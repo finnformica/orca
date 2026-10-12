@@ -123,7 +123,14 @@ void loadConfig().then((cfg) => orchestrator.recover(cfg, reconcile)).catch((e) 
 const INVENTORY_PUBLISH_MS = 10_000;
 setInterval(() => {
   void loadConfig().then((cfg) => Promise.all(cfg.repos.filter(verbs.repoHere).map((r) => agentRows(r).catch((e) => console.error(`orca: inventory publish failed for ${r.name}`, e)))));
+  void publishPreviews(); // the same for previews: the running-previews menu on any machine lists them
 }, INVENTORY_PUBLISH_MS).unref();
+
+/** Publish this instance's previews now (and answer the aggregate list) — on the timer, and right
+ *  after a start or stop so another machine's menu needn't wait for the tick. */
+// No viewer on a publish, so no loopback forwards for the others' previews.
+const publishPreviews = () => loadConfig().then((cfg) => verbs.previewRows(cfg, { loopback: false }))
+  .catch((e) => { console.error("orca: preview publish failed", e); return []; });
 
 // This machine's vitals into instance_metric once a minute, for the header chip's 24h graphs
 // (server/health.ts). Each instance samples itself; either answers the history from Postgres.
@@ -178,6 +185,8 @@ const DATABASE_ONLY = new Set([
   "/api/agents",
   // Needs no worktree, only SLACK_TOKEN — which is on the machine you click from, not the box.
   "/api/slack",
+  // Every instance's running previews: this one's live, the others' as they published them.
+  "/api/previews",
 ]);
 
 // DATABASE_ONLY routes whose `?instance=` selects rows rather than a machine — never forwarded.
@@ -213,11 +222,12 @@ async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: Orc
       body: req.method === "GET" || req.method === "HEAD" ? undefined : JSON.stringify(body),
       signal: req.signal,
     });
-    // A preview relayed from its owner is opened from THIS machine's browser: forward the service it
-    // opens to localhost here (a secure context — the app needs one) and hand back that URL.
+    // A preview relayed from its owner is opened from THIS machine's browser. Its tailnet url is the
+    // default; only a repo whose app needs a secure context gets the opened service forwarded to
+    // localhost here, with that URL as `localUrl`.
     if (url.pathname === "/api/preview" && upstream.ok) {
       const key = String(url.searchParams.get("key") ?? body.key ?? "");
-      return json(forward.localize(key, (await upstream.json()) as { port: number; url: string; open: boolean }[], new URL(base).hostname));
+      return json(forward.localize(key, (await upstream.json()) as { port: number; url: string; open: boolean }[], new URL(base).hostname, repo.previewSecureContext === true));
     }
     if (url.pathname === "/api/preview/stop") forward.release(String(body.key ?? ""));
     return new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
@@ -558,7 +568,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/preview") {
     if (!featuresOf(repo).previews) return notEnabled(repo, "Previews");
-    return json(await startPreview(cfg, repo, body.key, body.worktree));
+    const svcs = await startPreview(cfg, repo, body.key, body.worktree, typeof body.branch === "string" ? body.branch : undefined);
+    void publishPreviews();
+    return json(svcs);
   }
   if (req.method === "POST" && p === "/api/preview/master") {
     if (!featuresOf(repo).previews) return notEnabled(repo, "Previews");
@@ -569,17 +581,24 @@ async function api(req: Request, url: URL): Promise<Response> {
     await git.copyToWorktree(repo.repoPath, worktreePath, repo.copyToWorktree);
     await git.linkToWorktree(repo.repoPath, worktreePath, repo.linkToWorktree);
     await preview.start(worktreePath, worktreePath, repo.previewServices, cfg.portRange);
-    return json({ worktreePath, svcs: await preview.status(worktreePath) });
+    void publishPreviews();
+    return json({ worktreePath, svcs: await preview.status(worktreePath, preview.ownerHost(cfg.instances, db.instanceName())) });
   }
   if (req.method === "GET" && p === "/api/previews") {
-    return json(await preview.list()); // all running previews across repos (not repo-scoped)
+    // Every instance's running previews (not repo-scoped): this one's live, the others' published.
+    // Forward the others' previews here only for a page served from localhost (the Host it asked
+    // for — Vite's proxy keeps it): a phone, or anyone pointed at the box, opens the owner's url.
+    return json(await verbs.previewRows(cfg, { loopback: ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) }));
   }
   if (req.method === "GET" && p === "/api/preview") {
     const key = url.searchParams.get("key");
-    return json(key ? await preview.status(key) : []);
+    return json(key ? await preview.status(key, preview.ownerHost(cfg.instances, db.instanceName())) : []);
   }
   if (req.method === "POST" && p === "/api/preview/stop") {
     preview.stop(body.key, true); // teardown: drop this preview's DB
+    // The placement goes with it, so a refreshed page stops looking for it here.
+    await db.clearPreviewPlacement(String(body.key ?? "")).catch((e) => console.error("orca: preview placement clear failed", e));
+    void publishPreviews();
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/slack") {

@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Check, ChevronDown, Copy, ExternalLink, FlaskConical, Loader2, MonitorPlay, Square, TriangleAlert } from "lucide-react";
 import { api, type PreviewSvc } from "../api";
-import { baseBranch, instanceChoices, previewStatus, startMaster, stopMaster, stopPreview, testLocally, thisInstance, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
+import { baseBranch, instanceChoices, previewKeyOf, previewStatus, startMaster, stopMaster, stopPreview, testLocally, thisInstance, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
+import { previewHref } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { poll } from "@/lib/poll";
@@ -10,6 +11,9 @@ import { poll } from "@/lib/poll";
 // Shared preview lifecycle: start in the background, poll status, expose ready/failed/link. Driven
 // by a preview `key` (the worktree path) and a `starter` that spins it up — so the same hook powers
 // a branch preview (key known up front) and the "test master" preview (key learned on start).
+/** The URL this page opens for a service — see `previewHref`. */
+const hrefOf = (svc: PreviewSvc): string => previewHref(svc, window.location.hostname);
+
 function usePreview(initialKey: string | undefined, starter: () => Promise<{ key: string; svcs: PreviewSvc[] }>) {
   const [key, setKey] = useState(initialKey);
   const [svcs, setSvcs] = useState<PreviewSvc[]>([]);
@@ -100,7 +104,9 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
   // Where to run it: the session's own instance unless you pick another (only offered with >1).
   const [where, setWhere] = useState<string | undefined>(undefined);
   const choices = instanceChoices();
-  const { svcs, busy, active, error, start, stop } = usePreview(row.worktreePath, () => testLocally(row, where));
+  // Keyed by the server-recorded placement when there is one, so a preview starting on another
+  // instance shows as Starting/Open the moment the page loads, not after a click.
+  const { svcs, busy, active, error, start, stop } = usePreview(previewKeyOf(row), () => testLocally(row, where));
   const startOn = (instance: string) => { setWhere(instance); return testLocally(row, instance); };
   // The picker is joined to the Test button as one split control (same radius trim as Open·Stop).
   const split = choices.length > 1 ? "rounded-r-none" : "";
@@ -201,7 +207,7 @@ function PreviewLiveControl({ svcs, busy, onStop, openLabel, startingLabel, comp
   return (
     <div className={`inline-flex ${compact ? "" : "w-full"}`}>
       {ready && open ? (
-        <Button size={size} variant="outline" className={stateClass} onClick={() => window.open(open.url, "_blank", "noreferrer")} title={`Open preview on :${open.port}`} aria-label={openLabel}>
+        <Button size={size} variant="outline" className={stateClass} onClick={() => window.open(hrefOf(open), "_blank", "noreferrer")} title={`Open preview on :${open.port}`} aria-label={openLabel}>
           <ExternalLink className="size-3.5" /> {!compact && openLabel}
         </Button>
       ) : (
@@ -275,7 +281,7 @@ export function TestMasterMenu() {
  *  the trigger tracks how many are running — polling the bridge (`/api/previews`) so it stays live
  *  even with the popover shut. */
 export function PreviewManagerMenu() {
-  const [previews, setPreviews] = useState<{ key: string; svcs: PreviewSvc[] }[]>([]);
+  const [previews, setPreviews] = useState<{ key: string; instance?: string; svcs: PreviewSvc[] }[]>([]);
   // The endpoint is unreachable when Orca previews itself: its Vite proxies /api to whatever bridge
   // is already running (:8787), which may predate this route and 404. Track that so the menu shows a
   // legible "API unavailable" hint instead of a false "No previews running" empty state.
@@ -283,13 +289,14 @@ export function PreviewManagerMenu() {
   const rows = useWorkstreams();
   // Previews are keyed by worktree path; match that to a row for the session title (fall back to the
   // last path segment for adopted/base worktrees with no card).
-  const titleOf = (key: string) => rows.find((r) => r.worktreePath === key)?.title ?? key.split("/").pop() ?? key;
+  const titleOf = (key: string) => rows.find((r) => previewKeyOf(r) === key || r.worktreePath === key)?.title ?? key.split("/").pop() ?? key;
 
   const load = () => api.previews().then((p) => { setPreviews(p); setUnavailable(false); }).catch(() => setUnavailable(true));
   useEffect(() => poll(load, 2500), []); // reflects start/stop without a manual refresh
 
   const running = previews.filter((p) => p.svcs.some((s) => s.running));
-  const stop = async (key: string) => { await stopPreview(key).catch(() => {}); load(); };
+  // Stopped on the instance that runs it — the list spans every instance now.
+  const stop = async (key: string, instance?: string) => { await stopPreview(key, instance).catch(() => {}); load(); };
 
   return (
     <Popover>
@@ -313,7 +320,7 @@ export function PreviewManagerMenu() {
           running.map((p) => (
             <div key={p.key} className="space-y-1">
               <div className="text-muted-foreground truncate text-xs font-medium" title={titleOf(p.key)}>{titleOf(p.key)}</div>
-              <PreviewLiveControl svcs={p.svcs} busy={false} onStop={() => void stop(p.key)} openLabel="Open" startingLabel="Starting…" />
+              <PreviewLiveControl svcs={p.svcs} busy={false} onStop={() => void stop(p.key, p.instance)} openLabel="Open" startingLabel="Starting…" />
             </div>
           ))
         )}
@@ -324,7 +331,7 @@ export function PreviewManagerMenu() {
 
 /** Full panel for the detail Preview tab: embeds the running frontend once it's ready. */
 export function PreviewPanel({ row }: { row: Row }) {
-  const { open, active, ready, failed, busy, error, start, stop } = usePreview(row.worktreePath, () => testLocally(row));
+  const { open, active, ready, failed, busy, error, start, stop } = usePreview(previewKeyOf(row), () => testLocally(row));
 
   return (
     <div className="space-y-2 pt-3">
@@ -333,10 +340,10 @@ export function PreviewPanel({ row }: { row: Row }) {
         {active && <Button size="sm" variant="outline" disabled={busy} onClick={() => void stop()}>Stop preview</Button>}
         {active && !ready && <span className="text-muted-foreground text-sm">starting the frontend + backend… (~10s)</span>}
         {failed && <span className="text-destructive text-sm">a service failed to start — expand the log for details</span>}
-        {ready && open && <a className="text-muted-foreground inline-flex items-center gap-1 text-sm hover:underline" href={open.url} target="_blank" rel="noreferrer">open :{open.port} <ExternalLink className="size-3.5" /></a>}
+        {ready && open && <a className="text-muted-foreground inline-flex items-center gap-1 text-sm hover:underline" href={hrefOf(open)} target="_blank" rel="noreferrer">open :{open.port} <ExternalLink className="size-3.5" /></a>}
       </div>
       {error && <ErrorLog error={error} />}
-      {ready && open && <iframe title="preview" src={open.url} className="h-[70vh] w-full rounded-md border" />}
+      {ready && open && <iframe title="preview" src={hrefOf(open)} className="h-[70vh] w-full rounded-md border" />}
     </div>
   );
 }

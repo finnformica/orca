@@ -1154,3 +1154,13 @@ export function sparklineSegments(
   }
   return segs.map((s) => s.join(" "));
 }
+
+/** Which of a preview service's URLs this page should open. `url` is the owner's address (its
+ *  tailnet name), reachable from any device; `localUrl` is the same service on the answering
+ *  bridge's loopback — the only secure context a plain-http preview can have. A page served from
+ *  localhost (the laptop's own bridge) opens `localUrl` when there is one; anything else (a phone,
+ *  a browser pointed at the box) opens `url`, since ITS localhost is not that bridge. */
+export function previewHref(svc: { url: string; localUrl?: string }, pageHost: string): string {
+  const loopback = pageHost === "localhost" || pageHost === "127.0.0.1" || pageHost === "[::1]" || pageHost === "::1";
+  return loopback && svc.localUrl ? svc.localUrl : svc.url;
+}

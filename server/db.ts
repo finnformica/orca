@@ -292,6 +292,23 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       CREATE INDEX instance_metric_instance_at ON instance_metric (instance, at);
     `,
   },
+  {
+    id: 12,
+    // Running previews, published by the instance that runs them (the worktree_inventory pattern),
+    // so the running-previews menu on any machine — a phone pointed at the box included — lists
+    // every instance's previews. Keyed by the preview key (a worktree path), not a branch: a
+    // base-branch ("test master") preview has none.
+    sql: `
+      CREATE TABLE preview_inventory (
+        user_id TEXT NOT NULL,
+        instance TEXT NOT NULL,
+        key TEXT NOT NULL,
+        data JSONB NOT NULL,
+        seen_at BIGINT NOT NULL,
+        PRIMARY KEY (user_id, instance, key)
+      );
+    `,
+  },
 ];
 
 async function migrate(sql: Bun.SQL): Promise<void> {
@@ -726,6 +743,42 @@ export async function inventory(repo: string): Promise<{ instance: string; branc
     ORDER BY seen_at DESC`;
   return (rows as { instance: string; branch: string; data: Fields; seen_at: string }[])
     .map((r) => ({ instance: r.instance, branch: r.branch, data: r.data ?? {}, seenAt: Number(r.seen_at) }));
+}
+
+/** Publish THIS instance's running previews (upsert-then-sweep, as `publishInventory`): a preview
+ *  this publish didn't name has stopped. */
+export async function publishPreviews(previews: { key: string; data: Fields }[]): Promise<void> {
+  const sql = await open();
+  const user = currentUser();
+  const instance = instanceName();
+  const now = Date.now();
+  await sql.begin(async (tx: Bun.SQL) => {
+    for (const p of previews) {
+      await tx`
+        INSERT INTO preview_inventory (user_id, instance, key, data, seen_at)
+        VALUES (${user}, ${instance}, ${p.key}, ${p.data}, ${now})
+        ON CONFLICT (user_id, instance, key) DO UPDATE SET data = EXCLUDED.data, seen_at = EXCLUDED.seen_at`;
+    }
+    await tx`DELETE FROM preview_inventory WHERE user_id = ${user} AND instance = ${instance} AND seen_at < ${now}`;
+  });
+}
+
+/** Every instance's published previews, each with who runs it and when it was last reported. */
+export async function previewInventory(): Promise<{ instance: string; key: string; data: Fields; seenAt: number }[]> {
+  const sql = await open();
+  const rows = await sql`
+    SELECT instance, key, data, seen_at FROM preview_inventory WHERE user_id = ${currentUser()} ORDER BY instance, key`;
+  return (rows as { instance: string; key: string; data: Fields; seen_at: string }[])
+    .map((r) => ({ instance: r.instance, key: r.key, data: r.data ?? {}, seenAt: Number(r.seen_at) }));
+}
+
+/** Forget a stopped preview's placement (`previewInstance` in its workstream's enrichment), found by
+ *  key — the stop route knows the key, not the repo or branch. */
+export async function clearPreviewPlacement(key: string): Promise<void> {
+  const sql = await open();
+  await sql`
+    UPDATE workstream SET data = data - 'previewInstance'
+    WHERE user_id = ${currentUser()} AND data -> 'previewInstance' ->> 'key' = ${key}`;
 }
 
 /** Every instance that has ever checked in, with its last sighting. */
