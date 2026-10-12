@@ -17,11 +17,11 @@ beforeAll(() => store.configReady);
 
 describe("agents list layout (pure)", () => {
   test("the column set is only what you act on; instance only with more than one instance", () => {
-    expect(listColumns({ multiInstance: true }).map((c) => c.key)).toEqual(["workstream", "status", "pr", "signals", "instance", "updated", "actions"]);
-    expect(listColumns({ multiInstance: false }).map((c) => c.key)).toEqual(["workstream", "status", "pr", "signals", "updated", "actions"]);
+    expect(listColumns({ multiInstance: true }).map((c) => c.key)).toEqual(["workstream", "status", "pr", "signals", "instance", "actions"]);
+    expect(listColumns({ multiInstance: false }).map((c) => c.key)).toEqual(["workstream", "status", "pr", "signals", "actions"]);
     // Gone: the latest instruction, branch, model avatar and the separate PR # column.
     const keys = listColumns({ multiInstance: true }).map((c) => c.key as string);
-    for (const gone of ["instruction", "branch", "model", "prNumber"]) expect(keys).not.toContain(gone);
+    for (const gone of ["instruction", "branch", "model", "prNumber", "updated"]) expect(keys).not.toContain(gone);
   });
 
   test("no horizontal scroll from 1280px up: the floors fit beside the sidebar; flexible tracks take the rest", () => {
@@ -31,7 +31,8 @@ describe("agents list layout (pure)", () => {
       expect(listMinWidth(cols)).toBeLessThanOrEqual(1280 - LIST_CHROME_PX);
     }
     const t = listGridTemplate(listColumns({ multiInstance: true }));
-    expect(t).toBe("minmax(10rem,2fr) 8.5rem 8.5rem minmax(6rem,1fr) 5rem 4rem 4.5rem");
+    expect(t).toBe("minmax(10rem,2fr) 8.5rem 8.5rem minmax(6rem,1fr) 5rem 4.5rem");
+    expect(listColumns({ multiInstance: false }).at(-1)).toMatchObject({ key: "actions", label: "Actions" });
     expect(t).not.toContain("auto"); // a content-sized track could push the row wider than the card
   });
 
@@ -117,13 +118,13 @@ describe("agents list view", () => {
     await mount();
     const head = container!.querySelector('[data-slot="workstream-list-header"]')!;
     // The fake config has two instances, so Instance is shown.
-    expect([...head.querySelectorAll('[role="columnheader"]')].map((h) => h.textContent)).toEqual(["Workstream", "Status", "PR", "Checks & review", "Instance", "Updated", ""]);
+    expect([...head.querySelectorAll('[role="columnheader"]')].map((h) => h.textContent)).toEqual(["Workstream", "Status", "PR", "Checks & review", "Instance", "Actions"]);
     const list = container!.querySelector<HTMLElement>('[data-slot="workstream-list"]')!;
     expect(list.className).toContain("overflow-hidden");
     expect(list.className).not.toContain("overflow-x-auto");
     expect(list.querySelector('[class*="min-w-["]')).toBeNull(); // no fixed minimum forcing a scroll
     expect(rowOf("feat-ci").style.gridTemplateColumns).toBe(listGridTemplate(listColumns({ multiInstance: true })));
-    expect(rowOf("feat-ci").querySelectorAll('[role="cell"]')).toHaveLength(7);
+    expect(rowOf("feat-ci").querySelectorAll('[role="cell"]')).toHaveLength(6); // one per header, the last holding preview + ⋯
     expect(rowOf("feat-ci").querySelector(".lucide-folder-git2")).toBeNull();
     // Readable models: the run's reported model, else the pinned one — no initials avatar.
     expect(rowOf("local-idle").querySelector('[data-slot="model-label"]')!.textContent).toBe("Opus 5.5");

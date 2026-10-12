@@ -14,7 +14,7 @@ import { useNow } from "@/lib/ticker";
 import { oneOf, persistedKey, readPersisted, usePersisted, writePersisted } from "@/lib/persisted";
 import { instanceChoices, modelFor, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
 import {
-  DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, SORT_LABELS, ago, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed, lastActivity,
+  DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed,
   listColumns, listGridTemplate, modelBadge, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, toggleQuick,
   type ListColumn, type ListSort, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
 } from "../workstream";
@@ -205,7 +205,7 @@ const GRID = "grid items-center gap-x-3 px-4"; // gap / padding: workstream.LIST
 function ListHeader({ cols }: { cols: ListColumn[] }) {
   return (
     <div role="row" data-slot="workstream-list-header" style={rowGrid(cols)} className={`${GRID} text-muted-foreground h-9 border-b text-xs`}>
-      {cols.map((c) => <div key={c.key} role="columnheader" data-col={c.key} className={`truncate ${c.key === "updated" ? "text-right" : ""}`}>{c.label}</div>)}
+      {cols.map((c) => <div key={c.key} role="columnheader" data-col={c.key} className={`truncate ${c.key === "actions" ? "text-right" : ""}`}>{c.label}</div>)}
     </div>
   );
 }
@@ -249,7 +249,6 @@ export function AgentRow({ row, cols }: { row: Row; cols: ListColumn[] }) {
   const tone = rowTone(row);
   const reasons = attentionReasons(row);
   const instance = rowInstance(row, thisInstance());
-  const updated = lastActivity(row);
   const to = detailPath(row);
   const model = modelBadge(row.agentMeta?.model, row.worktreePath || row.prNumber ? modelFor(row) : undefined);
   const instruction = latestInstruction(row);
@@ -298,7 +297,6 @@ export function AgentRow({ row, cols }: { row: Row; cols: ListColumn[] }) {
         {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
       </div>
       {cell("instance") && <div role="cell" className="text-muted-foreground truncate text-xs" data-slot="instance-chip" title={instance}>{instance ?? "—"}</div>}
-      <div role="cell" className="text-muted-foreground truncate text-right text-xs tabular-nums" title={updated ? new Date(updated).toLocaleString() : undefined}>{ago(updated)}</div>
       <div role="cell" className="flex items-center justify-end gap-1">
         {!isDone && <PreviewControl row={row} compact />}
         {hasMenu && <WorkstreamActions row={row} compact menuOnly onBusy={setBusy} onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}

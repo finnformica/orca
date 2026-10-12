@@ -1775,7 +1775,7 @@ export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) =>
 // latest instruction, branch and model went into the title's subline and tooltip, the PR # into the
 // state cell, and the per-row repo icon was dropped (the repo is in the subline). Each column has a
 // floor in rem; the flexible ones share what is left, so the row never needs a horizontal scroll.
-export type ListColumn = { key: "workstream" | "status" | "pr" | "signals" | "instance" | "updated" | "actions"; label: string; minRem: number; grow?: number };
+export type ListColumn = { key: "workstream" | "status" | "pr" | "signals" | "instance" | "actions"; label: string; minRem: number; grow?: number };
 export function listColumns(opts: { multiInstance: boolean }): ListColumn[] {
   const cols: ListColumn[] = [
     { key: "workstream", label: "Workstream", minRem: 10, grow: 2 },
@@ -1783,8 +1783,7 @@ export function listColumns(opts: { multiInstance: boolean }): ListColumn[] {
     { key: "pr", label: "PR", minRem: 8.5 },
     { key: "signals", label: "Checks & review", minRem: 6, grow: 1 },
     { key: "instance", label: "Instance", minRem: 5 },
-    { key: "updated", label: "Updated", minRem: 4 },
-    { key: "actions", label: "", minRem: 4.5 },
+    { key: "actions", label: "Actions", minRem: 4.5 },
   ];
   return opts.multiInstance ? cols : cols.filter((c) => c.key !== "instance");
 }
