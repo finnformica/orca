@@ -28,7 +28,7 @@ function routeRow(route: Route, rows: Row[]): Row | undefined {
   return undefined;
 }
 
-function useCommands(query: string): Command[] {
+function useCommands(): Command[] {
   const rows = useWorkstreams();
   const repos = useRepos();
   const route = useRoute();
@@ -70,8 +70,6 @@ function useCommands(query: string): Command[] {
     action("instance:all", "Switch instance: All instances", () => setScope("all"));
     for (const i of instances) action(`instance:${i}`, `Switch instance: ${i}`, () => setScope(i));
   }
-  // Nothing you typed is wasted: it can always go to the orchestrator as a message to start from.
-  if (query.trim()) out.push({ id: "action:ask", group: "Actions", label: `Ask the orchestrator: “${query.trim()}”`, keywords: query, run: () => ask(query.trim()) });
   return out;
 }
 
@@ -81,8 +79,13 @@ export function CommandPalette() {
   const [dialog, setDialog] = useState<HTMLDialogElement | null>(null);
   const [query, setQuery] = useState("");
   const [sel, setSel] = useState(0);
-  const commands = useCommands(query);
-  const ranked = rankPalette(commands, query, recent.filter((id) => id !== "action:ask")) as Command[];
+  const commands = useCommands();
+  const { ask } = useOrchestrator();
+  // Nothing you typed is wasted: after the matches, it can always go to the orchestrator as a message.
+  const ranked = [
+    ...(rankPalette(commands, query, recent) as Command[]),
+    ...(query.trim() ? [{ id: "action:ask", group: "Actions" as const, label: `Ask the orchestrator: “${query.trim()}”`, run: () => ask(query.trim()) }] : []),
+  ];
   const listRef = useRef<HTMLDivElement>(null);
   const listId = useId();
   useEffect(() => {
@@ -97,7 +100,7 @@ export function CommandPalette() {
   const index = Math.min(sel, Math.max(0, ranked.length - 1));
   const run = (cmd: Command | undefined) => {
     if (!cmd) return;
-    setRecent(pushRecent(recent, cmd.id));
+    if (cmd.id !== "action:ask") setRecent(pushRecent(recent, cmd.id));
     setOpen(false);
     cmd.run();
   };

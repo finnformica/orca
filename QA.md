@@ -55,6 +55,24 @@ adapters or routes.
 - ✅ Card shows **Copy rebase prompt**; the copied text names the branch + base.
 - Resolve/rebase, push. After the next poll ✅ the card leaves `CONFLICTED`.
 
+## S — shortcuts, palette, Ask the orchestrator
+
+Automated in `tests/shortcuts.test.tsx` (S1–S5); by hand, in a real browser on Mac and non-Mac:
+
+- `⌘K` (Ctrl+K) → ✅ the palette opens, even with the caret in a composer; `⌘K` again closes it.
+  Type part of a workstream title, `#<pr>`, `usage`, `new` → ✅ the best match is first; ↑/↓ wrap,
+  Enter runs it. Reopen → ✅ what you ran leads under **Recent**. On an agent page → ✅ **Start
+  preview: …** starts that branch's preview and lands on its Preview tab.
+- Outside a field: `C` → New agent, `O` → the orchestrator with its composer focused, `F` → Find,
+  `⌘B` → the sidebar collapses (reload: ✅ still collapsed), `?` → the shortcuts sheet, Esc → closes
+  whichever is open. The browser's own `⌘B` / Downloads never fires.
+- In the Find box or any composer, type `c`, `o`, `f`, `?` → ✅ they're just text.
+- Top bar, every page: **Ask the orchestrator**. Click → ✅ the window opens focused. Type "what is
+  running?" into it → ✅ the window opens with that text after any earlier draft, caret at the end,
+  nothing sent. Pop the window out (Chrome/Edge), then ask from the top bar → ✅ the text lands in
+  the PiP window.
+- Tooltips show the keys: Add New (C), Collapse sidebar (⌘B / Ctrl+B), Ask the orchestrator (O).
+
 ## Teardown
 
 Delete the test PRs/branches and remove any leftover worktrees:
