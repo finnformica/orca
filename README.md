@@ -119,8 +119,11 @@ sudo cp deploy/orca.service /etc/systemd/system/ && sudo systemctl enable --now 
 
 **Previews on a box.** Write every preview command so it works on either machine: listen on `{bind}`
 (`ORCA_PREVIEW_BIND` — loopback on a laptop, the tailnet address on the box), put `{host}`
-(`ORCA_PREVIEW_HOST`) in any URL the app hands the browser, and for a Vite app allow that host, e.g.
-Orca's own:
+(`ORCA_PREVIEW_HOST`) in any URL the app hands the browser, and for a Vite app allow that host.
+Vite 5 checks the request's Host header against `server.allowedHosts` (localhost/bare IPs are
+always allowed; a tailnet name is not) and has no env var of its own for it — setting
+`__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` in the preview command does nothing unless the app's own
+`vite.config.ts` reads it into `server.allowedHosts`, e.g. Orca's own (`web/vite.config.ts`):
 
 ```sh
 cd web && export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS={host} && bunx --bun vite --host {bind} --port {port}
@@ -129,7 +132,10 @@ cd web && export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS={host} && bunx --bun vit
 A preview opens at its owner's tailnet URL on every device. A repo whose app only works in a secure
 context (plain-http tailnet names are not one — branch-demo needs `crypto.randomUUID`) sets
 `previewSecureContext: true`: then a laptop page served from localhost gets the box's preview
-forwarded to `http://localhost:<port>` instead. Orca itself does not need it.
+forwarded to `http://localhost:<port>` instead. Orca itself does not need it. That forward only
+covers a viewer on localhost, though — a phone or another box opens the raw tailnet URL directly,
+so branch-demo's own `frontend/vite.config.ts` (which does not read `server.allowedHosts` today)
+would hit the same 403 there and needs the same treatment as `web/vite.config.ts` below.
 
 Then in the config (settings page or `orca.config.ts`) name the instance and assign repos to it:
 `instances: { cloud: "http://<tailscale ip>:8787" }` and `runsOn: "cloud"` on each repo the box

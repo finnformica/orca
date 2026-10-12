@@ -28,12 +28,16 @@ export type Diagnostics = {
   gh: { ghCalls: number; agentPolls: number; uptimeMs: number };
   /** Whether Claude launches are being routed across logins by hydra's shim (see usage.routingInfo). */
   routing?: Routing;
+  /** This instance's last orphan-preview-db / stale-test-container reap (server/preview.ts's `reap`,
+   *  run at startup and hourly). Undefined until one has run. */
+  reap?: { at: number; droppedDbs: string[]; removedContainers: string[] };
 };
 
 export function summarize(
   entries: LedgerEntry[],
   gh: { ghCalls: number; agentPolls: number; uptimeMs: number },
   routing?: Routing,
+  reap?: Diagnostics["reap"],
 ): Diagnostics {
   const runs = entries.filter((e) => e.kind === "run");
   const prs = entries.filter((e) => e.kind === "pr-description");
@@ -60,6 +64,7 @@ export function summarize(
     prDescription: { total: prs.length, avoided: prs.filter((e) => e.prDescriptionAvoided).length },
     gh,
     ...(routing ? { routing } : {}),
+    ...(reap ? { reap } : {}),
   };
 }
 
@@ -93,6 +98,9 @@ export function renderText(d: Diagnostics): string {
     `PR descriptions: ${d.prDescription.total} total, ${d.prDescription.avoided} avoided a fresh model call`,
     `GitHub: ${d.gh.ghCalls} gh calls, ${d.gh.agentPolls} agent polls over ${Math.round(d.gh.uptimeMs / 1000)}s`,
     renderRouting(d.routing),
+    d.reap
+      ? `Reaper: last run ${new Date(d.reap.at).toISOString()} — dropped ${d.reap.droppedDbs.length} db(s), removed ${d.reap.removedContainers.length} container(s)`
+      : "Reaper: hasn't run yet",
   ];
   return lines.join("\n");
 }

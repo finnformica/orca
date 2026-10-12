@@ -98,6 +98,10 @@ const config: OrcaConfig = {
       // provider/AWS keys. Copied on create + checkout. (The per-preview DB scripts now live in the
       // Orca repo — see `previewDb` — so they no longer need copying into each worktree.)
       copyToWorktree: ["backend/.env"],
+      // The repo's own test harness starts a throwaway Postgres container per run
+      // (`branch_demo_test_postgres_<port>`) and doesn't remove it — Orca's hourly reaper does once
+      // one has been running longer than 3 hours (a run that never finished cleaning up).
+      testContainerPrefix: "branch_demo_test_postgres_",
       // The frontend needs a SECURE CONTEXT (crypto.randomUUID), which a plain-http tailnet name is
       // not: a preview on another instance is forwarded to this machine's localhost for a page served
       // from localhost. Repos without it open the owner's tailnet URL everywhere.

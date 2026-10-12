@@ -136,6 +136,18 @@ const publishPreviews = () => loadConfig().then((cfg) => verbs.previewRows(cfg, 
 // (server/health.ts). Each instance samples itself; either answers the history from Postgres.
 startMetricsSampler();
 
+// Orphaned preview databases (a bridge crash / reaped worktree / worker test run that never dropped
+// its own) and stale test-harness Docker containers — on this instance's repos only. At startup
+// (whatever accumulated since the last run), then hourly; a run's own failures are logged, never
+// thrown (see preview.reap).
+const REAP_INTERVAL_MS = 60 * 60 * 1000;
+function runReaper(): void {
+  void loadConfig().then((cfg) => preview.reap(cfg.repos.filter(verbs.repoHere)))
+    .catch((e) => console.error("orca: preview/container reap failed", e));
+}
+runReaper();
+setInterval(runReaper, REAP_INTERVAL_MS).unref();
+
 // How many of a conversation's newest turns are sent with their steps attached (older ones load on unfold).
 const STEPS_FOR_TURNS = 40;
 
@@ -399,7 +411,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "GET" && p === "/api/diagnostics") {
     // Efficiency report over the run ledger + process metrics. `?format=text` for the terminal.
-    const report = summarize(ledger.all(), metrics(), await routingInfo());
+    const report = summarize(ledger.all(), metrics(), await routingInfo(), preview.lastReapReport());
     return url.searchParams.get("format") === "text"
       ? new Response(renderText(report), { headers: { "content-type": "text/plain; charset=utf-8" } })
       : json(report);

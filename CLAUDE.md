@@ -478,9 +478,15 @@ port is forwarded on loopback here. Without the flag no forward is opened and ev
 owner's `url` (opening Orca's own preview from the laptop sent Finn to localhost when he wanted the
 tailnet). **A preview command binds `{bind}`** (`ORCA_PREVIEW_BIND`: loopback on a laptop, the
 tailnet address on a box) and embeds `{host}` (`ORCA_PREVIEW_HOST`) in any URL the app hands the
-browser; a Vite app also needs `export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS={host}` or it rejects
-the tailnet Host header — Orca's own: `cd web && export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS={host}
-&& bunx --bun vite --host {bind} --port {port}`. Plain TCP, so
+browser; a Vite app also needs to allow the tailnet Host header or it 403s with "Blocked request."
+Vite 5 (`web`'s is 5.4.21) checks `server.allowedHosts` itself — `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS`
+is not a Vite env var, so exporting it in the preview command does nothing by itself; `web/vite.config.ts`
+reads `ORCA_PREVIEW_HOST` and `__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` (comma-separated) into
+`server.allowedHosts` (never `true`, which would accept any host) — Orca's own preview command:
+`cd web && export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS={host}
+&& bunx --bun vite --host {bind} --port {port}`. branch-demo's `frontend/vite.config.ts` has no such
+read yet, so its own preview would 403 the same way for a viewer not on localhost (see README).
+Plain TCP, so
 Vite's HMR websocket rides it; dropped on stop; a port a local preview holds gets no `localUrl`. The
 browser opens `localUrl` only from a page on localhost (`previewHref`), else `url` — a phone opens the
 owner's tailnet URL, which still lacks a secure context until the tailnet has HTTPS certificates.
@@ -513,6 +519,16 @@ laptop points `ORCA_DATABASE_URL` at the box's Postgres over the tailnet. Modell
 macOS-only path (Keychain, `clonefile`) or a tool-flag difference would show first. **Pin the
 Claude Code version on the server:** `--bare` is slated to become the default for `-p`, and bare
 mode never reads OAuth credentials, which would silently break every subscription-login launch.
+**Orphan reaper:** a preview that dies with a bridge crash, a reaped worktree, or a worker's own
+test run leaves its `orca_*` database behind — nothing else drops it, and the box had 8 of them
+(~6.6 GB) accumulate before `server/preview.ts`'s `reap()` existed. It runs at startup and hourly
+(`server/index.ts`): lists `orca_%` databases on each repo's preview Postgres (`server/previewdb.ts`,
+connected the same way `scripts/preview-db.sh` is, from the repo's own `.env`), computes orphans
+against every repo's live worktrees plus every tracked preview key (`orphanPreviewDbs`), skips
+anything younger than 2 hours (a preview mid-clone), and drops the rest via `preview-db.sh drop`.
+The same pass removes a repo's `testContainerPrefix` Docker containers (branch-demo's test harness
+leaves `branch_demo_test_postgres_<port>` running) older than 3 hours, via `server/docker.ts` —
+silently skipped when `docker` isn't on the box. `/api/diagnostics` reports the last pass (`reap`).
 
 ## Conventions (follow these)
 
