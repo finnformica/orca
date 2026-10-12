@@ -288,7 +288,7 @@ export function AgentBadge({ row, hasWork }: { row: Row; hasWork: boolean }) {
 export function ConditionBadges({ row }: { row: Row }) {
   return (
     <>
-      {row.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
+      {row.autoMergeEnabled && <Badge variant="outline" className="border-transparent bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
       {row.reviewStatus === "changes_requested" && <Badge variant="destructive">Changes requested</Badge>}
       {row.mergeable === "CONFLICTING" && <Badge variant="destructive">Conflicts</Badge>}
       {row.mergeable === "UNKNOWN" && <Badge variant="outline">Checking…</Badge>}
@@ -387,7 +387,7 @@ function NewChatDialog({ open, onClose, repo, model, onSubmit }: { open: boolean
     else if (!open && d.open) d.close();
   }, [open]);
   return (
-    <dialog ref={ref} onClose={onClose} onCancel={onClose} onClick={(e) => { if (e.target === ref.current) onClose(); }} className="bg-card text-foreground m-auto w-[90vw] max-w-2xl rounded-lg border p-0 shadow-lg backdrop:bg-black/50">
+    <dialog ref={ref} onClose={onClose} onCancel={onClose} onClick={(e) => { if (e.target === ref.current) onClose(); }} className="bg-card text-foreground m-auto w-[90vw] max-w-2xl rounded-lg border p-0 shadow-modal backdrop:bg-black/50">
       <div className="flex flex-col gap-2 p-3">
         <div className="text-muted-foreground text-xs">New chat · {repo} · {modelLabel(model)}</div>
         {open && <ChatComposer autoFocus repo={repo} persistKey="orca.newChat" placeholder="Ask anything…" onSubmit={onSubmit} onCancel={onClose} />}
@@ -452,9 +452,9 @@ export function WorkstreamCard({ row }: { row: Row }) {
     : row.prNumber ? `/${row.repo}/prs/${row.prNumber}` : null; // done: link to the merged PR
 
   return (
-    <div className={`bg-card relative flex flex-col rounded-md border shadow-sm ${dense ? "gap-1 p-2" : "gap-2 p-3"} ${busy ? "pointer-events-none" : ""}`} aria-busy={busy}>
+    <div className={`bg-card relative flex flex-col rounded-lg border ${dense ? "gap-1 p-2" : "gap-2 p-3"} ${busy ? "pointer-events-none" : ""}`} aria-busy={busy}>
       {busy && (
-        <div className="bg-card/60 absolute inset-0 z-10 flex items-center justify-center rounded-md">
+        <div className="bg-card/60 absolute inset-0 z-10 flex items-center justify-center rounded-lg">
           <Loader2 className="text-muted-foreground size-5 animate-spin" />
         </div>
       )}
@@ -498,7 +498,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
       {!isDone && (
         <div className={`flex flex-wrap items-center gap-1 ${dense ? "[&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5" : ""}`}>
           {isOpenPr && row.following && (
-            <Badge variant="outline" className="border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-400" title="Orca is watching this PR and auto-runs the agent to resolve conflicts, fix CI, or address review comments.">
+            <Badge variant="outline" className="border-transparent bg-sky-500/10 text-sky-700 dark:text-sky-400" title="Orca is watching this PR and auto-runs the agent to resolve conflicts, fix CI, or address review comments.">
               Following <Eye />
             </Badge>
           )}
@@ -552,7 +552,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
               leading={
                 <>
                   <PreviewControl row={row} compact />
-                  <Button size="icon" variant="outline" className="size-7" onClick={() => setTerminalOpen(true)} title="Open terminal" aria-label="Open terminal">
+                  <Button size="icon" variant="ghost" className="size-7" onClick={() => setTerminalOpen(true)} title="Open terminal" aria-label="Open terminal">
                     <SquareTerminal className="size-3.5" />
                   </Button>
                 </>

@@ -229,3 +229,48 @@ describe("the console's pages", () => {
     expect(cfg.textContent).toContain("base main");
   });
 });
+
+// The surface rules from Finn's audit, asserted on the rendered pages so they can't drift back:
+// 1px hairlines only, no shadows outside menus / popovers / modals, 8px cards, and no card nested in
+// a card's border (the conversation runs full-bleed in its card, like Vercel's Build Logs).
+describe("surfaces: Vercel's hairlines, radii and shadows", () => {
+  beforeAll(() => store.configReady);
+  afterEach(async () => {
+    apiFake.reset();
+    await act(async () => { await store.refresh(); });
+    act(() => root?.unmount());
+    container?.remove();
+    root = container = undefined;
+    localStorage.clear();
+    navigate("/");
+  });
+  // The orchestrator's floating launcher and window are out of scope ("stays as it is"): a floating
+  // button keeps its lift, as Vercel's does.
+  const classes = () => [...container!.querySelectorAll<HTMLElement>("[class]")]
+    .filter((el) => !el.closest('[aria-label$="orchestrator"]'))
+    .map((el) => el.getAttribute("class")!);
+  const offending = (re: RegExp) => classes().filter((c) => re.test(c));
+
+  for (const path of ["/", "/agents", "/usage", "/repos", "/settings", "/r/local/feat-login"]) {
+    test(`${path}: 1px borders, no stray shadows, 8px cards`, async () => {
+      apiFake.agentsData = [{ branch: "feat-login", worktreePath: "/wt/feat-login", agentStatus: "done" }];
+      apiFake.turnsData.set("r::feat-login", [{ id: "t1", provider: "claude", prompt: "p", instruction: "go", response: "done", startedAt: NOW, finishedAt: NOW + 1 }]);
+      await open(path);
+      expect(offending(/(^|\s)border(-[lrtbxy])?-(2|4|8)(\s|$)/)).toEqual([]);
+      expect(offending(/(^|\s)(hover:|focus:)?shadow-(xs|sm|md|lg|xl|2xl)(\s|$)/)).toEqual([]);
+      for (const card of container!.querySelectorAll<HTMLElement>("section[data-slot]")) {
+        expect(card.className).toContain("rounded-lg");
+        expect(card.className).not.toContain("shadow");
+      }
+    });
+  }
+
+  test("the agent page's conversation runs full-bleed in its card: no border of its own, the page's theme", async () => {
+    apiFake.agentsData = [{ branch: "feat-login", worktreePath: "/wt/feat-login", agentStatus: "done" }];
+    await open("/r/local/feat-login");
+    const chat = container!.querySelector<HTMLElement>('[data-slot="agent-chat"]')!;
+    const log = chat.querySelector<HTMLElement>(".font-mono.overflow-y-auto")!;
+    expect(log.className).not.toMatch(/(^|\s)(border|rounded-md)(\s|$)/);
+    expect(chat.querySelector(".log-themed")).not.toBeNull(); // follows the page's light/dark theme
+  });
+});

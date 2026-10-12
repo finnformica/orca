@@ -16,7 +16,7 @@ export function VCard({ title, aside, children, className, slot, bodyClass, onHe
     onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onHeaderClick(); } },
   } : {};
   return (
-    <section data-slot={slot} className={cn("bg-card overflow-hidden rounded-xl border", className)}>
+    <section data-slot={slot} className={cn("bg-card overflow-hidden rounded-lg border", className)}>
       {(title || aside) && (
         <header data-slot="card-header" {...toggle} className={cn("flex min-h-12 items-center justify-between gap-3 border-b px-4 py-2", onHeaderClick && "hover:bg-accent/40 cursor-pointer select-none")}>
           <h3 className="truncate text-sm font-medium">{title}</h3>

@@ -256,7 +256,7 @@ function RenameDialog({ row, open, onClose }: { row: Row; open: boolean; onClose
       onClose={onClose}
       onCancel={onClose}
       onClick={(e) => { if (e.target === ref.current) onClose(); }} // backdrop click → close
-      className="bg-card text-foreground m-auto w-[28rem] max-w-[90vw] rounded-lg border p-0 shadow-lg backdrop:bg-black/50"
+      className="bg-card text-foreground m-auto w-[28rem] max-w-[90vw] rounded-lg border p-0 shadow-modal backdrop:bg-black/50"
     >
       <form className="flex flex-col gap-3 p-4" onSubmit={(e) => { e.preventDefault(); void save(); }}>
         <div className="text-sm font-medium">Rename {row.prNumber ? `PR #${row.prNumber}` : "card"}</div>

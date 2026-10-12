@@ -8,7 +8,7 @@
   /* Vercel's Geist design language, as the app's tokens: every component reads these. Light pages
      sit on #fafafa with white cards; dark on #000 with #0a0a0a cards; 1px hairlines, no shadows,
      one accent (blue), status dots green / amber / red / blue. */
-  --radius: 0.5rem;
+  --radius: 0.5rem; /* 8px cards; controls are radius-md (6px) */
   --background: #fafafa;
   --foreground: #171717;
   --card: #ffffff;
@@ -37,6 +37,9 @@
   --geist-warning-bg: #fff8e6;
   --geist-warning-fg: #a35200;
   --geist-error-bg: #fff0f0;
+  /* Geist's menu / popover and modal shadows — the only shadows in the app. */
+  --geist-shadow-menu: 0px 1px 1px rgba(0, 0, 0, 0.02), 0px 4px 8px -4px rgba(0, 0, 0, 0.04), 0px 16px 24px -8px rgba(0, 0, 0, 0.06);
+  --geist-shadow-modal: 0px 1px 1px rgba(0, 0, 0, 0.02), 0px 8px 16px -4px rgba(0, 0, 0, 0.04), 0px 24px 32px -8px rgba(0, 0, 0, 0.06);
 }
 
 .dark {
@@ -52,7 +55,7 @@
   --secondary-foreground: #ededed;
   --muted: #1a1a1a;
   --muted-foreground: #a1a1a1;
-  --accent: #1f1f1f;
+  --accent: #1a1a1a;
   --accent-foreground: #ededed;
   --destructive: #e5484d;
   --border: #333333;
@@ -62,11 +65,20 @@
   --geist-warning-bg: #2a1d03;
   --geist-warning-fg: #ffb224;
   --geist-error-bg: #2a0e0f;
+  --geist-shadow-menu: 0px 1px 1px rgba(0, 0, 0, 0.4), 0px 4px 8px -4px rgba(0, 0, 0, 0.5), 0px 16px 24px -8px rgba(0, 0, 0, 0.6);
+  --geist-shadow-modal: 0px 1px 1px rgba(0, 0, 0, 0.4), 0px 8px 16px -4px rgba(0, 0, 0, 0.5), 0px 24px 32px -8px rgba(0, 0, 0, 0.6);
 }
 
 @theme inline {
   --font-sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Geist's type scale for an app: 13px body, 12px meta. */
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.25rem;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1rem;
+  --shadow-menu: var(--geist-shadow-menu);
+  --shadow-modal: var(--geist-shadow-modal);
   --color-sidebar: var(--sidebar);
   --color-geist-blue: var(--geist-blue);
   --color-geist-green: var(--geist-green);
@@ -112,16 +124,57 @@
   }
 }
 
+/* The agent page's conversation sits where Vercel's Build Logs do, so it follows the page's theme —
+   light logs on the card in light mode — while the terminal modal and the orchestrator's window keep
+   their dark terminal. Tailwind v4 resolves every colour utility through a variable, so the log's
+   dark palette is remapped here, in one scope, instead of restyling each line of Chat.tsx. */
+:root:not(.dark) .log-themed {
+  --color-neutral-950: var(--card);
+  --color-neutral-900: #f2f2f2;
+  --color-neutral-800: var(--border);
+  --color-neutral-600: #8f8f8f;
+  --color-neutral-500: #8f8f8f;
+  --color-neutral-400: #666666;
+  --color-neutral-300: #4d4d4d;
+  --color-neutral-200: #171717;
+  --color-emerald-400: #297a3a;
+  --color-red-400: #cb2a2f;
+  --color-amber-300: #a35200;
+  --color-amber-400: #a35200;
+  --color-amber-600: #e5a000;
+  --color-amber-800: #f5d48e;
+  --color-sky-300: #0068d6;
+  --color-sky-400: #0068d6;
+  --tw-prose-invert-body: #4d4d4d;
+  --tw-prose-invert-headings: #171717;
+  --tw-prose-invert-bold: #171717;
+  --tw-prose-invert-links: #0068d6;
+  --tw-prose-invert-code: #0068d6;
+  --tw-prose-invert-bullets: #8f8f8f;
+  --tw-prose-invert-counters: #8f8f8f;
+  --tw-prose-invert-quotes: #4d4d4d;
+  --tw-prose-invert-quote-borders: var(--border);
+  --tw-prose-invert-hr: var(--border);
+  --tw-prose-invert-th-borders: var(--border);
+  --tw-prose-invert-td-borders: var(--border);
+  --tw-prose-invert-pre-bg: #f2f2f2;
+  --tw-prose-invert-pre-code: #171717;
+}
+
 @layer base {
   * {
     border-color: var(--border);
     outline-color: color-mix(in oklch, var(--ring) 50%, transparent);
   }
+  /* Geist icons: 1.5 stroke (lucide's default is 2, which reads heavy next to 1px hairlines). */
+  svg.lucide {
+    stroke-width: 1.5;
+  }
   body {
     background-color: var(--background);
     color: var(--foreground);
     font-family: var(--font-sans);
-    font-size: 14px;
+    font-size: 13px;
     -webkit-font-smoothing: antialiased;
     font-feature-settings: "liga" 1, "calt" 1;
   }

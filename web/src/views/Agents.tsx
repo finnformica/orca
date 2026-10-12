@@ -94,7 +94,7 @@ function AgentsList() {
             No agents match.
             <Button size="sm" variant="outline" onClick={clear}>Clear filters</Button>
           </div>
-        ) : <div className="min-w-[74rem]">{visible.map((r) => <AgentRow key={r.repo + r.branch} row={r} />)}</div>}
+        ) : <div className="min-w-[78rem]">{visible.map((r) => <AgentRow key={r.repo + r.branch} row={r} />)}</div>}
       </div>
     </section>
   );
@@ -172,7 +172,7 @@ function FilterRow({ scoped, quick, setQuick, visible, total, q, setQ, sort, set
 
 // One grid per row (fixed tracks so every row lines up): workstream · latest instruction · status ·
 // state · signals · PR · branch · instance · updated · model · actions.
-const COLS = "grid grid-cols-[minmax(11rem,1.4fr)_minmax(8rem,1.5fr)_9.5rem_6.5rem_minmax(8rem,1.1fr)_3.5rem_minmax(6rem,0.8fr)_4rem_4.5rem_1.5rem_6.5rem] items-center gap-x-3";
+const COLS = "grid grid-cols-[minmax(11rem,1.4fr)_minmax(8rem,1.1fr)_9.5rem_6.5rem_minmax(12rem,1.4fr)_3.5rem_minmax(6rem,0.8fr)_4rem_4.5rem_1.5rem_6.5rem] items-center gap-x-3";
 
 export const TONE_DOT: Record<RowTone, DotTone> = { running: "building", failed: "error", attention: "warning", ready: "ready", neutral: "neutral" };
 export const TONE_LABEL: Record<RowTone, string> = { running: "Running", failed: "Error", attention: "Needs you", ready: "Ready", neutral: "Idle" };
@@ -223,7 +223,7 @@ export function AgentRow({ row }: { row: Row }) {
       className={`${COLS} hover:bg-accent/40 h-14 border-b px-4 text-sm last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
     >
       <div className="flex min-w-0 items-center gap-2.5">
-        <span className="bg-muted inline-flex size-6 shrink-0 items-center justify-center rounded-md border" title={row.repo}><FolderGit2 className="size-3.5" /></span>
+        <span className="bg-muted inline-flex size-6 shrink-0 items-center justify-center rounded-full" title={row.repo}><FolderGit2 className="size-3.5" /></span>
         <div className="min-w-0">
           <div className="truncate font-medium" title={row.title}>{row.title}</div>
           <div className="text-muted-foreground flex items-center gap-1 truncate text-xs">
@@ -240,7 +240,7 @@ export function AgentRow({ row }: { row: Row }) {
         {duration !== undefined && <span className="text-muted-foreground tabular-nums">{formatDuration(duration)}</span>}
       </div>
       <div><Pill tone={LANE_PILL[row.lane]} slot="state-pill">{isDone ? "Merged" : LANE_LABELS[row.lane]}</Pill></div>
-      <div className="flex min-w-0 flex-wrap items-center gap-1 overflow-hidden [&>*]:shrink-0 [&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-1 [&>*]:shrink-0 [&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5">
         {row.prNumber && !isDone && <ConditionBadges row={row} />}
         {row.prNumber && !isDone && <ReviewCluster row={row} />}
         {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
@@ -269,7 +269,7 @@ export function ModelAvatar({ model }: { model?: string }): ReactNode {
   const initials = model.replace(/[^A-Za-z0-9 ]/g, "").split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("");
   return (
     <span data-slot="model-avatar" title={model} aria-label={`Model ${model}`}
-      className="bg-muted text-foreground inline-flex size-6 items-center justify-center rounded-full border text-[9px] font-semibold">
+      className="bg-muted text-foreground inline-flex size-6 items-center justify-center rounded-full text-[9px] font-semibold">
       {initials}
     </span>
   );

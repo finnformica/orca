@@ -140,7 +140,15 @@ overview: "copy the design theme of Vercel completely and reuse all of their des
 Theme: Geist Sans/Mono (a Google Fonts `<link>`, no dependency), `#fafafa`/`#fff` light and
 `#000`/`#0a0a0a` dark, the Geist grays, 1px hairlines, no card shadows, `#0070f3` as the one accent,
 status dots and pills as `--geist-*` tokens — all CSS variables in `styles.css`, so every component
-inherits it. Shell (`components/Shell.tsx`): a collapsible left sidebar (instance switcher
+inherits it. **Surface rules** (Finn found the first pass heavy-handed; `tests/console.test.tsx`
+asserts them on every page): 1px hairlines only, never 2px; rows use dividers, never a box inside a
+card's border; 8px cards (`rounded-lg`), 6px controls (`rounded-md`); 13px body / 12px meta; icons at
+1.5 stroke (a global `svg.lucide` rule); NO shadows except Geist's menu / modal tokens
+(`shadow-menu`, `shadow-modal`) and the orchestrator's floating launcher; badges are tinted fills
+with no border; buttons are Geist's three — primary (inverted; Merge too), secondary (hairline),
+tertiary (ghost: every icon-only row / toolbar button). The agent page's conversation runs
+full-bleed in its card and follows the page's theme (`.log-themed` remaps the terminal palette in
+light mode); the modal and the orchestrator keep the dark terminal. Shell (`components/Shell.tsx`): a collapsible left sidebar (instance switcher
 all/local/cloud scoping the pages, Find — the `F` key — which filters Agents, the nav Overview /
 Agents / Repos / Usage / Settings, you at the foot; off-canvas when narrow) and a top bar (repo
 switcher, breadcrumb, preview controls, **Add New** = the New-draft box in a popover). The
@@ -151,10 +159,17 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   card per machine (`views/Vitals.tsx`: a details grid plus CPU % / memory GB line graphs over
   6h/24h/7d from `/api/health/history`; it replaced the header's cloud chip), ONE Agents card with
   the four numbers (running, needs attention with its reasons, open PRs by state, merged today —
-  each opens the Agents list filtered to exactly that), and Recent activity. The first cut's
+  each opens the Agents list filtered to exactly that), and Recent activity. **Needs attention**
+  (`attentionReasons`): check failed, conflicts, CI red, changes requested, a run error or stop, or a
+  message held behind a run that isn't coming (`/api/agents` attaches each branch's undispatched
+  count, `db.queuedCounts`). The Usage card's per-login breakdown is a remembered toggle (the
+  chevron at its foot or its header row, `orca.usageExpanded`). The first cut's
   separate Awaiting-you tiles were dropped as redundant.
-- **Agents** (`/agents`, `views/Agents.tsx`): Vercel's Deployments list — Add Filter + dashed
-  chips (repo, state, instance, needs attention), search, sort; one ~56px row per workstream (repo
+- **Agents** (`/agents`, `views/Agents.tsx`): Vercel's Deployments list — one-click **quick
+  filter chips** (Needs attention, Running, Mine, Orchestrated, Open PRs, Mergeable, Merged today,
+  per instance, per repo; AND across groups, OR within one, each with its count) held in the URL
+  query (`?status=attention&pr=open&on=cloud`, `parseQuickFilter` / `quickFilterQuery`), so a
+  filtered view is a link and the Overview's numbers open exactly their chips; search, sort; one ~56px row per workstream (repo
   icon + title, latest instruction, status dot + duration, state pill, CI/conflict badges + the
   review cluster, PR, branch, instance, updated, the model as avatar); every action in the trailing
   ⋯ (`WorkstreamActions menuOnly`). The swimlanes stay behind a persisted List | Board toggle.

@@ -190,7 +190,7 @@ export function ChatComposer({
   return (
     <div className="relative">
       <div
-        className={cn("bg-card focus-within:border-ring focus-within:ring-ring/50 cursor-text rounded-md border shadow-sm transition-[color,box-shadow] focus-within:ring-[3px]", className)}
+        className={cn("bg-card focus-within:border-ring focus-within:ring-ring/40 cursor-text rounded-lg border transition-[color,box-shadow] focus-within:ring-2", className)}
         onMouseDown={focusText}
         onDrop={onDrop}
         onDragOver={(e) => e.preventDefault()}
@@ -249,7 +249,7 @@ export function ChatComposer({
         // (chat boxes sit low) unless the box is near the top of the viewport (the new-draft box).
         <div
           className={cn(
-            "bg-popover text-popover-foreground absolute left-0 z-50 w-full max-w-md rounded-md border p-1 shadow-md",
+            "bg-popover text-popover-foreground absolute left-0 z-50 w-full max-w-md rounded-lg border p-1 shadow-menu",
             (textRef.current?.getBoundingClientRect().top ?? 0) < 280 ? "top-full mt-1" : "bottom-full mb-1",
           )}
         >

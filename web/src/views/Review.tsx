@@ -1,4 +1,5 @@
 import { ExternalLink, MessageSquare } from "lucide-react";
+import { StatusDot, VCard } from "@/components/console";
 import { useReviewDigest, type Row } from "../store";
 import { ago, type ReviewDigest, type ReviewItem } from "../workstream";
 
@@ -15,7 +16,7 @@ const initials = (login: string) => login.replace(/\[bot\]$/, "").split(/[-_.]/)
 function ApproverChip({ login }: { login: string }) {
   return (
     <span data-slot="approver" title={`Approved by ${login}`} aria-label={`Approved by ${login}`}
-      className="bg-background inline-flex size-5 items-center justify-center rounded-full border border-emerald-500/50 text-[9px] font-semibold text-emerald-700 dark:text-emerald-400">
+      className="bg-geist-green/15 text-geist-green ring-card inline-flex size-5 items-center justify-center rounded-full text-[9px] font-semibold ring-2">
       {initials(login)}
     </span>
   );
@@ -37,7 +38,7 @@ export function ReviewCluster({ row }: { row: Row }) {
       {d.approvers.length > 3 && <span className="text-muted-foreground text-[10px]">+{d.approvers.length - 3}</span>}
       {count > 0 && (
         <span data-slot="unresolved" title={nits ? `${count} unresolved review threads (${nits} nit${nits === 1 ? "" : "s"})` : `${count} unresolved review threads`}
-          className="rounded border px-1 text-[10px] leading-4 whitespace-nowrap">
+          className="rounded-full border px-1.5 text-[10px] leading-4 whitespace-nowrap">
           {count} unresolved
         </span>
       )}
@@ -48,7 +49,7 @@ export function ReviewCluster({ row }: { row: Row }) {
       )}
       {d.worst && (
         <span data-slot="severe-dot" data-severity={d.worst} title={severeTitle(d)} aria-label={`${d.worst === "critical" ? "Severe" : "Warning"} AI review comment`}
-          className={`size-2 rounded-full ${d.worst === "critical" ? "bg-red-500" : "bg-amber-500"}`} />
+          className={`size-2 rounded-full ${d.worst === "critical" ? "bg-geist-red" : "bg-geist-amber"}`} />
       )}
     </span>
   );
@@ -57,8 +58,8 @@ export function ReviewCluster({ row }: { row: Row }) {
 function ItemLine({ item }: { item: ReviewItem }) {
   const at = item.createdAt ? Date.parse(item.createdAt) : 0;
   return (
-    <li data-slot="review-item" data-kind={item.kind} className="flex items-start gap-2 py-1.5 text-sm">
-      {item.severity && <span className={`mt-1.5 size-2 shrink-0 rounded-full ${item.severity === "critical" ? "bg-red-500" : "bg-amber-500"}`} title={item.severity} />}
+    <li data-slot="review-item" data-kind={item.kind} className="flex items-start gap-2 px-4 py-2.5 text-sm">
+      {item.severity && <StatusDot tone={item.severity === "critical" ? "error" : "warning"} className="mt-1.5 size-2" title={item.severity} />}
       <div className="min-w-0 flex-1">
         <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
           <span className="text-foreground font-medium">{item.author ?? "unknown"}</span>
@@ -79,26 +80,23 @@ export function ReviewPanel({ repo, prNumber, sig }: { repo: string; prNumber: n
   if (!d) return <p className="text-muted-foreground text-sm" data-slot="review-panel-loading">Loading review…</p>;
   const { count, nits } = d.unresolved;
   return (
-    <section data-slot="review-panel" className="space-y-2 rounded-lg border p-3">
-      <div className="flex flex-wrap items-center gap-2 text-sm">
-        <h3 className="font-semibold">Review</h3>
-        {d.approvers.length ? <span className="text-muted-foreground">Approved by <span className="text-foreground">{d.approvers.join(", ")}</span></span>
-          : <span className="text-muted-foreground">No approvals yet</span>}
-        <span className="text-muted-foreground">· {count} unresolved{nits ? ` (${nits} nit${nits === 1 ? "" : "s"})` : ""}</span>
-      </div>
-      {d.severe.length > 0 && (
-        <div>
-          <div className="text-muted-foreground text-xs font-medium uppercase">Flagged by AI reviewers</div>
-          <ul className="divide-y">{d.severe.map((i) => <ItemLine key={i.id} item={i} />)}</ul>
-        </div>
-      )}
-      {d.human.length > 0 && (
-        <div>
-          <div className="text-muted-foreground text-xs font-medium uppercase">From people</div>
-          <ul className="divide-y">{d.human.map((i) => <ItemLine key={i.id} item={i} />)}</ul>
-        </div>
-      )}
-      {!d.severe.length && !d.human.length && <p className="text-muted-foreground text-sm">No human comments or severe AI findings.</p>}
-    </section>
+    <VCard slot="review-panel" title="Review" aside={
+      <span className="text-muted-foreground text-xs">
+        {d.approvers.length ? <>Approved by <span className="text-foreground">{d.approvers.join(", ")}</span></> : "No approvals yet"}
+        {` · ${count} unresolved${nits ? ` (${nits} nit${nits === 1 ? "" : "s"})` : ""}`}
+      </span>
+    }>
+      {d.severe.length > 0 && <ReviewSection title="Flagged by AI reviewers" items={d.severe} />}
+      {d.human.length > 0 && <ReviewSection title="From people" items={d.human} />}
+      {!d.severe.length && !d.human.length && <p className="text-muted-foreground px-4 py-3 text-sm">No human comments or severe AI findings.</p>}
+    </VCard>
   );
 }
+
+/** A labelled run of divided rows inside the card — Vercel's grouped list, no box of its own. */
+const ReviewSection = ({ title, items }: { title: string; items: ReviewItem[] }) => (
+  <div className="border-b last:border-b-0">
+    <div className="text-muted-foreground bg-background/60 px-4 py-2 text-xs font-medium">{title}</div>
+    <ul className="divide-y border-t">{items.map((i) => <ItemLine key={i.id} item={i} />)}</ul>
+  </div>
+);

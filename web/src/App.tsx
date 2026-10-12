@@ -56,7 +56,7 @@ function TopActions({ route }: { route: Route }) {
   if (route.name !== "board" && route.name !== "agents") return null;
   return (
     <>
-      <div className="inline-flex -space-x-px [&>button]:rounded-none [&>button:first-of-type]:rounded-l-md [&>button:last-of-type]:rounded-r-md">
+      <div className="inline-flex items-center gap-0.5">
         <TestMasterMenu />
         <PreviewManagerMenu />
       </div>

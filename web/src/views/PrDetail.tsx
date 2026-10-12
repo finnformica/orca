@@ -107,7 +107,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
       {pr.ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
       {pr.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
       {pr.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
-      {pr.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
+      {pr.autoMergeEnabled && <Badge variant="outline" className="border-transparent bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
     </div>
   );
   const sub2 = !liveRow && sub === "chat" ? "overview" : sub; // a coworker's PR has no conversation here
@@ -161,7 +161,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
                     <div key={`r${i}`}><span className="text-muted-foreground">{r.author}</span> — {r.state.toLowerCase().replace(/_/g, " ")}</div>
                   ))}
                   {pr.comments.map((c, i) => (
-                    <div key={`c${i}`} className="border-l-2 pl-3">
+                    <div key={`c${i}`} className="border-l pl-3">
                       <div className="text-muted-foreground text-xs">{c.author}</div>
                       <Markdown>{c.body}</Markdown>
                     </div>

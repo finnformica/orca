@@ -69,7 +69,7 @@ function Step({ step, live }: { step: AgentStep; live: boolean }) {
         <span className="min-w-0 break-words">{toolLabel(step)}{live && !step.done ? "…" : ""}</span>
       </button>
       {open && body && (
-        <pre className="ml-4 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border-l-2 border-neutral-800 pl-2 text-[11px] text-neutral-500">{body}</pre>
+        <pre className="ml-4 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border-l border-neutral-800 pl-2 text-[11px] text-neutral-500">{body}</pre>
       )}
     </div>
   );
@@ -380,9 +380,9 @@ export function ChatPanel({ row, send, flush, controls, logBar }: {
   const counts = chatSummary(turns ?? []);
   const shownTurns = logBar && find.trim() ? (turns ?? []).filter((t) => turnMatches(t, find)) : turns;
   return (
-    <div className={`flex h-full flex-col ${flush ? "" : "gap-3"}`}>
+    <div className={`flex h-full flex-col ${flush || logBar ? "" : "gap-3"} ${logBar ? "log-themed" : ""}`}>
       {logBar && (
-        <div data-slot="chat-logbar" className="flex flex-wrap items-center gap-3 text-sm">
+        <div data-slot="chat-logbar" className="flex flex-wrap items-center gap-3 border-b px-4 py-2 text-sm">
           <span className="text-muted-foreground tabular-nums" data-slot="chat-count">{counts.turns} turn{counts.turns === 1 ? "" : "s"}</span>
           <span className="ml-auto flex items-center gap-3">
             <span className="inline-flex items-center gap-1 tabular-nums" title="Failed turns" data-slot="chat-errors"><CircleX className="text-geist-red size-4" />{counts.errors}</span>
@@ -398,7 +398,7 @@ export function ChatPanel({ row, send, flush, controls, logBar }: {
       <div
         ref={scroller}
         onScroll={onScroll}
-        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-neutral-950 p-3 font-mono text-xs leading-relaxed text-neutral-200 ${flush ? "" : "rounded-md border border-neutral-800"}`}
+        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-neutral-950 p-3 font-mono text-xs leading-relaxed text-neutral-200 ${flush || logBar ? "" : "rounded-md border border-neutral-800"}`}
       >
         {running && (
           <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-end">
@@ -438,7 +438,7 @@ export function ChatPanel({ row, send, flush, controls, logBar }: {
       </div>
       {/* `dark` scopes the theme tokens: the composer's text and border must read on the terminal
           background whatever the page's theme is. */}
-      <div className={flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : undefined}>
+      <div className={flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : logBar ? "border-t p-3" : undefined}>
       <ChatComposer
         className={flush ? "border-neutral-800 bg-neutral-950 shadow-none" : undefined}
         leading={<ChatControls {...ctl} compact={ctl.contextPct === undefined && compacting === null ? undefined

@@ -113,7 +113,7 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
   const placeMenu = choices.length > 1 && (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size="icon" variant="outline" className={`rounded-l-none border-l-0 ${compact ? "size-7" : "h-8 w-8"}`} title="Choose where the preview runs" aria-label="Test on…"><ChevronDown className="size-3.5" /></Button>
+        <Button size="icon" variant={compact ? "ghost" : "outline"} className={`rounded-l-none border-l-0 ${compact ? "size-7" : "h-8 w-8"}`} title="Choose where the preview runs" aria-label="Test on…"><ChevronDown className="size-3.5" /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {choices.map((i) => <DropdownMenuItem key={i} onSelect={() => void start(() => startOn(i))}>Test on {i}{i === thisInstance() ? " (here)" : ""}</DropdownMenuItem>)}
@@ -128,7 +128,7 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
     if (compact) {
       return (
         <span className="inline-flex">
-          <Button size="icon" variant="outline" className={`size-7 ${split}`} onClick={() => void start()} title={error ? "Preview failed — retry" : `Test on ${where ?? row.instance ?? thisInstance() ?? "local"}`} aria-label="Test locally">
+          <Button size="icon" variant="ghost" className={`size-7 ${split}`} onClick={() => void start()} title={error ? "Preview failed — retry" : `Test on ${where ?? row.instance ?? thisInstance() ?? "local"}`} aria-label="Test locally">
             {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
           </Button>
           {placeMenu}
@@ -207,15 +207,15 @@ function PreviewLiveControl({ svcs, busy, onStop, openLabel, startingLabel, comp
   return (
     <div className={`inline-flex ${compact ? "" : "w-full"}`}>
       {ready && open ? (
-        <Button size={size} variant="outline" className={stateClass} onClick={() => window.open(hrefOf(open), "_blank", "noreferrer")} title={`Open preview on :${open.port}`} aria-label={openLabel}>
+        <Button size={size} variant={compact ? "ghost" : "outline"} className={stateClass} onClick={() => window.open(hrefOf(open), "_blank", "noreferrer")} title={`Open preview on :${open.port}`} aria-label={openLabel}>
           <ExternalLink className="size-3.5" /> {!compact && openLabel}
         </Button>
       ) : (
-        <Button size={size} variant="outline" className={stateClass} disabled title={compact ? `${startingLabel} ${elapsed > 0 ? `${elapsed}s` : ""}`.trim() : undefined} aria-label={startingLabel}>
+        <Button size={size} variant={compact ? "ghost" : "outline"} className={stateClass} disabled title={compact ? `${startingLabel} ${elapsed > 0 ? `${elapsed}s` : ""}`.trim() : undefined} aria-label={startingLabel}>
           <Loader2 className="size-3.5 animate-spin" /> {!compact && <>{startingLabel} {elapsed > 0 ? `${elapsed}s` : ""}</>}
         </Button>
       )}
-      <Button size={size} variant="outline" className={`rounded-l-none border-l-0 ${compact ? "size-7" : ""}`} disabled={busy} onClick={onStop} title="Stop preview" aria-label="Stop preview"><Square className="size-3.5 fill-current" /></Button>
+      <Button size={size} variant={compact ? "ghost" : "outline"} className={`rounded-l-none border-l-0 ${compact ? "size-7" : ""}`} disabled={busy} onClick={onStop} title="Stop preview" aria-label="Stop preview"><Square className="size-3.5 fill-current" /></Button>
     </div>
   );
 }
@@ -262,7 +262,7 @@ export function TestMasterMenu() {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button size="icon" variant="outline" className="relative size-8" title="Test master — preview a repo's base branch" aria-label="Test master">
+        <Button size="icon" variant="ghost" className="relative size-8" title="Test master — preview a repo's base branch" aria-label="Test master">
           {loading ? <Loader2 className="size-4 animate-spin" /> : <FlaskConical className="size-4" />}
           {active && <span className="bg-primary ring-background absolute -top-0.5 -right-0.5 size-2 rounded-full ring-2" aria-label="a base preview is running" />}
         </Button>
@@ -301,7 +301,7 @@ export function PreviewManagerMenu() {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button size="icon" variant="outline" className="relative size-8" title="Running previews" aria-label="Running previews">
+        <Button size="icon" variant="ghost" className="relative size-8" title="Running previews" aria-label="Running previews">
           <MonitorPlay className="size-4" />
           {!unavailable && running.length > 0 && (
             <span className="bg-primary text-primary-foreground ring-background absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold ring-2" aria-label={`${running.length} running previews`}>

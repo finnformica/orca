@@ -33,9 +33,9 @@ export function DetailsCard({ row, summary, actions, extra }: { row: Row; summar
             <pre className="text-muted-foreground max-h-64 overflow-auto px-3 py-3 font-mono text-xs whitespace-pre-wrap">{failure.detail}</pre>
           </div>
         ) : (
-          <div data-slot="outcome-box" className="bg-background min-h-32 rounded-lg border">
-            <div className="text-muted-foreground border-b px-3 py-2.5 text-xs">{row.agentCheck?.ok ? "Verified · " : ""}Latest outcome</div>
-            <div className="max-h-64 overflow-auto px-3 py-3 text-sm">{outcome ? <Markdown>{outcome}</Markdown> : <span className="text-muted-foreground">No finished run yet.</span>}</div>
+          <div data-slot="outcome-box" className="bg-background min-h-32 rounded-md">
+            <div className="text-muted-foreground px-3 pt-3 text-xs">{row.agentCheck?.ok ? "Verified · " : ""}Latest outcome</div>
+            <div className="max-h-64 overflow-auto px-3 pt-1.5 pb-3 text-sm">{outcome ? <Markdown>{outcome}</Markdown> : <span className="text-muted-foreground">No finished run yet.</span>}</div>
           </div>
         )}
         <div className="min-w-0 space-y-5">
@@ -71,7 +71,7 @@ export function DetailsCard({ row, summary, actions, extra }: { row: Row; summar
 export function ChatCard({ row, tall = false }: { row: Row; tall?: boolean }) {
   return (
     <VCard slot="agent-chat" title="Conversation" aside={row.agentStatus === "running" ? <span className="flex items-center gap-1.5 text-xs"><StatusDot tone="building" className="size-2" />working</span> : undefined}>
-      <div className={`p-4 ${tall ? "h-[calc(100vh-14rem)] min-h-[28rem]" : "h-[36rem]"}`}>
+      <div className={tall ? "h-[calc(100vh-14rem)] min-h-[28rem]" : "h-[36rem]"}>
         <ChatPanel row={row} logBar />
       </div>
     </VCard>
