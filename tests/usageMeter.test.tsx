@@ -10,6 +10,8 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { aggregateProfiles, App, mergeUsage, untilReset } from "@/App";
 import { navigate } from "@/lib/route";
+import { getDefaultStore } from "jotai";
+import { usageExpandedAtom } from "@/lib/atoms";
 import { shapeCodexUsage, shapeUsage } from "../server/usage";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -33,6 +35,7 @@ afterEach(async () => {
   root = container = undefined;
   apiFake.reset();
   localStorage.clear();
+  getDefaultStore().set(usageExpandedAtom, false); // the atom outlives localStorage within a run
   navigate("/");
   await act(async () => { await store.refresh(); });
 });
@@ -148,7 +151,8 @@ test("with hydra's logins, the card leads with the fleet (mean per window, Fable
   expect(group("fleet")!.textContent).toContain("2 logins in rotation");
   expect(rows("fleet")).toEqual(["5-hour window 54% / 100%", "Weekly 33% / 100%", "Fable weekly 21% / 100%"]);
   expect(group("login:personal")).toBeNull(); // collapsed on the Overview
-  const more = [...card().querySelectorAll("button")].find((b) => b.textContent?.includes("2 logins"))!;
+  const more = card().querySelector("[data-slot='usage-toggle']")!;
+  expect(more.textContent).toContain("Show 2 logins");
   await act(async () => { more.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   expect(rows("login:personal")).toEqual(["5-hour window 95% / 100%", "Weekly 60% / 100%", "Fable weekly 21% / 100%"]);
   expect(rows("login:work")).toEqual(["5-hour window 12% / 100%", "Weekly 5% / 100%"]); // no Fable window
@@ -209,4 +213,37 @@ test("mergeUsage keeps the last-known routing verdict across a poll that omitted
   const claude = { fiveHour: { utilization: 40, resetsAt: null }, sevenDay: { utilization: 50, resetsAt: null }, extra: null };
   const routing = { hydra: true, shim: true };
   expect(mergeUsage({ claude, codex: null, routing }, { claude, codex: null })).toEqual({ claude, codex: null, profiles: undefined, routing });
+});
+
+test("the card collapses again: Vercel's chevron and the header row both toggle, and the choice is remembered", async () => {
+  const login = (name: string, five: number) => ({ name, state: "ok", usage: { fiveHour: { utilization: five, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
+  apiFake.usageData = { claude: null, codex: null, profiles: [login("work", 40), login("home", 20)] };
+  await mount();
+  const toggle = () => card().querySelector<HTMLElement>("[data-slot='usage-toggle']")!;
+  const header = () => card().querySelector<HTMLElement>("[data-slot='card-header']")!;
+  const click = (el: Element) => act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(toggle().getAttribute("aria-expanded")).toBe("false");
+  expect(group("login:work")).toBeNull();
+  await click(toggle()); // the chevron at the foot opens it…
+  expect(group("login:work")).not.toBeNull();
+  expect(toggle().textContent).toContain("Show less");
+  expect(header().getAttribute("aria-expanded")).toBe("true");
+  expect(localStorage.getItem("orca.usageExpanded")).toBe("true");
+  // …and a remount (a reload) keeps it open.
+  act(() => root?.unmount()); container?.remove();
+  await mount();
+  expect(group("login:work")).not.toBeNull();
+  await click(toggle()); // the chevron closes it too
+  expect(group("login:work")).toBeNull();
+  expect(localStorage.getItem("orca.usageExpanded")).toBe("false");
+  await click(header()); // and the header row toggles it, as on Vercel
+  expect(group("login:home")).not.toBeNull();
+  await click(header());
+  expect(group("login:home")).toBeNull();
+  // The Usage page always lists every login: nothing to toggle there.
+  act(() => root?.unmount()); container?.remove();
+  await mount("/usage");
+  expect(group("login:work")).not.toBeNull();
+  expect(card().querySelector("[data-slot='usage-toggle']")).toBeNull();
+  expect(header().getAttribute("role")).toBeNull();
 });

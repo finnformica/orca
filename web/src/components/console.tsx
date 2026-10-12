@@ -6,13 +6,19 @@ import { cn } from "@/lib/utils";
 import { niceMax, sparklineSegments, timeTicks, usageZone } from "../workstream";
 
 /** A card: hairline border, no shadow, a 48px header row with the title left and controls right. */
-export function VCard({ title, aside, children, className, slot, bodyClass }: {
+export function VCard({ title, aside, children, className, slot, bodyClass, onHeaderClick, expanded }: {
   title?: ReactNode; aside?: ReactNode; children: ReactNode; className?: string; slot?: string; bodyClass?: string;
+  /** Makes the whole header row a toggle (Vercel's collapsible cards); `expanded` is its state. */
+  onHeaderClick?: () => void; expanded?: boolean;
 }) {
+  const toggle = onHeaderClick ? {
+    role: "button", tabIndex: 0, "aria-expanded": expanded, onClick: onHeaderClick,
+    onKeyDown: (e: React.KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onHeaderClick(); } },
+  } : {};
   return (
     <section data-slot={slot} className={cn("bg-card overflow-hidden rounded-xl border", className)}>
       {(title || aside) && (
-        <header className="flex min-h-12 items-center justify-between gap-3 border-b px-4 py-2">
+        <header data-slot="card-header" {...toggle} className={cn("flex min-h-12 items-center justify-between gap-3 border-b px-4 py-2", onHeaderClick && "hover:bg-accent/40 cursor-pointer select-none")}>
           <h3 className="truncate text-sm font-medium">{title}</h3>
           {aside && <div className="flex shrink-0 items-center gap-2">{aside}</div>}
         </header>

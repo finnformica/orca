@@ -4,21 +4,27 @@
 // chosen range from /api/health/history. Both read the shared polls in lib/vitals, so the Overview
 // and the Usage page never poll twice.
 import { useState } from "react";
-import { AlertTriangle, ChevronDown, Server } from "lucide-react";
+import { useAtom } from "jotai";
+import { AlertTriangle, ChevronDown, ChevronUp, Server } from "lucide-react";
+import { usageExpandedAtom } from "@/lib/atoms";
 import { useHealth, useHealthHistory, useUsage } from "@/lib/vitals";
 import { HISTORY_RANGES, downsample, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, VCard } from "@/components/console";
 
-export function UsageCard({ expanded: startExpanded = false }: { expanded?: boolean }) {
+/** `all`: the Usage page — every login, no toggle. On the Overview the card shows the fleet and
+ *  Codex, and Vercel's chevron (or the header row) toggles the per-login breakdown; remembered. */
+export function UsageCard({ all = false }: { all?: boolean }) {
   const usage = useUsage();
   const groups = usageGroups(usage);
-  const [expanded, setExpanded] = useState(startExpanded);
-  // Collapsed, the card shows the headline group (the fleet, or the one login) and Codex — the
-  // per-login breakdown is one click away, like Vercel's "show more" chevron.
+  const [stored, setStored] = useAtom(usageExpandedAtom);
+  const expanded = all || stored;
+  const logins = groups.filter((g) => g.key.startsWith("login:")).length;
+  const canToggle = !all && logins > 0;
+  const toggle = () => setStored(!stored);
   const shown = expanded ? groups : groups.filter((g) => !g.key.startsWith("login:"));
-  const hidden = groups.length - shown.length;
   return (
-    <VCard slot="usage-card" title="Current windows" aside={<span className="text-muted-foreground text-xs">Claude &amp; Codex limits</span>}>
+    <VCard slot="usage-card" title="Current windows" aside={<span className="text-muted-foreground text-xs">Claude &amp; Codex limits</span>}
+      onHeaderClick={canToggle ? toggle : undefined} expanded={canToggle ? expanded : undefined}>
       {routingBroken(usage) && (
         <div data-slot="routing-warning" title="Claude Code's updater rewrote ~/.local/bin/claude. Re-run hydra's install.sh --shim on the bridge's machine."
           className="bg-geist-warning-bg text-geist-warning-fg flex items-start gap-2 border-b px-4 py-2 text-xs">
@@ -29,9 +35,10 @@ export function UsageCard({ expanded: startExpanded = false }: { expanded?: bool
       {!groups.length ? <Empty>No provider is signed in on this machine.</Empty> : (
         <div className="p-2">
           {shown.map((g) => <UsageGroupRows key={g.key} group={g} />)}
-          {hidden > 0 && (
-            <button type="button" onClick={() => setExpanded(true)} className="text-muted-foreground hover:text-foreground flex w-full items-center justify-center gap-1 py-1.5 text-xs">
-              {hidden} login{hidden === 1 ? "" : "s"} <ChevronDown className="size-3.5" />
+          {canToggle && (
+            <button type="button" data-slot="usage-toggle" aria-expanded={expanded} onClick={toggle}
+              className="text-muted-foreground hover:text-foreground flex w-full items-center justify-center gap-1 py-1.5 text-xs">
+              {expanded ? <>Show less <ChevronUp className="size-3.5" /></> : <>Show {logins} login{logins === 1 ? "" : "s"} <ChevronDown className="size-3.5" /></>}
             </button>
           )}
         </div>
