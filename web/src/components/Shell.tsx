@@ -11,13 +11,12 @@ import {
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { agentQueryAtom, instanceScopeAtom, repoFilterAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { useTheme, type Theme } from "@/lib/theme";
-import { cn } from "@/lib/utils";
+import { cn, PortalContainer } from "@/lib/utils";
 import { api } from "../api";
-import { instanceChoices, thisInstance, useRepos } from "../store";
+import { instanceChoices, thisInstance, undoDraft, useRepos, type OptimisticDraft } from "../store";
 import { summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
 import { Button } from "@/components/ui/button";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
@@ -219,22 +218,70 @@ function RepoSwitcher() {
   );
 }
 
-/** Vercel's "Add New…": the New-draft box in a popover. It stays open after a send, so its Undo is
- *  still there; a click outside closes it. */
-export function AddNew({ children, collapsed = false }: { children: ReactNode; collapsed?: boolean }) {
+/** Vercel's "Add New…": a proper dialog, not a popover — the New-draft box is a whole composer (repo,
+ *  model, attachments, the # picker, New chat). Native <dialog> like Rename / New chat, so Esc and
+ *  the backdrop close it, and it is the portal container for the composer's selects (a modal dialog
+ *  makes the rest of the page inert — a select rendered into <body> would be unclickable). Sending
+ *  closes it and leaves "Sent to … · Undo" at the foot of the screen for 6s. `C` opens it from
+ *  anywhere outside a text field. The typed draft persists either way (the composer's persistKey). */
+export function AddNew({ children, collapsed = false }: { children: (onSent: (draft: OptimisticDraft) => void) => ReactNode; collapsed?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [dialog, setDialog] = useState<HTMLDialogElement | null>(null);
+  const [sent, setSent] = useState<OptimisticDraft | null>(null);
+  useEffect(() => {
+    if (!dialog) return;
+    if (open && !dialog.open) {
+      dialog.showModal();
+      // showModal focuses the first focusable control (the close button): start in the textarea.
+      dialog.querySelector("textarea")?.focus();
+    } else if (!open && dialog.open) dialog.close();
+  }, [open, dialog]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target instanceof Element ? e.target : null;
+      if (e.key !== "c" || e.metaKey || e.ctrlKey || e.altKey || t?.closest("input, textarea, select, [contenteditable=true], dialog")) return;
+      e.preventDefault();
+      setOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  useEffect(() => {
+    if (!sent) return;
+    const t = setTimeout(() => setSent(null), 6000);
+    return () => clearTimeout(t);
+  }, [sent]);
+  const onSent = (draft: OptimisticDraft) => { setOpen(false); setSent(draft); };
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button size="sm" data-slot="add-new" title="Add New" aria-label="Add New" className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
-          <Plus className="size-4" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
-        </Button>
-      </PopoverTrigger>
-      {/* From the sidebar's foot it opens beside the sidebar, bottom-aligned with the button. */}
-      <PopoverContent side="right" align="end" sideOffset={8} className="w-[34rem] max-w-[calc(100vw-2rem)] p-2">
-        <div className="text-muted-foreground px-1 pb-2 text-xs">New agent — describe a feature, pick a repo and a model (Auto lets the orchestrator brief it).</div>
-        {children}
-      </PopoverContent>
-    </Popover>
+    <>
+      <Button size="sm" data-slot="add-new" title="Add New (C)" aria-label="Add New" onClick={() => setOpen(true)} className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
+        <Plus className="size-4" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
+      </Button>
+      <dialog
+        ref={setDialog} data-slot="add-new-dialog" aria-label="New agent"
+        onClose={() => setOpen(false)} onCancel={() => setOpen(false)}
+        onClick={(e) => { if (e.target === dialog) setOpen(false); }} // backdrop click
+        className="bg-card text-foreground m-auto mt-[12vh] w-[92vw] max-w-2xl rounded-lg border p-0 shadow-modal backdrop:bg-black/50"
+      >
+        <PortalContainer.Provider value={dialog ?? undefined}>
+          <header className="flex h-12 items-center justify-between border-b px-4">
+            <h2 className="text-sm font-medium">New agent</h2>
+            <Button size="icon" variant="ghost" className="size-7" onClick={() => setOpen(false)} aria-label="Close"><X className="size-4" /></Button>
+          </header>
+          <div className="space-y-3 p-4 [&_textarea]:min-h-32">
+            <p className="text-muted-foreground text-xs">Describe a feature, pick a repo and a model — Auto lets the orchestrator write the brief and choose.</p>
+            {open && children(onSent)}
+          </div>
+        </PortalContainer.Provider>
+      </dialog>
+      {sent && (
+        <div role="status" data-slot="sent-toast" className="bg-card fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg border px-3 py-2 text-sm shadow-menu">
+          <span>Sent to <span className="font-medium">{sent.repo}</span></span>
+          <button type="button" className="font-medium underline underline-offset-2 hover:no-underline" onClick={() => { void undoDraft(sent); setSent(null); }}>Undo</button>
+          <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setSent(null)} aria-label="Dismiss"><X className="size-3.5" /></button>
+        </div>
+      )}
+    </>
   );
 }
 

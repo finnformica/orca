@@ -299,7 +299,9 @@ export function ConditionBadges({ row }: { row: Row }) {
   );
 }
 
-export function NewDraft() {
+/** `onSent` hands each sent draft to the host (the Add New dialog closes and shows Undo itself);
+ *  without it the box keeps its own inline Undo, as on the Board. */
+export function NewDraft({ onSent, autoFocus = false }: { onSent?: (draft: OptimisticDraft) => void; autoFocus?: boolean } = {}) {
   const repos = useRepos();
   const providers = useAgentProviders();
   const [repo, setRepo] = useAtom(draftRepoAtom);
@@ -324,13 +326,15 @@ export function NewDraft() {
   const openTerminal = useSetAtom(openTerminalAtom);
   const [chatOpen, setChatOpen] = useState(false);
 
+  const sent = (draft: OptimisticDraft) => (onSent ? onSent(draft) : setUndoable(draft));
   return (
     <ChatComposer
+      autoFocus={autoFocus}
       persistKey="orca.newDraft"
       repo={active}
       placeholder="Describe a feature…"
       onSubmit={async (text, images) => {
-        setUndoable(createWorkstream(active, text, images, model, { instance: draftInstance(model, instanceChoices(), defaultInstanceFor(active)) }));
+        sent(createWorkstream(active, text, images, model, { instance: draftInstance(model, instanceChoices(), defaultInstanceFor(active)) }));
       }}
       footer={undoable && (
         <p className="text-muted-foreground mt-1 flex items-center gap-1.5 px-1 text-xs">
@@ -367,7 +371,7 @@ export function NewDraft() {
             model={model}
             onSubmit={async (text, images) => {
               setChatOpen(false);
-              setUndoable(createWorkstream(active, text, images, model, { chat: true, onCreated: (branch) => openTerminal(`${active}::${branch}`) }));
+              sent(createWorkstream(active, text, images, model, { chat: true, onCreated: (branch) => openTerminal(`${active}::${branch}`) }));
             }}
           />
         </>

@@ -150,7 +150,9 @@ tertiary (ghost: every icon-only row / toolbar button). The agent page's convers
 full-bleed in its card and follows the page's theme (`.log-themed` remaps the terminal palette in
 light mode); the modal and the orchestrator keep the dark terminal. Shell (`components/Shell.tsx`): a collapsible left sidebar (instance switcher
 all/local/cloud scoping the pages, Find — the `F` key — which filters Agents, the nav Overview /
-Agents / Previews / Repos / Usage / Settings, then **Add New** (the New-draft box in a popover) as the last action, above the divider, and
+Agents / Previews / Repos / Usage / Settings, then **Add New** as the last action, above the divider — a modal `<dialog>` holding the New-draft box
+(`C` opens it; it is the portal container for the composer's selects, since a modal leaves the rest
+of the page inert; sending closes it and leaves "Sent to … · Undo" for 6s; the typed draft persists) — and
 below it you on one thin line — "You · local" — with the collapse toggle;
 collapsed it is one icon column, expand toggle above you; off-canvas when narrow) and a top bar
 (repo switcher, breadcrumb). **Previews** is a page (running previews with Open / Stop, and Test

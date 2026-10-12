@@ -50,8 +50,10 @@ function Crumbs({ route }: { route: Route }) {
   return <Crumb>{TITLES[route.name]}</Crumb>;
 }
 
-// The sidebar's very bottom: Vercel's "Add New" holding the New-draft box, on every page.
-const SidebarAction = ({ collapsed }: { collapsed: boolean }) => <AddNew collapsed={collapsed}><NewDraft /></AddNew>;
+// The last of the sidebar's actions: Vercel's "Add New", opening the New-draft box in a dialog.
+const SidebarAction = ({ collapsed }: { collapsed: boolean }) => (
+  <AddNew collapsed={collapsed}>{(onSent) => <NewDraft onSent={onSent} autoFocus />}</AddNew>
+);
 
 // Pure helpers the usage tests import from here (they live in lib/vitals and workstream.ts).
 export { aggregateProfiles, mergeUsage } from "@/lib/vitals";
