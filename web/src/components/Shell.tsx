@@ -16,6 +16,7 @@ import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useRepos, type OptimisticDraft } from "../store";
 import { summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
+import { NotificationBell } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem,
@@ -109,6 +110,7 @@ function Sidebar({ collapsed, onToggle, onClose, actions }: {
       <div data-slot="sidebar-foot" className={cn("flex flex-col border-t p-2", collapsed && "items-stretch md:items-center")}>
         <div data-slot="sidebar-you" className={cn("flex items-center gap-1", collapsed && "md:flex-col-reverse")}>
           <ProfileMenu collapsed={collapsed} />
+          <NotificationBell collapsed={collapsed} />
           <button type="button" onClick={onToggle} className={cn("text-muted-foreground hover:text-foreground hover:bg-accent hidden size-8 shrink-0 items-center justify-center rounded-md md:inline-flex", !collapsed && "ml-auto")}
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
             {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}

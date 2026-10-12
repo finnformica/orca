@@ -7,6 +7,7 @@
 // always-on-top pop-out) is visible. A hidden tab gives its connection back; on return the stream
 // reopens and every chat catches up from its cursor.
 import type { AgentStep } from "../../../shared/agent";
+import type { Notification } from "../../../shared/notifications";
 import { api } from "../api";
 
 export type TurnHandlers = {
@@ -16,7 +17,10 @@ export type TurnHandlers = {
    *  have been missed, so catch up. Never called for the stream a chat first opened on. */
   resync: () => void;
 };
-type Sub = TurnHandlers & { key: string; fresh: boolean };
+type Sub = TurnHandlers & { key: string; fresh: boolean; notification?: (n: Notification) => void };
+
+// The notification centre's subscription has no conversation; this key matches no repo::branch.
+const NOTIFICATIONS_KEY = "\0notifications";
 
 const subs = new Set<Sub>();
 let source: EventSource | null = null;
@@ -46,9 +50,23 @@ function open(): void {
   };
   s.addEventListener("step", (e) => route(e, (sub, d) => sub.step(d.runId, d.steps)));
   s.addEventListener("turn", (e) => route(e, (sub, d) => sub.turn(d.runId)));
+  s.addEventListener("notification", (e) => {
+    const n = JSON.parse((e as MessageEvent).data) as Notification;
+    for (const sub of [...subs]) sub.notification?.(n);
+  });
 }
 
 if (typeof document !== "undefined") document.addEventListener("visibilitychange", syncEvents);
+
+/** The notification centre's live feed: every new notification, from either instance. Holding this
+ *  keeps the tab's one stream open while the tab is visible (a hidden tab still gives it back, and
+ *  `resync` on return says to catch up from the centre's cursor). */
+export function subscribeNotifications(handlers: { notification: (n: Notification) => void; resync: () => void }): () => void {
+  const sub: Sub = { key: NOTIFICATIONS_KEY, fresh: !live, step: () => {}, turn: () => {}, resync: handlers.resync, notification: handlers.notification };
+  subs.add(sub);
+  syncEvents();
+  return () => { subs.delete(sub); syncEvents(); };
+}
 
 /** Listen to one conversation's live events. A chat joining a stream that is already live has
  *  nothing to catch up on (it just loaded); one joining a stream still opening skips that `ready`. */

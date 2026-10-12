@@ -55,6 +55,29 @@ adapters or routes.
 - ✅ Card shows **Copy rebase prompt**; the copied text names the branch + base.
 - Resolve/rebase, push. After the next poll ✅ the card leaves `CONFLICTED`.
 
+## N — notifications
+
+- Run an agent on a card (W1's). When it finishes ✅ a toast pops bottom-right (above the orchestrator
+  launcher): the card's title, **Finished**, the outcome's first line, "just now", **Open**, ×. It
+  hides itself after ~6s. ✅ The bell at the sidebar's foot shows **1**.
+- Send a follow-up that ends in a question for you (e.g. "Ask me which colour to use before doing
+  anything"). ✅ A **Needs input** toast that stays until dismissed; **Open** lands on the card's page.
+- Stop a running agent from its chat. ✅ A **Stopped** toast. Break the repo's `checkCommand` and have
+  the agent commit. ✅ **Check failed** beside the run's own toast.
+- Start three runs that finish close together. ✅ The stack collapses to the top toast with two peeks
+  and "3 notifications"; hover expands it; **Clear all** empties the corner but ✅ the bell's count
+  stays.
+- Start a preview. ✅ **Preview ready** with the URL once every service answers; **Open preview**
+  opens it. Point a service at a bad command. ✅ **Preview failed** with the log's last line.
+- Open the bell. ✅ Rows grouped **Today / Yesterday / date**, unread dots, the kind chips filter, a
+  click marks read and opens; **Mark all read** clears the count; **Clear all** empties the centre on
+  BOTH machines (refresh the other).
+- Settings → Notifications: **Do not disturb** on ✅ no toasts, the centre still fills; untick
+  **Finished** ✅ only that kind stops popping; **Browser notifications** on, hide the tab, make an
+  agent fail ✅ a system notification, click brings the tab back on the card.
+- With two instances: finish a run on the box ✅ the laptop's tab pops it once (no duplicate after a
+  bridge restart on the box while the run was in flight).
+
 ## Teardown
 
 Delete the test PRs/branches and remove any leftover worktrees:

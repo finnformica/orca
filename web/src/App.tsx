@@ -1,6 +1,7 @@
 import { useRoute, type Route } from "@/lib/route";
 import { Shell, Crumb, AddNew } from "@/components/Shell";
 import { OrchestratorButton } from "@/components/Terminal";
+import { ToastHost } from "@/components/Notifications";
 import { useWorkstreams } from "./store";
 import { NewDraft } from "./views/Board";
 import { Overview } from "./views/Overview";
@@ -19,6 +20,7 @@ export function App() {
         <Page route={route} />
       </Shell>
       <OrchestratorButton />
+      <ToastHost />
     </>
   );
 }

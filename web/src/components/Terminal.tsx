@@ -57,6 +57,12 @@ export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean
 // running drives Stop and the composer's placeholder.
 export function OrchestratorButton() {
   const [open, setOpen] = useState(false);
+  // A notification's Open for the orchestrator (its reply asked you something) opens this window.
+  useEffect(() => {
+    const onOpen = () => setOpen(true);
+    window.addEventListener("orca:open-orchestrator", onOpen);
+    return () => window.removeEventListener("orca:open-orchestrator", onOpen);
+  }, []);
   const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
   const load = () => api.orchestrator().then(setState).catch(() => {});
   // Popped out: the chat lives in an always-on-top Document Picture-in-Picture window (Chrome/Edge

@@ -1,10 +1,12 @@
 // The sidebar's other pages. Repos: one row per configured repo with its agents' numbers (a click
 // opens Agents scoped to it). Usage: the Usage card with every login expanded, and every machine's
 // card. Settings: appearance, the board's density, and the configuration this bridge runs with
-// (read-only — it is edited in orca.config.ts / the config table, not here).
+// (read-only — it is edited in orca.config.ts / the config table, not here). Notifications: do not
+// disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
 import { useAtom, useSetAtom } from "jotai";
 import { FolderGit2, GitBranch } from "lucide-react";
-import { densityAtom, repoFilterAtom } from "@/lib/atoms";
+import { browserNotifyAtom, densityAtom, notifyDndAtom, repoFilterAtom, toastPrefsAtom } from "@/lib/atoms";
+import { KIND_META, NOTIFICATION_KINDS } from "../../../shared/notifications";
 import { navigate } from "@/lib/route";
 import { useTheme, type Theme } from "@/lib/theme";
 import { instanceChoices, staleHours, thisInstance, useAgentProviders, useRepos, useWorkstreams } from "../store";
@@ -95,6 +97,7 @@ export function Settings() {
           <Segmented label="Density" value={density} onChange={setDensity} options={[{ value: "comfortable", label: "Comfortable" }, { value: "dense", label: "Dense" }]} />
         </Setting>
       </VCard>
+      <NotificationSettings />
       <VCard slot="settings-config" title="Configuration" aside={<span className="text-muted-foreground text-xs">read-only · orca.config.ts</span>}>
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-b p-4 sm:grid-cols-4">
           <Detail label="This instance"><StatusDot tone="ready" />{here ?? "—"}</Detail>
@@ -116,6 +119,45 @@ export function Settings() {
         </ul>
       </VCard>
     </div>
+  );
+}
+
+function NotificationSettings() {
+  const [dnd, setDnd] = useAtom(notifyDndAtom);
+  const [browser, setBrowser] = useAtom(browserNotifyAtom);
+  const [prefs, setPrefs] = useAtom(toastPrefsAtom);
+  const onOff = [{ value: "on", label: "On" }, { value: "off", label: "Off" }];
+  const enableBrowser = async (on: boolean) => {
+    // The permission is asked for when switched on; refused, the switch stays off.
+    if (on && typeof Notification !== "undefined" && Notification.permission !== "granted") {
+      const r = await Notification.requestPermission().catch(() => "denied");
+      if (r !== "granted") return setBrowser(false);
+    }
+    setBrowser(on);
+  };
+  return (
+    <VCard slot="settings-notifications" title="Notifications" bodyClass="divide-y">
+      <Setting label="Do not disturb" hint="Silence the toasts; the centre still collects everything.">
+        <Segmented label="Do not disturb" value={dnd ? "on" : "off"} onChange={(v) => setDnd(v === "on")} options={onOff} />
+      </Setting>
+      <Setting label="Browser notifications" hint="When this tab is hidden: an agent needing input, a failure, a failed check.">
+        <Segmented label="Browser notifications" value={browser ? "on" : "off"} onChange={(v) => void enableBrowser(v === "on")} options={onOff} />
+      </Setting>
+      <div className="px-4 py-3">
+        <div className="text-sm font-medium">Toasts</div>
+        <div className="text-muted-foreground mb-2 text-xs">Which kinds pop up in the corner.</div>
+        <ul data-slot="toast-kinds" className="grid grid-cols-2 gap-x-6 gap-y-1.5 sm:grid-cols-3">
+          {NOTIFICATION_KINDS.map((k) => (
+            <li key={k}>
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" className="accent-geist-blue" checked={prefs[k] !== false} onChange={(e) => setPrefs({ ...prefs, [k]: e.target.checked })} />
+                {KIND_META[k].label}
+              </label>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </VCard>
   );
 }
 

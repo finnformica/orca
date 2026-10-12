@@ -32,3 +32,10 @@ export const instanceScopeAtom = atomWithStorage("orca.instanceScope", "all");
 export const agentQueryAtom = atom("");
 // The Overview's Usage card: just the fleet + Codex, or every hydra login too. Persisted.
 export const usageExpandedAtom = atomWithStorage("orca.usageExpanded", false);
+
+// The notification centre (components/Notifications.tsx), per browser: do-not-disturb silences the
+// toasts (the centre still fills); per-kind toasts off (a kind absent is on); browser notifications
+// for the urgent kinds while the tab is hidden (needs the permission, asked for when switched on).
+export const notifyDndAtom = atomWithStorage("orca.notifications.dnd", false);
+export const toastPrefsAtom = atomWithStorage<Partial<Record<string, boolean>>>("orca.notifications.toasts", {});
+export const browserNotifyAtom = atomWithStorage("orca.notifications.browser", false);
