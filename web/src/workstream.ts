@@ -1154,11 +1154,11 @@ export type OverviewRow = {
   agentStartedAt?: number;
   mergeable?: Mergeable; mergeClean?: "clean" | "conflict";
   ciStatus?: CiStatus; reviewStatus?: ReviewStatus;
-  orchestrated?: boolean; mergedAt?: string;
+  orchestrated?: boolean; mergedAt?: string; queued?: number;
   transcript?: Pick<AgentTurn, "instruction" | "prompt" | "startedAt" | "finishedAt" | "failed" | "stopped" | "provider">[];
 };
 
-export type Attention = "check failed" | "agent error" | "CI failing" | "conflicts" | "changes requested";
+export type Attention = "check failed" | "agent error" | "run stopped" | "CI failing" | "conflicts" | "changes requested" | "message held";
 
 /** Why a workstream is waiting on YOU — empty when it isn't. A running agent is working on it, so
  *  nothing is asked of you yet; a merged one is finished. */
@@ -1170,6 +1170,10 @@ export function attentionReasons(row: OverviewRow): Attention[] {
   if (row.ciStatus === "failing") out.push("CI failing");
   if (row.mergeable === "CONFLICTING" || row.mergeClean === "conflict") out.push("conflicts");
   if (row.reviewStatus === "changes_requested") out.push("changes requested");
+  // You stopped its last run (resumable, but nothing will happen until you say what next).
+  if (row.agentStatus !== "error" && row.transcript?.[row.transcript.length - 1]?.stopped) out.push("run stopped");
+  // A message queued behind a run that is no longer running: it will not send itself.
+  if ((row.queued ?? 0) > 0) out.push("message held");
   return out;
 }
 
@@ -1695,3 +1699,72 @@ export function agentFailure(row: { agentStatus?: string; agentError?: string; a
   }
   return undefined;
 }
+
+// ---- the Agents page's quick filters ----
+// One-click chips above the list, Vercel's filter row: toggleable and combinable — AND across
+// groups, OR within one (local OR cloud, Open PRs OR Merged today) — and kept in the URL query so a
+// filtered view is a link. Each chip shows how many rows it would show with the other groups' chips.
+
+export type QuickFilter = {
+  status: ("attention" | "running")[];
+  pr: ("open" | "mergeable" | "merged")[];
+  by: ("mine" | "orchestrated")[];
+  on: string[];
+  repo: string[];
+};
+export type QuickGroup = keyof QuickFilter;
+export const NO_QUICK_FILTER: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [] };
+const QUICK_GROUPS: QuickGroup[] = ["status", "pr", "by", "on", "repo"];
+const QUICK_VALUES: Partial<Record<QuickGroup, readonly string[]>> = {
+  status: ["attention", "running"], pr: ["open", "mergeable", "merged"], by: ["mine", "orchestrated"],
+};
+
+/** `?status=attention&on=cloud,local` → the filter. Unknown values are dropped, so a stale link is
+ *  merely less filtered, never broken. */
+export function parseQuickFilter(search: string): QuickFilter {
+  const params = new URLSearchParams(search);
+  const out: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [] };
+  for (const g of QUICK_GROUPS) {
+    const values = [...new Set((params.get(g) ?? "").split(",").map((v) => v.trim()).filter(Boolean))];
+    const allowed = QUICK_VALUES[g];
+    (out[g] as string[]) = allowed ? values.filter((v) => allowed.includes(v)) : values;
+  }
+  return out;
+}
+
+/** The filter as a query string ("" when nothing is on), groups in a fixed order so a link is stable. */
+export function quickFilterQuery(f: QuickFilter): string {
+  const parts = QUICK_GROUPS.filter((g) => f[g].length).map((g) => `${g}=${f[g].map(encodeURIComponent).join(",")}`);
+  return parts.length ? `?${parts.join("&")}` : "";
+}
+
+/** Flip one chip on or off. */
+export function toggleQuick(f: QuickFilter, group: QuickGroup, value: string): QuickFilter {
+  const has = (f[group] as string[]).includes(value);
+  return { ...f, [group]: has ? (f[group] as string[]).filter((v) => v !== value) : [...(f[group] as string[]), value] };
+}
+
+function matchesChip(row: OverviewRow, group: QuickGroup, value: string, here?: string): boolean {
+  switch (group) {
+    case "status": return value === "running" ? row.agentStatus === "running" : attentionReasons(row).length > 0;
+    case "pr": return value === "merged" ? row.lane === "DONE" : value === "mergeable" ? row.lane === "MERGEABLE" : Boolean(row.prNumber) && row.lane !== "DONE";
+    case "by": return value === "orchestrated" ? Boolean(row.orchestrated) : !row.orchestrated;
+    case "on": return rowInstance(row, here) === value;
+    case "repo": return row.repo === value;
+  }
+}
+
+const passes = (row: OverviewRow, f: QuickFilter, here: string | undefined, skip?: QuickGroup) =>
+  QUICK_GROUPS.every((g) => g === skip || !f[g].length || (f[g] as string[]).some((v) => matchesChip(row, g, v, here)));
+
+export function applyQuickFilter<R extends OverviewRow>(rows: R[], f: QuickFilter, here?: string): R[] {
+  return rows.filter((r) => passes(r, f, here));
+}
+
+/** A chip's count: the rows it matches among those the OTHER groups' chips let through — so it says
+ *  what turning it on (alone in its group) would show. */
+export function quickCount(rows: OverviewRow[], f: QuickFilter, group: QuickGroup, value: string, here?: string): number {
+  return rows.filter((r) => passes(r, f, here, group) && matchesChip(r, group, value, here)).length;
+}
+
+export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) => f[g].length > 0);

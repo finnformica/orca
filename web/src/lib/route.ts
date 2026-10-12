@@ -33,7 +33,7 @@ const update = () => { current = parse(); listeners.forEach((l) => l()); };
 window.addEventListener("popstate", update);
 
 export function navigate(path: string, replace = false) {
-  if (location.pathname === path) return;
+  if (location.pathname + location.search === path) return; // the query counts: /agents?status=running ≠ /agents
   if (replace) history.replaceState(null, "", path);
   else history.pushState(null, "", path);
   update();
@@ -41,3 +41,8 @@ export function navigate(path: string, replace = false) {
 
 export const useRoute = (): Route =>
   useSyncExternalStore((l) => { listeners.add(l); return () => listeners.delete(l); }, () => current);
+
+/** The URL's query string ("?status=attention…"), re-read on every navigation — the Agents page's
+ *  quick filters live here so a filtered view is a link. */
+export const useSearch = (): string =>
+  useSyncExternalStore((l) => { listeners.add(l); return () => listeners.delete(l); }, () => location.search);

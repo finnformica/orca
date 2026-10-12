@@ -10,7 +10,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { Overview } from "@/views/Overview";
 import { Agents } from "@/views/Agents";
-import { agentAttentionAtom, agentQueryAtom, agentStateAtom, boardViewAtom, repoFilterAtom } from "@/lib/atoms";
+import { agentQueryAtom, boardViewAtom, repoFilterAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
 import {
   DEFAULT_LIST_FILTER, attentionReasons, filterRows, lastActivity, overviewStats, recentActivity, rowTone, sortRows, turnsByHour,
@@ -105,8 +105,6 @@ afterEach(async () => {
   root = container = undefined;
   const s = getDefaultStore();
   s.set(repoFilterAtom, "all");
-  s.set(agentStateAtom, "all");
-  s.set(agentAttentionAtom, false);
   s.set(agentQueryAtom, "");
   localStorage.clear();
   navigate("/"); // the route store, not just the URL — later files mount App on "/"
@@ -162,21 +160,28 @@ describe("overview: the Agents card", () => {
     expect(container!.querySelector('[data-slot="stat-tiles"]')).toBeNull();
   });
 
-  test("each number opens the Agents list filtered to exactly what it counted", async () => {
+  test("each number links to the Agents list's quick chips that count exactly it", async () => {
     seed();
     await mount();
     await click(stat("attention"));
-    expect(location.pathname).toBe("/agents");
-    expect(getDefaultStore().get(agentAttentionAtom)).toBe(true);
+    expect(location.pathname + location.search).toBe("/agents?status=attention");
     act(() => root?.unmount()); container?.remove();
     await mount(<Agents />);
-    expect(listed().sort()).toEqual(["feat-ci", "local-err"]);
+    expect(listed().sort()).toEqual(["feat-ci", "local-err"]); // the same two the card counted
+    expect(container!.querySelector('[data-chip="status:attention"]')!.getAttribute("aria-pressed")).toBe("true");
     act(() => root?.unmount()); container?.remove();
     await act(async () => navigate("/"));
     await mount();
-    await click(stat("prs").querySelector('[data-slot="pipeline-DRAFT"]')!);
-    expect(getDefaultStore().get(agentStateAtom)).toBe("DRAFT");
-    expect(getDefaultStore().get(agentAttentionAtom)).toBe(false);
+    for (const [el, query] of [
+      [stat("running"), "?status=running"],
+      [stat("prs"), "?pr=open"],
+      [stat("prs").querySelector('[data-slot="pipeline-MERGEABLE"]')!, "?pr=mergeable"],
+      [stat("merged"), "?pr=merged"],
+    ] as const) {
+      await act(async () => navigate("/"));
+      await click(el);
+      expect(location.pathname + location.search).toBe(`/agents${query}`);
+    }
   });
 
   test("recent activity lists the newest turns with what was asked", async () => {
@@ -211,19 +216,9 @@ describe("agents list", () => {
     expect(container!.querySelector<HTMLElement>('[data-branch="feat-ok"]')!.querySelector('[data-slot="state-pill"]')!.textContent).toBe("Mergeable");
   });
 
-  test("filters: Add Filter's dimensions show as dashed chips that clear; search narrows; an empty result offers a way back", async () => {
+  test("search narrows the list alongside the chips; an empty result offers a way back", async () => {
     seed();
     await mount(<Agents />);
-    expect(container!.querySelector('[data-slot="add-filter"]')).not.toBeNull();
-    await act(async () => { getDefaultStore().set(agentStateAtom, "IN_REVIEW"); await flush(); });
-    expect(listed()).toEqual(["feat-ci"]);
-    const chip = container!.querySelector('[data-slot="filter-chip"]')!;
-    expect(chip.textContent).toContain("In review");
-    await click(chip.querySelector("button")!);
-    expect(listed()).toHaveLength(5);
-    await act(async () => { getDefaultStore().set(agentAttentionAtom, true); await flush(); });
-    expect(listed().sort()).toEqual(["feat-ci", "local-err"]);
-    await click(container!.querySelector('button[aria-label="Clear needs filter"]')!);
     const search = container!.querySelector<HTMLInputElement>('input[aria-label="Search workstreams"]')!;
     await type(search, "gauge");
     expect(listed()).toEqual(["local-run"]); // matched on its enriched title

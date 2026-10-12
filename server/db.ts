@@ -913,6 +913,17 @@ export async function queuedMessages(repo: string, branch: string): Promise<Queu
   }));
 }
 
+/** Undispatched messages per branch for a whole repo, in ONE query — the agents poll attaches the
+ *  count to every row, so the board can flag a message held behind a run that isn't coming. */
+export async function queuedCounts(repo: string): Promise<Map<string, number>> {
+  const sql = await open();
+  const rows = await sql`
+    SELECT branch, count(*)::int AS n FROM queued_message
+    WHERE user_id = ${currentUser()} AND repo = ${repo} AND dispatched_at IS NULL
+    GROUP BY branch`;
+  return new Map((rows as { branch: string; n: number }[]).map((r) => [r.branch, Number(r.n)]));
+}
+
 /** Claim the next queued message for a branch, marking it dispatched in the same statement so two
  *  instances (or a restart racing itself) cannot send it twice. */
 export async function claimQueuedMessage(repo: string, branch: string): Promise<QueuedMessage | undefined> {

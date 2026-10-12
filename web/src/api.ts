@@ -13,6 +13,8 @@ export type LiveAgent = {
   agentResult?: string;
   agentOutcome?: AgentOutcome;
   agentMeta?: RunMeta;
+  /** Messages queued for this branch and not yet sent (the agents poll attaches it). */
+  queued?: number;
   agentCheck?: TurnCheck;
   agentStartedAt?: number;
   agentFinishedAt?: number;

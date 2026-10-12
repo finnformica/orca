@@ -7,11 +7,11 @@
 import type { ReactNode } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { Activity } from "lucide-react";
-import { agentAttentionAtom, agentQueryAtom, agentStateAtom, instanceScopeAtom, repoFilterAtom } from "@/lib/atoms";
+import { agentQueryAtom, instanceScopeAtom, repoFilterAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
 import { instanceChoices, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
 import {
-  DEFAULT_LIST_FILTER, LANE_LABELS, ago, attentionReasons, filterRows, overviewStats, recentActivity, sparklineSegments,
+  DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, ago, attentionReasons, filterRows, quickFilterQuery, type QuickFilter, overviewStats, recentActivity, sparklineSegments,
   type ActivityItem, type OverviewLane,
 } from "../workstream";
 import { Empty, SectionTitle, StatusDot, VCard, type DotTone } from "@/components/console";
@@ -51,23 +51,21 @@ export function Overview() {
 
 function AgentsSnapshot({ rows }: { rows: Row[] }) {
   const s = overviewStats(rows);
-  const setState = useSetAtom(agentStateAtom);
-  const setAttention = useSetAtom(agentAttentionAtom);
   const setQ = useSetAtom(agentQueryAtom);
-  // Open the Agents list showing exactly what the number counted.
-  const open = (state: "all" | OverviewLane, attention = false) => () => { setQ(""); setState(state); setAttention(attention); navigate("/agents"); };
-  const pipeline: { lane: OverviewLane; n: number; cls: string }[] = [
-    { lane: "DRAFT", n: s.prs.draft, cls: "bg-geist-gray" },
-    { lane: "IN_REVIEW", n: s.prs.inReview, cls: "bg-geist-amber" },
-    { lane: "MERGEABLE", n: s.prs.mergeable, cls: "bg-geist-blue" },
+  // Open the Agents list with the quick chips that count exactly this — a link, like any filtered view.
+  const open = (f: Partial<QuickFilter>) => () => { setQ(""); navigate(`/agents${quickFilterQuery({ ...NO_QUICK_FILTER, ...f })}`); };
+  const pipeline: { lane: OverviewLane; n: number; cls: string; chip: QuickFilter["pr"][number] }[] = [
+    { lane: "DRAFT", n: s.prs.draft, cls: "bg-geist-gray", chip: "open" },
+    { lane: "IN_REVIEW", n: s.prs.inReview, cls: "bg-geist-amber", chip: "open" },
+    { lane: "MERGEABLE", n: s.prs.mergeable, cls: "bg-geist-blue", chip: "mergeable" },
   ];
   return (
     <VCard slot="agents-card" bodyClass="grid grid-cols-2 [&>*:nth-child(odd)]:border-r [&>*:nth-child(n+3)]:border-t">
-      <Stat slot="running" label="Running" value={s.running} onClick={open("all")} dot={s.running ? "building" : "neutral"}
+      <Stat slot="running" label="Running" value={s.running} onClick={open({ status: ["running"] })} dot={s.running ? "building" : "neutral"}
         below={<RunsSparkline values={s.turnsByHour} />} />
-      <Stat slot="attention" label="Needs attention" value={s.attention} onClick={open("all", true)} dot={s.attention ? "warning" : "neutral"}
+      <Stat slot="attention" label="Needs attention" value={s.attention} onClick={open({ status: ["attention"] })} dot={s.attention ? "warning" : "neutral"}
         below={<span data-slot="attention-reasons" className="text-muted-foreground text-xs">{reasonSummary(rows) || "nothing waiting on you"}</span>} />
-      <Stat slot="prs" label="Open PRs" value={s.prs.total} onClick={open("IN_REVIEW")} dot="queued"
+      <Stat slot="prs" label="Open PRs" value={s.prs.total} onClick={open({ pr: ["open"] })} dot="queued"
         below={
           <div className="space-y-1.5">
             <div className="bg-muted flex h-1.5 overflow-hidden rounded-full" aria-hidden="true">
@@ -75,14 +73,14 @@ function AgentsSnapshot({ rows }: { rows: Row[] }) {
             </div>
             <div className="flex flex-wrap gap-x-2.5 text-xs">
               {pipeline.map((p) => (
-                <button key={p.lane} type="button" data-slot={`pipeline-${p.lane}`} onClick={(e) => { e.stopPropagation(); open(p.lane)(); }} className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
+                <button key={p.lane} type="button" data-slot={`pipeline-${p.lane}`} onClick={(e) => { e.stopPropagation(); open({ pr: [p.chip] })(); }} className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1">
                   <span className={`size-1.5 rounded-full ${p.cls}`} />{LANE_LABELS[p.lane]} <span className="text-foreground tabular-nums">{p.n}</span>
                 </button>
               ))}
             </div>
           </div>
         } />
-      <Stat slot="merged" label="Merged today" value={s.mergedToday} onClick={open("DONE")} dot={s.mergedToday ? "ready" : "neutral"}
+      <Stat slot="merged" label="Merged today" value={s.mergedToday} onClick={open({ pr: ["merged"] })} dot={s.mergedToday ? "ready" : "neutral"}
         below={<span className="text-muted-foreground text-xs">since midnight</span>} />
     </VCard>
   );

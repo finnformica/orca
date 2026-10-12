@@ -30,9 +30,5 @@ export const boardViewAtom = atomWithStorage<BoardView>("orca.boardView", "list"
 export const sidebarCollapsedAtom = atomWithStorage("orca.sidebarCollapsed", false);
 export const instanceScopeAtom = atomWithStorage("orca.instanceScope", "all");
 export const agentQueryAtom = atom("");
-// The Agents list's state and needs-attention filters — atoms so the Overview's numbers can open the
-// list already filtered (clicking "Needs attention" shows exactly those). Not persisted.
-export const agentStateAtom = atom<"all" | "LOCAL" | "DRAFT" | "IN_REVIEW" | "MERGEABLE" | "DONE">("all");
-export const agentAttentionAtom = atom(false);
 // The Overview's Usage card: just the fleet + Codex, or every hydra login too. Persisted.
 export const usageExpandedAtom = atomWithStorage("orca.usageExpanded", false);

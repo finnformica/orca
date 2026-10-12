@@ -5,22 +5,19 @@
 // #, branch, instance, when, and the model as the avatar. Clicking a row opens its agent page; every
 // action is in the trailing ⋯ (WorkstreamActions, menu-only). The swimlanes stay behind List | Board.
 import { useState, type MouseEvent, type ReactNode } from "react";
-import { useAtom } from "jotai";
-import { Bot, Columns3, FolderGit2, GitBranch, GitPullRequest, List, ListFilter as FilterIcon, Rows2, Rows3, Search, X } from "lucide-react";
-import { agentAttentionAtom, agentQueryAtom, agentStateAtom, boardViewAtom, densityAtom, instanceScopeAtom, repoFilterAtom, type BoardView } from "@/lib/atoms";
-import { navigate } from "@/lib/route";
+import { useAtom, useAtomValue } from "jotai";
+import { Bot, Columns3, FolderGit2, GitBranch, GitPullRequest, List, Rows2, Rows3, Search, X } from "lucide-react";
+import { agentQueryAtom, boardViewAtom, densityAtom, instanceScopeAtom, repoFilterAtom, type BoardView } from "@/lib/atoms";
+import { navigate, useSearch } from "@/lib/route";
 import { instanceChoices, modelFor, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
 import {
-  LANE_LABELS, OVERVIEW_LANES, SORT_LABELS, ago, attentionReasons, filterRows, formatDuration, lastActivity, promptInstruction,
-  rowDuration, rowInstance, rowTone, sortRows, type ListFilter, type ListSort, type OverviewLane, type RowTone,
+  DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, SORT_LABELS, ago, applyQuickFilter, attentionReasons, filterRows, formatDuration, lastActivity,
+  parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, toggleQuick,
+  type ListSort, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
 } from "../workstream";
 import { modelLabel } from "../../../shared/models";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import {
-  DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator,
-  DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { Pill, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
 import { Board, ConditionBadges, CopyDone, LaneActions, useTerminalOpen } from "./Board";
@@ -75,22 +72,23 @@ function ViewToggle({ view, setView }: { view: BoardView; setView: (v: BoardView
 
 function AgentsList() {
   const all = useWorkstreams();
-  const [repo, setRepo] = useAtom(repoFilterAtom);
-  const [instance, setInstance] = useAtom(instanceScopeAtom);
+  const repo = useAtomValue(repoFilterAtom); // the top bar's scope
+  const instance = useAtomValue(instanceScopeAtom); // the sidebar's scope
   const [q, setQ] = useAtom(agentQueryAtom);
-  const [state, setState] = useAtom(agentStateAtom);
-  const [attention, setAttention] = useAtom(agentAttentionAtom);
+  const search = useSearch();
+  const quick = parseQuickFilter(search);
   const [sort, setSort] = useState<ListSort>("updated");
-  const filter: ListFilter = { repo, instance, state, attention, q };
-  const visible = sortRows(filterRows(all, filter, thisInstance()), sort);
-  const clear = () => { setRepo("all"); setInstance("all"); setState("all"); setAttention(false); setQ(""); };
+  const here = thisInstance();
+  // The scopes first (they hold on every page), then the search box, then the quick chips.
+  const scoped = filterRows(all, { ...DEFAULT_LIST_FILTER, repo, instance, q }, here);
+  const visible = sortRows(applyQuickFilter(scoped, quick, here), sort);
+  const setQuick = (f: QuickFilter) => navigate(`/agents${quickFilterQuery(f)}`, true); // a filter change is not a history step
+  const clear = () => { setQ(""); setQuick(NO_QUICK_FILTER); };
   return (
     <section aria-label="Agents" className="space-y-3">
-      <FilterRow
-        rows={all} filter={filter} visible={visible} sort={sort} setSort={setSort}
-        set={{ repo: setRepo, instance: setInstance, state: setState, attention: setAttention, q: setQ }}
-      />
-      <div data-slot="workstream-list" className="bg-card overflow-x-auto rounded-xl border">
+      <FilterRow scoped={scoped} quick={quick} setQuick={setQuick} visible={visible} total={all.length} q={q} setQ={setQ} sort={sort} setSort={setSort}
+        showRepos={repo === "all"} showInstances={instance === "all"} />
+      <div data-slot="workstream-list" className="bg-card overflow-x-auto rounded-lg border">
         {visible.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center gap-3 px-4 py-14 text-sm">
             No agents match.
@@ -102,97 +100,73 @@ function AgentsList() {
   );
 }
 
-type Setters = { repo: (v: string) => void; instance: (v: string) => void; state: (v: ListFilter["state"]) => void; attention: (v: boolean) => void; q: (v: string) => void };
+type Chip = { group: QuickGroup; value: string; label: string; dot?: DotTone };
 
-// Vercel's filter row: "Add Filter" opens every dimension; each active one is a dashed chip that
-// names it and clears on ×. Counts per state reflect every other filter, so each says what it shows.
-function FilterRow({ rows, filter, visible, sort, setSort, set }: {
-  rows: Row[]; filter: ListFilter; visible: Row[]; sort: ListSort; setSort: (s: ListSort) => void; set: Setters;
+// Vercel's filter row: one-click chips, each with its count, toggleable and combinable (AND across
+// groups, OR within one); the URL query holds them, so a filtered view is a link. Search and sort sit
+// at the end.
+function FilterRow({ scoped, quick, setQuick, visible, total, q, setQ, sort, setSort, showRepos, showInstances }: {
+  scoped: Row[]; quick: QuickFilter; setQuick: (f: QuickFilter) => void; visible: Row[]; total: number;
+  q: string; setQ: (v: string) => void; sort: ListSort; setSort: (s: ListSort) => void;
+  showRepos: boolean; showInstances: boolean;
 }) {
   const repos = useRepos();
   const instances = instanceChoices();
   const here = thisInstance();
-  const byState = filterRows(rows, { ...filter, state: "all" }, here);
-  const count = (lane: OverviewLane) => byState.filter((r) => r.lane === lane).length;
-  const needYou = filterRows(rows, { ...filter, attention: false }, here).filter((r) => attentionReasons(r).length).length;
+  const chips: Chip[] = [
+    { group: "status", value: "attention", label: "Needs attention", dot: "warning" },
+    { group: "status", value: "running", label: "Running", dot: "building" },
+    { group: "by", value: "mine", label: "Mine" },
+    { group: "by", value: "orchestrated", label: "Orchestrated" },
+    { group: "pr", value: "open", label: "Open PRs" },
+    { group: "pr", value: "mergeable", label: "Mergeable", dot: "queued" },
+    { group: "pr", value: "merged", label: "Merged today", dot: "ready" },
+    ...(showInstances && instances.length > 1 ? instances.map((i): Chip => ({ group: "on", value: i, label: i })) : []),
+    ...(showRepos && repos.length > 1 ? repos.map((r): Chip => ({ group: "repo", value: r.name, label: r.name })) : []),
+  ];
+  // The lane the chips narrow to, when exactly one: the swimlanes' bulk verbs apply to it.
+  const lane: OverviewLane | null = quick.pr.length === 1 && quick.pr[0] !== "open" ? (quick.pr[0] === "merged" ? "DONE" : "MERGEABLE") : null;
   return (
-    <div data-slot="filter-bar" className="flex flex-wrap items-center gap-2">
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button type="button" data-slot="add-filter" className="hover:bg-accent/60 inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-sm">
-            <FilterIcon className="size-3.5" /> Add Filter
+    <div data-slot="filter-bar" className="space-y-2">
+      <div role="group" aria-label="Quick filters" className="flex flex-wrap items-center gap-1.5">
+        {chips.map((c) => {
+          const on = (quick[c.group] as string[]).includes(c.value);
+          return (
+            <button key={`${c.group}:${c.value}`} type="button" data-slot="quick-filter" data-chip={`${c.group}:${c.value}`} aria-pressed={on}
+              onClick={() => setQuick(toggleQuick(quick, c.group, c.value))}
+              className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors ${on ? "border-foreground bg-foreground text-background" : "text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
+              {c.dot && <StatusDot tone={c.dot} className="size-2" />}
+              {c.label}
+              <span data-slot="quick-count" className={`tabular-nums ${on ? "opacity-70" : "opacity-60"}`}>{quickCount(scoped, quick, c.group, c.value, here)}</span>
+            </button>
+          );
+        })}
+        {quickActive(quick) && (
+          <button type="button" onClick={() => setQuick(NO_QUICK_FILTER)} className="text-muted-foreground hover:text-foreground inline-flex h-7 items-center gap-1 px-1.5 text-[13px]">
+            <X className="size-3.5" /> Clear
           </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-[12rem]">
-          {repos.length > 1 && (
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>Repo</DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                <DropdownMenuRadioGroup value={filter.repo} onValueChange={set.repo}>
-                  <DropdownMenuRadioItem value="all">All repos</DropdownMenuRadioItem>
-                  {repos.map((r) => <DropdownMenuRadioItem key={r.name} value={r.name}>{r.name}</DropdownMenuRadioItem>)}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-          )}
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger>State</DropdownMenuSubTrigger>
-            <DropdownMenuSubContent>
-              <DropdownMenuRadioGroup value={filter.state} onValueChange={(v) => set.state(v as ListFilter["state"])}>
-                <DropdownMenuRadioItem value="all">Any state <span className="text-muted-foreground ml-auto pl-3">{byState.length}</span></DropdownMenuRadioItem>
-                {OVERVIEW_LANES.map((lane) => (
-                  <DropdownMenuRadioItem key={lane} value={lane}>{LANE_LABELS[lane]} <span className="text-muted-foreground ml-auto pl-3">{count(lane)}</span></DropdownMenuRadioItem>
-                ))}
-              </DropdownMenuRadioGroup>
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
-          {instances.length > 1 && (
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>Instance</DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                <DropdownMenuRadioGroup value={filter.instance} onValueChange={set.instance}>
-                  <DropdownMenuRadioItem value="all">All instances</DropdownMenuRadioItem>
-                  {instances.map((i) => <DropdownMenuRadioItem key={i} value={i}>{i}</DropdownMenuRadioItem>)}
-                </DropdownMenuRadioGroup>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-          )}
-          <DropdownMenuSeparator />
-          <DropdownMenuCheckboxItem checked={filter.attention} onCheckedChange={(c) => set.attention(Boolean(c))}>
-            Needs attention <span className="text-muted-foreground ml-auto pl-3">{needYou}</span>
-          </DropdownMenuCheckboxItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      {filter.repo !== "all" && <FilterChip label="Repo" value={filter.repo} onClear={() => set.repo("all")} />}
-      {filter.state !== "all" && <FilterChip label="State" value={LANE_LABELS[filter.state]} onClear={() => set.state("all")} />}
-      {filter.instance !== "all" && <FilterChip label="Instance" value={filter.instance} onClear={() => set.instance("all")} />}
-      {filter.attention && <FilterChip label="Needs" value="attention" onClear={() => set.attention(false)} />}
-      <label className="bg-card focus-within:ring-ring/40 flex h-8 min-w-48 flex-1 items-center gap-2 rounded-full border px-3 focus-within:ring-2 sm:max-w-72">
-        <Search className="text-muted-foreground size-3.5 shrink-0" />
-        <input value={filter.q} onChange={(e) => set.q(e.target.value)} placeholder="Search agents…" aria-label="Search workstreams"
-          className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-sm outline-none" />
-        {filter.q && <button type="button" onClick={() => set.q("")} aria-label="Clear search" className="text-muted-foreground hover:text-foreground"><X className="size-3.5" /></button>}
-      </label>
-      <div className="ml-auto flex items-center gap-2">
-        <span className="text-muted-foreground text-xs tabular-nums" data-slot="agents-count">{visible.length} of {rows.length}</span>
-        {/* The swimlanes' bulk verbs, for the lane the list is showing — same menu, same per-card actions. */}
-        {filter.state === "DONE" && visible.length > 0 && <span className="text-muted-foreground"><CopyDone cards={visible} /></span>}
-        {filter.state !== "all" && <span className="text-muted-foreground"><LaneActions lane={filter.state} cards={visible} /></span>}
-        <Select value={sort} onValueChange={(v) => setSort(v as ListSort)}>
-          <SelectTrigger className="h-8 w-40 rounded-full" aria-label="Sort"><span className="text-muted-foreground text-xs">Sort</span><SelectValue /></SelectTrigger>
-          <SelectContent>{(Object.keys(SORT_LABELS) as ListSort[]).map((k) => <SelectItem key={k} value={k}>{SORT_LABELS[k]}</SelectItem>)}</SelectContent>
-        </Select>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="bg-card focus-within:ring-ring/40 flex h-8 min-w-48 flex-1 items-center gap-2 rounded-md border px-2.5 focus-within:ring-2 sm:max-w-72">
+          <Search className="text-muted-foreground size-4 shrink-0" strokeWidth={1.5} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search agents…" aria-label="Search workstreams"
+            className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-[13px] outline-none" />
+          {q && <button type="button" onClick={() => setQ("")} aria-label="Clear search" className="text-muted-foreground hover:text-foreground"><X className="size-3.5" /></button>}
+        </label>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-muted-foreground text-xs tabular-nums" data-slot="agents-count">{visible.length} of {total}</span>
+          {lane === "DONE" && visible.length > 0 && <span className="text-muted-foreground"><CopyDone cards={visible} /></span>}
+          {lane && <span className="text-muted-foreground"><LaneActions lane={lane} cards={visible} /></span>}
+          <Select value={sort} onValueChange={(v) => setSort(v as ListSort)}>
+            <SelectTrigger className="h-8 w-40" aria-label="Sort"><span className="text-muted-foreground text-xs">Sort</span><SelectValue /></SelectTrigger>
+            <SelectContent>{(Object.keys(SORT_LABELS) as ListSort[]).map((k) => <SelectItem key={k} value={k}>{SORT_LABELS[k]}</SelectItem>)}</SelectContent>
+          </Select>
+        </div>
       </div>
     </div>
   );
 }
-
-const FilterChip = ({ label, value, onClear }: { label: string; value: string; onClear: () => void }) => (
-  <span data-slot="filter-chip" className="inline-flex h-8 items-center gap-1.5 rounded-full border border-dashed px-3 text-sm">
-    <span className="text-muted-foreground">{label}</span> {value}
-    <button type="button" onClick={onClear} aria-label={`Clear ${label.toLowerCase()} filter`} className="text-muted-foreground hover:text-foreground"><X className="size-3.5" /></button>
-  </span>
-);
 
 // ---- the row ----
 
