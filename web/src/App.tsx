@@ -16,7 +16,7 @@ export function App() {
   const route = useRoute();
   return (
     <>
-      <Shell crumbs={<Crumbs route={route} />} actions={<TopActions route={route} />}>
+      <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarActions collapsed={collapsed} />}>
         <Page route={route} />
       </Shell>
       <OrchestratorButton />
@@ -50,17 +50,17 @@ function Crumbs({ route }: { route: Route }) {
   return <Crumb>{TITLES[route.name]}</Crumb>;
 }
 
-// The page's controls, right of the breadcrumb: preview master/manager (one segmented control) and
-// Vercel's "Add New" holding the New-draft box, on the pages where you start work.
-function TopActions({ route }: { route: Route }) {
-  if (route.name !== "board" && route.name !== "agents") return null;
+// The sidebar's foot: Vercel's "Add New" holding the New-draft box, and the preview master / manager
+// — on every page, above you. Collapsed, both drop to icons in one column.
+function SidebarActions({ collapsed }: { collapsed: boolean }) {
   return (
     <>
-      <div className="inline-flex items-center gap-0.5">
+      <AddNew collapsed={collapsed}><NewDraft /></AddNew>
+      <div data-slot="preview-controls" className={collapsed ? "flex flex-col items-center gap-0.5" : "flex items-center gap-0.5"}>
         <TestMasterMenu />
         <PreviewManagerMenu />
+        {!collapsed && <span className="text-muted-foreground ml-1 text-xs">Previews</span>}
       </div>
-      <AddNew><NewDraft /></AddNew>
     </>
   );
 }

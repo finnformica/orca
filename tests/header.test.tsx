@@ -109,6 +109,20 @@ describe("console shell", () => {
     expect(container!.querySelector<HTMLInputElement>('input[aria-label="Search workstreams"]')!.value).toBe("gauge"); // one query, shared
   });
 
+  test("the sidebar's foot: the profile button has room for its two lines; collapsed, it stacks so the toggle can't overlap", async () => {
+    await mount();
+    const profile = container!.querySelector<HTMLElement>('[data-slot="profile"]')!;
+    expect(profile.className).toContain("min-h-11"); // two lines (13px + 12px) never touch its edges
+    expect(profile.textContent).toContain("You");
+    const foot = () => container!.querySelector<HTMLElement>('[data-slot="sidebar-foot"]')!;
+    expect(foot().className).not.toContain("flex-col");
+    await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
+    expect(foot().className).toContain("flex-col"); // avatar above the expand button, one column
+    expect(container!.querySelector<HTMLElement>('[data-slot="sidebar-actions"]')!.className).toContain("flex-col");
+    // Add New is still there, as an icon.
+    expect(container!.querySelector('[data-slot="sidebar"] [data-slot="add-new"]')!.getAttribute("aria-label")).toBe("Add New");
+  });
+
   test("the sidebar collapses to icons and stays collapsed across a reload", async () => {
     await mount();
     await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);

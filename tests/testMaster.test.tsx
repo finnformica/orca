@@ -35,17 +35,22 @@ afterEach(async () => {
   await act(async () => { await store.refresh(); });
 });
 
-test("TM3 top bar: the Test master button sits in the page's actions, before Add New", async () => {
+test("TM3 sidebar: Add New and the preview controls sit at the sidebar's foot, above you — not in the top bar", async () => {
   container = document.createElement("div");
   document.body.appendChild(container);
   await act(async () => { root = createRoot(container!); root.render(<App />); await flush(); await flush(); });
 
-  const bar = container.querySelector("[data-slot='topbar']")!;
-  const testMaster = bar.querySelector("[aria-label='Test master']")!;
-  const addNew = bar.querySelector("[data-slot='add-new']")!;
-  expect(testMaster).toBeTruthy();
+  const sidebar = container.querySelector("[data-slot='sidebar']")!;
+  const addNew = sidebar.querySelector("[data-slot='add-new']")!;
+  const testMaster = sidebar.querySelector("[aria-label='Test master']")!;
+  const profile = sidebar.querySelector("[data-slot='profile']")!;
   expect(addNew).toBeTruthy();
-  expect(testMaster.compareDocumentPosition(addNew) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(testMaster).toBeTruthy();
+  expect(addNew.compareDocumentPosition(testMaster) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(testMaster.compareDocumentPosition(profile) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const bar = container.querySelector("[data-slot='topbar']")!;
+  expect(bar.querySelector("[data-slot='add-new']")).toBeNull();
+  expect(bar.querySelector("[aria-label='Test master']")).toBeNull();
 });
 
 test("TM1 test-master row: launches the base preview and opens once ready", async () => {

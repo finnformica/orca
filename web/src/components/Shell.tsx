@@ -31,7 +31,11 @@ const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (r: Rout
   { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
 ];
 
-export function Shell({ crumbs, actions, children }: { crumbs: ReactNode; actions?: ReactNode; children: ReactNode }) {
+/** `sidebarActions` renders the foot of the sidebar above you (Add New, the preview controls); it is
+ *  told whether the sidebar is collapsed, so it can drop to icons. */
+export function Shell({ crumbs, sidebarActions, children }: {
+  crumbs: ReactNode; sidebarActions?: (collapsed: boolean) => ReactNode; children: ReactNode;
+}) {
   const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
   const [open, setOpen] = useState(false); // off-canvas sidebar on a narrow screen
   const route = useRoute();
@@ -47,14 +51,13 @@ export function Shell({ crumbs, actions, children }: { crumbs: ReactNode; action
           collapsed ? "md:w-14" : "md:w-60", "w-60", open ? "translate-x-0" : "-translate-x-full",
         )}
       >
-        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} onClose={() => setOpen(false)} />
+        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} onClose={() => setOpen(false)} actions={sidebarActions} />
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <header data-slot="topbar" className="bg-background/80 sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 backdrop-blur md:px-6">
           <button type="button" className="text-muted-foreground hover:text-foreground md:hidden" onClick={() => setOpen(true)} aria-label="Open menu"><Menu className="size-5" /></button>
           <RepoSwitcher />
           <nav aria-label="Breadcrumb" className="text-muted-foreground flex min-w-0 items-center gap-2 text-sm">{crumbs}</nav>
-          <div className="ml-auto flex items-center gap-2">{actions}</div>
         </header>
         <main className="w-full flex-1 px-4 py-6 md:px-6">{children}</main>
       </div>
@@ -71,7 +74,9 @@ export const Crumb = ({ children, to }: { children: ReactNode; to?: string }) =>
   </>
 );
 
-function Sidebar({ collapsed, onToggle, onClose }: { collapsed: boolean; onToggle: () => void; onClose: () => void }) {
+function Sidebar({ collapsed, onToggle, onClose, actions }: {
+  collapsed: boolean; onToggle: () => void; onClose: () => void; actions?: (collapsed: boolean) => ReactNode;
+}) {
   const route = useRoute();
   return (
     <>
@@ -92,9 +97,14 @@ function Sidebar({ collapsed, onToggle, onClose }: { collapsed: boolean; onToggl
           );
         })}
       </nav>
-      <div className="mt-auto flex items-center gap-1 border-t p-2">
+      {/* The foot: start work (Add New), the preview controls, then you. Collapsed, it stacks into
+          one icon column so nothing overlaps. */}
+      <div data-slot="sidebar-actions" className={cn("mt-auto flex gap-1.5 px-2 pb-2", collapsed ? "flex-col items-stretch md:items-center" : "flex-col")}>
+        {actions?.(collapsed)}
+      </div>
+      <div data-slot="sidebar-foot" className={cn("flex gap-1 border-t p-2", collapsed ? "flex-col items-stretch md:items-center" : "items-center")}>
         <ProfileMenu collapsed={collapsed} />
-        <button type="button" onClick={onToggle} className="text-muted-foreground hover:text-foreground hover:bg-accent ml-auto hidden size-8 items-center justify-center rounded-md md:inline-flex"
+        <button type="button" onClick={onToggle} className={cn("text-muted-foreground hover:text-foreground hover:bg-accent hidden size-8 shrink-0 items-center justify-center rounded-md md:inline-flex", !collapsed && "ml-auto")}
           aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
           {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
         </button>
@@ -204,13 +214,16 @@ function RepoSwitcher() {
 
 /** Vercel's "Add New…": the New-draft box in a popover. It stays open after a send, so its Undo is
  *  still there; a click outside closes it. */
-export function AddNew({ children }: { children: ReactNode }) {
+export function AddNew({ children, collapsed = false }: { children: ReactNode; collapsed?: boolean }) {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button size="sm" data-slot="add-new"><Plus className="size-3.5" /> Add New</Button>
+        <Button size="sm" data-slot="add-new" title="Add New" aria-label="Add New" className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
+          <Plus className="size-4" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
+        </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-[34rem] max-w-[calc(100vw-2rem)] p-2">
+      {/* From the sidebar's foot it opens beside the sidebar, bottom-aligned with the button. */}
+      <PopoverContent side="right" align="end" sideOffset={8} className="w-[34rem] max-w-[calc(100vw-2rem)] p-2">
         <div className="text-muted-foreground px-1 pb-2 text-xs">New agent — describe a feature, pick a repo and a model (Auto lets the orchestrator brief it).</div>
         {children}
       </PopoverContent>
@@ -265,11 +278,11 @@ export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" className="hover:bg-accent/60 flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 text-sm" title="Profile" aria-label="Profile menu">
+        <button type="button" data-slot="profile" className={cn("hover:bg-accent/60 flex min-h-11 min-w-0 items-center gap-2.5 rounded-md px-1.5 py-1.5 text-sm", collapsed ? "md:size-8 md:min-h-0 md:justify-center md:p-0" : "flex-1")} title="Profile" aria-label="Profile menu">
           <CircleUser className="text-muted-foreground size-5 shrink-0" />
-          <span className={cn("min-w-0 text-left", collapsed && "md:hidden")}>
+          <span className={cn("min-w-0 text-left leading-tight", collapsed && "md:hidden")}>
             <span className="block truncate">You</span>
-            {thisInstance() && <span className="text-muted-foreground block truncate text-xs">on {thisInstance()}</span>}
+            {thisInstance() && <span className="text-muted-foreground mt-0.5 block truncate text-xs">on {thisInstance()}</span>}
           </span>
         </button>
       </DropdownMenuTrigger>
