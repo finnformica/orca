@@ -169,8 +169,44 @@ test("the composer clears as soon as you send, while the launch is still in flig
   await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
 
   expect(box.value).toBe(""); // cleared although the launch hasn't resolved
+  // The box is never busy: a second message goes while the first launch is still in flight, and
+  // both show as "sending…" in the log until the bridge has them. (It used to ignore Enter until
+  // the launch returned — seconds, longer over the tailnet.)
+  expect(send.disabled).toBe(true); // only because the box is empty
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "and then this");
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+  });
+  expect(send.disabled).toBe(false);
+  await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(box.value).toBe("");
+  expect(container!.querySelectorAll('[data-slot="chat-sending"]').length).toBe(2);
   await act(async () => { apiFake.releaseClaude?.(); await flush(); await flush(); });
-  expect(apiFake.claudePrompts.at(-1)).toContain("and now this");
+  expect(apiFake.claudePrompts.some((p) => p.includes("and now this"))).toBe(true);
+  expect(apiFake.claudePrompts.some((p) => p.includes("and then this"))).toBe(true);
+  expect(container!.querySelectorAll('[data-slot="chat-sending"]').length).toBe(0); // both answered
+});
+
+test("a send that fails while you're already typing the next message keeps both texts", async () => {
+  apiFake.turnsData.set("r::feat", []);
+  apiFake.holdClaude = true;
+  await mount(base);
+  const box = container!.querySelector("textarea")!;
+  const type = async (s: string) => act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, s);
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+  });
+  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (Enter)"]')!;
+  await type("first");
+  await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  await type("second, in progress");
+  // The held launch now fails: the box holds new text, so the lost one goes to the error line.
+  apiFake.claudeError = "launch exploded";
+  await act(async () => { apiFake.releaseClaude?.(); await flush(); await flush(); });
+  expect(box.value).toBe("second, in progress");
+  expect(text()).toContain("not sent: “first”");
 });
 
 test("a failed send puts the text back in the box", async () => {

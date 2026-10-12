@@ -2,7 +2,7 @@
 // resource is polled once however many components show it (the bridge is HTTP/1.1 with six
 // connections per host — see lib/poll.ts), and only while something is mounted to show it.
 import { useSyncExternalStore } from "react";
-import { api, type InstanceHealth } from "@/api";
+import { api, type InstanceHealth, type MetricPoint } from "@/api";
 import type { ProfileUsage, Usage, UsageWindow } from "../../../server/usage";
 import { poll } from "./poll";
 
@@ -83,6 +83,27 @@ export function useHealth(instance: string | undefined | null): HealthReading | 
       return () => { live = false; stop(); };
     });
     healthSources.set(key, src);
+  }
+  return useSyncExternalStore(src.subscribe, src.get);
+}
+
+const historySources = new Map<string, ReturnType<typeof sharedSource<MetricPoint[]>>>();
+
+/** An instance's last-day samples (/api/health/history — database-only, so any instance answers),
+ *  polled once a minute (the sampler writes once a minute) while something shows them: the header
+ *  chip's popover, the overview's instance tiles. One loop per instance however many show it. null
+ *  = nothing to watch; the value is null until the first answer, [] when the fetch fails. */
+export function useHealthHistory(instance: string | null, hours = 24): MetricPoint[] | null {
+  if (instance === null) return useSyncExternalStore(NOTHING.subscribe, NOTHING.get);
+  const key = `${instance}|${hours}`;
+  let src = historySources.get(key);
+  if (!src) {
+    src = sharedSource<MetricPoint[]>((set) => {
+      let live = true;
+      const stop = poll(() => api.healthHistory(instance, hours).then((v) => { if (live) set(v); }, () => { if (live) set([]); }), 60_000);
+      return () => { live = false; stop(); };
+    });
+    historySources.set(key, src);
   }
   return useSyncExternalStore(src.subscribe, src.get);
 }

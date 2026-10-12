@@ -220,7 +220,12 @@ shown as `❯ …` with the agent's output below), plus the follow-up `ChatCompo
 message. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
 involved. Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every
 board action uses. A turn written at launch but not yet finished renders as `▋ working…` (that's how
-an interrupted run stays visible); a turn with a parsed outcome renders its sections. (History: this
+an interrupted run stays visible); a turn with a parsed outcome renders its sections. **The composer
+is never busy:** a send clears the box at once and the next message can go while the launch is still
+in flight (seconds, longer over the tailnet) — the log's `▋ sending…` line, until the bridge has it as
+a running turn or a queued entry, is the receipt. (It used to go busy until the launch returned, and
+Enter did nothing meanwhile.) A failed send comes back into the box if it is still empty, else into
+the error line (`<error> — not sent: “<text>”`), so neither message is lost. (History: this
 was briefly a detail-page "Chat" tab; the user asked for it as a terminal-style modal instead, and the
 tab was removed.)
 
@@ -418,6 +423,14 @@ Plain TCP, so Vite's HMR websocket rides it; dropped on stop; a port a local pre
 on the owner's URL. The other services keep the owner's URL (an http page may call another http origin).
 **Slack posts from the instance you click on** (`/api/slack` is in the answer-here set): it needs no
 worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box it failed with no token.
+**Machine metrics history:** each instance samples ITSELF once a minute (`startMetricsSampler` in
+`server/health.ts`, started from `server/index.ts`, reusing `health()`) into `instance_metric`
+(migration 11: instance, `at`, cpu %, load1, memory used/total, disk used; indexed on
+`(instance, at)`). Every insert also deletes that instance's own rows older than 30 days, so retention
+needs no second timer; a failed write is logged and swallowed. `GET /api/health/history?instance=&hours=`
+(24 by default, at most 720) is database-only and its `instance` is a filter, never a forward, so
+either machine graphs the other even while it is down. The header chip's popover draws the last 24h
+of CPU and memory as inline SVG (no charting dependency), fetched only while it is open.
 **Conversation loading with a remote database:** `/api/turns` attaches steps to the newest
 `STEPS_FOR_TURNS` (40) turns in ONE query (`db.stepsForRuns`); older turns fetch theirs on unfold
 (`/api/turns/steps` from seq 0). One query per turn over a 6ms link made a 300-turn conversation

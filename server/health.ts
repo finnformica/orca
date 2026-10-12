@@ -38,3 +38,30 @@ export async function health(): Promise<Health> {
     cost: costEstimate(Number(process.env.ORCA_HOURLY_USD), process.env.ORCA_BILLING_SINCE), at: Date.now(),
   };
 }
+
+// ---- history (instance_metric) ----
+
+/** How often each instance samples itself into `instance_metric`. */
+export const METRIC_SAMPLE_MS = 60_000;
+
+/** The `hours` a history request asks for: 24 by default, at most the 30 days kept. */
+export function historyHours(raw: string | null | undefined): number {
+  const n = Number(raw);
+  return raw && Number.isFinite(n) && n > 0 ? Math.min(n, 24 * 30) : 24;
+}
+
+/** Sample this machine and record it. Never throws: a metrics write must not touch anything else. */
+export async function sampleMetrics(): Promise<void> {
+  try {
+    const h = await health();
+    await db.recordMetric({ cpuPct: h.cpuPct, load1: h.load1, memUsedGb: h.memUsedGb, memTotalGb: h.memTotalGb, diskUsedGb: h.disk?.usedGb });
+  } catch (e) {
+    console.error("orca: metrics sample failed", e instanceof Error ? e.message : e);
+  }
+}
+
+/** Each instance samples ITSELF once a minute (and once at startup, so a fresh box has a point). */
+export function startMetricsSampler(ms = METRIC_SAMPLE_MS): ReturnType<typeof setInterval> {
+  void sampleMetrics();
+  return setInterval(() => void sampleMetrics(), ms).unref();
+}

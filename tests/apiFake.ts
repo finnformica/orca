@@ -8,6 +8,12 @@ import { mock } from "bun:test";
 import type { AgentOutcome, AgentProvider } from "../shared/agent";
 import type { CiFailureEvidence, ConversationComment, ReviewThreadEvidence } from "../server/gh";
 
+// Chains onto any launch already held, so one releaseClaude() frees them all.
+async function holdLaunch() {
+  await new Promise<void>((resolve) => { const prev = apiFake.releaseClaude; apiFake.releaseClaude = () => { prev?.(); resolve(); }; });
+  if (apiFake.claudeError) throw new Error(apiFake.claudeError);
+}
+
 export const apiFake = {
   worktrees: new Map<string, { branch: string; worktreePath: string }>(),
   // Held resolver for createWorktree, so a test can assert the optimistic card while the "server"
@@ -58,6 +64,11 @@ export const apiFake = {
   adoptCalls: [] as { repo: string; branch: string; instance?: string }[],
   previewCalls: [] as { key: string; instance?: string }[],
   healthData: null as null | Record<string, unknown>,
+  healthHistoryData: [] as Record<string, unknown>[],
+  healthHistoryCalls: [] as { instance: string; hours?: number }[],
+  // When true, api.healthHistory blocks until releaseHealthHistory() — a slow history call.
+  holdHealthHistory: false,
+  releaseHealthHistory: null as null | (() => void),
   // When true (set BEFORE the store is imported), api.config blocks until releaseConfig() — lets a
   // test mount the header before config has landed, the way a real first paint does.
   holdConfig: false,
@@ -95,7 +106,8 @@ export const apiFake = {
   // When set, agent launch rejects with it — the failed-launch path (e.g. optimistic follow-up reopen).
   claudeError: null as null | string,
   // When true, api.claude blocks until releaseClaude() — lets a test assert the in-flight state
-  // (e.g. the Follow up button's spinner) while the launch is still running.
+  // (e.g. the Follow up button's spinner) while the launch is still running. releaseClaude frees
+  // EVERY held launch, and claudeError is read again after it, so a held launch can fail.
   holdClaude: false,
   releaseClaude: null as null | (() => void),
   // Provider usage served by api.usage (the header meter) — null hides the widget (default).
@@ -105,7 +117,7 @@ export const apiFake = {
     profiles?: { name: string; usage: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: null; fable?: { utilization: number; resetsAt: string | null } | null }; state?: string; email?: string }[];
     routing?: { hydra: boolean; shim: boolean; bin?: string };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.healthData = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
 };
 
 mock.module("@/api", () => ({
@@ -240,6 +252,11 @@ mock.module("@/api", () => ({
       if (apiFake.compactError) throw new Error(apiFake.compactError);
       return { runId: "run-compact" };
     },
+    healthHistory: async (instance: string, hours?: number) => {
+      apiFake.healthHistoryCalls.push({ instance, hours });
+      if (apiFake.holdHealthHistory) await new Promise<void>((resolve) => { apiFake.releaseHealthHistory = () => { apiFake.holdHealthHistory = false; resolve(); }; });
+      return apiFake.healthHistoryData;
+    },
     health: async (instance?: string) => apiFake.healthData ?? { instance: instance ?? "cloud", hostname: "orca-box", cores: 4, cpuPct: 12, load1: 0.5, load5: 0.4, memUsedGb: 3.1, memTotalGb: 15.3, disk: { usedGb: 11, totalGb: 145 }, uptimeS: 90000, cost: { monthUsd: 1.23, hourlyUsd: 0.25, sinceIso: "2026-10-12T09:00:00.000Z" }, at: Date.now() },
     orchestrator: async () => apiFake.orchestratorState,
     orchestratorModel: async (model: string) => { apiFake.orchestratorState = { ...apiFake.orchestratorState, model }; return { ok: true as const }; },
@@ -257,14 +274,14 @@ mock.module("@/api", () => ({
     claude: async (_repo: string, key: string, prompt: string) => {
       apiFake.calls.push(`claude:${key}`); apiFake.claudePrompts.push(prompt);
       if (apiFake.claudeError) throw new Error(apiFake.claudeError);
-      if (apiFake.holdClaude) await new Promise<void>((resolve) => { apiFake.releaseClaude = resolve; });
+      if (apiFake.holdClaude) await holdLaunch();
       return { status: "ok" };
     },
     agent: async (_repo: string, key: string, prompt: string, options: { provider?: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider; model?: string } = {}) => {
       apiFake.calls.push(`agent:${key}`); apiFake.claudePrompts.push(prompt);
       apiFake.agentLaunches.push({ key, prompt, provider: options.provider ?? "claude", resume: options.resume, history: options.history, handoffFrom: options.handoffFrom, model: options.model });
       if (apiFake.claudeError) throw new Error(apiFake.claudeError);
-      if (apiFake.holdClaude) await new Promise<void>((resolve) => { apiFake.releaseClaude = resolve; });
+      if (apiFake.holdClaude) await holdLaunch();
       return { status: "ok" };
     },
   },
