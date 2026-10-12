@@ -167,6 +167,8 @@ const DATABASE_ONLY = new Set([
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
   // others published — a repo can live on several instances now, so no one instance owns the list.
   "/api/agents",
+  // Needs no worktree, only SLACK_TOKEN — which is on the machine you click from, not the box.
+  "/api/slack",
 ]);
 
 /** Forward a request to the instance that owns the repo. An SSE response is just a long-lived body,

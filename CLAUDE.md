@@ -393,6 +393,14 @@ removed, the target adopts the branch over HTTP (with an explicit `instance`, si
 still lists it here until the next publish), and the session pointer is cleared — the provider's
 session file is on the old host's disk, so the next run there takes the portable-transcript rung.
 Turns and enrichment are in the shared database and need no moving. Not while its agent runs.
+**A preview on the other instance opens as `localhost` here** (`server/forward.ts`): when a
+preview status is relayed from its owner, the relaying bridge forwards the opened service's port on
+loopback and returns `http://localhost:<port>` — the app needs a secure context (`crypto.randomUUID`
+is undefined on a plain-http tailnet name; the page was blank), and the tailnet has no HTTPS certs.
+Plain TCP, so Vite's HMR websocket rides it; dropped on stop; a port a local preview holds is left
+on the owner's URL. The other services keep the owner's URL (an http page may call another http origin).
+**Slack posts from the instance you click on** (`/api/slack` is in the answer-here set): it needs no
+worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box it failed with no token.
 **Conversation loading with a remote database:** `/api/turns` attaches steps to the newest
 `STEPS_FOR_TURNS` (40) turns in ONE query (`db.stepsForRuns`); older turns fetch theirs on unfold
 (`/api/turns/steps` from seq 0). One query per turn over a 6ms link made a 300-turn conversation
