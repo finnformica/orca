@@ -32,7 +32,7 @@ const notify = () => { version++; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.delete(l); };
 
 // ---- config ----
-let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number } | null = null;
+let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number; instance?: string; instances?: string[] } | null = null;
 export const configReady = api.config()
   .then(async (c) => { cfg = c; notify(); await migrateLocalEnrichment(); void refresh(); })
   .catch(() => { cfg = { repos: EMPTY_REPOS, staleHours: 24, agentProviders: DEFAULT_AGENT_PROVIDERS }; });
@@ -77,6 +77,12 @@ export const useAgentProviders = (): AgentProvider[] => useSyncExternalStore(sub
 export const baseBranch = (repo: string) => repoInfo(repo)?.baseBranch ?? "main";
 export const slackChannel = (repo: string) => repoInfo(repo)?.slackChannel;
 export const staleHours = () => cfg?.staleHours ?? 24;
+/** This bridge's instance name, and every instance a workstream can be placed on (this one first).
+ *  Empty `others` means a single machine — placement UI stays hidden. */
+export const thisInstance = (): string | undefined => cfg?.instance;
+export const instanceChoices = (): string[] => cfg?.instance ? [cfg.instance, ...(cfg.instances ?? []).filter((i) => i !== cfg!.instance)] : [];
+/** Where a new workstream in a repo goes unless you pick: the repo's default, else here. */
+export const defaultInstanceFor = (repo: string): string | undefined => repoInfo(repo)?.runsOn ?? cfg?.instance;
 
 // ---- enrichment (repo+branch-keyed) ----
 export type Enrichment = {
@@ -493,18 +499,21 @@ export function assembleRows(): Row[] {
 /** `chat`: the first message is a conversation (chatPrompt), not a work order (launchPrompt) — the
  *  "New chat" path. Same optimistic card + background worktree; `onCreated` fires with the branch
  *  once it exists so the caller can open its terminal. */
-export function createWorkstream(repo: string, prompt: string, images: File[] = [], model: string = defaultModelFor(repo), opts: { chat?: boolean; onCreated?: (branch: string) => void } = {}): OptimisticDraft {
+export function createWorkstream(repo: string, prompt: string, images: File[] = [], model: string = defaultModelFor(repo), opts: { chat?: boolean; onCreated?: (branch: string) => void; instance?: string } = {}): OptimisticDraft {
   const draft: OptimisticDraft = { id: `opt-${optSeq++}`, repo, prompt, title: titleFromPrompt(prompt) };
   optimistic = [...optimistic, draft];
   notify();
   if (model === AUTO_MODEL && !opts.chat) { void createViaOrchestrator(draft, images, opts); return draft; }
+  // Placement travels with the first two calls (create, then launch); after that the bridge finds
+  // the worktree's home in the inventory and routes every action there on its own.
+  const instance = opts.instance && opts.instance !== defaultInstanceFor(repo) ? opts.instance : undefined;
   if (model === AUTO_MODEL) model = defaultModelFor(repo); // a chat is a conversation with a model you chose, not a task to triage
   const provider = providerOfModel(model) ?? "claude";
   void (async () => {
     try {
       const [paths, created] = await Promise.all([
         images.length ? api.uploadAttachments(images) : Promise.resolve([]),
-        api.createWorktree(repo, prompt, provider),
+        api.createWorktree(repo, prompt, provider, instance),
       ]);
       const { branch, worktreePath, title } = created; // selected provider derives the title
       draft.created = { branch, worktreePath };
@@ -515,7 +524,7 @@ export function createWorkstream(repo: string, prompt: string, images: File[] = 
         deleteEnrich(repo, branch);
       } else {
         const first = opts.chat ? chatPrompt(prompt) : launchPrompt({ title, branch, prompt }, baseBranch(repo));
-        void api.runAgent(worktreePath, withAttachments(first, paths), provider, { branch, action: opts.chat ? "followup" : "launch", instruction: prompt, model })
+        void api.runAgent(worktreePath, withAttachments(first, paths), provider, { branch, action: opts.chat ? "followup" : "launch", instruction: prompt, model, instance: created.instance ?? instance })
           .then((receipt) => patchEnrich(repo, branch, { agentProvider: provider, sessionId: receipt.sessionId }))
           .catch(() => {});
       }
@@ -537,14 +546,14 @@ export const spawnPoll = { ms: 3000 }; // mutable so a test needn't wait three s
  *  stands in until a worktree this repo didn't have before shows up in the poll.
  *  ponytail: "the first new branch in this repo" is the match; a worker the orchestrator spawned
  *  for something else in the same minute would be taken for it. Tag the spawn if that bites. */
-async function createViaOrchestrator(draft: OptimisticDraft, images: File[], opts: { onCreated?: (branch: string) => void }) {
+async function createViaOrchestrator(draft: OptimisticDraft, images: File[], opts: { onCreated?: (branch: string) => void; instance?: string }) {
   const before = new Set(live.find((r) => r.repo === draft.repo)?.agents.map((a) => a.branch));
   // After an Undo, keep watching for the spawn it was for (so it can be torn down), but not forever.
   let undoneAt: number | undefined;
   const cancelledUntil = () => (undoneAt ??= Date.now()) + 60_000;
   try {
     const paths = images.length ? await api.uploadAttachments(images) : [];
-    await api.orchestratorMessage(newDraftMessage(draft.repo, draft.prompt), paths);
+    await api.orchestratorMessage(newDraftMessage(draft.repo, draft.prompt, opts.instance !== defaultInstanceFor(draft.repo) ? opts.instance : undefined), paths);
     const deadline = Date.now() + ORCHESTRATOR_SPAWN_WAIT_MS;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, spawnPoll.ms));

@@ -20,9 +20,11 @@ import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
-import { BusyError, checkGate, compact, launchOptions, newWorktree, removeWorktree, startPreview } from "./verbs";
+import * as verbs from "./verbs";
+import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider } from "../shared/agent";
+import { providerOfModel } from "../shared/models";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -148,18 +150,28 @@ const notEnabled = (repo: RepoConfig, feature: string) =>
 const DATABASE_ONLY = new Set([
   "/api/turns", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
   "/api/usage", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel",
+  // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
+  // others published — a repo can live on several instances now, so no one instance owns the list.
+  "/api/agents",
 ]);
 
 /** Forward a request to the instance that owns the repo. An SSE response is just a long-lived body,
  *  so the same hop carries the chat's live stream — the owner pushes from its own bus, and this
  *  instance is a pipe. Returns undefined when the request should be handled locally. */
-async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: OrcaConfig): Promise<Response | undefined> {
+async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: OrcaConfig, body: Record<string, unknown>): Promise<Response | undefined> {
   if (DATABASE_ONLY.has(url.pathname)) return undefined;
   const instance = db.instanceName();
-  if (runsHere(repo, instance)) return undefined;
-  const base = cfg.instances?.[repo.runsOn!];
+  // Where this request belongs: an explicit instance, else the worktree's home, else the repo's
+  // default (verbs.placement). A workstream placed on the laptop stays on the laptop even when the
+  // repo's default is the cloud box.
+  const home = await placement(repo, {
+    instance: url.searchParams.get("instance") ?? body.instance, branch: url.searchParams.get("branch") ?? body.branch,
+    worktreePath: url.searchParams.get("worktree") ?? body.worktreePath ?? body.worktree, key: body.key,
+  });
+  if (home === instance) return undefined;
+  const base = cfg.instances?.[home];
   if (!base) {
-    return json({ error: `${repo.name} runs on "${repo.runsOn}", which has no address configured (set instances.${repo.runsOn})` }, 502);
+    return json({ error: `this belongs on "${home}", which has no address configured (set instances.${home})` }, 502);
   }
   const target = new URL(url.pathname + url.search, base);
   try {
@@ -202,6 +214,23 @@ async function api(req: Request, url: URL): Promise<Response> {
   const body: any = req.method === "POST" || req.method === "PUT" ? await req.json().catch(() => ({})) : {};
   // The orchestrator. Its tool route carries the repo INSIDE the command's arguments, so these are
   // answered before a request is resolved to (and possibly forwarded for) a repo.
+  if (p.startsWith("/api/orchestrator") && cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName()) {
+    // ONE instance hosts the orchestrator (orchestratorOn); everything about it goes there.
+    const base = cfg.instances?.[cfg.orchestratorOn];
+    if (!base) return json({ error: `the orchestrator lives on "${cfg.orchestratorOn}", which has no address configured (set instances.${cfg.orchestratorOn})` }, 502);
+    try {
+      const upstream = await fetch(new URL(url.pathname + url.search, base), { method: req.method, headers: req.headers, body: req.method === "GET" ? undefined : JSON.stringify(body), signal: req.signal });
+      return new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
+    } catch (e) {
+      return json({ error: `${cfg.orchestratorOn} is unreachable: ${e instanceof Error ? e.message : String(e)}` }, 502);
+    }
+  }
+  if (req.method === "POST" && p === "/api/orchestrator/event") {
+    // A worker report from another instance (its run-finished hook), delivered to the orchestrator here.
+    if (typeof body.text !== "string") return json({ error: "text required" }, 400);
+    await orchestrator.deliverReport(cfg, body.text, typeof body.key === "string" ? body.key : undefined);
+    return json({ ok: true });
+  }
   if (req.method === "GET" && p === "/api/orchestrator") return json(await orchestrator.status(cfg));
   if (req.method === "POST" && p === "/api/orchestrator/model") {
     try { await orchestrator.setModel(body.model); } catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 400); }
@@ -227,7 +256,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     ? { name: ORCHESTRATOR_REPO, repoPath: orchestrator.dir(), worktreeRoot: orchestrator.dir(), baseBranch: "", previewServices: [] }
     : repoOf(cfg, repoName);
   // A repo this instance doesn't run is handled by the instance that does.
-  const forwarded = await forwardToOwner(req, url, repo, cfg);
+  const forwarded = await forwardToOwner(req, url, repo, cfg, body);
   if (forwarded) return forwarded;
 
   if (req.method === "POST" && p === "/api/compact") {
@@ -280,7 +309,30 @@ async function api(req: Request, url: URL): Promise<Response> {
     const agentProviders = available;
     // apiPort lets the browser open the terminal WebSocket straight at the bridge — the Vite dev proxy
     // (Bun runtime) can't forward a WS upgrade. In the built app this equals the page's own port.
-    return json({ repos, staleHours: cfg.staleHours, agentProviders, apiPort: API_PORT });
+    // This instance's name and the others', so the New-draft box can place a workstream and a card
+    // can say where it lives. `runsOn` is each repo's default placement.
+    return json({
+      repos: repos.map((r, i) => ({ ...r, runsOn: cfg.repos[i]!.runsOn })),
+      staleHours: cfg.staleHours, agentProviders, apiPort: API_PORT,
+      instance: db.instanceName(), instances: Object.keys(cfg.instances ?? {}),
+    });
+  }
+  // The orchestrator's verbs over HTTP, so an orchestrator on one instance can spawn / send /
+  // address on another: these go through the same placement forwarding as every repo route.
+  if (req.method === "POST" && p === "/api/workstreams/spawn") {
+    const ws = await verbs.createWorkstream(cfg, repo, { prompt: String(body.prompt ?? ""), title: body.title, model: body.model, fields: { orchestrated: true } });
+    return json({ ...ws, instance: db.instanceName() });
+  }
+  if (req.method === "POST" && p === "/api/workstreams/followup") {
+    if (typeof body.model === "string") await db.patchEnrichment(repo.name, String(body.branch), { preferredModel: body.model, preferredProvider: providerOfModel(body.model) });
+    const r = await verbs.followUp(cfg, repo, String(body.branch), { instruction: String(body.instruction ?? "") });
+    await db.patchEnrichment(repo.name, String(body.branch), { orchestrated: true });
+    return json({ ...r, instance: db.instanceName() });
+  }
+  if (req.method === "POST" && p === "/api/workstreams/address") {
+    const r = await verbs.addressPr(cfg, repo, String(body.branch));
+    await db.patchEnrichment(repo.name, String(body.branch), { orchestrated: true });
+    return json({ ...r, instance: db.instanceName() });
   }
   if (req.method === "POST" && p === "/api/workstreams") {
     // The selected provider summarises the prompt into a short title (falls back locally); jitter suffix
@@ -290,7 +342,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
     const title = (featuresOf(repo).aiTitles ? await agent.summarize(provider, body.prompt) : undefined)
       ?? titleFromPrompt(body.prompt);
-    return json({ ...(await newWorktree(repo, title)), title });
+    return json({ ...(await newWorktree(repo, title)), title, instance: db.instanceName() });
   }
   if (req.method === "GET" && p === "/api/summary") {
     const wt = url.searchParams.get("worktree");
@@ -450,7 +502,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     // rather than making the whole board slow or empty.
     countAgentPoll();
     const instance = db.instanceName();
-    if (!runsHere(repo, instance)) return json(await foreignInventory(repo.name));
+    if (!verbs.repoHere(repo)) return json(await foreignInventory(repo.name)); // not checked out here: only what others see
     let wts = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
     // Reap worktrees whose PR has merged (incl. manual GitHub merges) so stale locals don't linger.
     // Reap worktrees whose PR is done with — merged (branch deleted) or closed unmerged (branch kept,

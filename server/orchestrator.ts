@@ -171,6 +171,21 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
     repo, branch, title: e.title as string | undefined, runId: run.runId, status: run.status,
     outcome: run.structured, response: run.result, check: run.check,
   });
+  // The orchestrator lives on ONE instance: a report from another is posted there, so one process
+  // wakes it (two resuming the same session at once was the "one message behind" bug).
+  const host = cfg.orchestratorOn;
+  if (host && host !== db.instanceName()) {
+    const base = cfg.instances?.[host];
+    if (!base) { console.error(`orca: orchestratorOn "${host}" has no address; report dropped`); return; }
+    await fetch(new URL("/api/orchestrator/event", base), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, key: run.key }) })
+      .catch((e) => console.error("orca: could not deliver a worker report to the orchestrator's instance", e));
+    return;
+  }
+  await deliverReport(cfg, text, run.key);
+}
+
+/** Deliver a worker's report by the management-by-exception rules, from this or another instance. */
+export async function deliverReport(cfg: OrcaConfig, text: string, key?: string): Promise<void> {
   // Management by exception. A manager is interrupted for a problem, not for every completion: a
   // worker that failed, was stopped, or whose commit failed Orca's check wakes the orchestrator now.
   // A clean finish is queued and delivered when the batch is done — the last of its running
@@ -179,7 +194,7 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   const exception = isWorkerProblem(text);
   await serial(async () => {
     const wakes = (await blob()).wakes ?? 0;
-    const othersRunning = !exception && await workersRunning(cfg, run.key);
+    const othersRunning = !exception && await workersRunning(cfg, key);
     // Held, not dropped: a paused orchestrator hears about it with your next message.
     if (agent.isRunning(dir()) || wakes >= MAX_WAKES || othersRunning) return void (await enqueue(text));
     await patch({ wakes: wakes + 1 });
@@ -302,28 +317,49 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
  *  finished before a bridge restart — `orca read` still has it. Join the turn table if that bites. */
 export async function board(cfg: OrcaConfig): Promise<BoardRow[]> {
   const rows: BoardRow[] = [];
-  for (const repo of cfg.repos.filter((r) => runsHere(r, db.instanceName()))) {
-    const [worktrees, prs, enrichment] = await Promise.all([
-      git.listWorktrees(repo.repoPath, repo.worktreeRoot).catch(() => []),
-      gh.listPrs(repo.repoPath).catch(() => []), // a local-only repo has no PRs
+  const here = db.instanceName();
+  const several = Object.keys(cfg.instances ?? {}).length > 0;
+  for (const repo of cfg.repos) {
+    const local = verbs.repoHere(repo);
+    const [worktrees, prs, enrichment, inventory] = await Promise.all([
+      local ? git.listWorktrees(repo.repoPath, repo.worktreeRoot).catch(() => []) : Promise.resolve([]),
+      local ? gh.listPrs(repo.repoPath).catch(() => []) : Promise.resolve([]), // a local-only repo has no PRs
       db.enrichment(repo.name),
+      db.inventory(repo.name).catch(() => []),
     ]);
     const paths = new Map(worktrees.map((w) => [w.branch, w.worktreePath]));
-    for (const branch of new Set([...paths.keys(), ...prs.map((p) => p.branch)])) {
+    // Other instances' worktrees, as they last published them (newest sighting per branch).
+    const elsewhere = new Map<string, { instance: string; data: db.Fields }>();
+    for (const r of inventory) if (r.instance !== here && !paths.has(r.branch) && !elsewhere.has(r.branch)) elsewhere.set(r.branch, { instance: r.instance, data: r.data });
+    for (const branch of new Set([...paths.keys(), ...elsewhere.keys(), ...prs.map((p) => p.branch)])) {
       const worktreePath = paths.get(branch);
+      const remote = elsewhere.get(branch);
       const pr = prs.find((p) => p.branch === branch);
       const run = worktreePath ? agent.status(worktreePath) : undefined;
       const e = enrichment[branch] ?? {};
       rows.push({
-        repo: repo.name, branch, title: pr?.title ?? (e.title as string | undefined), worktreePath,
-        agent: worktreePath && agent.isRunning(worktreePath) ? "running" : run?.status ?? "idle",
+        repo: repo.name, branch, title: pr?.title ?? (e.title as string | undefined), worktreePath: worktreePath ?? (remote?.data.worktreePath as string | undefined),
+        agent: worktreePath ? (agent.isRunning(worktreePath) ? "running" : run?.status ?? "idle") : ((remote?.data.agentStatus as string | undefined) ?? "idle"),
         pr: pr && { number: pr.number, isDraft: pr.isDraft, reviewStatus: pr.reviewStatus, ciStatus: pr.ciStatus, mergeable: pr.mergeable },
-        check: run?.check?.ok, orchestrated: Boolean(e.orchestrated),
-        last: run?.structured?.outcome ?? run?.error,
+        check: run?.check?.ok ?? ((remote?.data.agentCheck as { ok?: boolean } | undefined)?.ok), orchestrated: Boolean(e.orchestrated),
+        last: run?.structured?.outcome ?? run?.error ?? ((remote?.data.agentOutcome as { outcome?: string } | undefined)?.outcome),
+        instance: several ? (remote?.instance ?? (worktreePath ? here : undefined)) : undefined,
       });
     }
   }
   return rows;
+}
+
+/** Call one of this bridge's own verb routes on another instance (the orchestrator lives on one
+ *  machine; a workstream may live on another). The body names the repo and branch, so the far
+ *  instance's own placement forwarding would even bounce it on again if it had moved. */
+async function viaInstance(cfg: OrcaConfig, instance: string, path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const base = cfg.instances?.[instance];
+  if (!base) throw new Error(`"${instance}" is not a configured instance (instances: ${Object.keys(cfg.instances ?? {}).join(", ") || "none"})`);
+  const res = await fetch(new URL(path, base), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!res.ok) throw new Error(String(data.error ?? `${instance} answered ${res.status}`));
+  return data;
 }
 
 // ---- the `orca` command ----
@@ -336,9 +372,7 @@ const turnStatus = (t: AgentTurn) => (!t.finishedAt ? "running" : t.failed ? "fa
 function repoNamed(cfg: OrcaConfig, name: unknown): RepoConfig {
   const repo = cfg.repos.find((r) => r.name === name);
   if (!repo) throw new Error(`--repo must be one of: ${cfg.repos.map((r) => r.name).join(", ")}`);
-  // ponytail: no forwarding — the orchestrator acts on the repos its own instance runs.
-  if (!runsHere(repo, db.instanceName())) throw new Error(`${repo.name} runs on another instance (${repo.runsOn}); this orchestrator cannot act on it`);
-  return repo;
+  return repo; // a repo may live on any instance; each verb finds the workstream's home (viaInstance)
 }
 const required = (args: ToolArgs, key: string): string => {
   const v = args[key];
@@ -362,11 +396,14 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       if (typeof args.model !== "string" || !providerOfModel(args.model)) {
         throw new Error(`--model is required (${args.model ? `"${args.model}" is not a model` : "choose from the ladder"}): ${MODEL_LADDER.map((m) => m.id).join(", ")}`);
       }
-      const ws = await verbs.createWorkstream(cfg, repo, {
-        prompt: workerBrief(brief), title: typeof args.title === "string" ? args.title : undefined,
-        model: typeof args.model === "string" ? args.model : undefined, fields: { orchestrated: true },
-      });
-      return `Spawned ${repo.name}/${ws.branch} "${ws.title}". End your turn; you are woken when it finishes.`;
+      const on = typeof args.on === "string" && args.on ? args.on : (repo.runsOn ?? db.instanceName());
+      const title = typeof args.title === "string" ? args.title : undefined;
+      if (on !== db.instanceName()) {
+        const ws = await viaInstance(cfg, on, "/api/workstreams/spawn", { repo: repo.name, prompt: workerBrief(brief), title, model: args.model });
+        return `Spawned ${repo.name}/${ws.branch} "${ws.title}" on ${on}. End your turn; you are woken when it finishes.`;
+      }
+      const ws = await verbs.createWorkstream(cfg, repo, { prompt: workerBrief(brief), title, model: String(args.model), fields: { orchestrated: true } });
+      return `Spawned ${repo.name}/${ws.branch} "${ws.title}"${cfg.instances ? ` on ${on}` : ""}. End your turn; you are woken when it finishes.`;
     }
     case "send": {
       const repo = repoNamed(cfg, args.repo);
@@ -380,14 +417,20 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         if (!provider) throw new Error(`unknown model "${args.model}"`);
         await db.patchEnrichment(repo.name, branch, { preferredModel: args.model, preferredProvider: provider });
       }
-      const { status } = await verbs.followUp(cfg, repo, branch, { instruction: text });
+      const home = await verbs.placement(repo, { branch });
+      const { status } = home !== db.instanceName()
+        ? (await viaInstance(cfg, home, "/api/workstreams/followup", { repo: repo.name, branch, instruction: text }) as { status: string })
+        : await verbs.followUp(cfg, repo, branch, { instruction: text });
       await db.patchEnrichment(repo.name, branch, { orchestrated: true }); // now yours to hear back from
       return status === "queued" ? "Queued behind the run in flight; it is sent when that finishes." : `Sent to ${repo.name}/${branch}. End your turn; you are woken when it finishes.`;
     }
     case "address": {
       const repo = repoNamed(cfg, args.repo);
       const branch = required(args, "branch");
-      const { status, pr } = await verbs.addressPr(cfg, repo, branch);
+      const home = await verbs.placement(repo, { branch });
+      const { status, pr } = home !== db.instanceName()
+        ? (await viaInstance(cfg, home, "/api/workstreams/address", { repo: repo.name, branch }) as { status: string; pr: number })
+        : await verbs.addressPr(cfg, repo, branch);
       await db.patchEnrichment(repo.name, branch, { orchestrated: true });
       return `${status === "queued" ? "Queued" : "Started"} Address PR for #${pr}. End your turn; you are woken when it finishes.`;
     }

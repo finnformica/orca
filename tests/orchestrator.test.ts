@@ -684,3 +684,29 @@ test("O20: archive refuses a branch this orchestrator isn't responsible for", as
   expect(await db.enrichment("r")).toHaveProperty(branch); // left untouched
   await expect(orchestrator.tool(cfg(), "archive", { repo: "r" })).rejects.toThrow("--branch is required");
 });
+
+test("O21: placement — explicit instance, then the worktree's home from the inventory, then the repo's default, then here", async () => {
+  const repoCfg = cfg().repos[0]!;
+  expect(await verbs.placement(repoCfg, {})).toBe(db.instanceName()); // single machine: here
+  expect(await verbs.placement({ ...repoCfg, runsOn: "cloud" }, {})).toBe("cloud"); // the repo's default
+  expect(await verbs.placement({ ...repoCfg, runsOn: "cloud" }, { instance: "laptop" })).toBe("laptop"); // asked for
+  // A worktree another instance published is that instance's, whatever the default says.
+  const sql = await db.open();
+  await sql`INSERT INTO worktree_inventory (user_id, instance, repo, branch, data, seen_at) VALUES (${db.currentUser()}, 'cloud', 'r', 'feat', ${{ worktreePath: "/wt/feat" }}, ${Date.now()})`;
+  expect(await verbs.placement(repoCfg, { branch: "feat" })).toBe("cloud"); // (the test process is instance "laptop")
+  expect(await verbs.placement(repoCfg, { worktreePath: "/wt/feat" })).toBe("cloud");
+  expect(await verbs.placement(repoCfg, { key: "/wt/feat" })).toBe("cloud");
+  expect(await verbs.placement({ ...repoCfg, runsOn: "cloud" }, { branch: "other" })).toBe("cloud");
+
+  // The orchestrator's board names each workstream's instance once there is more than one, and
+  // spawn --on refuses an instance that has no address.
+  const two = { ...cfg(), instances: { cloud: "http://127.0.0.1:1" } };
+  const rows = await orchestrator.board(two);
+  expect(rows.find((r) => r.branch === "feat")).toMatchObject({ instance: "cloud", worktreePath: "/wt/feat" });
+  expect(boardText(rows)).toContain("r/feat | no PR | agent:idle | on:cloud");
+  await expect(orchestrator.tool(two, "spawn", { ...brief, on: "mars" })).rejects.toThrow('"mars" is not a configured instance');
+  await expect(orchestrator.tool(two, "spawn", { ...brief, on: "cloud" })).rejects.toThrow(/cloud answered|Unable to connect|fetch/i); // the address is dead, not a silent local spawn
+  expect(await db.enrichment("r")).toEqual({});
+  // A send to a workstream living elsewhere goes there too.
+  await expect(orchestrator.tool(two, "send", { repo: "r", branch: "feat", _: ["hi"] })).rejects.toThrow(/cloud answered|Unable to connect|fetch/i);
+});
