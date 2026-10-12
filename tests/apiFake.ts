@@ -44,7 +44,7 @@ export const apiFake = {
   // Prompts passed to the agent APIs (active-following fires agent actions through them) — tests assert
   // which action ran by matching the prompt text.
   claudePrompts: [] as string[],
-  agentLaunches: [] as { key: string; prompt: string; provider: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider; model?: string }[],
+  agentLaunches: [] as { key: string; prompt: string; provider: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider; model?: string; instance?: string }[],
   handoffs: [] as { branch: string; content: string }[],
   slackSends: [] as { repo: string; text: string }[],
   slackPosted: true, // when false, api.slack throws (post failed) → the client copies the message
@@ -53,6 +53,7 @@ export const apiFake = {
   suggestTitleCalls: [] as { provider: AgentProvider; prompt?: string; pr?: number; branch?: string; worktreePath?: string }[],
   renames: [] as { branch: string; title: string; pr?: number }[],
   titleProviders: [] as AgentProvider[],
+  createWorktreeCalls: [] as { repo: string; instance?: string }[],
   promotions: [] as { provider: AgentProvider; task?: string; sessionId?: string; outcome?: AgentOutcome; body?: string }[],
   reviewEvidenceData: [] as ReviewThreadEvidence[],
   prCommentsData: [] as ConversationComment[],
@@ -92,12 +93,13 @@ export const apiFake = {
     profiles?: { name: string; usage: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: null; fable?: { utilization: number; resetsAt: string | null } | null }; state?: string; email?: string }[];
     routing?: { hydra: boolean; shim: boolean; bin?: string };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
 };
 
 mock.module("@/api", () => ({
   api: {
-    config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24, agentProviders: ["claude", "codex", "cursor"], apiPort: 8787 }),
+    // Two instances, so the New-draft "run on" picker and the cards' instance chip render in tests.
+    config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24, agentProviders: ["claude", "codex", "cursor"], apiPort: 8787, instance: "laptop", instances: ["cloud"] }),
     usage: async () => apiFake.usageData,
     agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
     prs: async () => {
@@ -121,12 +123,13 @@ mock.module("@/api", () => ({
     promote: async (_repo: string, input: { provider: AgentProvider; task?: string; sessionId?: string; outcome?: AgentOutcome; body?: string }) => {
       apiFake.promotions.push(input); return { number: 42, url: "https://example.test/42" };
     },
-    createWorktree: (_repo: string, _prompt: string, provider: AgentProvider = "claude") => {
+    createWorktree: (_repo: string, _prompt: string, provider: AgentProvider = "claude", instance?: string) => {
       apiFake.titleProviders.push(provider);
+      apiFake.createWorktreeCalls.push({ repo: _repo, instance });
       return new Promise((resolve) => { apiFake.pending = (v) => { apiFake.worktrees.set(v.branch, { branch: v.branch, worktreePath: v.worktreePath }); resolve(v); }; });
     },
-    runAgent: async (_worktree: string, prompt: string, provider: AgentProvider = "claude", options: { model?: string } = {}) => {
-      apiFake.calls.push("runAgent"); apiFake.agentLaunches.push({ key: _worktree, prompt, provider, model: options.model }); return { status: "ok" };
+    runAgent: async (_worktree: string, prompt: string, provider: AgentProvider = "claude", options: { model?: string; instance?: string } = {}) => {
+      apiFake.calls.push("runAgent"); apiFake.agentLaunches.push({ key: _worktree, prompt, provider, model: options.model, instance: options.instance }); return { status: "ok" };
     },
     uploadAttachments: async () => [],
     discardWorktree: async (_repo: string, _wt: string, branch?: string) => {

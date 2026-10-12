@@ -122,6 +122,10 @@ export type OrcaConfig = {
    *  re-reads its whole history, so the cap can bite after a tool call or two; a wake that hits it
    *  says so in the chat and its message is retried. Workers are capped per repo (`agentMaxBudgetUsd`). */
   orchestratorWakeBudgetUsd?: number;
+  /** Which instance the orchestrator lives on, when there are several sharing the database. Its
+   *  routes are forwarded there and worker reports from other instances are posted there, so ONE
+   *  process wakes it (two would resume one session at once). Unset: wherever it is spoken to. */
+  orchestratorOn?: string;
 };
 
 /** The model a repo's Claude runs use: its own pin, else the global default, else the CLI's. Pure. */
@@ -237,6 +241,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
   if (d.agentModel !== undefined && (typeof d.agentModel !== "string" || !d.agentModel.trim())) {
     errors.push("agentModel must be a model id such as claude-fable-5-1");
   }
+  if (d.orchestratorOn !== undefined && (typeof d.orchestratorOn !== "string" || !d.orchestratorOn.trim())) {
+    errors.push("orchestratorOn must be an instance name");
+  }
   if (d.orchestratorShell !== undefined && typeof d.orchestratorShell !== "boolean") {
     errors.push("orchestratorShell must be true or false");
   }
@@ -255,6 +262,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       instances: d.instances as Record<string, string> | undefined,
       orchestratorShell: d.orchestratorShell as boolean | undefined,
       orchestratorWakeBudgetUsd: d.orchestratorWakeBudgetUsd as number | undefined,
+      orchestratorOn: d.orchestratorOn as string | undefined,
     },
   };
 }
@@ -310,6 +318,7 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
       ...(file.agentModel === undefined ? {} : { agentModel: file.agentModel }),
       ...(file.orchestratorShell === undefined ? {} : { orchestratorShell: file.orchestratorShell }),
       ...(file.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: file.orchestratorWakeBudgetUsd }),
+      ...(file.orchestratorOn === undefined ? {} : { orchestratorOn: file.orchestratorOn }),
     },
   });
 }
@@ -338,6 +347,7 @@ export async function loadConfig(): Promise<OrcaConfig> {
     instances: app.instances as Record<string, string> | undefined,
     orchestratorShell: app.orchestratorShell !== false,
     orchestratorWakeBudgetUsd: app.orchestratorWakeBudgetUsd as number | undefined,
+    orchestratorOn: app.orchestratorOn as string | undefined,
   };
   cached = config;
   return config;
@@ -363,6 +373,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.instances === undefined ? {} : { instances: config.instances }),
       ...(config.orchestratorShell === undefined ? {} : { orchestratorShell: config.orchestratorShell }),
       ...(config.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: config.orchestratorWakeBudgetUsd }),
+      ...(config.orchestratorOn === undefined ? {} : { orchestratorOn: config.orchestratorOn }),
     },
   });
   invalidateConfig();
@@ -402,9 +413,9 @@ export function providerAllowed(repo: RepoConfig, provider: AgentProvider): bool
 }
 
 
-/** Does THIS instance execute this repo? Absent `runsOn` means yes — one machine, today's
- *  behaviour. Reads are never gated by this: you can see a repo another machine runs, you just
- *  don't act on it here. */
+/** Is THIS instance the repo's DEFAULT home — where a new workstream goes unless placed elsewhere?
+ *  Absent `runsOn` means yes. A repo may be checked out on several instances; a workstream lives on
+ *  the one holding its worktree (verbs.placement), whatever the default. */
 export function runsHere(repo: RepoConfig, instance: string): boolean {
   return !repo.runsOn || repo.runsOn === instance;
 }
