@@ -17,7 +17,7 @@ const { InstanceCard } = await import("@/views/Vitals");
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const flush = () => new Promise((r) => setTimeout(r, 0));
 let root: Root | undefined; let container: HTMLElement | undefined;
-afterEach(async () => { await act(async () => { root?.unmount(); }); container?.remove(); apiFake.reset(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container?.remove(); apiFake.reset(); localStorage.clear(); });
 
 async function render(node: React.ReactNode) {
   container = document.createElement("div"); document.body.appendChild(container);
@@ -64,6 +64,33 @@ test("CPU and memory as line graphs from the last 24h, labelled with the newest 
   await act(async () => { range("7d").dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
   expect(apiFake.healthHistoryCalls.at(-1)).toEqual({ instance: "cloud", hours: 168 });
   expect(range("7d").getAttribute("aria-pressed")).toBe("true");
+});
+
+test("each machine's range is remembered per machine across a reload; bad JSON or an unknown range falls back to 24h", async () => {
+  const range = (label: string) => [...container!.querySelectorAll('[role="group"][aria-label="Range"] button')].find((b) => b.textContent === label)!;
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  expect(range("24h").getAttribute("aria-pressed")).toBe("true"); // default when nothing is saved
+  await act(async () => { range("6h").dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
+  expect(localStorage.getItem("orca.ui.v1.instanceRange:cloud")).toBe("6");
+  // A reload: the remount restores 6h and fetches it straight away.
+  await act(async () => { root?.unmount(); }); container?.remove(); apiFake.healthHistoryCalls.length = 0;
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  expect(range("6h").getAttribute("aria-pressed")).toBe("true");
+  expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 6 }]);
+  // Another machine keeps its own choice.
+  await act(async () => { root?.unmount(); }); container?.remove();
+  await render(<InstanceCard instance="laptop" here={false} />);
+  await ready();
+  expect(range("24h").getAttribute("aria-pressed")).toBe("true");
+  for (const bad of ["{nope", "13", '"6"']) {
+    await act(async () => { root?.unmount(); }); container?.remove();
+    localStorage.setItem("orca.ui.v1.instanceRange:cloud", bad);
+    await render(<InstanceCard instance="cloud" here={false} />);
+    await ready();
+    expect(range("24h").getAttribute("aria-pressed")).toBe("true");
+  }
 });
 
 test("no history yet says so instead of an empty chart", async () => {

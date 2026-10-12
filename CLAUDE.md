@@ -192,7 +192,7 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   (`attentionReasons`): check failed, conflicts, CI red, changes requested, a run error or stop, or a
   message held behind a run that isn't coming (`/api/agents` attaches each branch's undispatched
   count, `db.queuedCounts`). The Usage card's per-login breakdown is a remembered toggle (the
-  chevron at its foot or its header row, `orca.usageExpanded`). The first cut's
+  chevron at its foot or its header row, `orca.ui.v1.usageExpanded`); each machine card's range is remembered per machine (`orca.ui.v1.instanceRange:<instance>`). The first cut's
   separate Awaiting-you tiles were dropped as redundant. **Loading states are skeletons, not text**:
   the Agents card's four stat tiles (`StatSkeleton`), the Usage card's rows (`RowSkeleton`) and each
   machine's CPU/memory graphs (`ChartSkeleton`, `components/console.tsx`) render placeholders sized
@@ -216,7 +216,7 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   logBar`: turn / error / warning counters, Find in chat, timestamped, tinted turns, the composer).
 - **Repos**, **Usage** (every login, every machine) and **Settings** (theme, density, the
   read-only config). The Usage page's whole "Current windows" card is ITSELF collapsible — starts
-  collapsed, remembered (`orca.usageStatsExpanded`), independent of the Overview card's per-login
+  collapsed, remembered (`orca.ui.v1.usageStatsExpanded`), independent of the Overview card's per-login
   toggle above — since someone visiting `/usage` to read one number shouldn't have to scroll past
   every hydra login first.
 Every number is a pure derivation over the assembled rows (`workstream.ts`: `overviewStats`,

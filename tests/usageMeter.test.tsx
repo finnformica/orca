@@ -10,7 +10,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { aggregateProfiles, App, mergeUsage, untilReset } from "@/App";
 import { navigate } from "@/lib/route";
-import { getDefaultStore } from "jotai";
+import { createStore, getDefaultStore } from "jotai";
 import { usageExpandedAtom, usageStatsExpandedAtom } from "@/lib/atoms";
 import { shapeCodexUsage, shapeUsage } from "../server/usage";
 
@@ -244,14 +244,14 @@ test("the card collapses again: Vercel's chevron and the header row both toggle,
   expect(group("login:work")).not.toBeNull();
   expect(toggle().textContent).toContain("Show less");
   expect(header().getAttribute("aria-expanded")).toBe("true");
-  expect(localStorage.getItem("orca.usageExpanded")).toBe("true");
+  expect(localStorage.getItem("orca.ui.v1.usageExpanded")).toBe("true");
   // …and a remount (a reload) keeps it open.
   act(() => root?.unmount()); container?.remove();
   await mount();
   expect(group("login:work")).not.toBeNull();
   await click(toggle()); // the chevron closes it too
   expect(group("login:work")).toBeNull();
-  expect(localStorage.getItem("orca.usageExpanded")).toBe("false");
+  expect(localStorage.getItem("orca.ui.v1.usageExpanded")).toBe("false");
   await click(header()); // and the header row toggles it, as on Vercel
   expect(group("login:home")).not.toBeNull();
   await click(header());
@@ -266,7 +266,7 @@ test("the card collapses again: Vercel's chevron and the header row both toggle,
   await click(header());
   expect(group("login:work")).not.toBeNull();
   expect(card().querySelector("[data-slot='usage-toggle']")).toBeNull();
-  expect(localStorage.getItem("orca.usageStatsExpanded")).toBe("true");
+  expect(localStorage.getItem("orca.ui.v1.usageStatsExpanded")).toBe("true");
   // …and a remount (a reload) keeps it open.
   act(() => root?.unmount()); container?.remove();
   await mount("/usage");
@@ -281,4 +281,20 @@ test("the Usage page's card starts collapsed even with no hydra logins — just 
   expect(header().getAttribute("aria-expanded")).toBe("false");
   await act(async () => { header().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   expect(rows("claude")).toEqual(["5-hour window 38% / 100%", "Weekly 55% / 100%"]);
+});
+
+test("the two usage toggles read back on a reload: default collapsed, bad JSON falls back, a pre-v1 choice carries over", () => {
+  // A fresh jotai store is a reload: mounting the atoms reads localStorage.
+  const reload = () => { const s = createStore(); s.sub(usageExpandedAtom, () => {}); s.sub(usageStatsExpandedAtom, () => {}); return s; };
+  expect(reload().get(usageExpandedAtom)).toBe(false);
+  expect(reload().get(usageStatsExpandedAtom)).toBe(false);
+  localStorage.setItem("orca.ui.v1.usageStatsExpanded", "true");
+  expect(reload().get(usageStatsExpandedAtom)).toBe(true);
+  localStorage.setItem("orca.ui.v1.usageStatsExpanded", "{not json");
+  expect(reload().get(usageStatsExpandedAtom)).toBe(false);
+  localStorage.setItem("orca.ui.v1.usageExpanded", '"yes"'); // the wrong shape
+  expect(reload().get(usageExpandedAtom)).toBe(false);
+  localStorage.clear();
+  localStorage.setItem("orca.usageExpanded", "true"); // saved before the versioned key existed
+  expect(reload().get(usageExpandedAtom)).toBe(true);
 });

@@ -3,18 +3,18 @@
 // per machine, its current vitals as a details grid and CPU % / memory GB as line graphs over a
 // chosen range from /api/health/history. Both read the shared polls in lib/vitals, so the Overview
 // and the Usage page never poll twice.
-import { useState } from "react";
 import { useAtom } from "jotai";
 import { AlertTriangle, ChevronDown, ChevronUp, Server } from "lucide-react";
 import { usageExpandedAtom, usageStatsExpandedAtom } from "@/lib/atoms";
+import { persistedKey, usePersisted } from "@/lib/persisted";
 import { useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
 import { HISTORY_RANGES, downsample, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, RowSkeleton, Segmented, StatusDot, VCard, type ChartOverlay } from "@/components/console";
 
 /** `all`: the Usage page — every login (never just the fleet), and the whole card is itself
- *  collapsible (starts collapsed, remembered — `orca.usageStatsExpanded`). On the Overview the card
+ *  collapsible (starts collapsed, remembered — `orca.ui.v1.usageStatsExpanded`). On the Overview the card
  *  is always open, and Vercel's chevron (or the header row) toggles the per-login breakdown instead
- *  (`orca.usageExpanded`) — the two toggles are independent, since they collapse different things. */
+ *  (`orca.ui.v1.usageExpanded`) — the two toggles are independent, since they collapse different things. */
 export function UsageCard({ all = false }: { all?: boolean }) {
   const usage = useUsage();
   const loaded = useUsageLoaded();
@@ -82,11 +82,14 @@ function UsageGroupRows({ group: g }: { group: UsageGroup }) {
   );
 }
 
+const isRange = (v: unknown): v is number => HISTORY_RANGES.some((r) => r.hours === v);
+
 const fmtUptime = (s: number) => (s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
 
 /** One machine. `here`: the instance answering this page (its health needs no `?instance=`). */
 export function InstanceCard({ instance, here }: { instance: string; here: boolean }) {
-  const [hours, setHours] = useState<number>(24);
+  // The range is remembered per machine (`orca.ui.v1.instanceRange:<instance>`).
+  const [hours, setHours] = usePersisted<number>(persistedKey("instanceRange", instance), 24, isRange);
   const reading = useHealth(here ? undefined : instance);
   const history = useHealthHistory(instance, hours);
   const h = reading?.health;
