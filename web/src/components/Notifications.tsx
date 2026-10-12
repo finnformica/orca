@@ -1,17 +1,17 @@
-// The notification centre's two surfaces, in Geist: the toast stack in the bottom-right corner
-// (above the orchestrator's launcher) and the bell at the sidebar's foot that opens the centre — a
+// The notification centre's two surfaces, in Geist: the toast stack in the bottom-right corner and
+// the bell at the sidebar's foot that opens the centre — a
 // popover listing every notification by day. Modelled on branch-demo's inbox toasts (a stack that
 // collapses with a count, Clear all, per-toast dismiss) but flat and restyled: hairlines, 8px cards,
 // the menu shadow only, black/white primary, blue accent. The decisions (what pops, what persists,
 // the stack's cut) are pure in shared/notifications.ts; the state is lib/notificationStore.ts.
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { useAtom } from "jotai";
+import { useAtom, useSetAtom } from "jotai";
 import {
   AlertTriangle, Bell, BellOff, Check, CheckCheck, CircleX, GitPullRequestArrow, MessageCircleQuestion, MonitorCheck, MonitorX, OctagonPause, ShieldX, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
-import { notifyDndAtom } from "@/lib/atoms";
+import { notifyDndAtom, orchestratorOpenAtom } from "@/lib/atoms";
 import { clearToasts, dismiss, dismissToast, markRead, start, useNotifications } from "@/lib/notificationStore";
 import { groupByDay, KIND_META, NOTIFICATION_KINDS, notificationPath, toastStack, unreadCount, type Notification, type NotificationKind } from "../../../shared/notifications";
 import { useWorkstreams } from "../store";
@@ -34,9 +34,10 @@ const KindIcon = ({ kind, className }: { kind: NotificationKind; className?: str
 /** Where a notification opens, resolved against the live rows (its PR page once it has a PR). */
 function useOpener() {
   const rows = useWorkstreams();
+  const openOrchestrator = useSetAtom(orchestratorOpenAtom);
   return (n: Notification) => {
     void markRead([n.id]);
-    if (n.link?.orchestrator) return void window.dispatchEvent(new Event("orca:open-orchestrator"));
+    if (n.link?.orchestrator) return void openOrchestrator(true);
     if (n.link?.url) return void window.open(n.link.url, "_blank", "noopener");
     const row = rows.find((r) => r.repo === n.repo && r.branch === n.branch);
     const path = notificationPath(n, row ? detailPath(row) : undefined);
@@ -46,7 +47,8 @@ function useOpener() {
 
 // ---- the toast stack ----
 
-/** Bottom-right, above the orchestrator's launcher. Newest on top; more than one collapses to the
+/** Bottom-right (the orchestrator's window, when open, paints over it — it is what you are looking
+ *  at then, and the bell keeps the count). Newest on top; more than one collapses to the
  *  top few with a count bar (hover or click expands); Clear all; a toast for a finished run or a
  *  ready preview hides itself, a problem or a question stays until dismissed. */
 export function ToastHost() {
@@ -59,7 +61,7 @@ export function ToastHost() {
   if (!toasts.length) return null;
   return (
     <div data-slot="toast-host" data-expanded={expanded || undefined} role="region" aria-label="Notifications"
-      className="fixed right-4 bottom-20 z-40 flex w-[22rem] max-w-[calc(100vw-2rem)] flex-col items-stretch gap-2"
+      className="fixed right-4 bottom-4 z-40 flex w-[22rem] max-w-[calc(100vw-2rem)] flex-col items-stretch gap-2"
       onMouseEnter={() => setExpanded(true)} onMouseLeave={() => setExpanded(false)}>
       {stack.visible.map((n, i) => (stack.collapsed && i > 0
         ? <div key={n.id} data-slot="toast-peek" aria-hidden="true" className={cn("bg-card -mt-1 h-1.5 rounded-b-lg border border-t-0", i === 1 ? "mx-2" : "mx-4")} />

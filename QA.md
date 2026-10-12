@@ -78,6 +78,50 @@ adapters or routes.
 - With two instances: finish a run on the box ✅ the laptop's tab pops it once (no duplicate after a
   bridge restart on the box while the run was in flight).
 
+## S — shortcuts, palette, Ask the orchestrator
+
+Automated in `tests/shortcuts.test.tsx` (S1–S5); by hand, in a real browser on Mac and non-Mac:
+
+- `⌘K` (Ctrl+K) → ✅ the palette opens, even with the caret in a composer; `⌘K` again closes it.
+  Type part of a workstream title, `#<pr>`, `usage`, `new` → ✅ the best match is first; ↑/↓ wrap,
+  Enter runs it. Reopen → ✅ what you ran leads under **Recent**. On an agent page → ✅ **Start
+  preview: …** starts that branch's preview and lands on its Preview tab.
+- Outside a field: `C` → New agent, `O` → the orchestrator with its composer focused, `F` → Find,
+  `⌘B` → the sidebar collapses (reload: ✅ still collapsed), `?` → the shortcuts sheet, Esc → closes
+  whichever is open. The browser's own `⌘B` / Downloads never fires.
+- In the Find box or any composer, type `c`, `o`, `f`, `?` → ✅ they're just text.
+- Top bar, every page: **Ask the orchestrator**. Click → ✅ the window opens focused. Type "what is
+  running?" into it → ✅ the window opens with that text after any earlier draft, caret at the end,
+  nothing sent. Pop the window out (Chrome/Edge), then ask from the top bar → ✅ the text lands in
+  the PiP window.
+- Tooltips show the keys: Add New (C), Collapse sidebar (⌘B / Ctrl+B), Ask the orchestrator (O).
+
+## Agents list — condensed row, right-click, live timer
+
+Open **Agents** (List view) with a few workstreams, at least one running and one with a PR.
+
+- ✅ Header reads Workstream · Status · PR · Checks & review · (Instance, with two instances) ·
+  Updated. No branch / latest-instruction / model-avatar columns; hovering a title shows the latest
+  instruction and the branch.
+- Resize the window to **1280px** wide with the sidebar expanded (then 1440, 1920). ✅ No horizontal
+  scrollbar on the list; long titles and errors truncate with an ellipsis and show in full on hover.
+- ✅ The subline under the title reads `repo · Opus 5.5` (a readable model name, never `O5` / `CF`);
+  hovering it says which model the last run used and, if re-pinned, the next one.
+- A running row shows a spinning loader and `m:ss` elapsed that ticks every second. ✅ Other rows
+  don't flicker (React DevTools "highlight updates": only the running rows' status cells repaint).
+- Right-click a row. ✅ A menu opens at the pointer with the same items as its ⋯ (Open, Open PR,
+  Copy branch, Follow up, PR ▸ Address PR / Add preview, Move to <instance>, Close PR / Discard…),
+  in the Geist menu style. ↑/↓ move, Enter runs, **Esc** closes, a click outside closes. Right-click
+  on the PR # link still gives the browser's own menu.
+- Tab to a row, press the **menu key** (or Shift+F10). ✅ The same menu opens under the row; Enter on
+  a focused row opens its agent page.
+
+- Pick a couple of chips, type a search, choose a sort, switch to Board and dense, then reload
+  `/agents` with no query. ✅ The same chips come back and are in the URL, the search, sort, view and
+  density too. Open a link like `/agents?pr=mergeable` instead: ✅ the link wins (and is what's
+  remembered next). **Clear** ✅ empties chips and search, and a reload stays clear. Switching the
+  top bar's repo ✅ remembers filters per repo. (Keys: `orca.ui.v1.*` in DevTools → Local Storage.)
+
 ## Teardown
 
 Delete the test PRs/branches and remove any leftover worktrees:

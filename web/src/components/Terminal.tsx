@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { createPortal } from "react-dom";
 import { Bot, PictureInPicture2, PanelBottomClose, X } from "lucide-react";
 import { syncEvents } from "@/lib/events";
@@ -9,6 +10,8 @@ import { FRAME_MIN_H as MIN_H, FRAME_MIN_W as MIN_W, ORCHESTRATOR_BRANCH, ORCHES
 import { PortalContainer } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { poll } from "@/lib/poll";
+import { orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
+import { shortcutLabel } from "@/lib/shortcuts";
 
 // The card's terminal: a modal you open in place (no navigating to the detail page) showing the
 // branch's conversation as a terminal-style log — the durable turns Orca records — with the follow-up
@@ -49,20 +52,50 @@ export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean
 }
 
 // The orchestrator: the one conversation you talk to, which starts and steers workstreams itself.
-// A floating launcher in the bottom-right corner that pops out a chat window above it, the way a
-// website's chat widget does — NOT a modal: the board behind it stays visible and usable, because
-// the point of talking to it is to watch the cards it moves. The window is the same ChatPanel a
-// card's terminal uses (its turns are recorded like any other conversation, under a reserved
-// repo/branch) with the composer pointed at its own route. Polled only while open: whether it is
-// running drives Stop and the composer's placeholder.
-export function OrchestratorButton() {
-  const [open, setOpen] = useState(false);
-  // A notification's Open for the orchestrator (its reply asked you something) opens this window.
-  useEffect(() => {
-    const onOpen = () => setOpen(true);
-    window.addEventListener("orca:open-orchestrator", onOpen);
-    return () => window.removeEventListener("orca:open-orchestrator", onOpen);
-  }, []);
+// It pops out a chat window in the bottom-right corner, the way a website's chat widget does — NOT a
+// modal: the board behind it stays visible and usable, because the point of talking to it is to
+// watch the cards it moves. The window is the same ChatPanel a card's terminal uses (its turns are
+// recorded like any other conversation, under a reserved repo/branch) with the composer pointed at
+// its own route. Polled only while open: whether it is running drives Stop and the composer's
+// placeholder. What opens it is `orchestratorOpenAtom`: the top bar's "Ask the orchestrator" entry
+// (AskOrchestrator, on every page — it replaced the floating launcher), the O key and the palette.
+
+let askSeq = 0;
+/** A new ask session: the keystrokes of one ask replace each other in the composer (see ChatComposer). */
+export const newAskSession = (): number => ++askSeq;
+/** Open the orchestrator's window and focus its composer, with `text` after its draft. */
+export function useOrchestrator() {
+  const [open, setOpen] = useAtom(orchestratorOpenAtom);
+  const setPrefill = useSetAtom(orchestratorPrefillAtom);
+  const ask = (text = "", session = newAskSession()) => { setOpen(true); setPrefill({ text, session, seq: ++askSeq }); };
+  return { open, ask, close: () => setOpen(false) };
+}
+
+/** Vercel's top-right "Ask AI": a compact box in the top bar of every page. Clicking it opens the
+ *  orchestrator focused; typing in it opens it with what you typed, carried on in its composer. */
+export function AskOrchestrator() {
+  const { ask } = useOrchestrator();
+  const [text, setText] = useState("");
+  const session = useRef(0);
+  const key = shortcutLabel("orchestrator");
+  return (
+    <label data-slot="ask-orchestrator" title={`Ask the orchestrator (${key}): it starts and steers workstreams for you`}
+      className="bg-card focus-within:ring-ring/40 hover:border-ring/60 ml-auto flex h-8 w-40 shrink-0 cursor-text items-center gap-2 rounded-md border px-2 focus-within:ring-2 sm:w-64">
+      <Bot className="text-muted-foreground size-3.5 shrink-0" />
+      <input value={text} aria-label="Ask the orchestrator" placeholder="Ask the orchestrator…"
+        onClick={() => { session.current = newAskSession(); ask(text, session.current); }}
+        onChange={(e) => { if (!text) session.current = newAskSession(); setText(e.target.value); ask(e.target.value, session.current); }}
+        onBlur={() => setText("")} // it is in the composer now
+        className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-sm outline-none" />
+      <kbd className="text-muted-foreground rounded border px-1 font-sans text-[10px]">{key}</kbd>
+    </label>
+  );
+}
+
+export function OrchestratorWindow() {
+  const [open, setOpen] = useAtom(orchestratorOpenAtom);
+  const prefill = useAtomValue(orchestratorPrefillAtom);
+  const setPrefill = useSetAtom(orchestratorPrefillAtom);
   const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
   const load = () => api.orchestrator().then(setState).catch(() => {});
   // Popped out: the chat lives in an always-on-top Document Picture-in-Picture window (Chrome/Edge
@@ -75,7 +108,10 @@ export function OrchestratorButton() {
     if (!open) return;
     return poll(load, 2000, pip ?? window);
   }, [open, pip]);
-  useEffect(() => { if (!open) pip?.close(); }, [open]);
+  // Closing drops the pending ask, so a later open can't re-apply it to a freshly mounted composer.
+  useEffect(() => { if (!open) { pip?.close(); setPrefill(null); } }, [open]);
+  // An ask while popped out lands in the PiP window's composer; bring that window forward.
+  useEffect(() => { if (prefill) pip?.focus(); }, [prefill?.seq]);
   useEffect(() => {
     if (!pip) return;
     // The page's theme is a class on <html> (lib/theme.ts): mirror <html>'s class and inline style
@@ -94,7 +130,7 @@ export function OrchestratorButton() {
     const w = await pipApi()!.requestWindow(loadPipSize(frame)).catch(() => null);
     if (!w) return;
     copyStyles(document, w.document);
-    // Closing it (its own ✕, Return to tab, or the launcher) brings the chat back into the tab.
+    // Closing it (its own ✕, Return to tab, or closing the chat) brings the chat back into the tab.
     // The tab may be hidden by now, so the shared live stream re-checks whether it is still wanted.
     w.addEventListener("pagehide", () => { savePipSize(w); setPip(null); setTimeout(syncEvents); }, { once: true });
     setPip(w);
@@ -104,7 +140,7 @@ export function OrchestratorButton() {
     worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
   };
   // Where and how big the window is: dragged by its header, resized from any edge or corner,
-  // remembered per browser. Until it is moved it sits above the launcher, anchored bottom-right, so
+  // remembered per browser. Until it is moved it sits anchored bottom-right, so
   // it stays put as the viewport changes. During a drag or resize the element's style is written
   // DIRECTLY — a React state update per pointer move re-rendered the whole chat and lagged; state
   // (and storage) is updated once, when the pointer lets go.
@@ -187,7 +223,7 @@ export function OrchestratorButton() {
   const chat = (
     <div className="min-h-0 flex-1">
       {state && <ChatPanel
-        row={row} flush
+        row={row} flush prefill={prefill}
         // The same toolbar a card's terminal has, fed the orchestrator's own values. Claude
         // only; changing the model keeps the session.
         controls={{
@@ -209,7 +245,7 @@ export function OrchestratorButton() {
   const panelClass = "dark bg-neutral-950 text-foreground flex flex-col overflow-hidden [&_.text-xs]:text-[10px] [&_.prose]:text-[10.5px] [&_.prose]:leading-snug [&_textarea]:text-[11px]";
   return (
     // z-40: above the board, below menus and popovers (z-50), which must still open over it.
-    <div className="fixed right-4 bottom-4 z-40 flex flex-col items-end gap-3" onKeyDown={(e) => { if (e.key === "Escape" && !pip) setOpen(false); }}>
+    <div className="fixed right-4 bottom-4 z-40 flex flex-col items-end" onKeyDown={(e) => { if (e.key === "Escape" && !pip) setOpen(false); }}>
       {open && pip && createPortal(
         // Popovers and menus opened in here must portal into the PiP document, not the tab's.
         <PortalContainer.Provider value={pip.document.body}>
@@ -226,8 +262,8 @@ export function OrchestratorButton() {
           // offset from the corner — the window sat off-screen, invisible. Placed = fixed, period.
           className={`${panelClass} rounded-lg border shadow-xl ${placed ? "fixed" : "relative"}`}
           style={{
-            // Unplaced, it stacks above the launcher (3rem + gaps), so its max height leaves room for it.
-            width: frame.w, height: frame.h, maxWidth: "calc(100vw - 2rem)", maxHeight: placed ? "100vh" : "calc(100vh - 6rem)", minWidth: MIN_W, minHeight: MIN_H,
+            // Unplaced, it sits in the bottom-right corner, below the top bar.
+            width: frame.w, height: frame.h, maxWidth: "calc(100vw - 2rem)", maxHeight: placed ? "100vh" : "calc(100vh - 5rem)", minWidth: MIN_W, minHeight: MIN_H,
             ...(placed ? { left: frame.x, top: frame.y } : {}),
           }}
         >
@@ -239,16 +275,6 @@ export function OrchestratorButton() {
           {chat}
         </div>
       )}
-      {/* Inverted against the page — foreground as the fill — so it stands off the board in either theme. */}
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-label={open ? "Close orchestrator" : "Open orchestrator"} aria-expanded={open}
-        title="Talk to the orchestrator: it starts and steers workstreams for you"
-        className="bg-foreground text-background focus-visible:ring-ring flex size-12 items-center justify-center rounded-full shadow-lg transition-transform hover:scale-105 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:outline-none"
-      >
-        {open ? <X className="size-5" /> : <Bot className="size-5" />}
-      </button>
     </div>
   );
 }

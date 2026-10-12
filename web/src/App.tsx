@@ -1,6 +1,6 @@
 import { useRoute, type Route } from "@/lib/route";
 import { Shell, Crumb, AddNew } from "@/components/Shell";
-import { OrchestratorButton } from "@/components/Terminal";
+import { OrchestratorWindow } from "@/components/Terminal";
 import { ToastHost } from "@/components/Notifications";
 import { useWorkstreams } from "./store";
 import { NewDraft } from "./views/Board";
@@ -11,7 +11,7 @@ import { PrDetail } from "./views/PrDetail";
 import { LocalDetail } from "./views/LocalDetail";
 
 // The console: Vercel's shell (sidebar + top bar) around one page per route. The orchestrator's
-// floating launcher sits outside it, on every route.
+// window floats outside it, on every route; the top bar's "Ask the orchestrator" opens it.
 export function App() {
   const route = useRoute();
   return (
@@ -19,8 +19,8 @@ export function App() {
       <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarAction collapsed={collapsed} />}>
         <Page route={route} />
       </Shell>
-      <OrchestratorButton />
       <ToastHost />
+      <OrchestratorWindow />
     </>
   );
 }

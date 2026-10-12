@@ -108,7 +108,12 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   PRs + worktrees, so enrichment with no branch behind it renders nothing; PRs/worktrees with no
   enrichment still render (incl. PRs not made by Orca). **There is no enrichment GC** — it existed to
   bound a 5MB localStorage bucket, and pruning is now the opposite of the goal. `localStorage` keeps
-  only per-browser UI state (theme, density, composer drafts); a one-shot `migrateLocalEnrichment`
+  only per-browser UI state (theme, density, composer drafts; the shell's repo, instance scope,
+  sidebar collapse and palette recents, like the Agents list's view, density, sort and filters, go
+  through `lib/persisted.ts` — `persistedAtom` / `usePersisted`, versioned `orca.ui.v1.<name>` keys
+  (`persistedKey(name, repo)` for a per-repo value), a safe parse that falls back to the default, and
+  a restored repo/instance the config no longer has reads as "all" (`validChoice`); reuse it for new
+  UI state); a one-shot `migrateLocalEnrichment`
   hands any pre-DB blob (transcripts included) to the bridge on first load.
 - **GitHub = the `gh` CLI; Slack = a direct `chat.postMessage`** from your identity using a user token
   (`SLACK_TOKEN`) — the ONE Slack path for every provider: deterministic, verbatim, instant, no model,
@@ -144,7 +149,7 @@ inherits it. **Surface rules** (Finn found the first pass heavy-handed; `tests/c
 asserts them on every page): 1px hairlines only, never 2px; rows use dividers, never a box inside a
 card's border; 8px cards (`rounded-lg`), 6px controls (`rounded-md`); 13px body / 12px meta; icons at
 1.5 stroke (a global `svg.lucide` rule); NO shadows except Geist's menu / modal tokens
-(`shadow-menu`, `shadow-modal`) and the orchestrator's floating launcher; badges are tinted fills
+(`shadow-menu`, `shadow-modal`) and the orchestrator's floating window; badges are tinted fills
 with no border; buttons are Geist's three — primary (inverted; Merge too), secondary (hairline),
 tertiary (ghost: every icon-only row / toolbar button). The agent page's conversation runs
 full-bleed in its card and follows the page's theme (`.log-themed` remaps the terminal palette in
@@ -154,12 +159,29 @@ Agents / Previews / Repos / Usage / Settings, then **Add New** as the last actio
 (`C` opens it; it is the portal container for the composer's selects, since a modal leaves the rest
 of the page inert; sending closes it and leaves "Sent to … · Undo" for 6s; the typed draft persists) — and
 below it you on one thin line — "You · local" — with the collapse toggle;
-collapsed it is one icon column, expand toggle above you; off-canvas when narrow) and a top bar
-(repo switcher, breadcrumb). **Previews** is a page (running previews with Open / Stop, and Test
+collapsed it is one icon column, expand toggle above you; off-canvas when narrow; `⌘B` / Ctrl+B
+toggles it, remembered) and a top bar (repo switcher, breadcrumb, and **Ask the orchestrator** at its
+right on every page — Vercel's "Ask AI": click it and the orchestrator's window opens with its
+composer focused; type in it and the text carries on in that composer, after any draft it held).
+**Keyboard** (`lib/shortcuts.ts`: ONE table + a pure matcher; ONE listener, `Shortcuts` in
+`components/CommandPalette.tsx`): `⌘K` / Ctrl+K the command palette, `C` New agent, `O` the
+orchestrator, `F` Find, `⌘B` the sidebar, `?` the shortcuts sheet, Esc closes the overlay. Letters
+and ⌘B never fire in a field or inside a modal dialog (they'd eat a keystroke of the message); ⌘K and
+Esc fire everywhere. **O, not ⌘J**, for the orchestrator: ⌘J / Ctrl+J is the browser's Downloads
+(Chrome on Windows/Linux, Firefox), and a bare letter can't clash with a browser or a composer; from a
+field, ⌘K → "Open orchestrator" is one key more. The table also feeds the tooltips, the palette's
+hints and the `?` sheet, so a key can't be documented in one place and bound in another. **The
+palette** (⌘K, a native modal `<dialog>` with `shadow-modal`, like Add New): fuzzy search over
+workstreams, PRs, pages and actions (New agent, Open orchestrator, Toggle sidebar, switch repo /
+instance, Start preview for the workstream whose page you're on); ↑/↓ wrap, Enter runs; empty, the
+recently run items lead (persisted); a query with no good match can always go to the
+orchestrator as a prefilled message (offered last, never above a match). Ranking is pure
+(`lib/palette.ts`). The overlays' open state is jotai atoms (`lib/atoms.ts`), so a key, a button and
+the palette open the same one. **Previews** is a page (running previews with Open / Stop, and Test
 master per repo); its nav item carries the badges the old header buttons had — the running count
 and a spinner / dot for a base-branch preview — from one shared `/api/previews` poll
 (`usePreviewList`). The
-orchestrator's floating launcher is outside the shell, untouched. Building blocks (card, ring,
+orchestrator's window floats outside the shell (`App`'s `OrchestratorWindow`). Building blocks (card, ring,
 status dot, pill, details grid, line chart) are `components/console.tsx`.
 - **Overview** (`/`, `views/Overview.tsx`): a Usage card — Claude per window as ring + value / limit
   rows (the fleet, every hydra login on expand) and Codex; it REPLACED the header usage meter — one
@@ -293,8 +315,8 @@ the workstream's selected provider; Slack posting uses a lightweight model of th
 
 ## The orchestrator (one conversation that delegates)
 
-A floating launcher in the bottom-right corner (inverted against the theme, on every route) pops
-out a chat window — a popout like a site's chat widget, deliberately not a modal, so the board it
+**Ask the orchestrator** in the top bar (every page), the `O` key or the palette open a chat window
+in the bottom-right corner — a popout like a site's chat widget, deliberately not a modal, so the board it
 is moving stays visible. Its composer sits on the terminal's own background and carries a model
 picker (Claude models only; changing it keeps the session) and an icon button whose ring shows how
 full its context is (the percentage is in its hover popover) — the same `ChatControls` every card's
@@ -314,8 +336,10 @@ in `workstream.ts`: on every move, on browser resize, and on load, which also fi
 from a bigger screen). **Pop out** moves it into an always-on-top Document Picture-in-Picture window
 (Chrome/Edge 116+) via a React **portal**: the same tree, so draft, SSE, popovers and keys carry
 over. The page's stylesheets are copied into it and `<html>`'s class/style mirrored (theme). Radix
-popovers/selects portal into it through `PortalContainer` (`lib/utils.ts`). Return to tab, its own
-close, or the launcher brings it back, and its size is remembered. Browsers without the API get no
+popovers/selects portal into it through `PortalContainer` (`lib/utils.ts`). Return to tab or its own
+close brings it back (an ask while popped out lands in the PiP composer), and its size is remembered.
+(History: a floating round launcher in the corner opened it; the top-bar entry replaced it — two
+ways to do one thing, and the launcher covered the corner the window sits in.) Browsers without the API get no
 button (a plain popup can't stay on top, so it was not worth having).
 It is one conversation you talk to; it starts and steers
 workstreams itself. Anthropic's orchestrator-workers pattern, kept to **two layers** — it, and the
@@ -538,6 +562,11 @@ needs no second timer; a failed write is logged and swallowed. `GET /api/health/
 (24 by default, at most 720) is database-only and its `instance` is a filter, never a forward, so
 either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
 CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300 points.
+**On darwin, memory used comes from `vm_stat`** (active + wired + occupied-by-compressor pages,
+Activity Monitor's own formula), not `totalmem() − freemem()` — macOS's `freemem()` is only the
+truly-free page count and reads near-100% on every healthy Mac; `sysctl -n kern.memorystatus_level`
+rides along as `memPressurePct`/`memPressure` (linux keeps `totalmem() − freemem()`, which already
+tracks `/proc/meminfo`'s `MemAvailable`).
 **Conversation loading with a remote database:** `/api/turns` attaches steps to the newest
 `STEPS_FOR_TURNS` (40) turns in ONE query (`db.stepsForRuns`); older turns fetch theirs on unfold
 (`/api/turns/steps` from seq 0). One query per turn over a 6ms link made a 300-turn conversation

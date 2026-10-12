@@ -6,7 +6,7 @@ import { useSyncExternalStore } from "react";
 import { getDefaultStore } from "jotai";
 import { api } from "../api";
 import { subscribeNotifications } from "./events";
-import { browserNotifyAtom, notifyDndAtom, toastPrefsAtom } from "./atoms";
+import { browserNotifyAtom, notifyDndAtom, orchestratorOpenAtom, toastPrefsAtom } from "./atoms";
 import { KIND_META, TOAST_AUTO_HIDE_MS, notificationPath, shouldNotifyBrowser, shouldToast, type Notification, type ToastPrefs } from "../../../shared/notifications";
 import { navigate } from "./route";
 
@@ -67,7 +67,7 @@ function browserNotify(n: Notification): void {
     note.onclick = () => {
       window.focus();
       const path = notificationPath(n);
-      if (n.link?.orchestrator) window.dispatchEvent(new Event("orca:open-orchestrator"));
+      if (n.link?.orchestrator) getDefaultStore().set(orchestratorOpenAtom, true);
       else if (path) navigate(path);
       void markRead([n.id]);
     };
