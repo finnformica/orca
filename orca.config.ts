@@ -98,6 +98,10 @@ const config: OrcaConfig = {
       // provider/AWS keys. Copied on create + checkout. (The per-preview DB scripts now live in the
       // Orca repo — see `previewDb` — so they no longer need copying into each worktree.)
       copyToWorktree: ["backend/.env"],
+      // The repo's own test harness starts a throwaway Postgres container per run
+      // (`branch_demo_test_postgres_<port>`) and doesn't remove it — Orca's hourly reaper does once
+      // one has been running longer than 3 hours (a run that never finished cleaning up).
+      testContainerPrefix: "branch_demo_test_postgres_",
       // A fresh checkout has no node_modules; CoW-clone the main repo's (APFS clonefile, see git.ts) so
       // nest/vite/ts-node resolve without a slow install, and each worktree's tree is isolated — no
       // cross-worktree corruption. (Re-install in the worktree if a branch bumps deps.)

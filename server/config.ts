@@ -95,6 +95,11 @@ export type RepoConfig = {
    * paths are symlinked. Safe while the branch hasn't changed its lockfile (else install in the WT).
    */
   linkToWorktree?: string[];
+  /** Name prefix of this repo's own test-harness Docker containers (e.g. branch-demo's
+   *  `branch_demo_test_postgres_<port>`), so Orca's hourly reaper can remove ones its test run left
+   *  running. Unset (the default) means no reaping — a repo whose harness already cleans up, or has
+   *  none, opts in by naming its own prefix. */
+  testContainerPrefix?: string;
 };
 
 export type OrcaConfig = {

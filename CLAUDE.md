@@ -435,6 +435,16 @@ laptop points `ORCA_DATABASE_URL` at the box's Postgres over the tailnet. Modell
 macOS-only path (Keychain, `clonefile`) or a tool-flag difference would show first. **Pin the
 Claude Code version on the server:** `--bare` is slated to become the default for `-p`, and bare
 mode never reads OAuth credentials, which would silently break every subscription-login launch.
+**Orphan reaper:** a preview that dies with a bridge crash, a reaped worktree, or a worker's own
+test run leaves its `orca_*` database behind — nothing else drops it, and the box had 8 of them
+(~6.6 GB) accumulate before `server/preview.ts`'s `reap()` existed. It runs at startup and hourly
+(`server/index.ts`): lists `orca_%` databases on each repo's preview Postgres (`server/previewdb.ts`,
+connected the same way `scripts/preview-db.sh` is, from the repo's own `.env`), computes orphans
+against every repo's live worktrees plus every tracked preview key (`orphanPreviewDbs`), skips
+anything younger than 2 hours (a preview mid-clone), and drops the rest via `preview-db.sh drop`.
+The same pass removes a repo's `testContainerPrefix` Docker containers (branch-demo's test harness
+leaves `branch_demo_test_postgres_<port>` running) older than 3 hours, via `server/docker.ts` —
+silently skipped when `docker` isn't on the box. `/api/diagnostics` reports the last pass (`reap`).
 
 ## Conventions (follow these)
 
