@@ -8,7 +8,7 @@ import {
   staleHours, summary as fetchSummary, testLocally, toggleFollow, undoDraft, useAgentProviders, useRepos, useWorkstreams,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
-import { BULK_GROUPS, BULK_IRREVERSIBLE, BULK_LABELS, bulkActions, bulkCopyText, type BulkAction } from "../workstream";
+import { BULK_GROUPS, BULK_IRREVERSIBLE, BULK_LABELS, bulkActions, bulkCopyText, draftInstance, type BulkAction } from "../workstream";
 import { navigate } from "@/lib/route";
 import { Bot, Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, MoreHorizontal, Play, SquareTerminal, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -21,6 +21,7 @@ import { PreviewControl } from "./PreviewControl";
 import { TerminalDialog } from "@/components/Terminal";
 import { AUTO_MODEL, modelLabel, providerOfModel } from "../../../shared/models";
 import { ModelPicker } from "@/components/ModelPicker";
+import { poll } from "@/lib/poll";
 
 const LANES: { lane: Lane; title: string }[] = [
   { lane: "LOCAL", title: "Local" },
@@ -308,11 +309,6 @@ function NewDraft() {
   // model to bypass it and launch directly, as before. Falls back when the config arrives (or
   // changes) and the chosen model's CLI isn't installed here.
   const [model, setModel] = useState<string>(AUTO_MODEL);
-  // Where the workstream runs, when there is more than one instance: the repo's default unless you
-  // pick. Hidden on a single machine.
-  const choices = instanceChoices();
-  const [instance, setInstance] = useState<string | undefined>(undefined);
-  const placed = instance ?? defaultInstanceFor(active);
   useEffect(() => { if (model !== AUTO_MODEL && providers.length && !providers.includes(providerOfModel(model) ?? "claude")) setModel(AUTO_MODEL); }, [providers, model]);
   // The card + Undo appear the instant you submit — createWorkstream paints an optimistic draft and
   // does the worktree/agent work in the background. We keep the Undo affordance for ~6s so a mis-sent
@@ -334,7 +330,7 @@ function NewDraft() {
       repo={active}
       placeholder="Describe a feature…"
       onSubmit={async (text, images) => {
-        setUndoable(createWorkstream(active, text, images, model, { instance: placed }));
+        setUndoable(createWorkstream(active, text, images, model, { instance: draftInstance(model, instanceChoices(), defaultInstanceFor(active)) }));
       }}
       footer={undoable && (
         <p className="text-muted-foreground mt-1 flex items-center gap-1.5 px-1 text-xs">
@@ -357,14 +353,6 @@ function NewDraft() {
             </SelectContent>
           </Select>
           <ModelPicker auto label="Model" value={model} onChange={setModel} className="max-w-40 flex-1" />
-          {choices.length > 1 && (
-            <Select value={placed ?? choices[0]} onValueChange={setInstance}>
-              <SelectTrigger size="sm" aria-label="Run on" title="Which machine runs this workstream" className="text-muted-foreground hover:bg-accent hover:text-foreground min-w-0 border-0 shadow-none transition-colors focus-visible:ring-0"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                {choices.map((i) => <SelectItem key={i} value={i}>{i === thisInstance() ? `${i} (here)` : i}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          )}
         </div>
       }
       action={
@@ -424,11 +412,9 @@ export function WorkstreamCard({ row }: { row: Row }) {
   const [summary, setSummary] = useState<ChangeSummary | null>(null);
   useEffect(() => {
     if (isDone || !row.worktreePath) return;
-    const reload = () => void fetchSummary(row.repo, row.worktreePath!, row.prBase).then(setSummary).catch(() => {});
-    reload();
-    if (row.agentStatus !== "running") return;
-    const t = setInterval(reload, 8000);
-    return () => clearInterval(t);
+    const reload = () => fetchSummary(row.repo, row.worktreePath!, row.prBase).then(setSummary).catch(() => {});
+    if (row.agentStatus !== "running") return void reload();
+    return poll(reload, 8000);
   }, [isDone, row.repo, row.worktreePath, row.prBase, row.agentStatus]);
   const hasWork = (summary?.commits.length ?? 0) > 0;
 

@@ -24,6 +24,7 @@ import { OrchestratorButton } from "@/components/Terminal";
 import { api as orcaApi, type InstanceHealth, type MetricPoint } from "./api";
 import { instanceChoices, thisInstance } from "./store";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { poll } from "@/lib/poll";
 export function App() {
   const route = useRoute();
   const topLevel = route.name === "board";
@@ -504,9 +505,8 @@ export function InstanceHealthChip() {
     if (!other) return;
     let live = true;
     const load = () => orcaApi.health(other).then((v) => { if (live) { setH(v); setDown(false); } }).catch(() => { if (live) setDown(true); });
-    void load();
-    const t = setInterval(load, 15_000);
-    return () => { live = false; clearInterval(t); };
+    const stop = poll(load, 15_000);
+    return () => { live = false; stop(); };
   }, [other]);
   if (!other) return null;
   const tone = down ? "text-destructive" : (h?.cpuPct ?? 0) >= 80 || (h && h.memUsedGb / h.memTotalGb >= 0.9) ? "text-amber-500" : "text-muted-foreground";

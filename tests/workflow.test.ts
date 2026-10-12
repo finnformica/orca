@@ -631,13 +631,19 @@ test("S4 auto-merge is a toggle: enable and disable issue the matching gh comman
   expect(args).toContain("pr merge 42 --disable-auto");   // disable — the previously-missing half
 });
 
-test("R1 review-queue: listReviewPrs maps coworker meta (author + updated), newest first, no comments", async () => {
+test("R1 review-queue: listReviewPrs maps coworker meta (author + updated), newest first, no per-PR computed fields", async () => {
   await setPrListFixture([
     { number: 20, title: "Older", headRefName: "feat-old", url: "u20", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", author: { login: "alex", name: "Alex Atack" }, updatedAt: "2026-07-01T10:00:00Z" },
     { number: 21, title: "Newer", headRefName: "feat-new", url: "u21", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", author: { login: "sam" }, updatedAt: "2026-07-05T10:00:00Z" },
   ]);
+  const readArgs = await recordGhArgs();
   const prs = await listReviewPrs(repo);
   expect(prs.map((p) => p.number)).toEqual([21, 20]); // newest-updated first
+  // Fields GitHub computes PER PR are not asked for: over ~250 coworker PRs they made the cold fetch
+  // take seconds more, and the queue shows none of them (the PR page fetches its own).
+  const json = (await readArgs()).split("--json ")[1]!.split(/\s/)[0]!.split(",");
+  expect(json).toContain("reviewDecision");
+  for (const slow of ["mergeable", "autoMergeRequest", "statusCheckRollup", "comments"]) expect(json).not.toContain(slow);
   expect(prs[0]).toMatchObject({ author: "sam", authorName: "sam", reviewStatus: "approved" });
   expect(prs[0]!.previewUrl).toBeUndefined(); // meta list skips comments — the preview URL is a detail-only field
   expect(prs[0]!.ciStatus).toBe("none"); // and skips CI (statusCheckRollup) — that's a detail-only, slow fetch

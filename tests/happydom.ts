@@ -7,7 +7,7 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 // port, and Bun's fetch (1.4+) rejects happy-dom's AbortSignal as "not of type AbortSignal".
 // `Response` too: a Bun.serve handler in a test must return Bun's Response, not happy-dom's (which
 // Bun.serve doesn't recognise and answers with its welcome page).
-export const native = { fetch: Bun.fetch as typeof fetch, AbortSignal: globalThis.AbortSignal, Response: globalThis.Response };
+export const native = { fetch: Bun.fetch as typeof fetch, AbortSignal: globalThis.AbortSignal, AbortController: globalThis.AbortController, Response: globalThis.Response };
 
 GlobalRegistrator.register();
 
