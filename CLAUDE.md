@@ -464,7 +464,7 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
 
 ## Notification centre (toasts + the bell)
 
-Flat notifications — one row per event, no threads — in a `notification` table (migration 13) shared
+Flat notifications — one row per event, no threads — in a `notification` table (migration 15 — 13 and 14 were taken by branches open at the same time; `migrate()` tolerates the gap) shared
 by both instances, so either machine shows the same centre. **One emitter, `server/notify.ts`**: the
 row is written once (`db.addNotification`, idempotent on the event's `key` — `run:<runId>:<kind>`,
 `check:<runId>`, `preview:<key>:<startedAt>:ready|failed`, `pr-ci:<repo>#<n>:<checks>`,

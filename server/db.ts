@@ -311,7 +311,10 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
     `,
   },
   {
-    id: 13,
+    // 15, not 13: two branches open alongside this one each add a step too (usage → 13, insights →
+    // 14), and migrate() skips ids already applied without needing them contiguous, so a gap is
+    // harmless whichever lands first. Never renumber an applied step.
+    id: 15,
     // The notification centre (shared/notifications.ts): one flat row per event — an agent that
     // finished, asked for input, failed or was stopped; a check that failed; a PR whose CI fails or
     // that conflicts; a preview that came up or didn't. Written ONCE by the instance where it
