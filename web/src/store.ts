@@ -16,6 +16,7 @@ import type { PrRef } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
 import { attachCommand, handoffPrompt } from "../../shared/agent";
+import { poll } from "./lib/poll";
 
 const KEY = "orca.enrichment";
 const now = () => new Date().toISOString();
@@ -759,7 +760,7 @@ export async function testLocally(row: Row, instance?: string): Promise<{ key: s
 export type MasterPreview = { key?: string; svcs: PreviewSvc[]; busy: boolean; error: string | null };
 const EMPTY_MASTER: MasterPreview = { svcs: [], busy: false, error: null };
 const masters = new Map<string, MasterPreview>();
-const masterTimers = new Map<string, ReturnType<typeof setInterval>>();
+const masterTimers = new Map<string, () => void>(); // repo → stop its poll
 
 export const useMaster = (repo: string): MasterPreview =>
   useSyncExternalStore(subscribe, () => masters.get(repo) ?? EMPTY_MASTER);
@@ -793,8 +794,7 @@ function pollMaster(repo: string) {
     if (crashed) void stopMaster(repo, crashed.error ?? "a service failed to start");
     else setMaster(repo, { svcs });
   };
-  masterTimers.set(repo, setInterval(() => void tick(), 2500));
-  void tick();
+  masterTimers.set(repo, poll(tick, 2500));
 }
 
 /** Spin up (or restart) a preview of the repo's base branch. Sets `busy` immediately so the trigger
@@ -813,7 +813,7 @@ export async function startMaster(repo: string): Promise<void> {
 /** Tear down a repo's base preview (manual Stop, or an auto-reap after a crash carries the error). */
 export async function stopMaster(repo: string, error: string | null = null): Promise<void> {
   const t = masterTimers.get(repo);
-  if (t) { clearInterval(t); masterTimers.delete(repo); }
+  if (t) { t(); masterTimers.delete(repo); }
   const key = masters.get(repo)?.key;
   setMaster(repo, { key: undefined, svcs: [], busy: false, error });
   if (key) { try { await api.previewStop(key); } catch { /* already gone */ } }

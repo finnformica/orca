@@ -240,7 +240,7 @@ test("a tool call on a live run is open while it works and folds itself when its
   const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
   await act(async () => {
     stream.dispatchEvent(Object.assign(new Event("step"), {
-      data: JSON.stringify({ runId: "run-1", steps: [{ at: 3, kind: "result", id: "tu_1", output: "SECRET_TOOL_OUTPUT 289 pass" }] }),
+      data: JSON.stringify({ repo: "r", branch: "feat", runId: "run-1", steps: [{ at: 3, kind: "result", id: "tu_1", output: "SECRET_TOOL_OUTPUT 289 pass" }] }),
     }));
     await flush();
   });
@@ -332,7 +332,7 @@ test("the log follows new output, but not while the reader has scrolled up", asy
   const push = async (text: string) => {
     await act(async () => {
       stream.dispatchEvent(Object.assign(new Event("step"), {
-        data: JSON.stringify({ runId: "run-1", steps: [{ at: 1, kind: "text", text }] }),
+        data: JSON.stringify({ repo: "r", branch: "feat", runId: "run-1", steps: [{ at: 1, kind: "text", text }] }),
       }));
       await flush();
     });
@@ -450,7 +450,7 @@ test("the ring's Compact button compacts the session: pending until its turn fin
   // The compact run's turn lands finished over the stream → no longer pending.
   apiFake.turnsData.set("r::feat", [{ id: "run-compact", provider: "claude", instruction: "/compact", prompt: "/compact", response: "Compacted: 144000 → 9000 tokens.", startedAt: 1, finishedAt: 2 }]);
   const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
-  await act(async () => { stream.dispatchEvent(new Event("turn")); await flush(); await flush(); });
+  await act(async () => { stream.dispatchEvent(Object.assign(new Event("turn"), { data: JSON.stringify({ repo: "r", branch: "feat", runId: "run-compact" }) })); await flush(); await flush(); });
   expect(compactButton()!.textContent).toBe("Compact");
   expect(document.body.querySelector('[data-slot="context-compact-error"]')).toBeNull();
 });

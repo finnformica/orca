@@ -44,11 +44,23 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
   const liveRow = useWorkstreams().find((r) => r.repo === repo && r.prNumber === number); // your own PR, if tracked
   const header = useStickyHeader(Boolean(pr));
 
+  // `attempt` re-runs the fetch for Retry. A load that is taking a while says so, rather than an
+  // indefinite "Loading…" that looks like a hang.
+  const [attempt, setAttempt] = useState(0);
+  const [slow, setSlow] = useState(false);
   useEffect(() => {
+    let live = true;
     setPr(null);
     setError(null);
-    api.prDetail(repo, number).then(setPr).catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, [repo, number]);
+    setSlow(false);
+    const t = setTimeout(() => { if (live) setSlow(true); }, 8_000);
+    api.prDetail(repo, number)
+      .then((d) => { if (live) setPr(d); })
+      .catch((e) => { if (live) setError(e instanceof Error ? e.message : String(e)); })
+      .finally(() => clearTimeout(t));
+    return () => { live = false; clearTimeout(t); };
+  }, [repo, number, attempt]);
+  const retry = <Button size="sm" variant="outline" onClick={() => setAttempt((n) => n + 1)}>Retry</Button>;
 
   useEffect(() => {
     if (sub === "files" && diff === null) api.prDiff(repo, number).then((d) => setDiff(d.diff)).catch(() => setDiff(""));
@@ -57,8 +69,20 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
   const go = (t: PrTab) => navigate(t === "overview" ? `/${repo}/prs/${number}` : `/${repo}/prs/${number}/${t}`);
   const back = `/${repo}`;
 
-  if (error) return <div className="space-y-4"><Back to={back} /><p className="text-destructive text-sm">{error}</p></div>;
-  if (!pr) return <div className="space-y-4"><Back to={back} /><p className="text-muted-foreground text-sm">Loading PR #{number}…</p></div>;
+  if (error) return (
+    <div className="space-y-4" data-slot="pr-error">
+      <Back to={back} />
+      <p className="text-destructive text-sm">Couldn't load PR #{number}: {error}</p>
+      {retry}
+    </div>
+  );
+  if (!pr) return (
+    <div className="space-y-4" data-slot="pr-loading">
+      <Back to={back} />
+      <p className="text-muted-foreground text-sm">Loading PR #{number}…</p>
+      {slow && <div className="space-y-2"><p className="text-muted-foreground text-sm">This is taking longer than usual — GitHub may be slow.</p>{retry}</div>}
+    </div>
+  );
 
   // For a coworker PR (not one of your workstreams) synthesise a row so Test locally + the preview
   // panel + add-label still work here — the review list itself is action-free for density.

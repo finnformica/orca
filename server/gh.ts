@@ -286,11 +286,16 @@ export async function requiredChecks(cwd: string, branch: string): Promise<Set<s
 
 export type ReviewPr = PrSummary & { author: string; authorName: string; updatedAt: string };
 
+const REVIEW_FIELDS = "number,title,headRefName,baseRefName,url,state,isDraft,reviewDecision,author,updatedAt";
+
 async function fetchReviewPrs(cwd: string): Promise<ReviewPr[]> {
   // `-author:@me` (gh expands @me to the authenticated user) excludes your own PRs server-side.
   // High limit so the queue shows *all* open coworker PRs (gh's default is only 30).
+  // Fields GitHub computes PER PR (mergeable, autoMergeRequest) are left out: over ~250 PRs they add
+  // seconds, and the queue doesn't show them — the PR page fetches its own (prDetail). reviewDecision
+  // stays: approved / changes requested is what a review queue is for.
   const raw = await gh(cwd, "pr", "list", "--state", "open", "--search", "-author:@me", "--limit", "500",
-    "--json", `${PR_META_FIELDS},author,updatedAt`);
+    "--json", REVIEW_FIELDS);
   const arr = JSON.parse(raw) as Array<RawPr & { author?: { login?: string; name?: string }; updatedAt?: string }>;
   return arr
     .map((j) => ({ ...mapSummary(j), author: j.author?.login ?? "", authorName: j.author?.name || j.author?.login || "", updatedAt: j.updatedAt ?? "" }))
@@ -300,7 +305,8 @@ async function fetchReviewPrs(cwd: string): Promise<ReviewPr[]> {
 // The review queue re-fetches on every page mount + a 15s client poll, per repo — but each `gh pr
 // list` is a ~3s network round-trip, and coworker PRs change slowly. So cache per repo and serve
 // stale-while-revalidate: return the cached list instantly, refreshing in the background when it's
-// older than the TTL. First load pays the round-trip; every navigation/poll after is instant.
+// older than the TTL. First load pays the round-trip — which the bridge does itself at startup
+// (index.ts), so no caller ever waits the ~5-12s cold fetch; every call after is instant.
 const REVIEW_TTL_MS = 30_000;
 const reviewCache = new Map<string, { at: number; prs: ReviewPr[]; inflight?: Promise<ReviewPr[]> }>();
 

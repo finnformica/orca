@@ -21,6 +21,7 @@ export const apiFake = {
   diffText: "",
   // PR detail served by api.prDetail (the PR page) — overrides the minimal default below.
   prDetailData: null as null | Record<string, unknown>,
+  prDetailError: null as string | null, // the PR page's load fails with this (error + Retry)
   // Open PRs served by api.prs (the board's source of truth) — tests set this before mounting.
   prsData: [] as unknown[],
   // When set, api.prs rejects — lets a GC test simulate a transient poll failure (must NOT prune).
@@ -100,7 +101,7 @@ export const apiFake = {
     profiles?: { name: string; usage: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: null; fable?: { utilization: number; resetsAt: string | null } | null }; state?: string; email?: string }[];
     routing?: { hydra: boolean; shim: boolean; bin?: string };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.healthData = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.healthData = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
 };
 
 mock.module("@/api", () => ({
@@ -155,11 +156,15 @@ mock.module("@/api", () => ({
     previews: async () => { if (apiFake.previewsError) throw new Error(apiFake.previewsError); return apiFake.previewsData; },
     summary: async (_repo: string, worktree: string, base?: string) => { apiFake.calls.push(`summary:${worktree}:${base ?? ""}`); return apiFake.summaryData; },
     localDiff: async () => ({ diff: apiFake.diffText }),
-    prDetail: async (_repo: string, n: number) => ({
+    prDetail: async (_repo: string, n: number) => {
+      apiFake.calls.push(`prDetail:${n}`);
+      if (apiFake.prDetailError) throw new Error(apiFake.prDetailError);
+      return {
       number: n, title: `PR ${n}`, url: `https://example.test/${n}`, head: "sticky-1", base: "main", author: "me",
       additions: 1, deletions: 0, changedFiles: 1, state: "OPEN", checks: [], reviews: [], comments: [],
       ...apiFake.prDetailData,
-    }),
+      };
+    },
     prDiff: async () => ({ diff: apiFake.diffText }),
     adopt: async (_repo: string, branch: string, instance?: string) => {
       apiFake.adoptCalls.push({ repo: _repo, branch, instance });
@@ -205,8 +210,8 @@ mock.module("@/api", () => ({
       return { imported };
     },
     turns: async (repo: string, branch: string) => apiFake.turnsData.get(`${repo}::${branch}`) ?? [],
-    // The chat's live stream (stubbed EventSource in happydom.ts) plus its reconnect catch-up.
-    turnsStreamUrl: (repo: string, branch: string) => `/api/turns/stream?repo=${repo}&branch=${branch}`,
+    // The tab's one live stream (stubbed EventSource in happydom.ts) plus the chats' catch-up.
+    eventsUrl: () => "/api/events",
     queued: async (_repo: string, branch: string) => apiFake.queuedData.get(branch) ?? [],
     cancelQueued: async (_repo: string, id: number) => {
       for (const [b, list] of apiFake.queuedData) apiFake.queuedData.set(b, (list as { id: number }[]).filter((m) => m.id !== id));

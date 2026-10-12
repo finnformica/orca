@@ -21,6 +21,7 @@ import { PreviewControl } from "./PreviewControl";
 import { TerminalDialog } from "@/components/Terminal";
 import { AUTO_MODEL, modelLabel, providerOfModel } from "../../../shared/models";
 import { ModelPicker } from "@/components/ModelPicker";
+import { poll } from "@/lib/poll";
 
 const LANES: { lane: Lane; title: string }[] = [
   { lane: "LOCAL", title: "Local" },
@@ -424,11 +425,9 @@ export function WorkstreamCard({ row }: { row: Row }) {
   const [summary, setSummary] = useState<ChangeSummary | null>(null);
   useEffect(() => {
     if (isDone || !row.worktreePath) return;
-    const reload = () => void fetchSummary(row.repo, row.worktreePath!, row.prBase).then(setSummary).catch(() => {});
-    reload();
-    if (row.agentStatus !== "running") return;
-    const t = setInterval(reload, 8000);
-    return () => clearInterval(t);
+    const reload = () => fetchSummary(row.repo, row.worktreePath!, row.prBase).then(setSummary).catch(() => {});
+    if (row.agentStatus !== "running") return void reload();
+    return poll(reload, 8000);
   }, [isDone, row.repo, row.worktreePath, row.prBase, row.agentStatus]);
   const hasWork = (summary?.commits.length ?? 0) > 0;
 

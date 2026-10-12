@@ -10,6 +10,7 @@ import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { poll } from "@/lib/poll";
 
 // Detail view for a local session (a worktree + its agent, pre-PR). Mirrors PrDetail's shape:
 // Overview (prompt, agent result, commits), Files changed (branch-vs-base diff), Preview.
@@ -22,11 +23,9 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
 
   useEffect(() => {
     if (!wt) { setSummary(null); return; }
-    const reload = () => void fetchSummary(repo, wt).then(setSummary).catch(() => {});
-    reload();
-    if (row?.agentStatus !== "running") return;
-    const t = setInterval(reload, 8000); // keep commits/size fresh only while the agent works
-    return () => clearInterval(t);
+    const reload = () => fetchSummary(repo, wt).then(setSummary).catch(() => {});
+    if (row?.agentStatus !== "running") return void reload();
+    return poll(reload, 8000); // keep commits/size fresh only while the agent works
   }, [repo, wt, row?.agentStatus]);
 
   useEffect(() => {

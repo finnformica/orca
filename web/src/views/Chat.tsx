@@ -17,6 +17,7 @@ import { WORKER_EVENT_MARKER, isWorkerEvent, promptInstruction } from "../workst
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
+import { subscribeTurns } from "@/lib/events";
 import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
 
 // How close to the bottom still counts as "following". A few pixels of slack absorbs sub-pixel
@@ -260,33 +261,28 @@ export function ChatPanel({ row, send, flush, controls }: {
   const follow = useRef(true); // at the bottom → keep following; scrolled up → leave the reader be
   const turnsRef = useRef<AgentTurn[] | null>(null); // read by the tail without re-arming it
   const cursors = useRef(new Map<string, number>()); // per-run high-water mark, for reconnect catch-up
-  const opened = useRef(false); // first `ready` is this stream opening, not a reconnect
   const running = row.agentStatus === "running";
 
   // The conversation loads once, then steps are PUSHED as the agent records them — that's the
-  // terminal-like feel. The stream is served by the instance that owns the repo (the bridge proxies
-  // there if it isn't this one), so there is one delivery path whether the agent runs on this
-  // machine or in the cloud. A dropped connection resumes from the cursor rather than refetching the
-  // whole conversation.
+  // terminal-like feel. They arrive on the tab's one shared stream (lib/events.ts), which carries
+  // every instance's events, so there is one delivery path whether the agent runs on this machine or
+  // in the cloud. An interrupted feed resumes from the cursor rather than refetching the whole
+  // conversation.
   useEffect(() => {
     let live = true;
     const load = () => api.turns(row.repo, row.branch).then((t) => { if (live) setTurns(t); }).catch(() => {});
     void load();
     void loadQueued();
 
-    const source = new EventSource(api.turnsStreamUrl(row.repo, row.branch));
-    // A `turn` event means a run started or finished — either way the queue may have moved.
-    source.addEventListener("turn", () => { void load(); void loadQueued(); });
-    source.addEventListener("step", (e) => {
-      const { runId, steps } = JSON.parse((e as MessageEvent).data) as { runId: string; steps: AgentStep[] };
-      setTurns((prev) => prev?.map((t) => (t.id === runId ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
-    });
-    // `ready` fires on open AND on every automatic reconnect. The first is this stream opening; a
-    // later one means we were disconnected, so catch up from the cursor — anything recorded while we
-    // were away would otherwise be silently missing.
-    source.addEventListener("ready", () => {
-      if (!opened.current) { opened.current = true; return; }
-      void (async () => {
+    const unsubscribe = subscribeTurns(row.repo, row.branch, {
+      // A `turn` event means a run started or finished — either way the queue may have moved.
+      turn: () => { void load(); void loadQueued(); },
+      step: (runId, steps) => {
+        setTurns((prev) => prev?.map((t) => (t.id === runId ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
+      },
+      // We were disconnected (or the tab was hidden), so catch up from the cursor — anything
+      // recorded while we were away would otherwise be silently missing.
+      resync: () => void (async () => {
         const pending = turnsRef.current?.find((t) => !t.finishedAt);
         if (!pending) return void load();
         try {
@@ -299,9 +295,9 @@ export function ChatPanel({ row, send, flush, controls }: {
           }
           if (finished) await load();
         } catch { void load(); }
-      })();
+      })(),
     });
-    return () => { live = false; source.close(); };
+    return () => { live = false; unsubscribe(); };
   }, [row.repo, row.branch]);
 
   useEffect(() => { turnsRef.current = turns; }, [turns]);
