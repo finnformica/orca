@@ -66,15 +66,18 @@ export function drop(port: number): void {
   live.delete(port);
 }
 
-/** Rewrite a relayed preview status: the service the browser opens gets a loopback forward and a
- *  localhost URL; the rest keep the owner's URL (the frontend reaches the backend by that, and a
- *  page on http://localhost may call another http origin). */
-export function localize<T extends { port: number; url: string; open: boolean }>(key: string, svcs: T[], host: string): T[] {
+/** Annotate a relayed preview status for THIS machine's viewers: the service the browser opens gets
+ *  a loopback forward and a `localUrl`; `url` stays the owner's (a phone opens that). The owner's own
+ *  `localUrl` names ITS loopback, so it is dropped — here it would be someone else's port. The rest
+ *  keep only the owner's URL (the frontend reaches the backend by that, and a page on
+ *  http://localhost may call another http origin). */
+export function localize<T extends { port: number; url: string; localUrl?: string; open: boolean }>(key: string, svcs: T[], host: string): T[] {
   const ports: number[] = [];
-  const out = svcs.map((s) => {
+  const out = svcs.map(({ localUrl: _owner, ...rest }) => {
+    const s = rest as T;
     if (!s.open || !ensure(s.port, host)) return s;
     ports.push(s.port);
-    return { ...s, url: `http://localhost:${s.port}` };
+    return { ...s, localUrl: `http://localhost:${s.port}` };
   });
   if (ports.length) byKey.set(key, ports);
   return out;

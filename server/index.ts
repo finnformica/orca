@@ -123,7 +123,13 @@ void loadConfig().then((cfg) => orchestrator.recover(cfg, reconcile)).catch((e) 
 const INVENTORY_PUBLISH_MS = 10_000;
 setInterval(() => {
   void loadConfig().then((cfg) => Promise.all(cfg.repos.filter(verbs.repoHere).map((r) => agentRows(r).catch((e) => console.error(`orca: inventory publish failed for ${r.name}`, e)))));
+  void publishPreviews(); // the same for previews: the running-previews menu on any machine lists them
 }, INVENTORY_PUBLISH_MS).unref();
+
+/** Publish this instance's previews now (and answer the aggregate list) — on the timer, and right
+ *  after a start or stop so another machine's menu needn't wait for the tick. */
+const publishPreviews = () => loadConfig().then((cfg) => verbs.previewRows(cfg, { loopback: servesLoopback() }))
+  .catch((e) => { console.error("orca: preview publish failed", e); return []; });
 
 // This machine's vitals into instance_metric once a minute, for the header chip's 24h graphs
 // (server/health.ts). Each instance samples itself; either answers the history from Postgres.
@@ -178,6 +184,8 @@ const DATABASE_ONLY = new Set([
   "/api/agents",
   // Needs no worktree, only SLACK_TOKEN — which is on the machine you click from, not the box.
   "/api/slack",
+  // Every instance's running previews: this one's live, the others' as they published them.
+  "/api/previews",
 ]);
 
 // DATABASE_ONLY routes whose `?instance=` selects rows rather than a machine — never forwarded.
@@ -558,7 +566,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/preview") {
     if (!featuresOf(repo).previews) return notEnabled(repo, "Previews");
-    return json(await startPreview(cfg, repo, body.key, body.worktree));
+    const svcs = await startPreview(cfg, repo, body.key, body.worktree, typeof body.branch === "string" ? body.branch : undefined);
+    void publishPreviews();
+    return json(svcs);
   }
   if (req.method === "POST" && p === "/api/preview/master") {
     if (!featuresOf(repo).previews) return notEnabled(repo, "Previews");
@@ -569,17 +579,22 @@ async function api(req: Request, url: URL): Promise<Response> {
     await git.copyToWorktree(repo.repoPath, worktreePath, repo.copyToWorktree);
     await git.linkToWorktree(repo.repoPath, worktreePath, repo.linkToWorktree);
     await preview.start(worktreePath, worktreePath, repo.previewServices, cfg.portRange);
-    return json({ worktreePath, svcs: await preview.status(worktreePath) });
+    void publishPreviews();
+    return json({ worktreePath, svcs: await preview.status(worktreePath, preview.ownerHost(cfg.instances, db.instanceName())) });
   }
   if (req.method === "GET" && p === "/api/previews") {
-    return json(await preview.list()); // all running previews across repos (not repo-scoped)
+    // Every instance's running previews (not repo-scoped): this one's live, the others' published.
+    return json(await verbs.previewRows(cfg, { loopback: servesLoopback() }));
   }
   if (req.method === "GET" && p === "/api/preview") {
     const key = url.searchParams.get("key");
-    return json(key ? await preview.status(key) : []);
+    return json(key ? await preview.status(key, preview.ownerHost(cfg.instances, db.instanceName())) : []);
   }
   if (req.method === "POST" && p === "/api/preview/stop") {
     preview.stop(body.key, true); // teardown: drop this preview's DB
+    // The placement goes with it, so a refreshed page stops looking for it here.
+    await db.clearPreviewPlacement(String(body.key ?? "")).catch((e) => console.error("orca: preview placement clear failed", e));
+    void publishPreviews();
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/slack") {
@@ -807,6 +822,10 @@ async function serveStatic(url: URL): Promise<Response> {
 // instance must reach binds loopback (its own UI, the Vite proxy) AND its tailnet address. Never
 // 0.0.0.0, or the same process is also served to whatever café wifi the machine is on.
 const BIND = (process.env.ORCA_BIND || "127.0.0.1").split(",").map((h) => h.trim()).filter(Boolean);
+/** Whether a browser can reach this bridge on localhost (the laptop) — only then is a loopback
+ *  forward of another instance's preview worth holding a port for. A box bound to its tailnet
+ *  address alone is never viewed from its own localhost. */
+function servesLoopback(): boolean { return BIND.some((h) => ["127.0.0.1", "localhost", "::1"].includes(h)); }
 for (const hostname of BIND) Bun.serve({
   port: API_PORT,
   hostname,
