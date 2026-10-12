@@ -102,6 +102,10 @@ const config: OrcaConfig = {
       // (`branch_demo_test_postgres_<port>`) and doesn't remove it — Orca's hourly reaper does once
       // one has been running longer than 3 hours (a run that never finished cleaning up).
       testContainerPrefix: "branch_demo_test_postgres_",
+      // The frontend needs a SECURE CONTEXT (crypto.randomUUID), which a plain-http tailnet name is
+      // not: a preview on another instance is forwarded to this machine's localhost for a page served
+      // from localhost. Repos without it open the owner's tailnet URL everywhere.
+      previewSecureContext: true,
       // A fresh checkout has no node_modules; CoW-clone the main repo's (APFS clonefile, see git.ts) so
       // nest/vite/ts-node resolve without a slow install, and each worktree's tree is isolated — no
       // cross-worktree corruption. (Re-install in the worktree if a branch bumps deps.)
@@ -120,7 +124,9 @@ const config: OrcaConfig = {
       // an unconfigured database now — leaving a channel here would seed Slack back on for this repo
       // if the DB were ever rebuilt, since the backfill enables Slack wherever a channel is set.)
       previewServices: [
-        { name: "web", command: "cd web && bunx --bun vite --port {port}", open: true },
+        // The standard for a preview on a box: listen on {bind}, embed {host}, and let Vite accept it.
+        // No previewSecureContext: Orca runs fine on the plain-http tailnet URL.
+        { name: "web", command: "cd web && export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS={host} && bunx --bun vite --host {bind} --port {port}", open: true },
       ],
     },
   ],
