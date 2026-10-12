@@ -35,6 +35,9 @@ type Svc = { name: string; port: number; open: boolean; proc?: Bun.Subprocess; l
 /** Host the browser should use for preview links (ORCA_PREVIEW_HOST, e.g. the tailnet name of the
  *  box). Defaults to localhost, which is correct for a laptop instance. */
 export const previewHost = (): string => process.env.ORCA_PREVIEW_HOST || "localhost";
+/** The address a preview's services bind (ORCA_PREVIEW_BIND): loopback on a laptop; on a box reached
+ *  over the tailnet, that interface — `{bind}` in a preview command. */
+export const previewBind = (): string => process.env.ORCA_PREVIEW_BIND || "127.0.0.1";
 
 /** Which preview databases belong to no live worktree. Pure, so the selection — the part whose
  *  failure mode is dropping a database someone is using — is testable without a Postgres. */
@@ -140,7 +143,11 @@ export async function start(key: string, cwd: string, services: PreviewService[]
     const cmd = s.command
       .replace(/\{port\}/g, String(ports[s.name]))
       .replace(/\{svc:(\w+)\}/g, (_, n) => String(ports[n] ?? ""))
-      .replace(/\{db\}/g, db);
+      .replace(/\{db\}/g, db)
+      // `{host}` is what the BROWSER reaches the preview at (a frontend's backend URL); `{bind}` is
+      // what the service listens on. The same on a laptop (localhost); not on a box.
+      .replace(/\{host\}/g, previewHost())
+      .replace(/\{bind\}/g, previewBind());
     const logPath = join(tmpdir(), `orca-preview-${key.replace(/[^\w]+/g, "_")}-${s.name}.log`);
     const logFd = openSync(logPath, "w"); // capture output so a failed service is diagnosable
     const proc = Bun.spawn(["sh", "-lc", cmd], { cwd, env: process.env, stdout: logFd, stderr: logFd });

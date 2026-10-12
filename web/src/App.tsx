@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useAtom } from "jotai";
-import { Check, CircleUser, FolderSync, Loader2, Monitor, Moon, RefreshCw, Rows2, Rows3, Sun, X } from "lucide-react";
+import { Check, CircleUser, FolderSync, Loader2, Monitor, Moon, RefreshCw, Rows2, Rows3, Server, Sun, X } from "lucide-react";
 import { navigate, useRoute } from "@/lib/route";
 import { densityAtom, repoFilterAtom } from "@/lib/atoms";
 import { useTheme, type Theme } from "@/lib/theme";
@@ -21,6 +21,9 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { OrchestratorButton } from "@/components/Terminal";
 
+import { api as orcaApi, type InstanceHealth } from "./api";
+import { instanceChoices, thisInstance } from "./store";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 export function App() {
   const route = useRoute();
   const topLevel = route.name === "board";
@@ -32,6 +35,7 @@ export function App() {
         {/* Right cluster reads as two groups: read-only usage status, then a divider, then controls. */}
         <div className="ml-auto flex items-center gap-3">
           <UsageMeter />
+          <InstanceHealthChip />
           <div className="flex items-center gap-2">
             {/* Test master + running-previews read as one segmented control (connected borders). */}
             {topLevel && (
@@ -425,5 +429,49 @@ function ProfileMenu() {
         </DropdownMenuSub>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+// The cloud box's vitals in the header — CPU (load against cores), memory, disk, and the month's
+// estimated cost — polled every 15s from /api/health?instance=<other>, only when there is another
+// instance. A hover card has the details; the chip itself stays to one line.
+function InstanceHealthChip() {
+  const choices = instanceChoices();
+  const other = choices.find((i) => i !== thisInstance());
+  const [h, setH] = useState<InstanceHealth | null>(null);
+  const [down, setDown] = useState(false);
+  useEffect(() => {
+    if (!other) return;
+    let live = true;
+    const load = () => orcaApi.health(other).then((v) => { if (live) { setH(v); setDown(false); } }).catch(() => { if (live) setDown(true); });
+    void load();
+    const t = setInterval(load, 15_000);
+    return () => { live = false; clearInterval(t); };
+  }, [other]);
+  if (!other) return null;
+  const tone = down ? "text-destructive" : (h?.cpuPct ?? 0) >= 80 || (h && h.memUsedGb / h.memTotalGb >= 0.9) ? "text-amber-500" : "text-muted-foreground";
+  const uptime = (s: number) => (s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button type="button" data-slot="instance-health" className={`hidden items-center gap-1.5 rounded-md border px-2 py-1 text-xs sm:inline-flex ${tone} hover:bg-accent`} title={`${other}: machine health`}>
+          <Server className="size-3.5" />
+          <span className="font-medium">{other}</span>
+          {down ? <span>unreachable</span> : h ? <span>cpu {h.cpuPct}% · mem {h.memUsedGb}/{h.memTotalGb} GB{h.cost ? ` · $${h.cost.monthUsd.toFixed(2)}` : ""}</span> : <span>…</span>}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-72 text-xs">
+        {down || !h ? <p>{down ? `${other} did not answer.` : "Loading…"}</p> : (
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+            <dt className="text-muted-foreground">host</dt><dd>{h.hostname}</dd>
+            <dt className="text-muted-foreground">cpu</dt><dd>{h.cpuPct}% of {h.cores} cores (load {h.load1.toFixed(2)} / {h.load5.toFixed(2)})</dd>
+            <dt className="text-muted-foreground">memory</dt><dd>{h.memUsedGb} of {h.memTotalGb} GB</dd>
+            {h.disk && <><dt className="text-muted-foreground">disk</dt><dd>{h.disk.usedGb} of {h.disk.totalGb} GB</dd></>}
+            <dt className="text-muted-foreground">uptime</dt><dd>{uptime(h.uptimeS)}</dd>
+            {h.cost && <><dt className="text-muted-foreground">cost</dt><dd>${h.cost.monthUsd.toFixed(2)} this month, estimated at ${h.cost.hourlyUsd}/h since {h.cost.sinceIso.slice(0, 10)}</dd></>}
+          </dl>
+        )}
+      </PopoverContent>
+    </Popover>
   );
 }

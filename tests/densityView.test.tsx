@@ -55,7 +55,7 @@ describe("dense view", () => {
     expect(container!.textContent).toContain("2 files"); // diffstat
     // Labelled toolbar (text buttons), not icon-only.
     expect(labelledBtn("Follow up")).toBe(true);
-    expect(container!.textContent).toContain("Test locally");
+    expect(container!.textContent).toContain("Test on"); // "Test on <instance>" now that previews can be placed (the fake config has two instances)
     expect(container!.textContent).toContain("Merge (unreviewed)");
     // Full-size badges — no dense size-down variant.
     expect(hasClass("[data-slot=badge]]:text-[10px]")).toBe(false);
