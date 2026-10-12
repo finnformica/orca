@@ -1133,3 +1133,24 @@ export function insertPrRef(text: string, start: number, caret: number, label: s
   const ins = /^\s/.test(rest) ? label : `${label} `;
   return { text: text.slice(0, start) + ins + rest, caret: start + ins.length };
 }
+
+/** The instance chip's history graphs: samples → SVG polyline `points` strings, x by time across
+ *  [from, to] (so an outage reads as a gap, not as a compressed line) and y from 0 to `max`. A run
+ *  is broken where consecutive samples are more than `gapMs` apart — the sampler writes once a
+ *  minute, so a longer silence means the box (or its bridge) was down. */
+export function sparklineSegments(
+  points: { at: number; v: number }[], opts: { from: number; to: number; max: number; w: number; h: number; gapMs?: number },
+): string[] {
+  const { from, to, max, w, h, gapMs = 5 * 60_000 } = opts;
+  const span = Math.max(1, to - from), top = max > 0 ? max : 1;
+  const segs: string[][] = [];
+  let prev: number | undefined;
+  for (const p of points) {
+    if (p.at < from || p.at > to) continue;
+    if (prev === undefined || p.at - prev > gapMs) segs.push([]);
+    const x = ((p.at - from) / span) * w, y = h - (Math.min(Math.max(p.v, 0), top) / top) * h;
+    segs[segs.length - 1]!.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+    prev = p.at;
+  }
+  return segs.map((s) => s.join(" "));
+}
