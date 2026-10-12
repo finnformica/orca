@@ -16,7 +16,10 @@ Wants=network-online.target
 User=orca
 WorkingDirectory=/opt/orca
 # The CLIs install under the user's home; the unit's PATH is not the login shell's.
-Environment=PATH=/home/orca/.bun/bin:/home/orca/.local/bin:/usr/local/bin:/usr/bin:/bin
+# ~/.hydra/bin FIRST: that is hydra's `claude` shim, which picks the login with the most headroom per
+# launch (CLAUDE.md "Handover ladder"). Without it every run on the box landed on the default login
+# unrouted — /api/usage reported `routing.shim: false`.
+Environment=PATH=/home/orca/.hydra/bin:/home/orca/.bun/bin:/home/orca/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/orca
 ExecStart=/home/orca/.bun/bin/bun run server/index.ts
 Restart=always
