@@ -12,6 +12,7 @@ import * as gh from "./gh";
 import * as agent from "./agent";
 import * as db from "./db";
 import * as preview from "./preview";
+import { existsSync } from "fs";
 import { featuresOf, modelFor, providerAllowed, type OrcaConfig, type RepoConfig } from "./config";
 import { addressPrPrompt, chatPrompt, continuation, launchPrompt, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
 import { providerOfModel } from "../shared/models";
@@ -202,4 +203,28 @@ export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: strin
   if (comments.length) fields.commentsSeenAt = seenAt;
   if (Object.keys(fields).length) await db.patchEnrichment(repo.name, branch, fields);
   return { status, pr: pr.number };
+}
+
+// ---- placement: which instance a request about a workstream belongs to ----
+
+/** Is this repo checked out on this instance (so it can hold worktrees here)? */
+export const repoHere = (repo: RepoConfig): boolean => existsSync(repo.repoPath);
+
+/** The instance a request should run on. Explicit (`instance` in the body or query — the New-draft
+ *  box's choice, the orchestrator's --on) beats the worktree's home (the instance whose inventory
+ *  lists the branch or path — a workstream lives where its worktree is), which beats the repo's
+ *  default (`runsOn`), which beats here. */
+export async function placement(
+  repo: RepoConfig,
+  want: { instance?: unknown; branch?: unknown; worktreePath?: unknown; key?: unknown },
+): Promise<string> {
+  if (typeof want.instance === "string" && want.instance) return want.instance;
+  const branch = typeof want.branch === "string" ? want.branch : undefined;
+  const path = [want.worktreePath, want.key].find((v): v is string => typeof v === "string" && v.startsWith("/"));
+  if (branch || path) {
+    const rows = await db.inventory(repo.name).catch(() => []);
+    const home = rows.find((r) => (branch && r.branch === branch) || (path && r.data.worktreePath === path));
+    if (home) return home.instance;
+  }
+  return repo.runsOn ?? db.instanceName();
 }

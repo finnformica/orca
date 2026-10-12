@@ -841,7 +841,8 @@ export function workerBrief(brief: WorkerBrief): string {
 // What a New draft becomes when its model is left to the orchestrator (AUTO_MODEL): a message that
 // opens with this marker, which the role text tells it to answer with exactly one spawn.
 export const NEW_DRAFT_MARKER = "[new draft]";
-export const newDraftMessage = (repo: string, prompt: string): string => `${NEW_DRAFT_MARKER} repo: ${repo}\n\n${prompt}`;
+export const newDraftMessage = (repo: string, prompt: string, instance?: string): string =>
+  `${NEW_DRAFT_MARKER} repo: ${repo}${instance ? ` on: ${instance}` : ""}\n\n${prompt}`;
 
 /** Which model a worker should get, cheapest first. Fable is the scarce resource: the orchestrator
  *  is told to reach for it only when a cheaper model has already failed or the work is genuinely
@@ -930,6 +931,8 @@ export type BoardRow = {
   repo: string; branch: string; title?: string; worktreePath?: string; agent: string;
   pr?: { number: number; isDraft?: boolean; reviewStatus?: string; ciStatus?: string; mergeable?: string };
   check?: boolean; orchestrated?: boolean; last?: string;
+  /** The instance holding its worktree, when there is more than one instance. */
+  instance?: string;
 };
 export function boardText(rows: BoardRow[]): string {
   if (!rows.length) return "(no workstreams)";
@@ -940,6 +943,7 @@ export function boardText(rows: BoardRow[]): string {
     return [
       `${r.repo}/${r.branch}${r.title ? ` "${r.title}"` : ""}`,
       pr, `agent:${r.agent}`,
+      ...(r.instance ? [`on:${r.instance}`] : []),
       ...(r.check === undefined ? [] : [`check:${r.check ? "passed" : "FAILED"}`]),
       ...(r.orchestrated ? ["yours"] : []),
       ...(r.worktreePath ? [r.worktreePath] : []),
@@ -956,7 +960,9 @@ const ORCHESTRATOR_ROLE = [
   "Your tools are the `orca` command (run it with Bash) and Read/Grep/Glob over the repos, whose",
   "worktree paths are on the board. The `## Access` line of each message says what else you may run.",
   "  orca board                      every workstream: PR state, agent status, Orca's check verdict",
-  "  orca spawn --repo <repo> --title \"<2-5 words>\" --model <id> --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"]",
+  "  orca spawn --repo <repo> --title \"<2-5 words>\" --model <id> [--on <instance>] --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"]",
+  "      --on places the worktree on another instance (the board shows each workstream's `on:`; a `[new draft]`",
+  "      that says `on: <instance>` wants that one). Without it, the repo's default instance.",
   "  orca send --repo <repo> --branch <branch> [--model <id>] \"<message>\"     continue an existing workstream (--model moves it to another model)",
   "  orca address --repo <repo> --branch <branch>              have its agent fix conflicts, CI and review on its PR",
   "  orca archive --repo <repo> --branch <branch>              cancel a workstream you spawned or sent to: stop its agent,",

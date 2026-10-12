@@ -368,11 +368,21 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
 
 ## Deploying (a cloud box + the laptop, one database)
 
-Two instances share the Postgres database; each names itself (`ORCA_INSTANCE`, default hostname)
-and executes only the repos whose `runsOn` matches (`runsHere`). A request for a repo owned
-elsewhere is forwarded to that instance's URL from `instances` (`forwardToOwner`), except the
-`DATABASE_ONLY` routes, which any instance answers from Postgres. Each instance publishes the
-worktrees it can see (`worktree_inventory`) so the board shows both. Leases, the ledger, handoff
+Two instances share the Postgres database; each names itself (`ORCA_INSTANCE`, default hostname).
+A repo may be checked out on SEVERAL instances; **a workstream lives on the instance holding its
+worktree.** `verbs.placement` decides where a request goes: an explicit `instance` (the New-draft
+box's "run on" picker, the orchestrator's `spawn --on`) → the worktree's home, read from
+`worktree_inventory` by branch or path → the repo's `runsOn` (its DEFAULT placement) → here.
+`forwardToOwner` forwards to that instance's URL from `instances`, except the `DATABASE_ONLY`
+routes, which any instance answers — `/api/agents` among them: every instance lists its own
+worktrees (when the repo is on disk here, `verbs.repoHere`) plus what the others published. The
+board tags each card with its instance once there is more than one (`instanceChoices`). The
+orchestrator's `board` spans instances (`on:<instance>`), and `send`/`address` call the workstream's
+home over HTTP (`viaInstance`, the `/api/workstreams/{spawn,followup,address}` routes). **The
+orchestrator itself lives on ONE instance — `orchestratorOn`:** its routes are forwarded there and
+other instances post worker reports to `/api/orchestrator/event`, so one process wakes it (two
+resuming one session at once was the "one message behind" bug). Unset, it wakes wherever it is
+spoken to — fine for one machine, wrong for two. Leases, the ledger, handoff
 files, `~/.claude/projects` backfill, preview ports, and `/api/usage` are **per host** — they
 describe the instance that answered, which is right for leases and wrong-but-tolerable for the
 usage meter. `deploy/orca.service` is the systemd unit; `bun run build` then `bun run server` is

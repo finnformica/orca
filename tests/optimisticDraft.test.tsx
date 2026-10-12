@@ -137,3 +137,14 @@ describe("a New draft left to the orchestrator (Auto)", () => {
     expect(apiFake.pending).not.toBeNull(); // the worktree is being made directly
   });
 });
+
+describe("placement across instances", () => {
+  test("a New draft carries the chosen instance to the worktree and the first run; the repo's default is implied", async () => {
+    mount();
+    act(() => { store.createWorkstream("r", "Build it here", [], "claude-sonnet-5", { instance: "cloud" }); });
+    await act(async () => { await flush(); await flush(); });
+    expect(apiFake.createWorktreeCalls.at(-1)).toMatchObject({ repo: "r", instance: "cloud" });
+    await act(async () => { apiFake.pending!({ branch: "b1", worktreePath: "/wt/b1", title: "t" }); await flush(); await flush(); });
+    expect(apiFake.agentLaunches.at(-1)).toMatchObject({ key: "/wt/b1", instance: "cloud" });
+  });
+});
