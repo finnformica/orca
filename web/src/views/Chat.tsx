@@ -20,6 +20,7 @@ import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent"
 import { ChatComposer } from "@/components/ChatComposer";
 import { subscribeTurns } from "@/lib/events";
 import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
+import type { OrchestratorPrefill } from "@/lib/atoms";
 
 // How close to the bottom still counts as "following". A few pixels of slack absorbs sub-pixel
 // rounding and the composer resizing, so following doesn't switch off on its own.
@@ -246,8 +247,10 @@ function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () =>
  *  differently coloured strip under it. The composer's toolbar always carries the model picker and
  *  the context ring (ChatControls); `controls` supplies their values when they don't come from the
  *  row's card. Everything else about the panel is the same. */
-export function ChatPanel({ row, send, flush, controls, logBar }: {
+export function ChatPanel({ row, send, flush, controls, logBar, prefill }: {
   row: Row; send?: (text: string, images: File[]) => Promise<void>; flush?: boolean; controls?: ChatControlsProps;
+  /** Text for the composer from outside it (the orchestrator's entry) — see ChatComposer. */
+  prefill?: OrchestratorPrefill | null;
   /** The Agent page's Build-Logs framing: a bar with the turn count, error / warning counters and
    *  Find in chat, and timestamped, tinted turns. */
   logBar?: boolean;
@@ -448,6 +451,7 @@ export function ChatPanel({ row, send, flush, controls, logBar }: {
         placeholder={running ? "The agent is working — queue the next instruction…" : `Reply to ${modelLabel(modelFor(row))}…`}
         history={row.followUps}
         onSubmit={submit}
+        prefill={prefill}
         // Interrupt + message as ONE gesture, the way Managed Agents pairs user.interrupt with the
         // next user.message: the run is stopped and the text goes straight after it. If the process
         // hasn't exited by the time the message arrives it is queued and dispatched on exit, so the
