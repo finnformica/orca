@@ -5,12 +5,13 @@
 // review cluster, the instance, when it last moved, and the actions. Columns flex and truncate, so
 // the list never scrolls sideways. Clicking a row opens its agent page; every action is in the
 // trailing ⋯ and on right-click (WorkstreamActions, menu-only). The swimlanes stay behind List | Board.
-import { useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { Bot, Columns3, GitPullRequest, List, Loader2, Rows2, Rows3, Search, X } from "lucide-react";
 import { agentQueryAtom, boardViewAtom, densityAtom, instanceScopeAtom, repoFilterAtom, type BoardView } from "@/lib/atoms";
 import { navigate, useSearch } from "@/lib/route";
 import { useNow } from "@/lib/ticker";
+import { oneOf, persistedKey, readPersisted, usePersisted, writePersisted } from "@/lib/persisted";
 import { instanceChoices, modelFor, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
 import {
   DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, SORT_LABELS, ago, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed, lastActivity,
@@ -78,8 +79,27 @@ function AgentsList() {
   const [q, setQ] = useAtom(agentQueryAtom);
   const search = useSearch();
   const quick = parseQuickFilter(search);
-  const [sort, setSort] = useState<ListSort>("updated");
+  const [sort, setSort] = usePersisted<ListSort>(persistedKey("agents.sort"), "updated", oneOf(...(Object.keys(SORT_LABELS) as ListSort[])));
   const here = thisInstance();
+  const filtersKey = persistedKey("agents.filters", repo); // the chips + search, per repo scope
+  // The URL is the source of truth whenever it has a query (links keep working); /agents opened
+  // bare restores this scope's last chips + search and writes them into the URL. Every change after
+  // that is saved, so Clear (an empty query, no search) is remembered too.
+  const restoredFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (restoredFor.current !== filtersKey) {
+      restoredFor.current = filtersKey;
+      if (!search) {
+        const saved = readPersisted(filtersKey, NO_SAVED_FILTERS, isSavedFilters);
+        const restoreQ = !q && saved.q; // a query the Find box just typed wins over the saved one
+        if (restoreQ) setQ(saved.q);
+        const query = quickFilterQuery(parseQuickFilter(saved.query)); // re-normalised: never trust stored text as-is
+        if (query) { navigate(`/agents${query}`, true); return; }
+        if (restoreQ) return;
+      }
+    }
+    writePersisted(filtersKey, { query: quickFilterQuery(quick), q });
+  }, [filtersKey, search, q]); // quick derives from search
   // The scopes first (they hold on every page), then the search box, then the quick chips.
   const scoped = filterRows(all, { ...DEFAULT_LIST_FILTER, repo, instance, q }, here);
   const visible = sortRows(applyQuickFilter(scoped, quick, here), sort);
@@ -88,7 +108,7 @@ function AgentsList() {
   const cols = listColumns({ multiInstance: instanceChoices().length > 1 });
   return (
     <section aria-label="Agents" className="space-y-3">
-      <FilterRow scoped={scoped} quick={quick} setQuick={setQuick} visible={visible} total={all.length} q={q} setQ={setQ} sort={sort} setSort={setSort}
+      <FilterRow scoped={scoped} quick={quick} setQuick={setQuick} clear={clear} visible={visible} total={all.length} q={q} setQ={setQ} sort={sort} setSort={setSort}
         showRepos={repo === "all"} showInstances={instance === "all"} />
       <div data-slot="workstream-list" role="table" aria-label="Workstreams" className="bg-card overflow-hidden rounded-lg border">
         {visible.length > 0 && <ListHeader cols={cols} />}
@@ -103,13 +123,19 @@ function AgentsList() {
   );
 }
 
+// What the Agents list remembers per repo scope: the chips as their URL query, and the search text.
+type SavedFilters = { query: string; q: string };
+const NO_SAVED_FILTERS: SavedFilters = { query: "", q: "" };
+const isSavedFilters = (v: unknown): v is SavedFilters =>
+  typeof v === "object" && v !== null && typeof (v as SavedFilters).query === "string" && typeof (v as SavedFilters).q === "string";
+
 type Chip = { group: QuickGroup; value: string; label: string; dot?: DotTone };
 
 // Vercel's filter row: one-click chips, each with its count, toggleable and combinable (AND across
 // groups, OR within one); the URL query holds them, so a filtered view is a link. Search and sort sit
 // at the end.
-function FilterRow({ scoped, quick, setQuick, visible, total, q, setQ, sort, setSort, showRepos, showInstances }: {
-  scoped: Row[]; quick: QuickFilter; setQuick: (f: QuickFilter) => void; visible: Row[]; total: number;
+function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, sort, setSort, showRepos, showInstances }: {
+  scoped: Row[]; quick: QuickFilter; setQuick: (f: QuickFilter) => void; clear: () => void; visible: Row[]; total: number;
   q: string; setQ: (v: string) => void; sort: ListSort; setSort: (s: ListSort) => void;
   showRepos: boolean; showInstances: boolean;
 }) {
@@ -144,8 +170,8 @@ function FilterRow({ scoped, quick, setQuick, visible, total, q, setQ, sort, set
             </button>
           );
         })}
-        {quickActive(quick) && (
-          <button type="button" onClick={() => setQuick(NO_QUICK_FILTER)} className="text-muted-foreground hover:text-foreground inline-flex h-7 items-center gap-1 px-1.5 text-[13px]">
+        {(quickActive(quick) || q) && (
+          <button type="button" data-slot="clear-filters" onClick={clear} title="Clear the chips and the search (here and in what's remembered)" className="text-muted-foreground hover:text-foreground inline-flex h-7 items-center gap-1 px-1.5 text-[13px]">
             <X className="size-3.5" /> Clear
           </button>
         )}
