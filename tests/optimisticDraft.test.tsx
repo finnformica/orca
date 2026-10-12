@@ -11,6 +11,7 @@ import { apiFake } from "./apiFake";
 import { AUTO_MODEL } from "../shared/models";
 import * as store from "@/store";
 import type { OptimisticDraft } from "@/store";
+import { draftInstance } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -139,6 +140,9 @@ describe("a New draft left to the orchestrator (Auto)", () => {
 });
 
 describe("placement across instances", () => {
+  // The New-draft box no longer has a picker (see draftInstance below) — this exercises the
+  // underlying store contract that the box's direct-launch path and a card's move-to-instance
+  // action both still rely on: an explicit instance carries to the worktree and the first run.
   test("a New draft carries the chosen instance to the worktree and the first run; the repo's default is implied", async () => {
     mount();
     act(() => { store.createWorkstream("r", "Build it here", [], "claude-sonnet-5", { instance: "cloud" }); });
@@ -146,5 +150,20 @@ describe("placement across instances", () => {
     expect(apiFake.createWorktreeCalls.at(-1)).toMatchObject({ repo: "r", instance: "cloud" });
     await act(async () => { apiFake.pending!({ branch: "b1", worktreePath: "/wt/b1", title: "t" }); await flush(); await flush(); });
     expect(apiFake.agentLaunches.at(-1)).toMatchObject({ key: "/wt/b1", instance: "cloud" });
+  });
+});
+
+describe("draftInstance (pure)", () => {
+  test("a direct launch (model chosen) picks the instance named \"local\" when one is configured, regardless of the repo's own default", () => {
+    expect(draftInstance("claude-sonnet-5", ["laptop", "cloud", "local"], "cloud")).toBe("local");
+  });
+
+  test("a direct launch falls back to the repo's default when no instance is named \"local\"", () => {
+    expect(draftInstance("claude-sonnet-5", ["laptop", "cloud"], "cloud")).toBe("cloud");
+    expect(draftInstance("claude-sonnet-5", ["laptop", "cloud"], undefined)).toBeUndefined();
+  });
+
+  test("left to the orchestrator (Auto), placement is untouched — no explicit instance, even with a \"local\" one configured", () => {
+    expect(draftInstance(AUTO_MODEL, ["laptop", "cloud", "local"], "cloud")).toBeUndefined();
   });
 });

@@ -43,4 +43,9 @@ describe("sticky new-draft box", () => {
     expect(sticky!.className).toMatch(/\bbg-background\b/);
     expect(sticky!.className).toMatch(/-mx-2/);
   });
+
+  test("the box has no instance ('Run on') picker — drafts always start local, moved to cloud from the card instead", async () => {
+    await mount();
+    expect(container!.querySelector('[aria-label="Run on"]')).toBeNull();
+  });
 });
