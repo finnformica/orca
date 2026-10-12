@@ -312,6 +312,7 @@ export function FollowUpComposer(
       autoFocus
       optimistic
       persistKey={key}
+      repo={row.repo}
       // ↑/↓ from an empty box recall past follow-ups sent on this branch — resend the last one after
       // an error without retyping. Kept in enrichment (row.followUps) until the branch ends.
       history={row.followUps}

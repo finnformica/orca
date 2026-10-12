@@ -331,6 +331,7 @@ function NewDraft() {
   return (
     <ChatComposer
       persistKey="orca.newDraft"
+      repo={active}
       placeholder="Describe a feature…"
       onSubmit={async (text, images) => {
         setUndoable(createWorkstream(active, text, images, model, { instance: placed }));
@@ -401,7 +402,7 @@ function NewChatDialog({ open, onClose, repo, model, onSubmit }: { open: boolean
     <dialog ref={ref} onClose={onClose} onCancel={onClose} onClick={(e) => { if (e.target === ref.current) onClose(); }} className="bg-card text-foreground m-auto w-[90vw] max-w-2xl rounded-lg border p-0 shadow-lg backdrop:bg-black/50">
       <div className="flex flex-col gap-2 p-3">
         <div className="text-muted-foreground text-xs">New chat · {repo} · {modelLabel(model)}</div>
-        {open && <ChatComposer autoFocus persistKey="orca.newChat" placeholder="Ask anything…" onSubmit={onSubmit} onCancel={onClose} />}
+        {open && <ChatComposer autoFocus repo={repo} persistKey="orca.newChat" placeholder="Ask anything…" onSubmit={onSubmit} onCancel={onClose} />}
       </div>
     </dialog>
   );

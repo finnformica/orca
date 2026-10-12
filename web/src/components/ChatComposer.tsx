@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { ArrowUp, FileText, Loader2, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { usePrRefs } from "@/store";
+import { filterPrRefs, insertPrRef, prRefLabel, prTrigger, type PrRef } from "@/workstream";
 import { cn } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
 
@@ -18,8 +20,11 @@ export function stepHistory(idx: number | null, dir: "up" | "down", len: number)
 }
 
 export function ChatComposer({
-  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt, className,
+  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt, className, repo,
 }: {
+  // The repo this conversation is about (a workstream's, the new-draft box's selection). The # PR
+  // picker inserts a bare `#123` for that repo's PRs and `repo#123` for any other's.
+  repo?: string;
   className?: string; // extra classes for the box itself, e.g. a host's own background
   persistKey?: string; // if set, text + images persist to localStorage under this key
   onSubmit: (text: string, images: File[]) => Promise<void>;
@@ -49,6 +54,34 @@ export function ChatComposer({
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
+
+  // # PR picker: the `#query` at the caret lists the board's cached PRs (open first). Escape
+  // dismisses it for THAT `#` (until a new one is typed); a pick replaces the query with the ref.
+  const { refs, repoCount } = usePrRefs();
+  const [caret, setCaret] = useState(0);
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
+  const [active, setActive] = useState(0);
+  const pendingCaret = useRef<number | null>(null);
+  const listId = useId();
+  const trig = prTrigger(value, caret);
+  const matches = trig && trig.start !== dismissedAt ? filterPrRefs(refs, trig.query) : [];
+  const picking = matches.length > 0;
+  const activeIdx = Math.min(active, Math.max(0, matches.length - 1));
+  const optionId = (i: number) => `${listId}-pr-${i}`;
+  const pick = (ref: PrRef) => {
+    if (!trig) return;
+    const next = insertPrRef(value, trig.start, caret, prRefLabel(ref, refs, repoCount, repo));
+    pendingCaret.current = next.caret;
+    setDismissedAt(trig.start); // `#6101 ` still parses as a trigger; a pick is done with it
+    setValue(next.text);
+    setCaret(next.caret);
+    setHistIdx(null);
+  };
+  // Put the caret after an inserted ref once React has written the new value.
+  useLayoutEffect(() => {
+    const el = textRef.current;
+    if (el && pendingCaret.current !== null) { el.focus(); el.setSelectionRange(pendingCaret.current, pendingCaret.current); pendingCaret.current = null; }
+  }, [value]);
 
   // Clicking anywhere in the chrome (border, padding, toolbar gap) focuses the textarea, so the
   // whole box behaves like one input. preventDefault keeps the existing caret/selection intact.
@@ -119,6 +152,13 @@ export function ChatComposer({
   // Recall a history entry (or clear to empty at idx null) into the box.
   const recall = (idx: number | null) => { setHistIdx(idx); setValue(idx === null ? "" : (history?.[idx] ?? "")); };
   const onKey = (e: KeyboardEvent) => {
+    if (picking && !e.nativeEvent.isComposing) {
+      const n = matches.length;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); setActive((activeIdx + (e.key === "ArrowDown" ? 1 : n - 1)) % n); return; }
+      if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); pick(matches[activeIdx]!); return; }
+      // preventDefault also keeps a host <dialog> from closing on this Escape.
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setDismissedAt(trig!.start); return; }
+    }
     // Enter sends, like a chat; Shift/⌘/Ctrl+Enter breaks the line. (It was ⌘+Enter to send.) A
     // textarea inserts the newline for Shift on its own; ⌘/Ctrl need it put in by hand.
     if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); return; }
@@ -141,7 +181,7 @@ export function ChatComposer({
   const cancel = () => { if (persistKey) clearDraft(persistKey); onCancel?.(); };
 
   return (
-    <div>
+    <div className="relative">
       <div
         className={cn("bg-card focus-within:border-ring focus-within:ring-ring/50 cursor-text rounded-md border shadow-sm transition-[color,box-shadow] focus-within:ring-[3px]", className)}
         onMouseDown={focusText}
@@ -160,7 +200,18 @@ export function ChatComposer({
           className="placeholder:text-muted-foreground field-sizing-content max-h-48 w-full resize-none bg-transparent px-3 py-2.5 text-sm outline-none"
           placeholder={placeholder}
           value={value}
-          onChange={(e) => { setValue(e.target.value); setHistIdx(null); }}
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={picking}
+          aria-controls={picking ? listId : undefined}
+          aria-activedescendant={picking ? optionId(activeIdx) : undefined}
+          onChange={(e) => {
+            const t = prTrigger(e.target.value, e.target.selectionStart);
+            if (t?.start !== dismissedAt) setDismissedAt(null); // a new (or no) `#` re-arms the picker
+            setValue(e.target.value); setCaret(e.target.selectionStart); setActive(0); setHistIdx(null);
+          }}
+          onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+          onBlur={() => { if (trig) setDismissedAt(trig.start); }}
           onKeyDown={onKey}
           onPaste={onPaste}
         />
@@ -185,6 +236,37 @@ export function ChatComposer({
           </div>
         </div>
       </div>
+      {picking && (
+        // Inline, not a portaled popover: the composer lives in modal <dialog>s (top layer) and the
+        // orchestrator's PiP window, where a body portal would sit behind or outside it. Opens upward
+        // (chat boxes sit low) unless the box is near the top of the viewport (the new-draft box).
+        <div
+          className={cn(
+            "bg-popover text-popover-foreground absolute left-0 z-50 w-full max-w-md rounded-md border p-1 shadow-md",
+            (textRef.current?.getBoundingClientRect().top ?? 0) < 280 ? "top-full mt-1" : "bottom-full mb-1",
+          )}
+        >
+        <ul id={listId} role="listbox" aria-label="Pull requests" className="max-h-64 overflow-y-auto">
+          {matches.map((r, i) => (
+            <li
+              key={`${r.repo}#${r.number}`}
+              id={optionId(i)}
+              role="option"
+              aria-selected={i === activeIdx}
+              className={cn("flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm", i === activeIdx && "bg-accent text-accent-foreground")}
+              onMouseDown={(e) => e.preventDefault()} // keep the textarea's focus + caret
+              onMouseEnter={() => setActive(i)}
+              onClick={() => pick(r)}
+            >
+              <span className="text-muted-foreground shrink-0 font-mono text-xs">#{r.number}</span>
+              <span className="min-w-0 flex-1 truncate">{r.title}</span>
+              {repoCount > 1 && <span className="text-muted-foreground shrink-0 text-xs">{r.repo}</span>}
+              {r.state !== "open" && <span className="text-muted-foreground shrink-0 rounded border px-1 text-[10px]">{r.state}</span>}
+            </li>
+          ))}
+        </ul>
+        </div>
+      )}
       {error && <p className="text-destructive mt-1 px-1 text-xs break-words">{error}</p>}
       {footer}
     </div>

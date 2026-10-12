@@ -414,6 +414,7 @@ export function ChatPanel({ row, send, flush, controls }: {
         leading={<ChatControls {...ctl} compact={ctl.contextPct === undefined && compacting === null ? undefined
           : { onCompact, pending: compacting !== null, busy: running, error: compactError }} />}
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
+        repo={row.repo}
         placeholder={running ? "The agent is working — queue the next instruction…" : `Reply to ${modelLabel(modelFor(row))}…`}
         history={row.followUps}
         onSubmit={submit}
