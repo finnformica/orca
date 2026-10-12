@@ -6,43 +6,55 @@
 import { useState } from "react";
 import { useAtom } from "jotai";
 import { AlertTriangle, ChevronDown, ChevronUp, Server } from "lucide-react";
-import { usageExpandedAtom } from "@/lib/atoms";
-import { useHealth, useHealthHistory, useUsage } from "@/lib/vitals";
+import { usageExpandedAtom, usageStatsExpandedAtom } from "@/lib/atoms";
+import { useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
 import { HISTORY_RANGES, downsample, routingBroken, usageGroups, type UsageGroup } from "../workstream";
-import { Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, VCard } from "@/components/console";
+import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, RowSkeleton, Segmented, StatusDot, VCard, type ChartOverlay } from "@/components/console";
 
-/** `all`: the Usage page — every login, no toggle. On the Overview the card shows the fleet and
- *  Codex, and Vercel's chevron (or the header row) toggles the per-login breakdown; remembered. */
+/** `all`: the Usage page — every login (never just the fleet), and the whole card is itself
+ *  collapsible (starts collapsed, remembered — `orca.usageStatsExpanded`). On the Overview the card
+ *  is always open, and Vercel's chevron (or the header row) toggles the per-login breakdown instead
+ *  (`orca.usageExpanded`) — the two toggles are independent, since they collapse different things. */
 export function UsageCard({ all = false }: { all?: boolean }) {
   const usage = useUsage();
+  const loaded = useUsageLoaded();
   const groups = usageGroups(usage);
   const [stored, setStored] = useAtom(usageExpandedAtom);
-  const expanded = all || stored;
+  const [sectionStored, setSectionStored] = useAtom(usageStatsExpandedAtom);
+  const sectionExpanded = !all || sectionStored;
+  const loginsExpanded = all || stored;
   const logins = groups.filter((g) => g.key.startsWith("login:")).length;
-  const canToggle = !all && logins > 0;
-  const toggle = () => setStored(!stored);
-  const shown = expanded ? groups : groups.filter((g) => !g.key.startsWith("login:"));
+  const canToggleLogins = !all && logins > 0;
+  const toggleLogins = () => setStored(!stored);
+  const toggleSection = () => setSectionStored(!sectionStored);
+  const shown = loginsExpanded ? groups : groups.filter((g) => !g.key.startsWith("login:"));
   return (
     <VCard slot="usage-card" title="Current windows" aside={<span className="text-muted-foreground text-xs">Claude &amp; Codex limits</span>}
-      onHeaderClick={canToggle ? toggle : undefined} expanded={canToggle ? expanded : undefined}>
-      {routingBroken(usage) && (
-        <div data-slot="routing-warning" title="Claude Code's updater rewrote ~/.local/bin/claude. Re-run hydra's install.sh --shim on the bridge's machine."
-          className="bg-geist-warning-bg text-geist-warning-fg flex items-start gap-2 border-b px-4 py-2 text-xs">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-          <span>Claude routing off: hydra is installed but the bridge's <code>claude</code> isn't its shim, so every run lands on the default login.</span>
-        </div>
-      )}
-      {!groups.length ? <Empty>No provider is signed in on this machine.</Empty> : (
-        <div className="p-2">
-          {shown.map((g) => <UsageGroupRows key={g.key} group={g} />)}
-          {canToggle && (
-            <button type="button" data-slot="usage-toggle" aria-expanded={expanded} onClick={toggle}
-              className="text-muted-foreground hover:text-foreground flex w-full items-center justify-center gap-1 py-1.5 text-xs">
-              {expanded ? <>Show less <ChevronUp className="size-3.5" /></> : <>Show {logins} login{logins === 1 ? "" : "s"} <ChevronDown className="size-3.5" /></>}
-            </button>
-          )}
-        </div>
-      )}
+      onHeaderClick={all ? toggleSection : canToggleLogins ? toggleLogins : undefined} expanded={all ? sectionExpanded : canToggleLogins ? loginsExpanded : undefined}>
+      {sectionExpanded && (<>
+        {routingBroken(usage) && (
+          <div data-slot="routing-warning" title="Claude Code's updater rewrote ~/.local/bin/claude. Re-run hydra's install.sh --shim on the bridge's machine."
+            className="bg-geist-warning-bg text-geist-warning-fg flex items-start gap-2 border-b px-4 py-2 text-xs">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+            <span>Claude routing off: hydra is installed but the bridge's <code>claude</code> isn't its shim, so every run lands on the default login.</span>
+          </div>
+        )}
+        {!loaded ? (
+          <div data-slot="usage-skeleton" className="space-y-1 p-2">
+            <RowSkeleton /><RowSkeleton />
+          </div>
+        ) : !groups.length ? <Empty>No provider is signed in on this machine.</Empty> : (
+          <div className="p-2">
+            {shown.map((g) => <UsageGroupRows key={g.key} group={g} />)}
+            {canToggleLogins && (
+              <button type="button" data-slot="usage-toggle" aria-expanded={loginsExpanded} onClick={toggleLogins}
+                className="text-muted-foreground hover:text-foreground flex w-full items-center justify-center gap-1 py-1.5 text-xs">
+                {loginsExpanded ? <>Show less <ChevronUp className="size-3.5" /></> : <>Show {logins} login{logins === 1 ? "" : "s"} <ChevronDown className="size-3.5" /></>}
+              </button>
+            )}
+          </div>
+        )}
+      </>)}
     </VCard>
   );
 }
@@ -83,6 +95,10 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const cpu = downsample((history ?? []).map((p) => ({ at: p.at, v: p.cpuPct })), 300, from, to);
   const mem = downsample((history ?? []).map((p) => ({ at: p.at, v: p.memUsedGb })), 300, from, to);
   const memTotal = h?.memTotalGb ?? Math.max(1, ...(history ?? []).map((p) => p.memTotalGb));
+  // Running sessions on this instance, same window and downsampling as cpu/mem — overlaid on both
+  // graphs as a pink series on its own right-hand axis (a different scale: a small integer count).
+  const sessions = downsample((history ?? []).map((p) => ({ at: p.at, v: p.runningAgents ?? 0 })), 300, from, to);
+  const sessionsOverlay: ChartOverlay = { points: sessions, label: "Sessions", fmt: (v) => `${Math.round(v)}`, color: "var(--geist-pink)" };
   const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
   return (
     <VCard
@@ -100,12 +116,16 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
         <Detail label="Uptime">{h ? fmtUptime(h.uptimeS) : "—"}</Detail>
         <Detail label="Cost" slot="instance-cost">{h?.cost ? <span className="tabular-nums" title={`estimated at $${h.cost.hourlyUsd}/h since ${h.cost.sinceIso.slice(0, 10)}`}>${h.cost.monthUsd.toFixed(2)} <span className="text-muted-foreground text-xs">this month</span></span> : "—"}</Detail>
       </div>
-      {history === null ? <p className="text-muted-foreground p-4 text-sm">Loading history…</p>
+      {history === null ? (
+          <div className="grid gap-6 p-4 md:grid-cols-2">
+            <ChartSkeleton slot="chart-cpu-skeleton" /><ChartSkeleton slot="chart-mem-skeleton" />
+          </div>
+        )
         : !history.length ? <Empty>No history recorded yet — the sampler writes once a minute.</Empty>
         : (
           <div className="grid gap-6 p-4 md:grid-cols-2">
-            <LineChart slot="chart-cpu" label="CPU" points={cpu} from={from} to={to} max={100} fmt={(v) => `${Math.round(v)}%`} />
-            <LineChart slot="chart-mem" label="Memory used" points={mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" />
+            <LineChart slot="chart-cpu" label="CPU" points={cpu} from={from} to={to} max={100} fmt={(v) => `${Math.round(v)}%`} overlay={sessionsOverlay} />
+            <LineChart slot="chart-mem" label="Memory used" points={mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" overlay={sessionsOverlay} />
           </div>
         )}
     </VCard>

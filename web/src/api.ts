@@ -39,7 +39,7 @@ export type InstanceHealth = {
   cost?: { monthUsd: number; hourlyUsd: number; sinceIso: string }; at: number;
 };
 /** One recorded sample of an instance's vitals (instance_metric), for the chip's history graphs. */
-export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number };
+export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; runningAgents: number };
 export type PreviewSvc = { name: string; port: number; url: string; localUrl?: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const post = (path: string, body: unknown) =>

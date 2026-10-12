@@ -9,12 +9,12 @@ import { useAtomValue, useSetAtom } from "jotai";
 import { Activity } from "lucide-react";
 import { agentQueryAtom, instanceScopeAtom, repoFilterAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
-import { instanceChoices, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
+import { instanceChoices, thisInstance, useRepos, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
 import {
   DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, ago, attentionReasons, filterRows, quickFilterQuery, type QuickFilter, overviewStats, recentActivity, sparklineSegments,
   type ActivityItem, type OverviewLane,
 } from "../workstream";
-import { Empty, SectionTitle, StatusDot, VCard, type DotTone } from "@/components/console";
+import { Empty, SectionTitle, StatSkeleton, StatusDot, VCard, type DotTone } from "@/components/console";
 import { InstanceCard, UsageCard } from "./Vitals";
 import { detailPath } from "./Agents";
 
@@ -50,6 +50,7 @@ export function Overview() {
 // ---- Agents: four numbers in one card ----
 
 function AgentsSnapshot({ rows }: { rows: Row[] }) {
+  const loaded = useWorkstreamsLoaded();
   const s = overviewStats(rows);
   const setQ = useSetAtom(agentQueryAtom);
   // Open the Agents list with the quick chips that count exactly this — a link, like any filtered view.
@@ -59,6 +60,13 @@ function AgentsSnapshot({ rows }: { rows: Row[] }) {
     { lane: "IN_REVIEW", n: s.prs.inReview, cls: "bg-geist-amber", chip: "open" },
     { lane: "MERGEABLE", n: s.prs.mergeable, cls: "bg-geist-blue", chip: "mergeable" },
   ];
+  if (!loaded) {
+    return (
+      <VCard slot="agents-card" bodyClass="grid grid-cols-2 [&>*:nth-child(odd)]:border-r [&>*:nth-child(n+3)]:border-t">
+        {[0, 1, 2, 3].map((i) => <StatSkeleton key={i} />)}
+      </VCard>
+    );
+  }
   return (
     <VCard slot="agents-card" bodyClass="grid grid-cols-2 [&>*:nth-child(odd)]:border-r [&>*:nth-child(n+3)]:border-t">
       <Stat slot="running" label="Running" value={s.running} onClick={open({ status: ["running"] })} dot={s.running ? "building" : "neutral"}

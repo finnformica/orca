@@ -101,19 +101,34 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
   );
 }
 
+/** A second series sharing the x-axis but plotted against its own right-hand y-axis — a different
+ *  scale (e.g. a session count) overlaid on the same timeline as the main series. */
+export type ChartOverlay = {
+  points: { at: number; v: number }[]; label: string; fmt: (v: number) => string;
+  axis?: (v: number) => string; color?: string; max?: number;
+};
+
 /** A line chart with a y-axis (0 → a round max), time ticks under it and a hover readout — Vercel's
- *  Observability graphs. Gaps in the samples (a box that was down) break the line. */
-export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot, color = "var(--geist-blue)", height = 120 }: {
+ *  Observability graphs. Gaps in the samples (a box that was down) break the line. An `overlay`
+ *  draws a second series (its own right-hand axis, same x-domain) on top — e.g. running sessions on
+ *  a CPU/memory graph. */
+export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot, color = "var(--geist-blue)", height = 120, overlay }: {
   points: { at: number; v: number }[]; from: number; to: number; max?: number; fmt: (v: number) => string;
   /** The y-axis labels' format, when the readout's is too long for the gutter ("36G", not "36.0 GB"). */
   axis?: (v: number) => string;
-  label: string; slot?: string; color?: string; height?: number;
+  label: string; slot?: string; color?: string; height?: number; overlay?: ChartOverlay;
 }) {
   const W = 600, H = height;
   const top = max ?? niceMax(Math.max(0, ...points.map((p) => p.v)) * 1.1);
+  const overlayTop = overlay ? overlay.max ?? niceMax(Math.max(0, ...overlay.points.map((p) => p.v)) * 1.1) : 0;
+  const overlayColor = overlay?.color ?? "var(--geist-pink)";
+  const overlayAxis = overlay?.axis ?? overlay?.fmt;
   const [hover, setHover] = useState<{ at: number; v: number } | null>(null);
   const last = points[points.length - 1];
   const shown = hover ?? last;
+  const nearestTo = (list: { at: number; v: number }[], at: number) =>
+    list.length ? list.reduce((a, b) => (Math.abs(b.at - at) < Math.abs(a.at - at) ? b : a)) : undefined;
+  const overlayShown = overlay && shown ? nearestTo(overlay.points, shown.at) : undefined;
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     if (!points.length) return;
     const r = e.currentTarget.getBoundingClientRect();
@@ -121,13 +136,16 @@ export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot,
     setHover(points.reduce((a, b) => (Math.abs(b.at - at) < Math.abs(a.at - at) ? b : a)));
   };
   const x = (at: number) => ((at - from) / Math.max(1, to - from)) * W;
-  const segs = sparklineSegments(points, { from, to, max: top, w: W, h: H, gapMs: Math.max(5 * 60_000, (to - from) / 150) });
+  const gapMs = Math.max(5 * 60_000, (to - from) / 150);
+  const segs = sparklineSegments(points, { from, to, max: top, w: W, h: H, gapMs });
+  const overlaySegs = overlay ? sparklineSegments(overlay.points, { from, to, max: overlayTop, w: W, h: H, gapMs }) : [];
   return (
     <figure data-slot={slot} className="min-w-0">
       <figcaption className="mb-2 flex items-baseline justify-between gap-2">
         <span className="text-muted-foreground text-xs">{label}</span>
         <span data-slot="chart-value" className="text-sm font-medium tabular-nums">
           {shown ? fmt(shown.v) : "—"}
+          {overlay && overlayShown && <span data-slot="chart-overlay-value" className="ml-1.5 text-xs font-normal" style={{ color: overlayColor }}>{overlay.fmt(overlayShown.v)} {overlay.label.toLowerCase()}</span>}
           {hover && <span className="text-muted-foreground ml-1 text-xs font-normal">at {new Date(hover.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</span>}
         </span>
       </figcaption>
@@ -139,15 +157,61 @@ export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot,
           aria-label={`${label}${last ? `, now ${fmt(last.v)}` : ", no samples"}`} onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
           {[0, 0.5, 1].map((f) => <line key={f} x1={0} x2={W} y1={H * f} y2={H * f} className="stroke-border" strokeWidth={1} strokeDasharray={f === 1 ? undefined : "3 3"} vectorEffect="non-scaling-stroke" />)}
           {segs.map((pts, i) => <polyline key={i} points={pts} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />)}
+          {overlaySegs.map((pts, i) => <polyline key={`overlay-${i}`} points={pts} fill="none" stroke={overlayColor} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" strokeDasharray="4 2" vectorEffect="non-scaling-stroke" />)}
           {hover && <line x1={x(hover.at)} x2={x(hover.at)} y1={0} y2={H} className="stroke-muted-foreground" strokeWidth={1} strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />}
         </svg>
+        {overlay && overlayAxis && (
+          <div data-slot="chart-axis-right" className="flex w-8 shrink-0 flex-col justify-between text-left font-mono text-[10px] whitespace-nowrap tabular-nums" style={{ height: H, color: overlayColor }}>
+            <span className="-translate-y-1/2">{overlayAxis(overlayTop)}</span><span>{overlayAxis(overlayTop / 2)}</span><span className="translate-y-1/2">{overlayAxis(0)}</span>
+          </div>
+        )}
       </div>
-      <div className="text-muted-foreground mt-1 flex justify-between pl-10 font-mono text-[10px]">
+      <div className={cn("text-muted-foreground mt-1 flex justify-between pl-10 font-mono text-[10px]", overlay && "pr-10")}>
         {timeTicks(from, to, 4).map((t) => <span key={t.at}>{t.label}</span>)}
       </div>
     </figure>
   );
 }
+
+/** A loading placeholder — a shimmering block sized like whatever final content it stands in for,
+ *  so a card doesn't shift when the real data lands. */
+export const Skeleton = ({ className, slot }: { className?: string; slot?: string }) => (
+  <div data-slot={slot ?? "skeleton"} aria-hidden="true" className={cn("bg-accent animate-pulse rounded-md", className)} />
+);
+
+/** A `LineChart`-shaped placeholder: label + value line, the chart block itself, and the tick row. */
+export function ChartSkeleton({ slot }: { slot?: string }) {
+  return (
+    <div data-slot={slot ?? "chart-skeleton"} className="min-w-0">
+      <div className="mb-2 flex items-baseline justify-between gap-2">
+        <Skeleton className="h-3 w-16" />
+        <Skeleton className="h-4 w-12" />
+      </div>
+      <Skeleton className="h-[120px] w-full" />
+      <div className="mt-1 flex justify-between pl-10">
+        {[0, 1, 2, 3].map((i) => <Skeleton key={i} className="h-2.5 w-8" />)}
+      </div>
+    </div>
+  );
+}
+
+/** A usage-row-shaped placeholder: ring + label + value. */
+export const RowSkeleton = ({ slot }: { slot?: string }) => (
+  <div data-slot={slot ?? "row-skeleton"} className="flex h-9 items-center gap-2.5 rounded-md px-2">
+    <Skeleton className="size-4 shrink-0 rounded-full" />
+    <Skeleton className="h-3 flex-1" />
+    <Skeleton className="h-3 w-10 shrink-0" />
+  </div>
+);
+
+/** A `Stat` tile-shaped placeholder (Overview's Agents card numbers). */
+export const StatSkeleton = ({ slot }: { slot?: string }) => (
+  <div data-slot={slot ?? "stat-skeleton"} className="min-w-0 space-y-2 p-4">
+    <Skeleton className="h-3 w-20" />
+    <Skeleton className="h-7 w-10" />
+    <Skeleton className="h-4 w-24" />
+  </div>
+);
 
 /** The empty state inside a card (Vercel's centred icon + sentence). */
 export const Empty = ({ children, icon }: { children: ReactNode; icon?: ReactNode }) => (

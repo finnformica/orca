@@ -11,7 +11,7 @@ import * as store from "@/store";
 import { aggregateProfiles, App, mergeUsage, untilReset } from "@/App";
 import { navigate } from "@/lib/route";
 import { getDefaultStore } from "jotai";
-import { usageExpandedAtom } from "@/lib/atoms";
+import { usageExpandedAtom, usageStatsExpandedAtom } from "@/lib/atoms";
 import { shapeCodexUsage, shapeUsage } from "../server/usage";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -36,6 +36,7 @@ afterEach(async () => {
   apiFake.reset();
   localStorage.clear();
   getDefaultStore().set(usageExpandedAtom, false); // the atom outlives localStorage within a run
+  getDefaultStore().set(usageStatsExpandedAtom, false);
   navigate("/");
   await act(async () => { await store.refresh(); });
 });
@@ -77,6 +78,19 @@ test("says so when no provider usage is available", async () => {
   await mount();
   expect(card().textContent).toContain("No provider is signed in");
   expect(card().querySelector("[data-slot='usage-row']")).toBeNull();
+});
+
+test("shows skeleton rows, sized like the real ones, until the first poll answers — not the 'no provider' empty state", async () => {
+  apiFake.holdUsage = true;
+  await mount();
+  expect(card().querySelector("[data-slot='usage-skeleton']")).not.toBeNull();
+  expect(card().querySelector("[data-slot='row-skeleton']")).not.toBeNull();
+  expect(card().textContent).not.toContain("No provider is signed in"); // not yet answered — not the same as answered-empty
+  expect(card().querySelector("[data-slot='usage-row']")).toBeNull();
+  apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
+  await act(async () => { apiFake.releaseUsage!(); await flush(); await flush(); });
+  expect(card().querySelector("[data-slot='usage-skeleton']")).toBeNull();
+  expect(rows("claude")).toEqual(["5-hour window 38% / 100%", "Weekly 55% / 100%"]);
 });
 
 test("shows extra-usage spend as money in the plan's currency, used / cap", async () => {
@@ -168,7 +182,9 @@ test("logins that can't be routed to are excluded from the fleet mean but still 
       { name: "old", state: "disabled", usage: null },
     ],
   };
-  await mount("/usage"); // the Usage page lists every login
+  await mount("/usage"); // the Usage page lists every login, once its own card is opened
+  const header = () => card().querySelector<HTMLElement>("[data-slot='card-header']")!;
+  await act(async () => { header().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   expect(group("fleet")!.textContent).toContain("1 login in rotation · 1 exhausted"); // only `work` is in rotation…
   expect(rows("fleet")[0]).toBe("5-hour window 95% / 100%");                          // …so the mean IS its reading
   expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("exhausted");
@@ -240,10 +256,29 @@ test("the card collapses again: Vercel's chevron and the header row both toggle,
   expect(group("login:home")).not.toBeNull();
   await click(header());
   expect(group("login:home")).toBeNull();
-  // The Usage page always lists every login: nothing to toggle there.
+  // The Usage page's whole "Current windows" card is itself collapsible — starts collapsed,
+  // remembered independently of orca.usageExpanded above — and lists every login with no per-login
+  // toggle once open.
+  act(() => root?.unmount()); container?.remove();
+  await mount("/usage");
+  expect(group("login:work")).toBeNull(); // starts collapsed
+  expect(header().getAttribute("aria-expanded")).toBe("false");
+  await click(header());
+  expect(group("login:work")).not.toBeNull();
+  expect(card().querySelector("[data-slot='usage-toggle']")).toBeNull();
+  expect(localStorage.getItem("orca.usageStatsExpanded")).toBe("true");
+  // …and a remount (a reload) keeps it open.
   act(() => root?.unmount()); container?.remove();
   await mount("/usage");
   expect(group("login:work")).not.toBeNull();
-  expect(card().querySelector("[data-slot='usage-toggle']")).toBeNull();
-  expect(header().getAttribute("role")).toBeNull();
+});
+
+test("the Usage page's card starts collapsed even with no hydra logins — just the fleet/Codex rows wait behind the chevron", async () => {
+  apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
+  await mount("/usage");
+  const header = () => card().querySelector<HTMLElement>("[data-slot='card-header']")!;
+  expect(rows("claude")).toEqual([]);
+  expect(header().getAttribute("aria-expanded")).toBe("false");
+  await act(async () => { header().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(rows("claude")).toEqual(["5-hour window 38% / 100%", "Weekly 55% / 100%"]);
 });

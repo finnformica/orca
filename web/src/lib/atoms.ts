@@ -32,3 +32,6 @@ export const instanceScopeAtom = atomWithStorage("orca.instanceScope", "all");
 export const agentQueryAtom = atom("");
 // The Overview's Usage card: just the fleet + Codex, or every hydra login too. Persisted.
 export const usageExpandedAtom = atomWithStorage("orca.usageExpanded", false);
+// The Usage PAGE's whole "Current windows" card, independent of the above: collapsible, starts
+// collapsed (it's the first thing on a page someone usually visits to read ONE number), persisted.
+export const usageStatsExpandedAtom = atomWithStorage("orca.usageStatsExpanded", false);

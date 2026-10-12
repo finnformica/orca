@@ -171,7 +171,13 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   message held behind a run that isn't coming (`/api/agents` attaches each branch's undispatched
   count, `db.queuedCounts`). The Usage card's per-login breakdown is a remembered toggle (the
   chevron at its foot or its header row, `orca.usageExpanded`). The first cut's
-  separate Awaiting-you tiles were dropped as redundant.
+  separate Awaiting-you tiles were dropped as redundant. **Loading states are skeletons, not text**:
+  the Agents card's four stat tiles (`StatSkeleton`), the Usage card's rows (`RowSkeleton`) and each
+  machine's CPU/memory graphs (`ChartSkeleton`, `components/console.tsx`) render placeholders sized
+  like the real content — nothing shifts once the first poll lands. "Not loaded yet" is tracked
+  SEPARATELY from "loaded, genuinely nothing" (`useWorkstreamsLoaded` in `store.ts`,
+  `useUsageLoaded` in `lib/vitals.ts`): both `useWorkstreams()` and `useUsage()` read `null`/`[]` for
+  either case on the wire, which the skeleton can't tell apart from the real value alone.
 - **Agents** (`/agents`, `views/Agents.tsx`): Vercel's Deployments list — one-click **quick
   filter chips** (Needs attention, Running, Mine, Orchestrated, Open PRs, Mergeable, Merged today,
   per instance, per repo; AND across groups, OR within one, each with its count) held in the URL
@@ -187,7 +193,10 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   Source (branch → base, latest commit); then the conversation where Build Logs sit (`ChatPanel
   logBar`: turn / error / warning counters, Find in chat, timestamped, tinted turns, the composer).
 - **Repos**, **Usage** (every login, every machine) and **Settings** (theme, density, the
-  read-only config).
+  read-only config). The Usage page's whole "Current windows" card is ITSELF collapsible — starts
+  collapsed, remembered (`orca.usageStatsExpanded`), independent of the Overview card's per-login
+  toggle above — since someone visiting `/usage` to read one number shouldn't have to scroll past
+  every hydra login first.
 Every number is a pure derivation over the assembled rows (`workstream.ts`: `overviewStats`,
 `attentionReasons`, `filterRows`, `sortRows`, `recentActivity`, `usageGroups`, `rowDuration`,
 `chatSummary`, `repoSummaries`, `agentFailure`) — no endpoint of its own, so the views can't
@@ -501,12 +510,19 @@ owner's tailnet URL, which still lacks a secure context until the tailnet has HT
 worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box it failed with no token.
 **Machine metrics history:** each instance samples ITSELF once a minute (`startMetricsSampler` in
 `server/health.ts`, started from `server/index.ts`, reusing `health()`) into `instance_metric`
-(migration 11: instance, `at`, cpu %, load1, memory used/total, disk used; indexed on
-`(instance, at)`). Every insert also deletes that instance's own rows older than 30 days, so retention
+(migration 11: instance, `at`, cpu %, load1, memory used/total, disk used; migration 13 added
+`running_agents` — the count of leases `lease.live()` finds live at sample time, not agent.ts's
+in-memory `runs` map, so a sample taken right after a restart still counts what's genuinely live;
+nullable, so a pre-migration row reads back as 0 rather than null; indexed on `(instance, at)`).
+Every insert also deletes that instance's own rows older than 30 days, so retention
 needs no second timer; a failed write is logged and swallowed. `GET /api/health/history?instance=&hours=`
 (24 by default, at most 720) is database-only and its `instance` is a filter, never a forward, so
 either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
-CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300 points.
+CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300
+points, with running sessions overlaid on BOTH as a pink series on its own right-hand axis
+(`LineChart`'s `overlay` prop, `components/console.tsx`) — a different scale (a small integer count)
+sharing the same [from, to] window and downsampling as the main series, from the one
+`/api/health/history` poll, never a second fetch.
 **Conversation loading with a remote database:** `/api/turns` attaches steps to the newest
 `STEPS_FOR_TURNS` (40) turns in ONE query (`db.stepsForRuns`); older turns fetch theirs on unfold
 (`/api/turns/steps` from seq 0). One query per turn over a 6ms link made a 300-turn conversation
