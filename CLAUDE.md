@@ -39,7 +39,7 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
 - **One Bun process** (`server/index.ts`, via `Bun.serve`) serves the built React SPA *and*
   a plain-JSON API. `Vite` is dev-only (HMR + proxy). The one streaming surface is the SSE turn
   stream (`/api/turns/stream`) — everything else is request/response. **The API has no auth of its
-  own**, so the listen socket is loopback by default (`ORCA_BIND` overrides it for a deployed
+  own**, so the listen socket is loopback by default (`ORCA_BIND`, comma-separated addresses, adds the tailnet interface for a deployed
   instance, which binds its tailnet address and is reached only over Tailscale — never `0.0.0.0`).
   (History: a keystrokes-into-a-shell terminal WebSocket once made the loopback bind critical; the
   WebSocket is gone, the bind rule stays because the bridge runs agents with repo-granted authority.)
@@ -367,6 +367,11 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   output fed to something that can spawn and send, which is why its authority stops there.
 
 ## Deploying (a cloud box + the laptop, one database)
+
+The two instances are named **`local`** (the laptop, `ORCA_INSTANCE=local`, bound to
+`127.0.0.1,<its tailnet ip>` so the box can reach it) and **`cloud`** (the EC2 box, `orca-box`).
+`instances` in the app config holds both addresses, so a workstream can be placed on either from
+either, and the orchestrator (`orchestratorOn: cloud`) can `spawn --on local`.
 
 Two instances share the Postgres database; each names itself (`ORCA_INSTANCE`, default hostname).
 A repo may be checked out on SEVERAL instances; **a workstream lives on the instance holding its
