@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState } from "react";
-import { useAtom } from "jotai";
-import { Check, CircleUser, FolderSync, Loader2, Monitor, Moon, RefreshCw, Rows2, Rows3, Server, Sun, X } from "lucide-react";
+import { useState } from "react";
+import { useAtom, useAtomValue } from "jotai";
+import { Check, CircleUser, Columns3, FolderSync, List, Loader2, Monitor, Moon, RefreshCw, Rows2, Rows3, Server, Sun, X } from "lucide-react";
 import { navigate, useRoute } from "@/lib/route";
-import { densityAtom, repoFilterAtom } from "@/lib/atoms";
+import { boardViewAtom, densityAtom, repoFilterAtom, type BoardView } from "@/lib/atoms";
 import { useTheme, type Theme } from "@/lib/theme";
 import { api } from "./api";
 import type { ClaudeUsage, CodexUsage, ExtraUsage, Usage, ProfileUsage, UsageWindow } from "../../server/usage";
 import { useRepos } from "./store";
 import { summarizeSync } from "./workstream";
 import { Board } from "./views/Board";
+import { Overview } from "./views/Overview";
 import { PreviewManagerMenu, TestMasterMenu } from "./views/PreviewControl";
 import { PrDetail } from "./views/PrDetail";
 import { LocalDetail } from "./views/LocalDetail";
@@ -21,13 +22,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { OrchestratorButton } from "@/components/Terminal";
 
-import { api as orcaApi, type InstanceHealth } from "./api";
 import { instanceChoices, thisInstance } from "./store";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { poll } from "@/lib/poll";
+import { aggregateProfiles, outOfRotation, useHealth, useUsage } from "@/lib/vitals";
 export function App() {
   const route = useRoute();
   const topLevel = route.name === "board";
+  const view = useAtomValue(boardViewAtom);
   return (
     <div className="w-full px-4 py-4 md:px-6">
       <header className="mb-6 flex items-center gap-3">
@@ -45,15 +46,17 @@ export function App() {
                 <PreviewManagerMenu />
               </div>
             )}
-            {topLevel && <RepoFilter />}
-            {topLevel && <DensityToggle />}
+            {/* The List view has its own filter bar (repo included); these two shape the swimlanes. */}
+            {topLevel && view === "board" && <RepoFilter />}
+            {topLevel && view === "board" && <DensityToggle />}
+            {topLevel && <ViewToggle />}
             <ProfileMenu />
           </div>
         </div>
       </header>
       {route.name === "pr" ? <PrDetail repo={route.repo} number={route.number} sub={route.sub} />
         : route.name === "local" ? <LocalDetail repo={route.repo} branch={route.branch} sub={route.sub} />
-        : <Board />}
+        : view === "board" ? <Board /> : <Overview />}
       <OrchestratorButton />
     </div>
   );
@@ -75,6 +78,27 @@ function OrcaMark({ className }: { className?: string }) {
     <svg viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" className={className} aria-hidden="true">
       <path d="M2 12.5C2 9.5 5.5 8 9 8L11 3L13.5 8C16.5 8 19 8.5 20.5 9L22.5 6L20.3 11L22.5 15.5C19 13 10 14 2 12.5ZM5.6 10a1 1 0 1 0 0 2a1 1 0 1 0 0 -2Z" />
     </svg>
+  );
+}
+
+// "/" as the overview (List, default) or the five swimlanes (Board) — one persisted segmented control.
+const VIEWS: { value: BoardView; label: string; Icon: typeof List }[] = [
+  { value: "list", label: "List", Icon: List },
+  { value: "board", label: "Board", Icon: Columns3 },
+];
+function ViewToggle() {
+  const [view, setView] = useAtom(boardViewAtom);
+  return (
+    <div role="group" aria-label="View" className="bg-muted/50 inline-flex h-8 items-center rounded-md border p-0.5">
+      {VIEWS.map(({ value, label, Icon }) => (
+        <button
+          key={value} type="button" aria-pressed={view === value} onClick={() => setView(value)} title={`${label} view`}
+          className={`inline-flex h-full items-center gap-1.5 rounded-[5px] px-2 text-xs font-medium transition-colors ${view === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+        >
+          <Icon className="size-3.5" /> {label}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -111,44 +135,12 @@ function RepoFilter() {
   );
 }
 
-/** Merge a fresh usage poll over the last-known one, PER PROVIDER: a provider that came back null
- *  this poll (a transient failure, or not fetched yet) keeps its previous value instead of blanking
- *  the bar. Pure, so the belt is testable without a timer. */
-export function mergeUsage(prev: Usage | null, next: Usage): Usage {
-  return { claude: next.claude ?? prev?.claude ?? null, codex: next.codex ?? prev?.codex ?? null, profiles: next.profiles ?? prev?.profiles, routing: next.routing ?? prev?.routing };
-}
+export { mergeUsage } from "@/lib/vitals";
 
-// Provider usage (top-right): two compact terminal-bar groups, side by side.
-// Poll cadence self-adjusts: fast until both bars are filled, then every five minutes.
+// Provider usage (top-right): two compact terminal-bar groups, side by side. The poll is shared with
+// the overview's usage tile (lib/vitals.useUsage).
 function UsageMeter() {
-  const [usage, setUsage] = useState<Usage | null>(null);
-  // Mirror the state for synchronous merge/completeness checks inside the poll loop (setState's
-  // updater can't reliably report back). Not for rendering — that reads `usage`.
-  const latest = useRef<Usage | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    let fastTries = 0;
-    const SLOW = 5 * 60_000, FAST = 15_000, MAX_FAST = 4;
-    const schedule = (ms: number) => { if (!cancelled) timer = setTimeout(load, ms); };
-    // Merge PER PROVIDER: a single provider's transient null — Claude's endpoint rate-limiting, the
-    // Codex app-server handshake timing out, or a just-restarted bridge with a cold cache — must not
-    // drop the OTHER provider that's already showing. Until both are present, retry soon (bounded) so
-    // a cold start fills the bar in seconds; once complete, settle into the slow cadence.
-    const load = () => void api.usage().then((u) => {
-      if (cancelled) return;
-      let complete = false;
-      if (u) {
-        const next = mergeUsage(latest.current, u);
-        latest.current = next;
-        setUsage(next);
-        complete = Boolean(next.claude && next.codex);
-      }
-      schedule(complete || ++fastTries > MAX_FAST ? SLOW : FAST);
-    }).catch(() => schedule(FAST));
-    load();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, []);
+  const usage = useUsage();
   if (!usage) return null;
   return (
     <>
@@ -176,31 +168,7 @@ function UsageMeter() {
 // `name` is the login's hydra profile name (one group per login); `state` is hydra's verdict, shown
 // only when it isn't the ordinary "ok" — exhausted, locked, disabled, token stale, no data yet, not
 // signed in — so a login that can't be used says why instead of showing misleading bars.
-// Logins hydra can't route to right now: no reading, or deliberately out of the rotation. Exhausted
-// and locked logins DO count — they hold a real reading and are exactly what pulls the fleet up.
-const outOfRotation = (p: ProfileUsage): boolean => !p.usage || p.state === "disabled" || p.state === "not signed in on this machine";
-
-export type FleetUsage = { count: number; exhausted: number; fiveHour: UsageWindow; sevenDay: UsageWindow; fable: UsageWindow | null };
-
-/** One reading for the whole fleet: the mean utilization per window across the logins in rotation,
- *  with the soonest reset — so the header answers "how used are my Claude accounts overall" in one
- *  row, and the per-login truth lives in the breakdown. Null when nothing is in rotation. Pure. */
-export function aggregateProfiles(profiles: ProfileUsage[]): FleetUsage | null {
-  const live = profiles.filter((p) => !outOfRotation(p));
-  if (!live.length) return null;
-  const mean = (ws: UsageWindow[]): UsageWindow => ({
-    utilization: Math.round(ws.reduce((s, w) => s + w.utilization, 0) / ws.length),
-    resetsAt: ws.map((w) => w.resetsAt).filter((r): r is string => Boolean(r)).sort()[0] ?? null,
-  });
-  const fables = live.map((p) => p.usage!.fable).filter((w): w is UsageWindow => Boolean(w));
-  return {
-    count: live.length,
-    exhausted: live.filter((p) => p.state === "exhausted" || p.state === "locked").length,
-    fiveHour: mean(live.map((p) => p.usage!.fiveHour)),
-    sevenDay: mean(live.map((p) => p.usage!.sevenDay)),
-    fable: fables.length ? mean(fables) : null,
-  };
-}
+export { aggregateProfiles, type FleetUsage } from "@/lib/vitals";
 
 // The whole fleet as ONE row (three logins × three bars was too much header), with the per-login
 // breakdown in a hover card. Pure CSS hover (group-hover) plus focus-within so it opens from the
@@ -440,15 +408,9 @@ export function InstanceHealthChip() {
   useRepos(); // subscribe: config lands after first paint, and `other` is read from it — without this the chip stayed null for good
   const choices = instanceChoices();
   const other = choices.find((i) => i !== thisInstance());
-  const [h, setH] = useState<InstanceHealth | null>(null);
-  const [down, setDown] = useState(false);
-  useEffect(() => {
-    if (!other) return;
-    let live = true;
-    const load = () => orcaApi.health(other).then((v) => { if (live) { setH(v); setDown(false); } }).catch(() => { if (live) setDown(true); });
-    const stop = poll(load, 15_000);
-    return () => { live = false; stop(); };
-  }, [other]);
+  const reading = useHealth(other ?? null);
+  const h = other ? reading?.health ?? null : null;
+  const down = Boolean(other && reading?.down);
   if (!other) return null;
   const tone = down ? "text-destructive" : (h?.cpuPct ?? 0) >= 80 || (h && h.memUsedGb / h.memTotalGb >= 0.9) ? "text-amber-500" : "text-muted-foreground";
   const uptime = (s: number) => (s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);

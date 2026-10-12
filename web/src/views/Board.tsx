@@ -79,7 +79,7 @@ export function Board() {
 
 // Copies today's completed work as a shareable markdown list (scoped by the active repo filter,
 // since `cards` is already filtered). Handy for standups / status posts.
-function CopyDone({ cards }: { cards: Row[] }) {
+export function CopyDone({ cards }: { cards: Row[] }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
     const text = cards.map((c) => `- ${c.title}${c.prNumber ? ` (#${c.prNumber})` : ""}${c.prUrl ? ` — ${c.prUrl}` : ""}`).join("\n");
@@ -123,7 +123,7 @@ const BULK_RUN: Record<Exclude<BulkAction, "copyLink">, (row: Row) => Promise<un
 // The swimlane's ⋯ menu: run one action across every card in the lane that can take it. The menu is
 // state-gated (workstream.bulkActions), so it only lists work that actually exists and each item
 // says how many cards it will hit.
-function LaneActions({ lane, cards }: { lane: Lane; cards: Row[] }) {
+export function LaneActions({ lane, cards }: { lane: Lane; cards: Row[] }) {
   const [busy, setBusy] = useState<BulkAction | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const groups = bulkActions(lane, cards, { nowMs: Date.now(), staleHours: staleHours() });
@@ -204,7 +204,7 @@ const DestLink = ({ href, children }: { href?: string; children: ReactNode }) =>
 // there's a PR), the worktree name, and "Copy CLI" — the terminal command to resume the agent's
 // session in that worktree (ensures a worktree exists first). All the grab-and-go affordances live
 // here, off the card face, so the header stays uncluttered.
-function CopyMenu({ row }: { row: Row }) {
+export function CopyMenu({ row }: { row: Row }) {
   const [copied, setCopied] = useState(false);
   const flash = () => { setCopied(true); setTimeout(() => setCopied(false), 1500); };
   const copy = (text: string, label: string) => {
@@ -252,7 +252,7 @@ function Diffstat({ summary }: { summary: ChangeSummary }) {
 // choosing re-pins the card so every action — Follow up, Address PR — runs on it (store.setCardModel
 // / modelFor). The tooltip names the last run's model when it differs. stopPropagation keeps a click
 // from bubbling to the card's row navigation.
-function CardModelPicker({ row }: { row: Row }) {
+export function CardModelPicker({ row }: { row: Row }) {
   return <ModelPicker quiet label="Model for this card" value={modelFor(row)} ran={row.agentMeta?.model} onChange={(m) => setCardModel(row, m)} />;
 }
 
@@ -285,7 +285,7 @@ export function AgentBadge({ row, hasWork }: { row: Row; hasWork: boolean }) {
   return hasWork ? <Badge variant="success">Completed <Check /></Badge> : <Badge variant="destructive">Stopped <CircleStop /></Badge>;
 }
 
-function ConditionBadges({ row }: { row: Row }) {
+export function ConditionBadges({ row }: { row: Row }) {
   return (
     <>
       {row.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
@@ -299,7 +299,7 @@ function ConditionBadges({ row }: { row: Row }) {
   );
 }
 
-function NewDraft() {
+export function NewDraft() {
   const repos = useRepos();
   const providers = useAgentProviders();
   const [repo, setRepo] = useAtom(draftRepoAtom);
@@ -396,6 +396,34 @@ function NewChatDialog({ open, onClose, repo, model, onSubmit }: { open: boolean
   );
 }
 
+// Diffstat for every lane except Done (needs a worktree — Orca-made PRs keep theirs; adopted PRs
+// gain one on first action). Fetched once, and polled only while its agent runs. Shared by the card
+// and the overview's list row.
+export function useSummary(row: Row): ChangeSummary | null {
+  const isDone = row.lane === "DONE";
+  const [summary, setSummary] = useState<ChangeSummary | null>(null);
+  useEffect(() => {
+    if (isDone || !row.worktreePath) return;
+    const reload = () => fetchSummary(row.repo, row.worktreePath!, row.prBase).then(setSummary).catch(() => {});
+    if (row.agentStatus !== "running") return void reload();
+    return poll(reload, 8000);
+  }, [isDone, row.repo, row.worktreePath, row.prBase, row.agentStatus]);
+  return summary;
+}
+
+// The conversation opens in a terminal-style modal on the board (no navigating to the detail page).
+// A workstream born from "New chat" opens its terminal on arrival (see openTerminalAtom).
+export function useTerminalOpen(row: Row): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(false);
+  const [wanted, setWanted] = useAtom(openTerminalAtom);
+  useEffect(() => {
+    if (wanted !== `${row.repo}::${row.branch}`) return;
+    setOpen(true);
+    setWanted(null);
+  }, [wanted, row.repo, row.branch, setWanted]);
+  return [open, setOpen];
+}
+
 // One card for every lane. Sections switch on whether the row has an open PR / is done /
 // is a draft, but the shell, header, and styling are shared.
 export function WorkstreamCard({ row }: { row: Row }) {
@@ -407,15 +435,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
   // stays driveable; the prompt and diffstat are dropped. Done cards stay compact — they never densify.
   const dense = useAtomValue(densityAtom) === "dense" && !isDone;
 
-  // Diffstat for every lane except Done (needs a worktree — Orca-made PRs keep theirs; adopted PRs
-  // gain one on first action).
-  const [summary, setSummary] = useState<ChangeSummary | null>(null);
-  useEffect(() => {
-    if (isDone || !row.worktreePath) return;
-    const reload = () => fetchSummary(row.repo, row.worktreePath!, row.prBase).then(setSummary).catch(() => {});
-    if (row.agentStatus !== "running") return void reload();
-    return poll(reload, 8000);
-  }, [isDone, row.repo, row.worktreePath, row.prBase, row.agentStatus]);
+  const summary = useSummary(row);
   const hasWork = (summary?.commits.length ?? 0) > 0;
 
   // Card-level busy: any action (from WorkstreamActions or the Run button) dims the card and shows
@@ -423,15 +443,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
   const [busy, setBusy] = useState(false);
   const runBusy = async (fn: () => Promise<unknown>) => { setBusy(true); try { await fn(); } finally { setBusy(false); } };
 
-  // The conversation opens in a terminal-style modal on the board (no navigating to the detail page).
-  const [terminalOpen, setTerminalOpen] = useState(false);
-  // A card born from "New chat" opens its terminal on arrival (see openTerminalAtom).
-  const [wanted, setWanted] = useAtom(openTerminalAtom);
-  useEffect(() => {
-    if (wanted !== `${row.repo}::${row.branch}`) return;
-    setTerminalOpen(true);
-    setWanted(null);
-  }, [wanted, row.repo, row.branch, setWanted]);
+  const [terminalOpen, setTerminalOpen] = useTerminalOpen(row);
 
   // The title links to this workstream's detail view (PR or local session).
   const titleTo = isOpenPr ? `/${row.repo}/prs/${row.prNumber}`
