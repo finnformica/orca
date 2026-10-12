@@ -81,15 +81,24 @@ export const PREVIEW_STALE_MS = 60_000;
 
 export type PreviewRow = { key: string; instance: string; svcs: preview.SvcStatus[] };
 
+/** Does the preview at `key` (a worktree path on THIS machine) belong to a repo that needs a secure
+ *  context? Read on the owner, whose config paths match the key, and published with the row. */
+function secureContextOf(cfg: OrcaConfig, key: string): boolean {
+  return (cfg.repos ?? []).some((r) => r.previewSecureContext === true
+    && (key === r.repoPath || (!!r.worktreeRoot && key.startsWith(`${r.worktreeRoot.replace(/\/+$/, "")}/`))));
+}
+
 /** Every running preview on every instance — the running-previews menu's list. This instance's own
  *  are read live and published (so the others see them); the others' come from what they published.
  *  `loopback` = this bridge serves a page on localhost: then another instance's opened service is
- *  forwarded here and carries a `localUrl`, exactly as a relayed /api/preview status does. */
+ *  forwarded here and carries a `localUrl`, exactly as a relayed /api/preview status does — only for
+ *  a repo with `previewSecureContext`; otherwise the owner's tailnet url alone. */
 export async function previewRows(cfg: OrcaConfig, opts: { loopback: boolean; now?: number }): Promise<PreviewRow[]> {
   const self = db.instanceName();
   const mine = (await preview.list(preview.ownerHost(cfg.instances, self))).map((p) => ({ ...p, instance: self }));
   // Published without `localUrl`: that names THIS machine's loopback, meaningless to any other viewer.
-  await db.publishPreviews(mine.map((p) => ({ key: p.key, data: { svcs: p.svcs.map(({ localUrl: _, ...s }) => s) } })))
+  // `secureContext` rides along: the viewer can't map the owner's path back to a repo.
+  await db.publishPreviews(mine.map((p) => ({ key: p.key, data: { svcs: p.svcs.map(({ localUrl: _, ...s }) => s), secureContext: secureContextOf(cfg, p.key) } })))
     .catch((e) => console.error("orca: preview publish failed", e)); // advisory — never fail the list
   const cutoff = (opts.now ?? Date.now()) - PREVIEW_STALE_MS;
   const others = (await db.previewInventory().catch(() => []))
@@ -97,7 +106,7 @@ export async function previewRows(cfg: OrcaConfig, opts: { loopback: boolean; no
     .map((r) => {
       const svcs = (r.data.svcs ?? []) as preview.SvcStatus[];
       const base = cfg.instances?.[r.instance];
-      return { key: r.key, instance: r.instance, svcs: opts.loopback && base ? forward.localize(r.key, svcs, new URL(base).hostname) : svcs };
+      return { key: r.key, instance: r.instance, svcs: opts.loopback && base ? forward.localize(r.key, svcs, new URL(base).hostname, r.data.secureContext === true) : svcs };
     });
   return [...mine, ...others];
 }

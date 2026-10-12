@@ -412,10 +412,19 @@ device shows Starting/Open/Stop with no click. Each instance publishes its runni
 `/api/previews` (database-only) answers its own live plus the others' published, hiding a machine
 silent for `PREVIEW_STALE_MS`. **URLs are per viewer:** a service carries `url`, the owner's address
 (`ORCA_PREVIEW_HOST`, else its `instances` host), and `localUrl` when the ANSWERING bridge has it on
-loopback — its own preview bound to 127.0.0.1, or a forward (`server/forward.ts`): when a preview
-status is relayed from its owner (or listed for a page served from localhost), the opened service's
-port is forwarded on loopback here — the app needs a secure context (`crypto.randomUUID` is undefined
-on a plain-http tailnet name; the page was blank), and the tailnet has no HTTPS certs. Plain TCP, so
+loopback — its own preview bound to 127.0.0.1, or a forward (`server/forward.ts`). **The tailnet
+`url` is the default everywhere; the forward is the exception**, only for a repo with
+`previewSecureContext: true` (branch-demo: `crypto.randomUUID` is undefined on a plain-http tailnet
+name, the page was blank, and the tailnet has no HTTPS certs). For such a repo, when a preview status
+is relayed from its owner (or listed for a page served from localhost — the owner tags each published
+row `secureContext`, since the viewer can't map the owner's path to a repo), the opened service's
+port is forwarded on loopback here. Without the flag no forward is opened and every device gets the
+owner's `url` (opening Orca's own preview from the laptop sent Finn to localhost when he wanted the
+tailnet). **A preview command binds `{bind}`** (`ORCA_PREVIEW_BIND`: loopback on a laptop, the
+tailnet address on a box) and embeds `{host}` (`ORCA_PREVIEW_HOST`) in any URL the app hands the
+browser; a Vite app also needs `export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS={host}` or it rejects
+the tailnet Host header — Orca's own: `cd web && export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS={host}
+&& bunx --bun vite --host {bind} --port {port}`. Plain TCP, so
 Vite's HMR websocket rides it; dropped on stop; a port a local preview holds gets no `localUrl`. The
 browser opens `localUrl` only from a page on localhost (`previewHref`), else `url` — a phone opens the
 owner's tailnet URL, which still lacks a secure context until the tailnet has HTTPS certificates.

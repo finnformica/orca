@@ -117,6 +117,20 @@ gh auth setup-git               # `gh pr list --author @me` still means you); se
 sudo cp deploy/orca.service /etc/systemd/system/ && sudo systemctl enable --now orca
 ```
 
+**Previews on a box.** Write every preview command so it works on either machine: listen on `{bind}`
+(`ORCA_PREVIEW_BIND` — loopback on a laptop, the tailnet address on the box), put `{host}`
+(`ORCA_PREVIEW_HOST`) in any URL the app hands the browser, and for a Vite app allow that host, e.g.
+Orca's own:
+
+```sh
+cd web && export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS={host} && bunx --bun vite --host {bind} --port {port}
+```
+
+A preview opens at its owner's tailnet URL on every device. A repo whose app only works in a secure
+context (plain-http tailnet names are not one — branch-demo needs `crypto.randomUUID`) sets
+`previewSecureContext: true`: then a laptop page served from localhost gets the box's preview
+forwarded to `http://localhost:<port>` instead. Orca itself does not need it.
+
 Then in the config (settings page or `orca.config.ts`) name the instance and assign repos to it:
 `instances: { cloud: "http://<tailscale ip>:8787" }` and `runsOn: "cloud"` on each repo the box
 should execute. The laptop keeps running its own bridge against the same database; the board on

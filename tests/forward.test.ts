@@ -22,7 +22,7 @@ test("localize forwards the opened service to localhost as its localUrl and keep
   ];
   // The forward targets the same port number on the host; here that host port IS the upstream.
   expect(forward.ensure(port, "127.0.0.1", upstream.port)).toBe(true);
-  const out = forward.localize("/wt/feat", svcs, "127.0.0.1");
+  const out = forward.localize("/wt/feat", svcs, "127.0.0.1", true);
   expect(out[0]).toMatchObject({ url: `http://orca-box:${port}`, localUrl: `http://localhost:${port}` }); // a phone opens url
   expect(out[1]!.url).toBe(`http://orca-box:${upstream.port}`); // untouched
   expect(out[1]!.localUrl).toBeUndefined();
@@ -33,9 +33,18 @@ test("localize forwards the opened service to localhost as its localUrl and keep
   await expect(native.fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow(); // forward gone with the preview
 });
 
+test("a repo without previewSecureContext gets no forward: the owner's tailnet url alone, on every device", async () => {
+  const port = upstream.port! + 1001;
+  const svcs: { name: string; port: number; url: string; localUrl?: string; open: boolean }[] = [{ name: "web", port, url: `http://orca-box:${port}`, localUrl: `http://localhost:${port}`, open: true }];
+  const [out] = forward.localize("/wt/plain", svcs, "127.0.0.1", false);
+  expect(out).toEqual({ name: "web", port, url: `http://orca-box:${port}`, open: true }); // the owner's localUrl dropped too
+  await expect(native.fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow(); // nothing listening here
+  expect(previewHref(out!, "localhost")).toBe(`http://orca-box:${port}`); // even the laptop's own page
+});
+
 test("a port a local preview already holds is left alone: the owner's URL stays", () => {
   const svcs: { name: string; port: number; url: string; localUrl?: string; open: boolean }[] = [{ name: "frontend", port: local.port!, url: `http://orca-box:${local.port}`, open: true }];
-  const [out] = forward.localize("/wt/other", svcs, "127.0.0.1");
+  const [out] = forward.localize("/wt/other", svcs, "127.0.0.1", true);
   expect(out!.url).toBe(`http://orca-box:${local.port}`);
   expect(out!.localUrl).toBeUndefined();
 });

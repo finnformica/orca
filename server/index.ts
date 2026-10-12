@@ -222,11 +222,12 @@ async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: Orc
       body: req.method === "GET" || req.method === "HEAD" ? undefined : JSON.stringify(body),
       signal: req.signal,
     });
-    // A preview relayed from its owner is opened from THIS machine's browser: forward the service it
-    // opens to localhost here (a secure context — the app needs one) and hand back that URL.
+    // A preview relayed from its owner is opened from THIS machine's browser. Its tailnet url is the
+    // default; only a repo whose app needs a secure context gets the opened service forwarded to
+    // localhost here, with that URL as `localUrl`.
     if (url.pathname === "/api/preview" && upstream.ok) {
       const key = String(url.searchParams.get("key") ?? body.key ?? "");
-      return json(forward.localize(key, (await upstream.json()) as { port: number; url: string; open: boolean }[], new URL(base).hostname));
+      return json(forward.localize(key, (await upstream.json()) as { port: number; url: string; open: boolean }[], new URL(base).hostname, repo.previewSecureContext === true));
     }
     if (url.pathname === "/api/preview/stop") forward.release(String(body.key ?? ""));
     return new Response(upstream.body, { status: upstream.status, headers: upstream.headers });

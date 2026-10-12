@@ -2,7 +2,7 @@
 // preview_inventory and /api/previews (verbs.previewRows) answers the union from Postgres, the way
 // /api/agents does for worktrees. Plus the placement record a stop clears (db.clearPreviewPlacement).
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as db from "../server/db";
@@ -29,16 +29,24 @@ afterEach(async () => {
   for (const k of ENV) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
 });
 
-const cfg = { instances: { laptop: "http://127.0.0.1:8787", cloud: "http://127.0.0.1:8788" } } as unknown as OrcaConfig;
+const baseCfg = { instances: { laptop: "http://127.0.0.1:8787", cloud: "http://127.0.0.1:8788" } } as unknown as OrcaConfig;
 const svc = (port: number) => ({ name: "frontend", port, url: `http://orca-box:${port}`, open: true, running: true, ready: true, startedAt: 1 });
 
 test("each instance lists its own previews live and the others' as published; owner URL kept, localUrl only where forwarded", async () => {
   const port = await freePort([41000, 49000]);
   process.env.ORCA_INSTANCE = "cloud";
-  await db.publishPreviews([{ key: "/opt/wt/feat", data: { svcs: [svc(port)] } }]);
+  const plainPort = await freePort([41000, 49000]);
+  // `feat` is a repo whose app needs a secure context (the owner tags it); `plain` is not.
+  await db.publishPreviews([
+    { key: "/opt/wt/feat", data: { svcs: [svc(port)], secureContext: true } },
+    { key: "/opt/wt/plain", data: { svcs: [svc(plainPort)] } },
+  ]);
 
   process.env.ORCA_INSTANCE = "laptop";
-  const wt = mkdtempSync(join(tmpdir(), "orca-previnv-"));
+  const root = mkdtempSync(join(tmpdir(), "orca-previnv-"));
+  const wt = join(root, "feat");
+  mkdirSync(wt);
+  const cfg = { ...baseCfg, repos: [{ name: "app", repoPath: "/nowhere", worktreeRoot: root, previewSecureContext: true }] } as unknown as OrcaConfig;
   await preview.start(wt, wt, [{ name: "web", command: "sleep 30", open: true }], [41000, 49000]);
   try {
     const rows = await previewRows(cfg, { loopback: true });
@@ -50,11 +58,17 @@ test("each instance lists its own previews live and the others' as published; ow
     const theirs = rows.find((r) => r.key === "/opt/wt/feat")!;
     expect(theirs.instance).toBe("cloud");
     expect(theirs.svcs[0]).toMatchObject({ url: `http://orca-box:${port}`, localUrl: `http://localhost:${port}` }); // forwarded here
+    // No previewSecureContext: no forward even for a localhost page — the owner's tailnet url is the default.
+    const plain = rows.find((r) => r.key === "/opt/wt/plain")!;
+    expect(plain.svcs[0]!.url).toBe(`http://orca-box:${plainPort}`);
+    expect(plain.svcs[0]!.localUrl).toBeUndefined();
 
     // What the laptop published carries no localUrl (that names ITS loopback), and did not sweep cloud's row.
     const published = await db.previewInventory();
-    expect(published.map((r) => [r.instance, r.key]).sort()).toEqual([["cloud", "/opt/wt/feat"], ["laptop", wt]]);
-    expect((published.find((r) => r.instance === "laptop")!.data.svcs as { localUrl?: string }[])[0]!.localUrl).toBeUndefined();
+    expect(published.map((r) => [r.instance, r.key]).sort()).toEqual([["cloud", "/opt/wt/feat"], ["cloud", "/opt/wt/plain"], ["laptop", wt]]);
+    const laptopRow = published.find((r) => r.instance === "laptop")!;
+    expect((laptopRow.data.svcs as { localUrl?: string }[])[0]!.localUrl).toBeUndefined();
+    expect(laptopRow.data.secureContext).toBe(true); // its worktree is under the flagged repo's root
 
     // A box viewed only over the tailnet holds no forward: the owner URL alone.
     forward.release("/opt/wt/feat");
@@ -71,7 +85,7 @@ test("each instance lists its own previews live and the others' as published; ow
   }
   // Stopped → the next publish sweeps it.
   await previewRows(cfg, { loopback: false });
-  expect((await db.previewInventory()).map((r) => r.instance)).toEqual(["cloud"]);
+  expect((await db.previewInventory()).map((r) => r.instance)).toEqual(["cloud", "cloud"]);
 });
 
 test("a stop clears the workstream's recorded placement, found by its key", async () => {
