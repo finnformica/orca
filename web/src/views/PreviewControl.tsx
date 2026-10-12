@@ -102,10 +102,12 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
   const choices = instanceChoices();
   const { svcs, busy, active, error, start, stop } = usePreview(row.worktreePath, () => testLocally(row, where));
   const startOn = (instance: string) => { setWhere(instance); return testLocally(row, instance); };
+  // The picker is joined to the Test button as one split control (same radius trim as Open·Stop).
+  const split = choices.length > 1 ? "rounded-r-none" : "";
   const placeMenu = choices.length > 1 && (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size="icon" variant="outline" className="size-7" title="Choose where the preview runs" aria-label="Test on…"><ChevronDown className="size-3.5" /></Button>
+        <Button size="icon" variant="outline" className={`rounded-l-none border-l-0 ${compact ? "size-7" : "h-8 w-8"}`} title="Choose where the preview runs" aria-label="Test on…"><ChevronDown className="size-3.5" /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {choices.map((i) => <DropdownMenuItem key={i} onSelect={() => void start(() => startOn(i))}>Test on {i}{i === thisInstance() ? " (here)" : ""}</DropdownMenuItem>)}
@@ -119,8 +121,8 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
   if (!active && !busy) {
     if (compact) {
       return (
-        <span className="inline-flex -space-x-px">
-          <Button size="icon" variant="outline" className="size-7" onClick={() => void start()} title={error ? "Preview failed — retry" : `Test on ${where ?? row.instance ?? thisInstance() ?? "local"}`} aria-label="Test locally">
+        <span className="inline-flex">
+          <Button size="icon" variant="outline" className={`size-7 ${split}`} onClick={() => void start()} title={error ? "Preview failed — retry" : `Test on ${where ?? row.instance ?? thisInstance() ?? "local"}`} aria-label="Test locally">
             {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
           </Button>
           {placeMenu}
@@ -129,8 +131,8 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
     }
     return (
       <div className="w-full space-y-1">
-        <div className="flex w-full -space-x-px">
-          <Button size="sm" variant="outline" className="flex-1 justify-center" onClick={() => void start()} title={error ? "Preview failed — expand the log below" : `Spin up a preview of this branch on ${where ?? row.instance ?? thisInstance() ?? "this machine"}`}>
+        <div className="flex w-full">
+          <Button size="sm" variant="outline" className={`flex-1 justify-center ${split}`} onClick={() => void start()} title={error ? "Preview failed — expand the log below" : `Spin up a preview of this branch on ${where ?? row.instance ?? thisInstance() ?? "this machine"}`}>
             {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
             {error ? "Retry test" : choices.length > 1 ? `Test on ${where ?? row.instance ?? thisInstance()}` : "Test locally"}
           </Button>

@@ -57,6 +57,10 @@ export const apiFake = {
   adoptCalls: [] as { repo: string; branch: string; instance?: string }[],
   previewCalls: [] as { key: string; instance?: string }[],
   healthData: null as null | Record<string, unknown>,
+  // When true (set BEFORE the store is imported), api.config blocks until releaseConfig() — lets a
+  // test mount the header before config has landed, the way a real first paint does.
+  holdConfig: false,
+  releaseConfig: null as null | (() => void),
   promotions: [] as { provider: AgentProvider; task?: string; sessionId?: string; outcome?: AgentOutcome; body?: string }[],
   reviewEvidenceData: [] as ReviewThreadEvidence[],
   prCommentsData: [] as ConversationComment[],
@@ -102,7 +106,7 @@ export const apiFake = {
 mock.module("@/api", () => ({
   api: {
     // Two instances, so the New-draft "run on" picker and the cards' instance chip render in tests.
-    config: async () => ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24, agentProviders: ["claude", "codex", "cursor"], apiPort: 8787, instance: "laptop", instances: ["cloud"] }),
+    config: async () => { if (apiFake.holdConfig) await new Promise<void>((r) => { apiFake.releaseConfig = r; }); return ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24, agentProviders: ["claude", "codex", "cursor"], apiPort: 8787, instance: "laptop", instances: ["cloud"] }); },
     usage: async () => apiFake.usageData,
     agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
     prs: async () => {
