@@ -1133,3 +1133,182 @@ export function insertPrRef(text: string, start: number, caret: number, label: s
   const ins = /^\s/.test(rest) ? label : `${label} `;
   return { text: text.slice(0, start) + ins + rest, caret: start + ins.length };
 }
+
+// ---- The overview (the board's default List view) ----
+// Every number on the stat tiles, the list's filter + sort, and the activity feed are derived here
+// from the same assembled rows the swimlanes render — no endpoint of their own, so the two views can
+// never disagree about how many PRs are mergeable.
+
+export type OverviewLane = "LOCAL" | "DRAFT" | "IN_REVIEW" | "MERGEABLE" | "DONE";
+export const OVERVIEW_LANES: OverviewLane[] = ["LOCAL", "DRAFT", "IN_REVIEW", "MERGEABLE", "DONE"];
+export const LANE_LABELS: Record<OverviewLane, string> = {
+  LOCAL: "Local", DRAFT: "Draft", IN_REVIEW: "In review", MERGEABLE: "Mergeable", DONE: "Done today",
+};
+
+/** The subset of a board row the overview reads. Structural, so the store's Row satisfies it. */
+export type OverviewRow = {
+  repo: string; branch: string; title: string; prompt?: string; lane: OverviewLane;
+  prNumber?: number; worktreePath?: string; instance?: string;
+  agentStatus?: "idle" | "running" | "done" | "error";
+  agentCheck?: { ok: boolean };
+  agentStartedAt?: number;
+  mergeable?: Mergeable; mergeClean?: "clean" | "conflict";
+  ciStatus?: CiStatus; reviewStatus?: ReviewStatus;
+  orchestrated?: boolean; mergedAt?: string;
+  transcript?: Pick<AgentTurn, "instruction" | "prompt" | "startedAt" | "finishedAt" | "failed" | "stopped" | "provider">[];
+};
+
+export type Attention = "check failed" | "agent error" | "CI failing" | "conflicts" | "changes requested";
+
+/** Why a workstream is waiting on YOU — empty when it isn't. A running agent is working on it, so
+ *  nothing is asked of you yet; a merged one is finished. */
+export function attentionReasons(row: OverviewRow): Attention[] {
+  if (row.lane === "DONE" || row.agentStatus === "running") return [];
+  const out: Attention[] = [];
+  if (row.agentCheck && !row.agentCheck.ok) out.push("check failed");
+  if (row.agentStatus === "error") out.push("agent error");
+  if (row.ciStatus === "failing") out.push("CI failing");
+  if (row.mergeable === "CONFLICTING" || row.mergeClean === "conflict") out.push("conflicts");
+  if (row.reviewStatus === "changes_requested") out.push("changes requested");
+  return out;
+}
+
+/** The status dot: blue running, red failed (a check, CI or the run itself), amber needs you
+ *  (conflicts, changes requested), green ready to merge or merged, neutral otherwise. */
+export type RowTone = "running" | "failed" | "attention" | "ready" | "neutral";
+export function rowTone(row: OverviewRow): RowTone {
+  if (row.agentStatus === "running") return "running";
+  const why = attentionReasons(row);
+  if (why.some((w) => w === "check failed" || w === "agent error" || w === "CI failing")) return "failed";
+  if (why.length) return "attention";
+  if (row.lane === "MERGEABLE" || row.lane === "DONE") return "ready";
+  return "neutral";
+}
+
+/** Newest thing that happened on a workstream (ms): its last turn, its live run, or its merge. 0
+ *  when nothing is known (a PR Orca never ran an agent on). */
+export function lastActivity(row: OverviewRow): number {
+  const turns = row.transcript ?? [];
+  const last = turns[turns.length - 1];
+  return Math.max(0, last?.finishedAt ?? 0, last?.startedAt ?? 0, row.agentStartedAt ?? 0, row.mergedAt ? Date.parse(row.mergedAt) || 0 : 0);
+}
+
+export type OverviewStats = {
+  running: number;
+  attention: number;
+  local: number;
+  prs: { draft: number; inReview: number; mergeable: number; total: number };
+  mergedToday: number;
+  /** Turns started per hour over the last 24h, oldest first — the activity chart. */
+  turnsByHour: number[];
+};
+
+export function overviewStats(rows: OverviewRow[], now = Date.now()): OverviewStats {
+  const open = rows.filter((r) => r.prNumber && r.lane !== "DONE");
+  const count = (lane: OverviewLane) => open.filter((r) => r.lane === lane).length;
+  const prs = { draft: count("DRAFT"), inReview: count("IN_REVIEW"), mergeable: count("MERGEABLE"), total: open.length };
+  return {
+    running: rows.filter((r) => r.agentStatus === "running").length,
+    attention: rows.filter((r) => attentionReasons(r).length > 0).length,
+    local: rows.filter((r) => r.lane === "LOCAL").length,
+    prs,
+    mergedToday: rows.filter((r) => r.lane === "DONE").length,
+    turnsByHour: turnsByHour(rows, now),
+  };
+}
+
+/** Turns started in each of the last `hours` hours (oldest bucket first, the current hour last). */
+export function turnsByHour(rows: OverviewRow[], now = Date.now(), hours = 24): number[] {
+  const buckets = new Array<number>(hours).fill(0);
+  const HOUR = 3_600_000;
+  for (const r of rows) {
+    for (const t of r.transcript ?? []) {
+      if (!t.startedAt) continue;
+      const ago = Math.floor((now - t.startedAt) / HOUR);
+      if (ago >= 0 && ago < hours) buckets[hours - 1 - ago]!++;
+    }
+  }
+  return buckets;
+}
+
+export type ListFilter = {
+  repo: string; // "all" or a repo name
+  instance: string; // "all" or an instance name
+  state: "all" | OverviewLane;
+  attention: boolean;
+  q: string;
+};
+export const DEFAULT_LIST_FILTER: ListFilter = { repo: "all", instance: "all", state: "all", attention: false, q: "" };
+
+/** Where a row's worktree lives — `here` unless the bridge said otherwise. None without a worktree
+ *  (a PR Orca hasn't adopted, a merged one). */
+export const rowInstance = (row: OverviewRow, here?: string): string | undefined =>
+  row.worktreePath ? (row.instance ?? here) : undefined;
+
+export function filterRows<R extends OverviewRow>(rows: R[], f: ListFilter, here?: string): R[] {
+  const words = f.q.toLowerCase().split(/\s+/).filter(Boolean);
+  return rows.filter((r) => {
+    if (f.repo !== "all" && r.repo !== f.repo) return false;
+    if (f.instance !== "all" && rowInstance(r, here) !== f.instance) return false;
+    if (f.state !== "all" && r.lane !== f.state) return false;
+    if (f.attention && attentionReasons(r).length === 0) return false;
+    if (words.length) {
+      const hay = `${r.title} ${r.branch} ${r.repo} ${r.prNumber ? `#${r.prNumber}` : ""} ${r.prompt ?? ""}`.toLowerCase();
+      if (!words.every((w) => hay.includes(w))) return false;
+    }
+    return true;
+  });
+}
+
+export type ListSort = "updated" | "attention" | "state" | "title" | "repo";
+export const SORT_LABELS: Record<ListSort, string> = {
+  updated: "Last activity", attention: "Needs you first", state: "State", title: "Title", repo: "Repo",
+};
+
+/** A sorted copy. Ties fall back to last activity, then title, so the order is stable across polls. */
+export function sortRows<R extends OverviewRow>(rows: R[], by: ListSort): R[] {
+  const byActivity = (a: R, b: R) => lastActivity(b) - lastActivity(a) || a.title.localeCompare(b.title);
+  const key: Record<ListSort, (a: R, b: R) => number> = {
+    updated: () => 0,
+    attention: (a, b) => attentionReasons(b).length - attentionReasons(a).length || Number(b.agentStatus === "running") - Number(a.agentStatus === "running"),
+    state: (a, b) => OVERVIEW_LANES.indexOf(a.lane) - OVERVIEW_LANES.indexOf(b.lane),
+    title: (a, b) => a.title.localeCompare(b.title),
+    repo: (a, b) => a.repo.localeCompare(b.repo),
+  };
+  return [...rows].sort((a, b) => key[by](a, b) || byActivity(a, b));
+}
+
+export type ActivityItem = {
+  repo: string; branch: string; title: string; lane: OverviewLane; prNumber?: number;
+  text: string; at: number; status: "running" | "failed" | "stopped" | "done";
+};
+
+/** The newest turns across every workstream — the "Recent activity" feed. Each turn shows what you
+ *  (or the board action) asked, not the scaffolded prompt. */
+export function recentActivity(rows: OverviewRow[], limit = 12): ActivityItem[] {
+  const items: ActivityItem[] = [];
+  for (const r of rows) {
+    for (const t of r.transcript ?? []) {
+      const at = t.finishedAt ?? t.startedAt;
+      if (!at) continue;
+      items.push({
+        repo: r.repo, branch: r.branch, title: r.title, lane: r.lane, prNumber: r.prNumber,
+        text: (t.instruction ?? promptInstruction(t.prompt)).replace(/\s+/g, " ").trim(),
+        at,
+        status: t.failed ? "failed" : t.stopped ? "stopped" : t.finishedAt ? "done" : "running",
+      });
+    }
+  }
+  return items.sort((a, b) => b.at - a.at).slice(0, limit);
+}
+
+/** "just now" / "4m" / "3h" / "2d" — compact relative time for a dense list. */
+export function ago(ms: number, now = Date.now()): string {
+  if (!ms) return "—";
+  const m = Math.floor((now - ms) / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
