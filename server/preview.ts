@@ -14,9 +14,12 @@
 import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { portFree } from "./net";
-import type { PreviewService } from "./config";
+import type { PreviewService, RepoConfig } from "./config";
+import * as git from "./git";
+import * as previewdb from "./previewdb";
+import * as docker from "./docker";
 
 /** A stable, Postgres-identifier-safe database name for one preview (keyed by its worktree path), so
  *  the `{db}` placeholder in a preview command resolves to a per-worktree database on the shared
@@ -266,4 +269,98 @@ export function stop(key: string, teardown = false): void {
  *  so a restart re-spins against them (they're dropped only on an explicit Discard / preview-stop). */
 export function killAll(): void {
   for (const key of [...previews.keys()]) stop(key);
+}
+
+// --- orphan preview-DB / stale test-container reaper -----------------------------------------
+//
+// onStop drops a preview's own database when it is torn down deliberately, but a preview that dies
+// with a bridge crash, a `reapWorktrees`'d worktree, or a worker's own test run leaves its database
+// behind — nothing else collects it (one instance had 8 of them totalling ~6.6 GB). Run at startup
+// and hourly from server/index.ts; every failure is logged and otherwise ignored, never surfaced to
+// a caller — a reaper that can crash the bridge is worse than no reaper.
+
+/** A preview mid-clone is never older than this; a database younger than it is left for the next
+ *  pass rather than treated as a settled orphan. */
+const DB_GRACE_MS = 2 * 60 * 60 * 1000;
+/** branch-demo's test harness containers routinely run a few minutes; anything past this is a run
+ *  that never cleaned up after itself. */
+const CONTAINER_STALE_MS = 3 * 60 * 60 * 1000;
+
+export type ReapReport = { at: number; droppedDbs: string[]; removedContainers: string[] };
+let lastReap: ReapReport | undefined;
+/** The reaper's last pass, for /api/diagnostics — undefined until one has run. */
+export const lastReapReport = (): ReapReport | undefined => lastReap;
+
+/** Where a repo's preview-Postgres admin credentials live: the directory holding the `.env`
+ *  `copyToWorktree` names (e.g. "backend/.env") — the same file a live preview's {db} commands read.
+ *  A repo with no such entry has no per-preview database to reap. */
+function envFileFor(repo: RepoConfig): { dir: string; path: string } | undefined {
+  const rel = (repo.copyToWorktree ?? []).find((p) => p.endsWith(".env"));
+  if (!rel) return undefined;
+  return { dir: join(repo.repoPath, dirname(rel)), path: join(repo.repoPath, rel) };
+}
+
+/**
+ * Drop orphan preview databases and remove stale test containers across every given repo (the ones
+ * checked out on this instance — see verbs.repoHere). Pure selection (orphanPreviewDbs) decides what
+ * counts as an orphan; this is the IO shell around it. Call at startup, then hourly.
+ */
+export async function reap(
+  repos: RepoConfig[],
+  opts: { dbGraceMs?: number; containerStaleMs?: number } = {},
+): Promise<ReapReport> {
+  const dbGraceMs = opts.dbGraceMs ?? DB_GRACE_MS;
+  const containerStaleMs = opts.containerStaleMs ?? CONTAINER_STALE_MS;
+  const droppedDbs: string[] = [];
+  const removedContainers: string[] = [];
+
+  // Live = every worktree every repo on this instance still has, plus every preview this bridge is
+  // tracking (owned or re-adopted) — belt and suspenders for a key not yet reflected in `git worktree
+  // list` (e.g. a worktree removal and this pass racing).
+  const live = new Set<string>(previews.keys());
+  for (const repo of repos) {
+    try {
+      for (const w of await git.listWorktrees(repo.repoPath, repo.worktreeRoot)) live.add(w.worktreePath);
+    } catch (e) { console.error(`orca: reap: couldn't list worktrees for ${repo.name}`, e); }
+  }
+  const liveWorktreePaths = [...live];
+
+  const seenEnv = new Set<string>();
+  for (const repo of repos) {
+    const env = envFileFor(repo);
+    if (!env || seenEnv.has(env.path)) continue;
+    seenEnv.add(env.path);
+    try {
+      const candidates = await previewdb.orphanCandidates(env.path);
+      const orphans = new Set(orphanPreviewDbs(candidates.map((c) => c.name), liveWorktreePaths));
+      for (const c of candidates) {
+        if (!orphans.has(c.name) || c.ageMs < dbGraceMs) continue;
+        try {
+          await previewdb.dropPreviewDb(env.dir, c.name);
+          droppedDbs.push(c.name);
+          console.log(`orca: reaped orphan preview db ${c.name}`);
+        } catch (e) { console.error(`orca: reap: failed to drop preview db ${c.name}`, e); }
+      }
+    } catch (e) { console.error(`orca: reap: failed to list preview dbs for ${repo.name}`, e); }
+  }
+
+  const seenPrefix = new Set<string>();
+  for (const repo of repos) {
+    const prefix = repo.testContainerPrefix;
+    if (!prefix || seenPrefix.has(prefix)) continue;
+    seenPrefix.add(prefix);
+    try {
+      for (const c of await docker.listContainers(prefix)) {
+        if (Date.now() - c.createdAt < containerStaleMs) continue;
+        try {
+          await docker.removeContainer(c.name);
+          removedContainers.push(c.name);
+          console.log(`orca: reaped stale test container ${c.name}`);
+        } catch (e) { console.error(`orca: reap: failed to remove container ${c.name}`, e); }
+      }
+    } catch (e) { console.error(`orca: reap: failed to list containers for prefix ${prefix}`, e); }
+  }
+
+  lastReap = { at: Date.now(), droppedDbs, removedContainers };
+  return lastReap;
 }

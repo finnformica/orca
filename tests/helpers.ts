@@ -115,3 +115,40 @@ export async function recordGhArgs(): Promise<() => Promise<string>> {
   process.env.ORCA_GH_ARGS_LOG = path;
   return async () => readFile(path, "utf8");
 }
+
+// A `docker` stand-in for server/docker.ts: `ps --filter name=X --format {{.Names}}` lists the
+// fixture's container names, `inspect -f {{.Created}} <name>` prints that container's canned
+// creation timestamp, `rm -f <name>` records the removal. Same shape as GH_SHIM.
+const DOCKER_SHIM = `#!/bin/sh
+case "$1" in
+  ps) cat "$ORCA_DOCKER_PS_FIXTURE" 2>/dev/null ;;
+  inspect) awk -F'\\t' -v n="$4" '$1==n{print $2}' "$ORCA_DOCKER_CREATED_FIXTURE" ;;
+  rm) [ -n "$ORCA_DOCKER_RM_LOG" ] && echo "$3" >> "$ORCA_DOCKER_RM_LOG" ;;
+  *) echo "fake-docker: unhandled: $*" >&2; exit 1 ;;
+esac
+`;
+
+let realDockerPath: string | undefined;
+
+/** Prepend a fake `docker` to PATH and point it at the given containers (name + RFC3339 `.Created`
+ *  timestamp, e.g. from `new Date(...).toISOString()`). Returns a reader for the names `docker rm -f`
+ *  was actually called with. Call restoreDockerPath() when done. */
+export async function installFakeDocker(containers: { name: string; createdAt: string }[]): Promise<() => Promise<string[]>> {
+  const dir = await mkdtemp(join(tmpdir(), "orca-dshim-"));
+  const docker = join(dir, "docker");
+  await writeFile(docker, DOCKER_SHIM);
+  await chmod(docker, 0o755);
+  await writeFile(join(dir, "ps.fixture"), containers.map((c) => c.name).join("\n") + (containers.length ? "\n" : ""));
+  await writeFile(join(dir, "created.fixture"), containers.map((c) => `${c.name}\t${c.createdAt}`).join("\n") + "\n");
+  await writeFile(join(dir, "rm.log"), "");
+  process.env.ORCA_DOCKER_PS_FIXTURE = join(dir, "ps.fixture");
+  process.env.ORCA_DOCKER_CREATED_FIXTURE = join(dir, "created.fixture");
+  process.env.ORCA_DOCKER_RM_LOG = join(dir, "rm.log");
+  realDockerPath = process.env.PATH;
+  process.env.PATH = `${dir}:${realDockerPath}`;
+  return async () => (await readFile(join(dir, "rm.log"), "utf8")).split("\n").filter(Boolean);
+}
+
+export function restoreDockerPath(): void {
+  if (realDockerPath !== undefined) process.env.PATH = realDockerPath;
+}
