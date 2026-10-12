@@ -299,7 +299,7 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
       // it to `orca`, reading, the web and read-only subagents — nothing that can change this machine.
       ...(shell ? { permissionMode: "bypass" as const } : { permissionMode: "ask" as const, allowedTools: ["Bash(orca *)", "Read", "Grep", "Glob", "Agent", "WebSearch", "WebFetch"] }),
       env: {
-        ORCA_URL: `http://${process.env.ORCA_BIND || "127.0.0.1"}:${API_PORT}`,
+        ORCA_URL: `http://${(process.env.ORCA_BIND || "127.0.0.1").split(",")[0]!.trim()}:${API_PORT}`,
         PATH: `${new URL("../bin", import.meta.url).pathname}:${process.env.PATH ?? ""}`,
       },
     });
