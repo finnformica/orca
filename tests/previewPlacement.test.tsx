@@ -52,3 +52,38 @@ test("the card's Test button names the target and offers the other instance", as
   await click(cloud);
   expect(apiFake.previewCalls.at(-1)).toEqual({ key: "/wt/feat", instance: "cloud" });
 });
+
+// The placement lives on the SERVER (enrichment's `previewInstance`, written by the bridge that starts
+// the preview): a refreshed page, or a phone, is just a view of it.
+const startingSvc = { name: "frontend", port: 9001, url: "http://orca-box:9001", open: true, running: true, ready: false, startedAt: Date.now() };
+function Card({ branch }: { branch: string }) {
+  const row = store.useWorkstreams().find((r) => r.branch === branch);
+  return row ? <PreviewControl row={row} /> : null;
+}
+
+test("a preview started elsewhere shows on a fresh page with no click, polled and stopped on its owner", async () => {
+  // Another device pressed "Test on cloud" for the laptop's worktree: the box adopted its own checkout
+  // and the bridge recorded where. This page never saw the click — it only has what the server says.
+  apiFake.worktrees.set("feat", { branch: "feat", worktreePath: "/wt/feat" });
+  apiFake.enrichmentData.set("r::feat", { title: "Feat", previewInstance: { instance: "cloud", key: "/opt/wt/feat", startedAt: new Date().toISOString() } });
+  apiFake.previewSvcs = [startingSvc];
+  await store.refresh(); // the hydrate a page load does
+  await mount(<Card branch="feat" />);
+  expect(apiFake.previewStatusCalls).toContainEqual({ key: "/opt/wt/feat", instance: "cloud" }); // the owner's key, on the owner
+  expect(container!.querySelector('[aria-label="Starting…"]')).toBeTruthy(); // not the idle Test button
+  await click(container!.querySelector('button[aria-label="Stop preview"]')!);
+  expect(apiFake.previewStopCalls).toEqual([{ key: "/opt/wt/feat", instance: "cloud" }]);
+  await act(async () => { await store.refresh(); });
+  expect(store.enrichmentFor("r", "feat").previewInstance).toBeUndefined(); // cleared with the stop
+});
+
+test("starting records the placement server-side; it survives a re-hydrate and the stop targets it", async () => {
+  apiFake.worktrees.set("feat", { branch: "feat", worktreePath: "/wt/feat" });
+  await store.testLocally(localRow, "cloud");
+  await store.refresh(); // the mirror is rebuilt from the server, not from this tab's memory
+  expect(store.enrichmentFor("r", "feat").previewInstance).toMatchObject({ instance: "cloud", key: "/wt/feat" });
+  await store.previewStatus("/wt/feat");
+  expect(apiFake.previewStatusCalls.at(-1)).toEqual({ key: "/wt/feat", instance: "cloud" });
+  await store.stopPreview("/wt/feat");
+  expect(apiFake.previewStopCalls).toEqual([{ key: "/wt/feat", instance: "cloud" }]);
+});

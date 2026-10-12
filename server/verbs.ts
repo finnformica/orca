@@ -12,6 +12,7 @@ import * as gh from "./gh";
 import * as agent from "./agent";
 import * as db from "./db";
 import * as preview from "./preview";
+import * as forward from "./forward";
 import { existsSync } from "fs";
 import { featuresOf, modelFor, providerAllowed, type OrcaConfig, type RepoConfig } from "./config";
 import { addressPrPrompt, chatPrompt, continuation, launchPrompt, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
@@ -58,14 +59,56 @@ export async function ensureWorktree(repo: RepoConfig, branch: string): Promise<
 }
 
 /** Start (or restart) a worktree's preview — the one path behind the board's "Test locally" and the
- *  orchestrator's `orca preview`. Returns once the services are spawned, not once they are up. */
-export async function startPreview(cfg: OrcaConfig, repo: RepoConfig, key: string, worktree: string): Promise<preview.SvcStatus[]> {
+ *  orchestrator's `orca preview`. Returns once the services are spawned, not once they are up.
+ *  With a `branch`, the placement is recorded in its enrichment (`previewInstance`) so every browser —
+ *  after a refresh, on another device — finds the preview on the instance that runs it. */
+export async function startPreview(cfg: OrcaConfig, repo: RepoConfig, key: string, worktree: string, branch?: string): Promise<preview.SvcStatus[]> {
   // Gitignored config (backend/.env) is only copied at worktree create/adopt, so a worktree made
   // before the config listed it boots without one and the preview dies on "Error: .env not found".
   // Re-copy what's missing here, leaving any worktree-local edit intact.
   await git.copyToWorktree(repo.repoPath, worktree, repo.copyToWorktree, { keepExisting: true });
   await preview.start(key, worktree, repo.previewServices, cfg.portRange);
-  return preview.status(key);
+  if (branch) {
+    await db.patchEnrichment(repo.name, branch, { previewInstance: { instance: db.instanceName(), key, startedAt: new Date().toISOString() } })
+      .catch((e) => console.error("orca: preview placement write failed", e)); // advisory — never fail the start
+  }
+  return preview.status(key, preview.ownerHost(cfg.instances, db.instanceName()));
+}
+
+/** A published preview older than this is a machine that stopped reporting (asleep, down): its
+ *  previews are not shown as running. Several of the bridge's 10s publish ticks. */
+export const PREVIEW_STALE_MS = 60_000;
+
+export type PreviewRow = { key: string; instance: string; svcs: preview.SvcStatus[] };
+
+/** Does the preview at `key` (a worktree path on THIS machine) belong to a repo that needs a secure
+ *  context? Read on the owner, whose config paths match the key, and published with the row. */
+function secureContextOf(cfg: OrcaConfig, key: string): boolean {
+  return (cfg.repos ?? []).some((r) => r.previewSecureContext === true
+    && (key === r.repoPath || (!!r.worktreeRoot && key.startsWith(`${r.worktreeRoot.replace(/\/+$/, "")}/`))));
+}
+
+/** Every running preview on every instance — the running-previews menu's list. This instance's own
+ *  are read live and published (so the others see them); the others' come from what they published.
+ *  `loopback` = this bridge serves a page on localhost: then another instance's opened service is
+ *  forwarded here and carries a `localUrl`, exactly as a relayed /api/preview status does — only for
+ *  a repo with `previewSecureContext`; otherwise the owner's tailnet url alone. */
+export async function previewRows(cfg: OrcaConfig, opts: { loopback: boolean; now?: number }): Promise<PreviewRow[]> {
+  const self = db.instanceName();
+  const mine = (await preview.list(preview.ownerHost(cfg.instances, self))).map((p) => ({ ...p, instance: self }));
+  // Published without `localUrl`: that names THIS machine's loopback, meaningless to any other viewer.
+  // `secureContext` rides along: the viewer can't map the owner's path back to a repo.
+  await db.publishPreviews(mine.map((p) => ({ key: p.key, data: { svcs: p.svcs.map(({ localUrl: _, ...s }) => s), secureContext: secureContextOf(cfg, p.key) } })))
+    .catch((e) => console.error("orca: preview publish failed", e)); // advisory — never fail the list
+  const cutoff = (opts.now ?? Date.now()) - PREVIEW_STALE_MS;
+  const others = (await db.previewInventory().catch(() => []))
+    .filter((r) => r.instance !== self && r.seenAt >= cutoff)
+    .map((r) => {
+      const svcs = (r.data.svcs ?? []) as preview.SvcStatus[];
+      const base = cfg.instances?.[r.instance];
+      return { key: r.key, instance: r.instance, svcs: opts.loopback && base ? forward.localize(r.key, svcs, new URL(base).hostname, r.data.secureContext === true) : svcs };
+    });
+  return [...mine, ...others];
 }
 
 /** The agent a branch's next run uses: its pin (when the repo allows that provider), else whoever

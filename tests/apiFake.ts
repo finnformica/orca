@@ -44,7 +44,7 @@ export const apiFake = {
   // When set, api.previewMaster rejects with it — the failed-start path (Retry + Log popover).
   previewMasterError: null as null | string,
   // Running previews served by api.previews (the running-previews menu) — keyed by worktree path.
-  previewsData: [] as { key: string; svcs: unknown[] }[],
+  previewsData: [] as { key: string; instance?: string; svcs: unknown[] }[],
   // When set, api.previews rejects with it — the unreachable-endpoint path (e.g. a self-preview
   // whose bridge predates the /api/previews route and 404s).
   previewsError: null as null | string,
@@ -63,6 +63,9 @@ export const apiFake = {
   createWorktreeCalls: [] as { repo: string; instance?: string }[],
   adoptCalls: [] as { repo: string; branch: string; instance?: string }[],
   previewCalls: [] as { key: string; instance?: string }[],
+  // Where each preview status poll / stop was sent (the instance the store resolved for its key).
+  previewStatusCalls: [] as { key: string; instance?: string }[],
+  previewStopCalls: [] as { key: string; instance?: string }[],
   healthData: null as null | Record<string, unknown>,
   healthHistoryData: [] as Record<string, unknown>[],
   healthHistoryCalls: [] as { instance: string; hours?: number }[],
@@ -117,7 +120,7 @@ export const apiFake = {
     profiles?: { name: string; usage: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: null; fable?: { utilization: number; resetsAt: string | null } | null }; state?: string; email?: string }[];
     routing?: { hydra: boolean; shim: boolean; bin?: string };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
 };
 
 mock.module("@/api", () => ({
@@ -163,16 +166,30 @@ mock.module("@/api", () => ({
     discardWorktree: async (_repo: string, _wt: string, branch?: string) => {
       apiFake.calls.push(`discard:${branch}`); if (branch) apiFake.worktrees.delete(branch); return { ok: true };
     },
-    preview: async (_repo: string, key: string, _worktree: string, instance?: string) => {
-      apiFake.calls.push(`preview:${key}`); apiFake.previewCalls.push({ key, instance }); return apiFake.previewSvcs;
+    preview: async (repo: string, key: string, _worktree: string, instance?: string, branch?: string) => {
+      apiFake.calls.push(`preview:${key}`); apiFake.previewCalls.push({ key, instance });
+      // As the bridge does (verbs.startPreview): the starting instance records the placement.
+      if (branch) {
+        const k = `${repo}::${branch}`;
+        apiFake.enrichmentData.set(k, { ...apiFake.enrichmentData.get(k), previewInstance: { instance: instance ?? "laptop", key, startedAt: new Date().toISOString() } });
+      }
+      return apiFake.previewSvcs;
     },
     previewMaster: async (repo: string) => {
       apiFake.calls.push(`previewMaster:${repo}`);
       if (apiFake.previewMasterError) throw new Error(apiFake.previewMasterError);
       return { worktreePath: `/wt/${repo}-main`, svcs: apiFake.previewSvcs };
     },
-    previewStop: async (key: string) => { apiFake.calls.push(`previewStop:${key}`); apiFake.previewsData = apiFake.previewsData.filter((p) => p.key !== key); return { ok: true }; },
-    previewStatus: async () => apiFake.previewSvcs,
+    previewStop: async (key: string, instance?: string) => {
+      apiFake.calls.push(`previewStop:${key}`); apiFake.previewStopCalls.push({ key, instance });
+      apiFake.previewsData = apiFake.previewsData.filter((p) => p.key !== key);
+      // …and the stop clears it (db.clearPreviewPlacement).
+      for (const [k, v] of apiFake.enrichmentData) {
+        if ((v.previewInstance as { key?: string } | undefined)?.key === key) { const { previewInstance: _, ...rest } = v; apiFake.enrichmentData.set(k, rest); }
+      }
+      return { ok: true };
+    },
+    previewStatus: async (key: string, instance?: string) => { apiFake.previewStatusCalls.push({ key, instance }); return apiFake.previewSvcs; },
     previews: async () => { if (apiFake.previewsError) throw new Error(apiFake.previewsError); return apiFake.previewsData; },
     summary: async (_repo: string, worktree: string, base?: string) => { apiFake.calls.push(`summary:${worktree}:${base ?? ""}`); return apiFake.summaryData; },
     localDiff: async () => ({ diff: apiFake.diffText }),

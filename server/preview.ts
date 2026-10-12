@@ -38,6 +38,12 @@ export const previewHost = (): string => process.env.ORCA_PREVIEW_HOST || "local
 /** The address a preview's services bind (ORCA_PREVIEW_BIND): loopback on a laptop; on a box reached
  *  over the tailnet, that interface — `{bind}` in a preview command. */
 export const previewBind = (): string => process.env.ORCA_PREVIEW_BIND || "127.0.0.1";
+/** The host in a preview's `url` — the OWNER's address, which any device on the tailnet can reach:
+ *  ORCA_PREVIEW_HOST, else this instance's address from the config's `instances`, else localhost. */
+export function ownerHost(instances: Record<string, string> | undefined, self: string): string {
+  if (process.env.ORCA_PREVIEW_HOST) return process.env.ORCA_PREVIEW_HOST;
+  try { return instances?.[self] ? new URL(instances[self]!).hostname : "localhost"; } catch { return "localhost"; }
+}
 
 /** Which preview databases belong to no live worktree. Pure, so the selection — the part whose
  *  failure mode is dropping a database someone is using — is testable without a Postgres. */
@@ -46,7 +52,10 @@ export function orphanPreviewDbs(existing: string[], liveWorktreePaths: string[]
   return existing.filter((name) => !keep.has(name));
 }
 
-export type SvcStatus = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
+/** `url` is the owner's address (what a phone or the box's own page opens); `localUrl`, when set, is
+ *  the same service on the ANSWERING bridge's loopback (its own preview bound to 127.0.0.1, or a
+ *  forward in server/forward.ts) — what a page served from localhost opens, for a secure context. */
+export type SvcStatus = { name: string; port: number; url: string; localUrl?: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const previews = new Map<string, Svc[]>();
 
@@ -198,7 +207,7 @@ const tail = async (path: string, max = 1500): Promise<string> => {
 export const logs = (key: string, max = 3000): Promise<{ name: string; log: string }[]> =>
   Promise.all((previews.get(key) ?? []).map(async (s) => ({ name: s.name, log: await tail(s.logPath, max) })));
 
-export async function status(key: string): Promise<SvcStatus[]> {
+export async function status(key: string, host = previewHost()): Promise<SvcStatus[]> {
   const svcs = previews.get(key) ?? [];
   return Promise.all(svcs.map(async (s) => {
     const up = await portReady(s.port);
@@ -213,7 +222,10 @@ export async function status(key: string): Promise<SvcStatus[]> {
     // The URL is what the BROWSER opens, so it must name a host the browser can reach: `localhost`
     // is right when Orca runs on your machine and wrong the moment it runs on a box you reach over a
     // tailnet. The readiness probe below stays on localhost — that one runs here.
-    return { name: s.name, port: s.port, url: `http://${previewHost()}:${s.port}`, open: s.open, running, ready, error: running ? undefined : await tail(s.logPath), startedAt: s.startedAt };
+    // `localUrl` only when the service is on this machine's loopback; bound to a tailnet address,
+    // localhost would not reach it.
+    const loopback = ["127.0.0.1", "localhost", "::1"].includes(previewBind());
+    return { name: s.name, port: s.port, url: `http://${host}:${s.port}`, ...(loopback ? { localUrl: `http://localhost:${s.port}` } : {}), open: s.open, running, ready, error: running ? undefined : await tail(s.logPath), startedAt: s.startedAt };
   }));
 }
 
@@ -221,8 +233,8 @@ export async function status(key: string): Promise<SvcStatus[]> {
  *  Not repo-scoped: the map spans all repos, keyed by absolute path.
  *  Only reflects previews started by THIS bridge process (the in-memory `previews` map) — previews
  *  orphaned by a prior bridge aren't listed, by design. */
-export async function list(): Promise<{ key: string; svcs: SvcStatus[] }[]> {
-  return Promise.all([...previews.keys()].map(async (key) => ({ key, svcs: await status(key) })));
+export async function list(host = previewHost()): Promise<{ key: string; svcs: SvcStatus[] }[]> {
+  return Promise.all([...previews.keys()].map(async (key) => ({ key, svcs: await status(key, host) })));
 }
 
 /** Stop a preview's services. `teardown` = an explicit Discard / preview-stop (not the reap-before-

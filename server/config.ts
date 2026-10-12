@@ -49,6 +49,11 @@ export type RepoConfig = {
   baseBranch: string;
   /** Services started per workstream preview. `open` marks the one to open in the browser. */
   previewServices: PreviewService[];
+  /** The previewed app only works in a SECURE CONTEXT (e.g. it calls `crypto.randomUUID`), which a
+   *  plain-http tailnet name is not. Then a preview relayed from another instance gets its opened
+   *  service forwarded to this machine's loopback and a `localUrl` (server/forward.ts), which a page
+   *  served from localhost opens. Off by default: the owner's tailnet `url` everywhere, no forward. */
+  previewSecureContext?: boolean;
   /** Channel the Slack notify/bump message names (the agent posts to it via its Slack tool). */
   slackChannel?: string;
   /** Label that triggers the deploy-preview action (added by the "Add preview" button). */
@@ -209,6 +214,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
           else if (typeof v !== "boolean") errors.push(`${where}.features.${k} must be true or false`);
         }
       }
+    }
+    if (r.previewSecureContext !== undefined && typeof r.previewSecureContext !== "boolean") {
+      errors.push(`${where}.previewSecureContext must be true or false`);
     }
     if (r.previewServices !== undefined && !Array.isArray(r.previewServices)) {
       errors.push(`${where}.previewServices must be an array`);

@@ -41,8 +41,10 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   stream (`/api/events`, ONE per tab, multiplexing every chat and relaying the other instances' buses —
   a browser gets six HTTP/1.1 connections per host across all tabs, and a stream per chat starved the
   PR page's fetches) — everything else is request/response. **The API has no auth of its
-  own**, so the listen socket is loopback by default (`ORCA_BIND`, comma-separated addresses, adds the tailnet interface for a deployed
-  instance, which binds its tailnet address and is reached only over Tailscale — never `0.0.0.0`).
+  own**, so the listen socket is loopback by default (`ORCA_BIND`, comma-separated addresses). A deployed
+  instance binds loopback PLUS its tailnet address (`127.0.0.1,<tailnet ip>`) and is reached from other
+  machines only over Tailscale — never `0.0.0.0`. Loopback is not optional on the box: `bin/orca` and an
+  Orca preview's Vite proxy (`/api` → `localhost:8787`) both find nothing without it.
   (History: a keystrokes-into-a-shell terminal WebSocket once made the loopback bind critical; the
   WebSocket is gone, the bind rule stays because the bridge runs agents with repo-granted authority.)
 - **Why the process must exist:** a browser can't run `git worktree`, read a local diff, or
@@ -418,12 +420,32 @@ removed, the target adopts the branch over HTTP (with an explicit `instance`, si
 still lists it here until the next publish), and the session pointer is cleared — the provider's
 session file is on the old host's disk, so the next run there takes the portable-transcript rung.
 Turns and enrichment are in the shared database and need no moving. Not while its agent runs.
-**A preview on the other instance opens as `localhost` here** (`server/forward.ts`): when a
-preview status is relayed from its owner, the relaying bridge forwards the opened service's port on
-loopback and returns `http://localhost:<port>` — the app needs a secure context (`crypto.randomUUID`
-is undefined on a plain-http tailnet name; the page was blank), and the tailnet has no HTTPS certs.
-Plain TCP, so Vite's HMR websocket rides it; dropped on stop; a port a local preview holds is left
-on the owner's URL. The other services keep the owner's URL (an http page may call another http origin).
+**Preview state lives on the server; a browser is a view of it.** The bridge that starts a
+preview records where in the branch's enrichment (`previewInstance: {instance, key, startedAt}`,
+`verbs.startPreview`); the stop route clears it (`db.clearPreviewPlacement`, by key). The card keys
+its preview by that record (`store.previewKeyOf` — the key is a path on the OWNER, e.g. the box's
+own checkout after "Test on cloud") and sends status/stop there, so a refreshed page or another
+device shows Starting/Open/Stop with no click. Each instance publishes its running previews to
+`preview_inventory` (migration 12; the 10s publish tick, and right after a start/stop), and
+`/api/previews` (database-only) answers its own live plus the others' published, hiding a machine
+silent for `PREVIEW_STALE_MS`. **URLs are per viewer:** a service carries `url`, the owner's address
+(`ORCA_PREVIEW_HOST`, else its `instances` host), and `localUrl` when the ANSWERING bridge has it on
+loopback — its own preview bound to 127.0.0.1, or a forward (`server/forward.ts`). **The tailnet
+`url` is the default everywhere; the forward is the exception**, only for a repo with
+`previewSecureContext: true` (branch-demo: `crypto.randomUUID` is undefined on a plain-http tailnet
+name, the page was blank, and the tailnet has no HTTPS certs). For such a repo, when a preview status
+is relayed from its owner (or listed for a page served from localhost — the owner tags each published
+row `secureContext`, since the viewer can't map the owner's path to a repo), the opened service's
+port is forwarded on loopback here. Without the flag no forward is opened and every device gets the
+owner's `url` (opening Orca's own preview from the laptop sent Finn to localhost when he wanted the
+tailnet). **A preview command binds `{bind}`** (`ORCA_PREVIEW_BIND`: loopback on a laptop, the
+tailnet address on a box) and embeds `{host}` (`ORCA_PREVIEW_HOST`) in any URL the app hands the
+browser; a Vite app also needs `export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS={host}` or it rejects
+the tailnet Host header — Orca's own: `cd web && export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS={host}
+&& bunx --bun vite --host {bind} --port {port}`. Plain TCP, so
+Vite's HMR websocket rides it; dropped on stop; a port a local preview holds gets no `localUrl`. The
+browser opens `localUrl` only from a page on localhost (`previewHref`), else `url` — a phone opens the
+owner's tailnet URL, which still lacks a secure context until the tailnet has HTTPS certificates.
 **Slack posts from the instance you click on** (`/api/slack` is in the answer-here set): it needs no
 worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box it failed with no token.
 **Machine metrics history:** each instance samples ITSELF once a minute (`startMetricsSampler` in
@@ -446,7 +468,7 @@ VPC, a security group with NO ingress, the SSM instance profile) with `deploy/cl
 which installs Postgres, Tailscale (auth key read from SSM Parameter Store
 `/orca/tailscale-authkey`), Bun, the Claude CLI, hydra + shim and `gh`; sign-ins can't be
 unattended, so after first boot `gh auth login`, clone to `/opt/orca`, `hydra add …`, then
-`deploy/bootstrap.sh` builds, writes `.env` bound to the tailnet address and starts the unit. The
+`deploy/bootstrap.sh` builds, writes `.env` bound to loopback plus the tailnet address and starts the unit. The
 laptop points `ORCA_DATABASE_URL` at the box's Postgres over the tailnet. Modelled on a teammate's
 "chorus-server" (m7i.2xlarge, Ubuntu 24.04, SSM-only). The unit's `PATH` must hold `~/.local/bin` (hydra + the `claude` shim) and
 `jq`/`curl` (hydra's dependencies), and the box runs `hydra add … ; install.sh --shim` once. `.github/workflows/check.yml` runs the gate on Linux, which is where a

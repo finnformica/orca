@@ -38,7 +38,7 @@ export type InstanceHealth = {
 };
 /** One recorded sample of an instance's vitals (instance_metric), for the chip's history graphs. */
 export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number };
-export type PreviewSvc = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
+export type PreviewSvc = { name: string; port: number; url: string; localUrl?: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const post = (path: string, body: unknown) =>
   fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then(res);
@@ -133,10 +133,10 @@ export const api = {
   addPreviewLabel: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/label", { repo, pr }),
   // Previews are placed explicitly: a worktree path alone can't say which instance holds it once a
   // branch is checked out on both (the session's instance and the preview's may differ).
-  preview: (repo: string, key: string, worktree: string, instance?: string): Promise<PreviewSvc[]> => post("/api/preview", { repo, key, worktree, instance }),
+  preview: (repo: string, key: string, worktree: string, instance?: string, branch?: string): Promise<PreviewSvc[]> => post("/api/preview", { repo, key, worktree, instance, branch }),
   previewMaster: (repo: string): Promise<{ worktreePath: string; svcs: PreviewSvc[] }> => post("/api/preview/master", { repo }),
   previewStatus: (key: string, instance?: string): Promise<PreviewSvc[]> => fetch(`/api/preview?key=${encodeURIComponent(key)}${instance ? `&instance=${encodeURIComponent(instance)}` : ""}`).then(res),
-  previews: (): Promise<{ key: string; svcs: PreviewSvc[] }[]> => fetch("/api/previews").then(res),
+  previews: (): Promise<{ key: string; instance?: string; svcs: PreviewSvc[] }[]> => fetch("/api/previews").then(res),
   previewStop: (key: string, instance?: string): Promise<{ ok: true }> => post("/api/preview/stop", { key, instance }),
   // A machine's vitals (the header's instance chip); `instance` asks another instance for its own.
   health: (instance?: string): Promise<InstanceHealth> => fetch(`/api/health${instance ? `?instance=${encodeURIComponent(instance)}` : ""}`).then(res),
