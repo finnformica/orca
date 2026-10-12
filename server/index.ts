@@ -23,7 +23,7 @@ import * as orchestrator from "./orchestrator";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
-import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider } from "../shared/agent";
+import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
@@ -118,6 +118,9 @@ const INVENTORY_PUBLISH_MS = 10_000;
 setInterval(() => {
   void loadConfig().then((cfg) => Promise.all(cfg.repos.filter(verbs.repoHere).map((r) => agentRows(r).catch((e) => console.error(`orca: inventory publish failed for ${r.name}`, e)))));
 }, INVENTORY_PUBLISH_MS).unref();
+
+// How many of a conversation's newest turns are sent with their steps attached (older ones load on unfold).
+const STEPS_FOR_TURNS = 40;
 
 // How long shutdown waits for outstanding history writes before leaving anyway.
 const DRAIN_TIMEOUT_MS = 5_000;
@@ -391,6 +394,12 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   // The orchestrator's verbs over HTTP, so an orchestrator on one instance can spawn / send /
   // address on another: these go through the same placement forwarding as every repo route.
+  if (req.method === "POST" && p === "/api/workstreams/move") {
+    // Move a workstream's worktree to another instance (verbs.moveWorkstream). Placement forwards
+    // this to the instance that holds it now; the target adopts over HTTP.
+    try { return json(await verbs.moveWorkstream(cfg, repo, String(body.branch), String(body.to))); }
+    catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 409); }
+  }
   if (req.method === "POST" && p === "/api/workstreams/spawn") {
     const ws = await verbs.createWorkstream(cfg, repo, { prompt: String(body.prompt ?? ""), title: body.title, model: body.model, fields: { orchestrated: true } });
     return json({ ...ws, instance: db.instanceName() });
@@ -688,16 +697,17 @@ async function api(req: Request, url: URL): Promise<Response> {
     const branch = url.searchParams.get("branch");
     if (!branch) return json({ error: "branch required" }, 400);
     const turns = await db.turns(repo.name, branch);
-    // Decorate every turn with its recorded steps (the agent's thought process), read from the run's
-    // transcript — so it's there for finished turns too, and survives a bridge restart. The WHOLE
-    // transcript is sent: a tail was the point of "I can't see the depth of the conversation", and
-    // the steps are already bounded per field and per file when they're recorded. `?steps=N` still
-    // asks for just the last N.
-    const tail = Number(url.searchParams.get("steps")) || undefined;
-    for (const t of turns) {
-      const numbered = await transcript.numbered(t.id, { tail });
+    // Each turn carries its recorded steps (the agent's thought process) — for the NEWEST
+    // `STEPS_FOR_TURNS` turns, in ONE query. Older turns come without; the chat fetches a turn's
+    // steps when you unfold it (/api/turns/steps from seq 0). A 300-turn conversation used to mean
+    // 300 queries and megabytes on every open, and the database may be on the other machine now.
+    const limit = Number(url.searchParams.get("steps")) || STEPS_FOR_TURNS;
+    const recent = turns.slice(-limit);
+    const bySteps = await db.stepsForRuns(recent.map((t) => t.id));
+    for (const t of recent) {
+      const numbered = bySteps.get(t.id) ?? [];
       if (numbered.length) {
-        t.steps = numbered.map((n) => n.step);
+        t.steps = numbered.map((n) => n.step as unknown as AgentStep);
         t.stepSeq = numbered[numbered.length - 1]!.seq; // where the live tail resumes from
       }
     }

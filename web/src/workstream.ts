@@ -965,6 +965,7 @@ const ORCHESTRATOR_ROLE = [
   "      that says `on: <instance>` wants that one). Without it, the repo's default instance.",
   "  orca send --repo <repo> --branch <branch> [--model <id>] \"<message>\"     continue an existing workstream (--model moves it to another model)",
   "  orca address --repo <repo> --branch <branch>              have its agent fix conflicts, CI and review on its PR",
+  "  orca move --repo <repo> --branch <branch> --to <instance>  move its worktree to another instance (not while it runs)",
   "  orca archive --repo <repo> --branch <branch>              cancel a workstream you spawned or sent to: stop its agent,",
   "                                  drop anything queued for it, archive the card. Refuses one you don't own.",
   "  orca preview --repo <repo> --branch <branch> [--status]   start (or restart) its local preview; --status prints",

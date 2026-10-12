@@ -78,10 +78,20 @@ function Step({ step, live }: { step: AgentStep; live: boolean }) {
  *  what a finished turn is about, and a long run's trail belongs behind a toggle until you go looking
  *  for how it got there. (It was open by default once; with a hundred-step run above every answer,
  *  the conversation was unreadable.) */
-function Steps({ steps: raw, live }: { steps: AgentStep[]; live: boolean }) {
+function Steps({ steps: raw, live, load }: { steps: AgentStep[]; live: boolean; load?: () => Promise<AgentStep[]> }) {
   const [open, setOpen] = useState(false);
-  const steps = groupSteps(raw); // fold each tool result into its call — one toggle per tool use
-  if (!steps.length) return null;
+  // An older turn arrives without its steps (the bridge sends them for the newest turns only);
+  // they are fetched the first time it is unfolded.
+  const [fetched, setFetched] = useState<AgentStep[] | null>(null);
+  const steps = groupSteps(fetched ?? raw); // fold each tool result into its call — one toggle per tool use
+  if (!steps.length && !load) return null;
+  if (!steps.length && load && !fetched) {
+    return (
+      <div className="mb-1.5">
+        <button type="button" onClick={() => { void load().then((s) => { setFetched(s); setOpen(true); }); }} className="text-[10px] tracking-widest text-neutral-500 uppercase hover:text-neutral-300">⏵ steps</button>
+      </div>
+    );
+  }
   const body = <div className="space-y-1">{steps.map((s, i) => <Step key={i} step={s} live={live} />)}</div>;
   if (live) return body;
   return (
@@ -167,7 +177,7 @@ function WorkerReports({ instruction }: { instruction: string }) {
 }
 
 /** One exchange: the instruction shown as a shell command (`❯ …`), the agent's output below it. */
-function Turn({ turn }: { turn: AgentTurn }) {
+function Turn({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]> }) {
   const pending = !turn.finishedAt;
   const instruction = turn.instruction ?? promptInstruction(turn.prompt);
   return (
@@ -196,7 +206,7 @@ function Turn({ turn }: { turn: AgentTurn }) {
         ) : (
           <>
             {/* The final message is the turn's response, rendered by Output — not twice. */}
-            <Steps steps={withoutFinalEcho(turn.steps ?? [], turn.response)} live={false} />
+            <Steps steps={withoutFinalEcho(turn.steps ?? [], turn.response)} live={false} load={turn.steps ? undefined : loadSteps} />
             <Output turn={turn} />
             {/* Orca's verification of the commit — deterministic evidence, shown apart from the
                 agent's own Verification section. Output folds like a tool result. */}
@@ -376,7 +386,7 @@ export function ChatPanel({ row, send, flush, controls }: {
         )}
         {turns === null ? <p className="text-neutral-500">Loading conversation…</p>
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
-          : turns.map((turn) => <Turn key={turn.id} turn={turn} />)}
+          : turns.map((turn) => <Turn key={turn.id} turn={turn} loadSteps={() => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response))} />)}
         {/* Not drawn once the real thing has arrived over the stream — the same text twice, one of
             them "sending", is worse than the moment's gap it would cover. */}
         {sending.filter((m) => !landed(m.text)).map((m) => (
