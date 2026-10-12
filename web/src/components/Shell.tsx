@@ -15,6 +15,7 @@ import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPa
 import { AskOrchestrator } from "@/components/Terminal";
 import { useTheme, type Theme } from "@/lib/theme";
 import { cn, PortalContainer } from "@/lib/utils";
+import { validChoice } from "@/lib/persisted";
 import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useRepos, type OptimisticDraft } from "../store";
 import { summarizeSync } from "../workstream";
@@ -43,6 +44,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
 }) {
   const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
   const [open, setOpen] = useState(false); // off-canvas sidebar on a narrow screen
+  useShellFallbacks();
   const route = useRoute();
   useEffect(() => setOpen(false), [route]); // navigating closes the off-canvas sidebar
   useEffect(() => { // …and so does Esc
@@ -139,6 +141,21 @@ export function OrcaMark({ className }: { className?: string }) {
       <path d="M2 12.5C2 9.5 5.5 8 9 8L11 3L13.5 8C16.5 8 19 8.5 20.5 9L22.5 6L20.3 11L22.5 15.5C19 13 10 14 2 12.5ZM5.6 10a1 1 0 1 0 0 2a1 1 0 1 0 0 -2Z" />
     </svg>
   );
+}
+
+// The repo and instance scopes are restored from localStorage before the config lands; once it has,
+// a saved repo or instance that no longer exists goes back to "all" (never a page filtered to nothing).
+function useShellFallbacks() {
+  const repos = useRepos();
+  const [repo, setRepo] = useAtom(repoFilterAtom);
+  const [scope, setScope] = useAtom(instanceScopeAtom);
+  const here = thisInstance(); // set once the config has landed (useRepos re-renders on it)
+  useEffect(() => {
+    if (repos.length && validChoice(repo, repos.map((r) => r.name), "all") !== repo) setRepo("all");
+  }, [repos, repo, setRepo]);
+  useEffect(() => {
+    if (here && validChoice(scope, instanceChoices(), "all") !== scope) setScope("all");
+  }, [here, repos, scope, setScope]);
 }
 
 // Vercel's team switcher, as the instance scope: "All instances", or one machine. It scopes the

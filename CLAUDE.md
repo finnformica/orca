@@ -108,7 +108,11 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   PRs + worktrees, so enrichment with no branch behind it renders nothing; PRs/worktrees with no
   enrichment still render (incl. PRs not made by Orca). **There is no enrichment GC** — it existed to
   bound a 5MB localStorage bucket, and pruning is now the opposite of the goal. `localStorage` keeps
-  only per-browser UI state (theme, density, composer drafts); a one-shot `migrateLocalEnrichment`
+  only per-browser UI state (theme, density, composer drafts; the shell's repo, instance scope,
+  sidebar collapse and palette recents go through `lib/persisted.ts` — `persistedAtom` /
+  `usePersisted`, versioned `orca.ui.<name>.v1` keys, a safe parse that falls back to the default,
+  and a restored repo/instance the config no longer has reads as "all"; reuse it for new UI state,
+  with `perRepo` names for per-repo values); a one-shot `migrateLocalEnrichment`
   hands any pre-DB blob (transcripts included) to the bridge on first load.
 - **GitHub = the `gh` CLI; Slack = a direct `chat.postMessage`** from your identity using a user token
   (`SLACK_TOKEN`) — the ONE Slack path for every provider: deterministic, verbatim, instant, no model,
@@ -169,7 +173,7 @@ hints and the `?` sheet, so a key can't be documented in one place and bound in 
 palette** (⌘K, a native modal `<dialog>` with `shadow-modal`, like Add New): fuzzy search over
 workstreams, PRs, pages and actions (New agent, Open orchestrator, Toggle sidebar, switch repo /
 instance, Start preview for the workstream whose page you're on); ↑/↓ wrap, Enter runs; empty, the
-recently run items lead (`orca.palette.recent`); a query with no good match can always go to the
+recently run items lead (persisted); a query with no good match can always go to the
 orchestrator as a prefilled message (offered last, never above a match). Ranking is pure
 (`lib/palette.ts`). The overlays' open state is jotai atoms (`lib/atoms.ts`), so a key, a button and
 the palette open the same one. **Previews** is a page (running previews with Open / Stop, and Test

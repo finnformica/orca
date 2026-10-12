@@ -1,12 +1,14 @@
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
+import { persistedAtom } from "./persisted";
 
 // New-draft composer's selected repo, persisted. The prompt + attachments are persisted by
 // ChatComposer itself (see lib/composerDraft), so a reload never loses an in-progress draft.
 export const draftRepoAtom = atomWithStorage("orca.draftRepo", "");
 
-// Board repo filter ("all" or a repo name), persisted. Scopes the board + the Done-lane copy.
-export const repoFilterAtom = atomWithStorage("orca.repoFilter", "all");
+// The top bar's repo switcher ("all" or a repo name), persisted (lib/persisted; a repo no longer in
+// the config reads as "all" — Shell's useShellFallbacks). Scopes the board + the Done-lane copy.
+export const repoFilterAtom = persistedAtom("repoFilter", "all", { legacyKey: "orca.repoFilter" });
 
 // Card density, persisted. "comfortable" is the full card; "dense" strips a card down to its
 // at-a-glance status (repo, title, status/condition badges) — dropping the prompt, diffstat, and
@@ -27,8 +29,8 @@ export const boardViewAtom = atomWithStorage<BoardView>("orca.boardView", "list"
 // The console shell. The sidebar can be collapsed to icons (persisted); the instance switcher at its
 // top scopes the Overview and Agents pages to one machine ("all" or an instance name, persisted);
 // the Find box and the Agents page share one search query (not persisted — a fresh visit is unfiltered).
-export const sidebarCollapsedAtom = atomWithStorage("orca.sidebarCollapsed", false);
-export const instanceScopeAtom = atomWithStorage("orca.instanceScope", "all");
+export const sidebarCollapsedAtom = persistedAtom("sidebarCollapsed", false, { legacyKey: "orca.sidebarCollapsed" });
+export const instanceScopeAtom = persistedAtom("instanceScope", "all", { legacyKey: "orca.instanceScope" });
 export const agentQueryAtom = atom("");
 // The Overview's Usage card: just the fleet + Codex, or every hydra login too. Persisted.
 export const usageExpandedAtom = atomWithStorage("orca.usageExpanded", false);
@@ -45,4 +47,6 @@ export const addNewOpenAtom = atom(false);
 export const paletteOpenAtom = atom(false);
 export const shortcutsHelpOpenAtom = atom(false);
 // The palette's recently run item ids, newest first. Persisted per browser.
-export const paletteRecentAtom = atomWithStorage<string[]>("orca.palette.recent", []);
+export const paletteRecentAtom = persistedAtom<string[]>("palette.recent", [], {
+  legacyKey: "orca.palette.recent", valid: (v): v is string[] => Array.isArray(v) && v.every((x) => typeof x === "string"),
+});

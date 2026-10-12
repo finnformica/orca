@@ -89,7 +89,7 @@ describe("console shell", () => {
     // The Overview now shows that machine's card only.
     expect(container!.querySelector('[data-slot="instance-cloud"]')).not.toBeNull();
     expect(container!.querySelector('[data-slot="instance-laptop"]')).toBeNull();
-    expect(localStorage.getItem("orca.instanceScope")).toBe('"cloud"');
+    expect(localStorage.getItem("orca.ui.instanceScope.v1")).toBe('"cloud"');
   });
 
   test("Find: typing filters the Agents list (going there), and 'F' focuses it from anywhere", async () => {
@@ -131,7 +131,7 @@ describe("console shell", () => {
     await mount();
     await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
     expect(container!.querySelector('[data-slot="sidebar"]')!.getAttribute("data-collapsed")).toBe("true");
-    expect(localStorage.getItem("orca.sidebarCollapsed")).toBe("true");
+    expect(localStorage.getItem("orca.ui.sidebarCollapsed.v1")).toBe("true");
     act(() => root?.unmount());
     container?.remove();
     await mount();
