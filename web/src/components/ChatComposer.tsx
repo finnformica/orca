@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
-import { ArrowUp, FileText, Loader2, Paperclip, X } from "lucide-react";
+import { ArrowUp, FileText, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { usePrRefs } from "@/store";
 import { filterPrRefs, insertPrRef, prRefLabel, prTrigger, type PrRef } from "@/workstream";
@@ -46,11 +46,14 @@ export function ChatComposer({
   // Past submissions (oldest→newest) recallable with ↑/↓ from an empty box — resend a prior prompt.
   history?: string[];
 }) {
-  const [value, setValue] = useState(() => (persistKey ? loadDraft(persistKey).text : ""));
+  const [value, setText] = useState(() => (persistKey ? loadDraft(persistKey).text : ""));
+  // What the box holds as of the last edit, committed or not: a send that fails fast can land before
+  // React has rendered the clear, so the textarea's DOM value would still read as the sent text.
+  const latest = useRef(value);
+  const setValue = (v: string) => { latest.current = v; setText(v); };
   const [histIdx, setHistIdx] = useState<number | null>(null); // position while walking `history`, else null
   const [images, setImages] = useState<File[]>([]);
   const [hydrated, setHydrated] = useState(!persistKey);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
@@ -126,28 +129,32 @@ export function ChatComposer({
     if (e.dataTransfer.files.length) { e.preventDefault(); addImages(e.dataTransfer.files); }
   };
 
-  const canSubmit = Boolean(value.trim() || images.length) && !busy;
+  // Never gated on a send in flight: a launch takes seconds (longer over the tailnet) and the box
+  // must take the next message meanwhile — the log shows each one as "sending…" until the bridge
+  // has it (running or queued), which is the receipt. (It used to go busy until the launch
+  // returned, and Enter did nothing for those seconds.)
+  const canSubmit = Boolean(value.trim() || images.length);
   const submit = async (send: (text: string, images: File[]) => Promise<void> = onSubmit) => {
     if (!canSubmit) return;
     // Optimistic: fire and return so the parent can close instantly; it owns draft + errors.
     if (optimistic) return void send(value.trim(), images);
-    // Clear NOW, not after onSubmit resolves: sending a chat message launches an agent, which takes
-    // seconds, and a box still holding the text you just sent reads as "it didn't go". On failure the
-    // text (and attachments) come back, so nothing is lost.
+    // Clear NOW, not after onSubmit resolves: a box still holding the text you just sent reads as
+    // "it didn't go". On failure the text (and attachments) come back — into the box if it is still
+    // empty, else into the error line, so neither what you sent nor what you're typing is lost.
     const sent = { text: value.trim(), images };
     setValue("");
     setImages([]);
     setHistIdx(null);
     if (persistKey) clearDraft(persistKey);
-    setBusy(true);
     setError(null);
     try {
       await send(sent.text, sent.images);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setValue(sent.text);
-      setImages(sent.images);
-    } finally { setBusy(false); }
+      const msg = err instanceof Error ? err.message : String(err);
+      const empty = !latest.current.trim();
+      setError(empty ? msg : `${msg} — not sent: “${sent.text}”`);
+      if (empty) { setValue(sent.text); setImages(sent.images); }
+    }
   };
   // Recall a history entry (or clear to empty at idx null) into the box.
   const recall = (idx: number | null) => { setHistIdx(idx); setValue(idx === null ? "" : (history?.[idx] ?? "")); };
@@ -231,7 +238,7 @@ export function ChatComposer({
               </Button>
             )}
             <Button type="button" size="icon" className="size-8" disabled={!canSubmit} title="Send (Enter)" onClick={() => void submit()}>
-              {busy ? <Loader2 className="size-4 animate-spin" /> : <ArrowUp className="size-4" />}
+              <ArrowUp className="size-4" />
             </Button>
           </div>
         </div>

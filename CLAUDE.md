@@ -205,7 +205,12 @@ shown as `❯ …` with the agent's output below), plus the follow-up `ChatCompo
 message. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
 involved. Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every
 board action uses. A turn written at launch but not yet finished renders as `▋ working…` (that's how
-an interrupted run stays visible); a turn with a parsed outcome renders its sections. (History: this
+an interrupted run stays visible); a turn with a parsed outcome renders its sections. **The composer
+is never busy:** a send clears the box at once and the next message can go while the launch is still
+in flight (seconds, longer over the tailnet) — the log's `▋ sending…` line, until the bridge has it as
+a running turn or a queued entry, is the receipt. (It used to go busy until the launch returned, and
+Enter did nothing meanwhile.) A failed send comes back into the box if it is still empty, else into
+the error line (`<error> — not sent: “<text>”`), so neither message is lost. (History: this
 was briefly a detail-page "Chat" tab; the user asked for it as a terminal-style modal instead, and the
 tab was removed.)
 
