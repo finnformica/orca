@@ -81,7 +81,7 @@ describe("chatbox behaves like one text field", () => {
     // guard must skip it, else picking a repo would yank the caret into the message field.
     const c = mount(composer(<button role="combobox">repo</button>));
     const textarea = c.querySelector("textarea")!;
-    mouseDown(c.querySelector('[role="combobox"]')!);
+    mouseDown(c.querySelector('button[role="combobox"]')!);
     expect(document.activeElement).not.toBe(textarea);
   });
 });

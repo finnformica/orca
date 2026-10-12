@@ -12,6 +12,7 @@ import {
   addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, followUpPrompt, launchPrompt,
   newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
+import type { PrRef } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
 import { attachCommand, handoffPrompt } from "../../shared/agent";
@@ -427,6 +428,28 @@ function laneFor(row: Row, pr?: PrSummary): Lane {
   }
   if (row.worktreePath && row.promoted) return row.mergeClean === "clean" ? "MERGEABLE" : "IN_REVIEW";
   return "LOCAL"; // pre-PR worktree
+}
+
+/** Every PR the board already polled (open + merged, all repos) for the composer's # picker — the
+ *  same cached slices the lanes render from, so typing never costs a GitHub call. Remote repos come
+ *  through the same forwarded /api/prs. Rebuilt only when the store's version moves. */
+let prRefsAt = -1;
+let prRefsCache: { refs: PrRef[]; repoCount: number } = { refs: [], repoCount: 0 };
+export function usePrRefs(): { refs: PrRef[]; repoCount: number } {
+  const v = useSyncExternalStore(subscribe, () => version);
+  if (v !== prRefsAt) {
+    prRefsAt = v;
+    const refs: PrRef[] = live.flatMap((rl) => [
+      ...rl.prs.map((p): PrRef => ({
+        repo: rl.repo, number: p.number, title: p.title,
+        state: p.isDraft ? "draft" : p.reviewStatus === "approved" ? "approved" : "open",
+      })),
+      ...rl.merged.filter((m) => !rl.prs.some((p) => p.number === m.number))
+        .map((m): PrRef => ({ repo: rl.repo, number: m.number, title: m.title, state: "merged", mergedAt: m.mergedAt })),
+    ]);
+    prRefsCache = { refs, repoCount: live.length };
+  }
+  return prRefsCache;
 }
 
 export function useWorkstreams(): Row[] {
