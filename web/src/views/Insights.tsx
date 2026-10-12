@@ -49,7 +49,7 @@ export function InsightsSection({ repo, instance, machines, here }: { repo?: str
       <SectionTitle aside={<Segmented label="Insights range" value={String(days)} onChange={(v) => setDays(Number(v))} options={INSIGHT_RANGES.map((r) => ({ value: String(r.days), label: r.label }))} />}>
         Insights
       </SectionTitle>
-      {machines.map((m) => <BoxProbe key={m} instance={m} here={m === here || machines.length === 1} onCost={onBox} />)}
+      {machines.map((m) => <BoxProbe key={m} instance={m} here={m === here} onCost={onBox} />)}
       <div className="grid gap-4 lg:grid-cols-2">
         <SpendCard data={data} days={days} boxes={shownBoxes.map((m) => ({ instance: m, cost: boxes[m]! }))} />
         <RunsCard data={data} days={days} />
