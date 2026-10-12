@@ -1,13 +1,15 @@
-// E2E for the "Test master" menu row: launching a base-branch preview per repo, reflecting its
-// ready state, and surfacing a failed start as Retry + a Log popover trigger. Driven against the
-// fake api (tests/apiFake.ts) into a real DOM. See PreviewControl.TestMasterRow.
+// E2E for Test master — a row per repo on the Previews page (PreviewControl.TestMasterRow):
+// launching a base-branch preview, reflecting its ready state, and surfacing a failed start as Retry
+// + a Log popover trigger; and the sidebar's Previews badge that tracks it. Driven against the fake
+// api (tests/apiFake.ts) into a real DOM.
 import { afterEach, beforeAll, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { App } from "@/App";
-import { TestMasterMenu, TestMasterRow } from "@/views/PreviewControl";
+import { PreviewsBadge, TestMasterRow } from "@/views/PreviewControl";
+import { navigate } from "@/lib/route";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -35,22 +37,24 @@ afterEach(async () => {
   await act(async () => { await store.refresh(); });
 });
 
-test("TM3 sidebar: Add New and the preview controls sit at the sidebar's foot, above you — not in the top bar", async () => {
+test("TM3 sidebar: Previews is a page with the badges; Add New is the very bottom button, below you", async () => {
   container = document.createElement("div");
   document.body.appendChild(container);
   await act(async () => { root = createRoot(container!); root.render(<App />); await flush(); await flush(); });
 
   const sidebar = container.querySelector("[data-slot='sidebar']")!;
-  const addNew = sidebar.querySelector("[data-slot='add-new']")!;
-  const testMaster = sidebar.querySelector("[aria-label='Test master']")!;
+  const previews = [...sidebar.querySelectorAll('nav[aria-label="Main"] button')].find((b) => b.textContent?.startsWith("Previews"))!;
+  expect(previews.querySelector("[data-slot='previews-badge']")).toBeTruthy();
   const profile = sidebar.querySelector("[data-slot='profile']")!;
-  expect(addNew).toBeTruthy();
-  expect(testMaster).toBeTruthy();
-  expect(addNew.compareDocumentPosition(testMaster) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  expect(testMaster.compareDocumentPosition(profile) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  const bar = container.querySelector("[data-slot='topbar']")!;
-  expect(bar.querySelector("[data-slot='add-new']")).toBeNull();
-  expect(bar.querySelector("[aria-label='Test master']")).toBeNull();
+  const addNew = sidebar.querySelector("[data-slot='add-new']")!;
+  expect(profile.compareDocumentPosition(addNew) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const foot = sidebar.querySelector("[data-slot='sidebar-foot']")!;
+  expect(foot.lastElementChild).toBe(addNew); // nothing below it
+  // No preview buttons left in the foot or the top bar: the page holds Test master and the list.
+  expect(container.querySelector("[aria-label='Test master']")).toBeNull();
+  await act(async () => { navigate("/previews"); await flush(); await flush(); });
+  expect(container.querySelector("[data-slot='test-master']")!.textContent).toContain("Test main");
+  await act(async () => { navigate("/"); await flush(); });
 });
 
 test("TM1 test-master row: launches the base preview and opens once ready", async () => {
@@ -91,20 +95,20 @@ test("TM4 test-master row: survives the popover closing — no reset, no duplica
   expect(starts()).toBe(launched);          // no second base-preview launch
 });
 
-test("TM5 menu trigger: spinner while a base preview boots, badge once it's live", async () => {
+test("TM5 nav badge: spinner while a base preview boots, a dot once it's live", async () => {
   container = document.createElement("div");
   document.body.appendChild(container);
-  await act(async () => { root = createRoot(container!); root.render(<TestMasterMenu />); await flush(); });
-  const trigger = () => container!.querySelector("[aria-label='Test master']")!;
+  await act(async () => { root = createRoot(container!); root.render(<PreviewsBadge />); await flush(); });
+  const badge = () => container!.querySelector("[data-slot='previews-badge']")!;
 
-  // Booting (running, not yet ready) → spinner in place of the flask.
+  // Booting (running, not yet ready) → spinner.
   apiFake.previewSvcs = [{ name: "web", port: 5173, url: "http://localhost:5173", open: true, running: true, ready: false, startedAt: 1 }];
   await act(async () => { await store.startMaster("r"); await flush(); });
-  expect(trigger().querySelector(".animate-spin")).toBeTruthy();
+  expect(badge().querySelector(".animate-spin")).toBeTruthy();
 
-  // Fully up → badge dot, no spinner.
+  // Fully up → dot, no spinner.
   apiFake.previewSvcs = [{ name: "web", port: 5173, url: "http://localhost:5173", open: true, running: true, ready: true, startedAt: 1 }];
   await act(async () => { await store.startMaster("r"); await flush(); });
-  expect(trigger().querySelector(".animate-spin")).toBeFalsy();
-  expect(trigger().querySelector("[aria-label='a base preview is running']")).toBeTruthy();
+  expect(badge().querySelector(".animate-spin")).toBeFalsy();
+  expect(badge().querySelector("[aria-label='a base preview is running']")).toBeTruthy();
 });

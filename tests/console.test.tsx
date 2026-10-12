@@ -251,7 +251,7 @@ describe("surfaces: Vercel's hairlines, radii and shadows", () => {
     .map((el) => el.getAttribute("class")!);
   const offending = (re: RegExp) => classes().filter((c) => re.test(c));
 
-  for (const path of ["/", "/agents", "/usage", "/repos", "/settings", "/r/local/feat-login"]) {
+  for (const path of ["/", "/agents", "/previews", "/usage", "/repos", "/settings", "/r/local/feat-login"]) {
     test(`${path}: 1px borders, no stray shadows, 8px cards`, async () => {
       apiFake.agentsData = [{ branch: "feat-login", worktreePath: "/wt/feat-login", agentStatus: "done" }];
       apiFake.turnsData.set("r::feat-login", [{ id: "t1", provider: "claude", prompt: "p", instruction: "go", response: "done", startedAt: NOW, finishedAt: NOW + 1 }]);

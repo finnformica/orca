@@ -12,6 +12,7 @@ import { ago, repoSummaries } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
 import { THEMES } from "@/components/Shell";
 import { InstanceCard, UsageCard } from "./Vitals";
+import { RunningPreviews, TestMaster } from "./PreviewControl";
 
 export function Repos() {
   const repos = useRepos();
@@ -124,3 +125,15 @@ const Setting = ({ label, hint, children }: { label: string; hint: string; child
     {children}
   </div>
 );
+
+/** Previews: every live preview across instances (Open / Stop), and Test master — a preview of each
+ *  repo's base branch. The sidebar's Previews item carries the badges (running count, base preview). */
+export function PreviewsPage() {
+  return (
+    <div className="space-y-6">
+      <h1 className="text-2xl font-semibold tracking-tight">Previews</h1>
+      <div><SectionTitle>Running</SectionTitle><VCard slot="running-previews"><RunningPreviews /></VCard></div>
+      <div><SectionTitle>Test master</SectionTitle><VCard slot="test-master"><TestMaster /></VCard></div>
+    </div>
+  );
+}

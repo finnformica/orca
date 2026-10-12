@@ -8,7 +8,7 @@ import { poll } from "./poll";
 
 /** One value fed by a loop that runs while anyone subscribes. The value is dropped when the last
  *  subscriber leaves, so a later mount starts from a fresh read rather than a stale one. */
-function sharedSource<T>(start: (set: (v: T) => void) => () => void) {
+export function sharedSource<T>(start: (set: (v: T) => void) => () => void) {
   let value: T | null = null;
   let stop: (() => void) | null = null;
   const subs = new Set<() => void>();

@@ -6,7 +6,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtom } from "jotai";
 import {
   Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderGit2, FolderSync, Gauge, LayoutGrid, Loader2, Menu,
-  Monitor, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
+  Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { agentQueryAtom, instanceScopeAtom, repoFilterAtom, sidebarCollapsedAtom } from "@/lib/atoms";
@@ -15,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { api } from "../api";
 import { instanceChoices, thisInstance, useRepos } from "../store";
 import { summarizeSync } from "../workstream";
+import { PreviewsBadge } from "@/views/PreviewControl";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -22,17 +23,19 @@ import {
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (r: Route) => boolean }[] = [
+const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (r: Route) => boolean; badge?: (compact: boolean) => ReactNode }[] = [
   { to: "/", label: "Overview", Icon: LayoutGrid, match: (r) => r.name === "board" },
   // An agent's own page (PR or local detail) is "inside" Agents, as a deployment is inside Deployments.
   { to: "/agents", label: "Agents", Icon: Boxes, match: (r) => r.name === "agents" || r.name === "pr" || r.name === "local" },
+  // The previews (and Test master) page; its badges are what the two header buttons used to carry.
+  { to: "/previews", label: "Previews", Icon: MonitorPlay, match: (r) => r.name === "previews", badge: (compact) => <PreviewsBadge compact={compact} /> },
   { to: "/repos", label: "Repos", Icon: FolderGit2, match: (r) => r.name === "repos" },
   { to: "/usage", label: "Usage", Icon: Gauge, match: (r) => r.name === "usage" },
   { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
 ];
 
-/** `sidebarActions` renders the foot of the sidebar above you (Add New, the preview controls); it is
- *  told whether the sidebar is collapsed, so it can drop to icons. */
+/** `sidebarActions` renders the very bottom of the sidebar, below you (Add New); it is told whether
+ *  the sidebar is collapsed, so it can drop to an icon. */
 export function Shell({ crumbs, sidebarActions, children }: {
   crumbs: ReactNode; sidebarActions?: (collapsed: boolean) => ReactNode; children: ReactNode;
 }) {
@@ -86,28 +89,29 @@ function Sidebar({ collapsed, onToggle, onClose, actions }: {
       </div>
       {!collapsed && <div className="px-3 pb-2"><FindBox /></div>}
       <nav aria-label="Main" className="flex flex-col gap-0.5 px-2 py-1">
-        {NAV.map(({ to, label, Icon, match }) => {
+        {NAV.map(({ to, label, Icon, match, badge }) => {
           const active = match(route);
           return (
             <button key={to} type="button" onClick={() => navigate(to)} aria-current={active ? "page" : undefined} title={collapsed ? label : undefined}
-              className={cn("flex h-9 items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-accent text-foreground font-medium" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
+              className={cn("relative flex h-9 items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-accent text-foreground font-medium" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
               <Icon className="size-4 shrink-0" />
               <span className={cn(collapsed && "md:hidden")}>{label}</span>
+              {badge?.(collapsed)}
             </button>
           );
         })}
       </nav>
-      {/* The foot: start work (Add New), the preview controls, then you. Collapsed, it stacks into
-          one icon column so nothing overlaps. */}
-      <div data-slot="sidebar-actions" className={cn("mt-auto flex gap-1.5 px-2 pb-2", collapsed ? "flex-col items-stretch md:items-center" : "flex-col")}>
+      {/* The foot: you (with the collapse toggle), then Add New as the very bottom button. Collapsed,
+          it is one icon column — the expand toggle above you, Add New below — so nothing overlaps. */}
+      <div data-slot="sidebar-foot" className={cn("mt-auto flex flex-col border-t p-2", collapsed ? "items-stretch gap-1 md:items-center" : "gap-1.5")}>
+        <div data-slot="sidebar-you" className={cn("flex items-center gap-1", collapsed && "md:flex-col-reverse")}>
+          <ProfileMenu collapsed={collapsed} />
+          <button type="button" onClick={onToggle} className={cn("text-muted-foreground hover:text-foreground hover:bg-accent hidden size-8 shrink-0 items-center justify-center rounded-md md:inline-flex", !collapsed && "ml-auto")}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
+            {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
+          </button>
+        </div>
         {actions?.(collapsed)}
-      </div>
-      <div data-slot="sidebar-foot" className={cn("flex gap-1 border-t p-2", collapsed ? "flex-col items-stretch md:items-center" : "items-center")}>
-        <ProfileMenu collapsed={collapsed} />
-        <button type="button" onClick={onToggle} className={cn("text-muted-foreground hover:text-foreground hover:bg-accent hidden size-8 shrink-0 items-center justify-center rounded-md md:inline-flex", !collapsed && "ml-auto")}
-          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
-          {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
-        </button>
       </div>
     </>
   );
@@ -278,11 +282,12 @@ export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" data-slot="profile" className={cn("hover:bg-accent/60 flex min-h-11 min-w-0 items-center gap-2.5 rounded-md px-1.5 py-1.5 text-sm", collapsed ? "md:size-8 md:min-h-0 md:justify-center md:p-0" : "flex-1")} title="Profile" aria-label="Profile menu">
+        <button type="button" data-slot="profile" className={cn("hover:bg-accent/60 flex h-8 min-w-0 items-center gap-2 rounded-md px-1.5 text-sm", collapsed ? "md:size-8 md:justify-center md:p-0" : "flex-1")} title="Profile" aria-label="Profile menu">
           <CircleUser className="text-muted-foreground size-5 shrink-0" />
-          <span className={cn("min-w-0 text-left leading-tight", collapsed && "md:hidden")}>
-            <span className="block truncate">You</span>
-            {thisInstance() && <span className="text-muted-foreground mt-0.5 block truncate text-xs">on {thisInstance()}</span>}
+          {/* One line: who, then which machine — "You · local". */}
+          <span className={cn("flex min-w-0 items-center gap-1.5 whitespace-nowrap", collapsed && "md:hidden")}>
+            <span className="truncate">You</span>
+            {thisInstance() && <><span className="bg-muted-foreground/60 size-1 shrink-0 rounded-full" aria-hidden="true" /><span data-slot="profile-instance" className="text-muted-foreground truncate">{thisInstance()}</span></>}
           </span>
         </button>
       </DropdownMenuTrigger>

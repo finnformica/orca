@@ -150,8 +150,13 @@ tertiary (ghost: every icon-only row / toolbar button). The agent page's convers
 full-bleed in its card and follows the page's theme (`.log-themed` remaps the terminal palette in
 light mode); the modal and the orchestrator keep the dark terminal. Shell (`components/Shell.tsx`): a collapsible left sidebar (instance switcher
 all/local/cloud scoping the pages, Find — the `F` key — which filters Agents, the nav Overview /
-Agents / Repos / Usage / Settings, you at the foot; off-canvas when narrow) and a top bar (repo
-switcher, breadcrumb, preview controls, **Add New** = the New-draft box in a popover). The
+Agents / Previews / Repos / Usage / Settings, then you on one thin line — "You · local" — with the
+collapse toggle, and **Add New** (the New-draft box in a popover) as the very bottom button;
+collapsed it is one icon column, expand toggle above you; off-canvas when narrow) and a top bar
+(repo switcher, breadcrumb). **Previews** is a page (running previews with Open / Stop, and Test
+master per repo); its nav item carries the badges the old header buttons had — the running count
+and a spinner / dot for a base-branch preview — from one shared `/api/previews` poll
+(`usePreviewList`). The
 orchestrator's floating launcher is outside the shell, untouched. Building blocks (card, ring,
 status dot, pill, details grid, line chart) are `components/console.tsx`.
 - **Overview** (`/`, `views/Overview.tsx`): a Usage card — Claude per window as ring + value / limit

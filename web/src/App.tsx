@@ -5,8 +5,7 @@ import { useWorkstreams } from "./store";
 import { NewDraft } from "./views/Board";
 import { Overview } from "./views/Overview";
 import { Agents } from "./views/Agents";
-import { Repos, Settings, UsagePage } from "./views/Pages";
-import { PreviewManagerMenu, TestMasterMenu } from "./views/PreviewControl";
+import { PreviewsPage, Repos, Settings, UsagePage } from "./views/Pages";
 import { PrDetail } from "./views/PrDetail";
 import { LocalDetail } from "./views/LocalDetail";
 
@@ -16,7 +15,7 @@ export function App() {
   const route = useRoute();
   return (
     <>
-      <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarActions collapsed={collapsed} />}>
+      <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarAction collapsed={collapsed} />}>
         <Page route={route} />
       </Shell>
       <OrchestratorButton />
@@ -29,6 +28,7 @@ function Page({ route }: { route: Route }) {
     case "pr": return <PrDetail repo={route.repo} number={route.number} sub={route.sub} />;
     case "local": return <LocalDetail repo={route.repo} branch={route.branch} sub={route.sub} />;
     case "agents": return <Agents />;
+    case "previews": return <PreviewsPage />;
     case "repos": return <Repos />;
     case "usage": return <UsagePage />;
     case "settings": return <Settings />;
@@ -36,7 +36,7 @@ function Page({ route }: { route: Route }) {
   }
 }
 
-const TITLES = { board: "Overview", agents: "Agents", repos: "Repos", usage: "Usage", settings: "Settings" } as const;
+const TITLES = { board: "Overview", agents: "Agents", previews: "Previews", repos: "Repos", usage: "Usage", settings: "Settings" } as const;
 
 function Crumbs({ route }: { route: Route }) {
   const rows = useWorkstreams();
@@ -50,20 +50,8 @@ function Crumbs({ route }: { route: Route }) {
   return <Crumb>{TITLES[route.name]}</Crumb>;
 }
 
-// The sidebar's foot: Vercel's "Add New" holding the New-draft box, and the preview master / manager
-// — on every page, above you. Collapsed, both drop to icons in one column.
-function SidebarActions({ collapsed }: { collapsed: boolean }) {
-  return (
-    <>
-      <AddNew collapsed={collapsed}><NewDraft /></AddNew>
-      <div data-slot="preview-controls" className={collapsed ? "flex flex-col items-center gap-0.5" : "flex items-center gap-0.5"}>
-        <TestMasterMenu />
-        <PreviewManagerMenu />
-        {!collapsed && <span className="text-muted-foreground ml-1 text-xs">Previews</span>}
-      </div>
-    </>
-  );
-}
+// The sidebar's very bottom: Vercel's "Add New" holding the New-draft box, on every page.
+const SidebarAction = ({ collapsed }: { collapsed: boolean }) => <AddNew collapsed={collapsed}><NewDraft /></AddNew>;
 
 // Pure helpers the usage tests import from here (they live in lib/vitals and workstream.ts).
 export { aggregateProfiles, mergeUsage } from "@/lib/vitals";

@@ -70,7 +70,7 @@ describe("console shell", () => {
     expect(sidebar.querySelector('[data-slot="instance-scope"]')!.textContent).toBe("All instances"); // two instances in the fake config
     expect(sidebar.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     const items = [...sidebar.querySelectorAll('nav[aria-label="Main"] button')].map((b) => b.textContent?.trim());
-    expect(items).toEqual(["Overview", "Agents", "Repos", "Usage", "Settings"]);
+    expect(items).toEqual(["Overview", "Agents", "Previews", "Repos", "Usage", "Settings"]);
     expect(navItem("Overview").getAttribute("aria-current")).toBe("page");
     for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Repos", "/repos", "repos-list"], ["Usage", "/usage", "usage-card"], ["Settings", "/settings", "settings-appearance"]] as const) {
       await click(navItem(label));
@@ -109,18 +109,19 @@ describe("console shell", () => {
     expect(container!.querySelector<HTMLInputElement>('input[aria-label="Search workstreams"]')!.value).toBe("gauge"); // one query, shared
   });
 
-  test("the sidebar's foot: the profile button has room for its two lines; collapsed, it stacks so the toggle can't overlap", async () => {
+  test("the sidebar's foot: you on ONE thin line (name · machine), Add New at the very bottom; collapsed, the expand button sits above you", async () => {
     await mount();
     const profile = container!.querySelector<HTMLElement>('[data-slot="profile"]')!;
-    expect(profile.className).toContain("min-h-11"); // two lines (13px + 12px) never touch its edges
-    expect(profile.textContent).toContain("You");
+    expect(profile.className).toContain("h-8"); // one line, not a two-line block
+    expect(profile.textContent).toBe("Youlaptop"); // "You", a dot, then the machine
+    expect(profile.querySelector('[data-slot="profile-instance"]')!.textContent).toBe("laptop");
     const foot = () => container!.querySelector<HTMLElement>('[data-slot="sidebar-foot"]')!;
-    expect(foot().className).not.toContain("flex-col");
+    expect(foot().lastElementChild!.getAttribute("data-slot")).toBe("add-new");
     await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
-    expect(foot().className).toContain("flex-col"); // avatar above the expand button, one column
-    expect(container!.querySelector<HTMLElement>('[data-slot="sidebar-actions"]')!.className).toContain("flex-col");
-    // Add New is still there, as an icon.
-    expect(container!.querySelector('[data-slot="sidebar"] [data-slot="add-new"]')!.getAttribute("aria-label")).toBe("Add New");
+    const you = container!.querySelector<HTMLElement>('[data-slot="sidebar-you"]')!;
+    expect(you.className).toContain("md:flex-col-reverse"); // the toggle renders above the avatar
+    expect(you.lastElementChild!.getAttribute("aria-label")).toBe("Expand sidebar");
+    expect(foot().lastElementChild!.getAttribute("aria-label")).toBe("Add New"); // still last, as an icon
   });
 
   test("the sidebar collapses to icons and stays collapsed across a reload", async () => {
