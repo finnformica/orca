@@ -1,5 +1,5 @@
 // The Overview's insight cards' data (/api/insights): a run's model, cost and tokens are recorded on
-// its turn (migration 13) from the CLI's own result, read back without prompt or response
+// its turn (migration 14) from the CLI's own result, read back without prompt or response
 // (db.insightRuns), and aggregated by the pure workstream.insights — spend by category (orchestrator /
 // workers / your runs), by model / repo / workstream, runs per bucket by outcome, success and check
 // pass rates. Plus the two derivations the browser finishes: a machine's hourly cost over a range

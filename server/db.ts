@@ -311,7 +311,8 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
     `,
   },
   {
-    id: 13,
+    id: 14,
+    // (13 is #131's, merging separately; ids need not be contiguous — migrate() runs any unapplied id.)
     // What each run cost, for the Overview's insight cards (spend by category / model / repo). The
     // exit handler already parsed this from the CLI's result for the per-host ledger; on the turn it
     // is in the shared database, so either machine can total both. `cost_usd` is the CLI's own
