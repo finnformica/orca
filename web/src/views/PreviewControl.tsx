@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Copy, ExternalLink, FlaskConical, Loader2, MonitorPlay, Square, TriangleAlert } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Check, ChevronDown, Copy, ExternalLink, FlaskConical, Loader2, MonitorPlay, Square, TriangleAlert } from "lucide-react";
 import { api, type PreviewSvc } from "../api";
-import { baseBranch, previewStatus, startMaster, stopMaster, stopPreview, testLocally, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
+import { baseBranch, instanceChoices, previewStatus, startMaster, stopMaster, stopPreview, testLocally, thisInstance, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
@@ -46,9 +47,9 @@ function usePreview(initialKey: string | undefined, starter: () => Promise<{ key
     void stopPreview(key).catch(() => {});
   }, [crashed, key]);
 
-  const start = async () => {
+  const start = async (run: () => Promise<{ key: string; svcs: PreviewSvc[] }> = starter) => {
     setBusy(true); setError(null); reaping.current = false; // fresh run: re-enable polling, clear the last error
-    try { const r = await starter(); setKey(r.key); setSvcs(r.svcs); }
+    try { const r = await run(); setKey(r.key); setSvcs(r.svcs); }
     catch (e) { setError(e instanceof Error ? e.message : String(e)); } // don't revert silently
     finally { setBusy(false); }
   };
@@ -96,7 +97,21 @@ function ErrorLog({ error }: { error: string }) {
 /** "Test locally" action for the card footer: Test → Starting Ns → Open local (+Stop). `compact`
  *  renders it as an icon button (dense view) instead of a full-width labelled one. */
 export function PreviewControl({ row, compact = false }: { row: Row; compact?: boolean }) {
-  const { svcs, busy, active, error, start, stop } = usePreview(row.worktreePath, () => testLocally(row));
+  // Where to run it: the session's own instance unless you pick another (only offered with >1).
+  const [where, setWhere] = useState<string | undefined>(undefined);
+  const choices = instanceChoices();
+  const { svcs, busy, active, error, start, stop } = usePreview(row.worktreePath, () => testLocally(row, where));
+  const startOn = (instance: string) => { setWhere(instance); return testLocally(row, instance); };
+  const placeMenu = choices.length > 1 && (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button size="icon" variant="outline" className="size-7" title="Choose where the preview runs" aria-label="Test on…"><ChevronDown className="size-3.5" /></Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        {choices.map((i) => <DropdownMenuItem key={i} onSelect={() => void start(() => startOn(i))}>Test on {i}{i === thisInstance() ? " (here)" : ""}</DropdownMenuItem>)}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
 
   // Idle (incl. after a failure — the crashed preview auto-stops, so there's no Stop button here,
   // just Retry + the expandable log). Compact drops the label + log to a single icon (flip back to
@@ -104,23 +119,29 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
   if (!active && !busy) {
     if (compact) {
       return (
-        <Button size="icon" variant="outline" className="size-7" onClick={() => void start()} title={error ? "Preview failed — retry local test" : "Test locally"} aria-label="Test locally">
-          {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
-        </Button>
+        <span className="inline-flex -space-x-px">
+          <Button size="icon" variant="outline" className="size-7" onClick={() => void start()} title={error ? "Preview failed — retry" : `Test on ${where ?? row.instance ?? thisInstance() ?? "local"}`} aria-label="Test locally">
+            {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
+          </Button>
+          {placeMenu}
+        </span>
       );
     }
     return (
       <div className="w-full space-y-1">
-        <Button size="sm" variant="outline" className="w-full justify-center" onClick={() => void start()} title={error ? "Preview failed — expand the log below" : "Spin up a local preview of this branch"}>
-          {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
-          {error ? "Retry local test" : "Test locally"}
-        </Button>
+        <div className="flex w-full -space-x-px">
+          <Button size="sm" variant="outline" className="flex-1 justify-center" onClick={() => void start()} title={error ? "Preview failed — expand the log below" : `Spin up a preview of this branch on ${where ?? row.instance ?? thisInstance() ?? "this machine"}`}>
+            {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
+            {error ? "Retry test" : choices.length > 1 ? `Test on ${where ?? row.instance ?? thisInstance()}` : "Test locally"}
+          </Button>
+          {placeMenu}
+        </div>
         {error && <ErrorLog error={error} />}
       </div>
     );
   }
   // Running/starting: the state button + Stop read as one connected control.
-  return <PreviewLiveControl svcs={svcs} busy={busy} onStop={() => void stop()} openLabel="Open local" startingLabel="Starting local…" compact={compact} />;
+  return <PreviewLiveControl svcs={svcs} busy={busy} onStop={() => void stop()} openLabel="Open preview" startingLabel="Starting…" compact={compact} />;
 }
 
 // The failed-preview log affordance, styled exactly like the card's ErrorLog trigger ("Preview

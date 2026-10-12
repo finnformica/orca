@@ -704,18 +704,27 @@ export async function moveWorkstream(row: Row, to: string): Promise<void> {
 }
 
 /** Ensure a local worktree exists for a row (adopts the branch if needed). Returns its path. */
-export async function ensureWorktree(row: Row): Promise<string> {
-  if (row.worktreePath) return row.worktreePath;
-  const { worktreePath } = await api.adopt(row.repo, row.branch);
+export async function ensureWorktree(row: Row, instance?: string): Promise<string> {
+  // The row's own worktree serves when it is on the instance asked for (or none was asked for).
+  if (row.worktreePath && (!instance || (row.instance ?? thisInstance()) === instance)) return row.worktreePath;
+  const { worktreePath } = await api.adopt(row.repo, row.branch, instance);
   patchEnrich(row.repo, row.branch, { title: row.title });
   return worktreePath;
 }
 
+// Where each preview (by its worktree key) was placed, so status and stop reach the same instance.
+// A branch checked out on both instances makes the key alone ambiguous.
+const previewPlacement = new Map<string, string | undefined>();
+
 /** Check out the branch locally (if needed) and spin up its preview services. Returns the preview
  *  key (the worktree path) so the caller can poll/stop it. */
-export async function testLocally(row: Row): Promise<{ key: string; svcs: PreviewSvc[] }> {
-  const worktreePath = await ensureWorktree(row);
-  return { key: worktreePath, svcs: await api.preview(row.repo, worktreePath, worktreePath) };
+export async function testLocally(row: Row, instance?: string): Promise<{ key: string; svcs: PreviewSvc[] }> {
+  // Where the preview runs is YOUR choice, independent of where the session lives: a laptop short
+  // on CPU can run it on the box and open it over the tailnet. Default: the session's own instance.
+  const where = instance ?? row.instance ?? thisInstance();
+  const worktreePath = await ensureWorktree(row, where);
+  previewPlacement.set(worktreePath, where);
+  return { key: worktreePath, svcs: await api.preview(row.repo, worktreePath, worktreePath, where) };
 }
 
 // ---- master previews ("test master": preview a repo's base branch itself) ----
@@ -961,8 +970,8 @@ export async function addressPr(row: Row, manual = true) {
   await refresh();
 }
 
-export const stopPreview = (worktreePath: string) => api.previewStop(worktreePath);
-export const previewStatus = (worktreePath: string) => api.previewStatus(worktreePath);
+export const stopPreview = (worktreePath: string) => api.previewStop(worktreePath, previewPlacement.get(worktreePath));
+export const previewStatus = (worktreePath: string) => api.previewStatus(worktreePath, previewPlacement.get(worktreePath));
 export const summary = (repo: string, worktreePath: string, base?: string) => api.summary(repo, worktreePath, base);
 
 export async function discardDraft(row: Row) {
