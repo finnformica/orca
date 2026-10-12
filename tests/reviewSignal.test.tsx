@@ -12,7 +12,7 @@ import {
 } from "@/workstream";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
-import { Overview } from "@/views/Overview";
+import { Agents } from "@/views/Agents";
 import { ReviewPanel } from "@/views/Review";
 import { navigate } from "@/lib/route";
 import { installFakeGh, makeScratchRepo, restorePath, setReviewEvidenceFixture } from "./helpers";
@@ -173,7 +173,7 @@ describe("review cluster + Review panel", () => {
     apiFake.agentsData = [{ branch: "local-only", worktreePath: "/wt/local-only", agentStatus: "done" }];
     apiFake.reviewEvidenceData = threads;
     apiFake.prCommentsData = comments;
-    await mount(<Overview />);
+    await mount(<Agents />); // the Agents list: each PR row carries the review cluster
     const row = container!.querySelector<HTMLElement>('[data-branch="feat-x"]')!;
     const cluster = row.querySelector<HTMLElement>('[data-slot="review-cluster"]')!;
     expect(cluster).not.toBeNull();

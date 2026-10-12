@@ -1,4 +1,4 @@
-// E2E for the sticky worktree-detail header: a long diff scrolls the page, so "Back to board", the
+// E2E for the sticky worktree-detail header: a long diff scrolls the page, so the
 // title and the tab bar must stay pinned instead of scrolling away — and each file's accordion
 // header must stay visible (just below that page header) while you read its hunks. We render the
 // real LocalDetail on the Files tab and assert the sticky wrappers + the --stick offset that keeps
@@ -44,18 +44,17 @@ afterEach(() => {
 });
 
 describe("sticky worktree-detail header", () => {
-  test("back/title/tabs are pinned, and each file's diff header sticks below them", async () => {
+  test("title/tabs are pinned below the top bar, and each file's diff header sticks below them", async () => {
     apiFake.worktrees.set("sticky-1", { branch: "sticky-1", worktreePath: "/wt/sticky-1" });
     apiFake.diffText = DIFF;
     await store.refresh();
     await mount();
 
-    // Back button, title and the tab bar all live inside ONE sticky, opaque, full-bleed wrapper.
-    const back = [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("Back to board"));
-    expect(back).toBeDefined();
-    const sticky = back!.closest(".sticky");
+    // The title and the tab bar live inside ONE sticky, opaque, full-bleed wrapper, pinned just under
+    // the console's top bar (h-14) — the breadcrumb there replaced the old "Back to board" button.
+    const sticky = container!.querySelector('[role="tablist"]')!.closest(".sticky");
     expect(sticky).not.toBeNull();
-    expect(sticky!.className).toMatch(/\btop-0\b/);
+    expect(sticky!.className).toMatch(/\btop-14\b/);
     expect(sticky!.className).toMatch(/\bbg-background\b/);
     expect(sticky!.className).toMatch(/-mx-4/); // covers the page padding, so nothing peeks past it
     expect(sticky!.textContent).toContain("sticky-1");
@@ -107,10 +106,9 @@ describe("sticky worktree-detail header", () => {
     apiFake.diffText = DIFF;
     await mount(<PrDetail repo="r" number={66} sub="files" />);
 
-    const back = [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("Back to board"));
-    const sticky = back!.closest(".sticky");
+    const sticky = container!.querySelector('[role="tablist"]')!.closest(".sticky");
     expect(sticky).not.toBeNull();
-    expect(sticky!.className).toMatch(/\btop-0\b/);
+    expect(sticky!.className).toMatch(/\btop-14\b/);
     expect(sticky!.className).toMatch(/\bbg-background\b/);
     expect(sticky!.textContent).toContain("PR 66");
     expect(sticky!.querySelector('[role="tablist"]')).not.toBeNull();

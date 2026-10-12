@@ -7,7 +7,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { Board, WorkstreamCard } from "@/views/Board";
-import type { PrTab, LocalTab } from "@/lib/route";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -72,10 +71,19 @@ describe("card terminal (conversation modal)", () => {
     expect(toggle).toBeUndefined();
   });
 
-  test("the detail views no longer route a Chat tab (it lives in the terminal now)", () => {
-    const prTabs: PrTab[] = ["overview", "files", "checks", "preview"];
-    const localTabs: LocalTab[] = ["overview", "files", "preview"];
-    expect(prTabs).not.toContain("chat" as PrTab);
-    expect(localTabs).not.toContain("chat" as LocalTab);
+  test("the agent page routes a Chat tab too: the conversation sits where Vercel puts Build Logs", async () => {
+    // The card's terminal modal stays (above); the agent page also carries the conversation, as its
+    // Chat tab and under the Details card. /…/chat parses to that tab on both detail pages.
+    const { navigate, useRoute } = await import("@/lib/route");
+    let seen: unknown;
+    const Probe = () => { seen = useRoute(); return null; };
+    const c = document.createElement("div");
+    const r = createRoot(c);
+    await act(async () => { r.render(<Probe />); navigate("/r/local/feat%2Fx/chat"); });
+    expect(seen).toEqual({ name: "local", repo: "r", branch: "feat/x", sub: "chat" });
+    await act(async () => { navigate("/r/prs/7/chat"); });
+    expect(seen).toEqual({ name: "pr", repo: "r", number: 7, sub: "chat" });
+    await act(async () => { navigate("/"); });
+    act(() => r.unmount());
   });
 });

@@ -399,15 +399,16 @@ function NewChatDialog({ open, onClose, repo, model, onSubmit }: { open: boolean
 // Diffstat for every lane except Done (needs a worktree — Orca-made PRs keep theirs; adopted PRs
 // gain one on first action). Fetched once, and polled only while its agent runs. Shared by the card
 // and the overview's list row.
-export function useSummary(row: Row): ChangeSummary | null {
-  const isDone = row.lane === "DONE";
+export function useSummary(row: Row | undefined): ChangeSummary | null {
+  const isDone = row?.lane === "DONE";
   const [summary, setSummary] = useState<ChangeSummary | null>(null);
+  const repo = row?.repo, wt = row?.worktreePath, base = row?.prBase, status = row?.agentStatus;
   useEffect(() => {
-    if (isDone || !row.worktreePath) return;
-    const reload = () => fetchSummary(row.repo, row.worktreePath!, row.prBase).then(setSummary).catch(() => {});
-    if (row.agentStatus !== "running") return void reload();
+    if (isDone || !repo || !wt) return;
+    const reload = () => fetchSummary(repo, wt, base).then(setSummary).catch(() => {});
+    if (status !== "running") return void reload();
     return poll(reload, 8000);
-  }, [isDone, row.repo, row.worktreePath, row.prBase, row.agentStatus]);
+  }, [isDone, repo, wt, base, status]);
   return summary;
 }
 

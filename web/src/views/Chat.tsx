@@ -7,13 +7,14 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, CircleX, Search } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { WORKER_EVENT_MARKER, isWorkerEvent, promptInstruction } from "../workstream";
+import { WORKER_EVENT_MARKER, chatSummary, isWorkerEvent, promptInstruction, turnMatches } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -178,11 +179,16 @@ function WorkerReports({ instruction }: { instruction: string }) {
 }
 
 /** One exchange: the instruction shown as a shell command (`❯ …`), the agent's output below it. */
-function Turn({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]> }) {
+const stampOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "");
+
+/** `stamped`: the Agent page's log mode — a time gutter, and failed / warned turns tinted the way
+ *  Vercel tints error and warning lines in Build Logs. */
+function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; stamped?: boolean }) {
   const pending = !turn.finishedAt;
   const instruction = turn.instruction ?? promptInstruction(turn.prompt);
-  return (
-    <div className="mb-3">
+  const tint = !stamped ? "" : turn.failed ? "bg-red-500/10 -mx-3 px-3" : turn.stopped || (turn.check && !turn.check.ok) ? "bg-amber-500/10 -mx-3 px-3" : "";
+  const body = (
+    <div className={`mb-3 ${tint}`} data-slot="chat-turn" data-failed={turn.failed || undefined}>
       {instruction.split("\n\n").every(isWorkerEvent) ? <WorkerReports instruction={instruction} /> : (
         <div className="flex gap-2 text-emerald-400">
           <span className="shrink-0 select-none">❯</span>
@@ -224,6 +230,13 @@ function Turn({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Promise<
       </div>
     </div>
   );
+  if (!stamped) return body;
+  return (
+    <div className="flex gap-3">
+      <span className="w-16 shrink-0 pt-px text-neutral-500 tabular-nums select-none" data-slot="turn-time">{stampOf(turn.startedAt)}</span>
+      <div className="min-w-0 flex-1">{body}</div>
+    </div>
+  );
 }
 
 /** `send` replaces the follow-up launch for a conversation that isn't a branch's agent — the
@@ -233,9 +246,13 @@ function Turn({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Promise<
  *  differently coloured strip under it. The composer's toolbar always carries the model picker and
  *  the context ring (ChatControls); `controls` supplies their values when they don't come from the
  *  row's card. Everything else about the panel is the same. */
-export function ChatPanel({ row, send, flush, controls }: {
+export function ChatPanel({ row, send, flush, controls, logBar }: {
   row: Row; send?: (text: string, images: File[]) => Promise<void>; flush?: boolean; controls?: ChatControlsProps;
+  /** The Agent page's Build-Logs framing: a bar with the turn count, error / warning counters and
+   *  Find in chat, and timestamped, tinted turns. */
+  logBar?: boolean;
 }) {
+  const [find, setFind] = useState("");
   const deliver = send ?? ((text: string, images: File[]) => followUp(row, text, images));
   // Messages on their way to the bridge. Sending one launches an agent — an upload, a worktree
   // lookup, the board snapshot the orchestrator is handed — which takes seconds, and a log that
@@ -360,8 +377,24 @@ export function ChatPanel({ row, send, flush, controls }: {
   const ctl = controls ?? {
     model: modelFor(row), onModel: (m: string) => setCardModel(row, m), ran: row.agentMeta?.model, contextPct: row.agentMeta?.contextPct,
   };
+  const counts = chatSummary(turns ?? []);
+  const shownTurns = logBar && find.trim() ? (turns ?? []).filter((t) => turnMatches(t, find)) : turns;
   return (
     <div className={`flex h-full flex-col ${flush ? "" : "gap-3"}`}>
+      {logBar && (
+        <div data-slot="chat-logbar" className="flex flex-wrap items-center gap-3 text-sm">
+          <span className="text-muted-foreground tabular-nums" data-slot="chat-count">{counts.turns} turn{counts.turns === 1 ? "" : "s"}</span>
+          <span className="ml-auto flex items-center gap-3">
+            <span className="inline-flex items-center gap-1 tabular-nums" title="Failed turns" data-slot="chat-errors"><CircleX className="text-geist-red size-4" />{counts.errors}</span>
+            <span className="inline-flex items-center gap-1 tabular-nums" title="Stopped turns and failed checks" data-slot="chat-warnings"><AlertTriangle className="text-geist-amber size-4" />{counts.warnings}</span>
+            <label className="bg-card focus-within:ring-ring/40 flex h-8 w-56 items-center gap-2 rounded-md border px-2 focus-within:ring-2">
+              <Search className="text-muted-foreground size-3.5 shrink-0" />
+              <input value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find in chat" aria-label="Find in chat"
+                className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-sm outline-none" />
+            </label>
+          </span>
+        </div>
+      )}
       <div
         ref={scroller}
         onScroll={onScroll}
@@ -382,7 +415,8 @@ export function ChatPanel({ row, send, flush, controls }: {
         )}
         {turns === null ? <p className="text-neutral-500">Loading conversation…</p>
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
-          : turns.map((turn) => <Turn key={turn.id} turn={turn} loadSteps={() => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response))} />)}
+          : shownTurns!.length === 0 ? <p className="text-neutral-500">No turn matches “{find}”.</p>
+          : shownTurns!.map((turn) => <Turn key={turn.id} turn={turn} stamped={logBar} loadSteps={() => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response))} />)}
         {/* Not drawn once the real thing has arrived over the stream — the same text twice, one of
             them "sending", is worse than the moment's gap it would cover. */}
         {sending.filter((m) => !landed(m.text)).map((m) => (

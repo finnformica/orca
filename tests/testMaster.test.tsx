@@ -35,18 +35,17 @@ afterEach(async () => {
   await act(async () => { await store.refresh(); });
 });
 
-test("TM3 header: the Test master button sits by the repo controls, after the usage meter", async () => {
-  apiFake.usageData = { claude: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 20, resetsAt: null }, extra: null }, codex: null };
+test("TM3 top bar: the Test master button sits in the page's actions, before Add New", async () => {
   container = document.createElement("div");
   document.body.appendChild(container);
   await act(async () => { root = createRoot(container!); root.render(<App />); await flush(); await flush(); });
 
-  const meter = container.querySelector("[aria-label='Claude usage limits']")!;
-  const testMaster = container.querySelector("[aria-label='Test master']")!;
-  expect(meter).toBeTruthy();
+  const bar = container.querySelector("[data-slot='topbar']")!;
+  const testMaster = bar.querySelector("[aria-label='Test master']")!;
+  const addNew = bar.querySelector("[data-slot='add-new']")!;
   expect(testMaster).toBeTruthy();
-  // Test master moved to the right of the usage meter (next to the repo selector), not before it.
-  expect(meter.compareDocumentPosition(testMaster) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(addNew).toBeTruthy();
+  expect(testMaster.compareDocumentPosition(addNew) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 test("TM1 test-master row: launches the base preview and opens once ready", async () => {

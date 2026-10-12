@@ -1665,3 +1665,14 @@ export function repoSummaries(rows: OverviewRow[], repos: string[]): RepoSummary
     };
   });
 }
+
+/** What the agent page's Details card puts in its red box, Vercel's "Build Failed": the run's error,
+ *  or Orca's check failing on the commit — the run's own failure first. Undefined when neither. */
+export function agentFailure(row: { agentStatus?: string; agentError?: string; agentCheck?: TurnCheck }): { title: string; detail: string } | undefined {
+  if (row.agentStatus === "error") return { title: "Run failed", detail: row.agentError?.trim() || "The agent exited with an error." };
+  if (row.agentCheck && !row.agentCheck.ok) {
+    const tail = row.agentCheck.output.trim().split("\n").slice(-12).join("\n");
+    return { title: "Check failed", detail: `Command "${row.agentCheck.command}" exited with ${row.agentCheck.exitCode}${tail ? `\n\n${tail}` : ""}` };
+  }
+  return undefined;
+}

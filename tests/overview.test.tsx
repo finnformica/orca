@@ -1,9 +1,7 @@
-// E2E for the overview — the board's default List view (views/Overview.tsx): stat tiles whose
-// numbers come from the same rows the swimlanes render, a dense workstream list with its actions
-// inline and a filter bar, a recent-activity feed from the transcripts, and the List | Board choice
-// persisted in localStorage. The pure derivations (workstream.overviewStats / filterRows / sortRows
-// / recentActivity) are checked directly first; then the view is driven against the fake api
-// (tests/apiFake.ts) in a real DOM.
+// E2E for the Overview's Agents card (views/Overview.tsx) and the Agents list (views/Agents.tsx):
+// numbers and rows come from the same rows the swimlanes render. The pure derivations
+// (workstream.overviewStats / filterRows / sortRows / recentActivity) are checked directly first;
+// then the views are driven against the fake api (tests/apiFake.ts) in a real DOM.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -11,7 +9,8 @@ import { createStore, getDefaultStore } from "jotai";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { Overview } from "@/views/Overview";
-import { boardViewAtom, repoFilterAtom } from "@/lib/atoms";
+import { Agents } from "@/views/Agents";
+import { agentAttentionAtom, agentQueryAtom, agentStateAtom, boardViewAtom, repoFilterAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
 import {
   DEFAULT_LIST_FILTER, attentionReasons, filterRows, lastActivity, overviewStats, recentActivity, rowTone, sortRows, turnsByHour,
@@ -85,16 +84,16 @@ describe("overview derivations (pure)", () => {
   });
 });
 
-// ---- the view ----
+// ---- the views: the Overview's Agents card, and the Agents list ----
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
 let root: Root | undefined;
 let container: HTMLElement | undefined;
-async function mount() {
+async function mount(node: React.ReactNode = <Overview />) {
   container = document.createElement("div");
   document.body.appendChild(container);
-  await act(async () => { root = createRoot(container!); root.render(<Overview />); await flush(); });
+  await act(async () => { root = createRoot(container!); root.render(node); await flush(); });
   await act(async () => { await store.refresh(); await flush(); await flush(); });
 }
 
@@ -104,7 +103,11 @@ afterEach(async () => {
   act(() => root?.unmount());
   container?.remove();
   root = container = undefined;
-  getDefaultStore().set(repoFilterAtom, "all");
+  const s = getDefaultStore();
+  s.set(repoFilterAtom, "all");
+  s.set(agentStateAtom, "all");
+  s.set(agentAttentionAtom, false);
+  s.set(agentQueryAtom, "");
   localStorage.clear();
   navigate("/"); // the route store, not just the URL — later files mount App on "/"
 });
@@ -130,131 +133,50 @@ function seed() {
   });
 }
 
-const tile = (slot: string) => container!.querySelector<HTMLElement>(`[data-slot="tile-${slot}"]`)!;
-const value = (slot: string) => tile(slot).querySelector('[data-slot="stat-value"]')!.textContent;
+const stat = (slot: string) => container!.querySelector<HTMLElement>(`[data-slot="stat-${slot}"]`)!;
+const value = (slot: string) => stat(slot).querySelector('[data-slot="stat-value"]')!.textContent;
 const listed = () => [...container!.querySelectorAll<HTMLElement>('[data-slot="workstream-row"]')].map((r) => r.dataset.branch);
 const button = (text: string) => [...container!.querySelectorAll("button")].find((b) => b.textContent?.trim().startsWith(text))!;
-const stateChip = (label: string) => [...container!.querySelectorAll('[role="group"][aria-label="State"] button')].find((b) => b.textContent?.trim().startsWith(label))!;
+const type = async (input: HTMLInputElement, text: string) => act(async () => {
+  Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, text);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  await flush();
+});
 
-describe("overview view", () => {
-  test("stat tiles count the live rows: running, awaiting you, open PRs by state, merged today, each instance", async () => {
+describe("overview: the Agents card", () => {
+  test("ONE card with the four numbers — running (with the 24h runs line), needs attention, open PRs by state, merged today", async () => {
     seed();
     await mount();
+    const card = container!.querySelector('[data-slot="agents-card"]')!;
+    expect(card.querySelectorAll('[data-slot^="stat-"][role="button"]')).toHaveLength(4);
     expect(value("running")).toBe("1");
     expect(value("attention")).toBe("2"); // CI red + the errored run
-    expect(tile("attention").textContent).toContain("1 CI failing");
     expect(value("prs")).toBe("3");
-    expect(tile("prs").querySelector('[data-slot="pipeline-DRAFT"]')!.textContent).toContain("1");
-    expect(tile("prs").querySelector('[data-slot="pipeline-IN_REVIEW"]')!.textContent).toContain("1");
-    expect(tile("prs").querySelector('[data-slot="pipeline-MERGEABLE"]')!.textContent).toContain("1");
-    expect(tile("prs").textContent).toContain("2 local branches");
+    expect(stat("prs").querySelector('[data-slot="pipeline-DRAFT"]')!.textContent).toContain("1");
+    expect(stat("prs").querySelector('[data-slot="pipeline-IN_REVIEW"]')!.textContent).toContain("1");
+    expect(stat("prs").querySelector('[data-slot="pipeline-MERGEABLE"]')!.textContent).toContain("1");
+    expect(stat("attention").textContent).toContain("2 local branches");
     expect(value("merged")).toBe("0");
-    // The fake config has two instances (laptop, cloud): one tile each, CPU from /api/health.
-    expect(value("instance-laptop")).toBe("12%");
-    expect(value("instance-cloud")).toBe("12%");
-    // The 24h runs chart is there with the one run in its current hour.
-    expect(tile("running").querySelector("svg[aria-label^='Runs started per hour']")).not.toBeNull();
+    expect(stat("running").querySelector("svg[aria-label^='Runs started per hour']")).not.toBeNull();
+    // The redundant Awaiting-you tiles of the first cut are gone.
+    expect(container!.querySelector('[data-slot="stat-tiles"]')).toBeNull();
   });
 
-  test("instance tiles: a CPU and memory sparkline from the last 24h of history, one fetch per instance; a meter until it lands", async () => {
-    const now = Date.now();
-    apiFake.healthHistoryData = [0, 1, 2].map((i) => ({ at: now - (2 - i) * 60_000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 16 }));
-    await mount();
-    for (const name of ["laptop", "cloud"]) {
-      const t = tile(`instance-${name}`);
-      for (const metric of ["cpu", "mem"]) {
-        const trend = t.querySelector(`[data-slot="trend-${metric}"]`)!;
-        expect(trend).not.toBeNull();
-        expect(trend.querySelector("polyline")!.getAttribute("points")!.split(" ")).toHaveLength(3);
-      }
-    }
-    // One shared loop per instance (database-only, so either instance answers), 24h each; a poll of
-    // the board doesn't start another.
-    await act(async () => { await store.refresh(); await flush(); });
-    expect(apiFake.healthHistoryCalls.map((c) => `${c.instance}:${c.hours}`).sort()).toEqual(["cloud:24", "laptop:24"]);
-  });
-
-  test("instance tiles with no recorded history keep the plain meters", async () => {
-    await mount();
-    expect(tile("instance-cloud").querySelector('[data-slot^="trend-"]')).toBeNull();
-    expect(tile("instance-cloud").textContent).toContain("cpu");
-    expect(tile("instance-cloud").textContent).toContain("mem");
-  });
-
-  test("the usage tile shows the same Claude reading the header meter does", async () => {
-    apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
-    await mount();
-    expect(value("usage")).toBe("38%");
-    expect(tile("usage").textContent).toContain("55%");
-  });
-
-  test("every workstream is one row with its actions inline; the error and badges show on the row", async () => {
+  test("each number opens the Agents list filtered to exactly what it counted", async () => {
     seed();
     await mount();
-    expect(listed().sort()).toEqual(["feat-ci", "feat-draft", "feat-ok", "local-err", "local-run"]);
-    const err = container!.querySelector<HTMLElement>('[data-branch="local-err"]')!;
-    expect(err.textContent).toContain("CLI exploded");
-    expect(err.querySelector('[data-tone="failed"]')).not.toBeNull();
-    const ci = container!.querySelector<HTMLElement>('[data-branch="feat-ci"]')!;
-    expect(ci.textContent).toContain("#8");
-    expect(ci.textContent).toContain("In review");
-    expect(ci.textContent).toContain("CI");
-    // The card's controls, reused: Test/preview, terminal, Follow up, Merge (mergeable only), ⋯.
-    for (const label of ["Test locally", "Open terminal", "Follow up", "Actions"]) expect(ci.querySelector(`button[aria-label="${label}"]`)).not.toBeNull();
-    const ok = container!.querySelector<HTMLElement>('[data-branch="feat-ok"]')!;
-    expect(ok.querySelector('button[aria-label^="Merge"]')).not.toBeNull();
-  });
-
-  test("filter bar: state chips, needs-you, search and the tiles all narrow the list; clearing restores it", async () => {
-    seed();
-    await mount();
-    await click(stateChip("In review"));
-    expect(listed()).toEqual(["feat-ci"]);
-    await click(stateChip("All"));
-    await click(button("Needs you"));
+    await click(stat("attention"));
+    expect(location.pathname).toBe("/agents");
+    expect(getDefaultStore().get(agentAttentionAtom)).toBe(true);
+    act(() => root?.unmount()); container?.remove();
+    await mount(<Agents />);
     expect(listed().sort()).toEqual(["feat-ci", "local-err"]);
-    await click(button("Needs you"));
-    const search = container!.querySelector<HTMLInputElement>('input[aria-label="Search workstreams"]')!;
-    await act(async () => {
-      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-      set.call(search, "gauge");
-      search.dispatchEvent(new Event("input", { bubbles: true }));
-      await flush();
-    });
-    expect(listed()).toEqual(["local-run"]); // matched on its enriched title
-    await click(container!.querySelector('button[aria-label="Clear search"]')!);
-    // The Awaiting-you tile is the same filter, and the pipeline bar's segments pick a state.
-    await click(tile("attention"));
-    expect(tile("attention").getAttribute("aria-pressed")).toBe("true");
-    expect(listed().sort()).toEqual(["feat-ci", "local-err"]);
-    await click(tile("attention"));
-    await click(tile("prs").querySelector('[data-slot="pipeline-DRAFT"]')!);
-    expect(listed()).toEqual(["feat-draft"]);
-    // Nothing matches → an empty state with a way back.
-    await act(async () => {
-      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-      set.call(search, "no such thing");
-      search.dispatchEvent(new Event("input", { bubbles: true }));
-      await flush();
-    });
-    expect(listed()).toEqual([]);
-    await click(button("Clear filters"));
-    expect(listed()).toHaveLength(5);
-  });
-
-  test("clicking a row opens its detail page; clicking a control in it does not", async () => {
-    (window as unknown as { happyDOM: { setURL: (u: string) => void } }).happyDOM.setURL("http://localhost/");
-    seed();
-    await mount();
-    const ci = container!.querySelector<HTMLElement>('[data-branch="feat-ci"]')!;
-    await click(ci.querySelector('[data-slot="badge"]')!); // a non-control cell
-    expect(location.pathname).toBe("/r/prs/8");
+    act(() => root?.unmount()); container?.remove();
     await act(async () => navigate("/"));
-    await click(ci.querySelector('button[aria-label="Open terminal"]')!);
-    expect(location.pathname).toBe("/");
-    const local = container!.querySelector<HTMLElement>('[data-branch="local-run"]')!;
-    await click(local.querySelector(".font-medium")!);
-    expect(location.pathname).toBe("/r/local/local-run");
+    await mount();
+    await click(stat("prs").querySelector('[data-slot="pipeline-DRAFT"]')!);
+    expect(getDefaultStore().get(agentStateAtom)).toBe("DRAFT");
+    expect(getDefaultStore().get(agentAttentionAtom)).toBe(false);
   });
 
   test("recent activity lists the newest turns with what was asked", async () => {
@@ -263,6 +185,66 @@ describe("overview view", () => {
     const feed = container!.querySelector('[data-slot="recent-activity"]')!;
     expect(feed.textContent).toContain("Add a gauge to the tiles");
     expect(feed.textContent).toContain("Wire the gauge");
+  });
+});
+
+describe("agents list", () => {
+  test("one dense row per workstream: status dot + label, state pill, signals, PR, branch, model; the error shows on the row", async () => {
+    seed();
+    await mount(<Agents />);
+    expect(listed().sort()).toEqual(["feat-ci", "feat-draft", "feat-ok", "local-err", "local-run"]);
+    const err = container!.querySelector<HTMLElement>('[data-branch="local-err"]')!;
+    expect(err.textContent).toContain("CLI exploded");
+    expect(err.querySelector('[data-tone="failed"]')!.textContent).toBe("Error");
+    expect(err.querySelector('[data-slot="status-dot"]')!.getAttribute("data-tone")).toBe("error");
+    const run = container!.querySelector<HTMLElement>('[data-branch="local-run"]')!;
+    expect(run.textContent).toContain("Add a gauge to the tiles"); // the latest instruction, where Vercel shows the commit
+    expect(run.querySelector('[data-tone="running"]')!.textContent).toBe("Running");
+    const ci = container!.querySelector<HTMLElement>('[data-branch="feat-ci"]')!;
+    expect(ci.querySelector('[data-slot="state-pill"]')!.textContent).toBe("In review");
+    expect(ci.textContent).toContain("8");
+    expect(ci.textContent).toContain("CI");
+    expect(ci.querySelector('[data-slot="model-avatar"]')).not.toBeNull();
+    // Every action is in the trailing ⋯ (plus the preview's Test); no toolbar of verbs on the row.
+    expect(ci.querySelector('button[aria-label="Actions"]')).not.toBeNull();
+    expect(ci.querySelector('button[aria-label="Follow up"]')).toBeNull();
+    expect(container!.querySelector<HTMLElement>('[data-branch="feat-ok"]')!.querySelector('[data-slot="state-pill"]')!.textContent).toBe("Mergeable");
+  });
+
+  test("filters: Add Filter's dimensions show as dashed chips that clear; search narrows; an empty result offers a way back", async () => {
+    seed();
+    await mount(<Agents />);
+    expect(container!.querySelector('[data-slot="add-filter"]')).not.toBeNull();
+    await act(async () => { getDefaultStore().set(agentStateAtom, "IN_REVIEW"); await flush(); });
+    expect(listed()).toEqual(["feat-ci"]);
+    const chip = container!.querySelector('[data-slot="filter-chip"]')!;
+    expect(chip.textContent).toContain("In review");
+    await click(chip.querySelector("button")!);
+    expect(listed()).toHaveLength(5);
+    await act(async () => { getDefaultStore().set(agentAttentionAtom, true); await flush(); });
+    expect(listed().sort()).toEqual(["feat-ci", "local-err"]);
+    await click(container!.querySelector('button[aria-label="Clear needs filter"]')!);
+    const search = container!.querySelector<HTMLInputElement>('input[aria-label="Search workstreams"]')!;
+    await type(search, "gauge");
+    expect(listed()).toEqual(["local-run"]); // matched on its enriched title
+    await type(search, "no such thing");
+    expect(listed()).toEqual([]);
+    await click(button("Clear filters"));
+    expect(listed()).toHaveLength(5);
+  });
+
+  test("clicking a row opens its agent page; clicking a control in it does not", async () => {
+    seed();
+    await mount(<Agents />);
+    const ci = container!.querySelector<HTMLElement>('[data-branch="feat-ci"]')!;
+    await click(ci.querySelector('[data-slot="state-pill"]')!); // a non-control cell
+    expect(location.pathname).toBe("/r/prs/8");
+    await act(async () => navigate("/agents"));
+    await click(ci.querySelector('button[aria-label="Actions"]')!);
+    expect(location.pathname).toBe("/agents");
+    const local = container!.querySelector<HTMLElement>('[data-branch="local-run"]')!;
+    await click(local.querySelector(".font-medium")!);
+    expect(location.pathname).toBe("/r/local/local-run");
   });
 });
 

@@ -23,3 +23,14 @@ export const openTerminalAtom = atom<string | null>(null);
 // recent activity), "board" the original five swimlanes of cards. List is the default.
 export type BoardView = "list" | "board";
 export const boardViewAtom = atomWithStorage<BoardView>("orca.boardView", "list");
+
+// The console shell. The sidebar can be collapsed to icons (persisted); the instance switcher at its
+// top scopes the Overview and Agents pages to one machine ("all" or an instance name, persisted);
+// the Find box and the Agents page share one search query (not persisted — a fresh visit is unfiltered).
+export const sidebarCollapsedAtom = atomWithStorage("orca.sidebarCollapsed", false);
+export const instanceScopeAtom = atomWithStorage("orca.instanceScope", "all");
+export const agentQueryAtom = atom("");
+// The Agents list's state and needs-attention filters — atoms so the Overview's numbers can open the
+// list already filtered (clicking "Needs attention" shows exactly those). Not persisted.
+export const agentStateAtom = atom<"all" | "LOCAL" | "DRAFT" | "IN_REVIEW" | "MERGEABLE" | "DONE">("all");
+export const agentAttentionAtom = atom(false);

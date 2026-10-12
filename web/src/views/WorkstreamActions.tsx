@@ -26,7 +26,12 @@ const followUpDraftKey = (row: Row) => `orca.followup.${row.repo}::${row.branch}
 
 // `compact` renders the toolbar as icon-only buttons (dense view); `leading` slots an extra control
 // (the dense Test-locally icon) into the front of that same row so the whole toolbar reads as one line.
-export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false, leading }: { row: Row; hasWork?: boolean; onBusy?: (busy: boolean) => void; compact?: boolean; leading?: ReactNode }) {
+// `menuOnly` is the Agents list's trailing ⋯: no toolbar, Follow up and Merge move INTO the menu, so
+// every verb is still one click away. `onFollowUp` replaces the inline composer there (the agent's
+// page has the conversation); without it the menu's Follow up opens the composer as the button does.
+export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false, leading, menuOnly = false, onFollowUp }: {
+  row: Row; hasWork?: boolean; onBusy?: (busy: boolean) => void; compact?: boolean; leading?: ReactNode; menuOnly?: boolean; onFollowUp?: () => void;
+}) {
   // Reopen the follow-up box on reload if a draft was left in progress, so nothing typed is lost.
   const [composing, setComposing] = useState(() => hasDraft(followUpDraftKey(row)));
   const [renaming, setRenaming] = useState(false);
@@ -84,13 +89,13 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
-        {leading}
-        <Button size={icon} className={iconClass} variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)} title="Follow up" aria-label="Follow up">
+        {!menuOnly && leading}
+        {!menuOnly && <Button size={icon} className={iconClass} variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)} title="Follow up" aria-label="Follow up">
           {compact
             ? (submitting ? <Loader2 className="size-4 animate-spin" /> : <MessageSquarePlus className="size-3.5" />)
             : <>{submitting && <Loader2 className="size-4 animate-spin" />}Follow up</>}
-        </Button>
-        {row.lane === "MERGEABLE" && (
+        </Button>}
+        {!menuOnly && row.lane === "MERGEABLE" && (
           <Button size={icon} className={iconClass} variant="success" onClick={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }} title={mergeLabel} aria-label={mergeLabel}>
             {compact ? <GitMerge className="size-3.5" /> : mergeLabel}
           </Button>
@@ -101,7 +106,14 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
               {compact ? <MoreHorizontal className="size-4" /> : <>Actions <ChevronDown className="size-3.5" /></>}
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="min-w-[12rem]">
+          <DropdownMenuContent align={menuOnly ? "end" : "start"} className="min-w-[12rem]">
+            {menuOnly && (
+              <>
+                <DropdownMenuItem disabled={submitting} onSelect={() => (onFollowUp ? onFollowUp() : setComposing(true))}>Follow up…</DropdownMenuItem>
+                {row.lane === "MERGEABLE" && <DropdownMenuItem onSelect={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }}>{mergeLabel}</DropdownMenuItem>}
+                <DropdownMenuSeparator />
+              </>
+            )}
             {/* Follow: put the card on autopilot — Orca watches the PR and fires the agent to resolve
                 conflicts / fix CI / address review comments as they appear. */}
             {isPr && (

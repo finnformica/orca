@@ -16,11 +16,15 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ReviewPanel, reviewSig } from "./Review";
+import { ChatCard, DetailsCard } from "./AgentPage";
+import { AgentTitle } from "./LocalDetail";
+import { Detail, VCard } from "@/components/console";
+import { useSummary } from "./Board";
 
 /** Both detail pages pin their header — back / title / actions / tabs stay reachable while a long
  *  diff scrolls under them. Opaque + full-bleed (negative margins) so nothing peeks past the page
  *  padding. Shared so the PR page and the local-session page can't drift apart. */
-export const STICKY_HEADER = "bg-background sticky top-0 z-20 -mx-4 space-y-2 px-4 py-2 md:-mx-6 md:px-6";
+export const STICKY_HEADER = "bg-background sticky top-14 z-20 -mx-4 space-y-2 px-4 py-2 md:-mx-6 md:px-6";
 
 /** Ref for that header plus the wrapper style publishing its LIVE height as --stick, so the diff's
  *  own sticky file headers park below it instead of sliding underneath. `ready` flips once the page
@@ -43,6 +47,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
   const [diff, setDiff] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const liveRow = useWorkstreams().find((r) => r.repo === repo && r.prNumber === number); // your own PR, if tracked
+  const summary = useSummary(liveRow); // its commits, for the Details card's Source
   const header = useStickyHeader(Boolean(pr));
 
   // `attempt` re-runs the fetch for Retry. A load that is taking a while says so, rather than an
@@ -68,7 +73,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
   }, [sub, repo, number, diff]);
 
   const go = (t: PrTab) => navigate(t === "overview" ? `/${repo}/prs/${number}` : `/${repo}/prs/${number}/${t}`);
-  const back = `/${repo}`;
+  const back = "/agents";
 
   if (error) return (
     <div className="space-y-4" data-slot="pr-error">
@@ -93,14 +98,25 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
     ciStatus: pr.ciStatus, reviewStatus: pr.reviewStatus, mergeable: pr.mergeable,
   };
 
+  const badges = (
+    <div className="flex flex-wrap gap-1">
+      <Badge variant="outline">{pr.state}</Badge>
+      {pr.reviewStatus === "changes_requested" && <Badge variant="destructive">Changes requested</Badge>}
+      {pr.reviewStatus === "approved" && <Badge variant="success">Approved</Badge>}
+      {pr.mergeable === "CONFLICTING" && <Badge variant="destructive">Conflicts</Badge>}
+      {pr.ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
+      {pr.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
+      {pr.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
+      {pr.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
+    </div>
+  );
+  const sub2 = !liveRow && sub === "chat" ? "overview" : sub; // a coworker's PR has no conversation here
+
   return (
     <div style={header.style}>
-      <Tabs value={sub} onValueChange={(v) => go(v as PrTab)}>
+      <Tabs value={sub2} onValueChange={(v) => go(v as PrTab)}>
         <div ref={header.ref} className={STICKY_HEADER}>
-          <Back to={back} />
-          <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
-            <span className="text-muted-foreground">#{pr.number}</span>
-            {pr.title}
+          <AgentTitle repo={repo} title={<><span className="text-muted-foreground font-normal">#{pr.number}</span>{pr.title}</>}>
             <a className="text-muted-foreground inline-flex items-center gap-1 text-sm font-normal hover:underline" href={pr.url} target="_blank" rel="noreferrer">
               View on GitHub <ExternalLink className="size-3.5" />
             </a>
@@ -109,48 +125,58 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
                 PR preview <ExternalLink className="size-3.5" />
               </a>
             )}
-          </h2>
-          <p className="text-muted-foreground text-sm">
-            <code>{pr.head}</code> → <code>{pr.base}</code> · by {pr.author || "?"} · +{pr.additions}/−{pr.deletions} across {pr.changedFiles} files
-          </p>
-          <div className="flex flex-wrap gap-1">
-            <Badge variant="outline">{pr.state}</Badge>
-            {pr.reviewStatus === "changes_requested" && <Badge variant="destructive">Changes requested</Badge>}
-            {pr.reviewStatus === "approved" && <Badge variant="success">Approved</Badge>}
-            {pr.mergeable === "CONFLICTING" && <Badge variant="destructive">Conflicts</Badge>}
-            {pr.ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
-            {pr.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
-            {pr.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
-            {pr.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
-          </div>
-          {liveRow ? <WorkstreamActions row={liveRow} />
-            : !pr.previewUrl ? <ActionButton onRun={() => addPreviewLabel(row)}>Add preview label</ActionButton>
-            : null}
+          </AgentTitle>
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
+            {liveRow && <TabsTrigger value="chat">Chat</TabsTrigger>}
             <TabsTrigger value="files">Files changed ({pr.changedFiles})</TabsTrigger>
             <TabsTrigger value="checks">Checks ({pr.checks.length})</TabsTrigger>
             <TabsTrigger value="preview">Preview</TabsTrigger>
           </TabsList>
         </div>
 
-        <TabsContent value="overview" className="space-y-4 pt-3">
-          <ReviewPanel repo={repo} prNumber={number} sig={liveRow ? reviewSig(liveRow) : undefined} />
-          {pr.body ? <Markdown>{pr.body}</Markdown> : <p className="text-muted-foreground text-sm">No description.</p>}
-          {(pr.reviews.length > 0 || pr.comments.length > 0) && (
-            <div className="space-y-2 border-t pt-3 text-sm">
-              {pr.reviews.map((r, i) => (
-                <div key={`r${i}`}><span className="text-muted-foreground">{r.author}</span> — {r.state.toLowerCase().replace(/_/g, " ")}</div>
-              ))}
-              {pr.comments.map((c, i) => (
-                <div key={`c${i}`} className="border-l-2 pl-3">
-                  <div className="text-muted-foreground text-xs">{c.author}</div>
-                  <Markdown>{c.body}</Markdown>
-                </div>
-              ))}
-            </div>
+        <TabsContent value="overview" className="space-y-6 pt-3">
+          {liveRow ? (
+            <>
+              <DetailsCard row={liveRow} summary={summary} actions={<WorkstreamActions row={liveRow} />} extra={<Detail label="Pull request status">{badges}</Detail>} />
+              <ChatCard row={liveRow} />
+            </>
+          ) : (
+            <VCard slot="pr-details" title="Pull request details" aside={!pr.previewUrl ? <ActionButton onRun={() => addPreviewLabel(row)}>Add preview label</ActionButton> : undefined}>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-4 p-4 md:grid-cols-4">
+                <Detail label="Author">{pr.author || "?"}</Detail>
+                <Detail label="Source"><code className="truncate font-mono">{pr.head}</code><span className="text-muted-foreground">→ {pr.base}</span></Detail>
+                <Detail label="Changes"><span className="text-geist-green">+{pr.additions}</span><span className="text-geist-red">−{pr.deletions}</span><span className="text-muted-foreground">in {pr.changedFiles} files</span></Detail>
+                <Detail label="Status">{badges}</Detail>
+              </div>
+            </VCard>
           )}
+          <ReviewPanel repo={repo} prNumber={number} sig={liveRow ? reviewSig(liveRow) : undefined} />
+          <VCard slot="pr-description" title="Description">
+            <div className="space-y-4 p-4">
+              {pr.body ? <Markdown>{pr.body}</Markdown> : <p className="text-muted-foreground text-sm">No description.</p>}
+              {(pr.reviews.length > 0 || pr.comments.length > 0) && (
+                <div className="space-y-2 border-t pt-3 text-sm">
+                  {pr.reviews.map((r, i) => (
+                    <div key={`r${i}`}><span className="text-muted-foreground">{r.author}</span> — {r.state.toLowerCase().replace(/_/g, " ")}</div>
+                  ))}
+                  {pr.comments.map((c, i) => (
+                    <div key={`c${i}`} className="border-l-2 pl-3">
+                      <div className="text-muted-foreground text-xs">{c.author}</div>
+                      <Markdown>{c.body}</Markdown>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </VCard>
         </TabsContent>
+
+        {liveRow && (
+          <TabsContent value="chat" className="pt-3">
+            <ChatCard row={liveRow} tall />
+          </TabsContent>
+        )}
 
         <TabsContent value="files" className="space-y-3 pt-3">
           {diff === null ? <p className="text-muted-foreground text-sm">Loading diff…</p> : <DiffView text={diff} />}
@@ -174,7 +200,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
   );
 }
 
-const Back = ({ to }: { to: string }) => <Button variant="ghost" size="sm" onClick={() => navigate(to)}><ArrowLeft /> Back to board</Button>;
+const Back = ({ to }: { to: string }) => <Button variant="ghost" size="sm" onClick={() => navigate(to)}><ArrowLeft /> Back to agents</Button>;
 
 export const Markdown = ({ children }: { children: string }) => (
   <div className="prose prose-sm dark:prose-invert max-w-none">
