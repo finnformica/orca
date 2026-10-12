@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { Bot, PictureInPicture2, PanelBottomClose, X } from "lucide-react";
+import { syncEvents } from "@/lib/events";
 import { ChatPanel } from "@/views/Chat";
 import { api } from "../api";
 import type { Row } from "../store";
 import { FRAME_MIN_H as MIN_H, FRAME_MIN_W as MIN_W, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, clampFrame, resizeFrame, type Frame } from "../workstream";
 import { PortalContainer } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { poll } from "@/lib/poll";
 
 // The card's terminal: a modal you open in place (no navigating to the detail page) showing the
 // branch's conversation as a terminal-style log — the durable turns Orca records — with the follow-up
@@ -65,10 +67,7 @@ export function OrchestratorButton() {
   // a hidden tab's timers get throttled (to once a minute after a while).
   useEffect(() => {
     if (!open) return;
-    void load();
-    const host = pip ?? window;
-    const timer = host.setInterval(load, 2000);
-    return () => host.clearInterval(timer);
+    return poll(load, 2000, pip ?? window);
   }, [open, pip]);
   useEffect(() => { if (!open) pip?.close(); }, [open]);
   useEffect(() => {
@@ -90,7 +89,8 @@ export function OrchestratorButton() {
     if (!w) return;
     copyStyles(document, w.document);
     // Closing it (its own ✕, Return to tab, or the launcher) brings the chat back into the tab.
-    w.addEventListener("pagehide", () => { savePipSize(w); setPip(null); }, { once: true });
+    // The tab may be hidden by now, so the shared live stream re-checks whether it is still wanted.
+    w.addEventListener("pagehide", () => { savePipSize(w); setPip(null); setTimeout(syncEvents); }, { once: true });
     setPip(w);
   };
   const row: Row = {

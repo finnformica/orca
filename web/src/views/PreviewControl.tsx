@@ -5,6 +5,7 @@ import { api, type PreviewSvc } from "../api";
 import { baseBranch, instanceChoices, previewStatus, startMaster, stopMaster, stopPreview, testLocally, thisInstance, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { poll } from "@/lib/poll";
 
 // Shared preview lifecycle: start in the background, poll status, expose ready/failed/link. Driven
 // by a preview `key` (the worktree path) and a `starter` that spins it up — so the same hook powers
@@ -24,10 +25,9 @@ function usePreview(initialKey: string | undefined, starter: () => Promise<{ key
   useEffect(() => {
     if (!key) { setSvcs([]); return; }
     let cancelled = false;
-    const tick = () => { if (reaping.current) return; void previewStatus(key).then((s) => !cancelled && setSvcs(s)).catch(() => {}); };
-    tick();
-    const t = setInterval(tick, 2500); // reflects "starting → ready" without a manual refresh
-    return () => { cancelled = true; clearInterval(t); };
+    const tick = () => { if (reaping.current) return; return previewStatus(key).then((s) => !cancelled && setSvcs(s)).catch(() => {}); };
+    const stop = poll(tick, 2500); // reflects "starting → ready" without a manual refresh
+    return () => { cancelled = true; stop(); };
   }, [key]);
 
   const open = svcs.find((s) => s.open) ?? svcs[0];
@@ -285,12 +285,8 @@ export function PreviewManagerMenu() {
   // last path segment for adopted/base worktrees with no card).
   const titleOf = (key: string) => rows.find((r) => r.worktreePath === key)?.title ?? key.split("/").pop() ?? key;
 
-  const load = () => void api.previews().then((p) => { setPreviews(p); setUnavailable(false); }).catch(() => setUnavailable(true));
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 2500); // reflects start/stop without a manual refresh
-    return () => clearInterval(t);
-  }, []);
+  const load = () => api.previews().then((p) => { setPreviews(p); setUnavailable(false); }).catch(() => setUnavailable(true));
+  useEffect(() => poll(load, 2500), []); // reflects start/stop without a manual refresh
 
   const running = previews.filter((p) => p.svcs.some((s) => s.running));
   const stop = async (key: string) => { await stopPreview(key).catch(() => {}); load(); };

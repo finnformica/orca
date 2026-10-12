@@ -219,7 +219,7 @@ function fakePip() {
       requests.push(size);
       const w = Object.assign(new EventTarget(), {
         document: document.implementation.createHTMLDocument("pip"), innerWidth: size.width, innerHeight: size.height,
-        setInterval: window.setInterval.bind(window), clearInterval: window.clearInterval.bind(window),
+        setTimeout: window.setTimeout.bind(window), clearTimeout: window.clearTimeout.bind(window),
         close() { w.dispatchEvent(new Event("pagehide")); },
       });
       windows.push(w);
