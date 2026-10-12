@@ -88,6 +88,15 @@ function secureContextOf(cfg: OrcaConfig, key: string): boolean {
     && (key === r.repoPath || (!!r.worktreeRoot && key.startsWith(`${r.worktreeRoot.replace(/\/+$/, "")}/`))));
 }
 
+/** Does a RELAYED preview (a key on another instance) need a secure context? The owner published
+ *  the answer with its row — the viewer can't map the owner's path to a repo, and a status poll
+ *  often names no repo at all, so `repoOf`'s fallback (the first repo in config) must never decide.
+ *  The repo flag is the fallback only when nothing was published for the key. */
+export function secureForRelay(rows: { key: string; data: { secureContext?: unknown } }[], key: string, repoFlag: boolean | undefined): boolean {
+  const row = rows.find((r) => r.key === key);
+  return row ? row.data.secureContext === true : repoFlag === true;
+}
+
 /** Every running preview on every instance — the running-previews menu's list. This instance's own
  *  are read live and published (so the others see them); the others' come from what they published.
  *  `loopback` = this bridge serves a page on localhost: then another instance's opened service is

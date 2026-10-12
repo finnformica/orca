@@ -239,7 +239,10 @@ async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: Orc
     // localhost here, with that URL as `localUrl`.
     if (url.pathname === "/api/preview" && upstream.ok) {
       const key = String(url.searchParams.get("key") ?? body.key ?? "");
-      return json(forward.localize(key, (await upstream.json()) as { port: number; url: string; open: boolean }[], new URL(base).hostname, repo.previewSecureContext === true));
+      // The owner published whether this key needs a secure context; `repo` here may be repoOf's
+      // fallback (the poll names no repo), which once localized every Orca preview to localhost.
+      const secure = verbs.secureForRelay(await db.previewInventory().catch(() => []), key, repo.previewSecureContext);
+      return json(forward.localize(key, (await upstream.json()) as { port: number; url: string; open: boolean }[], new URL(base).hostname, secure));
     }
     if (url.pathname === "/api/preview/stop") forward.release(String(body.key ?? ""));
     return new Response(upstream.body, { status: upstream.status, headers: upstream.headers });

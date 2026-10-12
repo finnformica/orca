@@ -56,3 +56,15 @@ test("the browser opens localUrl only from a page served on localhost; anything 
   expect(previewHref(svc, "100.64.0.7")).toBe("http://orca-box:9001");
   expect(previewHref({ url: "http://orca-box:9001" }, "localhost")).toBe("http://orca-box:9001"); // no forward here: the owner's
 });
+
+// The status poll names no repo, so the relaying bridge's `repo` is repoOf's fallback (the first in
+// config). With branch-demo flagged secure, every Orca preview was being localized to localhost.
+// The owner's published row for the key decides; the repo flag only when nothing was published.
+test("secureForRelay: the owner's published flag for the key wins over the (fallback) repo's flag", async () => {
+  const { secureForRelay } = await import("../server/verbs");
+  const rows = [{ key: "/opt/orca/.worktrees/x", data: { secureContext: false } }, { key: "/opt/bd/.worktrees/y", data: { secureContext: true } }];
+  expect(secureForRelay(rows, "/opt/orca/.worktrees/x", true)).toBe(false); // Orca preview, polled with branch-demo as the fallback repo
+  expect(secureForRelay(rows, "/opt/bd/.worktrees/y", undefined)).toBe(true);
+  expect(secureForRelay(rows, "/opt/unknown", true)).toBe(true); // nothing published → the repo flag
+  expect(secureForRelay([], "/opt/unknown", undefined)).toBe(false);
+});
