@@ -1,21 +1,22 @@
 // The Agents page — Vercel's Deployments list, adapted: an "Add Filter" chip row (repo, state,
 // instance, needs attention) with the active filters as dashed chips, then one dense row per
-// workstream: repo icon + title, its latest instruction (where Vercel has the commit message), the
-// status dot with a duration, the state pill, the signals (CI / conflicts / the review cluster), PR
-// #, branch, instance, when, and the model as the avatar. Clicking a row opens its agent page; every
-// action is in the trailing ⋯ (WorkstreamActions, menu-only). The swimlanes stay behind List | Board.
-import { useState, type MouseEvent, type ReactNode } from "react";
+// workstream with only what you act on (workstream.listColumns): the title over repo · model, the
+// status (a spinner and a live elapsed time while running), the PR state + number, checks and the
+// review cluster, the instance, when it last moved, and the actions. Columns flex and truncate, so
+// the list never scrolls sideways. Clicking a row opens its agent page; every action is in the
+// trailing ⋯ and on right-click (WorkstreamActions, menu-only). The swimlanes stay behind List | Board.
+import { useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useAtom, useAtomValue } from "jotai";
-import { Bot, Columns3, FolderGit2, GitBranch, GitPullRequest, List, Rows2, Rows3, Search, X } from "lucide-react";
+import { Bot, Columns3, GitPullRequest, List, Loader2, Rows2, Rows3, Search, X } from "lucide-react";
 import { agentQueryAtom, boardViewAtom, densityAtom, instanceScopeAtom, repoFilterAtom, type BoardView } from "@/lib/atoms";
 import { navigate, useSearch } from "@/lib/route";
+import { useNow } from "@/lib/ticker";
 import { instanceChoices, modelFor, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
 import {
-  DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, SORT_LABELS, ago, applyQuickFilter, attentionReasons, filterRows, formatDuration, lastActivity,
-  parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, toggleQuick,
-  type ListSort, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
+  DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, SORT_LABELS, ago, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed, lastActivity,
+  listColumns, listGridTemplate, modelBadge, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, toggleQuick,
+  type ListColumn, type ListSort, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
 } from "../workstream";
-import { modelLabel } from "../../../shared/models";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Pill, StatusDot, type DotTone } from "@/components/console";
@@ -84,17 +85,19 @@ function AgentsList() {
   const visible = sortRows(applyQuickFilter(scoped, quick, here), sort);
   const setQuick = (f: QuickFilter) => navigate(`/agents${quickFilterQuery(f)}`, true); // a filter change is not a history step
   const clear = () => { setQ(""); setQuick(NO_QUICK_FILTER); };
+  const cols = listColumns({ multiInstance: instanceChoices().length > 1 });
   return (
     <section aria-label="Agents" className="space-y-3">
       <FilterRow scoped={scoped} quick={quick} setQuick={setQuick} visible={visible} total={all.length} q={q} setQ={setQ} sort={sort} setSort={setSort}
         showRepos={repo === "all"} showInstances={instance === "all"} />
-      <div data-slot="workstream-list" className="bg-card overflow-x-auto rounded-lg border">
+      <div data-slot="workstream-list" role="table" aria-label="Workstreams" className="bg-card overflow-hidden rounded-lg border">
+        {visible.length > 0 && <ListHeader cols={cols} />}
         {visible.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center gap-3 px-4 py-14 text-sm">
             No agents match.
             <Button size="sm" variant="outline" onClick={clear}>Clear filters</Button>
           </div>
-        ) : <div className="min-w-[78rem]">{visible.map((r) => <AgentRow key={r.repo + r.branch} row={r} />)}</div>}
+        ) : visible.map((r) => <AgentRow key={r.repo + r.branch} row={r} cols={cols} />)}
       </div>
     </section>
   );
@@ -170,9 +173,16 @@ function FilterRow({ scoped, quick, setQuick, visible, total, q, setQ, sort, set
 
 // ---- the row ----
 
-// One grid per row (fixed tracks so every row lines up): workstream · latest instruction · status ·
-// state · signals · PR · branch · instance · updated · model · actions.
-const COLS = "grid grid-cols-[minmax(11rem,1.4fr)_minmax(8rem,1.1fr)_9.5rem_6.5rem_minmax(12rem,1.4fr)_3.5rem_minmax(6rem,0.8fr)_4rem_4.5rem_1.5rem_6.5rem] items-center gap-x-3";
+const rowGrid = (cols: ListColumn[]) => ({ gridTemplateColumns: listGridTemplate(cols) });
+const GRID = "grid items-center gap-x-3 px-4"; // gap / padding: workstream.LIST_GAP_PX / LIST_PAD_PX
+
+function ListHeader({ cols }: { cols: ListColumn[] }) {
+  return (
+    <div role="row" data-slot="workstream-list-header" style={rowGrid(cols)} className={`${GRID} text-muted-foreground h-9 border-b text-xs`}>
+      {cols.map((c) => <div key={c.key} role="columnheader" data-col={c.key} className={`truncate ${c.key === "updated" ? "text-right" : ""}`}>{c.label}</div>)}
+    </div>
+  );
+}
 
 export const TONE_DOT: Record<RowTone, DotTone> = { running: "building", failed: "error", attention: "warning", ready: "ready", neutral: "neutral" };
 export const TONE_LABEL: Record<RowTone, string> = { running: "Running", failed: "Error", attention: "Needs you", ready: "Ready", neutral: "Idle" };
@@ -204,74 +214,87 @@ export function latestInstruction(row: Row): string {
   return (text || "").replace(/\s+/g, " ").trim();
 }
 
-export function AgentRow({ row }: { row: Row }) {
+export function AgentRow({ row, cols }: { row: Row; cols: ListColumn[] }) {
   const isDone = row.lane === "DONE";
   const [busy, setBusy] = useState(false);
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
   const [terminalOpen, setTerminalOpen] = useTerminalOpen(row); // "New chat" pops its conversation open on arrival
   const tone = rowTone(row);
   const reasons = attentionReasons(row);
   const instance = rowInstance(row, thisInstance());
   const updated = lastActivity(row);
-  const duration = rowDuration(row);
   const to = detailPath(row);
-  const model = row.agentMeta?.model ?? (row.worktreePath || row.prNumber ? modelLabel(modelFor(row)) : undefined);
+  const model = modelBadge(row.agentMeta?.model, row.worktreePath || row.prNumber ? modelFor(row) : undefined);
   const instruction = latestInstruction(row);
+  const error = row.agentStatus === "error" ? row.agentError : undefined;
+  const hasMenu = !isDone;
+  // Right-click (or the keyboard's menu key / Shift+F10 on a focused row) opens the ⋯ menu's items
+  // where the pointer is; from the keyboard there is no pointer, so it opens at the row's left edge.
+  const onContextMenu = (e: MouseEvent<HTMLDivElement>) => {
+    if (!hasMenu || (e.target as HTMLElement).closest("a, input, textarea")) return; // links keep the browser's menu
+    e.preventDefault();
+    const r = e.currentTarget.getBoundingClientRect();
+    setMenuAt(e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : { x: r.left + 16, y: r.bottom });
+  };
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === "Enter" && to) navigate(to);
+  };
+  const closeMenu = () => { setMenuAt(null); if (!document.activeElement || document.activeElement === document.body) ref.current?.focus({ preventScroll: true }); };
+  const cell = (key: ListColumn["key"]) => cols.some((c) => c.key === key);
   return (
     <div
-      role="row" data-slot="workstream-row" data-branch={row.branch} aria-busy={busy}
-      onClick={openOnRowClick(row)}
-      className={`${COLS} hover:bg-accent/40 h-14 border-b px-4 text-sm last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
+      ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-branch={row.branch} aria-busy={busy}
+      aria-label={row.title} aria-haspopup={hasMenu ? "menu" : undefined}
+      onClick={openOnRowClick(row)} onContextMenu={onContextMenu} onKeyDown={onKeyDown}
+      style={rowGrid(cols)}
+      className={`${GRID} hover:bg-accent/40 focus-visible:bg-accent/40 h-14 border-b text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
     >
-      <div className="flex min-w-0 items-center gap-2.5">
-        <span className="bg-muted inline-flex size-6 shrink-0 items-center justify-center rounded-full" title={row.repo}><FolderGit2 className="size-3.5" /></span>
-        <div className="min-w-0">
-          <div className="truncate font-medium" title={row.title}>{row.title}</div>
-          <div className="text-muted-foreground flex items-center gap-1 truncate text-xs">
-            {row.repo}{row.orchestrated && <span title="Started or continued by the orchestrator" aria-label="Orchestrated"><Bot className="size-3" /></span>}
-          </div>
+      <div role="cell" className="min-w-0" title={[row.title, instruction && `Latest: ${instruction}`, `Branch: ${row.branch}`].filter(Boolean).join("\n")}>
+        <div className="truncate font-medium">{row.title}</div>
+        <div className="text-muted-foreground flex min-w-0 items-center gap-1 text-xs">
+          <span className="shrink-0">{row.repo}</span>
+          {model && <><span aria-hidden="true">·</span><span data-slot="model-label" className="shrink-0" title={model.title}>{model.label}</span></>}
+          {row.orchestrated && <span className="shrink-0" title="Started or continued by the orchestrator" aria-label="Orchestrated"><Bot className="size-3" /></span>}
+          {error && <><span aria-hidden="true">·</span><span data-slot="row-error" className="text-geist-red truncate" title={error}>{error}</span></>}
         </div>
       </div>
-      <div className="text-muted-foreground truncate" title={row.agentStatus === "error" && row.agentError ? row.agentError : instruction}>
-        {row.agentStatus === "error" && row.agentError ? <span className="text-geist-red">{row.agentError}</span> : instruction || "—"}
+      <div role="cell" className="min-w-0"><RunStatus row={row} tone={tone} reasons={reasons} /></div>
+      <div role="cell" className="flex min-w-0 items-center gap-2">
+        <Pill tone={LANE_PILL[row.lane]} slot="state-pill">{isDone ? "Merged" : LANE_LABELS[row.lane]}</Pill>
+        {row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" title={`Open PR #${row.prNumber} on GitHub`} className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>}
       </div>
-      <div className="flex min-w-0 items-center gap-2 whitespace-nowrap" title={reasons.length ? reasons.join(", ") : undefined}>
-        <StatusDot tone={TONE_DOT[tone]} />
-        <span data-tone={tone} className="font-medium">{TONE_LABEL[tone]}</span>
-        {duration !== undefined && <span className="text-muted-foreground tabular-nums">{formatDuration(duration)}</span>}
-      </div>
-      <div><Pill tone={LANE_PILL[row.lane]} slot="state-pill">{isDone ? "Merged" : LANE_LABELS[row.lane]}</Pill></div>
-      <div className="flex min-w-0 flex-wrap items-center gap-1 [&>*]:shrink-0 [&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5">
+      <div role="cell" data-slot="row-signals" title={reasons.length ? reasons.join(", ") : undefined}
+        className="flex min-w-0 items-center gap-1 overflow-hidden [&>*]:shrink-0 [&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5">
         {row.prNumber && !isDone && <ConditionBadges row={row} />}
         {row.prNumber && !isDone && <ReviewCluster row={row} />}
         {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
       </div>
-      <div className="text-muted-foreground flex items-center gap-1 font-mono text-xs">
-        {row.prNumber ? <a href={row.prUrl} target="_blank" rel="noreferrer" className="hover:text-foreground inline-flex items-center gap-1"><GitPullRequest className="size-3.5" />{row.prNumber}</a> : "—"}
-      </div>
-      <div className="text-muted-foreground flex min-w-0 items-center gap-1 font-mono text-xs" title={row.branch}>
-        <GitBranch className="size-3.5 shrink-0" /><span className="truncate">{row.branch}</span>
-      </div>
-      <div className="text-muted-foreground truncate text-xs" data-slot="instance-chip">{instanceChoices().length > 1 ? instance ?? "—" : ""}</div>
-      <div className="text-muted-foreground text-right text-xs tabular-nums" title={updated ? new Date(updated).toLocaleString() : undefined}>{ago(updated)}</div>
-      <ModelAvatar model={model} />
-      <div className="flex items-center justify-end gap-1">
+      {cell("instance") && <div role="cell" className="text-muted-foreground truncate text-xs" data-slot="instance-chip" title={instance}>{instance ?? "—"}</div>}
+      <div role="cell" className="text-muted-foreground truncate text-right text-xs tabular-nums" title={updated ? new Date(updated).toLocaleString() : undefined}>{ago(updated)}</div>
+      <div role="cell" className="flex items-center justify-end gap-1">
         {!isDone && <PreviewControl row={row} compact />}
-        {!isDone && <WorkstreamActions row={row} compact menuOnly onBusy={setBusy} onFollowUp={to ? () => navigate(`${to}/chat`) : undefined} />}
+        {hasMenu && <WorkstreamActions row={row} compact menuOnly onBusy={setBusy} onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}
+          onOpen={to ? () => navigate(to) : undefined} contextAt={menuAt} onContextClose={closeMenu} />}
         {!isDone && <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />}
       </div>
     </div>
   );
 }
 
-/** The row's "avatar": the model's initials in a circle (Vercel shows the author). */
-export function ModelAvatar({ model }: { model?: string }): ReactNode {
-  if (!model) return <span />;
-  const initials = model.replace(/[^A-Za-z0-9 ]/g, "").split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]!.toUpperCase()).join("");
+/** The status cell: dot + label, and the duration. While running, a spinner and an elapsed time read
+ *  off the ONE shared ticker (lib/ticker) — only this cell re-renders each second, never the list. */
+export function RunStatus({ row, tone, reasons }: { row: Row; tone: RowTone; reasons: string[] }) {
+  const running = row.agentStatus === "running" && Boolean(row.agentStartedAt);
+  const now = useNow(running);
+  const duration = running ? undefined : rowDuration(row);
   return (
-    <span data-slot="model-avatar" title={model} aria-label={`Model ${model}`}
-      className="bg-muted text-foreground inline-flex size-6 items-center justify-center rounded-full text-[9px] font-semibold">
-      {initials}
-    </span>
+    <div data-slot="run-status" className="flex min-w-0 items-center gap-2 whitespace-nowrap" title={reasons.length ? reasons.join(", ") : undefined}>
+      {tone === "running" ? <Loader2 data-slot="run-spinner" aria-hidden="true" className="text-geist-amber size-3 shrink-0 animate-spin" /> : <StatusDot tone={TONE_DOT[tone]} />}
+      <span data-tone={tone} className="truncate font-medium">{TONE_LABEL[tone]}</span>
+      {running && now !== undefined && <span data-slot="elapsed" className="text-muted-foreground tabular-nums" title={`Running since ${new Date(row.agentStartedAt!).toLocaleTimeString()}`}>{formatElapsed(now - row.agentStartedAt!)}</span>}
+      {duration !== undefined && <span className="text-muted-foreground tabular-nums" title="How long the last run took">{formatDuration(duration)}</span>}
+    </div>
   );
 }
-

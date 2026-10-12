@@ -55,6 +55,26 @@ adapters or routes.
 - ✅ Card shows **Copy rebase prompt**; the copied text names the branch + base.
 - Resolve/rebase, push. After the next poll ✅ the card leaves `CONFLICTED`.
 
+## Agents list — condensed row, right-click, live timer
+
+Open **Agents** (List view) with a few workstreams, at least one running and one with a PR.
+
+- ✅ Header reads Workstream · Status · PR · Checks & review · (Instance, with two instances) ·
+  Updated. No branch / latest-instruction / model-avatar columns; hovering a title shows the latest
+  instruction and the branch.
+- Resize the window to **1280px** wide with the sidebar expanded (then 1440, 1920). ✅ No horizontal
+  scrollbar on the list; long titles and errors truncate with an ellipsis and show in full on hover.
+- ✅ The subline under the title reads `repo · Opus 5.5` (a readable model name, never `O5` / `CF`);
+  hovering it says which model the last run used and, if re-pinned, the next one.
+- A running row shows a spinning loader and `m:ss` elapsed that ticks every second. ✅ Other rows
+  don't flicker (React DevTools "highlight updates": only the running rows' status cells repaint).
+- Right-click a row. ✅ A menu opens at the pointer with the same items as its ⋯ (Open, Open PR,
+  Copy branch, Follow up, PR ▸ Address PR / Add preview, Move to <instance>, Close PR / Discard…),
+  in the Geist menu style. ↑/↓ move, Enter runs, **Esc** closes, a click outside closes. Right-click
+  on the PR # link still gives the browser's own menu.
+- Tab to a row, press the **menu key** (or Shift+F10). ✅ The same menu opens under the row; Enter on
+  a focused row opens its agent page.
+
 ## Teardown
 
 Delete the test PRs/branches and remove any leftover worktrees:

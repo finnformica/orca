@@ -194,7 +194,7 @@ describe("overview: the Agents card", () => {
 });
 
 describe("agents list", () => {
-  test("one dense row per workstream: status dot + label, state pill, signals, PR, branch, model; the error shows on the row", async () => {
+  test("one condensed row per workstream: title over repo · model, status, state pill + PR, signals; the error shows on the row", async () => {
     seed();
     await mount(<Agents />);
     expect(listed().sort()).toEqual(["feat-ci", "feat-draft", "feat-ok", "local-err", "local-run"]);
@@ -203,13 +203,15 @@ describe("agents list", () => {
     expect(err.querySelector('[data-tone="failed"]')!.textContent).toBe("Error");
     expect(err.querySelector('[data-slot="status-dot"]')!.getAttribute("data-tone")).toBe("error");
     const run = container!.querySelector<HTMLElement>('[data-branch="local-run"]')!;
-    expect(run.textContent).toContain("Add a gauge to the tiles"); // the latest instruction, where Vercel shows the commit
+    // The latest instruction and branch are no longer columns: they ride the title's tooltip.
+    expect(run.querySelector<HTMLElement>('[role="cell"]')!.title).toContain("Latest: Add a gauge to the tiles");
+    expect(run.querySelector<HTMLElement>('[role="cell"]')!.title).toContain("Branch: local-run");
     expect(run.querySelector('[data-tone="running"]')!.textContent).toBe("Running");
     const ci = container!.querySelector<HTMLElement>('[data-branch="feat-ci"]')!;
     expect(ci.querySelector('[data-slot="state-pill"]')!.textContent).toBe("In review");
     expect(ci.textContent).toContain("8");
     expect(ci.textContent).toContain("CI");
-    expect(ci.querySelector('[data-slot="model-avatar"]')).not.toBeNull();
+    expect(ci.querySelector('[data-slot="model-label"]')!.textContent).toBe("Fable 5.1"); // readable, not "CF"
     // Every action is in the trailing ⋯ (plus the preview's Test); no toolbar of verbs on the row.
     expect(ci.querySelector('button[aria-label="Actions"]')).not.toBeNull();
     expect(ci.querySelector('button[aria-label="Follow up"]')).toBeNull();
