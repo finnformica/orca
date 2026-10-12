@@ -111,7 +111,9 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
           <StatusDot tone={tone} />{down ? "Unreachable" : h ? "Online" : "Loading…"}
         </Detail>
         <Detail label="CPU" slot="instance-cpu">{h ? <><span className="tabular-nums">{h.cpuPct}%</span><span className="text-muted-foreground text-xs">of {h.cores} cores</span></> : "—"}</Detail>
-        <Detail label="Memory" slot="instance-mem">{h ? <span className="tabular-nums">{h.memUsedGb} / {h.memTotalGb} GB</span> : "—"}</Detail>
+        <Detail label="Memory" slot="instance-mem">
+          {h ? <span className="tabular-nums" title={h.memPressure ? `pressure — ${h.memPressurePct}% used` : undefined}>{h.memUsedGb} / {h.memTotalGb} GB</span> : "—"}
+        </Detail>
         <Detail label="Disk">{h?.disk ? <span className="tabular-nums">{h.disk.usedGb} / {h.disk.totalGb} GB</span> : "—"}</Detail>
         <Detail label="Uptime">{h ? fmtUptime(h.uptimeS) : "—"}</Detail>
         <Detail label="Cost" slot="instance-cost">{h?.cost ? <span className="tabular-nums" title={`estimated at $${h.cost.hourlyUsd}/h since ${h.cost.sinceIso.slice(0, 10)}`}>${h.cost.monthUsd.toFixed(2)} <span className="text-muted-foreground text-xs">this month</span></span> : "—"}</Detail>
