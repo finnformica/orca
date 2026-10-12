@@ -4,12 +4,73 @@
 // role doesn't have, and an estimate that is always there beats a bill that needs a login.
 import * as os from "os";
 import * as db from "./db";
+import { run } from "./run";
 
 export type Health = {
   instance: string; hostname: string; cores: number; cpuPct: number; load1: number; load5: number;
-  memUsedGb: number; memTotalGb: number; disk?: { usedGb: number; totalGb: number }; uptimeS: number;
+  memUsedGb: number; memTotalGb: number; memPressurePct?: number; memPressure?: boolean;
+  disk?: { usedGb: number; totalGb: number }; uptimeS: number;
   cost?: { monthUsd: number; hourlyUsd: number; sinceIso: string; billingSince?: string }; at: number;
 };
+
+// ---- darwin memory: os.freemem() is only the truly-free page count, and the kernel keeps nearly
+// all RAM occupied by design (inactive/file cache/speculative), so totalmem()-freemem() reads
+// ~100% on every healthy Mac. `vm_stat` is what Activity Monitor's "Memory Used" reads instead:
+// app + wired + compressed, i.e. active + wired + occupied-by-compressor pages. (Linux is fine as
+// is: os.freemem() there already tracks /proc/meminfo's MemAvailable, so totalmem()-freemem() is
+// the same "used" Activity Monitor's Linux equivalents report — verified against /proc/meminfo on
+// the box.) Both shell out through `run` (server/run.ts) so tests can shim them on PATH, same as
+// the rest of the server's adapters.
+
+type VmStatPages = { pageSize: number; activePages: number; wiredPages: number; compressorPages: number };
+
+/** Parse `vm_stat`'s text report. `Pages occupied by compressor` is missing on older macOS, where
+ *  it counts as zero. Returns undefined if the page size or the active/wired lines aren't there —
+ *  a format we don't recognise, so the caller should fall back rather than report nonsense. */
+export function parseVmStat(out: string): VmStatPages | undefined {
+  const pageSize = out.match(/page size of (\d+) bytes/)?.[1];
+  const activePages = out.match(/Pages active:\s*(\d+)\./)?.[1];
+  const wiredPages = out.match(/Pages wired down:\s*(\d+)\./)?.[1];
+  const compressorPages = out.match(/Pages occupied by compressor:\s*(\d+)\./)?.[1];
+  if (!pageSize || !activePages || !wiredPages) return undefined;
+  return { pageSize: Number(pageSize), activePages: Number(activePages), wiredPages: Number(wiredPages), compressorPages: Number(compressorPages ?? 0) };
+}
+
+/** Activity Monitor's "Memory Used", in GB: app (active) + wired + compressed, page size weighted. */
+export function vmStatUsedGb(p: VmStatPages): number {
+  return Math.round(((p.pageSize * (p.activePages + p.wiredPages + p.compressorPages)) / 1073741824) * 10) / 10;
+}
+
+async function vmStat(): Promise<string> {
+  return run(["vm_stat"]);
+}
+
+/** `kern.memorystatus_level` is a free-ness level (100 ≈ plenty free, falling as pressure rises).
+ *  Inverted to a pressure percentage; "pressure" proper below ~20 (Apple's own warn/critical band
+ *  starts there). Undefined when the sysctl isn't there (non-darwin, or an old kernel). */
+async function memoryPressureLevel(): Promise<number | undefined> {
+  const n = Number((await run(["sysctl", "-n", "kern.memorystatus_level"])).trim());
+  return Number.isFinite(n) ? n : undefined;
+}
+
+/** darwin's corrected memory figures, shelling to `vm_stat`/`sysctl` through `run` so a test can
+ *  shim them on PATH (tests/health.test.ts, same approach as tests/helpers.ts' fake `gh`) without
+ *  the box actually being a Mac. Exported separately
+ *  from `health()` for exactly that: `process.platform` can't be faked, these adapters can. Each
+ *  failure degrades on its own — a missing sysctl shouldn't cost the (more important) used figure. */
+export async function darwinMemory(): Promise<{ memUsedGb?: number; memPressurePct?: number; memPressure?: boolean }> {
+  let memUsedGb: number | undefined;
+  try {
+    const parsed = parseVmStat(await vmStat());
+    if (parsed) memUsedGb = vmStatUsedGb(parsed);
+  } catch { /* vm_stat unavailable */ }
+  let memPressurePct: number | undefined, memPressure: boolean | undefined;
+  try {
+    const level = await memoryPressureLevel();
+    if (level !== undefined) { memPressurePct = Math.round(100 - level); memPressure = level < 20; }
+  } catch { /* sysctl unavailable */ }
+  return { memUsedGb, memPressurePct, memPressure };
+}
 
 /** Month-to-date cost: hours since the later of the billing start and the first of the month, at
  *  the hourly rate. Pure, so the arithmetic is tested; `now` is injectable for that. */
@@ -34,10 +95,22 @@ export async function health(): Promise<Health> {
     const out = Bun.spawnSync(["df", "-k", "/"]).stdout.toString().trim().split("\n").at(-1)?.split(/\s+/) ?? [];
     if (out.length >= 4) disk = { usedGb: Math.round((Number(out[2]) / 1048576) * 10) / 10, totalGb: Math.round((Number(out[1]) / 1048576) * 10) / 10 };
   } catch { /* no df */ }
+
+  // linux: os.freemem() already tracks MemAvailable, so totalmem()-freemem() is real "used".
+  let memUsedGb = Math.round(((os.totalmem() - os.freemem()) / 1073741824) * 10) / 10;
+  let memPressurePct: number | undefined;
+  let memPressure: boolean | undefined;
+  if (process.platform === "darwin") {
+    const darwin = await darwinMemory();
+    if (darwin.memUsedGb !== undefined) memUsedGb = darwin.memUsedGb;
+    memPressurePct = darwin.memPressurePct;
+    memPressure = darwin.memPressure;
+  }
+
   return {
     instance: db.instanceName(), hostname: os.hostname(), cores,
     cpuPct: Math.min(100, Math.round((load1 / cores) * 100)), load1, load5,
-    memUsedGb: Math.round(((os.totalmem() - os.freemem()) / 1073741824) * 10) / 10, memTotalGb: Math.round((os.totalmem() / 1073741824) * 10) / 10,
+    memUsedGb, memTotalGb: Math.round((os.totalmem() / 1073741824) * 10) / 10, memPressurePct, memPressure,
     disk, uptimeS: Math.round(os.uptime()),
     cost: costEstimate(Number(process.env.ORCA_HOURLY_USD), process.env.ORCA_BILLING_SINCE), at: Date.now(),
   };

@@ -35,7 +35,8 @@ export type QueuedMessage = {
 
 export type InstanceHealth = {
   instance: string; hostname: string; cores: number; cpuPct: number; load1: number; load5: number;
-  memUsedGb: number; memTotalGb: number; disk?: { usedGb: number; totalGb: number }; uptimeS: number;
+  memUsedGb: number; memTotalGb: number; memPressurePct?: number; memPressure?: boolean;
+  disk?: { usedGb: number; totalGb: number }; uptimeS: number;
   cost?: { monthUsd: number; hourlyUsd: number; sinceIso: string; billingSince?: string }; at: number;
 };
 /** One recorded sample of an instance's vitals (instance_metric), for the chip's history graphs. */

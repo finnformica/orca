@@ -507,6 +507,11 @@ needs no second timer; a failed write is logged and swallowed. `GET /api/health/
 (24 by default, at most 720) is database-only and its `instance` is a filter, never a forward, so
 either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
 CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300 points.
+**On darwin, memory used comes from `vm_stat`** (active + wired + occupied-by-compressor pages,
+Activity Monitor's own formula), not `totalmem() − freemem()` — macOS's `freemem()` is only the
+truly-free page count and reads near-100% on every healthy Mac; `sysctl -n kern.memorystatus_level`
+rides along as `memPressurePct`/`memPressure` (linux keeps `totalmem() − freemem()`, which already
+tracks `/proc/meminfo`'s `MemAvailable`).
 **Conversation loading with a remote database:** `/api/turns` attaches steps to the newest
 `STEPS_FOR_TURNS` (40) turns in ONE query (`db.stepsForRuns`); older turns fetch theirs on unfold
 (`/api/turns/steps` from seq 0). One query per turn over a 6ms link made a 300-turn conversation

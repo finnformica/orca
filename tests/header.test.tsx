@@ -145,7 +145,7 @@ describe("console shell", () => {
     await click(btnByText("Board")!);
     expect(gridEl()).not.toBeNull(); // the swimlanes
     expect(container!.querySelector('[data-slot="workstream-list"]')).toBeNull();
-    expect(localStorage.getItem("orca.boardView")).toBe('"board"');
+    expect(localStorage.getItem("orca.ui.v1.agents.view")).toBe('"board"');
     // A fresh mount (a reload) keeps the choice.
     act(() => root?.unmount());
     container?.remove();
@@ -153,7 +153,7 @@ describe("console shell", () => {
     expect(btnByText("Board")!.getAttribute("aria-pressed")).toBe("true");
     expect(gridEl()).not.toBeNull();
     await click(btnByText("List")!);
-    expect(localStorage.getItem("orca.boardView")).toBe('"list"');
+    expect(localStorage.getItem("orca.ui.v1.agents.view")).toBe('"list"');
     expect(gridEl()).toBeNull();
   });
 
@@ -167,6 +167,6 @@ describe("console shell", () => {
     expect(toggle.getAttribute("aria-pressed")).toBe("false"); // comfortable by default
     await act(async () => { toggle.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
-    expect(localStorage.getItem("orca.density")).toBe('"dense"');
+    expect(localStorage.getItem("orca.ui.v1.density")).toBe('"dense"');
   });
 });

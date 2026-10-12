@@ -3,7 +3,7 @@
 
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentTurn, type TurnCheck } from "../../shared/agent";
-import { AUTO_MODEL } from "../../shared/models";
+import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
 export { attachCommand } from "../../shared/agent";
 
 // Kanban lanes are driven by the REVIEW lifecycle only. Conflict / CI / mergeability
@@ -1937,4 +1937,58 @@ export function limitForecasts(u: UsageReading | null, now = Date.now()): { key:
   });
   if (codex.length) out.push({ key: "codex", title: "Codex", rows: codex });
   return out;
+}
+
+// ---- the Agents list's columns ----
+// Only what you act on: the workstream, its run status, the PR (state + number), checks and the
+// review signal, the instance (only with more than one), when it last moved, and the actions. The
+// latest instruction, branch and model went into the title's subline and tooltip, the PR # into the
+// state cell, and the per-row repo icon was dropped (the repo is in the subline). Each column has a
+// floor in rem; the flexible ones share what is left, so the row never needs a horizontal scroll.
+export type ListColumn = { key: "workstream" | "status" | "pr" | "signals" | "instance" | "actions"; label: string; minRem: number; grow?: number };
+export function listColumns(opts: { multiInstance: boolean }): ListColumn[] {
+  const cols: ListColumn[] = [
+    { key: "workstream", label: "Workstream", minRem: 10, grow: 2 },
+    { key: "status", label: "Status", minRem: 8.5 },
+    { key: "pr", label: "PR", minRem: 8.5 },
+    { key: "signals", label: "Checks & review", minRem: 6, grow: 1 },
+    { key: "instance", label: "Instance", minRem: 5 },
+    { key: "actions", label: "Actions", minRem: 4.5 },
+  ];
+  return opts.multiInstance ? cols : cols.filter((c) => c.key !== "instance");
+}
+/** The CSS grid-template-columns for a column set: fixed floors, `minmax(floor, Nfr)` for the flexible. */
+export const listGridTemplate = (cols: ListColumn[]): string =>
+  cols.map((c) => (c.grow ? `minmax(${c.minRem}rem,${c.grow}fr)` : `${c.minRem}rem`)).join(" ");
+/** The row's gap (gap-x-3) and horizontal padding (px-4) in px — kept in step with the row's classes. */
+export const LIST_GAP_PX = 12, LIST_PAD_PX = 32;
+/** The narrowest a row can be before it would overflow: every floor, every gap, the padding. */
+export const listMinWidth = (cols: ListColumn[], remPx = 16): number =>
+  cols.reduce((n, c) => n + c.minRem * remPx, 0) + LIST_GAP_PX * (cols.length - 1) + LIST_PAD_PX;
+/** What the shell takes off the viewport beside the list: the expanded sidebar (w-60), main's px-6
+ *  on both sides, the card's 1px border on both sides. */
+export const LIST_CHROME_PX = 240 + 48 + 2;
+export const listFits = (cols: ListColumn[], viewportPx: number): boolean => listMinWidth(cols) <= viewportPx - LIST_CHROME_PX;
+
+/** A running agent's live elapsed time, clock-style so the width holds still as it ticks:
+ *  "0:07", "12:05", "1:02:03". */
+export function formatElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return h ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+}
+
+/** A row's model as a readable label (never initials): what its last run reported (`agentMeta.model`,
+ *  already prettified — "Opus 5.5", "Codex") else the pinned model's catalog name. The tooltip spells
+ *  out the provider and, when they differ, the model the next run will use. */
+export function modelBadge(ran: string | undefined, pinned: string | undefined): { label: string; title: string } | undefined {
+  const pinnedLabel = pinned ? (MODELS.find((m) => m.id === pinned)?.label ?? prettyModel(pinned)) : undefined;
+  const label = ran ?? pinnedLabel;
+  if (!label) return undefined;
+  const next = pinned ? modelLabel(pinned) : undefined;
+  const title = ran
+    ? `Last run on ${ran}${next && pinnedLabel !== ran ? ` · next run: ${next}` : ""}`
+    : `Model: ${next}`;
+  return { label, title };
 }
