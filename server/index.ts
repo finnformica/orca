@@ -7,6 +7,7 @@ import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
 import * as preview from "./preview";
+import * as forward from "./forward";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { routingInfo, usage } from "./usage";
 import * as ledger from "./ledger";
@@ -166,6 +167,8 @@ const DATABASE_ONLY = new Set([
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
   // others published — a repo can live on several instances now, so no one instance owns the list.
   "/api/agents",
+  // Needs no worktree, only SLACK_TOKEN — which is on the machine you click from, not the box.
+  "/api/slack",
 ]);
 
 /** Forward a request to the instance that owns the repo. An SSE response is just a long-lived body,
@@ -199,6 +202,13 @@ async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: Orc
       body: req.method === "GET" || req.method === "HEAD" ? undefined : JSON.stringify(body),
       signal: req.signal,
     });
+    // A preview relayed from its owner is opened from THIS machine's browser: forward the service it
+    // opens to localhost here (a secure context — the app needs one) and hand back that URL.
+    if (url.pathname === "/api/preview" && upstream.ok) {
+      const key = String(url.searchParams.get("key") ?? body.key ?? "");
+      return json(forward.localize(key, (await upstream.json()) as { port: number; url: string; open: boolean }[], new URL(base).hostname));
+    }
+    if (url.pathname === "/api/preview/stop") forward.release(String(body.key ?? ""));
     return new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
   } catch (e) {
     return json({ error: `${repo.runsOn} is unreachable: ${e instanceof Error ? e.message : String(e)}` }, 502);
