@@ -41,8 +41,10 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   stream (`/api/events`, ONE per tab, multiplexing every chat and relaying the other instances' buses —
   a browser gets six HTTP/1.1 connections per host across all tabs, and a stream per chat starved the
   PR page's fetches) — everything else is request/response. **The API has no auth of its
-  own**, so the listen socket is loopback by default (`ORCA_BIND`, comma-separated addresses, adds the tailnet interface for a deployed
-  instance, which binds its tailnet address and is reached only over Tailscale — never `0.0.0.0`).
+  own**, so the listen socket is loopback by default (`ORCA_BIND`, comma-separated addresses). A deployed
+  instance binds loopback PLUS its tailnet address (`127.0.0.1,<tailnet ip>`) and is reached from other
+  machines only over Tailscale — never `0.0.0.0`. Loopback is not optional on the box: `bin/orca` and an
+  Orca preview's Vite proxy (`/api` → `localhost:8787`) both find nothing without it.
   (History: a keystrokes-into-a-shell terminal WebSocket once made the loopback bind critical; the
   WebSocket is gone, the bind rule stays because the bridge runs agents with repo-granted authority.)
 - **Why the process must exist:** a browser can't run `git worktree`, read a local diff, or
@@ -439,7 +441,7 @@ VPC, a security group with NO ingress, the SSM instance profile) with `deploy/cl
 which installs Postgres, Tailscale (auth key read from SSM Parameter Store
 `/orca/tailscale-authkey`), Bun, the Claude CLI, hydra + shim and `gh`; sign-ins can't be
 unattended, so after first boot `gh auth login`, clone to `/opt/orca`, `hydra add …`, then
-`deploy/bootstrap.sh` builds, writes `.env` bound to the tailnet address and starts the unit. The
+`deploy/bootstrap.sh` builds, writes `.env` bound to loopback plus the tailnet address and starts the unit. The
 laptop points `ORCA_DATABASE_URL` at the box's Postgres over the tailnet. Modelled on a teammate's
 "chorus-server" (m7i.2xlarge, Ubuntu 24.04, SSM-only). The unit's `PATH` must hold `~/.local/bin` (hydra + the `claude` shim) and
 `jq`/`curl` (hydra's dependencies), and the box runs `hydra add … ; install.sh --shim` once. `.github/workflows/check.yml` runs the gate on Linux, which is where a

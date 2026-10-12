@@ -99,7 +99,7 @@ lives in `~/.local/bin` (e.g. `codex`), make sure that's on the PATH of the shel
 
 The bridge is one Bun process plus Postgres; it needs a real disk for worktrees and long-lived
 child processes, so it runs on a plain Linux box (an ARM instance with 4 GB is plenty), not on
-anything serverless. The API has no auth of its own: bind it to the tailnet address and reach it
+anything serverless. The API has no auth of its own: bind it to loopback plus the tailnet address and reach it
 from the laptop over Tailscale. Nothing is ever exposed publicly.
 
 ```sh
@@ -107,7 +107,7 @@ from the laptop over Tailscale. Nothing is ever exposed publicly.
 git clone <this repo> /opt/orca && cd /opt/orca
 bun install && bun run build
 cp .env.example .env            # set ORCA_DEV_ROOT, ORCA_DATABASE_URL, ORCA_INSTANCE=cloud,
-                                # ORCA_BIND=<tailscale ip>, ORCA_PREVIEW_HOST=<tailscale name>
+                                # ORCA_BIND=127.0.0.1,<tailscale ip>, ORCA_PREVIEW_HOST=<tailscale name>
 claude login                    # paste-the-code flow works over SSH; writes ~/.claude/.credentials.json
 # several Claude logins: install claude-hydra + its shim here too (see "Several Claude accounts";
 # apt install jq curl). The unit's PATH already lists ~/.local/bin, where hydra and the shim live.
