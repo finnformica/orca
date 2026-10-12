@@ -435,7 +435,8 @@ function ProfileMenu() {
 // The cloud box's vitals in the header — CPU (load against cores), memory, disk, and the month's
 // estimated cost — polled every 15s from /api/health?instance=<other>, only when there is another
 // instance. A hover card has the details; the chip itself stays to one line.
-function InstanceHealthChip() {
+export function InstanceHealthChip() {
+  useRepos(); // subscribe: config lands after first paint, and `other` is read from it — without this the chip stayed null for good
   const choices = instanceChoices();
   const other = choices.find((i) => i !== thisInstance());
   const [h, setH] = useState<InstanceHealth | null>(null);
