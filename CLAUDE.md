@@ -109,10 +109,11 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   enrichment still render (incl. PRs not made by Orca). **There is no enrichment GC** — it existed to
   bound a 5MB localStorage bucket, and pruning is now the opposite of the goal. `localStorage` keeps
   only per-browser UI state (theme, density, composer drafts; the shell's repo, instance scope,
-  sidebar collapse and palette recents go through `lib/persisted.ts` — `persistedAtom` /
-  `usePersisted`, versioned `orca.ui.<name>.v1` keys, a safe parse that falls back to the default,
-  and a restored repo/instance the config no longer has reads as "all"; reuse it for new UI state,
-  with `perRepo` names for per-repo values); a one-shot `migrateLocalEnrichment`
+  sidebar collapse and palette recents, like the Agents list's view, density, sort and filters, go
+  through `lib/persisted.ts` — `persistedAtom` / `usePersisted`, versioned `orca.ui.v1.<name>` keys
+  (`persistedKey(name, repo)` for a per-repo value), a safe parse that falls back to the default, and
+  a restored repo/instance the config no longer has reads as "all" (`validChoice`); reuse it for new
+  UI state); a one-shot `migrateLocalEnrichment`
   hands any pre-DB blob (transcripts included) to the bridge on first load.
 - **GitHub = the `gh` CLI; Slack = a direct `chat.postMessage`** from your identity using a user token
   (`SLACK_TOKEN`) — the ONE Slack path for every provider: deterministic, verbatim, instant, no model,
@@ -530,6 +531,11 @@ needs no second timer; a failed write is logged and swallowed. `GET /api/health/
 (24 by default, at most 720) is database-only and its `instance` is a filter, never a forward, so
 either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
 CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300 points.
+**On darwin, memory used comes from `vm_stat`** (active + wired + occupied-by-compressor pages,
+Activity Monitor's own formula), not `totalmem() − freemem()` — macOS's `freemem()` is only the
+truly-free page count and reads near-100% on every healthy Mac; `sysctl -n kern.memorystatus_level`
+rides along as `memPressurePct`/`memPressure` (linux keeps `totalmem() − freemem()`, which already
+tracks `/proc/meminfo`'s `MemAvailable`).
 **Conversation loading with a remote database:** `/api/turns` attaches steps to the newest
 `STEPS_FOR_TURNS` (40) turns in ONE query (`db.stepsForRuns`); older turns fetch theirs on unfold
 (`/api/turns/steps` from seq 0). One query per turn over a 6ms link made a 300-turn conversation

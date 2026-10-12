@@ -1,81 +1,63 @@
-// Persisted per-browser UI state — the ONE helper for it. Keys are versioned under `orca.ui.`
-// (`orca.ui.<name>.v<version>`), so a change of shape bumps the version instead of misreading an old
-// value. A read never throws: bad JSON, a value of the wrong type (or one `valid` rejects), a
-// private window — all fall back to the default. A value that is per-repo goes under a per-repo
-// name (`perRepo`). A jotai atom, so a key, a button and the palette that touch
-// the same state share one atom (and other tabs see the change through the `storage` event).
-import { atom, useAtom, type WritableAtom } from "jotai";
+// Per-browser UI state in localStorage, in one place: versioned keys under `orca.ui.v1.`, a JSON
+// read that falls back to the default on anything missing, unparsable or the wrong shape, and a
+// write that never throws (a private window, a full bucket). Bump PERSISTED_VERSION when a stored
+// shape changes incompatibly — old values are then simply not read. A value that only makes sense
+// for one repo (the Agents filters) takes a per-repo key.
+import { useCallback, useState } from "react";
+import { atomWithStorage } from "jotai/utils";
 
-export const UI_PREFIX = "orca.ui.";
-export const uiKey = (name: string, version = 1) => `${UI_PREFIX}${name}.v${version}`;
-/** A per-repo name for a value that only means something in one repo. */
-export const perRepo = (name: string, repo: string) => `${name}:${repo}`;
+export const PERSISTED_VERSION = 1;
+const PREFIX = `orca.ui.v${PERSISTED_VERSION}.`;
 
-type Opts<T> = { version?: number; valid?: (v: unknown) => v is T; legacyKey?: string };
+/** `orca.ui.v1.<name>`, or `orca.ui.v1.<name>:<repo>` for a repo-specific value. */
+export const persistedKey = (name: string, repo?: string): string => `${PREFIX}${name}${repo ? `:${repo}` : ""}`;
 
-// Same JSON type as the default (an array for an array) — the cheap guard that keeps a hand-edited
-// or stale value from reaching a component that expects, say, a string.
-const sameType = (v: unknown, d: unknown) => Array.isArray(d) ? Array.isArray(v) : v !== null && typeof v === typeof d;
-
-const parse = (raw: string | null): { ok: boolean; value?: unknown } => {
-  if (raw === null) return { ok: false };
-  try { return { ok: true, value: JSON.parse(raw) }; } catch { return { ok: false }; }
-};
-
-/** The stored value at `key`, or `fallback` when it is absent, unparsable or the wrong shape.
- *  `legacyKey` is read once when the versioned key has nothing yet (the pre-`orca.ui.` keys). */
-export function readPersisted<T>(key: string, fallback: T, opts: Omit<Opts<T>, "version"> = {}): T {
-  const ok = (v: unknown): v is T => sameType(v, fallback) && (!opts.valid || opts.valid(v));
-  try {
-    const cur = parse(localStorage.getItem(key));
-    if (cur.ok) return ok(cur.value) ? cur.value : fallback;
-    if (opts.legacyKey) {
-      const old = parse(localStorage.getItem(opts.legacyKey));
-      if (old.ok && ok(old.value)) return old.value;
-    }
-  } catch { /* storage unavailable */ }
-  return fallback;
+/** The stored value, or `fallback` when absent, unparsable, or rejected by `valid`. `legacyKey` is an
+ *  older unversioned key read once when the new one is absent, so a saved choice survives the rename. */
+export function readPersisted<T>(key: string, fallback: T, valid?: (v: unknown) => v is T, legacyKey?: string): T {
+  const parse = (k: string): { ok: true; v: T } | { ok: false } => {
+    try {
+      const raw = localStorage.getItem(k);
+      if (raw === null) return { ok: false };
+      const v: unknown = JSON.parse(raw);
+      return valid && !valid(v) ? { ok: false } : { ok: true, v: v as T };
+    } catch { return { ok: false }; }
+  };
+  const got = parse(key);
+  if (got.ok) return got.v;
+  const old = legacyKey ? parse(legacyKey) : { ok: false as const };
+  return old.ok ? old.v : fallback;
 }
 
 export function writePersisted<T>(key: string, value: T): void {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* private window / full */ }
 }
 
-export type PersistedAtom<T> = WritableAtom<T, [T | ((prev: T) => T)], void>;
-
-/** A jotai atom persisted under `uiKey(name, version)`. It reads localStorage on first use in a store
- *  (a page load), writes through on every set, and follows other tabs' writes while mounted. */
-export function persistedAtom<T>(name: string, fallback: T, opts: Opts<T> = {}): PersistedAtom<T> {
-  const key = uiKey(name, opts.version);
-  const read = () => readPersisted(key, fallback, opts);
-  const set = atom<{ v: T } | null>(null); // null until this store sets it: the stored value stands
-  set.onMount = (setSet) => {
-    const on = (e: StorageEvent) => { if (e.key === key) setSet({ v: read() }); };
-    window.addEventListener("storage", on);
-    return () => window.removeEventListener("storage", on);
-  };
-  const a: PersistedAtom<T> = atom(
-    (get) => { const s = get(set); return s ? s.v : read(); },
-    (get, put, update: T | ((prev: T) => T)) => {
-      const v = typeof update === "function" ? (update as (prev: T) => T)(get(a)) : update;
-      put(set, { v });
-      writePersisted(key, v);
-    },
-  );
-  return a;
+/** useState backed by localStorage. Changing `key` (e.g. the repo scope) reads that key's value. */
+export function usePersisted<T>(key: string, fallback: T, valid?: (v: unknown) => v is T): [T, (v: T) => void] {
+  const [state, setState] = useState(() => ({ key, value: readPersisted(key, fallback, valid) }));
+  const value = state.key === key ? state.value : readPersisted(key, fallback, valid);
+  const set = useCallback((v: T) => { writePersisted(key, v); setState({ key, value: v }); }, [key]);
+  return [value, set];
 }
 
-// One atom per key, so every `usePersisted` of a key shares its state.
-const atoms = new Map<string, PersistedAtom<unknown>>();
-/** `useState`, persisted: `const [v, setV] = usePersisted("thing", default)`. */
-export function usePersisted<T>(name: string, fallback: T, opts: Opts<T> = {}) {
-  const key = uiKey(name, opts.version);
-  let a = atoms.get(key) as PersistedAtom<T> | undefined;
-  if (!a) { a = persistedAtom(name, fallback, opts); atoms.set(key, a as PersistedAtom<unknown>); }
-  return useAtom(a);
+/** The same storage for a jotai atom shared across components (the view toggle, density). */
+export function persistedAtom<T>(name: string, fallback: T, valid?: (v: unknown) => v is T, legacyKey?: string) {
+  return atomWithStorage<T>(persistedKey(name), fallback, {
+    getItem: (key, init) => readPersisted(key, init, valid, legacyKey),
+    setItem: (key, v) => writePersisted(key, v),
+    removeItem: (key) => { try { localStorage.removeItem(key); } catch { /* ignore */ } },
+  }, { getOnInit: true });
 }
+
+/** A guard for a value that must be one of a fixed set of strings. */
+export const oneOf = <T extends string>(...values: readonly T[]) => (v: unknown): v is T => typeof v === "string" && (values as readonly string[]).includes(v);
 
 /** A restored choice that no longer exists (a repo dropped from the config, an instance retired)
  *  reads as the default. */
 export const validChoice = (value: string, choices: readonly string[], fallback: string): string =>
   value === fallback || choices.includes(value) ? value : fallback;
+
+export const isString = (v: unknown): v is string => typeof v === "string";
+export const isBoolean = (v: unknown): v is boolean => typeof v === "boolean";
+export const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every(isString);

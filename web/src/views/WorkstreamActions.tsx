@@ -29,8 +29,11 @@ const followUpDraftKey = (row: Row) => `orca.followup.${row.repo}::${row.branch}
 // `menuOnly` is the Agents list's trailing ⋯: no toolbar, Follow up and Merge move INTO the menu, so
 // every verb is still one click away. `onFollowUp` replaces the inline composer there (the agent's
 // page has the conversation); without it the menu's Follow up opens the composer as the button does.
-export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false, leading, menuOnly = false, onFollowUp }: {
+// `contextAt` (menuOnly) opens the SAME items as a right-click menu at that point — a second,
+// controlled root over the one items fragment, so the two menus can't drift; `onOpen` adds Open.
+export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false, leading, menuOnly = false, onFollowUp, onOpen, contextAt, onContextClose }: {
   row: Row; hasWork?: boolean; onBusy?: (busy: boolean) => void; compact?: boolean; leading?: ReactNode; menuOnly?: boolean; onFollowUp?: () => void;
+  onOpen?: () => void; contextAt?: { x: number; y: number } | null; onContextClose?: () => void;
 }) {
   // Reopen the follow-up box on reload if a draft was left in progress, so nothing typed is lost.
   const [composing, setComposing] = useState(() => hasDraft(followUpDraftKey(row)));
@@ -76,6 +79,9 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
     if (!row.prUrl) return;
     try { await navigator.clipboard.writeText(row.prUrl); } catch { window.prompt("Copy the PR link:", row.prUrl); }
   };
+  const copyBranch = async () => {
+    try { await navigator.clipboard.writeText(row.branch); } catch { window.prompt("Copy the branch:", row.branch); }
+  };
   const prActions = prMenuActions(row);
   const mergeConfirm = isPr
     ? `Merge PR #${row.prNumber} "${row.title}" into ${baseBranch(row.repo)}? This can't be undone.`
@@ -86,6 +92,109 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   const icon = compact ? "icon" : "sm";
   const iconClass = compact ? "size-7" : undefined;
   const mergeLabel = `Merge${unreviewed ? " (unreviewed)" : ""}`;
+  const items = (
+    <>
+      {menuOnly && (
+        <>
+          {onOpen && <DropdownMenuItem onSelect={onOpen}>Open</DropdownMenuItem>}
+          {row.prUrl && <DropdownMenuItem onSelect={() => window.open(row.prUrl, "_blank", "noreferrer")}>Open PR #{row.prNumber}</DropdownMenuItem>}
+          <DropdownMenuItem onSelect={run(copyBranch)}>Copy branch</DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem disabled={submitting} onSelect={() => (onFollowUp ? onFollowUp() : setComposing(true))}>Follow up…</DropdownMenuItem>
+          {row.lane === "MERGEABLE" && <DropdownMenuItem onSelect={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }}>{mergeLabel}</DropdownMenuItem>}
+          <DropdownMenuSeparator />
+        </>
+      )}
+      {/* Follow: put the card on autopilot — Orca watches the PR and fires the agent to resolve
+          conflicts / fix CI / address review comments as they appear. */}
+      {isPr && (
+        <>
+          <DropdownMenuCheckboxItem checked={Boolean(row.following)} onCheckedChange={() => toggleFollow(row)} onSelect={(e) => e.preventDefault()}
+            title="Autopilot: every ~8s Orca checks this PR and launches the agent to resolve conflicts, fix failing CI, and address new review comments as they land — no click needed.">
+            Follow PR (auto-fix)
+          </DropdownMenuCheckboxItem>
+          <DropdownMenuSeparator />
+        </>
+      )}
+      {/* Lifecycle: promote a local branch, or merge from a lane where Merge isn't already a header button */}
+      {isLocalLane && (row.hasRemote
+        ? <PromoteSubmenu row={row} disabled={!hasWork} run={run} />
+        : <DropdownMenuItem disabled={!hasWork} onSelect={run(() => promote(row))}>Promote</DropdownMenuItem>)}
+      {canMergeNow && row.lane !== "MERGEABLE" && (
+        <DropdownMenuItem onSelect={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }}>
+          Merge{unreviewed ? " (unreviewed)" : ""}
+        </DropdownMenuItem>
+      )}
+      {/* Rename — fix a broken/auto title. AI suggests a name (editable); a PR renames on GitHub. */}
+      <DropdownMenuItem onSelect={() => setRenaming(true)}>Rename…</DropdownMenuItem>
+      {/* Move the worktree to another instance (verbs.moveWorkstream). Not while its agent runs. */}
+      {row.worktreePath && instanceChoices().filter((i) => i !== (row.instance ?? thisInstance())).map((to) => (
+        <DropdownMenuItem key={to} disabled={row.agentStatus === "running"} onSelect={run(() => moveWorkstream(row, to))} title={row.agentStatus === "running" ? "Wait for the agent to finish first" : `Push the branch and re-open its worktree on ${to}; the next run starts a fresh session there`}>
+          Move to {to}
+        </DropdownMenuItem>
+      ))}
+
+      {/* PR — every action that needs an open PR, in one place (workstream.prMenuActions) */}
+      {isPr && (
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>PR</DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            {prActions.includes("markReady") && <DropdownMenuItem onSelect={run(() => markReady(row))}>Mark ready for review</DropdownMenuItem>}
+            {prActions.includes("moveToDraft") && <DropdownMenuItem onSelect={run(() => convertToDraft(row))}>Move to draft</DropdownMenuItem>}
+            {prActions.includes("autoMerge") && (row.autoMergeEnabled
+              ? <DropdownMenuItem onSelect={run(() => disableAutoMerge(row))}>Disable auto-merge</DropdownMenuItem>
+              : <DropdownMenuItem onSelect={run(() => autoMerge(row))}>Enable auto-merge</DropdownMenuItem>)}
+            {/* One agent verb: conflicts, CI and review in a single run (store.addressPr). */}
+            {prActions.includes("addressPr") && <DropdownMenuItem onSelect={run(() => addressPr(row))} title="One run that resolves conflicts, fixes CI and addresses review threads/comments — whichever apply">Address PR</DropdownMenuItem>}
+            {prActions.includes("addPreview") && <DropdownMenuItem onSelect={run(() => addPreviewLabel(row))}>Add preview</DropdownMenuItem>}
+            {prActions.includes("copyLink") && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={run(copyLink)}>Copy link</DropdownMenuItem></>}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+      )}
+
+      <DropdownMenuSeparator />
+
+      {/* Agent — provider-neutral work; resolve conflicts lives here only for a local branch (no PR) */}
+      <DropdownMenuSub>
+        <DropdownMenuSubTrigger>Agent</DropdownMenuSubTrigger>
+        <DropdownMenuSubContent>
+          {!isPr && conflicting && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
+          {/* Local only — see the card's copy menu. */}
+          {!row.remote && <DropdownMenuItem onSelect={run(copyCli)}>Copy CLI</DropdownMenuItem>}
+          <DropdownMenuItem onSelect={run(copyWorktree)}>Copy worktree</DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+
+      {/* Slack — only meaningful once there's a PR to link */}
+      {isPr && (
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>Slack</DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuItem onSelect={run(() => sendSlack(row, "notify"))}>Send message{notified ? " again" : ""}</DropdownMenuItem>
+            <DropdownMenuItem disabled={!notified} onSelect={run(() => sendSlack(row, "bump"))}>Send bump{bumpDue ? " (due)" : ""}</DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+      )}
+
+      {/* Close/Discard — Close PR abandons an open PR (+cleanup); Discard only for pre-PR locals */}
+      <DropdownMenuSeparator />
+      {isPr ? (
+        <DropdownMenuItem
+          className="text-destructive focus:text-destructive"
+          onSelect={() => { if (window.confirm(`Close PR #${row.prNumber} "${row.title}" without merging? Removes the worktree and local branch.`)) run(() => closePr(row))(); }}
+        >
+          Close PR
+        </DropdownMenuItem>
+      ) : (
+        <DropdownMenuItem
+          className="text-destructive focus:text-destructive"
+          onSelect={() => { if (window.confirm(`Discard "${row.title}" (${row.branch})? Removes the worktree and branch.`)) void discardDraft(row); }}
+        >
+          Discard
+        </DropdownMenuItem>
+      )}
+    </>
+  );
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -107,103 +216,22 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align={menuOnly ? "end" : "start"} className="min-w-[12rem]">
-            {menuOnly && (
-              <>
-                <DropdownMenuItem disabled={submitting} onSelect={() => (onFollowUp ? onFollowUp() : setComposing(true))}>Follow up…</DropdownMenuItem>
-                {row.lane === "MERGEABLE" && <DropdownMenuItem onSelect={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }}>{mergeLabel}</DropdownMenuItem>}
-                <DropdownMenuSeparator />
-              </>
-            )}
-            {/* Follow: put the card on autopilot — Orca watches the PR and fires the agent to resolve
-                conflicts / fix CI / address review comments as they appear. */}
-            {isPr && (
-              <>
-                <DropdownMenuCheckboxItem checked={Boolean(row.following)} onCheckedChange={() => toggleFollow(row)} onSelect={(e) => e.preventDefault()}
-                  title="Autopilot: every ~8s Orca checks this PR and launches the agent to resolve conflicts, fix failing CI, and address new review comments as they land — no click needed.">
-                  Follow PR (auto-fix)
-                </DropdownMenuCheckboxItem>
-                <DropdownMenuSeparator />
-              </>
-            )}
-            {/* Lifecycle: promote a local branch, or merge from a lane where Merge isn't already a header button */}
-            {isLocalLane && (row.hasRemote
-              ? <PromoteSubmenu row={row} disabled={!hasWork} run={run} />
-              : <DropdownMenuItem disabled={!hasWork} onSelect={run(() => promote(row))}>Promote</DropdownMenuItem>)}
-            {canMergeNow && row.lane !== "MERGEABLE" && (
-              <DropdownMenuItem onSelect={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }}>
-                Merge{unreviewed ? " (unreviewed)" : ""}
-              </DropdownMenuItem>
-            )}
-            {/* Rename — fix a broken/auto title. AI suggests a name (editable); a PR renames on GitHub. */}
-            <DropdownMenuItem onSelect={() => setRenaming(true)}>Rename…</DropdownMenuItem>
-            {/* Move the worktree to another instance (verbs.moveWorkstream). Not while its agent runs. */}
-            {row.worktreePath && instanceChoices().filter((i) => i !== (row.instance ?? thisInstance())).map((to) => (
-              <DropdownMenuItem key={to} disabled={row.agentStatus === "running"} onSelect={run(() => moveWorkstream(row, to))} title={row.agentStatus === "running" ? "Wait for the agent to finish first" : `Push the branch and re-open its worktree on ${to}; the next run starts a fresh session there`}>
-                Move to {to}
-              </DropdownMenuItem>
-            ))}
-
-            {/* PR — every action that needs an open PR, in one place (workstream.prMenuActions) */}
-            {isPr && (
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>PR</DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>
-                  {prActions.includes("markReady") && <DropdownMenuItem onSelect={run(() => markReady(row))}>Mark ready for review</DropdownMenuItem>}
-                  {prActions.includes("moveToDraft") && <DropdownMenuItem onSelect={run(() => convertToDraft(row))}>Move to draft</DropdownMenuItem>}
-                  {prActions.includes("autoMerge") && (row.autoMergeEnabled
-                    ? <DropdownMenuItem onSelect={run(() => disableAutoMerge(row))}>Disable auto-merge</DropdownMenuItem>
-                    : <DropdownMenuItem onSelect={run(() => autoMerge(row))}>Enable auto-merge</DropdownMenuItem>)}
-                  {/* One agent verb: conflicts, CI and review in a single run (store.addressPr). */}
-                  {prActions.includes("addressPr") && <DropdownMenuItem onSelect={run(() => addressPr(row))} title="One run that resolves conflicts, fixes CI and addresses review threads/comments — whichever apply">Address PR</DropdownMenuItem>}
-                  {prActions.includes("addPreview") && <DropdownMenuItem onSelect={run(() => addPreviewLabel(row))}>Add preview</DropdownMenuItem>}
-                  {prActions.includes("copyLink") && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={run(copyLink)}>Copy link</DropdownMenuItem></>}
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-            )}
-
-            <DropdownMenuSeparator />
-
-            {/* Agent — provider-neutral work; resolve conflicts lives here only for a local branch (no PR) */}
-            <DropdownMenuSub>
-              <DropdownMenuSubTrigger>Agent</DropdownMenuSubTrigger>
-              <DropdownMenuSubContent>
-                {!isPr && conflicting && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
-                {/* Local only — see the card's copy menu. */}
-                {!row.remote && <DropdownMenuItem onSelect={run(copyCli)}>Copy CLI</DropdownMenuItem>}
-                <DropdownMenuItem onSelect={run(copyWorktree)}>Copy worktree</DropdownMenuItem>
-              </DropdownMenuSubContent>
-            </DropdownMenuSub>
-
-            {/* Slack — only meaningful once there's a PR to link */}
-            {isPr && (
-              <DropdownMenuSub>
-                <DropdownMenuSubTrigger>Slack</DropdownMenuSubTrigger>
-                <DropdownMenuSubContent>
-                  <DropdownMenuItem onSelect={run(() => sendSlack(row, "notify"))}>Send message{notified ? " again" : ""}</DropdownMenuItem>
-                  <DropdownMenuItem disabled={!notified} onSelect={run(() => sendSlack(row, "bump"))}>Send bump{bumpDue ? " (due)" : ""}</DropdownMenuItem>
-                </DropdownMenuSubContent>
-              </DropdownMenuSub>
-            )}
-
-            {/* Close/Discard — Close PR abandons an open PR (+cleanup); Discard only for pre-PR locals */}
-            <DropdownMenuSeparator />
-            {isPr ? (
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onSelect={() => { if (window.confirm(`Close PR #${row.prNumber} "${row.title}" without merging? Removes the worktree and local branch.`)) run(() => closePr(row))(); }}
-              >
-                Close PR
-              </DropdownMenuItem>
-            ) : (
-              <DropdownMenuItem
-                className="text-destructive focus:text-destructive"
-                onSelect={() => { if (window.confirm(`Discard "${row.title}" (${row.branch})? Removes the worktree and branch.`)) void discardDraft(row); }}
-              >
-                Discard
-              </DropdownMenuItem>
-            )}
+            {items}
           </DropdownMenuContent>
         </DropdownMenu>
+        {menuOnly && contextAt && (
+          // Right-click: the same items, anchored to a zero-size trigger at the pointer. Radix gives it
+          // the menu's keyboard handling (arrows, Enter, Esc) and closes it on an outside click.
+          <DropdownMenu key={`${contextAt.x},${contextAt.y}`} open onOpenChange={(o) => { if (!o) onContextClose?.(); }}>
+            <DropdownMenuTrigger asChild>
+              <span data-slot="context-anchor" aria-hidden="true" tabIndex={-1} style={{ position: "fixed", left: contextAt.x, top: contextAt.y, width: 0, height: 0 }} />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" sideOffset={0} data-slot="row-context-menu" aria-label={`Actions for ${row.title}`} className="min-w-[12rem]"
+              onCloseAutoFocus={(e) => e.preventDefault()}>
+              {items}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
       {err && <p className="text-destructive text-xs break-words">{err}</p>}
       <RenameDialog row={row} open={renaming} onClose={() => setRenaming(false)} />

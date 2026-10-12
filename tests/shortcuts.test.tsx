@@ -170,7 +170,7 @@ test("S1: C, O, ?, ⌘B and Esc work from the page — and never while typing in
   // ⌘B collapses the sidebar and the choice is remembered.
   await press(document.body, "b", MOD);
   expect(q('[data-slot="sidebar"]')!.getAttribute("data-collapsed")).toBe("true");
-  expect(localStorage.getItem("orca.ui.sidebarCollapsed.v1")).toBe("true");
+  expect(localStorage.getItem("orca.ui.v1.sidebarCollapsed")).toBe("true");
   await press(document.body, "b", MOD);
   expect(q('[data-slot="sidebar"]')!.getAttribute("data-collapsed")).toBe("false");
 

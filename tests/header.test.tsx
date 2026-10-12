@@ -89,7 +89,7 @@ describe("console shell", () => {
     // The Overview now shows that machine's card only.
     expect(container!.querySelector('[data-slot="instance-cloud"]')).not.toBeNull();
     expect(container!.querySelector('[data-slot="instance-laptop"]')).toBeNull();
-    expect(localStorage.getItem("orca.ui.instanceScope.v1")).toBe('"cloud"');
+    expect(localStorage.getItem("orca.ui.v1.instanceScope")).toBe('"cloud"');
   });
 
   test("Find: typing filters the Agents list (going there), and 'F' focuses it from anywhere", async () => {
@@ -131,7 +131,7 @@ describe("console shell", () => {
     await mount();
     await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
     expect(container!.querySelector('[data-slot="sidebar"]')!.getAttribute("data-collapsed")).toBe("true");
-    expect(localStorage.getItem("orca.ui.sidebarCollapsed.v1")).toBe("true");
+    expect(localStorage.getItem("orca.ui.v1.sidebarCollapsed")).toBe("true");
     act(() => root?.unmount());
     container?.remove();
     await mount();
@@ -145,7 +145,7 @@ describe("console shell", () => {
     await click(btnByText("Board")!);
     expect(gridEl()).not.toBeNull(); // the swimlanes
     expect(container!.querySelector('[data-slot="workstream-list"]')).toBeNull();
-    expect(localStorage.getItem("orca.boardView")).toBe('"board"');
+    expect(localStorage.getItem("orca.ui.v1.agents.view")).toBe('"board"');
     // A fresh mount (a reload) keeps the choice.
     act(() => root?.unmount());
     container?.remove();
@@ -153,7 +153,7 @@ describe("console shell", () => {
     expect(btnByText("Board")!.getAttribute("aria-pressed")).toBe("true");
     expect(gridEl()).not.toBeNull();
     await click(btnByText("List")!);
-    expect(localStorage.getItem("orca.boardView")).toBe('"list"');
+    expect(localStorage.getItem("orca.ui.v1.agents.view")).toBe('"list"');
     expect(gridEl()).toBeNull();
   });
 
@@ -167,6 +167,6 @@ describe("console shell", () => {
     expect(toggle.getAttribute("aria-pressed")).toBe("false"); // comfortable by default
     await act(async () => { toggle.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
-    expect(localStorage.getItem("orca.density")).toBe('"dense"');
+    expect(localStorage.getItem("orca.ui.v1.density")).toBe('"dense"');
   });
 });

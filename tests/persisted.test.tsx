@@ -1,8 +1,9 @@
 // E2E for persisted shell state (lib/persisted): the top bar's repo, the sidebar's instance scope and
 // collapse, and the palette's recent items survive a reload under versioned `orca.ui.` keys; bad JSON
 // or a wrong-typed value falls back to the default; a restored repo or instance that the config no
-// longer has goes back to "all" once the config lands. A "reload" is a fresh jotai store — the atoms
-// read localStorage on first use, exactly as on page load.
+// longer has goes back to "all" once the config lands. A "reload" is a fresh jotai store with the
+// atoms mounted — mounting reads localStorage, exactly as on page load. (The helper's own key format
+// and usePersisted are covered by tests/persistedState.test.tsx.)
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -11,12 +12,14 @@ import { createStore, getDefaultStore } from "jotai";
 import * as store from "@/store";
 import { App } from "@/App";
 import { instanceScopeAtom, paletteRecentAtom, repoFilterAtom, sidebarCollapsedAtom } from "@/lib/atoms";
-import { perRepo, persistedAtom, readPersisted, uiKey, usePersisted } from "@/lib/persisted";
+import { persistedKey, validChoice } from "@/lib/persisted";
 import { navigate } from "@/lib/route";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 beforeAll(() => store.configReady);
+const SHELL = [repoFilterAtom, instanceScopeAtom, sidebarCollapsedAtom, paletteRecentAtom] as const;
+const reload = () => { const s = createStore(); for (const a of SHELL) s.sub(a, () => {}); return s; };
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 let root: Root | undefined;
@@ -40,43 +43,39 @@ afterEach(async () => {
   await act(async () => navigate("/"));
 });
 
-describe("persisted UI state", () => {
-  test("keys are versioned under orca.ui.; per-repo names carry the repo", () => {
-    expect(uiKey("repoFilter")).toBe("orca.ui.repoFilter.v1");
-    expect(uiKey("x", 2)).toBe("orca.ui.x.v2");
-    expect(uiKey(perRepo("view", "r"))).toBe("orca.ui.view:r.v1");
+describe("persisted shell state", () => {
+  test("default when absent", () => {
+    const s = reload();
+    expect(s.get(repoFilterAtom)).toBe("all");
+    expect(s.get(instanceScopeAtom)).toBe("all");
+    expect(s.get(sidebarCollapsedAtom)).toBe(false);
+    expect(s.get(paletteRecentAtom)).toEqual([]);
   });
 
-  test("default when absent; bad JSON and a wrong-typed value fall back", () => {
-    expect(readPersisted(uiKey("t"), "all")).toBe("all");
-    localStorage.setItem(uiKey("t"), "{not json");
-    expect(readPersisted(uiKey("t"), "all")).toBe("all");
-    localStorage.setItem(uiKey("t"), "42");
-    expect(readPersisted(uiKey("t"), "all")).toBe("all");
-    localStorage.setItem(uiKey("t"), "null");
-    expect(readPersisted(uiKey("t"), false)).toBe(false);
-    localStorage.setItem(uiKey("t"), JSON.stringify("x"));
-    expect(readPersisted(uiKey("t"), [] as string[])).toEqual([]);
-    // Every shell atom, from a fresh load over junk: its default.
-    for (const name of ["repoFilter", "instanceScope", "sidebarCollapsed", "palette.recent"]) localStorage.setItem(uiKey(name), "}{");
-    const fresh = createStore();
-    expect(fresh.get(repoFilterAtom)).toBe("all");
-    expect(fresh.get(instanceScopeAtom)).toBe("all");
-    expect(fresh.get(sidebarCollapsedAtom)).toBe(false);
-    expect(fresh.get(paletteRecentAtom)).toEqual([]);
-    // A recent list holding a non-string is rejected whole.
-    localStorage.setItem(uiKey("palette.recent"), JSON.stringify(["page:/", 3]));
-    expect(createStore().get(paletteRecentAtom)).toEqual([]);
+  test("bad JSON or a wrong-typed value falls back to the default", () => {
+    for (const name of ["repoFilter", "instanceScope", "sidebarCollapsed", "palette.recent"]) localStorage.setItem(persistedKey(name), "}{");
+    let s = reload();
+    expect(s.get(repoFilterAtom)).toBe("all");
+    expect(s.get(instanceScopeAtom)).toBe("all");
+    expect(s.get(sidebarCollapsedAtom)).toBe(false);
+    expect(s.get(paletteRecentAtom)).toEqual([]);
+    localStorage.setItem(persistedKey("repoFilter"), "42");
+    localStorage.setItem(persistedKey("sidebarCollapsed"), JSON.stringify("yes"));
+    localStorage.setItem(persistedKey("palette.recent"), JSON.stringify(["page:/", 3])); // rejected whole
+    s = reload();
+    expect(s.get(repoFilterAtom)).toBe("all");
+    expect(s.get(sidebarCollapsedAtom)).toBe(false);
+    expect(s.get(paletteRecentAtom)).toEqual([]);
   });
 
-  test("the four shell values restore on reload", () => {
-    const before = createStore();
+  test("the four shell values restore on reload, under orca.ui.v1. keys", () => {
+    const before = reload();
     before.set(repoFilterAtom, "r");
     before.set(instanceScopeAtom, "cloud");
     before.set(sidebarCollapsedAtom, true);
     before.set(paletteRecentAtom, ["page:/usage", "action:new"]);
-    expect(localStorage.getItem(uiKey("sidebarCollapsed"))).toBe("true");
-    const after = createStore(); // the reload
+    expect(localStorage.getItem("orca.ui.v1.sidebarCollapsed")).toBe("true");
+    const after = reload();
     expect(after.get(repoFilterAtom)).toBe("r");
     expect(after.get(instanceScopeAtom)).toBe("cloud");
     expect(after.get(sidebarCollapsedAtom)).toBe(true);
@@ -86,24 +85,15 @@ describe("persisted UI state", () => {
   test("a value saved under the pre-orca.ui. key is carried over", () => {
     localStorage.setItem("orca.sidebarCollapsed", "true");
     localStorage.setItem("orca.palette.recent", JSON.stringify(["action:help"]));
-    const s = createStore();
+    const s = reload();
     expect(s.get(sidebarCollapsedAtom)).toBe(true);
     expect(s.get(paletteRecentAtom)).toEqual(["action:help"]);
   });
 
-  test("usePersisted is a shared, persisted useState", async () => {
-    function Count({ id }: { id: string }) {
-      const [n, setN] = usePersisted("test.count", 0);
-      return <button type="button" data-id={id} onClick={() => setN(n + 1)}>{n}</button>;
-    }
-    localStorage.setItem(uiKey("test.count"), "4");
-    await render(<><Count id="a" /><Count id="b" /></>);
-    const btn = (id: string) => container!.querySelector<HTMLButtonElement>(`[data-id="${id}"]`)!;
-    expect(btn("a").textContent).toBe("4");
-    await act(async () => { btn("a").click(); await flush(); });
-    expect(btn("b").textContent).toBe("5");
-    expect(localStorage.getItem(uiKey("test.count"))).toBe("5");
-    expect(createStore().get(persistedAtom("test.count", 0))).toBe(5);
+  test("validChoice keeps a live choice and the default, and drops a gone one", () => {
+    expect(validChoice("r", ["r", "web"], "all")).toBe("r");
+    expect(validChoice("all", [], "all")).toBe("all");
+    expect(validChoice("gone", ["r"], "all")).toBe("all");
   });
 
   test("a restored repo or instance that no longer exists falls back to all; a live one is kept", async () => {
@@ -113,7 +103,7 @@ describe("persisted UI state", () => {
     await render(<App />);
     expect(s.get(repoFilterAtom)).toBe("all");
     expect(s.get(instanceScopeAtom)).toBe("all");
-    expect(localStorage.getItem(uiKey("repoFilter"))).toBe(JSON.stringify("all"));
+    expect(localStorage.getItem(persistedKey("repoFilter"))).toBe(JSON.stringify("all"));
     act(() => root?.unmount());
     container?.remove();
     s.set(repoFilterAtom, "r");
