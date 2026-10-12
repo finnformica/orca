@@ -400,12 +400,23 @@ removed, the target adopts the branch over HTTP (with an explicit `instance`, si
 still lists it here until the next publish), and the session pointer is cleared — the provider's
 session file is on the old host's disk, so the next run there takes the portable-transcript rung.
 Turns and enrichment are in the shared database and need no moving. Not while its agent runs.
-**A preview on the other instance opens as `localhost` here** (`server/forward.ts`): when a
-preview status is relayed from its owner, the relaying bridge forwards the opened service's port on
-loopback and returns `http://localhost:<port>` — the app needs a secure context (`crypto.randomUUID`
-is undefined on a plain-http tailnet name; the page was blank), and the tailnet has no HTTPS certs.
-Plain TCP, so Vite's HMR websocket rides it; dropped on stop; a port a local preview holds is left
-on the owner's URL. The other services keep the owner's URL (an http page may call another http origin).
+**Preview state lives on the server; a browser is a view of it.** The bridge that starts a
+preview records where in the branch's enrichment (`previewInstance: {instance, key, startedAt}`,
+`verbs.startPreview`); the stop route clears it (`db.clearPreviewPlacement`, by key). The card keys
+its preview by that record (`store.previewKeyOf` — the key is a path on the OWNER, e.g. the box's
+own checkout after "Test on cloud") and sends status/stop there, so a refreshed page or another
+device shows Starting/Open/Stop with no click. Each instance publishes its running previews to
+`preview_inventory` (migration 12; the 10s publish tick, and right after a start/stop), and
+`/api/previews` (database-only) answers its own live plus the others' published, hiding a machine
+silent for `PREVIEW_STALE_MS`. **URLs are per viewer:** a service carries `url`, the owner's address
+(`ORCA_PREVIEW_HOST`, else its `instances` host), and `localUrl` when the ANSWERING bridge has it on
+loopback — its own preview bound to 127.0.0.1, or a forward (`server/forward.ts`): when a preview
+status is relayed from its owner (or listed by a bridge that serves localhost), the opened service's
+port is forwarded on loopback here — the app needs a secure context (`crypto.randomUUID` is undefined
+on a plain-http tailnet name; the page was blank), and the tailnet has no HTTPS certs. Plain TCP, so
+Vite's HMR websocket rides it; dropped on stop; a port a local preview holds gets no `localUrl`. The
+browser opens `localUrl` only from a page on localhost (`previewHref`), else `url` — a phone opens the
+owner's tailnet URL, which still lacks a secure context until the tailnet has HTTPS certificates.
 **Slack posts from the instance you click on** (`/api/slack` is in the answer-here set): it needs no
 worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box it failed with no token.
 **Machine metrics history:** each instance samples ITSELF once a minute (`startMetricsSampler` in
