@@ -43,6 +43,9 @@ test("the card's Test button names the target and offers the other instance", as
   expect(main).toBeTruthy();
   // Radix opens menus on pointerdown, not click — drive it the way a pointer would.
   const menu = container!.querySelector<HTMLButtonElement>('button[aria-label="Test on…"]')!;
+  // The pair reads as one split button: inner corners squared, one shared border between them.
+  expect(main.className).toContain("rounded-r-none");
+  expect(menu.className).toContain("rounded-l-none");
   await act(async () => { menu.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })); await flush(); await flush(); });
   const cloud = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => /Test on cloud/.test(i.textContent ?? ""))!;
   expect(cloud).toBeTruthy();
