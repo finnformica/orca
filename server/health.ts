@@ -8,7 +8,7 @@ import * as db from "./db";
 export type Health = {
   instance: string; hostname: string; cores: number; cpuPct: number; load1: number; load5: number;
   memUsedGb: number; memTotalGb: number; disk?: { usedGb: number; totalGb: number }; uptimeS: number;
-  cost?: { monthUsd: number; hourlyUsd: number; sinceIso: string }; at: number;
+  cost?: { monthUsd: number; hourlyUsd: number; sinceIso: string; billingSince?: string }; at: number;
 };
 
 /** Month-to-date cost: hours since the later of the billing start and the first of the month, at
@@ -19,7 +19,11 @@ export function costEstimate(hourlyUsd: number, billingSince: string | undefined
   const d = new Date(now);
   const monthStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
   const from = Math.max(monthStart, Number.isFinite(since) ? since : 0);
-  return { monthUsd: Math.round(((now - from) / 3_600_000) * hourlyUsd * 100) / 100, hourlyUsd, sinceIso: new Date(from).toISOString() };
+  // `billingSince` unclamped, so a range spanning the 1st (the Spend card's 30 days) counts last month too.
+  return {
+    monthUsd: Math.round(((now - from) / 3_600_000) * hourlyUsd * 100) / 100, hourlyUsd, sinceIso: new Date(from).toISOString(),
+    ...(Number.isFinite(since) ? { billingSince: new Date(since).toISOString() } : {}),
+  };
 }
 
 export async function health(): Promise<Health> {

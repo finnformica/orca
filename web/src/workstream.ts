@@ -1512,7 +1512,7 @@ type Window = { utilization: number; resetsAt: string | null };
 type ClaudeReading = { fiveHour: Window; sevenDay: Window; fable?: Window | null; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
 type UsageReading = {
   claude: ClaudeReading | null;
-  codex: { windows: (Window & { label: string })[] } | null;
+  codex: { windows: (Window & { label: string; durationMinutes?: number | null })[] } | null;
   profiles?: LoginReading[];
   routing?: { hydra: boolean; shim: boolean };
 };
@@ -1768,3 +1768,173 @@ export function quickCount(rows: OverviewRow[], f: QuickFilter, group: QuickGrou
 }
 
 export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) => f[g].length > 0);
+
+// ---- insights: the Overview's spend / runs / forecast cards ----
+// Pure aggregation over the turn table's rows (db.insightRuns), served by /api/insights, plus the two
+// derivations the browser finishes with data it already polls (each machine's hourly rate, the usage
+// windows). Every money figure here is an ESTIMATE and the cards say so: a run's cost is the CLI's
+// own `total_cost_usd` (list-price API equivalent — a subscription login is not billed it), only
+// Claude reports one, and the box is an hourly rate times wall-clock hours.
+
+/** One run as the insight cards need it — no prompt, no response. */
+export type InsightRun = {
+  runId: string; repo: string; branch: string; title?: string; orchestrated: boolean; instance?: string;
+  provider: string; model?: string; status: "running" | "done" | "error" | "stopped"; check?: "passed" | "failed";
+  startedAt: number; finishedAt?: number; costUsd?: number; tokens?: number;
+};
+
+/** Who a run's spend belongs to: the orchestrator's own wakes, the workers it drives, or runs you
+ *  started yourself. A workstream counts as a worker once the orchestrator has touched it. */
+export type SpendCategory = "orchestrator" | "workers" | "direct";
+export const SPEND_CATEGORIES: { key: SpendCategory; label: string; basis: string }[] = [
+  { key: "orchestrator", label: "Orchestrator", basis: "the orchestrator's own wakes" },
+  { key: "workers", label: "Workers", basis: "runs on workstreams the orchestrator spawned or sent to" },
+  { key: "direct", label: "Your runs", basis: "runs you started from the board or a chat" },
+];
+export const runCategory = (r: Pick<InsightRun, "repo" | "orchestrated">): SpendCategory =>
+  r.repo === ORCHESTRATOR_REPO ? "orchestrator" : r.orchestrated ? "workers" : "direct";
+
+/** The range picker's choices. Today is hourly buckets from local midnight; the others daily. */
+export const INSIGHT_RANGES = [{ days: 1, label: "Today" }, { days: 7, label: "7d" }, { days: 30, label: "30d" }] as const;
+export const insightDays = (raw: string | null | undefined): number => (raw === "1" || raw === "7" ? Number(raw) : 30);
+
+const DAY_MS = 86_400_000;
+/** The range [from, to) and its buckets in the VIEWER's timezone (`tzOffsetMin` is the browser's
+ *  getTimezoneOffset): today = 24 hours from local midnight, else `days` days ending today. */
+export function insightWindow(days: number, now: number, tzOffsetMin = 0): { from: number; to: number; bucketMs: number; count: number } {
+  const shift = tzOffsetMin * 60_000;
+  const midnight = Math.floor((now - shift) / DAY_MS) * DAY_MS + shift;
+  return days <= 1
+    ? { from: midnight, to: midnight + DAY_MS, bucketMs: 3_600_000, count: 24 }
+    : { from: midnight - (days - 1) * DAY_MS, to: midnight + DAY_MS, bucketMs: DAY_MS, count: days };
+}
+
+export type InsightBucket = { at: number; runs: number; done: number; error: number; stopped: number; running: number; costUsd: number };
+/** One row of a breakdown: a model, a repo, a workstream. */
+export type InsightSlice = { key: string; label: string; sub?: string; costUsd: number; runs: number; tokens: number; runtimeMs: number };
+export type Insights = {
+  from: number; to: number; bucketMs: number; generatedAt: number;
+  buckets: InsightBucket[];
+  spend: Record<SpendCategory, number>;
+  runsBy: Record<SpendCategory, number>;
+  /** Runs with a reported cost, and without one (Codex, Cursor, a Claude run that died first). */
+  priced: number; unpriced: number;
+  runs: { total: number; done: number; error: number; stopped: number; running: number };
+  /** done / (done + error): a run you stopped is neither. Null with nothing finished. */
+  successRate: number | null;
+  /** Orca's verification gate over the runs that committed. */
+  checks: { passed: number; failed: number };
+  medianMs: number | null;
+  byModel: InsightSlice[]; byRepo: InsightSlice[]; topWorkstreams: InsightSlice[];
+};
+
+const median = (xs: number[]): number | null => {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b), m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m]! : (s[m - 1]! + s[m]!) / 2;
+};
+const cents = (v: number) => Math.round(v * 100) / 100;
+const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** Everything the insight cards show, over one range. `repo` / `instance` narrow it the way the top
+ *  bar and the sidebar narrow the rest of the Overview (a repo filter drops the orchestrator, whose
+ *  runs belong to no repo). */
+export function insights(all: InsightRun[], opts: { days: number; now: number; tzOffsetMin?: number; repo?: string; instance?: string }): Insights {
+  const w = insightWindow(opts.days, opts.now, opts.tzOffsetMin);
+  const runs = all.filter((r) => r.startedAt >= w.from && r.startedAt < w.to
+    && (!opts.repo || r.repo === opts.repo) && (!opts.instance || r.instance === opts.instance));
+  const buckets: InsightBucket[] = Array.from({ length: w.count }, (_, i) => ({ at: w.from + i * w.bucketMs, runs: 0, done: 0, error: 0, stopped: 0, running: 0, costUsd: 0 }));
+  const spend: Record<SpendCategory, number> = { orchestrator: 0, workers: 0, direct: 0 };
+  const runsBy: Record<SpendCategory, number> = { orchestrator: 0, workers: 0, direct: 0 };
+  const slices = { model: new Map<string, InsightSlice>(), repo: new Map<string, InsightSlice>(), ws: new Map<string, InsightSlice>() };
+  const add = (m: Map<string, InsightSlice>, key: string, label: string, sub: string | undefined, r: InsightRun, runtime: number) => {
+    const s = m.get(key) ?? { key, label, sub, costUsd: 0, runs: 0, tokens: 0, runtimeMs: 0 };
+    s.costUsd += r.costUsd ?? 0; s.runs++; s.tokens += r.tokens ?? 0; s.runtimeMs += runtime;
+    m.set(key, s);
+  };
+  const durations: number[] = [];
+  let priced = 0;
+  const checks = { passed: 0, failed: 0 };
+  for (const r of runs) {
+    const b = buckets[Math.min(w.count - 1, Math.floor((r.startedAt - w.from) / w.bucketMs))]!;
+    b.runs++; b[r.status]++; b.costUsd += r.costUsd ?? 0;
+    const cat = runCategory(r);
+    spend[cat] += r.costUsd ?? 0; runsBy[cat]++;
+    if (r.costUsd !== undefined) priced++;
+    if (r.check) checks[r.check]++;
+    const runtime = r.finishedAt ? Math.max(0, r.finishedAt - r.startedAt) : Math.max(0, opts.now - r.startedAt);
+    if (r.finishedAt && r.status !== "running") durations.push(runtime);
+    const model = r.model ?? (r.provider === "claude" ? "Claude · model not recorded" : capital(r.provider));
+    add(slices.model, model, model, undefined, r, runtime);
+    if (cat !== "orchestrator") add(slices.repo, r.repo, r.repo, undefined, r, runtime);
+    add(slices.ws, `${r.repo}::${r.branch}`, cat === "orchestrator" ? "Orchestrator" : r.title || r.branch, cat === "orchestrator" ? undefined : r.repo, r, runtime);
+  }
+  const rank = (m: Map<string, InsightSlice>) => [...m.values()]
+    .map((s) => ({ ...s, costUsd: cents(s.costUsd) }))
+    .sort((a, b) => b.costUsd - a.costUsd || b.runtimeMs - a.runtimeMs || a.label.localeCompare(b.label));
+  const count = (k: InsightRun["status"]) => runs.filter((r) => r.status === k).length;
+  const tally = { total: runs.length, done: count("done"), error: count("error"), stopped: count("stopped"), running: count("running") };
+  return {
+    from: w.from, to: w.to, bucketMs: w.bucketMs, generatedAt: opts.now,
+    buckets: buckets.map((b) => ({ ...b, costUsd: cents(b.costUsd) })),
+    spend: { orchestrator: cents(spend.orchestrator), workers: cents(spend.workers), direct: cents(spend.direct) },
+    runsBy, priced, unpriced: runs.length - priced, runs: tally,
+    successRate: tally.done + tally.error ? tally.done / (tally.done + tally.error) : null,
+    checks, medianMs: median(durations),
+    byModel: rank(slices.model), byRepo: rank(slices.repo), topWorkstreams: rank(slices.ws).slice(0, 5),
+  };
+}
+
+/** A machine's estimated cost over [from, to): its hourly rate times the hours it was billed in the
+ *  range (from its billing start, never the future). 0 without a rate. */
+export function boxSpend(cost: { hourlyUsd: number; billingSince?: string; sinceIso?: string } | undefined, from: number, to: number, now = Date.now()): number {
+  if (!cost || !(cost.hourlyUsd > 0)) return 0;
+  const since = Date.parse(cost.billingSince ?? "") || Date.parse(cost.sinceIso ?? "") || 0;
+  const hours = Math.max(0, Math.min(to, now) - Math.max(from, since)) / 3_600_000;
+  return cents(hours * cost.hourlyUsd);
+}
+
+/** "$12.40", "$0.31", "<$0.01" — two decimals, and a non-zero sliver never reads as nothing. */
+export const formatUsd = (v: number): string => (v > 0 && v < 0.005 ? "<$0.01" : `$${v.toFixed(2)}`);
+
+/** A usage window projected at its current burn rate. `state`: `reached` (at 100%), `will-hit`
+ *  (on pace to run out before it resets — `hitsInMs` says when), `ok` (on pace for `projectedPct`
+ *  at reset), `early` (too little of the window has passed to project honestly, or no reset time). */
+export type WindowForecast = {
+  key: string; label: string; pct: number; state: "reached" | "will-hit" | "ok" | "early";
+  projectedPct: number | null; hitsInMs: number | null; resetsInMs: number | null;
+};
+
+/** Linear: the average rate since the window opened, carried forward. Needs 10% of the window
+ *  elapsed — before that one busy hour reads as a runaway. */
+export function forecastWindow(key: string, label: string, w: { utilization: number; resetsAt: string | null }, windowMs: number, now: number): WindowForecast {
+  const reset = w.resetsAt ? Date.parse(w.resetsAt) : NaN;
+  const resetsInMs = Number.isFinite(reset) ? Math.max(0, reset - now) : null;
+  const base = { key, label, pct: w.utilization, resetsInMs };
+  if (w.utilization >= 100) return { ...base, state: "reached", projectedPct: 100, hitsInMs: 0 };
+  const elapsed = resetsInMs === null ? 0 : windowMs - resetsInMs;
+  if (resetsInMs === null || elapsed < windowMs * 0.1) return { ...base, state: "early", projectedPct: null, hitsInMs: null };
+  const rate = w.utilization / elapsed; // % per ms
+  const projectedPct = Math.round(w.utilization + rate * resetsInMs);
+  if (projectedPct < 100 || rate <= 0) return { ...base, state: "ok", projectedPct, hitsInMs: null };
+  return { ...base, state: "will-hit", projectedPct, hitsInMs: Math.round((100 - w.utilization) / rate) };
+}
+
+/** The forecast card's groups: Claude (the hydra fleet's mean, else the one login) and Codex. */
+export function limitForecasts(u: UsageReading | null, now = Date.now()): { key: string; title: string; subtitle?: string; rows: WindowForecast[] }[] {
+  if (!u) return [];
+  const out: { key: string; title: string; subtitle?: string; rows: WindowForecast[] }[] = [];
+  const fleet = u.profiles?.length ? aggregateProfiles(u.profiles) : null;
+  const claude = fleet ?? u.claude;
+  if (claude) {
+    const rows = [forecastWindow("claude:5h", "5-hour window", claude.fiveHour, 5 * 3_600_000, now), forecastWindow("claude:wk", "Weekly", claude.sevenDay, 7 * DAY_MS, now)];
+    if (claude.fable) rows.push(forecastWindow("claude:fable", "Fable weekly", claude.fable, 7 * DAY_MS, now));
+    out.push({ key: "claude", title: "Claude", subtitle: fleet ? `mean of ${fleet.count} login${fleet.count === 1 ? "" : "s"}` : undefined, rows });
+  }
+  const codex = (u.codex?.windows ?? []).flatMap((w, i) => {
+    const mins = w.durationMinutes ?? (w.label === "5h" ? 300 : w.label === "wk" ? 10_080 : null);
+    return mins ? [forecastWindow(`codex:${i}`, w.label === "wk" ? "Weekly" : w.label === "5h" ? "5-hour window" : w.label, w, mins * 60_000, now)] : [];
+  });
+  if (codex.length) out.push({ key: "codex", title: "Codex", rows: codex });
+  return out;
+}

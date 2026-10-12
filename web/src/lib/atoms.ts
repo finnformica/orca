@@ -32,3 +32,5 @@ export const instanceScopeAtom = atomWithStorage("orca.instanceScope", "all");
 export const agentQueryAtom = atom("");
 // The Overview's Usage card: just the fleet + Codex, or every hydra login too. Persisted.
 export const usageExpandedAtom = atomWithStorage("orca.usageExpanded", false);
+/** The Overview's Insights range in days (1 = today, 7, 30) — remembered. */
+export const insightRangeAtom = atomWithStorage<number>("orca.insightRange", 7);

@@ -24,7 +24,7 @@ import * as orchestrator from "./orchestrator";
 import { health, historyHours, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
-import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import { ORCHESTRATOR_REPO, insightDays, insightWindow, insights, type Insights, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 
@@ -201,6 +201,25 @@ const DATABASE_ONLY = new Set([
   "/api/previews",
 ]);
 
+/** /api/insights, cached briefly: every Overview tab polls it, and the answer moves no faster than
+ *  runs finish. Keyed by the whole query (range, timezone, filters). */
+const INSIGHTS_TTL_MS = 30_000;
+const insightsCache = new Map<string, { at: number; value: Promise<Insights> }>();
+function insightsFor(q: URLSearchParams): Promise<Insights> {
+  const days = insightDays(q.get("days"));
+  const tzOffsetMin = Number(q.get("tz")) || 0;
+  const repo = q.get("repo") || undefined, instance = q.get("on") || undefined;
+  const key = JSON.stringify([days, tzOffsetMin, repo, instance]);
+  const now = Date.now();
+  const hit = insightsCache.get(key);
+  if (hit && now - hit.at < INSIGHTS_TTL_MS) return hit.value;
+  for (const [k, v] of insightsCache) if (now - v.at >= INSIGHTS_TTL_MS) insightsCache.delete(k);
+  const value = db.insightRuns(insightWindow(days, now, tzOffsetMin).from).then((runs) => insights(runs, { days, now, tzOffsetMin, repo, instance }));
+  value.catch(() => insightsCache.delete(key)); // a failed read is retried next poll, not cached
+  insightsCache.set(key, { at: now, value });
+  return value;
+}
+
 // DATABASE_ONLY routes whose `?instance=` selects rows rather than a machine — never forwarded.
 const INSTANCE_IS_A_FILTER = new Set(["/api/health/history"]);
 
@@ -374,6 +393,13 @@ async function api(req: Request, url: URL): Promise<Response> {
     } catch (e) {
       return json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }
+  }
+  if (req.method === "GET" && p === "/api/insights") {
+    // The Overview's insight cards: spend by category / model / repo, runs and their outcomes, over
+    // Today / 7d / 30d in the viewer's timezone. Read from Postgres (any instance answers, for every
+    // instance's runs); `repo` and `on` narrow it like the Overview's switchers and are filters,
+    // never a placement — which is why this is handled before the repo resolution below.
+    return json(await insightsFor(url.searchParams));
   }
   // Every repo-scoped call names its repo (query for GET, body for POST); defaults to the first.
   // The orchestrator's conversation is recorded under a reserved repo name that is no git repo —

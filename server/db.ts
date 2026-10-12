@@ -27,6 +27,7 @@
 // reached over the tailnet) and never inside a worktree, so it can't leak into a diff or PR.
 import { hostname } from "os";
 import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck } from "../shared/agent";
+import type { InsightRun } from "../web/src/workstream";
 import * as bus from "./bus";
 
 export type TurnStatus = "running" | "done" | "error" | "stopped";
@@ -309,6 +310,24 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       );
     `,
   },
+  {
+    id: 13,
+    // What each run cost, for the Overview's insight cards (spend by category / model / repo). The
+    // exit handler already parsed this from the CLI's result for the per-host ledger; on the turn it
+    // is in the shared database, so either machine can total both. `cost_usd` is the CLI's own
+    // `total_cost_usd` — list-price API equivalent, NOT what a subscription login is billed — and only
+    // Claude reports it (Codex and Cursor leave it NULL; their tokens still land). `model` is the
+    // friendly name ("Opus 5.5"). Nullable throughout: older turns and adopted runs have none.
+    sql: `
+      ALTER TABLE turn ADD COLUMN model TEXT;
+      ALTER TABLE turn ADD COLUMN cost_usd DOUBLE PRECISION;
+      ALTER TABLE turn ADD COLUMN input_tokens BIGINT;
+      ALTER TABLE turn ADD COLUMN output_tokens BIGINT;
+      ALTER TABLE turn ADD COLUMN cache_read_tokens BIGINT;
+      ALTER TABLE turn ADD COLUMN cache_creation_tokens BIGINT;
+      CREATE INDEX turn_started ON turn (user_id, started_at);
+    `,
+  },
 ];
 
 async function migrate(sql: Bun.SQL): Promise<void> {
@@ -461,10 +480,11 @@ export async function startTurn(input: {
  *  possible; the exit handler has it, so the rescue costs nothing. */
 export async function finishTurn(runId: string, input: {
   status: TurnStatus; response?: string; structured?: AgentOutcome; stopReason?: StopReason;
-  sessionId?: string; finishedAt: number;
+  sessionId?: string; finishedAt: number; usage?: TurnUsage;
   identity?: { repo: string; branch: string; provider: AgentProvider; instruction?: string; prompt: string; startedAt: number };
 }): Promise<void> {
   const sql = await open();
+  const u = usageColumns(input.usage);
   // Return the owning branch in the same round trip, so the bus event can be addressed to the chat
   // stream watching it without a second lookup on a hot path.
   const rows = await sql`
@@ -476,6 +496,10 @@ export async function finishTurn(runId: string, input: {
         stop_reason = ${input.stopReason ?? null},
         session_id = COALESCE(${input.sessionId ?? null}, session_id),
         raw_ref = COALESCE(${input.sessionId ?? null}, raw_ref),
+        model = COALESCE(${u.model}, model), cost_usd = COALESCE(${u.cost_usd}, cost_usd),
+        input_tokens = COALESCE(${u.input_tokens}, input_tokens), output_tokens = COALESCE(${u.output_tokens}, output_tokens),
+        cache_read_tokens = COALESCE(${u.cache_read_tokens}, cache_read_tokens),
+        cache_creation_tokens = COALESCE(${u.cache_creation_tokens}, cache_creation_tokens),
         finished_at = ${input.finishedAt}
       WHERE run_id = ${runId}
       RETURNING workstream_id
@@ -489,14 +513,51 @@ export async function finishTurn(runId: string, input: {
     const workstream = await workstreamId(repo, branch);
     await sql`
       INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, response,
-                        structured, stop_reason, session_id, raw_ref, started_at, finished_at)
+                        structured, stop_reason, session_id, raw_ref, started_at, finished_at,
+                        model, cost_usd, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
       VALUES (${workstream}, ${currentUser()}, ${instanceName()}, ${runId}, ${provider}, ${input.status},
               ${instruction ?? null}, ${prompt}, ${input.response ?? null}, ${input.structured ?? null}, ${input.stopReason ?? null},
-              ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${startedAt}, ${input.finishedAt})
+              ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${startedAt}, ${input.finishedAt},
+              ${u.model}, ${u.cost_usd}, ${u.input_tokens}, ${u.output_tokens}, ${u.cache_read_tokens}, ${u.cache_creation_tokens})
       ON CONFLICT (run_id) DO NOTHING`;
     owner = { repo, branch };
   }
   if (owner?.branch) bus.publish({ kind: "turn", runId, repo: owner.repo, branch: owner.branch });
+}
+
+/** What a run reported about itself (agent.ts RunMeta's money-and-tokens half). */
+export type TurnUsage = { model?: string; costUsd?: number; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheCreationTokens?: number };
+
+const usageColumns = (u: TurnUsage | undefined) => {
+  const n = (v: number | undefined) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  return {
+    model: u?.model ?? null, cost_usd: n(u?.costUsd), input_tokens: n(u?.inputTokens), output_tokens: n(u?.outputTokens),
+    cache_read_tokens: n(u?.cacheReadTokens), cache_creation_tokens: n(u?.cacheCreationTokens),
+  };
+};
+
+/** Every turn started since `since`, without its text — the raw rows the Overview's insight cards
+ *  aggregate (workstream.ts `insights`). Joined to its workstream for the repo, branch, title and
+ *  whether the orchestrator drove it; archived workstreams included, since their spend still counts. */
+export async function insightRuns(since: number): Promise<InsightRun[]> {
+  const sql = await open();
+  const rows = await sql`
+    SELECT t.run_id, w.repo, w.branch, w.data->>'title' AS title, (w.data->>'orchestrated') = 'true' AS orchestrated,
+           t.instance, t.provider, t.model, t.status, t."check"->>'ok' AS check_ok, t.started_at, t.finished_at,
+           t.cost_usd, t.input_tokens, t.output_tokens, t.cache_read_tokens, t.cache_creation_tokens
+    FROM turn t JOIN workstream w ON w.id = t.workstream_id
+    WHERE t.user_id = ${currentUser()} AND t.started_at >= ${since}
+    ORDER BY t.started_at`;
+  const num = (v: unknown) => (v === null || v === undefined ? undefined : Number(v));
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    runId: String(r.run_id), repo: String(r.repo), branch: String(r.branch ?? ""), title: (r.title as string | null) ?? undefined,
+    orchestrated: Boolean(r.orchestrated), instance: (r.instance as string | null) ?? undefined,
+    provider: String(r.provider), model: (r.model as string | null) ?? undefined, status: String(r.status) as InsightRun["status"],
+    check: r.check_ok === "true" ? "passed" : r.check_ok === "false" ? "failed" : undefined,
+    startedAt: Number(r.started_at), finishedAt: num(r.finished_at), costUsd: num(r.cost_usd),
+    tokens: ["input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"].some((k) => r[k] != null)
+      ? ["input_tokens", "output_tokens", "cache_read_tokens", "cache_creation_tokens"].reduce((s, k) => s + (Number(r[k]) || 0), 0) : undefined,
+  }));
 }
 
 /** Replace a finished turn's outcome with Orca's own account of why it died (an orchestrator wake

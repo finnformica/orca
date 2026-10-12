@@ -3,7 +3,7 @@ import type { ChangeSummary } from "../../server/git";
 import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSummary, ReviewSignal, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
 import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
-import type { SyncResult } from "./workstream";
+import type { Insights, SyncResult } from "./workstream";
 
 export type LiveAgent = {
   branch: string;
@@ -36,7 +36,7 @@ export type QueuedMessage = {
 export type InstanceHealth = {
   instance: string; hostname: string; cores: number; cpuPct: number; load1: number; load5: number;
   memUsedGb: number; memTotalGb: number; disk?: { usedGb: number; totalGb: number }; uptimeS: number;
-  cost?: { monthUsd: number; hourlyUsd: number; sinceIso: string }; at: number;
+  cost?: { monthUsd: number; hourlyUsd: number; sinceIso: string; billingSince?: string }; at: number;
 };
 /** One recorded sample of an instance's vitals (instance_metric), for the chip's history graphs. */
 export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number };
@@ -143,6 +143,9 @@ export const api = {
   // A machine's vitals (the header's instance chip); `instance` asks another instance for its own.
   health: (instance?: string): Promise<InstanceHealth> => fetch(`/api/health${instance ? `?instance=${encodeURIComponent(instance)}` : ""}`).then(res),
   // Its recorded vitals over the last `hours` (default 24), read from Postgres by whichever instance answers.
+  /** The Overview's insight cards (server-side aggregate over the turn table; cached 30s there). */
+  insights: (q: { days: number; tz: number; repo?: string; on?: string }): Promise<Insights> =>
+    fetch(`/api/insights?${new URLSearchParams({ days: String(q.days), tz: String(q.tz), ...(q.repo ? { repo: q.repo } : {}), ...(q.on ? { on: q.on } : {}) })}`).then(res),
   healthHistory: (instance: string, hours = 24): Promise<MetricPoint[]> => fetch(`/api/health/history?instance=${encodeURIComponent(instance)}&hours=${hours}`).then(res),
   syncWorktrees: (repo: string): Promise<SyncResult[]> => post("/api/worktrees/sync", { repo }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>

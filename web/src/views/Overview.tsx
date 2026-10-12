@@ -4,6 +4,8 @@
 // filtered. Right column: one card per machine (vitals + CPU / memory line graphs over a range) and
 // Recent activity. Every number is a pure derivation over the board's rows (workstream.ts) — no
 // endpoint of its own — scoped by the top bar's repo switcher and the sidebar's instance switcher.
+// Below both, the Insights section (views/Insights.tsx: spend, runs, breakdown, limit forecast) —
+// the one part served by an aggregate endpoint, since it spans history the board's rows don't hold.
 import type { ReactNode } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { Activity } from "lucide-react";
@@ -16,6 +18,7 @@ import {
 } from "../workstream";
 import { Empty, SectionTitle, StatusDot, VCard, type DotTone } from "@/components/console";
 import { InstanceCard, UsageCard } from "./Vitals";
+import { InsightsSection } from "./Insights";
 import { detailPath } from "./Agents";
 
 export function Overview() {
@@ -28,6 +31,7 @@ export function Overview() {
   const instances = instanceChoices();
   const machines = scope === "all" ? (instances.length ? instances : here ? [here] : []) : [scope];
   return (
+    <div className="space-y-8">
     <div className="grid gap-6 xl:grid-cols-[minmax(22rem,26rem)_minmax(0,1fr)]">
       <div className="min-w-0 space-y-6">
         <div><SectionTitle>Usage</SectionTitle><UsageCard /></div>
@@ -43,6 +47,8 @@ export function Overview() {
         </div>
         <div><SectionTitle>Recent activity</SectionTitle><RecentActivity rows={rows} /></div>
       </div>
+    </div>
+    <InsightsSection repo={repo === "all" ? undefined : repo} instance={scope === "all" ? undefined : scope} machines={machines} here={here} />
     </div>
   );
 }

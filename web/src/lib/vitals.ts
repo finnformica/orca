@@ -4,6 +4,7 @@
 import { useSyncExternalStore } from "react";
 import { api, type InstanceHealth, type MetricPoint } from "@/api";
 import type { Usage } from "../../../server/usage";
+import type { Insights } from "../workstream";
 import { poll } from "./poll";
 
 /** One value fed by a loop that runs while anyone subscribes. The value is dropped when the last
@@ -111,3 +112,23 @@ export function useHealthHistory(instance: string | null, hours = 24): MetricPoi
 // The fleet mean lives with the other pure usage derivations (workstream.ts), so the Usage card and
 // this module can't compute it two ways.
 export { aggregateProfiles, outOfRotation, type FleetUsage } from "../workstream";
+
+const insightSources = new Map<string, ReturnType<typeof sharedSource<Insights | null>>>();
+
+/** The insight cards' aggregate (/api/insights) for a range, scoped like the Overview, polled once a
+ *  minute while a card shows it — one loop per scope however many cards read it. null until the
+ *  first answer; a failed poll keeps the last answer (the cards show it rather than blanking). */
+export function useInsights(days: number, repo?: string, on?: string): Insights | null {
+  const tz = new Date().getTimezoneOffset();
+  const key = `${days}|${tz}|${repo ?? ""}|${on ?? ""}`;
+  let src = insightSources.get(key);
+  if (!src) {
+    src = sharedSource<Insights | null>((set) => {
+      let live = true;
+      const stop = poll(() => api.insights({ days, tz, repo, on }).then((v) => { if (live) set(v); }), 60_000);
+      return () => { live = false; stop(); };
+    });
+    insightSources.set(key, src);
+  }
+  return useSyncExternalStore(src.subscribe, src.get);
+}
