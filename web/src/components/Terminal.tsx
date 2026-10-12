@@ -33,7 +33,7 @@ export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean
       // UA `dialog:not([open]) { display: none }` (UA origin loses to author regardless of
       // specificity), so a closed dialog would render inline in the swimlane. Layout goes on the
       // inner wrapper instead; the dialog stays hidden until showModal().
-      className="bg-card text-foreground m-auto h-[80vh] w-[90vw] max-w-4xl rounded-lg border p-0 shadow-lg backdrop:bg-black/50"
+      className="bg-card text-foreground m-auto h-[80vh] w-[90vw] max-w-4xl rounded-lg border p-0 shadow-modal backdrop:bg-black/50"
     >
       <div className="flex h-full flex-col">
         <div className="flex items-center justify-between gap-2 border-b px-3 py-2">

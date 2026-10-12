@@ -79,7 +79,7 @@ export function Board() {
 
 // Copies today's completed work as a shareable markdown list (scoped by the active repo filter,
 // since `cards` is already filtered). Handy for standups / status posts.
-function CopyDone({ cards }: { cards: Row[] }) {
+export function CopyDone({ cards }: { cards: Row[] }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
     const text = cards.map((c) => `- ${c.title}${c.prNumber ? ` (#${c.prNumber})` : ""}${c.prUrl ? ` — ${c.prUrl}` : ""}`).join("\n");
@@ -123,7 +123,7 @@ const BULK_RUN: Record<Exclude<BulkAction, "copyLink">, (row: Row) => Promise<un
 // The swimlane's ⋯ menu: run one action across every card in the lane that can take it. The menu is
 // state-gated (workstream.bulkActions), so it only lists work that actually exists and each item
 // says how many cards it will hit.
-function LaneActions({ lane, cards }: { lane: Lane; cards: Row[] }) {
+export function LaneActions({ lane, cards }: { lane: Lane; cards: Row[] }) {
   const [busy, setBusy] = useState<BulkAction | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const groups = bulkActions(lane, cards, { nowMs: Date.now(), staleHours: staleHours() });
@@ -204,7 +204,7 @@ const DestLink = ({ href, children }: { href?: string; children: ReactNode }) =>
 // there's a PR), the worktree name, and "Copy CLI" — the terminal command to resume the agent's
 // session in that worktree (ensures a worktree exists first). All the grab-and-go affordances live
 // here, off the card face, so the header stays uncluttered.
-function CopyMenu({ row }: { row: Row }) {
+export function CopyMenu({ row }: { row: Row }) {
   const [copied, setCopied] = useState(false);
   const flash = () => { setCopied(true); setTimeout(() => setCopied(false), 1500); };
   const copy = (text: string, label: string) => {
@@ -252,7 +252,7 @@ function Diffstat({ summary }: { summary: ChangeSummary }) {
 // choosing re-pins the card so every action — Follow up, Address PR — runs on it (store.setCardModel
 // / modelFor). The tooltip names the last run's model when it differs. stopPropagation keeps a click
 // from bubbling to the card's row navigation.
-function CardModelPicker({ row }: { row: Row }) {
+export function CardModelPicker({ row }: { row: Row }) {
   return <ModelPicker quiet label="Model for this card" value={modelFor(row)} ran={row.agentMeta?.model} onChange={(m) => setCardModel(row, m)} />;
 }
 
@@ -285,10 +285,10 @@ export function AgentBadge({ row, hasWork }: { row: Row; hasWork: boolean }) {
   return hasWork ? <Badge variant="success">Completed <Check /></Badge> : <Badge variant="destructive">Stopped <CircleStop /></Badge>;
 }
 
-function ConditionBadges({ row }: { row: Row }) {
+export function ConditionBadges({ row }: { row: Row }) {
   return (
     <>
-      {row.autoMergeEnabled && <Badge variant="outline" className="border-purple-500/20 bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
+      {row.autoMergeEnabled && <Badge variant="outline" className="border-transparent bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
       {row.reviewStatus === "changes_requested" && <Badge variant="destructive">Changes requested</Badge>}
       {row.mergeable === "CONFLICTING" && <Badge variant="destructive">Conflicts</Badge>}
       {row.mergeable === "UNKNOWN" && <Badge variant="outline">Checking…</Badge>}
@@ -299,7 +299,9 @@ function ConditionBadges({ row }: { row: Row }) {
   );
 }
 
-function NewDraft() {
+/** `onSent` hands each sent draft to the host (the Add New dialog closes and shows Undo itself);
+ *  without it the box keeps its own inline Undo, as on the Board. */
+export function NewDraft({ onSent, autoFocus = false }: { onSent?: (draft: OptimisticDraft) => void; autoFocus?: boolean } = {}) {
   const repos = useRepos();
   const providers = useAgentProviders();
   const [repo, setRepo] = useAtom(draftRepoAtom);
@@ -324,13 +326,15 @@ function NewDraft() {
   const openTerminal = useSetAtom(openTerminalAtom);
   const [chatOpen, setChatOpen] = useState(false);
 
+  const sent = (draft: OptimisticDraft) => (onSent ? onSent(draft) : setUndoable(draft));
   return (
     <ChatComposer
+      autoFocus={autoFocus}
       persistKey="orca.newDraft"
       repo={active}
       placeholder="Describe a feature…"
       onSubmit={async (text, images) => {
-        setUndoable(createWorkstream(active, text, images, model, { instance: draftInstance(model, instanceChoices(), defaultInstanceFor(active)) }));
+        sent(createWorkstream(active, text, images, model, { instance: draftInstance(model, instanceChoices(), defaultInstanceFor(active)) }));
       }}
       footer={undoable && (
         <p className="text-muted-foreground mt-1 flex items-center gap-1.5 px-1 text-xs">
@@ -367,7 +371,7 @@ function NewDraft() {
             model={model}
             onSubmit={async (text, images) => {
               setChatOpen(false);
-              setUndoable(createWorkstream(active, text, images, model, { chat: true, onCreated: (branch) => openTerminal(`${active}::${branch}`) }));
+              sent(createWorkstream(active, text, images, model, { chat: true, onCreated: (branch) => openTerminal(`${active}::${branch}`) }));
             }}
           />
         </>
@@ -387,13 +391,42 @@ function NewChatDialog({ open, onClose, repo, model, onSubmit }: { open: boolean
     else if (!open && d.open) d.close();
   }, [open]);
   return (
-    <dialog ref={ref} onClose={onClose} onCancel={onClose} onClick={(e) => { if (e.target === ref.current) onClose(); }} className="bg-card text-foreground m-auto w-[90vw] max-w-2xl rounded-lg border p-0 shadow-lg backdrop:bg-black/50">
+    <dialog ref={ref} onClose={onClose} onCancel={onClose} onClick={(e) => { if (e.target === ref.current) onClose(); }} className="bg-card text-foreground m-auto w-[90vw] max-w-2xl rounded-lg border p-0 shadow-modal backdrop:bg-black/50">
       <div className="flex flex-col gap-2 p-3">
         <div className="text-muted-foreground text-xs">New chat · {repo} · {modelLabel(model)}</div>
         {open && <ChatComposer autoFocus repo={repo} persistKey="orca.newChat" placeholder="Ask anything…" onSubmit={onSubmit} onCancel={onClose} />}
       </div>
     </dialog>
   );
+}
+
+// Diffstat for every lane except Done (needs a worktree — Orca-made PRs keep theirs; adopted PRs
+// gain one on first action). Fetched once, and polled only while its agent runs. Shared by the card
+// and the overview's list row.
+export function useSummary(row: Row | undefined): ChangeSummary | null {
+  const isDone = row?.lane === "DONE";
+  const [summary, setSummary] = useState<ChangeSummary | null>(null);
+  const repo = row?.repo, wt = row?.worktreePath, base = row?.prBase, status = row?.agentStatus;
+  useEffect(() => {
+    if (isDone || !repo || !wt) return;
+    const reload = () => fetchSummary(repo, wt, base).then(setSummary).catch(() => {});
+    if (status !== "running") return void reload();
+    return poll(reload, 8000);
+  }, [isDone, repo, wt, base, status]);
+  return summary;
+}
+
+// The conversation opens in a terminal-style modal on the board (no navigating to the detail page).
+// A workstream born from "New chat" opens its terminal on arrival (see openTerminalAtom).
+export function useTerminalOpen(row: Row): [boolean, (open: boolean) => void] {
+  const [open, setOpen] = useState(false);
+  const [wanted, setWanted] = useAtom(openTerminalAtom);
+  useEffect(() => {
+    if (wanted !== `${row.repo}::${row.branch}`) return;
+    setOpen(true);
+    setWanted(null);
+  }, [wanted, row.repo, row.branch, setWanted]);
+  return [open, setOpen];
 }
 
 // One card for every lane. Sections switch on whether the row has an open PR / is done /
@@ -407,15 +440,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
   // stays driveable; the prompt and diffstat are dropped. Done cards stay compact — they never densify.
   const dense = useAtomValue(densityAtom) === "dense" && !isDone;
 
-  // Diffstat for every lane except Done (needs a worktree — Orca-made PRs keep theirs; adopted PRs
-  // gain one on first action).
-  const [summary, setSummary] = useState<ChangeSummary | null>(null);
-  useEffect(() => {
-    if (isDone || !row.worktreePath) return;
-    const reload = () => fetchSummary(row.repo, row.worktreePath!, row.prBase).then(setSummary).catch(() => {});
-    if (row.agentStatus !== "running") return void reload();
-    return poll(reload, 8000);
-  }, [isDone, row.repo, row.worktreePath, row.prBase, row.agentStatus]);
+  const summary = useSummary(row);
   const hasWork = (summary?.commits.length ?? 0) > 0;
 
   // Card-level busy: any action (from WorkstreamActions or the Run button) dims the card and shows
@@ -423,15 +448,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
   const [busy, setBusy] = useState(false);
   const runBusy = async (fn: () => Promise<unknown>) => { setBusy(true); try { await fn(); } finally { setBusy(false); } };
 
-  // The conversation opens in a terminal-style modal on the board (no navigating to the detail page).
-  const [terminalOpen, setTerminalOpen] = useState(false);
-  // A card born from "New chat" opens its terminal on arrival (see openTerminalAtom).
-  const [wanted, setWanted] = useAtom(openTerminalAtom);
-  useEffect(() => {
-    if (wanted !== `${row.repo}::${row.branch}`) return;
-    setTerminalOpen(true);
-    setWanted(null);
-  }, [wanted, row.repo, row.branch, setWanted]);
+  const [terminalOpen, setTerminalOpen] = useTerminalOpen(row);
 
   // The title links to this workstream's detail view (PR or local session).
   const titleTo = isOpenPr ? `/${row.repo}/prs/${row.prNumber}`
@@ -439,9 +456,9 @@ export function WorkstreamCard({ row }: { row: Row }) {
     : row.prNumber ? `/${row.repo}/prs/${row.prNumber}` : null; // done: link to the merged PR
 
   return (
-    <div className={`bg-card relative flex flex-col rounded-md border shadow-sm ${dense ? "gap-1 p-2" : "gap-2 p-3"} ${busy ? "pointer-events-none" : ""}`} aria-busy={busy}>
+    <div className={`bg-card relative flex flex-col rounded-lg border ${dense ? "gap-1 p-2" : "gap-2 p-3"} ${busy ? "pointer-events-none" : ""}`} aria-busy={busy}>
       {busy && (
-        <div className="bg-card/60 absolute inset-0 z-10 flex items-center justify-center rounded-md">
+        <div className="bg-card/60 absolute inset-0 z-10 flex items-center justify-center rounded-lg">
           <Loader2 className="text-muted-foreground size-5 animate-spin" />
         </div>
       )}
@@ -485,7 +502,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
       {!isDone && (
         <div className={`flex flex-wrap items-center gap-1 ${dense ? "[&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5" : ""}`}>
           {isOpenPr && row.following && (
-            <Badge variant="outline" className="border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-400" title="Orca is watching this PR and auto-runs the agent to resolve conflicts, fix CI, or address review comments.">
+            <Badge variant="outline" className="border-transparent bg-sky-500/10 text-sky-700 dark:text-sky-400" title="Orca is watching this PR and auto-runs the agent to resolve conflicts, fix CI, or address review comments.">
               Following <Eye />
             </Badge>
           )}
@@ -539,7 +556,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
               leading={
                 <>
                   <PreviewControl row={row} compact />
-                  <Button size="icon" variant="outline" className="size-7" onClick={() => setTerminalOpen(true)} title="Open terminal" aria-label="Open terminal">
+                  <Button size="icon" variant="ghost" className="size-7" onClick={() => setTerminalOpen(true)} title="Open terminal" aria-label="Open terminal">
                     <SquareTerminal className="size-3.5" />
                   </Button>
                 </>

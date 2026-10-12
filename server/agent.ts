@@ -33,6 +33,23 @@ function recordTurn(options: LaunchOptions, write: () => Promise<void>): Promise
 const historyWrites = new Set<Promise<unknown>>();
 
 /** Wait for every outstanding history write. Call before closing the pool (shutdown, teardown). */
+// A finished run is marked done (runs.set) BEFORE its after-run path — the queued send and the
+// onRunFinished hook (the orchestrator's wake / death handling, which may rewrite the turn) — has
+// run. Track that window, so a caller can tell "finished" from "finished and fully handled".
+const afterRuns = new Set<Promise<void>>();
+function afterRunStarted(): () => void {
+  let done!: () => void;
+  const p = new Promise<void>((r) => { done = r; });
+  afterRuns.add(p);
+  void p.finally(() => afterRuns.delete(p));
+  return done;
+}
+
+/** Resolves once every finished run's after-run path (queued send + onRunFinished hook) is done. */
+export async function afterRunsSettled(): Promise<void> {
+  while (afterRuns.size) await Promise.all([...afterRuns]);
+}
+
 export async function flushHistory(): Promise<void> {
   while (historyWrites.size) await Promise.all([...historyWrites]);
 }
@@ -642,6 +659,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
         }).catch((e) => console.error("orca: autofix queue failed", e));
       }
     }
+    const handled = afterRunStarted();
     runs.set(key, ok
       ? { status: "done", ...common, check }
       : { status: "error", ...common, error });
@@ -660,6 +678,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     } catch (e) {
       console.error("orca: run-finished hook failed", e); // a listener must never break the run it heard about
     }
+    handled();
   })();
   return { status: "running", provider, runId, sessionId };
 }
@@ -823,17 +842,22 @@ async function finishAdopted(l: lease.Lease, recover: Parameters<typeof adoptLea
     await pending;
   }
   lease.release(l.key, l.runId);
-  runs.set(l.key, { status, provider: l.provider, runId: l.runId, sessionId: l.sessionId, result, structured: found?.structured, startedAt: l.startedAt, finishedAt, error: ok ? undefined : result });
-  if (!owner) return;
-  const options: LaunchOptions = { repo: owner.repo, branch: owner.branch, provider: l.provider };
-  const continued = await dispatchQueued(owner.repo, owner.branch, options);
+  const handled = afterRunStarted();
   try {
-    await runFinished?.({
-      key: l.key, cwd: l.worktreePath, runId: l.runId, options, status, sessionId: l.sessionId, result, structured: found?.structured, continued,
-      exit: { code: ok ? 0 : 1, timedOut: false, budgetReached: false, stderr: "" },
-    });
-  } catch (e) {
-    console.error("orca: run-finished hook failed", e);
+    runs.set(l.key, { status, provider: l.provider, runId: l.runId, sessionId: l.sessionId, result, structured: found?.structured, startedAt: l.startedAt, finishedAt, error: ok ? undefined : result });
+    if (!owner) return;
+    const options: LaunchOptions = { repo: owner.repo, branch: owner.branch, provider: l.provider };
+    const continued = await dispatchQueued(owner.repo, owner.branch, options);
+    try {
+      await runFinished?.({
+        key: l.key, cwd: l.worktreePath, runId: l.runId, options, status, sessionId: l.sessionId, result, structured: found?.structured, continued,
+        exit: { code: ok ? 0 : 1, timedOut: false, budgetReached: false, stderr: "" },
+      });
+    } catch (e) {
+      console.error("orca: run-finished hook failed", e);
+    }
+  } finally {
+    handled();
   }
 }
 

@@ -1,537 +1,60 @@
-import { useEffect, useRef, useState } from "react";
-import { useAtom } from "jotai";
-import { Check, CircleUser, FolderSync, Loader2, Monitor, Moon, RefreshCw, Rows2, Rows3, Server, Sun, X } from "lucide-react";
-import { navigate, useRoute } from "@/lib/route";
-import { densityAtom, repoFilterAtom } from "@/lib/atoms";
-import { useTheme, type Theme } from "@/lib/theme";
-import { api } from "./api";
-import type { ClaudeUsage, CodexUsage, ExtraUsage, Usage, ProfileUsage, UsageWindow } from "../../server/usage";
-import { useRepos } from "./store";
-import { sparklineSegments, summarizeSync } from "./workstream";
-import { Board } from "./views/Board";
-import { PreviewManagerMenu, TestMasterMenu } from "./views/PreviewControl";
+import { useRoute, type Route } from "@/lib/route";
+import { Shell, Crumb, AddNew } from "@/components/Shell";
+import { OrchestratorButton } from "@/components/Terminal";
+import { useWorkstreams } from "./store";
+import { NewDraft } from "./views/Board";
+import { Overview } from "./views/Overview";
+import { Agents } from "./views/Agents";
+import { PreviewsPage, Repos, Settings, UsagePage } from "./views/Pages";
 import { PrDetail } from "./views/PrDetail";
 import { LocalDetail } from "./views/LocalDetail";
-import { Button } from "@/components/ui/button";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import {
-  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
-  DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator,
-  DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent,
-} from "@/components/ui/dropdown-menu";
-import { OrchestratorButton } from "@/components/Terminal";
 
-import { api as orcaApi, type InstanceHealth, type MetricPoint } from "./api";
-import { instanceChoices, thisInstance } from "./store";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { poll } from "@/lib/poll";
+// The console: Vercel's shell (sidebar + top bar) around one page per route. The orchestrator's
+// floating launcher sits outside it, on every route.
 export function App() {
   const route = useRoute();
-  const topLevel = route.name === "board";
-  return (
-    <div className="w-full px-4 py-4 md:px-6">
-      <header className="mb-6 flex items-center gap-3">
-        <Wordmark />
-        <p className="text-muted-foreground hidden text-sm sm:block">the pod that ships</p>
-        {/* Right cluster reads as two groups: read-only usage status, then a divider, then controls. */}
-        <div className="ml-auto flex items-center gap-3">
-          <UsageMeter />
-          <InstanceHealthChip />
-          <div className="flex items-center gap-2">
-            {/* Test master + running-previews read as one segmented control (connected borders). */}
-            {topLevel && (
-              <div className="inline-flex -space-x-px [&>button]:rounded-none [&>button:first-of-type]:rounded-l-md [&>button:last-of-type]:rounded-r-md">
-                <TestMasterMenu />
-                <PreviewManagerMenu />
-              </div>
-            )}
-            {topLevel && <RepoFilter />}
-            {topLevel && <DensityToggle />}
-            <ProfileMenu />
-          </div>
-        </div>
-      </header>
-      {route.name === "pr" ? <PrDetail repo={route.repo} number={route.number} sub={route.sub} />
-        : route.name === "local" ? <LocalDetail repo={route.repo} branch={route.branch} sub={route.sub} />
-        : <Board />}
-      <OrchestratorButton />
-    </div>
-  );
-}
-
-// The mark: a geometric orca silhouette (single-fill, currentColor, eye punched out via evenodd so
-// it reads on any theme) beside a monospace "Orca" wordmark. The whole lockup links home to the board.
-function Wordmark() {
-  return (
-    <button onClick={() => navigate("/")} className="flex items-center gap-2" title="Orca — board" aria-label="Orca — go to board">
-      <OrcaMark className="text-foreground size-6" />
-      <span className="font-mono text-xl font-semibold tracking-tight">Orca</span>
-    </button>
-  );
-}
-
-function OrcaMark({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" className={className} aria-hidden="true">
-      <path d="M2 12.5C2 9.5 5.5 8 9 8L11 3L13.5 8C16.5 8 19 8.5 20.5 9L22.5 6L20.3 11L22.5 15.5C19 13 10 14 2 12.5ZM5.6 10a1 1 0 1 0 0 2a1 1 0 1 0 0 -2Z" />
-    </svg>
-  );
-}
-
-// Board-only control: flip every (non-Done) card between the full comfortable card and a compact,
-// status-only dense card — one persisted toggle, so a board with many sessions fits on screen.
-function DensityToggle() {
-  const [density, setDensity] = useAtom(densityAtom);
-  const dense = density === "dense";
-  return (
-    <Button
-      size="icon" variant="outline" className="size-8" aria-pressed={dense}
-      onClick={() => setDensity(dense ? "comfortable" : "dense")}
-      title={dense ? "Switch to comfortable view" : "Switch to dense view"}
-      aria-label={dense ? "Switch to comfortable view" : "Switch to dense view"}
-    >
-      {dense ? <Rows2 className="size-4" /> : <Rows3 className="size-4" />}
-    </Button>
-  );
-}
-
-// Board-only control: filter by repo (only meaningful with more than one configured).
-function RepoFilter() {
-  const repos = useRepos();
-  const [filter, setFilter] = useAtom(repoFilterAtom);
-  if (repos.length <= 1) return null;
-  return (
-    <Select value={filter} onValueChange={setFilter}>
-      <SelectTrigger className="h-8 w-36"><SelectValue /></SelectTrigger>
-      <SelectContent>
-        <SelectItem value="all">All repos</SelectItem>
-        {repos.map((r) => <SelectItem key={r.name} value={r.name}>{r.name}</SelectItem>)}
-      </SelectContent>
-    </Select>
-  );
-}
-
-/** Merge a fresh usage poll over the last-known one, PER PROVIDER: a provider that came back null
- *  this poll (a transient failure, or not fetched yet) keeps its previous value instead of blanking
- *  the bar. Pure, so the belt is testable without a timer. */
-export function mergeUsage(prev: Usage | null, next: Usage): Usage {
-  return { claude: next.claude ?? prev?.claude ?? null, codex: next.codex ?? prev?.codex ?? null, profiles: next.profiles ?? prev?.profiles, routing: next.routing ?? prev?.routing };
-}
-
-// Provider usage (top-right): two compact terminal-bar groups, side by side.
-// Poll cadence self-adjusts: fast until both bars are filled, then every five minutes.
-function UsageMeter() {
-  const [usage, setUsage] = useState<Usage | null>(null);
-  // Mirror the state for synchronous merge/completeness checks inside the poll loop (setState's
-  // updater can't reliably report back). Not for rendering — that reads `usage`.
-  const latest = useRef<Usage | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
-    let fastTries = 0;
-    const SLOW = 5 * 60_000, FAST = 15_000, MAX_FAST = 4;
-    const schedule = (ms: number) => { if (!cancelled) timer = setTimeout(load, ms); };
-    // Merge PER PROVIDER: a single provider's transient null — Claude's endpoint rate-limiting, the
-    // Codex app-server handshake timing out, or a just-restarted bridge with a cold cache — must not
-    // drop the OTHER provider that's already showing. Until both are present, retry soon (bounded) so
-    // a cold start fills the bar in seconds; once complete, settle into the slow cadence.
-    const load = () => void api.usage().then((u) => {
-      if (cancelled) return;
-      let complete = false;
-      if (u) {
-        const next = mergeUsage(latest.current, u);
-        latest.current = next;
-        setUsage(next);
-        complete = Boolean(next.claude && next.codex);
-      }
-      schedule(complete || ++fastTries > MAX_FAST ? SLOW : FAST);
-    }).catch(() => schedule(FAST));
-    load();
-    return () => { cancelled = true; clearTimeout(timer); };
-  }, []);
-  if (!usage) return null;
   return (
     <>
-      <div className="text-muted-foreground hidden items-center gap-3 font-mono text-[10px] leading-tight sm:flex" aria-label="Agent usage limits">
-        {/* hydra is installed but the `claude` the bridge runs isn't its shim: every run is quietly
-            landing on the default login (Claude Code's updater rewrites ~/.local/bin/claude). */}
-        {usage.routing?.hydra && !usage.routing.shim && (
-          <span data-slot="routing-warning" className="rounded border border-amber-500/40 px-1 text-amber-600 dark:text-amber-400" title="claude on the bridge's PATH isn't hydra's shim, so runs aren't load-balanced across logins. Re-run claude-hydra's install.sh --shim.">
-            routing off — claude on PATH isn't hydra's shim
-          </span>
-        )}
-        {usage.profiles ? <ClaudeFleetGroup profiles={usage.profiles} /> : usage.claude && <ClaudeUsageGroup usage={usage.claude} />}
-        {(usage.profiles?.some((p) => p.usage) || usage.claude) && usage.codex && <span className="opacity-30" aria-hidden="true">│</span>}
-        {usage.codex && <CodexUsageGroup usage={usage.codex} />}
-      </div>
-      {/* Full button-height footprint (h-8) but the visible line is inset by py-1 — reads as the
-          same height as the buttons, just a touch shorter. */}
-      <div className="hidden h-8 py-1 sm:block" aria-hidden="true">
-        <div className="bg-border h-full w-px" />
-      </div>
+      <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarAction collapsed={collapsed} />}>
+        <Page route={route} />
+      </Shell>
+      <OrchestratorButton />
     </>
   );
 }
 
-// `name` is the login's hydra profile name (one group per login); `state` is hydra's verdict, shown
-// only when it isn't the ordinary "ok" — exhausted, locked, disabled, token stale, no data yet, not
-// signed in — so a login that can't be used says why instead of showing misleading bars.
-// Logins hydra can't route to right now: no reading, or deliberately out of the rotation. Exhausted
-// and locked logins DO count — they hold a real reading and are exactly what pulls the fleet up.
-const outOfRotation = (p: ProfileUsage): boolean => !p.usage || p.state === "disabled" || p.state === "not signed in on this machine";
-
-export type FleetUsage = { count: number; exhausted: number; fiveHour: UsageWindow; sevenDay: UsageWindow; fable: UsageWindow | null };
-
-/** One reading for the whole fleet: the mean utilization per window across the logins in rotation,
- *  with the soonest reset — so the header answers "how used are my Claude accounts overall" in one
- *  row, and the per-login truth lives in the breakdown. Null when nothing is in rotation. Pure. */
-export function aggregateProfiles(profiles: ProfileUsage[]): FleetUsage | null {
-  const live = profiles.filter((p) => !outOfRotation(p));
-  if (!live.length) return null;
-  const mean = (ws: UsageWindow[]): UsageWindow => ({
-    utilization: Math.round(ws.reduce((s, w) => s + w.utilization, 0) / ws.length),
-    resetsAt: ws.map((w) => w.resetsAt).filter((r): r is string => Boolean(r)).sort()[0] ?? null,
-  });
-  const fables = live.map((p) => p.usage!.fable).filter((w): w is UsageWindow => Boolean(w));
-  return {
-    count: live.length,
-    exhausted: live.filter((p) => p.state === "exhausted" || p.state === "locked").length,
-    fiveHour: mean(live.map((p) => p.usage!.fiveHour)),
-    sevenDay: mean(live.map((p) => p.usage!.sevenDay)),
-    fable: fables.length ? mean(fables) : null,
-  };
-}
-
-// The whole fleet as ONE row (three logins × three bars was too much header), with the per-login
-// breakdown in a hover card. Pure CSS hover (group-hover) plus focus-within so it opens from the
-// keyboard too; the card is always in the DOM, only hidden, so it costs no state. The card hangs
-// off a padded wrapper rather than a margin: a margin is a gap the cursor must cross, and leaving
-// the group for even one pixel closed it before you could reach it.
-function ClaudeFleetGroup({ profiles }: { profiles: ProfileUsage[] }) {
-  const fleet = aggregateProfiles(profiles);
-  return (
-    <div className="group relative flex items-center gap-2 outline-none" tabIndex={0} aria-label="Claude usage limits">
-      <span className="opacity-70">claude ×{fleet?.count ?? 0}</span>
-      {fleet ? <>
-        <UsageStat provider="Claude" label="5h" pct={fleet.fiveHour.utilization} resetsAt={fleet.fiveHour.resetsAt} />
-        <UsageStat provider="Claude" label="1w" pct={fleet.sevenDay.utilization} resetsAt={fleet.sevenDay.resetsAt} />
-        {fleet.fable && <UsageStat provider="Claude" label="fable" pct={fleet.fable.utilization} resetsAt={fleet.fable.resetsAt} />}
-        {fleet.exhausted > 0 && <span data-slot="usage-state" className="rounded border border-red-500/40 px-1 text-red-600 dark:text-red-400">{fleet.exhausted} exhausted</span>}
-      </> : <span data-slot="usage-state" className="rounded border px-1 opacity-60">no login in rotation</span>}
-      <div className="absolute top-full right-0 z-30 hidden pt-2 group-hover:block group-focus-within:block">
-        <div data-slot="usage-breakdown" role="tooltip" className="bg-popover text-popover-foreground w-96 rounded-lg border px-4 py-3 shadow-lg">
-          <div className="mb-2 flex items-baseline justify-between text-[11px] opacity-60">
-            <span>Claude logins</span>
-            <span>{fleet ? `${fleet.count} in rotation` : "none in rotation"}</span>
-          </div>
-          <div className="flex flex-col gap-2.5">
-            {profiles.map((p) => <LoginUsage key={p.name} profile={p} />)}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// One login in the breakdown: name + state on the first line, then a bar per window with the
-// figure and the time to reset. Dimmed when hydra can't route to it.
-function LoginUsage({ profile: p }: { profile: ProfileUsage }) {
-  const state = p.state ?? "ok";
-  const windows: [string, UsageWindow | null | undefined][] = [["5h", p.usage?.fiveHour], ["1w", p.usage?.sevenDay], ["fable", p.usage?.fable]];
-  return (
-    <div data-slot="usage-login" className={outOfRotation(p) ? "opacity-50" : ""}>
-      <div className="flex items-baseline justify-between gap-2">
-        <span className="truncate font-medium" title={p.email}>{p.name}</span>
-        <span className={`shrink-0 rounded px-1 text-[10px] uppercase tracking-wide ${state === "ok" ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400" : state === "exhausted" || state === "locked" ? "bg-red-500/10 text-red-600 dark:text-red-400" : "bg-muted opacity-70"}`}>{state}</span>
-      </div>
-      <div className="mt-1 grid grid-cols-3 gap-4">
-        {windows.map(([label, w]) => <UsageBar key={label} label={label} window={w} />)}
-      </div>
-    </div>
-  );
-}
-
-const ZONE_BAR: Record<"ok" | "warn" | "danger", string> = { ok: "bg-emerald-500", warn: "bg-amber-500", danger: "bg-red-500" };
-
-function UsageBar({ label, window: w }: { label: string; window: UsageWindow | null | undefined }) {
-  return (
-    <div className="min-w-0">
-      <div className="flex justify-between text-[10px] leading-tight">
-        <span className="opacity-60">{label}</span>
-        <span className={w ? `font-semibold ${ZONE_TEXT[usageZone(w.utilization)]}` : "opacity-40"}>{w ? `${w.utilization}%` : "—"}</span>
-      </div>
-      <div className="bg-muted mt-0.5 h-1.5 w-full overflow-hidden rounded-full">
-        {w && <div className={`h-full rounded-full ${ZONE_BAR[usageZone(w.utilization)]}`} style={{ width: `${Math.min(100, w.utilization)}%` }} />}
-      </div>
-    </div>
-  );
-}
-
-function ClaudeUsageGroup({ usage, name, state }: { usage: ClaudeUsage | null; name?: string; state?: string }) {
-  const off = state && state !== "ok";
-  return (
-    <div className="flex items-center gap-2" aria-label={name ? `Claude ${name} usage limits` : "Claude usage limits"}>
-      <span className="opacity-70">{name ? `claude·${name}` : "claude"}</span>
-      {usage && <>
-        <UsageStat provider="Claude" label="5h" pct={usage.fiveHour.utilization} resetsAt={usage.fiveHour.resetsAt} />
-        <UsageStat provider="Claude" label="1w" pct={usage.sevenDay.utilization} resetsAt={usage.sevenDay.resetsAt} />
-        {usage.fable && <UsageStat provider="Claude" label="fable" pct={usage.fable.utilization} resetsAt={usage.fable.resetsAt} />}
-        {usage.extra && <SpendStat extra={usage.extra} />}
-      </>}
-      {off && <span data-slot="usage-state" className={`rounded border px-1 ${state === "exhausted" || state === "locked" ? "border-red-500/40 text-red-600 dark:text-red-400" : "opacity-60"}`} title={`hydra: ${state}`}>{state}</span>}
-    </div>
-  );
-}
-
-function CodexUsageGroup({ usage }: { usage: CodexUsage }) {
-  return (
-    <div className="flex items-center gap-2" aria-label="Codex usage limits">
-      <span className="opacity-70">codex</span>
-      {usage.windows.map((window, index) => (
-        <UsageStat key={`${window.label}-${index}`} provider="Codex" label={window.label === "wk" ? "1w" : window.label} pct={window.utilization} resetsAt={window.resetsAt} />
-      ))}
-    </div>
-  );
-}
-
-// Traffic-light zone by how much of the allowance is burned: green (fine) → amber (caution, ≥75%)
-// → red (the "red-zone", ≥90%). Colours the figure only — statusline style, not a badge.
-function usageZone(pct: number): "ok" | "warn" | "danger" {
-  return pct >= 90 ? "danger" : pct >= 75 ? "warn" : "ok";
-}
-const ZONE_TEXT: Record<"ok" | "warn" | "danger", string> = {
-  ok: "text-emerald-600 dark:text-emerald-400",
-  warn: "text-amber-600 dark:text-amber-400",
-  danger: "text-red-600 dark:text-red-400",
-};
-
-/** Compact countdown to a window's reset, e.g. "45m", "1h 15m", "2h", "7d 2h" — null if unknown or
- *  already past. `now` is injectable for tests (defaults to wall-clock). Pure. Lives here (not
- *  server/usage.ts) so it stays out of a browser bundle that can't resolve that module's node/Bun
- *  imports. */
-export function untilReset(resetsAt: string | null, now = Date.now()): string | null {
-  if (!resetsAt) return null;
-  const ms = new Date(resetsAt).getTime() - now;
-  if (!Number.isFinite(ms) || ms <= 0) return null;
-  const mins = Math.round(ms / 60_000);
-  if (mins < 60) return `${mins}m`;
-  if (mins < 24 * 60) {
-    const hours = Math.floor(mins / 60);
-    const minutes = mins % 60;
-    return `${hours}h${minutes ? ` ${minutes}m` : ""}`;
-  }
-  const days = Math.floor(mins / (24 * 60));
-  const hours = Math.floor((mins % (24 * 60)) / 60);
-  return `${days}d${hours ? ` ${hours}h` : ""}`;
-}
-
-function UsageStat({ provider, label, pct, resetsAt }: { provider: string; label: string; pct: number; resetsAt: string | null }) {
-  const left = untilReset(resetsAt);
-  const resets = resetsAt ? `, resets ${new Date(resetsAt).toLocaleString()}` : "";
-  const filled = Math.max(0, Math.min(5, Math.round(pct / 20)));
-  return (
-    <span className="whitespace-nowrap" title={`${provider} ${label} usage: ${pct}%${resets}`}>
-      {label}{" "}
-      <span className={`font-semibold ${ZONE_TEXT[usageZone(pct)]}`}>
-        <span aria-hidden="true">{"█".repeat(filled)}{"░".repeat(5 - filled)}</span>{" "}{pct}%
-        {left && <span className="ml-0.5 font-normal opacity-60">({left})</span>}
-      </span>
-    </span>
-  );
-}
-
-/** Format money carried as minor units (+ exponent) in its own currency, e.g. 8535/2/GBP → "£85.35". */
-function formatMoney(minor: number, exponent: number, currency: string): string {
-  const amount = minor / 10 ** exponent;
-  try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency, maximumFractionDigits: exponent }).format(amount);
-  } catch {
-    return `${amount.toFixed(exponent)} ${currency}`; // unknown currency code → plain number + code
+function Page({ route }: { route: Route }) {
+  switch (route.name) {
+    case "pr": return <PrDetail repo={route.repo} number={route.number} sub={route.sub} />;
+    case "local": return <LocalDetail repo={route.repo} branch={route.branch} sub={route.sub} />;
+    case "agents": return <Agents />;
+    case "previews": return <PreviewsPage />;
+    case "repos": return <Repos />;
+    case "usage": return <UsagePage />;
+    case "settings": return <Settings />;
+    default: return <Overview />;
   }
 }
 
-// Pay-as-you-go spend this month as actual money, coloured by how much of the cap is used.
-function SpendStat({ extra }: { extra: ExtraUsage }) {
-  const used = formatMoney(extra.usedMinor, extra.exponent, extra.currency);
-  const limit = formatMoney(extra.limitMinor, extra.exponent, extra.currency);
-  return (
-    <span className="whitespace-nowrap" title={`Extra usage this month: ${used} of ${limit} (${extra.utilization}%)`}>
-      $ <span className={`font-semibold ${ZONE_TEXT[usageZone(extra.utilization)]}`}>{used}</span>
-    </span>
-  );
+const TITLES = { board: "Overview", agents: "Agents", previews: "Previews", repos: "Repos", usage: "Usage", settings: "Settings" } as const;
+
+function Crumbs({ route }: { route: Route }) {
+  const rows = useWorkstreams();
+  if (route.name === "pr" || route.name === "local") {
+    const row = route.name === "pr"
+      ? rows.find((r) => r.repo === route.repo && r.prNumber === route.number)
+      : rows.find((r) => r.repo === route.repo && r.branch === route.branch);
+    const label = row?.title ?? (route.name === "pr" ? `#${route.number}` : route.branch);
+    return <><Crumb to="/agents">Agents</Crumb><Crumb>{label}</Crumb></>;
+  }
+  return <Crumb>{TITLES[route.name]}</Crumb>;
 }
 
-// Pull remote work down across every configured repo: fetch each, fast-forward its worktrees to
-// their upstreams (never forces). Keeps the menu open (onSelect preventDefault) so its inline
-// spinner → ✓/✗ feedback and per-outcome summary stay visible, matching the ActionButton pattern.
-function SyncWorktreesItem() {
-  const repos = useRepos();
-  const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
-  const [summary, setSummary] = useState("");
-  const run = async () => {
-    if (state === "loading") return;
-    setState("loading");
-    setSummary("");
-    try {
-      const results = (await Promise.all(repos.map((r) => api.syncWorktrees(r.name)))).flat();
-      setSummary(summarizeSync(results));
-      setState("done");
-    } catch {
-      setSummary("sync failed");
-      setState("error");
-    }
-    setTimeout(() => { setState("idle"); setSummary(""); }, 6000);
-  };
-  const Icon = state === "loading" ? Loader2 : state === "done" ? Check : state === "error" ? X : FolderSync;
-  return (
-    <DropdownMenuItem
-      onSelect={(e) => { e.preventDefault(); void run(); }}
-      disabled={state === "loading"}
-      title="Fetch each repo and fast-forward every worktree to its upstream (never forces, skips dirty/diverged)"
-    >
-      <Icon className={`size-3.5${state === "loading" ? " animate-spin" : ""}`} /> Sync worktrees
-      {summary && <span className="text-muted-foreground ml-auto pl-3 text-xs">{summary}</span>}
-    </DropdownMenuItem>
-  );
-}
+// The last of the sidebar's actions: Vercel's "Add New", opening the New-draft box in a dialog.
+const SidebarAction = ({ collapsed }: { collapsed: boolean }) => (
+  <AddNew collapsed={collapsed}>{(onSent) => <NewDraft onSent={onSent} autoFocus />}</AddNew>
+);
 
-const THEMES: { value: Theme; label: string; Icon: typeof Sun }[] = [
-  { value: "light", label: "Light", Icon: Sun },
-  { value: "dark", label: "Dark", Icon: Moon },
-  { value: "system", label: "System", Icon: Monitor },
-];
-
-// Profile menu (top-right, all views): refresh the app + a theme submenu (light/dark/system).
-function ProfileMenu() {
-  const [theme, setTheme] = useTheme();
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button size="icon" variant="outline" className="size-8" title="Profile" aria-label="Profile menu">
-          <CircleUser className="size-4" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
-        <DropdownMenuItem onSelect={() => window.location.reload()} title="Reload the app (pick up rebuilt code + refetch)">
-          <RefreshCw className="size-3.5" /> Refresh
-        </DropdownMenuItem>
-        <SyncWorktreesItem />
-        <DropdownMenuSeparator />
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>Theme</DropdownMenuSubTrigger>
-          <DropdownMenuSubContent>
-            <DropdownMenuLabel>Theme</DropdownMenuLabel>
-            <DropdownMenuRadioGroup value={theme} onValueChange={(v) => setTheme(v as Theme)}>
-              {THEMES.map(({ value, label, Icon }) => (
-                <DropdownMenuRadioItem key={value} value={value}><Icon className="size-3.5" /> {label}</DropdownMenuRadioItem>
-              ))}
-            </DropdownMenuRadioGroup>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-// The popover's last-24h graphs from instance_metric: CPU % and memory used, one chart each (two
-// scales never share an axis). Each is labelled with its newest value; hovering reads off a point.
-function HealthHistory({ points }: { points: MetricPoint[] | null }) {
-  if (!points) return <p className="mt-3 text-muted-foreground">Loading history…</p>;
-  if (!points.length) return <p className="mt-3 text-muted-foreground" data-slot="health-history-empty">No history recorded yet.</p>;
-  const to = Date.now(), from = to - 24 * 3_600_000;
-  const memMax = Math.max(...points.map((p) => p.memTotalGb), 1);
-  return (
-    <div className="mt-3 space-y-3 border-t pt-3">
-      <Sparkline slot="cpu" title="cpu %" points={points.map((p) => ({ at: p.at, v: p.cpuPct }))} from={from} to={to} max={100} fmt={(v) => `${Math.round(v)}%`} />
-      <Sparkline slot="mem" title="memory used" points={points.map((p) => ({ at: p.at, v: p.memUsedGb }))} from={from} to={to} max={memMax} fmt={(v) => `${v.toFixed(1)} / ${memMax} GB`} />
-      <p className="text-[10px] text-muted-foreground">last 24h · one sample a minute</p>
-    </div>
-  );
-}
-
-function Sparkline({ slot, title, points, from, to, max, fmt }: {
-  slot: string; title: string; points: { at: number; v: number }[]; from: number; to: number; max: number; fmt: (v: number) => string;
-}) {
-  const W = 256, H = 40;
-  const [hover, setHover] = useState<{ at: number; v: number } | null>(null);
-  const shown = hover ?? points[points.length - 1]!;
-  const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    const at = from + ((e.clientX - r.left) / (r.width || W)) * (to - from);
-    setHover(points.reduce((a, b) => (Math.abs(b.at - at) < Math.abs(a.at - at) ? b : a)));
-  };
-  const hx = hover ? ((hover.at - from) / (to - from)) * W : undefined;
-  return (
-    <figure data-slot={`health-chart-${slot}`}>
-      <figcaption className="mb-1 flex justify-between">
-        <span className="text-muted-foreground">{title}</span>
-        <span data-slot="health-chart-value" className="font-medium tabular-nums">
-          {fmt(shown.v)}{hover && <span className="ml-1 font-normal text-muted-foreground">at {new Date(hover.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
-        </span>
-      </figcaption>
-      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="h-10 w-full overflow-visible text-foreground" role="img" aria-label={`${title}, last 24 hours, now ${fmt(points[points.length - 1]!.v)}`}
-        onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
-        <line x1={0} y1={H} x2={W} y2={H} className="stroke-border" strokeWidth={1} vectorEffect="non-scaling-stroke" />
-        {sparklineSegments(points, { from, to, max, w: W, h: H }).map((pts, i) => (
-          <polyline key={i} points={pts} fill="none" stroke="currentColor" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-        ))}
-        {hx !== undefined && <line x1={hx} y1={0} x2={hx} y2={H} className="stroke-muted-foreground" strokeWidth={1} strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />}
-      </svg>
-    </figure>
-  );
-}
-
-// The cloud box's vitals in the header — CPU (load against cores), memory, disk, and the month's
-// estimated cost — polled every 15s from /api/health?instance=<other>, only when there is another
-// instance. A hover card has the details; the chip itself stays to one line.
-export function InstanceHealthChip() {
-  useRepos(); // subscribe: config lands after first paint, and `other` is read from it — without this the chip stayed null for good
-  const choices = instanceChoices();
-  const other = choices.find((i) => i !== thisInstance());
-  const [h, setH] = useState<InstanceHealth | null>(null);
-  const [down, setDown] = useState(false);
-  const [open, setOpen] = useState(false);
-  const [history, setHistory] = useState<MetricPoint[] | null>(null);
-  useEffect(() => {
-    // The last day's samples, only while the popover is open: ~1,440 rows that change once a minute.
-    if (!other || !open) return;
-    let live = true;
-    const load = () => orcaApi.healthHistory(other, 24).then((v) => { if (live) setHistory(v); }).catch(() => { if (live) setHistory([]); });
-    const stop = poll(load, 60_000); // next fetch only after this one settles — a slow history call can't pile up
-    return () => { live = false; stop(); };
-  }, [other, open]);
-  useEffect(() => {
-    if (!other) return;
-    let live = true;
-    const load = () => orcaApi.health(other).then((v) => { if (live) { setH(v); setDown(false); } }).catch(() => { if (live) setDown(true); });
-    const stop = poll(load, 15_000);
-    return () => { live = false; stop(); };
-  }, [other]);
-  if (!other) return null;
-  const tone = down ? "text-destructive" : (h?.cpuPct ?? 0) >= 80 || (h && h.memUsedGb / h.memTotalGb >= 0.9) ? "text-amber-500" : "text-muted-foreground";
-  const uptime = (s: number) => (s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button type="button" data-slot="instance-health" className={`hidden items-center gap-1.5 rounded-md border px-2 py-1 text-xs sm:inline-flex ${tone} hover:bg-accent`} title={`${other}: machine health`}>
-          <Server className="size-3.5" />
-          <span className="font-medium">{other}</span>
-          {down ? <span>unreachable</span> : h ? <span>cpu {h.cpuPct}% · mem {h.memUsedGb}/{h.memTotalGb} GB{h.cost ? ` · $${h.cost.monthUsd.toFixed(2)}` : ""}</span> : <span>…</span>}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 text-xs">
-        {down || !h ? <p>{down ? `${other} did not answer.` : "Loading…"}</p> : (
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
-            <dt className="text-muted-foreground">host</dt><dd>{h.hostname}</dd>
-            <dt className="text-muted-foreground">cpu</dt><dd>{h.cpuPct}% of {h.cores} cores (load {h.load1.toFixed(2)} / {h.load5.toFixed(2)})</dd>
-            <dt className="text-muted-foreground">memory</dt><dd>{h.memUsedGb} of {h.memTotalGb} GB</dd>
-            {h.disk && <><dt className="text-muted-foreground">disk</dt><dd>{h.disk.usedGb} of {h.disk.totalGb} GB</dd></>}
-            <dt className="text-muted-foreground">uptime</dt><dd>{uptime(h.uptimeS)}</dd>
-            {h.cost && <><dt className="text-muted-foreground">cost</dt><dd>${h.cost.monthUsd.toFixed(2)} this month, estimated at ${h.cost.hourlyUsd}/h since {h.cost.sinceIso.slice(0, 10)}</dd></>}
-          </dl>
-        )}
-        {!down && <HealthHistory points={history} />}
-      </PopoverContent>
-    </Popover>
-  );
-}
+// Pure helpers the usage tests import from here (they live in lib/vitals and workstream.ts).
+export { aggregateProfiles, mergeUsage } from "@/lib/vitals";
+export { untilReset } from "./workstream";

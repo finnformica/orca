@@ -14,6 +14,11 @@ export type ReviewThreadEvidence = {
   url?: string;
   resolved: boolean;
   alreadyHanded?: boolean;
+  /** Review-signal fields (reviewSignal only): the code it was left on has since changed; the
+   *  opener is a GitHub App / bot account; when it was opened. */
+  outdated?: boolean;
+  bot?: boolean;
+  createdAt?: string;
 };
 
 export type CiFailureEvidence = {
@@ -44,6 +49,9 @@ const truncate = (value: string, limit: number) => value.length > limit ? `${val
  *  when it last handed them over (enrichment `commentsSeenAt`) and only surfaces newer ones. */
 export type ConversationComment = {
   id: string; kind: "comment" | "review"; author?: string; createdAt: string; body: string; url?: string;
+  /** reviewSignal only: a review's state (APPROVED / CHANGES_REQUESTED / COMMENTED / DISMISSED) and
+   *  whether the author is a bot account. */
+  state?: string; bot?: boolean;
 };
 
 const COMMENTS_MAX = 30;
@@ -112,6 +120,53 @@ export async function reviewEvidence(cwd: string, pr: number): Promise<ReviewThr
     evidence.push(item);
   }
   return evidence;
+}
+
+/** Everything the board's review cluster and the PR page's Review panel are derived from
+ *  (workstream.ts `reviewDigest`), in ONE GraphQL call: every review with its state (approvals have
+ *  no body, so conversationComments can't carry them), every conversation comment, and every inline
+ *  thread — resolved and bot ones included, with the opener as author — because deciding what is
+ *  human, severe or actionable is the pure derivation's job, not the adapter's. The PR author's own
+ *  comments are dropped as in conversationComments; their thread openers are kept but marked by
+ *  `prAuthor`, so the derivation can exclude them. Bodies are bounded; the heuristics only read the top. */
+export type ReviewSignal = { prAuthor?: string; threads: ReviewThreadEvidence[]; comments: ConversationComment[] };
+
+const SIGNAL_BODY_LIMIT = 600;
+
+export async function reviewSignal(cwd: string, pr: number): Promise<ReviewSignal> {
+  const repoRaw = await gh(cwd, "repo", "view", "--json", "nameWithOwner");
+  const [owner, name] = String(JSON.parse(repoRaw).nameWithOwner ?? "").split("/");
+  if (!owner || !name) throw new Error("could not resolve GitHub repository");
+  const who = "author{__typename,login}";
+  const query = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){author{login},`
+    + `reviews(last:100){nodes{id,${who},state,body,submittedAt,url}},`
+    + `comments(last:100){nodes{id,${who},body,createdAt,url}},`
+    + `reviewThreads(first:100){nodes{id,isResolved,isOutdated,path,line,originalLine,comments(first:1){nodes{${who},body,url,createdAt}}}}}}}`;
+  const raw = await gh(cwd, "api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${pr}`);
+  const p = JSON.parse(raw)?.data?.repository?.pullRequest ?? {};
+  const prAuthor: string | undefined = p.author?.login;
+  const isBot = (a: any) => a?.__typename === "Bot" || botLogin(a?.login);
+  const body = (b: unknown) => truncate(String(b ?? "").trim(), SIGNAL_BODY_LIMIT);
+  const comments: ConversationComment[] = [];
+  for (const r of p.reviews?.nodes ?? []) {
+    if (!r?.submittedAt || (prAuthor && r.author?.login === prAuthor)) continue;
+    comments.push({ id: r.id ?? r.url ?? r.submittedAt, kind: "review", author: r.author?.login, createdAt: r.submittedAt, body: body(r.body), url: r.url, state: r.state, bot: isBot(r.author) });
+  }
+  for (const c of p.comments?.nodes ?? []) {
+    if (!c?.createdAt || (prAuthor && c.author?.login === prAuthor) || !String(c.body ?? "").trim()) continue;
+    comments.push({ id: c.id ?? c.url ?? c.createdAt, kind: "comment", author: c.author?.login, createdAt: c.createdAt, body: body(c.body), url: c.url, bot: isBot(c.author) });
+  }
+  comments.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const threads: ReviewThreadEvidence[] = [];
+  for (const t of p.reviewThreads?.nodes ?? []) {
+    const first = t?.comments?.nodes?.[0];
+    if (typeof t?.id !== "string" || !first) continue;
+    threads.push({
+      id: t.id, path: t.path || undefined, line: t.line ?? t.originalLine ?? undefined, author: first.author?.login, body: body(first.body),
+      url: first.url || undefined, resolved: Boolean(t.isResolved), outdated: Boolean(t.isOutdated), bot: isBot(first.author), createdAt: first.createdAt,
+    });
+  }
+  return { prAuthor, threads, comments };
 }
 
 function usefulLogExcerpt(raw: string): string | undefined {

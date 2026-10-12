@@ -540,6 +540,10 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && reviewEvidenceMatch) {
     return json(await gh.reviewEvidence(repo.repoPath, Number(reviewEvidenceMatch[1])));
   }
+  const reviewSignalMatch = p.match(/^\/api\/prs\/(\d+)\/review-signal$/);
+  if (req.method === "GET" && reviewSignalMatch) {
+    return json(await gh.reviewSignal(repo.repoPath, Number(reviewSignalMatch[1])));
+  }
   const ciEvidenceMatch = p.match(/^\/api\/prs\/(\d+)\/ci-evidence$/);
   if (req.method === "GET" && ciEvidenceMatch) {
     return json(await gh.ciEvidence(repo.repoPath, Number(ciEvidenceMatch[1])));
@@ -647,7 +651,10 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "GET" && p === "/api/agents") {
     countAgentPoll();
-    return json(await agentRows(repo));
+    // Queued messages live in the shared database, so the count is attached here for every row —
+    // this instance's worktrees and the others' alike — rather than published with stale inventory.
+    const [rows, queued] = await Promise.all([agentRows(repo), db.queuedCounts(repo.name).catch(() => new Map<string, number>())]);
+    return json(rows.map((r) => ({ ...(r as Record<string, unknown>), queued: queued.get((r as { branch: string }).branch) ?? 0 })));
   }
   if (req.method === "POST" && p === "/api/prs/label") {
     await gh.addLabel(repo.repoPath, body.pr, repo.previewLabel ?? "preview");
