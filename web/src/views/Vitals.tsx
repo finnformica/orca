@@ -1,37 +1,28 @@
 // The two vitals cards, Vercel-style. Usage: Claude (per hydra login, plus the fleet) and Codex as
-// rows of ring + label + value / limit — this replaced the header's usage meter. Instance: one card
+// rows of ring + label + value / limit (the Usage page). Instance: one card
 // per machine, its current vitals as a details grid and CPU % / memory GB as line graphs over a
 // chosen range from /api/health/history. Both read the shared polls in lib/vitals, so the Overview
 // and the Usage page never poll twice.
 import { useAtom } from "jotai";
-import { AlertTriangle, ChevronDown, ChevronUp, Server } from "lucide-react";
-import { usageExpandedAtom, usageStatsExpandedAtom } from "@/lib/atoms";
+import { AlertTriangle, Server } from "lucide-react";
+import { usageStatsExpandedAtom } from "@/lib/atoms";
 import { persistedKey, usePersisted } from "@/lib/persisted";
 import { useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
 import { HISTORY_RANGES, downsample, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, RowSkeleton, Segmented, StatusDot, VCard, type ChartOverlay } from "@/components/console";
 
-/** `all`: the Usage page — every login (never just the fleet), and the whole card is itself
- *  collapsible (starts collapsed, remembered — `orca.ui.v1.usageStatsExpanded`). On the Overview the card
- *  is always open, and Vercel's chevron (or the header row) toggles the per-login breakdown instead
- *  (`orca.ui.v1.usageExpanded`) — the two toggles are independent, since they collapse different things. */
-export function UsageCard({ all = false }: { all?: boolean }) {
+/** The Usage page's "Current windows": every login's windows (the fleet first, then each hydra
+ *  login, then Codex). The whole card is collapsible — starts collapsed, remembered
+ *  (`orca.ui.v1.usageStatsExpanded`) — since the Overview's Next-limit tile answers the usual question. */
+export function UsageCard() {
   const usage = useUsage();
   const loaded = useUsageLoaded();
   const groups = usageGroups(usage);
-  const [stored, setStored] = useAtom(usageExpandedAtom);
-  const [sectionStored, setSectionStored] = useAtom(usageStatsExpandedAtom);
-  const sectionExpanded = !all || sectionStored;
-  const loginsExpanded = all || stored;
-  const logins = groups.filter((g) => g.key.startsWith("login:")).length;
-  const canToggleLogins = !all && logins > 0;
-  const toggleLogins = () => setStored(!stored);
-  const toggleSection = () => setSectionStored(!sectionStored);
-  const shown = loginsExpanded ? groups : groups.filter((g) => !g.key.startsWith("login:"));
+  const [expanded, setExpanded] = useAtom(usageStatsExpandedAtom);
   return (
     <VCard slot="usage-card" title="Current windows" aside={<span className="text-muted-foreground text-xs">Claude &amp; Codex limits</span>}
-      onHeaderClick={all ? toggleSection : canToggleLogins ? toggleLogins : undefined} expanded={all ? sectionExpanded : canToggleLogins ? loginsExpanded : undefined}>
-      {sectionExpanded && (<>
+      onHeaderClick={() => setExpanded(!expanded)} expanded={expanded}>
+      {expanded && (<>
         {routingBroken(usage) && (
           <div data-slot="routing-warning" title="Claude Code's updater rewrote ~/.local/bin/claude. Re-run hydra's install.sh --shim on the bridge's machine."
             className="bg-geist-warning-bg text-geist-warning-fg flex items-start gap-2 border-b px-4 py-2 text-xs">
@@ -44,15 +35,7 @@ export function UsageCard({ all = false }: { all?: boolean }) {
             <RowSkeleton /><RowSkeleton />
           </div>
         ) : !groups.length ? <Empty>No provider is signed in on this machine.</Empty> : (
-          <div className="p-2">
-            {shown.map((g) => <UsageGroupRows key={g.key} group={g} />)}
-            {canToggleLogins && (
-              <button type="button" data-slot="usage-toggle" aria-expanded={loginsExpanded} onClick={toggleLogins}
-                className="text-muted-foreground hover:text-foreground flex w-full items-center justify-center gap-1 py-1.5 text-xs">
-                {loginsExpanded ? <>Show less <ChevronUp className="size-3.5" /></> : <>Show {logins} login{logins === 1 ? "" : "s"} <ChevronDown className="size-3.5" /></>}
-              </button>
-            )}
-          </div>
+          <div className="p-2">{groups.map((g) => <UsageGroupRows key={g.key} group={g} />)}</div>
         )}
       </>)}
     </VCard>

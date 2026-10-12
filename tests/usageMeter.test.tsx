@@ -1,6 +1,6 @@
-// E2E for the Usage card (server/usage.shapeUsage → /api/usage → views/Vitals.UsageCard), which
-// replaced the header's usage meter: Vercel's usage rows — a ring, a label, value / limit and the
-// time to reset — for Claude (the fleet, and each hydra login on expand) and Codex, an empty state
+// E2E for the Usage page's Current-windows card (server/usage.shapeUsage → /api/usage →
+// views/Vitals.UsageCard): Vercel's usage rows — a ring, a label, value / limit and the time to
+// reset — for Claude (the fleet, then each hydra login) and Codex, an empty state
 // when nothing is signed in, and the routing warning. Driven against the fake api
 // (tests/apiFake.ts), rendered into a real DOM. Plus the pure shapeUsage / mergeUsage checks.
 import { afterEach, beforeAll, expect, test } from "bun:test";
@@ -11,7 +11,7 @@ import * as store from "@/store";
 import { aggregateProfiles, App, mergeUsage, untilReset } from "@/App";
 import { navigate } from "@/lib/route";
 import { createStore, getDefaultStore } from "jotai";
-import { usageExpandedAtom, usageStatsExpandedAtom } from "@/lib/atoms";
+import { usageStatsExpandedAtom } from "@/lib/atoms";
 import { shapeCodexUsage, shapeUsage } from "../server/usage";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -22,7 +22,9 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
 let root: Root | undefined;
 let container: HTMLElement | undefined;
-async function mount(path = "/") {
+/** The Usage page, its Current-windows card open unless `open` is false (it starts collapsed). */
+async function mount(path = "/usage", open = true) {
+  getDefaultStore().set(usageStatsExpandedAtom, open);
   navigate(path);
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -35,8 +37,7 @@ afterEach(async () => {
   root = container = undefined;
   apiFake.reset();
   localStorage.clear();
-  getDefaultStore().set(usageExpandedAtom, false); // the atom outlives localStorage within a run
-  getDefaultStore().set(usageStatsExpandedAtom, false);
+  getDefaultStore().set(usageStatsExpandedAtom, false); // the atom outlives localStorage within a run
   navigate("/");
   await act(async () => { await store.refresh(); });
 });
@@ -151,7 +152,7 @@ test("shapeCodexUsage maps app-server windows and unix reset timestamps", () => 
   expect(shapeCodexUsage(null)).toBeNull();
 });
 
-test("with hydra's logins, the card leads with the fleet (mean per window, Fable included); every login is one click away", async () => {
+test("with hydra's logins, the card leads with the fleet (mean per window, Fable included), then every login", async () => {
   apiFake.usageData = {
     claude: { fiveHour: { utilization: 95, resetsAt: null }, sevenDay: { utilization: 60, resetsAt: null }, extra: null },
     codex: null,
@@ -164,10 +165,6 @@ test("with hydra's logins, the card leads with the fleet (mean per window, Fable
   // The fleet mean: 5h (95+12)/2 → 54, 1w (60+5)/2 → 33, Fable over the logins that have one → 21.
   expect(group("fleet")!.textContent).toContain("2 logins in rotation");
   expect(rows("fleet")).toEqual(["5-hour window 54% / 100%", "Weekly 33% / 100%", "Fable weekly 21% / 100%"]);
-  expect(group("login:personal")).toBeNull(); // collapsed on the Overview
-  const more = card().querySelector("[data-slot='usage-toggle']")!;
-  expect(more.textContent).toContain("Show 2 logins");
-  await act(async () => { more.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   expect(rows("login:personal")).toEqual(["5-hour window 95% / 100%", "Weekly 60% / 100%", "Fable weekly 21% / 100%"]);
   expect(rows("login:work")).toEqual(["5-hour window 12% / 100%", "Weekly 5% / 100%"]); // no Fable window
   expect(group("login:personal")!.querySelector("[data-slot='usage-state']")).toBeNull(); // "ok" needs no tag
@@ -182,9 +179,7 @@ test("logins that can't be routed to are excluded from the fleet mean but still 
       { name: "old", state: "disabled", usage: null },
     ],
   };
-  await mount("/usage"); // the Usage page lists every login, once its own card is opened
-  const header = () => card().querySelector<HTMLElement>("[data-slot='card-header']")!;
-  await act(async () => { header().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  await mount();
   expect(group("fleet")!.textContent).toContain("1 login in rotation · 1 exhausted"); // only `work` is in rotation…
   expect(rows("fleet")[0]).toBe("5-hour window 95% / 100%");                          // …so the mean IS its reading
   expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("exhausted");
@@ -231,51 +226,34 @@ test("mergeUsage keeps the last-known routing verdict across a poll that omitted
   expect(mergeUsage({ claude, codex: null, routing }, { claude, codex: null })).toEqual({ claude, codex: null, profiles: undefined, routing });
 });
 
-test("the card collapses again: Vercel's chevron and the header row both toggle, and the choice is remembered", async () => {
+test("the card starts collapsed, its header row toggles it, and the choice is remembered", async () => {
   const login = (name: string, five: number) => ({ name, state: "ok", usage: { fiveHour: { utilization: five, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
   apiFake.usageData = { claude: null, codex: null, profiles: [login("work", 40), login("home", 20)] };
-  await mount();
-  const toggle = () => card().querySelector<HTMLElement>("[data-slot='usage-toggle']")!;
+  await mount("/usage", false);
   const header = () => card().querySelector<HTMLElement>("[data-slot='card-header']")!;
   const click = (el: Element) => act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
-  expect(toggle().getAttribute("aria-expanded")).toBe("false");
-  expect(group("login:work")).toBeNull();
-  await click(toggle()); // the chevron at the foot opens it…
-  expect(group("login:work")).not.toBeNull();
-  expect(toggle().textContent).toContain("Show less");
-  expect(header().getAttribute("aria-expanded")).toBe("true");
-  expect(localStorage.getItem("orca.ui.v1.usageExpanded")).toBe("true");
-  // …and a remount (a reload) keeps it open.
-  act(() => root?.unmount()); container?.remove();
-  await mount();
-  expect(group("login:work")).not.toBeNull();
-  await click(toggle()); // the chevron closes it too
-  expect(group("login:work")).toBeNull();
-  expect(localStorage.getItem("orca.ui.v1.usageExpanded")).toBe("false");
-  await click(header()); // and the header row toggles it, as on Vercel
-  expect(group("login:home")).not.toBeNull();
-  await click(header());
-  expect(group("login:home")).toBeNull();
-  // The Usage page's whole "Current windows" card is itself collapsible — starts collapsed,
-  // remembered independently of orca.usageExpanded above — and lists every login with no per-login
-  // toggle once open.
-  act(() => root?.unmount()); container?.remove();
-  await mount("/usage");
   expect(group("login:work")).toBeNull(); // starts collapsed
   expect(header().getAttribute("aria-expanded")).toBe("false");
   await click(header());
   expect(group("login:work")).not.toBeNull();
+  expect(group("login:home")).not.toBeNull(); // every login, no per-login toggle
   expect(card().querySelector("[data-slot='usage-toggle']")).toBeNull();
   expect(localStorage.getItem("orca.ui.v1.usageStatsExpanded")).toBe("true");
   // …and a remount (a reload) keeps it open.
   act(() => root?.unmount()); container?.remove();
-  await mount("/usage");
+  navigate("/usage");
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  await act(async () => { root = createRoot(container!); root.render(<App />); await flush(); await flush(); });
   expect(group("login:work")).not.toBeNull();
+  await click(header());
+  expect(group("login:work")).toBeNull();
+  expect(localStorage.getItem("orca.ui.v1.usageStatsExpanded")).toBe("false");
 });
 
-test("the Usage page's card starts collapsed even with no hydra logins — just the fleet/Codex rows wait behind the chevron", async () => {
+test("the card starts collapsed even with no hydra logins — just the fleet/Codex rows wait behind the header", async () => {
   apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
-  await mount("/usage");
+  await mount("/usage", false);
   const header = () => card().querySelector<HTMLElement>("[data-slot='card-header']")!;
   expect(rows("claude")).toEqual([]);
   expect(header().getAttribute("aria-expanded")).toBe("false");
@@ -283,18 +261,17 @@ test("the Usage page's card starts collapsed even with no hydra logins — just 
   expect(rows("claude")).toEqual(["5-hour window 38% / 100%", "Weekly 55% / 100%"]);
 });
 
-test("the two usage toggles read back on a reload: default collapsed, bad JSON falls back, a pre-v1 choice carries over", () => {
-  // A fresh jotai store is a reload: mounting the atoms reads localStorage.
-  const reload = () => { const s = createStore(); s.sub(usageExpandedAtom, () => {}); s.sub(usageStatsExpandedAtom, () => {}); return s; };
-  expect(reload().get(usageExpandedAtom)).toBe(false);
+test("the card's toggle reads back on a reload: default collapsed, bad JSON falls back, a pre-v1 choice carries over", () => {
+  // A fresh jotai store is a reload: mounting the atom reads localStorage.
+  const reload = () => { const s = createStore(); s.sub(usageStatsExpandedAtom, () => {}); return s; };
   expect(reload().get(usageStatsExpandedAtom)).toBe(false);
   localStorage.setItem("orca.ui.v1.usageStatsExpanded", "true");
   expect(reload().get(usageStatsExpandedAtom)).toBe(true);
   localStorage.setItem("orca.ui.v1.usageStatsExpanded", "{not json");
   expect(reload().get(usageStatsExpandedAtom)).toBe(false);
-  localStorage.setItem("orca.ui.v1.usageExpanded", '"yes"'); // the wrong shape
-  expect(reload().get(usageExpandedAtom)).toBe(false);
+  localStorage.setItem("orca.ui.v1.usageStatsExpanded", '"yes"'); // the wrong shape
+  expect(reload().get(usageStatsExpandedAtom)).toBe(false);
   localStorage.clear();
-  localStorage.setItem("orca.usageExpanded", "true"); // saved before the versioned key existed
-  expect(reload().get(usageExpandedAtom)).toBe(true);
+  localStorage.setItem("orca.usageStatsExpanded", "true"); // saved before the versioned key existed
+  expect(reload().get(usageStatsExpandedAtom)).toBe(true);
 });

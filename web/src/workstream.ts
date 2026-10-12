@@ -1939,6 +1939,25 @@ export function limitForecasts(u: UsageReading | null, now = Date.now()): { key:
   return out;
 }
 
+/** The Overview's "Next limit" tile: the ONE window to watch, read off the forecast's groups. A
+ *  window already at its limit comes first (soonest reset), then the one on pace to run out soonest;
+ *  with neither, the window projected highest at reset (or, all too early, the fullest now) and
+ *  `state` says nothing is in sight. `label` reads "Claude weekly"; `inMs` is till the limit, or
+ *  till the reset for a reached window. null with no provider signed in. */
+export type NextLimit = { label: string; state: WindowForecast["state"]; inMs: number | null; pct: number; projectedPct: number | null };
+export function nextLimit(groups: ReturnType<typeof limitForecasts>): NextLimit | null {
+  const all = groups.flatMap((g) => g.rows.map((f) => ({ f, label: `${g.title} ${f.label === "Weekly" ? "weekly" : f.label}` })));
+  if (!all.length) return null;
+  const soonest = (xs: typeof all, ms: (f: WindowForecast) => number) => xs.reduce((a, b) => (ms(b.f) < ms(a.f) ? b : a));
+  const reached = all.filter((x) => x.f.state === "reached");
+  const willHit = all.filter((x) => x.f.state === "will-hit");
+  const pick = reached.length ? soonest(reached, (f) => f.resetsInMs ?? Infinity)
+    : willHit.length ? soonest(willHit, (f) => f.hitsInMs!)
+    : all.reduce((a, b) => ((b.f.projectedPct ?? b.f.pct) > (a.f.projectedPct ?? a.f.pct) ? b : a));
+  const { f } = pick;
+  return { label: pick.label, state: f.state, inMs: f.state === "reached" ? f.resetsInMs : f.hitsInMs, pct: f.pct, projectedPct: f.projectedPct };
+}
+
 // ---- the Agents list's columns ----
 // Only what you act on: the workstream, its run status, the PR (state + number), checks and the
 // review signal, the instance (only with more than one), when it last moved, and the actions. The

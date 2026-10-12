@@ -1,11 +1,12 @@
-// The Overview — Vercel's team overview, adapted. Left column: Usage (Claude per login + Codex, as
-// ring rows — the header meter's replacement) and ONE Agents card with the four numbers that matter
-// (running, needs attention, open PRs by state, merged today), each opening the Agents list already
-// filtered. Right column: one card per machine (vitals + CPU / memory line graphs over a range) and
-// Recent activity. Every number is a pure derivation over the board's rows (workstream.ts) — no
-// endpoint of its own — scoped by the top bar's repo switcher and the sidebar's instance switcher.
-// Below both, the Insights section (views/Insights.tsx: spend, runs, breakdown, limit forecast) —
-// the one part served by an aggregate endpoint, since it spans history the board's rows don't hold.
+// The Overview — what needs you, and is it healthy, at a glance. Left column: two one-number tiles,
+// Spend today (estimate) and Next limit (projection), each a link to the Usage page where the detail
+// lives (views/Insights.tsx); then ONE Agents card with the four numbers that matter (running, needs
+// attention, open PRs by state, merged today), each opening the Agents list already filtered. Right
+// column: one card per machine (vitals + CPU / memory line graphs with the running-sessions overlay)
+// and Recent activity. The Agents numbers are pure derivations over the board's rows (workstream.ts)
+// — no endpoint of their own — scoped by the top bar's repo switcher and the sidebar's instance
+// switcher. Analytics (windows per login, forecast, spend, runs, breakdown) are the Usage page's,
+// never repeated here.
 import type { ReactNode } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import { Activity } from "lucide-react";
@@ -17,8 +18,8 @@ import {
   type ActivityItem, type OverviewLane,
 } from "../workstream";
 import { Empty, SectionTitle, StatSkeleton, StatusDot, VCard, type DotTone } from "@/components/console";
-import { InstanceCard, UsageCard } from "./Vitals";
-import { InsightsSection } from "./Insights";
+import { InstanceCard } from "./Vitals";
+import { NextLimitTile, SpendTodayTile } from "./Insights";
 import { detailPath } from "./Agents";
 
 export function Overview() {
@@ -31,10 +32,15 @@ export function Overview() {
   const instances = instanceChoices();
   const machines = scope === "all" ? (instances.length ? instances : here ? [here] : []) : [scope];
   return (
-    <div className="space-y-8">
     <div className="grid gap-6 xl:grid-cols-[minmax(22rem,26rem)_minmax(0,1fr)]">
       <div className="min-w-0 space-y-6">
-        <div><SectionTitle>Usage</SectionTitle><UsageCard /></div>
+        <div>
+          <SectionTitle>Usage</SectionTitle>
+          <div className="grid grid-cols-2 gap-4">
+            <SpendTodayTile repo={repo === "all" ? undefined : repo} instance={scope === "all" ? undefined : scope} machines={machines} here={here} />
+            <NextLimitTile />
+          </div>
+        </div>
         <div><SectionTitle>Agents</SectionTitle><AgentsSnapshot rows={rows} /></div>
       </div>
       <div className="min-w-0 space-y-6">
@@ -47,8 +53,6 @@ export function Overview() {
         </div>
         <div><SectionTitle>Recent activity</SectionTitle><RecentActivity rows={rows} /></div>
       </div>
-    </div>
-    <InsightsSection repo={repo === "all" ? undefined : repo} instance={scope === "all" ? undefined : scope} machines={machines} here={here} />
     </div>
   );
 }

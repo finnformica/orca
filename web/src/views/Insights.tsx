@@ -1,23 +1,27 @@
-// The Overview's insight cards — Vercel's Usage / Observability, Linear Insights, Railway's cost
-// breakdown, adapted to what Orca can actually measure. One range (Today / 7d / 30d) drives all four:
+// The Usage page's analytics — Vercel's Usage / Observability, Linear Insights, Railway's cost
+// breakdown, adapted to what Orca can actually measure. One range (Today / 7d / 30d, the page
+// header's picker) drives the aggregate cards:
+//   Limit forecast  — each usage window projected at its current burn rate.
 //   Spend           — by category: the orchestrator's wakes, the workers it drives, your own runs,
 //                     and each machine's hourly cost. Every figure an ESTIMATE, labelled and explained.
 //   Runs            — runs per hour / day by outcome, success rate, Orca's check pass rate, median run.
 //   Where it went   — spend (or runtime) by model, by repo, or the top workstreams.
-//   Limit forecast  — each usage window projected at its current burn rate.
-// The first three read ONE aggregate (/api/insights, workstream.ts `insights`); the box cost and the
-// forecast are finished here from polls the Overview already runs (/api/health, /api/usage).
+// Spend, Runs and Where it went read ONE aggregate (/api/insights, workstream.ts `insights`); the box
+// cost and the forecast are finished here from the shared /api/health and /api/usage polls.
+// The Overview carries two one-number tiles from the same sources — Spend today and Next limit —
+// each a link here; the detail lives only on this page.
 import { useEffect, useState, type ReactNode } from "react";
-import { useAtom } from "jotai";
+import { useAtom, useSetAtom } from "jotai";
 import { BarChart3, Gauge } from "lucide-react";
+import { navigate } from "@/lib/route";
 import { insightRangeAtom } from "@/lib/atoms";
-import { useHealth, useInsights, useUsage } from "@/lib/vitals";
+import { useHealth, useInsights, useUsage, useUsageLoaded } from "@/lib/vitals";
 import { cn } from "@/lib/utils";
 import {
-  INSIGHT_RANGES, SPEND_CATEGORIES, boxSpend, formatDuration, formatUsd, limitForecasts,
+  INSIGHT_RANGES, SPEND_CATEGORIES, boxSpend, formatDuration, formatUsd, limitForecasts, nextLimit,
   type InsightBucket, type InsightSlice, type Insights, type SpendCategory, type WindowForecast,
 } from "../workstream";
-import { Empty, Pill, Segmented, SectionTitle, VCard } from "@/components/console";
+import { Empty, Pill, Segmented, VCard } from "@/components/console";
 
 const RANGE_WORDS: Record<number, string> = { 1: "today", 7: "the last 7 days", 30: "the last 30 days" };
 const CATEGORY_CLASS: Record<SpendCategory | "box", string> = {
@@ -29,11 +33,32 @@ const AGENT_BASIS = "Agent runs: the cost the Claude CLI reports for each run (t
 /** A placeholder block the size of what it stands in for, so nothing moves when data lands. */
 export const Skeleton = ({ className }: { className?: string }) => <span data-slot="skeleton" aria-hidden="true" className={cn("bg-muted block animate-pulse rounded", className)} />;
 
-/** The Insights section: a heading with the range picker, then the four cards. `machines`/`here` are
- *  the Overview's instance list, so each machine's hourly cost joins the spend. */
-export function InsightsSection({ repo, instance, machines, here }: { repo?: string; instance?: string; machines: string[]; here?: string }) {
+/** The range picker for the page header — one picker for every range-bound card. */
+export function InsightRangePicker() {
   const [days, setDays] = useAtom(insightRangeAtom);
+  return <Segmented label="Usage range" value={String(days)} onChange={(v) => setDays(Number(v))} options={INSIGHT_RANGES.map((r) => ({ value: String(r.days), label: r.label }))} />;
+}
+
+/** The Usage page's analytics cards. `machines`/`here` are the instance list, so each machine's
+ *  hourly cost joins the spend. */
+export function InsightsSection({ repo, instance, machines, here }: { repo?: string; instance?: string; machines: string[]; here?: string }) {
+  const [days] = useAtom(insightRangeAtom);
   const data = useInsights(days, repo, instance);
+  const [boxes, probes] = useBoxCosts(machines, here, repo);
+  return (
+    <div data-slot="insights" className="grid gap-4 lg:grid-cols-2">
+      {probes}
+      <ForecastCard />
+      <SpendCard data={data} days={days} boxes={boxes} />
+      <RunsCard data={data} days={days} />
+      <BreakdownCard data={data} />
+    </div>
+  );
+}
+
+/** Each machine's hourly cost, read by one probe per machine (hooks can't loop). A repo filter has
+ *  no machine to charge — a box runs every repo at once — so it yields none. */
+function useBoxCosts(machines: string[], here: string | undefined, repo: string | undefined): [{ instance: string; cost: BoxCost }[], ReactNode] {
   const [boxes, setBoxes] = useState<Record<string, BoxCost>>({});
   const onBox = (m: string, cost: BoxCost | undefined) => setBoxes((prev) => {
     const cur = prev[m];
@@ -42,22 +67,8 @@ export function InsightsSection({ repo, instance, machines, here }: { repo?: str
     if (cost) next[m] = cost; else delete next[m];
     return next;
   });
-  // A repo filter has no machine to charge: a box runs every repo at once.
-  const shownBoxes = repo ? [] : machines.filter((m) => boxes[m]);
-  return (
-    <div data-slot="insights">
-      <SectionTitle aside={<Segmented label="Insights range" value={String(days)} onChange={(v) => setDays(Number(v))} options={INSIGHT_RANGES.map((r) => ({ value: String(r.days), label: r.label }))} />}>
-        Insights
-      </SectionTitle>
-      {machines.map((m) => <BoxProbe key={m} instance={m} here={m === here} onCost={onBox} />)}
-      <div className="grid gap-4 lg:grid-cols-2">
-        <SpendCard data={data} days={days} boxes={shownBoxes.map((m) => ({ instance: m, cost: boxes[m]! }))} />
-        <RunsCard data={data} days={days} />
-        <BreakdownCard data={data} />
-        <ForecastCard />
-      </div>
-    </div>
-  );
+  const shown = repo ? [] : machines.filter((m) => boxes[m]).map((m) => ({ instance: m, cost: boxes[m]! }));
+  return [shown, machines.map((m) => <BoxProbe key={m} instance={m} here={m === here} onCost={onBox} />)];
 }
 
 type BoxCost = { hourlyUsd: number; sinceIso: string; billingSince?: string };
@@ -71,7 +82,10 @@ function BoxProbe({ instance, here, onCost }: { instance: string; here: boolean;
 
 // ---- Spend ----
 
-function SpendCard({ data, days, boxes }: { data: Insights | null; days: number; boxes: { instance: string; cost: BoxCost }[] }) {
+type SpendRow = { key: string; label: string; cls: string; usd: number; note: string; basis: string };
+
+/** The spend rows for a range: each agent category, then each machine's estimated box cost. */
+function spendRows(data: Insights | null, days: number, boxes: { instance: string; cost: BoxCost }[]): SpendRow[] {
   const boxRows = data ? boxes.map((b) => {
     const usd = boxSpend(b.cost, data.from, data.to, data.generatedAt);
     const hours = b.cost.hourlyUsd > 0 ? usd / b.cost.hourlyUsd : 0;
@@ -87,6 +101,11 @@ function SpendCard({ data, days, boxes }: { data: Insights | null; days: number;
     })),
     ...boxRows,
   ] : [];
+  return rows;
+}
+
+function SpendCard({ data, days, boxes }: { data: Insights | null; days: number; boxes: { instance: string; cost: BoxCost }[] }) {
+  const rows = spendRows(data, days, boxes);
   const total = rows.reduce((s, r) => s + r.usd, 0);
   return (
     <VCard slot="insight-spend" title="Spend" aside={<Pill slot="estimate-pill" title={AGENT_BASIS}>Estimate</Pill>}>
@@ -275,5 +294,61 @@ function ForecastCard() {
         </div>
       )}
     </VCard>
+  );
+}
+
+// ---- the Overview's two tiles: one number each, the detail one click away on Usage ----
+
+/** A compact clickable tile: a label (+ its Estimate / Projection pill), one value, one line. */
+function Tile({ slot, label, pill, value, sub, tone, onOpen }: { slot: string; label: string; pill: ReactNode; value: ReactNode | null; sub: ReactNode | null; tone?: "red" | "amber"; onOpen: () => void }) {
+  return (
+    <VCard slot={slot} className="min-w-0">
+      <div role="link" tabIndex={0} onClick={onOpen} onKeyDown={(e) => { if (e.key === "Enter") onOpen(); }} title="Open Usage"
+        className="hover:bg-accent/40 min-w-0 cursor-pointer space-y-1.5 p-4 transition-colors">
+        <div className="text-muted-foreground flex items-center justify-between gap-2 text-xs"><span className="truncate">{label}</span>{pill}</div>
+        {value === null ? <Skeleton className="h-7 w-24" /> : (
+          <div data-slot="tile-value" className={cn("truncate text-xl font-semibold tracking-tight tabular-nums", tone === "red" && "text-geist-red", tone === "amber" && "text-geist-warning-fg")}>{value}</div>
+        )}
+        {sub === null ? <Skeleton className="h-3 w-28" /> : <div data-slot="tile-sub" className="text-muted-foreground truncate text-xs">{sub}</div>}
+      </div>
+    </VCard>
+  );
+}
+
+/** Spend today (estimate): agent runs plus each machine's box hours since midnight. Opens Usage on Today. */
+export function SpendTodayTile({ repo, instance, machines, here }: { repo?: string; instance?: string; machines: string[]; here?: string }) {
+  const data = useInsights(1, repo, instance);
+  const [boxes, probes] = useBoxCosts(machines, here, repo);
+  const setDays = useSetAtom(insightRangeAtom);
+  const rows = spendRows(data, 1, boxes);
+  const total = rows.reduce((s, r) => s + r.usd, 0);
+  const box = rows.filter((r) => r.key.startsWith("box:")).reduce((s, r) => s + r.usd, 0);
+  return (
+    <>
+      {probes}
+      <Tile slot="tile-spend-today" label="Spend today" pill={<Pill slot="estimate-pill" title={AGENT_BASIS}>Estimate</Pill>}
+        value={data && `~${formatUsd(total)}`}
+        sub={data && `${data.runs.total} run${data.runs.total === 1 ? "" : "s"} · agents ${formatUsd(total - box)}${boxes.length ? ` · box ${formatUsd(box)}` : ""}`}
+        onOpen={() => { setDays(1); navigate("/usage"); }} />
+    </>
+  );
+}
+
+/** Next limit (projection): the one usage window to watch, from the forecast's own projection. */
+export function NextLimitTile() {
+  const usage = useUsage();
+  const loaded = useUsageLoaded();
+  const next = nextLimit(limitForecasts(usage));
+  const value = !loaded ? null : !next ? "—" : next.state === "reached" ? `${next.label} reached`
+    : next.state === "will-hit" ? `${next.label} in about ${span(next.inMs!)}` : "No limit in sight";
+  const sub = !loaded ? null : !next ? "No provider is signed in on this machine."
+    : next.state === "reached" ? (next.inMs !== null ? `resets in ${span(next.inMs)}` : "waiting on its reset")
+    : next.state === "will-hit" ? `at ${next.pct}% now, at the current pace`
+    : next.state === "ok" ? `${next.label} on pace for ~${next.projectedPct}% at reset`
+    : `${next.label} at ${next.pct}% — too early to project`;
+  return (
+    <Tile slot="tile-next-limit" label="Next limit" pill={<Pill slot="projection-pill" title={FORECAST_BASIS}>Projection</Pill>}
+      value={value} sub={sub} tone={next?.state === "reached" ? "red" : next?.state === "will-hit" ? "amber" : undefined}
+      onOpen={() => navigate("/usage")} />
   );
 }

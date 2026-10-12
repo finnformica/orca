@@ -183,16 +183,19 @@ and a spinner / dot for a base-branch preview — from one shared `/api/previews
 (`usePreviewList`). The
 orchestrator's window floats outside the shell (`App`'s `OrchestratorWindow`). Building blocks (card, ring,
 status dot, pill, details grid, line chart) are `components/console.tsx`.
-- **Overview** (`/`, `views/Overview.tsx`): a Usage card — Claude per window as ring + value / limit
-  rows (the fleet, every hydra login on expand) and Codex; it REPLACED the header usage meter — one
+- **Overview** (`/`, `views/Overview.tsx`) answers "what needs me, and is it healthy" at a glance;
+  **Usage** is the analytics home, and no figure is shown on both. The Overview has two one-number
+  tiles, each a link to Usage: **Spend today** (an *Estimate* pill — the CLI's list-price
+  `total_cost_usd` per run plus each box's `ORCA_HOURLY_USD` hours; it opens Usage on Today) and
+  **Next limit** (a *Projection* pill — `nextLimit` over `limitForecasts`: a reached window, else the
+  one on pace to run out soonest, e.g. "Claude weekly in about 2h", else "No limit in sight"). Then one
   card per machine (`views/Vitals.tsx`: a details grid plus CPU % / memory GB line graphs over
   6h/24h/7d from `/api/health/history`; it replaced the header's cloud chip), ONE Agents card with
   the four numbers (running, needs attention with its reasons, open PRs by state, merged today —
   each opens the Agents list filtered to exactly that), and Recent activity. **Needs attention**
   (`attentionReasons`): check failed, conflicts, CI red, changes requested, a run error or stop, or a
   message held behind a run that isn't coming (`/api/agents` attaches each branch's undispatched
-  count, `db.queuedCounts`). The Usage card's per-login breakdown is a remembered toggle (the
-  chevron at its foot or its header row, `orca.ui.v1.usageExpanded`); each machine card's range is remembered per machine (`orca.ui.v1.instanceRange:<instance>`). The first cut's
+  count, `db.queuedCounts`). Each machine card's range is remembered per machine (`orca.ui.v1.instanceRange:<instance>`). The first cut's
   separate Awaiting-you tiles were dropped as redundant. **Loading states are skeletons, not text**:
   the Agents card's four stat tiles (`StatSkeleton`), the Usage card's rows (`RowSkeleton`) and each
   machine's CPU/memory graphs (`ChartSkeleton`, `components/console.tsx`) render placeholders sized
@@ -214,11 +217,16 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   failed check), Created / Status / Duration / State / Model / Instance / PR / Preview and the
   Source (branch → base, latest commit); then the conversation where Build Logs sit (`ChatPanel
   logBar`: turn / error / warning counters, Find in chat, timestamped, tinted turns, the composer).
-- **Repos**, **Usage** (every login, every machine) and **Settings** (theme, density, the
-  read-only config). The Usage page's whole "Current windows" card is ITSELF collapsible — starts
-  collapsed, remembered (`orca.ui.v1.usageStatsExpanded`), independent of the Overview card's per-login
-  toggle above — since someone visiting `/usage` to read one number shouldn't have to scroll past
-  every hydra login first.
+- **Usage** (`/usage`, `views/Pages.tsx` + `views/Insights.tsx`): ONE Today / 7d / 30d picker in the
+  page header (`orca.ui.v1.usage.insightRange`) over "Current windows" (every login's windows as ring
+  rows — collapsible, starts collapsed, remembered `orca.ui.v1.usageStatsExpanded`, since Next limit
+  on the Overview already answers the usual question), **Limit forecast**, **Spend** by category
+  (orchestrator / workers it drives / your own runs / each box — every figure labelled an estimate
+  with its basis on hover), **Runs** (per hour/day by outcome, success rate, check pass rate, median)
+  and **Where it went** (by model / repo / workstream). Spend, Runs and Where it went read ONE
+  aggregate, `GET /api/insights` (`workstream.ts` `insights` over the turn table's per-run `model`,
+  `cost_usd` and token columns, migration 14); the machine cards are the Overview's, not repeated.
+- **Repos** and **Settings** (theme, density, the read-only config).
 Every number is a pure derivation over the assembled rows (`workstream.ts`: `overviewStats`,
 `attentionReasons`, `filterRows`, `sortRows`, `recentActivity`, `usageGroups`, `rowDuration`,
 `chatSummary`, `repoSummaries`, `agentFailure`) — no endpoint of its own, so the views can't

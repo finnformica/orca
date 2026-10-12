@@ -1,17 +1,19 @@
 // The sidebar's other pages. Repos: one row per configured repo with its agents' numbers (a click
-// opens Agents scoped to it). Usage: the Usage card with every login expanded, and every machine's
-// card. Settings: appearance, the board's density, and the configuration this bridge runs with
+// opens Agents scoped to it). Usage: the analytics home — every login's windows, the limit
+// forecast, spend, runs and where it went, under one range picker (views/Insights.tsx); the machine
+// cards stay on the Overview. Settings: appearance, the board's density, and the configuration this bridge runs with
 // (read-only — it is edited in orca.config.ts / the config table, not here).
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { FolderGit2, GitBranch } from "lucide-react";
-import { densityAtom, repoFilterAtom } from "@/lib/atoms";
+import { densityAtom, instanceScopeAtom, repoFilterAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
 import { useTheme, type Theme } from "@/lib/theme";
 import { instanceChoices, staleHours, thisInstance, useAgentProviders, useRepos, useWorkstreams } from "../store";
 import { ago, repoSummaries } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
 import { THEMES } from "@/components/Shell";
-import { InstanceCard, UsageCard } from "./Vitals";
+import { UsageCard } from "./Vitals";
+import { InsightRangePicker, InsightsSection } from "./Insights";
 import { RunningPreviews, TestMaster } from "./PreviewControl";
 
 export function Repos() {
@@ -65,15 +67,18 @@ export function UsagePage() {
   useRepos();
   const here = thisInstance();
   const instances = instanceChoices();
-  const machines = instances.length ? instances : here ? [here] : [];
+  const repo = useAtomValue(repoFilterAtom);
+  const scope = useAtomValue(instanceScopeAtom);
+  const all = instances.length ? instances : here ? [here] : [];
+  const machines = scope === "all" ? all : [scope];
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Usage</h1>
-      <UsageCard all />
-      <div>
-        <SectionTitle>Machines</SectionTitle>
-        <div className="space-y-4">{machines.map((m) => <InstanceCard key={m} instance={m} here={m === here || !instances.length} />)}</div>
+      <div className="flex items-center justify-between gap-4">
+        <h1 className="text-2xl font-semibold tracking-tight">Usage</h1>
+        <InsightRangePicker />
       </div>
+      <UsageCard />
+      <InsightsSection repo={repo === "all" ? undefined : repo} instance={scope === "all" ? undefined : scope} machines={machines} here={here} />
     </div>
   );
 }

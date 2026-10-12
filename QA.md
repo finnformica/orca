@@ -115,6 +115,9 @@ these are the things only a real screen shows.
   6h / 24h / 7d and confirm the pink line stays aligned with the blue/green one at every range.
 - **Usage page** (`/usage`) → the "Current windows" card should load already collapsed; reload the
   page after opening it once and confirm it stays open.
+- **Overview → Usage** → the Spend today and Next limit tiles should match the Usage page's Spend
+  (on Today) and Limit forecast; clicking Spend today lands on Usage with Today selected. The
+  windows per login, forecast, spend and runs should appear ONLY on Usage, never on the Overview.
 - **Cold load** → hard-refresh the Overview and the Usage page on a slow connection (or throttle it
   in devtools) and confirm the stat tiles / usage rows / machine graphs show shimmering placeholders
   sized like the real content, with no layout jump when the real data lands.

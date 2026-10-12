@@ -1,14 +1,15 @@
-// The Overview's Insights section (views/Insights.tsx) against the fake api: four cards that hold
-// their shape as skeletons until /api/insights answers, the Spend card adding each machine's hourly
-// cost (from the /api/health poll the instance cards already run) to the agent spend by category, a
-// range picker that refetches, a breakdown toggle, and the limit forecast from /api/usage. Every
-// estimate says so on hover.
+// The Usage page's analytics (views/Insights.tsx) against the fake api: four cards that hold their
+// shape as skeletons until /api/insights answers, the Spend card adding each machine's hourly cost
+// (from the shared /api/health poll) to the agent spend by category, the page's range picker that
+// refetches, a breakdown toggle, and the limit forecast from /api/usage. Every estimate says so on
+// hover. Plus the Overview's two tiles — Spend today and Next limit — each a link to Usage.
 import { afterEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { getDefaultStore } from "jotai";
 import { apiFake } from "./apiFake";
-import { InsightsSection } from "@/views/Insights";
+import { InsightRangePicker, InsightsSection, NextLimitTile, SpendTodayTile } from "@/views/Insights";
+import { navigate } from "@/lib/route";
 import { insightRangeAtom } from "@/lib/atoms";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, insights, type InsightRun } from "@/workstream";
 
@@ -17,9 +18,9 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 let root: Root | undefined; let container: HTMLElement | undefined;
 afterEach(async () => { await act(async () => { root?.unmount(); }); container?.remove(); apiFake.reset(); getDefaultStore().set(insightRangeAtom, 7); });
 
-async function render() {
+async function render(node: React.ReactNode = <><InsightRangePicker /><InsightsSection machines={["cloud"]} here="cloud" /></>) {
   container = document.createElement("div"); document.body.appendChild(container);
-  await act(async () => { root = createRoot(container!); root.render(<InsightsSection machines={["cloud"]} here="cloud" />); await flush(); await flush(); });
+  await act(async () => { root = createRoot(container!); root.render(node); await flush(); await flush(); });
 }
 const $ = (sel: string) => container!.querySelector(sel);
 const text = (sel: string) => $(sel)?.textContent ?? "";
@@ -75,7 +76,7 @@ test("Runs: success rate, check pass rate and median, bars per day; the range pi
   expect(container!.querySelectorAll('[data-slot="run-bar"]')).toHaveLength(7);
   expect(container!.querySelector('[data-slot="run-bar"]:last-child title')!.textContent).toContain("4 runs: 3 done, 1 failed");
 
-  const range = (label: string) => [...container!.querySelectorAll('[aria-label="Insights range"] button')].find((b) => b.textContent === label)!;
+  const range = (label: string) => [...container!.querySelectorAll('[aria-label="Usage range"] button')].find((b) => b.textContent === label)!;
   await act(async () => { range("Today").dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
   expect(apiFake.insightsCalls.at(-1)!.days).toBe(1);
   expect(getDefaultStore().get(insightRangeAtom)).toBe(1);
@@ -102,4 +103,54 @@ test("Limit forecast: each window projected at its burn rate, labelled as a proj
   expect(rows[0]!.textContent).toMatch(/runs out in ~1h 40m/);
   expect(rows[1]!.textContent).toContain("on pace for ~20% at reset");
   expect($('[data-slot="projection-pill"]')!.getAttribute("title")).toContain("average rate since the window opened");
+});
+
+// ---- the Overview's tiles ----
+
+const HEALTH = { instance: "cloud", hostname: "h", cores: 4, cpuPct: 1, load1: 0, load5: 0, memUsedGb: 1, memTotalGb: 2, uptimeS: 1, at: NOW, cost: { monthUsd: 1, hourlyUsd: 0.25, sinceIso: "2026-01-01T00:00:00Z", billingSince: "2026-01-01T00:00:00Z" } };
+
+test("Spend today: today's agents plus the box, labelled an estimate; a click opens Usage on Today", async () => {
+  getDefaultStore().set(insightRangeAtom, 30);
+  apiFake.insightsData = insights([run({ costUsd: 1.5 }), run({ costUsd: 0.5, orchestrated: true })], { days: 1, now: NOW, tzOffsetMin: new Date().getTimezoneOffset() }) as unknown as Record<string, unknown>;
+  apiFake.healthData = HEALTH;
+  await render(<SpendTodayTile machines={["cloud"]} here="cloud" />);
+  expect(apiFake.insightsCalls.every((c) => c.days === 1)).toBe(true); // always today, whatever Usage's range
+  const tile = $('[data-slot="tile-spend-today"]')!;
+  const total = Number(text('[data-slot="tile-spend-today"] [data-slot="tile-value"]').match(/^~\$(\d+\.\d\d)$/)![1]);
+  const box = Number(text('[data-slot="tile-sub"]').match(/box \$(\d+\.\d\d)/)![1]);
+  expect(text('[data-slot="tile-sub"]')).toContain("2 runs · agents $2.00");
+  expect(box).toBeGreaterThan(0); // some of today at $0.25/h
+  expect(total).toBeCloseTo(2 + box, 2);
+  expect(tile.querySelector('[data-slot="estimate-pill"]')!.getAttribute("title")).toContain("not what a subscription login is billed");
+  await act(async () => { tile.querySelector<HTMLElement>('[role="link"]')!.click(); await flush(); });
+  expect(location.pathname).toBe("/usage");
+  expect(getDefaultStore().get(insightRangeAtom)).toBe(1);
+  navigate("/");
+});
+
+test("Next limit: the window on pace to run out soonest, else nothing in sight; a projection, linking to Usage", async () => {
+  const at = (ms: number) => new Date(Date.now() + ms).toISOString();
+  apiFake.usageData = { claude: { fiveHour: { utilization: 20, resetsAt: at(2.5 * 3_600_000) }, sevenDay: { utilization: 80, resetsAt: at(2 * 86_400_000) }, extra: null }, codex: null };
+  await render(<NextLimitTile />);
+  // Weekly: 80% in 5 days → 16%/day → the last 20% in ~1d 6h, well before its reset in 2d.
+  expect(text('[data-slot="tile-value"]')).toBe("Claude weekly in about 1d 6h");
+  expect(text('[data-slot="tile-sub"]')).toBe("at 80% now, at the current pace");
+  expect($('[data-slot="tile-value"]')!.className).toContain("text-geist-warning-fg");
+  expect($('[data-slot="projection-pill"]')!.getAttribute("title")).toContain("average rate since the window opened");
+  await act(async () => { $('[data-slot="tile-next-limit"] [role="link"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(location.pathname).toBe("/usage");
+  navigate("/");
+  await act(async () => { root?.unmount(); }); container?.remove();
+  // Neither runs out: the window projected highest at reset is named (5h → ~20%, weekly → ~30%).
+  apiFake.usageData = { claude: { fiveHour: { utilization: 10, resetsAt: at(2.5 * 3_600_000) }, sevenDay: { utilization: 15, resetsAt: at(3.5 * 86_400_000) }, extra: null }, codex: null };
+  await render(<NextLimitTile />);
+  expect(text('[data-slot="tile-value"]')).toBe("No limit in sight");
+  expect(text('[data-slot="tile-sub"]')).toBe("Claude weekly on pace for ~30% at reset");
+});
+
+test("the tiles hold their shape as skeletons until their polls answer", async () => {
+  apiFake.holdUsage = true;
+  await render(<><SpendTodayTile machines={[]} /><NextLimitTile /></>);
+  expect($('[data-slot="tile-value"]')).toBeNull();
+  expect(container!.querySelectorAll('[data-slot="skeleton"]').length).toBe(4);
 });

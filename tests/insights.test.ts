@@ -12,7 +12,7 @@ import { join } from "node:path";
 import * as db from "../server/db";
 import * as agent from "../server/agent";
 import {
-  ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boxSpend, forecastWindow, insightDays, insightWindow, insights, limitForecasts, runCategory,
+  ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boxSpend, forecastWindow, insightDays, nextLimit, insightWindow, insights, limitForecasts, runCategory, type WindowForecast,
   type InsightRun,
 } from "../web/src/workstream";
 import { freshSchema, type TestDb } from "./pg";
@@ -164,5 +164,23 @@ describe("aggregation (pure)", () => {
       ["codex", undefined, ["5-hour window:ok"]], // a window with no known length is not projected
     ]);
     expect(limitForecasts(null)).toEqual([]);
+  });
+
+  test("nextLimit: a reached window first, then the soonest to run out, else the highest projected — one window, named", () => {
+    const f = (key: string, label: string, over: Partial<WindowForecast>): WindowForecast =>
+      ({ key, label, pct: 50, state: "ok", projectedPct: 60, hitsInMs: null, resetsInMs: H, ...over });
+    const g = (title: string, rows: WindowForecast[]) => ({ key: title.toLowerCase(), title, rows });
+    expect(nextLimit([])).toBeNull();
+    // Two windows running out: the sooner wins, whichever provider it is.
+    expect(nextLimit([
+      g("Claude", [f("a", "5-hour window", { state: "will-hit", hitsInMs: 3 * H }), f("b", "Weekly", { state: "will-hit", hitsInMs: 2 * H, pct: 80 })]),
+      g("Codex", [f("c", "Weekly", { state: "ok", projectedPct: 99 })]),
+    ])).toEqual({ label: "Claude weekly", state: "will-hit", inMs: 2 * H, pct: 80, projectedPct: 60 });
+    // A window already at its limit beats one that will be; inMs is then till its reset.
+    expect(nextLimit([g("Claude", [f("a", "5-hour window", { state: "will-hit", hitsInMs: H }), f("b", "Fable weekly", { state: "reached", pct: 100, resetsInMs: 5 * H })])]))
+      .toMatchObject({ label: "Claude Fable weekly", state: "reached", inMs: 5 * H });
+    // Nothing running out: the highest projection (an early window counts at its current %).
+    expect(nextLimit([g("Claude", [f("a", "5-hour window", { projectedPct: 40 }), f("b", "Weekly", { state: "early", projectedPct: null, pct: 70 })])]))
+      .toMatchObject({ label: "Claude weekly", state: "early", inMs: null });
   });
 });

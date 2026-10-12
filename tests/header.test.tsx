@@ -51,9 +51,10 @@ const click = async (el: Element) => { await act(async () => { el.dispatchEvent(
 const crumb = () => container!.querySelector('nav[aria-label="Breadcrumb"]')!.textContent;
 
 describe("console shell", () => {
-  test("'/' is the Overview: usage, the agents snapshot, instances and recent activity — not the kanban grid", async () => {
+  test("'/' is the Overview: the two usage tiles, the agents snapshot, instances and recent activity — not the kanban grid", async () => {
     await mount();
-    for (const slot of ["usage-card", "agents-card", "recent-activity"]) expect(container!.querySelector(`[data-slot="${slot}"]`)).not.toBeNull();
+    expect(container!.querySelector('[data-slot="usage-card"]')).toBeNull(); // the windows per login are Usage's, not repeated here
+    for (const slot of ["tile-spend-today", "tile-next-limit", "agents-card", "recent-activity"]) expect(container!.querySelector(`[data-slot="${slot}"]`)).not.toBeNull();
     expect(container!.querySelector('[data-slot^="instance-"]')).not.toBeNull();
     expect(gridEl()).toBeNull();
     expect(crumb()).toContain("Overview");

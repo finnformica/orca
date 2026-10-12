@@ -35,10 +35,8 @@ export const boardViewAtom = persistedAtom<BoardView>("agents.view", "list", one
 export const sidebarCollapsedAtom = persistedAtom("sidebarCollapsed", false, isBoolean, "orca.sidebarCollapsed");
 export const instanceScopeAtom = persistedAtom("instanceScope", "all", isString, "orca.instanceScope");
 export const agentQueryAtom = atom("");
-// The Overview's Usage card: just the fleet + Codex, or every hydra login too. Persisted.
-export const usageExpandedAtom = persistedAtom("usageExpanded", false, isBoolean, "orca.usageExpanded");
-// The Usage PAGE's whole "Current windows" card, independent of the above: collapsible, starts
-// collapsed (it's the first thing on a page someone usually visits to read ONE number), persisted.
+// The Usage page's "Current windows" card (every login's windows): collapsible, starts collapsed —
+// the Overview's Next-limit tile already answers the one question most visits ask — persisted.
 export const usageStatsExpandedAtom = persistedAtom("usageStatsExpanded", false, isBoolean, "orca.usageStatsExpanded");
 
 // Overlays any key, the palette or a button can open (components/Shortcuts.tsx). The orchestrator's
@@ -54,5 +52,6 @@ export const paletteOpenAtom = atom(false);
 export const shortcutsHelpOpenAtom = atom(false);
 // The palette's recently run item ids, newest first. Persisted per browser.
 export const paletteRecentAtom = persistedAtom<string[]>("palette.recent", [], isStringArray, "orca.palette.recent");
-// The Overview's Insights range in days (1 = today, 7, 30). Persisted; anything else reads as 7.
-export const insightRangeAtom = persistedAtom<number>("overview.insightRange", 7, (v): v is number => v === 1 || v === 7 || v === 30);
+// The Usage page's range in days (1 = today, 7, 30) — one picker for Spend, Runs and Where it went.
+// Persisted; anything else reads as 7. (The Overview's Spend-today tile is always today.)
+export const insightRangeAtom = persistedAtom<number>("usage.insightRange", 7, (v): v is number => v === 1 || v === 7 || v === 30);
