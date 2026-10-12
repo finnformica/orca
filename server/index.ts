@@ -501,6 +501,10 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && reviewEvidenceMatch) {
     return json(await gh.reviewEvidence(repo.repoPath, Number(reviewEvidenceMatch[1])));
   }
+  const reviewSignalMatch = p.match(/^\/api\/prs\/(\d+)\/review-signal$/);
+  if (req.method === "GET" && reviewSignalMatch) {
+    return json(await gh.reviewSignal(repo.repoPath, Number(reviewSignalMatch[1])));
+  }
   const ciEvidenceMatch = p.match(/^\/api\/prs\/(\d+)\/ci-evidence$/);
   if (req.method === "GET" && ciEvidenceMatch) {
     return json(await gh.ciEvidence(repo.repoPath, Number(ciEvidenceMatch[1])));

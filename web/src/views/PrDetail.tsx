@@ -15,6 +15,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ReviewPanel, reviewSig } from "./Review";
 
 /** Both detail pages pin their header — back / title / actions / tabs stay reachable while a long
  *  diff scrolls under them. Opaque + full-bleed (negative margins) so nothing peeks past the page
@@ -134,6 +135,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
         </div>
 
         <TabsContent value="overview" className="space-y-4 pt-3">
+          <ReviewPanel repo={repo} prNumber={number} sig={liveRow ? reviewSig(liveRow) : undefined} />
           {pr.body ? <Markdown>{pr.body}</Markdown> : <p className="text-muted-foreground text-sm">No description.</p>}
           {(pr.reviews.length > 0 || pr.comments.length > 0) && (
             <div className="space-y-2 border-t pt-3 text-sm">

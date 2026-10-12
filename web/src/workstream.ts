@@ -1,7 +1,7 @@
 // Pure workstream logic — the state machine and derivations. No React, no I/O,
 // so both the store and the e2e tests import it directly.
 
-import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
+import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentTurn, type TurnCheck } from "../../shared/agent";
 import { AUTO_MODEL } from "../../shared/models";
 export { attachCommand } from "../../shared/agent";
@@ -1311,4 +1311,132 @@ export function ago(ms: number, now = Date.now()): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+// ---- review signal: who approved, what humans said, what the AI reviewers flagged, what's open ----
+// Pure derivations over gh.reviewSignal (one PR's reviews, comments and inline threads), shared by
+// the list row's review cluster and the PR page's Review panel.
+
+/** AI code reviewers, matched as a case-insensitive substring of the login (their accounts vary:
+ *  `claude[bot]`, `gemini-code-assist`, `copilot-pull-request-reviewer`, `coderabbitai`…). Any login
+ *  ending in `[bot]`, or flagged a Bot by GitHub, is a bot too. Grow this list, not the checks. */
+export const AI_REVIEWERS = ["claude", "gemini", "copilot", "coderabbit", "cursor", "codex"];
+
+export function isBotAuthor(login?: string, bot?: boolean): boolean {
+  if (bot || !login) return true; // a deleted ("ghost") account has no login: not a person you can ask
+  const l = login.toLowerCase();
+  return l.endsWith("[bot]") || AI_REVIEWERS.some((name) => l.includes(name));
+}
+
+export type Severity = "critical" | "warning";
+const SEVERITY_WINDOW = 300;
+const CRITICAL_RE = /🔴|\bcritical\b|\bsevere\b|\bhigh[- ]severity\b|\bhigh[- ]priority\b|\bblock(?:ing|er)\b|\bmust[- ]fix\b|\bsecurity\b/i;
+const WARNING_RE = /🟠|\u26a0|\bwarning\b/i;
+const EMOJI_MARKER_RE = /🔴|🟠|\u26a0/;
+const SUMMARY_RE = /^\s*(?:<!--[^]*?-->\s*)*(?:#{1,6}\s*|\*\*)?(?:summary\b|walkthrough\b|review summary\b|pr summary\b|code review\b|pull request overview\b)/i;
+const STATUS_RE = /^\s*(?:\*\*)?(?:status\b|fyi\b|note:|update:|heads[- ]up\b|lgtm\b|✅)/i;
+const NIT_RE = /^\s*(?:\*\*|\[)?\(?nit(?:pick)?\b/i;
+
+/** The severity a (bot) review comment declares near its top — an emoji marker, a Gemini priority
+ *  badge (`high-priority.svg`), or a word like "critical" / "must fix" / "warning" in the first 300
+ *  characters. One function, so the heuristic is tuned in one place. */
+export function commentSeverity(body: string): Severity | undefined {
+  const top = body.slice(0, SEVERITY_WINDOW);
+  if (CRITICAL_RE.test(top)) return "critical";
+  if (WARNING_RE.test(top)) return "warning";
+  return undefined;
+}
+
+/** A bot's walkthrough / "## Summary" comment: an overview, not a request for a change. */
+export const isSummaryComment = (body: string) => SUMMARY_RE.test(body);
+/** "Status: …", "FYI", "Note:" — an update, not something to address. */
+export const isStatusUpdate = (body: string) => STATUS_RE.test(body);
+export const isNit = (body: string) => NIT_RE.test(body);
+
+/** The first readable line of a comment: badges, HTML comments and heading/emphasis marks dropped. */
+export function firstLine(body: string, max = 140): string {
+  const text = body.replace(/<!--[^]*?-->/g, "").replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/<[^>]+>/g, "").replace(/\*\*/g, "");
+  const line = text.split(/\r?\n/).map((l) => l.replace(/^[\s#>*_-]+|[*_]+$/g, "").trim()).find(Boolean) ?? "";
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+export type ReviewItem = {
+  id: string; kind: "thread" | "comment" | "review"; author?: string; body: string; url?: string;
+  createdAt?: string; path?: string; severity?: Severity; bot: boolean;
+  /** What to show: the first readable line, or for a severe finding the line that flags it (a
+   *  Claude review opens with "Claude finished…", not the finding). */
+  line: string;
+};
+
+/** The first line in the severity window that carries a marker — the finding itself. */
+function severityLine(body: string): string | undefined {
+  const top = body.slice(0, SEVERITY_WINDOW);
+  const hit = top.split(/\r?\n/).find((l) => CRITICAL_RE.test(l) || WARNING_RE.test(l));
+  return hit ? firstLine(hit) || undefined : undefined;
+}
+
+/** Everything someone else said that is still worth reading: every conversation comment and review
+ *  body, and every UNRESOLVED inline thread not opened by the PR's author. Newest first. */
+function reviewItems(s: ReviewSignal): ReviewItem[] {
+  const items: ReviewItem[] = [];
+  for (const c of s.comments) {
+    if (!c.body.trim()) continue; // a bare approval: shown as an approver, not a comment
+    items.push({ id: c.id, kind: c.kind, author: c.author, body: c.body, url: c.url, createdAt: c.createdAt, bot: isBotAuthor(c.author, c.bot), line: firstLine(c.body) });
+  }
+  for (const t of s.threads) {
+    if (t.resolved || (s.prAuthor && t.author === s.prAuthor) || !t.body.trim()) continue;
+    items.push({ id: t.id, kind: "thread", author: t.author, body: t.body, url: t.url, createdAt: t.createdAt, path: t.path, bot: isBotAuthor(t.author, t.bot), line: firstLine(t.body) });
+  }
+  return items.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+}
+
+/** Logins whose latest DECISIVE review is an approval. A later plain "commented" review does not
+ *  withdraw an approval on GitHub, so only APPROVED / CHANGES_REQUESTED / DISMISSED count. */
+export function approvers(s: ReviewSignal): string[] {
+  const latest = new Map<string, string>();
+  for (const r of [...s.comments].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+    if (r.kind !== "review" || !r.author || !r.state || !["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(r.state)) continue;
+    latest.delete(r.author); // re-insert so the order is by latest decision
+    latest.set(r.author, r.state);
+  }
+  return [...latest].filter(([, state]) => state === "APPROVED").map(([login]) => login);
+}
+
+/** Comments and open threads from people (not bots / AI reviewers). */
+export const humanComments = (s: ReviewSignal): ReviewItem[] => reviewItems(s).filter((i) => !i.bot);
+
+/** Bot / AI comments that declare a severity near their top. A summary comment counts only when it
+ *  carries an explicit emoji marker — its prose ("improves security…") is not a finding. */
+export function severeAiComments(s: ReviewSignal): ReviewItem[] {
+  return reviewItems(s).flatMap((i) => {
+    if (!i.bot || (isSummaryComment(i.body) && !EMOJI_MARKER_RE.test(i.body.slice(0, SEVERITY_WINDOW)))) return [];
+    const severity = commentSeverity(i.body);
+    // A badge-only line (Gemini's priority image) has no text of its own: keep the first line then.
+    return severity ? [{ ...i, severity, line: (/!\[/.test(severityLine(i.body) ?? "") ? undefined : severityLine(i.body)) ?? i.line }] : [];
+  });
+}
+
+/** Unresolved inline threads that ask for a change: not opened by the PR's author, not a status
+ *  update, not a bot's summary. Nits still count — `nits` says how many of them are. */
+export function actionableUnresolved(s: ReviewSignal): { count: number; nits: number } {
+  let count = 0, nits = 0;
+  for (const t of s.threads) {
+    if (t.resolved || (s.prAuthor && t.author === s.prAuthor) || isStatusUpdate(t.body) || isSummaryComment(t.body)) continue;
+    count++;
+    if (isNit(t.body)) nits++;
+  }
+  return { count, nits };
+}
+
+export type ReviewDigest = {
+  approvers: string[]; human: ReviewItem[]; severe: ReviewItem[];
+  unresolved: { count: number; nits: number }; worst?: Severity;
+};
+
+export function reviewDigest(s: ReviewSignal): ReviewDigest {
+  const severe = severeAiComments(s);
+  return {
+    approvers: approvers(s), human: humanComments(s), severe, unresolved: actionableUnresolved(s),
+    worst: severe.some((i) => i.severity === "critical") ? "critical" : severe.length ? "warning" : undefined,
+  };
 }

@@ -18,6 +18,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { TerminalDialog } from "@/components/Terminal";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewControl } from "./PreviewControl";
+import { ReviewCluster } from "./Review";
 import { AgentBadge, CardModelPicker, ConditionBadges, CopyDone, CopyMenu, LaneActions, NewDraft, useSummary, useTerminalOpen } from "./Board";
 
 // The board's default view: a Vercel-style overview. Stat tiles up top (what's running, what's
@@ -407,6 +408,7 @@ export function ListRow({ row }: { row: Row }) {
       <div className="flex min-w-0 flex-wrap items-center gap-1 [&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5">
         {row.following && !isDone && <Badge variant="outline" className="border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-400" title="Orca is watching this PR and auto-runs the agent on conflicts, CI and review.">Following <Eye /></Badge>}
         {row.prNumber && !isDone && <ConditionBadges row={row} />}
+        {row.prNumber && !isDone && <ReviewCluster row={row} />}
         {isLocal && row.mergeClean === "conflict" && <Badge variant="destructive">Conflicts with {baseBranch(row.repo)}</Badge>}
       </div>
       {/* Agent: status (incl. Orca's check verdict) + run, then the model picker. */}
