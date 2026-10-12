@@ -36,7 +36,10 @@ runcmd:
   # The orca user's toolchain: Bun, the Claude CLI, hydra with its shim (CLAUDE.md "Handover ladder").
   - sudo -iu orca bash -c 'curl -fsSL https://bun.sh/install | bash'
   - sudo -iu orca bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
-  - sudo -iu orca bash -c 'git clone https://github.com/finnformica/claude-hydra ~/.local/share/claude-hydra && ~/.local/share/claude-hydra/install.sh --shim'
+  # hydra's install.sh writes to ~/.zshrc; the box's shell is bash, so point it at .bashrc — and put
+  # the CLIs' install dirs on bash's PATH too (Ubuntu's .profile only adds ~/.local/bin at login).
+  - sudo -iu orca bash -c 'printf "\nexport PATH=\"\$HOME/.local/bin:\$HOME/.bun/bin:\$PATH\"\n" >> ~/.bashrc'
+  - sudo -iu orca bash -c 'git clone https://github.com/finnformica/claude-hydra ~/.local/share/claude-hydra && HYDRA_RC=~/.bashrc ~/.local/share/claude-hydra/install.sh --shim'
   - mkdir -p /opt/orca && chown orca:orca /opt/orca
   # Quoted as a whole: an unquoted `key: value` here is a YAML mapping, which makes cloud-init reject
   # the entire runcmd block (that is exactly what happened on the first launch — nothing ran).
