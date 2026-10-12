@@ -1471,3 +1471,197 @@ export function previewHref(svc: { url: string; localUrl?: string }, pageHost: s
   const loopback = pageHost === "localhost" || pageHost === "127.0.0.1" || pageHost === "[::1]" || pageHost === "::1";
   return loopback && svc.localUrl ? svc.localUrl : svc.url;
 }
+
+// ---- the Vercel-style console: usage rows, metric charts, durations, chat log, repos ----
+// Pure pieces the Overview / Agents / Agent / Usage / Repos pages render, so each number is tested
+// without a DOM.
+
+/** Compact countdown to a window's reset, e.g. "45m", "1h 15m", "2h", "7d 2h" — null if unknown or
+ *  already past. */
+export function untilReset(resetsAt: string | null, now = Date.now()): string | null {
+  if (!resetsAt) return null;
+  const ms = new Date(resetsAt).getTime() - now;
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const mins = Math.round(ms / 60_000);
+  if (mins < 60) return `${mins}m`;
+  if (mins < 24 * 60) {
+    const hours = Math.floor(mins / 60);
+    const minutes = mins % 60;
+    return `${hours}h${minutes ? ` ${minutes}m` : ""}`;
+  }
+  const days = Math.floor(mins / (24 * 60));
+  const hours = Math.floor((mins % (24 * 60)) / 60);
+  return `${days}d${hours ? ` ${hours}h` : ""}`;
+}
+
+/** Money carried as minor units (+ exponent) in its own currency, e.g. 8535/2/GBP → "£85.35". */
+export function formatMoney(minor: number, exponent: number, currency: string): string {
+  const amount = minor / 10 ** exponent;
+  try {
+    return new Intl.NumberFormat("en-GB", { style: "currency", currency, maximumFractionDigits: exponent }).format(amount);
+  } catch {
+    return `${amount.toFixed(exponent)} ${currency}`;
+  }
+}
+
+type Window = { utilization: number; resetsAt: string | null };
+type ClaudeReading = { fiveHour: Window; sevenDay: Window; fable?: Window | null; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
+type UsageReading = {
+  claude: ClaudeReading | null;
+  codex: { windows: (Window & { label: string })[] } | null;
+  profiles?: { name: string; usage: ClaudeReading | null; state?: string; email?: string }[];
+  routing?: { hydra: boolean; shim: boolean };
+};
+
+/** One line of the Usage card, Vercel's shape: a ring at `pct`, a label, and value / limit. */
+export type UsageRow = { key: string; label: string; pct: number; value: string; limit: string; resetsIn: string | null };
+/** A block of rows under one heading: the fleet, one hydra login, Codex. `state` is hydra's verdict
+ *  when it isn't "ok"; `dim` when hydra can't route to that login. */
+export type UsageGroup = { key: string; title: string; subtitle?: string; state?: string; dim?: boolean; rows: UsageRow[] };
+
+const CLAUDE_WINDOWS: [keyof Pick<ClaudeReading, "fiveHour" | "sevenDay" | "fable">, string][] = [["fiveHour", "5-hour window"], ["sevenDay", "Weekly"], ["fable", "Fable weekly"]];
+const LOGIN_OFF = (p: { usage: unknown; state?: string }) => !p.usage || p.state === "disabled" || p.state === "not signed in on this machine";
+
+function claudeRows(key: string, c: ClaudeReading, now: number): UsageRow[] {
+  const rows: UsageRow[] = [];
+  for (const [field, label] of CLAUDE_WINDOWS) {
+    const w = c[field] as Window | null | undefined;
+    if (w) rows.push({ key: `${key}:${field}`, label, pct: w.utilization, value: `${w.utilization}%`, limit: "100%", resetsIn: untilReset(w.resetsAt, now) });
+  }
+  if (c.extra) rows.push({
+    key: `${key}:extra`, label: "Extra usage", pct: c.extra.utilization,
+    value: formatMoney(c.extra.usedMinor, c.extra.exponent, c.extra.currency), limit: formatMoney(c.extra.limitMinor, c.extra.exponent, c.extra.currency), resetsIn: null,
+  });
+  return rows;
+}
+
+/** The Usage card's groups: with hydra, the fleet (mean per window over the logins in rotation)
+ *  then every login; without it, the one Claude login. Codex after. Empty when nothing is signed in. */
+export function usageGroups(u: UsageReading | null, now = Date.now()): UsageGroup[] {
+  if (!u) return [];
+  const groups: UsageGroup[] = [];
+  const profiles = u.profiles ?? [];
+  if (profiles.length) {
+    const live = profiles.filter((p) => !LOGIN_OFF(p));
+    if (live.length) {
+      const mean = (pick: (c: ClaudeReading) => Window | null | undefined): Window | null => {
+        const ws = live.map((p) => pick(p.usage!)).filter((w): w is Window => Boolean(w));
+        if (!ws.length) return null;
+        return { utilization: Math.round(ws.reduce((s, w) => s + w.utilization, 0) / ws.length), resetsAt: ws.map((w) => w.resetsAt).filter((r): r is string => Boolean(r)).sort()[0] ?? null };
+      };
+      const exhausted = live.filter((p) => p.state === "exhausted" || p.state === "locked").length;
+      groups.push({
+        key: "fleet", title: "Claude", subtitle: `${live.length} login${live.length === 1 ? "" : "s"} in rotation${exhausted ? ` · ${exhausted} exhausted` : ""}`,
+        rows: claudeRows("fleet", { fiveHour: mean((c) => c.fiveHour)!, sevenDay: mean((c) => c.sevenDay)!, fable: mean((c) => c.fable), extra: null }, now),
+      });
+    } else groups.push({ key: "fleet", title: "Claude", subtitle: "no login in rotation", rows: [] });
+    for (const p of profiles) {
+      groups.push({
+        key: `login:${p.name}`, title: p.name, subtitle: p.email, state: p.state && p.state !== "ok" ? p.state : undefined, dim: LOGIN_OFF(p),
+        rows: p.usage ? claudeRows(`login:${p.name}`, p.usage, now) : [],
+      });
+    }
+  } else if (u.claude) groups.push({ key: "claude", title: "Claude", rows: claudeRows("claude", u.claude, now) });
+  if (u.codex?.windows.length) groups.push({
+    key: "codex", title: "Codex",
+    rows: u.codex.windows.map((w, i) => ({
+      key: `codex:${i}`, label: w.label === "wk" ? "Weekly" : w.label === "5h" ? "5-hour window" : w.label, pct: w.utilization, value: `${w.utilization}%`, limit: "100%", resetsIn: untilReset(w.resetsAt, now),
+    })),
+  });
+  return groups;
+}
+
+/** Hydra is installed but the bridge's `claude` isn't its shim: every run silently uses one login. */
+export const routingBroken = (u: UsageReading | null): boolean => Boolean(u?.routing?.hydra && !u.routing.shim);
+
+/** Usage zone by how much of an allowance is burned: fine, caution (≥75%), the red zone (≥90%). */
+export const usageZone = (pct: number): "ok" | "warn" | "danger" => (pct >= 90 ? "danger" : pct >= 75 ? "warn" : "ok");
+
+/** The instance card's range picker. */
+export const HISTORY_RANGES = [{ label: "6h", hours: 6 }, { label: "24h", hours: 24 }, { label: "7d", hours: 168 }] as const;
+
+/** At most `max` points, each the mean of its time bucket — a week of minute samples is 10k points,
+ *  which no 600px line needs. Gaps survive: an empty bucket emits nothing. */
+export function downsample(points: { at: number; v: number }[], max: number, from: number, to: number): { at: number; v: number }[] {
+  if (points.length <= max) return points;
+  const width = Math.max(1, (to - from) / max);
+  const out: { at: number; v: number }[] = [];
+  let bucket = -1, sumV = 0, sumAt = 0, n = 0;
+  const flush = () => { if (n) out.push({ at: sumAt / n, v: sumV / n }); sumV = sumAt = n = 0; };
+  for (const p of points) {
+    const b = Math.floor((p.at - from) / width);
+    if (b !== bucket) { flush(); bucket = b; }
+    sumV += p.v; sumAt += p.at; n++;
+  }
+  flush();
+  return out;
+}
+
+/** A round axis maximum at or above `v`: 1, 2, 2.5 or 5 × 10^k. */
+export function niceMax(v: number): number {
+  if (!(v > 0)) return 1;
+  const exp = 10 ** Math.floor(Math.log10(v));
+  return ([1, 2, 2.5, 5, 10].find((m) => m * exp >= v) ?? 10) * exp;
+}
+
+/** `n` evenly spaced x-axis labels across [from, to]: clock time within a day, the date beyond. */
+export function timeTicks(from: number, to: number, n = 4): { at: number; label: string }[] {
+  const span = to - from;
+  return Array.from({ length: n }, (_, i) => {
+    const at = from + (span * i) / (n - 1);
+    const d = new Date(at);
+    const label = span > 36 * 3_600_000
+      ? d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })
+      : d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    return { at, label };
+  });
+}
+
+/** "44s", "1m 12s", "2h 5m" — Vercel's duration column. */
+export function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${s % 60 ? ` ${s % 60}s` : ""}`;
+  const h = Math.floor(m / 60);
+  return `${h}h${m % 60 ? ` ${m % 60}m` : ""}`;
+}
+
+/** How long the agent has been at it (running) or took (its last turn). Undefined when unknown. */
+export function rowDuration(row: Pick<OverviewRow, "agentStatus" | "agentStartedAt" | "transcript">, now = Date.now()): number | undefined {
+  if (row.agentStatus === "running" && row.agentStartedAt) return now - row.agentStartedAt;
+  const last = row.transcript?.[row.transcript.length - 1];
+  return last?.startedAt && last.finishedAt ? last.finishedAt - last.startedAt : undefined;
+}
+
+/** The chat card's header counters, like Build Logs' line / error / warning counts: a failed turn is
+ *  an error; a stopped one or a commit whose check failed is a warning. */
+export function chatSummary(turns: Pick<AgentTurn, "failed" | "stopped" | "check">[]): { turns: number; errors: number; warnings: number } {
+  return {
+    turns: turns.length,
+    errors: turns.filter((t) => t.failed).length,
+    warnings: turns.filter((t) => !t.failed && (t.stopped || (t.check && !t.check.ok))).length,
+  };
+}
+
+/** Find in chat: every word appears in the turn's instruction or response (case-insensitive). */
+export function turnMatches(turn: Pick<AgentTurn, "instruction" | "prompt" | "response">, q: string): boolean {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const hay = `${turn.instruction ?? promptInstruction(turn.prompt)}\n${turn.response ?? ""}`.toLowerCase();
+  return words.every((w) => hay.includes(w));
+}
+
+export type RepoSummary = { repo: string; total: number; running: number; attention: number; openPrs: number; local: number; mergedToday: number; lastActivity: number };
+
+/** One line per configured repo for the Repos page — the overview's numbers, scoped. */
+export function repoSummaries(rows: OverviewRow[], repos: string[]): RepoSummary[] {
+  return repos.map((repo) => {
+    const mine = rows.filter((r) => r.repo === repo);
+    const s = overviewStats(mine);
+    return {
+      repo, total: mine.length, running: s.running, attention: s.attention, openPrs: s.prs.total, local: s.local, mergedToday: s.mergedToday,
+      lastActivity: Math.max(0, ...mine.map(lastActivity)),
+    };
+  });
+}
