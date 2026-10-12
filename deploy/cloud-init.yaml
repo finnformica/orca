@@ -1,0 +1,41 @@
+#cloud-config
+# An Orca box on EC2, the way deploy/orca.service expects it. Launched by deploy/provision.sh.
+#
+# What this does unattended: Ubuntu packages, a local Postgres with an `orca` database, Tailscale
+# joined to your tailnet (the auth key is read from SSM Parameter Store, so it never sits in this
+# file), a user `orca` with Bun, the Claude CLI, hydra (its shim first on PATH) and `gh`.
+# What it cannot do unattended: sign in. After first boot, open an SSM session and, as `orca`, run
+#   gh auth login            # then: git clone <orca repo> /opt/orca && /opt/orca/deploy/bootstrap.sh
+#   hydra add <name>         # one per Claude login; `hydra add personal --existing` after `claude login`
+# bootstrap.sh builds the UI, writes .env with the tailnet address, and installs the systemd unit.
+hostname: orca-box
+package_update: true
+packages: [git, jq, curl, unzip, postgresql, postgresql-contrib, build-essential]
+users:
+  - name: orca
+    groups: [sudo]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+snap:
+  commands:
+    - snap install aws-cli --classic
+runcmd:
+  # Tailscale: the box is reached ONLY over the tailnet (the security group has no ingress at all).
+  - curl -fsSL https://tailscale.com/install.sh | sh
+  - REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region); KEY=$(aws ssm get-parameter --region "$REGION" --name /orca/tailscale-authkey --with-decryption --query Parameter.Value --output text) && tailscale up --authkey="$KEY" --hostname=orca-box --ssh
+  # Postgres: one local database; the laptop reaches it over the tailnet (see bootstrap.sh).
+  - sudo -u postgres psql -c "CREATE ROLE orca LOGIN PASSWORD 'orca'" || true
+  - sudo -u postgres psql -c "CREATE DATABASE orca OWNER orca" || true
+  - sed -i "s/^#listen_addresses = 'localhost'/listen_addresses = '*'/" /etc/postgresql/*/main/postgresql.conf
+  - echo "host all all 100.64.0.0/10 scram-sha-256" >> /etc/postgresql/*/main/pg_hba.conf
+  - systemctl restart postgresql
+  # GitHub CLI (apt, from GitHub's repo).
+  - curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg
+  - echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
+  - apt-get update && apt-get install -y gh
+  # The orca user's toolchain: Bun, the Claude CLI, hydra with its shim (CLAUDE.md "Handover ladder").
+  - sudo -iu orca bash -c 'curl -fsSL https://bun.sh/install | bash'
+  - sudo -iu orca bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+  - sudo -iu orca bash -c 'git clone https://github.com/finnformica/claude-hydra ~/.local/share/claude-hydra && ~/.local/share/claude-hydra/install.sh --shim'
+  - mkdir -p /opt/orca && chown orca:orca /opt/orca
+  - echo "orca-box: ready for sign-in (see /var/log/cloud-init-output.log)" > /etc/motd

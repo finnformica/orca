@@ -376,7 +376,14 @@ worktrees it can see (`worktree_inventory`) so the board shows both. Leases, the
 files, `~/.claude/projects` backfill, preview ports, and `/api/usage` are **per host** — they
 describe the instance that answered, which is right for leases and wrong-but-tolerable for the
 usage meter. `deploy/orca.service` is the systemd unit; `bun run build` then `bun run server` is
-the whole deploy. The unit's `PATH` must hold `~/.local/bin` (hydra + the `claude` shim) and
+the whole deploy. **Provisioning a box:** `deploy/provision.sh` launches an EC2 instance (default
+VPC, a security group with NO ingress, the SSM instance profile) with `deploy/cloud-init.yaml`,
+which installs Postgres, Tailscale (auth key read from SSM Parameter Store
+`/orca/tailscale-authkey`), Bun, the Claude CLI, hydra + shim and `gh`; sign-ins can't be
+unattended, so after first boot `gh auth login`, clone to `/opt/orca`, `hydra add …`, then
+`deploy/bootstrap.sh` builds, writes `.env` bound to the tailnet address and starts the unit. The
+laptop points `ORCA_DATABASE_URL` at the box's Postgres over the tailnet. Modelled on a teammate's
+"chorus-server" (m7i.2xlarge, Ubuntu 24.04, SSM-only). The unit's `PATH` must hold `~/.local/bin` (hydra + the `claude` shim) and
 `jq`/`curl` (hydra's dependencies), and the box runs `hydra add … ; install.sh --shim` once. `.github/workflows/check.yml` runs the gate on Linux, which is where a
 macOS-only path (Keychain, `clonefile`) or a tool-flag difference would show first. **Pin the
 Claude Code version on the server:** `--bare` is slated to become the default for `-p`, and bare
