@@ -214,7 +214,11 @@ async function api(req: Request, url: URL): Promise<Response> {
   const body: any = req.method === "POST" || req.method === "PUT" ? await req.json().catch(() => ({})) : {};
   // The orchestrator. Its tool route carries the repo INSIDE the command's arguments, so these are
   // answered before a request is resolved to (and possibly forwarded for) a repo.
-  if (p.startsWith("/api/orchestrator") && cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName()) {
+  // The orchestrator's live stream too: its turns are in the shared database (so /api/turns answers
+  // anywhere), but the "a turn started / finished" events come off the bus of the process that ran
+  // it. Served here, the window never heard a reply land and showed "working…" until a reload.
+  const orchestratorStream = p === "/api/turns/stream" && (url.searchParams.get("repo") ?? body.repo) === ORCHESTRATOR_REPO;
+  if ((p.startsWith("/api/orchestrator") || orchestratorStream) && cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName()) {
     // ONE instance hosts the orchestrator (orchestratorOn); everything about it goes there.
     const base = cfg.instances?.[cfg.orchestratorOn];
     if (!base) return json({ error: `the orchestrator lives on "${cfg.orchestratorOn}", which has no address configured (set instances.${cfg.orchestratorOn})` }, 502);
