@@ -279,6 +279,8 @@ test("O3: messages that arrive mid-run are queued and drained as ONE resumed wak
   expect(turns[1]!.prompt).not.toContain("You are Orca's orchestrator");
   expect(turns[1]!.prompt).toContain("## Board\n(no workstreams)");
   expect(turns[1]!.prompt).toContain("## Models\n`spawn` requires --model."); // the model rule rides every wake, resumed or not
+  expect(turns[1]!.prompt).toContain("## Commands\n  orca board"); // and so does the command reference — a resumed session learns new verbs
+  expect(turns[1]!.prompt).toContain("orca move --repo <repo> --branch <branch> --to <instance>");
 });
 
 test("O4: the wake cap pauses self-waking; your next message resumes it with what was held", async () => {
