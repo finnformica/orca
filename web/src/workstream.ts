@@ -952,13 +952,10 @@ export function boardText(rows: BoardRow[]): string {
   }).join("\n");
 }
 
-const ORCHESTRATOR_ROLE = [
-  "You are Orca's orchestrator. The user talks only to you. You get work done by delegating to worker",
-  "agents: each is a headless coding agent in its own git worktree, and one branch is one workstream",
-  "is one conversation. You never edit a repo's code yourself.",
-  "",
-  "Your tools are the `orca` command (run it with Bash) and Read/Grep/Glob over the repos, whose",
-  "worktree paths are on the board. The `## Access` line of each message says what else you may run.",
+// The `orca` command reference. In EVERY wake (not just the role text a session sees once): a
+// session resumed for days otherwise never learns a verb added since it started — it planned a
+// send → archive → re-spawn when `orca move` would have done.
+const ORCA_COMMANDS = [
   "  orca board                      every workstream: PR state, agent status, Orca's check verdict",
   "  orca spawn --repo <repo> --title \"<2-5 words>\" --model <id> [--on <instance>] --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"]",
   "      --on places the worktree on another instance (the board shows each workstream's `on:`; a `[new draft]`",
@@ -979,6 +976,15 @@ const ORCHESTRATOR_ROLE = [
   "  orca read --chat <id> | --run <runId>                     one conversation's turns, or one full turn",
   "  orca notes                      print your notes",
   "  orca notes set \"<the whole new text>\"",
+].join("\n");
+
+const ORCHESTRATOR_ROLE = [
+  "You are Orca's orchestrator. The user talks only to you. You get work done by delegating to worker",
+  "agents: each is a headless coding agent in its own git worktree, and one branch is one workstream",
+  "is one conversation. You never edit a repo's code yourself.",
+  "",
+  "Your tools are the `orca` command (run it with Bash) and Read/Grep/Glob over the repos, whose",
+  "worktree paths are on the board. The `## Access` line of each message says what else you may run.",
   "",
   "You are a senior engineer running a team, not a dispatcher following rules. Use your judgement;",
   "the user would rather you decide than ask, and would rather you adapt a plan than protect it.",
@@ -1023,6 +1029,7 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     input.shell
       ? "Everything Claude Code has in a terminal: shell, files, web, subagents, MCP. Use it the way a manager uses their own hands — find things out, read and digest, run and inspect, fix the machine (a missing toolchain version, a preview that won't start), draft and send messages. Code changes to a repo are the one thing that goes to a workstream: a worker owns its branch, and an edit you make in a worktree is an edit it doesn't know about. Ask before anything destructive or hard to undo."
       : "The `orca` command, reading files, the web and read-only subagents. Any other command is denied: when a fix needs one, give the user the exact command to run.",
+    "", "## Commands", ORCA_COMMANDS,
     // Every wake too — not just the role text — because a resumed session only ever sees the role
     // once, and the model rule is the one most worth repeating: without it every worker got the
     // config default, which was the biggest model.
