@@ -46,7 +46,11 @@ export function ChatComposer({
   // Past submissions (oldest→newest) recallable with ↑/↓ from an empty box — resend a prior prompt.
   history?: string[];
 }) {
-  const [value, setValue] = useState(() => (persistKey ? loadDraft(persistKey).text : ""));
+  const [value, setText] = useState(() => (persistKey ? loadDraft(persistKey).text : ""));
+  // What the box holds as of the last edit, committed or not: a send that fails fast can land before
+  // React has rendered the clear, so the textarea's DOM value would still read as the sent text.
+  const latest = useRef(value);
+  const setValue = (v: string) => { latest.current = v; setText(v); };
   const [histIdx, setHistIdx] = useState<number | null>(null); // position while walking `history`, else null
   const [images, setImages] = useState<File[]>([]);
   const [hydrated, setHydrated] = useState(!persistKey);
@@ -147,7 +151,7 @@ export function ChatComposer({
       await send(sent.text, sent.images);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      const empty = !textRef.current?.value.trim();
+      const empty = !latest.current.trim();
       setError(empty ? msg : `${msg} — not sent: “${sent.text}”`);
       if (empty) { setValue(sent.text); setImages(sent.images); }
     }

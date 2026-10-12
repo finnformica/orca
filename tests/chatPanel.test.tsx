@@ -183,7 +183,9 @@ test("the composer clears as soon as you send, while the launch is still in flig
   expect(box.value).toBe("");
   expect(container!.querySelectorAll('[data-slot="chat-sending"]').length).toBe(2);
   await act(async () => { apiFake.releaseClaude?.(); await flush(); await flush(); });
-  expect(apiFake.claudePrompts.some((p) => p.includes("and now this") || p.includes("and then this"))).toBe(true);
+  expect(apiFake.claudePrompts.some((p) => p.includes("and now this"))).toBe(true);
+  expect(apiFake.claudePrompts.some((p) => p.includes("and then this"))).toBe(true);
+  expect(container!.querySelectorAll('[data-slot="chat-sending"]').length).toBe(0); // both answered
 });
 
 test("a send that fails while you're already typing the next message keeps both texts", async () => {

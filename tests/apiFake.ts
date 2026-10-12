@@ -8,6 +8,12 @@ import { mock } from "bun:test";
 import type { AgentOutcome, AgentProvider } from "../shared/agent";
 import type { CiFailureEvidence, ConversationComment, ReviewThreadEvidence } from "../server/gh";
 
+// Chains onto any launch already held, so one releaseClaude() frees them all.
+async function holdLaunch() {
+  await new Promise<void>((resolve) => { const prev = apiFake.releaseClaude; apiFake.releaseClaude = () => { prev?.(); resolve(); }; });
+  if (apiFake.claudeError) throw new Error(apiFake.claudeError);
+}
+
 export const apiFake = {
   worktrees: new Map<string, { branch: string; worktreePath: string }>(),
   // Held resolver for createWorktree, so a test can assert the optimistic card while the "server"
@@ -91,7 +97,8 @@ export const apiFake = {
   // When set, agent launch rejects with it — the failed-launch path (e.g. optimistic follow-up reopen).
   claudeError: null as null | string,
   // When true, api.claude blocks until releaseClaude() — lets a test assert the in-flight state
-  // (e.g. the Follow up button's spinner) while the launch is still running.
+  // (e.g. the Follow up button's spinner) while the launch is still running. releaseClaude frees
+  // EVERY held launch, and claudeError is read again after it, so a held launch can fail.
   holdClaude: false,
   releaseClaude: null as null | (() => void),
   // Provider usage served by api.usage (the header meter) — null hides the widget (default).
@@ -249,14 +256,14 @@ mock.module("@/api", () => ({
     claude: async (_repo: string, key: string, prompt: string) => {
       apiFake.calls.push(`claude:${key}`); apiFake.claudePrompts.push(prompt);
       if (apiFake.claudeError) throw new Error(apiFake.claudeError);
-      if (apiFake.holdClaude) await new Promise<void>((resolve) => { apiFake.releaseClaude = resolve; });
+      if (apiFake.holdClaude) await holdLaunch();
       return { status: "ok" };
     },
     agent: async (_repo: string, key: string, prompt: string, options: { provider?: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider; model?: string } = {}) => {
       apiFake.calls.push(`agent:${key}`); apiFake.claudePrompts.push(prompt);
       apiFake.agentLaunches.push({ key, prompt, provider: options.provider ?? "claude", resume: options.resume, history: options.history, handoffFrom: options.handoffFrom, model: options.model });
       if (apiFake.claudeError) throw new Error(apiFake.claudeError);
-      if (apiFake.holdClaude) await new Promise<void>((resolve) => { apiFake.releaseClaude = resolve; });
+      if (apiFake.holdClaude) await holdLaunch();
       return { status: "ok" };
     },
   },
