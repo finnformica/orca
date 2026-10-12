@@ -109,19 +109,22 @@ describe("console shell", () => {
     expect(container!.querySelector<HTMLInputElement>('input[aria-label="Search workstreams"]')!.value).toBe("gauge"); // one query, shared
   });
 
-  test("the sidebar's foot: you on ONE thin line (name · machine), Add New at the very bottom; collapsed, the expand button sits above you", async () => {
+  test("the sidebar's foot: Add New is the last action, above the divider; you on ONE thin line below it; collapsed, the expand button sits above you", async () => {
     await mount();
     const profile = container!.querySelector<HTMLElement>('[data-slot="profile"]')!;
     expect(profile.className).toContain("h-8"); // one line, not a two-line block
     expect(profile.textContent).toBe("Youlaptop"); // "You", a dot, then the machine
-    expect(profile.querySelector('[data-slot="profile-instance"]')!.textContent).toBe("laptop");
-    const foot = () => container!.querySelector<HTMLElement>('[data-slot="sidebar-foot"]')!;
-    expect(foot().lastElementChild!.getAttribute("data-slot")).toBe("add-new");
+    const actions = container!.querySelector<HTMLElement>('[data-slot="sidebar-actions"]')!;
+    const foot = container!.querySelector<HTMLElement>('[data-slot="sidebar-foot"]')!;
+    expect(actions.querySelector('[data-slot="add-new"]')).not.toBeNull();
+    expect(actions.nextElementSibling).toBe(foot); // straight above the divider (the foot's border-t) and you
+    expect(foot.className).toContain("border-t");
+    expect(foot.querySelector('[data-slot="add-new"]')).toBeNull();
     await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
     const you = container!.querySelector<HTMLElement>('[data-slot="sidebar-you"]')!;
     expect(you.className).toContain("md:flex-col-reverse"); // the toggle renders above the avatar
     expect(you.lastElementChild!.getAttribute("aria-label")).toBe("Expand sidebar");
-    expect(foot().lastElementChild!.getAttribute("aria-label")).toBe("Add New"); // still last, as an icon
+    expect(container!.querySelector('[data-slot="sidebar-actions"] [data-slot="add-new"]')!.getAttribute("aria-label")).toBe("Add New"); // an icon now
   });
 
   test("the sidebar collapses to icons and stays collapsed across a reload", async () => {

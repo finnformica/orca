@@ -37,7 +37,7 @@ afterEach(async () => {
   await act(async () => { await store.refresh(); });
 });
 
-test("TM3 sidebar: Previews is a page with the badges; Add New is the very bottom button, below you", async () => {
+test("TM3 sidebar: Previews is a page with the badges; Add New is the last action, above you", async () => {
   container = document.createElement("div");
   document.body.appendChild(container);
   await act(async () => { root = createRoot(container!); root.render(<App />); await flush(); await flush(); });
@@ -47,9 +47,7 @@ test("TM3 sidebar: Previews is a page with the badges; Add New is the very botto
   expect(previews.querySelector("[data-slot='previews-badge']")).toBeTruthy();
   const profile = sidebar.querySelector("[data-slot='profile']")!;
   const addNew = sidebar.querySelector("[data-slot='add-new']")!;
-  expect(profile.compareDocumentPosition(addNew) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  const foot = sidebar.querySelector("[data-slot='sidebar-foot']")!;
-  expect(foot.lastElementChild).toBe(addNew); // nothing below it
+  expect(addNew.compareDocumentPosition(profile) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy(); // Add New, then you
   // No preview buttons left in the foot or the top bar: the page holds Test master and the list.
   expect(container.querySelector("[aria-label='Test master']")).toBeNull();
   await act(async () => { navigate("/previews"); await flush(); await flush(); });

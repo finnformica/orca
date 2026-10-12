@@ -34,8 +34,8 @@ const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (r: Rout
   { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
 ];
 
-/** `sidebarActions` renders the very bottom of the sidebar, below you (Add New); it is told whether
- *  the sidebar is collapsed, so it can drop to an icon. */
+/** `sidebarActions` renders the last of the sidebar's actions (Add New), above the divider and you;
+ *  it is told whether the sidebar is collapsed, so it can drop to an icon. */
 export function Shell({ crumbs, sidebarActions, children }: {
   crumbs: ReactNode; sidebarActions?: (collapsed: boolean) => ReactNode; children: ReactNode;
 }) {
@@ -101,9 +101,13 @@ function Sidebar({ collapsed, onToggle, onClose, actions }: {
           );
         })}
       </nav>
-      {/* The foot: you (with the collapse toggle), then Add New as the very bottom button. Collapsed,
-          it is one icon column — the expand toggle above you, Add New below — so nothing overlaps. */}
-      <div data-slot="sidebar-foot" className={cn("mt-auto flex flex-col border-t p-2", collapsed ? "items-stretch gap-1 md:items-center" : "gap-1.5")}>
+      {/* Add New is the last of the actions — pushed to the bottom, just above the divider and you.
+          Collapsed, it is an icon in the same column. */}
+      <div data-slot="sidebar-actions" className={cn("mt-auto px-2 pb-2", collapsed && "flex flex-col md:items-center")}>
+        {actions?.(collapsed)}
+      </div>
+      {/* The foot: you, with the collapse toggle — above you when collapsed, so nothing overlaps. */}
+      <div data-slot="sidebar-foot" className={cn("flex flex-col border-t p-2", collapsed && "items-stretch md:items-center")}>
         <div data-slot="sidebar-you" className={cn("flex items-center gap-1", collapsed && "md:flex-col-reverse")}>
           <ProfileMenu collapsed={collapsed} />
           <button type="button" onClick={onToggle} className={cn("text-muted-foreground hover:text-foreground hover:bg-accent hidden size-8 shrink-0 items-center justify-center rounded-md md:inline-flex", !collapsed && "ml-auto")}
@@ -111,7 +115,6 @@ function Sidebar({ collapsed, onToggle, onClose, actions }: {
             {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
           </button>
         </div>
-        {actions?.(collapsed)}
       </div>
     </>
   );
