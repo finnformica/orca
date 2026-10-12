@@ -583,3 +583,13 @@ test("Enter sends; Shift+Enter and ⌘+Enter break the line instead", async () =
   expect(apiFake.agentLaunches.map((l) => l.prompt.includes("line one"))).toEqual([true]);
   expect(textarea.value).toBe("");
 });
+
+test("an older turn that arrived without its steps loads them on unfold", async () => {
+  apiFake.turnsData.set("r::feat", [{ id: "run-old", provider: "claude", prompt: "p", instruction: "old work", response: "Did it.", finishedAt: 2 }]); // no `steps`
+  apiFake.turnStepsData.set("run-old", [{ seq: 0, step: { kind: "tool", name: "Bash", input: { command: "bun test" }, at: 1 } }, { seq: 1, step: { kind: "result", output: "ok", at: 2 } }]);
+  await mount(base);
+  const unfold = [...container!.querySelectorAll("button")].find((b) => b.textContent?.trim() === "⏵ steps")!;
+  expect(unfold).toBeTruthy();
+  await act(async () => { unfold.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
+  expect(text()).toContain("1 step"); // fetched from /api/turns/steps from seq 0, then folded like any finished turn
+});

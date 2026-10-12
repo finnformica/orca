@@ -66,6 +66,9 @@ export const api = {
   disableAutoMerge: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/disable-auto-merge", { repo, pr }),
   convertToDraft: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/draft", { repo, pr }),
   adopt: (repo: string, branch: string): Promise<{ branch: string; worktreePath: string }> => post("/api/worktrees/adopt", { repo, branch }),
+  // Move a workstream's worktree to another instance; the bridge routes it to wherever it is now.
+  moveWorkstream: (repo: string, branch: string, to: string): Promise<{ branch: string; worktreePath: string; instance: string }> =>
+    post("/api/workstreams/move", { repo, branch, to }),
   handoff: (repo: string, branch: string, content: string): Promise<{ path: string }> => post("/api/handoff", { repo, branch, content }),
   // The durable enrichment + chat history (server/db.ts) — what localStorage used to hold.
   enrichment: (repo: string): Promise<Record<string, Record<string, unknown>>> => fetch(`/api/enrichment${q(repo)}`).then(res),
