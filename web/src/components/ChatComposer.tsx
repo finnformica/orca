@@ -5,6 +5,8 @@ import { usePrRefs } from "@/store";
 import { filterPrRefs, insertPrRef, prRefLabel, prTrigger, type PrRef } from "@/workstream";
 import { cn } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
+import { joinPrefill } from "@/lib/palette";
+import type { OrchestratorPrefill } from "@/lib/atoms";
 
 // The one chat input, shared by the new-draft box and the follow-up box. A single bordered
 // "chatbox" (à la Claude/ChatGPT) wrapping image thumbnails, the textarea, and a bottom toolbar
@@ -20,8 +22,12 @@ export function stepHistory(idx: number | null, dir: "up" | "down", len: number)
 }
 
 export function ChatComposer({
-  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt, className, repo,
+  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt, className, repo, prefill,
 }: {
+  // Text asked for from outside the box (the orchestrator's top-bar entry, O, the palette): it goes
+  // after the draft and the box takes focus. Every new `seq` is applied; one `session`'s asks replace
+  // each other (keystrokes typed in the entry before this box mounted).
+  prefill?: OrchestratorPrefill | null;
   // The repo this conversation is about (a workstream's, the new-draft box's selection). The # PR
   // picker inserts a bare `#123` for that repo's PRs and `repo#123` for any other's.
   repo?: string;
@@ -85,6 +91,20 @@ export function ChatComposer({
     const el = textRef.current;
     if (el && pendingCaret.current !== null) { el.focus(); el.setSelectionRange(pendingCaret.current, pendingCaret.current); pendingCaret.current = null; }
   }, [value]);
+  const prefillBase = useRef<{ session: number; base: string } | null>(null);
+  useEffect(() => {
+    if (!prefill) return;
+    const fresh = prefillBase.current?.session !== prefill.session;
+    if (fresh) prefillBase.current = { session: prefill.session, base: latest.current };
+    if (!fresh || prefill.text) {
+      const next = joinPrefill(prefillBase.current!.base, prefill.text);
+      pendingCaret.current = next.length; // the layout effect focuses and puts the caret at the end
+      setValue(next);
+      setHistIdx(null);
+    }
+    const el = textRef.current;
+    if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+  }, [prefill?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Clicking anywhere in the chrome (border, padding, toolbar gap) focuses the textarea, so the
   // whole box behaves like one input. preventDefault keeps the existing caret/selection intact.

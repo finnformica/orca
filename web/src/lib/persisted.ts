@@ -52,3 +52,12 @@ export function persistedAtom<T>(name: string, fallback: T, valid?: (v: unknown)
 
 /** A guard for a value that must be one of a fixed set of strings. */
 export const oneOf = <T extends string>(...values: readonly T[]) => (v: unknown): v is T => typeof v === "string" && (values as readonly string[]).includes(v);
+
+/** A restored choice that no longer exists (a repo dropped from the config, an instance retired)
+ *  reads as the default. */
+export const validChoice = (value: string, choices: readonly string[], fallback: string): string =>
+  value === fallback || choices.includes(value) ? value : fallback;
+
+export const isString = (v: unknown): v is string => typeof v === "string";
+export const isBoolean = (v: unknown): v is boolean => typeof v === "boolean";
+export const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every(isString);
