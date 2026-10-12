@@ -110,6 +110,15 @@ agent.onRunFinished(async (run) => orchestrator.onRunFinished(await loadConfig()
 // A wake that was in flight when the previous bridge stopped: re-queue what it was handling.
 void loadConfig().then((cfg) => orchestrator.recover(cfg, reconcile)).catch((e) => console.error("orca: orchestrator recovery failed", e));
 
+// Publish this instance's worktrees whether or not a browser is polling it: with two instances,
+// the board on the OTHER machine shows this one's workstreams from the shared inventory, which
+// only the owner can write. (A cloud box has no browser of its own; before this, its worktrees
+// appeared only while someone's board happened to be forwarded to it.)
+const INVENTORY_PUBLISH_MS = 10_000;
+setInterval(() => {
+  void loadConfig().then((cfg) => Promise.all(cfg.repos.filter(verbs.repoHere).map((r) => agentRows(r).catch((e) => console.error(`orca: inventory publish failed for ${r.name}`, e)))));
+}, INVENTORY_PUBLISH_MS).unref();
+
 // How long shutdown waits for outstanding history writes before leaving anyway.
 const DRAIN_TIMEOUT_MS = 5_000;
 
@@ -180,13 +189,72 @@ async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: Orc
     const upstream = await fetch(target, {
       method: req.method,
       headers: req.headers,
-      body: req.method === "GET" || req.method === "HEAD" ? undefined : await req.clone().text(),
+      // The body was consumed by the JSON parse above; re-serialise it (a clone of a consumed
+      // request has no text, and the forwarded request went out empty).
+      body: req.method === "GET" || req.method === "HEAD" ? undefined : JSON.stringify(body),
       signal: req.signal,
     });
     return new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
   } catch (e) {
     return json({ error: `${repo.runsOn} is unreachable: ${e instanceof Error ? e.message : String(e)}` }, 502);
   }
+}
+
+/** The Draft lane for a repo as THIS instance sees it: its own worktrees (reaped, statused,
+ *  published to the shared inventory) plus what the other instances published. Called by the
+ *  browser's poll and by the publish timer below, so an instance nobody is looking at still keeps
+ *  its inventory current — the board on the other machine is read from it. */
+async function agentRows(repo: RepoConfig): Promise<unknown[]> {
+  // Source of truth for the Draft lane: live worktrees + run status + local mergeability.
+  //
+  // An instance only inspects the repos IT runs — it cannot stat another machine's disk — and
+  // publishes what it found. The response is the union across instances, read back from Postgres,
+  // so a board on either machine shows both and an instance that is asleep leaves its rows stale
+  // rather than making the whole board slow or empty.
+  const instance = db.instanceName();
+  if (!verbs.repoHere(repo)) return foreignInventory(repo.name); // not checked out here: only what others see
+  let wts = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
+  // Reap worktrees whose PR has merged (incl. manual GitHub merges) so stale locals don't linger.
+  // Reap worktrees whose PR is done with — merged (branch deleted) or closed unmerged (branch kept,
+  // see git.reapWorktrees). Both lists are cached, so the hot poll pays at most one cheap gh list.
+  const [merged, closed] = await Promise.all([
+    gh.mergedBranches(repo.repoPath).catch(() => new Set<string>()), // empty for local-only repos
+    gh.closedBranches(repo.repoPath).catch(() => new Set<string>()),
+  ]);
+  const reaped = await git.reapWorktrees(repo.repoPath, repo.worktreeRoot, merged, closed, async (w) => {
+    agent.stop(w.worktreePath);
+    await agent.killByBranch(w.branch);
+    preview.stop(w.worktreePath, true); // reaped → drop its preview DB too
+  });
+  for (const r of reaped) await db.archive(repo.name, r.branch); // reaped from disk; its conversation is kept
+  const reapedBranches = new Set(reaped.map((r) => r.branch));
+  wts = wts.filter((w) => !reapedBranches.has(w.branch));
+  const live = await agent.detectRunning(wts.map((w) => w.branch)); // recover status lost on restart
+  const base = await git.resolveBase(repo.repoPath, repo.baseBranch); // origin/<base>, not stale local
+  const mine = await Promise.all(wts.map(async (w) => {
+    const run = agent.status(w.worktreePath);
+    const agentStatus = run.status !== "idle" ? run.status : live.has(w.branch) ? "running" : "idle";
+    return {
+      ...w,
+      agentStatus,
+      agentError: run.error,
+      agentResult: run.result,
+      agentOutcome: run.structured,
+      agentMeta: run.meta,
+      agentCheck: run.check,
+      agentStartedAt: run.startedAt,
+      agentFinishedAt: run.finishedAt,
+      agentProvider: run.provider,
+      agentRunId: run.runId,
+      agentPrompt: run.prompt,
+      sessionId: run.sessionId,
+      mergeClean: await git.mergeClean(repo.repoPath, base, w.branch),
+    };
+  }));
+  // Publish before responding, so the other instance's next poll sees this one's work.
+  await db.publishInventory(repo.name, mine.map((w) => ({ branch: w.branch, data: w as unknown as db.Fields })))
+    .catch((e) => console.error("orca: inventory publish failed", e)); // advisory — never fail a poll
+  return [...mine, ...(await foreignInventory(repo.name, instance))];
 }
 
 async function api(req: Request, url: URL): Promise<Response> {
@@ -498,57 +566,8 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ok: true });
   }
   if (req.method === "GET" && p === "/api/agents") {
-    // Source of truth for the Draft lane: live worktrees + run status + local mergeability.
-    //
-    // An instance only inspects the repos IT runs — it cannot stat another machine's disk — and
-    // publishes what it found. The response is the union across instances, read back from Postgres,
-    // so a board on either machine shows both and an instance that is asleep leaves its rows stale
-    // rather than making the whole board slow or empty.
     countAgentPoll();
-    const instance = db.instanceName();
-    if (!verbs.repoHere(repo)) return json(await foreignInventory(repo.name)); // not checked out here: only what others see
-    let wts = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
-    // Reap worktrees whose PR has merged (incl. manual GitHub merges) so stale locals don't linger.
-    // Reap worktrees whose PR is done with — merged (branch deleted) or closed unmerged (branch kept,
-    // see git.reapWorktrees). Both lists are cached, so the hot poll pays at most one cheap gh list.
-    const [merged, closed] = await Promise.all([
-      gh.mergedBranches(repo.repoPath).catch(() => new Set<string>()), // empty for local-only repos
-      gh.closedBranches(repo.repoPath).catch(() => new Set<string>()),
-    ]);
-    const reaped = await git.reapWorktrees(repo.repoPath, repo.worktreeRoot, merged, closed, async (w) => {
-      agent.stop(w.worktreePath);
-      await agent.killByBranch(w.branch);
-      preview.stop(w.worktreePath, true); // reaped → drop its preview DB too
-    });
-    for (const r of reaped) await db.archive(repo.name, r.branch); // reaped from disk; its conversation is kept
-    const reapedBranches = new Set(reaped.map((r) => r.branch));
-    wts = wts.filter((w) => !reapedBranches.has(w.branch));
-    const live = await agent.detectRunning(wts.map((w) => w.branch)); // recover status lost on restart
-    const base = await git.resolveBase(repo.repoPath, repo.baseBranch); // origin/<base>, not stale local
-    const mine = await Promise.all(wts.map(async (w) => {
-      const run = agent.status(w.worktreePath);
-      const agentStatus = run.status !== "idle" ? run.status : live.has(w.branch) ? "running" : "idle";
-      return {
-        ...w,
-        agentStatus,
-        agentError: run.error,
-        agentResult: run.result,
-        agentOutcome: run.structured,
-        agentMeta: run.meta,
-        agentCheck: run.check,
-        agentStartedAt: run.startedAt,
-        agentFinishedAt: run.finishedAt,
-        agentProvider: run.provider,
-        agentRunId: run.runId,
-        agentPrompt: run.prompt,
-        sessionId: run.sessionId,
-        mergeClean: await git.mergeClean(repo.repoPath, base, w.branch),
-      };
-    }));
-    // Publish before responding, so the other instance's next poll sees this one's work.
-    await db.publishInventory(repo.name, mine.map((w) => ({ branch: w.branch, data: w as unknown as db.Fields })))
-      .catch((e) => console.error("orca: inventory publish failed", e)); // advisory — never fail a poll
-    return json([...mine, ...(await foreignInventory(repo.name, instance))]);
+    return json(await agentRows(repo));
   }
   if (req.method === "POST" && p === "/api/prs/label") {
     await gh.addLabel(repo.repoPath, body.pr, repo.previewLabel ?? "preview");
