@@ -7,6 +7,7 @@ import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
 import * as preview from "./preview";
+import * as forward from "./forward";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { routingInfo, usage } from "./usage";
 import * as ledger from "./ledger";
@@ -199,6 +200,13 @@ async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: Orc
       body: req.method === "GET" || req.method === "HEAD" ? undefined : JSON.stringify(body),
       signal: req.signal,
     });
+    // A preview relayed from its owner is opened from THIS machine's browser: forward the service it
+    // opens to localhost here (a secure context — the app needs one) and hand back that URL.
+    if (url.pathname === "/api/preview" && upstream.ok) {
+      const key = String(url.searchParams.get("key") ?? body.key ?? "");
+      return json(forward.localize(key, (await upstream.json()) as { port: number; url: string; open: boolean }[], new URL(base).hostname));
+    }
+    if (url.pathname === "/api/preview/stop") forward.release(String(body.key ?? ""));
     return new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
   } catch (e) {
     return json({ error: `${repo.runsOn} is unreachable: ${e instanceof Error ? e.message : String(e)}` }, 502);

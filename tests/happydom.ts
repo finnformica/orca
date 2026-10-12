@@ -5,7 +5,9 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 // Bun's own, captured before happy-dom replaces the globals. A test that drives the BRIDGE's
 // network code (the preview readiness probe) needs both back: happy-dom's fetch CORS-blocks a real
 // port, and Bun's fetch (1.4+) rejects happy-dom's AbortSignal as "not of type AbortSignal".
-export const native = { fetch: Bun.fetch as typeof fetch, AbortSignal: globalThis.AbortSignal };
+// `Response` too: a Bun.serve handler in a test must return Bun's Response, not happy-dom's (which
+// Bun.serve doesn't recognise and answers with its welcome page).
+export const native = { fetch: Bun.fetch as typeof fetch, AbortSignal: globalThis.AbortSignal, Response: globalThis.Response };
 
 GlobalRegistrator.register();
 
