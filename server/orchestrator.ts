@@ -479,7 +479,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         ].join("\n");
       }
       const key = await verbs.ensureWorktree(repo, branch);
-      const svcs = await verbs.startPreview(cfg, repo, key, key);
+      const svcs = await verbs.startPreview(cfg, repo, key, key, branch);
       return `Starting the preview for ${repo.name}/${branch}: ${svcs.map((s) => `${s.name} ${s.url}`).join(", ")}. It takes a minute or more to boot and nothing wakes you when it is up: check with \`orca preview ${at} --status\`.`;
     }
     case "chats": {

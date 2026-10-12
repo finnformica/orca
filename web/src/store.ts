@@ -95,7 +95,11 @@ export type Enrichment = {
   commentsSeenAt?: string; // ISO: conversation comments up to here have been handed to the agent (see addressReview)
   slackNotifiedAt?: string; slackLastBumpedAt?: string; createdAt?: string;
   orchestrated?: boolean; // started or continued by the orchestrator, which is woken when its run ends
+  previewInstance?: PreviewPlacement; // written by the bridge that started the preview, cleared on stop
 };
+/** Where a branch's preview runs: the instance, and its key there (a worktree path ON that instance —
+ *  "Test on cloud" for a laptop worktree previews the box's own checkout of the branch). */
+export type PreviewPlacement = { instance: string; key: string; startedAt?: string };
 // The bridge owns enrichment (server/db.ts); this map is a local MIRROR of it. Reads stay synchronous
 // — `enrichOf` is called from render and from poll handlers — while writes go through the server and
 // are re-hydrated on the next poll. The mirror is updated optimistically first so the UI never waits
@@ -414,6 +418,8 @@ export type Row = {
   following?: boolean;
   /** The orchestrator started or continued this one, and hears when its agent finishes. */
   orchestrated?: boolean;
+  /** Its running preview's placement, from the server — so a fresh page finds it without a click. */
+  previewInstance?: PreviewPlacement;
   followUps?: string[];
   failingChecks?: string[];
   feedback?: string[];
@@ -498,7 +504,7 @@ export function assembleRows(): Row[] {
         mergeClean: wt?.mergeClean, remote: wt?.remote, instance: wt?.instance, promoted: e.promoted,
         prNumber: pr?.number, prBase: pr?.base, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
-        following: e.following, followUps: e.followUps, orchestrated: e.orchestrated,
+        following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, previewInstance: e.previewInstance,
         failingChecks: pr?.failingChecks, feedback: pr?.feedback,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
         lane: "DRAFT",
@@ -736,9 +742,16 @@ export async function ensureWorktree(row: Row, instance?: string): Promise<strin
   return worktreePath;
 }
 
-// Where each preview (by its worktree key) was placed, so status and stop reach the same instance.
-// A branch checked out on both instances makes the key alone ambiguous.
+// Where each preview (by its key) was placed, so status and stop reach the same instance — a branch
+// checked out on both instances makes the key alone ambiguous. The SERVER records it (enrichment's
+// `previewInstance`, written by the bridge that starts it), so a refreshed page or another device
+// finds it; this map only covers the moment between a click and the next hydrate.
 const previewPlacement = new Map<string, string | undefined>();
+const placementOf = (key: string): string | undefined =>
+  Object.values(enrichMap).find((e) => e.previewInstance?.key === key)?.previewInstance?.instance ?? previewPlacement.get(key);
+/** The key a card's preview is polled under: the recorded placement's (possibly another instance's
+ *  checkout), else the card's own worktree. */
+export const previewKeyOf = (row: Row): string | undefined => row.previewInstance?.key ?? row.worktreePath;
 
 /** Check out the branch locally (if needed) and spin up its preview services. Returns the preview
  *  key (the worktree path) so the caller can poll/stop it. */
@@ -748,7 +761,7 @@ export async function testLocally(row: Row, instance?: string): Promise<{ key: s
   const where = instance ?? row.instance ?? thisInstance();
   const worktreePath = await ensureWorktree(row, where);
   previewPlacement.set(worktreePath, where);
-  return { key: worktreePath, svcs: await api.preview(row.repo, worktreePath, worktreePath, where) };
+  return { key: worktreePath, svcs: await api.preview(row.repo, worktreePath, worktreePath, where, row.branch) };
 }
 
 // ---- master previews ("test master": preview a repo's base branch itself) ----
@@ -993,8 +1006,14 @@ export async function addressPr(row: Row, manual = true) {
   await refresh();
 }
 
-export const stopPreview = (worktreePath: string) => api.previewStop(worktreePath, previewPlacement.get(worktreePath));
-export const previewStatus = (worktreePath: string) => api.previewStatus(worktreePath, previewPlacement.get(worktreePath));
+/** Stop a preview on the instance that runs it: `instance` when the caller knows it (the running-
+ *  previews menu lists it), else its recorded placement. */
+export const stopPreview = (key: string, instance?: string) => {
+  const where = instance ?? placementOf(key);
+  previewPlacement.delete(key);
+  return api.previewStop(key, where);
+};
+export const previewStatus = (key: string) => api.previewStatus(key, placementOf(key));
 export const summary = (repo: string, worktreePath: string, base?: string) => api.summary(repo, worktreePath, base);
 
 export async function discardDraft(row: Row) {

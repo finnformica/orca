@@ -11,7 +11,9 @@ bun run build
 [ -f .env ] || cat > .env <<ENV
 ORCA_DEV_ROOT=/opt
 ORCA_INSTANCE=cloud
-ORCA_BIND=$ts_ip
+# Loopback AS WELL: an Orca preview on the box (Vite proxies /api to localhost:8787) and bin/orca
+# both reach the bridge there.
+ORCA_BIND=127.0.0.1,$ts_ip
 ORCA_PREVIEW_HOST=$ts_name
 ORCA_DATABASE_URL=postgres://orca:orca@localhost:5432/orca
 ORCA_TEST_DATABASE_URL=postgres://orca:orca@localhost:5432/postgres
