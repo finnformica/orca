@@ -31,3 +31,24 @@ test("the chip appears once config names another instance, and shows its vitals 
   expect(chip.textContent).toContain("cpu 12%");
   expect(chip.textContent).toContain("$1.23");
 });
+
+test("the popover graphs the last 24h of cpu and memory, labelled with the newest values", async () => {
+  const now = Date.now();
+  apiFake.healthHistoryData = [0, 1, 2].map((i) => ({ at: now - (2 - i) * 60_000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3 }));
+  container = document.createElement("div"); document.body.appendChild(container);
+  await act(async () => { root = createRoot(container!); root.render(<InstanceHealthChip />); await flush(); });
+  if (apiFake.releaseConfig) apiFake.releaseConfig();
+  await act(async () => { await store.configReady; await flush(); await flush(); });
+  const chip = container.querySelector('[data-slot="instance-health"]') as HTMLElement;
+  const line = chip.textContent;
+  expect(apiFake.healthHistoryCalls).toHaveLength(0); // nothing fetched until the popover opens
+  await act(async () => { chip.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 })); chip.click(); await flush(); await flush(); });
+  expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 24 }]);
+  const cpu = document.querySelector('[data-slot="health-chart-cpu"]')!;
+  const mem = document.querySelector('[data-slot="health-chart-mem"]')!;
+  expect(cpu.querySelector('[data-slot="health-chart-value"]')!.textContent).toBe("23%");
+  expect(mem.querySelector('[data-slot="health-chart-value"]')!.textContent).toBe("4.2 / 15.3 GB");
+  expect(cpu.querySelector("polyline")!.getAttribute("points")!.split(" ")).toHaveLength(3);
+  expect(mem.querySelector("polyline")).toBeTruthy();
+  expect(chip.textContent).toBe(line); // the one-line chip is unchanged
+});

@@ -21,7 +21,7 @@ import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
-import { health } from "./health";
+import { health, historyHours, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
@@ -121,6 +121,10 @@ setInterval(() => {
   void loadConfig().then((cfg) => Promise.all(cfg.repos.filter(verbs.repoHere).map((r) => agentRows(r).catch((e) => console.error(`orca: inventory publish failed for ${r.name}`, e)))));
 }, INVENTORY_PUBLISH_MS).unref();
 
+// This machine's vitals into instance_metric once a minute, for the header chip's 24h graphs
+// (server/health.ts). Each instance samples itself; either answers the history from Postgres.
+startMetricsSampler();
+
 // How many of a conversation's newest turns are sent with their steps attached (older ones load on unfold).
 const STEPS_FOR_TURNS = 40;
 
@@ -164,6 +168,7 @@ const notEnabled = (repo: RepoConfig, feature: string) =>
 const DATABASE_ONLY = new Set([
   "/api/turns", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
   "/api/usage", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
+  "/api/health/history",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
   // others published — a repo can live on several instances now, so no one instance owns the list.
   "/api/agents",
@@ -171,12 +176,16 @@ const DATABASE_ONLY = new Set([
   "/api/slack",
 ]);
 
+// DATABASE_ONLY routes whose `?instance=` selects rows rather than a machine — never forwarded.
+const INSTANCE_IS_A_FILTER = new Set(["/api/health/history"]);
+
 /** Forward a request to the instance that owns the repo. An SSE response is just a long-lived body,
  *  so the same hop carries the chat's live stream — the owner pushes from its own bus, and this
  *  instance is a pipe. Returns undefined when the request should be handled locally. */
 async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: OrcaConfig, body: Record<string, unknown>): Promise<Response | undefined> {
-  // An explicit `instance` on an otherwise local route (`/api/health?instance=cloud`) still forwards.
-  if (DATABASE_ONLY.has(url.pathname) && !url.searchParams.get("instance")) return undefined;
+  // An explicit `instance` on an otherwise local route (`/api/health?instance=cloud`) still forwards —
+  // except where `instance` names whose rows to read, not where to run.
+  if (DATABASE_ONLY.has(url.pathname) && (!url.searchParams.get("instance") || INSTANCE_IS_A_FILTER.has(url.pathname))) return undefined;
   const instance = db.instanceName();
   // Where this request belongs: an explicit instance, else the worktree's home, else the repo's
   // default (verbs.placement). A workstream placed on the laptop stays on the laptop even when the
@@ -360,6 +369,11 @@ async function api(req: Request, url: URL): Promise<Response> {
     // This machine's vitals, for the header's instance chip. `?instance=` reaches another instance
     // through the ordinary placement forwarding (an explicit instance beats everything).
     return json(await health());
+  }
+  if (req.method === "GET" && p === "/api/health/history") {
+    // An instance's recorded vitals (instance_metric), oldest first — read from Postgres, so either
+    // instance answers for either, even when the one asked about is down.
+    return json(await db.metricHistory(url.searchParams.get("instance") || db.instanceName(), historyHours(url.searchParams.get("hours"))));
   }
   if (req.method === "GET" && p === "/api/usage") {
     // Claude (OAuth usage endpoint) + Codex (local app-server) both expose read-only rate-limit

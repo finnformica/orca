@@ -57,6 +57,8 @@ export const apiFake = {
   adoptCalls: [] as { repo: string; branch: string; instance?: string }[],
   previewCalls: [] as { key: string; instance?: string }[],
   healthData: null as null | Record<string, unknown>,
+  healthHistoryData: [] as Record<string, unknown>[],
+  healthHistoryCalls: [] as { instance: string; hours?: number }[],
   // When true (set BEFORE the store is imported), api.config blocks until releaseConfig() — lets a
   // test mount the header before config has landed, the way a real first paint does.
   holdConfig: false,
@@ -100,7 +102,7 @@ export const apiFake = {
     profiles?: { name: string; usage: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: null; fable?: { utilization: number; resetsAt: string | null } | null }; state?: string; email?: string }[];
     routing?: { hydra: boolean; shim: boolean; bin?: string };
   },
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.healthData = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; },
 };
 
 mock.module("@/api", () => ({
@@ -227,6 +229,7 @@ mock.module("@/api", () => ({
       if (apiFake.compactError) throw new Error(apiFake.compactError);
       return { runId: "run-compact" };
     },
+    healthHistory: async (instance: string, hours?: number) => { apiFake.healthHistoryCalls.push({ instance, hours }); return apiFake.healthHistoryData; },
     health: async (instance?: string) => apiFake.healthData ?? { instance: instance ?? "cloud", hostname: "orca-box", cores: 4, cpuPct: 12, load1: 0.5, load5: 0.4, memUsedGb: 3.1, memTotalGb: 15.3, disk: { usedGb: 11, totalGb: 145 }, uptimeS: 90000, cost: { monthUsd: 1.23, hourlyUsd: 0.25, sinceIso: "2026-10-12T09:00:00.000Z" }, at: Date.now() },
     orchestrator: async () => apiFake.orchestratorState,
     orchestratorModel: async (model: string) => { apiFake.orchestratorState = { ...apiFake.orchestratorState, model }; return { ok: true as const }; },

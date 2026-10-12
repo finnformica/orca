@@ -36,6 +36,8 @@ export type InstanceHealth = {
   memUsedGb: number; memTotalGb: number; disk?: { usedGb: number; totalGb: number }; uptimeS: number;
   cost?: { monthUsd: number; hourlyUsd: number; sinceIso: string }; at: number;
 };
+/** One recorded sample of an instance's vitals (instance_metric), for the chip's history graphs. */
+export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number };
 export type PreviewSvc = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const post = (path: string, body: unknown) =>
@@ -139,6 +141,8 @@ export const api = {
   previewStop: (key: string, instance?: string): Promise<{ ok: true }> => post("/api/preview/stop", { key, instance }),
   // A machine's vitals (the header's instance chip); `instance` asks another instance for its own.
   health: (instance?: string): Promise<InstanceHealth> => fetch(`/api/health${instance ? `?instance=${encodeURIComponent(instance)}` : ""}`).then(res),
+  // Its recorded vitals over the last `hours` (default 24), read from Postgres by whichever instance answers.
+  healthHistory: (instance: string, hours = 24): Promise<MetricPoint[]> => fetch(`/api/health/history?instance=${encodeURIComponent(instance)}&hours=${hours}`).then(res),
   syncWorktrees: (repo: string): Promise<SyncResult[]> => post("/api/worktrees/sync", { repo }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>
     post("/api/worktrees/remove", { repo, worktreePath, branch, deleteBranch }),

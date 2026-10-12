@@ -401,6 +401,14 @@ Plain TCP, so Vite's HMR websocket rides it; dropped on stop; a port a local pre
 on the owner's URL. The other services keep the owner's URL (an http page may call another http origin).
 **Slack posts from the instance you click on** (`/api/slack` is in the answer-here set): it needs no
 worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box it failed with no token.
+**Machine metrics history:** each instance samples ITSELF once a minute (`startMetricsSampler` in
+`server/health.ts`, started from `server/index.ts`, reusing `health()`) into `instance_metric`
+(migration 11: instance, `at`, cpu %, load1, memory used/total, disk used; indexed on
+`(instance, at)`). Every insert also deletes that instance's own rows older than 30 days, so retention
+needs no second timer; a failed write is logged and swallowed. `GET /api/health/history?instance=&hours=`
+(24 by default, at most 720) is database-only and its `instance` is a filter, never a forward, so
+either machine graphs the other even while it is down. The header chip's popover draws the last 24h
+of CPU and memory as inline SVG (no charting dependency), fetched only while it is open.
 **Conversation loading with a remote database:** `/api/turns` attaches steps to the newest
 `STEPS_FOR_TURNS` (40) turns in ONE query (`db.stepsForRuns`); older turns fetch theirs on unfold
 (`/api/turns/steps` from seq 0). One query per turn over a 6ms link made a 300-turn conversation
