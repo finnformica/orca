@@ -105,7 +105,7 @@ export const apiFake = {
 
 mock.module("@/api", () => ({
   api: {
-    // Two instances, so the New-draft "run on" picker and the cards' instance chip render in tests.
+    // Two instances, so the cards' instance chip and "Move to" control render in tests.
     config: async () => { if (apiFake.holdConfig) await new Promise<void>((r) => { apiFake.releaseConfig = r; }); return ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24, agentProviders: ["claude", "codex", "cursor"], apiPort: 8787, instance: "laptop", instances: ["cloud"] }); },
     usage: async () => apiFake.usageData,
     agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),

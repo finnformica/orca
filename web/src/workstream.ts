@@ -3,6 +3,7 @@
 
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentTurn, type TurnCheck } from "../../shared/agent";
+import { AUTO_MODEL } from "../../shared/models";
 export { attachCommand } from "../../shared/agent";
 
 // Kanban lanes are driven by the REVIEW lifecycle only. Conflict / CI / mergeability
@@ -843,6 +844,14 @@ export function workerBrief(brief: WorkerBrief): string {
 export const NEW_DRAFT_MARKER = "[new draft]";
 export const newDraftMessage = (repo: string, prompt: string, instance?: string): string =>
   `${NEW_DRAFT_MARKER} repo: ${repo}${instance ? ` on: ${instance}` : ""}\n\n${prompt}`;
+
+/** Where a New-draft-box submission starts (the box no longer offers a picker). A direct launch
+ *  (a model chosen) always starts on the instance named "local", when one is configured, else the
+ *  repo's own default — moving to cloud afterwards is the card's "Move to" control, not this. Left
+ *  to the orchestrator (AUTO_MODEL), placement is untouched: no explicit instance, so `orca spawn`
+ *  keeps using the repo's `runsOn` default without `--on`. */
+export const draftInstance = (model: string, choices: string[], repoDefault?: string): string | undefined =>
+  model === AUTO_MODEL ? undefined : (choices.includes("local") ? "local" : repoDefault);
 
 /** Which model a worker should get, cheapest first. Fable is the scarce resource: the orchestrator
  *  is told to reach for it only when a cheaper model has already failed or the work is genuinely
