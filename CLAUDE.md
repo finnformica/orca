@@ -38,7 +38,9 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
 
 - **One Bun process** (`server/index.ts`, via `Bun.serve`) serves the built React SPA *and*
   a plain-JSON API. `Vite` is dev-only (HMR + proxy). The one streaming surface is the SSE turn
-  stream (`/api/turns/stream`) — everything else is request/response. **The API has no auth of its
+  stream (`/api/events`, ONE per tab, multiplexing every chat and relaying the other instances' buses —
+  a browser gets six HTTP/1.1 connections per host across all tabs, and a stream per chat starved the
+  PR page's fetches) — everything else is request/response. **The API has no auth of its
   own**, so the listen socket is loopback by default (`ORCA_BIND`, comma-separated addresses, adds the tailnet interface for a deployed
   instance, which binds its tailnet address and is reached only over Tailscale — never `0.0.0.0`).
   (History: a keystrokes-into-a-shell terminal WebSocket once made the loopback bind critical; the
@@ -428,6 +430,9 @@ mode never reads OAuth credentials, which would silently break every subscriptio
   binary via a PATH shim and run `git` against a scratch repo — so keep adapters shelling
   out to real binaries, not reimplementing them.
 - **Pure logic in `workstream.ts`**, so it's testable without booting anything.
+- **Browser polls use `poll()` (`web/src/lib/poll.ts`), never `setInterval(fetch…)`** — the bridge is
+  HTTP/1.1, six connections per host across all tabs; clock-driven polls queued hundreds deep behind a
+  busy pool and the PR page never loaded. Live push goes through the ONE stream (`lib/events.ts`).
 - **Ponytail:** reuse `git`/`gh`, no bespoke machinery. Shortest working change wins.
 - **Node is blocked behind an unset asdf** — always run Node-based tools through Bun:
   `bunx --bun tsc`, `bunx --bun vite`. Plain `bunx`/`npm` will fail.

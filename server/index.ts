@@ -14,7 +14,7 @@ import * as ledger from "./ledger";
 import * as db from "./db";
 import * as transcript from "./transcript";
 import { backfillRun } from "./backfill";
-import * as bus from "./bus";
+import { eventStream } from "./events";
 import * as lease from "./lease";
 import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
@@ -109,6 +109,10 @@ agent.onQueuedMessage(async (message) => {
 // The orchestrator's wake loop: a worker it is responsible for going idle wakes it, and its own run
 // ending drains what queued up meanwhile. Config is read per event, like every request.
 agent.onRunFinished(async (run) => orchestrator.onRunFinished(await loadConfig(), run));
+// Warm the review queue (gh.listReviewPrs) so its slow cold fetch is paid here, not by a caller. A
+// local-only repo just fails quietly.
+void loadConfig().then((cfg) => cfg.repos.filter(verbs.repoHere)
+  .forEach((r) => void gh.listReviewPrs(r.repoPath).catch(() => {})));
 // A wake that was in flight when the previous bridge stopped: re-queue what it was handling.
 void loadConfig().then((cfg) => orchestrator.recover(cfg, reconcile)).catch((e) => console.error("orca: orchestrator recovery failed", e));
 
@@ -171,9 +175,8 @@ const DATABASE_ONLY = new Set([
   "/api/slack",
 ]);
 
-/** Forward a request to the instance that owns the repo. An SSE response is just a long-lived body,
- *  so the same hop carries the chat's live stream — the owner pushes from its own bus, and this
- *  instance is a pipe. Returns undefined when the request should be handled locally. */
+/** Forward a request to the instance that owns the repo. Returns undefined when the request should
+ *  be handled locally. (The chat's live stream is not forwarded — /api/events relays instead.) */
 async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: OrcaConfig, body: Record<string, unknown>): Promise<Response | undefined> {
   // An explicit `instance` on an otherwise local route (`/api/health?instance=cloud`) still forwards.
   if (DATABASE_ONLY.has(url.pathname) && !url.searchParams.get("instance")) return undefined;
@@ -192,8 +195,7 @@ async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: Orc
   }
   const target = new URL(url.pathname + url.search, base);
   try {
-    // Streamed through, not buffered: /api/turns/stream never completes, so awaiting a body here
-    // would hang the chat instead of relaying it.
+    // Streamed through, not buffered: a large body (a diff) reaches the browser as it arrives.
     const upstream = await fetch(target, {
       method: req.method,
       headers: req.headers,
@@ -297,11 +299,15 @@ async function api(req: Request, url: URL): Promise<Response> {
   const body: any = req.method === "POST" || req.method === "PUT" ? await req.json().catch(() => ({})) : {};
   // The orchestrator. Its tool route carries the repo INSIDE the command's arguments, so these are
   // answered before a request is resolved to (and possibly forwarded for) a repo.
-  // The orchestrator's live stream too: its turns are in the shared database (so /api/turns answers
-  // anywhere), but the "a turn started / finished" events come off the bus of the process that ran
-  // it. Served here, the window never heard a reply land and showed "working…" until a reload.
-  const orchestratorStream = p === "/api/turns/stream" && (url.searchParams.get("repo") ?? body.repo) === ORCHESTRATOR_REPO;
-  if ((p.startsWith("/api/orchestrator") || orchestratorStream) && cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName()) {
+  // The live feed for every chat in the tab, multiplexed (server/events.ts). Not repo-scoped and never
+  // forwarded: this instance serves its own bus and relays the others', so it is answered here before
+  // a request is resolved to a repo.
+  if (req.method === "GET" && p === "/api/events") {
+    const self = db.instanceName();
+    const others = url.searchParams.get("local") ? [] : Object.entries(cfg.instances ?? {}).filter(([n]) => n !== self).map(([, base]) => base);
+    return eventStream(req, others);
+  }
+  if (p.startsWith("/api/orchestrator") && cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName()) {
     // ONE instance hosts the orchestrator (orchestratorOn); everything about it goes there.
     const base = cfg.instances?.[cfg.orchestratorOn];
     if (!base) return json({ error: `the orchestrator lives on "${cfg.orchestratorOn}", which has no address configured (set instances.${cfg.orchestratorOn})` }, 502);
@@ -738,41 +744,6 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/queued/cancel") {
     await db.cancelQueuedMessage(Number(body.id));
     return json({ ok: true });
-  }
-  if (req.method === "GET" && p === "/api/turns/stream") {
-    // The chat's live feed, pushed as each step is recorded. Server-Sent Events, not a WebSocket:
-    // one-way, EventSource reconnects itself, and it traverses a reverse proxy — including the hop
-    // this instance makes when the repo belongs to another one (see forwardToOwner). The stream is
-    // always served by the instance that OWNS the repo, so the run and the bus are in the same
-    // process and there is exactly one delivery path.
-    const branch = url.searchParams.get("branch");
-    if (!branch) return json({ error: "branch required" }, 400);
-    let unsubscribe = () => {};
-    const stream = new ReadableStream({
-      start(controller) {
-        const send = (event: string, data: unknown) => {
-          try { controller.enqueue(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); } catch { unsubscribe(); }
-        };
-        send("ready", { branch });
-        // A comment line every 25s keeps proxies (and some browsers) from reaping an idle stream.
-        const keepAlive = setInterval(() => { try { controller.enqueue(": keep-alive\n\n"); } catch { unsubscribe(); } }, 25_000);
-        const off = bus.subscribe((e) => {
-          if (e.repo !== repo.name || e.branch !== branch) return;
-          if (e.kind === "step") send("step", { runId: e.runId, steps: e.steps });
-          else send("turn", { runId: e.runId });
-        });
-        unsubscribe = () => {
-          clearInterval(keepAlive);
-          off();
-          try { controller.close(); } catch { /* already closed */ }
-        };
-        req.signal.addEventListener("abort", unsubscribe); // client navigated away / closed the modal
-      },
-      cancel() { unsubscribe(); },
-    });
-    return new Response(stream, {
-      headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
-    });
   }
   if (req.method === "GET" && p === "/api/turns/steps") {
     // Catch-up after a dropped stream: the steps recorded since the cursor the client holds. The

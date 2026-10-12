@@ -84,11 +84,9 @@ export const api = {
     post("/api/enrichment/import", { entries }),
   turns: (repo: string, branch: string): Promise<AgentTurn[]> =>
     fetch(`/api/turns${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
-  /** URL for the chat's live stream — a URL, not a fetch, because EventSource opens it itself and
-   *  reconnects on its own. Relative, so Vite's dev proxy forwards it (unlike a WS upgrade, SSE
-   *  proxies fine — including the hop the bridge makes for a repo owned by another instance). */
-  turnsStreamUrl: (repo: string, branch: string): string =>
-    `/api/turns/stream${q(repo, `&branch=${encodeURIComponent(branch)}`)}`,
+  /** URL for the tab's ONE live feed (every chat's steps and turn events, multiplexed — see
+   *  lib/events.ts). A URL, not a fetch, because EventSource opens it itself and reconnects on its own. */
+  eventsUrl: (): string => "/api/events",
   /** Instructions typed while a run was in flight, waiting to be sent. */
   queued: (repo: string, branch: string): Promise<QueuedMessage[]> =>
     fetch(`/api/queued${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
