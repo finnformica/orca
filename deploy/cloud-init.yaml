@@ -22,7 +22,7 @@ snap:
 runcmd:
   # Tailscale: the box is reached ONLY over the tailnet (the security group has no ingress at all).
   - curl -fsSL https://tailscale.com/install.sh | sh
-  - REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region); KEY=$(aws ssm get-parameter --region "$REGION" --name /orca/tailscale-authkey --with-decryption --query Parameter.Value --output text) && tailscale up --authkey="$KEY" --hostname=orca-box --ssh
+  - 'REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region); KEY=$(/snap/bin/aws ssm get-parameter --region "$REGION" --name /orca/tailscale-authkey --with-decryption --query Parameter.Value --output text) && tailscale up --authkey="$KEY" --hostname=orca-box --ssh'
   # Postgres: one local database; the laptop reaches it over the tailnet (see bootstrap.sh).
   - sudo -u postgres psql -c "CREATE ROLE orca LOGIN PASSWORD 'orca'" || true
   - sudo -u postgres psql -c "CREATE DATABASE orca OWNER orca" || true
@@ -38,4 +38,6 @@ runcmd:
   - sudo -iu orca bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
   - sudo -iu orca bash -c 'git clone https://github.com/finnformica/claude-hydra ~/.local/share/claude-hydra && ~/.local/share/claude-hydra/install.sh --shim'
   - mkdir -p /opt/orca && chown orca:orca /opt/orca
-  - echo "orca-box: ready for sign-in (see /var/log/cloud-init-output.log)" > /etc/motd
+  # Quoted as a whole: an unquoted `key: value` here is a YAML mapping, which makes cloud-init reject
+  # the entire runcmd block (that is exactly what happened on the first launch — nothing ran).
+  - 'echo "orca-box - ready for sign-in (see /var/log/cloud-init-output.log)" > /etc/motd'
