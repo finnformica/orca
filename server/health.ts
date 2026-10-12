@@ -4,6 +4,7 @@
 // role doesn't have, and an estimate that is always there beats a bill that needs a login.
 import * as os from "os";
 import * as db from "./db";
+import * as lease from "./lease";
 import { run } from "./run";
 
 export type Health = {
@@ -127,11 +128,16 @@ export function historyHours(raw: string | null | undefined): number {
   return raw && Number.isFinite(n) && n > 0 ? Math.min(n, 24 * 30) : 24;
 }
 
-/** Sample this machine and record it. Never throws: a metrics write must not touch anything else. */
+/** Sample this machine and record it. Never throws: a metrics write must not touch anything else.
+ *  Running agents come from the leases (durable, per-host) rather than agent.ts's in-memory `runs`
+ *  map, so a sample taken right after a restart still counts what's genuinely live. */
 export async function sampleMetrics(): Promise<void> {
   try {
     const h = await health();
-    await db.recordMetric({ cpuPct: h.cpuPct, load1: h.load1, memUsedGb: h.memUsedGb, memTotalGb: h.memTotalGb, diskUsedGb: h.disk?.usedGb });
+    await db.recordMetric({
+      cpuPct: h.cpuPct, load1: h.load1, memUsedGb: h.memUsedGb, memTotalGb: h.memTotalGb, diskUsedGb: h.disk?.usedGb,
+      runningAgents: lease.live().length,
+    });
   } catch (e) {
     console.error("orca: metrics sample failed", e instanceof Error ? e.message : e);
   }

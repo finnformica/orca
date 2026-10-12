@@ -311,8 +311,14 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
     `,
   },
   {
+    id: 13,
+    // How many agents were live on this instance at sample time, alongside its cpu/mem (the Usage
+    // dashboard overlays it on the CPU/memory graphs). Nullable: rows written before this migration
+    // have none; metricHistory reads them back as 0 rather than null.
+    sql: `ALTER TABLE instance_metric ADD COLUMN running_agents INTEGER`,
+  },
+  {
     id: 14,
-    // (13 is #131's, merging separately; ids need not be contiguous — migrate() runs any unapplied id.)
     // What each run cost, for the Overview's insight cards (spend by category / model / repo). The
     // exit handler already parsed this from the CLI's result for the per-host ledger; on the turn it
     // is in the shared database, so either machine can total both. `cost_usd` is the CLI's own
@@ -852,7 +858,7 @@ export async function instances(): Promise<{ name: string; seenAt: number }[]> {
 
 // ---- instance metrics (the health chip's history) ----
 
-export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number };
+export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; runningAgents: number };
 
 /** How long a metric row is kept. */
 export const METRIC_RETENTION_MS = 30 * 24 * 3_600_000;
@@ -865,8 +871,8 @@ export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()):
   const sql = await open();
   const instance = instanceName();
   await sql`
-    INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb)
-    VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null})`;
+    INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents)
+    VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null}, ${p.runningAgents})`;
   await sql`DELETE FROM instance_metric WHERE instance = ${instance} AND at < ${new Date(at - METRIC_RETENTION_MS)}`;
 }
 
@@ -874,11 +880,12 @@ export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()):
 export async function metricHistory(instance: string, hours: number, now = Date.now()): Promise<MetricPoint[]> {
   const sql = await open();
   const rows = await sql`
-    SELECT at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb FROM instance_metric
+    SELECT at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents FROM instance_metric
     WHERE user_id = ${currentUser()} AND instance = ${instance} AND at >= ${new Date(now - hours * 3_600_000)}
     ORDER BY at`;
-  return (rows as { at: Date; cpu_pct: number; load1: number; mem_used_gb: number; mem_total_gb: number; disk_used_gb: number | null }[]).map((r) => ({
+  return (rows as { at: Date; cpu_pct: number; load1: number; mem_used_gb: number; mem_total_gb: number; disk_used_gb: number | null; running_agents: number | null }[]).map((r) => ({
     at: new Date(r.at).getTime(), cpuPct: Number(r.cpu_pct), load1: Number(r.load1), memUsedGb: Number(r.mem_used_gb), memTotalGb: Number(r.mem_total_gb),
+    runningAgents: r.running_agents == null ? 0 : Number(r.running_agents),
     ...(r.disk_used_gb == null ? {} : { diskUsedGb: Number(r.disk_used_gb) }),
   }));
 }

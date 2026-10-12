@@ -36,7 +36,10 @@ export const sidebarCollapsedAtom = persistedAtom("sidebarCollapsed", false, isB
 export const instanceScopeAtom = persistedAtom("instanceScope", "all", isString, "orca.instanceScope");
 export const agentQueryAtom = atom("");
 // The Overview's Usage card: just the fleet + Codex, or every hydra login too. Persisted.
-export const usageExpandedAtom = atomWithStorage("orca.usageExpanded", false);
+export const usageExpandedAtom = persistedAtom("usageExpanded", false, isBoolean, "orca.usageExpanded");
+// The Usage PAGE's whole "Current windows" card, independent of the above: collapsible, starts
+// collapsed (it's the first thing on a page someone usually visits to read ONE number), persisted.
+export const usageStatsExpandedAtom = persistedAtom("usageStatsExpanded", false, isBoolean, "orca.usageStatsExpanded");
 
 // Overlays any key, the palette or a button can open (components/Shortcuts.tsx). The orchestrator's
 // window is open or closed here, so the top bar's "Ask the orchestrator", O and the palette all drive

@@ -17,7 +17,7 @@ const { InstanceCard } = await import("@/views/Vitals");
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const flush = () => new Promise((r) => setTimeout(r, 0));
 let root: Root | undefined; let container: HTMLElement | undefined;
-afterEach(async () => { await act(async () => { root?.unmount(); }); container?.remove(); apiFake.reset(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container?.remove(); apiFake.reset(); localStorage.clear(); });
 
 async function render(node: React.ReactNode) {
   container = document.createElement("div"); document.body.appendChild(container);
@@ -46,14 +46,15 @@ test("a card per machine appears once config names them, with each one's vitals 
 
 test("CPU and memory as line graphs from the last 24h, labelled with the newest values; the range picker refetches", async () => {
   const now = Date.now();
-  apiFake.healthHistoryData = [0, 1, 2].map((i) => ({ at: now - (2 - i) * 60_000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3 }));
+  apiFake.healthHistoryData = [0, 1, 2].map((i) => ({ at: now - (2 - i) * 60_000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: 0 }));
   await render(<InstanceCard instance="cloud" here={false} />);
   await ready();
   expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 24 }]);
   const cpu = container!.querySelector('[data-slot="chart-cpu"]')!;
   const mem = container!.querySelector('[data-slot="chart-mem"]')!;
-  expect(cpu.querySelector('[data-slot="chart-value"]')!.textContent).toBe("23%");
-  expect(mem.querySelector('[data-slot="chart-value"]')!.textContent).toBe("4.2 GB");
+  // The main reading, plus the sessions overlay's value tucked in beside it (0 — none running here).
+  expect(cpu.querySelector('[data-slot="chart-value"]')!.textContent).toBe("23%0 sessions");
+  expect(mem.querySelector('[data-slot="chart-value"]')!.textContent).toBe("4.2 GB0 sessions");
   expect(cpu.querySelector("polyline")!.getAttribute("points")!.split(" ")).toHaveLength(3);
   expect(mem.querySelector("polyline")).toBeTruthy();
   expect(cpu.querySelector("svg")!.getAttribute("aria-label")).toBe("CPU, now 23%");
@@ -65,11 +66,72 @@ test("CPU and memory as line graphs from the last 24h, labelled with the newest 
   expect(range("7d").getAttribute("aria-pressed")).toBe("true");
 });
 
+test("each machine's range is remembered per machine across a reload; bad JSON or an unknown range falls back to 24h", async () => {
+  const range = (label: string) => [...container!.querySelectorAll('[role="group"][aria-label="Range"] button')].find((b) => b.textContent === label)!;
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  expect(range("24h").getAttribute("aria-pressed")).toBe("true"); // default when nothing is saved
+  await act(async () => { range("6h").dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
+  expect(localStorage.getItem("orca.ui.v1.instanceRange:cloud")).toBe("6");
+  // A reload: the remount restores 6h and fetches it straight away.
+  await act(async () => { root?.unmount(); }); container?.remove(); apiFake.healthHistoryCalls.length = 0;
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  expect(range("6h").getAttribute("aria-pressed")).toBe("true");
+  expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 6 }]);
+  // Another machine keeps its own choice.
+  await act(async () => { root?.unmount(); }); container?.remove();
+  await render(<InstanceCard instance="laptop" here={false} />);
+  await ready();
+  expect(range("24h").getAttribute("aria-pressed")).toBe("true");
+  for (const bad of ["{nope", "13", '"6"']) {
+    await act(async () => { root?.unmount(); }); container?.remove();
+    localStorage.setItem("orca.ui.v1.instanceRange:cloud", bad);
+    await render(<InstanceCard instance="cloud" here={false} />);
+    await ready();
+    expect(range("24h").getAttribute("aria-pressed")).toBe("true");
+  }
+});
+
 test("no history yet says so instead of an empty chart", async () => {
   await render(<InstanceCard instance="cloud" here={false} />);
   await ready();
   expect(container!.textContent).toContain("No history recorded yet");
   expect(container!.querySelector('[data-slot="chart-cpu"]')).toBeNull();
+});
+
+test("running sessions overlay on CPU and memory, as a pink series on its own right-hand axis, aligned to the same window", async () => {
+  const now = Date.now();
+  apiFake.healthHistoryData = [0, 1, 2].map((i) => ({
+    at: now - (2 - i) * 60_000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: [0, 2, 1][i],
+  }));
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  for (const slot of ["chart-cpu", "chart-mem"]) {
+    const chart = container!.querySelector(`[data-slot="${slot}"]`)!;
+    const lines = chart.querySelectorAll("polyline");
+    expect(lines).toHaveLength(2); // the main series, then the sessions overlay
+    const overlay = lines[1]!;
+    expect(overlay.getAttribute("stroke")).toBe("var(--geist-pink)");
+    // Same 3 samples, same [from, to] window as the main series — not a separate, misaligned fetch.
+    expect(overlay.getAttribute("points")!.split(" ")).toHaveLength(lines[0]!.getAttribute("points")!.split(" ").length);
+    expect(chart.querySelector('[data-slot="chart-axis-right"]')).toBeTruthy();
+    // The newest sample (i=2) had 1 running session.
+    expect(chart.querySelector('[data-slot="chart-overlay-value"]')!.textContent).toContain("1");
+  }
+  // One poll of /api/health/history feeds both the vitals and the sessions overlay — no second fetch.
+  expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 24 }]);
+});
+
+test("the machine graphs show a skeleton, sized like the chart, while history is still loading", async () => {
+  apiFake.holdHealthHistory = true;
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  expect(container!.querySelector('[data-slot="chart-cpu-skeleton"]')).toBeTruthy();
+  expect(container!.querySelector('[data-slot="chart-mem-skeleton"]')).toBeTruthy();
+  expect(container!.querySelector('[data-slot="chart-cpu"]')).toBeNull();
+  await act(async () => { apiFake.releaseHealthHistory!(); await flush(); await flush(); });
+  expect(container!.querySelector('[data-slot="chart-cpu-skeleton"]')).toBeNull();
 });
 
 test("the history poll waits for a slow call to settle, and stops when the card goes away", async () => {
