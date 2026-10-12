@@ -137,15 +137,18 @@ is the chat panel over its recorded turns; a wake is `claude -p --resume` on its
 `boardViewAtom` / `orca.boardView`). **List is the default** — the overview (`web/src/views/Overview.tsx`,
 Vercel-style, at the user's request: the swimlanes were "not an efficient way of displaying the
 relevant information"): stat tiles (running workers + a 24h runs-per-hour sparkline, awaiting you,
-open PRs by lane as a clickable pipeline bar, merged today, Claude usage, one CPU/memory tile per
-instance), ONE dense workstreams list with a filter bar (search, repo, instance, lane, needs-you,
+open PRs by lane as a clickable pipeline bar, merged today, Claude usage, one tile per
+instance with 24h CPU/memory sparklines from `/api/health/history`), ONE dense workstreams list with a filter bar (search, repo, instance, lane, needs-you,
 sort), and a Recent activity feed plus the New-draft box beside it. Every number and filter is a
 pure derivation over the assembled rows (`workstream.ts`: `overviewStats`, `attentionReasons`,
 `rowTone`, `filterRows`, `sortRows`, `recentActivity`) — no endpoint of its own, so the two views
 can't disagree. A list row reuses the card's pieces (`WorkstreamActions`, `PreviewControl`, the
 badges, `useSummary`, `useTerminalOpen`), so no action lives in only one view; clicking a row (not
-a control) opens its detail route. Usage and health are one shared poll each for the header and
-the tiles (`lib/vitals.ts`). **Board** is the original swimlanes, unchanged, including the lane ⋯
+a control) opens its detail route. Usage, health and health history are one shared poll each for the
+header and the tiles (`lib/vitals.ts` `sharedSource`; history only while a tile or the chip's popover
+shows it). Each PR row also carries a **review cluster** (approvers, `N unresolved`, a severity dot)
+and the PR page a **Review panel** — `reviewDigest` over `GET /api/prs/:n/review-signal`, fetched
+lazily per rendered PR (`store.useReviewDigest`). **Board** is the original swimlanes, unchanged, including the lane ⋯
 bulk menus (the List offers the same `LaneActions` when filtered to one lane).
 
 The board (`web/src/views/Board.tsx`), lanes: **Local → Draft → In Review → Mergeable → Done·today**.

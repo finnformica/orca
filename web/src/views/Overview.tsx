@@ -3,13 +3,13 @@ import { useAtom } from "jotai";
 import { Bot, ExternalLink, Eye, Loader2, Play, Search, SquareTerminal, X } from "lucide-react";
 import { repoFilterAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
-import { aggregateProfiles, useHealth, useUsage } from "@/lib/vitals";
+import { aggregateProfiles, useHealth, useHealthHistory, useUsage } from "@/lib/vitals";
 import {
   baseBranch, instanceChoices, rerunAgent, thisInstance, useRepos, useWorkstreams, type Row,
 } from "../store";
 import {
   DEFAULT_LIST_FILTER, LANE_LABELS, OVERVIEW_LANES, SORT_LABELS, ago, attentionReasons, filterRows, lastActivity,
-  overviewStats, recentActivity, rowInstance, rowTone, sortRows,
+  overviewStats, recentActivity, rowInstance, rowTone, sortRows, sparklineSegments,
   type ActivityItem, type Attention, type ListFilter, type ListSort, type OverviewLane, type RowTone,
 } from "../workstream";
 import { Badge } from "@/components/ui/badge";
@@ -222,11 +222,15 @@ function UsageTile() {
   );
 }
 
-// One machine: CPU as the number, CPU and memory as meters. (A history sparkline needs
-// /api/health/history, which this tile will pick up once it exists.)
+// One machine: CPU as the number, then CPU and memory over the last 24h (/api/health/history — the
+// same shared loop as the header chip's graphs, running only while a tile or that popover shows it).
+// Until history arrives, or when the instance has none, each line is a plain meter of the reading.
 function InstanceTile({ instance, here }: { instance: string; here: boolean }) {
   const reading = useHealth(here ? undefined : instance);
+  const history = useHealthHistory(instance);
   const h = reading?.health;
+  const cpu = history?.map((p) => ({ at: p.at, v: p.cpuPct }));
+  const mem = history?.map((p) => ({ at: p.at, v: p.memTotalGb ? (p.memUsedGb / p.memTotalGb) * 100 : 0 }));
   return (
     <Tile label={`${instance}${here ? " · here" : ""}`} slot={`instance-${instance}`}
       value={reading?.down ? "—" : h ? `${h.cpuPct}%` : "…"}
@@ -234,11 +238,28 @@ function InstanceTile({ instance, here }: { instance: string; here: boolean }) {
       hint={reading?.down ? "unreachable" : h ? `cpu · ${h.cores} cores${h.cost ? ` · $${h.cost.monthUsd.toFixed(2)} this month` : ""}` : "loading"}>
       {h && !reading?.down && (
         <div className="space-y-1">
-          <Meter label="cpu" pct={h.cpuPct} detail={`load ${h.load1.toFixed(2)} / ${h.load5.toFixed(2)}`} />
-          <Meter label="mem" pct={(h.memUsedGb / h.memTotalGb) * 100} detail={`${h.memUsedGb} of ${h.memTotalGb} GB`} />
+          <Trend label="cpu" pct={h.cpuPct} points={cpu} detail={`load ${h.load1.toFixed(2)} / ${h.load5.toFixed(2)}`} />
+          <Trend label="mem" pct={(h.memUsedGb / h.memTotalGb) * 100} points={mem} detail={`${h.memUsedGb} of ${h.memTotalGb} GB`} />
         </div>
       )}
     </Tile>
+  );
+}
+
+/** A metric's last 24h as a one-line sparkline (gaps where the sampler was silent), now on the right. */
+function Trend({ label, pct, points, detail }: { label: string; pct: number; points?: { at: number; v: number }[]; detail?: string }) {
+  if (!points?.length) return <Meter label={label} pct={pct} detail={detail} />;
+  const W = 120, H = 14, to = Date.now();
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 text-[10px]" title={detail} data-slot={`trend-${label}`}>
+      <span className="text-muted-foreground w-6 shrink-0">{label}</span>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="h-3.5 min-w-0 flex-1 text-foreground/70" role="img" aria-label={`${label} over the last 24 hours, now ${Math.round(pct)}%`}>
+        {sparklineSegments(points, { from: to - 24 * 3_600_000, to, max: 100, w: W, h: H }).map((pts, i) => (
+          <polyline key={i} points={pts} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+        ))}
+      </svg>
+      <span className="w-8 shrink-0 text-right font-medium tabular-nums">{Math.round(pct)}%</span>
+    </div>
   );
 }
 

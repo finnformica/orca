@@ -156,6 +156,31 @@ describe("overview view", () => {
     expect(tile("running").querySelector("svg[aria-label^='Runs started per hour']")).not.toBeNull();
   });
 
+  test("instance tiles: a CPU and memory sparkline from the last 24h of history, one fetch per instance; a meter until it lands", async () => {
+    const now = Date.now();
+    apiFake.healthHistoryData = [0, 1, 2].map((i) => ({ at: now - (2 - i) * 60_000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 16 }));
+    await mount();
+    for (const name of ["laptop", "cloud"]) {
+      const t = tile(`instance-${name}`);
+      for (const metric of ["cpu", "mem"]) {
+        const trend = t.querySelector(`[data-slot="trend-${metric}"]`)!;
+        expect(trend).not.toBeNull();
+        expect(trend.querySelector("polyline")!.getAttribute("points")!.split(" ")).toHaveLength(3);
+      }
+    }
+    // One shared loop per instance (database-only, so either instance answers), 24h each; a poll of
+    // the board doesn't start another.
+    await act(async () => { await store.refresh(); await flush(); });
+    expect(apiFake.healthHistoryCalls.map((c) => `${c.instance}:${c.hours}`).sort()).toEqual(["cloud:24", "laptop:24"]);
+  });
+
+  test("instance tiles with no recorded history keep the plain meters", async () => {
+    await mount();
+    expect(tile("instance-cloud").querySelector('[data-slot^="trend-"]')).toBeNull();
+    expect(tile("instance-cloud").textContent).toContain("cpu");
+    expect(tile("instance-cloud").textContent).toContain("mem");
+  });
+
   test("the usage tile shows the same Claude reading the header meter does", async () => {
     apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
     await mount();
