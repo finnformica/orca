@@ -31,3 +31,52 @@ test("the chip appears once config names another instance, and shows its vitals 
   expect(chip.textContent).toContain("cpu 12%");
   expect(chip.textContent).toContain("$1.23");
 });
+
+test("the popover graphs the last 24h of cpu and memory, labelled with the newest values", async () => {
+  const now = Date.now();
+  apiFake.healthHistoryData = [0, 1, 2].map((i) => ({ at: now - (2 - i) * 60_000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3 }));
+  container = document.createElement("div"); document.body.appendChild(container);
+  await act(async () => { root = createRoot(container!); root.render(<InstanceHealthChip />); await flush(); });
+  if (apiFake.releaseConfig) apiFake.releaseConfig();
+  await act(async () => { await store.configReady; await flush(); await flush(); });
+  const chip = container.querySelector('[data-slot="instance-health"]') as HTMLElement;
+  const line = chip.textContent;
+  expect(apiFake.healthHistoryCalls).toHaveLength(0); // nothing fetched until the popover opens
+  await act(async () => { chip.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 })); chip.click(); await flush(); await flush(); });
+  expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 24 }]);
+  const cpu = document.querySelector('[data-slot="health-chart-cpu"]')!;
+  const mem = document.querySelector('[data-slot="health-chart-mem"]')!;
+  expect(cpu.querySelector('[data-slot="health-chart-value"]')!.textContent).toBe("23%");
+  expect(mem.querySelector('[data-slot="health-chart-value"]')!.textContent).toBe("4.2 / 15.3 GB");
+  expect(cpu.querySelector("polyline")!.getAttribute("points")!.split(" ")).toHaveLength(3);
+  expect(mem.querySelector("polyline")).toBeTruthy();
+  expect(chip.textContent).toBe(line); // the one-line chip is unchanged
+});
+
+test("the history poll waits for a slow call to settle, and stops when the popover closes", async () => {
+  // poll(), not setInterval: the next 60s tick is scheduled only after a fetch settles, so a slow
+  // history call can't queue more behind it on the bridge's six connections.
+  const realSet = window.setTimeout, realClear = window.clearTimeout;
+  const minuteTimers = new Set<unknown>();
+  window.setTimeout = ((fn: () => void, ms?: number) => { const t = realSet(fn, ms); if (ms === 60_000) minuteTimers.add(t); return t; }) as typeof window.setTimeout;
+  window.clearTimeout = ((t?: number) => { minuteTimers.delete(t); realClear(t); }) as typeof window.clearTimeout;
+  try {
+    container = document.createElement("div"); document.body.appendChild(container);
+    await act(async () => { root = createRoot(container!); root.render(<InstanceHealthChip />); await flush(); });
+    if (apiFake.releaseConfig) apiFake.releaseConfig();
+    await act(async () => { await store.configReady; await flush(); await flush(); });
+    const chip = container.querySelector('[data-slot="instance-health"]') as HTMLElement;
+    const toggle = () => act(async () => { chip.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, button: 0 })); chip.click(); await flush(); await flush(); });
+    apiFake.holdHealthHistory = true;
+    await toggle(); // open
+    expect(apiFake.healthHistoryCalls).toHaveLength(1);
+    expect(minuteTimers.size).toBe(0); // in flight: no next tick yet
+    await act(async () => { apiFake.releaseHealthHistory!(); await flush(); await flush(); });
+    expect(minuteTimers.size).toBe(1); // settled: exactly one next tick
+    await toggle(); // close
+    expect(minuteTimers.size).toBe(0); // closed: no more history fetches
+    expect(apiFake.healthHistoryCalls).toHaveLength(1);
+  } finally {
+    window.setTimeout = realSet; window.clearTimeout = realClear;
+  }
+});

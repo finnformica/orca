@@ -272,6 +272,26 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
     // turns commit nothing, and repos without a checkCommand never get one.
     sql: `ALTER TABLE turn ADD COLUMN "check" JSONB`,
   },
+  {
+    id: 11,
+    // Machine metrics over time (server/health.ts's sampler): each instance writes ITS OWN vitals
+    // once a minute, so the header chip can graph the other box's last day from either machine.
+    // Pruned to 30 days by the writer; ~43k rows per instance at most.
+    sql: `
+      CREATE TABLE instance_metric (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        instance TEXT NOT NULL,
+        at TIMESTAMPTZ NOT NULL,
+        cpu_pct DOUBLE PRECISION NOT NULL,
+        load1 DOUBLE PRECISION NOT NULL,
+        mem_used_gb DOUBLE PRECISION NOT NULL,
+        mem_total_gb DOUBLE PRECISION NOT NULL,
+        disk_used_gb DOUBLE PRECISION
+      );
+      CREATE INDEX instance_metric_instance_at ON instance_metric (instance, at);
+    `,
+  },
 ];
 
 async function migrate(sql: Bun.SQL): Promise<void> {
@@ -715,6 +735,38 @@ export async function instances(): Promise<{ name: string; seenAt: number }[]> {
   return (rows as { name: string; seen_at: string }[]).map((r) => ({ name: r.name, seenAt: Number(r.seen_at) }));
 }
 
+// ---- instance metrics (the health chip's history) ----
+
+export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number };
+
+/** How long a metric row is kept. */
+export const METRIC_RETENTION_MS = 30 * 24 * 3_600_000;
+
+/** Record one sample of THIS instance's vitals, and drop its rows past retention in the same breath —
+ *  a delete per insert is cheap on the (instance, at) index, and it needs no second timer. Each
+ *  instance prunes only its own rows: the other may be on an older build, but never on someone
+ *  else's timer. `at` is injectable for tests. */
+export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()): Promise<void> {
+  const sql = await open();
+  const instance = instanceName();
+  await sql`
+    INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb)
+    VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null})`;
+  await sql`DELETE FROM instance_metric WHERE instance = ${instance} AND at < ${new Date(at - METRIC_RETENTION_MS)}`;
+}
+
+/** An instance's samples over the last `hours`, oldest first. */
+export async function metricHistory(instance: string, hours: number, now = Date.now()): Promise<MetricPoint[]> {
+  const sql = await open();
+  const rows = await sql`
+    SELECT at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb FROM instance_metric
+    WHERE user_id = ${currentUser()} AND instance = ${instance} AND at >= ${new Date(now - hours * 3_600_000)}
+    ORDER BY at`;
+  return (rows as { at: Date; cpu_pct: number; load1: number; mem_used_gb: number; mem_total_gb: number; disk_used_gb: number | null }[]).map((r) => ({
+    at: new Date(r.at).getTime(), cpuPct: Number(r.cpu_pct), load1: Number(r.load1), memUsedGb: Number(r.mem_used_gb), memTotalGb: Number(r.mem_total_gb),
+    ...(r.disk_used_gb == null ? {} : { diskUsedGb: Number(r.disk_used_gb) }),
+  }));
+}
 
 // ---- steps (the agent's thought process) ----
 

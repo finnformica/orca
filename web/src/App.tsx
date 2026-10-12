@@ -7,7 +7,7 @@ import { useTheme, type Theme } from "@/lib/theme";
 import { api } from "./api";
 import type { ClaudeUsage, CodexUsage, ExtraUsage, Usage, ProfileUsage, UsageWindow } from "../../server/usage";
 import { useRepos } from "./store";
-import { summarizeSync } from "./workstream";
+import { sparklineSegments, summarizeSync } from "./workstream";
 import { Board } from "./views/Board";
 import { PreviewManagerMenu, TestMasterMenu } from "./views/PreviewControl";
 import { PrDetail } from "./views/PrDetail";
@@ -21,7 +21,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { OrchestratorButton } from "@/components/Terminal";
 
-import { api as orcaApi, type InstanceHealth } from "./api";
+import { api as orcaApi, type InstanceHealth, type MetricPoint } from "./api";
 import { instanceChoices, thisInstance } from "./store";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { poll } from "@/lib/poll";
@@ -433,6 +433,54 @@ function ProfileMenu() {
   );
 }
 
+// The popover's last-24h graphs from instance_metric: CPU % and memory used, one chart each (two
+// scales never share an axis). Each is labelled with its newest value; hovering reads off a point.
+function HealthHistory({ points }: { points: MetricPoint[] | null }) {
+  if (!points) return <p className="mt-3 text-muted-foreground">Loading history…</p>;
+  if (!points.length) return <p className="mt-3 text-muted-foreground" data-slot="health-history-empty">No history recorded yet.</p>;
+  const to = Date.now(), from = to - 24 * 3_600_000;
+  const memMax = Math.max(...points.map((p) => p.memTotalGb), 1);
+  return (
+    <div className="mt-3 space-y-3 border-t pt-3">
+      <Sparkline slot="cpu" title="cpu %" points={points.map((p) => ({ at: p.at, v: p.cpuPct }))} from={from} to={to} max={100} fmt={(v) => `${Math.round(v)}%`} />
+      <Sparkline slot="mem" title="memory used" points={points.map((p) => ({ at: p.at, v: p.memUsedGb }))} from={from} to={to} max={memMax} fmt={(v) => `${v.toFixed(1)} / ${memMax} GB`} />
+      <p className="text-[10px] text-muted-foreground">last 24h · one sample a minute</p>
+    </div>
+  );
+}
+
+function Sparkline({ slot, title, points, from, to, max, fmt }: {
+  slot: string; title: string; points: { at: number; v: number }[]; from: number; to: number; max: number; fmt: (v: number) => string;
+}) {
+  const W = 256, H = 40;
+  const [hover, setHover] = useState<{ at: number; v: number } | null>(null);
+  const shown = hover ?? points[points.length - 1]!;
+  const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const at = from + ((e.clientX - r.left) / (r.width || W)) * (to - from);
+    setHover(points.reduce((a, b) => (Math.abs(b.at - at) < Math.abs(a.at - at) ? b : a)));
+  };
+  const hx = hover ? ((hover.at - from) / (to - from)) * W : undefined;
+  return (
+    <figure data-slot={`health-chart-${slot}`}>
+      <figcaption className="mb-1 flex justify-between">
+        <span className="text-muted-foreground">{title}</span>
+        <span data-slot="health-chart-value" className="font-medium tabular-nums">
+          {fmt(shown.v)}{hover && <span className="ml-1 font-normal text-muted-foreground">at {new Date(hover.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>}
+        </span>
+      </figcaption>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="h-10 w-full overflow-visible text-foreground" role="img" aria-label={`${title}, last 24 hours, now ${fmt(points[points.length - 1]!.v)}`}
+        onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
+        <line x1={0} y1={H} x2={W} y2={H} className="stroke-border" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+        {sparklineSegments(points, { from, to, max, w: W, h: H }).map((pts, i) => (
+          <polyline key={i} points={pts} fill="none" stroke="currentColor" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+        ))}
+        {hx !== undefined && <line x1={hx} y1={0} x2={hx} y2={H} className="stroke-muted-foreground" strokeWidth={1} strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />}
+      </svg>
+    </figure>
+  );
+}
+
 // The cloud box's vitals in the header — CPU (load against cores), memory, disk, and the month's
 // estimated cost — polled every 15s from /api/health?instance=<other>, only when there is another
 // instance. A hover card has the details; the chip itself stays to one line.
@@ -442,6 +490,16 @@ export function InstanceHealthChip() {
   const other = choices.find((i) => i !== thisInstance());
   const [h, setH] = useState<InstanceHealth | null>(null);
   const [down, setDown] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [history, setHistory] = useState<MetricPoint[] | null>(null);
+  useEffect(() => {
+    // The last day's samples, only while the popover is open: ~1,440 rows that change once a minute.
+    if (!other || !open) return;
+    let live = true;
+    const load = () => orcaApi.healthHistory(other, 24).then((v) => { if (live) setHistory(v); }).catch(() => { if (live) setHistory([]); });
+    const stop = poll(load, 60_000); // next fetch only after this one settles — a slow history call can't pile up
+    return () => { live = false; stop(); };
+  }, [other, open]);
   useEffect(() => {
     if (!other) return;
     let live = true;
@@ -453,7 +511,7 @@ export function InstanceHealthChip() {
   const tone = down ? "text-destructive" : (h?.cpuPct ?? 0) >= 80 || (h && h.memUsedGb / h.memTotalGb >= 0.9) ? "text-amber-500" : "text-muted-foreground";
   const uptime = (s: number) => (s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button type="button" data-slot="instance-health" className={`hidden items-center gap-1.5 rounded-md border px-2 py-1 text-xs sm:inline-flex ${tone} hover:bg-accent`} title={`${other}: machine health`}>
           <Server className="size-3.5" />
@@ -472,6 +530,7 @@ export function InstanceHealthChip() {
             {h.cost && <><dt className="text-muted-foreground">cost</dt><dd>${h.cost.monthUsd.toFixed(2)} this month, estimated at ${h.cost.hourlyUsd}/h since {h.cost.sinceIso.slice(0, 10)}</dd></>}
           </dl>
         )}
+        {!down && <HealthHistory points={history} />}
       </PopoverContent>
     </Popover>
   );
