@@ -31,6 +31,11 @@ export type QueuedMessage = {
   id: number; repo: string; branch: string; instruction: string; attachments: string[]; createdAt: number;
 };
 
+export type InstanceHealth = {
+  instance: string; hostname: string; cores: number; cpuPct: number; load1: number; load5: number;
+  memUsedGb: number; memTotalGb: number; disk?: { usedGb: number; totalGb: number }; uptimeS: number;
+  cost?: { monthUsd: number; hourlyUsd: number; sinceIso: string }; at: number;
+};
 export type PreviewSvc = { name: string; port: number; url: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const post = (path: string, body: unknown) =>
@@ -65,7 +70,8 @@ export const api = {
   autoMerge: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/auto-merge", { repo, pr }),
   disableAutoMerge: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/disable-auto-merge", { repo, pr }),
   convertToDraft: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/draft", { repo, pr }),
-  adopt: (repo: string, branch: string): Promise<{ branch: string; worktreePath: string }> => post("/api/worktrees/adopt", { repo, branch }),
+  // `instance` adopts the branch on THAT instance (a preview can run where the session doesn't).
+  adopt: (repo: string, branch: string, instance?: string): Promise<{ branch: string; worktreePath: string }> => post("/api/worktrees/adopt", { repo, branch, instance }),
   // Move a workstream's worktree to another instance; the bridge routes it to wherever it is now.
   moveWorkstream: (repo: string, branch: string, to: string): Promise<{ branch: string; worktreePath: string; instance: string }> =>
     post("/api/workstreams/move", { repo, branch, to }),
@@ -124,11 +130,15 @@ export const api = {
     post("/api/prs/close", { repo, pr, worktreePath, branch }),
   mergeLocal: (repo: string, branch: string, worktreePath?: string): Promise<{ ok: true }> => post("/api/merge-local", { repo, branch, worktreePath }),
   addPreviewLabel: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/label", { repo, pr }),
-  preview: (repo: string, key: string, worktree: string): Promise<PreviewSvc[]> => post("/api/preview", { repo, key, worktree }),
+  // Previews are placed explicitly: a worktree path alone can't say which instance holds it once a
+  // branch is checked out on both (the session's instance and the preview's may differ).
+  preview: (repo: string, key: string, worktree: string, instance?: string): Promise<PreviewSvc[]> => post("/api/preview", { repo, key, worktree, instance }),
   previewMaster: (repo: string): Promise<{ worktreePath: string; svcs: PreviewSvc[] }> => post("/api/preview/master", { repo }),
-  previewStatus: (key: string): Promise<PreviewSvc[]> => fetch(`/api/preview?key=${encodeURIComponent(key)}`).then(res),
+  previewStatus: (key: string, instance?: string): Promise<PreviewSvc[]> => fetch(`/api/preview?key=${encodeURIComponent(key)}${instance ? `&instance=${encodeURIComponent(instance)}` : ""}`).then(res),
   previews: (): Promise<{ key: string; svcs: PreviewSvc[] }[]> => fetch("/api/previews").then(res),
-  previewStop: (key: string): Promise<{ ok: true }> => post("/api/preview/stop", { key }),
+  previewStop: (key: string, instance?: string): Promise<{ ok: true }> => post("/api/preview/stop", { key, instance }),
+  // A machine's vitals (the header's instance chip); `instance` asks another instance for its own.
+  health: (instance?: string): Promise<InstanceHealth> => fetch(`/api/health${instance ? `?instance=${encodeURIComponent(instance)}` : ""}`).then(res),
   syncWorktrees: (repo: string): Promise<SyncResult[]> => post("/api/worktrees/sync", { repo }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>
     post("/api/worktrees/remove", { repo, worktreePath, branch, deleteBranch }),

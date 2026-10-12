@@ -338,7 +338,12 @@ export async function loadConfig(): Promise<OrcaConfig> {
   const config: OrcaConfig = {
     repos: rows.map((r) => {
       const c = r.config as unknown as RepoConfig;
-      return { ...c, name: r.name, repoPath: expandPath(c.repoPath ?? ""), worktreeRoot: expandPath(c.worktreeRoot ?? "") };
+      return {
+        ...c, name: r.name, repoPath: expandPath(c.repoPath ?? ""), worktreeRoot: expandPath(c.worktreeRoot ?? ""),
+        // A preview command names Orca's own scripts by path (`${ORCA_DEV_ROOT}/orca/scripts/…`),
+        // which differs per machine like the repo paths do.
+        previewServices: (c.previewServices ?? []).map((svc) => ({ ...svc, command: expandPath(svc.command), ...(svc.onStop ? { onStop: expandPath(svc.onStop) } : {}) })),
+      };
     }),
     portRange: (app.portRange as [number, number]) ?? [30000, 40000],
     staleHours: (app.staleHours as number) ?? 24,

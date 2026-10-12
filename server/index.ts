@@ -20,6 +20,7 @@ import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
+import { health } from "./health";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
@@ -161,7 +162,7 @@ const notEnabled = (repo: RepoConfig, feature: string) =>
 // must run where the repo lives.
 const DATABASE_ONLY = new Set([
   "/api/turns", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
-  "/api/usage", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel",
+  "/api/usage", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
   // others published — a repo can live on several instances now, so no one instance owns the list.
   "/api/agents",
@@ -171,7 +172,8 @@ const DATABASE_ONLY = new Set([
  *  so the same hop carries the chat's live stream — the owner pushes from its own bus, and this
  *  instance is a pipe. Returns undefined when the request should be handled locally. */
 async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: OrcaConfig, body: Record<string, unknown>): Promise<Response | undefined> {
-  if (DATABASE_ONLY.has(url.pathname)) return undefined;
+  // An explicit `instance` on an otherwise local route (`/api/health?instance=cloud`) still forwards.
+  if (DATABASE_ONLY.has(url.pathname) && !url.searchParams.get("instance")) return undefined;
   const instance = db.instanceName();
   // Where this request belongs: an explicit instance, else the worktree's home, else the repo's
   // default (verbs.placement). A workstream placed on the laptop stays on the laptop even when the
@@ -343,6 +345,11 @@ async function api(req: Request, url: URL): Promise<Response> {
       const busy = e instanceof BusyError || (e instanceof Error && /already running/.test(e.message));
       return json({ error: busy ? new BusyError().message : e instanceof Error ? e.message : String(e) }, busy ? 409 : 400);
     }
+  }
+  if (req.method === "GET" && p === "/api/health") {
+    // This machine's vitals, for the header's instance chip. `?instance=` reaches another instance
+    // through the ordinary placement forwarding (an explicit instance beats everything).
+    return json(await health());
   }
   if (req.method === "GET" && p === "/api/usage") {
     // Claude (OAuth usage endpoint) + Codex (local app-server) both expose read-only rate-limit
