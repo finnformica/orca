@@ -284,6 +284,11 @@ export { API_PORT } from "./ports";
 // Cached in memory because the board polls constantly; `invalidateConfig()` clears it on write, so a
 // paste takes effect on the next request with no restart.
 let cached: OrcaConfig | null = null;
+let cachedAt = 0;
+// The cache is per process, and the database is shared by two: a config written on the laptop
+// must reach the box without a restart. A short TTL does that (one read per few seconds, not one
+// per request); a write still invalidates locally at once.
+const CONFIG_TTL_MS = 5_000;
 
 export function invalidateConfig(): void {
   cached = null;
@@ -325,7 +330,7 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
 
 /** The effective configuration: database rows, seeded once from the file if the database is empty. */
 export async function loadConfig(): Promise<OrcaConfig> {
-  if (cached) return cached;
+  if (cached && Date.now() - cachedAt < CONFIG_TTL_MS) return cached;
   let rows = await db.repoConfigs();
   if (!rows.length) {
     const file = await fileConfig();
@@ -355,6 +360,7 @@ export async function loadConfig(): Promise<OrcaConfig> {
     orchestratorOn: app.orchestratorOn as string | undefined,
   };
   cached = config;
+  cachedAt = Date.now();
   return config;
 }
 
