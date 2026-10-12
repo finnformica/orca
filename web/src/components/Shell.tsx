@@ -1,7 +1,7 @@
 // The console shell, Vercel's: a left sidebar (instance switcher, Find, the nav, you at the bottom)
 // that collapses to icons and goes off-canvas on a narrow screen, and a top bar with the repo
-// context switcher, a breadcrumb and the page's controls. The orchestrator's floating launcher is
-// not part of it — it stays on every route, untouched.
+// context switcher, a breadcrumb and, on the right, "Ask the orchestrator" (on every page). It also
+// hosts the ⌘K palette, the ? shortcuts sheet and the one keyboard-shortcut listener.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtom } from "jotai";
 import {
@@ -9,7 +9,10 @@ import {
   Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
-import { agentQueryAtom, instanceScopeAtom, repoFilterAtom, sidebarCollapsedAtom } from "@/lib/atoms";
+import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, repoFilterAtom, sidebarCollapsedAtom } from "@/lib/atoms";
+import { shortcutLabel } from "@/lib/shortcuts";
+import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPalette";
+import { AskOrchestrator } from "@/components/Terminal";
 import { useTheme, type Theme } from "@/lib/theme";
 import { cn, PortalContainer } from "@/lib/utils";
 import { api } from "../api";
@@ -42,6 +45,12 @@ export function Shell({ crumbs, sidebarActions, children }: {
   const [open, setOpen] = useState(false); // off-canvas sidebar on a narrow screen
   const route = useRoute();
   useEffect(() => setOpen(false), [route]); // navigating closes the off-canvas sidebar
+  useEffect(() => { // …and so does Esc
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
   return (
     <div className="flex min-h-screen w-full">
       {/* Off-canvas backdrop (narrow screens). */}
@@ -60,9 +69,13 @@ export function Shell({ crumbs, sidebarActions, children }: {
           <button type="button" className="text-muted-foreground hover:text-foreground md:hidden" onClick={() => setOpen(true)} aria-label="Open menu"><Menu className="size-5" /></button>
           <RepoSwitcher />
           <nav aria-label="Breadcrumb" className="text-muted-foreground flex min-w-0 items-center gap-2 text-sm">{crumbs}</nav>
+          <AskOrchestrator />
         </header>
         <main className="w-full flex-1 px-4 py-6 md:px-6">{children}</main>
       </div>
+      <Shortcuts />
+      <CommandPalette />
+      <ShortcutsHelp />
     </div>
   );
 }
@@ -110,7 +123,7 @@ function Sidebar({ collapsed, onToggle, onClose, actions }: {
         <div data-slot="sidebar-you" className={cn("flex items-center gap-1", collapsed && "md:flex-col-reverse")}>
           <ProfileMenu collapsed={collapsed} />
           <button type="button" onClick={onToggle} className={cn("text-muted-foreground hover:text-foreground hover:bg-accent hidden size-8 shrink-0 items-center justify-center rounded-md md:inline-flex", !collapsed && "ml-auto")}
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={`${collapsed ? "Expand sidebar" : "Collapse sidebar"} (${shortcutLabel("sidebar")})`}>
             {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
           </button>
         </div>
@@ -170,27 +183,16 @@ function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
 }
 
 // Find: searches the agents list. Typing here filters /agents (going there if needed); "F" anywhere
-// outside a text field focuses it, as on Vercel.
+// outside a text field focuses it, as on Vercel (components/CommandPalette.tsx's Shortcuts).
 function FindBox() {
   const [q, setQ] = useAtom(agentQueryAtom);
-  const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const t = e.target instanceof Element ? e.target : null;
-      if (e.key !== "f" || e.metaKey || e.ctrlKey || e.altKey || t?.closest("input, textarea, select, [contenteditable=true]")) return;
-      e.preventDefault();
-      ref.current?.focus();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
   return (
     <label className="bg-card focus-within:ring-ring/40 flex h-8 items-center gap-2 rounded-md border px-2 focus-within:ring-2">
       <Search className="text-muted-foreground size-3.5 shrink-0" />
-      <input ref={ref} value={q} aria-label="Find agents" placeholder="Find…"
+      <input value={q} aria-label="Find agents" placeholder="Find…"
         onChange={(e) => { setQ(e.target.value); if (location.pathname !== "/agents") navigate("/agents"); }}
         className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-sm outline-none" />
-      <kbd className="text-muted-foreground rounded border px-1 font-sans text-[10px]">F</kbd>
+      <kbd className="text-muted-foreground rounded border px-1 font-sans text-[10px]">{shortcutLabel("find")}</kbd>
     </label>
   );
 }
@@ -222,10 +224,11 @@ function RepoSwitcher() {
  *  model, attachments, the # picker, New chat). Native <dialog> like Rename / New chat, so Esc and
  *  the backdrop close it, and it is the portal container for the composer's selects (a modal dialog
  *  makes the rest of the page inert — a select rendered into <body> would be unclickable). Sending
- *  closes it and leaves "Sent to … · Undo" at the foot of the screen for 6s. `C` opens it from
- *  anywhere outside a text field. The typed draft persists either way (the composer's persistKey). */
+ *  closes it and leaves "Sent to … · Undo" at the foot of the screen for 6s. `C` (and the palette's
+ *  New agent) opens it from anywhere outside a text field — `addNewOpenAtom`. The typed draft
+ *  persists either way (the composer's persistKey). */
 export function AddNew({ children, collapsed = false }: { children: (onSent: (draft: OptimisticDraft) => void) => ReactNode; collapsed?: boolean }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useAtom(addNewOpenAtom);
   const [dialog, setDialog] = useState<HTMLDialogElement | null>(null);
   const [sent, setSent] = useState<OptimisticDraft | null>(null);
   useEffect(() => {
@@ -237,16 +240,6 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
     } else if (!open && dialog.open) dialog.close();
   }, [open, dialog]);
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const t = e.target instanceof Element ? e.target : null;
-      if (e.key !== "c" || e.metaKey || e.ctrlKey || e.altKey || t?.closest("input, textarea, select, [contenteditable=true], dialog")) return;
-      e.preventDefault();
-      setOpen(true);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-  useEffect(() => {
     if (!sent) return;
     const t = setTimeout(() => setSent(null), 6000);
     return () => clearTimeout(t);
@@ -254,7 +247,7 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
   const onSent = (draft: OptimisticDraft) => { setOpen(false); setSent(draft); };
   return (
     <>
-      <Button size="sm" data-slot="add-new" title="Add New (C)" aria-label="Add New" onClick={() => setOpen(true)} className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
+      <Button size="sm" data-slot="add-new" title={`Add New (${shortcutLabel("new")})`} aria-label="Add New" onClick={() => setOpen(true)} className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
         <Plus className="size-4" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
       </Button>
       <dialog

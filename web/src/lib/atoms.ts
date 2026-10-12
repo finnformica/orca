@@ -32,3 +32,17 @@ export const instanceScopeAtom = atomWithStorage("orca.instanceScope", "all");
 export const agentQueryAtom = atom("");
 // The Overview's Usage card: just the fleet + Codex, or every hydra login too. Persisted.
 export const usageExpandedAtom = atomWithStorage("orca.usageExpanded", false);
+
+// Overlays any key, the palette or a button can open (components/Shortcuts.tsx). The orchestrator's
+// window is open or closed here, so the top bar's "Ask the orchestrator", O and the palette all drive
+// the one window; `orchestratorPrefillAtom` is text for its composer. `session` groups the keystrokes
+// of one ask (typed in the entry before the composer mounts) so they replace each other rather than
+// stacking; `seq` makes every ask an event, even with the same text (it also refocuses the composer).
+export const orchestratorOpenAtom = atom(false);
+export type OrchestratorPrefill = { text: string; session: number; seq: number };
+export const orchestratorPrefillAtom = atom<OrchestratorPrefill | null>(null);
+export const addNewOpenAtom = atom(false);
+export const paletteOpenAtom = atom(false);
+export const shortcutsHelpOpenAtom = atom(false);
+// The palette's recently run item ids, newest first. Persisted per browser.
+export const paletteRecentAtom = atomWithStorage<string[]>("orca.palette.recent", []);

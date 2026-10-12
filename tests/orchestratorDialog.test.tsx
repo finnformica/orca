@@ -1,12 +1,14 @@
-// The orchestrator's entry point in the UI: a floating launcher in the bottom-right corner that pops
-// out a chat window (the same ChatPanel a card's terminal uses) over the orchestrator's own turns,
+// The orchestrator's entry point in the UI: "Ask the orchestrator" in the top bar opens a chat window
+// in the bottom-right corner (the same ChatPanel a card's terminal uses) over the orchestrator's own turns,
 // with the composer sending to its route (never the branch follow-up launch). Rendered into a real DOM against the fake api.
 import { afterEach, beforeAll, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
-import { OrchestratorButton } from "@/components/Terminal";
+import { getDefaultStore } from "jotai";
+import { AskOrchestrator, OrchestratorWindow } from "@/components/Terminal";
+import { orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
 import { WorkstreamCard } from "@/views/Board";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, clampFrame, resizeFrame } from "@/workstream";
 
@@ -29,26 +31,30 @@ afterEach(async () => {
   localStorage.clear();
   delete (window as unknown as { documentPictureInPicture?: unknown }).documentPictureInPicture;
   document.documentElement.classList.remove("dark");
+  getDefaultStore().set(orchestratorOpenAtom, false);
+  getDefaultStore().set(orchestratorPrefillAtom, null);
 });
+const OrchestratorButton = () => <><AskOrchestrator /><OrchestratorWindow /></>;
 
 const panel = () => container!.querySelector<HTMLElement>('[data-slot="orchestrator-panel"]');
-const launcher = () => container!.querySelector<HTMLButtonElement>('button[aria-label$="orchestrator"][aria-expanded]')!;
+const launcher = () => container!.querySelector<HTMLInputElement>('input[aria-label="Ask the orchestrator"]')!;
+const closeButton = (root: ParentNode = container!) => root.querySelector<HTMLButtonElement>('button[aria-label="Close orchestrator"]')!;
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
 
-test("the floating launcher pops out the orchestrator's conversation, and the composer sends to it", async () => {
+test("Ask the orchestrator opens its conversation in a corner window, and the composer sends to it", async () => {
   apiFake.turnsData.set("@orca::orchestrator", [
     { id: "run-1", provider: "claude", instruction: "ship the cache", prompt: "p", response: "Spawned r/add-cache.", finishedAt: 2 },
   ]);
   apiFake.orchestratorState = { ...apiFake.orchestratorState, model: "claude-opus-5-5", contextPct: 42 };
   await mount(<OrchestratorButton />);
-  expect(panel()).toBeNull(); // closed: only the launcher, pinned bottom-right
+  expect(panel()).toBeNull(); // closed: only the entry
   expect(container!.querySelector("dialog")).toBeNull(); // a popout, not a modal — the board stays usable
-  expect(launcher().parentElement!.className).toContain("fixed right-4 bottom-4");
-  // Inverted against the page in either theme: the foreground token is the fill.
-  expect(launcher().className).toContain("bg-foreground text-background");
+  // No floating launcher any more: the top bar's entry replaced it.
+  expect(container!.querySelector(".fixed.right-4.bottom-4 button")).toBeNull();
 
   await click(launcher());
-  expect(launcher().getAttribute("aria-expanded")).toBe("true");
+  expect(panel()!.parentElement!.className).toContain("fixed right-4 bottom-4"); // pinned bottom-right
+  expect(document.activeElement).toBe(panel()!.querySelector("textarea")); // focused, ready to type
   expect(panel()!.textContent).toContain("ship the cache");
   expect(panel()!.textContent).toContain("Spawned r/add-cache.");
   // The terminal log fills the window: no padding around it and no frame of its own.
@@ -95,8 +101,8 @@ test("the floating launcher pops out the orchestrator's conversation, and the co
   expect(apiFake.orchestratorMessages).toEqual([{ text: "what is running?", attachments: [] }]);
   expect(apiFake.agentLaunches).toEqual([]); // not a branch follow-up
 
-  // The launcher toggles, and Escape from inside the window closes it too.
-  await click(launcher());
+  // Its ✕ closes it, the entry reopens it, and Escape from inside the window closes it too.
+  await click(closeButton());
   expect(panel()).toBeNull();
   await click(launcher());
   await act(async () => { panel()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
@@ -288,11 +294,11 @@ test("Pop out moves the live chat into a Picture-in-Picture window and back (Ret
     await act(async () => { pip.win(1).close(); await flush(); });
     expect(panel()!.textContent).toContain("Spawned r/add-cache.");
 
-    // And the launcher closing the chat closes a popped-out window with it.
+    // And closing the chat (its ✕, in the PiP window) closes the popped-out window with it.
     await click(panel()!.querySelector('[aria-label="Pop out"]')!);
     let closed = false;
     pip.win(2).addEventListener("pagehide", () => { closed = true; });
-    await click(launcher());
+    await click(closeButton(pip.win(2).document));
     expect(closed).toBe(true);
     expect(panel()).toBeNull();
   } finally { style.remove(); }
