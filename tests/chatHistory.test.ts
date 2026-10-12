@@ -390,6 +390,19 @@ test("an instruction typed mid-run is queued, claimed once, and cancellable", as
   expect(await db.queuedMessages("r", "feat")).toEqual([]);
 });
 
+// The agents poll attaches each branch's undispatched count to its row, so the board can flag a
+// message held behind a run that is no longer coming ("Needs attention"). One grouped query per repo.
+test("queued counts per branch: only undispatched, scoped to the repo", async () => {
+  await db.queueMessage({ repo: "qc", branch: "one", worktreePath: "/wt/one", instruction: "a", attachments: [] });
+  await db.queueMessage({ repo: "qc", branch: "one", worktreePath: "/wt/one", instruction: "b", attachments: [] });
+  await db.queueMessage({ repo: "qc", branch: "two", worktreePath: "/wt/two", instruction: "c", attachments: [] });
+  await db.queueMessage({ repo: "other", branch: "one", worktreePath: "/wt/x", instruction: "d", attachments: [] });
+  expect(Object.fromEntries(await db.queuedCounts("qc"))).toEqual({ one: 2, two: 1 });
+  await db.claimQueuedMessage("qc", "two"); // sent → no longer counted
+  expect(Object.fromEntries(await db.queuedCounts("qc"))).toEqual({ one: 2 });
+  expect((await db.queuedCounts("none")).size).toBe(0);
+});
+
 // A run whose bridge died mid-flight kept working — the agent outlives the bridge by design — but
 // the reader transcribing it and the handler recording its outcome both died with the process. The
 // provider kept everything, and turn.raw_ref holds the session id, so the turn can be reconstructed

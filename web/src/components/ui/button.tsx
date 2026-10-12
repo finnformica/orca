@@ -4,16 +4,16 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex cursor-pointer items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 outline-none focus-visible:ring-ring/50 focus-visible:ring-[3px]",
+  "inline-flex cursor-pointer items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 outline-none focus-visible:ring-ring/40 focus-visible:ring-2",
   {
     variants: {
       variant: {
-        default: "bg-primary/10 text-primary border border-primary/20 hover:bg-primary/20",
-        success: "bg-emerald-500/10 text-emerald-700 border border-emerald-500/20 hover:bg-emerald-500/20 dark:text-emerald-400",
-        destructive: "bg-destructive/10 text-destructive border border-destructive/20 hover:bg-destructive/20",
-        outline: "border bg-background hover:bg-accent hover:text-accent-foreground",
-        secondary: "bg-muted text-foreground hover:bg-muted/70",
-        soft: "bg-foreground/5 text-foreground hover:bg-foreground/10",
+        default: "bg-primary text-primary-foreground border border-primary hover:bg-primary/85",
+        success: "bg-primary text-primary-foreground border border-primary hover:bg-primary/85", // Geist has one primary: Merge is it
+        destructive: "bg-geist-red text-white border border-geist-red hover:bg-geist-red/90", // Geist error
+        outline: "border bg-card hover:bg-accent hover:text-accent-foreground",
+        secondary: "border bg-card hover:bg-accent hover:text-accent-foreground", // Geist secondary, as outline
+        soft: "text-foreground hover:bg-accent", // Geist tertiary
         ghost: "hover:bg-accent hover:text-accent-foreground",
         link: "text-primary underline-offset-4 hover:underline",
       },

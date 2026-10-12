@@ -1,13 +1,17 @@
-// E2E for the top-right usage meter (server/usage.shapeUsage → /api/usage → App.UsageMeter):
-// Claude and Codex limits show as stacked terminal-style rows, and the widget hides entirely when
-// neither provider is authenticated (endpoint returns null). Driven against the fake api
-// (tests/apiFake.ts), rendered into a real DOM. Plus a pure shapeUsage unit check (no network).
+// E2E for the Usage card (server/usage.shapeUsage → /api/usage → views/Vitals.UsageCard), which
+// replaced the header's usage meter: Vercel's usage rows — a ring, a label, value / limit and the
+// time to reset — for Claude (the fleet, and each hydra login on expand) and Codex, an empty state
+// when nothing is signed in, and the routing warning. Driven against the fake api
+// (tests/apiFake.ts), rendered into a real DOM. Plus the pure shapeUsage / mergeUsage checks.
 import { afterEach, beforeAll, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { aggregateProfiles, App, mergeUsage, untilReset } from "@/App";
+import { navigate } from "@/lib/route";
+import { getDefaultStore } from "jotai";
+import { usageExpandedAtom } from "@/lib/atoms";
 import { shapeCodexUsage, shapeUsage } from "../server/usage";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -18,7 +22,8 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 
 let root: Root | undefined;
 let container: HTMLElement | undefined;
-async function mount() {
+async function mount(path = "/") {
+  navigate(path);
   container = document.createElement("div");
   document.body.appendChild(container);
   await act(async () => { root = createRoot(container!); root.render(<App />); await flush(); await flush(); });
@@ -30,26 +35,29 @@ afterEach(async () => {
   root = container = undefined;
   apiFake.reset();
   localStorage.clear();
+  getDefaultStore().set(usageExpandedAtom, false); // the atom outlives localStorage within a run
+  navigate("/");
   await act(async () => { await store.refresh(); });
 });
 
-const meter = () => container!.querySelector("[aria-label='Claude usage limits']");
+const card = () => container!.querySelector("[data-slot='usage-card']")!;
+const group = (key: string) => card().querySelector(`[data-slot='usage-group'][data-group='${key}']`);
+/** Each row as "label value / limit" (plus "resets …" when known), whitespace-collapsed. */
+const rows = (key: string) => [...(group(key)?.querySelectorAll("[data-slot='usage-row']") ?? [])]
+  .map((r) => [...r.children].map((c) => c.textContent?.trim()).filter(Boolean).join(" ").replace(/\s+/g, " "));
 
-test("shows the 5-hour and weekly percentages in the header", async () => {
+test("the Usage card shows the 5-hour and weekly windows as value / limit rows with a ring", async () => {
   apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
   await mount();
-  const text = meter()?.textContent ?? "";
-  expect(text).toContain("5h");
-  expect(text).toContain("38%");
-  expect(text).toContain("1w");
-  expect(text).toContain("55%");
+  expect(rows("claude")).toEqual(["5-hour window 38% / 100%", "Weekly 55% / 100%"]);
+  expect(group("claude")!.querySelectorAll("svg circle").length).toBeGreaterThanOrEqual(2); // the rings
 });
 
 test("shows the time left till each window resets", async () => {
   const in90m = new Date(Date.now() + 90 * 60_000).toISOString();
   apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: in90m }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
   await mount();
-  expect(meter()?.textContent ?? "").toContain("1h 30m");
+  expect(rows("claude")[0]).toContain("resets 1h 30m");
 });
 
 test("untilReset formats the countdown compactly, null when unknown/past", () => {
@@ -64,13 +72,14 @@ test("untilReset formats the countdown compactly, null when unknown/past", () =>
   expect(untilReset("2026-07-15T14:00:00Z", now)).toBe("7d 2h");
 });
 
-test("renders nothing when no provider usage is available", async () => {
+test("says so when no provider usage is available", async () => {
   apiFake.usageData = null;
   await mount();
-  expect(meter()).toBeNull();
+  expect(card().textContent).toContain("No provider is signed in");
+  expect(card().querySelector("[data-slot='usage-row']")).toBeNull();
 });
 
-test("shows extra-usage spend as money in the plan's currency", async () => {
+test("shows extra-usage spend as money in the plan's currency, used / cap", async () => {
   apiFake.usageData = {
     claude: {
       fiveHour: { utilization: 20, resetsAt: null }, sevenDay: { utilization: 30, resetsAt: null },
@@ -79,9 +88,7 @@ test("shows extra-usage spend as money in the plan's currency", async () => {
     codex: null,
   };
   await mount();
-  const text = meter()?.textContent ?? "";
-  expect(text).toContain("$");
-  expect(text).toContain("£85.35"); // 8535 minor / 10^2, GBP → pound-formatted
+  expect(rows("claude")).toContain("Extra usage £85.35 / £200.00"); // 8535 minor / 10^2, GBP → pound-formatted
 });
 
 test("shapeUsage clamps/rounds utilization, defaults windows to 0%, and extracts extra-usage spend", () => {
@@ -95,20 +102,15 @@ test("shapeUsage clamps/rounds utilization, defaults windows to 0%, and extracts
   expect(shapeUsage({ extra_usage: { is_enabled: false } }).extra).toBeNull();
 });
 
-test("shows Claude and Codex terminal bars side by side without lifetime tokens", async () => {
+test("shows Claude then Codex, each window a row, without lifetime tokens", async () => {
   apiFake.usageData = {
     claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null },
     codex: { windows: [{ label: "wk", durationMinutes: 10_080, utilization: 20, resetsAt: null }] },
   };
   await mount();
-  const all = container!.querySelector("[aria-label='Agent usage limits']")!;
-  const claude = container!.querySelector("[aria-label='Claude usage limits']")!;
-  const codex = container!.querySelector("[aria-label='Codex usage limits']");
-  expect(codex?.textContent ?? "").toContain("codex");
-  expect(codex?.textContent ?? "").toContain("20%");
-  expect(codex?.textContent ?? "").toContain("█░░░░");
-  expect(all.textContent).not.toContain("total");
-  expect(claude.compareDocumentPosition(codex!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(rows("codex")).toEqual(["Weekly 20% / 100%"]);
+  expect(card().textContent).not.toContain("total");
+  expect(group("claude")!.compareDocumentPosition(group("codex")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 test("mergeUsage keeps a provider's last-good value when a poll returns it null", () => {
@@ -135,7 +137,7 @@ test("shapeCodexUsage maps app-server windows and unix reset timestamps", () => 
   expect(shapeCodexUsage(null)).toBeNull();
 });
 
-test("with hydra's logins, the header shows ONE fleet row (mean per window, Fable included) and the per-login breakdown in a hover card", async () => {
+test("with hydra's logins, the card leads with the fleet (mean per window, Fable included); every login is one click away", async () => {
   apiFake.usageData = {
     claude: { fiveHour: { utilization: 95, resetsAt: null }, sevenDay: { utilization: 60, resetsAt: null }, extra: null },
     codex: null,
@@ -145,22 +147,16 @@ test("with hydra's logins, the header shows ONE fleet row (mean per window, Fabl
     ],
   };
   await mount();
-  // Exactly one Claude group in the header — not one per login — labelled with how many are in rotation.
-  const groups = container!.querySelectorAll("[aria-label='Claude usage limits']");
-  expect(groups).toHaveLength(1);
-  const fleet = groups[0]!;
-  expect(fleet.textContent).toContain("claude ×2");
-  // The bars are the fleet mean: 5h (95+12)/2 → 54, 1w (60+5)/2 → 33, Fable over the logins that have one → 21.
-  expect(fleet.querySelector("[title^='Claude 5h']")?.textContent).toContain("54%");
-  expect(fleet.querySelector("[title^='Claude 1w']")?.textContent).toContain("33%");
-  expect(fleet.querySelector("[title^='Claude fable']")?.textContent).toContain("21%");
-  // The breakdown card carries every login with its own numbers.
-  const card = fleet.querySelector("[data-slot='usage-breakdown']")!;
-  const rows = [...card.querySelectorAll("[data-slot='usage-login']")].map((r) => r.textContent?.replace(/\s+/g, " ").trim());
-  expect(rows).toHaveLength(2);
-  expect(rows[0]).toContain("personal"); expect(rows[0]).toContain("95%"); expect(rows[0]).toContain("21%"); expect(rows[0]).toContain("ok"); // a healthy login says so, not a blank
-  expect(rows[1]).toContain("work");     expect(rows[1]).toContain("12%"); expect(rows[1]).toContain("—"); // no Fable window
-  expect(fleet.querySelector("[data-slot='usage-state']")).toBeNull(); // nothing exhausted → no tag
+  // The fleet mean: 5h (95+12)/2 → 54, 1w (60+5)/2 → 33, Fable over the logins that have one → 21.
+  expect(group("fleet")!.textContent).toContain("2 logins in rotation");
+  expect(rows("fleet")).toEqual(["5-hour window 54% / 100%", "Weekly 33% / 100%", "Fable weekly 21% / 100%"]);
+  expect(group("login:personal")).toBeNull(); // collapsed on the Overview
+  const more = card().querySelector("[data-slot='usage-toggle']")!;
+  expect(more.textContent).toContain("Show 2 logins");
+  await act(async () => { more.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(rows("login:personal")).toEqual(["5-hour window 95% / 100%", "Weekly 60% / 100%", "Fable weekly 21% / 100%"]);
+  expect(rows("login:work")).toEqual(["5-hour window 12% / 100%", "Weekly 5% / 100%"]); // no Fable window
+  expect(group("login:personal")!.querySelector("[data-slot='usage-state']")).toBeNull(); // "ok" needs no tag
 });
 
 test("logins that can't be routed to are excluded from the fleet mean but still listed with their reason; exhausted ones count and are flagged", async () => {
@@ -172,15 +168,14 @@ test("logins that can't be routed to are excluded from the fleet mean but still 
       { name: "old", state: "disabled", usage: null },
     ],
   };
-  await mount();
-  const fleet = container!.querySelector("[aria-label='Claude usage limits']")!;
-  expect(fleet.textContent).toContain("claude ×1");                       // only `work` is in rotation…
-  expect(fleet.querySelector("[title^='Claude 5h']")?.textContent).toContain("95%"); // …so the mean IS its reading
-  expect(fleet.querySelector("[data-slot='usage-state']")?.textContent).toBe("1 exhausted");
-  const rows = [...fleet.querySelectorAll("[data-slot='usage-login']")].map((r) => r.textContent?.replace(/\s+/g, " ").trim());
-  expect(rows).toHaveLength(3);                                          // every login hydra knows is still listed
-  expect(rows[1]).toContain("spare"); expect(rows[1]).toContain("not signed in on this machine"); expect(rows[1]).not.toContain("%");
-  expect(rows[2]).toContain("old");   expect(rows[2]).toContain("disabled");
+  await mount("/usage"); // the Usage page lists every login
+  expect(group("fleet")!.textContent).toContain("1 login in rotation · 1 exhausted"); // only `work` is in rotation…
+  expect(rows("fleet")[0]).toBe("5-hour window 95% / 100%");                          // …so the mean IS its reading
+  expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("exhausted");
+  expect(group("login:spare")!.textContent).toContain("not signed in on this machine");
+  expect(rows("login:spare")).toEqual([]);
+  expect(group("login:spare")!.className).toContain("opacity-50");
+  expect(group("login:old")!.textContent).toContain("disabled");
 });
 
 test("aggregateProfiles: mean per window over the rotation, soonest reset, null when nothing is in rotation", () => {
@@ -199,6 +194,7 @@ test("warns when hydra is installed but the bridge's `claude` isn't its shim (ru
   await mount();
   const warn = container!.querySelector("[data-slot='routing-warning']");
   expect(warn?.textContent).toContain("routing off");
+  expect(card().contains(warn)).toBe(true);
   expect(warn?.getAttribute("title")).toContain("install.sh --shim");
 });
 
@@ -217,4 +213,37 @@ test("mergeUsage keeps the last-known routing verdict across a poll that omitted
   const claude = { fiveHour: { utilization: 40, resetsAt: null }, sevenDay: { utilization: 50, resetsAt: null }, extra: null };
   const routing = { hydra: true, shim: true };
   expect(mergeUsage({ claude, codex: null, routing }, { claude, codex: null })).toEqual({ claude, codex: null, profiles: undefined, routing });
+});
+
+test("the card collapses again: Vercel's chevron and the header row both toggle, and the choice is remembered", async () => {
+  const login = (name: string, five: number) => ({ name, state: "ok", usage: { fiveHour: { utilization: five, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
+  apiFake.usageData = { claude: null, codex: null, profiles: [login("work", 40), login("home", 20)] };
+  await mount();
+  const toggle = () => card().querySelector<HTMLElement>("[data-slot='usage-toggle']")!;
+  const header = () => card().querySelector<HTMLElement>("[data-slot='card-header']")!;
+  const click = (el: Element) => act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(toggle().getAttribute("aria-expanded")).toBe("false");
+  expect(group("login:work")).toBeNull();
+  await click(toggle()); // the chevron at the foot opens it…
+  expect(group("login:work")).not.toBeNull();
+  expect(toggle().textContent).toContain("Show less");
+  expect(header().getAttribute("aria-expanded")).toBe("true");
+  expect(localStorage.getItem("orca.usageExpanded")).toBe("true");
+  // …and a remount (a reload) keeps it open.
+  act(() => root?.unmount()); container?.remove();
+  await mount();
+  expect(group("login:work")).not.toBeNull();
+  await click(toggle()); // the chevron closes it too
+  expect(group("login:work")).toBeNull();
+  expect(localStorage.getItem("orca.usageExpanded")).toBe("false");
+  await click(header()); // and the header row toggles it, as on Vercel
+  expect(group("login:home")).not.toBeNull();
+  await click(header());
+  expect(group("login:home")).toBeNull();
+  // The Usage page always lists every login: nothing to toggle there.
+  act(() => root?.unmount()); container?.remove();
+  await mount("/usage");
+  expect(group("login:work")).not.toBeNull();
+  expect(card().querySelector("[data-slot='usage-toggle']")).toBeNull();
+  expect(header().getAttribute("role")).toBeNull();
 });

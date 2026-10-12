@@ -5,13 +5,14 @@
 // Enrichment and the chat transcript now live in the bridge's SQLite store (server/db.ts); this
 // module keeps a synchronous in-memory mirror of it. localStorage holds only per-browser UI state
 // (theme, density, composer drafts) — see the migration below for the one-shot handover.
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
   addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, followUpPrompt, launchPrompt,
-  newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
+  newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
+import type { ReviewDigest } from "./workstream";
 import type { PrRef } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
@@ -395,6 +396,8 @@ export type Row = {
   agentOutcome?: AgentOutcome;
   agentMeta?: LiveAgent["agentMeta"];
   agentCheck?: LiveAgent["agentCheck"];
+  /** Messages queued for the branch and not yet sent. */
+  queued?: number;
   agentStartedAt?: number;
   agentProvider?: AgentProvider;
   preferredProvider?: AgentProvider;
@@ -459,6 +462,33 @@ export function usePrRefs(): { refs: PrRef[]; repoCount: number } {
   return prRefsCache;
 }
 
+// ---- review signal (lazy, per visible PR) ----
+// The row's review cluster and the PR page's Review panel read gh.reviewSignal — one GraphQL call
+// per PR, so it is fetched only when a component that shows it mounts, never for every row on
+// every poll. Cached per PR; refetched when the PR's review state or feedback count moves (the
+// /api/prs poll already carries both) or after REVIEW_SIGNAL_TTL.
+const REVIEW_SIGNAL_TTL = 5 * 60_000;
+type SignalEntry = { digest?: ReviewDigest; sig: string; at: number; inflight?: boolean };
+const reviewSignals = new Map<string, SignalEntry>();
+
+export function useReviewDigest(repo: string, prNumber: number | undefined, sig = ""): ReviewDigest | undefined {
+  const key = prNumber ? `${repo}#${prNumber}` : "";
+  const entry = useSyncExternalStore(subscribe, () => (key ? reviewSignals.get(key) : undefined));
+  useEffect(() => {
+    if (!key || !prNumber) return;
+    const e = reviewSignals.get(key);
+    if (e && (e.inflight || (e.sig === sig && Date.now() - e.at < REVIEW_SIGNAL_TTL))) return;
+    reviewSignals.set(key, { digest: e?.digest, sig, at: Date.now(), inflight: true });
+    notify();
+    api.reviewSignal(repo, prNumber)
+      .then((s) => reviewSignals.set(key, { digest: reviewDigest(s), sig, at: Date.now() }))
+      .catch(() => reviewSignals.set(key, { digest: e?.digest, sig, at: Date.now() })) // keep the last good one; retry after the TTL
+      .finally(notify);
+  }, [key, repo, prNumber, sig]);
+  return entry?.digest;
+}
+export const _resetReviewSignals = () => reviewSignals.clear();
+
 export function useWorkstreams(): Row[] {
   useSyncExternalStore(subscribe, () => version); // re-render on any store change (live, enrichment, optimistic)
   return assembleRows();
@@ -495,7 +525,7 @@ export function assembleRows(): Row[] {
         title: pr?.title ?? e.title ?? branch,
         prompt: e.prompt ?? "",
         worktreePath: wt?.worktreePath, agentStatus: wt?.agentStatus, agentError: wt?.agentError,
-        agentResult: wt?.agentResult, agentOutcome: wt?.agentOutcome, agentMeta: wt?.agentMeta, agentCheck: wt?.agentCheck, agentStartedAt: wt?.agentStartedAt,
+        agentResult: wt?.agentResult, agentOutcome: wt?.agentOutcome, agentMeta: wt?.agentMeta, agentCheck: wt?.agentCheck, queued: wt?.queued, agentStartedAt: wt?.agentStartedAt,
         agentProvider: e.agentProvider ?? wt?.agentProvider,
         preferredProvider: e.preferredProvider,
         preferredModel: e.preferredModel,

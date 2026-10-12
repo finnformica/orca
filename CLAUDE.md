@@ -135,7 +135,69 @@ is the chat panel over its recorded turns; a wake is `claude -p --resume` on its
 
 ## The one board & model
 
-One board (`web/src/views/Board.tsx`), lanes: **Local → Draft → In Review → Mergeable → Done·today**.
+**The console is Vercel's, copied outright** (Finn's re-brief after the first, swimlane-ish
+overview: "copy the design theme of Vercel completely and reuse all of their design decisions").
+Theme: Geist Sans/Mono (a Google Fonts `<link>`, no dependency), `#fafafa`/`#fff` light and
+`#000`/`#0a0a0a` dark, the Geist grays, 1px hairlines, no card shadows, `#0070f3` as the one accent,
+status dots and pills as `--geist-*` tokens — all CSS variables in `styles.css`, so every component
+inherits it. **Surface rules** (Finn found the first pass heavy-handed; `tests/console.test.tsx`
+asserts them on every page): 1px hairlines only, never 2px; rows use dividers, never a box inside a
+card's border; 8px cards (`rounded-lg`), 6px controls (`rounded-md`); 13px body / 12px meta; icons at
+1.5 stroke (a global `svg.lucide` rule); NO shadows except Geist's menu / modal tokens
+(`shadow-menu`, `shadow-modal`) and the orchestrator's floating launcher; badges are tinted fills
+with no border; buttons are Geist's three — primary (inverted; Merge too), secondary (hairline),
+tertiary (ghost: every icon-only row / toolbar button). The agent page's conversation runs
+full-bleed in its card and follows the page's theme (`.log-themed` remaps the terminal palette in
+light mode); the modal and the orchestrator keep the dark terminal. Shell (`components/Shell.tsx`): a collapsible left sidebar (instance switcher
+all/local/cloud scoping the pages, Find — the `F` key — which filters Agents, the nav Overview /
+Agents / Previews / Repos / Usage / Settings, then **Add New** as the last action, above the divider — a modal `<dialog>` holding the New-draft box
+(`C` opens it; it is the portal container for the composer's selects, since a modal leaves the rest
+of the page inert; sending closes it and leaves "Sent to … · Undo" for 6s; the typed draft persists) — and
+below it you on one thin line — "You · local" — with the collapse toggle;
+collapsed it is one icon column, expand toggle above you; off-canvas when narrow) and a top bar
+(repo switcher, breadcrumb). **Previews** is a page (running previews with Open / Stop, and Test
+master per repo); its nav item carries the badges the old header buttons had — the running count
+and a spinner / dot for a base-branch preview — from one shared `/api/previews` poll
+(`usePreviewList`). The
+orchestrator's floating launcher is outside the shell, untouched. Building blocks (card, ring,
+status dot, pill, details grid, line chart) are `components/console.tsx`.
+- **Overview** (`/`, `views/Overview.tsx`): a Usage card — Claude per window as ring + value / limit
+  rows (the fleet, every hydra login on expand) and Codex; it REPLACED the header usage meter — one
+  card per machine (`views/Vitals.tsx`: a details grid plus CPU % / memory GB line graphs over
+  6h/24h/7d from `/api/health/history`; it replaced the header's cloud chip), ONE Agents card with
+  the four numbers (running, needs attention with its reasons, open PRs by state, merged today —
+  each opens the Agents list filtered to exactly that), and Recent activity. **Needs attention**
+  (`attentionReasons`): check failed, conflicts, CI red, changes requested, a run error or stop, or a
+  message held behind a run that isn't coming (`/api/agents` attaches each branch's undispatched
+  count, `db.queuedCounts`). The Usage card's per-login breakdown is a remembered toggle (the
+  chevron at its foot or its header row, `orca.usageExpanded`). The first cut's
+  separate Awaiting-you tiles were dropped as redundant.
+- **Agents** (`/agents`, `views/Agents.tsx`): Vercel's Deployments list — one-click **quick
+  filter chips** (Needs attention, Running, Mine, Orchestrated, Open PRs, Mergeable, Merged today,
+  per instance, per repo; AND across groups, OR within one, each with its count) held in the URL
+  query (`?status=attention&pr=open&on=cloud`, `parseQuickFilter` / `quickFilterQuery`), so a
+  filtered view is a link and the Overview's numbers open exactly their chips; search, sort; one ~56px row per workstream (repo
+  icon + title, latest instruction, status dot + duration, state pill, CI/conflict badges + the
+  review cluster, PR, branch, instance, updated, the model as avatar); every action in the trailing
+  ⋯ (`WorkstreamActions menuOnly`). The swimlanes stay behind a persisted List | Board toggle.
+- **Agent page** (the existing `/{repo}/prs/:n` and `/{repo}/local/:branch` routes,
+  `views/AgentPage.tsx`): tabs Overview | Chat | Files | Checks | Preview; a Details card with
+  the failure box where Vercel shows "Build Failed" (`agentFailure`: the run's error, else the
+  failed check), Created / Status / Duration / State / Model / Instance / PR / Preview and the
+  Source (branch → base, latest commit); then the conversation where Build Logs sit (`ChatPanel
+  logBar`: turn / error / warning counters, Find in chat, timestamped, tinted turns, the composer).
+- **Repos**, **Usage** (every login, every machine) and **Settings** (theme, density, the
+  read-only config).
+Every number is a pure derivation over the assembled rows (`workstream.ts`: `overviewStats`,
+`attentionReasons`, `filterRows`, `sortRows`, `recentActivity`, `usageGroups`, `rowDuration`,
+`chatSummary`, `repoSummaries`, `agentFailure`) — no endpoint of its own, so the views can't
+disagree. Usage, health and health history are one shared poll each (`lib/vitals.ts`
+`sharedSource`; history only while a card shows it). Each PR row also carries a **review cluster**
+(approvers, `N unresolved`, a severity dot) and the PR page a **Review panel** — `reviewDigest`
+over `GET /api/prs/:n/review-signal`, fetched lazily per rendered PR (`store.useReviewDigest`).
+Mobile is backlog.
+
+The board (`web/src/views/Board.tsx`), lanes: **Local → Draft → In Review → Mergeable → Done·today**.
 A workstream is a branch; its lane (`store.laneFor`):
 - **open PR, draft** → Draft. **open PR, approved** → Mergeable. **open PR, else** → In Review.
 - **no PR** → Local, until Promote (local repo: sets `promoted`; then Mergeable if `git merge-tree`
@@ -214,7 +276,8 @@ a running turn or a queued entry, is the receipt. (It used to go busy until the 
 Enter did nothing meanwhile.) A failed send comes back into the box if it is still empty, else into
 the error line (`<error> — not sent: “<text>”`), so neither message is lost. (History: this
 was briefly a detail-page "Chat" tab; the user asked for it as a terminal-style modal instead, and the
-tab was removed.)
+tab was removed. The Vercel re-brief brought it back on the agent page — as its Chat tab and in
+Build Logs' place — alongside the modal, which the Board's cards and New chat still open.)
 
 `web/src/workstream.ts` is the pure state machine (no React/IO — imported by store + tests):
 
@@ -442,8 +505,8 @@ worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box
 `(instance, at)`). Every insert also deletes that instance's own rows older than 30 days, so retention
 needs no second timer; a failed write is logged and swallowed. `GET /api/health/history?instance=&hours=`
 (24 by default, at most 720) is database-only and its `instance` is a filter, never a forward, so
-either machine graphs the other even while it is down. The header chip's popover draws the last 24h
-of CPU and memory as inline SVG (no charting dependency), fetched only while it is open.
+either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
+CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300 points.
 **Conversation loading with a remote database:** `/api/turns` attaches steps to the newest
 `STEPS_FOR_TURNS` (40) turns in ONE query (`db.stepsForRuns`); older turns fetch theirs on unfold
 (`/api/turns/steps` from seq 0). One query per turn over a 6ms link made a 300-turn conversation

@@ -79,9 +79,12 @@ const anyRunning = async () => agent.isRunning(orchestrator.dir())
   || (existsSync(repo) ? (await git.listWorktrees(repo, worktrees)).some((w) => agent.isRunning(w.worktreePath)) : false);
 /** Every fake-claude launch's argv, oldest first. */
 const launches = async () => Promise.all((await readdir(log)).sort().map((f) => readFile(join(log, f), "utf8")));
-/** Wait until `read()` yields `n` finished turns and nothing is running. */
+/** Wait until `read()` yields `n` finished turns, nothing is running, and every after-run hook is done. */
 async function settled(read: () => Promise<AgentTurn[]>, n: number): Promise<AgentTurn[]> {
   for (let i = 0; i < 400; i++) {
+    // A run counts as finished before its after-run hook (the orchestrator's death handling rewrites
+    // the turn, a wake launches the next run) has run — wait for that too, or a read can land between.
+    await agent.afterRunsSettled();
     const turns = await read();
     if (turns.length >= n && turns.every((t) => t.finishedAt) && !(await anyRunning())) return turns;
     await new Promise((r) => setTimeout(r, 25));
@@ -573,6 +576,18 @@ test("O14: a message whose wake dies twice is not queued a third time", async ()
   // Sending it again is a new message: it gets its own two attempts.
   await orchestrator.message(cfg(), "do the thing");
   expect((await settled(orchTurns, 4))[3]!.response).toContain("Not retried again");
+});
+
+test("O14b: a finished wake's death handling is part of settling — a slow hook can't be read around", async () => {
+  // The CI flake behind O14: the run is marked finished before onRunFinished rewrites its turn into
+  // the "Wake stopped" line, so a read in between saw the raw stderr. Widen that gap on purpose.
+  agent.onRunFinished(async (run) => { await new Promise((r) => setTimeout(r, 300)); await orchestrator.onRunFinished(cfg(), run); });
+  await fakeClaude(`echo "boom: not logged in" >&2; exit 3`);
+  await orchestrator.message(cfg(), "do the thing");
+  const [first, second] = await settled(orchTurns, 2);
+  expect(first!.response).toStartWith("Wake stopped: exited with code 3");
+  expect(second!.response).toContain("Not retried again");
+  expect(await orchQueue()).toEqual([]);
 });
 
 test("O15: a timed-out wake and one that ends on the CLI's placeholder are retried; one you stop is not", async () => {

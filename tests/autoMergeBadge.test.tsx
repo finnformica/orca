@@ -1,5 +1,5 @@
 // E2E for the auto-merge card badge (server/gh.listPrs → store Row.autoMergeEnabled →
-// Board.ConditionBadges): an open PR with GitHub auto-merge armed shows a purple "Auto-merge"
+// Board.ConditionBadges, on the Agents list's row): an open PR with GitHub auto-merge armed shows a purple "Auto-merge"
 // badge alongside the other GitHub condition badges (ready for review, CI, …). Driven against the
 // fake api (tests/apiFake.ts), rendered into a real DOM.
 import { afterEach, beforeAll, expect, test } from "bun:test";
@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { App } from "@/App";
+import { navigate } from "@/lib/route";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -20,6 +21,7 @@ let container: HTMLElement | undefined;
 async function mount() {
   container = document.createElement("div");
   document.body.appendChild(container);
+  navigate("/agents"); // the Agents list: each PR row carries the card's condition badges
   await act(async () => { root = createRoot(container!); root.render(<App />); await flush(); await flush(); });
 }
 
@@ -29,6 +31,7 @@ afterEach(async () => {
   root = container = undefined;
   apiFake.reset();
   localStorage.clear();
+  navigate("/");
   await act(async () => { await store.refresh(); }); // clear the shared store's live PRs so we don't leak rows into other test files
 });
 

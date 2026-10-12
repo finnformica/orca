@@ -1,7 +1,7 @@
 // Pure workstream logic — the state machine and derivations. No React, no I/O,
 // so both the store and the e2e tests import it directly.
 
-import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
+import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentTurn, type TurnCheck } from "../../shared/agent";
 import { AUTO_MODEL } from "../../shared/models";
 export { attachCommand } from "../../shared/agent";
@@ -1134,6 +1134,317 @@ export function insertPrRef(text: string, start: number, caret: number, label: s
   return { text: text.slice(0, start) + ins + rest, caret: start + ins.length };
 }
 
+// ---- The overview (the board's default List view) ----
+// Every number on the stat tiles, the list's filter + sort, and the activity feed are derived here
+// from the same assembled rows the swimlanes render — no endpoint of their own, so the two views can
+// never disagree about how many PRs are mergeable.
+
+export type OverviewLane = "LOCAL" | "DRAFT" | "IN_REVIEW" | "MERGEABLE" | "DONE";
+export const OVERVIEW_LANES: OverviewLane[] = ["LOCAL", "DRAFT", "IN_REVIEW", "MERGEABLE", "DONE"];
+export const LANE_LABELS: Record<OverviewLane, string> = {
+  LOCAL: "Local", DRAFT: "Draft", IN_REVIEW: "In review", MERGEABLE: "Mergeable", DONE: "Done today",
+};
+
+/** The subset of a board row the overview reads. Structural, so the store's Row satisfies it. */
+export type OverviewRow = {
+  repo: string; branch: string; title: string; prompt?: string; lane: OverviewLane;
+  prNumber?: number; worktreePath?: string; instance?: string;
+  agentStatus?: "idle" | "running" | "done" | "error";
+  agentCheck?: { ok: boolean };
+  agentStartedAt?: number;
+  mergeable?: Mergeable; mergeClean?: "clean" | "conflict";
+  ciStatus?: CiStatus; reviewStatus?: ReviewStatus;
+  orchestrated?: boolean; mergedAt?: string; queued?: number;
+  transcript?: Pick<AgentTurn, "instruction" | "prompt" | "startedAt" | "finishedAt" | "failed" | "stopped" | "provider">[];
+};
+
+export type Attention = "check failed" | "agent error" | "run stopped" | "CI failing" | "conflicts" | "changes requested" | "message held";
+
+/** Why a workstream is waiting on YOU — empty when it isn't. A running agent is working on it, so
+ *  nothing is asked of you yet; a merged one is finished. */
+export function attentionReasons(row: OverviewRow): Attention[] {
+  if (row.lane === "DONE" || row.agentStatus === "running") return [];
+  const out: Attention[] = [];
+  if (row.agentCheck && !row.agentCheck.ok) out.push("check failed");
+  if (row.agentStatus === "error") out.push("agent error");
+  if (row.ciStatus === "failing") out.push("CI failing");
+  if (row.mergeable === "CONFLICTING" || row.mergeClean === "conflict") out.push("conflicts");
+  if (row.reviewStatus === "changes_requested") out.push("changes requested");
+  // You stopped its last run (resumable, but nothing will happen until you say what next).
+  if (row.agentStatus !== "error" && row.transcript?.[row.transcript.length - 1]?.stopped) out.push("run stopped");
+  // A message queued behind a run that is no longer running: it will not send itself.
+  if ((row.queued ?? 0) > 0) out.push("message held");
+  return out;
+}
+
+/** The status dot: blue running, red failed (a check, CI or the run itself), amber needs you
+ *  (conflicts, changes requested), green ready to merge or merged, neutral otherwise. */
+export type RowTone = "running" | "failed" | "attention" | "ready" | "neutral";
+export function rowTone(row: OverviewRow): RowTone {
+  if (row.agentStatus === "running") return "running";
+  const why = attentionReasons(row);
+  if (why.some((w) => w === "check failed" || w === "agent error" || w === "CI failing")) return "failed";
+  if (why.length) return "attention";
+  if (row.lane === "MERGEABLE" || row.lane === "DONE") return "ready";
+  return "neutral";
+}
+
+/** Newest thing that happened on a workstream (ms): its last turn, its live run, or its merge. 0
+ *  when nothing is known (a PR Orca never ran an agent on). */
+export function lastActivity(row: OverviewRow): number {
+  const turns = row.transcript ?? [];
+  const last = turns[turns.length - 1];
+  return Math.max(0, last?.finishedAt ?? 0, last?.startedAt ?? 0, row.agentStartedAt ?? 0, row.mergedAt ? Date.parse(row.mergedAt) || 0 : 0);
+}
+
+export type OverviewStats = {
+  running: number;
+  attention: number;
+  local: number;
+  prs: { draft: number; inReview: number; mergeable: number; total: number };
+  mergedToday: number;
+  /** Turns started per hour over the last 24h, oldest first — the activity chart. */
+  turnsByHour: number[];
+};
+
+export function overviewStats(rows: OverviewRow[], now = Date.now()): OverviewStats {
+  const open = rows.filter((r) => r.prNumber && r.lane !== "DONE");
+  const count = (lane: OverviewLane) => open.filter((r) => r.lane === lane).length;
+  const prs = { draft: count("DRAFT"), inReview: count("IN_REVIEW"), mergeable: count("MERGEABLE"), total: open.length };
+  return {
+    running: rows.filter((r) => r.agentStatus === "running").length,
+    attention: rows.filter((r) => attentionReasons(r).length > 0).length,
+    local: rows.filter((r) => r.lane === "LOCAL").length,
+    prs,
+    mergedToday: rows.filter((r) => r.lane === "DONE").length,
+    turnsByHour: turnsByHour(rows, now),
+  };
+}
+
+/** Turns started in each of the last `hours` hours (oldest bucket first, the current hour last). */
+export function turnsByHour(rows: OverviewRow[], now = Date.now(), hours = 24): number[] {
+  const buckets = new Array<number>(hours).fill(0);
+  const HOUR = 3_600_000;
+  for (const r of rows) {
+    for (const t of r.transcript ?? []) {
+      if (!t.startedAt) continue;
+      const ago = Math.floor((now - t.startedAt) / HOUR);
+      if (ago >= 0 && ago < hours) buckets[hours - 1 - ago]!++;
+    }
+  }
+  return buckets;
+}
+
+export type ListFilter = {
+  repo: string; // "all" or a repo name
+  instance: string; // "all" or an instance name
+  state: "all" | OverviewLane;
+  attention: boolean;
+  q: string;
+};
+export const DEFAULT_LIST_FILTER: ListFilter = { repo: "all", instance: "all", state: "all", attention: false, q: "" };
+
+/** Where a row's worktree lives — `here` unless the bridge said otherwise. None without a worktree
+ *  (a PR Orca hasn't adopted, a merged one). */
+export const rowInstance = (row: OverviewRow, here?: string): string | undefined =>
+  row.worktreePath ? (row.instance ?? here) : undefined;
+
+export function filterRows<R extends OverviewRow>(rows: R[], f: ListFilter, here?: string): R[] {
+  const words = f.q.toLowerCase().split(/\s+/).filter(Boolean);
+  return rows.filter((r) => {
+    if (f.repo !== "all" && r.repo !== f.repo) return false;
+    if (f.instance !== "all" && rowInstance(r, here) !== f.instance) return false;
+    if (f.state !== "all" && r.lane !== f.state) return false;
+    if (f.attention && attentionReasons(r).length === 0) return false;
+    if (words.length) {
+      const hay = `${r.title} ${r.branch} ${r.repo} ${r.prNumber ? `#${r.prNumber}` : ""} ${r.prompt ?? ""}`.toLowerCase();
+      if (!words.every((w) => hay.includes(w))) return false;
+    }
+    return true;
+  });
+}
+
+export type ListSort = "updated" | "attention" | "state" | "title" | "repo";
+export const SORT_LABELS: Record<ListSort, string> = {
+  updated: "Last activity", attention: "Needs you first", state: "State", title: "Title", repo: "Repo",
+};
+
+/** A sorted copy. Ties fall back to last activity, then title, so the order is stable across polls. */
+export function sortRows<R extends OverviewRow>(rows: R[], by: ListSort): R[] {
+  const byActivity = (a: R, b: R) => lastActivity(b) - lastActivity(a) || a.title.localeCompare(b.title);
+  const key: Record<ListSort, (a: R, b: R) => number> = {
+    updated: () => 0,
+    attention: (a, b) => attentionReasons(b).length - attentionReasons(a).length || Number(b.agentStatus === "running") - Number(a.agentStatus === "running"),
+    state: (a, b) => OVERVIEW_LANES.indexOf(a.lane) - OVERVIEW_LANES.indexOf(b.lane),
+    title: (a, b) => a.title.localeCompare(b.title),
+    repo: (a, b) => a.repo.localeCompare(b.repo),
+  };
+  return [...rows].sort((a, b) => key[by](a, b) || byActivity(a, b));
+}
+
+export type ActivityItem = {
+  repo: string; branch: string; title: string; lane: OverviewLane; prNumber?: number;
+  text: string; at: number; status: "running" | "failed" | "stopped" | "done";
+};
+
+/** The newest turns across every workstream — the "Recent activity" feed. Each turn shows what you
+ *  (or the board action) asked, not the scaffolded prompt. */
+export function recentActivity(rows: OverviewRow[], limit = 12): ActivityItem[] {
+  const items: ActivityItem[] = [];
+  for (const r of rows) {
+    for (const t of r.transcript ?? []) {
+      const at = t.finishedAt ?? t.startedAt;
+      if (!at) continue;
+      items.push({
+        repo: r.repo, branch: r.branch, title: r.title, lane: r.lane, prNumber: r.prNumber,
+        text: (t.instruction ?? promptInstruction(t.prompt)).replace(/\s+/g, " ").trim(),
+        at,
+        status: t.failed ? "failed" : t.stopped ? "stopped" : t.finishedAt ? "done" : "running",
+      });
+    }
+  }
+  return items.sort((a, b) => b.at - a.at).slice(0, limit);
+}
+
+/** "just now" / "4m" / "3h" / "2d" — compact relative time for a dense list. */
+export function ago(ms: number, now = Date.now()): string {
+  if (!ms) return "—";
+  const m = Math.floor((now - ms) / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+// ---- review signal: who approved, what humans said, what the AI reviewers flagged, what's open ----
+// Pure derivations over gh.reviewSignal (one PR's reviews, comments and inline threads), shared by
+// the list row's review cluster and the PR page's Review panel.
+
+/** AI code reviewers, matched as a case-insensitive substring of the login (their accounts vary:
+ *  `claude[bot]`, `gemini-code-assist`, `copilot-pull-request-reviewer`, `coderabbitai`…). Any login
+ *  ending in `[bot]`, or flagged a Bot by GitHub, is a bot too. Grow this list, not the checks. */
+export const AI_REVIEWERS = ["claude", "gemini", "copilot", "coderabbit", "cursor", "codex"];
+
+export function isBotAuthor(login?: string, bot?: boolean): boolean {
+  if (bot || !login) return true; // a deleted ("ghost") account has no login: not a person you can ask
+  const l = login.toLowerCase();
+  return l.endsWith("[bot]") || AI_REVIEWERS.some((name) => l.includes(name));
+}
+
+export type Severity = "critical" | "warning";
+const SEVERITY_WINDOW = 300;
+const CRITICAL_RE = /🔴|\bcritical\b|\bsevere\b|\bhigh[- ]severity\b|\bhigh[- ]priority\b|\bblock(?:ing|er)\b|\bmust[- ]fix\b|\bsecurity\b/i;
+const WARNING_RE = /🟠|\u26a0|\bwarning\b/i;
+const EMOJI_MARKER_RE = /🔴|🟠|\u26a0/;
+const SUMMARY_RE = /^\s*(?:<!--[^]*?-->\s*)*(?:#{1,6}\s*|\*\*)?(?:summary\b|walkthrough\b|review summary\b|pr summary\b|code review\b|pull request overview\b)/i;
+const STATUS_RE = /^\s*(?:\*\*)?(?:status\b|fyi\b|note:|update:|heads[- ]up\b|lgtm\b|✅)/i;
+const NIT_RE = /^\s*(?:\*\*|\[)?\(?nit(?:pick)?\b/i;
+
+/** The severity a (bot) review comment declares near its top — an emoji marker, a Gemini priority
+ *  badge (`high-priority.svg`), or a word like "critical" / "must fix" / "warning" in the first 300
+ *  characters. One function, so the heuristic is tuned in one place. */
+export function commentSeverity(body: string): Severity | undefined {
+  const top = body.slice(0, SEVERITY_WINDOW);
+  if (CRITICAL_RE.test(top)) return "critical";
+  if (WARNING_RE.test(top)) return "warning";
+  return undefined;
+}
+
+/** A bot's walkthrough / "## Summary" comment: an overview, not a request for a change. */
+export const isSummaryComment = (body: string) => SUMMARY_RE.test(body);
+/** "Status: …", "FYI", "Note:" — an update, not something to address. */
+export const isStatusUpdate = (body: string) => STATUS_RE.test(body);
+export const isNit = (body: string) => NIT_RE.test(body);
+
+/** The first readable line of a comment: badges, HTML comments and heading/emphasis marks dropped. */
+export function firstLine(body: string, max = 140): string {
+  const text = body.replace(/<!--[^]*?-->/g, "").replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/<[^>]+>/g, "").replace(/\*\*/g, "");
+  const line = text.split(/\r?\n/).map((l) => l.replace(/^[\s#>*_-]+|[*_]+$/g, "").trim()).find(Boolean) ?? "";
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+export type ReviewItem = {
+  id: string; kind: "thread" | "comment" | "review"; author?: string; body: string; url?: string;
+  createdAt?: string; path?: string; severity?: Severity; bot: boolean;
+  /** What to show: the first readable line, or for a severe finding the line that flags it (a
+   *  Claude review opens with "Claude finished…", not the finding). */
+  line: string;
+};
+
+/** The first line in the severity window that carries a marker — the finding itself. */
+function severityLine(body: string): string | undefined {
+  const top = body.slice(0, SEVERITY_WINDOW);
+  const hit = top.split(/\r?\n/).find((l) => CRITICAL_RE.test(l) || WARNING_RE.test(l));
+  return hit ? firstLine(hit) || undefined : undefined;
+}
+
+/** Everything someone else said that is still worth reading: every conversation comment and review
+ *  body, and every UNRESOLVED inline thread not opened by the PR's author. Newest first. */
+function reviewItems(s: ReviewSignal): ReviewItem[] {
+  const items: ReviewItem[] = [];
+  for (const c of s.comments) {
+    if (!c.body.trim()) continue; // a bare approval: shown as an approver, not a comment
+    items.push({ id: c.id, kind: c.kind, author: c.author, body: c.body, url: c.url, createdAt: c.createdAt, bot: isBotAuthor(c.author, c.bot), line: firstLine(c.body) });
+  }
+  for (const t of s.threads) {
+    if (t.resolved || (s.prAuthor && t.author === s.prAuthor) || !t.body.trim()) continue;
+    items.push({ id: t.id, kind: "thread", author: t.author, body: t.body, url: t.url, createdAt: t.createdAt, path: t.path, bot: isBotAuthor(t.author, t.bot), line: firstLine(t.body) });
+  }
+  return items.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+}
+
+/** Logins whose latest DECISIVE review is an approval. A later plain "commented" review does not
+ *  withdraw an approval on GitHub, so only APPROVED / CHANGES_REQUESTED / DISMISSED count. */
+export function approvers(s: ReviewSignal): string[] {
+  const latest = new Map<string, string>();
+  for (const r of [...s.comments].sort((a, b) => a.createdAt.localeCompare(b.createdAt))) {
+    if (r.kind !== "review" || !r.author || !r.state || !["APPROVED", "CHANGES_REQUESTED", "DISMISSED"].includes(r.state)) continue;
+    latest.delete(r.author); // re-insert so the order is by latest decision
+    latest.set(r.author, r.state);
+  }
+  return [...latest].filter(([, state]) => state === "APPROVED").map(([login]) => login);
+}
+
+/** Comments and open threads from people (not bots / AI reviewers). */
+export const humanComments = (s: ReviewSignal): ReviewItem[] => reviewItems(s).filter((i) => !i.bot);
+
+/** Bot / AI comments that declare a severity near their top. A summary comment counts only when it
+ *  carries an explicit emoji marker — its prose ("improves security…") is not a finding. */
+export function severeAiComments(s: ReviewSignal): ReviewItem[] {
+  return reviewItems(s).flatMap((i) => {
+    if (!i.bot || (isSummaryComment(i.body) && !EMOJI_MARKER_RE.test(i.body.slice(0, SEVERITY_WINDOW)))) return [];
+    const severity = commentSeverity(i.body);
+    // A badge-only line (Gemini's priority image) has no text of its own: keep the first line then.
+    return severity ? [{ ...i, severity, line: (/!\[/.test(severityLine(i.body) ?? "") ? undefined : severityLine(i.body)) ?? i.line }] : [];
+  });
+}
+
+/** Unresolved inline threads that ask for a change: not opened by the PR's author, not a status
+ *  update, not a bot's summary. Nits still count — `nits` says how many of them are. */
+export function actionableUnresolved(s: ReviewSignal): { count: number; nits: number } {
+  let count = 0, nits = 0;
+  for (const t of s.threads) {
+    if (t.resolved || (s.prAuthor && t.author === s.prAuthor) || isStatusUpdate(t.body) || isSummaryComment(t.body)) continue;
+    count++;
+    if (isNit(t.body)) nits++;
+  }
+  return { count, nits };
+}
+
+export type ReviewDigest = {
+  approvers: string[]; human: ReviewItem[]; severe: ReviewItem[];
+  unresolved: { count: number; nits: number }; worst?: Severity;
+};
+
+export function reviewDigest(s: ReviewSignal): ReviewDigest {
+  const severe = severeAiComments(s);
+  return {
+    approvers: approvers(s), human: humanComments(s), severe, unresolved: actionableUnresolved(s),
+    worst: severe.some((i) => i.severity === "critical") ? "critical" : severe.length ? "warning" : undefined,
+  };
+}
+
 /** The instance chip's history graphs: samples → SVG polyline `points` strings, x by time across
  *  [from, to] (so an outage reads as a gap, not as a compressed line) and y from 0 to `max`. A run
  *  is broken where consecutive samples are more than `gapMs` apart — the sampler writes once a
@@ -1164,3 +1475,296 @@ export function previewHref(svc: { url: string; localUrl?: string }, pageHost: s
   const loopback = pageHost === "localhost" || pageHost === "127.0.0.1" || pageHost === "[::1]" || pageHost === "::1";
   return loopback && svc.localUrl ? svc.localUrl : svc.url;
 }
+
+// ---- the Vercel-style console: usage rows, metric charts, durations, chat log, repos ----
+// Pure pieces the Overview / Agents / Agent / Usage / Repos pages render, so each number is tested
+// without a DOM.
+
+/** Compact countdown to a window's reset, e.g. "45m", "1h 15m", "2h", "7d 2h" — null if unknown or
+ *  already past. */
+export function untilReset(resetsAt: string | null, now = Date.now()): string | null {
+  if (!resetsAt) return null;
+  const ms = new Date(resetsAt).getTime() - now;
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  const mins = Math.round(ms / 60_000);
+  if (mins < 60) return `${mins}m`;
+  if (mins < 24 * 60) {
+    const hours = Math.floor(mins / 60);
+    const minutes = mins % 60;
+    return `${hours}h${minutes ? ` ${minutes}m` : ""}`;
+  }
+  const days = Math.floor(mins / (24 * 60));
+  const hours = Math.floor((mins % (24 * 60)) / 60);
+  return `${days}d${hours ? ` ${hours}h` : ""}`;
+}
+
+/** Money carried as minor units (+ exponent) in its own currency, e.g. 8535/2/GBP → "£85.35". */
+export function formatMoney(minor: number, exponent: number, currency: string): string {
+  const amount = minor / 10 ** exponent;
+  try {
+    return new Intl.NumberFormat("en-GB", { style: "currency", currency, maximumFractionDigits: exponent }).format(amount);
+  } catch {
+    return `${amount.toFixed(exponent)} ${currency}`;
+  }
+}
+
+type Window = { utilization: number; resetsAt: string | null };
+type ClaudeReading = { fiveHour: Window; sevenDay: Window; fable?: Window | null; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
+type UsageReading = {
+  claude: ClaudeReading | null;
+  codex: { windows: (Window & { label: string })[] } | null;
+  profiles?: LoginReading[];
+  routing?: { hydra: boolean; shim: boolean };
+};
+
+/** One line of the Usage card, Vercel's shape: a ring at `pct`, a label, and value / limit. */
+export type UsageRow = { key: string; label: string; pct: number; value: string; limit: string; resetsIn: string | null };
+/** A block of rows under one heading: the fleet, one hydra login, Codex. `state` is hydra's verdict
+ *  when it isn't "ok"; `dim` when hydra can't route to that login. */
+export type UsageGroup = { key: string; title: string; subtitle?: string; state?: string; dim?: boolean; rows: UsageRow[] };
+
+const CLAUDE_WINDOWS: [keyof Pick<ClaudeReading, "fiveHour" | "sevenDay" | "fable">, string][] = [["fiveHour", "5-hour window"], ["sevenDay", "Weekly"], ["fable", "Fable weekly"]];
+type LoginReading = { name: string; usage: ClaudeReading | null; state?: string; email?: string };
+
+/** Logins hydra can't route to right now: no reading, or deliberately out of the rotation. Exhausted
+ *  and locked logins DO count — they hold a real reading and are exactly what pulls the fleet up. */
+export const outOfRotation = (p: { usage: unknown; state?: string }): boolean => !p.usage || p.state === "disabled" || p.state === "not signed in on this machine";
+
+export type FleetUsage = { count: number; exhausted: number; fiveHour: Window; sevenDay: Window; fable: Window | null };
+
+/** One reading for the whole fleet: the mean utilization per window across the logins in rotation,
+ *  with the soonest reset. Null when nothing is in rotation. */
+export function aggregateProfiles(profiles: LoginReading[]): FleetUsage | null {
+  const live = profiles.filter((p) => !outOfRotation(p));
+  if (!live.length) return null;
+  const mean = (ws: Window[]): Window => ({
+    utilization: Math.round(ws.reduce((s, w) => s + w.utilization, 0) / ws.length),
+    resetsAt: ws.map((w) => w.resetsAt).filter((r): r is string => Boolean(r)).sort()[0] ?? null,
+  });
+  const fables = live.map((p) => p.usage!.fable).filter((w): w is Window => Boolean(w));
+  return {
+    count: live.length,
+    exhausted: live.filter((p) => p.state === "exhausted" || p.state === "locked").length,
+    fiveHour: mean(live.map((p) => p.usage!.fiveHour)),
+    sevenDay: mean(live.map((p) => p.usage!.sevenDay)),
+    fable: fables.length ? mean(fables) : null,
+  };
+}
+
+function claudeRows(key: string, c: ClaudeReading, now: number): UsageRow[] {
+  const rows: UsageRow[] = [];
+  for (const [field, label] of CLAUDE_WINDOWS) {
+    const w = c[field] as Window | null | undefined;
+    if (w) rows.push({ key: `${key}:${field}`, label, pct: w.utilization, value: `${w.utilization}%`, limit: "100%", resetsIn: untilReset(w.resetsAt, now) });
+  }
+  if (c.extra) rows.push({
+    key: `${key}:extra`, label: "Extra usage", pct: c.extra.utilization,
+    value: formatMoney(c.extra.usedMinor, c.extra.exponent, c.extra.currency), limit: formatMoney(c.extra.limitMinor, c.extra.exponent, c.extra.currency), resetsIn: null,
+  });
+  return rows;
+}
+
+/** The Usage card's groups: with hydra, the fleet (mean per window over the logins in rotation)
+ *  then every login; without it, the one Claude login. Codex after. Empty when nothing is signed in. */
+export function usageGroups(u: UsageReading | null, now = Date.now()): UsageGroup[] {
+  if (!u) return [];
+  const groups: UsageGroup[] = [];
+  const profiles = u.profiles ?? [];
+  if (profiles.length) {
+    const fleet = aggregateProfiles(profiles);
+    groups.push(fleet ? {
+      key: "fleet", title: "Claude", subtitle: `${fleet.count} login${fleet.count === 1 ? "" : "s"} in rotation${fleet.exhausted ? ` · ${fleet.exhausted} exhausted` : ""}`,
+      rows: claudeRows("fleet", { fiveHour: fleet.fiveHour, sevenDay: fleet.sevenDay, fable: fleet.fable, extra: null }, now),
+    } : { key: "fleet", title: "Claude", subtitle: "no login in rotation", rows: [] });
+    for (const p of profiles) {
+      groups.push({
+        key: `login:${p.name}`, title: p.name, subtitle: p.email, state: p.state && p.state !== "ok" ? p.state : undefined, dim: outOfRotation(p),
+        rows: p.usage ? claudeRows(`login:${p.name}`, p.usage, now) : [],
+      });
+    }
+  } else if (u.claude) groups.push({ key: "claude", title: "Claude", rows: claudeRows("claude", u.claude, now) });
+  if (u.codex?.windows.length) groups.push({
+    key: "codex", title: "Codex",
+    rows: u.codex.windows.map((w, i) => ({
+      key: `codex:${i}`, label: w.label === "wk" ? "Weekly" : w.label === "5h" ? "5-hour window" : w.label, pct: w.utilization, value: `${w.utilization}%`, limit: "100%", resetsIn: untilReset(w.resetsAt, now),
+    })),
+  });
+  return groups;
+}
+
+/** Hydra is installed but the bridge's `claude` isn't its shim: every run silently uses one login. */
+export const routingBroken = (u: UsageReading | null): boolean => Boolean(u?.routing?.hydra && !u.routing.shim);
+
+/** Usage zone by how much of an allowance is burned: fine, caution (≥75%), the red zone (≥90%). */
+export const usageZone = (pct: number): "ok" | "warn" | "danger" => (pct >= 90 ? "danger" : pct >= 75 ? "warn" : "ok");
+
+/** The instance card's range picker. */
+export const HISTORY_RANGES = [{ label: "6h", hours: 6 }, { label: "24h", hours: 24 }, { label: "7d", hours: 168 }] as const;
+
+/** At most `max` points, each the mean of its time bucket — a week of minute samples is 10k points,
+ *  which no 600px line needs. Gaps survive: an empty bucket emits nothing. */
+export function downsample(points: { at: number; v: number }[], max: number, from: number, to: number): { at: number; v: number }[] {
+  if (points.length <= max) return points;
+  const width = Math.max(1, (to - from) / max);
+  const out: { at: number; v: number }[] = [];
+  let bucket = -1, sumV = 0, sumAt = 0, n = 0;
+  const flush = () => { if (n) out.push({ at: sumAt / n, v: sumV / n }); sumV = sumAt = n = 0; };
+  for (const p of points) {
+    const b = Math.floor((p.at - from) / width);
+    if (b !== bucket) { flush(); bucket = b; }
+    sumV += p.v; sumAt += p.at; n++;
+  }
+  flush();
+  return out;
+}
+
+/** A round axis maximum at or above `v`: 1, 2, 2.5 or 5 × 10^k. */
+export function niceMax(v: number): number {
+  if (!(v > 0)) return 1;
+  const exp = 10 ** Math.floor(Math.log10(v));
+  return ([1, 2, 2.5, 5, 10].find((m) => m * exp >= v) ?? 10) * exp;
+}
+
+/** `n` evenly spaced x-axis labels across [from, to]: clock time within a day, the date beyond; the
+ *  right edge is "now" (a 24h axis would otherwise read the same clock time at both ends). */
+export function timeTicks(from: number, to: number, n = 4): { at: number; label: string }[] {
+  const span = to - from;
+  return Array.from({ length: n }, (_, i) => {
+    const at = from + (span * i) / (n - 1);
+    if (i === n - 1) return { at, label: "now" };
+    const d = new Date(at);
+    const label = span > 36 * 3_600_000
+      ? d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })
+      : d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+    return { at, label };
+  });
+}
+
+/** "44s", "1m 12s", "2h 5m" — Vercel's duration column. */
+export function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${s % 60 ? ` ${s % 60}s` : ""}`;
+  const h = Math.floor(m / 60);
+  return `${h}h${m % 60 ? ` ${m % 60}m` : ""}`;
+}
+
+/** How long the agent has been at it (running) or took (its last turn). Undefined when unknown. */
+export function rowDuration(row: Pick<OverviewRow, "agentStatus" | "agentStartedAt" | "transcript">, now = Date.now()): number | undefined {
+  if (row.agentStatus === "running" && row.agentStartedAt) return now - row.agentStartedAt;
+  const last = row.transcript?.[row.transcript.length - 1];
+  return last?.startedAt && last.finishedAt ? last.finishedAt - last.startedAt : undefined;
+}
+
+/** The chat card's header counters, like Build Logs' line / error / warning counts: a failed turn is
+ *  an error; a stopped one or a commit whose check failed is a warning. */
+export function chatSummary(turns: Pick<AgentTurn, "failed" | "stopped" | "check">[]): { turns: number; errors: number; warnings: number } {
+  return {
+    turns: turns.length,
+    errors: turns.filter((t) => t.failed).length,
+    warnings: turns.filter((t) => !t.failed && (t.stopped || (t.check && !t.check.ok))).length,
+  };
+}
+
+/** Find in chat: every word appears in the turn's instruction or response (case-insensitive). */
+export function turnMatches(turn: Pick<AgentTurn, "instruction" | "prompt" | "response">, q: string): boolean {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const hay = `${turn.instruction ?? promptInstruction(turn.prompt)}\n${turn.response ?? ""}`.toLowerCase();
+  return words.every((w) => hay.includes(w));
+}
+
+export type RepoSummary = { repo: string; total: number; running: number; attention: number; openPrs: number; local: number; mergedToday: number; lastActivity: number };
+
+/** One line per configured repo for the Repos page — the overview's numbers, scoped. */
+export function repoSummaries(rows: OverviewRow[], repos: string[]): RepoSummary[] {
+  return repos.map((repo) => {
+    const mine = rows.filter((r) => r.repo === repo);
+    const s = overviewStats(mine);
+    return {
+      repo, total: mine.length, running: s.running, attention: s.attention, openPrs: s.prs.total, local: s.local, mergedToday: s.mergedToday,
+      lastActivity: Math.max(0, ...mine.map(lastActivity)),
+    };
+  });
+}
+
+/** What the agent page's Details card puts in its red box, Vercel's "Build Failed": the run's error,
+ *  or Orca's check failing on the commit — the run's own failure first. Undefined when neither. */
+export function agentFailure(row: { agentStatus?: string; agentError?: string; agentCheck?: TurnCheck }): { title: string; detail: string } | undefined {
+  if (row.agentStatus === "error") return { title: "Run failed", detail: row.agentError?.trim() || "The agent exited with an error." };
+  if (row.agentCheck && !row.agentCheck.ok) {
+    const tail = row.agentCheck.output.trim().split("\n").slice(-12).join("\n");
+    return { title: "Check failed", detail: `Command "${row.agentCheck.command}" exited with ${row.agentCheck.exitCode}${tail ? `\n\n${tail}` : ""}` };
+  }
+  return undefined;
+}
+
+// ---- the Agents page's quick filters ----
+// One-click chips above the list, Vercel's filter row: toggleable and combinable — AND across
+// groups, OR within one (local OR cloud, Open PRs OR Merged today) — and kept in the URL query so a
+// filtered view is a link. Each chip shows how many rows it would show with the other groups' chips.
+
+export type QuickFilter = {
+  status: ("attention" | "running")[];
+  pr: ("open" | "mergeable" | "merged")[];
+  by: ("mine" | "orchestrated")[];
+  on: string[];
+  repo: string[];
+};
+export type QuickGroup = keyof QuickFilter;
+export const NO_QUICK_FILTER: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [] };
+const QUICK_GROUPS: QuickGroup[] = ["status", "pr", "by", "on", "repo"];
+const QUICK_VALUES: Partial<Record<QuickGroup, readonly string[]>> = {
+  status: ["attention", "running"], pr: ["open", "mergeable", "merged"], by: ["mine", "orchestrated"],
+};
+
+/** `?status=attention&on=cloud,local` → the filter. Unknown values are dropped, so a stale link is
+ *  merely less filtered, never broken. */
+export function parseQuickFilter(search: string): QuickFilter {
+  const params = new URLSearchParams(search);
+  const out: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [] };
+  for (const g of QUICK_GROUPS) {
+    const values = [...new Set((params.get(g) ?? "").split(",").map((v) => v.trim()).filter(Boolean))];
+    const allowed = QUICK_VALUES[g];
+    (out[g] as string[]) = allowed ? values.filter((v) => allowed.includes(v)) : values;
+  }
+  return out;
+}
+
+/** The filter as a query string ("" when nothing is on), groups in a fixed order so a link is stable. */
+export function quickFilterQuery(f: QuickFilter): string {
+  const parts = QUICK_GROUPS.filter((g) => f[g].length).map((g) => `${g}=${f[g].map(encodeURIComponent).join(",")}`);
+  return parts.length ? `?${parts.join("&")}` : "";
+}
+
+/** Flip one chip on or off. */
+export function toggleQuick(f: QuickFilter, group: QuickGroup, value: string): QuickFilter {
+  const has = (f[group] as string[]).includes(value);
+  return { ...f, [group]: has ? (f[group] as string[]).filter((v) => v !== value) : [...(f[group] as string[]), value] };
+}
+
+function matchesChip(row: OverviewRow, group: QuickGroup, value: string, here?: string): boolean {
+  switch (group) {
+    case "status": return value === "running" ? row.agentStatus === "running" : attentionReasons(row).length > 0;
+    case "pr": return value === "merged" ? row.lane === "DONE" : value === "mergeable" ? row.lane === "MERGEABLE" : Boolean(row.prNumber) && row.lane !== "DONE";
+    case "by": return value === "orchestrated" ? Boolean(row.orchestrated) : !row.orchestrated;
+    case "on": return rowInstance(row, here) === value;
+    case "repo": return row.repo === value;
+  }
+}
+
+const passes = (row: OverviewRow, f: QuickFilter, here: string | undefined, skip?: QuickGroup) =>
+  QUICK_GROUPS.every((g) => g === skip || !f[g].length || (f[g] as string[]).some((v) => matchesChip(row, g, v, here)));
+
+export function applyQuickFilter<R extends OverviewRow>(rows: R[], f: QuickFilter, here?: string): R[] {
+  return rows.filter((r) => passes(r, f, here));
+}
+
+/** A chip's count: the rows it matches among those the OTHER groups' chips let through — so it says
+ *  what turning it on (alone in its group) would show. */
+export function quickCount(rows: OverviewRow[], f: QuickFilter, group: QuickGroup, value: string, here?: string): number {
+  return rows.filter((r) => passes(r, f, here, group) && matchesChip(r, group, value, here)).length;
+}
+
+export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) => f[g].length > 0);

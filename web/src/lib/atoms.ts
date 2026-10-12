@@ -18,3 +18,17 @@ export const densityAtom = atomWithStorage<Density>("orca.density", "comfortable
 // which creates the worktree in the background and drops you straight into its conversation.
 // The card clears it once opened, so a later re-render doesn't reopen it.
 export const openTerminalAtom = atom<string | null>(null);
+
+// Which view "/" shows, persisted: "list" is the overview (stat tiles, the workstreams table and
+// recent activity), "board" the original five swimlanes of cards. List is the default.
+export type BoardView = "list" | "board";
+export const boardViewAtom = atomWithStorage<BoardView>("orca.boardView", "list");
+
+// The console shell. The sidebar can be collapsed to icons (persisted); the instance switcher at its
+// top scopes the Overview and Agents pages to one machine ("all" or an instance name, persisted);
+// the Find box and the Agents page share one search query (not persisted — a fresh visit is unfiltered).
+export const sidebarCollapsedAtom = atomWithStorage("orca.sidebarCollapsed", false);
+export const instanceScopeAtom = atomWithStorage("orca.instanceScope", "all");
+export const agentQueryAtom = atom("");
+// The Overview's Usage card: just the fleet + Codex, or every hydra login too. Persisted.
+export const usageExpandedAtom = atomWithStorage("orca.usageExpanded", false);

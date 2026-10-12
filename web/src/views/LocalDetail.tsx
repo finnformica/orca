@@ -1,19 +1,19 @@
-import { useEffect, useState } from "react";
-import { ArrowLeft } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { ChangeSummary } from "../../../server/git";
 import { api } from "../api";
-import { baseBranch, summary as fetchSummary, useWorkstreams } from "../store";
+import { summary as fetchSummary, useWorkstreams } from "../store";
 import { navigate, type LocalTab } from "@/lib/route";
-import { AgentBadge } from "./Board";
-import { DiffView, Markdown, STICKY_HEADER, useStickyHeader } from "./PrDetail";
+import { DiffView, STICKY_HEADER, useStickyHeader } from "./PrDetail";
+import { ChatCard, DetailsCard } from "./AgentPage";
+import { VCard } from "@/components/console";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
-import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { poll } from "@/lib/poll";
 
-// Detail view for a local session (a worktree + its agent, pre-PR). Mirrors PrDetail's shape:
-// Overview (prompt, agent result, commits), Files changed (branch-vs-base diff), Preview.
+// The agent page for a local session (a worktree + its agent, pre-PR), Vercel's deployment page:
+// Overview (the Details card, then the conversation where Build Logs sit, then files and commits),
+// Chat (the conversation alone, full height), Files changed (branch-vs-base diff), Preview.
 export function LocalDetail({ repo, branch, sub }: { repo: string; branch: string; sub: LocalTab }) {
   const row = useWorkstreams().find((r) => r.repo === repo && r.branch === branch && !r.mergedAt);
   const [summary, setSummary] = useState<ChangeSummary | null>(null);
@@ -33,9 +33,8 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
   }, [sub, repo, wt, diff]);
 
   const go = (t: LocalTab) => navigate(`/${repo}/local/${encodeURIComponent(branch)}${t === "overview" ? "" : `/${t}`}`);
-  const back = `/${repo}`;
 
-  if (!row) return <div className="space-y-4"><Back to={back} /><p className="text-muted-foreground text-sm">No local session for <code>{branch}</code>.</p></div>;
+  if (!row) return <p className="text-muted-foreground text-sm">No local session for <code>{branch}</code>. <button className="underline" onClick={() => navigate("/agents")}>Back to agents</button></p>;
 
   const hasWork = (summary?.commits.length ?? 0) > 0;
 
@@ -43,51 +42,46 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
     <div style={header.style}>
       <Tabs value={sub} onValueChange={(v) => go(v as LocalTab)}>
         <div ref={header.ref} className={STICKY_HEADER}>
-          <Back to={back} />
-          <div className="text-muted-foreground text-[10px] font-semibold tracking-widest uppercase">{repo}</div>
-          <h2 className="flex flex-wrap items-center gap-2 text-lg font-semibold">
-            {row.title}
-            <AgentBadge row={row} hasWork={hasWork} />
-          </h2>
-          <p className="text-muted-foreground text-sm">
-            <code>{branch}</code> → <code>{baseBranch(repo)}</code>
-            {summary && <> · +{summary.additions}/−{summary.deletions} across {summary.files.length} files</>}
-          </p>
-          <WorkstreamActions row={row} hasWork={hasWork} />
+          <AgentTitle repo={repo} title={row.title} />
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="chat">Chat</TabsTrigger>
             <TabsTrigger value="files">Files changed{summary ? ` (${summary.files.length})` : ""}</TabsTrigger>
             <TabsTrigger value="preview">Preview</TabsTrigger>
           </TabsList>
         </div>
 
-        <TabsContent value="overview" className="space-y-4 pt-3">
-          {row.prompt && <Section title="Prompt"><p className="text-sm whitespace-pre-wrap">{row.prompt}</p></Section>}
-          {row.agentResult && <Section title="Agent result"><Markdown>{row.agentResult}</Markdown></Section>}
-          {row.agentError && <p className="text-destructive text-sm whitespace-pre-wrap">{row.agentError}</p>}
-          <Section title={`Files changed (${summary?.files.length ?? 0})`}>
-            {summary && summary.files.length > 0 ? (
-              <ul className="space-y-1 font-mono text-xs">
-                {summary.files.map((f) => (
-                  <li key={f.path} className="flex items-center gap-2">
-                    <button className="truncate text-left hover:underline" onClick={() => go("files")}>{f.path}</button>
-                    <span className="ml-auto shrink-0">
-                      <span className="text-emerald-600 dark:text-emerald-400">+{f.additions}</span> <span className="text-red-600 dark:text-red-400">−{f.deletions}</span>
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            ) : <p className="text-muted-foreground text-sm">No changes yet.</p>}
-          </Section>
-          <Section title={`Commits (${summary?.commits.length ?? 0})`}>
-            {summary && summary.commits.length > 0 ? (
-              <ul className="space-y-1 text-sm">
-                {summary.commits.map((c) => (
-                  <li key={c.hash} className="flex gap-2"><code className="text-muted-foreground shrink-0">{c.hash.slice(0, 7)}</code><span className="truncate">{c.subject}</span></li>
-                ))}
-              </ul>
-            ) : <p className="text-muted-foreground text-sm">No commits yet.</p>}
-          </Section>
+        <TabsContent value="overview" className="space-y-6 pt-3">
+          <DetailsCard row={row} summary={summary} actions={<WorkstreamActions row={row} hasWork={hasWork} />} />
+          <ChatCard row={row} />
+          <div className="grid gap-6 lg:grid-cols-2">
+            <VCard title={`Files changed (${summary?.files.length ?? 0})`}>
+              {summary && summary.files.length > 0 ? (
+                <ul className="divide-y font-mono text-xs">
+                  {summary.files.map((f) => (
+                    <li key={f.path} className="flex items-center gap-2 px-4 py-2">
+                      <button className="truncate text-left hover:underline" onClick={() => go("files")}>{f.path}</button>
+                      <span className="ml-auto shrink-0"><span className="text-geist-green">+{f.additions}</span> <span className="text-geist-red">−{f.deletions}</span></span>
+                    </li>
+                  ))}
+                </ul>
+              ) : <p className="text-muted-foreground p-4 text-sm">No changes yet.</p>}
+            </VCard>
+            <VCard title={`Commits (${summary?.commits.length ?? 0})`}>
+              {summary && summary.commits.length > 0 ? (
+                <ul className="divide-y text-sm">
+                  {summary.commits.map((c) => (
+                    <li key={c.hash} className="flex gap-2 px-4 py-2"><code className="text-muted-foreground shrink-0 font-mono">{c.hash.slice(0, 7)}</code><span className="truncate">{c.subject}</span></li>
+                  ))}
+                </ul>
+              ) : <p className="text-muted-foreground p-4 text-sm">No commits yet.</p>}
+            </VCard>
+          </div>
+          {row.prompt && <VCard title="Prompt"><p className="p-4 text-sm whitespace-pre-wrap">{row.prompt}</p></VCard>}
+        </TabsContent>
+
+        <TabsContent value="chat" className="pt-3">
+          <ChatCard row={row} tall />
         </TabsContent>
 
         <TabsContent value="files" className="space-y-3 pt-3">
@@ -104,11 +98,11 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
   );
 }
 
-const Back = ({ to }: { to: string }) => <Button variant="ghost" size="sm" onClick={() => navigate(to)}><ArrowLeft /> Back to board</Button>;
-
-const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
-  <div>
-    <h3 className="text-muted-foreground mb-1 text-xs font-semibold tracking-wide uppercase">{title}</h3>
-    {children}
+/** The page's title row, Vercel's: the repo above, the agent's name large. */
+export const AgentTitle = ({ repo, title, children }: { repo: string; title: ReactNode; children?: ReactNode }) => (
+  <div className="space-y-0.5 pt-1">
+    <div className="text-muted-foreground text-xs">{repo}</div>
+    <h1 className="flex flex-wrap items-center gap-2 text-2xl font-semibold tracking-tight">{title}{children}</h1>
   </div>
 );
+

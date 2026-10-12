@@ -9,7 +9,10 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 // Bun.serve doesn't recognise and answers with its welcome page).
 export const native = { fetch: Bun.fetch as typeof fetch, AbortSignal: globalThis.AbortSignal, AbortController: globalThis.AbortController, Response: globalThis.Response };
 
-GlobalRegistrator.register();
+// A real base URL (not about:blank, whose pathname reads "blank"), so navigate() moves the route
+// store between pages the way it does in the browser. Not localhost: code that behaves differently
+// on a localhost page (previewHref) keeps its non-local default.
+GlobalRegistrator.register({ url: "http://orca.test/" });
 
 // happy-dom ships no EventSource, and the chat opens one for its live step feed — without this the
 // panel throws on mount. A stub rather than a real connection: component tests assert rendering, and

@@ -1,12 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Check, ChevronDown, Copy, ExternalLink, FlaskConical, Loader2, MonitorPlay, Square, TriangleAlert } from "lucide-react";
+import { Check, ChevronDown, Copy, ExternalLink, FlaskConical, Loader2, Square, TriangleAlert } from "lucide-react";
 import { api, type PreviewSvc } from "../api";
 import { baseBranch, instanceChoices, previewKeyOf, previewStatus, startMaster, stopMaster, stopPreview, testLocally, thisInstance, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
 import { previewHref } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { poll } from "@/lib/poll";
+import { sharedSource } from "@/lib/vitals";
 
 // Shared preview lifecycle: start in the background, poll status, expose ready/failed/link. Driven
 // by a preview `key` (the worktree path) and a `starter` that spins it up — so the same hook powers
@@ -113,7 +114,7 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
   const placeMenu = choices.length > 1 && (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size="icon" variant="outline" className={`rounded-l-none border-l-0 ${compact ? "size-7" : "h-8 w-8"}`} title="Choose where the preview runs" aria-label="Test on…"><ChevronDown className="size-3.5" /></Button>
+        <Button size="icon" variant={compact ? "ghost" : "outline"} className={`rounded-l-none border-l-0 ${compact ? "size-7" : "h-8 w-8"}`} title="Choose where the preview runs" aria-label="Test on…"><ChevronDown className="size-3.5" /></Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
         {choices.map((i) => <DropdownMenuItem key={i} onSelect={() => void start(() => startOn(i))}>Test on {i}{i === thisInstance() ? " (here)" : ""}</DropdownMenuItem>)}
@@ -128,7 +129,7 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
     if (compact) {
       return (
         <span className="inline-flex">
-          <Button size="icon" variant="outline" className={`size-7 ${split}`} onClick={() => void start()} title={error ? "Preview failed — retry" : `Test on ${where ?? row.instance ?? thisInstance() ?? "local"}`} aria-label="Test locally">
+          <Button size="icon" variant="ghost" className={`size-7 ${split}`} onClick={() => void start()} title={error ? "Preview failed — retry" : `Test on ${where ?? row.instance ?? thisInstance() ?? "local"}`} aria-label="Test locally">
             {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
           </Button>
           {placeMenu}
@@ -207,15 +208,15 @@ function PreviewLiveControl({ svcs, busy, onStop, openLabel, startingLabel, comp
   return (
     <div className={`inline-flex ${compact ? "" : "w-full"}`}>
       {ready && open ? (
-        <Button size={size} variant="outline" className={stateClass} onClick={() => window.open(hrefOf(open), "_blank", "noreferrer")} title={`Open preview on :${open.port}`} aria-label={openLabel}>
+        <Button size={size} variant={compact ? "ghost" : "outline"} className={stateClass} onClick={() => window.open(hrefOf(open), "_blank", "noreferrer")} title={`Open preview on :${open.port}`} aria-label={openLabel}>
           <ExternalLink className="size-3.5" /> {!compact && openLabel}
         </Button>
       ) : (
-        <Button size={size} variant="outline" className={stateClass} disabled title={compact ? `${startingLabel} ${elapsed > 0 ? `${elapsed}s` : ""}`.trim() : undefined} aria-label={startingLabel}>
+        <Button size={size} variant={compact ? "ghost" : "outline"} className={stateClass} disabled title={compact ? `${startingLabel} ${elapsed > 0 ? `${elapsed}s` : ""}`.trim() : undefined} aria-label={startingLabel}>
           <Loader2 className="size-3.5 animate-spin" /> {!compact && <>{startingLabel} {elapsed > 0 ? `${elapsed}s` : ""}</>}
         </Button>
       )}
-      <Button size={size} variant="outline" className={`rounded-l-none border-l-0 ${compact ? "size-7" : ""}`} disabled={busy} onClick={onStop} title="Stop preview" aria-label="Stop preview"><Square className="size-3.5 fill-current" /></Button>
+      <Button size={size} variant={compact ? "ghost" : "outline"} className={`rounded-l-none border-l-0 ${compact ? "size-7" : ""}`} disabled={busy} onClick={onStop} title="Stop preview" aria-label="Stop preview"><Square className="size-3.5 fill-current" /></Button>
     </div>
   );
 }
@@ -248,84 +249,83 @@ export function TestMasterRow({ repo }: { repo: string }) {
   );
 }
 
-/** Top-right "Test master" menu: a flask-icon trigger that opens a popover with one row per repo,
- *  each able to spin up a preview of that repo's base branch itself — to sanity-check whether a bug
- *  reproduces on a clean main, without a feature branch in the way. The trigger reads the shared
- *  store state (not the popover's rows, which unmount on close) so it spins the instant a base
- *  preview is booting and shows a badge dot while one is live — even with the popover shut. */
-export function TestMasterMenu() {
-  const repos = useRepos();
+/** Every live preview across instances (`/api/previews`), polled every 2.5s while anything shows it
+ *  — the sidebar's Previews badge and the Previews page share ONE loop, so they can't disagree.
+ *  `unavailable`: the endpoint isn't there (Orca previewing itself through a Vite proxy whose bridge
+ *  predates the route) — said so, rather than a false "nothing running". */
+type PreviewList = { previews: { key: string; instance?: string; svcs: PreviewSvc[] }[]; unavailable: boolean };
+let reloadPreviews: (() => void) | null = null; // set while the loop runs: re-read now (after a stop)
+const previewSource = sharedSource<PreviewList>((set) => {
+  let live = true;
+  const load = () => api.previews().then(
+    (previews) => { if (live) set({ previews, unavailable: false }); },
+    () => { if (live) set({ previews: [], unavailable: true }); },
+  );
+  reloadPreviews = () => void load();
+  const stop = poll(load, 2500);
+  return () => { live = false; reloadPreviews = null; stop(); };
+});
+const NO_PREVIEWS: PreviewList = { previews: [], unavailable: false };
+export const usePreviewList = (): PreviewList => useSyncExternalStore(previewSource.subscribe, previewSource.get) ?? NO_PREVIEWS;
+
+/** The Previews nav item's badges — what the two header buttons used to carry: a spinner while a
+ *  base-branch preview boots, a dot once one is live, and the count of running previews. */
+export function PreviewsBadge({ compact = false }: { compact?: boolean }) {
   const masters = useMasters();
+  const { previews, unavailable } = usePreviewList();
   const loading = masters.some((m) => m.busy || (m.svcs.length > 0 && !m.svcs.every((s) => s.ready)));
   const active = masters.some((m) => m.svcs.some((s) => s.running));
-  if (repos.length === 0) return null;
+  const running = previews.filter((p) => p.svcs.some((s) => s.running)).length;
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button size="icon" variant="outline" className="relative size-8" title="Test master — preview a repo's base branch" aria-label="Test master">
-          {loading ? <Loader2 className="size-4 animate-spin" /> : <FlaskConical className="size-4" />}
-          {active && <span className="bg-primary ring-background absolute -top-0.5 -right-0.5 size-2 rounded-full ring-2" aria-label="a base preview is running" />}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 space-y-3">
-        <div className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">Test master</div>
-        {repos.map((r) => <TestMasterRow key={r.name} repo={r.name} />)}
-      </PopoverContent>
-    </Popover>
+    <span data-slot="previews-badge" className={compact ? "absolute -top-0.5 -right-0.5 flex items-center" : "ml-auto flex items-center gap-1.5"}>
+      {loading ? <Loader2 className="size-3 animate-spin" aria-label="a base preview is starting" />
+        : active && <span className="bg-geist-blue size-1.5 rounded-full" aria-label="a base preview is running" />}
+      {!unavailable && running > 0 && (
+        <span className="bg-foreground text-background flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold tabular-nums" aria-label={`${running} running previews`}>
+          {running}
+        </span>
+      )}
+    </span>
   );
 }
 
-/** Top-right "Running previews" menu, sitting beside Test master as a button group: lists every live
- *  local preview across repos (the cards' "Test locally" spins + any base-branch previews), each
- *  labelled with its session title and offering Open / Stop via the shared control. A count badge on
- *  the trigger tracks how many are running — polling the bridge (`/api/previews`) so it stays live
- *  even with the popover shut. */
-export function PreviewManagerMenu() {
-  const [previews, setPreviews] = useState<{ key: string; instance?: string; svcs: PreviewSvc[] }[]>([]);
-  // The endpoint is unreachable when Orca previews itself: its Vite proxies /api to whatever bridge
-  // is already running (:8787), which may predate this route and 404. Track that so the menu shows a
-  // legible "API unavailable" hint instead of a false "No previews running" empty state.
-  const [unavailable, setUnavailable] = useState(false);
+/** The Previews page's list: every live preview, labelled with its session title, with Open / Stop. */
+export function RunningPreviews() {
+  const { previews, unavailable } = usePreviewList();
   const rows = useWorkstreams();
   // Previews are keyed by worktree path; match that to a row for the session title (fall back to the
   // last path segment for adopted/base worktrees with no card).
   const titleOf = (key: string) => rows.find((r) => previewKeyOf(r) === key || r.worktreePath === key)?.title ?? key.split("/").pop() ?? key;
-
-  const load = () => api.previews().then((p) => { setPreviews(p); setUnavailable(false); }).catch(() => setUnavailable(true));
-  useEffect(() => poll(load, 2500), []); // reflects start/stop without a manual refresh
-
   const running = previews.filter((p) => p.svcs.some((s) => s.running));
-  // Stopped on the instance that runs it — the list spans every instance now.
-  const stop = async (key: string, instance?: string) => { await stopPreview(key, instance).catch(() => {}); load(); };
-
+  if (unavailable) return <p className="text-muted-foreground px-4 py-6 text-sm">Previews API unavailable — run the bridge on this branch.</p>;
+  if (!running.length) return <p className="text-muted-foreground px-4 py-6 text-sm">No previews running.</p>;
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <Button size="icon" variant="outline" className="relative size-8" title="Running previews" aria-label="Running previews">
-          <MonitorPlay className="size-4" />
-          {!unavailable && running.length > 0 && (
-            <span className="bg-primary text-primary-foreground ring-background absolute -top-1 -right-1 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold ring-2" aria-label={`${running.length} running previews`}>
-              {running.length}
-            </span>
-          )}
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent align="end" className="w-72 space-y-3">
-        <div className="text-muted-foreground text-xs font-semibold tracking-wide uppercase">Running previews</div>
-        {unavailable ? (
-          <div className="text-muted-foreground text-xs">Previews API unavailable — run the bridge on this branch.</div>
-        ) : running.length === 0 ? (
-          <div className="text-muted-foreground text-xs">No previews running.</div>
-        ) : (
-          running.map((p) => (
-            <div key={p.key} className="space-y-1">
-              <div className="text-muted-foreground truncate text-xs font-medium" title={titleOf(p.key)}>{titleOf(p.key)}</div>
-              <PreviewLiveControl svcs={p.svcs} busy={false} onStop={() => void stop(p.key, p.instance)} openLabel="Open" startingLabel="Starting…" />
+    <ul className="divide-y">
+      {running.map((p) => (
+        <li key={p.key} data-slot="running-preview" className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-medium" title={titleOf(p.key)}>{titleOf(p.key)}</div>
+            <div className="text-muted-foreground truncate text-xs">
+              {p.instance ? `${p.instance} · ` : ""}{p.svcs.map((s) => `${s.name} :${s.port}`).join(" · ")}
             </div>
-          ))
-        )}
-      </PopoverContent>
-    </Popover>
+          </div>
+          <div className="w-56"><PreviewLiveControl svcs={p.svcs} busy={false} onStop={() => void stopPreview(p.key, p.instance).catch(() => {}).then(() => reloadPreviews?.())} openLabel="Open" startingLabel="Starting…" /></div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The Previews page's Test master list: one row per repo, each able to preview that repo's base
+ *  branch — to check whether a bug reproduces on a clean main, without a feature branch in the way. */
+export function TestMaster() {
+  const repos = useRepos();
+  return (
+    <ul className="divide-y">
+      {repos.map((r) => (
+        <li key={r.name} className="px-4 py-3"><div className="max-w-xs"><TestMasterRow repo={r.name} /></div></li>
+      ))}
+    </ul>
   );
 }
 
