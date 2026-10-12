@@ -1509,7 +1509,7 @@ type ClaudeReading = { fiveHour: Window; sevenDay: Window; fable?: Window | null
 type UsageReading = {
   claude: ClaudeReading | null;
   codex: { windows: (Window & { label: string })[] } | null;
-  profiles?: { name: string; usage: ClaudeReading | null; state?: string; email?: string }[];
+  profiles?: LoginReading[];
   routing?: { hydra: boolean; shim: boolean };
 };
 
@@ -1520,7 +1520,32 @@ export type UsageRow = { key: string; label: string; pct: number; value: string;
 export type UsageGroup = { key: string; title: string; subtitle?: string; state?: string; dim?: boolean; rows: UsageRow[] };
 
 const CLAUDE_WINDOWS: [keyof Pick<ClaudeReading, "fiveHour" | "sevenDay" | "fable">, string][] = [["fiveHour", "5-hour window"], ["sevenDay", "Weekly"], ["fable", "Fable weekly"]];
-const LOGIN_OFF = (p: { usage: unknown; state?: string }) => !p.usage || p.state === "disabled" || p.state === "not signed in on this machine";
+type LoginReading = { name: string; usage: ClaudeReading | null; state?: string; email?: string };
+
+/** Logins hydra can't route to right now: no reading, or deliberately out of the rotation. Exhausted
+ *  and locked logins DO count — they hold a real reading and are exactly what pulls the fleet up. */
+export const outOfRotation = (p: { usage: unknown; state?: string }): boolean => !p.usage || p.state === "disabled" || p.state === "not signed in on this machine";
+
+export type FleetUsage = { count: number; exhausted: number; fiveHour: Window; sevenDay: Window; fable: Window | null };
+
+/** One reading for the whole fleet: the mean utilization per window across the logins in rotation,
+ *  with the soonest reset. Null when nothing is in rotation. */
+export function aggregateProfiles(profiles: LoginReading[]): FleetUsage | null {
+  const live = profiles.filter((p) => !outOfRotation(p));
+  if (!live.length) return null;
+  const mean = (ws: Window[]): Window => ({
+    utilization: Math.round(ws.reduce((s, w) => s + w.utilization, 0) / ws.length),
+    resetsAt: ws.map((w) => w.resetsAt).filter((r): r is string => Boolean(r)).sort()[0] ?? null,
+  });
+  const fables = live.map((p) => p.usage!.fable).filter((w): w is Window => Boolean(w));
+  return {
+    count: live.length,
+    exhausted: live.filter((p) => p.state === "exhausted" || p.state === "locked").length,
+    fiveHour: mean(live.map((p) => p.usage!.fiveHour)),
+    sevenDay: mean(live.map((p) => p.usage!.sevenDay)),
+    fable: fables.length ? mean(fables) : null,
+  };
+}
 
 function claudeRows(key: string, c: ClaudeReading, now: number): UsageRow[] {
   const rows: UsageRow[] = [];
@@ -1542,22 +1567,14 @@ export function usageGroups(u: UsageReading | null, now = Date.now()): UsageGrou
   const groups: UsageGroup[] = [];
   const profiles = u.profiles ?? [];
   if (profiles.length) {
-    const live = profiles.filter((p) => !LOGIN_OFF(p));
-    if (live.length) {
-      const mean = (pick: (c: ClaudeReading) => Window | null | undefined): Window | null => {
-        const ws = live.map((p) => pick(p.usage!)).filter((w): w is Window => Boolean(w));
-        if (!ws.length) return null;
-        return { utilization: Math.round(ws.reduce((s, w) => s + w.utilization, 0) / ws.length), resetsAt: ws.map((w) => w.resetsAt).filter((r): r is string => Boolean(r)).sort()[0] ?? null };
-      };
-      const exhausted = live.filter((p) => p.state === "exhausted" || p.state === "locked").length;
-      groups.push({
-        key: "fleet", title: "Claude", subtitle: `${live.length} login${live.length === 1 ? "" : "s"} in rotation${exhausted ? ` · ${exhausted} exhausted` : ""}`,
-        rows: claudeRows("fleet", { fiveHour: mean((c) => c.fiveHour)!, sevenDay: mean((c) => c.sevenDay)!, fable: mean((c) => c.fable), extra: null }, now),
-      });
-    } else groups.push({ key: "fleet", title: "Claude", subtitle: "no login in rotation", rows: [] });
+    const fleet = aggregateProfiles(profiles);
+    groups.push(fleet ? {
+      key: "fleet", title: "Claude", subtitle: `${fleet.count} login${fleet.count === 1 ? "" : "s"} in rotation${fleet.exhausted ? ` · ${fleet.exhausted} exhausted` : ""}`,
+      rows: claudeRows("fleet", { fiveHour: fleet.fiveHour, sevenDay: fleet.sevenDay, fable: fleet.fable, extra: null }, now),
+    } : { key: "fleet", title: "Claude", subtitle: "no login in rotation", rows: [] });
     for (const p of profiles) {
       groups.push({
-        key: `login:${p.name}`, title: p.name, subtitle: p.email, state: p.state && p.state !== "ok" ? p.state : undefined, dim: LOGIN_OFF(p),
+        key: `login:${p.name}`, title: p.name, subtitle: p.email, state: p.state && p.state !== "ok" ? p.state : undefined, dim: outOfRotation(p),
         rows: p.usage ? claudeRows(`login:${p.name}`, p.usage, now) : [],
       });
     }
@@ -1604,11 +1621,13 @@ export function niceMax(v: number): number {
   return ([1, 2, 2.5, 5, 10].find((m) => m * exp >= v) ?? 10) * exp;
 }
 
-/** `n` evenly spaced x-axis labels across [from, to]: clock time within a day, the date beyond. */
+/** `n` evenly spaced x-axis labels across [from, to]: clock time within a day, the date beyond; the
+ *  right edge is "now" (a 24h axis would otherwise read the same clock time at both ends). */
 export function timeTicks(from: number, to: number, n = 4): { at: number; label: string }[] {
   const span = to - from;
   return Array.from({ length: n }, (_, i) => {
     const at = from + (span * i) / (n - 1);
+    if (i === n - 1) return { at, label: "now" };
     const d = new Date(at);
     const label = span > 36 * 3_600_000
       ? d.toLocaleDateString("en-GB", { day: "numeric", month: "short" })

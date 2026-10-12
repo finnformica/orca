@@ -11,7 +11,7 @@ import { agentAttentionAtom, agentQueryAtom, agentStateAtom, instanceScopeAtom, 
 import { navigate } from "@/lib/route";
 import { instanceChoices, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
 import {
-  DEFAULT_LIST_FILTER, LANE_LABELS, ago, filterRows, overviewStats, recentActivity, sparklineSegments,
+  DEFAULT_LIST_FILTER, LANE_LABELS, ago, attentionReasons, filterRows, overviewStats, recentActivity, sparklineSegments,
   type ActivityItem, type OverviewLane,
 } from "../workstream";
 import { Empty, SectionTitle, StatusDot, VCard, type DotTone } from "@/components/console";
@@ -62,11 +62,11 @@ function AgentsSnapshot({ rows }: { rows: Row[] }) {
     { lane: "MERGEABLE", n: s.prs.mergeable, cls: "bg-geist-blue" },
   ];
   return (
-    <VCard slot="agents-card" bodyClass="grid grid-cols-2 divide-x divide-y [&>*:nth-child(2)]:border-t-0 [&>*:nth-child(1)]:border-t-0">
+    <VCard slot="agents-card" bodyClass="grid grid-cols-2 [&>*:nth-child(odd)]:border-r [&>*:nth-child(n+3)]:border-t">
       <Stat slot="running" label="Running" value={s.running} onClick={open("all")} dot={s.running ? "building" : "neutral"}
         below={<RunsSparkline values={s.turnsByHour} />} />
       <Stat slot="attention" label="Needs attention" value={s.attention} onClick={open("all", true)} dot={s.attention ? "warning" : "neutral"}
-        below={<span className="text-muted-foreground text-xs">{s.local} local branch{s.local === 1 ? "" : "es"}</span>} />
+        below={<span data-slot="attention-reasons" className="text-muted-foreground text-xs">{reasonSummary(rows) || "nothing waiting on you"}</span>} />
       <Stat slot="prs" label="Open PRs" value={s.prs.total} onClick={open("IN_REVIEW")} dot="queued"
         below={
           <div className="space-y-1.5">
@@ -86,6 +86,13 @@ function AgentsSnapshot({ rows }: { rows: Row[] }) {
         below={<span className="text-muted-foreground text-xs">since midnight</span>} />
     </VCard>
   );
+}
+
+/** "1 CI failing · 1 run error" — why the number is what it is, most common reason first. */
+function reasonSummary(rows: Row[]): string {
+  const counts = new Map<string, number>();
+  for (const r of rows) for (const why of attentionReasons(r)) counts.set(why, (counts.get(why) ?? 0) + 1);
+  return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 3).map(([why, n]) => `${n} ${why}`).join(" · ");
 }
 
 function Stat({ slot, label, value, onClick, dot, below }: { slot: string; label: string; value: number; onClick: () => void; dot: DotTone; below?: ReactNode }) {

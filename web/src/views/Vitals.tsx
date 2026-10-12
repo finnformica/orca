@@ -18,7 +18,7 @@ export function UsageCard({ expanded: startExpanded = false }: { expanded?: bool
   const shown = expanded ? groups : groups.filter((g) => !g.key.startsWith("login:"));
   const hidden = groups.length - shown.length;
   return (
-    <VCard slot="usage-card" title="Usage" aside={<span className="text-muted-foreground text-xs">Claude &amp; Codex limits</span>}>
+    <VCard slot="usage-card" title="Current windows" aside={<span className="text-muted-foreground text-xs">Claude &amp; Codex limits</span>}>
       {routingBroken(usage) && (
         <div data-slot="routing-warning" title="Claude Code's updater rewrote ~/.local/bin/claude. Re-run hydra's install.sh --shim on the bridge's machine."
           className="bg-geist-warning-bg text-geist-warning-fg flex items-start gap-2 border-b px-4 py-2 text-xs">
@@ -97,8 +97,8 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
         : !history.length ? <Empty>No history recorded yet — the sampler writes once a minute.</Empty>
         : (
           <div className="grid gap-6 p-4 md:grid-cols-2">
-            <LineChart slot="chart-cpu" label="CPU" points={cpu} from={from} to={to} max={100} unit="%" fmt={(v) => `${Math.round(v)}%`} />
-            <LineChart slot="chart-mem" label="Memory used" points={mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} color="var(--geist-green)" />
+            <LineChart slot="chart-cpu" label="CPU" points={cpu} from={from} to={to} max={100} fmt={(v) => `${Math.round(v)}%`} />
+            <LineChart slot="chart-mem" label="Memory used" points={mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" />
           </div>
         )}
     </VCard>

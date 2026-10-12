@@ -66,7 +66,8 @@ describe("console derivations (pure)", () => {
     expect([niceMax(0), niceMax(15.3), niceMax(31), niceMax(100), niceMax(0.4)]).toEqual([1, 20, 50, 100, 0.5]);
     const t = timeTicks(NOW - 6 * 3_600_000, NOW, 4);
     expect(t).toHaveLength(4);
-    expect(t[3]!.label).toBe(new Date(NOW).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })); // clock time within a day
+    expect(t[3]!.label).toBe("now"); // the right edge
+    expect(t[0]!.label).toBe(new Date(NOW - 6 * 3_600_000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })); // clock time within a day
     expect(timeTicks(NOW - 168 * 3_600_000, NOW)[0]!.label).toBe(new Date(NOW - 168 * 3_600_000).toLocaleDateString("en-GB", { day: "numeric", month: "short" })); // dates beyond
   });
 

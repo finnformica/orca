@@ -261,12 +261,16 @@ export const THEMES: { value: Theme; label: string; Icon: typeof Sun }[] = [
 // You, at the foot of the sidebar: refresh the app, sync worktrees, the theme.
 export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
   const [theme, setTheme] = useTheme();
+  useRepos(); // the instance name arrives with config, after first paint
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button type="button" className="hover:bg-accent/60 flex h-9 min-w-0 flex-1 items-center gap-2 rounded-md px-1.5 text-sm" title="Profile" aria-label="Profile menu">
           <CircleUser className="text-muted-foreground size-5 shrink-0" />
-          <span className={cn("truncate", collapsed && "md:hidden")}>{thisInstance() ?? "You"}</span>
+          <span className={cn("min-w-0 text-left", collapsed && "md:hidden")}>
+            <span className="block truncate">You</span>
+            {thisInstance() && <span className="text-muted-foreground block truncate text-xs">on {thisInstance()}</span>}
+          </span>
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top">

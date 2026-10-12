@@ -96,7 +96,7 @@ function AgentsList() {
             No agents match.
             <Button size="sm" variant="outline" onClick={clear}>Clear filters</Button>
           </div>
-        ) : <div className="min-w-[68rem]">{visible.map((r) => <AgentRow key={r.repo + r.branch} row={r} />)}</div>}
+        ) : <div className="min-w-[74rem]">{visible.map((r) => <AgentRow key={r.repo + r.branch} row={r} />)}</div>}
       </div>
     </section>
   );
@@ -198,7 +198,7 @@ const FilterChip = ({ label, value, onClear }: { label: string; value: string; o
 
 // One grid per row (fixed tracks so every row lines up): workstream · latest instruction · status ·
 // state · signals · PR · branch · instance · updated · model · actions.
-const COLS = "grid grid-cols-[minmax(13rem,1.6fr)_minmax(12rem,1.8fr)_9rem_7.5rem_minmax(8rem,1fr)_4rem_minmax(7rem,0.8fr)_5rem_5.5rem_1.75rem_4.5rem] items-center gap-x-4";
+const COLS = "grid grid-cols-[minmax(11rem,1.4fr)_minmax(8rem,1.5fr)_9.5rem_6.5rem_minmax(8rem,1.1fr)_3.5rem_minmax(6rem,0.8fr)_4rem_4.5rem_1.5rem_6.5rem] items-center gap-x-3";
 
 export const TONE_DOT: Record<RowTone, DotTone> = { running: "building", failed: "error", attention: "warning", ready: "ready", neutral: "neutral" };
 export const TONE_LABEL: Record<RowTone, string> = { running: "Running", failed: "Error", attention: "Needs you", ready: "Ready", neutral: "Idle" };
@@ -260,13 +260,13 @@ export function AgentRow({ row }: { row: Row }) {
       <div className="text-muted-foreground truncate" title={row.agentStatus === "error" && row.agentError ? row.agentError : instruction}>
         {row.agentStatus === "error" && row.agentError ? <span className="text-geist-red">{row.agentError}</span> : instruction || "—"}
       </div>
-      <div className="flex min-w-0 items-center gap-2" title={reasons.length ? reasons.join(", ") : undefined}>
+      <div className="flex min-w-0 items-center gap-2 whitespace-nowrap" title={reasons.length ? reasons.join(", ") : undefined}>
         <StatusDot tone={TONE_DOT[tone]} />
         <span data-tone={tone} className="font-medium">{TONE_LABEL[tone]}</span>
         {duration !== undefined && <span className="text-muted-foreground tabular-nums">{formatDuration(duration)}</span>}
       </div>
       <div><Pill tone={LANE_PILL[row.lane]} slot="state-pill">{isDone ? "Merged" : LANE_LABELS[row.lane]}</Pill></div>
-      <div className="flex min-w-0 flex-wrap items-center gap-1 [&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-1 overflow-hidden [&>*]:shrink-0 [&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5">
         {row.prNumber && !isDone && <ConditionBadges row={row} />}
         {row.prNumber && !isDone && <ReviewCluster row={row} />}
         {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}

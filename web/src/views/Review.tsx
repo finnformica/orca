@@ -32,12 +32,12 @@ export function ReviewCluster({ row }: { row: Row }) {
   const { count, nits } = d.unresolved;
   if (!d.approvers.length && !count && !d.worst && !d.human.length) return null;
   return (
-    <span data-slot="review-cluster" className="inline-flex items-center gap-1">
+    <span data-slot="review-cluster" className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap">
       {d.approvers.length > 0 && <span className="flex -space-x-1">{d.approvers.slice(0, 3).map((a) => <ApproverChip key={a} login={a} />)}</span>}
       {d.approvers.length > 3 && <span className="text-muted-foreground text-[10px]">+{d.approvers.length - 3}</span>}
       {count > 0 && (
         <span data-slot="unresolved" title={nits ? `${count} unresolved review threads (${nits} nit${nits === 1 ? "" : "s"})` : `${count} unresolved review threads`}
-          className="rounded border px-1 text-[10px] leading-4">
+          className="rounded border px-1 text-[10px] leading-4 whitespace-nowrap">
           {count} unresolved
         </span>
       )}

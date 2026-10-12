@@ -155,7 +155,7 @@ describe("overview: the Agents card", () => {
     expect(stat("prs").querySelector('[data-slot="pipeline-DRAFT"]')!.textContent).toContain("1");
     expect(stat("prs").querySelector('[data-slot="pipeline-IN_REVIEW"]')!.textContent).toContain("1");
     expect(stat("prs").querySelector('[data-slot="pipeline-MERGEABLE"]')!.textContent).toContain("1");
-    expect(stat("attention").textContent).toContain("2 local branches");
+    expect(stat("attention").querySelector('[data-slot="attention-reasons"]')!.textContent).toBe("1 agent error · 1 CI failing"); // why, not just how many
     expect(value("merged")).toBe("0");
     expect(stat("running").querySelector("svg[aria-label^='Runs started per hour']")).not.toBeNull();
     // The redundant Awaiting-you tiles of the first cut are gone.

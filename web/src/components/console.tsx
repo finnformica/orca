@@ -97,8 +97,10 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
 
 /** A line chart with a y-axis (0 → a round max), time ticks under it and a hover readout — Vercel's
  *  Observability graphs. Gaps in the samples (a box that was down) break the line. */
-export function LineChart({ points, from, to, max, unit, fmt, label, slot, color = "var(--geist-blue)", height = 120 }: {
-  points: { at: number; v: number }[]; from: number; to: number; max?: number; unit?: string; fmt: (v: number) => string;
+export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot, color = "var(--geist-blue)", height = 120 }: {
+  points: { at: number; v: number }[]; from: number; to: number; max?: number; fmt: (v: number) => string;
+  /** The y-axis labels' format, when the readout's is too long for the gutter ("36G", not "36.0 GB"). */
+  axis?: (v: number) => string;
   label: string; slot?: string; color?: string; height?: number;
 }) {
   const W = 600, H = height;
@@ -124,8 +126,8 @@ export function LineChart({ points, from, to, max, unit, fmt, label, slot, color
         </span>
       </figcaption>
       <div className="flex gap-2">
-        <div className="text-muted-foreground flex flex-col justify-between py-0 text-right font-mono text-[10px] tabular-nums" style={{ height: H }}>
-          <span>{fmt(top)}</span><span>{fmt(top / 2)}</span><span>0{unit ?? ""}</span>
+        <div className="text-muted-foreground flex w-8 shrink-0 flex-col justify-between text-right font-mono text-[10px] whitespace-nowrap tabular-nums" style={{ height: H }}>
+          <span className="-translate-y-1/2">{axis(top)}</span><span>{axis(top / 2)}</span><span className="translate-y-1/2">{axis(0)}</span>
         </div>
         <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ height: H }} className="w-full min-w-0 overflow-visible" role="img"
           aria-label={`${label}${last ? `, now ${fmt(last.v)}` : ", no samples"}`} onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
@@ -134,7 +136,7 @@ export function LineChart({ points, from, to, max, unit, fmt, label, slot, color
           {hover && <line x1={x(hover.at)} x2={x(hover.at)} y1={0} y2={H} className="stroke-muted-foreground" strokeWidth={1} strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />}
         </svg>
       </div>
-      <div className="text-muted-foreground mt-1 flex justify-between pl-8 font-mono text-[10px]">
+      <div className="text-muted-foreground mt-1 flex justify-between pl-10 font-mono text-[10px]">
         {timeTicks(from, to, 4).map((t) => <span key={t.at}>{t.label}</span>)}
       </div>
     </figure>

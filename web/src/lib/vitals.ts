@@ -3,7 +3,7 @@
 // connections per host — see lib/poll.ts), and only while something is mounted to show it.
 import { useSyncExternalStore } from "react";
 import { api, type InstanceHealth, type MetricPoint } from "@/api";
-import type { ProfileUsage, Usage, UsageWindow } from "../../../server/usage";
+import type { Usage } from "../../../server/usage";
 import { poll } from "./poll";
 
 /** One value fed by a loop that runs while anyone subscribes. The value is dropped when the last
@@ -108,28 +108,6 @@ export function useHealthHistory(instance: string | null, hours = 24): MetricPoi
   return useSyncExternalStore(src.subscribe, src.get);
 }
 
-// Logins hydra can't route to right now: no reading, or deliberately out of the rotation. Exhausted
-// and locked logins DO count — they hold a real reading and are exactly what pulls the fleet up.
-export const outOfRotation = (p: ProfileUsage): boolean => !p.usage || p.state === "disabled" || p.state === "not signed in on this machine";
-
-export type FleetUsage = { count: number; exhausted: number; fiveHour: UsageWindow; sevenDay: UsageWindow; fable: UsageWindow | null };
-
-/** One reading for the whole fleet: the mean utilization per window across the logins in rotation,
- *  with the soonest reset — so the header answers "how used are my Claude accounts overall" in one
- *  row, and the per-login truth lives in the breakdown. Null when nothing is in rotation. Pure. */
-export function aggregateProfiles(profiles: ProfileUsage[]): FleetUsage | null {
-  const live = profiles.filter((p) => !outOfRotation(p));
-  if (!live.length) return null;
-  const mean = (ws: UsageWindow[]): UsageWindow => ({
-    utilization: Math.round(ws.reduce((s, w) => s + w.utilization, 0) / ws.length),
-    resetsAt: ws.map((w) => w.resetsAt).filter((r): r is string => Boolean(r)).sort()[0] ?? null,
-  });
-  const fables = live.map((p) => p.usage!.fable).filter((w): w is UsageWindow => Boolean(w));
-  return {
-    count: live.length,
-    exhausted: live.filter((p) => p.state === "exhausted" || p.state === "locked").length,
-    fiveHour: mean(live.map((p) => p.usage!.fiveHour)),
-    sevenDay: mean(live.map((p) => p.usage!.sevenDay)),
-    fable: fables.length ? mean(fables) : null,
-  };
-}
+// The fleet mean lives with the other pure usage derivations (workstream.ts), so the Usage card and
+// this module can't compute it two ways.
+export { aggregateProfiles, outOfRotation, type FleetUsage } from "../workstream";

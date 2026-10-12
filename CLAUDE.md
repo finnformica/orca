@@ -135,23 +135,45 @@ is the chat panel over its recorded turns; a wake is `claude -p --resume` on its
 
 ## The one board & model
 
-`/` has two views of the same rows, switched by the header's **List | Board** toggle (persisted,
-`boardViewAtom` / `orca.boardView`). **List is the default** — the overview (`web/src/views/Overview.tsx`,
-Vercel-style, at the user's request: the swimlanes were "not an efficient way of displaying the
-relevant information"): stat tiles (running workers + a 24h runs-per-hour sparkline, awaiting you,
-open PRs by lane as a clickable pipeline bar, merged today, Claude usage, one tile per
-instance with 24h CPU/memory sparklines from `/api/health/history`), ONE dense workstreams list with a filter bar (search, repo, instance, lane, needs-you,
-sort), and a Recent activity feed plus the New-draft box beside it. Every number and filter is a
-pure derivation over the assembled rows (`workstream.ts`: `overviewStats`, `attentionReasons`,
-`rowTone`, `filterRows`, `sortRows`, `recentActivity`) — no endpoint of its own, so the two views
-can't disagree. A list row reuses the card's pieces (`WorkstreamActions`, `PreviewControl`, the
-badges, `useSummary`, `useTerminalOpen`), so no action lives in only one view; clicking a row (not
-a control) opens its detail route. Usage, health and health history are one shared poll each for the
-header and the tiles (`lib/vitals.ts` `sharedSource`; history only while a tile or the chip's popover
-shows it). Each PR row also carries a **review cluster** (approvers, `N unresolved`, a severity dot)
-and the PR page a **Review panel** — `reviewDigest` over `GET /api/prs/:n/review-signal`, fetched
-lazily per rendered PR (`store.useReviewDigest`). **Board** is the original swimlanes, unchanged, including the lane ⋯
-bulk menus (the List offers the same `LaneActions` when filtered to one lane).
+**The console is Vercel's, copied outright** (Finn's re-brief after the first, swimlane-ish
+overview: "copy the design theme of Vercel completely and reuse all of their design decisions").
+Theme: Geist Sans/Mono (a Google Fonts `<link>`, no dependency), `#fafafa`/`#fff` light and
+`#000`/`#0a0a0a` dark, the Geist grays, 1px hairlines, no card shadows, `#0070f3` as the one accent,
+status dots and pills as `--geist-*` tokens — all CSS variables in `styles.css`, so every component
+inherits it. Shell (`components/Shell.tsx`): a collapsible left sidebar (instance switcher
+all/local/cloud scoping the pages, Find — the `F` key — which filters Agents, the nav Overview /
+Agents / Repos / Usage / Settings, you at the foot; off-canvas when narrow) and a top bar (repo
+switcher, breadcrumb, preview controls, **Add New** = the New-draft box in a popover). The
+orchestrator's floating launcher is outside the shell, untouched. Building blocks (card, ring,
+status dot, pill, details grid, line chart) are `components/console.tsx`.
+- **Overview** (`/`, `views/Overview.tsx`): a Usage card — Claude per window as ring + value / limit
+  rows (the fleet, every hydra login on expand) and Codex; it REPLACED the header usage meter — one
+  card per machine (`views/Vitals.tsx`: a details grid plus CPU % / memory GB line graphs over
+  6h/24h/7d from `/api/health/history`; it replaced the header's cloud chip), ONE Agents card with
+  the four numbers (running, needs attention with its reasons, open PRs by state, merged today —
+  each opens the Agents list filtered to exactly that), and Recent activity. The first cut's
+  separate Awaiting-you tiles were dropped as redundant.
+- **Agents** (`/agents`, `views/Agents.tsx`): Vercel's Deployments list — Add Filter + dashed
+  chips (repo, state, instance, needs attention), search, sort; one ~56px row per workstream (repo
+  icon + title, latest instruction, status dot + duration, state pill, CI/conflict badges + the
+  review cluster, PR, branch, instance, updated, the model as avatar); every action in the trailing
+  ⋯ (`WorkstreamActions menuOnly`). The swimlanes stay behind a persisted List | Board toggle.
+- **Agent page** (the existing `/{repo}/prs/:n` and `/{repo}/local/:branch` routes,
+  `views/AgentPage.tsx`): tabs Overview | Chat | Files | Checks | Preview; a Details card with
+  the failure box where Vercel shows "Build Failed" (`agentFailure`: the run's error, else the
+  failed check), Created / Status / Duration / State / Model / Instance / PR / Preview and the
+  Source (branch → base, latest commit); then the conversation where Build Logs sit (`ChatPanel
+  logBar`: turn / error / warning counters, Find in chat, timestamped, tinted turns, the composer).
+- **Repos**, **Usage** (every login, every machine) and **Settings** (theme, density, the
+  read-only config).
+Every number is a pure derivation over the assembled rows (`workstream.ts`: `overviewStats`,
+`attentionReasons`, `filterRows`, `sortRows`, `recentActivity`, `usageGroups`, `rowDuration`,
+`chatSummary`, `repoSummaries`, `agentFailure`) — no endpoint of its own, so the views can't
+disagree. Usage, health and health history are one shared poll each (`lib/vitals.ts`
+`sharedSource`; history only while a card shows it). Each PR row also carries a **review cluster**
+(approvers, `N unresolved`, a severity dot) and the PR page a **Review panel** — `reviewDigest`
+over `GET /api/prs/:n/review-signal`, fetched lazily per rendered PR (`store.useReviewDigest`).
+Mobile is backlog.
 
 The board (`web/src/views/Board.tsx`), lanes: **Local → Draft → In Review → Mergeable → Done·today**.
 A workstream is a branch; its lane (`store.laneFor`):
@@ -232,7 +254,8 @@ a running turn or a queued entry, is the receipt. (It used to go busy until the 
 Enter did nothing meanwhile.) A failed send comes back into the box if it is still empty, else into
 the error line (`<error> — not sent: “<text>”`), so neither message is lost. (History: this
 was briefly a detail-page "Chat" tab; the user asked for it as a terminal-style modal instead, and the
-tab was removed.)
+tab was removed. The Vercel re-brief brought it back on the agent page — as its Chat tab and in
+Build Logs' place — alongside the modal, which the Board's cards and New chat still open.)
 
 `web/src/workstream.ts` is the pure state machine (no React/IO — imported by store + tests):
 
@@ -454,8 +477,8 @@ worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box
 `(instance, at)`). Every insert also deletes that instance's own rows older than 30 days, so retention
 needs no second timer; a failed write is logged and swallowed. `GET /api/health/history?instance=&hours=`
 (24 by default, at most 720) is database-only and its `instance` is a filter, never a forward, so
-either machine graphs the other even while it is down. The header chip's popover draws the last 24h
-of CPU and memory as inline SVG (no charting dependency), fetched only while it is open.
+either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
+CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300 points.
 **Conversation loading with a remote database:** `/api/turns` attaches steps to the newest
 `STEPS_FOR_TURNS` (40) turns in ONE query (`db.stepsForRuns`); older turns fetch theirs on unfold
 (`/api/turns/steps` from seq 0). One query per turn over a 6ms link made a 300-turn conversation
