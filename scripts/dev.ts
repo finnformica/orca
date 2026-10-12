@@ -1,5 +1,10 @@
 // Launch the bridge + Vite dev server together. Vite proxies /api to the bridge.
-const opts = { stdout: "inherit", stderr: "inherit", env: process.env } as const;
+// The children get this process's environment MINUS its ORCA_* variables: Bun loaded .env into this
+// launcher at ITS start, and an inherited variable beats the child's own .env load — so an edit to
+// .env (the database, the instance name, the bind address) never reached a watch-restarted bridge
+// until `bun run dev` itself was restarted. Now each (re)start of the bridge reads .env afresh.
+const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("ORCA_")));
+const opts = { stdout: "inherit", stderr: "inherit", env } as const;
 const children = [
   // --watch so editing server code restarts the bridge. A restart under in-flight runs is survivable
   // now (agent.adoptLeases finishes them from the session file) — but it is still a restart, so the
