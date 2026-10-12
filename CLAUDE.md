@@ -411,7 +411,7 @@ device shows Starting/Open/Stop with no click. Each instance publishes its runni
 silent for `PREVIEW_STALE_MS`. **URLs are per viewer:** a service carries `url`, the owner's address
 (`ORCA_PREVIEW_HOST`, else its `instances` host), and `localUrl` when the ANSWERING bridge has it on
 loopback — its own preview bound to 127.0.0.1, or a forward (`server/forward.ts`): when a preview
-status is relayed from its owner (or listed by a bridge that serves localhost), the opened service's
+status is relayed from its owner (or listed for a page served from localhost), the opened service's
 port is forwarded on loopback here — the app needs a secure context (`crypto.randomUUID` is undefined
 on a plain-http tailnet name; the page was blank), and the tailnet has no HTTPS certs. Plain TCP, so
 Vite's HMR websocket rides it; dropped on stop; a port a local preview holds gets no `localUrl`. The

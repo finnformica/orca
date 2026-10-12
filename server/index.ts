@@ -128,7 +128,8 @@ setInterval(() => {
 
 /** Publish this instance's previews now (and answer the aggregate list) — on the timer, and right
  *  after a start or stop so another machine's menu needn't wait for the tick. */
-const publishPreviews = () => loadConfig().then((cfg) => verbs.previewRows(cfg, { loopback: servesLoopback() }))
+// No viewer on a publish, so no loopback forwards for the others' previews.
+const publishPreviews = () => loadConfig().then((cfg) => verbs.previewRows(cfg, { loopback: false }))
   .catch((e) => { console.error("orca: preview publish failed", e); return []; });
 
 // This machine's vitals into instance_metric once a minute, for the header chip's 24h graphs
@@ -584,7 +585,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "GET" && p === "/api/previews") {
     // Every instance's running previews (not repo-scoped): this one's live, the others' published.
-    return json(await verbs.previewRows(cfg, { loopback: servesLoopback() }));
+    // Forward the others' previews here only for a page served from localhost (the Host it asked
+    // for — Vite's proxy keeps it): a phone, or anyone pointed at the box, opens the owner's url.
+    return json(await verbs.previewRows(cfg, { loopback: ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname) }));
   }
   if (req.method === "GET" && p === "/api/preview") {
     const key = url.searchParams.get("key");
@@ -822,10 +825,6 @@ async function serveStatic(url: URL): Promise<Response> {
 // instance must reach binds loopback (its own UI, the Vite proxy) AND its tailnet address. Never
 // 0.0.0.0, or the same process is also served to whatever café wifi the machine is on.
 const BIND = (process.env.ORCA_BIND || "127.0.0.1").split(",").map((h) => h.trim()).filter(Boolean);
-/** Whether a browser can reach this bridge on localhost (the laptop) — only then is a loopback
- *  forward of another instance's preview worth holding a port for. A box bound to its tailnet
- *  address alone is never viewed from its own localhost. */
-function servesLoopback(): boolean { return BIND.some((h) => ["127.0.0.1", "localhost", "::1"].includes(h)); }
 for (const hostname of BIND) Bun.serve({
   port: API_PORT,
   hostname,
