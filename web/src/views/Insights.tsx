@@ -45,7 +45,7 @@ export function InsightsSection({ repo, instance, machines, here }: { repo?: str
   // A repo filter has no machine to charge: a box runs every repo at once.
   const shownBoxes = repo ? [] : machines.filter((m) => boxes[m]);
   return (
-    <section data-slot="insights">
+    <div data-slot="insights">
       <SectionTitle aside={<Segmented label="Insights range" value={String(days)} onChange={(v) => setDays(Number(v))} options={INSIGHT_RANGES.map((r) => ({ value: String(r.days), label: r.label }))} />}>
         Insights
       </SectionTitle>
@@ -56,7 +56,7 @@ export function InsightsSection({ repo, instance, machines, here }: { repo?: str
         <BreakdownCard data={data} />
         <ForecastCard />
       </div>
-    </section>
+    </div>
   );
 }
 
