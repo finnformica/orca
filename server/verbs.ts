@@ -228,3 +228,29 @@ export async function placement(
   }
   return repo.runsOn ?? db.instanceName();
 }
+
+/** Move a workstream's worktree from THIS instance to another. The branch goes up to origin, the
+ *  worktree here is removed (the branch is kept), the target adopts the branch over HTTP (with an
+ *  explicit `instance`, because the inventory still shows the branch here until the next publish),
+ *  and the provider session pointer is cleared: the session file lives on this host's disk, so the
+ *  next run over there takes the ladder's portable-transcript rung rather than failing to resume.
+ *  Turns and enrichment are in the shared database and need no moving. */
+export async function moveWorkstream(cfg: OrcaConfig, repo: RepoConfig, branch: string, to: string): Promise<{ branch: string; worktreePath: string; instance: string }> {
+  const here = db.instanceName();
+  if (to === here) throw new Error(`${repo.name}/${branch} is already on ${here}`);
+  const base = cfg.instances?.[to];
+  if (!base) throw new Error(`"${to}" is not a configured instance (instances: ${Object.keys(cfg.instances ?? {}).join(", ") || "none"})`);
+  const wt = (await git.listWorktrees(repo.repoPath, repo.worktreeRoot)).find((w) => w.branch === branch);
+  if (!wt) throw new Error(`${repo.name}/${branch} has no worktree on ${here}`);
+  if (agent.isRunning(wt.worktreePath)) throw new Error(`${repo.name}/${branch} has an agent running; wait for it (or stop it) before moving`);
+  if (!(await git.hasRemote(repo.repoPath))) throw new Error(`${repo.name} has no remote to carry the branch across`);
+  await git.pushBranch(wt.worktreePath, branch);
+  await git.removeWorktree(repo.repoPath, wt.worktreePath);
+  const res = await fetch(new URL("/api/worktrees/adopt", base), {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ repo: repo.name, branch, instance: to }),
+  });
+  const data = (await res.json().catch(() => ({}))) as { worktreePath?: string; error?: string };
+  if (!res.ok || !data.worktreePath) throw new Error(`${to} could not adopt ${branch}: ${data.error ?? `answered ${res.status}`} (the branch is on origin; the worktree here is gone)`);
+  await db.patchEnrichment(repo.name, branch, { sessionId: null, movedFrom: here, movedAt: new Date().toISOString() });
+  return { branch, worktreePath: data.worktreePath, instance: to };
+}

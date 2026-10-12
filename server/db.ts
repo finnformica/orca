@@ -758,6 +758,21 @@ export async function steps(runId: string, opts: { tail?: number; afterSeq?: num
   return (rows as { seq: number; step: Fields }[]).map((r) => ({ seq: Number(r.seq), step: r.step }));
 }
 
+/** Every recorded step of several runs in ONE round trip, grouped by run. The conversation view
+ *  used one query per turn; with the database on the other machine (6ms away) a 300-turn
+ *  conversation took seconds to open. */
+export async function stepsForRuns(runIds: string[]): Promise<Map<string, { seq: number; step: Fields }[]>> {
+  const out = new Map<string, { seq: number; step: Fields }[]>();
+  if (!runIds.length) return out;
+  const sql = await open();
+  const rows = await sql`SELECT run_id, seq, step FROM turn_step WHERE run_id IN ${sql(runIds)} ORDER BY run_id, seq`;
+  for (const r of rows as { run_id: string; seq: number; step: Fields }[]) {
+    let list = out.get(r.run_id);
+    if (!list) out.set(r.run_id, (list = []));
+    list.push({ seq: Number(r.seq), step: r.step });
+  }
+  return out;
+}
 
 // ---- queued messages ----
 

@@ -697,6 +697,12 @@ export async function promote(row: Row, opts?: { draft?: boolean; labels?: strin
   await refresh();
 }
 
+/** Move a row's worktree to another instance. The card re-appears there on the next poll. */
+export async function moveWorkstream(row: Row, to: string): Promise<void> {
+  await api.moveWorkstream(row.repo, row.branch, to);
+  await refresh();
+}
+
 /** Ensure a local worktree exists for a row (adopts the branch if needed). Returns its path. */
 export async function ensureWorktree(row: Row): Promise<string> {
   if (row.worktreePath) return row.worktreePath;

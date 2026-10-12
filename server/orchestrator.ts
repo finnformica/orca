@@ -434,6 +434,16 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await db.patchEnrichment(repo.name, branch, { orchestrated: true });
       return `${status === "queued" ? "Queued" : "Started"} Address PR for #${pr}. End your turn; you are woken when it finishes.`;
     }
+    case "move": {
+      const repo = repoNamed(cfg, args.repo);
+      const branch = required(args, "branch");
+      const to = required(args, "to");
+      const home = await verbs.placement(repo, { branch });
+      const r = home !== db.instanceName()
+        ? (await viaInstance(cfg, home, "/api/workstreams/move", { repo: repo.name, branch, to }) as { instance: string })
+        : await verbs.moveWorkstream(cfg, repo, branch, to);
+      return `Moved ${repo.name}/${branch} to ${r.instance}. Its next run starts a new session there from the portable transcript.`;
+    }
     case "archive": {
       const repo = repoNamed(cfg, args.repo);
       const branch = required(args, "branch");

@@ -387,7 +387,16 @@ home over HTTP (`viaInstance`, the `/api/workstreams/{spawn,followup,address}` r
 orchestrator itself lives on ONE instance — `orchestratorOn`:** its routes are forwarded there and
 other instances post worker reports to `/api/orchestrator/event`, so one process wakes it (two
 resuming one session at once was the "one message behind" bug). Unset, it wakes wherever it is
-spoken to — fine for one machine, wrong for two. Leases, the ledger, handoff
+spoken to — fine for one machine, wrong for two. **Moving a workstream** (`verbs.moveWorkstream`, the card menu's
+"Move to <instance>", `orca move --to`): the branch is pushed to origin, the worktree here is
+removed, the target adopts the branch over HTTP (with an explicit `instance`, since the inventory
+still lists it here until the next publish), and the session pointer is cleared — the provider's
+session file is on the old host's disk, so the next run there takes the portable-transcript rung.
+Turns and enrichment are in the shared database and need no moving. Not while its agent runs.
+**Conversation loading with a remote database:** `/api/turns` attaches steps to the newest
+`STEPS_FOR_TURNS` (40) turns in ONE query (`db.stepsForRuns`); older turns fetch theirs on unfold
+(`/api/turns/steps` from seq 0). One query per turn over a 6ms link made a 300-turn conversation
+take seconds to open. Leases, the ledger, handoff
 files, `~/.claude/projects` backfill, preview ports, and `/api/usage` are **per host** — they
 describe the instance that answered, which is right for leases and wrong-but-tolerable for the
 usage meter. `deploy/orca.service` is the systemd unit; `bun run build` then `bun run server` is

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreHorizontal, Sparkles } from "lucide-react";
 import {
-  addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, markReady,
+  addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, moveWorkstream, thisInstance,
   cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, staleHours, suggestTitle, toggleFollow, useRepos, type Row,
 } from "../store";
 import { prMenuActions, shouldBump } from "../workstream";
@@ -124,6 +124,12 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
             )}
             {/* Rename — fix a broken/auto title. AI suggests a name (editable); a PR renames on GitHub. */}
             <DropdownMenuItem onSelect={() => setRenaming(true)}>Rename…</DropdownMenuItem>
+            {/* Move the worktree to another instance (verbs.moveWorkstream). Not while its agent runs. */}
+            {row.worktreePath && instanceChoices().filter((i) => i !== (row.instance ?? thisInstance())).map((to) => (
+              <DropdownMenuItem key={to} disabled={row.agentStatus === "running"} onSelect={run(() => moveWorkstream(row, to))} title={row.agentStatus === "running" ? "Wait for the agent to finish first" : `Push the branch and re-open its worktree on ${to}; the next run starts a fresh session there`}>
+                Move to {to}
+              </DropdownMenuItem>
+            ))}
 
             {/* PR — every action that needs an open PR, in one place (workstream.prMenuActions) */}
             {isPr && (
