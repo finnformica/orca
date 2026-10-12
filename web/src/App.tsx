@@ -497,9 +497,8 @@ export function InstanceHealthChip() {
     if (!other || !open) return;
     let live = true;
     const load = () => orcaApi.healthHistory(other, 24).then((v) => { if (live) setHistory(v); }).catch(() => { if (live) setHistory([]); });
-    void load();
-    const t = setInterval(load, 60_000);
-    return () => { live = false; clearInterval(t); };
+    const stop = poll(load, 60_000); // next fetch only after this one settles — a slow history call can't pile up
+    return () => { live = false; stop(); };
   }, [other, open]);
   useEffect(() => {
     if (!other) return;
