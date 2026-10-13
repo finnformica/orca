@@ -12,7 +12,7 @@ import { aggregateProfiles, App, mergeUsage, untilReset } from "@/App";
 import { navigate } from "@/lib/route";
 import { createStore, getDefaultStore } from "jotai";
 import { usageExpandedAtom } from "@/lib/atoms";
-import { resetToasts } from "@/lib/toast";
+import * as centre from "@/lib/notificationStore";
 import { shapeCodexUsage, shapeUsage } from "../server/usage";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -35,7 +35,7 @@ afterEach(async () => {
   container?.remove();
   root = container = undefined;
   apiFake.reset();
-  act(() => resetToasts()); // the toast store is a module-level singleton that outlives this file's tests
+  act(() => centre.reset()); // the notification store is a module-level singleton that outlives this file's tests
   localStorage.clear();
   getDefaultStore().set(usageExpandedAtom, false); // the atom outlives localStorage within a run
   navigate("/");
@@ -332,7 +332,7 @@ test("a hydra login's row shows a switch on hover: flipping it disables/enables 
   expect(row()).toBeNull(); // leaves the DOM again once the row isn't hovered
 });
 
-test("a failed toggle goes to the error toast and the switch reverts", async () => {
+test("a failed toggle is a failed-action notification toast and the switch reverts", async () => {
   apiFake.usageData = { claude: null, codex: null, profiles: [{ name: "work", state: "ok", usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } }] };
   apiFake.setProfileEnabledError = "hydra: no such profile";
   await mount("/usage");
@@ -342,7 +342,7 @@ test("a failed toggle goes to the error toast and the switch reverts", async () 
   const row = group("login:work")!.querySelector<HTMLElement>("[data-slot='login-toggle']")!;
   await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   expect(row.getAttribute("aria-checked")).toBe("true"); // unchanged — the server refused it
-  const toast = container!.querySelector('[data-slot="toast"]')!;
+  const toast = container!.querySelector('[data-slot="notification-toast"][data-kind="action_failed"]')!;
   expect(toast.textContent).toContain("Disable failed");
   expect(toast.textContent).toContain("hydra: no such profile");
 });

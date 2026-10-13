@@ -1,11 +1,12 @@
-// The instance health chip's numbers (server/health.ts): the month-to-date cost estimate is plain
-// arithmetic worth pinning; the vitals come straight from the os module, except on darwin where
+// The instance health chip's numbers (server/health.ts): the machine's hourly rate (config, else an
+// EC2 on-demand estimate from IMDSv2, else 0 — the source order is worth pinning); the vitals come straight from the os module, except on darwin where
 // memory is corrected via `vm_stat`/`sysctl` (see darwinMemory's doc comment for why).
 import { mkdtemp, writeFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
-import { costEstimate, darwinMemory, health, parseVmStat, vmStatUsedGb } from "../server/health";
+import { native } from "./happydom";
+import { darwinMemory, EC2_ON_DEMAND_USD, health, imdsInstance, instanceRate, parseVmStat, resetImds, vmStatUsedGb } from "../server/health";
 
 // A real `vm_stat` capture (Apple Silicon, page size 16384) — asserts the parse against actual
 // field names/formatting, not a hand-trimmed fixture.
@@ -34,13 +35,54 @@ Swapins:                                       0.
 Swapouts:                                      0.
 `;
 
-test("cost: hours since the later of the billing start and the 1st of the month, at the rate", () => {
-  const now = Date.UTC(2026, 9, 12, 12, 0, 0); // 12 Oct 2026 12:00Z
-  expect(costEstimate(0.25, "2026-10-12T09:00:00Z", now)).toEqual({ monthUsd: 0.75, hourlyUsd: 0.25, sinceIso: "2026-10-12T09:00:00.000Z" }); // 3h × 0.25
-  expect(costEstimate(0.25, "2026-09-01T00:00:00Z", now)?.monthUsd).toBe(69); // from the 1st: 11.5 days × 24 × 0.25
-  expect(costEstimate(0.25, undefined, now)?.sinceIso).toBe("2026-10-01T00:00:00.000Z"); // no start → the month
-  expect(costEstimate(0, "2026-10-12T09:00:00Z", now)).toBeUndefined(); // no rate → no estimate
-  expect(costEstimate(NaN, undefined, now)).toBeUndefined();
+/** A fake IMDSv2: a PUT for a session token, then the two metadata reads, which demand the token. */
+function fakeImds(instanceType: string, region: string) {
+  const calls: string[] = [];
+  const server = Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    fetch(req) {
+      const path = new URL(req.url).pathname;
+      calls.push(`${req.method} ${path}`);
+      if (req.method === "PUT" && path === "/latest/api/token") return new native.Response("tok-1");
+      if (req.headers.get("X-aws-ec2-metadata-token") !== "tok-1") return new native.Response("", { status: 401 });
+      if (path === "/latest/meta-data/instance-type") return new native.Response(instanceType);
+      if (path === "/latest/meta-data/placement/region") return new native.Response(region);
+      return new native.Response("", { status: 404 });
+    },
+  });
+  return { url: `http://127.0.0.1:${server.port}`, calls, stop: () => server.stop(true) };
+}
+
+const prevImds = process.env.ORCA_IMDS_URL;
+afterEach(() => { resetImds(); if (prevImds === undefined) delete process.env.ORCA_IMDS_URL; else process.env.ORCA_IMDS_URL = prevImds; });
+
+test("rate: with no config entry, an EC2 box's type and region from IMDSv2 priced from the built-in table, labelled an estimate", async () => {
+  const imds = fakeImds("m7i.xlarge", "eu-west-2");
+  process.env.ORCA_IMDS_URL = imds.url;
+  try {
+    expect(await instanceRate(undefined, "cloud")).toEqual({ hourlyUsd: 0.2331, source: "estimate", instanceType: "m7i.xlarge", region: "eu-west-2" });
+    expect(imds.calls).toEqual(["PUT /latest/api/token", "GET /latest/meta-data/instance-type", "GET /latest/meta-data/placement/region"]);
+    await instanceRate({ local: 0 }, "cloud"); // another instance's entry is not this one's
+    expect(imds.calls).toHaveLength(3); // IMDS is asked once per process
+  } finally { imds.stop(); }
+});
+
+test("rate: the config's instanceHourlyUsd wins over IMDS; an unknown type is 0, never a guess", async () => {
+  const imds = fakeImds("x9.huge", "eu-west-2");
+  process.env.ORCA_IMDS_URL = imds.url;
+  try {
+    expect(await instanceRate({ cloud: 0.3 }, "cloud")).toEqual({ hourlyUsd: 0.3, source: "config" });
+    expect(imds.calls).toEqual([]); // not even asked
+    expect(await instanceRate({}, "cloud")).toEqual({ hourlyUsd: 0, source: "none", instanceType: "x9.huge", region: "eu-west-2" });
+  } finally { imds.stop(); }
+});
+
+test("rate: the laptop (instance local) — no IMDS answers — is 0, unless the config names a rate for it", async () => {
+  process.env.ORCA_IMDS_URL = "http://127.0.0.1:1"; // nothing listens, as off EC2
+  expect(await imdsInstance(process.env.ORCA_IMDS_URL, 500)).toBeUndefined();
+  expect(await instanceRate(undefined, "local")).toEqual({ hourlyUsd: 0, source: "none" });
+  expect(await instanceRate({ local: 0 }, "local")).toEqual({ hourlyUsd: 0, source: "config" });
+  expect(EC2_ON_DEMAND_USD["eu-west-2"]!["m7i.xlarge"]).toBe(0.2331); // this box
 });
 
 test("health reports this machine's vitals in the shape the chip reads", async () => {
