@@ -374,3 +374,31 @@ test("S6: every control with a shortcut shows its keycap — the pill, the top b
   await act(async () => { item.click(); await flush(); await flush(); });
   expect(dialogOpen("command-palette")).toBe(true);
 });
+
+describe("narrow screen: every orchestrator entry navigates instead of opening the panel", () => {
+  const realMatchMedia = window.matchMedia;
+  const emulateNarrow = () => {
+    window.matchMedia = ((q: string) => ({ matches: q === "(max-width: 767px)", media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  };
+  afterEach(() => { window.matchMedia = realMatchMedia; });
+
+  test("S7: O routes to /orchestrator; the panel never opens", async () => {
+    emulateNarrow();
+    await mount("/agents");
+    await press(document.body, "o");
+    expect(location.pathname).toBe("/orchestrator");
+    expect(panel()).toBeNull();
+  });
+
+  test("S8: the palette's Open orchestrator routes the same way", async () => {
+    emulateNarrow();
+    await mount("/agents");
+    await press(document.body, "k", MOD);
+    await act(async () => {
+      q('[data-slot="command-palette"] [role="option"][data-id="action:orchestrator"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await flush(); await flush();
+    });
+    expect(location.pathname).toBe("/orchestrator");
+    expect(panel()).toBeNull();
+  });
+});

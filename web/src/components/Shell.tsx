@@ -184,8 +184,11 @@ function BottomBar({ onMenu, activity }: { onMenu: () => void; activity: { runni
       <button type="button" className={cn(item, "text-foreground")} onClick={() => setAddNew(true)}>
         <span className="bg-foreground text-background inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span>New agent
       </button>
-      {/* The orchestrator, carrying the activity dot the desktop's quick-ask pill shows (there is no pill below md). */}
-      <button type="button" className={cn(item, "relative")} onClick={() => ask()}><Bot className="size-5" /><ActivityDot activity={activity} className="absolute top-1.5 right-[calc(50%-0.9rem)]" />Orchestrator</button>
+      {/* The orchestrator, carrying the activity dot the desktop's quick-ask pill shows (there is no pill below md).
+          `ask()` routes here to /orchestrator on a narrow screen rather than opening the side panel. */}
+      <button type="button" className={cn(item, "relative", route.name === "orchestrator" && "text-foreground")} aria-current={route.name === "orchestrator" ? "page" : undefined} onClick={() => ask()}>
+        <Bot className="size-5" /><ActivityDot activity={activity} className="absolute top-1.5 right-[calc(50%-0.9rem)]" />Orchestrator
+      </button>
     </nav>
   );
 }

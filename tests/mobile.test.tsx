@@ -217,16 +217,34 @@ describe("the phone layout (390px, touch)", () => {
     expect($('[data-slot="filters-active"]')!.textContent).toBe("1");
   });
 
-  test("the orchestrator opens as a full-screen sheet: no drag, resize or pop out", async () => {
+  test("the orchestrator opens as a routed page, not the overlay panel: no drag, resize or pop out", async () => {
     await mount("/", true);
+    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false);
     await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
     await act(async () => { await flush(); await flush(); });
-    const panel = $('[data-slot="orchestrator-panel"]')!;
-    expect(panel.hasAttribute("data-sheet")).toBe(true);
-    expect(panel.className).toContain("sheet");
+    expect(location.pathname).toBe("/orchestrator");
+    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false); // the side panel never opens on a phone
+    expect($('[data-slot="orchestrator-panel"]')).toBeNull();
+    const page = $('[data-slot="orchestrator-page"]')!;
+    expect(page).not.toBeNull();
+    expect(page.querySelector("textarea")).not.toBeNull(); // the composer, in the page itself
     expect(document.querySelectorAll('[data-slot="orchestrator-resize"]')).toHaveLength(0);
-    expect($('[data-slot="orchestrator-handle"]')!.className).not.toContain("cursor-move");
     expect(document.querySelector('[aria-label="Pop out"]')).toBeNull();
+    // The bottom bar marks it the current destination, like Agents does.
+    const button = [...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!;
+    expect(button.getAttribute("aria-current")).toBe("page");
+  });
+
+  test("the orchestrator page's own scroller holds the conversation; its back arrow returns to the previous page", async () => {
+    await mount("/agents", true);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await act(async () => { await flush(); await flush(); });
+    const page = $('[data-slot="orchestrator-page"]')!;
+    // The chat's own div is the thing that scrolls — nothing about the page wraps it in a second one.
+    expect(page.querySelector(".overflow-y-auto")).not.toBeNull();
+    await click($('[aria-label="Back"]')!);
+    await act(async () => { await flush(); await flush(); });
+    expect(location.pathname).toBe("/agents");
   });
 
   test("on a touch screen Enter in the composer is a newline, not a send", async () => {
@@ -309,15 +327,6 @@ describe("gestures", () => {
     expect(sheet.open).toBe(false);
   });
 
-  test("the orchestrator's phone sheet closes on a swipe down its header", async () => {
-    await mount("/", true);
-    act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
-    await act(async () => { await flush(); await flush(); });
-    const handle = $('[data-slot="orchestrator-handle"]')!;
-    await act(async () => { pointer("pointerdown", 50, handle); pointer("pointermove", 400); pointer("pointerup", 400); await flush(); });
-    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false);
-  });
-
   test("pull to refresh on the Agents list: the indicator follows the finger, and letting go past it refreshes", async () => {
     await mount("/agents", true);
     const list = $('section[aria-label="Agents"]')!;
@@ -345,7 +354,9 @@ describe("gestures", () => {
 describe("home-screen shortcuts", () => {
   test("/?open=orchestrator opens the orchestrator once, and the parameter is dropped", async () => {
     await mount("/?open=orchestrator", true);
-    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(true);
+    // On a phone that's a navigation to the routed page, not the side panel.
+    expect(location.pathname).toBe("/orchestrator");
+    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false);
     expect(location.search).toBe("");
   });
 });
