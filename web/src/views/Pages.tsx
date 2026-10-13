@@ -8,7 +8,7 @@ import { useEffect, useState } from "react";
 import { useAtom, useSetAtom } from "jotai";
 import { FolderGit2, GitBranch } from "lucide-react";
 import { refreshVitals } from "@/lib/vitals";
-import { actionFailed } from "@/lib/notificationStore";
+import { notifyLocal } from "@/lib/notificationStore";
 import { Button } from "@/components/ui/button";
 import { browserNotifyAtom, densityAtom, notifyDndAtom, repoFilterAtom, toastPrefsAtom } from "@/lib/atoms";
 import { KIND_META, NOTIFICATION_KINDS } from "../../../shared/notifications";
@@ -192,7 +192,14 @@ function MachineRate({ instance, saved }: { instance: string; saved: number | un
   const save = async () => {
     setBusy(true);
     try { await setInstanceRate(instance, value); void refreshVitals(); }
-    catch (e) { actionFailed({ action: "Save rate", title: instance, repo: "", branch: "" }, e); }
+    catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      notifyLocal({
+        kind: "action_failed", repo: "", title: `Machine cost · ${instance}`, label: "Save rate failed", body: error,
+        copy: `Action: Save rate for ${instance}\nError:\n${error}`,
+        ask: `Save rate for ${instance} failed: ${error}. Please investigate and fix.`,
+      });
+    }
     finally { setBusy(false); }
   };
   return (
