@@ -162,3 +162,24 @@ test("bun run db:check prints applied vs expected and exits 1 when a start would
   expect(r.code).toBe(1);
   expect(r.out).toContain("REFUSE to start");
 });
+
+// 2026-10-13: #132's `notification` table already existed on the shared database (an unmerged
+// branch's bridge had created it under another id), its step was a plain CREATE TABLE, and both
+// bridges crashed at boot on "relation already exists". Every step must be re-runnable.
+test("every step is idempotent: marked so, and no bare CREATE TABLE / INDEX", () => {
+  for (const s of db.MIGRATIONS) {
+    // A pure data backfill (3) may be one-shot; anything that creates or alters schema must re-run cleanly.
+    if (/\b(CREATE|ALTER)\b/.test(s.sql)) expect({ id: s.id, idempotent: s.idempotent }).toEqual({ id: s.id, idempotent: true });
+    expect({ id: s.id, bare: s.sql.match(/CREATE (UNIQUE )?(TABLE|INDEX) (?!IF NOT EXISTS)/g) ?? [] }).toEqual({ id: s.id, bare: [] });
+  }
+});
+
+test("a table a foreign branch already created does not crash the runner: its step is a no-op and gets recorded", async () => {
+  await raw(async (sql) => {
+    // The shape #132's branch created — same as main's 15, but no migration row for it.
+    await sql.unsafe(db.MIGRATIONS.find((s) => s.name === "notification")!.sql);
+  });
+  const rows = await ledger();
+  expect(rows.map((r: { id: number; name: string }) => r.name)).toContain("notification");
+  expect(db.migrationReport()).toMatchObject({ refused: [] });
+});
