@@ -1,4 +1,3 @@
-import { tmpdir } from "os";
 import {
   API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
@@ -6,6 +5,7 @@ import {
 import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
+import * as attachments from "./attachments";
 import * as preview from "./preview";
 import * as forward from "./forward";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
@@ -26,7 +26,7 @@ import * as notify from "./notify";
 import { health, historyHours, instanceRate, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
-import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import { ORCHESTRATOR_REPO, attachmentRefs, followUpPrompt, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
@@ -339,19 +339,31 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (PREVIEW_BRIDGE && req.method !== "GET") {
     return json({ error: "This is a branch preview's bridge: it reads the shared database but changes nothing. Use the main Orca for actions." }, 403);
   }
-  // Pasted/dropped files (any type): save each to a temp dir, hand back absolute paths the agent Reads.
-  // Handled before the JSON body parse below — this is the one multipart route.
+  // Pasted/dropped files (any type): stored in the shared database, answered as references
+  // (server/attachments.ts) that whichever instance runs the agent turns into a local file. The
+  // field is still `paths` so the composer needn't care. Handled before the JSON body parse below —
+  // this is the one multipart route.
   if (req.method === "POST" && p === "/api/attachments") {
-    const dir = `${tmpdir()}/orca-attachments`;
-    const paths: string[] = [];
-    for (const f of (await req.formData()).getAll("files")) {
-      if (typeof f === "string") continue;
-      const ext = f.name.match(/\.[a-z0-9]+$/i)?.[0]?.toLowerCase() ?? "";
-      const file = `${dir}/${crypto.randomUUID()}${ext}`;
-      await Bun.write(file, f); // Bun.write creates the parent dir
-      paths.push(file);
+    const files = (await req.formData()).getAll("files").filter((f): f is File => typeof f !== "string");
+    try {
+      return json({ paths: await attachments.store(files) });
+    } catch (e) {
+      if (e instanceof attachments.AttachmentTooLarge) return json({ error: e.message }, 413);
+      throw e;
     }
-    return json({ paths });
+  }
+  // One stored attachment's bytes, for the chat's thumbnail / file chip. Read from Postgres, so any
+  // instance answers it whichever one took the upload. Served inline but sandboxed and never sniffed:
+  // a pasted SVG or HTML file must not run as this (unauthenticated) origin.
+  const stored = req.method === "GET" && p.match(/^\/api\/attachments\/([0-9a-f-]{36})$/);
+  if (stored) {
+    const file = await db.attachment(stored[1]!);
+    if (!file) return json({ error: "attachment not found (pruned after 30 days, or never stored)" }, 404);
+    return new Response(file.bytes as Uint8Array<ArrayBuffer>, { headers: {
+      "Content-Type": file.mimeType, "Content-Disposition": `inline; filename="${file.filename.replace(/["\\\r\n]/g, "_")}"`,
+      "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
+      "Cache-Control": "private, max-age=86400, immutable",
+    } });
   }
   // PUT carries a body too (the pasted config document) — parsing only POST silently handed the
   // handler an empty object, which then failed validation as "repos must be a non-empty array".
@@ -560,6 +572,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     const r = await verbs.followUp(cfg, repo, String(body.branch), { instruction: String(body.instruction ?? "") });
     await db.patchEnrichment(repo.name, String(body.branch), { orchestrated: true });
     return json({ ...r, instance: db.instanceName() });
+  }
+  if (req.method === "POST" && p === "/api/conflicts/settle") {
+    // The board's Address PR / Resolve conflicts call this first: a changelog-only conflict is merged,
+    // unioned and pushed here, and the agent is asked only about what's left.
+    if (!body.branch) return json({ error: "branch required" }, 400);
+    return json(await verbs.settleConflict(repo, String(body.branch)));
   }
   if (req.method === "POST" && p === "/api/workstreams/address") {
     const r = await verbs.addressPr(cfg, repo, String(body.branch));
@@ -920,6 +938,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     // never shown: the chat renders `instruction`, and falls back to trimming the prompt only for
     // turns recorded before the instruction was stored. For the orchestrator's 375 turns the prompts
     // were 3.6 MB of a 5.3 MB response — seconds over the tailnet, for nothing on screen.
+    // Files the message carried, read off the stored prompt (an agent chat's instruction is just the
+    // typed text; the references live in the prompt, which is blanked next) — the chat shows them.
+    for (const t of turns) {
+      const files = attachmentRefs(`${t.instruction ?? ""}\n${t.prompt}`);
+      if (files.length) t.attachments = files;
+    }
     for (const t of turns) if (t.instruction !== undefined) t.prompt = "";
     return json(page ? { turns, older: page.older } : turns);
   }

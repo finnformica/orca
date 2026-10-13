@@ -15,6 +15,7 @@ import { mkdirSync } from "fs";
 import { join } from "path";
 import * as agent from "./agent";
 import * as db from "./db";
+import * as attachments from "./attachments";
 import * as git from "./git";
 import * as gh from "./gh";
 import * as verbs from "./verbs";
@@ -435,6 +436,18 @@ const required = (args: ToolArgs, key: string): string => {
 
 export type ToolArgs = Record<string, unknown> & { _?: string[] };
 
+/** `--attach` (repeatable) as stored references, ready for `withAttachments` — they ride the brief or
+ *  message to the worker's instance, which materialises them at launch like any other attachment. */
+async function attachArgs(args: ToolArgs): Promise<string[]> {
+  const raw = args.attach === undefined ? [] : Array.isArray(args.attach) ? args.attach : [args.attach];
+  const refs: string[] = [];
+  for (const v of raw) {
+    if (typeof v !== "string" || !v.trim()) throw new Error("--attach needs a value: an attachment id from ## Attachments, or a file path");
+    refs.push(await attachments.forward(v));
+  }
+  return refs;
+}
+
 /** Run one `orca <verb>` and return what it prints. Throws with a message the model can act on. */
 export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): Promise<string> {
   const words = args._ ?? [];
@@ -451,18 +464,20 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       }
       const on = typeof args.on === "string" && args.on ? args.on : (repo.runsOn ?? db.instanceName());
       const title = typeof args.title === "string" ? args.title : undefined;
+      const prompt = withAttachments(workerBrief(brief), await attachArgs(args));
       if (on !== db.instanceName()) {
-        const ws = await viaInstance(cfg, on, "/api/workstreams/spawn", { repo: repo.name, prompt: workerBrief(brief), title, model: args.model });
+        const ws = await viaInstance(cfg, on, "/api/workstreams/spawn", { repo: repo.name, prompt, title, model: args.model });
         return `Spawned ${repo.name}/${ws.branch} "${ws.title}" on ${on}. End your turn; you are woken when it finishes.`;
       }
-      const ws = await verbs.createWorkstream(cfg, repo, { prompt: workerBrief(brief), title, model: String(args.model), fields: { orchestrated: true } });
+      const ws = await verbs.createWorkstream(cfg, repo, { prompt, title, model: String(args.model), fields: { orchestrated: true } });
       return `Spawned ${repo.name}/${ws.branch} "${ws.title}"${cfg.instances ? ` on ${on}` : ""}. End your turn; you are woken when it finishes.`;
     }
     case "send": {
       const repo = repoNamed(cfg, args.repo);
       const branch = required(args, "branch");
-      const text = words.join(" ").trim();
-      if (!text) throw new Error('the message is required: orca send --repo <repo> --branch <branch> "<message>"');
+      const typed = words.join(" ").trim();
+      if (!typed) throw new Error('the message is required: orca send --repo <repo> --branch <branch> "<message>"');
+      const text = withAttachments(typed, await attachArgs(args));
       // A new pin is read by followUp, so the move happens on this message (the ladder decides
       // resume vs handoff from the pinned provider as it does for the card's own picker).
       if (typeof args.model === "string") {
@@ -485,6 +500,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         ? (await viaInstance(cfg, home, "/api/workstreams/address", { repo: repo.name, branch }) as { status: string; pr: number })
         : await verbs.addressPr(cfg, repo, branch);
       await db.patchEnrichment(repo.name, branch, { orchestrated: true });
+      if (status === "resolved") return `#${pr}'s only conflict was in its changelog: Orca merged the base, kept both sides' entries and pushed. Nothing else needed an agent, so none was started.`;
       return `${status === "queued" ? "Queued" : "Started"} Address PR for #${pr}. End your turn; you are woken when it finishes.`;
     }
     case "move": {

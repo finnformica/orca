@@ -9,8 +9,8 @@ import { useEffect, useSyncExternalStore } from "react";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import {
-  addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, followUpPrompt, instanceOrder, launchPrompt,
-  newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
+  addressNeedsAgent, addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, followUpPrompt, instanceOrder, launchPrompt,
+  mergeSettled, newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { BridgeInfo, ReviewDigest } from "./workstream";
 import type { OrchStatus, PrRef } from "./workstream";
@@ -18,6 +18,7 @@ import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent"
 import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
 import { attachCommand, handoffPrompt } from "../../shared/agent";
 import { poll } from "./lib/poll";
+import { notifyLocal } from "./lib/notificationStore";
 
 const KEY = "orca.enrichment";
 const now = () => new Date().toISOString();
@@ -1065,8 +1066,18 @@ export async function sendSlack(row: Row, kind: "notify" | "bump") {
   patchEnrich(row.repo, row.branch, kind === "notify" ? { slackNotifiedAt: now() } : { slackLastBumpedAt: now() });
 }
 
+/** Orca's own merge of the base, before any agent: true when it left no conflict (a clean merge, or a
+ *  changelog-only one it unioned and pushed). A failure to ask is "no" — the agent then does it. */
+async function settledWithoutAgent(row: Row): Promise<boolean> {
+  const r = await api.settleConflict(row.repo, row.branch).catch(() => undefined);
+  // A local, self-hiding notification (the one toast stack, #164) — news, not a problem.
+  if (r?.outcome === "resolved") notifyLocal({ kind: "finished", repo: row.repo, branch: row.branch, title: row.title ?? row.branch, label: "Changelog conflict resolved", body: `Merged ${baseBranch(row.repo)}, kept both sides' entries in ${r.files.join(", ")} and pushed — no agent needed for it.` });
+  return mergeSettled(r?.outcome);
+}
+
 export async function resolveConflicts(row: Row) {
   const wt = await ensureWorktree(row); // spin up a worktree for the PR if there isn't one yet
+  if (await settledWithoutAgent(row)) { await refresh(); return; }
   await launchOnRow(row, wt, resolveConflictsPrompt({ branch: row.branch }, baseBranch(row.repo)), providerFor(row), { action: "conflict", instruction: `Resolve merge conflicts with ${baseBranch(row.repo)}` });
   await refresh();
 }
@@ -1086,7 +1097,9 @@ export async function addPreviewLabel(row: Row) {
 export async function addressPr(row: Row, manual = true) {
   const wt = await ensureWorktree(row); // spin up a worktree for the PR if there isn't one yet
   const enrichment = enrichOf(row.repo, row.branch);
-  const conflicting = row.mergeable === "CONFLICTING" || row.mergeClean === "conflict";
+  const blocked = row.mergeable === "CONFLICTING" || row.mergeClean === "conflict";
+  const settled = blocked && await settledWithoutAgent(row);
+  const conflicting = blocked && !settled;
   const ciFailing = row.ciStatus === "failing";
   const [details, collected, comments] = await Promise.all([
     ciFailing && row.prNumber ? api.ciEvidence(row.repo, row.prNumber).catch(() => []) : Promise.resolve([]),
@@ -1100,11 +1113,13 @@ export async function addressPr(row: Row, manual = true) {
   const marked = (threads ?? []).map((thread) => ({ ...thread, alreadyHanded: handed.has(thread.id) }));
   const seenAt = new Date().toISOString();
   const evidenceChars = JSON.stringify(details).length + JSON.stringify(marked).length + JSON.stringify(comments).length;
+  const ci = ciFailing ? { failingChecks: row.failingChecks, details } : undefined;
+  // The conflict was all Orca's to settle and nothing else is outstanding: no run.
+  if (settled && !addressNeedsAgent({ conflicting, ci, feedback: row.feedback, threads: marked, comments })) { await refresh(); return; }
   await launchOnRow(
     row, wt,
     addressPrPrompt({ prNumber: row.prNumber ?? 0, branch: row.branch }, {
-      base: baseBranch(row.repo), conflicting,
-      ci: ciFailing ? { failingChecks: row.failingChecks, details } : undefined,
+      base: baseBranch(row.repo), conflicting, ci,
       feedback: row.feedback, threads: marked, followed: !manual, comments,
     }),
     providerFor(row),

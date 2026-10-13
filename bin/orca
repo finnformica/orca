@@ -15,7 +15,12 @@ for (let i = 0; i < rest.length; i++) {
   // top of the notes) is still text.
   // A flag followed by another flag (or by nothing) is a switch: `--status --repo r` must not take
   // `--repo` as its value.
-  if (flag.test(a)) args[a.slice(2)] = flag.test(rest[i + 1] ?? "--end") ? "" : rest[++i]!;
+  // A repeated flag collects (`--attach a --attach b` → ["a", "b"]); a single one stays a string.
+  if (flag.test(a)) {
+    const name = a.slice(2), value = flag.test(rest[i + 1] ?? "--end") ? "" : rest[++i]!;
+    const had = args[name];
+    args[name] = had === undefined ? value : [...(Array.isArray(had) ? had : [had]), value];
+  }
   else words.push(a);
 }
 const res = await fetch(`${process.env.ORCA_URL ?? `http://127.0.0.1:${API_PORT}`}/api/orchestrator/tool`, {

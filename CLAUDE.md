@@ -80,9 +80,25 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   `idempotent` step recorded under a foreign name (so write steps `IF NOT EXISTS` wherever Postgres
   allows) and refuses to start on a non-idempotent one; `bun run db:check` prints the ledger,
   read-only. (History: two branches each took id 13; a branch's 13 reached the shared database
-  first and main's `running_agents` column was skipped as "applied".) **Workers: a migration id is
-  reserved only by MERGING to main** — if main gained a step while your branch was open, rebase and
-  renumber yours before opening the PR — and never point a running bridge or a test at the shared
+  first and main's `running_agents` column was skipped as "applied".) **Numbered steps are frozen
+  at 18 (`LAST_NUMBERED_ID`); every new step is NAMED** — no `id`, `name: "YYYYMMDD-slug"` (the day
+  you write it), `IF NOT EXISTS` throughout — and recorded in its own ledger, `migration_named`
+  (name → applied_at). (History: parallel branches kept taking "the next integer" — 16, 17 and 18
+  were reserved by hand across #152, #157 and #160.) Pending named steps apply after the numbered
+  ones in NAME order, so two branches that never coordinated land in one stable order on every
+  database. `checkSteps` (run at boot, and by the gate over `MIGRATIONS`) refuses a new numbered
+  step, a malformed or duplicate name, a non-idempotent named step, and a named step that sorts
+  before one above it in the array — code order IS apply order, so a step that depends on one it
+  was rebased onto must be re-dated (today) to sort after it; an independent one may move above.
+  **Compatibility:** an existing database keeps its numbered ledger (1–15 on the shared one; 17
+  and 18 — #160 merged with its integer first — apply as numbered steps); the runner creates `migration_named` on first boot. A bridge still on
+  older code reads only `migration`, so it never sees a row it can't parse. A database where a branch
+  once recorded its step under an integer (a test DB with #152's 16) logs that id as unknown and
+  re-runs the named step, harmlessly, because it is idempotent. **Rebasing an open PR that adds a
+  numbered step (#152's 16 `attachment`):** drop the `id`, rename it
+  `YYYYMMDD-<old name>` (e.g. `20261013-attachment`), append it after the last step in name order,
+  and change any test that finds it by id to find it by name. **Workers: a migration name is reserved
+  only by MERGING to main** — never point a running bridge or a test at the shared
   database from a worktree (a worktree's copied `.env` names it; `bun test` refuses any database
   that isn't a `tests/pg.ts` schema, and a worktree's bridge refuses to apply migrations unless
   `ORCA_ALLOW_WORKTREE_MIGRATIONS=1`). A history write must never break the
@@ -321,7 +337,17 @@ Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
   worktree. **Address PR is the one agent verb for a PR** (`store.addressPr`, `addressPrPrompt`): a
   single run that resolves merge conflicts, fixes failing CI and addresses the review — whichever
   apply, in that order — instead of three buttons the user had to triage between. Resolve conflicts
-  remains on its own only for a LOCAL branch with no PR. They
+  remains on its own only for a LOCAL branch with no PR. **A changelog-only conflict never reaches
+  the agent** (branch-demo #6189 spent five runs re-merging one CHANGELOG hunk where both sides added
+  an entry under the same heading): before either verb, Orca merges the base into the worktree itself
+  (`POST /api/conflicts/settle` → `verbs.settleConflict` → `git.mergeBaseUnioningChangelogs`, on the
+  worktree's instance). If every conflicted path matches the repo's `changelogFiles` globs (default
+  `**/CHANGELOG.md`, `[]` turns it off), each is resolved by `git merge-file --union` — both sides'
+  lines, ours first — then committed and pushed; a clean merge is pushed too. If that leaves nothing
+  else (no failing CI, threads, comments or change request), NO agent starts (`status: "resolved"`,
+  a self-hiding local notification); otherwise the agent runs without the conflict section. Any other conflict, a dirty
+  tree, a running agent or a rejected push leaves the worktree exactly as it was, and the agent
+  gets the conflict as before. A manual Address PR with no conflict still always runs. They
   worktree. They **`ensureWorktree` first** (`store.ts`): use the existing worktree, else adopt one
   via `git worktree add` from the branch (incl. PRs with no Orca history) — so no action ever
   requires a manual "check out" step or a copied prompt. Follow up continues the conversation by
@@ -758,6 +784,22 @@ Plain TCP, so
 Vite's HMR websocket rides it; dropped on stop; a port a local preview holds gets no `localUrl`. The
 browser opens `localUrl` only from a page on localhost (`previewHref`), else `url` — a phone opens the
 owner's tailnet URL, which still lacks a secure context until the tailnet has HTTPS certificates.
+**Attachments are in the database, not on a host** (`server/attachments.ts`, migration 16): the
+upload stores the bytes (20 MB per file, pruned past 30 days) and answers `orca-attachment://<id>/<name>`
+references in its `paths` field; `agent.launch` — the one place every launch passes, whether queued,
+proxied to `orchestratorOn` or forwarded to a workstream's home — swaps each for a file under ITS
+state dir (`attachments/<id>/`, cached by id). A legacy plain path is kept if it exists there, else
+reduced to its name and marked unavailable — another machine's temp path never reaches an agent.
+The chat shows a message's files (`/api/turns` decorates each turn with `attachments`, read off its
+stored prompt; `Attachments` in `views/Chat.tsx`: a thumbnail for an image, a named chip otherwise),
+each opening `GET /api/attachments/<id>` — served from Postgres by any instance, sandboxed and
+`nosniff`. **The orchestrator forwards them:** its wake prompt lists the ids under `## Attachments`,
+and `orca spawn` / `orca send` take `--attach <id|path>` (repeatable; `bin/orca` collects a repeated
+flag) — an id, or a file on its own machine, which is stored like an upload (`attachments.forward`) —
+appended to the brief / message as references, so the worker's instance materialises them at launch.
+`tests/attachmentsRelay.test.ts` drives two real bridges (upload on one, run, the orchestratorOn
+proxy and spawn/send `--attach` on the other). (History: a laptop's `/var/folders` path reached the box's
+agents, which couldn't open it.)
 **Slack posts from the instance you click on** (`/api/slack` is in the answer-here set): it needs no
 worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box it failed with no token.
 **Machine metrics history:** each instance samples ITSELF once a minute (`startMetricsSampler` in
