@@ -14,14 +14,15 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, anchoredScrollTop, capWindow, groupWakes, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, chatSummary, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, turnMatches } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, agentsUnread, anchoredScrollTop, capWindow, channelItems, longReply, sourceOf, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, chatSummary, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, turnMatches } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { subscribeTurns } from "@/lib/events";
 import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
 import { StatusDot } from "@/components/console";
-import type { OrchestratorPrefill } from "@/lib/atoms";
+import { orchestratorAgentsSeenAtom, orchestratorAgentsUnreadAtom, orchestratorChannelAtom, type OrchestratorPrefill } from "@/lib/atoms";
+import { useAtom, useSetAtom } from "jotai";
 
 // How close to the bottom still counts as "following". A few pixels of slack absorbs sub-pixel
 // rounding and the composer resizing, so following doesn't switch off on its own.
@@ -181,8 +182,7 @@ function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () =>
 /** The orchestrator's wake messages that were worker reports, not something you typed: each shown
  *  as one muted system line (what finished, how), with the full report behind a toggle. Only when
  *  EVERY part of the instruction is a report — a wake that also carried your message stays a prompt. */
-function WorkerReports({ instruction }: { instruction: string }) {
-  const parts = instruction.split("\n\n");
+function WorkerReports({ parts }: { parts: string[] }) {
   return (
     <div data-slot="worker-reports" className="space-y-0.5 text-neutral-500">
       {parts.map((part, i) => (
@@ -243,18 +243,18 @@ const clockOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString(undefined
  *  (and days are grouped by the divider ChatPanel draws). Colours are the theme's tokens, so it
  *  follows light and dark like the rest of the console. */
 function ChatTurn({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean }) {
-  const instruction = turn.instruction ?? promptInstruction(turn.prompt);
-  const reports = instruction.split("\n\n").every(isWorkerEvent);
+  const parts = (turn.instruction ?? promptInstruction(turn.prompt)).split("\n\n");
+  // A wake that carried your message AND worker reports: your words in the bubble, the reports folded.
+  const reports = parts.filter(isWorkerEvent), said = parts.filter((p) => !isWorkerEvent(p)).join("\n\n");
   const time = clockOf(turn.startedAt);
   return (
     <div className="mb-4" data-slot="chat-turn" data-failed={turn.failed || undefined} data-style="chat">
-      {reports ? (
-        // Worker reports that woke it: a compact, folded system line — not something you said.
-        <div className="mb-2 text-[11px]"><WorkerReports instruction={instruction} /></div>
-      ) : (
+      {/* Worker reports that woke it: compact, folded system lines — not something you said. */}
+      {reports.length > 0 && <div className="mb-2 text-[11px]"><WorkerReports parts={reports} /></div>}
+      {said && (
         <div className="group mb-2 flex justify-end" data-slot="chat-user">
           <div className="max-w-[85%]">
-            <div className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">{instruction}</div>
+            <div className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">{said}</div>
             <div className="text-muted-foreground mt-0.5 text-right text-[10px] opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{time}</div>
           </div>
         </div>
@@ -289,18 +289,18 @@ function Clamp({ on, children }: { on: boolean; children: React.ReactNode }) {
   );
 }
 
-/** Consecutive automated wakes (worker reports in, a reply out, nothing you typed) as ONE muted line
- *  that expands to the turns — a day of workers finishing is otherwise a screenful of system chatter. */
-function WakeGroup({ turns, render }: { turns: AgentTurn[]; render: (t: AgentTurn) => React.ReactNode }) {
+/** The Chat channel's trace of agent traffic: a run of worker-driven turns (reports in, its replies
+ *  out, nothing you said) as ONE muted line — "3 worker reports · 2 replies" — that expands inline to
+ *  the turns, so you know they happened without the bulk. The Agents channel shows them in full. */
+function AgentsMarker({ turns, render }: { turns: AgentTurn[]; render: (t: AgentTurn) => React.ReactNode }) {
   const [open, setOpen] = useState(false);
-  const reports = turns.reduce((n, t) => n + (t.instruction ?? promptInstruction(t.prompt)).split("\n\n").length, 0);
   const span = [clockOf(turns[0]!.startedAt), clockOf(turns[turns.length - 1]!.finishedAt)].filter(Boolean).join("–");
   return (
-    <div className="mb-4" data-slot="wake-group" data-open={open || undefined}>
+    <div className="mb-4" data-slot="agents-marker" data-open={open || undefined}>
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
         className="text-muted-foreground hover:text-foreground flex w-full items-center gap-2 text-left text-[11px]">
         <span>{open ? "⏷" : "⏵"}</span>
-        <span>⚙ {turns.length} automated wakes · {reports} worker report{reports === 1 ? "" : "s"}{span ? ` · ${span}` : ""}</span>
+        <span>⚙ {agentsMarker(turns)}{span ? ` · ${span}` : ""}</span>
       </button>
       {open && <div className="mt-2 border-l pl-3">{turns.map(render)}</div>}
     </div>
@@ -314,7 +314,7 @@ function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () =>
   const tint = !stamped ? "" : turn.failed ? "bg-red-500/10 -mx-3 px-3" : turn.stopped || (turn.check && !turn.check.ok) ? "bg-amber-500/10 -mx-3 px-3" : "";
   const body = (
     <div className={`mb-3 ${tint}`} data-slot="chat-turn" data-failed={turn.failed || undefined}>
-      {instruction.split("\n\n").every(isWorkerEvent) ? <WorkerReports instruction={instruction} /> : (
+      {instruction.split("\n\n").every(isWorkerEvent) ? <WorkerReports parts={instruction.split("\n\n")} /> : (
         <div className="flex gap-2 text-emerald-400">
           <span className="shrink-0 select-none">❯</span>
           {/* What you typed, recorded with the turn. Turns from before that was stored fall back to
@@ -346,7 +346,7 @@ function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () =>
  *  differently coloured strip under it. The composer's toolbar always carries the model picker and
  *  the context ring (ChatControls); `controls` supplies their values when they don't come from the
  *  row's card. Everything else about the panel is the same. */
-export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant = "terminal" }: {
+export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant = "terminal", channels }: {
   row: Row; send?: (text: string, images: File[]) => Promise<void>; flush?: boolean; controls?: ChatControlsProps;
   /** "terminal" (default): the dark monospace log. "chat": the orchestrator panel's assistant-chat
    *  styling — bubbles, prose, day dividers, hover timestamps — in the page's theme (see ChatTurn). */
@@ -356,8 +356,15 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   /** The Agent page's Chat tab: a slim toolbar (working indicator, error / warning counters, Find
    *  in chat) instead of a card header, and timestamped, tinted turns. */
   logBar?: boolean;
+  /** The orchestrator's two channels (workstream.ts channelItems): Chat or Agents, as the header's
+   *  toggle (orchestratorChannelAtom) says; this panel keeps the toggle's unread count. */
+  channels?: boolean;
 }) {
   const [find, setFind] = useState("");
+  const [channelValue, setChannel] = useAtom(orchestratorChannelAtom);
+  const channel = channels ? channelValue : undefined;
+  const [agentsSeen, setAgentsSeen] = useAtom(orchestratorAgentsSeenAtom);
+  const setAgentsUnread = useSetAtom(orchestratorAgentsUnreadAtom);
   const deliver = send ?? ((text: string, images: File[]) => followUp(row, text, images));
   // Messages on their way to the bridge. Sending one launches an agent — an upload, a worktree
   // lookup, the board snapshot the orchestrator is handed — which takes seconds, and a log that
@@ -369,6 +376,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   const submit = async (text: string, images: File[]) => {
     const id = ++sendSeq.current;
     follow.current = true; // you just spoke: jump to it, wherever you had scrolled
+    if (channels) setChannel("chat"); // what you said, and the reply to it, are in Chat
     setSending((s) => [...s, { id, text }]);
     try {
       await deliver(text, images);
@@ -491,6 +499,18 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   }, [row.repo, row.branch]);
 
   useEffect(() => { turnsRef.current = turns; }, [turns]);
+  // The Agents toggle's count: agent turns newer than your last look at that channel. Looking at it
+  // (it is the channel shown) moves the mark to the newest; the very first load starts it at now,
+  // rather than calling a whole page of history unread.
+  useEffect(() => {
+    if (!channels || !turns) return;
+    if (!agentsSeen) return void setAgentsSeen(Date.now());
+    if (channel === "agents") {
+      const newest = Math.max(0, ...turns.filter((t) => sourceOf(t) === "agents").map((t) => t.startedAt ?? 0));
+      if (newest > agentsSeen) setAgentsSeen(newest);
+    }
+    setAgentsUnread(channel === "agents" ? 0 : agentsUnread(turns, agentsSeen));
+  }, [channels, turns, channel, agentsSeen]);
 
   // Follow the tail as output arrives, the way a terminal does — but only while the reader is AT the
   // bottom. Scrolling up to read something is an intent to stay there (a stream of steps yanking you
@@ -590,14 +610,15 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   // first lines; runs of automated wakes fold into one line.
   const position = new Map((turns ?? []).map((t, i) => [t.id, i]));
   const compactBefore = (turns?.length ?? 0) - RECENT_FULL;
-  const newestId = turns?.[turns.length - 1]?.id;
   const chatStyle = variant === "chat";
   const stepsOf = (turn: AgentTurn) => () => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response));
   const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadSteps={stepsOf(turn)} compact={(position.get(turn.id) ?? 0) < compactBefore} />;
   const renderTurns = (list: AgentTurn[]) => {
     if (!chatStyle) return list.map((turn) => <Turn key={turn.id} turn={turn} stamped={logBar} loadSteps={stepsOf(turn)} />);
+    const items = channelItems(list, channel ?? "chat");
+    if (!items.length) return <p className="text-muted-foreground" data-slot="channel-empty">{channel === "agents" ? "No worker reports here yet." : "Nothing from you here yet. Send a message below."}</p>;
     let prev: number | undefined;
-    return groupWakes(list, (t) => t.id === newestId).map((item) => {
+    return items.map((item) => {
       const first = item.kind === "turn" ? item.turn : item.turns[0]!;
       const divider = first.startedAt && (prev === undefined || !sameDay(prev, first.startedAt));
       prev = (item.kind === "turn" ? item.turn : item.turns[item.turns.length - 1]!).startedAt ?? prev;
@@ -608,7 +629,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
               <span className="h-px flex-1 bg-border" /><span>{dayLabel(first.startedAt!)}</span><span className="h-px flex-1 bg-border" />
             </div>
           )}
-          {item.kind === "turn" ? chatTurn(item.turn) : <WakeGroup turns={item.turns} render={chatTurn} />}
+          {item.kind === "turn" ? chatTurn(item.turn) : <AgentsMarker turns={item.turns} render={chatTurn} />}
         </div>
       );
     });
@@ -671,7 +692,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
         )}
         {/* Not drawn once the real thing has arrived over the stream — the same text twice, one of
             them "sending", is worse than the moment's gap it would cover. */}
-        {sending.filter((m) => !landed(m.text)).map((m) => chatStyle ? (
+        {sending.filter((m) => !landed(m.text) && channel !== "agents").map((m) => chatStyle ? (
           <div key={m.id} className="mb-4" data-slot="chat-sending">
             <div className="mb-2 flex justify-end"><div className="bg-accent text-foreground max-w-[85%] rounded-lg px-3 py-2 whitespace-pre-wrap break-words opacity-70">{m.text}</div></div>
             <div className="text-muted-foreground pl-8 text-[11px]">▋ sending…</div>
@@ -685,7 +706,8 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
             <div className="mt-1 pl-4 text-neutral-500">▋ sending…</div>
           </div>
         ))}
-        {queued.map((m) => (
+        {/* Held worker reports belong to Agents; your queued messages to Chat. */}
+        {queued.filter((m) => !channel || (channel === "agents") === isWorkerEvent(m.instruction)).map((m) => (
           <Queued
             key={m.id}
             message={m}

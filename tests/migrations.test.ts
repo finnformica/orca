@@ -97,13 +97,18 @@ test("a mismatch on a step that isn't idempotent refuses to start, with instruct
   expect(logged.some((l) => l.includes("MIGRATION MISMATCH") && l.includes("migration 3"))).toBe(true);
 });
 
-test("every step named uniquely, ids consecutive, and an idempotent step is IF NOT EXISTS throughout", () => {
-  expect(db.MIGRATIONS.map((s) => s.id)).toEqual(db.MIGRATIONS.map((_, i) => i + 1));
+test("every step named uniquely, ids ascending, and an idempotent step is IF NOT EXISTS throughout", () => {
+  // Ascending, not consecutive: an id held by a branch still open is skipped (16 and 17 → 18), and
+  // migrate() runs whatever isn't recorded without needing the ids contiguous.
+  const ids = db.MIGRATIONS.map((s) => s.id);
+  expect(ids).toEqual([...ids].sort((a, b) => a - b));
+  expect(new Set(ids).size).toBe(ids.length);
   expect(new Set(db.MIGRATIONS.map((s) => s.name)).size).toBe(db.MIGRATIONS.length);
   for (const step of db.MIGRATIONS.filter((s) => s.idempotent)) {
     const statements = step.sql.replace(/--[^\n]*/g, "").split(";").map((s) => s.trim().replace(/\s+/g, " ")).filter(Boolean);
     for (const st of statements) {
-      expect(`${step.id}: ${st}`).toMatch(/^\d+: (CREATE (UNIQUE )?(TABLE|INDEX) IF NOT EXISTS |ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS )/i);
+      // …or a backfill that only fills NULLs, so a re-run touches nothing it already wrote.
+      expect(`${step.id}: ${st}`).toMatch(/^\d+: (CREATE (UNIQUE )?(TABLE|INDEX) IF NOT EXISTS |ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS |UPDATE (\S+) .* AND \S+ IS NULL$)/i);
     }
   }
 });
@@ -182,4 +187,25 @@ test("a table a foreign branch already created does not crash the runner: its st
   const rows = await ledger();
   expect(rows.map((r: { id: number; name: string }) => r.name)).toContain("notification");
   expect(db.migrationReport()).toMatchObject({ refused: [] });
+});
+
+test("18 tags the orchestrator's turns with their source — reports alone are the agents', anything you said is yours", async () => {
+  await db.open();
+  const at = Date.now();
+  const add = (branch: string, runId: string, instruction: string | undefined, prompt = "p") =>
+    db.startTurn({ repo: branch === "orchestrator" ? "@orca" : "r", branch, runId, provider: "claude", instruction, prompt, startedAt: at });
+  await add("orchestrator", "reports", "[worker finished] r/a — done\nOutcome: ok\n\n[worker finished] r/b — error\nResponse: boom");
+  await add("orchestrator", "mixed", "[worker finished] r/a — done\nOutcome: ok\n\ncarry on");
+  await add("orchestrator", "typed", "ship the cache");
+  await add("orchestrator", "legacy", undefined, "You are Orca's orchestrator\n\n## New\n[worker finished] r/c — done\nOutcome: ok");
+  await add("feature", "worker", "[worker finished] looks like one but is a worker's own turn");
+  // A row the bridge wrote with its source (after this step) is never rewritten.
+  await db.startTurn({ repo: "@orca", branch: "orchestrator", runId: "written", provider: "claude", instruction: "[worker finished] r/d — done", prompt: "p", startedAt: at, source: "human" });
+
+  await (await db.open()).unsafe(db.MIGRATIONS.find((m) => m.id === 18)!.sql); // the backfill, re-run: idempotent
+  const sourceOf = async (branch: string) =>
+    Object.fromEntries((await db.turns(branch === "orchestrator" ? "@orca" : "r", branch)).map((t) => [t.id, t.source]));
+  expect(await sourceOf("orchestrator")).toEqual({ reports: "agents", mixed: "human", typed: "human", legacy: "agents", written: "human" });
+  expect(await sourceOf("feature")).toEqual({ worker: undefined });
+  expect(db.MIGRATIONS.find((m) => m.id === 18)).toMatchObject({ name: "turn-source", idempotent: true });
 });

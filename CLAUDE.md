@@ -399,7 +399,20 @@ stays MOUNTED while closed (slid out, `aria-hidden`), so reopening is instant wi
 scroll position and draft where you left them. Its chat is `ChatPanel variant="chat"`: an
 assistant-chat styling in the page's theme (`.log-themed`) — your messages as `bg-accent` bubbles on
 the right, replies under "Orchestrator" with a bot avatar, folded steps and `⚙` worker reports,
-day dividers (`dayLabel`), timestamps on hover. (History: a modal, then a draggable/resizable corner
+day dividers (`dayLabel`), timestamps on hover. **Two channels**, a Chat | Agents `Segmented` in the
+panel's and the `/orchestrator` page's header (`orchestratorChannelAtom`, Chat on every load):
+**Chat** is you and its replies to you; **Agents** is the worker traffic — the wakes worker reports
+caused and its replies to those — with a count on the toggle of agent turns since you last looked
+there (`agentsUnread`, the mark `orca.ui.v1.orchestratorAgentsSeen`; the first load starts it at
+now). In Chat a run of agent turns is ONE collapsed line, `⚙ 3 worker reports · 2 replies`, that
+expands inline (`channelItems` / `agentsMarker` in `workstream.ts`); a wake that carried your message
+AND reports is a Chat turn, your words in the bubble and the reports folded above. Held reports show
+in Agents, your queued messages in Chat; sending switches to Chat. The split rides `turn.source`
+(`human` | `agents`, `shared/agent.ts` `TurnSource`; migration 18 — 16 and 17 were held by open
+branches — backfilled from the stored text): `human` is anything you said (typed, quick-ask, the
+palette, a toast's Ask, the New-draft box, Compact), `agents` a wake whose every message is a
+`[worker finished]` report (`turnSource`, decided in `orchestrator.wake`). A row without it is read
+off its instruction the same way (`sourceOf`). (History: a modal, then a draggable/resizable corner
 window with the dark terminal styling — one more thing to place and keep out of the way.) Its composer
 carries a model
 picker (Claude models only; changing it keeps the session) and an icon button whose ring shows how
@@ -511,11 +524,14 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   muted `⚙ … held for the batch` line. Between wakes it checks in itself with `orca board` /
   `orca read`. (It used to be woken per completion;
   the user found that noisy and wanted it to operate like a manager.) In the chat, a wake whose
-  message was only worker reports renders as muted `⚙` system lines with the report folded, not as
-  a `❯` prompt. It is asynchronous by design: it spawns, ends its turn, and is woken; it never polls.
+  message was only worker reports is an Agents-channel turn (above): muted `⚙` system lines with the
+  report folded, not a `❯` prompt. It is asynchronous by design: it spawns, ends its turn, and is woken; it never polls.
 - **One wake per batch.** Its runs launch with `queue: false`; everything that arrived while it
   worked (worker events, your messages) is drained into ONE resumed run, and deliveries are
-  serialised so two workers finishing together can't race a launch.
+  serialised so two workers finishing together can't race a launch. In that run's prompt what you
+  said and what the workers reported are separate labelled sections, yours first — `## From the
+  user`, then `## Worker reports` (each report verbatim) — so the model never reads a report as an
+  instruction from you, or the reverse (`orchestratorPrompt`).
 - **Loop guards.** `MAX_WAKES` (12) self-wakes in a row with no message from you → it pauses and
   holds further events in the queue until you reply (the window's title says so). Each wake has a
   `--max-budget-usd`: `orchestratorWakeBudgetUsd` in the app config, 5 unless set. There is
@@ -690,8 +706,8 @@ returns `{ turns, older }` — the newest page (oldest first) and an opaque curs
 window** (`CHAT_WINDOW`, two pages; `capWindow` / `revealAbove` / `revealBelow` in `workstream.ts`)
 bounds the DOM: scrolling toward an edge remounts loaded turns and unmounts the far side, one edge
 per commit so the scroll anchor stays exact. In the orchestrator's chat styling, turns older than the
-newest `RECENT_FULL` show their answer's first lines + Show more, and runs of automated wakes fold
-into one line (`groupWakes`). Without `limit` the whole array
+newest `RECENT_FULL` show their answer's first lines + Show more, and in its Chat channel each run of
+agent turns folds into one marker line (`channelItems`; the channel filter runs over the loaded page). Without `limit` the whole array
 comes back as it always did, so an older client keeps working. `ChatPanel` opens on the newest page
 (`TURN_PAGE_SIZE`), fetches the next older page as you near the top (or on the "↑ earlier turns"
 click, for a page too short to scroll) and restores `scrollTop` by the height added above

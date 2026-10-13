@@ -2,7 +2,7 @@
 // so both the store and the e2e tests import it directly.
 
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
-import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentTurn, type TurnCheck } from "../../shared/agent";
+import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentTurn, type TurnCheck, type TurnSource } from "../../shared/agent";
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
 export { attachCommand } from "../../shared/agent";
 
@@ -912,6 +912,10 @@ export const isWorkerProblem = (text: string): boolean => {
   const [head = "", next = ""] = text.split("\n");
   return !head.endsWith(" — done") || next.startsWith("Orca's check") && next.includes("FAILED");
 };
+/** Who a wake answers, from the messages it carried: worker reports alone → `agents`; anything you
+ *  said (typed, quick-ask, the palette, a toast's Ask, the New-draft box) → `human`. */
+export const turnSource = (messages: string[]): TurnSource =>
+  messages.length > 0 && messages.every(isWorkerEvent) ? "agents" : "human";
 /** Reports that may wait: every part is a clean worker report. */
 export const onlyCleanReports = (messages: string[]): boolean =>
   messages.length > 0 && messages.every((m) => isWorkerEvent(m) && !isWorkerProblem(m));
@@ -1031,6 +1035,7 @@ const ORCHESTRATOR_ROLE = [
  *  restarts after a context reset); the notes and a fresh board go in EVERY time, because they are
  *  what makes the session disposable — everything it needs to carry on is outside its context. */
 export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[]; shell?: boolean; cutOff?: string }): string {
+  const human = input.messages.filter((m) => !isWorkerEvent(m)), reports = input.messages.filter(isWorkerEvent);
   return [
     ...(input.fresh ? [ORCHESTRATOR_ROLE, ""] : []),
     // Every wake, not just the first: the setting can change under a session that is being resumed.
@@ -1050,8 +1055,11 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     "", "## Your notes", input.notes?.trim() || "(empty)",
     "", "## Board", input.board,
     // The wake before this one died mid-turn: say so, or the user has to ask why it went quiet.
-    ...(input.cutOff ? ["", "## Previous wake was cut off", `Your previous wake ${input.cutOff} before it finished its turn, so the user got no reply. What it was handling is under New again. It may already have acted: check the board before you spawn or send (never start the same work twice), then finish the reply.`] : []),
-    "", "## New", input.messages.join("\n\n"),
+    ...(input.cutOff ? ["", "## Previous wake was cut off", `Your previous wake ${input.cutOff} before it finished its turn, so the user got no reply. What it was handling is below again. It may already have acted: check the board before you spawn or send (never start the same work twice), then finish the reply.`] : []),
+    // What the user said and what the workers reported, in separate labelled sections — the user
+    // first — so a report's text is never read as an instruction from them, nor theirs as a report.
+    ...(human.length ? ["", "## From the user", human.join("\n\n")] : []),
+    ...(reports.length ? ["", "## Worker reports", "Automated, from Orca as your workers finish — not the user.", "", reports.join("\n\n")] : []),
   ].join("\n");
 }
 
@@ -2087,26 +2095,46 @@ export const RECENT_FULL = 3;
 export const longReply = (t: { response?: string; structured?: unknown }): boolean =>
   Boolean(t.structured) || (t.response ?? "").split("\n").length > 4 || (t.response ?? "").length > 320;
 
-/** Is a turn an automated wake — the orchestrator woken by worker reports alone, nothing you typed? */
-export const isAutomatedWake = (t: { instruction?: string; prompt?: string; finishedAt?: number }): boolean =>
-  Boolean(t.finishedAt) && (t.instruction ?? promptInstruction(t.prompt ?? "")).split("\n\n").every(isWorkerEvent);
+// ---- the orchestrator's two channels ----
+// Chat is the conversation with you: your turns and its replies to them. Agents is the worker
+// traffic: the wakes worker reports caused and its replies to those. In Chat, a run of agent turns is
+// ONE collapsed marker ("3 worker reports · 2 replies"), so you know they happened without the bulk.
 
-/** The chat's items: runs of 2+ consecutive automated wakes become ONE group (a muted, expandable
- *  line); everything else stays a turn. The newest turn is never grouped — the latest reply shows. */
-export function groupWakes<T extends Keyed & { instruction?: string; prompt?: string; finishedAt?: number }>(
-  turns: T[], isNewest: (t: T) => boolean = (t) => t === turns[turns.length - 1],
-): ({ kind: "turn"; turn: T } | { kind: "wakes"; turns: T[] })[] {
-  const out: ({ kind: "turn"; turn: T } | { kind: "wakes"; turns: T[] })[] = [];
-  let run: T[] = [];
-  const close = () => {
-    if (run.length > 1) out.push({ kind: "wakes", turns: run });
-    else for (const turn of run) out.push({ kind: "turn", turn });
-    run = [];
-  };
+export type OrchestratorChannel = "chat" | "agents";
+type Sourced = { source?: TurnSource; instruction?: string; prompt?: string; finishedAt?: number; startedAt?: number };
+
+/** A turn's source: recorded since migration 18; a row without it (a worker's turn, a client ahead of
+ *  the backfill) is read off its instruction the same way. */
+export const sourceOf = (t: Sourced): TurnSource =>
+  t.source ?? turnSource((t.instruction ?? promptInstruction(t.prompt ?? "")).split("\n\n"));
+
+export type ChannelItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] };
+/** What a channel renders. Chat: your turns, with each run of agent turns between them as one marker.
+ *  Agents: the agent turns alone, each in full. */
+export function channelItems<T extends Sourced>(turns: T[], channel: OrchestratorChannel): ChannelItem<T>[] {
+  if (channel === "agents") return turns.filter((t) => sourceOf(t) === "agents").map((turn) => ({ kind: "turn", turn }));
+  const out: ChannelItem<T>[] = [];
   for (const t of turns) {
-    if (isAutomatedWake(t) && !isNewest(t)) run.push(t);
-    else { close(); out.push({ kind: "turn", turn: t }); }
+    const last = out[out.length - 1];
+    if (sourceOf(t) === "human") out.push({ kind: "turn", turn: t });
+    else if (last?.kind === "agents") last.turns.push(t);
+    else out.push({ kind: "agents", turns: [t] });
   }
-  close();
   return out;
 }
+
+/** The Chat channel's marker line for a run of agent turns. */
+export function agentsMarker(turns: Sourced[]): string {
+  const reports = turns.reduce((n, t) => n + (t.instruction ?? promptInstruction(t.prompt ?? "")).split("\n\n").filter(isWorkerEvent).length, 0);
+  const replies = turns.filter((t) => t.finishedAt).length;
+  const working = turns.length - replies;
+  return [
+    `${reports} worker report${reports === 1 ? "" : "s"}`,
+    `${replies} repl${replies === 1 ? "y" : "ies"}`,
+    ...(working ? ["working"] : []),
+  ].join(" · ");
+}
+
+/** The Agents toggle's count: agent turns that started after you last looked at that channel. */
+export const agentsUnread = (turns: Sourced[], seenAt: number): number =>
+  turns.filter((t) => sourceOf(t) === "agents" && (t.startedAt ?? 0) > seenAt).length;

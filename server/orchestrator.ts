@@ -25,7 +25,7 @@ import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
-  orchestratorPrompt, sessionHint, wakeExitReason, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  orchestratorPrompt, sessionHint, turnSource, wakeExitReason, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
   type BoardRow, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
@@ -132,7 +132,7 @@ export function compact(cfg: OrcaConfig): Promise<{ runId: string }> {
     if (agent.isRunning(dir())) throw new verbs.BusyError();
     const { runId } = await agent.launch(dir(), dir(), "/compact", {
       provider: "claude", resume: b.sessionId, repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
-      instruction: "/compact", action: "compact", queue: false, model: modelOf(cfg, b),
+      instruction: "/compact", action: "compact", queue: false, model: modelOf(cfg, b), source: "human", // your button
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return { runId };
@@ -292,6 +292,8 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
     const receipt = await agent.launch(dir(), dir(), prompt, {
       ...next, provider: "claude", repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
       instruction: messages.join("\n\n"), action: "orchestrate", queue: false,
+      // Chat or Agents channel: anything you said makes it yours; worker reports alone are the agents'.
+      source: turnSource(messages),
       model: modelOf(cfg, b), maxBudgetUsd: budgetOf(cfg),
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
       // Everything Claude Code has in a terminal (bypassPermissions), as the user asked: a manager

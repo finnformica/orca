@@ -122,6 +122,10 @@ test("O1: spawn creates a briefed workstream, and the worker finishing wakes the
   expect(wake!.instruction).toStartWith(`${WORKER_EVENT_MARKER} r/${branch} "Add cache" — done`);
   expect(wake!.instruction).toContain("Outcome: Done.");
   expect(wake!.instruction).toContain(`orca read --run ${(await db.turns("r", branch))[0]!.id}`);
+  // Woken by a report alone: the Agents channel's, and the report sits under its own heading.
+  expect(wake!.source).toBe("agents");
+  expect(wake!.prompt).toContain(`## Worker reports\nAutomated, from Orca as your workers finish — not the user.\n\n${WORKER_EVENT_MARKER} r/${branch}`);
+  expect(wake!.prompt).not.toContain("## From the user");
   // A first wake carries the role, its notes, and a board that shows the workstream as its own.
   expect(wake!.prompt).toContain("You are Orca's orchestrator");
   expect(wake!.prompt).toContain("## Your notes\n(empty)");
@@ -310,6 +314,14 @@ test("O4: the wake cap pauses self-waking; your next message resumes it with wha
   await orchestrator.message(cfg(), "carry on");
   const [turn] = await settled(orchTurns, 1);
   expect(turn!.instruction).toBe(`${WORKER_EVENT_MARKER} r/mine "Mine" — error\nResponse: boom\nFull turn: orca read --run run-mine\n\ncarry on`);
+  // You spoke, so it is a Chat turn; in its prompt your words come first, under their own heading,
+  // and the held report after them under the workers' — never one blob the model has to untangle.
+  expect(turn!.source).toBe("human");
+  const user = turn!.prompt.indexOf("## From the user\ncarry on"), reports = turn!.prompt.indexOf(`## Worker reports\n`);
+  expect(user).toBeGreaterThan(-1);
+  expect(reports).toBeGreaterThan(user);
+  expect(turn!.prompt.slice(reports)).toContain(`${WORKER_EVENT_MARKER} r/mine "Mine" — error`);
+  expect(turn!.prompt.slice(user, reports)).not.toContain(WORKER_EVENT_MARKER);
   expect((await orchestrator.status(cfg())).paused).toBe(false);
 });
 
