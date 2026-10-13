@@ -445,7 +445,7 @@ describe("the desktop layout is untouched", () => {
 });
 
 describe("a newer build", () => {
-  test("the banner appears when version.json names another build, and only then", async () => {
+  test("the banner appears when version.json names another build, and only then; it clears the status bar itself and reports its state up", async () => {
     const realFetch = globalThis.fetch;
     let served = "build-1";
     globalThis.fetch = (async (url: string) => {
@@ -454,12 +454,18 @@ describe("a newer build", () => {
     }) as unknown as typeof fetch;
     container = document.createElement("div");
     document.body.appendChild(container);
-    await act(async () => { root = createRoot(container!); root.render(<UpdateBanner build="build-1" every={5} />); await flush(); });
+    const staleChanges: boolean[] = [];
+    await act(async () => { root = createRoot(container!); root.render(<UpdateBanner build="build-1" every={5} onStaleChange={(s) => staleChanges.push(s)} />); await flush(); });
     await act(async () => { await Bun.sleep(20); });
     expect(container.querySelector('[data-slot="update-banner"]')).toBeNull();
+    expect(staleChanges).toEqual([false]); // told up front it isn't shown, so a header can keep its own inset
     served = "build-2";
     await act(async () => { await Bun.sleep(30); });
-    expect(container.querySelector('[data-slot="update-banner"]')!.textContent).toContain("Refresh");
+    const banner = container.querySelector<HTMLElement>('[data-slot="update-banner"]')!;
+    expect(banner.textContent).toContain("Refresh");
+    // It is now the topmost element on a narrow layout, so it — not the header below it — clears the notch.
+    expect(banner.className).toContain("max-md:pt-[env(safe-area-inset-top)]");
+    expect(staleChanges).toEqual([false, true]);
     globalThis.fetch = realFetch;
   });
 });
