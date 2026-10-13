@@ -875,10 +875,16 @@ export const METRIC_RETENTION_MS = 30 * 24 * 3_600_000;
 export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()): Promise<void> {
   return withRetry(async (sql) => {
     const instance = instanceName();
-    await sql`
-      INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents)
-      VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null}, ${p.runningAgents})`;
-    await sql`DELETE FROM instance_metric WHERE instance = ${instance} AND at < ${new Date(at - METRIC_RETENTION_MS)}`;
+    // `instance_metric` has no unique constraint on (instance, at) — a retry that re-ran just the
+    // INSERT after the DELETE dropped mid-connection would leave a duplicate sample in the graph.
+    // One transaction makes the pair atomic, so `withRetry`'s whole-callback retry redoes both or
+    // neither.
+    await sql.begin(async (tx: Bun.SQL) => {
+      await tx`
+        INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents)
+        VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null}, ${p.runningAgents})`;
+      await tx`DELETE FROM instance_metric WHERE instance = ${instance} AND at < ${new Date(at - METRIC_RETENTION_MS)}`;
+    });
   });
 }
 
