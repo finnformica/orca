@@ -149,12 +149,11 @@ const isSavedFilters = (v: unknown): v is SavedFilters =>
 
 type Chip = { group: QuickGroup; value: string; label: string; dot?: DotTone };
 
-// A segmented group of chips with a muted caption — State, Activity, Repo — so related pills read
-// as one family instead of a flat row.
+// A segmented group of chips — no visible caption, but the gap between groups (and this wrapper,
+// keyed by `label` for tests/CSS) keeps related pills reading as one family instead of a flat row.
 function ChipFamily({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div data-slot="quick-filter-group" data-group={label.toLowerCase()} className="flex items-center gap-1.5">
-      <span className="text-muted-foreground text-[10px] font-medium tracking-wide uppercase">{label}</span>
       {children}
     </div>
   );
