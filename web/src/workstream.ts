@@ -1565,29 +1565,60 @@ type UsageReading = {
 };
 
 /** One line of the Usage card, Vercel's shape: a ring at `pct`, a label, and value / limit. */
-export type UsageRow = { key: string; label: string; pct: number; value: string; limit: string; resetsIn: string | null };
+export type UsageRow = {
+  key: string; label: string; pct: number; value: string; limit: string; resetsIn: string | null;
+  /** Said in the countdown's place when there is no reset to count to: a window not yet opened. */
+  resetNote?: string;
+};
 /** A block of rows under one heading: the fleet, one hydra login, Codex. `state` is hydra's verdict
- *  when it isn't "ok"; `dim` when hydra can't route to that login. */
-export type UsageGroup = { key: string; title: string; subtitle?: string; state?: string; dim?: boolean; rows: UsageRow[] };
+ *  when it isn't "ok"; `dim` when hydra can't route to that login. `name` is the hydra login name
+ *  (set only for a `login:` group) — what the enable/disable toggle sends back to the server. */
+export type UsageGroup = { key: string; title: string; subtitle?: string; state?: string; dim?: boolean; name?: string; rows: UsageRow[] };
 
 const CLAUDE_WINDOWS: [keyof Pick<ClaudeReading, "fiveHour" | "sevenDay" | "fable">, string][] = [["fiveHour", "5-hour window"], ["sevenDay", "Weekly"], ["fable", "Fable weekly"]];
 type LoginReading = { name: string; usage: ClaudeReading | null; state?: string; email?: string };
 
 /** Logins hydra can't route to right now: no reading, or deliberately out of the rotation. Exhausted
  *  and locked logins DO count — they hold a real reading and are exactly what pulls the fleet up. */
+/** A window as it stands NOW — hydra's own rule (its `eff`): once the reset time has passed, the
+ *  window has rolled over and is empty, whatever the (older) reading said. A stale login's reading
+ *  keeps a past `resets`; carried as-is it hid the fleet's 5-hour countdown (the soonest reset was
+ *  that past time, which `untilReset` drops) and showed a used-up window that had already reset. */
+export function liveWindow(w: Window, now = Date.now()): Window {
+  return w.resetsAt && Date.parse(w.resetsAt) <= now ? { utilization: 0, resetsAt: null } : w;
+}
+
+/** A hydra login's state as ONE word for its pill, the full reason in its tooltip. hydra's states:
+ *  `hydra`'s `state()` — not signed in on this machine, disabled, locked, exhausted, token stale —
+ *  refreshes on next launch, no usage data yet, ok. Anything newer reads as its first word. */
+export function loginStatus(state: string): { label: string; detail: string; tone: "default" | "amber" | "red" } {
+  if (state === "not signed in on this machine") return { label: "Signed-out", detail: "Not signed in on this machine — hydra login <name> to add it", tone: "default" };
+  if (state === "disabled") return { label: "Disabled", detail: "Disabled — out of hydra's rotation until you enable it", tone: "default" };
+  if (state === "locked") return { label: "Locked", detail: "Locked — hydra won't route to this login", tone: "red" };
+  if (state === "exhausted") return { label: "Limited", detail: "Exhausted — a usage window is at hydra's threshold; skipped until it resets", tone: "red" };
+  if (state.startsWith("token stale")) return { label: "Stale", detail: "Token stale — refreshes on next launch; the usage shown may be old", tone: "amber" };
+  if (state === "no usage data yet") return { label: "New", detail: "No usage data yet — it fills in after the first run", tone: "default" };
+  if (/expired/i.test(state)) return { label: "Expired", detail: state.charAt(0).toUpperCase() + state.slice(1), tone: "red" };
+  const word = state.split(/[\s—-]+/)[0] ?? state;
+  return { label: word.charAt(0).toUpperCase() + word.slice(1), detail: state.charAt(0).toUpperCase() + state.slice(1), tone: "default" };
+}
+
 export const outOfRotation = (p: { usage: unknown; state?: string }): boolean => !p.usage || p.state === "disabled" || p.state === "not signed in on this machine";
 
 export type FleetUsage = { count: number; exhausted: number; fiveHour: Window; sevenDay: Window; fable: Window | null };
 
 /** One reading for the whole fleet: the mean utilization per window across the logins in rotation,
- *  with the soonest reset. Null when nothing is in rotation. */
-export function aggregateProfiles(profiles: LoginReading[]): FleetUsage | null {
+ *  with the soonest reset still to come (`liveWindow`). Null when nothing is in rotation. */
+export function aggregateProfiles(profiles: LoginReading[], now = Date.now()): FleetUsage | null {
   const live = profiles.filter((p) => !outOfRotation(p));
   if (!live.length) return null;
-  const mean = (ws: Window[]): Window => ({
-    utilization: Math.round(ws.reduce((s, w) => s + w.utilization, 0) / ws.length),
-    resetsAt: ws.map((w) => w.resetsAt).filter((r): r is string => Boolean(r)).sort()[0] ?? null,
-  });
+  const mean = (raw: Window[]): Window => {
+    const ws = raw.map((w) => liveWindow(w, now));
+    return {
+      utilization: Math.round(ws.reduce((s, w) => s + w.utilization, 0) / ws.length),
+      resetsAt: ws.map((w) => w.resetsAt).filter((r): r is string => Boolean(r)).sort()[0] ?? null,
+    };
+  };
   const fables = live.map((p) => p.usage!.fable).filter((w): w is Window => Boolean(w));
   return {
     count: live.length,
@@ -1601,8 +1632,13 @@ export function aggregateProfiles(profiles: LoginReading[]): FleetUsage | null {
 function claudeRows(key: string, c: ClaudeReading, now: number): UsageRow[] {
   const rows: UsageRow[] = [];
   for (const [field, label] of CLAUDE_WINDOWS) {
-    const w = c[field] as Window | null | undefined;
-    if (w) rows.push({ key: `${key}:${field}`, label, pct: w.utilization, value: `${w.utilization}%`, limit: "100%", resetsIn: untilReset(w.resetsAt, now) });
+    const raw = c[field] as Window | null | undefined;
+    if (!raw) continue;
+    const w = liveWindow(raw, now);
+    // No reset and nothing used: the window opens on the next message (Claude's 5-hour window is
+    // counted from its first use), so there is nothing to count down to yet — say that, not nothing.
+    rows.push({ key: `${key}:${field}`, label, pct: w.utilization, value: `${w.utilization}%`, limit: "100%", resetsIn: untilReset(w.resetsAt, now),
+      ...(!w.resetsAt && w.utilization === 0 ? { resetNote: "starts on next use" } : {}) });
   }
   if (c.extra) rows.push({
     key: `${key}:extra`, label: "Extra usage", pct: c.extra.utilization,
@@ -1618,14 +1654,14 @@ export function usageGroups(u: UsageReading | null, now = Date.now()): UsageGrou
   const groups: UsageGroup[] = [];
   const profiles = u.profiles ?? [];
   if (profiles.length) {
-    const fleet = aggregateProfiles(profiles);
+    const fleet = aggregateProfiles(profiles, now);
     groups.push(fleet ? {
       key: "fleet", title: "Claude", subtitle: `${fleet.count} login${fleet.count === 1 ? "" : "s"} in rotation${fleet.exhausted ? ` · ${fleet.exhausted} exhausted` : ""}`,
       rows: claudeRows("fleet", { fiveHour: fleet.fiveHour, sevenDay: fleet.sevenDay, fable: fleet.fable, extra: null }, now),
     } : { key: "fleet", title: "Claude", subtitle: "no login in rotation", rows: [] });
     for (const p of profiles) {
       groups.push({
-        key: `login:${p.name}`, title: p.name, subtitle: p.email, state: p.state && p.state !== "ok" ? p.state : undefined, dim: outOfRotation(p),
+        key: `login:${p.name}`, title: p.name, subtitle: p.email, state: p.state && p.state !== "ok" ? p.state : undefined, dim: outOfRotation(p), name: p.name,
         rows: p.usage ? claudeRows(`login:${p.name}`, p.usage, now) : [],
       });
     }
@@ -1665,6 +1701,45 @@ export function downsample(points: { at: number; v: number }[], max: number, fro
   return out;
 }
 
+/** One vitals sample, recorded (instance_metric) or live (/api/health). */
+export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number; costUsd?: number };
+type Pt = { at: number; v: number };
+export type InstanceSeries = {
+  cpu: Pt[]; mem: Pt[]; agents: Pt[]; cost: Pt[];
+  /** The newest sample — what the card's header stats show, and exactly every chart's last point. */
+  latest: { at: number; cpuPct: number; memUsedGb: number; runningAgents: number; costUsd: number } | null;
+};
+
+/** Every instance chart's points, from the recorded history plus the live reading. The header stats
+ *  and the charts once disagreed for two reasons: the header read the live poll (every 15s) while the
+ *  chart's newest point was the history's (every 60s, up to a minute older), and `downsample` made
+ *  that point the MEAN of its bucket (at 7d, ~34 minutes of samples). Here the live reading, when it
+ *  is newer, becomes the newest sample, and the newest sample is kept raw as every series' last point
+ *  — so `latest` (the header) and the last point are the same reading. Cost is cumulative over the
+ *  range: each sample carries what the runs that finished since the previous one cost. */
+export function instanceSeries(history: VitalSample[], live: VitalSample | null | undefined, from: number, to: number, max = 300): InstanceSeries {
+  const samples = history.filter((p) => p.at >= from && p.at <= to);
+  const last = samples[samples.length - 1];
+  if (live && live.at <= to && (!last || live.at > last.at)) samples.push({ ...live, costUsd: 0 });
+  if (!samples.length) return { cpu: [], mem: [], agents: [], cost: [], latest: null };
+  let total = 0;
+  const cumulative = samples.map((p) => ({ at: p.at, v: (total += p.costUsd ?? 0) }));
+  const series = (pts: Pt[]) => [...downsample(pts.slice(0, -1), max - 1, from, to), pts[pts.length - 1]!];
+  const newest = samples[samples.length - 1]!;
+  return {
+    cpu: series(samples.map((p) => ({ at: p.at, v: p.cpuPct }))),
+    mem: series(samples.map((p) => ({ at: p.at, v: p.memUsedGb }))),
+    agents: series(samples.map((p) => ({ at: p.at, v: p.runningAgents ?? 0 }))),
+    cost: series(cumulative),
+    latest: { at: newest.at, cpuPct: newest.cpuPct, memUsedGb: newest.memUsedGb, runningAgents: newest.runningAgents ?? 0, costUsd: total },
+  };
+}
+
+/** The agents axis's top: a small whole count, even so its midpoint tick is whole too (0 · 2 · 4). */
+export function countMax(v: number): number {
+  return Math.max(2, Math.ceil(Math.max(0, v) / 2) * 2);
+}
+
 /** A round axis maximum at or above `v`: 1, 2, 2.5 or 5 × 10^k. */
 export function niceMax(v: number): number {
   if (!(v > 0)) return 1;
@@ -1702,24 +1777,6 @@ export function rowDuration(row: Pick<OverviewRow, "agentStatus" | "agentStarted
   if (row.agentStatus === "running" && row.agentStartedAt) return now - row.agentStartedAt;
   const last = row.transcript?.[row.transcript.length - 1];
   return last?.startedAt && last.finishedAt ? last.finishedAt - last.startedAt : undefined;
-}
-
-/** The chat card's header counters, like Build Logs' line / error / warning counts: a failed turn is
- *  an error; a stopped one or a commit whose check failed is a warning. */
-export function chatSummary(turns: Pick<AgentTurn, "failed" | "stopped" | "check">[]): { turns: number; errors: number; warnings: number } {
-  return {
-    turns: turns.length,
-    errors: turns.filter((t) => t.failed).length,
-    warnings: turns.filter((t) => !t.failed && (t.stopped || (t.check && !t.check.ok))).length,
-  };
-}
-
-/** Find in chat: every word appears in the turn's instruction or response (case-insensitive). */
-export function turnMatches(turn: Pick<AgentTurn, "instruction" | "prompt" | "response">, q: string): boolean {
-  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!words.length) return true;
-  const hay = `${turn.instruction ?? promptInstruction(turn.prompt)}\n${turn.response ?? ""}`.toLowerCase();
-  return words.every((w) => hay.includes(w));
 }
 
 export type RepoSummary = { repo: string; total: number; running: number; attention: number; openPrs: number; local: number; mergedToday: number; lastActivity: number };
@@ -1848,25 +1905,25 @@ export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) =>
 
 // ---- the Agents list's columns ----
 // Only what you act on: the workstream, its run status, the PR (state + number), checks and the
-// review signal, the instance (only with more than one), when it last moved, and the actions. The
-// latest instruction, branch and model went into the title's subline and tooltip, the PR # into the
-// state cell, and the per-row repo icon was dropped (the repo is in the subline). Each column has a
-// floor in rem; the flexible ones share what is left, so the row never needs a horizontal scroll.
-export type ListColumn = { key: "workstream" | "status" | "pr" | "signals" | "instance" | "actions"; label: string; minRem: number; grow?: number };
-export function listColumns(opts: { multiInstance: boolean }): ListColumn[] {
-  const cols: ListColumn[] = [
+// review signal, and the actions. The latest instruction, branch and model went into the title's
+// subline and tooltip, the PR # into the state cell, and the per-row repo icon was dropped (the
+// repo is in the subline). The instance column was dropped too — it's a row menu action ("Move to
+// …") and a tooltip, not something worth a whole column — and the width it held goes to the
+// flexible tracks (workstream, signals) via their own `grow`. Each column has a floor in rem; the
+// flexible ones share what is left, so the row never needs a horizontal scroll.
+export type ListColumn = { key: "workstream" | "status" | "pr" | "signals" | "actions"; label: string; minRem: number; grow?: number };
+export function listColumns(): ListColumn[] {
+  return [
     { key: "workstream", label: "Workstream", minRem: 10, grow: 2 },
     { key: "status", label: "Status", minRem: 8.5 },
     { key: "pr", label: "PR", minRem: 8.5 },
     { key: "signals", label: "Checks & review", minRem: 6, grow: 1 },
-    { key: "instance", label: "Instance", minRem: 5 },
     // Fixed at up to 3 size-7 slots (local preview link + its Stop, the ⋯ menu) so the column never
     // shifts between states and nothing overflows into a sideways scroll. The PR-preview icon that
     // used to sit here moved to a text link next to the model name (PrPreviewInline) — the ⋯ menu's
     // PR submenu still carries Open/Add PR preview.
     { key: "actions", label: "Actions", minRem: 8 },
   ];
-  return opts.multiInstance ? cols : cols.filter((c) => c.key !== "instance");
 }
 /** The CSS grid-template-columns for a column set: fixed floors, `minmax(floor, Nfr)` for the flexible. */
 export const listGridTemplate = (cols: ListColumn[]): string =>
@@ -2038,3 +2095,115 @@ export const anchoredScrollTop = (prevScrollTop: number, prevScrollHeight: numbe
 /** Is a scroll position "at the bottom" — within `slack` px of it — i.e. still following the tail? */
 export const atBottom = (scrollTop: number, scrollHeight: number, clientHeight: number, slack: number): boolean =>
   scrollHeight - scrollTop - clientHeight < slack;
+
+// ---- the PR page's checks: failing first, then running, the rest folded into one line ----
+
+/** One check as the PR page shows it (gh.ts `PrCheck`). */
+export type CheckRow = { name: string; status: CiStatus; url?: string; startedAt?: string; completedAt?: string; skipped?: boolean };
+export type CheckGroups<T extends CheckRow = CheckRow> = { failing: T[]; running: T[]; passing: T[]; skipped: T[] };
+
+/** Sorted by what needs you: failing, then running / pending (the two you watch), each by name; the
+ *  passing and the skipped / neutral ones are what the PR page folds behind one summary line. */
+export function checkGroups<T extends CheckRow>(checks: T[]): CheckGroups<T> {
+  const byName = (a: T, b: T) => a.name.localeCompare(b.name);
+  const of = (keep: (c: T) => boolean) => checks.filter(keep).sort(byName);
+  return {
+    failing: of((c) => c.status === "failing"),
+    running: of((c) => c.status === "pending" || c.status === "none"),
+    passing: of((c) => c.status === "passing" && !c.skipped),
+    skipped: of((c) => c.status === "passing" && Boolean(c.skipped)),
+  };
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** The card's header: "1 failing · 2 running · 24 passing · 3 skipped", zero counts left out. */
+export const checkSummary = (g: CheckGroups<CheckRow>): string =>
+  [g.failing.length && `${g.failing.length} failing`, g.running.length && `${g.running.length} running`,
+    g.passing.length && `${g.passing.length} passing`, g.skipped.length && `${g.skipped.length} skipped`].filter(Boolean).join(" · ") || "No checks";
+
+/** The folded row's label: "24 passing" / "24 passing, 3 skipped" / "3 skipped". */
+export const foldedChecksLabel = (g: CheckGroups<CheckRow>): string =>
+  [g.passing.length && `${g.passing.length} passing`, g.skipped.length && `${g.skipped.length} skipped`].filter(Boolean).join(", ");
+
+/** How long a check ran (or has been running), in ms. GitHub sends `0001-01-01T00:00:00Z` for a
+ *  time that hasn't happened yet (a queued run's start, a running one's end), which parses negative. */
+export function checkDuration(c: CheckRow, now = Date.now()): number | undefined {
+  const start = c.startedAt ? Date.parse(c.startedAt) : NaN;
+  if (!(start > 0)) return undefined;
+  const done = c.completedAt ? Date.parse(c.completedAt) : NaN;
+  const end = done > 0 ? done : c.status === "pending" ? now : NaN;
+  return end >= start ? end - start : undefined;
+}
+
+// ---- the PR page's conversation, GitHub-style ----
+// Chronological, as GitHub shows it (replies and "fixed in abc" read in context), with a summary
+// line of counts and a jump to the first unresolved thread. Resolved and outdated threads fold to
+// one line; a long body is clamped behind Show more; every bot comment (preview notices, billing
+// notices, QA reports) goes into ONE folded row at the top instead of between the people.
+
+export type PrComment = { author: string; body: string; createdAt?: string; url?: string; bot?: boolean };
+export type PrReview = { author: string; state: string; body?: string; submittedAt?: string; url?: string; bot?: boolean };
+
+export type ConversationEntry =
+  | { kind: "comment"; id: string; author: string; body: string; createdAt?: string; url?: string; long: boolean }
+  | { kind: "review"; id: string; author: string; state: string; body: string; createdAt?: string; url?: string; long: boolean }
+  | { kind: "thread"; id: string; author: string; body: string; createdAt?: string; url?: string; path?: string; line?: number;
+      resolved: boolean; outdated: boolean; collapsed: boolean; long: boolean };
+
+export type PrConversation = {
+  entries: ConversationEntry[];
+  bots: ConversationEntry[];
+  counts: { comments: number; threads: number; unresolved: number; resolved: number; outdated: number; bots: number };
+  /** The id of the first thread still open (not resolved, not outdated) — the jump target. */
+  firstUnresolved?: string;
+};
+
+/** Past this a body is clamped behind Show more — a measure that needs no layout. */
+export const LONG_BODY_CHARS = 600;
+export const LONG_BODY_LINES = 10;
+export const isLongBody = (body: string) => body.length > LONG_BODY_CHARS || body.split("\n").length > LONG_BODY_LINES;
+
+export function prConversation(input: { comments: PrComment[]; reviews: PrReview[]; threads?: ReviewThreadEvidence[] }): PrConversation {
+  const people: ConversationEntry[] = [];
+  const bots: ConversationEntry[] = [];
+  input.comments.forEach((c, i) => {
+    if (!c.body.trim()) return;
+    (c.bot ? bots : people).push({ kind: "comment", id: `c${i}`, author: c.author, body: c.body, createdAt: c.createdAt, url: c.url, long: isLongBody(c.body) });
+  });
+  input.reviews.forEach((r, i) => {
+    const body = r.body?.trim() ?? "";
+    // A bare COMMENTED review is only the wrapper of inline threads, which show on their own.
+    if (!body && (r.state === "COMMENTED" || r.state === "PENDING")) return;
+    (r.bot ? bots : people).push({ kind: "review", id: `r${i}`, author: r.author, state: r.state, body, createdAt: r.submittedAt, url: r.url, long: isLongBody(body) });
+  });
+  for (const t of input.threads ?? []) {
+    const outdated = Boolean(t.outdated);
+    people.push({
+      kind: "thread", id: `t:${t.id}`, author: t.author ?? "unknown", body: t.body, createdAt: t.createdAt, url: t.url, path: t.path, line: t.line,
+      resolved: t.resolved, outdated, collapsed: t.resolved || outdated, long: isLongBody(t.body),
+    });
+  }
+  // Stable: undated items keep their order, ahead of the dated ones.
+  const chrono = (a: ConversationEntry, b: ConversationEntry) => (a.createdAt ?? "").localeCompare(b.createdAt ?? "");
+  people.sort(chrono);
+  bots.sort(chrono);
+  const threads = people.filter((e): e is Extract<ConversationEntry, { kind: "thread" }> => e.kind === "thread");
+  const open = threads.filter((t) => !t.collapsed);
+  return {
+    entries: people,
+    bots,
+    counts: {
+      comments: people.length - threads.length, threads: threads.length, unresolved: open.length,
+      resolved: threads.filter((t) => t.resolved).length, outdated: threads.filter((t) => t.outdated && !t.resolved).length, bots: bots.length,
+    },
+    firstUnresolved: open[0]?.id,
+  };
+}
+
+/** "3 comments · 5 threads (2 unresolved, 2 resolved, 1 outdated) · 4 bot" — zero parts left out. */
+export function conversationSummary(c: PrConversation["counts"]): string {
+  const threadParts = [c.unresolved && `${c.unresolved} unresolved`, c.resolved && `${c.resolved} resolved`, c.outdated && `${c.outdated} outdated`].filter(Boolean).join(", ");
+  return [c.comments && plural(c.comments, "comment"), c.threads && `${plural(c.threads, "thread")}${threadParts ? ` (${threadParts})` : ""}`, c.bots && `${c.bots} bot`]
+    .filter(Boolean).join(" · ") || "No comments";
+}

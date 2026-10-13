@@ -217,16 +217,66 @@ describe("the phone layout (390px, touch)", () => {
     expect($('[data-slot="filters-active"]')!.textContent).toBe("1");
   });
 
-  test("the orchestrator opens as a full-screen sheet: no drag, resize or pop out", async () => {
+  test("Agents at 390px: a PR row is a taller card — title+status on line 1, branch/model/PR/preview/diffstat on line 2, the ⋯ off to the side (no fixed-width columns, nothing sits under it)", async () => {
+    apiFake.prsData = [{
+      number: 12, title: "feat wide", branch: "feat-wide", url: "https://x/12", state: "OPEN", isDraft: false,
+      ciStatus: "passing", reviewStatus: "review_required", mergeable: "MERGEABLE", autoMergeEnabled: false,
+      additions: 42, deletions: 9,
+    }];
+    await mount("/agents", true);
+    const row = $('[data-branch="feat-wide"]')!;
+    expect(row.dataset.layout).toBe("stacked");
+    // No fixed-width columns on a phone: no inline grid template, no arbitrary min-width class.
+    expect(row.style.gridTemplateColumns).toBe("");
+    expect(row.querySelector('[class*="min-w-["]')).toBeNull();
+    const cells = [...row.querySelectorAll('[role="cell"]')];
+    const [line1, line2, line3] = cells;
+    // Line 1: title and status share the row.
+    expect(line1!.textContent).toContain("feat wide");
+    expect(line1!.querySelector('[data-slot="run-status"]')).not.toBeNull();
+    // Line 2: branch, model, PR, preview info, diffstat — none of that spills into line 1 or line 3.
+    expect(line2!.textContent).toContain("feat-wide");
+    expect(line2!.querySelector('a[title="Open PR #12 on GitHub"]')).not.toBeNull();
+    expect(line2!.querySelector('[data-slot="pr-preview-inline"]')).not.toBeNull();
+    expect(line2!.querySelector('[data-slot="diffstat"]')!.textContent).toBe("+42 −9");
+    expect(line1!.querySelector('[data-slot="diffstat"]')).toBeNull();
+    expect(line2!.querySelector('[data-slot="state-pill"]')).toBeNull();
+    // The state pill and PR condition badges are their own wrapping line, after line 2.
+    expect(line3!.querySelector('[data-slot="state-pill"]')).not.toBeNull();
+    // The ⋯ menu is a flex sibling of the text column, not absolutely positioned over it.
+    expect(row.className).not.toContain("relative");
+    const menuButton = row.querySelector<HTMLElement>('button[aria-label="Actions"]')!;
+    expect(menuButton.closest('[class*="absolute"]')).toBeNull();
+  });
+
+  test("the orchestrator opens as a routed page, not the overlay panel: no drag, resize or pop out", async () => {
     await mount("/", true);
+    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false);
     await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
     await act(async () => { await flush(); await flush(); });
-    const panel = $('[data-slot="orchestrator-panel"]')!;
-    expect(panel.hasAttribute("data-sheet")).toBe(true);
-    expect(panel.className).toContain("sheet");
+    expect(location.pathname).toBe("/orchestrator");
+    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false); // the side panel never opens on a phone
+    expect($('[data-slot="orchestrator-panel"]')).toBeNull();
+    const page = $('[data-slot="orchestrator-page"]')!;
+    expect(page).not.toBeNull();
+    expect(page.querySelector("textarea")).not.toBeNull(); // the composer, in the page itself
     expect(document.querySelectorAll('[data-slot="orchestrator-resize"]')).toHaveLength(0);
-    expect($('[data-slot="orchestrator-handle"]')!.className).not.toContain("cursor-move");
     expect(document.querySelector('[aria-label="Pop out"]')).toBeNull();
+    // The bottom bar marks it the current destination, like Agents does.
+    const button = [...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!;
+    expect(button.getAttribute("aria-current")).toBe("page");
+  });
+
+  test("the orchestrator page's own scroller holds the conversation; its back arrow returns to the previous page", async () => {
+    await mount("/agents", true);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await act(async () => { await flush(); await flush(); });
+    const page = $('[data-slot="orchestrator-page"]')!;
+    // The chat's own div is the thing that scrolls — nothing about the page wraps it in a second one.
+    expect(page.querySelector(".overflow-y-auto")).not.toBeNull();
+    await click($('[aria-label="Back"]')!);
+    await act(async () => { await flush(); await flush(); });
+    expect(location.pathname).toBe("/agents");
   });
 
   test("on a touch screen Enter in the composer is a newline, not a send", async () => {
@@ -309,15 +359,6 @@ describe("gestures", () => {
     expect(sheet.open).toBe(false);
   });
 
-  test("the orchestrator's phone sheet closes on a swipe down its header", async () => {
-    await mount("/", true);
-    act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
-    await act(async () => { await flush(); await flush(); });
-    const handle = $('[data-slot="orchestrator-handle"]')!;
-    await act(async () => { pointer("pointerdown", 50, handle); pointer("pointermove", 400); pointer("pointerup", 400); await flush(); });
-    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false);
-  });
-
   test("pull to refresh on the Agents list: the indicator follows the finger, and letting go past it refreshes", async () => {
     await mount("/agents", true);
     const list = $('section[aria-label="Agents"]')!;
@@ -345,7 +386,9 @@ describe("gestures", () => {
 describe("home-screen shortcuts", () => {
   test("/?open=orchestrator opens the orchestrator once, and the parameter is dropped", async () => {
     await mount("/?open=orchestrator", true);
-    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(true);
+    // On a phone that's a navigation to the routed page, not the side panel.
+    expect(location.pathname).toBe("/orchestrator");
+    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false);
     expect(location.search).toBe("");
   });
 });

@@ -7,20 +7,19 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowDown, Bot, CircleX, Search } from "lucide-react";
+import { ArrowDown, Bot } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { TURN_PAGE_SIZE, WORKER_EVENT_MARKER, anchoredScrollTop, asTurnPage, atBottom, chatSummary, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, turnMatches } from "../workstream";
+import { TURN_PAGE_SIZE, WORKER_EVENT_MARKER, anchoredScrollTop, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { subscribeTurns } from "@/lib/events";
 import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
-import { StatusDot } from "@/components/console";
 import type { OrchestratorPrefill } from "@/lib/atoms";
 
 // How close to the bottom still counts as "following". A few pixels of slack absorbs sub-pixel
@@ -305,6 +304,10 @@ function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () =>
   );
 }
 
+/** The Agent page's Chat tab reads smaller than the modal's terminal: your messages at 11px mono and
+ *  the agent's replies (prose, which is 14px at prose-sm) at 12px. */
+const LOG_TEXT = "font-mono text-[11px] [&_.prose]:text-[12px]";
+
 /** `send` replaces the follow-up launch for a conversation that isn't a branch's agent — the
  *  orchestrator's, which goes to its own route. `flush` is for a host that IS the window (the
  *  orchestrator's popout): the log runs edge to edge with no frame of its own, and the composer sits
@@ -323,7 +326,6 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
    *  in chat) instead of a card header, and timestamped, tinted turns. */
   logBar?: boolean;
 }) {
-  const [find, setFind] = useState("");
   const deliver = send ?? ((text: string, images: File[]) => followUp(row, text, images));
   // Messages on their way to the bridge. Sending one launches an agent — an upload, a worktree
   // lookup, the board snapshot the orchestrator is handed — which takes seconds, and a log that
@@ -512,8 +514,6 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   const ctl = controls ?? {
     model: modelFor(row), onModel: (m: string) => setCardModel(row, m), ran: row.agentMeta?.model, contextPct: row.agentMeta?.contextPct,
   };
-  const counts = chatSummary(turns ?? []);
-  const shownTurns = logBar && find.trim() ? (turns ?? []).filter((t) => turnMatches(t, find)) : turns;
   const chatStyle = variant === "chat";
   const renderTurn = (turn: AgentTurn, i: number, list: AgentTurn[]) => {
     const loadSteps = () => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response));
@@ -533,24 +533,10 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   };
   return (
     <div className={`flex h-full flex-col ${flush || logBar ? "" : "gap-3"} ${logBar || chatStyle ? "log-themed" : ""}`} data-variant={variant}>
-      {logBar && (
-        <div data-slot="chat-logbar" className="flex flex-wrap items-center gap-3 border-b px-4 py-2 text-sm">
-          {running && <span className="text-muted-foreground flex items-center gap-1.5 text-xs" data-slot="chat-working"><StatusDot tone="building" className="size-2" />working</span>}
-          <span className="ml-auto flex items-center gap-3">
-            <span className="inline-flex items-center gap-1 tabular-nums" title="Failed turns" data-slot="chat-errors"><CircleX className="text-geist-red size-4" />{counts.errors}</span>
-            <span className="inline-flex items-center gap-1 tabular-nums" title="Stopped turns and failed checks" data-slot="chat-warnings"><AlertTriangle className="text-geist-amber size-4" />{counts.warnings}</span>
-            <label className="bg-card focus-within:ring-ring/40 flex h-8 w-56 items-center gap-2 rounded-md border px-2 focus-within:ring-2">
-              <Search className="text-muted-foreground size-3.5 shrink-0" />
-              <input value={find} onChange={(e) => setFind(e.target.value)} placeholder="Find in chat" aria-label="Find in chat"
-                className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-sm outline-none" />
-            </label>
-          </span>
-        </div>
-      )}
       <div
         ref={scroller}
         onScroll={onScroll}
-        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-neutral-950 p-3 leading-relaxed text-neutral-200 ${chatStyle ? "font-sans text-[13px] [&_.prose]:text-[13px]" : "font-mono text-xs"} ${flush || logBar ? "" : "rounded-md border border-neutral-800"}`}
+        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-neutral-950 leading-relaxed ${logBar ? "px-4 py-3 md:px-6" : "p-3"} text-neutral-200 ${chatStyle ? "font-sans text-[13px] [&_.prose]:text-[13px]" : logBar ? LOG_TEXT : "font-mono text-xs"} ${flush || logBar ? "" : "rounded-md border border-neutral-800"}`}
       >
         {running && (
           <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-end">
@@ -578,8 +564,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
         )}
         {turns === null ? <ChatSkeleton rows={4} />
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
-          : shownTurns!.length === 0 ? <p className="text-neutral-500">No turn matches “{find}”.</p>
-          : shownTurns!.map(renderTurn)}
+          : turns.map(renderTurn)}
         {/* Not drawn once the real thing has arrived over the stream — the same text twice, one of
             them "sending", is worse than the moment's gap it would cover. */}
         {sending.filter((m) => !landed(m.text)).map((m) => chatStyle ? (
@@ -615,7 +600,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
       </div>
       {/* `dark` scopes the theme tokens: the composer's text and border must read on the terminal
           background whatever the page's theme is. */}
-      <div className={chatStyle ? "border-t p-2" : flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : logBar ? "border-t p-3" : undefined}>
+      <div className={chatStyle ? "border-t p-2" : flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : logBar ? "border-t p-4" : undefined}>
       <ChatComposer
         className={chatStyle ? "shadow-none" : flush ? "border-neutral-800 bg-neutral-950 shadow-none" : undefined}
         leading={<ChatControls {...ctl} compact={ctl.contextPct === undefined && compacting === null ? undefined

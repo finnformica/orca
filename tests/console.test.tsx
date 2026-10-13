@@ -11,7 +11,7 @@ import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import { repoFilterAtom } from "@/lib/atoms";
 import {
-  agentFailure, chatSummary, downsample, formatDuration, instanceOrder, niceMax, repoSummaries, routingBroken, rowDuration, timeTicks, turnMatches, untilReset,
+  agentFailure, downsample, formatDuration, instanceOrder, niceMax, repoSummaries, routingBroken, rowDuration, timeTicks, untilReset,
   usageGroups, type OverviewRow,
 } from "@/workstream";
 
@@ -86,14 +86,6 @@ describe("console derivations (pure)", () => {
     expect(rowDuration({ agentStatus: "running", agentStartedAt: NOW - 90_000 }, NOW)).toBe(90_000);
     expect(rowDuration({ agentStatus: "done", transcript: [{ provider: "claude", prompt: "", startedAt: 1_000, finishedAt: 61_000 }] }, NOW)).toBe(60_000);
     expect(rowDuration({}, NOW)).toBeUndefined();
-  });
-
-  test("chat log: turns / errors / warnings counters, and find-in-chat over instruction and response", () => {
-    expect(chatSummary([{ failed: true }, { stopped: true }, { check: { ok: false, command: "x", exitCode: 1, output: "", durationMs: 1 } }, {}])).toEqual({ turns: 4, errors: 1, warnings: 2 });
-    const turn = { prompt: "", instruction: "Fix the flaky login test", response: "Root cause: a race in the session cookie." };
-    expect(turnMatches(turn, "")).toBe(true);
-    expect(turnMatches(turn, "login RACE")).toBe(true);
-    expect(turnMatches(turn, "login deploy")).toBe(false);
   });
 
   test("repo summaries: the overview's numbers per repo, plus last activity", () => {
@@ -180,13 +172,42 @@ describe("the console's pages", () => {
     expect(source).toContain("feat-login");
     expect(source).toContain("6eaab29");
     expect(source).toContain("Add the login form");
-    // The page's actions live on the card, Vercel's Redeploy / ⋯.
-    expect(details.querySelector('button[aria-label="Actions"]')).not.toBeNull();
+    // The page's actions live in the compact header row now, not on the card.
+    expect(details.querySelector('button[aria-label="Actions"]')).toBeNull();
+    expect($("agent-header").querySelector('button[aria-label="Actions"]')).not.toBeNull();
     // The local preview control (link/Add preview + its Stop button) sits beside the PR one — not
     // just a click away on the Preview tab.
     expect(details.querySelector('[data-slot="preview-cell"]')).not.toBeNull();
     const tabs = [...container!.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
     expect(tabs).toEqual(["Overview", "Chat", "Files changed (1)", "Preview"]);
+  });
+
+  // Finn: the header wasted height (a repo line, a 2xl title, links, then the tabs on their own
+  // row) and the Chat tab's window was short. Now ONE row — title, status, branch, actions — with the
+  // tabs directly under it, both in the sticky block flush under the top bar, and the chat sized to
+  // the viewport minus the top bar, main's bottom padding and that header's live height.
+  test("agent page: one compact sticky header row — title, status, branch, actions — with the tabs right under it; the chat fills the rest", async () => {
+    seedLocal();
+    await open("/r/local/feat-login/chat");
+    const head = $("agent-header");
+    expect(head.querySelector("h1")!.textContent).toContain("Login form");
+    expect(head.querySelector("h1")!.className).not.toContain("text-2xl");
+    expect(head.querySelector('[data-slot="agent-header-status"]')!.textContent).toBe("Error");
+    expect(head.querySelector('[data-slot="agent-header-source"]')!.textContent).toContain("feat-login");
+    expect(head.querySelector('button[aria-label="Actions"]')).not.toBeNull();
+    const sticky = head.closest(".sticky")!;
+    expect(sticky.querySelector('[role="tablist"]')).not.toBeNull(); // tabs in the same pinned block
+    expect(sticky.className).toMatch(/(^|\s)-mt-6(\s|$)/); // flush under the top bar, over main's top padding
+    expect(sticky.children).toHaveLength(2); // the row and the tabs — nothing else stacked in it
+    expect(sticky.closest('[data-slot="tabs"]')!.className).toContain("gap-0");
+    const chat = $("agent-chat");
+    // Full-bleed, and on desktop it takes main's bottom padding: only the top bar and the header remain.
+    expect(chat.className).toContain("md:h-[calc(var(--vvh,100dvh)-3.5rem-env(safe-area-inset-top)-var(--stick,0px))]");
+    expect(chat.className).toContain("h-[calc(var(--vvh,100dvh)-9rem-");
+    expect(chat.className.split(/\s+/)).toEqual(expect.arrayContaining(["-mx-4", "md:-mx-6", "md:-mb-6"]));
+    // Even padding around the header, and the tabs pulled left so "Overview" lines up with the repo name.
+    expect(sticky.className.split(/\s+/)).toContain("py-2");
+    expect(sticky.querySelector('[role="tablist"]')!.className).toContain("-ml-[13px]");
   });
 
   test("agent page: Overview has no chat section — the conversation lives on its own Chat tab", async () => {
@@ -197,35 +218,42 @@ describe("the console's pages", () => {
     expect(container!.querySelector('[data-slot="agent-details"]')).not.toBeNull(); // the rest of Overview stays
   });
 
-  test("agent page: the Chat tab — no Conversation title or turn count, error / warning counters and Find in chat stand alone, composer focused", async () => {
+  // Finn: "remove the bar with the error / warning and Find in chat, I have no idea what any of that
+  // does" — the conversation is the log and the composer, nothing above it.
+  test("agent page: the Chat tab — no toolbar (no counters, no Find in chat), timestamped tinted turns, composer focused", async () => {
     seedLocal();
     await open("/r/local/feat-login/chat");
     const chat = $("agent-chat");
     expect(chat.textContent).not.toContain("Conversation"); // no card header
-    expect(chat.querySelector('[data-slot="chat-count"]')).toBeNull(); // the turns counter is gone
-    expect(chat.querySelector('[data-slot="chat-errors"]')!.textContent).toBe("1");
-    expect(chat.querySelector('[data-slot="chat-warnings"]')!.textContent).toBe("1");
+    for (const slot of ["chat-logbar", "chat-errors", "chat-warnings", "chat-working"]) expect(chat.querySelector(`[data-slot="${slot}"]`)).toBeNull();
+    expect(chat.querySelector('input[aria-label="Find in chat"]')).toBeNull();
     expect(chat.querySelectorAll('[data-slot="turn-time"]')).toHaveLength(3);
     expect(chat.querySelector('[data-slot="chat-turn"][data-failed]')!.className).toContain("bg-red-500/10"); // tinted like an error line
-    await type(chat.querySelector<HTMLInputElement>('input[aria-label="Find in chat"]')!, "flaky");
-    expect(chat.querySelectorAll('[data-slot="chat-turn"]')).toHaveLength(1);
-    expect(chat.textContent).toContain("Fix the flaky login test");
-    await type(chat.querySelector<HTMLInputElement>('input[aria-label="Find in chat"]')!, "nothing like it");
-    expect(chat.textContent).toContain("No turn matches");
     // The composer is at the foot, with focus — opening the Chat tab is one of the ways in.
     const box = chat.querySelector("textarea")!;
     expect(box).not.toBeNull();
     expect(document.activeElement).toBe(box);
+    // Even padding all round the composer, and the messages smaller than the modal's terminal.
+    expect(box.closest(".border-t")!.className.split(/\s+/)).toEqual(["border-t", "p-4"]);
+    const log = chat.querySelector<HTMLElement>(".font-mono.overflow-y-auto")!;
+    expect(log.className).toContain("text-[11px]");
+    expect(log.className).toContain("[&_.prose]:text-[12px]");
   });
 
-  test("agent page: no working indicator while idle; one appears while the agent runs", async () => {
+  // Finn: the Ask pill sat on top of the Chat tab's composer, which fills the viewport's foot.
+  test("agent page: the quick-ask pill is hidden on the Chat tab, and back on Overview", async () => {
     seedLocal();
     await open("/r/local/feat-login/chat");
-    expect($("agent-chat").querySelector('[data-slot="chat-working"]')).toBeNull();
+    expect(container!.querySelector('[data-slot="quick-ask"]')).toBeNull();
     act(() => root?.unmount()); container?.remove();
+    await open("/r/local/feat-login");
+    expect(container!.querySelector('[data-slot="quick-ask"]')).not.toBeNull();
+  });
+
+  test("agent page: a running agent shows in the header's status (the chat has no toolbar for it)", async () => {
     apiFake.agentsData = [{ branch: "feat-login", worktreePath: "/wt/feat-login", agentStatus: "running" }];
     await open("/r/local/feat-login/chat");
-    expect($("agent-chat").querySelector('[data-slot="chat-working"]')!.textContent).toContain("working");
+    expect($("agent-header").querySelector('[data-slot="agent-header-status"]')!.textContent).toBe("Running");
   });
 
   test("agent page: clicking the Chat tab focuses its composer without disturbing Overview's own load", async () => {

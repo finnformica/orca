@@ -79,7 +79,8 @@ export function Shell({ crumbs, sidebarActions, children }: {
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <UpdateBanner />
-        <header data-slot="topbar" className="bg-background/80 sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 backdrop-blur md:px-6 max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pt-[env(safe-area-inset-top)]">
+        {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it. */}
+        <header data-slot="topbar" className="bg-background sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 md:px-6 max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pt-[env(safe-area-inset-top)]">
           <button type="button" className="text-muted-foreground hover:text-foreground -ml-2 inline-flex size-11 shrink-0 items-center justify-center md:hidden" onClick={() => setOpen(true)} aria-label="Open menu"><Menu className="size-5" /></button>
           <button type="button" data-slot="topbar-mark" onClick={() => navigate("/")} aria-label="Orca — go to overview" className="shrink-0 md:hidden"><RoundMark /></button>
           <RepoSwitcher />
@@ -90,14 +91,18 @@ export function Shell({ crumbs, sidebarActions, children }: {
         <main className="w-full flex-1 px-4 py-6 md:px-6 max-md:min-w-0 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pb-[calc(5.5rem+env(safe-area-inset-bottom))]">{offline ? <OfflineScreen /> : children}</main>
       </div>
       <BottomBar onMenu={() => setOpen(true)} activity={activity} />
-      {/* The quick-ask pill, bottom centre of every page (desktop; the phone's bottom bar has the orchestrator). */}
-      <QuickAsk />
+      {/* The quick-ask pill, bottom centre of every page but an agent's Chat tab (desktop; the phone's bottom bar has the orchestrator). */}
+      {!chatTab(route) && <QuickAsk />}
       <Shortcuts />
       <CommandPalette />
       <ShortcutsHelp />
     </div>
   );
 }
+
+/** An agent page's Chat tab: its composer fills the viewport's foot, so the quick-ask pill (which
+ *  floats there) would sit on top of it — the tab is a conversation already, the pill is hidden. */
+export const chatTab = (route: Route) => (route.name === "pr" || route.name === "local") && route.sub === "chat";
 
 /** "/" then a page name, Vercel's top-bar breadcrumb. */
 export const Crumb = ({ children, to }: { children: ReactNode; to?: string }) => (
@@ -184,8 +189,11 @@ function BottomBar({ onMenu, activity }: { onMenu: () => void; activity: { runni
       <button type="button" className={cn(item, "text-foreground")} onClick={() => setAddNew(true)}>
         <span className="bg-foreground text-background inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span>New agent
       </button>
-      {/* The orchestrator, carrying the activity dot the desktop's quick-ask pill shows (there is no pill below md). */}
-      <button type="button" className={cn(item, "relative")} onClick={() => ask()}><Bot className="size-5" /><ActivityDot activity={activity} className="absolute top-1.5 right-[calc(50%-0.9rem)]" />Orchestrator</button>
+      {/* The orchestrator, carrying the activity dot the desktop's quick-ask pill shows (there is no pill below md).
+          `ask()` routes here to /orchestrator on a narrow screen rather than opening the side panel. */}
+      <button type="button" className={cn(item, "relative", route.name === "orchestrator" && "text-foreground")} aria-current={route.name === "orchestrator" ? "page" : undefined} onClick={() => ask()}>
+        <Bot className="size-5" /><ActivityDot activity={activity} className="absolute top-1.5 right-[calc(50%-0.9rem)]" />Orchestrator
+      </button>
     </nav>
   );
 }

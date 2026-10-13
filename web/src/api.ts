@@ -44,10 +44,14 @@ export type InstanceHealth = {
   memUsedGb: number; memTotalGb: number; memPressurePct?: number; memPressure?: boolean;
   disk?: { usedGb: number; totalGb: number }; uptimeS: number;
   cost?: { monthUsd: number; hourlyUsd: number; sinceIso: string }; at: number;
+  /** Absent from an older bridge. */
+  runningAgents?: number;
 };
 /** One recorded sample of an instance's vitals (instance_metric), for the chip's history graphs. */
 export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; /** Absent from a bridge older than migration 13 — unknown, not 0. */
-  runningAgents?: number };
+  runningAgents?: number;
+  /** USD of the runs that finished since the previous sample (migration 17); absent from an older bridge. */
+  costUsd?: number };
 export type PreviewSvc = { name: string; port: number; url: string; localUrl?: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const post = (path: string, body: unknown) =>
@@ -69,6 +73,10 @@ const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extr
 export const api = {
   config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[] }> => fetch("/api/config").then(res),
   usage: (): Promise<Usage | null> => fetch("/api/usage").then(res),
+  // Take a hydra login out of its rotation or put it back; `instance` names the host it's signed
+  // in on (hydra state is per host) — the usage card's own, today.
+  setProfileEnabled: (name: string, enabled: boolean, instance?: string): Promise<{ profiles: Usage["profiles"] }> =>
+    post("/api/usage/profile", { name, enabled, instance }),
   // `instance` places the worktree on that instance (the bridge forwards there); the reply says where it landed.
   createWorktree: (repo: string, prompt: string, provider: AgentProvider, instance?: string): Promise<{ branch: string; worktreePath: string; title: string; instance?: string }> =>
     post("/api/workstreams", { repo, prompt, provider, instance }),

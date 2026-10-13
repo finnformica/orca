@@ -9,7 +9,7 @@ import * as attachments from "./attachments";
 import * as preview from "./preview";
 import * as forward from "./forward";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
-import { routingInfo, usage } from "./usage";
+import { routingInfo, setProfileEnabled, usage } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
 import * as transcript from "./transcript";
@@ -438,6 +438,17 @@ async function api(req: Request, url: URL): Promise<Response> {
     // windows from the CLI's login. The Cursor CLI exposes no such endpoint — `about`/`status` report
     // only auth + subscription tier, no utilization — so there is deliberately no Cursor usage here.
     return json(await usage());
+  }
+  if (req.method === "POST" && p === "/api/usage/profile") {
+    // Hydra state is PER HOST — not in DATABASE_ONLY, so an explicit ?instance= (or body.instance)
+    // forwards to that machine via the ordinary placement path above; omitted, it answers here.
+    const name = String(body.name ?? "");
+    if (!name) return json({ error: "name required" }, 400);
+    try {
+      return json({ profiles: await setProfileEnabled(name, Boolean(body.enabled)) });
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
   }
   if (req.method === "GET" && p === "/api/diagnostics") {
     // Efficiency report over the run ledger + process metrics. `?format=text` for the terminal.

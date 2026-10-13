@@ -12,16 +12,20 @@ export function sharedSource<T>(start: (set: (v: T) => void) => () => void) {
   let value: T | null = null;
   let stop: (() => void) | null = null;
   const subs = new Set<() => void>();
+  const set = (v: T) => { value = v; subs.forEach((s) => s()); };
   return {
     subscribe(cb: () => void) {
       subs.add(cb);
-      if (subs.size === 1) stop = start((v) => { value = v; subs.forEach((s) => s()); });
+      if (subs.size === 1) stop = start(set);
       return () => {
         subs.delete(cb);
         if (!subs.size) { stop?.(); stop = null; value = null; }
       };
     },
     get: () => value,
+    // Push a value in from OUTSIDE the poll loop (a mutation's own response) — e.g. the usage
+    // card's enable/disable switch, so the row updates at once rather than waiting for the next tick.
+    push: set,
   };
 }
 
@@ -77,6 +81,23 @@ export const useUsage = (): Usage | null => useSyncExternalStore(usageSource.sub
 export const useUsageLoaded = (): boolean =>
   useSyncExternalStore((cb) => { usageLoadedSubs.add(cb); return () => usageLoadedSubs.delete(cb); }, () => usageLoaded);
 
+/** Apply the profile list POST /api/usage/profile hands back, so the row the switch is on shows
+ *  the new state at once rather than waiting for the next (up to 5-minute) poll tick. */
+export function applyProfiles(profiles: NonNullable<Usage["profiles"]>): void {
+  const current = usageSource.get();
+  if (current) usageSource.push({ ...current, profiles });
+}
+
+// Every health / history loop that is running right now, by its fetch — so the Instances header's
+// refresh button can fetch them all at once instead of waiting out each one's tick.
+const loaders = new Set<() => Promise<unknown>>();
+
+/** Refetch every instance's health and history currently shown, now. Resolves when all have answered
+ *  (a failure is the source's own business — it shows as down / no history, as on a tick). */
+export function refreshVitals(): Promise<void> {
+  return Promise.allSettled([...loaders].map((load) => load())).then(() => undefined);
+}
+
 export type HealthReading = { health: InstanceHealth | null; down: boolean };
 const healthSources = new Map<string, ReturnType<typeof sharedSource<HealthReading>>>();
 
@@ -92,11 +113,13 @@ export function useHealth(instance: string | undefined | null): HealthReading | 
     src = sharedSource<HealthReading>((set) => {
       let live = true;
       let last: InstanceHealth | null = null;
-      const stop = poll(() => api.health(instance).then(
+      const load = () => api.health(instance).then(
         (h) => { if (live) { last = h; set({ health: h, down: false }); } },
         () => { if (live) set({ health: last, down: true }); },
-      ), 15_000);
-      return () => { live = false; stop(); };
+      );
+      loaders.add(load);
+      const stop = poll(load, 15_000);
+      return () => { live = false; loaders.delete(load); stop(); };
     });
     healthSources.set(key, src);
   }
@@ -116,8 +139,10 @@ export function useHealthHistory(instance: string | null, hours = 24): MetricPoi
   if (!src) {
     src = sharedSource<MetricPoint[]>((set) => {
       let live = true;
-      const stop = poll(() => api.healthHistory(instance, hours).then((v) => { if (live) set(v); }, () => { if (live) set([]); }), 60_000);
-      return () => { live = false; stop(); };
+      const load = () => api.healthHistory(instance, hours).then((v) => { if (live) set(v); }, () => { if (live) set([]); });
+      loaders.add(load);
+      const stop = poll(load, 60_000);
+      return () => { live = false; loaders.delete(load); stop(); };
     });
     historySources.set(key, src);
   }

@@ -243,18 +243,26 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   review cluster, PR, branch, instance, updated, the model as avatar); every action in the trailing
   ⋯ (`WorkstreamActions menuOnly`). The swimlanes stay behind a persisted List | Board toggle.
 - **Agent page** (the existing `/{repo}/prs/:n` and `/{repo}/local/:branch` routes,
-  `views/AgentPage.tsx`): tabs Overview | Chat | Files | Checks | Preview; a Details card with
+  `views/AgentPage.tsx`): ONE compact sticky header row (`AgentHeader`: repo / title, status, branch
+  or PR link, the actions) with the tabs Overview | Chat | Files | Preview directly under it, flush
+  under the top bar (which is opaque), so the Chat tab's conversation gets the rest of the viewport
+  (`CHAT_FILL_HEIGHT`); a Details card with
   the failure box where Vercel shows "Build Failed" (`agentFailure`: the run's error, else the
   failed check), Created / Status / Duration / State / Model / Instance / PR / Preview and the
   Source (branch → base, latest commit); then the conversation where Build Logs sit (`ChatPanel
-  logBar`: turn / error / warning counters, Find in chat, timestamped, tinted turns, the composer).
+  logBar`: timestamped, tinted turns and the composer, full-bleed to the viewport's foot — no toolbar;
+  the error / warning counters and Find in chat were removed as unclear).
+  A PR's Overview then has Review, **Checks** (no tab of its own any more: failing, then running,
+  passing + skipped folded into one expandable line — `checkGroups`), Description and the
+  **Conversation** (`prConversation`: chronological like GitHub, a counts line + Jump to unresolved,
+  resolved / outdated threads on one line, long bodies behind Show more, bots in ONE folded row).
 - **Repos**, **Usage** (every login, every machine) and **Settings** (theme, density, the
   read-only config). The Usage page shows the SAME `UsageCard` as the Overview — the high-level rows,
   with every hydra login behind the one remembered chevron (`orca.ui.v1.usageExpanded`, shared by
   both pages).
 Every number is a pure derivation over the assembled rows (`workstream.ts`: `overviewStats`,
 `attentionReasons`, `filterRows`, `sortRows`, `recentActivity`, `usageGroups`, `rowDuration`,
-`chatSummary`, `repoSummaries`, `agentFailure`) — no endpoint of its own, so the views can't
+`repoSummaries`, `agentFailure`) — no endpoint of its own, so the views can't
 disagree. Usage, health and health history are one shared poll each (`lib/vitals.ts`
 `sharedSource`; history only while a card shows it). Each PR row also carries a **review cluster**
 (approvers, `N unresolved`, a severity dot) and the PR page a **Review panel** — `reviewDigest`
@@ -321,6 +329,8 @@ context between turns.
    session-file copy; both deleted when hydra took over). An explicit `CLAUDE_CONFIG_DIR` bypasses
    hydra. If the shim is missing (Claude Code's updater rewrites `~/.local/bin/claude`), every run
    silently lands on the default login — `/api/usage` reports `routing.shim` and the meter warns.
+   The Usage card's per-login row has a hover switch (`POST /api/usage/profile`, per host) to take a
+   login out of hydra's rotation — still signed in, just skipped by this ladder — or put it back.
 3. **Portable transcript** (lossy, bounded). Used for a provider switch, a Claude session at ≥80%
    context, a Codex/Cursor session past 12 turns or three straight failures, a session the provider
    can't find, or a login switch whose session file is missing. `handoffPrompt` (`shared/agent.ts`)
@@ -347,7 +357,7 @@ so the gate can never loop. The conversational prompts also open with a session-
 - **Discard** never deletes a branch that has an open PR (only pre-PR locals).
 
 Agent runs are killed on discard and on server shutdown (SIGINT/SIGTERM) so restarts don't orphan
-them. Routing: `/` = board, `/{repo}/prs/:n[/files|/checks|/preview]` = PR detail,
+them. Routing: `/` = board, `/{repo}/prs/:n[/chat|/files|/preview]` = PR detail (an old `/checks` lands on Overview),
 `/{repo}/local/:branch[/files|/preview]` = local-session detail.
 
 **Terminal (the conversation)** — `web/src/components/Terminal.tsx`'s `TerminalDialog` is a modal
@@ -672,10 +682,17 @@ needs no second timer; a failed write is logged and swallowed. `GET /api/health/
 (24 by default, at most 720) is database-only and its `instance` is a filter, never a forward, so
 either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
 CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300
-points, with running sessions overlaid on BOTH as a pink series on its own right-hand axis
-(`LineChart`'s `overlay` prop, `components/console.tsx`) — a different scale (a small integer count)
-sharing the same [from, to] window and downsampling as the main series, from the one
-`/api/health/history` poll, never a second fetch.
+points, one line each (no overlay — the running sessions are their own chart). Beside them, in the
+same `LineChart` design, an **Agents** chart (`running_agents` over time) and **Cost accrued** (the
+running sum of `instance_metric.cost_usd`, migration 17: what the runs that finished since the
+previous sample cost, from the run ledger's `costUsd` — Claude's `total_cost_usd`; Codex/Cursor report
+none). Rows written before migration 17 are filled once from the ledger at startup
+(`health.backfillCost` → `db.backfillMetricCost`: each run onto the first sample at or after it, only
+where `cost_usd` is still NULL, so it never re-counts what the sampler did). All four come from the
+one `/api/health/history` poll. Every chart and the card's header stats come from ONE series
+(`instanceSeries`): the live `/api/health` reading, when newer, is the newest sample and every line's
+raw last point, so a header stat can never disagree with where its line ends. The Instances heading's
+refresh (`RefreshVitals`) refetches every shown health + history at once.
 **On darwin, memory used comes from `vm_stat`** (active + wired + occupied-by-compressor pages,
 Activity Monitor's own formula), not `totalmem() − freemem()` — macOS's `freemem()` is only the
 truly-free page count and reads near-100% on every healthy Mac; `sysctl -n kern.memorystatus_level`

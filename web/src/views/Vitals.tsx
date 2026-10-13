@@ -3,12 +3,20 @@
 // per machine, its current vitals as a details grid and CPU % / memory GB as line graphs over a
 // chosen range from /api/health/history. Both read the shared polls in lib/vitals, so the Overview
 // and the Usage page never poll twice.
+import { useState } from "react";
 import { useAtom } from "jotai";
-import { AlertTriangle, ChevronDown, ChevronUp, Server } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronUp, Loader2, RefreshCw, Server, X } from "lucide-react";
+import { api } from "@/api";
 import { usageExpandedAtom } from "@/lib/atoms";
+import { toast } from "@/lib/toast";
 import { persistedKey, usePersisted } from "@/lib/persisted";
-import { useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
-import { HISTORY_RANGES, downsample, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { useCoarse } from "@/lib/viewport";
+import { applyProfiles, refreshVitals, useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tip";
+import { cn } from "@/lib/utils";
+import { thisInstance } from "../store";
+import { HISTORY_RANGES, countMax, instanceSeries, loginStatus, niceMax, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
@@ -51,21 +59,28 @@ export function UsageCard() {
 }
 
 function UsageGroupRows({ group: g }: { group: UsageGroup }) {
+  const [hover, setHover] = useState(false);
+  const coarse = useCoarse();
+  const status = g.state ? loginStatus(g.state) : null;
   return (
     <div data-slot="usage-group" data-group={g.key} className={`mb-1 last:mb-0 ${g.dim ? "opacity-50" : ""}`}>
-      <div className="flex items-baseline justify-between gap-2 px-2 pt-1.5 pb-1">
-        <span className="truncate text-xs font-medium" title={g.subtitle}>{g.title}</span>
-        <span className="flex items-center gap-1.5">
-          {g.subtitle && <span className="text-muted-foreground truncate text-xs">{g.subtitle}</span>}
-          {g.state && <Pill tone={g.state === "exhausted" || g.state === "locked" ? "red" : "default"} slot="usage-state">{g.state}</Pill>}
+      {/* One line however long the name or the reason: the status is one word right after the name
+          (its reason in the tooltip), the name truncates rather than pushing the row out, and the
+          email gives way first. */}
+      <div data-slot="usage-group-header" className="flex max-w-full min-w-0 items-center justify-between gap-2 px-2 pt-1.5 pb-1" onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span data-slot="usage-group-title" className="min-w-0 truncate text-xs font-medium" title={g.subtitle ? `${g.title} · ${g.subtitle}` : g.title}>{g.title}</span>
+          {status && <Pill tone={status.tone} slot="usage-state" title={status.detail}>{status.label}</Pill>}
+          {g.name && (hover || coarse) && <LoginToggle name={g.name} enabled={g.state !== "disabled"} />}
         </span>
+        {g.subtitle && <span className="text-muted-foreground min-w-0 shrink-[2] truncate text-xs">{g.subtitle}</span>}
       </div>
       {g.rows.map((r) => (
         <div key={r.key} data-slot="usage-row" title={r.resetsIn ? `resets in ${r.resetsIn}` : undefined}
           className="hover:bg-accent/60 flex h-9 items-center gap-2.5 rounded-md px-2 text-sm">
           <Ring pct={r.pct} />
           <span className="min-w-0 flex-1 truncate">{r.label}</span>
-          {r.resetsIn && <span className="text-muted-foreground hidden text-xs sm:inline">resets {r.resetsIn}</span>}
+          {(r.resetsIn || r.resetNote) && <span data-slot="usage-reset" className="text-muted-foreground hidden text-xs sm:inline">{r.resetsIn ? `resets ${r.resetsIn}` : r.resetNote}</span>}
           <span className="text-muted-foreground shrink-0 tabular-nums"><span className="text-foreground">{r.value}</span> / {r.limit}</span>
         </div>
       ))}
@@ -73,9 +88,71 @@ function UsageGroupRows({ group: g }: { group: UsageGroup }) {
   );
 }
 
+type SwitchState = "idle" | "loading" | "done" | "error";
+
+/** A hydra login's rotation switch, next to its name — the caller mounts it only on hover (or
+ *  always, on a touch screen), so it reserves no space on a row that isn't. ActionButton's own
+ *  semantics (spinner → ✓/✗) in switch form: flipping it calls `POST /api/usage/profile`, applies
+ *  the refreshed profile list it hands back at once (so the row doesn't wait for the next poll
+ *  tick), and a failure goes to the error toast. */
+function LoginToggle({ name, enabled }: { name: string; enabled: boolean }) {
+  const [state, setState] = useState<SwitchState>("idle");
+  const toggle = async () => {
+    if (state === "loading") return;
+    setState("loading");
+    try {
+      const { profiles } = await api.setProfileEnabled(name, !enabled, thisInstance());
+      if (profiles) applyProfiles(profiles);
+      setState("done");
+    } catch (e) {
+      toast({ kind: "error", title: `${enabled ? "Disable" : "Enable"} failed · ${name}`, body: e instanceof Error ? e.message : String(e) });
+      setState("error");
+    }
+    setTimeout(() => setState("idle"), 2000);
+  };
+  return (
+    <button type="button" role="switch" aria-checked={enabled} data-slot="login-toggle" disabled={state === "loading"}
+      title={enabled ? `Take ${name} out of hydra's rotation` : `Put ${name} back`}
+      onClick={(e) => { e.stopPropagation(); void toggle(); }}
+      className={cn(
+        "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors",
+        state === "error" ? "bg-destructive" : enabled ? "bg-geist-blue" : "bg-input",
+      )}>
+      <span className={cn("flex size-3 items-center justify-center rounded-full bg-white transition-transform", enabled ? "translate-x-3.5" : "translate-x-0.5")}>
+        {state === "loading" && <Loader2 className="size-2.5 animate-spin" />}
+        {state === "done" && <Check className="size-2.5" />}
+        {state === "error" && <X className="size-2.5" />}
+      </span>
+    </button>
+  );
+}
+
 const isRange = (v: unknown): v is number => HISTORY_RANGES.some((r) => r.hours === v);
 
 const fmtUptime = (s: number) => (s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
+
+/** The Instances heading's refresh: every machine card's health and history, fetched now rather than
+ *  on its next tick — a spinner until they have all answered. */
+export function RefreshVitals() {
+  const [busy, setBusy] = useState(false);
+  const refresh = async () => {
+    if (busy) return;
+    setBusy(true);
+    try { await refreshVitals(); } finally { setBusy(false); }
+  };
+  return (
+    <Tip label="Refresh" side="bottom">
+      <Button type="button" variant="soft" size="icon" data-slot="instances-refresh" aria-label="Refresh" aria-busy={busy} disabled={busy}
+        onClick={() => void refresh()} className="size-7">
+        {busy ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+      </Button>
+    </Tip>
+  );
+}
+
+const pct = (v: number) => `${Math.round(v)}%`;
+const count = (v: number) => String(Math.round(v));
+const usd = (v: number) => `$${v.toFixed(2)}`;
 
 /** One machine. `here`: the instance answering this page (its health needs no `?instance=`). */
 export function InstanceCard({ instance, here }: { instance: string; here: boolean }) {
@@ -86,8 +163,10 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const h = reading?.health;
   const down = Boolean(reading?.down);
   const to = Date.now(), from = to - hours * 3_600_000;
-  const cpu = downsample((history ?? []).map((p) => ({ at: p.at, v: p.cpuPct })), 300, from, to);
-  const mem = downsample((history ?? []).map((p) => ({ at: p.at, v: p.memUsedGb })), 300, from, to);
+  // One series for every chart AND the header stats: the newest sample (the live reading when it is
+  // newer than the last recorded one) is both what the grid shows and where every line ends.
+  const s = instanceSeries(history ?? [], h, from, to);
+  const now = s.latest;
   const memTotal = h?.memTotalGb ?? Math.max(1, ...(history ?? []).map((p) => p.memTotalGb));
   const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
   return (
@@ -100,9 +179,9 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
         <Detail label="Status" slot="instance-status">
           <StatusDot tone={tone} />{down ? "Unreachable" : h ? "Online" : "Loading…"}
         </Detail>
-        <Detail label="CPU" slot="instance-cpu">{h ? <><span className="tabular-nums">{h.cpuPct}%</span><span className="text-muted-foreground text-xs">of {h.cores} cores</span></> : "—"}</Detail>
+        <Detail label="CPU" slot="instance-cpu">{now ? <><span className="tabular-nums">{pct(now.cpuPct)}</span>{h && <span className="text-muted-foreground text-xs">of {h.cores} cores</span>}</> : "—"}</Detail>
         <Detail label="Memory" slot="instance-mem">
-          {h ? <span className="tabular-nums" title={h.memPressure ? `pressure — ${h.memPressurePct}% used` : undefined}>{h.memUsedGb} / {h.memTotalGb} GB</span> : "—"}
+          {now ? <span className="tabular-nums" title={h?.memPressure ? `pressure — ${h.memPressurePct}% used` : undefined}>{now.memUsedGb.toFixed(1)} / {memTotal} GB</span> : "—"}
         </Detail>
         <Detail label="Disk">{h?.disk ? <span className="tabular-nums">{h.disk.usedGb} / {h.disk.totalGb} GB</span> : "—"}</Detail>
         <Detail label="Uptime">{h ? fmtUptime(h.uptimeS) : "—"}</Detail>
@@ -111,13 +190,17 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
       {history === null ? (
           <div className="grid gap-6 p-4 md:grid-cols-2">
             <ChartSkeleton slot="chart-cpu-skeleton" /><ChartSkeleton slot="chart-mem-skeleton" />
+            <ChartSkeleton slot="chart-agents-skeleton" /><ChartSkeleton slot="chart-cost-skeleton" />
           </div>
         )
         : !history.length ? <Empty>No history recorded yet — the sampler writes once a minute.</Empty>
         : (
           <div className="grid gap-6 p-4 md:grid-cols-2">
-            <LineChart slot="chart-cpu" label="CPU" points={cpu} from={from} to={to} max={100} fmt={(v) => `${Math.round(v)}%`} />
-            <LineChart slot="chart-mem" label="Memory used" points={mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" />
+            <LineChart slot="chart-cpu" label="CPU" points={s.cpu} from={from} to={to} max={100} fmt={pct} />
+            <LineChart slot="chart-mem" label="Memory used" points={s.mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" />
+            <LineChart slot="chart-agents" label="Agents" points={s.agents} from={from} to={to} max={countMax(Math.max(0, ...s.agents.map((p) => p.v)))} fmt={count} color="var(--geist-pink)" />
+            <LineChart slot="chart-cost" label="Cost accrued" points={s.cost} from={from} to={to} max={niceMax(Math.max(0, ...s.cost.map((p) => p.v)) * 1.1)} fmt={usd}
+              axis={(v) => `$${v >= 10 ? Math.round(v) : v.toFixed(v >= 1 ? 1 : 2)}`} color="var(--geist-amber)" />
           </div>
         )}
     </VCard>
