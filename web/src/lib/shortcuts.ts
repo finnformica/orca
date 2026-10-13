@@ -33,6 +33,13 @@ export function shortcutLabel(id: ShortcutId, mac = isMacPlatform()): string {
   return s.mod ? (mac ? `⌘${s.key}` : `Ctrl+${s.key}`) : s.key;
 }
 
+/** The same shortcut as separate keycaps, for <Shortcut> (components/ui/kbd): ["⌘", "K"] on a Mac,
+ *  ["Ctrl", "K"] elsewhere, ["C"] for a letter. */
+export function shortcutKeys(id: ShortcutId, mac = isMacPlatform()): string[] {
+  const s = SHORTCUTS.find((x) => x.id === id)!;
+  return s.mod ? [mac ? "⌘" : "Ctrl", s.key] : [s.key];
+}
+
 /** Is focus somewhere a keystroke is text: a field, an editable region, or a modal dialog's contents. */
 export function isTypingTarget(target: EventTarget | null): boolean {
   const el = target && typeof (target as Element).closest === "function" ? (target as Element) : null;

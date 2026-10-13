@@ -16,7 +16,7 @@ import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import { agentQueryAtom, instanceScopeAtom, repoFilterAtom } from "@/lib/atoms";
 import {
-  NO_QUICK_FILTER, applyQuickFilter, attentionReasons, notMergedHiddenCount, parseQuickFilter, quickCount, quickFilterQuery, toggleNotMerged, toggleQuick, type OverviewRow,
+  NO_QUICK_FILTER, applyQuickFilter, attentionReasons, notMergedCount, parseQuickFilter, quickCount, quickFilterQuery, toggleNotMerged, toggleQuick, type OverviewRow,
 } from "@/workstream";
 
 const row = (over: Partial<OverviewRow>): OverviewRow => ({ repo: "a", branch: "b", title: "t", lane: "LOCAL", ...over });
@@ -83,10 +83,11 @@ describe("quick filters (pure)", () => {
     expect(quickCount(rows, f, "by", "mine", "local")).toBe(2); // its own group is ignored: what switching to it shows ("done" stays hidden)
   });
 
-  test("the notMerged chip's own count: merged rows it hides, under the other groups' chips", () => {
-    expect(notMergedHiddenCount(rows, NO_QUICK_FILTER, "local")).toBe(1); // "done"
-    expect(notMergedHiddenCount(rows, parseQuickFilter("?status=running"), "local")).toBe(0); // "done" isn't running
-    expect(notMergedHiddenCount(rows, toggleNotMerged(NO_QUICK_FILTER), "local")).toBe(1); // same count whether on or off
+  test("the notMerged chip's own count: NOT merged workstreams, under the other groups' chips", () => {
+    expect(notMergedCount(rows, NO_QUICK_FILTER, "local")).toBe(4); // everything but "done"
+    expect(notMergedCount(rows, parseQuickFilter("?status=running"), "local")).toBe(1); // "run" only
+    expect(notMergedCount(rows, parseQuickFilter("?pr=merged"), "local")).toBe(0); // only "done" matches pr=merged, and it's merged
+    expect(notMergedCount(rows, toggleNotMerged(NO_QUICK_FILTER), "local")).toBe(4); // same count whether the toggle is on or off
   });
 });
 
@@ -188,7 +189,7 @@ describe("quick filter chips on the Agents page", () => {
     await open("/agents");
     expect(location.search).toBe(""); // on by default, so a plain URL
     expect(chip("notMerged").getAttribute("aria-pressed")).toBe("true");
-    expect(count("notMerged")).toBe("0"); // no merged rows seeded, but the chip still reports a count
+    expect(count("notMerged")).toBe("5"); // every seeded row is not merged
     expect(listed()).toHaveLength(5);
 
     await click(chip("notMerged"));

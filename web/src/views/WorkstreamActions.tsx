@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreVertical, Sparkles, X } from "lucide-react";
 import {
-  addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, moveWorkstream, thisInstance,
+  addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, moveWorkstream, previewConfigured, thisInstance,
   cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, staleHours, suggestTitle, toggleFollow, useRepos, type Row,
 } from "../store";
-import { firstLine, prMenuActions, shouldBump } from "../workstream";
+import { firstLine, prMenuActions, prPreviewState, shouldBump } from "../workstream";
 import { actionFailed } from "@/lib/toast";
 import { ChatComposer } from "@/components/ChatComposer";
 import { clearDraft, hasDraft } from "@/lib/composerDraft";
@@ -90,6 +90,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
     try { await navigator.clipboard.writeText(row.branch); } catch { window.prompt("Copy the branch:", row.branch); }
   };
   const prActions = prMenuActions(row);
+  const prPreview = prPreviewState(row, previewConfigured(row.repo));
   const mergeConfirm = isPr
     ? `Merge PR #${row.prNumber} "${row.title}" into ${baseBranch(row.repo)}? This can't be undone.`
     : `Merge ${row.branch} into ${baseBranch(row.repo)} locally? This can't be undone.`;
@@ -153,7 +154,9 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
               : <DropdownMenuItem onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</DropdownMenuItem>)}
             {/* One agent verb: conflicts, CI and review in a single run (store.addressPr). */}
             {prActions.includes("addressPr") && <DropdownMenuItem onSelect={run("Address PR", () => addressPr(row))} title="One run that resolves conflicts, fixes CI and addresses review threads/comments — whichever apply">Address PR</DropdownMenuItem>}
-            {prActions.includes("addPreview") && <DropdownMenuItem onSelect={run("Add preview", () => addPreviewLabel(row))}>Add preview</DropdownMenuItem>}
+            {prPreview === "ready" && <DropdownMenuItem onSelect={() => window.open(row.previewUrl, "_blank", "noreferrer")}>Open PR preview</DropdownMenuItem>}
+            {prPreview === "pending" && <DropdownMenuItem disabled>Deploying preview…</DropdownMenuItem>}
+            {prPreview === "add" && <DropdownMenuItem onSelect={run("Add preview", () => addPreviewLabel(row))}>Add PR preview</DropdownMenuItem>}
             {prActions.includes("copyLink") && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={run("Copy link", copyLink)}>Copy link</DropdownMenuItem></>}
           </DropdownMenuSubContent>
         </DropdownMenuSub>
@@ -203,7 +206,11 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
     </>
   );
   return (
-    <div className="space-y-2">
+    // `flex flex-col gap-2`, not `space-y-2`: a margin-based gap still reserves space for a
+    // `display:none` sibling (the closed RenameDialog, or the TerminalDialog above this component),
+    // which inflated this wrapper past the toolbar's own height and threw off the Actions cell's
+    // vertical centering on every row. `gap` only spaces boxes the layout actually generates.
+    <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
         {!menuOnly && leading}
         {!menuOnly && <Button size={icon} className={iconClass} variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)} title="Follow up" aria-label="Follow up">
