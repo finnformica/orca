@@ -46,7 +46,8 @@ afterEach(async () => {
 const gridEl = () => container!.querySelector(".xl\\:grid-cols-5");
 const btnByText = (label: string) =>
   [...container!.querySelectorAll("button")].find((b) => b.textContent?.trim() === label);
-const navItem = (label: string) => [...container!.querySelectorAll<HTMLButtonElement>('nav[aria-label="Main"] button')].find((b) => b.textContent?.trim() === label)!;
+const navLabel = (b: Element) => b.querySelector('[data-slot="nav-label"]')?.textContent?.trim();
+const navItem = (label: string) => [...container!.querySelectorAll<HTMLButtonElement>('nav[aria-label="Main"] button')].find((b) => navLabel(b) === label)!;
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); }); };
 const crumb = () => container!.querySelector('nav[aria-label="Breadcrumb"]')!.textContent;
 
@@ -78,7 +79,7 @@ describe("console shell", () => {
     expect(sidebar.textContent).toContain("Orca");
     expect(sidebar.querySelector('[data-slot="instance-scope"]')!.textContent).toBe("All instances"); // two instances in the fake config
     expect(sidebar.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
-    const items = [...sidebar.querySelectorAll('nav[aria-label="Main"] button')].map((b) => b.textContent?.trim());
+    const items = [...sidebar.querySelectorAll('nav[aria-label="Main"] button')].map(navLabel);
     expect(items).toEqual(["Overview", "Agents", "Previews", "Repos", "Usage", "Settings"]);
     expect(navItem("Overview").getAttribute("aria-current")).toBe("page");
     for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Repos", "/repos", "repos-list"], ["Usage", "/usage", "usage-card"], ["Settings", "/settings", "settings-appearance"]] as const) {
