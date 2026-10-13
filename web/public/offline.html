@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Orca · offline</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- What the installed app shows when it has neither the network nor a cached shell (sw.js).
+         Self-contained: no bundle, no fonts — the page's theme tokens inline. -->
+    <style>
+      :root { color-scheme: light dark; --bg: #f9f9f8; --fg: #171717; --muted: #666; --border: #eaeaea; }
+      @media (prefers-color-scheme: dark) { :root { --bg: #111111; --fg: #ededed; --muted: #a1a1a1; --border: #333; } }
+      html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+      main { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: env(safe-area-inset-top) 24px env(safe-area-inset-bottom); text-align: center; box-sizing: border-box; }
+      img { width: 48px; height: 48px; }
+      h1 { font-size: 16px; font-weight: 600; margin: 0; }
+      p { color: var(--muted); margin: 0; max-width: 22rem; }
+      button { min-height: 44px; padding: 0 16px; border-radius: 6px; border: 1px solid var(--border); background: var(--fg); color: var(--bg); font: inherit; font-weight: 500; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="/favicon.svg" alt="" />
+      <h1>Orca is offline</h1>
+      <p>This device can't reach the Orca bridge. Check the network or the tailnet, then try again.</p>
+      <button type="button" onclick="location.reload()">Try again</button>
+    </main>
+  </body>
+</html>
