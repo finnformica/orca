@@ -322,7 +322,17 @@ Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
   worktree. **Address PR is the one agent verb for a PR** (`store.addressPr`, `addressPrPrompt`): a
   single run that resolves merge conflicts, fixes failing CI and addresses the review — whichever
   apply, in that order — instead of three buttons the user had to triage between. Resolve conflicts
-  remains on its own only for a LOCAL branch with no PR. They
+  remains on its own only for a LOCAL branch with no PR. **A changelog-only conflict never reaches
+  the agent** (branch-demo #6189 spent five runs re-merging one CHANGELOG hunk where both sides added
+  an entry under the same heading): before either verb, Orca merges the base into the worktree itself
+  (`POST /api/conflicts/settle` → `verbs.settleConflict` → `git.mergeBaseUnioningChangelogs`, on the
+  worktree's instance). If every conflicted path matches the repo's `changelogFiles` globs (default
+  `**/CHANGELOG.md`, `[]` turns it off), each is resolved by `git merge-file --union` — both sides'
+  lines, ours first — then committed and pushed; a clean merge is pushed too. If that leaves nothing
+  else (no failing CI, threads, comments or change request), NO agent starts (`status: "resolved"`,
+  an info toast); otherwise the agent runs without the conflict section. Any other conflict, a dirty
+  tree, a running agent or a rejected push leaves the worktree exactly as it was, and the agent
+  gets the conflict as before. A manual Address PR with no conflict still always runs. They
   worktree. They **`ensureWorktree` first** (`store.ts`): use the existing worktree, else adopt one
   via `git worktree add` from the branch (incl. PRs with no Orca history) — so no action ever
   requires a manual "check out" step or a copied prompt. Follow up continues the conversation by

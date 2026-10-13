@@ -1,9 +1,10 @@
 import { realpathSync } from "node:fs";
-import { cp, mkdir, readdir, rm, symlink } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { dlopen, FFIType, suffix } from "bun:ffi";
 import { run } from "./run";
-import { defaultPrBody, type SyncOutcome, type SyncResult } from "../web/src/workstream";
+import { changelogOnlyConflict, defaultPrBody, type MechanicalMerge, type SyncOutcome, type SyncResult } from "../web/src/workstream";
 
 const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
 
@@ -364,4 +365,68 @@ export async function changeSummary(worktreePath: string, base: string): Promise
     additions: files.reduce((n, f) => n + f.additions, 0),
     deletions: files.reduce((n, f) => n + f.deletions, 0),
   };
+}
+
+/**
+ * Merge the base into a worktree's branch the way an agent would be asked to, but only when no
+ * judgement is needed: a clean merge, or one whose every conflict is in a changelog (`patterns`, the
+ * repo's `changelogFiles`). Each such file is resolved with `git merge-file --union` — both sides'
+ * added lines, ours first, in order — which is exactly the resolution "both added an entry under the
+ * same heading" needs. Then commit and push. Anything else (a code conflict, a delete/modify, a dirty
+ * tree, a push that fails) leaves the worktree exactly as it was and says so, and the caller hands the
+ * conflict to the agent. Never forces.
+ */
+export async function mergeBaseUnioningChangelogs(worktreePath: string, base: string, patterns?: string[]): Promise<{ outcome: MechanicalMerge; files: string[] }> {
+  if ((await git(worktreePath, "status", "--porcelain")).trim()) return { outcome: "dirty", files: [] };
+  const remote = await hasRemote(worktreePath);
+  if (remote) await git(worktreePath, "fetch", "origin", base).catch(() => {});
+  const ref = await resolveBase(worktreePath, base);
+  const before = (await git(worktreePath, "rev-parse", "HEAD")).trim();
+  const message = `Merge ${ref} into ${(await git(worktreePath, "rev-parse", "--abbrev-ref", "HEAD")).trim()}`;
+  let files: string[] = [];
+  let outcome: MechanicalMerge;
+  try {
+    await git(worktreePath, "merge", "--no-edit", "-m", message, ref);
+    outcome = (await git(worktreePath, "rev-parse", "HEAD")).trim() === before ? "up to date" : "merged";
+  } catch {
+    files = (await git(worktreePath, "diff", "--name-only", "--diff-filter=U")).split("\n").filter(Boolean);
+    if (!changelogOnlyConflict(files, patterns) || !(await unionConflicts(worktreePath, files))) {
+      await git(worktreePath, "merge", "--abort").catch(() => git(worktreePath, "reset", "--hard", before));
+      return { outcome: "conflict", files };
+    }
+    await git(worktreePath, "commit", "--no-edit", "-m", `${message}\n\nOrca resolved the changelog-only conflict mechanically (both sides' entries kept): ${files.join(", ")}`);
+    outcome = "resolved";
+  }
+  if (outcome === "up to date" || !remote) return { outcome, files };
+  try {
+    await git(worktreePath, "push", "origin", "HEAD");
+  } catch {
+    // Most likely the remote branch moved on: undo our merge (the tree was clean before it) and let the
+    // agent, which pulls first, do it properly.
+    await git(worktreePath, "reset", "--hard", before);
+    return { outcome: "push failed", files };
+  }
+  return { outcome, files };
+}
+
+/** Resolve each conflicted file from its index stages by union. False — nothing written that matters,
+ *  the caller aborts — when a side is missing (a delete/modify conflict has no lines to union). */
+async function unionConflicts(worktreePath: string, files: string[]): Promise<boolean> {
+  const dir = await mkdtemp(join(tmpdir(), "orca-union-"));
+  try {
+    for (const [i, file] of files.entries()) {
+      const stage = (n: number) => git(worktreePath, "show", `:${n}:${file}`);
+      let ours: string, theirs: string;
+      try { [ours, theirs] = await Promise.all([stage(2), stage(3)]); } catch { return false; }
+      const ancestor = await stage(1).catch(() => ""); // both added the file: no common ancestor
+      const [o, a, t] = ["ours", "base", "theirs"].map((n) => join(dir, `${i}.${n}`));
+      await Promise.all([writeFile(o!, ours), writeFile(a!, ancestor), writeFile(t!, theirs)]);
+      const merged = await run(["git", "merge-file", "--union", "-p", o!, a!, t!]);
+      await writeFile(join(worktreePath, file), merged);
+      await git(worktreePath, "add", "--", file);
+    }
+    return true;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }

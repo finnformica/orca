@@ -647,6 +647,51 @@ export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">,
   ].join(" "));
 }
 
+// Changelog-only conflicts. Two branches that each add an entry under the same CHANGELOG heading
+// conflict on every merge of the base, and an agent spent a whole run re-merging that one hunk (five
+// runs on one branch-demo PR). Orca merges the base itself first: if every conflicted path is a
+// changelog, each is resolved by keeping BOTH sides' added lines in order (`git merge-file --union`)
+// and pushed — no agent. Anything else aborts the merge and goes to the agent as before.
+
+/** The changelog paths a repo has unless it sets `changelogFiles`. */
+export const DEFAULT_CHANGELOG_FILES = ["**/CHANGELOG.md"];
+
+/** A repo-relative glob as a regex: `**\/` any directories (incl. none), `*` within one segment,
+ *  `?` one character. Pure, so the browser and tests share it (no Bun.Glob). */
+export function globToRegExp(glob: string): RegExp {
+  let re = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]!;
+    if (glob.startsWith("**/", i)) { re += "(?:.*/)?"; i += 2; }
+    else if (glob.startsWith("**", i)) { re += ".*"; i += 1; }
+    else if (c === "*") re += "[^/]*";
+    else if (c === "?") re += "[^/]";
+    else re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${re}$`);
+}
+
+/** Whether `path` is a changelog by the repo's patterns. */
+export const isChangelogPath = (path: string, patterns: string[] = DEFAULT_CHANGELOG_FILES): boolean =>
+  patterns.some((g) => globToRegExp(g).test(path));
+
+/** Whether a merge's conflicted paths can be resolved mechanically: there are some, and every one is
+ *  a changelog. */
+export const changelogOnlyConflict = (conflicted: string[], patterns?: string[]): boolean =>
+  conflicted.length > 0 && conflicted.every((p) => isChangelogPath(p, patterns));
+
+/** What Orca's own merge of the base did. `resolved` (changelog conflicts unioned) and `merged` (it
+ *  merged cleanly) both pushed and leave no conflict for an agent; the rest leave the worktree as it
+ *  was. */
+export type MechanicalMerge = "resolved" | "merged" | "up to date" | "conflict" | "dirty" | "busy" | "push failed";
+export const mergeSettled = (m: MechanicalMerge | undefined): boolean => m === "resolved" || m === "merged";
+
+/** Whether Address PR still needs an agent once Orca has settled the conflict itself: only if CI fails
+ *  or there is review to answer (threads, conversation, a change request). Asked ONLY after Orca
+ *  settled one — a manual Address PR on a quiet PR still runs, as it always did. */
+export const addressNeedsAgent = (p: Pick<AddressPrParts, "conflicting" | "ci" | "feedback" | "threads" | "comments">): boolean =>
+  p.conflicting || !!p.ci || !!p.feedback?.length || !!p.threads?.length || !!p.comments?.length;
+
 export type AddressPrParts = {
   base: string;
   conflicting: boolean;
