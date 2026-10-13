@@ -15,7 +15,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { App } from "@/App";
 import { navigate } from "@/lib/route";
-import { notifyDndAtom, toastPrefsAtom } from "@/lib/atoms";
+import { notifyDndAtom, orchestratorOpenAtom, toastPrefsAtom } from "@/lib/atoms";
 import * as centre from "@/lib/notificationStore";
 import { COUNT_BAR_SPACE, TOAST_EXIT_MS, type Notification } from "../shared/notifications";
 
@@ -86,6 +86,7 @@ describe("the notification centre", () => {
     apiFake.reset();
     getDefaultStore().set(notifyDndAtom, false);
     getDefaultStore().set(toastPrefsAtom, {});
+    getDefaultStore().set(orchestratorOpenAtom, false); // "Open orchestrator" opens it; the store outlives this file
     localStorage.clear();
     navigate("/");
   });
