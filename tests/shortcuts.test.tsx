@@ -14,7 +14,8 @@ import { navigate } from "@/lib/route";
 import {
   addNewOpenAtom, orchestratorOpenAtom, orchestratorPrefillAtom, paletteOpenAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom,
 } from "@/lib/atoms";
-import { isMacPlatform, isTypingTarget, matchShortcut, shortcutLabel } from "@/lib/shortcuts";
+import { SHORTCUTS, isMacPlatform, isTypingTarget, matchShortcut, shortcutKeys, shortcutLabel, type ShortcutId } from "@/lib/shortcuts";
+import { Kbd, KbdGroup, Shortcut } from "@/components/ui/kbd";
 import { fuzzyScore, joinPrefill, moveSelection, pushRecent, rankPalette, type PaletteItem } from "@/lib/palette";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -100,6 +101,43 @@ describe("palette ranking", () => {
   });
 });
 
+describe("the Kbd keycap", () => {
+  const render = async (node: React.ReactNode) => {
+    const el = document.createElement("div");
+    document.body.appendChild(el);
+    const r = createRoot(el);
+    await act(async () => { r.render(node); });
+    return { el, done: () => { act(() => r.unmount()); el.remove(); } };
+  };
+  test("K1: a fixed 20px-high, self-centred chip — it never stretches to its flex parent's height", async () => {
+    // A 32px row that stretches its children (the default), like the pill and the top-bar button.
+    const { el, done } = await render(<button style={{ display: "flex", height: 32 }}><span>Ask</span><Kbd>A</Kbd><KbdGroup><Kbd>⌘</Kbd><Kbd>K</Kbd></KbdGroup></button>);
+    const kbd = el.querySelector('kbd[data-slot="kbd"]')!;
+    const cls = kbd.className.split(/\s+/);
+    for (const c of ["inline-flex", "items-center", "h-5", "min-w-5", "self-center", "rounded", "border", "px-1", "text-[11px]", "text-muted-foreground", "shrink-0"]) expect(cls).toContain(c);
+    expect(cls.some((c) => /^(h-full|self-stretch|py-)/.test(c))).toBe(false);
+    expect(el.querySelector('[data-slot="kbd-group"]')!.className).toContain("self-center");
+    done();
+  });
+  test("K2: a registered shortcut shows this platform's modifier — ⌘ on a Mac, Ctrl elsewhere — from the one table", async () => {
+    expect(shortcutKeys("palette", true)).toEqual(["⌘", "K"]);
+    expect(shortcutKeys("palette", false)).toEqual(["Ctrl", "K"]);
+    expect(shortcutKeys("sidebar", false)).toEqual(["Ctrl", "B"]);
+    expect(shortcutKeys("new", true)).toEqual(["C"]);
+    expect(shortcutKeys("escape", false)).toEqual(["Esc"]);
+    const mac = await render(<Shortcut id="palette" mac />);
+    expect(keycaps(mac.el.querySelector('[data-shortcut="palette"]'))).toEqual(["⌘", "K"]);
+    mac.done();
+    const pc = await render(<Shortcut id="palette" mac={false} />);
+    expect(keycaps(pc.el.querySelector('[data-shortcut="palette"]'))).toEqual(["Ctrl", "K"]);
+    pc.done();
+    // Default: the platform it runs on.
+    const here = await render(<Shortcut id="sidebar" />);
+    expect(keycaps(here.el.querySelector('[data-shortcut="sidebar"]'))).toEqual([isMacPlatform() ? "⌘" : "Ctrl", "B"]);
+    here.done();
+  });
+});
+
 // ---- the App, end to end ----
 const flush = () => new Promise((r) => setTimeout(r, 0));
 let root: Root | undefined;
@@ -134,6 +172,8 @@ const dialogOpen = (slot: string) => q<HTMLDialogElement>(`[data-slot="${slot}"]
 // The side panel stays mounted once opened (reopening is instant): "closed" is its data-state.
 const panel = () => { const p = q('[data-slot="orchestrator-panel"]'); return p && p.dataset.state === "open" ? p : null; };
 const quickAsk = () => q('[data-slot="quick-ask-box"]');
+/** The keycaps a <Shortcut> renders, in order. */
+const keycaps = (el: Element | null | undefined) => el ? [...el.querySelectorAll('kbd[data-slot="kbd"]')].map((k) => k.textContent) : null;
 const find = () => q<HTMLInputElement>('input[aria-label="Find agents"]')!;
 async function typeInto(el: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => {
@@ -188,8 +228,10 @@ test("S1: C, O, ?, ⌘B and Esc work from the page — and never while typing in
   // ? lists every shortcut, with this platform's labels.
   await press(document.body, "?", { shiftKey: true });
   expect(dialogOpen("shortcuts-help")).toBe(true);
-  const help = q('[data-slot="shortcuts-help"]')!.textContent!;
-  for (const t of ["Command palette", shortcutLabel("palette"), "New agent", "Ask the orchestrator", "O", shortcutLabel("sidebar"), "Esc"]) expect(help).toContain(t);
+  const help = q('[data-slot="shortcuts-help"]')!;
+  for (const t of ["Command palette", "New agent", "Ask the orchestrator", "Esc"]) expect(help.textContent).toContain(t);
+  // Every registered shortcut, as its keycaps (⌘ K / Ctrl K).
+  for (const s of SHORTCUTS) expect(keycaps(help.querySelector(`li [data-shortcut="${s.id}"]`))).toEqual(shortcutKeys(s.id));
 
   // The tooltips carry the keys too.
   expect(q('[data-slot="add-new"]')!.getAttribute("title")).toBe("Add New (C)");
@@ -276,7 +318,7 @@ test("S5: the top bar of every page has an Ask-the-orchestrator BUTTON that open
     const entry = q<HTMLButtonElement>('header[data-slot="topbar"] button[data-slot="ask-orchestrator"]');
     expect(entry).not.toBeNull();
     expect(entry!.textContent).toContain("Ask the orchestrator");
-    expect(entry!.textContent).toContain(shortcutLabel("orchestrator"));
+    expect(keycaps(entry!.querySelector('[data-shortcut="orchestrator"]'))).toEqual(["O"]);
     expect(q('header[data-slot="topbar"] input[aria-label="Ask the orchestrator"]')).toBeNull(); // no text box in the chrome any more
     act(() => root?.unmount()); container?.remove();
   }
@@ -292,4 +334,43 @@ test("S5: the top bar of every page has an Ask-the-orchestrator BUTTON that open
   await act(async () => { q('button[data-slot="ask-orchestrator"]')!.click(); await flush(); });
   expect(document.activeElement).toBe(box);
   expect(box.value).toBe("earlier draft");
+});
+
+test("S6: every control with a shortcut shows its keycap — the pill, the top bar, Find, Add New, the palette's rows and the profile menu", async () => {
+  await mount("/");
+  const hint = (root: Element | null, id: ShortcutId) => keycaps(root?.querySelector(`[data-shortcut="${id}"]`));
+  expect(hint(q('[data-slot="quick-ask-pill"]'), "quickAsk")).toEqual(["A"]);
+  expect(hint(q('button[data-slot="ask-orchestrator"]'), "orchestrator")).toEqual(["O"]);
+  expect(hint(find().closest("label"), "find")).toEqual(["F"]);
+  expect(hint(q('button[data-slot="add-new"]'), "new")).toEqual(["C"]);
+  // No ad hoc <kbd> left anywhere: every one is the shared Kbd.
+  for (const k of document.querySelectorAll("kbd")) expect(k.getAttribute("data-slot")).toBe("kbd");
+
+  // The palette: its Esc, and the right-aligned shortcut slot on every action that has a key.
+  await press(document.body, "k", MOD);
+  const pal = q('[data-slot="command-palette"]')!;
+  expect([...pal.querySelectorAll('kbd[data-slot="kbd"]')].some((k) => k.textContent === "Esc")).toBe(true);
+  for (const id of ["new", "orchestrator", "quickAsk", "find", "sidebar", "help"] as ShortcutId[]) {
+    const row = pal.querySelector(`[role="option"][data-id="action:${id}"]`);
+    expect(row).not.toBeNull();
+    const slot = row!.querySelector(`[data-shortcut="${id}"]`)!;
+    expect(keycaps(slot)).toEqual(shortcutKeys(id));
+    expect(slot.className).toContain("ml-auto");
+  }
+  // Running the palette's Quick ask opens the box, as A does.
+  await act(async () => { pal.querySelector<HTMLElement>('[data-id="action:quickAsk"]')!.click(); await flush(); });
+  expect(quickAsk()).not.toBeNull();
+  await press(quickAsk()!, "Escape");
+
+  // The profile menu: Command palette ⌘K and Keyboard shortcuts ?, which open them.
+  const openProfile = async () => act(async () => {
+    q('[data-slot="profile"]')!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" }));
+    await flush(); await flush();
+  });
+  await openProfile();
+  const item = q('[data-slot="open-palette"]')!;
+  expect(hint(item, "palette")).toEqual(shortcutKeys("palette"));
+  expect(hint(q('[data-slot="open-shortcuts"]'), "help")).toEqual(["?"]);
+  await act(async () => { item.click(); await flush(); await flush(); });
+  expect(dialogOpen("command-palette")).toBe(true);
 });

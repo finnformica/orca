@@ -9,16 +9,23 @@ import { Search } from "lucide-react";
 import {
   addNewOpenAtom, instanceScopeAtom, paletteOpenAtom, paletteRecentAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom, quickAskOpenAtom } from "@/lib/atoms";
 import { moveSelection, pushRecent, rankPalette, type PaletteItem } from "@/lib/palette";
-import { SHORTCUTS, isTypingTarget, matchShortcut, shortcutLabel, type ShortcutId } from "@/lib/shortcuts";
+import { SHORTCUTS, isTypingTarget, matchShortcut, type ShortcutId } from "@/lib/shortcuts";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { cn } from "@/lib/utils";
+import { Kbd, MenuShortcut, Shortcut } from "@/components/ui/kbd";
 import { instanceChoices, testLocally, useRepos, useWorkstreams, type Row } from "../store";
 import { detailPath } from "@/views/Agents";
 import { useOrchestrator } from "@/components/Terminal";
 
-type Command = PaletteItem & { run: () => void };
+type Command = PaletteItem & { run: () => void; shortcut?: ShortcutId };
 
 const PAGES: [string, string][] = [["/", "Overview"], ["/agents", "Agents"], ["/previews", "Previews"], ["/repos", "Repos"], ["/usage", "Usage"], ["/settings", "Settings"]];
+
+/** F: focus the sidebar's Find box — which only exists in the expanded sidebar. */
+function focusFind(collapsed: boolean, setCollapsed: (v: boolean) => void) {
+  if (collapsed) setCollapsed(false);
+  setTimeout(() => document.querySelector<HTMLInputElement>('input[aria-label="Find agents"]')?.focus());
+}
 
 /** The workstream whose page you are on — the palette's "selected" one. */
 function routeRow(route: Route, rows: Row[]): Row | undefined {
@@ -33,6 +40,7 @@ function useCommands(): Command[] {
   const route = useRoute();
   const setAddNew = useSetAtom(addNewOpenAtom);
   const setHelp = useSetAtom(shortcutsHelpOpenAtom);
+  const setQuickAsk = useSetAtom(quickAskOpenAtom);
   const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
   const setRepo = useSetAtom(repoFilterAtom);
   const setScope = useSetAtom(instanceScopeAtom);
@@ -49,9 +57,11 @@ function useCommands(): Command[] {
   }
   for (const [to, label] of PAGES) out.push({ id: `page:${to}`, group: "Pages", label, hint: "Page", run: () => navigate(to) });
   const action = (id: string, label: string, run: () => void, shortcut?: ShortcutId, keywords?: string) =>
-    out.push({ id: `action:${id}`, group: "Actions", label, hint: shortcut && shortcutLabel(shortcut), keywords, run });
+    out.push({ id: `action:${id}`, group: "Actions", label, shortcut, keywords, run });
   action("new", "New agent", () => setAddNew(true), "new", "add draft create");
   action("orchestrator", "Open orchestrator", () => ask(), "orchestrator", "ask chat");
+  action("quickAsk", "Quick ask the orchestrator", () => setQuickAsk(true), "quickAsk", "message one line");
+  action("find", "Find agents", () => focusFind(collapsed, setCollapsed), "find", "search filter");
   action("sidebar", collapsed ? "Expand sidebar" : "Collapse sidebar", () => setCollapsed(!collapsed), "sidebar", "toggle sidebar");
   action("help", "Keyboard shortcuts", () => setHelp(true), "help", "keys help");
   const here = routeRow(route, rows);
@@ -124,7 +134,7 @@ export function CommandPalette() {
           role="combobox" aria-expanded aria-controls={listId} aria-activedescendant={ranked[index] ? `${listId}-${index}` : undefined}
           className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-sm outline-none"
         />
-        <kbd className="text-muted-foreground rounded border px-1 font-sans text-[10px]">Esc</kbd>
+        <Kbd>Esc</Kbd>
       </div>
       <div ref={listRef} id={listId} role="listbox" data-slot="palette-list" aria-label="Commands" className="max-h-[50vh] overflow-y-auto p-1">
         {ranked.length === 0 && <p className="text-muted-foreground px-2 py-6 text-center text-sm">No results</p>}
@@ -140,7 +150,8 @@ export function CommandPalette() {
                 className={cn("flex h-9 cursor-pointer items-center gap-2 rounded-md px-2 text-sm", i === index && "bg-accent")}
               >
                 <span className="min-w-0 truncate">{cmd.label}</span>
-                {cmd.hint && <span className="text-muted-foreground ml-auto shrink-0 truncate pl-3 text-xs">{cmd.hint}</span>}
+                {cmd.shortcut ? <MenuShortcut id={cmd.shortcut} />
+                  : cmd.hint && <span className="text-muted-foreground ml-auto shrink-0 truncate pl-3 text-xs">{cmd.hint}</span>}
               </div>
             </div>
           );
@@ -171,11 +182,11 @@ export function ShortcutsHelp() {
         {SHORTCUTS.map((s) => (
           <li key={s.id} className="flex h-9 items-center justify-between">
             <span>{s.label}</span>
-            <kbd className="text-muted-foreground rounded border px-1.5 font-sans text-xs">{shortcutLabel(s.id)}</kbd>
+            <Shortcut id={s.id} />
           </li>
         ))}
       </ul>
-      <p className="text-muted-foreground border-t px-4 py-2 text-xs">Letters don't fire while you type in a field; {shortcutLabel("palette")} and Esc always do.</p>
+      <p className="text-muted-foreground border-t px-4 py-2 text-xs">Letters don't fire while you type in a field; <Shortcut id="palette" /> and <Kbd>Esc</Kbd> always do.</p>
     </dialog>
   );
 }
@@ -214,11 +225,7 @@ export function Shortcuts() {
       else if (id === "quickAsk") setQuickAsk(true);
       else if (id === "help") setHelp(true);
       else if (id === "sidebar") setCollapsed(!s.collapsed);
-      else if (id === "find") {
-        // The Find box only exists in the expanded sidebar.
-        if (s.collapsed) setCollapsed(false);
-        setTimeout(() => document.querySelector<HTMLInputElement>('input[aria-label="Find agents"]')?.focus());
-      }
+      else if (id === "find") focusFind(s.collapsed, setCollapsed);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

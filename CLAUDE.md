@@ -180,7 +180,8 @@ toggles it, remembered) and a top bar (repo switcher, breadcrumb, and **Ask the 
 right on every page — Vercel's "Ask AI", as a BUTTON: it opens the orchestrator's side panel with its
 composer focused. It was a text box whose keystrokes carried into the composer; the quick-ask pill
 below now covers "fire off a line"). **The quick-ask pill** (`components/QuickAsk.tsx`, the `A` key):
-a small "Ask · A" pill fixed at the bottom centre of every page (desktop; below md the phone's bottom
+a small "Ask · A" pill fixed at the bottom centre of the main column (its strip starts where
+the sidebar ends, collapsed or expanded) on every page (desktop; below md the phone's bottom
 bar has the orchestrator instead) opens a one-line box for ONE message to the orchestrator with no
 history — Enter sends, "Sent to the orchestrator · Open chat" dwells 4s then it closes, a failed
 send keeps the text. The pill, the top-bar button and the phone's bottom bar carry the orchestrator's
@@ -195,7 +196,11 @@ and ⌘B never fire in a field or inside a modal dialog (they'd eat a keystroke 
 Esc fire everywhere. **O, not ⌘J**, for the orchestrator: ⌘J / Ctrl+J is the browser's Downloads
 (Chrome on Windows/Linux, Firefox), and a bare letter can't clash with a browser or a composer; from a
 field, ⌘K → "Open orchestrator" is one key more. The table also feeds the tooltips, the palette's
-hints and the `?` sheet, so a key can't be documented in one place and bound in another. **The
+hints and the `?` sheet, so a key can't be documented in one place and bound in another. **Every
+visible hint is the ONE keycap** (`components/ui/kbd.tsx`: `Kbd`, `KbdGroup`, `<Shortcut id>` from the
+table with ⌘ on a Mac / Ctrl elsewhere, `MenuShortcut` for a menu's or palette row's right-aligned
+slot) — a fixed-height, `self-center` chip, never an ad hoc `<kbd>`; the profile menu lists Command
+palette and Keyboard shortcuts with theirs. **The
 palette** (⌘K, a native modal `<dialog>` with `shadow-modal`, like Add New): fuzzy search over
 workstreams, PRs, pages and actions (New agent, Open orchestrator, Toggle sidebar, switch repo /
 instance, Start preview for the workstream whose page you're on); ↑/↓ wrap, Enter runs; empty, the
