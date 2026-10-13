@@ -134,7 +134,6 @@ export const api = {
   // after the live stream was dropped; the live rows themselves arrive on /api/events.
   notifications: (since?: number): Promise<Notification[]> => fetch(`/api/notifications${since ? `?since=${since}` : ""}`).then(res),
   notificationsRead: (ids: number[] | "all"): Promise<{ ok: true; changed: number }> => post("/api/notifications/read", ids === "all" ? { all: true } : { ids }),
-  notificationsDismiss: (ids: number[] | "all"): Promise<{ ok: true; changed: number }> => post("/api/notifications/dismiss", ids === "all" ? { all: true } : { ids }),
   agents: (repo: string): Promise<LiveAgent[]> => fetch(`/api/agents${q(repo)}`).then(res),
   prs: (repo: string): Promise<PrSummary[]> => fetch(`/api/prs${q(repo)}`).then(res),
   // The client sends its own local midnight: "merged today" belongs to the person reading the board,

@@ -588,24 +588,34 @@ bottom-LEFT, growing up from just above the bell (`stackAnchor`, measured from t
 above the bottom bar on a phone), so the orchestrator's window and the action-error Toaster keep the
 bottom-right. It copies branch-demo's inbox toasts — sonner's stack — in CSS, no dependency
 (`stackLayout` / `toastMotion` / `swipeOut` / the `HideClock`, all pure): newest in front, three
-showing; past one they collapse behind it (14px lift, 5% smaller each) over a count bar with Clear
-all; hover spreads them by their real heights; slide in from below, drop out over 200ms; swipe left
-or down dismisses; auto-hide pauses while hovered, touched or the tab is hidden. A toast for a
-finished run or a ready preview hides itself after 6s, a problem or a question stays until dismissed
-— `KIND_META.persistent`. A toast's title opens its workstream (the agent page, a PR's included).
-**Quick actions** on every toast and centre row, shown on hover / focus (always on a touch screen):
-the kind's one or two verbs, the first primary, then Read (a read toast leaves the stack) and, in
-the centre, a dismiss × — chosen by the pure `notificationActions` (`workstream.ts`), which drops
+showing; past one they collapse behind it (14px lift, 5% smaller each) over a count bar with Mark
+all as read; hover spreads them by their real heights; slide in from below, drop out over 200ms; swipe
+left or down is the ×; auto-hide pauses while hovered, touched or the tab is hidden. A toast for a
+finished run or a ready preview hides itself after 6s (still unread), a problem or a question stays
+until dismissed — `KIND_META.persistent`. **Notifications always persist, and have ONE state —
+unread or read.** There is no Clear and no delete route (only the 30-day prune removes a row; the old
+`dismissed_at` column is ignored, its rows read as read): the × on a toast or a centre row, a swipe,
+opening it, any quick action and Mark all as read all just `markRead`, which also takes its toast
+off the stack. A toast's title opens its workstream's Chat tab (the agent page, a PR's included), composer focused.
+**Quick actions** on every toast and centre row, shown on hover / focus (always on a touch screen),
+as size-7 ghost **icon buttons** (lucide icon, aria-label, a `Tip` tooltip — `components/ui/tip.tsx`
+— with the `Kbd` keycap where a shortcut exists; the action-error Toaster's Copy / Ask use the same):
+the kind's one or two verbs, the first primary (no Read button — acting marks it read), then **Open,
+always, always last**, labelled just Open (its workstream's Chat tab with the composer focused; the
+orchestrator's panel, composer focused, for its own wake) and, on an
+unread centre row, the × — chosen by the pure `notificationActions` (`workstream.ts`), which drops
 one whose prerequisite is missing (no live row, PR URL, failed check). CI failing / conflicts →
 Address PR (`store.addressPr`) + View PR (GitHub); check failed → Fix (`autofixInstruction` as a
-follow-up) + View output; finished → Open workstream + Reply; needs input → Reply (the Chat tab,
-`?reply` focuses the composer) + Open workstream; failed / stopped → Retry (`RETRY_INSTRUCTION` on
-the same session) + Open chat; preview ready → Open preview + Stop; preview failed → Retry test +
-View log; the orchestrator's own wake → Reply in its window. Verbs run in `ActionButton`, so a
+follow-up) + View output; finished / needs input → Reply (the Chat tab, `?reply` focuses the
+composer); failed / stopped → Retry (`RETRY_INSTRUCTION` on the same session) + Open chat; preview
+ready → Open preview + Stop; preview failed → Retry test + View log; the orchestrator's own wake →
+Open only. Verbs run in `ActionButton`, so a
 failure is the action-error toast with Ask the orchestrator), and
-the bell at the sidebar's foot with the unread count, opening the centre (grouped by day, read /
-unread, a kind filter, Mark all read, Clear all = dismiss, do-not-disturb). Dismissing a toast keeps
-the row; clearing the centre keeps nothing. Settings: do not disturb, per-kind toasts, and browser
+the bell at the sidebar's foot with the unread count, opening the centre: one compact header —
+the title, an Unread (its count) / All `Segmented`, a Mark all as read icon — over the rows grouped
+by day. It opens on **Unread**, so a read row is out of view yet one click away under All; the
+choice is remembered (`orca.ui.v1.notificationFilter`). The per-kind chips and the header's
+do-not-disturb toggle were dropped as noise (DND lives in Settings; the bell shows it). Settings: do not disturb, per-kind toasts, and browser
 notifications (urgent kinds only, while the tab is hidden; the permission is asked for when switched
 on). Preferences are per browser (`orca.notifications.*` in localStorage); the rows are not.
 
@@ -756,6 +766,33 @@ anything younger than 2 hours (a preview mid-clone), and drops the rest via `pre
 The same pass removes a repo's `testContainerPrefix` Docker containers (branch-demo's test harness
 leaves `branch_demo_test_postgres_<port>` running) older than 3 hours, via `server/docker.ts` —
 silently skipped when `docker` isn't on the box. `/api/diagnostics` reports the last pass (`reap`).
+**Per-worker memory ceiling** (`server/cgroup.ts`): the incident this exists for — an m7i.xlarge
+(16GB) ran 4-5 concurrent builds, the kernel OOM killer fired on the whole system, load average hit
+49, and Postgres/Tailscale/SSM were unreachable for 12 minutes. Every agent run now gets its own
+`systemd-run --user --scope -p MemoryMax=<repo's agentMemoryMaxGb, default 4>G -p
+MemorySwapMax=0 -p CPUWeight=<agentCpuWeight, default 50>` — a worker's runaway build or headless
+browser is OOM-killed inside its OWN cgroup, never the box's. There is deliberately no cap on
+concurrent workers (Finn removed the orchestrator's once, for the same reason): the fix is bounding
+the blast radius of ONE, not limiting how many run. `--user` (not the system manager): a non-root
+`systemd-run --scope` against the system manager needs polkit authorization a headless box can't
+grant interactively, but `--user` has no such check — it only needs a reachable user bus, which
+`orca` (a service account, never logged in) doesn't have by default. `loginctl enable-linger orca`
+(`deploy/bootstrap.sh`, once) starts a user manager at boot regardless; `cgroup.available()` checks
+the bus socket itself (`/run/user/<uid>/bus`), not just the `systemd-run` binary, so a CI runner or
+an unprovisioned box — which has the binary but no lingering — degrades to unwrapped, unchanged
+behaviour rather than failing every run. `prlimit --as` was considered and rejected: it bounds one
+process's own address space, not the tree a build or a browser spawns, so it would not have capped
+the incident at all. A run killed this way is detected from BOTH signals — exit 137 (plain SIGKILL)
+AND `systemctl --user show <scope> -p Result` reporting `oom-kill` (briefly, before the scope is
+GC'd) — so a run you stopped yourself, which also exits non-zero, is never mislabelled; its turn
+gets stop reason `error` and a response of `out of memory (<N> GB ceiling)`, and the ledger records
+`errorKind: "oom"`. `deploy/orca.service` separately reserves `MemoryMax=` ~85% of the box's RAM for
+the bridge's own tree (previews, git/gh, anything it runs directly — NOT agent runs, which have
+already left this cgroup for their own scope by the time they'd count against it) and sets
+`OOMScoreAdjust=-500` so the bridge is the last thing a true system-wide OOM kill would pick.
+Postgres and Tailscale are untouched: they are separate systemd units, never children of
+`orca.service`, so they were never inside either limit — the two settings just make sure nothing
+Orca does crowds them out of the 15% left over.
 
 ## Conventions (follow these)
 

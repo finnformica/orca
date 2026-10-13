@@ -26,13 +26,14 @@ export type Notification = {
   body: string;
   link?: NotificationLink;
   createdAt: number;
+  /** The one state a notification has: unread until this is set. Nothing is ever deleted by you —
+   *  X, a quick action, Open and Mark all as read all just set it (rows go after 30 days). */
   readAt?: number;
-  dismissedAt?: number;
 };
 
 /** What the emitter writes: a `key` makes the insert idempotent (unique per user), so a run that is
  *  finished twice (adopted after a restart, or the same repo answered by two instances) is one row. */
-export type NotificationInput = Omit<Notification, "id" | "createdAt" | "readAt" | "dismissedAt" | "instance"> & { key: string };
+export type NotificationInput = Omit<Notification, "id" | "createdAt" | "readAt" | "instance"> & { key: string };
 
 export type KindMeta = {
   label: string;
@@ -148,9 +149,14 @@ export function prNotifications(repo: string, prs: {
   return out;
 }
 
-/** How many are unread (dismissed ones are gone from the centre, so they don't count). */
-export const unreadCount = (list: Pick<Notification, "readAt" | "dismissedAt">[]): number =>
-  list.filter((n) => !n.readAt && !n.dismissedAt).length;
+/** How many are unread — the bell's badge and the centre's Unread count. */
+export const unreadCount = (list: Pick<Notification, "readAt">[]): number => list.filter((n) => !n.readAt).length;
+
+/** The centre's one filter: Unread (the default — a read row drops out of it) or All (read ones too). */
+export const NOTIFICATION_FILTERS = ["unread", "all"] as const;
+export type NotificationFilter = typeof NOTIFICATION_FILTERS[number];
+export const filterNotifications = <T extends Pick<Notification, "readAt">>(list: T[], filter: NotificationFilter): T[] =>
+  filter === "all" ? list : list.filter((n) => !n.readAt);
 
 /** The centre's rows grouped by calendar day, newest group (and row) first. */
 export function groupByDay<T extends Pick<Notification, "createdAt">>(list: T[], now = Date.now()): { label: string; items: T[] }[] {
@@ -171,8 +177,8 @@ export type ToastPrefs = Partial<Record<NotificationKind, boolean>>;
 
 /** Whether a notification pops up: not while do-not-disturb is on, not a kind switched off, and not
  *  one older than the fresh window (a catch-up after an hour away is for the centre, not the corner). */
-export function shouldToast(n: Pick<Notification, "kind" | "createdAt" | "dismissedAt">, opts: { dnd: boolean; prefs: ToastPrefs; now?: number }): boolean {
-  if (opts.dnd || n.dismissedAt) return false;
+export function shouldToast(n: Pick<Notification, "kind" | "createdAt" | "readAt">, opts: { dnd: boolean; prefs: ToastPrefs; now?: number }): boolean {
+  if (opts.dnd || n.readAt) return false;
   if (opts.prefs[n.kind] === false) return false;
   return (opts.now ?? Date.now()) - n.createdAt < TOAST_FRESH_MS;
 }

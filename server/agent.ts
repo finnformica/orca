@@ -12,6 +12,7 @@ import * as db from "./db";
 import * as transcript from "./transcript";
 import * as outbox from "./outbox";
 import * as bus from "./bus";
+import * as cgroup from "./cgroup";
 import { tmpdir } from "os";
 
 /** Persist a turn, but never let the history write break the run that produced it. Repo-level runs
@@ -116,6 +117,11 @@ export type LaunchOptions = {
   /** `false`: this run's queue is drained by whoever launched it, not by the exit handler (the
    *  orchestrator batches every pending wake into one run). */
   queue?: false;
+  /** The repo's `agentMemoryMaxGb` (server/cgroup.ts); unset means the default (4GB). Every launch
+   *  is capped — there is no "uncapped" option, only a bigger number. */
+  memoryMaxGb?: number;
+  /** The app's `agentCpuWeight`; unset means the default (50, systemd's own neutral weight). */
+  cpuWeight?: number;
 };
 
 /** What a finished run looked like — handed to the onRunFinished hook. */
@@ -555,9 +561,20 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   const startedAt = Date.now();
   // HEAD before the run, so "did it commit?" is a comparison, not a guess from the outcome text.
   const headBefore = options.check ? await headOf(cwd) : undefined;
+  // Every run gets its own memory/CPU-limited scope when one is available (server/cgroup.ts) — so
+  // THIS worker's runaway build or browser gets killed by the kernel alone, not the box. No-op on
+  // darwin or an unprovisioned Linux box (no systemd-run, or no reachable user bus).
+  const scopeUnit = `orca-run-${runId}`;
+  const memoryMaxGb = options.memoryMaxGb ?? cgroup.DEFAULT_MEMORY_MAX_GB;
+  const cpuWeight = options.cpuWeight ?? cgroup.DEFAULT_CPU_WEIGHT;
+  const scoped = cgroup.available();
+  const scopedEnv = scoped ? cgroup.runtimeEnv() : {};
   const proc = Bun.spawn(
-    agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd, options.allowedTools),
-    { cwd, env: { ...agentEnv(), ...options.env }, stdout: "pipe", stderr: "pipe" },
+    cgroup.scopedCommand(
+      agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd, options.allowedTools),
+      { available: scoped, memoryMaxGb, cpuWeight, unit: scopeUnit },
+    ),
+    { cwd, env: { ...agentEnv(), ...scopedEnv, ...options.env }, stdout: "pipe", stderr: "pipe" },
   );
   let timedOut = false;
   const timeout = options.timeoutMs ? setTimeout(() => { timedOut = true; proc.kill(); }, options.timeoutMs) : undefined;
@@ -623,7 +640,11 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, structured, meta, startedAt, finishedAt };
     const ok = code === 0 && !isError;
     const wasStopped = stoppedRuns.delete(runId);
-    const error = ok ? undefined : (err.trim() || result || `exit ${code}`).slice(0, 300);
+    // 137 is plain SIGKILL from anything; ask the scope itself (its Result, read while it still has
+    // one — see cgroup.wasOomKilled) rather than assume, so a run you stopped or that died some other
+    // way at 137 isn't mislabelled.
+    const oomKilled = scoped && !ok && !wasStopped && code === 137 && await cgroup.wasOomKilled(scopeUnit, { ...process.env, ...scopedEnv });
+    const error = ok ? undefined : oomKilled ? `out of memory (${memoryMaxGb} GB ceiling)` : (err.trim() || result || `exit ${code}`).slice(0, 300);
     const stopReason: StopReason = wasStopped ? "interrupted" : budgetReached ? "budget_reached" : ok ? "end_turn" : "error";
     await started; // finish can never overtake start, however fast the run was
     recordTurn(options, () => outbox.finishTurn(runId, {
@@ -645,7 +666,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
       inputTokens: meta?.inputTokens, outputTokens: meta?.outputTokens,
       cacheReadTokens: meta?.cacheReadTokens, cacheCreationTokens: meta?.cacheCreationTokens,
       evidenceChars: options.evidenceChars, costUsd: meta?.costUsd,
-      errorKind: ok ? undefined : budgetReached ? "budget" : timedOut ? "timeout" : code !== 0 ? "nonzero-exit" : "agent-error",
+      errorKind: ok ? undefined : oomKilled ? "oom" : budgetReached ? "budget" : timedOut ? "timeout" : code !== 0 ? "nonzero-exit" : "agent-error",
     });
     // The verification gate: a run that committed gets the repo's check command run over it, and
     // the result lands on the turn as evidence. Only a successful run is checked — a failed one has

@@ -2,10 +2,12 @@ import { useState } from "react";
 import { Bot, Check, CircleAlert, Copy, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useOrchestrator } from "@/components/Terminal";
+import { Tip } from "@/components/ui/tip";
 import { dismissToast, useToasts, type Toast } from "@/lib/toast";
 
 /** The toast stack (lib/toast), mounted once in App: bottom-right, above the orchestrator's window
- *  (z-40), newest at the bottom. Geist's toast: card, hairline border, 8px radius, the menu shadow. */
+ *  (z-40), newest at the bottom. Geist's toast: card, hairline border, 8px radius, the menu shadow; its
+ *  actions are size-7 ghost icon buttons with tooltips, like the notification toasts' quick actions. */
 export function Toaster() {
   const toasts = useToasts();
   if (!toasts.length) return null;
@@ -32,9 +34,17 @@ function ToastItem({ t }: { t: Toast }) {
       </div>
       {t.body && <pre data-slot="toast-body" className="text-muted-foreground mt-1.5 max-h-40 overflow-auto font-mono text-xs break-words whitespace-pre-wrap">{t.body}</pre>}
       {(t.copy || t.ask) && (
-        <div className="mt-2.5 flex justify-end gap-2">
-          {t.copy && <Button size="sm" variant="outline" className="h-7" onClick={() => void copy()}>{copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}{copied ? "Copied" : "Copy"}</Button>}
-          {t.ask && <Button size="sm" variant="outline" className="h-7" onClick={() => { ask(t.ask); dismissToast(t.id); }}><Bot className="size-3.5" />Ask the orchestrator</Button>}
+        <div data-slot="toast-actions" className="mt-1.5 flex justify-end gap-1">
+          {t.copy && (
+            <Tip label={copied ? "Copied" : "Copy"}>
+              <Button size="icon" variant="ghost" className="text-muted-foreground hover:text-foreground size-7" aria-label="Copy" onClick={() => void copy()}>{copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}</Button>
+            </Tip>
+          )}
+          {t.ask && (
+            <Tip label="Ask the orchestrator">
+              <Button size="icon" variant="ghost" className="text-foreground size-7" aria-label="Ask the orchestrator" onClick={() => { ask(t.ask); dismissToast(t.id); }}><Bot className="size-3.5" /></Button>
+            </Tip>
+          )}
         </div>
       )}
     </div>

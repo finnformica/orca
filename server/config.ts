@@ -89,6 +89,11 @@ export type RepoConfig = {
   /** Cost ceiling for ONE agent run, in US dollars (Claude's `--max-budget-usd`). The run ends with
    *  stop reason `budget_reached` — a runaway run can't drain a login. Unset = no cap. */
   agentMaxBudgetUsd?: number;
+  /** Memory ceiling for ONE agent run, in GB (`server/cgroup.ts`'s `MemoryMax` on the run's own
+   *  systemd scope, Linux only). Unlike the budget cap, there is no "uncapped" — unset means the
+   *  default (4GB). A run that hits it is killed by the kernel alone, not the box; the turn's
+   *  response says so and its stop reason is `error`. */
+  agentMemoryMaxGb?: number;
   /** Which Orca instance executes this repo (`db.instanceName()`). Absent = whichever instance is
    *  reading, i.e. today's single-machine behaviour. An instance ignores repos assigned elsewhere,
    *  which is how a laptop and a cloud box divide the work without a queue between them. */
@@ -137,6 +142,10 @@ export type OrcaConfig = {
    *  routes are forwarded there and worker reports from other instances are posted there, so ONE
    *  process wakes it (two would resume one session at once). Unset: wherever it is spoken to. */
   orchestratorOn?: string;
+  /** `CPUWeight` on every agent run's own scope (`server/cgroup.ts`), 1-10000, systemd's neutral
+   *  default is 100 but Orca's own default is 50 — a worker should yield to the bridge serving the
+   *  board, not compete with it. Unset means the default. */
+  agentCpuWeight?: number;
 };
 
 /** The model a repo's Claude runs use: its own pin, else the global default, else the CLI's. Pure. */
@@ -208,6 +217,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
     if (r.agentMaxBudgetUsd !== undefined && (typeof r.agentMaxBudgetUsd !== "number" || !(r.agentMaxBudgetUsd > 0))) {
       errors.push(`${where}.agentMaxBudgetUsd must be a positive number of dollars`);
     }
+    if (r.agentMemoryMaxGb !== undefined && (typeof r.agentMemoryMaxGb !== "number" || !(r.agentMemoryMaxGb > 0))) {
+      errors.push(`${where}.agentMemoryMaxGb must be a positive number of GB`);
+    }
     if (r.features !== undefined) {
       if (!r.features || typeof r.features !== "object" || Array.isArray(r.features)) {
         errors.push(`${where}.features must be an object`);
@@ -264,6 +276,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
   if (d.orchestratorWakeBudgetUsd !== undefined && (typeof d.orchestratorWakeBudgetUsd !== "number" || !(d.orchestratorWakeBudgetUsd > 0))) {
     errors.push("orchestratorWakeBudgetUsd must be a positive number of dollars");
   }
+  if (d.agentCpuWeight !== undefined && (typeof d.agentCpuWeight !== "number" || !(d.agentCpuWeight > 0))) {
+    errors.push("agentCpuWeight must be a positive number (systemd CPUWeight, 1-10000)");
+  }
   if (errors.length) return { errors };
   return {
     errors: [],
@@ -277,6 +292,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       orchestratorShell: d.orchestratorShell as boolean | undefined,
       orchestratorWakeBudgetUsd: d.orchestratorWakeBudgetUsd as number | undefined,
       orchestratorOn: d.orchestratorOn as string | undefined,
+      agentCpuWeight: d.agentCpuWeight as number | undefined,
     },
   };
 }
@@ -338,6 +354,7 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
       ...(file.orchestratorShell === undefined ? {} : { orchestratorShell: file.orchestratorShell }),
       ...(file.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: file.orchestratorWakeBudgetUsd }),
       ...(file.orchestratorOn === undefined ? {} : { orchestratorOn: file.orchestratorOn }),
+      ...(file.agentCpuWeight === undefined ? {} : { agentCpuWeight: file.agentCpuWeight }),
     },
   });
 }
@@ -401,6 +418,7 @@ async function loadFromDb(): Promise<OrcaConfig> {
     orchestratorShell: app.orchestratorShell !== false,
     orchestratorWakeBudgetUsd: app.orchestratorWakeBudgetUsd as number | undefined,
     orchestratorOn: app.orchestratorOn as string | undefined,
+    agentCpuWeight: app.agentCpuWeight as number | undefined,
   };
   cached = config;
   cachedAt = Date.now();
@@ -432,6 +450,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.orchestratorShell === undefined ? {} : { orchestratorShell: config.orchestratorShell }),
       ...(config.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: config.orchestratorWakeBudgetUsd }),
       ...(config.orchestratorOn === undefined ? {} : { orchestratorOn: config.orchestratorOn }),
+      ...(config.agentCpuWeight === undefined ? {} : { agentCpuWeight: config.agentCpuWeight }),
     },
   });
   invalidateConfig();
