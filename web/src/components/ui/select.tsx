@@ -14,7 +14,7 @@ function SelectTrigger({ className, children, size = "default", ...props }: Reac
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
       className={cn(
-        "border-input focus-visible:ring-ring/40 flex min-w-0 w-fit cursor-pointer items-center justify-between overflow-hidden rounded-md border bg-card whitespace-nowrap outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50 [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:truncate [&_svg]:shrink-0",
+        "border-input focus-visible:ring-ring/40 flex min-w-0 w-fit cursor-pointer items-center justify-between overflow-hidden rounded-md border bg-card whitespace-nowrap outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50 [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:flex-1 [&_[data-slot=select-value]]:truncate [&_svg]:shrink-0",
         size === "sm" ? "h-7 gap-1 px-1.5 text-xs [&_svg]:size-3.5" : "h-8 gap-2 px-2 text-sm [&_svg]:size-4",
         className,
       )}
