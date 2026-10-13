@@ -79,7 +79,8 @@ export function Shell({ crumbs, sidebarActions, children }: {
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <UpdateBanner />
-        <header data-slot="topbar" className="bg-background/80 sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 backdrop-blur md:px-6 max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pt-[env(safe-area-inset-top)]">
+        {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it. */}
+        <header data-slot="topbar" className="bg-background sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 md:px-6 max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pt-[env(safe-area-inset-top)]">
           <button type="button" className="text-muted-foreground hover:text-foreground -ml-2 inline-flex size-11 shrink-0 items-center justify-center md:hidden" onClick={() => setOpen(true)} aria-label="Open menu"><Menu className="size-5" /></button>
           <button type="button" data-slot="topbar-mark" onClick={() => navigate("/")} aria-label="Orca — go to overview" className="shrink-0 md:hidden"><RoundMark /></button>
           <RepoSwitcher />
