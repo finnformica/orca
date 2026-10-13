@@ -6,15 +6,15 @@
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
-import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, CircleX, Search } from "lucide-react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { AlertTriangle, ArrowDown, CircleX, Search } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { WORKER_EVENT_MARKER, chatSummary, isWorkerEvent, promptInstruction, turnMatches } from "../workstream";
+import { TURN_PAGE_SIZE, WORKER_EVENT_MARKER, anchoredScrollTop, atBottom, chatSummary, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, turnMatches } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -25,6 +25,21 @@ import type { OrchestratorPrefill } from "@/lib/atoms";
 // How close to the bottom still counts as "following". A few pixels of slack absorbs sub-pixel
 // rounding and the composer resizing, so following doesn't switch off on its own.
 const FOLLOW_SLACK = 48;
+// How close to the top (px) fetches the next older page.
+const OLDER_THRESHOLD = 160;
+
+/** Placeholder lines sized like a turn, while a page is in flight — nothing shifts when it lands. */
+const ChatSkeleton = ({ rows }: { rows: number }) => (
+  <div className="w-full animate-pulse space-y-3" data-slot="chat-skeleton" aria-hidden="true">
+    {Array.from({ length: rows }, (_, i) => (
+      <div key={i} className="space-y-1.5">
+        <div className="h-3 w-2/5 rounded bg-neutral-800" />
+        <div className="h-3 w-4/5 rounded bg-neutral-800/70" />
+        <div className="h-3 w-3/5 rounded bg-neutral-800/50" />
+      </div>
+    ))}
+  </div>
+);
 
 /** Markdown inside the terminal-styled log: prose spacing and readable lists, but sized and coloured
  *  to sit in the dark window rather than looking like a pasted document. */
@@ -270,18 +285,65 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill }: {
     setSending((s) => [...s, { id, text }]);
     try {
       await deliver(text, images);
-      setTurns(await api.turns(row.repo, row.branch).catch(() => turnsRef.current ?? []));
+      await loadLatest();
       await loadQueued(); // it may have been held rather than launched
     } finally {
       setSending((s) => s.filter((m) => m.id !== id));
     }
   };
+  // The conversation is PAGED: the newest TURN_PAGE_SIZE turns on open, and one more page each time
+  // you reach the top (`older` is the cursor for it, null once the first turn is loaded). The
+  // orchestrator's conversation is hundreds of turns and used to load whole — megabytes over the
+  // tailnet and a long first render — to show the last few.
   const [turns, setTurns] = useState<AgentTurn[] | null>(null);
+  const [older, setOlder] = useState<string | null>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const follow = useRef(true); // at the bottom → keep following; scrolled up → leave the reader be
+  const [atTail, setAtTail] = useState(true); // `follow`, as state, for the jump-to-latest button
+  const [unseen, setUnseen] = useState(false); // something arrived below while you were scrolled up
   const turnsRef = useRef<AgentTurn[] | null>(null); // read by the tail without re-arming it
+  const olderRef = useRef<string | null>(null);
+  const loadingOlderRef = useRef(false);
+  const anchor = useRef<{ top: number; height: number } | null>(null); // scroll position to restore after a prepend
   const cursors = useRef(new Map<string, number>()); // per-run high-water mark, for reconnect catch-up
   const running = row.agentStatus === "running";
+  /** (Re)fetch the newest page. What was already loaded above it stays; a turn the page re-delivers
+   *  (now finished) takes its fresh form. The first fetch also sets where the older pages start. */
+  const loadLatest = async () => {
+    const page = await api.turnPage(row.repo, row.branch, { limit: TURN_PAGE_SIZE }).catch(() => null);
+    if (!page) return;
+    const had = turnsRef.current;
+    if (!had || !had.length) { olderRef.current = page.older; setOlder(page.older); }
+    setTurns(had ? mergeLatestPage(had, page.turns) : page.turns);
+  };
+  /** The page before the oldest loaded turn, put in front of it with the scroll position anchored on
+   *  what you were reading (useLayoutEffect below). */
+  const loadOlder = async () => {
+    const before = olderRef.current;
+    if (!before || loadingOlderRef.current) return;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    try {
+      const page = await api.turnPage(row.repo, row.branch, { limit: TURN_PAGE_SIZE, before });
+      const el = scroller.current;
+      if (el) anchor.current = { top: el.scrollTop, height: el.scrollHeight };
+      olderRef.current = page.older;
+      setOlder(page.older);
+      setTurns((prev) => prependOlderPage(page.turns, prev ?? []));
+    } catch { /* the affordance stays; a scroll or click tries again */ } finally {
+      loadingOlderRef.current = false;
+      setLoadingOlder(false);
+    }
+  };
+  // Content was added ABOVE the viewport: move the scroller by the same amount, so the turn you were
+  // reading doesn't jump. Layout effect: before the browser paints the shifted content.
+  useLayoutEffect(() => {
+    const a = anchor.current, el = scroller.current;
+    if (!a || !el) return;
+    anchor.current = null;
+    el.scrollTop = anchoredScrollTop(a.top, a.height, el.scrollHeight);
+  }, [turns]);
 
   // The conversation loads once, then steps are PUSHED as the agent records them — that's the
   // terminal-like feel. They arrive on the tab's one shared stream (lib/events.ts), which carries
@@ -290,7 +352,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill }: {
   // conversation.
   useEffect(() => {
     let live = true;
-    const load = () => api.turns(row.repo, row.branch).then((t) => { if (live) setTurns(t); }).catch(() => {});
+    const load = async () => { if (live) await loadLatest(); };
     void load();
     void loadQueued();
 
@@ -326,9 +388,18 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill }: {
   // bottom. Scrolling up to read something is an intent to stay there (a stream of steps yanking you
   // back down mid-read is the worst version of this), and returning to the bottom resumes following.
   // Keyed on `turns` itself, not its length, so appended steps scroll too.
+  // Not following (you scrolled up to read): nothing moves, and a jump-to-latest button appears once
+  // something new has arrived below. An older page landing above is not "new".
   useEffect(() => {
     if (follow.current) scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
+    else if (!anchor.current && !loadingOlderRef.current) setUnseen(true);
   }, [turns, sending]);
+  const jumpToLatest = () => {
+    follow.current = true;
+    setAtTail(true);
+    setUnseen(false);
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
+  };
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
   const loadQueued = () => api.queued(row.repo, row.branch).then(setQueued).catch(() => {});
   // The context ring's Compact button. `compacting` is the compact run's id ("" while the request is
@@ -372,7 +443,13 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill }: {
     Boolean(turns?.some((t) => !t.finishedAt && t.instruction?.startsWith(text))) || queued.some((m) => m.instruction.startsWith(text));
   const onScroll = () => {
     const el = scroller.current;
-    if (el) follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < FOLLOW_SLACK;
+    if (!el) return;
+    const tail = atBottom(el.scrollTop, el.scrollHeight, el.clientHeight, FOLLOW_SLACK);
+    follow.current = tail;
+    if (tail !== atTail) setAtTail(tail);
+    if (tail) setUnseen(false);
+    // Near the top with more history behind: fetch the next page before you hit the edge.
+    if (el.scrollTop < OLDER_THRESHOLD && olderRef.current) void loadOlder();
   };
 
   // Compact is offered once the ring has a reading: only a Claude session reports one, and only a
@@ -386,7 +463,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill }: {
     <div className={`flex h-full flex-col ${flush || logBar ? "" : "gap-3"} ${logBar ? "log-themed" : ""}`}>
       {logBar && (
         <div data-slot="chat-logbar" className="flex flex-wrap items-center gap-3 border-b px-4 py-2 text-sm">
-          <span className="text-muted-foreground tabular-nums" data-slot="chat-count">{counts.turns} turn{counts.turns === 1 ? "" : "s"}</span>
+          <span className="text-muted-foreground tabular-nums" data-slot="chat-count" title={older ? "Older turns load as you scroll up" : undefined}>{counts.turns}{older ? "+" : ""} turn{counts.turns === 1 && !older ? "" : "s"}</span>
           <span className="ml-auto flex items-center gap-3">
             <span className="inline-flex items-center gap-1 tabular-nums" title="Failed turns" data-slot="chat-errors"><CircleX className="text-geist-red size-4" />{counts.errors}</span>
             <span className="inline-flex items-center gap-1 tabular-nums" title="Stopped turns and failed checks" data-slot="chat-warnings"><AlertTriangle className="text-geist-amber size-4" />{counts.warnings}</span>
@@ -416,7 +493,18 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill }: {
             </button>
           </div>
         )}
-        {turns === null ? <p className="text-neutral-500">Loading conversation…</p>
+        {/* Earlier pages: fetched as you near the top, or on a click (a page shorter than the window
+            can't be scrolled). A skeleton while the page is in flight. */}
+        {turns !== null && older && (
+          <div className="mb-3 flex justify-center" data-slot="chat-older">
+            {loadingOlder ? <ChatSkeleton rows={2} /> : (
+              <button type="button" onClick={() => void loadOlder()} className="rounded-md border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200">
+                ↑ earlier turns
+              </button>
+            )}
+          </div>
+        )}
+        {turns === null ? <ChatSkeleton rows={4} />
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
           : shownTurns!.length === 0 ? <p className="text-neutral-500">No turn matches “{find}”.</p>
           : shownTurns!.map((turn) => <Turn key={turn.id} turn={turn} stamped={logBar} loadSteps={() => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response))} />)}
@@ -438,6 +526,15 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill }: {
             onCancel={() => void api.cancelQueued(row.repo, m.id).then(loadQueued)}
           />
         ))}
+        {/* Scrolled up while the agent keeps talking: a way back down, instead of being dragged there. */}
+        {!atTail && (
+          <div className="sticky bottom-0 flex justify-center pointer-events-none">
+            <button type="button" onClick={jumpToLatest} data-slot="chat-jump" data-unseen={unseen || undefined}
+              className={`pointer-events-auto flex items-center gap-1 rounded-full border border-neutral-800 bg-neutral-900 px-2.5 py-1 font-sans text-[11px] shadow-menu hover:text-neutral-100 ${unseen ? "text-sky-400" : "text-neutral-400"}`}>
+              <ArrowDown className="size-3" />{unseen ? "New messages" : "Jump to latest"}
+            </button>
+          </div>
+        )}
       </div>
       {/* `dark` scopes the theme tokens: the composer's text and border must read on the terminal
           background whatever the page's theme is. */}

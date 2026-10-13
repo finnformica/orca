@@ -1903,3 +1903,37 @@ export function pullState(dy: number): { phase: "idle" | "pull" | "release"; off
   if (dy < 10) return { phase: "idle", offset: 0 };
   return { phase: dy * 0.5 >= PULL_REFRESH_PX ? "release" : "pull", offset: Math.min(Math.round(dy * 0.5), 96) };
 }
+
+// ---- chat pagination: pure pieces of ChatPanel's paging and scroll anchoring ----
+
+/** How many turns a chat loads at a time: the newest page on open, one more each time you reach
+ *  the top. The orchestrator's conversation runs to hundreds of turns, nearly all of them old. */
+export const TURN_PAGE_SIZE = 50;
+
+/** Turns identify by run id; a re-fetched page replaces what it covers and keeps what it doesn't. */
+type Keyed = { id: string };
+
+/** The conversation after the NEWEST page is re-fetched (a turn started or finished): everything
+ *  already loaded that the fresh page doesn't carry stays in front of it — the older pages you
+ *  scrolled back through aren't thrown away by a refresh — and a turn the page re-delivers (now
+ *  finished, with its steps) takes its fresh form. */
+export function mergeLatestPage<T extends Keyed>(loaded: T[], latest: T[]): T[] {
+  const fresh = new Set(latest.map((t) => t.id));
+  return [...loaded.filter((t) => !fresh.has(t.id)), ...latest];
+}
+
+/** An older page arrives: it goes in front of what's loaded, minus anything already there (a turn
+ *  that moved between the two fetches, or a page requested twice). */
+export function prependOlderPage<T extends Keyed>(older: T[], loaded: T[]): T[] {
+  const have = new Set(loaded.map((t) => t.id));
+  return [...older.filter((t) => !have.has(t.id)), ...loaded];
+}
+
+/** Where the scroller must sit so the turn you were reading stays put after content was added ABOVE
+ *  it: the old offset plus however much taller the content got. */
+export const anchoredScrollTop = (prevScrollTop: number, prevScrollHeight: number, nextScrollHeight: number): number =>
+  prevScrollTop + (nextScrollHeight - prevScrollHeight);
+
+/** Is a scroll position "at the bottom" — within `slack` px of it — i.e. still following the tail? */
+export const atBottom = (scrollTop: number, scrollHeight: number, clientHeight: number, slack: number): boolean =>
+  scrollHeight - scrollTop - clientHeight < slack;
