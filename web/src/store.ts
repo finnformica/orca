@@ -12,7 +12,7 @@ import {
   addressNeedsAgent, addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, followUpPrompt, instanceOrder, launchPrompt,
   mergeSettled, newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
-import type { ReviewDigest } from "./workstream";
+import type { BridgeInfo, ReviewDigest } from "./workstream";
 import type { PrRef } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
@@ -36,7 +36,7 @@ const notify = () => { version++; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.delete(l); };
 
 // ---- config ----
-let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number> } | null = null;
+let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; bridge?: BridgeInfo } | null = null;
 export const configReady = api.config()
   .then(async (c) => { cfg = c; notify(); await migrateLocalEnrichment(); void refresh(); })
   .catch(() => { cfg = { repos: EMPTY_REPOS, staleHours: 24, agentProviders: DEFAULT_AGENT_PROVIDERS }; configFailed = true; notify(); });
@@ -77,6 +77,8 @@ export async function migrateLocalEnrichment(): Promise<void> {
 /** The bridge's port — the terminal WebSocket targets it directly (the Bun-run Vite dev proxy can't
  *  forward a WS upgrade). Falls back to the page's own port, which is correct for the built app. */
 export const apiPort = (): string => String(cfg?.apiPort ?? location.port);
+/** Which bridge answered /api/config (a branch preview's own, or main's) — for BridgeLabel. */
+export const useBridge = (): BridgeInfo | undefined => useSyncExternalStore(subscribe, () => cfg?.bridge);
 
 const repoInfo = (repo: string) => cfg?.repos.find((r) => r.name === repo);
 export const useRepos = (): RepoInfo[] => useSyncExternalStore(subscribe, () => cfg?.repos ?? EMPTY_REPOS);
