@@ -6,7 +6,7 @@ import { useOrchestrator } from "@/components/Terminal";
 import { launchOverlay } from "./workstream";
 import { expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
 import { Shell, Crumb, AddNew } from "@/components/Shell";
-import { OrchestratorPanel } from "@/components/Terminal";
+import { OrchestratorPanel, OrchestratorPage } from "@/components/Terminal";
 import { Toaster } from "@/components/Toaster";
 import { ToastHost } from "@/components/Notifications";
 import { useWorkstreams } from "./store";
@@ -56,11 +56,14 @@ function Page({ route }: { route: Route }) {
     case "repos": return <Repos />;
     case "usage": return <UsagePage />;
     case "settings": return <Settings />;
+    // The orchestrator's routed page (narrow screens; see useOrchestrator). It works if visited
+    // directly on a desktop width too — nothing about the route itself is phone-only.
+    case "orchestrator": return <OrchestratorPage />;
     default: return <Overview />;
   }
 }
 
-const TITLES = { board: "Overview", agents: "Agents", previews: "Previews", repos: "Repos", usage: "Usage", settings: "Settings" } as const;
+const TITLES = { board: "Overview", agents: "Agents", previews: "Previews", repos: "Repos", usage: "Usage", settings: "Settings", orchestrator: "Orchestrator" } as const;
 
 function Crumbs({ route }: { route: Route }) {
   const rows = useWorkstreams();
