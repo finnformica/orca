@@ -12,6 +12,8 @@
 import * as bus from "./bus";
 
 const RETRY_MS = 3_000;
+/** The events relayed from another instance (its `ready` and keep-alives are dropped). */
+export const RELAYED = ["step", "turn", "notification"] as const;
 
 /** The stream. `upstreams` are the other instances' base URLs (empty for a `?local=1` relay). An
  *  upstream that drops is retried; when it comes back, a `ready` tells the client to catch up from
@@ -28,7 +30,8 @@ export function eventStream(req: Request, upstreams: string[]): Response {
       const keepAlive = setInterval(() => send(": keep-alive\n\n"), 25_000);
       const off = bus.subscribe((e) => {
         if (e.kind === "step") event("step", { repo: e.repo, branch: e.branch, runId: e.runId, steps: e.steps });
-        else event("turn", { repo: e.repo, branch: e.branch, runId: e.runId });
+        else if (e.kind === "turn") event("turn", { repo: e.repo, branch: e.branch, runId: e.runId });
+        else event("notification", e.notification);
       });
       const aborts = new AbortController();
       close = () => {
@@ -68,7 +71,7 @@ async function relay(base: string, signal: AbortSignal, send: (frame: string) =>
         while ((end = buf.indexOf("\n\n")) >= 0) {
           const frame = buf.slice(0, end + 2);
           buf = buf.slice(end + 2);
-          if (frame.startsWith("event: step\n") || frame.startsWith("event: turn\n")) send(frame);
+          if (RELAYED.some((name) => frame.startsWith(`event: ${name}\n`))) send(frame);
         }
       }
     } catch { attempt++; /* unreachable or dropped — retry below */ }

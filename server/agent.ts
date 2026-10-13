@@ -649,7 +649,10 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     let check: TurnCheck | undefined;
     if (ok && options.check && headBefore !== undefined && (await headOf(cwd)) !== headBefore) {
       check = await runCheck(cwd, options.check.command);
-      recordTurn(options, () => db.setCheck(runId, check!));
+      // Awaited (the run is over; this only delays the status flip by one round trip), so a run that
+      // reads as finished has its verdict on the turn — a reader that polls "finished, then fetch"
+      // otherwise sees the check missing when the pool is busy (the notification writes below).
+      await recordTurn(options, () => db.setCheck(runId, check!));
       if (!check.ok && options.check.autofix && options.repo && options.branch && !isAutofix(options.instruction)) {
         // Queued rather than launched: the same path a typed follow-up takes, so it inherits the
         // session, profile routing, and the run lease. dispatchQueued below sends it.

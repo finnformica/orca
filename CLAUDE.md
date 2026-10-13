@@ -38,9 +38,9 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
 
 - **One Bun process** (`server/index.ts`, via `Bun.serve`) serves the built React SPA *and*
   a plain-JSON API. `Vite` is dev-only (HMR + proxy). The one streaming surface is the SSE turn
-  stream (`/api/events`, ONE per tab, multiplexing every chat and relaying the other instances' buses —
-  a browser gets six HTTP/1.1 connections per host across all tabs, and a stream per chat starved the
-  PR page's fetches) — everything else is request/response. **The API has no auth of its
+  stream (`/api/events`, ONE per tab, multiplexing every chat, the notification centre's pushes, and
+  relaying the other instances' buses — a browser gets six HTTP/1.1 connections per host across all
+  tabs, and a stream per chat starved the PR page's fetches) — everything else is request/response. **The API has no auth of its
   own**, so the listen socket is loopback by default (`ORCA_BIND`, comma-separated addresses). A deployed
   instance binds loopback PLUS its tailnet address (`127.0.0.1,<tailnet ip>`) and is reached from other
   machines only over Tailscale — never `0.0.0.0`. Loopback is not optional on the box: `bin/orca` and an
@@ -498,6 +498,37 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
 - **Limits to know:** it acts only on repos its own instance runs (no forwarding); two instances
   must not both drive it at once (the run lease is per host); a worker's outcome text is model
   output fed to something that can spawn and send, which is why its authority stops there.
+
+## Notification centre (toasts + the bell)
+
+Flat notifications — one row per event, no threads — in a `notification` table (migration 15 — 13 and 14 were taken by branches open at the same time; `migrate()` tolerates the gap) shared
+by both instances, so either machine shows the same centre. **One emitter, `server/notify.ts`**: the
+row is written once (`db.addNotification`, idempotent on the event's `key` — `run:<runId>:<kind>`,
+`check:<runId>`, `preview:<key>:<startedAt>:ready|failed`, `pr-ci:<repo>#<n>:<checks>`,
+`pr-conflict:<repo>#<n>` — so a run finished twice by a restart's lease adoption, or a repo answered
+by two instances, is one row), then pushed on the bus as a `notification` event that rides the
+per-tab `/api/events` stream and is relayed between instances like steps and turns. Sources: the
+run-finished hook (`finished`, `needs_input`, `failed`; `check_failed` beside the run's own event,
+even when an autofix continues the branch; a `compact` is silent; the orchestrator's own wake is
+reported only when it died or asked you something, and its Open opens the window), the Stop route
+(`stopped` — a stopped run is superseded in `agent.ts` and never reaches the hook, and a discard is
+not news), a watcher after `preview.start` (`preview_ready` with the URL you'd open, else
+`preview_failed`; a preview you stop mid-boot is forgotten), and the `/api/prs` answer
+(`pr_ci_failed`, `pr_conflicts`). **Needs input is a heuristic** (`asksForInput`): a reply whose last
+line is a question, or `requires_action` — nobody has a cleaner signal (CLAUDE: a question is still
+`end_turn`). Titles are the card's title, else the branch. Rows are pruned past 30 days by the writer.
+The decisions are pure in `shared/notifications.ts` (what an event is, what pops, how the stack is
+cut, grouping by day); the browser mirror is `web/src/lib/notificationStore.ts` (loads once, holds
+the tab's stream, catches up by `since` on reconnect; toasts pop only for rows newer than the first
+load and younger than ten minutes); the surfaces are `components/Notifications.tsx`: the toast stack
+bottom-right above the orchestrator's launcher (newest on top; past one it collapses to the top three
+with a count bar, hover or click expands; Clear all; a toast for a finished run or a ready preview
+hides itself after 6s, a problem or a question stays until dismissed — `KIND_META.persistent`), and
+the bell at the sidebar's foot with the unread count, opening the centre (grouped by day, read /
+unread, a kind filter, Mark all read, Clear all = dismiss, do-not-disturb). Dismissing a toast keeps
+the row; clearing the centre keeps nothing. Settings: do not disturb, per-kind toasts, and browser
+notifications (urgent kinds only, while the tab is hidden; the permission is asked for when switched
+on). Preferences are per browser (`orca.notifications.*` in localStorage); the rows are not.
 
 ## Deploying (a cloud box + the laptop, one database)
 

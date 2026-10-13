@@ -28,6 +28,7 @@
 import { hostname } from "os";
 import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck } from "../shared/agent";
 import * as bus from "./bus";
+import type { Notification, NotificationInput } from "../shared/notifications";
 
 export type TurnStatus = "running" | "done" | "error" | "stopped";
 
@@ -356,6 +357,38 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
     // dashboard overlays it on the CPU/memory graphs). Nullable: rows written before this migration
     // have none; metricHistory reads them back as 0 rather than null.
     sql: `ALTER TABLE instance_metric ADD COLUMN running_agents INTEGER`,
+  },
+  {
+    // 15, not 13: two branches open alongside this one each add a step too (usage → 13, insights →
+    // 14), and migrate() skips ids already applied without needing them contiguous, so a gap is
+    // harmless whichever lands first. Never renumber an applied step.
+    id: 15,
+    // The notification centre (shared/notifications.ts): one flat row per event — an agent that
+    // finished, asked for input, failed or was stopped; a check that failed; a PR whose CI fails or
+    // that conflicts; a preview that came up or didn't. Written ONCE by the instance where it
+    // happened and read by every instance, so both machines show the same centre. `key` is the
+    // event's identity: a run adopted after a restart, or a repo answered by two instances, must not
+    // produce a second row, and a unique index makes that a no-op insert rather than a check.
+    // Pruned to 30 days by the writer, like instance_metric.
+    sql: `
+      CREATE TABLE notification (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        key TEXT NOT NULL,
+        instance TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        branch TEXT,
+        kind TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL DEFAULT '',
+        link JSONB,
+        created_at BIGINT NOT NULL,
+        read_at BIGINT,
+        dismissed_at BIGINT
+      );
+      CREATE UNIQUE INDEX notification_key ON notification (user_id, key);
+      CREATE INDEX notification_recent ON notification (user_id, created_at DESC);
+    `,
   },
 ];
 
@@ -1050,4 +1083,67 @@ export async function dropQueuedMessages(repo: string, branch: string): Promise<
       DELETE FROM queued_message
       WHERE user_id = ${currentUser()} AND repo = ${repo} AND branch = ${branch} AND dispatched_at IS NULL`;
   });
+}
+
+// ---- notifications (the notification centre) ----
+
+/** How long a notification row is kept. */
+export const NOTIFICATION_RETENTION_MS = 30 * 24 * 3_600_000;
+
+type NotificationRow = {
+  id: string; instance: string; repo: string; branch: string | null; kind: Notification["kind"]; title: string; body: string;
+  link: Notification["link"] | null; created_at: string; read_at: string | null; dismissed_at: string | null;
+};
+const toNotification = (r: NotificationRow): Notification => ({
+  id: Number(r.id), instance: r.instance, repo: r.repo, ...(r.branch ? { branch: r.branch } : {}), kind: r.kind, title: r.title, body: r.body,
+  ...(r.link ? { link: r.link } : {}), createdAt: Number(r.created_at),
+  ...(r.read_at ? { readAt: Number(r.read_at) } : {}), ...(r.dismissed_at ? { dismissedAt: Number(r.dismissed_at) } : {}),
+});
+
+/** Record one event, once: a second insert with the same `key` is a no-op and returns undefined, so
+ *  the caller knows not to push it. The same statement prunes this user's rows past retention —
+ *  cheap on the (user, created_at) index, and it needs no second timer. `at` is injectable for tests. */
+export async function addNotification(input: NotificationInput, at = Date.now()): Promise<Notification | undefined> {
+  const sql = await open();
+  const user = currentUser();
+  const rows = await sql`
+    INSERT INTO notification (user_id, key, instance, repo, branch, kind, title, body, link, created_at)
+    VALUES (${user}, ${input.key}, ${instanceName()}, ${input.repo}, ${input.branch ?? null}, ${input.kind}, ${input.title}, ${input.body}, ${input.link ?? null}, ${at})
+    ON CONFLICT (user_id, key) DO NOTHING
+    RETURNING id, instance, repo, branch, kind, title, body, link, created_at, read_at, dismissed_at`;
+  await sql`DELETE FROM notification WHERE user_id = ${user} AND created_at < ${at - NOTIFICATION_RETENTION_MS}`;
+  const row = (rows as NotificationRow[])[0];
+  return row ? toNotification(row) : undefined;
+}
+
+/** The centre's rows: not dismissed, newest first. `since` (ms) is the catch-up cursor after a dropped
+ *  stream — rows created after it, read or not. */
+export async function notifications(opts: { since?: number; limit?: number } = {}): Promise<Notification[]> {
+  const sql = await open();
+  const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000);
+  const rows = await sql`
+    SELECT id, instance, repo, branch, kind, title, body, link, created_at, read_at, dismissed_at FROM notification
+    WHERE user_id = ${currentUser()} AND dismissed_at IS NULL AND created_at > ${opts.since ?? 0}
+    ORDER BY created_at DESC, id DESC LIMIT ${limit}`;
+  return (rows as NotificationRow[]).map(toNotification);
+}
+
+/** Mark read: the given ids, or every unread one. Returns how many changed. */
+export async function markNotificationsRead(ids: number[] | "all", at = Date.now()): Promise<number> {
+  const sql = await open();
+  const user = currentUser();
+  const rows = ids === "all"
+    ? await sql`UPDATE notification SET read_at = ${at} WHERE user_id = ${user} AND read_at IS NULL AND dismissed_at IS NULL RETURNING id`
+    : ids.length ? await sql`UPDATE notification SET read_at = ${at} WHERE user_id = ${user} AND read_at IS NULL AND id IN ${sql(ids)} RETURNING id` : [];
+  return rows.length;
+}
+
+/** Dismiss (clear from the centre): the given ids, or all. A dismissed row is also read. */
+export async function dismissNotifications(ids: number[] | "all", at = Date.now()): Promise<number> {
+  const sql = await open();
+  const user = currentUser();
+  const rows = ids === "all"
+    ? await sql`UPDATE notification SET dismissed_at = ${at}, read_at = COALESCE(read_at, ${at}) WHERE user_id = ${user} AND dismissed_at IS NULL RETURNING id`
+    : ids.length ? await sql`UPDATE notification SET dismissed_at = ${at}, read_at = COALESCE(read_at, ${at}) WHERE user_id = ${user} AND dismissed_at IS NULL AND id IN ${sql(ids)} RETURNING id` : [];
+  return rows.length;
 }
