@@ -1806,24 +1806,6 @@ export function rowDuration(row: Pick<OverviewRow, "agentStatus" | "agentStarted
   return last?.startedAt && last.finishedAt ? last.finishedAt - last.startedAt : undefined;
 }
 
-/** The chat card's header counters, like Build Logs' line / error / warning counts: a failed turn is
- *  an error; a stopped one or a commit whose check failed is a warning. */
-export function chatSummary(turns: Pick<AgentTurn, "failed" | "stopped" | "check">[]): { turns: number; errors: number; warnings: number } {
-  return {
-    turns: turns.length,
-    errors: turns.filter((t) => t.failed).length,
-    warnings: turns.filter((t) => !t.failed && (t.stopped || (t.check && !t.check.ok))).length,
-  };
-}
-
-/** Find in chat: every word appears in the turn's instruction or response (case-insensitive). */
-export function turnMatches(turn: Pick<AgentTurn, "instruction" | "prompt" | "response">, q: string): boolean {
-  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!words.length) return true;
-  const hay = `${turn.instruction ?? promptInstruction(turn.prompt)}\n${turn.response ?? ""}`.toLowerCase();
-  return words.every((w) => hay.includes(w));
-}
-
 export type RepoSummary = { repo: string; total: number; running: number; attention: number; openPrs: number; local: number; mergedToday: number; lastActivity: number };
 
 /** One line per configured repo for the Repos page — the overview's numbers, scoped. */
@@ -2228,3 +2210,114 @@ export function agentsMarker(turns: Sourced[]): string {
   ].join(" · ");
 }
 
+// ---- the PR page's checks: failing first, then running, the rest folded into one line ----
+
+/** One check as the PR page shows it (gh.ts `PrCheck`). */
+export type CheckRow = { name: string; status: CiStatus; url?: string; startedAt?: string; completedAt?: string; skipped?: boolean };
+export type CheckGroups<T extends CheckRow = CheckRow> = { failing: T[]; running: T[]; passing: T[]; skipped: T[] };
+
+/** Sorted by what needs you: failing, then running / pending (the two you watch), each by name; the
+ *  passing and the skipped / neutral ones are what the PR page folds behind one summary line. */
+export function checkGroups<T extends CheckRow>(checks: T[]): CheckGroups<T> {
+  const byName = (a: T, b: T) => a.name.localeCompare(b.name);
+  const of = (keep: (c: T) => boolean) => checks.filter(keep).sort(byName);
+  return {
+    failing: of((c) => c.status === "failing"),
+    running: of((c) => c.status === "pending" || c.status === "none"),
+    passing: of((c) => c.status === "passing" && !c.skipped),
+    skipped: of((c) => c.status === "passing" && Boolean(c.skipped)),
+  };
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** The card's header: "1 failing · 2 running · 24 passing · 3 skipped", zero counts left out. */
+export const checkSummary = (g: CheckGroups<CheckRow>): string =>
+  [g.failing.length && `${g.failing.length} failing`, g.running.length && `${g.running.length} running`,
+    g.passing.length && `${g.passing.length} passing`, g.skipped.length && `${g.skipped.length} skipped`].filter(Boolean).join(" · ") || "No checks";
+
+/** The folded row's label: "24 passing" / "24 passing, 3 skipped" / "3 skipped". */
+export const foldedChecksLabel = (g: CheckGroups<CheckRow>): string =>
+  [g.passing.length && `${g.passing.length} passing`, g.skipped.length && `${g.skipped.length} skipped`].filter(Boolean).join(", ");
+
+/** How long a check ran (or has been running), in ms. GitHub sends `0001-01-01T00:00:00Z` for a
+ *  time that hasn't happened yet (a queued run's start, a running one's end), which parses negative. */
+export function checkDuration(c: CheckRow, now = Date.now()): number | undefined {
+  const start = c.startedAt ? Date.parse(c.startedAt) : NaN;
+  if (!(start > 0)) return undefined;
+  const done = c.completedAt ? Date.parse(c.completedAt) : NaN;
+  const end = done > 0 ? done : c.status === "pending" ? now : NaN;
+  return end >= start ? end - start : undefined;
+}
+
+// ---- the PR page's conversation, GitHub-style ----
+// Chronological, as GitHub shows it (replies and "fixed in abc" read in context), with a summary
+// line of counts and a jump to the first unresolved thread. Resolved and outdated threads fold to
+// one line; a long body is clamped behind Show more; every bot comment (preview notices, billing
+// notices, QA reports) goes into ONE folded row at the top instead of between the people.
+
+export type PrComment = { author: string; body: string; createdAt?: string; url?: string; bot?: boolean };
+export type PrReview = { author: string; state: string; body?: string; submittedAt?: string; url?: string; bot?: boolean };
+
+export type ConversationEntry =
+  | { kind: "comment"; id: string; author: string; body: string; createdAt?: string; url?: string; long: boolean }
+  | { kind: "review"; id: string; author: string; state: string; body: string; createdAt?: string; url?: string; long: boolean }
+  | { kind: "thread"; id: string; author: string; body: string; createdAt?: string; url?: string; path?: string; line?: number;
+      resolved: boolean; outdated: boolean; collapsed: boolean; long: boolean };
+
+export type PrConversation = {
+  entries: ConversationEntry[];
+  bots: ConversationEntry[];
+  counts: { comments: number; threads: number; unresolved: number; resolved: number; outdated: number; bots: number };
+  /** The id of the first thread still open (not resolved, not outdated) — the jump target. */
+  firstUnresolved?: string;
+};
+
+/** Past this a body is clamped behind Show more — a measure that needs no layout. */
+export const LONG_BODY_CHARS = 600;
+export const LONG_BODY_LINES = 10;
+export const isLongBody = (body: string) => body.length > LONG_BODY_CHARS || body.split("\n").length > LONG_BODY_LINES;
+
+export function prConversation(input: { comments: PrComment[]; reviews: PrReview[]; threads?: ReviewThreadEvidence[] }): PrConversation {
+  const people: ConversationEntry[] = [];
+  const bots: ConversationEntry[] = [];
+  input.comments.forEach((c, i) => {
+    if (!c.body.trim()) return;
+    (c.bot ? bots : people).push({ kind: "comment", id: `c${i}`, author: c.author, body: c.body, createdAt: c.createdAt, url: c.url, long: isLongBody(c.body) });
+  });
+  input.reviews.forEach((r, i) => {
+    const body = r.body?.trim() ?? "";
+    // A bare COMMENTED review is only the wrapper of inline threads, which show on their own.
+    if (!body && (r.state === "COMMENTED" || r.state === "PENDING")) return;
+    (r.bot ? bots : people).push({ kind: "review", id: `r${i}`, author: r.author, state: r.state, body, createdAt: r.submittedAt, url: r.url, long: isLongBody(body) });
+  });
+  for (const t of input.threads ?? []) {
+    const outdated = Boolean(t.outdated);
+    people.push({
+      kind: "thread", id: `t:${t.id}`, author: t.author ?? "unknown", body: t.body, createdAt: t.createdAt, url: t.url, path: t.path, line: t.line,
+      resolved: t.resolved, outdated, collapsed: t.resolved || outdated, long: isLongBody(t.body),
+    });
+  }
+  // Stable: undated items keep their order, ahead of the dated ones.
+  const chrono = (a: ConversationEntry, b: ConversationEntry) => (a.createdAt ?? "").localeCompare(b.createdAt ?? "");
+  people.sort(chrono);
+  bots.sort(chrono);
+  const threads = people.filter((e): e is Extract<ConversationEntry, { kind: "thread" }> => e.kind === "thread");
+  const open = threads.filter((t) => !t.collapsed);
+  return {
+    entries: people,
+    bots,
+    counts: {
+      comments: people.length - threads.length, threads: threads.length, unresolved: open.length,
+      resolved: threads.filter((t) => t.resolved).length, outdated: threads.filter((t) => t.outdated && !t.resolved).length, bots: bots.length,
+    },
+    firstUnresolved: open[0]?.id,
+  };
+}
+
+/** "3 comments · 5 threads (2 unresolved, 2 resolved, 1 outdated) · 4 bot" — zero parts left out. */
+export function conversationSummary(c: PrConversation["counts"]): string {
+  const threadParts = [c.unresolved && `${c.unresolved} unresolved`, c.resolved && `${c.resolved} resolved`, c.outdated && `${c.outdated} outdated`].filter(Boolean).join(", ");
+  return [c.comments && plural(c.comments, "comment"), c.threads && `${plural(c.threads, "thread")}${threadParts ? ` (${threadParts})` : ""}`, c.bots && `${c.bots} bot`]
+    .filter(Boolean).join(" · ") || "No comments";
+}

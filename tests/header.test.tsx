@@ -62,6 +62,15 @@ describe("console shell", () => {
     expect(container!.querySelector('[data-slot="instance-health"]')).toBeNull();
   });
 
+  test("the top bar is opaque: a solid background, no translucency or blur for scrolled content to show through", async () => {
+    await mount();
+    const bar = container!.querySelector<HTMLElement>('[data-slot="topbar"]')!;
+    const cls = bar.className.split(/\s+/);
+    expect(cls).toContain("bg-background");
+    expect(cls).toContain("sticky");
+    expect(cls.filter((c) => /^bg-background\/|^backdrop-blur/.test(c))).toEqual([]);
+  });
+
   test("the sidebar: Orca mark + instance switcher, Find, the five pages, and the active one marked", async () => {
     await mount();
     const sidebar = container!.querySelector('[data-slot="sidebar"]')!;
