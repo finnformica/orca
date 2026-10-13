@@ -1,6 +1,8 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { ArrowUp, FileText, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Shortcut } from "@/components/ui/kbd";
 import { usePrRefs } from "@/store";
 import { filterPrRefs, insertPrRef, prRefLabel, prTrigger, type PrRef } from "@/workstream";
 import { cn } from "@/lib/utils";
@@ -10,12 +12,15 @@ import { endTypeahead } from "@/lib/orchestratorOpen";
 import type { OrchestratorPrefill } from "@/lib/atoms";
 import { enterSends, isCoarse } from "@/lib/viewport";
 
-// The one chat input, shared by the new-draft box and the follow-up box. A single bordered
+// The one chat input, shared by the new-draft box, the follow-up box and the quick-ask box. A single bordered
 // "chatbox" (à la Claude/ChatGPT) wrapping image thumbnails, the textarea, and a bottom toolbar
 // with the repo selector (via `leading`) on the left and an icon send button on the right.
 // Accepts files of any type by paste, drag-drop, or the paperclip picker; Enter sends; Shift/⌘/Ctrl+Enter breaks the line.
 // On a touch screen Enter breaks the line (a phone keyboard has no Shift+Enter) and the button sends.
 // Owns its own text + attachments; with a `persistKey` it survives page reloads (localStorage).
+// `variant="quick"` is the same input dressed as the quick-ask box (components/QuickAsk): no border of
+// its own (the host's morphing surface is the box), an `icon` top left beside a three-line textarea,
+// and a labelled Send with its keycap; its @ picker is portaled out of the host's overflow-hidden.
 /** Shell-style history step: ↑ walks toward older (from newest when not yet walking), ↓ toward newer
  *  and off the end back to an empty box (null). Pure, so it's unit-tested without a DOM. */
 export function stepHistory(idx: number | null, dir: "up" | "down", len: number): number | null {
@@ -26,12 +31,17 @@ export function stepHistory(idx: number | null, dir: "up" | "down", len: number)
 
 export function ChatComposer({
   persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt, className, repo, prefill,
+  variant = "box", icon, inputLabel,
 }: {
+  variant?: "box" | "quick";
+  icon?: ReactNode; // quick variant: sits top left, the text the whole width beside it
+  inputLabel?: string; // the textarea's aria-label
+
   // Text asked for from outside the box (the orchestrator's top-bar entry, O, the palette): it goes
   // after the draft and the box takes focus. Every new `seq` is applied; one `session`'s asks replace
   // each other (keystrokes typed in the entry before this box mounted).
   prefill?: OrchestratorPrefill | null;
-  // The repo this conversation is about (a workstream's, the new-draft box's selection). The # PR
+  // The repo this conversation is about (a workstream's, the new-draft box's selection). The @ PR
   // picker inserts a bare `#123` for that repo's PRs and `repo#123` for any other's.
   repo?: string;
   className?: string; // extra classes for the box itself, e.g. a host's own background
@@ -67,8 +77,8 @@ export function ChatComposer({
   const fileRef = useRef<HTMLInputElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
 
-  // # PR picker: the `#query` at the caret lists the board's cached PRs (open first). Escape
-  // dismisses it for THAT `#` (until a new one is typed); a pick replaces the query with the ref.
+  // @ PR picker: the `@query` at the caret lists the board's cached PRs (open first). Escape
+  // dismisses it for THAT `@` (until a new one is typed); a pick replaces the query with the ref.
   const { refs, repoCount } = usePrRefs();
   const [caret, setCaret] = useState(0);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
@@ -84,7 +94,7 @@ export function ChatComposer({
     if (!trig) return;
     const next = insertPrRef(value, trig.start, caret, prRefLabel(ref, refs, repoCount, repo));
     pendingCaret.current = next.caret;
-    setDismissedAt(trig.start); // `#6101 ` still parses as a trigger; a pick is done with it
+    setDismissedAt(trig.start); // a pick is done with that `@`, even if the text still parses as one
     setValue(next.text);
     setCaret(next.caret);
     setHistIdx(null);
@@ -94,6 +104,16 @@ export function ChatComposer({
     const el = textRef.current;
     if (el && pendingCaret.current !== null) { el.focus(); el.setSelectionRange(pendingCaret.current, pendingCaret.current); pendingCaret.current = null; }
   }, [value]);
+  const quick = variant === "quick";
+  const rootRef = useRef<HTMLDivElement>(null);
+  // Quick variant: grow with the text where `field-sizing: content` isn't supported (Safari, Firefox),
+  // where the box stayed one scrolling line. The CSS min / max heights still bound it.
+  useLayoutEffect(() => {
+    const el = textRef.current;
+    if (!quick || !el || (typeof CSS !== "undefined" && CSS.supports?.("field-sizing", "content"))) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [quick, value]);
   const prefillBase = useRef<{ session: number; base: string } | null>(null);
   // A LAYOUT effect, so the box has focus in the same commit that opened it — before the browser
   // paints, and so before the next keystroke. (A passive effect focused it a frame late: the first
@@ -220,10 +240,74 @@ export function ChatComposer({
   // reopen on the next reload (open-state is derived from whether a draft exists).
   const cancel = () => { if (persistKey) clearDraft(persistKey); onCancel?.(); };
 
+  const textarea = (
+    <textarea
+      ref={textRef}
+      autoFocus={autoFocus}
+      rows={quick ? 3 : 2}
+      aria-label={inputLabel}
+      className={quick
+        ? "placeholder:text-muted-foreground field-sizing-content max-h-40 min-h-[4.5rem] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent py-0.5 text-sm outline-none"
+        : "placeholder:text-muted-foreground field-sizing-content max-h-48 w-full resize-none bg-transparent px-3 py-2.5 text-sm outline-none"}
+      placeholder={placeholder}
+      value={value}
+      role="combobox"
+      aria-autocomplete="list"
+      aria-expanded={picking}
+      aria-controls={picking ? listId : undefined}
+      aria-activedescendant={picking ? optionId(activeIdx) : undefined}
+      onChange={(e) => {
+        const t = prTrigger(e.target.value, e.target.selectionStart);
+        if (t?.start !== dismissedAt) setDismissedAt(null); // a new (or no) `@` re-arms the picker
+        setValue(e.target.value); setCaret(e.target.selectionStart); setActive(0); setHistIdx(null);
+      }}
+      onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+      onBlur={() => { if (trig) setDismissedAt(trig.start); }}
+      onKeyDown={onKey}
+      onPaste={onPaste}
+    />
+  );
+  // Opens upward (chat boxes sit low) unless the box is near the top of the viewport (the new-draft box).
+  const rect = picking ? (quick ? rootRef.current : textRef.current)?.getBoundingClientRect() : undefined;
+  const mentions = picking && (
+    // Inline, not a portaled popover: the composer lives in modal <dialog>s (top layer) and the
+    // orchestrator's PiP window, where a body portal would sit behind or outside it. The quick variant
+    // is the exception — its host clips (overflow-hidden, for the morph) and is in neither — so it goes
+    // to its own document's body, fixed just above the box.
+    <div
+      data-slot="chat-composer-mentions"
+      className={cn(
+        "bg-popover text-popover-foreground z-50 w-full max-w-md rounded-lg border p-1 shadow-menu",
+        quick ? "fixed" : cn("absolute left-0", (rect?.top ?? 0) < 280 ? "top-full mt-1" : "bottom-full mb-1"),
+      )}
+      style={quick && rect ? { left: rect.left, bottom: (textRef.current?.ownerDocument.defaultView?.innerHeight ?? 0) - rect.top + 4, width: rect.width } : undefined}
+    >
+    <ul id={listId} role="listbox" aria-label="Pull requests" className="max-h-64 overflow-y-auto">
+      {matches.map((r, i) => (
+        <li
+          key={`${r.repo}#${r.number}`}
+          id={optionId(i)}
+          role="option"
+          aria-selected={i === activeIdx}
+          className={cn("flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm", i === activeIdx && "bg-accent text-accent-foreground")}
+          onMouseDown={(e) => e.preventDefault()} // keep the textarea's focus + caret
+          onMouseEnter={() => setActive(i)}
+          onClick={() => pick(r)}
+        >
+          <span className="text-muted-foreground shrink-0 font-mono text-xs">#{r.number}</span>
+          <span className="min-w-0 flex-1 truncate">{r.title}</span>
+          {repoCount > 1 && <span className="text-muted-foreground shrink-0 text-xs">{r.repo}</span>}
+          {r.state !== "open" && <span className="text-muted-foreground shrink-0 rounded border px-1 text-[10px]">{r.state}</span>}
+        </li>
+      ))}
+    </ul>
+    </div>
+  );
+
   return (
-    <div className="relative">
+    <div ref={rootRef} className="relative">
       <div
-        className={cn("bg-card focus-within:border-ring focus-within:ring-ring/40 cursor-text rounded-lg border transition-[color,box-shadow] focus-within:ring-2", className)}
+        className={cn(quick ? "cursor-text" : "bg-card focus-within:border-ring focus-within:ring-ring/40 cursor-text rounded-lg border transition-[color,box-shadow] focus-within:ring-2", className)}
         onMouseDown={focusText}
         onDrop={onDrop}
         onDragOver={(e) => e.preventDefault()}
@@ -233,29 +317,13 @@ export function ChatComposer({
             {images.map((f, i) => <Thumb key={i} file={f} onRemove={() => setImages((p) => p.filter((_, j) => j !== i))} />)}
           </div>
         )}
-        <textarea
-          ref={textRef}
-          autoFocus={autoFocus}
-          rows={2}
-          className="placeholder:text-muted-foreground field-sizing-content max-h-48 w-full resize-none bg-transparent px-3 py-2.5 text-sm outline-none"
-          placeholder={placeholder}
-          value={value}
-          role="combobox"
-          aria-autocomplete="list"
-          aria-expanded={picking}
-          aria-controls={picking ? listId : undefined}
-          aria-activedescendant={picking ? optionId(activeIdx) : undefined}
-          onChange={(e) => {
-            const t = prTrigger(e.target.value, e.target.selectionStart);
-            if (t?.start !== dismissedAt) setDismissedAt(null); // a new (or no) `#` re-arms the picker
-            setValue(e.target.value); setCaret(e.target.selectionStart); setActive(0); setHistIdx(null);
-          }}
-          onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-          onBlur={() => { if (trig) setDismissedAt(trig.start); }}
-          onKeyDown={onKey}
-          onPaste={onPaste}
-        />
-        <div data-slot="chat-composer-toolbar" className="flex min-w-0 items-center gap-1 p-2 pt-0">
+        {quick ? (
+          <div className="flex items-start gap-2 px-3 pt-2.5">
+            {icon}
+            {textarea}
+          </div>
+        ) : textarea}
+        <div data-slot="chat-composer-toolbar" className={cn("flex min-w-0 items-center gap-1", quick ? "px-2 pt-1 pb-2" : "p-2 pt-0")}>
           {leading && <div data-slot="chat-composer-leading" className="min-w-0 flex-1 overflow-hidden">{leading}</div>}
           <input ref={fileRef} type="file" multiple hidden onChange={(e) => { addImages(e.target.files ?? []); e.target.value = ""; }} />
           <div data-slot="chat-composer-actions" className="ml-auto flex shrink-0 items-center gap-1">
@@ -270,44 +338,21 @@ export function ChatComposer({
                 {alt.label}
               </Button>
             )}
-            <Button type="button" size="icon" className="size-8" disabled={!canSubmit} title="Send (Enter)" aria-label="Send" onClick={() => void submit()}>
-              <ArrowUp className="size-4" />
-            </Button>
+            {quick ? (
+              <Button type="button" size="sm" variant="secondary" className="h-7 gap-1.5 pr-1.5 pl-2.5" disabled={!canSubmit} title="Send (Enter)" aria-label="Send" onClick={() => void submit()}>
+                Send
+                <Shortcut id="send" />
+              </Button>
+            ) : (
+              <Button type="button" size="icon" className="size-8" disabled={!canSubmit} title="Send (Enter)" aria-label="Send" onClick={() => void submit()}>
+                <ArrowUp className="size-4" />
+              </Button>
+            )}
           </div>
         </div>
       </div>
-      {picking && (
-        // Inline, not a portaled popover: the composer lives in modal <dialog>s (top layer) and the
-        // orchestrator's PiP window, where a body portal would sit behind or outside it. Opens upward
-        // (chat boxes sit low) unless the box is near the top of the viewport (the new-draft box).
-        <div
-          className={cn(
-            "bg-popover text-popover-foreground absolute left-0 z-50 w-full max-w-md rounded-lg border p-1 shadow-menu",
-            (textRef.current?.getBoundingClientRect().top ?? 0) < 280 ? "top-full mt-1" : "bottom-full mb-1",
-          )}
-        >
-        <ul id={listId} role="listbox" aria-label="Pull requests" className="max-h-64 overflow-y-auto">
-          {matches.map((r, i) => (
-            <li
-              key={`${r.repo}#${r.number}`}
-              id={optionId(i)}
-              role="option"
-              aria-selected={i === activeIdx}
-              className={cn("flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm", i === activeIdx && "bg-accent text-accent-foreground")}
-              onMouseDown={(e) => e.preventDefault()} // keep the textarea's focus + caret
-              onMouseEnter={() => setActive(i)}
-              onClick={() => pick(r)}
-            >
-              <span className="text-muted-foreground shrink-0 font-mono text-xs">#{r.number}</span>
-              <span className="min-w-0 flex-1 truncate">{r.title}</span>
-              {repoCount > 1 && <span className="text-muted-foreground shrink-0 text-xs">{r.repo}</span>}
-              {r.state !== "open" && <span className="text-muted-foreground shrink-0 rounded border px-1 text-[10px]">{r.state}</span>}
-            </li>
-          ))}
-        </ul>
-        </div>
-      )}
-      {error && <p className="text-destructive mt-1 px-1 text-xs break-words">{error}</p>}
+      {mentions && (quick && textRef.current ? createPortal(mentions, textRef.current.ownerDocument.body) : mentions)}
+      {error && <p data-slot="chat-composer-error" className={cn("text-destructive text-xs break-words", quick ? "border-t px-3 py-1.5" : "mt-1 px-1")}>{error}</p>}
       {footer}
     </div>
   );
