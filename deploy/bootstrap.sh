@@ -20,4 +20,13 @@ ORCA_TEST_DATABASE_URL=postgres://orca:orca@localhost:5432/postgres
 ENV
 sudo cp deploy/orca.service /etc/systemd/system/orca.service
 sudo systemctl daemon-reload && sudo systemctl enable --now orca
+
+# Auto-deploy: pulls main, builds and restarts the bridge on its own once main changes (see
+# CLAUDE.md "Deploying" → "Auto-deploy").
+sudo cp deploy/orca-autodeploy.service deploy/orca-autodeploy.timer /etc/systemd/system/
+sudo cp deploy/orca-autodeploy.sudoers /etc/sudoers.d/orca-autodeploy
+sudo chmod 440 /etc/sudoers.d/orca-autodeploy
+sudo visudo -c
+sudo systemctl daemon-reload && sudo systemctl enable --now orca-autodeploy.timer
+
 echo "orca → http://$ts_name:8787  (database: postgres://orca:orca@$ts_name:5432/orca for the laptop's ORCA_DATABASE_URL)"
