@@ -102,6 +102,22 @@ test("C1: a merged PR's worktree is reaped and its card archived after the grace
   expect([...(await db.archivedBranches("r"))].sort()).toEqual(["merged-x"]); // …not deleted
 });
 
+test("C1b: a branch preview's read-only bridge never reaps a worktree", async () => {
+  const merged = await workOn("merged-pb");
+  await setDonePrListFixture([
+    { number: 9, title: "Merged", url: "u9", headRefName: "merged-pb", headRefOid: merged.sha, mergedAt: iso(NOW - 3_600_000), closedAt: iso(NOW - 3_600_000) },
+  ]);
+  process.env.ORCA_PREVIEW_BRIDGE = "1";
+  try {
+    expect(await verbs.cleanupRepo(repo, { now: NOW })).toEqual([]);
+    expect((await verbs.sweep({ repos: [repo] } as never, { confirm: true, now: NOW })).confirmed).toBe(false);
+  } finally {
+    delete process.env.ORCA_PREVIEW_BRIDGE;
+  }
+  expect(existsSync(merged.worktreePath)).toBe(true);
+  expect((await verbs.cleanupRepo(repo, { now: NOW })).map((c) => c.branch)).toEqual(["merged-pb"]); // the real bridge acts on it
+});
+
 test("C2: a merged worktree with uncommitted or unpushed work is flagged, not removed; a squash-merged one whose remote branch is gone is reaped", async () => {
   const dirty = await workOn("dirty-a");
   await writeFile(join(dirty.worktreePath, "notes.md"), "not committed\n");
