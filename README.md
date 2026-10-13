@@ -117,6 +117,22 @@ gh auth setup-git               # `gh pr list --author @me` still means you); se
 sudo cp deploy/orca.service /etc/systemd/system/ && sudo systemctl enable --now orca
 ```
 
+**Per-worker memory ceiling.** Every agent run gets its own `systemd-run --user --scope` with a
+`MemoryMax` (`server/cgroup.ts`) — a repo's `agentMemoryMaxGb` (default 4GB; unset means the
+default, never uncapped) plus the app's `agentCpuWeight` (default 50). One worker's runaway build
+or headless browser is then killed by the kernel alone, not the box: this is what kept an m7i.xlarge
+from hanging for 12 minutes under 4-5 concurrent builds. `--user` scopes need a reachable user bus,
+which a service account that never logs in interactively (`orca`) doesn't have by default —
+`deploy/bootstrap.sh` runs `loginctl enable-linger orca` once so a user manager starts at boot
+regardless. Without that (or on macOS, or a box with no `systemd-run`), runs are simply unwrapped —
+`cgroup.available()` checks the bus socket itself, not just the binary, so this degrades silently
+rather than breaking a run. A run killed this way shows `out of memory (<N> GB ceiling)` as its
+result. `deploy/orca.service` separately reserves ~85% of the box's RAM (`MemoryMax`) for the
+bridge itself plus anything it runs directly (previews, git/gh calls — NOT agent runs, which are
+capped individually), and sets `OOMScoreAdjust=-500` so the bridge is the last thing a system-wide
+OOM kill would pick; Postgres and Tailscale stay outside that limit entirely, as their own systemd
+units.
+
 **Previews on a box.** Write every preview command so it works on either machine: listen on `{bind}`
 (`ORCA_PREVIEW_BIND` — loopback on a laptop, the tailnet address on the box), put `{host}`
 (`ORCA_PREVIEW_HOST`) in any URL the app hands the browser, and for a Vite app allow that host.
