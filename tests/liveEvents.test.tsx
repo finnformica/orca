@@ -79,3 +79,73 @@ test("two open chats share ONE stream; each hears only its own branch; hidden ta
   await act(async () => { root!.unmount(); root = undefined; });
   expect(opened().length).toBe(before);
 });
+
+// "The reply only shows once I send another message": a finished turn must render from the stream
+// alone — no send, no reload — however the fetches it triggers interleave, and after any gap in the
+// feed (hidden tab, dropped connection, a stream that died for good).
+const pending = (id: string, instruction: string) => ({ id, provider: "claude", instruction, prompt: "", response: "", startedAt: 10 });
+const finished = (id: string, instruction: string, response: string) => ({ ...pending(id, instruction), response, finishedAt: 20 });
+async function mountOne(branch: string) {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  await act(async () => { root = createRoot(container!); root.render(<ChatPanel row={row(branch)} />); await flush(); await flush(); });
+}
+
+test("L2: a stale page fetched while the run was running can't overwrite the finished reply that landed first", async () => {
+  apiFake.turnsData.set("r::race", [pending("run-1", "do it")]);
+  await mountOne("race");
+  const stream = opened().at(-1)!;
+  await act(async () => { emit(stream, "ready", {}); await flush(); });
+  // A `turn` event (say, the run's start) fetches the page — slowly; the run finishes meanwhile and
+  // its `turn` event fetches again, which answers FIRST.
+  apiFake.holdTurnPages = true;
+  await act(async () => { emit(stream, "turn", { repo: "r", branch: "race", runId: "run-1" }); await flush(); });
+  apiFake.turnsData.set("r::race", [finished("run-1", "do it", "THE_REPLY")]);
+  await act(async () => { emit(stream, "turn", { repo: "r", branch: "race", runId: "run-1" }); await flush(); });
+  const [slow, fast] = apiFake.heldTurnPages;
+  await act(async () => { fast!(); await flush(); await flush(); });
+  expect(container!.textContent).toContain("THE_REPLY");
+  await act(async () => { slow!(); await flush(); await flush(); });
+  expect(container!.textContent).toContain("THE_REPLY");
+  expect(container!.textContent).not.toContain("working…");
+});
+
+test("L3: back from a hidden tab, the newest turn's finish is caught up even past an older unfinished turn", async () => {
+  // An old turn left unfinished (an interrupted run) used to be the only one the catch-up looked at.
+  apiFake.turnsData.set("r::gap", [pending("run-old", "old"), pending("run-new", "new")]);
+  await mountOne("gap");
+  await act(async () => { emit(opened().at(-1)!, "ready", {}); await flush(); });
+  await setVisibility("hidden");
+  apiFake.turnsData.set("r::gap", [pending("run-old", "old"), finished("run-new", "new", "MISSED_WHILE_HIDDEN")]);
+  apiFake.turnFinished.add("run-new");
+  await setVisibility("visible");
+  await act(async () => { emit(opened().at(-1)!, "ready", {}); await flush(); await flush(); await flush(); });
+  expect(container!.textContent).toContain("MISSED_WHILE_HIDDEN");
+});
+
+test("L4: a chat opened while the tab is hidden catches up when the stream finally opens", async () => {
+  apiFake.turnsData.set("r::late", [pending("run-1", "go")]);
+  await setVisibility("hidden");
+  const before = opened().length;
+  await mountOne("late");
+  expect(opened().length).toBe(before); // hidden: no connection yet
+  apiFake.turnsData.set("r::late", [finished("run-1", "go", "FINISHED_BEFORE_THE_STREAM")]);
+  await setVisibility("visible");
+  await act(async () => { emit(opened().at(-1)!, "ready", {}); await flush(); await flush(); });
+  expect(container!.textContent).toContain("FINISHED_BEFORE_THE_STREAM");
+});
+
+test("L5: a stream the browser gave up on (an HTTP error closes an EventSource for good) is reopened and caught up", async () => {
+  apiFake.turnsData.set("r::dead", [pending("run-1", "go")]);
+  await mountOne("dead");
+  const first = opened().at(-1)! as FakeSource & { readyState: number };
+  await act(async () => { emit(first, "ready", {}); await flush(); });
+  first.readyState = 2; // CLOSED: a 502 from a restarting bridge — the browser will not retry
+  await act(async () => { first.dispatchEvent(new Event("error")); await flush(); });
+  apiFake.turnsData.set("r::dead", [finished("run-1", "go", "AFTER_THE_OUTAGE")]);
+  await act(async () => { await new Promise((r) => setTimeout(r, 1100)); });
+  const second = opened().at(-1)!;
+  expect(second).not.toBe(first);
+  await act(async () => { emit(second, "ready", {}); await flush(); await flush(); });
+  expect(container!.textContent).toContain("AFTER_THE_OUTAGE");
+});

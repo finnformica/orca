@@ -408,17 +408,29 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   winRef.current = win;
   const toTail = useRef(false); // jump-to-latest: scroll down once the window is back at the tail
   const cursors = useRef(new Map<string, number>()); // per-run high-water mark, for reconnect catch-up
+  const latestAsked = useRef(0), latestApplied = useRef(0); // loadLatest's request order (see there)
   const running = row.agentStatus === "running";
   /** (Re)fetch the newest page. What was already loaded above it stays; a turn the page re-delivers
    *  (now finished) takes its fresh form. The first fetch also sets where the older pages start. */
   const loadLatest = async () => {
+    // The newest REQUEST wins, not the last answer: a page fetched while a run was still running can
+    // answer after the one its finish triggered, and applying it put the turn back to `working…` with
+    // nothing left to fetch again — the reply "only appeared once I sent another message".
+    const ticket = ++latestAsked.current;
     // asTurnPage again at the render boundary: whatever answered (an older bridge sends an array),
     // nothing undefined reaches `turns`, which must be null (loading) or a list.
     const page = await api.turnPage(row.repo, row.branch, { limit: TURN_PAGE_SIZE }).then(asTurnPage<AgentTurn>).catch(() => null);
-    if (!page) return;
+    if (!page || ticket < latestApplied.current) return;
+    latestApplied.current = ticket;
     const had = turnsRef.current;
     if (!had || !had.length) { olderRef.current = page.older; setOlder(page.older); }
-    setTurns(had ? mergeLatestPage(had, page.turns) : page.turns);
+    // A page turn without steps (past the newest few the bridge ships them for) keeps the ones
+    // already pushed or caught up, rather than folding them away.
+    setTurns((prev) => {
+      if (!prev) return page.turns;
+      const had = new Map(prev.map((t) => [t.id, t.steps]));
+      return mergeLatestPage(prev, page.turns.map((t) => (t.steps || !had.get(t.id) ? t : { ...t, steps: had.get(t.id) })));
+    });
   };
   /** The page before the oldest loaded turn, put in front of it with the scroll position anchored on
    *  what you were reading (useLayoutEffect below). */
@@ -480,19 +492,22 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
       },
       // We were disconnected (or the tab was hidden), so catch up from the cursor — anything
       // recorded while we were away would otherwise be silently missing.
+      // The newest page is ALWAYS re-read: a turn that started or finished while we were away (or an
+      // older interrupted turn sitting unfinished above it) is only visible that way.
       resync: () => void (async () => {
-        const pending = turnsRef.current?.find((t) => !t.finishedAt);
-        if (!pending) return void load();
-        try {
-          const cursor = cursors.current.get(pending.id) ?? pending.stepSeq ?? 0;
-          const { steps, seq, finished } = await api.turnSteps(row.repo, row.branch, pending.id, cursor);
-          if (!live) return;
-          if (steps.length) {
-            cursors.current.set(pending.id, seq);
-            setTurns((prev) => prev?.map((t) => (t.id === pending.id ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
-          }
-          if (finished) await load();
-        } catch { void load(); }
+        const pending = turnsRef.current?.findLast((t) => !t.finishedAt);
+        if (pending) {
+          try {
+            const cursor = cursors.current.get(pending.id) ?? pending.stepSeq ?? 0;
+            const { steps, seq } = await api.turnSteps(row.repo, row.branch, pending.id, cursor);
+            if (!live) return;
+            if (steps.length) {
+              cursors.current.set(pending.id, seq);
+              setTurns((prev) => prev?.map((t) => (t.id === pending.id ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
+            }
+          } catch { /* the page below carries the turn's steps anyway */ }
+        }
+        await load();
       })(),
     });
     return () => { live = false; unsubscribe(); };
