@@ -220,7 +220,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
   );
   const sortSelect = (
           <Select value={sort} onValueChange={(v) => setSort(v as ListSort)}>
-            <SelectTrigger className="h-8 w-40" aria-label="Sort"><span className="text-muted-foreground text-xs">Sort</span><SelectValue /></SelectTrigger>
+            <SelectTrigger className="h-8 w-40" aria-label="Sort" title={`Sort: ${SORT_LABELS[sort]}`}><span className="text-muted-foreground text-xs">Sort</span><SelectValue /></SelectTrigger>
             <SelectContent>{(Object.keys(SORT_LABELS) as ListSort[]).map((k) => <SelectItem key={k} value={k}>{SORT_LABELS[k]}</SelectItem>)}</SelectContent>
           </Select>
   );
