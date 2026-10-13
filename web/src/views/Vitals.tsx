@@ -3,24 +3,25 @@
 // per machine, its current vitals as a details grid and CPU % / memory GB as line graphs over a
 // chosen range from /api/health/history. Both read the shared polls in lib/vitals, so the Overview
 // and the Usage page never poll twice.
-import { useState } from "react";
 import { useAtom } from "jotai";
 import { AlertTriangle, ChevronDown, ChevronUp, Server } from "lucide-react";
 import { usageExpandedAtom } from "@/lib/atoms";
-import { useHealth, useHealthHistory, useUsage } from "@/lib/vitals";
-import { HISTORY_RANGES, downsample, routingBroken, usageGroups, type UsageGroup } from "../workstream";
-import { Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, VCard } from "@/components/console";
+import { persistedKey, usePersisted } from "@/lib/persisted";
+import { useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
+import { HISTORY_RANGES, countMax, downsample, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard, type ChartOverlay } from "@/components/console";
 
-/** `all`: the Usage page — every login, no toggle. On the Overview the card shows the fleet and
- *  Codex, and Vercel's chevron (or the header row) toggles the per-login breakdown; remembered. */
-export function UsageCard({ all = false }: { all?: boolean }) {
+/** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
+ *  fleet + Codex) always show, and Vercel's chevron (or the header row) expands the per-login breakdown.
+ *  The choice is one remembered toggle (`orca.ui.v1.usageExpanded`), shared by both pages. */
+export function UsageCard() {
   const usage = useUsage();
+  const loaded = useUsageLoaded();
   const groups = usageGroups(usage);
-  const [stored, setStored] = useAtom(usageExpandedAtom);
-  const expanded = all || stored;
+  const [expanded, setExpanded] = useAtom(usageExpandedAtom);
   const logins = groups.filter((g) => g.key.startsWith("login:")).length;
-  const canToggle = !all && logins > 0;
-  const toggle = () => setStored(!stored);
+  const canToggle = logins > 0;
+  const toggle = () => setExpanded(!expanded);
   const shown = expanded ? groups : groups.filter((g) => !g.key.startsWith("login:"));
   return (
     <VCard slot="usage-card" title="Current windows" aside={<span className="text-muted-foreground text-xs">Claude &amp; Codex limits</span>}
@@ -32,7 +33,9 @@ export function UsageCard({ all = false }: { all?: boolean }) {
           <span>Claude routing off: hydra is installed but the bridge's <code>claude</code> isn't its shim, so every run lands on the default login.</span>
         </div>
       )}
-      {!groups.length ? <Empty>No provider is signed in on this machine.</Empty> : (
+      {!loaded ? (
+        <UsageSkeleton />
+      ) : !groups.length ? <Empty>No provider is signed in on this machine.</Empty> : (
         <div className="p-2">
           {shown.map((g) => <UsageGroupRows key={g.key} group={g} />)}
           {canToggle && (
@@ -70,11 +73,14 @@ function UsageGroupRows({ group: g }: { group: UsageGroup }) {
   );
 }
 
+const isRange = (v: unknown): v is number => HISTORY_RANGES.some((r) => r.hours === v);
+
 const fmtUptime = (s: number) => (s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
 
 /** One machine. `here`: the instance answering this page (its health needs no `?instance=`). */
 export function InstanceCard({ instance, here }: { instance: string; here: boolean }) {
-  const [hours, setHours] = useState<number>(24);
+  // The range is remembered per machine (`orca.ui.v1.instanceRange:<instance>`).
+  const [hours, setHours] = usePersisted<number>(persistedKey("instanceRange", instance), 24, isRange);
   const reading = useHealth(here ? undefined : instance);
   const history = useHealthHistory(instance, hours);
   const h = reading?.health;
@@ -83,6 +89,13 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const cpu = downsample((history ?? []).map((p) => ({ at: p.at, v: p.cpuPct })), 300, from, to);
   const mem = downsample((history ?? []).map((p) => ({ at: p.at, v: p.memUsedGb })), 300, from, to);
   const memTotal = h?.memTotalGb ?? Math.max(1, ...(history ?? []).map((p) => p.memTotalGb));
+  // Running sessions on this instance, same window and downsampling as cpu/mem — overlaid on both
+  // graphs as a pink series on its own right-hand axis (a different scale: a small integer count).
+  // A bridge from before migration 13 sends no `runningAgents` at all: that is "unknown", not a flat
+  // 0, so no overlay is drawn rather than a line claiming nothing ran.
+  const sessions = downsample((history ?? []).filter((p) => p.runningAgents != null).map((p) => ({ at: p.at, v: p.runningAgents! })), 300, from, to);
+  const sessionsOverlay: ChartOverlay | undefined = !sessions.length ? undefined : { points: sessions, label: "Sessions", fmt: (v) => `${Math.round(v)}`, color: "var(--geist-pink)",
+    max: countMax(Math.max(0, ...sessions.map((p) => p.v))) };
   const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
   return (
     <VCard
@@ -102,12 +115,16 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
         <Detail label="Uptime">{h ? fmtUptime(h.uptimeS) : "—"}</Detail>
         <Detail label="Cost" slot="instance-cost">{h?.cost ? <span className="tabular-nums" title={`estimated at $${h.cost.hourlyUsd}/h since ${h.cost.sinceIso.slice(0, 10)}`}>${h.cost.monthUsd.toFixed(2)} <span className="text-muted-foreground text-xs">this month</span></span> : "—"}</Detail>
       </div>
-      {history === null ? <p className="text-muted-foreground p-4 text-sm">Loading history…</p>
+      {history === null ? (
+          <div className="grid gap-6 p-4 md:grid-cols-2">
+            <ChartSkeleton slot="chart-cpu-skeleton" /><ChartSkeleton slot="chart-mem-skeleton" />
+          </div>
+        )
         : !history.length ? <Empty>No history recorded yet — the sampler writes once a minute.</Empty>
         : (
           <div className="grid gap-6 p-4 md:grid-cols-2">
-            <LineChart slot="chart-cpu" label="CPU" points={cpu} from={from} to={to} max={100} fmt={(v) => `${Math.round(v)}%`} />
-            <LineChart slot="chart-mem" label="Memory used" points={mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" />
+            <LineChart slot="chart-cpu" label="CPU" points={cpu} from={from} to={to} max={100} fmt={(v) => `${Math.round(v)}%`} overlay={sessionsOverlay} />
+            <LineChart slot="chart-mem" label="Memory used" points={mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" overlay={sessionsOverlay} />
           </div>
         )}
     </VCard>
