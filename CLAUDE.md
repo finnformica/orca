@@ -184,7 +184,12 @@ a small "Ask · A" pill fixed at the bottom centre of the main column (its strip
 the sidebar ends, collapsed or expanded) on every page (desktop; below md the phone's bottom
 bar has the orchestrator instead) MORPHS (one surface: width, height, radius; instant under reduced
 motion) into a box for messages to the orchestrator with no history — "Ask the orchestrator...", a
-textarea three lines tall that grows to a cap (a JS fallback where `field-sizing` is unsupported), Enter sends / Shift, ⌘ or Ctrl+Enter breaks the line (as in the chat composer), no ✕. The agent icon sits top left with the text
+textarea three lines tall that grows to a cap (a JS fallback where `field-sizing` is unsupported), no ✕. Its input
+IS the shared `ChatComposer` (`variant="quick"`, never a fork), so the `@` PR picker, attachments,
+paste, Enter sends / Shift, ⌘ or Ctrl+Enter breaks the line and focus are the chat composer's; the
+picker is portaled out of the surface's `overflow-hidden`. A pointerdown outside the box closes it like
+Esc (the draft is kept) — not one in the box, in the `@` picker or a Radix popover, nor while "Sent"
+shows. The agent icon sits top left with the text
 the whole width beside it; the row below holds only actions — a Send button carrying the `send` keycap
 (and the "Sent · Open chat" receipt). Collapsing keeps the box's contents mounted through the morph —
 faded, inert, pinned at their width — and the pill fades in after (`MORPH_MS`); swapping them at once
@@ -389,7 +394,9 @@ them. Routing: `/` = board, `/{repo}/prs/:n[/chat|/files|/preview]` = PR detail 
 opened from the card's terminal button, rendering `ChatPanel` (`web/src/views/Chat.tsx`): the branch's
 whole conversation from `GET /api/turns` as a **terminal-style log** (dark monospace, each instruction
 shown as `❯ …` with the agent's output below), plus the follow-up `ChatComposer` to send the next
-message. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
+message. Every `ChatComposer` has the **`@` PR picker** (`prTrigger`: `@` at the start or after a
+space/bracket lists the board's polled PRs; a pick inserts `#123`, or `repo#123`). It was `#` — `@` is
+the mention key everywhere else, and `#` collided with markdown headings and URL fragments. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
 involved. Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every
 board action uses. A turn written at launch but not yet finished renders as `▋ working…` (that's how
 an interrupted run stays visible); a turn with a parsed outcome renders its sections. A Claude run's
