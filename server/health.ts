@@ -162,8 +162,22 @@ export async function sampleMetrics(): Promise<void> {
   }
 }
 
+/** Give the samples recorded before migration 17 their cost, from the run ledger (30 days, the same
+ *  as the metrics kept) — without it the Cost accrued chart would start flat at deploy and only fill
+ *  from then on. Never throws. */
+export async function backfillCost(): Promise<void> {
+  try {
+    const runs = ledger.all().filter((e) => e.kind === "run" && e.costUsd).map((e) => ({ at: e.at, usd: e.costUsd! }));
+    const n = await db.backfillMetricCost(runs);
+    if (n) console.log(`orca: cost backfilled onto ${n} metric samples from the run ledger`);
+  } catch (e) {
+    console.error("orca: cost backfill failed", e instanceof Error ? e.message : e);
+  }
+}
+
 /** Each instance samples ITSELF once a minute (and once at startup, so a fresh box has a point). */
 export function startMetricsSampler(ms = METRIC_SAMPLE_MS): ReturnType<typeof setInterval> {
+  void backfillCost();
   void sampleMetrics();
   return setInterval(() => void sampleMetrics(), ms).unref();
 }

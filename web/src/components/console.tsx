@@ -101,73 +101,49 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
   );
 }
 
-type ChartPoint = { at: number; v: number };
-const nearest = (points: ChartPoint[], at: number) => points.reduce((a, b) => (Math.abs(b.at - at) < Math.abs(a.at - at) ? b : a));
-
-/** One y-axis gutter: top, middle and zero, in the chart's mono 10px. The right-hand axis is the same
- *  element mirrored, so the two can't drift apart in font, size or ticks. */
-const Axis = ({ top, fmt, height, side, slot }: { top: number; fmt: (v: number) => string; height: number; side: "left" | "right"; slot: string }) => (
-  <div data-slot={slot} className={cn("text-muted-foreground flex w-8 shrink-0 flex-col justify-between font-mono text-[10px] whitespace-nowrap tabular-nums", side === "left" ? "text-right" : "text-left")} style={{ height }}>
-    <span className="-translate-y-1/2">{fmt(top)}</span><span>{fmt(top / 2)}</span><span className="translate-y-1/2">{fmt(0)}</span>
-  </div>
-);
-
 /** A line chart with a y-axis (0 → a round max), time ticks under it and a hover readout — Vercel's
- *  Observability graphs. Gaps in the samples (a box that was down) break the line. The caption reads
- *  "CPU · 42%" on the left; an `overlay` (the running agents) adds "Agents · 3" on the right, a solid
- *  pink line under the main one, and its own right-hand axis — no gridlines of its own. Both readouts
- *  are the series' LAST point (or the hovered time), so they are exactly what the lines end on. */
-export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot, color = "var(--geist-blue)", height = 120, overlay }: {
-  points: ChartPoint[]; from: number; to: number; max?: number; fmt: (v: number) => string;
+ *  Observability graphs. Gaps in the samples (a box that was down) break the line. */
+export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot, color = "var(--geist-blue)", height = 120 }: {
+  points: { at: number; v: number }[]; from: number; to: number; max?: number; fmt: (v: number) => string;
   /** The y-axis labels' format, when the readout's is too long for the gutter ("36G", not "36.0 GB"). */
   axis?: (v: number) => string;
   label: string; slot?: string; color?: string; height?: number;
-  overlay?: { label: string; points: ChartPoint[]; max: number; fmt: (v: number) => string; color?: string };
 }) {
   const W = 600, H = height;
   const top = max ?? niceMax(Math.max(0, ...points.map((p) => p.v)) * 1.1);
-  const [hoverAt, setHoverAt] = useState<number | null>(null);
-  const hover = hoverAt === null || !points.length ? null : nearest(points, hoverAt);
-  const shown = hover ?? points[points.length - 1];
-  const extra = overlay?.points.length ? (hoverAt === null ? overlay.points[overlay.points.length - 1] : nearest(overlay.points, hoverAt)) : undefined;
+  const [hover, setHover] = useState<{ at: number; v: number } | null>(null);
+  const last = points[points.length - 1];
+  const shown = hover ?? last;
   const onMove = (e: React.PointerEvent<SVGSVGElement>) => {
     if (!points.length) return;
     const r = e.currentTarget.getBoundingClientRect();
-    setHoverAt(from + ((e.clientX - r.left) / (r.width || W)) * (to - from));
+    const at = from + ((e.clientX - r.left) / (r.width || W)) * (to - from);
+    setHover(points.reduce((a, b) => (Math.abs(b.at - at) < Math.abs(a.at - at) ? b : a)));
   };
   const x = (at: number) => ((at - from) / Math.max(1, to - from)) * W;
   const gapMs = Math.max(5 * 60_000, (to - from) / 150);
   const segs = sparklineSegments(points, { from, to, max: top, w: W, h: H, gapMs });
-  const overlaySegs = overlay ? sparklineSegments(overlay.points, { from, to, max: overlay.max, w: W, h: H, gapMs }) : [];
-  const overlayColor = overlay?.color ?? "var(--geist-pink)";
   return (
     <figure data-slot={slot} className="min-w-0">
-      <figcaption className="mb-2 flex items-baseline justify-between gap-2 text-xs whitespace-nowrap">
-        <span className="flex min-w-0 items-baseline gap-1.5">
-          <span className="text-muted-foreground">{label} ·</span>
-          <span data-slot="chart-value" className="text-foreground text-sm font-medium tabular-nums">{shown ? fmt(shown.v) : "—"}</span>
-          {hover && <span className="text-muted-foreground">at {new Date(hover.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</span>}
+      <figcaption className="mb-2 flex items-baseline justify-between gap-2">
+        <span className="text-muted-foreground flex min-w-0 items-baseline gap-1.5 text-xs whitespace-nowrap">{label}</span>
+        <span data-slot="chart-value" className="text-sm font-medium whitespace-nowrap tabular-nums">
+          {shown ? fmt(shown.v) : "—"}
+          {hover && <span className="text-muted-foreground ml-1 text-xs font-normal">at {new Date(hover.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</span>}
         </span>
-        {overlay && (
-          <span className="flex items-baseline gap-1.5">
-            <span className="text-muted-foreground flex items-center gap-1.5"><span aria-hidden="true" className="inline-block h-0.5 w-2.5 rounded-full" style={{ background: overlayColor }} />{overlay.label} ·</span>
-            <span data-slot="chart-overlay-value" className="text-foreground text-sm font-medium tabular-nums">{extra ? overlay.fmt(extra.v) : "—"}</span>
-          </span>
-        )}
       </figcaption>
       <div className="flex gap-2">
-        <Axis slot="chart-axis-left" side="left" top={top} fmt={axis} height={H} />
+        <div className="text-muted-foreground flex w-8 shrink-0 flex-col justify-between text-right font-mono text-[10px] whitespace-nowrap tabular-nums" style={{ height: H }}>
+          <span className="-translate-y-1/2">{axis(top)}</span><span>{axis(top / 2)}</span><span className="translate-y-1/2">{axis(0)}</span>
+        </div>
         <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ height: H }} className="w-full min-w-0 overflow-visible" role="img"
-          aria-label={`${label}${shown && !hover ? `, now ${fmt(shown.v)}` : !points.length ? ", no samples" : ""}${overlay && extra && !hover ? `; ${overlay.label.toLowerCase()} ${overlay.fmt(extra.v)}` : ""}`}
-          onPointerMove={onMove} onPointerLeave={() => setHoverAt(null)}>
+          aria-label={`${label}${last ? `, now ${fmt(last.v)}` : ", no samples"}`} onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
           {[0, 0.5, 1].map((f) => <line key={f} x1={0} x2={W} y1={H * f} y2={H * f} className="stroke-border" strokeWidth={1} strokeDasharray={f === 1 ? undefined : "3 3"} vectorEffect="non-scaling-stroke" />)}
-          {overlaySegs.map((pts, i) => <polyline key={`o${i}`} data-slot="chart-overlay-line" points={pts} fill="none" stroke={overlayColor} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />)}
-          {segs.map((pts, i) => <polyline key={i} data-slot="chart-line" points={pts} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />)}
+          {segs.map((pts, i) => <polyline key={i} points={pts} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />)}
           {hover && <line x1={x(hover.at)} x2={x(hover.at)} y1={0} y2={H} className="stroke-muted-foreground" strokeWidth={1} strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />}
         </svg>
-        {overlay && <Axis slot="chart-axis-right" side="right" top={overlay.max} fmt={overlay.fmt} height={H} />}
       </div>
-      <div className={cn("text-muted-foreground mt-1 flex justify-between pl-10 font-mono text-[10px]", overlay && "pr-10")}>
+      <div className="text-muted-foreground mt-1 flex justify-between pl-10 font-mono text-[10px]">
         {timeTicks(from, to, 4).map((t) => <span key={t.at}>{t.label}</span>)}
       </div>
     </figure>

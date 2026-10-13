@@ -168,7 +168,6 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const s = instanceSeries(history ?? [], h, from, to);
   const now = s.latest;
   const memTotal = h?.memTotalGb ?? Math.max(1, ...(history ?? []).map((p) => p.memTotalGb));
-  const agents = { label: "Agents", points: s.agents, max: countMax(Math.max(0, ...s.agents.map((p) => p.v))), fmt: count };
   const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
   return (
     <VCard
@@ -197,11 +196,11 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
         : !history.length ? <Empty>No history recorded yet — the sampler writes once a minute.</Empty>
         : (
           <div className="grid gap-6 p-4 md:grid-cols-2">
-            <LineChart slot="chart-cpu" label="CPU" points={s.cpu} from={from} to={to} max={100} fmt={pct} overlay={agents} />
-            <LineChart slot="chart-mem" label="Memory used" points={s.mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" overlay={agents} />
-            <LineChart slot="chart-agents" label="Agents" points={s.agents} from={from} to={to} max={agents.max} fmt={count} color="var(--geist-pink)" />
+            <LineChart slot="chart-cpu" label="CPU" points={s.cpu} from={from} to={to} max={100} fmt={pct} />
+            <LineChart slot="chart-mem" label="Memory used" points={s.mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" />
+            <LineChart slot="chart-agents" label="Agents" points={s.agents} from={from} to={to} max={countMax(Math.max(0, ...s.agents.map((p) => p.v)))} fmt={count} color="var(--geist-pink)" />
             <LineChart slot="chart-cost" label="Cost accrued" points={s.cost} from={from} to={to} max={niceMax(Math.max(0, ...s.cost.map((p) => p.v)) * 1.1)} fmt={usd}
-              axis={(v) => `$${v >= 10 ? Math.round(v) : v.toFixed(v >= 1 ? 1 : 2)}`} color="var(--geist-amber)" overlay={agents} />
+              axis={(v) => `$${v >= 10 ? Math.round(v) : v.toFixed(v >= 1 ? 1 : 2)}`} color="var(--geist-amber)" />
           </div>
         )}
     </VCard>

@@ -7,7 +7,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as db from "../server/db";
-import { costSince, health, historyHours, resetCostWindow, sampleMetrics } from "../server/health";
+import { backfillCost, costSince, health, historyHours, resetCostWindow, sampleMetrics } from "../server/health";
 import * as lease from "../server/lease";
 import * as ledger from "../server/ledger";
 import { countMax, instanceSeries, sparklineSegments } from "../web/src/workstream";
@@ -146,6 +146,30 @@ test("cost: a row from before migration 17 reads back as $0", async () => {
     INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, running_agents)
     VALUES (${db.currentUser()}, 'cloud', ${new Date(Date.now() - H)}, 15, 0.6, 3, 15, 1)`;
   expect((await db.metricHistory("cloud", 24))[0]!.costUsd).toBe(0);
+});
+
+test("cost backfill: samples written before migration 17 get the ledger's runs, each on the sample that would have counted it — once, never over the sampler's", async () => {
+  const now = Date.now(), M = 60_000;
+  const sql = await db.open();
+  // Three old samples (cost_usd NULL, as every row before migration 17) and one the sampler wrote.
+  for (const at of [now - 30 * M, now - 20 * M, now - 10 * M]) {
+    await sql`INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, running_agents)
+      VALUES (${db.currentUser()}, 'cloud', ${new Date(at)}, 10, 0.4, 3, 15, 0)`;
+  }
+  await db.recordMetric({ ...sample(10), costUsd: 0.125 }, now - 5 * M);
+  ledger.clear();
+  ledger.record({ kind: "run", provider: "claude", status: "done", costUsd: 1, at: now - 25 * M });   // → the -20m sample
+  ledger.record({ kind: "run", provider: "claude", status: "done", costUsd: 2, at: now - 22 * M });   // → the -20m sample
+  ledger.record({ kind: "run", provider: "claude", status: "done", costUsd: 4, at: now - 10 * M });   // → the -10m sample (at it, inclusive)
+  ledger.record({ kind: "run", provider: "claude", status: "done", costUsd: 8, at: now - 7 * M });    // the sampler's row counted it already
+  ledger.record({ kind: "run", provider: "claude", status: "done", costUsd: 16, at: now - 1 * M });   // after every sample: the next sample's
+  ledger.record({ kind: "run", provider: "codex", status: "done", at: now - 25 * M });                // no cost
+  await backfillCost();
+  const costs = async () => (await db.metricHistory("cloud", 1, now)).map((r) => r.costUsd);
+  expect(await costs()).toEqual([0, 3, 4, 0.125]);
+  await backfillCost(); // a restart: nothing changes
+  expect(await costs()).toEqual([0, 3, 4, 0.125]);
+  ledger.clear();
 });
 
 test("costSince: runs only, in (from, to], summed", () => {

@@ -45,7 +45,7 @@ test("a card per machine appears once config names them, with each one's vitals 
 });
 
 const lastValue = (chart: Element) => chart.querySelector('[data-slot="chart-value"]')!.textContent;
-const linePoints = (chart: Element) => chart.querySelector('[data-slot="chart-line"]')!.getAttribute("points")!.split(" ");
+const linePoints = (chart: Element) => chart.querySelector("polyline")!.getAttribute("points")!.split(" ");
 
 test("CPU and memory as line graphs from the last 24h, ending on the live reading the header shows; the range picker refetches", async () => {
   const now = Date.now();
@@ -62,9 +62,9 @@ test("CPU and memory as line graphs from the last 24h, ending on the live readin
   expect(lastValue(cpu)).toBe("12%");
   expect(detail(card, "instance-mem")).toContain("3.1 / 15.3 GB");
   expect(lastValue(mem)).toBe("3.1 GB");
-  expect(cpu.querySelector("figcaption")!.textContent).toBe("CPU ·12%Agents ·0");
+  expect(cpu.querySelector("figcaption")!.textContent).toBe("CPU12%"); // main's caption: label left, value right
   expect(linePoints(cpu)).toHaveLength(4); // three recorded + the live one
-  expect(cpu.querySelector("svg")!.getAttribute("aria-label")).toBe("CPU, now 12%; agents 0");
+  expect(cpu.querySelector("svg")!.getAttribute("aria-label")).toBe("CPU, now 12%");
   // 6h / 24h / 7d: another range is another fetch at that many hours.
   const range = (label: string) => [...container!.querySelectorAll('[role="group"][aria-label="Range"] button')].find((b) => b.textContent === label)!;
   expect(range("24h").getAttribute("aria-pressed")).toBe("true");
@@ -90,7 +90,7 @@ test("the header stat equals the chart's last point when the recorded sample is 
   expect(lastValue(cpu)).toBe("97%");
   expect(lastValue(card.querySelector('[data-slot="chart-mem"]')!)).toBe("9.9 GB");
   expect(detail(card, "instance-mem")).toContain("9.9 / 15.3 GB");
-  expect(cpu.querySelector('[data-slot="chart-overlay-value"]')!.textContent).toBe("5");
+  expect(lastValue(card.querySelector('[data-slot="chart-agents"]')!)).toBe("5");
   expect(linePoints(cpu).length).toBeLessThanOrEqual(300);
   expect(linePoints(cpu).at(-1)!.split(",")[1]).toBe("3.6"); // 97% of a 120px axis, drawn raw
 });
@@ -129,7 +129,7 @@ test("no history yet says so instead of an empty chart", async () => {
   expect(container!.querySelector('[data-slot="chart-cpu"]')).toBeNull();
 });
 
-test("every resource chart carries the running agents: Agents · N on the right, a solid pink line, its own right-hand axis styled like the left", async () => {
+test("CPU and memory stay one line each, as on main; Agents and Cost accrued are charts of the same design beside them", async () => {
   const now = Date.now();
   apiFake.healthHistoryData = [0, 1, 2].map((i) => ({
     at: now - (2 - i) * 60_000 - 1000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: [0, 2, 1][i], costUsd: [0, 0.5, 0.25][i],
@@ -137,27 +137,22 @@ test("every resource chart carries the running agents: Agents · N on the right,
   apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 12, load1: 0.5, load5: 0.4, memUsedGb: 3.1, memTotalGb: 15.3, uptimeS: 9, at: now, runningAgents: 3 };
   await render(<InstanceCard instance="cloud" here={false} />);
   await ready();
-  for (const slot of ["chart-cpu", "chart-mem", "chart-cost"]) {
-    const chart = container!.querySelector(`[data-slot="${slot}"]`)!;
-    expect(chart.querySelector('[data-slot="chart-overlay-value"]')!.textContent).toBe("3"); // the live count
-    expect(chart.querySelector("figcaption")!.textContent).toContain("Agents ·3");
-    const line = chart.querySelector('[data-slot="chart-overlay-line"]')!;
-    expect(line.getAttribute("stroke")).toBe("var(--geist-pink)");
-    expect(line.getAttribute("stroke-dasharray")).toBeNull(); // solid
-    expect(line.getAttribute("vector-effect")).toBe("non-scaling-stroke");
-    const left = chart.querySelector('[data-slot="chart-axis-left"]')!, right = chart.querySelector('[data-slot="chart-axis-right"]')!;
-    expect(right.className.replace("text-left", "text-right")).toBe(left.className);
-    expect([...right.querySelectorAll("span")].map((e) => e.textContent)).toEqual(["4", "2", "0"]); // 3 → an even whole top
-    expect(chart.querySelectorAll("svg line")).toHaveLength(3); // the left axis's gridlines only
+  const chart = (slot: string) => container!.querySelector(`[data-slot="${slot}"]`)!;
+  for (const slot of ["chart-cpu", "chart-mem", "chart-agents", "chart-cost"]) {
+    // One line, the left axis and its three gridlines — no overlay, no right-hand axis.
+    expect(chart(slot).querySelectorAll("polyline")).toHaveLength(1);
+    expect(chart(slot).querySelectorAll(".text-muted-foreground.flex.w-8")).toHaveLength(1);
+    expect(chart(slot).querySelectorAll(".text-muted-foreground.flex.w-8 span")).toHaveLength(3);
+    expect(chart(slot).querySelectorAll("svg line")).toHaveLength(3);
+    // The same caption, axis and tick-row markup as CPU's.
+    expect(chart(slot).querySelector("figcaption")!.className).toBe(chart("chart-cpu").querySelector("figcaption")!.className);
+    expect(chart(slot).lastElementChild!.className).toBe(chart("chart-cpu").lastElementChild!.className);
   }
-  // The Agents chart is the count itself, so it has no overlay of its own.
-  const agents = container!.querySelector('[data-slot="chart-agents"]')!;
-  expect(lastValue(agents)).toBe("3");
-  expect(agents.querySelector('[data-slot="chart-axis-right"]')).toBeNull();
-  expect(agents.querySelector('[data-slot="chart-line"]')!.getAttribute("stroke")).toBe("var(--geist-pink)");
+  expect(chart("chart-agents").querySelector("figcaption")!.textContent).toBe("Agents3"); // the live count
+  expect([...chart("chart-agents").querySelectorAll(".text-muted-foreground.flex.w-8 span")].map((e) => e.textContent)).toEqual(["4", "2", "0"]); // whole ticks
+  expect(chart("chart-agents").querySelector("polyline")!.getAttribute("stroke")).toBe("var(--geist-pink)");
   // Cost accrued: the running sum of each sample's cost over the range.
-  const cost = container!.querySelector('[data-slot="chart-cost"]')!;
-  expect(cost.querySelector("figcaption")!.textContent).toStartWith("Cost accrued ·$0.75");
+  expect(chart("chart-cost").querySelector("figcaption")!.textContent).toBe("Cost accrued$0.75");
   expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 24 }]); // one poll feeds all four
 });
 
@@ -167,9 +162,8 @@ test("a bridge that sends no runningAgents or costUsd (pre-migration 13 / 17) st
   apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 30, load1: 0.5, load5: 0.4, memUsedGb: 2, memTotalGb: 15.3, uptimeS: 9, at: now };
   await render(<InstanceCard instance="cloud" here={false} />);
   await ready();
-  const chart = container!.querySelector('[data-slot="chart-cpu"]')!;
-  expect(chart.querySelectorAll('[data-slot="chart-line"]')).toHaveLength(1);
-  expect(chart.querySelector('[data-slot="chart-overlay-value"]')!.textContent).toBe("0");
+  expect(container!.querySelector('[data-slot="chart-cpu"]')!.querySelectorAll("polyline")).toHaveLength(1);
+  expect(lastValue(container!.querySelector('[data-slot="chart-agents"]')!)).toBe("0");
   expect(lastValue(container!.querySelector('[data-slot="chart-cost"]')!)).toBe("$0.00");
 });
 

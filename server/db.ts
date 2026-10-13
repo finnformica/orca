@@ -1141,6 +1141,34 @@ export async function recordMetric(p: Omit<MetricPoint, "at" | "costUsd"> & { co
   });
 }
 
+/** Fill in the cost of samples written before migration 17 (their `cost_usd` is NULL) from the runs
+ *  this instance's ledger remembers: each run goes to the first sample at or after it — the one whose
+ *  window would have counted it. A row the sampler wrote is never NULL, so a run it already counted
+ *  is skipped and re-running this changes nothing. Returns how many rows were filled. */
+export async function backfillMetricCost(runs: { at: number; usd: number }[], instance = instanceName()): Promise<number> {
+  if (!runs.length) return 0;
+  return withRetry(async (sql) => {
+    const from = Math.min(...runs.map((r) => r.at));
+    const rows = (await sql`
+      SELECT id, at, cost_usd IS NULL AS open FROM instance_metric
+      WHERE user_id = ${currentUser()} AND instance = ${instance} AND at >= ${new Date(from)}
+      ORDER BY at`) as { id: string; at: Date; open: boolean }[];
+    const ats = rows.map((r) => new Date(r.at).getTime());
+    const fill = new Map<string, number>();
+    for (const run of runs) {
+      let lo = 0, hi = ats.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (ats[mid]! < run.at) lo = mid + 1; else hi = mid; }
+      const row = rows[lo];
+      if (row?.open) fill.set(row.id, (fill.get(row.id) ?? 0) + run.usd);
+    }
+    if (!fill.size) return 0;
+    await sql.begin(async (tx: Bun.SQL) => {
+      for (const [id, usd] of fill) await tx`UPDATE instance_metric SET cost_usd = ${Math.round(usd * 1e6) / 1e6} WHERE id = ${id} AND cost_usd IS NULL`;
+    });
+    return fill.size;
+  });
+}
+
 /** When this instance last sampled itself — where the sampler's first cost window starts after a
  *  restart, so a run that finished while the bridge was down is still counted once. */
 export async function lastMetricAt(instance = instanceName()): Promise<number | null> {
