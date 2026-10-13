@@ -4,7 +4,7 @@
 import { parseAgentOutcome, type AgentOutcome, type StopReason, type TurnCheck } from "./agent";
 
 export const NOTIFICATION_KINDS = [
-  "needs_input", "finished", "failed", "stopped", "check_failed", "pr_ci_failed", "pr_conflicts", "preview_ready", "preview_failed",
+  "needs_input", "finished", "failed", "stopped", "check_failed", "pr_ci_failed", "pr_conflicts", "preview_ready", "preview_failed", "action_failed",
   "merged", "merge_refused",
 ] as const;
 export type NotificationKind = typeof NOTIFICATION_KINDS[number];
@@ -30,6 +30,13 @@ export type Notification = {
   /** The one state a notification has: unread until this is set. Nothing is ever deleted by you —
    *  X, a quick action, Open and Mark all as read all just set it (rows go after 30 days). */
   readAt?: number;
+  /** A LOCAL notification's extras (`action_failed`, raised in this browser and never stored — a
+   *  button you clicked failed, which no other tab or machine needs to hear about): `label` names
+   *  the failed verb in place of the kind's label ("Merge failed"), `copy` is what Copy puts on the
+   *  clipboard and `ask` what Ask the orchestrator prefills. */
+  label?: string;
+  copy?: string;
+  ask?: string;
 };
 
 /** What the emitter writes: a `key` makes the insert idempotent (unique per user), so a run that is
@@ -57,6 +64,7 @@ export const KIND_META: Record<NotificationKind, KindMeta> = {
   preview_failed: { label: "Preview failed", persistent: true, urgent: false, tone: "error" },
   merged: { label: "Merged", persistent: false, urgent: false, tone: "ready" },
   merge_refused: { label: "Not merged", persistent: true, urgent: false, tone: "warning" },
+  action_failed: { label: "Action failed", persistent: true, urgent: false, tone: "error" },
 };
 
 /** How long a non-persistent toast stays. */
@@ -132,10 +140,13 @@ export function previewNotification(p: {
     : { repo: p.repo, branch: p.branch, title: p.title, kind: "preview_failed", key: `preview:${p.key}:${p.startedAt}:failed`, body: oneLine(p.error || "A service did not come up.") };
 }
 
-/** What an open PR's state says, once per PR per set of failing checks (CI) or once per PR
- *  (conflicts). Read off the ordinary PR list, so it costs nothing extra. */
+/** What an open PR's state says: CI failing once per head commit, conflicts once per PR. Read off
+ *  the ordinary PR list, so it costs nothing extra. The CI key is the COMMIT, never the set of
+ *  failing checks: that set changes while checks run, re-run and flap on one commit (lint fails,
+ *  then lint + test, then test after a re-run), and each new set was a new key — the same failure
+ *  notified three times. A new push failing again is news; without a head SHA, once per PR. */
 export function prNotifications(repo: string, prs: {
-  number: number; title: string; branch: string; state: string; ciStatus: string; mergeable: string; failingChecks?: string[];
+  number: number; title: string; branch: string; state: string; ciStatus: string; mergeable: string; failingChecks?: string[]; head?: string;
 }[]): NotificationInput[] {
   const out: NotificationInput[] = [];
   for (const pr of prs) {
@@ -143,7 +154,7 @@ export function prNotifications(repo: string, prs: {
     const base = { repo, branch: pr.branch, title: pr.title || pr.branch, link: { pr: pr.number } };
     if (pr.ciStatus === "failing") {
       const checks = [...(pr.failingChecks ?? [])].sort();
-      out.push({ ...base, kind: "pr_ci_failed", key: `pr-ci:${repo}#${pr.number}:${checks.join(",")}`, body: checks.length ? oneLine(`Failing: ${checks.join(", ")}`) : "CI is failing." });
+      out.push({ ...base, kind: "pr_ci_failed", key: `pr-ci:${repo}#${pr.number}${pr.head ? `@${pr.head}` : ""}`, body: checks.length ? oneLine(`Failing: ${checks.join(", ")}`) : "CI is failing." });
     }
     if (pr.mergeable === "CONFLICTING") {
       out.push({ ...base, kind: "pr_conflicts", key: `pr-conflict:${repo}#${pr.number}`, body: "Has merge conflicts with its base." });

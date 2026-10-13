@@ -355,3 +355,23 @@ test("a repo's agentMemoryMaxGb and the app's agentCpuWeight are validated and r
   expect(cfg.agentCpuWeight).toBe(20);
   expect(cfg.repos[0]!.agentMemoryMaxGb).toBe(8);
 });
+
+test("instanceHourlyUsd (the machines' cost) is validated, round-trips, and Settings' one-row write leaves the rest alone", async () => {
+  expect(parseConfigDocument(doc({ instanceHourlyUsd: { cloud: -1 } })).errors)
+    .toContain("instanceHourlyUsd must map an instance name to its non-negative USD per hour");
+  expect(parseConfigDocument(doc({ instanceHourlyUsd: ["cloud"] })).errors).toHaveLength(1);
+  await saveConfigDocument(parseConfigDocument(doc({ staleHours: 7, instanceHourlyUsd: { local: 0 } })).config!);
+  expect((await loadConfig()).instanceHourlyUsd).toEqual({ local: 0 });
+  // Settings' Machine cost row: one instance's rate set, then cleared — staleHours untouched.
+  await db.setInstanceHourlyUsd("cloud", 0.24);
+  invalidateConfig();
+  let cfg = await loadConfig();
+  expect(cfg.instanceHourlyUsd).toEqual({ local: 0, cloud: 0.24 });
+  expect(cfg.staleHours).toBe(7);
+  await db.setInstanceHourlyUsd("cloud", null);
+  await db.setInstanceHourlyUsd("local", null);
+  invalidateConfig();
+  cfg = await loadConfig();
+  expect(cfg.instanceHourlyUsd).toBeUndefined();
+  expect(cfg.staleHours).toBe(7);
+});

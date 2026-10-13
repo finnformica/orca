@@ -9,8 +9,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { PreviewCell } from "@/views/PreviewControl";
-import { Toaster } from "@/components/Toaster";
-import { resetToasts } from "@/lib/toast";
+import { ToastHost } from "@/components/Notifications";
+import * as centre from "@/lib/notificationStore";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -20,10 +20,10 @@ let container: HTMLElement | undefined;
 async function mount(node: React.ReactNode) {
   container = document.createElement("div");
   document.body.appendChild(container);
-  await act(async () => { root = createRoot(container!); root.render(<>{node}<Toaster /></>); await flush(); await flush(); });
+  await act(async () => { root = createRoot(container!); root.render(<>{node}<ToastHost /></>); await flush(); await flush(); });
 }
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
-afterEach(async () => { await act(async () => { root?.unmount(); }); container?.remove(); apiFake.reset(); act(() => resetToasts()); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container?.remove(); apiFake.reset(); act(() => centre.reset()); });
 
 // repo "r" (the fake config's only repo) carries RepoFeatures.previews: true; a row on a repo the
 // config knows nothing about reads as previews-disabled — there is no entry saying otherwise.
@@ -108,7 +108,9 @@ test("stop: clicking the Stop button next to the link stops the preview, no conf
   expect(stopBtn()).toBeNull(); // gone once there's nothing running
 });
 
-test("stop failure: the preview stays up and the error goes to the action-error toast, not the row", async () => {
+const actionToasts = () => [...document.body.querySelectorAll<HTMLElement>('[data-slot="notification-toast"][data-kind="action_failed"]')];
+
+test("stop failure: the preview stays up and the error goes to a failed-action notification toast, not the row", async () => {
   await mount(<PreviewCell row={row} />);
   apiFake.previewSvcs = [{ name: "frontend", port: 9001, url: "http://orca-box:9001", open: true, running: true, ready: true, startedAt: Date.now() }];
   await click(cell().querySelector("button")!);
@@ -116,9 +118,9 @@ test("stop failure: the preview stays up and the error goes to the action-error 
   await click(stopBtn()!);
   expect(cell().dataset.state).toBe("ready"); // the control doesn't lie about a preview still running
   expect(stopBtn()).not.toBeNull();
-  const toast = container!.querySelector('[data-slot="toast"]')!;
-  expect(toast.textContent).toContain("Preview");
-  expect(toast.textContent).toContain("stop failed: port busy");
+  expect(actionToasts()).toHaveLength(1);
+  expect(actionToasts()[0]!.textContent).toContain("Preview failed");
+  expect(actionToasts()[0]!.textContent).toContain("stop failed: port busy");
 });
 
 test("failed: a crashed service reaps to a retry icon with an error-tone dot, same slot", async () => {
@@ -136,4 +138,7 @@ test("failed: a crashed service reaps to a retry icon with an error-tone dot, sa
   const dot = c.querySelector<HTMLElement>('[data-slot="status-dot"]')!;
   expect(dot.dataset.tone).toBe("error");
   expect(stopBtn()).toBeNull(); // already reaped — nothing left to stop
+  // No failed-action toast for a crash: the bridge's watcher reports it as `preview_failed`, and one
+  // crash is one notification (tests/actionToast.test.tsx T4 pushes that and counts the stack).
+  expect(actionToasts()).toEqual([]);
 });

@@ -5,7 +5,7 @@ import {
   cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, staleHours, suggestTitle, toggleFollow, useRepos, type Row,
 } from "../store";
 import { firstLine, prMenuActions, prPreviewState, shouldBump } from "../workstream";
-import { actionFailed } from "@/lib/toast";
+import { actionFailed } from "@/lib/notificationStore";
 import { ChatComposer } from "@/components/ChatComposer";
 import { clearDraft, hasDraft } from "@/lib/composerDraft";
 import { Button } from "@/components/ui/button";
@@ -45,8 +45,8 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // Wrap every action so it (a) surfaces errors — menu items are fire-and-forget, so a failed
-  // promote/merge would otherwise vanish silently — as a toast (lib/toast: the message, Copy, Ask
-  // the orchestrator), never as text in the row, where it broke the Agents list's layout; the ⋯
+  // promote/merge would otherwise vanish silently — as a failed-action notification (lib/notificationStore: the message, Copy,
+  // Ask the orchestrator), never as text in the row, where it broke the Agents list's layout; the ⋯
   // keeps only a ✗ with the first line as its tooltip; and (b) reports busy up to the card, which
   // shows a loading overlay (actions like promote push + open a PR and take a few seconds).
   const fail = (action: string, e: unknown) => {

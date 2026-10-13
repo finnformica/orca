@@ -300,12 +300,18 @@ A workstream is a branch; its lane (`store.laneFor`):
   is clean, else In Review). **merged today** (server-local calendar day) → Done (`gh pr list --state merged`).
 
 Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
-- **A failed action is a toast, never text in the row** (`lib/toast` + `components/Toaster`, mounted
-  once in App, bottom-right above the orchestrator's window; errors stay until dismissed, info goes
-  after 8s). Title = action + workstream, body = the message (mono, scrollable), **Copy** (message +
-  repo/branch/PR/action) and **Ask the orchestrator** (the #128 `ask`, prefilled `Action … failed: …
-  Please investigate and fix.`). The button keeps only its ✗, first line as tooltip. Covers
-  `WorkstreamActions` (Merge, Slack, Move, …), `ActionButton` with `failure`, and preview start/crash.
+- **A failed action is a notification, never text in the row** — kind `action_failed`, in the ONE
+  notification toast stack and the bell's centre (see Notification centre; there is no second,
+  bottom-right stack any more — Finn found two inconsistent). It is LOCAL (`notificationStore`
+  `actionFailed` / `notifyLocal`: a negative id, never stored nor sent to the bridge — your click failing
+  is news to this browser only), persistent until dismissed, and the same failure while unread is
+  re-popped, not stacked twice. Card = repo · workstream, labelled with the verb (`Merge failed`),
+  body = the message; quick actions **Ask the orchestrator** (the #128 `ask`, prefilled `Action …
+  failed: … Please investigate and fix.`) and **Copy** (message + repo/branch/PR/action), then Open.
+  The button keeps only its ✗, first line as tooltip. Covers `WorkstreamActions` (Merge, Slack, Move,
+  …), `ActionButton` with `failure`, a preview's start / stop / add-label request, and the Usage
+  card's login switch. NOT a preview crash: the bridge's watcher already reports it as
+  `preview_failed`, so one crash is one notification.
 - **Enable auto-merge on a repo that disallows it** (`Auto merge is not allowed for this repository`):
   `enableAutoMerge` squash-merges directly if `mergeSafe`, else rethrows with "enable auto-merge in the
   repo settings, or merge when green". The stacked fallback still comes first.
@@ -364,6 +370,16 @@ so the gate can never loop. The conversational prompts also open with a session-
 
 - **Mark ready** (draft PR) = `gh pr ready`. **Merge**: PR → `gh pr merge`; local → guarded `git merge`.
 - **Discard** never deletes a branch that has an open PR (only pre-PR locals).
+- **Cleanup after finished work** (`verbs.cleanupRepo`, run by each instance's agents poll / publish
+  tick for ITS OWN worktrees): a merged or closed PR's worktree is reaped after `CLEANUP_GRACE_MS`
+  (10 min, from `mergedAt`/`closedAt`) and never while an agent runs on it — preview stopped, placement
+  cleared, a merged branch deleted (a closed one kept), the card archived. **Nothing that would lose
+  work is removed** (`cleanupDecision`): uncommitted changes, or commits on no remote, not in base and
+  not the PR's last head (`git.worktreeSafety`), flag the card (`cleanupBlocked`) instead. `orca
+  archive` goes to the worktree's home instance (`/api/workstreams/archive`). **`orca sweep
+  [--confirm]`** (`/api/cleanup/sweep`, fanned out to every instance) is the one-off: finished
+  worktrees, previews with nothing behind them and Orca's own branches left with no worktree or open
+  PR — a dry-run report unless confirmed, same safety, no grace period.
 
 Agent runs are killed on discard and on server shutdown (SIGINT/SIGTERM) so restarts don't orphan
 them. Routing: `/` = board, `/{repo}/prs/:n[/chat|/files|/preview]` = PR detail (an old `/checks` lands on Overview),
@@ -475,7 +491,7 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   project-scope MCP servers, and Claude Code's own auto-memory accrues under that cwd; user-level
   `~/.claude` config loads as in any session.
 - **`orca`** (`bin/orca` → `POST /api/orchestrator/tool` → `orchestrator.tool`): `board`, `spawn`,
-  `send`, `address`, `archive`, `preview` (`--status`; and `--push-to-template [--confirm]`,
+  `send`, `address`, `archive`, `sweep [--confirm]`, `preview` (`--status`; and `--push-to-template [--confirm]`,
   `server/pushTemplate.ts`, which makes a preview's whole database the repo's `PREVIEW_TEMPLATE_DB`
   — old one kept as `<template>_bak_<ts>` — and writes its integration env vars back to the main
   checkout's copied `.env`; dry run without `--confirm`, values masked — README), `merge`
@@ -630,7 +646,7 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
 Flat notifications — one row per event, no threads — in a `notification` table (migration 15 — 13 and 14 were taken by branches open at the same time; `migrate()` tolerates the gap) shared
 by both instances, so either machine shows the same centre. **One emitter, `server/notify.ts`**: the
 row is written once (`db.addNotification`, idempotent on the event's `key` — `run:<runId>:<kind>`,
-`check:<runId>`, `preview:<key>:<startedAt>:ready|failed`, `pr-ci:<repo>#<n>:<checks>`,
+`check:<runId>`, `preview:<key>:<startedAt>:ready|failed`, `pr-ci:<repo>#<n>@<head sha>` — the commit, not the failing-check set, which flaps,
 `pr-conflict:<repo>#<n>` — so a run finished twice by a restart's lease adoption, or a repo answered
 by two instances, is one row), then pushed on the bus as a `notification` event that rides the
 per-tab `/api/events` stream and is relayed between instances like steps and turns. Sources: the
@@ -649,7 +665,7 @@ cut, grouping by day); the browser mirror is `web/src/lib/notificationStore.ts` 
 the tab's stream, catches up by `since` on reconnect; toasts pop only for rows newer than the first
 load and younger than ten minutes); the surfaces are `components/Notifications.tsx`: the toast stack
 bottom-LEFT, growing up from just above the bell (`stackAnchor`, measured from the bell; full width
-above the bottom bar on a phone), so the orchestrator's window and the action-error Toaster keep the
+above the bottom bar on a phone), so the orchestrator's window keeps the
 bottom-right. It copies branch-demo's inbox toasts — sonner's stack — in CSS, no dependency
 (`stackLayout` / `toastMotion` / `swipeOut` / the `HideClock`, all pure): newest in front, three
 showing; past one they collapse behind it (14px lift, 5% smaller each) over a count bar with Mark
@@ -663,7 +679,7 @@ opening it, any quick action and Mark all as read all just `markRead`, which als
 off the stack. A toast's title opens its workstream's Chat tab (the agent page, a PR's included), composer focused.
 **Quick actions** on every toast and centre row, shown on hover / focus (always on a touch screen),
 as size-7 ghost **icon buttons** (lucide icon, aria-label, a `Tip` tooltip — `components/ui/tip.tsx`
-— with the `Kbd` keycap where a shortcut exists; the action-error Toaster's Copy / Ask use the same):
+— with the `Kbd` keycap where a shortcut exists; a failed action's Ask / Copy are two of them):
 the kind's one or two verbs, the first primary (no Read button — acting marks it read), then **Open,
 always, always last**, labelled just Open (its workstream's Chat tab with the composer focused; the
 orchestrator's panel, composer focused, for its own wake) and, on an
@@ -672,7 +688,7 @@ one whose prerequisite is missing (no live row, PR URL, failed check). CI failin
 Address PR (`store.addressPr`) + View PR (GitHub); check failed → Fix (`autofixInstruction` as a
 follow-up) + View output; finished / needs input → Reply (the Chat tab, `?reply` focuses the
 composer); failed / stopped → Retry (`RETRY_INSTRUCTION` on the same session) + Open chat; preview
-ready → Open preview + Stop; preview failed → Retry test + View log; the orchestrator's own wake →
+ready → Open preview + Stop; preview failed → Retry test + View log; a failed action (local) → Ask the orchestrator + Copy; the orchestrator's own wake →
 Open only. Verbs run in `ActionButton`, so a
 failure is the action-error toast with Ask the orchestrator), and
 the bell at the sidebar's foot with the unread count, opening the centre: one compact header —
@@ -756,12 +772,22 @@ needs no second timer; a failed write is logged and swallowed. `GET /api/health/
 either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
 CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300
 points, one line each (no overlay — the running sessions are their own chart). Beside them, in the
-same `LineChart` design, an **Agents** chart (`running_agents` over time) and **Cost accrued** (the
-running sum of `instance_metric.cost_usd`, migration 17: what the runs that finished since the
-previous sample cost, from the run ledger's `costUsd` — Claude's `total_cost_usd`; Codex/Cursor report
-none). Rows written before migration 17 are filled once from the ledger at startup
-(`health.backfillCost` → `db.backfillMetricCost`: each run onto the first sample at or after it, only
-where `cost_usd` is still NULL, so it never re-counts what the sampler did). All four come from the
+same `LineChart` design, an **Agents** chart (`running_agents` over time) and **Cost accrued** —
+what the MACHINE cost, not model spend (Finn: the first cut summed the runs' `total_cost_usd`, which
+was wrong in intent; model spend is the Usage card's business). It is the instance's hourly rate ×
+the time between consecutive samples, where a pause over 5 minutes (`UPTIME_GAP_MS`, the sparkline's
+gap) means it was down and adds nothing (`accruedCost`, pure); the caption shows the rate
+(`rateLabel`: `$0.23/h est. (m7i.xlarge)`), the value the total for the range. **The rate**
+(`health.instanceRate`, on `/api/health` as `rate`): the app config's `instanceHourlyUsd[<instance>]`
+(editable in Settings' Machine cost card → `POST /api/config/instance-rate`, which sets one entry
+and leaves the rest of the document alone), else on EC2 the type + region from IMDSv2 priced from
+the small built-in on-demand table `EC2_ON_DEMAND_USD` (source `estimate`; the box, m7i.xlarge in
+eu-west-2, is $0.2331/h), else 0 — the laptop — and a card with no rate greys the chart
+(`chart-cost-off`) rather than drawing a flat $0. The rate is today's, applied over the whole range
+(no rate history). `ORCA_HOURLY_USD` / `ORCA_BILLING_SINCE` and the month-to-date estimate are gone.
+`instance_metric.cost_usd` (migration 17) is left in place but UNUSED — nothing writes or reads it
+any more, and the ledger backfill that filled it was removed; dropping it would be a migration of
+its own for no gain. All four come from the
 one `/api/health/history` poll. Every chart and the card's header stats come from ONE series
 (`instanceSeries`): the live `/api/health` reading, when newer, is the newest sample and every line's
 raw last point, so a header stat can never disagree with where its line ends. The Instances heading's

@@ -23,10 +23,10 @@ import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
 import * as mergeQueue from "./mergeQueue";
 import * as notify from "./notify";
-import { health, historyHours, startMetricsSampler } from "./health";
+import { health, historyHours, instanceRate, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
-import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 
@@ -212,7 +212,7 @@ const notEnabled = (repo: RepoConfig, feature: string) =>
 const DATABASE_ONLY = new Set([
   "/api/turns", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
   "/api/usage", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history",
+  "/api/health/history", "/api/config/instance-rate",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
   // others published — a repo can live on several instances now, so no one instance owns the list.
   "/api/agents",
@@ -288,20 +288,9 @@ async function agentRows(repo: RepoConfig): Promise<unknown[]> {
   const instance = db.instanceName();
   if (!verbs.repoHere(repo)) return foreignInventory(repo.name); // not checked out here: only what others see
   let wts = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
-  // Reap worktrees whose PR has merged (incl. manual GitHub merges) so stale locals don't linger.
-  // Reap worktrees whose PR is done with — merged (branch deleted) or closed unmerged (branch kept,
-  // see git.reapWorktrees). Both lists are cached, so the hot poll pays at most one cheap gh list.
-  const [merged, closed] = await Promise.all([
-    gh.mergedBranches(repo.repoPath).catch(() => new Set<string>()), // empty for local-only repos
-    gh.closedBranches(repo.repoPath).catch(() => new Set<string>()),
-  ]);
-  const reaped = await git.reapWorktrees(repo.repoPath, repo.worktreeRoot, merged, closed, async (w) => {
-    agent.stop(w.worktreePath);
-    await agent.killInWorktree(w.worktreePath);
-    preview.stop(w.worktreePath, true); // reaped → drop its preview DB too
-  });
-  for (const r of reaped) await db.archive(repo.name, r.branch); // reaped from disk; its conversation is kept
-  const reapedBranches = new Set(reaped.map((r) => r.branch));
+  // Auto-archive: worktrees whose PR merged or closed (on GitHub too) are reaped after a grace
+  // period, unless that would lose work — then they're flagged and kept (verbs.cleanupRepo).
+  const reapedBranches = new Set((await verbs.cleanupRepo(repo)).filter((c) => c.action === "reaped").map((c) => c.branch));
   wts = wts.filter((w) => !reapedBranches.has(w.branch));
   const live = await agent.detectRunning(wts.map((w) => w.branch)); // recover status lost on restart
   const base = await git.resolveBase(repo.repoPath, repo.baseBranch); // origin/<base>, not stale local
@@ -381,6 +370,13 @@ async function api(req: Request, url: URL): Promise<Response> {
     await orchestrator.deliverReport(cfg, body.text, typeof body.key === "string" ? body.key : undefined);
     return json({ ok: true });
   }
+  if (p === "/api/cleanup/sweep") {
+    // The one-off sweep (`orca sweep`): a dry run unless `confirm`. Not repo-scoped — this instance
+    // sweeps its own disk and asks every other instance to sweep theirs (`local` stops the fan-out).
+    const confirm = req.method === "POST" && body.confirm === true;
+    const reports = body.local ? [await verbs.sweep(cfg, { confirm })] : await verbs.sweepAll(cfg, { confirm });
+    return json({ reports, text: sweepText(reports) });
+  }
   if (req.method === "GET" && p === "/api/orchestrator") return json(await orchestrator.status(cfg));
   if (req.method === "POST" && p === "/api/orchestrator/model") {
     try { await orchestrator.setModel(body.model); } catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 400); }
@@ -421,8 +417,10 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "GET" && p === "/api/health") {
     // This machine's vitals, for the header's instance chip. `?instance=` reaches another instance
-    // through the ordinary placement forwarding (an explicit instance beats everything).
-    return json(await health());
+    // through the ordinary placement forwarding (an explicit instance beats everything). The rate is
+    // this machine's (config → IMDS estimate → 0), for the card's Cost accrued chart.
+    const [h, rate] = await Promise.all([health(), loadConfig().then((c) => instanceRate(c.instanceHourlyUsd))]);
+    return json({ ...h, rate });
   }
   if (req.method === "GET" && p === "/api/notifications") {
     // The centre's rows (any instance answers: one table). `since` is the catch-up cursor after a
@@ -478,6 +476,15 @@ async function api(req: Request, url: URL): Promise<Response> {
     await saveConfigDocument(config);
     return json({ ok: true, repos: config.repos.map((r) => r.name) });
   }
+  if (req.method === "POST" && p === "/api/config/instance-rate") {
+    // Settings' Machine cost: one instance's USD/hour (null clears it, back to the IMDS estimate / 0).
+    const instance = typeof body.instance === "string" ? body.instance.trim() : "";
+    const usd = body.hourlyUsd === null || body.hourlyUsd === "" ? null : Number(body.hourlyUsd);
+    if (!instance || (usd !== null && !(Number.isFinite(usd) && usd >= 0))) return json({ error: "instance and a non-negative hourlyUsd (or null) are required" }, 400);
+    await db.setInstanceHourlyUsd(instance, usd);
+    invalidateConfig();
+    return json({ ok: true });
+  }
   if (req.method === "GET" && p === "/api/config") {
     const available = AGENT_PROVIDERS.filter((provider) => Boolean(Bun.which(providerBinary(provider))));
     const repos = await Promise.all(cfg.repos.map(async (r) => ({
@@ -499,6 +506,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       repos: repos.map((r, i) => ({ ...r, runsOn: cfg.repos[i]!.runsOn })),
       staleHours: cfg.staleHours, agentProviders, apiPort: API_PORT,
       instance: db.instanceName(), instances: Object.keys(cfg.instances ?? {}),
+      instanceHourlyUsd: cfg.instanceHourlyUsd ?? {},
     });
   }
   // The orchestrator's verbs over HTTP, so an orchestrator on one instance can spawn / send /
@@ -508,6 +516,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     // this to the instance that holds it now; the target adopts over HTTP.
     try { return json(await verbs.moveWorkstream(cfg, repo, String(body.branch), String(body.to))); }
     catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 409); }
+  }
+  if (req.method === "POST" && p === "/api/workstreams/archive") {
+    // `orca archive` for a workstream living here, sent by the orchestrator's instance. Placement
+    // forwards it to the instance holding the worktree, which is the only one that can remove it.
+    await verbs.archiveWorkstream(repo, String(body.branch));
+    return json({ ok: true, instance: db.instanceName() });
   }
   if (req.method === "POST" && p === "/api/workstreams/spawn") {
     const ws = await verbs.createWorkstream(cfg, repo, { prompt: String(body.prompt ?? ""), title: body.title, model: body.model, fields: { orchestrated: true } });

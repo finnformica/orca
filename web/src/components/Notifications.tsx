@@ -8,14 +8,15 @@
 // quick action or opening it marks it read (out of the stack, out of the centre's default Unread
 // view, still under All). Every toast and centre row carries quick actions on hover (always, on a
 // touch screen) as icon buttons with tooltips: its kind's one or two (Address PR, Fix, Reply, Retry,
-// …), then Open, always last — chosen by the pure `notificationActions` (workstream.ts), run by the
-// store's existing verbs. The decisions (what pops,
+// …; a failed action's Ask the orchestrator and Copy), then Open, always last — chosen by the pure `notificationActions` (workstream.ts), run by the
+// store's existing verbs. A button you clicked that failed is one more kind (`action_failed`, a
+// local row the store raises in this browser), so it shares the stack, the card and the centre. The decisions (what pops,
 // what persists, the stack's layout and motion) are pure in shared/notifications.ts; the state is
 // lib/notificationStore.ts.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useAtomValue } from "jotai";
 import {
-  AlertTriangle, ArrowUpRight, Bell, BellOff, Bot, Check, CheckCheck, CircleX, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, GitMerge, Hammer, MessageCircleQuestion,
+  AlertTriangle, ArrowUpRight, Bell, BellOff, Bot, Check, CheckCheck, CircleAlert, CircleX, Copy, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, GitMerge, Hammer, MessageCircleQuestion,
   MessagesSquare, MonitorCheck, MonitorX, OctagonPause, Reply, RotateCcw, ScrollText, ShieldX, Square, Wrench, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -43,7 +44,7 @@ import type { ShortcutId } from "@/lib/shortcuts";
 
 const ICON: Record<NotificationKind, typeof Bell> = {
   needs_input: MessageCircleQuestion, finished: Check, failed: CircleX, stopped: OctagonPause, check_failed: ShieldX,
-  pr_ci_failed: AlertTriangle, pr_conflicts: GitPullRequestArrow, preview_ready: MonitorCheck, preview_failed: MonitorX,
+  pr_ci_failed: AlertTriangle, pr_conflicts: GitPullRequestArrow, preview_ready: MonitorCheck, preview_failed: MonitorX, action_failed: CircleAlert,
   merged: GitMerge, merge_refused: GitPullRequest,
 };
 const TONE_TEXT = { ready: "text-geist-green", error: "text-geist-red", warning: "text-geist-warning-fg", queued: "text-geist-blue", neutral: "text-muted-foreground" } as const;
@@ -67,7 +68,18 @@ const ACTION_ICON: Record<NotificationActionId, typeof Bell> = {
   // notificationActions) — its icon is the orchestrator's own avatar everywhere else, not the panel
   // it opens.
   openChat: MessagesSquare, openPreview: ExternalLink, stopPreview: Square, retryPreview: RotateCcw, viewLog: ScrollText, openOrchestrator: Bot,
+  ask: Bot, copy: Copy,
 };
+
+/** Copy a failed action's text; where the clipboard is refused (no secure context over the plain-http
+ *  tailnet), a prompt with the text selected is the fallback. */
+async function copyText(text: string): Promise<void> {
+  try { await navigator.clipboard.writeText(text); } catch { window.prompt("Copy the error:", text); }
+}
+
+/** What a card says beside its title: the failed verb for a failed action ("Merge failed"), else
+ *  the kind's own label. */
+const labelOf = (n: Notification): string => n.label ?? KIND_META[n.kind].label;
 const ACTION_SHORTCUT: Partial<Record<NotificationActionId, ShortcutId>> = { openOrchestrator: "orchestrator" };
 
 /** Where a notification opens and what its quick actions do, resolved against the live rows (its
@@ -120,6 +132,8 @@ function useNotificationActions() {
       case "viewPr": { const url = rowOf(n)?.prUrl; return url ? () => void window.open(url, "_blank", "noopener") : undefined; }
       case "openPreview": return n.link?.url ? () => void window.open(n.link!.url, "_blank", "noopener") : undefined;
       case "openOrchestrator": return () => openOrchestrator();
+      case "ask": return n.ask ? () => openOrchestrator(n.ask) : undefined;
+      case "copy": return n.copy ? () => void copyText(n.copy!) : undefined;
       default: return undefined;
     }
   };
@@ -130,7 +144,7 @@ function useNotificationActions() {
  *  actions (the first primary, in the foreground colour), Open always last and — in the centre,
  *  while unread — the ×. Hidden until the card or row is hovered or focused, always shown on a touch
  *  screen. Every action is optimistic: the toast/row closes or marks read AT ONCE, the verb (or
- *  navigation) runs after — never waited on. A verb that fails shows the action-error toast with why
+ *  navigation) runs after — never waited on. A verb that fails shows a failed-action notification with why
  *  (as on the board) and, if the notification was unread, puts it back — the click shouldn't have to
  *  wait on a launch to know whether it worked. */
 function QuickActions({ n, shown, onDismiss, className }: {
@@ -216,8 +230,8 @@ const useDocumentHidden = () => {
 type Gone = { n: Notification; place: ToastPlace };
 
 /** Bottom-left, its foot just above the bell (full width above the bottom bar on a phone), so the
- *  orchestrator's window in the bottom-right corner and the action-error Toaster never share its
- *  corner. Newest in front; three show, the rest wait (the bell has them all). Past one, the cards
+ *  orchestrator's window in the bottom-right corner never shares its corner. A failed action is
+ *  one of these cards too (`action_failed`), not a stack of its own. Newest in front; three show, the rest wait (the bell has them all). Past one, the cards
  *  collapse behind the front one over a count bar with Mark all as read; hovering spreads them, and
  *  while the stack is hovered, touched or the tab hidden, nothing auto-hides. A finished run or a
  *  ready preview hides itself (still unread in the centre); a problem or a question stays until you
@@ -272,7 +286,7 @@ export function ToastHost() {
       <div data-slot="notification-host" data-expanded={expanded || undefined} role="region" aria-label="Notification centre"
         // z-[60]: above the sidebar (z-50 — a toast anchored above the bell would otherwise paint
         // underneath it) and the orchestrator's side panel (z-40), still under native <dialog>s
-        // (the command palette, Add New) and the action-error Toaster's own corner (z-50).
+        // (the command palette, Add New).
         className="fixed z-[60]" style={{ left: anchor.left, bottom: anchor.bottom + (showCount ? COUNT_BAR_SPACE : 0), ...width }}
         onMouseEnter={() => setExpanded(true)} onMouseMove={() => setExpanded(true)}
         onMouseLeave={() => { if (!interacting) setExpanded(false); }}
@@ -374,7 +388,7 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
           <div className="flex items-baseline gap-1.5 text-sm leading-5">
             <RepoLabel repo={n.repo} />
             <button type="button" data-slot="notification-title" className="truncate font-medium hover:underline" onClick={onOpen}>{n.title}</button>
-            <span className={cn("shrink-0 text-xs", TONE_TEXT[meta.tone])}>{meta.label}</span>
+            <span className={cn("shrink-0 text-xs", TONE_TEXT[meta.tone])}>{labelOf(n)}</span>
           </div>
           {n.body && <div className="text-muted-foreground line-clamp-2 text-xs leading-5 break-words">{n.body}</div>}
         </div>
@@ -481,7 +495,7 @@ function CentreRow({ n, onOpen }: { n: Notification; onOpen: () => void }) {
           <span className="flex items-baseline gap-1.5 text-sm leading-5">
             <RepoLabel repo={n.repo} />
             <span className="truncate font-medium">{n.title}</span>
-            <span className={cn("shrink-0 text-xs", TONE_TEXT[KIND_META[n.kind].tone])}>{KIND_META[n.kind].label}</span>
+            <span className={cn("shrink-0 text-xs", TONE_TEXT[KIND_META[n.kind].tone])}>{labelOf(n)}</span>
           </span>
           {n.body && <span className="text-muted-foreground block truncate text-xs leading-5">{n.body}</span>}
           <span className="text-muted-foreground block text-xs">{ago(n.createdAt)}{n.instance ? ` · ${n.instance}` : ""}</span>

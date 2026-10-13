@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { cp, mkdir, readdir, rm, symlink } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { dlopen, FFIType, suffix } from "bun:ffi";
@@ -238,31 +238,51 @@ export async function linkToWorktree(repoPath: string, worktreePath: string, pat
   }));
 }
 
-/** Remove a worktree (does NOT touch the branch — that's an explicit, separate op). */
-export type ReapReason = "merged" | "closed";
+/** Why a worktree is up for cleanup: its PR merged, its PR was closed unmerged, or its workstream
+ *  was archived while the worktree stayed behind. */
+export type ReapReason = "merged" | "closed" | "archived";
 
-/** Remove the worktrees whose PR is done with. A MERGED PR's branch is deleted too (its commits are
- *  in base). A CLOSED (unmerged) PR's worktree is removed but its branch is KEPT — those commits
- *  exist only on it, so we never auto-delete them; the card clears because no worktree/open-PR
- *  remains. A branch in neither set (a pre-PR local, or a still-open PR) is left alone. `before` runs
- *  per reaped worktree ahead of removal so the caller can stop the agent/preview and archive it.
- *  Returns what was reaped. Real git only; the caller owns the non-git side effects. */
-export async function reapWorktrees(
-  repoPath: string, worktreeRoot: string, merged: Set<string>, closed: Set<string>,
-  before?: (w: { branch: string; worktreePath: string }, reason: ReapReason) => void | Promise<void>,
-): Promise<{ branch: string; worktreePath: string; reason: ReapReason }[]> {
-  const reaped: { branch: string; worktreePath: string; reason: ReapReason }[] = [];
-  for (const w of await listWorktrees(repoPath, worktreeRoot)) {
-    const reason: ReapReason | undefined = merged.has(w.branch) ? "merged" : closed.has(w.branch) ? "closed" : undefined;
-    if (!reason) continue;
-    if (before) await before(w, reason);
-    await removeWorktree(repoPath, w.worktreePath).catch(() => {});
-    if (reason === "merged") await deleteBranch(repoPath, w.branch); // closed keeps its branch
-    reaped.push({ ...w, reason });
-  }
-  return reaped;
+const commitExists = (cwd: string, ref: string) =>
+  git(cwd, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`).then(() => true, () => false);
+
+/** How many commits on `ref` exist nowhere else: on no remote-tracking branch, not in `base`, and
+ *  not in `head` (a PR's last pushed commit — after a squash merge GitHub deletes the remote branch
+ *  and a prune drops it from `--remotes`, yet those commits were pushed). A ref git can't read counts
+ *  as one unpushed commit, so a cleanup errs toward keeping it. */
+export async function unpushedCount(repoPath: string, ref: string, opts: { base?: string; head?: string } = {}): Promise<number> {
+  const not = ["--remotes"];
+  for (const r of [opts.base, opts.head]) if (r && await commitExists(repoPath, r)) not.push(r);
+  try {
+    return (await git(repoPath, "rev-list", ref, "--not", ...not)).split("\n").filter(Boolean).length;
+  } catch { return 1; }
 }
 
+/** What removing a worktree would lose: paths with uncommitted changes (tracked edits and untracked
+ *  files, minus `ignore` — the repo's own copied/linked entries, e.g. a symlinked node_modules that a
+ *  `node_modules/` pattern does not match) and the branch's commits that exist nowhere else. A
+ *  worktree directory that is already gone has no uncommitted work. */
+export async function worktreeSafety(
+  repoPath: string, w: { branch: string; worktreePath: string }, opts: { base?: string; head?: string; ignore?: string[] } = {},
+): Promise<{ dirty: string[]; unpushed: number }> {
+  const ignore = new Set((opts.ignore ?? []).map((p) => p.replace(/\/+$/, "")));
+  let dirty: string[] = [];
+  if (existsSync(w.worktreePath)) {
+    try {
+      dirty = (await git(w.worktreePath, "status", "--porcelain")).split("\n").filter(Boolean)
+        .map((l) => l.slice(3).replace(/^"|"$/g, "").replace(/\/$/, ""))
+        .filter((p) => !ignore.has(p));
+    } catch { dirty = ["(git status failed)"]; }
+  }
+  return { dirty, unpushed: await unpushedCount(repoPath, `refs/heads/${w.branch}`, opts) };
+}
+
+/** Every local branch and the worktree it is checked out in ("" for none). */
+export async function localBranches(repoPath: string): Promise<{ branch: string; worktreePath: string }[]> {
+  const out = await git(repoPath, "for-each-ref", "refs/heads", "--format=%(refname:short)%09%(worktreepath)");
+  return out.split("\n").filter(Boolean).map((l) => { const [branch = "", worktreePath = ""] = l.split("\t"); return { branch, worktreePath }; });
+}
+
+/** Remove a worktree (does NOT touch the branch — that's an explicit, separate op). */
 export async function removeWorktree(repoPath: string, worktreePath: string): Promise<void> {
   await git(repoPath, "worktree", "remove", "--force", worktreePath);
 }
