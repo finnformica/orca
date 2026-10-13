@@ -65,13 +65,14 @@ adapters or routes.
 - Stop a running agent from its chat. ✅ A **Stopped** toast. Break the repo's `checkCommand` and have
   the agent commit. ✅ **Check failed** beside the run's own toast.
 - Start three runs that finish close together. ✅ The stack collapses to the top toast with two peeks
-  and "3 notifications"; hover expands it; **Clear all** empties the corner but ✅ the bell's count
-  stays.
+  and "3 notifications"; hover expands it; **Mark all as read** empties the corner and ✅ the bell's
+  count drops by three; the bell's **All** still lists them, read.
 - Start a preview. ✅ **Preview ready** with the URL once every service answers; **Open preview**
   opens it. Point a service at a bad command. ✅ **Preview failed** with the log's last line.
-- Open the bell. ✅ Rows grouped **Today / Yesterday / date**, unread dots, the kind chips filter, a
-  click marks read and opens; **Mark all read** clears the count; **Clear all** empties the centre on
-  BOTH machines (refresh the other).
+- Open the bell. ✅ It opens on **Unread** (with its count); rows grouped **Today / Yesterday / date**;
+  a click marks read and opens; a row's × marks it read and it leaves the Unread view; **All** shows
+  it (dimmed) and the choice survives a reload; **Mark all as read** clears the count on BOTH machines
+  (refresh the other). ✅ No **Clear** anywhere — nothing is ever deleted from the centre.
 - Settings → Notifications: **Do not disturb** on ✅ no toasts, the centre still fills; untick
   **Finished** ✅ only that kind stops popping; **Browser notifications** on, hide the tab, make an
   agent fail ✅ a system notification, click brings the tab back on the card.

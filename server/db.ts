@@ -1297,12 +1297,12 @@ export const NOTIFICATION_RETENTION_MS = 30 * 24 * 3_600_000;
 
 type NotificationRow = {
   id: string; instance: string; repo: string; branch: string | null; kind: Notification["kind"]; title: string; body: string;
-  link: Notification["link"] | null; created_at: string; read_at: string | null; dismissed_at: string | null;
+  link: Notification["link"] | null; created_at: string; read_at: string | null;
 };
 const toNotification = (r: NotificationRow): Notification => ({
   id: Number(r.id), instance: r.instance, repo: r.repo, ...(r.branch ? { branch: r.branch } : {}), kind: r.kind, title: r.title, body: r.body,
   ...(r.link ? { link: r.link } : {}), createdAt: Number(r.created_at),
-  ...(r.read_at ? { readAt: Number(r.read_at) } : {}), ...(r.dismissed_at ? { dismissedAt: Number(r.dismissed_at) } : {}),
+  ...(r.read_at ? { readAt: Number(r.read_at) } : {}),
 });
 
 /** Record one event, once: a second insert with the same `key` is a no-op and returns undefined, so
@@ -1315,20 +1315,21 @@ export async function addNotification(input: NotificationInput, at = Date.now())
     INSERT INTO notification (user_id, key, instance, repo, branch, kind, title, body, link, created_at)
     VALUES (${user}, ${input.key}, ${instanceName()}, ${input.repo}, ${input.branch ?? null}, ${input.kind}, ${input.title}, ${input.body}, ${input.link ?? null}, ${at})
     ON CONFLICT (user_id, key) DO NOTHING
-    RETURNING id, instance, repo, branch, kind, title, body, link, created_at, read_at, dismissed_at`;
+    RETURNING id, instance, repo, branch, kind, title, body, link, created_at, read_at`;
   await sql`DELETE FROM notification WHERE user_id = ${user} AND created_at < ${at - NOTIFICATION_RETENTION_MS}`;
   const row = (rows as NotificationRow[])[0];
   return row ? toNotification(row) : undefined;
 }
 
-/** The centre's rows: not dismissed, newest first. `since` (ms) is the catch-up cursor after a dropped
+/** The centre's rows, read and unread, newest first. Nothing is deleted by you (`dismissed_at` is
+ *  from when the centre had Clear: such a row is also read, so it shows under All like any other). `since` (ms) is the catch-up cursor after a dropped
  *  stream — rows created after it, read or not. */
 export async function notifications(opts: { since?: number; limit?: number } = {}): Promise<Notification[]> {
   const sql = await open();
   const limit = Math.min(Math.max(opts.limit ?? 200, 1), 1000);
   const rows = await sql`
-    SELECT id, instance, repo, branch, kind, title, body, link, created_at, read_at, dismissed_at FROM notification
-    WHERE user_id = ${currentUser()} AND dismissed_at IS NULL AND created_at > ${opts.since ?? 0}
+    SELECT id, instance, repo, branch, kind, title, body, link, created_at, read_at FROM notification
+    WHERE user_id = ${currentUser()} AND created_at > ${opts.since ?? 0}
     ORDER BY created_at DESC, id DESC LIMIT ${limit}`;
   return (rows as NotificationRow[]).map(toNotification);
 }
@@ -1338,17 +1339,7 @@ export async function markNotificationsRead(ids: number[] | "all", at = Date.now
   const sql = await open();
   const user = currentUser();
   const rows = ids === "all"
-    ? await sql`UPDATE notification SET read_at = ${at} WHERE user_id = ${user} AND read_at IS NULL AND dismissed_at IS NULL RETURNING id`
+    ? await sql`UPDATE notification SET read_at = ${at} WHERE user_id = ${user} AND read_at IS NULL RETURNING id`
     : ids.length ? await sql`UPDATE notification SET read_at = ${at} WHERE user_id = ${user} AND read_at IS NULL AND id IN ${sql(ids)} RETURNING id` : [];
-  return rows.length;
-}
-
-/** Dismiss (clear from the centre): the given ids, or all. A dismissed row is also read. */
-export async function dismissNotifications(ids: number[] | "all", at = Date.now()): Promise<number> {
-  const sql = await open();
-  const user = currentUser();
-  const rows = ids === "all"
-    ? await sql`UPDATE notification SET dismissed_at = ${at}, read_at = COALESCE(read_at, ${at}) WHERE user_id = ${user} AND dismissed_at IS NULL RETURNING id`
-    : ids.length ? await sql`UPDATE notification SET dismissed_at = ${at}, read_at = COALESCE(read_at, ${at}) WHERE user_id = ${user} AND dismissed_at IS NULL AND id IN ${sql(ids)} RETURNING id` : [];
   return rows.length;
 }

@@ -44,7 +44,7 @@ afterEach(async () => {
 const q = <T extends Element = HTMLElement>(sel: string) => document.querySelector<T>(sel);
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
 const pointerdown = async (el: Element) => { await act(async () => { el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })); await flush(); await flush(); }); };
-const button = (scope: ParentNode, text: string) => [...scope.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent?.trim() === text)!;
+const button = (scope: ParentNode, text: string) => [...scope.querySelectorAll<HTMLElement>("button")].find((b) => (b.getAttribute("aria-label") ?? b.textContent?.trim()) === text)!;
 
 const ERROR = "GraphQL: Pull request is not mergeable: the base branch policy prohibits the merge (mergePullRequest)\nmore detail on a second line";
 
@@ -89,6 +89,11 @@ test("T2 a failed Merge on the Agents list: a toast with Copy + Ask; the row has
     expect(trigger.querySelector(".lucide-x")).not.toBeNull();
     expect(trigger.title).toBe("GraphQL: Pull request is not mergeable: the base branch policy prohibits the merge (mergePullRequest)");
 
+    // Copy and Ask are size-7 ghost icon buttons, each labelled and with its tooltip — the same
+    // style as the notification toasts' quick actions.
+    const acts = t.querySelector('[data-slot="toast-actions"]')!;
+    expect([...acts.querySelectorAll("button")].map((b) => [b.getAttribute("aria-label"), b.textContent, b.className.includes("size-7")])).toEqual([["Copy", "", true], ["Ask the orchestrator", "", true]]);
+    expect([...acts.querySelectorAll('[role="tooltip"]')].map((x) => x.textContent)).toEqual(["Copy", "Ask the orchestrator"]);
     // Copy: the message plus its context.
     await click(button(t, "Copy"));
     expect(copied).toEqual([`Action: Merge\nRepo: r\nBranch: feat-ok\nPR: #9\nError:\n${ERROR}`]);
