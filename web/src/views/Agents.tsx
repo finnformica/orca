@@ -11,7 +11,7 @@
 // beside the search box.
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { useAtom, useAtomValue } from "jotai";
-import { ArrowDown, Bot, Columns3, GitPullRequest, List, ListFilter, Loader2, Rows2, Rows3, Search, X } from "lucide-react";
+import { ArrowDown, Columns3, GitPullRequest, List, ListFilter, Loader2, Rows2, Rows3, Search, X } from "lucide-react";
 import { agentQueryAtom, boardViewAtom, densityAtom, instanceScopeAtom, repoFilterAtom, type BoardView } from "@/lib/atoms";
 import { navigate, useSearch } from "@/lib/route";
 import { useNow } from "@/lib/ticker";
@@ -380,7 +380,6 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
         <span>{row.repo}</span>
         {model && <><span aria-hidden="true">·</span><span data-slot="model-label">{model.label}</span></>}
         {!isDone && <PrPreviewInline row={row} />}
-        {row.orchestrated && <><span aria-hidden="true">·</span><span className="inline-flex items-center gap-1"><Bot className="size-3" />orchestrated</span></>}
         {instance && cell("instance") && <><span aria-hidden="true">·</span><span data-slot="instance-chip">{instance}</span></>}
         <span aria-hidden="true">·</span><span className="min-w-0 font-mono break-all">{row.branch}</span>
       </div>
@@ -401,7 +400,6 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
           <span className="shrink-0">{row.repo}</span>
           {model && <><span aria-hidden="true">·</span><span data-slot="model-label" className="shrink-0" title={model.title}>{model.label}</span></>}
           {!isDone && <PrPreviewInline row={row} />}
-          {row.orchestrated && <span className="shrink-0" title="Started or continued by the orchestrator" aria-label="Orchestrated"><Bot className="size-3" /></span>}
           {error && <><span aria-hidden="true">·</span><span data-slot="row-error" className="text-geist-red truncate" title={error}>{error}</span></>}
         </div>
       </div>
@@ -419,7 +417,6 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
       {cell("instance") && <div role="cell" className="text-muted-foreground truncate text-xs" data-slot="instance-chip" title={instance}>{instance ?? "—"}</div>}
       <div role="cell" className="flex items-center justify-end gap-1">
         {!isDone && <PreviewCell row={row} />}
-        {!isDone && <PrPreviewCell row={row} />}
         {hasMenu && <WorkstreamActions row={row} compact menuOnly onBusy={setBusy} onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}
           onOpen={to ? () => navigate(to) : undefined} contextAt={menuAt} onContextClose={closeMenu} />}
         {!isDone && <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />}
