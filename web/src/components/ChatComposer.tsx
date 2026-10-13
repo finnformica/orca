@@ -6,6 +6,7 @@ import { filterPrRefs, insertPrRef, prRefLabel, prTrigger, type PrRef } from "@/
 import { cn } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
 import { joinPrefill } from "@/lib/palette";
+import { endTypeahead } from "@/lib/orchestratorOpen";
 import type { OrchestratorPrefill } from "@/lib/atoms";
 import { enterSends, isCoarse } from "@/lib/viewport";
 
@@ -94,18 +95,27 @@ export function ChatComposer({
     if (el && pendingCaret.current !== null) { el.focus(); el.setSelectionRange(pendingCaret.current, pendingCaret.current); pendingCaret.current = null; }
   }, [value]);
   const prefillBase = useRef<{ session: number; base: string } | null>(null);
-  useEffect(() => {
+  // A LAYOUT effect, so the box has focus in the same commit that opened it — before the browser
+  // paints, and so before the next keystroke. (A passive effect focused it a frame late: the first
+  // letter went elsewhere or, focused mid-word, "Sometimes" came out "ometimesS".) Keys typed before
+  // even that (lib/orchestratorOpen's typeahead) are appended in order. A box that already has focus
+  // keeps its caret and value: whatever the user has typed is never moved or reset.
+  useLayoutEffect(() => {
     if (!prefill) return;
     const fresh = prefillBase.current?.session !== prefill.session;
     if (fresh) prefillBase.current = { session: prefill.session, base: latest.current };
-    if (!fresh || prefill.text) {
-      const next = joinPrefill(prefillBase.current!.base, prefill.text);
-      pendingCaret.current = next.length; // the layout effect focuses and puts the caret at the end
+    let next = !fresh || prefill.text ? joinPrefill(prefillBase.current!.base, prefill.text) : null;
+    const held = endTypeahead();
+    if (held) next = (next ?? latest.current) + held;
+    const el = textRef.current;
+    if (next !== null && next !== latest.current) {
+      pendingCaret.current = next.length; // the [value] layout effect focuses and puts the caret at the end
       setValue(next);
       setHistIdx(null);
+    } else if (el && el.ownerDocument.activeElement !== el) {
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
     }
-    const el = textRef.current;
-    if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
   }, [prefill?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Clicking anywhere in the chrome (border, padding, toolbar gap) focuses the textarea, so the
