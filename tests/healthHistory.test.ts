@@ -3,20 +3,27 @@
 // write (which only ever touches the writer's own rows), the `hours` clamp, and that a failed write
 // is swallowed rather than surfacing anywhere else.
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import * as db from "../server/db";
 import { historyHours, sampleMetrics } from "../server/health";
+import * as lease from "../server/lease";
 import { sparklineSegments } from "../web/src/workstream";
 import { freshSchema, type TestDb } from "./pg";
 
 let pg: TestDb;
 let prevDbUrl: string | undefined;
 let prevInstance: string | undefined;
+let prevStateDir: string | undefined;
 beforeEach(async () => {
   prevDbUrl = process.env.ORCA_DATABASE_URL;
   prevInstance = process.env.ORCA_INSTANCE;
+  prevStateDir = process.env.ORCA_STATE_DIR;
   pg = await freshSchema("healthhistory");
   process.env.ORCA_DATABASE_URL = pg.url;
   process.env.ORCA_INSTANCE = "cloud";
+  process.env.ORCA_STATE_DIR = mkdtempSync(join(tmpdir(), "orca-state-")); // isolate leases from ~/.orca
   await db.close();
 });
 afterEach(async () => {
@@ -24,29 +31,40 @@ afterEach(async () => {
   await pg.drop();
   if (prevDbUrl === undefined) delete process.env.ORCA_DATABASE_URL; else process.env.ORCA_DATABASE_URL = prevDbUrl;
   if (prevInstance === undefined) delete process.env.ORCA_INSTANCE; else process.env.ORCA_INSTANCE = prevInstance;
+  if (prevStateDir === undefined) delete process.env.ORCA_STATE_DIR; else process.env.ORCA_STATE_DIR = prevStateDir;
 });
 
 const H = 3_600_000;
-const sample = (cpuPct: number) => ({ cpuPct, load1: cpuPct / 25, memUsedGb: 3.1, memTotalGb: 15.3, diskUsedGb: 11 });
+const sample = (cpuPct: number, runningAgents = 0) => ({ cpuPct, load1: cpuPct / 25, memUsedGb: 3.1, memTotalGb: 15.3, diskUsedGb: 11, runningAgents });
 
 test("samples read back oldest first, within the hours asked for, for the instance asked about", async () => {
   const now = Date.now();
   await db.recordMetric(sample(10), now - 30 * H); // outside 24h
-  await db.recordMetric(sample(20), now - 2 * H);
-  await db.recordMetric(sample(30), now - 1 * H);
+  await db.recordMetric(sample(20, 2), now - 2 * H);
+  await db.recordMetric(sample(30, 1), now - 1 * H);
   process.env.ORCA_INSTANCE = "local";
-  await db.recordMetric({ cpuPct: 99, load1: 1, memUsedGb: 1, memTotalGb: 8 }, now - H); // another machine, no disk
+  await db.recordMetric({ cpuPct: 99, load1: 1, memUsedGb: 1, memTotalGb: 8, runningAgents: 0 }, now - H); // another machine, no disk
   process.env.ORCA_INSTANCE = "cloud";
 
   const day = await db.metricHistory("cloud", 24, now);
   expect(day.map((p) => p.cpuPct)).toEqual([20, 30]);
-  expect(day[0]).toEqual({ at: now - 2 * H, cpuPct: 20, load1: 0.8, memUsedGb: 3.1, memTotalGb: 15.3, diskUsedGb: 11 });
+  expect(day[0]).toEqual({ at: now - 2 * H, cpuPct: 20, load1: 0.8, memUsedGb: 3.1, memTotalGb: 15.3, diskUsedGb: 11, runningAgents: 2 });
+  expect(day.map((p) => p.runningAgents)).toEqual([2, 1]);
   expect((await db.metricHistory("cloud", 48, now)).map((p) => p.cpuPct)).toEqual([10, 20, 30]);
   expect((await db.metricHistory("cloud", 1.5, now)).map((p) => p.cpuPct)).toEqual([30]);
   // Either instance reads the other's rows — the history is in the shared database.
   const local = await db.metricHistory("local", 24, now);
   expect(local.map((p) => p.cpuPct)).toEqual([99]);
   expect(local[0]!.diskUsedGb).toBeUndefined();
+});
+
+test("a row written before the running_agents column existed reads back as 0 sessions, not null", async () => {
+  const now = Date.now();
+  const sql = await db.open();
+  await sql`
+    INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb)
+    VALUES (${db.currentUser()}, 'cloud', ${new Date(now - H)}, 15, 0.6, 3, 15)`; // no running_agents at all
+  expect((await db.metricHistory("cloud", 24, now))[0]!.runningAgents).toBe(0);
 });
 
 test("a write prunes the writer's own rows past 30 days, never another instance's", async () => {
@@ -67,6 +85,7 @@ test("the sampler records this machine, and a failed write is logged, not thrown
   const rows = await db.metricHistory("cloud", 1);
   expect(rows).toHaveLength(1);
   expect(rows[0]!.memTotalGb).toBeGreaterThan(0);
+  expect(rows[0]!.runningAgents).toBe(0); // nothing leased
 
   await db.close();
   process.env.ORCA_DATABASE_URL = "postgres://127.0.0.1:1/nowhere"; // nothing listens
@@ -77,6 +96,19 @@ test("the sampler records this machine, and a failed write is logged, not thrown
   expect(errors).toHaveLength(1);
   await db.close();
   process.env.ORCA_DATABASE_URL = pg.url;
+});
+
+test("the sampler counts live leases as running agents, not dead or expired ones", async () => {
+  lease.acquire({ key: "/wt/a", worktreePath: "/wt/a", branch: "a", provider: "claude", runId: "r1", pid: process.pid, startedAt: Date.now() });
+  lease.acquire({ key: "/wt/b", worktreePath: "/wt/b", branch: "b", provider: "claude", runId: "r2", pid: process.pid, startedAt: Date.now() });
+  lease.acquire({ key: "/wt/c", worktreePath: "/wt/c", branch: "c", provider: "claude", runId: "r3", pid: process.pid, startedAt: Date.now() - 10_000, timeoutMs: 1 }); // expired
+  try {
+    await sampleMetrics();
+    const rows = await db.metricHistory("cloud", 1);
+    expect(rows[0]!.runningAgents).toBe(2);
+  } finally {
+    lease.release("/wt/a"); lease.release("/wt/b"); lease.release("/wt/c");
+  }
 });
 
 test("hours: 24 by default, never past the 30 days kept", () => {

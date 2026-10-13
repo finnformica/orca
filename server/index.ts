@@ -858,11 +858,22 @@ async function api(req: Request, url: URL): Promise<Response> {
   return json({ error: "not found" }, 404);
 }
 
+// The files that name the CURRENT build are never cached: the page (which names the hashed bundle),
+// version.json (the open tab's "a newer build is deployed" check), the PWA manifest and sw.js (so
+// the browser sees a new build's service worker on its next check). The hashed
+// assets keep the browser's default caching.
+const UNCACHED = new Set(["index.html", "version.json", "manifest.webmanifest", "sw.js"]);
+const staticHeaders = (name: string): HeadersInit => ({
+  ...(UNCACHED.has(name) ? { "Cache-Control": "no-cache" } : {}),
+  ...(name.endsWith(".webmanifest") ? { "Content-Type": "application/manifest+json" } : {}),
+});
+
 async function serveStatic(url: URL): Promise<Response> {
-  const file = Bun.file(DIST + (url.pathname === "/" ? "index.html" : url.pathname.slice(1)));
-  if (await file.exists()) return new Response(file);
+  const name = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
+  const file = Bun.file(DIST + name);
+  if (await file.exists()) return new Response(file, { headers: staticHeaders(name) });
   const index = Bun.file(DIST + "index.html");
-  if (await index.exists()) return new Response(index); // SPA fallback
+  if (await index.exists()) return new Response(index, { headers: staticHeaders("index.html") }); // SPA fallback
   return new Response("Orca bridge up. Build the UI with `bun run build`, or use `bun run dev`.");
 }
 

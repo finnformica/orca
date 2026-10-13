@@ -1,4 +1,5 @@
 import type { LaunchReceipt, RunMeta } from "../../server/agent";
+import type { RepoFeatures } from "../../server/config";
 import type { ChangeSummary } from "../../server/git";
 import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSummary, ReviewSignal, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
@@ -41,7 +42,8 @@ export type InstanceHealth = {
   cost?: { monthUsd: number; hourlyUsd: number; sinceIso: string }; at: number;
 };
 /** One recorded sample of an instance's vitals (instance_metric), for the chip's history graphs. */
-export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number };
+export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; /** Absent from a bridge older than migration 13 — unknown, not 0. */
+  runningAgents?: number };
 export type PreviewSvc = { name: string; port: number; url: string; localUrl?: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const post = (path: string, body: unknown) =>
@@ -53,7 +55,10 @@ async function res(r: Response) {
   return data;
 }
 
-export type RepoInfo = { name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; prLabels?: { name: string; default?: boolean }[]; defaultModel?: string; runsOn?: string };
+export type RepoInfo = {
+  name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; prLabels?: { name: string; default?: boolean }[];
+  defaultModel?: string; runsOn?: string; features?: RepoFeatures;
+};
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
 export const api = {

@@ -71,7 +71,7 @@ export function UsagePage() {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold tracking-tight">Usage</h1>
-      <UsageCard all />
+      <UsageCard />
       <div>
         <SectionTitle>Machines</SectionTitle>
         <div className="space-y-4">{machines.map((m) => <InstanceCard key={m} instance={m} here={m === here || !instances.length} />)}</div>
@@ -146,7 +146,7 @@ function NotificationSettings() {
       <div className="px-4 py-3">
         <div className="text-sm font-medium">Toasts</div>
         <div className="text-muted-foreground mb-2 text-xs">Which kinds pop up in the corner.</div>
-        <ul data-slot="toast-kinds" className="grid grid-cols-2 gap-x-6 gap-y-1.5 sm:grid-cols-3">
+        <ul data-slot="notification-kinds" className="grid grid-cols-2 gap-x-6 gap-y-1.5 sm:grid-cols-3">
           {NOTIFICATION_KINDS.map((k) => (
             <li key={k}>
               <label className="flex items-center gap-2 text-sm">

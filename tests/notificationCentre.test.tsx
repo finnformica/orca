@@ -68,7 +68,7 @@ describe("the notification centre", () => {
     await open("/");
     expect($("notifications-unread")!.textContent).toBe("2");
     expect($("notifications-bell")!.getAttribute("aria-label")).toBe("Notifications (2 unread)");
-    expect($("toast-host")).toBeNull();
+    expect($("notification-host")).toBeNull();
     expect(apiFake.notificationFetches).toEqual([undefined]);
   });
 
@@ -77,17 +77,17 @@ describe("the notification centre", () => {
     const s = await live();
     expect(s.url).toBe("/api/events"); // the same stream the chats share — not a second connection
     await push(s, note({ kind: "needs_input", body: "Should I migrate the old rows?" }));
-    const toast = $("toast")!;
+    const toast = $("notification-toast")!;
     expect(toast.className).toContain("rounded-lg");
     expect(toast.className).toContain("shadow-menu"); // the menu shadow, the only one allowed
     expect(toast.className).not.toMatch(/border-2/);
     expect(toast.textContent).toContain("Login form");
     expect(toast.textContent).toContain("Needs input");
     expect(toast.textContent).toContain("Should I migrate the old rows?");
-    expect(toast.querySelector('[data-slot="toast-time"]')!.textContent).toContain("just now");
+    expect(toast.querySelector('[data-slot="notification-time"]')!.textContent).toContain("just now");
     expect($("notifications-unread")!.textContent).toBe("1"); // the centre has it too
     await click(toast.querySelector('button[aria-label="Dismiss"]'));
-    expect($("toast")).toBeNull();
+    expect($("notification-toast")).toBeNull();
     expect($("notifications-unread")!.textContent).toBe("1"); // dismissing the toast keeps the row
   });
 
@@ -98,15 +98,15 @@ describe("the notification centre", () => {
     await push(s, note({ id: 2, title: "Second", kind: "failed", createdAt: Date.now() - 2 }));
     await push(s, note({ id: 3, title: "Third", kind: "failed", createdAt: Date.now() - 1 }));
     await push(s, note({ id: 4, title: "Fourth", kind: "failed" }));
-    expect($$("toast")).toHaveLength(1); // the top one in full…
-    expect($("toast")!.textContent).toContain("Fourth");
-    expect($$("toast-peek")).toHaveLength(2); // …two peeking under it
-    expect($("toast-count")!.textContent).toContain("4 notifications · 1 more");
-    await click($("toast-count")!.querySelector("button[aria-expanded]"));
-    expect($$("toast").map((t) => t.querySelector(".font-medium")!.textContent)).toEqual(["Fourth", "Third", "Second", "First"]);
-    expect($$("toast-peek")).toHaveLength(0);
-    await click([...$("toast-count")!.querySelectorAll("button")].find((b) => b.textContent === "Clear all")!);
-    expect($("toast-host")).toBeNull();
+    expect($$("notification-toast")).toHaveLength(1); // the top one in full…
+    expect($("notification-toast")!.textContent).toContain("Fourth");
+    expect($$("notification-peek")).toHaveLength(2); // …two peeking under it
+    expect($("notification-count")!.textContent).toContain("4 notifications · 1 more");
+    await click($("notification-count")!.querySelector("button[aria-expanded]"));
+    expect($$("notification-toast").map((t) => t.querySelector(".font-medium")!.textContent)).toEqual(["Fourth", "Third", "Second", "First"]);
+    expect($$("notification-peek")).toHaveLength(0);
+    await click([...$("notification-count")!.querySelectorAll("button")].find((b) => b.textContent === "Clear all")!);
+    expect($("notification-host")).toBeNull();
     expect($("notifications-unread")!.textContent).toBe("4"); // Clear all is the stack, not the centre
   });
 
@@ -115,32 +115,32 @@ describe("the notification centre", () => {
     const s = await live();
     await push(s, note({ kind: "finished", title: "Quick" }));
     await push(s, note({ kind: "needs_input", title: "Waiting" }));
-    expect($$("toast").length + $$("toast-peek").length).toBe(2);
+    expect($$("notification-toast").length + $$("notification-peek").length).toBe(2);
     await act(async () => { await wait(90); });
-    expect($$("toast").map((t) => t.getAttribute("data-kind"))).toEqual(["needs_input"]);
+    expect($$("notification-toast").map((t) => t.getAttribute("data-kind"))).toEqual(["needs_input"]);
     await act(async () => { await wait(90); });
-    expect($$("toast")).toHaveLength(1); // still there
+    expect($$("notification-toast")).toHaveLength(1); // still there
   });
 
   test("do-not-disturb and a kind switched off in Settings silence the toast; the centre still fills; a stale catch-up never pops", async () => {
     await open("/settings");
     const s = await live();
-    const kinds = $("toast-kinds")!;
+    const kinds = $("notification-kinds")!;
     const finished = [...kinds.querySelectorAll("label")].find((l) => l.textContent!.includes("Finished"))!.querySelector("input")!;
     await act(async () => { finished.click(); await flush(); });
     expect(getDefaultStore().get(toastPrefsAtom)).toEqual({ finished: false });
     await push(s, note({ kind: "finished" }));
-    expect($("toast-host")).toBeNull();
+    expect($("notification-host")).toBeNull();
     await push(s, note({ kind: "failed" }));
-    expect($$("toast")).toHaveLength(1);
+    expect($$("notification-toast")).toHaveLength(1);
     centre.clearToasts();
     await act(async () => { getDefaultStore().set(notifyDndAtom, true); await flush(); });
     await push(s, note({ kind: "needs_input" }));
-    expect($("toast-host")).toBeNull();
+    expect($("notification-host")).toBeNull();
     expect($("notifications-unread")!.textContent).toBe("3");
     await act(async () => { getDefaultStore().set(notifyDndAtom, false); await flush(); });
     await push(s, note({ kind: "needs_input", createdAt: Date.now() - 3_600_000 })); // an hour old: the centre, not the corner
-    expect($("toast-host")).toBeNull();
+    expect($("notification-host")).toBeNull();
     expect($("notifications-unread")!.textContent).toBe("4");
   });
 
@@ -187,10 +187,10 @@ describe("the notification centre", () => {
     await open("/");
     const s = await live();
     await push(s, note({ id: 9, kind: "failed" }));
-    await click([...$("toast")!.querySelectorAll("button")].find((b) => b.textContent === "Open"));
+    await click([...$("notification-toast")!.querySelectorAll("button")].find((b) => b.textContent === "Open"));
     expect(location.pathname).toBe("/r/local/feat-x");
     expect(apiFake.notificationCalls).toEqual([{ verb: "read", ids: [9] }]);
-    expect($("toast")).toBeNull();
+    expect($("notification-toast")).toBeNull();
     await click($("notifications-bell"));
     await click(document.body.querySelector('button[aria-label="Do not disturb"]'));
     expect(getDefaultStore().get(notifyDndAtom)).toBe(true);
@@ -206,7 +206,7 @@ describe("the notification centre", () => {
     apiFake.notificationsData.push(note({ id: 51, kind: "failed", title: "While away" }));
     await act(async () => { emit(first, "ready", {}); await flush(); await flush(); });
     expect(apiFake.notificationFetches.at(-1)).toBe(apiFake.notificationsData[0]!.createdAt as number);
-    expect($("toast")!.textContent).toContain("While away");
+    expect($("notification-toast")!.textContent).toContain("While away");
     expect($("notifications-unread")!.textContent).toBe("2");
   });
 });

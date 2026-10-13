@@ -47,7 +47,9 @@ function useOpener() {
 
 // ---- the toast stack ----
 
-/** Bottom-right (the orchestrator's window, when open, paints over it — it is what you are looking
+/** Bottom-right, under the action-error Toaster (lib/toast, z-50: an error you just caused comes
+ *  first and is dismissed in a click; the bell keeps this stack's count meanwhile) and the
+ *  orchestrator's window, when open, paints over it — it is what you are looking
  *  at then, and the bell keeps the count). Newest on top; more than one collapses to the
  *  top few with a count bar (hover or click expands); Clear all; a toast for a finished run or a
  *  ready preview hides itself, a problem or a question stays until dismissed. */
@@ -60,15 +62,15 @@ export function ToastHost() {
   const open = useOpener();
   if (!toasts.length) return null;
   return (
-    <div data-slot="toast-host" data-expanded={expanded || undefined} role="region" aria-label="Notifications"
+    <div data-slot="notification-host" data-expanded={expanded || undefined} role="region" aria-label="Notification centre"
       className="fixed right-4 bottom-4 z-40 flex w-[22rem] max-w-[calc(100vw-2rem)] flex-col items-stretch gap-2"
       onMouseEnter={() => setExpanded(true)} onMouseLeave={() => setExpanded(false)}>
       {stack.visible.map((n, i) => (stack.collapsed && i > 0
-        ? <div key={n.id} data-slot="toast-peek" aria-hidden="true" className={cn("bg-card -mt-1 h-1.5 rounded-b-lg border border-t-0", i === 1 ? "mx-2" : "mx-4")} />
+        ? <div key={n.id} data-slot="notification-peek" aria-hidden="true" className={cn("bg-card -mt-1 h-1.5 rounded-b-lg border border-t-0", i === 1 ? "mx-2" : "mx-4")} />
         : <Toast key={n.id} n={n} onOpen={() => { dismissToast(n.id); open(n); }} />
       ))}
       {toasts.length > 1 && (
-        <div data-slot="toast-count" className="bg-card flex h-8 items-center justify-between rounded-lg border pl-3 pr-1 text-xs shadow-menu">
+        <div data-slot="notification-count" className="bg-card flex h-8 items-center justify-between rounded-lg border pl-3 pr-1 text-xs shadow-menu">
           <button type="button" className="text-muted-foreground hover:text-foreground" aria-expanded={expanded} onClick={() => setExpanded((e) => !e)}>
             {toasts.length} notifications{stack.hidden ? ` · ${stack.hidden} more` : ""}
           </button>
@@ -82,7 +84,7 @@ export function ToastHost() {
 function Toast({ n, onOpen }: { n: Notification; onOpen: () => void }) {
   const meta = KIND_META[n.kind];
   return (
-    <div data-slot="toast" data-kind={n.kind} role="status" className="bg-card text-foreground flex flex-col gap-2 rounded-lg border p-3 shadow-menu">
+    <div data-slot="notification-toast" data-kind={n.kind} role="status" className="bg-card text-foreground flex flex-col gap-2 rounded-lg border p-3 shadow-menu">
       <div className="flex items-start gap-2">
         <KindIcon kind={n.kind} className="mt-0.5" />
         <div className="min-w-0 flex-1">
@@ -95,7 +97,7 @@ function Toast({ n, onOpen }: { n: Notification; onOpen: () => void }) {
         <Button variant="ghost" size="icon" className="-mt-1 -mr-1 size-6" aria-label="Dismiss" onClick={() => dismissToast(n.id)}><X className="size-3.5" /></Button>
       </div>
       <div className="flex items-center justify-between gap-2">
-        <span data-slot="toast-time" className="text-muted-foreground text-xs">{ago(n.createdAt)}{n.instance ? ` · ${n.instance}` : ""}</span>
+        <span data-slot="notification-time" className="text-muted-foreground text-xs">{ago(n.createdAt)}{n.instance ? ` · ${n.instance}` : ""}</span>
         <Button size="sm" className="h-7 px-2.5 text-xs" onClick={onOpen}>{meta.action}</Button>
       </div>
     </div>

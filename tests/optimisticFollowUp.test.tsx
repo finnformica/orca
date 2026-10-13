@@ -1,7 +1,8 @@
 // E2E for optimistic follow-up submit: hitting send on the follow-up box must close it the instant
 // you send — launching the agent (ensureWorktree + upload + claude) takes a few seconds and the old
 // behaviour left a spinner up the whole time. The typed prompt stays persisted, so if the launch
-// FAILS the box reopens with the same text (and an error); on SUCCESS the draft is dropped. Driven
+// FAILS the box reopens with the same text (and the error is a toast, lib/toast); on SUCCESS the draft
+// is dropped. Driven
 // against the preloaded fake `api` (tests/apiFake.ts, no network) and rendered into a real DOM.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
@@ -9,6 +10,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { WorkstreamActions } from "@/views/WorkstreamActions";
+import { Toaster } from "@/components/Toaster";
+import { resetToasts } from "@/lib/toast";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -20,12 +23,14 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 const row: store.Row = { repo: "r", hasRemote: false, branch: "feat", title: "Feat", prompt: "", lane: "LOCAL", worktreePath: "/wt/feat" };
 const draftKey = `orca.followup.${row.repo}::${row.branch}`;
 
+// The card's actions, and the Toaster App mounts once — where a failure's message goes.
+const tree = (r: store.Row) => <><div data-slot="actions"><WorkstreamActions row={r} /></div><Toaster /></>;
 let root: Root | undefined;
 let container: HTMLElement | undefined;
 function mount(): HTMLElement {
   container = document.createElement("div");
   document.body.appendChild(container);
-  act(() => { root = createRoot(container!); root.render(<WorkstreamActions row={row} />); });
+  act(() => { root = createRoot(container!); root.render(tree(row)); });
   return container;
 }
 const btn = (text: string) => [...container!.querySelectorAll("button")].find((b) => b.textContent?.trim() === text);
@@ -39,6 +44,7 @@ const type = async (el: HTMLTextAreaElement, text: string) => {
 afterEach(async () => {
   localStorage.clear();
   apiFake.reset();
+  act(() => resetToasts());
   await act(async () => { await store.refresh(); });
   act(() => root?.unmount());
   container?.remove();
@@ -62,9 +68,9 @@ describe("optimistic follow-up submit", () => {
     const selected = () => container!.querySelector('[role="combobox"][aria-label="Model"]')?.textContent ?? "";
     expect(selected()).toBe("Claude · Fable 5.1");
 
-    await act(async () => { root!.render(<WorkstreamActions row={{ ...row, agentProvider: "codex" }} />); await flush(); });
+    await act(async () => { root!.render(tree({ ...row, agentProvider: "codex" })); await flush(); });
     expect(selected()).toBe("Codex · GPT-5.5");   // last ran on Codex, nothing pinned → its first model
-    await act(async () => { root!.render(<WorkstreamActions row={{ ...row, agentProvider: "codex", preferredModel: "claude-fable-5-1" }} />); await flush(); });
+    await act(async () => { root!.render(tree({ ...row, agentProvider: "codex", preferredModel: "claude-fable-5-1" })); await flush(); });
     expect(selected()).toBe("Claude · Fable 5.1");   // a pinned model wins, and implies its CLI
   });
 
@@ -110,10 +116,15 @@ describe("optimistic follow-up submit", () => {
     await click(container!.querySelector('button[title^="Send"]')!);
     await flush();
 
-    // Failed launch: the box is back, pre-filled with what was typed, and says why.
+    // Failed launch: the box is back, pre-filled with what was typed, and a toast says why — the
+    // card's own toolbar never holds the message (only the ⋯'s ✗ and its tooltip).
     expect(textarea()).not.toBeNull();
     expect(textarea()!.value).toBe("fix the flake");
-    expect(container!.textContent).toContain("worktree busy");
+    const t = container!.querySelector('[data-slot="toast"]')!;
+    expect(t.textContent).toContain("Follow up failed · Feat");
+    expect(t.textContent).toContain("worktree busy");
+    expect(container!.querySelector('[data-slot="actions"]')!.textContent).not.toContain("worktree busy");
+    expect(container!.querySelector<HTMLElement>('button[aria-label="Actions"]')!.title).toBe("worktree busy");
     expect(JSON.parse(localStorage.getItem(draftKey)!).text).toBe("fix the flake"); // draft kept
   });
 });

@@ -17,7 +17,8 @@ export async function makeScratchRepo(): Promise<string> {
 
 // A `gh` stand-in: `pr create` prints a URL, `pr view` cats the fixture file,
 // `pr merge` succeeds (or, with ORCA_GH_STACKED set, fails the way GitHub refuses a stacked PR, and
-// the merge-async endpoint answers ORCA_GH_MERGE_ASYNC). Same code path as real gh, no network. When ORCA_GH_ARGS_LOG is set it
+// the merge-async endpoint answers ORCA_GH_MERGE_ASYNC; with ORCA_GH_NO_AUTO set, `--auto` fails the
+// way a repo without auto-merge enabled refuses it). Same code path as real gh, no network. When ORCA_GH_ARGS_LOG is set it
 // records each invocation's args, so a test can assert *which* --json fields we ask gh for (the
 // shim otherwise ignores the field list — cat'ing the whole fixture regardless).
 const GH_SHIM = `#!/bin/sh
@@ -32,7 +33,8 @@ case "$1 $2" in
   "api graphql") cat "$ORCA_GH_GRAPHQL_FIXTURE" ;;
   *rules/branches*) cat "$ORCA_GH_RULES_FIXTURE" 2>/dev/null || echo '[]' ;;
   "run view") cat "$ORCA_GH_RUN_LOG_FIXTURE" ;;
-  "pr merge") [ -n "$ORCA_GH_STACKED" ] && { echo "GraphQL: This pull request is part of a stack and must be merged using the asynchronous merge REST API. For more information, see https://docs.github.com/rest/pulls/pulls#merge-a-pull-request-asynchronously (mergePullRequest)" >&2; exit 1; }; exit 0 ;;
+  "pr merge") case "$*" in *--auto*) [ -n "$ORCA_GH_NO_AUTO" ] && { echo "GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)" >&2; exit 1; } ;; esac
+    [ -n "$ORCA_GH_STACKED" ] && { echo "GraphQL: This pull request is part of a stack and must be merged using the asynchronous merge REST API. For more information, see https://docs.github.com/rest/pulls/pulls#merge-a-pull-request-asynchronously (mergePullRequest)" >&2; exit 1; }; exit 0 ;;
   "pr ready") exit 0 ;;
   "pr edit") exit 0 ;;
   *) echo "fake-gh: unhandled: $*" >&2; exit 1 ;;
