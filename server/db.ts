@@ -412,6 +412,9 @@ export const MIGRATIONS: MigrationStep[] = [
     id: 15,
     name: "notification",
     idempotent: true,
+    // Idempotent because this table ALREADY EXISTED on the shared database before this step ran on
+    // main: an unmerged branch's bridge had created it under another id (the collision the names
+    // above exist to catch). A plain CREATE TABLE crashed both bridges at boot on 2026-10-13.
     // The notification centre (shared/notifications.ts): one flat row per event — an agent that
     // finished, asked for input, failed or was stopped; a check that failed; a PR whose CI fails or
     // that conflicts; a preview that came up or didn't. Written ONCE by the instance where it
