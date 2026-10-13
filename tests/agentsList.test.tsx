@@ -31,7 +31,7 @@ describe("agents list layout (pure)", () => {
       expect(listMinWidth(cols)).toBeLessThanOrEqual(1280 - LIST_CHROME_PX);
     }
     const t = listGridTemplate(listColumns({ multiInstance: true }));
-    expect(t).toBe("minmax(10rem,2fr) 8.5rem 8.5rem minmax(6rem,1fr) 5rem 4.5rem");
+    expect(t).toBe("minmax(10rem,2fr) 8.5rem 8.5rem minmax(6rem,1fr) 5rem 8rem");
     expect(listColumns({ multiInstance: false }).at(-1)).toMatchObject({ key: "actions", label: "Actions" });
     expect(t).not.toContain("auto"); // a content-sized track could push the row wider than the card
   });

@@ -66,7 +66,9 @@ function usePreview(initialKey: string | undefined, starter: () => Promise<{ key
   const stop = async () => {
     if (!key) return;
     setBusy(true); reaping.current = true; // stop polling; nothing left to reflect
-    try { await stopPreview(key); setSvcs([]); } finally { setBusy(false); }
+    try { await stopPreview(key); setSvcs([]); }
+    catch (e) { toastFailure(e); }
+    finally { setBusy(false); }
   };
 
   // Tick once a second while starting so the elapsed timer updates (shows if a boot is hanging).
@@ -163,22 +165,33 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
  *  size-7 slot throughout, so switching between states never shifts the Actions column. Disabled
  *  (with a tooltip) when the repo hasn't opted into RepoFeatures.previews; the bridge still enforces
  *  this, the check here only saves a round trip to a button that would just 404. Starts the preview
- *  the same way the card's own "Test locally" control does (store.testLocally). */
+ *  the same way the card's own "Test locally" control does (store.testLocally). A Stop icon button
+ *  (confirm-free, same `usePreview.stop` as the card's Test-locally control) sits right beside it
+ *  while the preview is starting or running — before this it could only be stopped from the card's
+ *  own footer or the detail page's Preview tab. */
 export function PreviewCell({ row }: { row: Row }) {
   const enabled = previewsEnabled(row.repo);
-  const { busy, active, ready, failed, error, open, start } = usePreview(previewKeyOf(row), () => testLocally(row), row);
+  const { busy, active, ready, failed, error, open, start, stop } = usePreview(previewKeyOf(row), () => testLocally(row), row);
   const state: "disabled" | "none" | "starting" | "ready" | "failed" =
     !enabled ? "disabled" : failed ? "failed" : active && ready && open ? "ready" : busy || active ? "starting" : "none";
 
   const slot = "relative inline-flex size-7 shrink-0 items-center justify-center";
+  const stopBtn = (state === "ready" || state === "starting") && (
+    <Button size="icon" variant="ghost" className="size-7 shrink-0" disabled={busy} onClick={() => void stop()} title="Stop preview" aria-label="Stop preview">
+      <Square className="size-3.5 fill-current" />
+    </Button>
+  );
   if (state === "ready") {
     return (
-      <span className={slot} data-slot="preview-cell" data-state={state}>
-        <a href={hrefOf(open!)} target="_blank" rel="noreferrer" aria-label="Open preview" title={`Open preview on :${open!.port}`}
-          className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 items-center justify-center rounded-md">
-          <ExternalLink className="size-3.5" />
-        </a>
-        <StatusDot tone="ready" title="Running" className="absolute -top-0.5 -right-0.5" />
+      <span className="inline-flex shrink-0 items-center gap-1">
+        <span className={slot} data-slot="preview-cell" data-state={state}>
+          <a href={hrefOf(open!)} target="_blank" rel="noreferrer" aria-label="Open preview" title={`Open preview on :${open!.port}`}
+            className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 items-center justify-center rounded-md">
+            <ExternalLink className="size-3.5" />
+          </a>
+          <StatusDot tone="ready" title="Running" className="absolute -top-0.5 -right-0.5" />
+        </span>
+        {stopBtn}
       </span>
     );
   }
@@ -190,14 +203,17 @@ export function PreviewCell({ row }: { row: Row }) {
     : state === "failed" ? (error ? `Preview failed — ${error}` : "Preview failed — retry")
     : state === "starting" ? "Starting preview…" : "Add preview";
   return (
-    <span className={slot} data-slot="preview-cell" data-state={state}>
-      <Button size="icon" variant="ghost" className="size-7" disabled={state === "disabled" || state === "starting"}
-        onClick={() => void start()} title={title} aria-label={label}>
-        {icon}
-      </Button>
-      {(state === "starting" || state === "failed") && (
-        <StatusDot tone={state === "failed" ? "error" : "building"} title={state === "failed" ? "Failed" : "Starting…"} className="absolute -top-0.5 -right-0.5" />
-      )}
+    <span className="inline-flex shrink-0 items-center gap-1">
+      <span className={slot} data-slot="preview-cell" data-state={state}>
+        <Button size="icon" variant="ghost" className="size-7" disabled={state === "disabled" || state === "starting"}
+          onClick={() => void start()} title={title} aria-label={label}>
+          {icon}
+        </Button>
+        {(state === "starting" || state === "failed") && (
+          <StatusDot tone={state === "failed" ? "error" : "building"} title={state === "failed" ? "Failed" : "Starting…"} className="absolute -top-0.5 -right-0.5" />
+        )}
+      </span>
+      {stopBtn}
     </span>
   );
 }

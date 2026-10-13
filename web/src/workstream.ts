@@ -1862,7 +1862,9 @@ export function listColumns(opts: { multiInstance: boolean }): ListColumn[] {
     { key: "pr", label: "PR", minRem: 8.5 },
     { key: "signals", label: "Checks & review", minRem: 6, grow: 1 },
     { key: "instance", label: "Instance", minRem: 5 },
-    { key: "actions", label: "Actions", minRem: 4.5 },
+    // Fixed at 4 size-7 slots (local preview link + its Stop, PR preview, the ⋯ menu) so the column
+    // never shifts between states and nothing overflows into a sideways scroll.
+    { key: "actions", label: "Actions", minRem: 8 },
   ];
   return opts.multiInstance ? cols : cols.filter((c) => c.key !== "instance");
 }

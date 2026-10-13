@@ -176,6 +176,9 @@ describe("the console's pages", () => {
     expect(source).toContain("Add the login form");
     // The page's actions live on the card, Vercel's Redeploy / ⋯.
     expect(details.querySelector('button[aria-label="Actions"]')).not.toBeNull();
+    // The local preview control (link/Add preview + its Stop button) sits beside the PR one — not
+    // just a click away on the Preview tab.
+    expect(details.querySelector('[data-slot="preview-cell"]')).not.toBeNull();
     const tabs = [...container!.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
     expect(tabs).toEqual(["Overview", "Chat", "Files changed (1)", "Preview"]);
   });
