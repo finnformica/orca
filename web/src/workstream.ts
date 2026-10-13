@@ -1666,6 +1666,45 @@ export function downsample(points: { at: number; v: number }[], max: number, fro
   return out;
 }
 
+/** One vitals sample, recorded (instance_metric) or live (/api/health). */
+export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number; costUsd?: number };
+type Pt = { at: number; v: number };
+export type InstanceSeries = {
+  cpu: Pt[]; mem: Pt[]; agents: Pt[]; cost: Pt[];
+  /** The newest sample — what the card's header stats show, and exactly every chart's last point. */
+  latest: { at: number; cpuPct: number; memUsedGb: number; runningAgents: number; costUsd: number } | null;
+};
+
+/** Every instance chart's points, from the recorded history plus the live reading. The header stats
+ *  and the charts once disagreed for two reasons: the header read the live poll (every 15s) while the
+ *  chart's newest point was the history's (every 60s, up to a minute older), and `downsample` made
+ *  that point the MEAN of its bucket (at 7d, ~34 minutes of samples). Here the live reading, when it
+ *  is newer, becomes the newest sample, and the newest sample is kept raw as every series' last point
+ *  — so `latest` (the header) and the last point are the same reading. Cost is cumulative over the
+ *  range: each sample carries what the runs that finished since the previous one cost. */
+export function instanceSeries(history: VitalSample[], live: VitalSample | null | undefined, from: number, to: number, max = 300): InstanceSeries {
+  const samples = history.filter((p) => p.at >= from && p.at <= to);
+  const last = samples[samples.length - 1];
+  if (live && live.at <= to && (!last || live.at > last.at)) samples.push({ ...live, costUsd: 0 });
+  if (!samples.length) return { cpu: [], mem: [], agents: [], cost: [], latest: null };
+  let total = 0;
+  const cumulative = samples.map((p) => ({ at: p.at, v: (total += p.costUsd ?? 0) }));
+  const series = (pts: Pt[]) => [...downsample(pts.slice(0, -1), max - 1, from, to), pts[pts.length - 1]!];
+  const newest = samples[samples.length - 1]!;
+  return {
+    cpu: series(samples.map((p) => ({ at: p.at, v: p.cpuPct }))),
+    mem: series(samples.map((p) => ({ at: p.at, v: p.memUsedGb }))),
+    agents: series(samples.map((p) => ({ at: p.at, v: p.runningAgents ?? 0 }))),
+    cost: series(cumulative),
+    latest: { at: newest.at, cpuPct: newest.cpuPct, memUsedGb: newest.memUsedGb, runningAgents: newest.runningAgents ?? 0, costUsd: total },
+  };
+}
+
+/** The agents axis's top: a small whole count, even so its midpoint tick is whole too (0 · 2 · 4). */
+export function countMax(v: number): number {
+  return Math.max(2, Math.ceil(Math.max(0, v) / 2) * 2);
+}
+
 /** A round axis maximum at or above `v`: 1, 2, 2.5 or 5 × 10^k. */
 export function niceMax(v: number): number {
   if (!(v > 0)) return 1;

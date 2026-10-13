@@ -5,16 +5,18 @@
 // and the Usage page never poll twice.
 import { useState } from "react";
 import { useAtom } from "jotai";
-import { AlertTriangle, Check, ChevronDown, ChevronUp, Loader2, Server, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronUp, Loader2, RefreshCw, Server, X } from "lucide-react";
 import { api } from "@/api";
 import { usageExpandedAtom } from "@/lib/atoms";
 import { toast } from "@/lib/toast";
 import { persistedKey, usePersisted } from "@/lib/persisted";
 import { useCoarse } from "@/lib/viewport";
-import { applyProfiles, useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
+import { applyProfiles, refreshVitals, useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
-import { HISTORY_RANGES, downsample, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { HISTORY_RANGES, countMax, instanceSeries, niceMax, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
@@ -127,6 +129,29 @@ const isRange = (v: unknown): v is number => HISTORY_RANGES.some((r) => r.hours 
 
 const fmtUptime = (s: number) => (s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
 
+/** The Instances heading's refresh: every machine card's health and history, fetched now rather than
+ *  on its next tick — a spinner until they have all answered. */
+export function RefreshVitals() {
+  const [busy, setBusy] = useState(false);
+  const refresh = async () => {
+    if (busy) return;
+    setBusy(true);
+    try { await refreshVitals(); } finally { setBusy(false); }
+  };
+  return (
+    <Tip label="Refresh">
+      <Button type="button" variant="soft" size="icon" data-slot="instances-refresh" aria-label="Refresh" aria-busy={busy} disabled={busy}
+        onClick={() => void refresh()} className="size-7">
+        {busy ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+      </Button>
+    </Tip>
+  );
+}
+
+const pct = (v: number) => `${Math.round(v)}%`;
+const count = (v: number) => String(Math.round(v));
+const usd = (v: number) => `$${v.toFixed(2)}`;
+
 /** One machine. `here`: the instance answering this page (its health needs no `?instance=`). */
 export function InstanceCard({ instance, here }: { instance: string; here: boolean }) {
   // The range is remembered per machine (`orca.ui.v1.instanceRange:<instance>`).
@@ -136,9 +161,12 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const h = reading?.health;
   const down = Boolean(reading?.down);
   const to = Date.now(), from = to - hours * 3_600_000;
-  const cpu = downsample((history ?? []).map((p) => ({ at: p.at, v: p.cpuPct })), 300, from, to);
-  const mem = downsample((history ?? []).map((p) => ({ at: p.at, v: p.memUsedGb })), 300, from, to);
+  // One series for every chart AND the header stats: the newest sample (the live reading when it is
+  // newer than the last recorded one) is both what the grid shows and where every line ends.
+  const s = instanceSeries(history ?? [], h, from, to);
+  const now = s.latest;
   const memTotal = h?.memTotalGb ?? Math.max(1, ...(history ?? []).map((p) => p.memTotalGb));
+  const agents = { label: "Agents", points: s.agents, max: countMax(Math.max(0, ...s.agents.map((p) => p.v))), fmt: count };
   const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
   return (
     <VCard
@@ -150,9 +178,9 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
         <Detail label="Status" slot="instance-status">
           <StatusDot tone={tone} />{down ? "Unreachable" : h ? "Online" : "Loading…"}
         </Detail>
-        <Detail label="CPU" slot="instance-cpu">{h ? <><span className="tabular-nums">{h.cpuPct}%</span><span className="text-muted-foreground text-xs">of {h.cores} cores</span></> : "—"}</Detail>
+        <Detail label="CPU" slot="instance-cpu">{now ? <><span className="tabular-nums">{pct(now.cpuPct)}</span>{h && <span className="text-muted-foreground text-xs">of {h.cores} cores</span>}</> : "—"}</Detail>
         <Detail label="Memory" slot="instance-mem">
-          {h ? <span className="tabular-nums" title={h.memPressure ? `pressure — ${h.memPressurePct}% used` : undefined}>{h.memUsedGb} / {h.memTotalGb} GB</span> : "—"}
+          {now ? <span className="tabular-nums" title={h?.memPressure ? `pressure — ${h.memPressurePct}% used` : undefined}>{now.memUsedGb.toFixed(1)} / {memTotal} GB</span> : "—"}
         </Detail>
         <Detail label="Disk">{h?.disk ? <span className="tabular-nums">{h.disk.usedGb} / {h.disk.totalGb} GB</span> : "—"}</Detail>
         <Detail label="Uptime">{h ? fmtUptime(h.uptimeS) : "—"}</Detail>
@@ -161,13 +189,17 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
       {history === null ? (
           <div className="grid gap-6 p-4 md:grid-cols-2">
             <ChartSkeleton slot="chart-cpu-skeleton" /><ChartSkeleton slot="chart-mem-skeleton" />
+            <ChartSkeleton slot="chart-agents-skeleton" /><ChartSkeleton slot="chart-cost-skeleton" />
           </div>
         )
         : !history.length ? <Empty>No history recorded yet — the sampler writes once a minute.</Empty>
         : (
           <div className="grid gap-6 p-4 md:grid-cols-2">
-            <LineChart slot="chart-cpu" label="CPU" points={cpu} from={from} to={to} max={100} fmt={(v) => `${Math.round(v)}%`} />
-            <LineChart slot="chart-mem" label="Memory used" points={mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" />
+            <LineChart slot="chart-cpu" label="CPU" points={s.cpu} from={from} to={to} max={100} fmt={pct} overlay={agents} />
+            <LineChart slot="chart-mem" label="Memory used" points={s.mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" overlay={agents} />
+            <LineChart slot="chart-agents" label="Agents" points={s.agents} from={from} to={to} max={agents.max} fmt={count} color="var(--geist-pink)" />
+            <LineChart slot="chart-cost" label="Cost accrued" points={s.cost} from={from} to={to} max={niceMax(Math.max(0, ...s.cost.map((p) => p.v)) * 1.1)} fmt={usd}
+              axis={(v) => `$${v >= 10 ? Math.round(v) : v.toFixed(v >= 1 ? 1 : 2)}`} color="var(--geist-amber)" overlay={agents} />
           </div>
         )}
     </VCard>

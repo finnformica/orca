@@ -97,8 +97,12 @@ test("a mismatch on a step that isn't idempotent refuses to start, with instruct
   expect(logged.some((l) => l.includes("MIGRATION MISMATCH") && l.includes("migration 3"))).toBe(true);
 });
 
-test("every step named uniquely, ids consecutive, and an idempotent step is IF NOT EXISTS throughout", () => {
-  expect(db.MIGRATIONS.map((s) => s.id)).toEqual(db.MIGRATIONS.map((_, i) => i + 1));
+test("every step named uniquely, ids strictly increasing, and an idempotent step is IF NOT EXISTS throughout", () => {
+  // Increasing, not consecutive: an id held by another open branch (16, #152's) leaves a gap until it
+  // lands, and migrate() needs only the order.
+  const ids = db.MIGRATIONS.map((s) => s.id);
+  expect(ids).toEqual([...ids].sort((a, b) => a - b));
+  expect(new Set(ids).size).toBe(ids.length);
   expect(new Set(db.MIGRATIONS.map((s) => s.name)).size).toBe(db.MIGRATIONS.length);
   for (const step of db.MIGRATIONS.filter((s) => s.idempotent)) {
     const statements = step.sql.replace(/--[^\n]*/g, "").split(";").map((s) => s.trim().replace(/\s+/g, " ")).filter(Boolean);

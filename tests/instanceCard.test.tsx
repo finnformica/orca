@@ -12,7 +12,7 @@ import { apiFake } from "./apiFake";
 apiFake.holdConfig = true; // before the store's import, so config is still in flight at mount
 const store = await import("@/store");
 const { Overview } = await import("@/views/Overview");
-const { InstanceCard } = await import("@/views/Vitals");
+const { InstanceCard, RefreshVitals } = await import("@/views/Vitals");
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -44,27 +44,55 @@ test("a card per machine appears once config names them, with each one's vitals 
   expect(detail(cloud, "instance-cost")).toContain("$1.23");
 });
 
-test("CPU and memory as line graphs from the last 24h, labelled with the newest values; the range picker refetches", async () => {
+const lastValue = (chart: Element) => chart.querySelector('[data-slot="chart-value"]')!.textContent;
+const linePoints = (chart: Element) => chart.querySelector('[data-slot="chart-line"]')!.getAttribute("points")!.split(" ");
+
+test("CPU and memory as line graphs from the last 24h, ending on the live reading the header shows; the range picker refetches", async () => {
   const now = Date.now();
-  apiFake.healthHistoryData = [0, 1, 2].map((i) => ({ at: now - (2 - i) * 60_000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: 0 }));
+  apiFake.healthHistoryData = [0, 1, 2].map((i) => ({ at: now - (2 - i) * 60_000 - 1000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: 0 }));
   await render(<InstanceCard instance="cloud" here={false} />);
   await ready();
   expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 24 }]);
+  const card = container!.querySelector('[data-slot="instance-cloud"]')!;
   const cpu = container!.querySelector('[data-slot="chart-cpu"]')!;
   const mem = container!.querySelector('[data-slot="chart-mem"]')!;
-  // The main reading on the right, no sessions overlay beside the title.
-  expect(cpu.querySelector('[data-slot="chart-value"]')!.textContent).toBe("23%");
-  expect(mem.querySelector('[data-slot="chart-value"]')!.textContent).toBe("4.2 GB");
-  expect(cpu.querySelector("figcaption")!.textContent).toBe("CPU23%");
-  expect(cpu.querySelector("polyline")!.getAttribute("points")!.split(" ")).toHaveLength(3);
-  expect(mem.querySelector("polyline")).toBeTruthy();
-  expect(cpu.querySelector("svg")!.getAttribute("aria-label")).toBe("CPU, now 23%");
+  // The live reading (12%, 3.1 GB) is newer than the last recorded sample (23%, 4.2 GB): it is the
+  // header's stat AND the line's last point — one sample, not a minute-old one beside a fresher one.
+  expect(detail(card, "instance-cpu")).toContain("12%");
+  expect(lastValue(cpu)).toBe("12%");
+  expect(detail(card, "instance-mem")).toContain("3.1 / 15.3 GB");
+  expect(lastValue(mem)).toBe("3.1 GB");
+  expect(cpu.querySelector("figcaption")!.textContent).toBe("CPU ·12%Agents ·0");
+  expect(linePoints(cpu)).toHaveLength(4); // three recorded + the live one
+  expect(cpu.querySelector("svg")!.getAttribute("aria-label")).toBe("CPU, now 12%; agents 0");
   // 6h / 24h / 7d: another range is another fetch at that many hours.
   const range = (label: string) => [...container!.querySelectorAll('[role="group"][aria-label="Range"] button')].find((b) => b.textContent === label)!;
   expect(range("24h").getAttribute("aria-pressed")).toBe("true");
   await act(async () => { range("7d").dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
   expect(apiFake.healthHistoryCalls.at(-1)).toEqual({ instance: "cloud", hours: 168 });
   expect(range("7d").getAttribute("aria-pressed")).toBe("true");
+});
+
+test("the header stat equals the chart's last point when the recorded sample is the newer one — and at 7d, not a bucket's mean", async () => {
+  const now = Date.now();
+  // A week of minute samples (10k, downsampled to 300 buckets of ~34 minutes) ending on a spike; the
+  // live reading is older than it (a remote box whose last health answer was a while ago).
+  apiFake.healthHistoryData = Array.from({ length: 10_080 }, (_, i) => ({
+    at: now - (10_079 - i) * 60_000 - 1000, cpuPct: i === 10_079 ? 97 : 10, load1: 0.1, memUsedGb: i === 10_079 ? 9.9 : 2, memTotalGb: 15.3, runningAgents: i === 10_079 ? 5 : 1,
+  }));
+  apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 50, load1: 2, load5: 1, memUsedGb: 6, memTotalGb: 15.3, uptimeS: 9, at: now - 10 * 60_000, runningAgents: 3 };
+  localStorage.setItem("orca.ui.v1.instanceRange:cloud", "168");
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  const card = container!.querySelector('[data-slot="instance-cloud"]')!;
+  const cpu = card.querySelector('[data-slot="chart-cpu"]')!;
+  expect(detail(card, "instance-cpu")).toContain("97%");
+  expect(lastValue(cpu)).toBe("97%");
+  expect(lastValue(card.querySelector('[data-slot="chart-mem"]')!)).toBe("9.9 GB");
+  expect(detail(card, "instance-mem")).toContain("9.9 / 15.3 GB");
+  expect(cpu.querySelector('[data-slot="chart-overlay-value"]')!.textContent).toBe("5");
+  expect(linePoints(cpu).length).toBeLessThanOrEqual(300);
+  expect(linePoints(cpu).at(-1)!.split(",")[1]).toBe("3.6"); // 97% of a 120px axis, drawn raw
 });
 
 test("each machine's range is remembered per machine across a reload; bad JSON or an unknown range falls back to 24h", async () => {
@@ -101,37 +129,64 @@ test("no history yet says so instead of an empty chart", async () => {
   expect(container!.querySelector('[data-slot="chart-cpu"]')).toBeNull();
 });
 
-test("no running-sessions overlay on CPU or memory — the axes and the one line are all that render, whatever runningAgents says", async () => {
+test("every resource chart carries the running agents: Agents · N on the right, a solid pink line, its own right-hand axis styled like the left", async () => {
   const now = Date.now();
   apiFake.healthHistoryData = [0, 1, 2].map((i) => ({
-    at: now - (2 - i) * 60_000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: [0, 2, 1][i],
+    at: now - (2 - i) * 60_000 - 1000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: [0, 2, 1][i], costUsd: [0, 0.5, 0.25][i],
   }));
+  apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 12, load1: 0.5, load5: 0.4, memUsedGb: 3.1, memTotalGb: 15.3, uptimeS: 9, at: now, runningAgents: 3 };
   await render(<InstanceCard instance="cloud" here={false} />);
   await ready();
-  for (const slot of ["chart-cpu", "chart-mem"]) {
+  for (const slot of ["chart-cpu", "chart-mem", "chart-cost"]) {
     const chart = container!.querySelector(`[data-slot="${slot}"]`)!;
-    // Only the main series renders — no second, dashed/pink polyline for sessions.
-    expect(chart.querySelectorAll("polyline")).toHaveLength(1);
-    // No overlay readout, and no second (right-hand) axis — just the usual left gutter.
-    expect(chart.querySelector('[data-slot="chart-overlay-value"]')).toBeNull();
-    expect(chart.querySelector('[data-slot="chart-axis-right"]')).toBeNull();
-    // The axis and gridlines are untouched: three left-hand ticks, three horizontal gridlines.
-    expect(chart.querySelectorAll('.text-muted-foreground.flex.w-8 span')).toHaveLength(3);
-    expect(chart.querySelectorAll("svg line")).toHaveLength(3);
+    expect(chart.querySelector('[data-slot="chart-overlay-value"]')!.textContent).toBe("3"); // the live count
+    expect(chart.querySelector("figcaption")!.textContent).toContain("Agents ·3");
+    const line = chart.querySelector('[data-slot="chart-overlay-line"]')!;
+    expect(line.getAttribute("stroke")).toBe("var(--geist-pink)");
+    expect(line.getAttribute("stroke-dasharray")).toBeNull(); // solid
+    expect(line.getAttribute("vector-effect")).toBe("non-scaling-stroke");
+    const left = chart.querySelector('[data-slot="chart-axis-left"]')!, right = chart.querySelector('[data-slot="chart-axis-right"]')!;
+    expect(right.className.replace("text-left", "text-right")).toBe(left.className);
+    expect([...right.querySelectorAll("span")].map((e) => e.textContent)).toEqual(["4", "2", "0"]); // 3 → an even whole top
+    expect(chart.querySelectorAll("svg line")).toHaveLength(3); // the left axis's gridlines only
   }
-  // One poll of /api/health/history still feeds the vitals — the column is read, just not drawn.
-  expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 24 }]);
+  // The Agents chart is the count itself, so it has no overlay of its own.
+  const agents = container!.querySelector('[data-slot="chart-agents"]')!;
+  expect(lastValue(agents)).toBe("3");
+  expect(agents.querySelector('[data-slot="chart-axis-right"]')).toBeNull();
+  expect(agents.querySelector('[data-slot="chart-line"]')!.getAttribute("stroke")).toBe("var(--geist-pink)");
+  // Cost accrued: the running sum of each sample's cost over the range.
+  const cost = container!.querySelector('[data-slot="chart-cost"]')!;
+  expect(cost.querySelector("figcaption")!.textContent).toStartWith("Cost accrued ·$0.75");
+  expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 24 }]); // one poll feeds all four
 });
 
-test("a bridge that sends no runningAgents (pre-migration 13) still renders the one CPU line fine", async () => {
+test("a bridge that sends no runningAgents or costUsd (pre-migration 13 / 17) still renders: zero agents, $0", async () => {
   const now = Date.now();
-  apiFake.healthHistoryData = [0, 1].map((i) => ({ at: now - (1 - i) * 60_000, cpuPct: 30, load1: 0.1, memUsedGb: 2, memTotalGb: 15.3 }));
+  apiFake.healthHistoryData = [0, 1].map((i) => ({ at: now - (1 - i) * 60_000 - 1000, cpuPct: 30, load1: 0.1, memUsedGb: 2, memTotalGb: 15.3 }));
+  apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 30, load1: 0.5, load5: 0.4, memUsedGb: 2, memTotalGb: 15.3, uptimeS: 9, at: now };
   await render(<InstanceCard instance="cloud" here={false} />);
   await ready();
   const chart = container!.querySelector('[data-slot="chart-cpu"]')!;
-  expect(chart.querySelectorAll("polyline")).toHaveLength(1);
-  expect(chart.querySelector('[data-slot="chart-overlay-value"]')).toBeNull();
-  expect(chart.querySelector('[data-slot="chart-axis-right"]')).toBeNull();
+  expect(chart.querySelectorAll('[data-slot="chart-line"]')).toHaveLength(1);
+  expect(chart.querySelector('[data-slot="chart-overlay-value"]')!.textContent).toBe("0");
+  expect(lastValue(container!.querySelector('[data-slot="chart-cost"]')!)).toBe("$0.00");
+});
+
+test("the Instances refresh button refetches health and history at once, spinning until they answer", async () => {
+  await render(<><RefreshVitals /><InstanceCard instance="cloud" here={false} /></>);
+  await ready();
+  expect(apiFake.healthHistoryCalls).toHaveLength(1);
+  apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 77, load1: 3, load5: 1, memUsedGb: 3.1, memTotalGb: 15.3, uptimeS: 9, at: Date.now(), runningAgents: 0 };
+  apiFake.holdHealthHistory = true;
+  const button = container!.querySelector<HTMLButtonElement>('[data-slot="instances-refresh"]')!;
+  await act(async () => { button.click(); await flush(); });
+  expect(apiFake.healthHistoryCalls).toHaveLength(2);
+  expect(button.getAttribute("aria-busy")).toBe("true");
+  expect(button.disabled).toBe(true);
+  await act(async () => { apiFake.releaseHealthHistory!(); await flush(); await flush(); });
+  expect(button.getAttribute("aria-busy")).toBe("false");
+  expect(detail(container!.querySelector('[data-slot="instance-cloud"]')!, "instance-cpu")).toContain("77%");
 });
 
 test("the machine graphs show a skeleton, sized like the chart, while history is still loading", async () => {

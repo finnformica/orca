@@ -155,7 +155,15 @@ describe("overview: the Agents card", () => {
     expect(stat("prs").querySelector('[data-slot="pipeline-MERGEABLE"]')!.textContent).toContain("1");
     expect(stat("attention").querySelector('[data-slot="attention-reasons"]')!.textContent).toBe("1 agent error · 1 CI failing"); // why, not just how many
     expect(value("merged")).toBe("0");
-    expect(stat("running").querySelector("svg[aria-label^='Runs started per hour']")).not.toBeNull();
+    const spark = stat("running").querySelector("svg[aria-label^='Runs started per hour']")!;
+    expect(spark).not.toBeNull();
+    // A constant-width line: the stroke never scales with the stretched box, and the viewBox is padded
+    // by half the stroke so a peak (y=0) or a quiet hour (y=18) isn't clipped to half its width.
+    expect(spark.getAttribute("viewBox")).toBe("0 -0.75 120 19.5");
+    for (const line of spark.querySelectorAll("polyline")) {
+      expect(line.getAttribute("vector-effect")).toBe("non-scaling-stroke");
+      expect(line.getAttribute("stroke-width")).toBe("1.5");
+    }
     // The redundant Awaiting-you tiles of the first cut are gone.
     expect(container!.querySelector('[data-slot="stat-tiles"]')).toBeNull();
   });

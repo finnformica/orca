@@ -10,7 +10,7 @@ import * as db from "../server/db";
 import { costSince, health, historyHours, resetCostWindow, sampleMetrics } from "../server/health";
 import * as lease from "../server/lease";
 import * as ledger from "../server/ledger";
-import { sparklineSegments } from "../web/src/workstream";
+import { countMax, instanceSeries, sparklineSegments } from "../web/src/workstream";
 import { freshSchema, type TestDb } from "./pg";
 
 let pg: TestDb;
@@ -168,4 +168,27 @@ test("sparkline: x by time, y from 0 to max, broken where the sampler went quiet
   const pts = [{ at: 0, v: 0 }, { at: 60_000, v: 50 }, { at: 50 * 60_000, v: 100 }, { at: 51 * 60_000, v: 200 }];
   expect(sparklineSegments(pts, { from, to, max: 100, w: 100, h: 10 })).toEqual(["0.0,10.0 1.0,5.0", "50.0,0.0 51.0,0.0"]); // clamped to max
   expect(sparklineSegments([{ at: -1, v: 5 }], { from, to, max: 100, w: 100, h: 10 })).toEqual([]); // outside the window
+});
+
+test("instanceSeries: the newest sample (live when newer) is every series' raw last point and the header's latest; cost cumulates", () => {
+  const rec = (at: number, cpuPct: number, costUsd = 0, runningAgents = 1) => ({ at, cpuPct, memUsedGb: 2, runningAgents, costUsd });
+  const history = [rec(-5, 99), rec(10, 10, 0.5), rec(20, 30, 0.25, 2)]; // the first is outside [0, 100]
+  const live = { at: 25, cpuPct: 42, memUsedGb: 3, runningAgents: 4 };
+  const s = instanceSeries(history, live, 0, 100);
+  expect(s.cpu.map((p) => p.v)).toEqual([10, 30, 42]);
+  expect(s.latest).toEqual({ at: 25, cpuPct: 42, memUsedGb: 3, runningAgents: 4, costUsd: 0.75 });
+  expect(s.cost.map((p) => p.v)).toEqual([0.5, 0.75, 0.75]);
+  expect(s.agents.at(-1)).toEqual({ at: 25, v: 4 });
+  // An older live reading is ignored: the recorded sample is newer, and is the latest.
+  expect(instanceSeries(history, { ...live, at: 15 }, 0, 100).latest!.cpuPct).toBe(30);
+  // Many samples: downsampled, but the last point is the raw newest, not its bucket's mean.
+  const many = Array.from({ length: 1000 }, (_, i) => rec(i, i === 999 ? 100 : 0));
+  const d = instanceSeries(many, null, 0, 1000, 50);
+  expect(d.cpu.length).toBeLessThanOrEqual(50);
+  expect(d.cpu.at(-1)).toEqual({ at: 999, v: 100 });
+  expect(instanceSeries([], null, 0, 100)).toEqual({ cpu: [], mem: [], agents: [], cost: [], latest: null });
+});
+
+test("countMax: an even whole top for the agents axis, so the middle tick is whole", () => {
+  expect([0, 1, 2, 3, 4, 7].map(countMax)).toEqual([2, 2, 2, 4, 4, 8]);
 });
