@@ -1,10 +1,12 @@
 // Is what's on screen current? Two answers, both in the top bar's reach. The stale indicator: the
 // board's poll hasn't been answered for a while (a phone that slept, a dropped tailnet, a bridge
 // restart) — said in words, not on hover. The refresh banner: the server now serves a newer build
-// than the one this tab runs (a deploy happened) — one tap reloads.
+// than the one this tab runs (a deploy happened) — one tap hands over to the new build's service
+// worker (lib/sw.ts applyUpdate) and reloads.
 import { useEffect, useState } from "react";
-import { CloudOff, RefreshCw } from "lucide-react";
+import { CloudOff, RefreshCw, WifiOff } from "lucide-react";
 import { poll } from "@/lib/poll";
+import { applyUpdate } from "@/lib/sw";
 import { useLastSync } from "../store";
 import { ago, newerBuild, staleAge } from "../workstream";
 
@@ -35,8 +37,22 @@ export function UpdateBanner({ build = RUNNING_BUILD, every = 60_000 }: { build?
   return (
     <div role="status" data-slot="update-banner" className="bg-geist-blue flex items-center justify-center gap-3 px-4 py-2 text-sm text-white">
       <span>A new version of Orca is available.</span>
-      <button type="button" onClick={() => window.location.reload()} className="inline-flex min-h-8 items-center gap-1 rounded-md bg-white/15 px-2.5 font-medium hover:bg-white/25">
+      <button type="button" onClick={() => void applyUpdate()} className="inline-flex min-h-8 items-center gap-1 rounded-md bg-white/15 px-2.5 font-medium hover:bg-white/25">
         <RefreshCw className="size-3.5" aria-hidden="true" />Refresh
+      </button>
+    </div>
+  );
+}
+
+/** The page when the bridge can't be reached at all (the installed app opened offline from its cache). */
+export function OfflineScreen() {
+  return (
+    <div role="alert" data-slot="offline-screen" className="flex min-h-[60dvh] flex-col items-center justify-center gap-3 text-center">
+      <WifiOff className="text-muted-foreground size-8" aria-hidden="true" />
+      <h1 className="text-base font-semibold">Orca is offline</h1>
+      <p className="text-muted-foreground max-w-sm text-sm">This device can't reach the Orca bridge. Check the network or the tailnet, then try again.</p>
+      <button type="button" onClick={() => window.location.reload()} className="bg-primary text-primary-foreground inline-flex min-h-11 items-center gap-1.5 rounded-md px-4 text-sm font-medium">
+        <RefreshCw className="size-4" aria-hidden="true" />Try again
       </button>
     </div>
   );

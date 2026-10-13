@@ -1,3 +1,5 @@
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
@@ -21,10 +23,23 @@ export const allowedHosts = (env: NodeJS.ProcessEnv): string[] =>
 // dist/version.json. An open tab polls that file (served uncached) and offers a refresh when it names
 // a different build — the deploy has moved on under it. `vite serve` has no id: HMR covers it.
 const BUILD_ID = new Date().toISOString();
+// The same build also writes dist/sw.js (the installed app's service worker, web/sw.template.js) with
+// that id and the files to precache: everything the bundle wrote, plus the public files the shell
+// needs offline. A new build is therefore a new worker, which waits for the banner's Refresh.
+const SW_PUBLIC = ["/index.html", "/offline.html", "/manifest.webmanifest", "/favicon.svg", "/icon-192.png", "/apple-touch-icon.png"];
+/** dist/sw.js for a build: the template with its id and precache list filled in. Pure (bar the read). */
+export function serviceWorkerSource(build: string, bundleFiles: string[]): string {
+  const files = bundleFiles.filter((f) => !f.endsWith(".map") && f !== "version.json" && f !== "index.html").map((f) => `/${f}`);
+  const precache = [...new Set([...SW_PUBLIC, ...files])].sort();
+  return readFileSync(new URL("./sw.template.js", import.meta.url), "utf8")
+    .replace('"__ORCA_BUILD__"', JSON.stringify(build))
+    .replace('["__ORCA_PRECACHE__"]', JSON.stringify(precache));
+}
 const buildVersion = (): Plugin => ({
   name: "orca-build-version",
   apply: "build",
   generateBundle() { this.emitFile({ type: "asset", fileName: "version.json", source: JSON.stringify({ build: BUILD_ID }) }); },
+  writeBundle(options, bundle) { writeFileSync(join(options.dir!, "sw.js"), serviceWorkerSource(BUILD_ID, Object.keys(bundle))); },
 });
 
 export default defineConfig(({ command }) => ({

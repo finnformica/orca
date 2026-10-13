@@ -38,7 +38,11 @@ const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.
 let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number; instance?: string; instances?: string[] } | null = null;
 export const configReady = api.config()
   .then(async (c) => { cfg = c; notify(); await migrateLocalEnrichment(); void refresh(); })
-  .catch(() => { cfg = { repos: EMPTY_REPOS, staleHours: 24, agentProviders: DEFAULT_AGENT_PROVIDERS }; });
+  .catch(() => { cfg = { repos: EMPTY_REPOS, staleHours: 24, agentProviders: DEFAULT_AGENT_PROVIDERS }; configFailed = true; notify(); });
+// The bridge didn't answer the first request: the installed app opened from its cached shell with no
+// way to reach Orca. The Shell shows the offline screen (Try again) instead of an empty board.
+let configFailed = false;
+export const useConfigFailed = (): boolean => useSyncExternalStore(subscribe, () => configFailed);
 
 const MIGRATED_KEY = "orca.enrichment.migrated";
 
