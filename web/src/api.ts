@@ -5,7 +5,7 @@ import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSumm
 import type { Usage } from "../../server/usage";
 import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
 import type { Notification } from "../../shared/notifications";
-import type { SyncResult } from "./workstream";
+import type { BridgeInfo, MechanicalMerge, SyncResult } from "./workstream";
 
 export type LiveAgent = {
   branch: string;
@@ -72,7 +72,7 @@ export type RepoInfo = {
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
 export const api = {
-  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number> }> => fetch("/api/config").then(res),
+  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; bridge?: BridgeInfo }> => fetch("/api/config").then(res),
   /** Settings' Machine cost: one instance's USD/hour; null clears it (back to the EC2 estimate / 0). */
   setInstanceRate: (instance: string, hourlyUsd: number | null): Promise<{ ok: true }> => post("/api/config/instance-rate", { instance, hourlyUsd }),
   usage: (): Promise<Usage | null> => fetch("/api/usage").then(res),
@@ -88,6 +88,9 @@ export const api = {
   promote: (repo: string, b: { worktreePath: string; branch: string; title: string; provider: AgentProvider; task?: string; sessionId?: string; outcome?: AgentOutcome; body?: string; draft?: boolean; labels?: string[] }): Promise<{ number: number; url: string }> =>
     post("/api/promote", { repo, ...b }),
   markReady: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/ready", { repo, pr }),
+  /** Merge the base into the branch on its own instance; a changelog-only conflict is unioned and
+   *  pushed there with no agent (server/verbs.ts `settleConflict`). */
+  settleConflict: (repo: string, branch: string): Promise<{ outcome: MechanicalMerge; files: string[] }> => post("/api/conflicts/settle", { repo, branch }),
   // Rename a card: for a PR this edits the GitHub title (the card's title source); always records it in
   // enrichment. suggestTitle asks the provider to name it from the prompt (or the PR body for adopted PRs).
   suggestTitle: (repo: string, b: { provider: AgentProvider; prompt?: string; pr?: number; branch?: string; worktreePath?: string }): Promise<{ title: string }> =>

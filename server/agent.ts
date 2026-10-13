@@ -11,6 +11,7 @@ import * as ledger from "./ledger";
 import * as db from "./db";
 import * as transcript from "./transcript";
 import * as bus from "./bus";
+import { resolvePrompt } from "./attachments";
 import * as cgroup from "./cgroup";
 import { tmpdir } from "os";
 
@@ -143,8 +144,12 @@ const ORCA_SECRETS = ["SLACK_TOKEN", "ORCA_DATABASE_URL", "ORCA_TEST_DATABASE_UR
 export function agentEnv(): Record<string, string | undefined> {
   const env = { ...process.env };
   for (const key of ORCA_SECRETS) delete env[key];
+  // `bin/worker` holds the tools every run may use — `orca-shot`, the one way to take a screenshot
+  // (server/screenshot.ts). Not `bin/`: `orca` there is the orchestrator's, not a worker's.
+  env.PATH = `${WORKER_BIN}:${env.PATH ?? ""}`;
   return env;
 }
+export const WORKER_BIN = new URL("../bin/worker", import.meta.url).pathname;
 
 /** How this run reuses prior context — derived from what the launch options carry, so the ledger's
  *  resume/reset/handoff breakdown matches the store's actual continuation decision. Pure. */
@@ -583,9 +588,11 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   if (options.resume && lease.sessionBusy(options.resume)) throw new Error("an agent is already running on this session");
   const provider = options.provider ?? "claude";
   const sessionId = options.resume ?? (provider === "claude" ? crypto.randomUUID() : undefined);
-  const effectivePrompt = !options.resume && (options.handoffFrom || options.history?.length)
+  // Attachment references become files on THIS instance (server/attachments.ts): the message may
+  // have been uploaded on another machine.
+  const effectivePrompt = await resolvePrompt(!options.resume && (options.handoffFrom || options.history?.length)
     ? handoffPrompt(options.history ?? [], prompt, options.handoffFrom, provider)
-    : prompt;
+    : prompt);
   const runId = crypto.randomUUID();
   const startedAt = Date.now();
   // HEAD before the run, so "did it commit?" is a comparison, not a guess from the outcome text.

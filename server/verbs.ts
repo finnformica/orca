@@ -16,7 +16,7 @@ import * as forward from "./forward";
 import * as notify from "./notify";
 import { existsSync } from "fs";
 import { featuresOf, modelFor, providerAllowed, type OrcaConfig, type RepoConfig } from "./config";
-import { addressPrPrompt, chatPrompt, cleanupDecision, continuation, launchPrompt, slugifyBranch, titleFromPrompt, type SweepReport } from "../web/src/workstream";
+import { addressNeedsAgent, addressPrPrompt, chatPrompt, cleanupDecision, continuation, launchPrompt, mergeSettled, slugifyBranch, titleFromPrompt, type MechanicalMerge, type SweepReport } from "../web/src/workstream";
 import { providerOfModel } from "../shared/models";
 import { isAgentProvider, type AgentProvider } from "../shared/agent";
 
@@ -230,14 +230,28 @@ export async function archiveWorkstream(repo: RepoConfig, branch: string): Promi
   await db.archive(repo.name, branch); // idempotent — a no-op if removeWorktree already archived it
 }
 
+/** Settle a branch's conflict with its base without an agent where no judgement is needed: Orca
+ *  merges the base itself and, when the only conflicts are in the repo's changelog files, unions them
+ *  and pushes (`git.mergeBaseUnioningChangelogs`). Every other outcome leaves the worktree untouched
+ *  for the agent. Never while an agent runs in the worktree — it owns the tree. */
+export async function settleConflict(repo: RepoConfig, branch: string): Promise<{ outcome: MechanicalMerge; files: string[] }> {
+  const worktreePath = await ensureWorktree(repo, branch);
+  if (agent.isRunning(worktreePath)) return { outcome: "busy", files: [] };
+  const r = await git.mergeBaseUnioningChangelogs(worktreePath, repo.baseBranch, repo.changelogFiles);
+  if (r.outcome === "resolved") console.log(`[conflict] ${repo.name}/${branch}: changelog-only conflict unioned and pushed (${r.files.join(", ")}) — no agent`);
+  return r;
+}
+
 /** THE agent action for a PR — one run for conflicts, failing CI and the review, whichever apply —
  *  with the evidence fetched immediately before launch. The manual form of the store's `addressPr`:
  *  every unresolved thread is sent, and the hand-over is recorded once the launch is accepted. */
-export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: string): Promise<{ status: "running" | "queued"; pr: number }> {
+export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: string): Promise<{ status: "running" | "queued" | "resolved"; pr: number }> {
   const pr = (await gh.listPrs(repo.repoPath)).find((p) => p.branch === branch);
   if (!pr) throw new Error(`${repo.name}/${branch} has no open PR to address`);
   const e = (await db.enrichment(repo.name))[branch] ?? {};
-  const conflicting = pr.mergeable === "CONFLICTING";
+  // A changelog-only (or clean) merge of the base is Orca's job, not a run's.
+  const settled = pr.mergeable === "CONFLICTING" && mergeSettled((await settleConflict(repo, branch)).outcome);
+  const conflicting = pr.mergeable === "CONFLICTING" && !settled;
   const ciFailing = pr.ciStatus === "failing";
   const [details, threads, comments] = await Promise.all([
     ciFailing ? gh.ciEvidence(repo.repoPath, pr.number).catch(() => []) : Promise.resolve([]),
@@ -247,12 +261,13 @@ export async function addressPr(cfg: OrcaConfig, repo: RepoConfig, branch: strin
   const handed = new Set((e.handedReviewThreadIds as string[] | undefined) ?? []);
   const marked = threads.map((thread) => ({ ...thread, alreadyHanded: handed.has(thread.id) }));
   const seenAt = new Date().toISOString();
+  const ci = ciFailing ? { failingChecks: pr.failingChecks, details } : undefined;
+  if (settled && !addressNeedsAgent({ conflicting, ci, feedback: pr.feedback, threads: marked, comments })) return { status: "resolved", pr: pr.number };
   const { status } = await followUp(cfg, repo, branch, {
     instruction: "Address the PR: conflicts, CI, review", action: "address",
     evidenceChars: JSON.stringify(details).length + JSON.stringify(marked).length + JSON.stringify(comments).length,
     prompt: addressPrPrompt({ prNumber: pr.number, branch }, {
-      base: repo.baseBranch, conflicting,
-      ci: ciFailing ? { failingChecks: pr.failingChecks, details } : undefined,
+      base: repo.baseBranch, conflicting, ci,
       feedback: pr.feedback, threads: marked, followed: false, comments,
     }),
   });
@@ -340,6 +355,9 @@ const cleaning = new Map<string, Promise<CleanupResult[]>>();
  *  its own worktrees (the agents poll and the publish tick), so a laptop's worktree is reaped by the
  *  laptop. One pass per repo at a time: the poll and the tick overlap. */
 export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: number } = {}): Promise<CleanupResult[]> {
+  // A branch preview's read-only bridge (db.previewBridge) answers the same agents poll: it must
+  // never remove this instance's worktrees.
+  if (db.previewBridge()) return Promise.resolve([]);
   const inflight = cleaning.get(repo.name);
   if (inflight) return inflight;
   const pass = (async () => {
@@ -382,7 +400,7 @@ export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: nu
  *  the same safety as auto-archive (no grace period — you asked), and a branch goes only when every
  *  commit on it exists elsewhere. */
 export async function sweep(cfg: OrcaConfig, opts: { confirm?: boolean; now?: number } = {}): Promise<SweepReport> {
-  const confirm = Boolean(opts.confirm);
+  const confirm = Boolean(opts.confirm) && !db.previewBridge(); // a preview bridge only ever dry-runs
   const report: SweepReport = { instance: db.instanceName(), confirmed: confirm, worktrees: [], previews: [], branches: [] };
   const removing = new Map<string, () => Promise<void>>(); // worktree path → its reap
   for (const repo of cfg.repos.filter(repoHere)) {

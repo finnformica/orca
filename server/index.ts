@@ -1,4 +1,3 @@
-import { tmpdir } from "os";
 import {
   API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
@@ -6,6 +5,7 @@ import {
 import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
+import * as attachments from "./attachments";
 import * as preview from "./preview";
 import * as forward from "./forward";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
@@ -25,9 +25,10 @@ import * as notify from "./notify";
 import { health, historyHours, instanceRate, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
-import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import { ORCHESTRATOR_REPO, attachmentRefs, followUpPrompt, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
+import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -68,7 +69,11 @@ async function resolvePrDescription(
 // Take the API port from a stale bridge (a prior dev run, or another checkout's instance) before
 // binding — otherwise a fresh bridge with newer routes silently loses the bind and the UI proxies
 // `/api` to the old code, 404ing on anything new (this is what made "Test master" report "not found").
-if (!(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
+// A branch preview's own bridge (db.previewBridge, scripts/preview-orca.sh) reads the shared database
+// for its preview and does NOTHING else: none of the startup work below, which acts on this
+// instance's runs, previews and metrics, and no write route (see `api`).
+const PREVIEW_BRIDGE = db.previewBridge();
+if (!PREVIEW_BRIDGE && !(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
   console.log(`orca: reclaimed :${API_PORT} from a stale bridge`);
   await waitForPortFree(API_PORT);
 }
@@ -79,7 +84,7 @@ await db.open().catch((e) => {
   console.error(e.message);
   process.exit(1);
 });
-await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-killed prior bridge
+if (!PREVIEW_BRIDGE) await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-killed prior bridge
 // Turns whose run died with a previous bridge would otherwise render "working…" forever. Leases are
 // the authority on what's genuinely still running (they deliberately survive shutdown). Before
 // writing one off, try to recover what it actually did from the provider's own session file — the
@@ -88,11 +93,11 @@ const reconcile = () => db.reconcileRunning(lease.liveRunIds(), async ({ runId, 
   const found = await backfillRun(runId, sessionId);
   return found?.response ? { response: found.response, structured: found.outcome } : undefined;
 });
-const { closed, recovered } = await reconcile();
+const { closed, recovered } = PREVIEW_BRIDGE ? { closed: 0, recovered: 0 } : await reconcile();
 if (closed) console.log(`orca: closed ${closed} interrupted turn(s), recovered ${recovered} from the provider's session`);
 // Runs still going under a lease are adopted, not written off: when each exits, its turn is finished
 // from the session file and the orchestrator hears about it, as if the bridge had never restarted.
-const adopted = agent.adoptLeases(async (runId, sessionId, worktreePath) => {
+const adopted = PREVIEW_BRIDGE ? 0 : agent.adoptLeases(async (runId, sessionId, worktreePath) => {
   const found = await backfillRun(runId, sessionId, worktreePath);
   return found?.response ? { response: found.response, structured: found.outcome } : undefined;
 }, orchestrator.dir());
@@ -127,14 +132,14 @@ agent.onRunFinished(async (run) => {
 void loadConfig().then((cfg) => cfg.repos.filter(verbs.repoHere)
   .forEach((r) => void gh.listReviewPrs(r.repoPath).catch(() => {})));
 // A wake that was in flight when the previous bridge stopped: re-queue what it was handling.
-void loadConfig().then((cfg) => orchestrator.recover(cfg, reconcile)).catch((e) => console.error("orca: orchestrator recovery failed", e));
+if (!PREVIEW_BRIDGE) void loadConfig().then((cfg) => orchestrator.recover(cfg, reconcile)).catch((e) => console.error("orca: orchestrator recovery failed", e));
 
 // Publish this instance's worktrees whether or not a browser is polling it: with two instances,
 // the board on the OTHER machine shows this one's workstreams from the shared inventory, which
 // only the owner can write. (A cloud box has no browser of its own; before this, its worktrees
 // appeared only while someone's board happened to be forwarded to it.)
 const INVENTORY_PUBLISH_MS = 10_000;
-setInterval(() => {
+if (!PREVIEW_BRIDGE) setInterval(() => {
   void loadConfig().then((cfg) => Promise.all(cfg.repos.filter(verbs.repoHere).map((r) => agentRows(r).catch((e) => console.error(`orca: inventory publish failed for ${r.name}`, e)))));
   void publishPreviews(); // the same for previews: the running-previews menu on any machine lists them
 }, INVENTORY_PUBLISH_MS).unref();
@@ -147,7 +152,7 @@ const publishPreviews = () => loadConfig().then((cfg) => verbs.previewRows(cfg, 
 
 // This machine's vitals into instance_metric once a minute, for the header chip's 24h graphs
 // (server/health.ts). Each instance samples itself; either answers the history from Postgres.
-startMetricsSampler();
+if (!PREVIEW_BRIDGE) startMetricsSampler();
 
 // Orphaned preview databases (a bridge crash / reaped worktree / worker test run that never dropped
 // its own) and stale test-harness Docker containers — on this instance's repos only. At startup
@@ -158,8 +163,10 @@ function runReaper(): void {
   void loadConfig().then((cfg) => preview.reap(cfg.repos.filter(verbs.repoHere)))
     .catch((e) => console.error("orca: preview/container reap failed", e));
 }
-runReaper();
-setInterval(runReaper, REAP_INTERVAL_MS).unref();
+if (!PREVIEW_BRIDGE) {
+  runReaper();
+  setInterval(runReaper, REAP_INTERVAL_MS).unref();
+}
 
 // How many of a conversation's newest turns are sent with their steps attached (older ones load on unfold).
 const STEPS_FOR_TURNS = 40;
@@ -171,6 +178,9 @@ const DRAIN_TIMEOUT_MS = 5_000;
 const DIST = new URL("../web/dist/", import.meta.url).pathname;
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
+
+const BRIDGE_BRANCH = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: import.meta.dir }).stdout.toString().trim() || undefined;
+const bridgeInfo = () => ({ preview: PREVIEW_BRIDGE, branch: BRIDGE_BRANCH, port: API_PORT });
 
 /** A caller-supplied base ref, rejected unless it looks like a branch name (never a `-flag` that git
  *  would read as an option). */
@@ -319,19 +329,34 @@ async function api(req: Request, url: URL): Promise<Response> {
   // repo or changing a setting takes effect on the next call rather than the next deploy. Cached in
   // config.ts and invalidated on write, so this is a map lookup in the common case.
   const cfg = await loadConfig();
-  // Pasted/dropped files (any type): save each to a temp dir, hand back absolute paths the agent Reads.
-  // Handled before the JSON body parse below — this is the one multipart route.
+  if (PREVIEW_BRIDGE && req.method !== "GET") {
+    return json({ error: "This is a branch preview's bridge: it reads the shared database but changes nothing. Use the main Orca for actions." }, 403);
+  }
+  // Pasted/dropped files (any type): stored in the shared database, answered as references
+  // (server/attachments.ts) that whichever instance runs the agent turns into a local file. The
+  // field is still `paths` so the composer needn't care. Handled before the JSON body parse below —
+  // this is the one multipart route.
   if (req.method === "POST" && p === "/api/attachments") {
-    const dir = `${tmpdir()}/orca-attachments`;
-    const paths: string[] = [];
-    for (const f of (await req.formData()).getAll("files")) {
-      if (typeof f === "string") continue;
-      const ext = f.name.match(/\.[a-z0-9]+$/i)?.[0]?.toLowerCase() ?? "";
-      const file = `${dir}/${crypto.randomUUID()}${ext}`;
-      await Bun.write(file, f); // Bun.write creates the parent dir
-      paths.push(file);
+    const files = (await req.formData()).getAll("files").filter((f): f is File => typeof f !== "string");
+    try {
+      return json({ paths: await attachments.store(files) });
+    } catch (e) {
+      if (e instanceof attachments.AttachmentTooLarge) return json({ error: e.message }, 413);
+      throw e;
     }
-    return json({ paths });
+  }
+  // One stored attachment's bytes, for the chat's thumbnail / file chip. Read from Postgres, so any
+  // instance answers it whichever one took the upload. Served inline but sandboxed and never sniffed:
+  // a pasted SVG or HTML file must not run as this (unauthenticated) origin.
+  const stored = req.method === "GET" && p.match(/^\/api\/attachments\/([0-9a-f-]{36})$/);
+  if (stored) {
+    const file = await db.attachment(stored[1]!);
+    if (!file) return json({ error: "attachment not found (pruned after 30 days, or never stored)" }, 404);
+    return new Response(file.bytes as Uint8Array<ArrayBuffer>, { headers: {
+      "Content-Type": file.mimeType, "Content-Disposition": `inline; filename="${file.filename.replace(/["\\\r\n]/g, "_")}"`,
+      "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
+      "Cache-Control": "private, max-age=86400, immutable",
+    } });
   }
   // PUT carries a body too (the pasted config document) — parsing only POST silently handed the
   // handler an empty object, which then failed validation as "repos must be a non-empty array".
@@ -345,6 +370,18 @@ async function api(req: Request, url: URL): Promise<Response> {
     const self = db.instanceName();
     const others = url.searchParams.get("local") ? [] : Object.entries(cfg.instances ?? {}).filter(([n]) => n !== self).map(([, base]) => base);
     return eventStream(req, others);
+  }
+  // Screenshots (server/screenshot.ts): the one capped browser on this box, behind one queue. Never
+  // forwarded — a worker shoots a preview on its own instance.
+  if (req.method === "POST" && p === "/api/screenshot") {
+    let shot: ShotRequest;
+    try { shot = parseShotRequest(body); } catch (e) { return json({ error: (e as Error).message }, 400); }
+    return json(await shooter().shoot(shot));
+  }
+  const shotId = p.match(/^\/api\/screenshots\/(shot-[\w-]+)$/)?.[1];
+  if (req.method === "GET" && shotId) {
+    const file = diskStore().path(shotId);
+    return file ? new Response(Bun.file(file), { headers: { "content-type": "image/png" } }) : json({ error: "not found" }, 404);
   }
   if (p.startsWith("/api/orchestrator") && cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName()) {
     // ONE instance hosts the orchestrator (orchestratorOn); everything about it goes there.
@@ -500,6 +537,9 @@ async function api(req: Request, url: URL): Promise<Response> {
       staleHours: cfg.staleHours, agentProviders, apiPort: API_PORT,
       instance: db.instanceName(), instances: Object.keys(cfg.instances ?? {}),
       instanceHourlyUsd: cfg.instanceHourlyUsd ?? {},
+      // Which bridge answered — a branch preview labels itself with it (BridgeLabel), so a number
+      // read from main's bridge is never mistaken for the branch's.
+      bridge: bridgeInfo(),
     });
   }
   // The orchestrator's verbs over HTTP, so an orchestrator on one instance can spawn / send /
@@ -525,6 +565,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     const r = await verbs.followUp(cfg, repo, String(body.branch), { instruction: String(body.instruction ?? "") });
     await db.patchEnrichment(repo.name, String(body.branch), { orchestrated: true });
     return json({ ...r, instance: db.instanceName() });
+  }
+  if (req.method === "POST" && p === "/api/conflicts/settle") {
+    // The board's Address PR / Resolve conflicts call this first: a changelog-only conflict is merged,
+    // unioned and pushed here, and the agent is asked only about what's left.
+    if (!body.branch) return json({ error: "branch required" }, 400);
+    return json(await verbs.settleConflict(repo, String(body.branch)));
   }
   if (req.method === "POST" && p === "/api/workstreams/address") {
     const r = await verbs.addressPr(cfg, repo, String(body.branch));
@@ -876,6 +922,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     // never shown: the chat renders `instruction`, and falls back to trimming the prompt only for
     // turns recorded before the instruction was stored. For the orchestrator's 375 turns the prompts
     // were 3.6 MB of a 5.3 MB response — seconds over the tailnet, for nothing on screen.
+    // Files the message carried, read off the stored prompt (an agent chat's instruction is just the
+    // typed text; the references live in the prompt, which is blanked next) — the chat shows them.
+    for (const t of turns) {
+      const files = attachmentRefs(`${t.instruction ?? ""}\n${t.prompt}`);
+      if (files.length) t.attachments = files;
+    }
     for (const t of turns) if (t.instruction !== undefined) t.prompt = "";
     return json(page ? { turns, older: page.older } : turns);
   }

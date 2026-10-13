@@ -7,6 +7,7 @@
 import { mock } from "bun:test";
 import type { AgentOutcome, AgentProvider } from "../shared/agent";
 import type { CiFailureEvidence, ConversationComment, ReviewThreadEvidence } from "../server/gh";
+import type { MechanicalMerge } from "../web/src/workstream";
 
 // Chains onto any launch already held, so one releaseClaude() frees them all.
 async function holdLaunch() {
@@ -89,6 +90,10 @@ export const apiFake = {
   reviewSignalAuthor: "me" as string | undefined,
   reviewSignalCalls: [] as string[],
   reviewEvidenceError: null as string | null,
+  // What api.settleConflict (Orca's own merge of the base, before Address PR / Resolve conflicts)
+  // answers; every call's branch is recorded.
+  settleResult: { outcome: "conflict", files: [] } as { outcome: MechanicalMerge; files: string[] },
+  settleCalls: [] as string[],
   ciEvidenceData: [] as CiFailureEvidence[],
   ciEvidenceError: null as string | null,
   // The bridge's durable enrichment + chat history (server/db.ts), keyed `repo::branch`. Tests seed
@@ -148,7 +153,7 @@ export const apiFake = {
   setProfileEnabledError: null as null | string,
   instanceRates: {} as Record<string, number>,
   setInstanceRateCalls: [] as { instance: string; hourlyUsd: number | null }[],
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.instanceRates = {}; this.setInstanceRateCalls = []; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.settleResult = { outcome: "conflict", files: [] }; this.settleCalls = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.instanceRates = {}; this.setInstanceRateCalls = []; },
 };
 
 mock.module("@/api", () => ({
@@ -189,6 +194,7 @@ mock.module("@/api", () => ({
     reviewEvidence: async () => { if (apiFake.reviewEvidenceError) throw new Error(apiFake.reviewEvidenceError); return apiFake.reviewEvidenceData; },
     // Mirrors the server's `since` filter so the seen-at bookkeeping is exercised end to end.
     prComments: async (_repo: string, _n: number, since?: string) => apiFake.prCommentsData.filter((c) => !since || c.createdAt > since),
+    settleConflict: async (_repo: string, branch: string) => { apiFake.settleCalls.push(branch); return apiFake.settleResult; },
     ciEvidence: async () => { if (apiFake.ciEvidenceError) throw new Error(apiFake.ciEvidenceError); return apiFake.ciEvidenceData; },
     merge: async (_repo: string, pr: number) => { apiFake.calls.push(`merge:${pr}`); if (apiFake.mergeError) throw new Error(apiFake.mergeError); return { ok: true }; },
     autoMerge: async (_repo: string, pr: number) => { apiFake.calls.push(`autoMerge:${pr}`); return { ok: true }; },

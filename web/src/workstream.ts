@@ -236,6 +236,10 @@ export function promptFor(ws: Pick<Workstream, "title" | "branch" | "prompt">): 
 // the agent will sometimes open a ready-for-review PR on its own, which yanks the card into In
 // Review — so every launch/follow-up prompt explicitly forbids it.
 const NO_PR = "Do NOT open a pull request or run `gh pr create` — stop after committing. Promoting the branch to a PR is handled separately in Orca.";
+// The box can't afford a browser per worker (an OOM took it down), so the bridge runs ONE capped,
+// queued browser (server/screenshot.ts) and this is how a worker reaches it. Shot paths in the reply
+// ride into the orchestrator's report (`workerEvent`).
+export const SCREENSHOTS = "To see a UI, the ONLY allowed way to take a screenshot is `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--scroll <y|sel>] [--label before|after]` (it queues on Orca's one memory-capped browser and prints `shot: <path>`; Read the PNG to look at it). Never launch a browser, Playwright or Puppeteer yourself. For a UI change, list each before/after `shot: <path>` line in your Verification.";
 
 // A headless run narrates almost nothing by default: one real run produced 11 text blocks against 97
 // tool calls, so the chat showed a list of commands and nothing about why. Claude's own reasoning is
@@ -277,6 +281,7 @@ export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">
     "",
     NARRATE,
     NO_PR,
+    SCREENSHOTS,
   ].join("\n"));
 }
 
@@ -339,7 +344,7 @@ export function slackPrompt(
 
 /** Follow-up instruction for an agent already working a branch (resumes its session). */
 export function followUpPrompt(instruction: string): string {
-  return withOutcomeContract(`${instruction}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}`);
+  return withOutcomeContract(`${instruction}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}\n${SCREENSHOTS}`);
 }
 
 // Every session starts with no memory of the last one, so it starts by looking: the same three-line
@@ -377,6 +382,7 @@ export function chatPrompt(instruction: string): string {
     "what has actually happened, whatever the conversation above says.",
     SESSION_START,
     NO_PR,
+    SCREENSHOTS,
     "",
     "If (and only if) you changed something, finish with the usual sections:",
     OUTCOME_CONTRACT,
@@ -535,12 +541,43 @@ export function prDescriptionPrompt(input: { template?: string | null; diff: str
   ].join("\n");
 }
 
-/** Point the agent at pasted/dropped files of any type (absolute paths) for extra context. */
+export const ATTACHED_FILES_HEADER = "Attached files (Read these for extra context):";
+
+/** Point the agent at pasted/dropped files of any type for extra context: `orca-attachment://`
+ *  references (server/attachments.ts turns each into a local path where the run launches), or a
+ *  legacy absolute path. */
 export function withAttachments(prompt: string, paths: string[]): string {
   if (!paths.length) return prompt;
   const list = paths.map((p) => `- ${p}`).join("\n");
-  return `${prompt}\n\nAttached files (Read these for extra context):\n${list}`;
+  return `${prompt}\n\n${ATTACHED_FILES_HEADER}\n${list}`;
 }
+
+/** One stored attachment a message carried: its id (served at `/api/attachments/<id>`) and name. */
+export type AttachmentRef = { id: string; name: string };
+
+/** Every `orca-attachment://<id>/<name>` reference in a text, first occurrence of each id. */
+export function attachmentRefs(text: string): AttachmentRef[] {
+  const seen = new Map<string, AttachmentRef>();
+  for (const m of text.matchAll(/orca-attachment:\/\/([0-9a-f-]{36})(?:\/([\w.-]+))?/g)) {
+    if (!seen.has(m[1]!)) seen.set(m[1]!, { id: m[1]!, name: m[2] ?? "file" });
+  }
+  return [...seen.values()];
+}
+
+/** The message as typed: the "Attached files" block `withAttachments` appended is dropped, since the
+ *  chat shows those files as chips / thumbnails instead of a list of references. */
+export function withoutAttachmentList(text: string): string {
+  return text.replace(new RegExp(`\\n*${ATTACHED_FILES_HEADER.replace(/[()]/g, "\\$&")}(?:\\n- [^\\n]*)*`, "g"), "").trimEnd();
+}
+
+function attachmentSection(messages: string[]): string[] {
+  const files = attachmentRefs(messages.join("\n"));
+  if (!files.length) return [];
+  return ["", "## Attachments", "Files attached to the messages above. To give one to a worker, pass `--attach <id>` to orca spawn / orca send (repeatable):",
+    ...files.map((f) => `- ${f.id}  ${f.name}`)];
+}
+
+export const isImageName = (name: string) => /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name);
 
 /** Instruction for Claude to resolve a PR's merge conflicts in its worktree, then push. */
 // The three PR blockers as SECTIONS (no intro, no outcome contract), so one composed "Address PR"
@@ -647,6 +684,51 @@ export function addressReviewPrompt(ws: Pick<Workstream, "prNumber" | "branch">,
   ].join(" "));
 }
 
+// Changelog-only conflicts. Two branches that each add an entry under the same CHANGELOG heading
+// conflict on every merge of the base, and an agent spent a whole run re-merging that one hunk (five
+// runs on one branch-demo PR). Orca merges the base itself first: if every conflicted path is a
+// changelog, each is resolved by keeping BOTH sides' added lines in order (`git merge-file --union`)
+// and pushed — no agent. Anything else aborts the merge and goes to the agent as before.
+
+/** The changelog paths a repo has unless it sets `changelogFiles`. */
+export const DEFAULT_CHANGELOG_FILES = ["**/CHANGELOG.md"];
+
+/** A repo-relative glob as a regex: `**\/` any directories (incl. none), `*` within one segment,
+ *  `?` one character. Pure, so the browser and tests share it (no Bun.Glob). */
+export function globToRegExp(glob: string): RegExp {
+  let re = "";
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]!;
+    if (glob.startsWith("**/", i)) { re += "(?:.*/)?"; i += 2; }
+    else if (glob.startsWith("**", i)) { re += ".*"; i += 1; }
+    else if (c === "*") re += "[^/]*";
+    else if (c === "?") re += "[^/]";
+    else re += c.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  }
+  return new RegExp(`^${re}$`);
+}
+
+/** Whether `path` is a changelog by the repo's patterns. */
+export const isChangelogPath = (path: string, patterns: string[] = DEFAULT_CHANGELOG_FILES): boolean =>
+  patterns.some((g) => globToRegExp(g).test(path));
+
+/** Whether a merge's conflicted paths can be resolved mechanically: there are some, and every one is
+ *  a changelog. */
+export const changelogOnlyConflict = (conflicted: string[], patterns?: string[]): boolean =>
+  conflicted.length > 0 && conflicted.every((p) => isChangelogPath(p, patterns));
+
+/** What Orca's own merge of the base did. `resolved` (changelog conflicts unioned) and `merged` (it
+ *  merged cleanly) both pushed and leave no conflict for an agent; the rest leave the worktree as it
+ *  was. */
+export type MechanicalMerge = "resolved" | "merged" | "up to date" | "conflict" | "dirty" | "busy" | "push failed";
+export const mergeSettled = (m: MechanicalMerge | undefined): boolean => m === "resolved" || m === "merged";
+
+/** Whether Address PR still needs an agent once Orca has settled the conflict itself: only if CI fails
+ *  or there is review to answer (threads, conversation, a change request). Asked ONLY after Orca
+ *  settled one — a manual Address PR on a quiet PR still runs, as it always did. */
+export const addressNeedsAgent = (p: Pick<AddressPrParts, "conflicting" | "ci" | "feedback" | "threads" | "comments">): boolean =>
+  p.conflicting || !!p.ci || !!p.feedback?.length || !!p.threads?.length || !!p.comments?.length;
+
 export type AddressPrParts = {
   base: string;
   conflicting: boolean;
@@ -671,6 +753,7 @@ export function addressPrPrompt(ws: Pick<Workstream, "prNumber" | "branch">, par
     "## Review",
     ...reviewLines(ws, parts.feedback, parts.threads, parts.followed, parts.comments),
     NO_PR,
+    SCREENSHOTS,
   ].join(" "));
 }
 
@@ -953,6 +1036,18 @@ export const onlyCleanReports = (messages: string[]): boolean =>
   messages.length > 0 && messages.every((m) => isWorkerEvent(m) && !isWorkerProblem(m));
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
 
+/** The `orca-shot` PNGs a worker's reply names, each with its line's label (`before`, `after`) —
+ *  how before/after shots ride a worker report without the transcript. Pure. */
+export function reportedShots(text: string): string[] {
+  const seen = new Map<string, string>();
+  for (const m of text.matchAll(/\/\S*\/shots\/(shot-[\w-]+)\.png/g)) {
+    if (seen.has(m[0])) continue;
+    const label = m[1]!.match(/-(before|after|[a-z]+)$/i)?.[1];
+    seen.set(m[0], label && !/^[0-9a-f]{8}$/i.test(label) ? `${label}: ${m[0]}` : m[0]);
+  }
+  return [...seen.values()].slice(0, 8);
+}
+
 /** A finished worker run, as the orchestrator hears about it: the condensed outcome (the 1–2k token
  *  summary a sub-agent hands back), Orca's own check verdict, and the run id as a reference to the
  *  full turn — never the transcript itself. */
@@ -967,6 +1062,7 @@ export function workerEvent(input: {
     ...(check ? [`Orca's check \`${check.command}\` ${check.ok ? "passed" : `FAILED (exit ${check.exitCode}):\n${clip(check.output, 600)}`}`] : []),
     ...(o ? [`Outcome: ${clip(o.outcome, 1500)}`, ...list("Remaining", o.remaining), ...list("Decisions", o.decisions), ...list("Commits", o.commits)]
       : [`Response: ${clip(input.response ?? "(none)", 1500)}`]),
+    ...list("Screenshots (Read to view)", reportedShots([input.response ?? "", ...(o?.verification ?? [])].join("\n"))),
     `Full turn: orca read --run ${input.runId}`,
   ].join("\n");
 }
@@ -1002,10 +1098,11 @@ export function boardText(rows: BoardRow[]): string {
 // send → archive → re-spawn when `orca move` would have done.
 const ORCA_COMMANDS = [
   "  orca board                      every workstream: PR state, agent status, Orca's check verdict",
-  "  orca spawn --repo <repo> --title \"<2-5 words>\" --model <id> [--on <instance>] --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"]",
+  "  orca spawn --repo <repo> --title \"<2-5 words>\" --model <id> [--on <instance>] --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"] [--attach <id|path>]…",
   "      --on places the worktree on another instance (the board shows each workstream's `on:`; a `[new draft]`",
   "      that says `on: <instance>` wants that one). Without it, the repo's default instance.",
-  "  orca send --repo <repo> --branch <branch> [--model <id>] \"<message>\"     continue an existing workstream (--model moves it to another model)",
+  "  orca send --repo <repo> --branch <branch> [--model <id>] [--attach <id|path>]… \"<message>\"     continue an existing workstream (--model moves it to another model)",
+  "      --attach (repeatable) hands the worker a file on whatever instance it runs on: an id from ## Attachments, or a file path on this machine",
   "  orca address --repo <repo> --branch <branch>              have its agent fix conflicts, CI and review on its PR",
   "  orca move --repo <repo> --branch <branch> --to <instance>  move its worktree to another instance (not while it runs)",
   "  orca archive --repo <repo> --branch <branch>              cancel a workstream you spawned or sent to: stop its agent,",
@@ -1096,6 +1193,9 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     // Each message stays its own: several sent while you worked are separate messages, in order.
     ...(human.length ? ["", "## From the user", ...(human.length > 1 ? [`${human.length} separate messages, oldest first.`, ""] : []), joinMessages(human)] : []),
     ...(reports.length ? ["", "## Worker reports", "Automated, from Orca as your workers finish — not the user.", "", joinMessages(reports)] : []),
+    // The files those messages carried, by id: the paths above are on THIS machine, so a worker
+    // elsewhere gets one only through `--attach <id>`.
+    ...attachmentSection(input.messages),
   ].join("\n");
 }
 
@@ -2369,6 +2469,23 @@ export function conversationSummary(c: PrConversation["counts"]): string {
   const threadParts = [c.unresolved && `${c.unresolved} unresolved`, c.resolved && `${c.resolved} resolved`, c.outdated && `${c.outdated} outdated`].filter(Boolean).join(", ");
   return [c.comments && plural(c.comments, "comment"), c.threads && `${plural(c.threads, "thread")}${threadParts ? ` (${threadParts})` : ""}`, c.bots && `${c.bots} bot`]
     .filter(Boolean).join(" · ") || "No comments";
+}
+
+/** The bridge that answered `/api/config` (server/index.ts `bridgeInfo`). */
+export type BridgeInfo = { preview: boolean; branch?: string; port: number };
+
+/** What a page should say about the bridge behind its `/api`, or null when there is nothing to say
+ *  (the real Orca). A branch preview's frontend once proxied to MAIN's bridge silently, so its Cost
+ *  chart read main's numbers and everyone took them for the branch's. A preview page now always
+ *  says which answered, and warns when it is main's. Pure. */
+export function bridgeLabel(bridge: BridgeInfo | undefined, previewPage: boolean): { text: string; warn: boolean; title: string } | null {
+  if (!previewPage && !bridge?.preview) return null;
+  if (bridge?.preview) {
+    return { text: `API: this branch's bridge${bridge.branch ? ` (${bridge.branch})` : ""}`, warn: false,
+      title: `Answered by the branch's own bridge on :${bridge.port}, reading the shared database. Read-only: actions are refused.` };
+  }
+  return { text: "API: main bridge — not this branch", warn: true,
+    title: `Answered by the main bridge${bridge ? ` (${bridge.branch ?? "?"} on :${bridge.port})` : ""}: data and actions here are main's code, not this branch's.` };
 }
 
 // ---- cleanup after finished work ----
