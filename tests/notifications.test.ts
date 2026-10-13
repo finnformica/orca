@@ -61,7 +61,7 @@ describe("decisions (pure)", () => {
     const out = prNotifications("r", [pr, { ...pr, number: 8, state: "MERGED" }]);
     expect(out.map((n) => [n.kind, n.key])).toEqual([["pr_ci_failed", "pr-ci:r#7@abc123"], ["pr_conflicts", "pr-conflict:r#7"]]);
     // Checks flapping on ONE commit (a re-run, a check finishing later) is the same event: same key.
-    const key = (p: typeof pr) => prNotifications("r", [p])[0]!.key;
+    const key = (p: Parameters<typeof prNotifications>[1][number]) => prNotifications("r", [p])[0]!.key;
     expect(key({ ...pr, failingChecks: ["lint"] })).toBe(key({ ...pr, failingChecks: ["test"] }));
     // A new push failing again is a new event; with no head known, it is once per PR.
     expect(key({ ...pr, head: "def456" })).toBe("pr-ci:r#7@def456");
