@@ -1928,6 +1928,17 @@ export function pullState(dy: number): { phase: "idle" | "pull" | "release"; off
  *  the top. The orchestrator's conversation runs to hundreds of turns, nearly all of them old. */
 export const TURN_PAGE_SIZE = 50;
 
+/** What `/api/turns?limit=` answered, as a page. A bridge from before paging ignores `limit` and
+ *  sends the whole conversation as a plain array (a preview's Vite proxy points at the main
+ *  checkout's bridge; a deploy window has one side ahead of the other): that is the page, with
+ *  nothing older. Anything else malformed is an empty page rather than a crash mid-render. */
+export function asTurnPage<T>(body: unknown): { turns: T[]; older: string | null } {
+  if (Array.isArray(body)) return { turns: body as T[], older: null };
+  const page = body as { turns?: unknown; older?: unknown } | null;
+  if (!page || !Array.isArray(page.turns)) return { turns: [], older: null };
+  return { turns: page.turns as T[], older: typeof page.older === "string" ? page.older : null };
+}
+
 /** Turns identify by run id; a re-fetched page replaces what it covers and keeps what it doesn't. */
 type Keyed = { id: string };
 

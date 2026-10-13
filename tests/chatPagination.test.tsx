@@ -9,7 +9,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
-import { TURN_PAGE_SIZE, anchoredScrollTop, atBottom, mergeLatestPage, prependOlderPage } from "@/workstream";
+import { TURN_PAGE_SIZE, anchoredScrollTop, asTurnPage, atBottom, mergeLatestPage, prependOlderPage } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -121,4 +121,24 @@ test("the pure pieces: merging pages and anchoring", () => {
   expect(anchoredScrollTop(300, 2000, 3000)).toBe(1300);
   expect(atBottom(1560, 2000, 400, 48)).toBe(true);
   expect(atBottom(1500, 2000, 400, 48)).toBe(false);
+});
+
+test("P4: a bridge from before paging answers with the whole array — the chat shows it instead of going blank", async () => {
+  // A preview's Vite proxy points at the main checkout's bridge; during a deploy one side is ahead of
+  // the other. Before this, `page.turns` was undefined and the panel's render crashed on `.length`.
+  apiFake.turnsData.set("r::long", Array.from({ length: 3 }, (_, i) => turn(i)));
+  const api = (await import("../web/src/api")).api;
+  const paged = api.turnPage;
+  api.turnPage = (async (repo: string, branch: string) => apiFake.turnsData.get(`${repo}::${branch}`) ?? []) as never;
+  try {
+    await mount();
+    expect(shown()).toEqual([0, 1, 2]);
+    expect(container!.querySelector('[data-slot="chat-older"]')).toBeNull(); // the whole conversation: nothing older
+  } finally { api.turnPage = paged; }
+  // The pure normalisation: an array is a page with nothing older; junk is an empty page, never undefined.
+  expect(asTurnPage([{ id: "a" }])).toEqual({ turns: [{ id: "a" }], older: null });
+  expect(asTurnPage({ turns: [{ id: "a" }], older: "5~1" })).toEqual({ turns: [{ id: "a" }], older: "5~1" });
+  expect(asTurnPage({ turns: [{ id: "a" }], older: 7 })).toEqual({ turns: [{ id: "a" }], older: null });
+  expect(asTurnPage(null)).toEqual({ turns: [], older: null });
+  expect(asTurnPage({ error: "nope" })).toEqual({ turns: [], older: null });
 });

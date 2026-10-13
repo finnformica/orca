@@ -14,7 +14,7 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { TURN_PAGE_SIZE, WORKER_EVENT_MARKER, anchoredScrollTop, atBottom, chatSummary, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, turnMatches } from "../workstream";
+import { TURN_PAGE_SIZE, WORKER_EVENT_MARKER, anchoredScrollTop, asTurnPage, atBottom, chatSummary, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, turnMatches } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -363,7 +363,9 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   /** (Re)fetch the newest page. What was already loaded above it stays; a turn the page re-delivers
    *  (now finished) takes its fresh form. The first fetch also sets where the older pages start. */
   const loadLatest = async () => {
-    const page = await api.turnPage(row.repo, row.branch, { limit: TURN_PAGE_SIZE }).catch(() => null);
+    // asTurnPage again at the render boundary: whatever answered (an older bridge sends an array),
+    // nothing undefined reaches `turns`, which must be null (loading) or a list.
+    const page = await api.turnPage(row.repo, row.branch, { limit: TURN_PAGE_SIZE }).then(asTurnPage<AgentTurn>).catch(() => null);
     if (!page) return;
     const had = turnsRef.current;
     if (!had || !had.length) { olderRef.current = page.older; setOlder(page.older); }
@@ -377,7 +379,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
     loadingOlderRef.current = true;
     setLoadingOlder(true);
     try {
-      const page = await api.turnPage(row.repo, row.branch, { limit: TURN_PAGE_SIZE, before });
+      const page = asTurnPage<AgentTurn>(await api.turnPage(row.repo, row.branch, { limit: TURN_PAGE_SIZE, before }));
       const el = scroller.current;
       if (el) anchor.current = { top: el.scrollTop, height: el.scrollHeight };
       olderRef.current = page.older;
