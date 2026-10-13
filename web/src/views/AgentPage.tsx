@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { AlertTriangle, ExternalLink, GitBranch, GitCommitHorizontal, GitPullRequest } from "lucide-react";
 import type { ChangeSummary } from "../../../server/git";
 import { baseBranch, instanceChoices, modelFor, thisInstance, type Row } from "../store";
-import { LANE_LABELS, agentFailure, ago, formatDuration, rowDuration, rowInstance, rowTone } from "../workstream";
+import { agentFailure, ago, formatDuration, prPill, rowDuration, rowInstance, rowTone } from "../workstream";
 import { modelLabel } from "../../../shared/models";
 import { Detail, Pill, StatusDot, VCard } from "@/components/console";
 import { ChatPanel } from "./Chat";
@@ -18,6 +18,7 @@ import { PreviewCell, PrPreviewButton } from "./PreviewControl";
 export function DetailsCard({ row, summary, actions, extra }: { row: Row; summary: ChangeSummary | null; actions?: ReactNode; extra?: ReactNode }) {
   const failure = agentFailure(row);
   const tone = rowTone(row);
+  const pill = prPill(row);
   const created = row.transcript?.[0]?.startedAt ?? row.agentStartedAt;
   const duration = rowDuration(row);
   const last = summary?.commits[0];
@@ -43,7 +44,7 @@ export function DetailsCard({ row, summary, actions, extra }: { row: Row; summar
             <Detail label="Created" slot="detail-created">{created ? ago(created) : "—"}</Detail>
             <Detail label="Status" slot="detail-status"><StatusDot tone={TONE_DOT[tone]} />{TONE_LABEL[tone]}{row.agentCheck && <span className="text-muted-foreground">· {row.agentCheck.ok ? "check passed" : "check failed"}</span>}</Detail>
             <Detail label="Duration">{duration !== undefined ? formatDuration(duration) : "—"}</Detail>
-            <Detail label="State"><Pill tone={row.lane === "MERGEABLE" ? "blue" : row.lane === "DONE" ? "green" : "default"}>{row.lane === "DONE" ? "Merged" : LANE_LABELS[row.lane]}</Pill></Detail>
+            <Detail label="State"><Pill tone={pill.tone} title={pill.tooltip}>{pill.label}</Pill></Detail>
             <Detail label="Model" slot="detail-model">{model}</Detail>
             {instanceChoices().length > 1 && <Detail label="Instance">{instance ?? "—"}</Detail>}
             <Detail label="Pull request">{row.prNumber

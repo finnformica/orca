@@ -12,6 +12,7 @@ import {
   addressNeedsAgent, addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, followUpPrompt, instanceOrder, launchPrompt,
   mergeSettled, newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
+import type { MergeMark } from "./workstream";
 import type { BridgeInfo, ReviewDigest } from "./workstream";
 import type { OrchStatus, PrRef } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
@@ -125,6 +126,7 @@ export type Enrichment = {
   orchestrated?: boolean; // started or continued by the orchestrator, which is woken when its run ends
   orchStatus?: OrchStatus; // the orchestrator's `orca status` record: plan, what it waits on, merge class
   previewInstance?: PreviewPlacement; // written by the bridge that started the preview, cleared on stop
+  mergeWhenGreen?: MergeMark; // marked by `orca merge --when-green` / the PR menu (server/mergeQueue.ts)
 };
 /** Where a branch's preview runs: the instance, and its key there (a worktree path ON that instance —
  *  "Test on cloud" for a laptop worktree previews the box's own checkout of the branch). */
@@ -466,6 +468,12 @@ export type Row = {
   reviewStatus?: ReviewStatus;
   mergeable?: Mergeable;
   autoMergeEnabled?: boolean;
+  /** GitHub's own merge method for its auto-merge request (squash/merge/rebase) — the status
+   *  pill's tooltip names it. */
+  autoMergeMethod?: string;
+  /** Marked merge-when-green by Orca's own queue (#169), from enrichment — a second, independent
+   *  way the status pill reads "Auto-merge" even when GitHub's own flag is off. */
+  mergeWhenGreen?: MergeMark;
   following?: boolean;
   /** The orchestrator started or continued this one, and hears when its agent finishes. */
   orchestrated?: boolean;
@@ -602,8 +610,8 @@ export function assembleRows(): Row[] {
         mergeClean: wt?.mergeClean, remote: wt?.remote, instance: wt?.instance, promoted: e.promoted,
         prNumber: pr?.number, prBase: pr?.base, prAdditions: pr?.additions, prDeletions: pr?.deletions,
         prUrl: pr?.url, previewUrl: pr?.previewUrl, hasPreviewLabel: pr?.hasPreviewLabel, isDraft: pr?.isDraft,
-        ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
-        following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, orchStatus: e.orchStatus, previewInstance: e.previewInstance,
+        ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled, autoMergeMethod: pr?.autoMergeMethod,
+        following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, orchStatus: e.orchStatus, previewInstance: e.previewInstance, mergeWhenGreen: e.mergeWhenGreen,
         failingChecks: pr?.failingChecks, feedback: pr?.feedback,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
         lane: "DRAFT",

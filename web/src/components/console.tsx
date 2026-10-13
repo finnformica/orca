@@ -65,13 +65,16 @@ export const StatusDot = ({ tone, className, title }: { tone: DotTone; className
 );
 
 /** An environment-style pill (Production / Preview): rounded, hairline, an optional leading icon. */
-export function Pill({ children, tone = "default", slot, title }: { children: ReactNode; tone?: "default" | "blue" | "green" | "amber" | "red"; slot?: string; title?: string }) {
+export function Pill({ children, tone = "default", slot, title }: { children: ReactNode; tone?: "default" | "blue" | "green" | "amber" | "red" | "purple"; slot?: string; title?: string }) {
   const tones = {
     default: "text-foreground border",
     blue: "border-transparent bg-geist-blue/15 text-geist-blue",
     green: "border-transparent bg-geist-green/15 text-geist-green",
     amber: "border-transparent bg-geist-amber/15 text-geist-warning-fg",
     red: "border-transparent bg-geist-red/15 text-geist-red",
+    // No --geist-purple token exists; GitHub's own merge-purple, matched by the ad hoc Tailwind
+    // purple the Auto-merge condition badge already uses (Board.tsx / PrDetail.tsx).
+    purple: "border-transparent bg-purple-500/15 text-purple-700 dark:text-purple-400",
   };
   return (
     <span data-slot={slot ?? "pill"} title={title} className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2.5 text-xs font-medium whitespace-nowrap [&>svg]:size-3", tones[tone])}>

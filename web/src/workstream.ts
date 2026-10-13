@@ -1500,6 +1500,42 @@ export const LANE_LABELS: Record<OverviewLane, string> = {
   LOCAL: "Local", DRAFT: "Draft", IN_REVIEW: "In review", MERGEABLE: "Mergeable", DONE: "Done today",
 };
 
+export type PillTone = "default" | "blue" | "green" | "purple";
+/** The lane's own pill, with no auto-merge override — the DONE lane's "Merged" rather than its
+ *  swimlane title "Done today". */
+export const lanePill = (lane: OverviewLane): { label: string; tone: PillTone } => ({
+  label: lane === "DONE" ? "Merged" : LANE_LABELS[lane],
+  tone: lane === "MERGEABLE" ? "blue" : lane === "DONE" ? "green" : "default",
+});
+
+/** Everything the PR status pill needs: the lane it would otherwise show, whether CI is failing,
+ *  and both ways a PR can be set to merge itself — GitHub's own auto-merge, or Orca's
+ *  merge-when-green queue mark (#169). */
+export type PrPillLike = {
+  lane: OverviewLane;
+  ciStatus?: CiStatus;
+  autoMergeEnabled?: boolean;
+  autoMergeMethod?: string;
+  mergeWhenGreen?: Pick<MergeMark, "by">;
+};
+
+/** The PR status pill shown on an agents-list row, a board card and the agent page's Details card:
+ *  Merged (and a closed PR, which never reaches here — gh only lists open ones) and failing CI still
+ *  win, but armed auto-merge replaces an otherwise in-review/mergeable reading with one purple
+ *  "Auto-merge" state, so "it'll merge itself" is visible without opening the PR. Pure. */
+export function prPill(row: PrPillLike): { label: string; tone: PillTone; tooltip?: string } {
+  const base = lanePill(row.lane);
+  if (row.lane !== "IN_REVIEW" && row.lane !== "MERGEABLE") return base; // Local/Draft/Merged: unaffected
+  if (row.ciStatus === "failing") return base; // a known-red PR isn't about to merge itself
+  if (row.autoMergeEnabled) {
+    return { label: "Auto-merge", tone: "purple", tooltip: `GitHub auto-merge is enabled${row.autoMergeMethod ? ` (${row.autoMergeMethod})` : ""}` };
+  }
+  if (row.mergeWhenGreen) {
+    return { label: "Auto-merge", tone: "purple", tooltip: `Orca's merge queue will merge it when green${row.mergeWhenGreen.by ? ` (queued by ${row.mergeWhenGreen.by})` : ""}` };
+  }
+  return base;
+}
+
 /** The subset of a board row the overview reads. Structural, so the store's Row satisfies it. */
 export type OverviewRow = {
   repo: string; branch: string; title: string; prompt?: string; lane: OverviewLane;
