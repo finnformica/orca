@@ -863,6 +863,34 @@ export const MODEL_LADDER: { id: string; when: string }[] = [
   { id: "claude-fable-5-1", when: "ONLY work that has already defeated Opus, or genuinely novel, ambiguous design work" },
 ];
 
+/** Model-ladder automation: a worker that fails — the run errors, or its commit fails Orca's check —
+ *  `LADDER_FAILURES` times in a row on the same model gets the next model up for the retry. The
+ *  streak lives on the workstream's enrichment (`failStreak`), so a restart doesn't reset it. */
+export const LADDER_FAILURES = 2;
+export type FailStreak = { model: string; count: number };
+/** The next model up the ladder, or undefined at the top or for a model not on it (Codex, Cursor). */
+export const nextLadderModel = (model: string): string | undefined => {
+  const i = MODEL_LADDER.findIndex((m) => m.id === model);
+  return i < 0 ? undefined : MODEL_LADDER[i + 1]?.id;
+};
+/** The streak after a run on `model`: a failure extends it (or starts one on a new model), a clean
+ *  run ends it. A run you stopped is neither — pass the previous streak through instead. */
+export function nextFailStreak(prev: FailStreak | undefined, model: string | undefined, failed: boolean): FailStreak | undefined {
+  if (!failed || !model) return undefined;
+  return { model, count: prev?.model === model ? prev.count + 1 : 1 };
+}
+/** What the ladder says about a streak: nothing below the threshold or off the ladder; at it, a line
+ *  for the worker report — a suggestion, or (the repo's `modelEscalation: "apply"`) the move Orca
+ *  made, in `moveTo`. At the top there is nowhere to go, and the line says so. */
+export function ladderStep(streak: FailStreak | undefined, mode: "suggest" | "apply", at: { repo: string; branch: string }): { line: string; moveTo?: string } | undefined {
+  if (!streak || streak.count < LADDER_FAILURES || !MODEL_LADDER.some((m) => m.id === streak.model)) return undefined;
+  const head = `Model ladder: ${streak.count} failures in a row on ${streak.model}`;
+  const next = nextLadderModel(streak.model);
+  if (!next) return { line: `${head}, the top of the ladder — another attempt is unlikely to differ; tell the user.` };
+  if (mode === "apply") return { moveTo: next, line: `${head} — Orca moved this workstream up to ${next}; your retry (orca send) runs on it.` };
+  return { line: `${head} — Orca suggests the next model up for the retry: orca send --repo ${at.repo} --branch ${at.branch} --model ${next} "…"` };
+}
+
 /** Why an orchestrator wake died before finishing its turn. `no-reply` is the CLI ending "cleanly"
  *  on its own placeholder instead of an answer. */
 export type WakeExit =
@@ -1234,6 +1262,7 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     "`spawn` requires --model. Start from Opus; step DOWN to Sonnet for small, clear tasks and UP to Fable only when Opus has failed:",
     ...MODEL_LADDER.map((m) => `  ${m.id}: ${m.when}`),
     "Move a workstream along the ladder with send --model when a run fails, stalls, or turns out smaller than it looked; say which model you chose and why.",
+    `Orca counts a worker's failures on one model: after ${LADDER_FAILURES} in a row its report carries a \`Model ladder:\` line — the next model up to retry on, or that Orca has already moved it there.`,
     `A message opening with \`${NEW_DRAFT_MARKER}\` is the user's New-draft box: spawn exactly ONE workstream for it, in the repo it names, with a brief you write from it and a model you choose. Reply with one line: branch and model.`,
     "", "## Your notes", input.notes?.trim() || "(empty)",
     "", "## Board", input.board,

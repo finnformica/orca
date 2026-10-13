@@ -524,6 +524,13 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   the repo didn't have before (`createViaOrchestrator`; Undo tears that spawn down). Picking a real
   model in the box bypasses the orchestrator and launches directly, as before. "New chat" never goes
   through it — a chat is a conversation with a model you chose.
+- **The ladder moves on evidence, not only its judgement.** An orchestrated worker that fails twice
+  in a row on one model (the run errors, or its commit fails Orca's check — a stop is neither) gets
+  a `Model ladder:` line in its report (`ladderStep`, the streak as `failStreak` on its enrichment,
+  counted even when an autofix takes over): the next model up to retry on, or — with the repo's
+  `modelEscalation: "apply"` — the workstream already re-pinned to it, so the orchestrator's next
+  `send` runs there. At the top (Fable) the line says to stop and tell the user. A clean run ends
+  the streak; a model off the ladder (Codex, Cursor) gets no line.
 - **A brief has three required parts** — objective, expected output, boundaries (`briefProblems`);
   `spawn` refuses one without them, because a worker knows only its brief.
 - **Wake loop — management by exception.** A workstream it spawned or sent to is marked

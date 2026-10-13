@@ -26,8 +26,8 @@ import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
-  orchStatusText, orchStatusUpdate, orchestratorPrompt, sessionHint, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
-  type BoardRow, type OrchStatus, type WakeExit,
+  ladderStep, nextFailStreak, orchStatusText, orchStatusUpdate, orchestratorPrompt, sessionHint, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  type BoardRow, type FailStreak, type OrchStatus, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
@@ -167,14 +167,34 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   if (!e.orchestrated) return;
   // Codex and Cursor reveal their session id mid-run, and no browser may be open to record it.
   if (run.sessionId && e.sessionId !== run.sessionId) await db.patchEnrichment(repo, branch, { sessionId: run.sessionId });
-  if (run.continued) return; // a queued follow-up (an autofix) took over — not idle yet
   if (run.options.action === "compact") return; // housekeeping you asked for, not work to report
+  const step = await ladder(cfg, repo, branch, e, run); // counted even when an autofix takes over
+  if (run.continued) return; // a queued follow-up (an autofix) took over — not idle yet
   const opened = await autoPr(cfg, repo, branch, run);
   const text = workerEvent({
     repo, branch, title: e.title as string | undefined, runId: run.runId, status: run.status,
     outcome: run.structured, response: run.result, check: run.check,
-  }) + (opened ? `\n${opened}` : "");
+  }) + (opened ? `\n${opened}` : "") + (step ? `\n${step}` : "");
   await report(cfg, text, run.key);
+}
+
+/** Model-ladder automation: keep the workstream's failure streak, and once it reaches the threshold
+ *  on one model, suggest the next model up — or, with the repo's `modelEscalation: "apply"`, re-pin
+ *  the workstream to it so the retry runs there. Returns the worker report's line, if any. Only at
+ *  report time: an autofix taking over is counted, not escalated, so its own run is the retry. */
+async function ladder(cfg: OrcaConfig, repoName: string, branch: string, e: db.Fields, run: agent.RunFinished): Promise<string | undefined> {
+  const prev = e.failStreak as FailStreak | undefined;
+  const failed = run.status === "error" || run.check?.ok === false;
+  const streak = run.status === "stopped" ? prev : nextFailStreak(prev, run.options.model ?? (e.preferredModel as string | undefined), failed);
+  if (JSON.stringify(streak) !== JSON.stringify(prev)) await db.patchEnrichment(repoName, branch, { failStreak: streak ?? null });
+  if (run.continued) return undefined;
+  const repo = cfg.repos.find((r) => r.name === repoName);
+  const step = ladderStep(streak, repo?.modelEscalation ?? "suggest", { repo: repoName, branch });
+  if (step?.moveTo) {
+    // The send that retries reads the pin (as `send --model` does); the streak restarts on the new model.
+    await db.patchEnrichment(repoName, branch, { preferredModel: step.moveTo, preferredProvider: providerOfModel(step.moveTo) ?? "claude", failStreak: null });
+  }
+  return step?.line;
 }
 
 /** The repo's `mergePolicy.autoPr`: a clean finish opens the branch's PR (verbs.openWorkerPr), and

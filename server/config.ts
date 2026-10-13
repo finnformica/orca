@@ -115,6 +115,10 @@ export type RepoConfig = {
    *  once checks pass and it merges clean, which paths it never merges, and whether it opens a
    *  finished orchestrated worker's PR itself. Absent = Orca never merges and never opens a PR. */
   mergePolicy?: MergePolicy;
+  /** When an orchestrated worker fails twice in a row on one model (the run errors or its commit
+   *  fails the check): `suggest` (the default) puts the next model up the ladder in the worker
+   *  report; `apply` re-pins the workstream to it, so the retry runs there, and the report says so. */
+  modelEscalation?: "suggest" | "apply";
 };
 
 export type OrcaConfig = {
@@ -236,6 +240,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
           else if (typeof v !== "boolean") errors.push(`${where}.features.${k} must be true or false`);
         }
       }
+    }
+    if (r.modelEscalation !== undefined && r.modelEscalation !== "suggest" && r.modelEscalation !== "apply") {
+      errors.push(`${where}.modelEscalation must be "suggest" or "apply"`);
     }
     if (r.mergePolicy !== undefined) {
       const m = r.mergePolicy as Record<string, unknown> | null;

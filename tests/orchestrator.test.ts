@@ -21,7 +21,7 @@ import { run } from "../server/run";
 import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
 import {
-  ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isWorkerProblem, onlyCleanReports, sessionHint, wakeExitReason,
+  ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, ladderStep, nextFailStreak, isWorkerProblem, onlyCleanReports, sessionHint, wakeExitReason,
   wakeProgress, wakeStoppedLine, workerEvent,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
@@ -821,4 +821,56 @@ test("O22: orca status keeps a short per-workstream record on its enrichment, an
 
   expect(await orchestrator.tool(cfg(), "status", { ...at, clear: "" })).toBe(`Cleared the status of r/${branch}.`);
   expect((await db.enrichment("r"))[branch]).not.toHaveProperty("orchStatus");
+});
+
+test("O23: two failures in a row on one model put the next model up in the report; modelEscalation: apply moves it", async () => {
+  let escalation: "suggest" | "apply" = "suggest";
+  const conf = (): OrcaConfig => ({ ...cfg(), repos: cfg().repos.map((r) => ({ ...r, modelEscalation: escalation })) });
+  agent.onRunFinished((run) => orchestrator.onRunFinished(conf(), run));
+  // Workers fail; the orchestrator answers.
+  await fakeClaude(`case "$PWD" in */orchestrator) ${OK} ;; *) echo boom >&2; exit 1 ;; esac`);
+  await orchestrator.tool(conf(), "spawn", { ...brief, model: "claude-opus-5-5" });
+  const branch = Object.keys(await db.enrichment("r"))[0]!;
+  const reports = async (n: number) => (await settled(orchTurns, n)).map((t) => t.instruction ?? "");
+
+  // One failure is a problem report, nothing more — a single bad run is not a pattern.
+  let r = await reports(1);
+  expect(r[0]).toStartWith(`${WORKER_EVENT_MARKER} r/${branch} "Add cache" — error`);
+  expect(r[0]).not.toContain("Model ladder");
+  expect((await db.enrichment("r"))[branch]!.failStreak).toEqual({ model: "claude-opus-5-5", count: 1 });
+
+  // The second on the same model: Orca suggests the next model up, and leaves the pin alone.
+  await orchestrator.tool(conf(), "send", { repo: "r", branch, _: ["try again"] });
+  r = await reports(2);
+  expect(r[1]).toContain(`Model ladder: 2 failures in a row on claude-opus-5-5 — Orca suggests the next model up for the retry: orca send --repo r --branch ${branch} --model claude-fable-5-1`);
+  expect((await db.enrichment("r"))[branch]!.preferredModel).toBe("claude-opus-5-5");
+
+  // With the repo's setting, Orca moves it itself — the retry runs on the next model, and the streak restarts.
+  escalation = "apply";
+  await orchestrator.tool(conf(), "send", { repo: "r", branch, _: ["once more"] });
+  r = await reports(3);
+  expect(r[2]).toContain("Model ladder: 3 failures in a row on claude-opus-5-5 — Orca moved this workstream up to claude-fable-5-1; your retry (orca send) runs on it.");
+  expect((await db.enrichment("r"))[branch]).toMatchObject({ preferredModel: "claude-fable-5-1", preferredProvider: "claude" });
+  expect((await db.enrichment("r"))[branch]).not.toHaveProperty("failStreak");
+  await fakeClaude(OK); // the bigger model gets it done
+  await orchestrator.tool(conf(), "send", { repo: "r", branch, _: ["retry"] });
+  r = await reports(4);
+  expect(r[3]).not.toContain("Model ladder");
+  const workerLaunches = (await launches()).filter((a) => !a.includes("Orca's orchestrator") && !a.includes("## Board"));
+  expect(workerLaunches.at(-1)).toContain("--model claude-fable-5-1");
+  expect((await db.enrichment("r"))[branch]).not.toHaveProperty("failStreak"); // a clean run ends the streak
+});
+
+test("O23b: the ladder decision is pure — threshold, the top, and models off the ladder", () => {
+  expect(nextFailStreak(undefined, "claude-sonnet-5", true)).toEqual({ model: "claude-sonnet-5", count: 1 });
+  expect(nextFailStreak({ model: "claude-sonnet-5", count: 1 }, "claude-sonnet-5", true)).toEqual({ model: "claude-sonnet-5", count: 2 });
+  expect(nextFailStreak({ model: "claude-sonnet-5", count: 1 }, "claude-opus-5-5", true)).toEqual({ model: "claude-opus-5-5", count: 1 }); // a new model starts over
+  expect(nextFailStreak({ model: "claude-sonnet-5", count: 1 }, "claude-sonnet-5", false)).toBeUndefined();
+  const at = { repo: "r", branch: "b" };
+  expect(ladderStep({ model: "claude-sonnet-5", count: 1 }, "apply", at)).toBeUndefined();
+  expect(ladderStep({ model: "claude-sonnet-5", count: 2 }, "apply", at)!.moveTo).toBe("claude-opus-5-5");
+  expect(ladderStep({ model: "claude-fable-5-1", count: 2 }, "apply", at)).toEqual({ line: "Model ladder: 2 failures in a row on claude-fable-5-1, the top of the ladder — another attempt is unlikely to differ; tell the user." });
+  expect(ladderStep({ model: "gpt-5.5", count: 5 }, "apply", at)).toBeUndefined();
+  expect(parseConfigDocument({ repos: [{ name: "r", repoPath: "/r", worktreeRoot: "/w", baseBranch: "main", modelEscalation: "always" }] }).errors.join("\n"))
+    .toContain('modelEscalation must be "suggest" or "apply"');
 });
