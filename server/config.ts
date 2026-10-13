@@ -118,6 +118,10 @@ export type OrcaConfig = {
    *  A request for a repo this instance doesn't run is forwarded to its owner — that is how a board
    *  on the laptop acts on a session executing in the cloud without a job queue between them. */
   instances?: Record<string, string>;
+  /** What each named instance costs per hour, in USD, e.g. `{ cloud: 0.2331, local: 0 }` — the
+   *  instance cards' Cost accrued chart is this rate over the time the instance was up. Absent for
+   *  an instance: an EC2 on-demand estimate from IMDS, else 0 (`instanceRate`). */
+  instanceHourlyUsd?: Record<string, number>;
   /** Repos Orca manages; the first is the default. */
   repos: RepoConfig[];
   /** Inclusive [min, max] port range for preview services (shared across repos). */
@@ -258,6 +262,11 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       && Object.values(d.instances as Record<string, unknown>).every((v) => typeof v === "string" && /^https?:\/\//.test(v));
     if (!ok) errors.push("instances must map an instance name to its base URL");
   }
+  if (d.instanceHourlyUsd !== undefined) {
+    const ok = d.instanceHourlyUsd && typeof d.instanceHourlyUsd === "object" && !Array.isArray(d.instanceHourlyUsd)
+      && Object.values(d.instanceHourlyUsd as Record<string, unknown>).every((v) => typeof v === "number" && Number.isFinite(v) && v >= 0);
+    if (!ok) errors.push("instanceHourlyUsd must map an instance name to its non-negative USD per hour");
+  }
   if (d.staleHours !== undefined && (typeof d.staleHours !== "number" || d.staleHours < 0)) {
     errors.push("staleHours must be a non-negative number");
   }
@@ -289,6 +298,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       agentTimeoutMinutes: d.agentTimeoutMinutes as number | undefined,
       agentModel: d.agentModel as string | undefined,
       instances: d.instances as Record<string, string> | undefined,
+      instanceHourlyUsd: d.instanceHourlyUsd as Record<string, number> | undefined,
       orchestratorShell: d.orchestratorShell as boolean | undefined,
       orchestratorWakeBudgetUsd: d.orchestratorWakeBudgetUsd as number | undefined,
       orchestratorOn: d.orchestratorOn as string | undefined,
@@ -415,6 +425,7 @@ async function loadFromDb(): Promise<OrcaConfig> {
     agentTimeoutMinutes: app.agentTimeoutMinutes as number | undefined,
     agentModel: app.agentModel as string | undefined,
     instances: app.instances as Record<string, string> | undefined,
+    instanceHourlyUsd: app.instanceHourlyUsd as Record<string, number> | undefined,
     orchestratorShell: app.orchestratorShell !== false,
     orchestratorWakeBudgetUsd: app.orchestratorWakeBudgetUsd as number | undefined,
     orchestratorOn: app.orchestratorOn as string | undefined,
@@ -447,6 +458,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.agentTimeoutMinutes === undefined ? {} : { agentTimeoutMinutes: config.agentTimeoutMinutes }),
       ...(config.agentModel === undefined ? {} : { agentModel: config.agentModel }),
       ...(config.instances === undefined ? {} : { instances: config.instances }),
+      ...(config.instanceHourlyUsd === undefined ? {} : { instanceHourlyUsd: config.instanceHourlyUsd }),
       ...(config.orchestratorShell === undefined ? {} : { orchestratorShell: config.orchestratorShell }),
       ...(config.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: config.orchestratorWakeBudgetUsd }),
       ...(config.orchestratorOn === undefined ? {} : { orchestratorOn: config.orchestratorOn }),

@@ -16,7 +16,7 @@ import * as forward from "./forward";
 import * as notify from "./notify";
 import { existsSync } from "fs";
 import { featuresOf, modelFor, providerAllowed, type OrcaConfig, type RepoConfig } from "./config";
-import { addressPrPrompt, chatPrompt, continuation, launchPrompt, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
+import { addressPrPrompt, chatPrompt, cleanupDecision, continuation, launchPrompt, slugifyBranch, titleFromPrompt, type SweepReport } from "../web/src/workstream";
 import { providerOfModel } from "../shared/models";
 import { isAgentProvider, type AgentProvider } from "../shared/agent";
 
@@ -318,4 +318,161 @@ export async function moveWorkstream(cfg: OrcaConfig, repo: RepoConfig, branch: 
   if (!res.ok || !data.worktreePath) throw new Error(`${to} could not adopt ${branch}: ${data.error ?? `answered ${res.status}`} (the branch is on origin; the worktree here is gone)`);
   await db.patchEnrichment(repo.name, branch, { sessionId: null, movedFrom: here, movedAt: new Date().toISOString() });
   return { branch, worktreePath: data.worktreePath, instance: to };
+}
+
+// ---- cleanup after finished work ----
+
+/** What Orca itself put in a worktree (copied config, linked dependencies) — never "uncommitted work". */
+const orcaPaths = (repo: RepoConfig): string[] => [...(repo.copyToWorktree ?? []), ...(repo.linkToWorktree ?? [])];
+
+/** Reap one finished worktree: its preview stopped (and its placement forgotten), the worktree
+ *  removed, a MERGED branch deleted (a closed PR's branch is kept), the workstream archived — its
+ *  conversation stays. Only ever called once `cleanupDecision` said nothing would be lost. */
+async function reapWorktree(repo: RepoConfig, w: { branch: string; worktreePath: string }, reason: git.ReapReason, blocked: boolean): Promise<void> {
+  agent.stop(w.worktreePath);
+  preview.stop(w.worktreePath, true); // reaped → drop its preview DB too
+  await db.clearPreviewPlacement(w.worktreePath).catch(() => {});
+  await git.removeWorktree(repo.repoPath, w.worktreePath);
+  if (reason === "merged") await git.deleteBranch(repo.repoPath, w.branch);
+  if (blocked) await db.patchEnrichment(repo.name, w.branch, { cleanupBlocked: null }).catch(() => {});
+  // The worktree is gone either way; with the database down (degraded mode) the archive is skipped
+  // rather than reported as a failed removal.
+  await db.archive(repo.name, w.branch).catch((e) => { if (!(e instanceof db.DbUnavailable)) throw e; });
+}
+
+export type CleanupResult = { branch: string; worktreePath: string; reason: git.ReapReason; action: "reaped" | "flagged" | "waiting"; why?: string };
+const cleaning = new Map<string, Promise<CleanupResult[]>>();
+
+/** Auto-archive: every worktree HERE whose PR merged or closed is reaped once the grace period is
+ *  over and no agent runs on it — unless it holds uncommitted changes or commits that exist nowhere
+ *  else, which is flagged on its card (`cleanupBlocked`) and left alone. Each instance runs this for
+ *  its own worktrees (the agents poll and the publish tick), so a laptop's worktree is reaped by the
+ *  laptop. One pass per repo at a time: the poll and the tick overlap. */
+export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: number } = {}): Promise<CleanupResult[]> {
+  const inflight = cleaning.get(repo.name);
+  if (inflight) return inflight;
+  const pass = (async () => {
+    const done = await gh.donePrs(repo.repoPath).catch(() => new Map<string, gh.DonePr>()); // empty for local-only repos
+    if (!done.size) return [];
+    const out: CleanupResult[] = [];
+    let ench: Record<string, db.Fields> | undefined;
+    for (const w of await git.listWorktrees(repo.repoPath, repo.worktreeRoot)) {
+      const pr = done.get(w.branch);
+      if (!pr) continue;
+      const facts = { doneAt: pr.at, now: opts.now ?? Date.now(), graceMs: opts.graceMs, running: agent.isRunning(w.worktreePath) };
+      let d = cleanupDecision({ ...facts, dirty: [], unpushed: 0 }); // timing first — the git probes only once due
+      if (d.action === "reap") d = cleanupDecision({ ...facts, ...(await git.worktreeSafety(repo.repoPath, w, { base: repo.baseBranch, head: pr.head, ignore: orcaPaths(repo) })) });
+      ench ??= await db.enrichment(repo.name).catch(() => ({}));
+      const blocked = ench[w.branch]?.cleanupBlocked as { why?: string } | undefined;
+      if (d.action === "reap") {
+        try {
+          await reapWorktree(repo, w, pr.reason, Boolean(blocked));
+          out.push({ ...w, reason: pr.reason, action: "reaped" });
+          continue;
+        } catch (e) {
+          d = { action: "flag", why: `removal failed: ${e instanceof Error ? e.message.split("\n")[0] : String(e)}` };
+        }
+      }
+      if (d.action === "flag" && blocked?.why !== d.why) {
+        console.warn(`orca: not reaping ${repo.name}/${w.branch} (PR ${pr.reason}): ${d.why}`);
+        await db.patchEnrichment(repo.name, w.branch, { cleanupBlocked: { why: d.why, at: new Date().toISOString() } }).catch(() => {});
+      }
+      out.push({ ...w, reason: pr.reason, action: d.action === "flag" ? "flagged" : "waiting", why: d.why });
+    }
+    return out;
+  })().finally(() => cleaning.delete(repo.name));
+  cleaning.set(repo.name, pass);
+  return pass;
+}
+
+/** The one-off sweep on THIS instance: every finished (merged, closed or archived) workstream whose
+ *  worktree is still on disk, every preview with nothing behind it, and every branch Orca knows of
+ *  (a done PR's or a workstream's) left with no worktree and no open PR. A dry run unless `confirm`;
+ *  the same safety as auto-archive (no grace period — you asked), and a branch goes only when every
+ *  commit on it exists elsewhere. */
+export async function sweep(cfg: OrcaConfig, opts: { confirm?: boolean; now?: number } = {}): Promise<SweepReport> {
+  const confirm = Boolean(opts.confirm);
+  const report: SweepReport = { instance: db.instanceName(), confirmed: confirm, worktrees: [], previews: [], branches: [] };
+  const removing = new Map<string, () => Promise<void>>(); // worktree path → its reap
+  for (const repo of cfg.repos.filter(repoHere)) {
+    const [done, archived, ench] = await Promise.all([
+      gh.donePrs(repo.repoPath).catch(() => new Map<string, gh.DonePr>()),
+      db.archivedBranches(repo.name).catch(() => new Set<string>()),
+      db.enrichment(repo.name).catch(() => ({}) as Record<string, db.Fields>),
+    ]);
+    let open: Set<string>;
+    try { open = new Set((await gh.listPrs(repo.repoPath)).map((p) => p.branch)); }
+    catch (e) {
+      if (await git.hasRemote(repo.repoPath)) {
+        report.branches.push({ repo: repo.name, branch: "*", action: "keep", why: `skipped the repo: open PRs unknown (${e instanceof Error ? e.message.split("\n")[0] : String(e)})` });
+        continue;
+      }
+      open = new Set(); // a local-only repo has no PRs
+    }
+    const goingBranches = new Set<string>();
+    for (const w of await git.listWorktrees(repo.repoPath, repo.worktreeRoot)) {
+      const pr = done.get(w.branch);
+      const reason: git.ReapReason | undefined = pr?.reason ?? (archived.has(w.branch) ? "archived" : undefined);
+      if (!reason || open.has(w.branch)) continue; // not finished, or a newer PR reuses the branch
+      const d = cleanupDecision({
+        now: opts.now ?? Date.now(), graceMs: 0, running: agent.isRunning(w.worktreePath),
+        ...(await git.worktreeSafety(repo.repoPath, w, { base: repo.baseBranch, head: pr?.head, ignore: orcaPaths(repo) })),
+      });
+      report.worktrees.push({ repo: repo.name, branch: w.branch, worktreePath: w.worktreePath, reason, action: d.action === "reap" ? "remove" : "keep", why: d.action === "reap" ? undefined : d.why });
+      if (d.action !== "reap") continue;
+      removing.set(w.worktreePath, () => reapWorktree(repo, w, reason, Boolean(ench[w.branch]?.cleanupBlocked)));
+      if (reason === "merged") goingBranches.add(w.branch); // the reap deletes it
+    }
+    const known = new Set([...done.keys(), ...archived, ...Object.keys(ench)]);
+    for (const b of await git.localBranches(repo.repoPath).catch(() => [])) {
+      if (b.branch === repo.baseBranch || !known.has(b.branch) || open.has(b.branch) || goingBranches.has(b.branch)) continue;
+      if (b.worktreePath && !removing.has(b.worktreePath)) continue; // still checked out somewhere that stays
+      const unpushed = await git.unpushedCount(repo.repoPath, `refs/heads/${b.branch}`, { base: repo.baseBranch, head: done.get(b.branch)?.head });
+      const what = done.get(b.branch) ? `PR ${done.get(b.branch)!.reason}` : archived.has(b.branch) ? "archived" : "no open PR";
+      report.branches.push(unpushed
+        ? { repo: repo.name, branch: b.branch, action: "keep", why: `${what}, but ${unpushed === 1 ? "1 commit exists" : `${unpushed} commits exist`} only on it` }
+        : { repo: repo.name, branch: b.branch, action: "remove", why: `${what}, no worktree, every commit is on a remote or in ${repo.baseBranch}` });
+    }
+  }
+  for (const p of await preview.list().catch(() => [])) {
+    const why = removing.has(p.key) ? "its worktree is being removed" : !existsSync(p.key) ? "its worktree is gone" : undefined;
+    if (why) report.previews.push({ key: p.key, why });
+  }
+  if (!confirm) return report;
+  for (const w of report.worktrees) {
+    if (w.action !== "remove") continue;
+    try { await removing.get(w.worktreePath)!(); w.done = true; }
+    catch (e) { w.done = false; w.why = e instanceof Error ? e.message.split("\n")[0] : String(e); }
+  }
+  for (const p of report.previews) {
+    preview.stop(p.key, true);
+    await db.clearPreviewPlacement(p.key).catch(() => {});
+    p.done = true;
+  }
+  for (const b of report.branches) {
+    if (b.action !== "remove") continue;
+    const repo = cfg.repos.find((r) => r.name === b.repo)!;
+    await git.deleteBranch(repo.repoPath, b.branch);
+    b.done = !(await git.localBranches(repo.repoPath)).some((x) => x.branch === b.branch);
+  }
+  return report; // the 10s publish tick carries the stopped previews to the other instance
+}
+
+/** The sweep on EVERY instance: this one directly, the others over HTTP (`/api/cleanup/sweep` with
+ *  `local`, so it doesn't fan out again). An instance that doesn't answer is reported, not skipped. */
+export async function sweepAll(cfg: OrcaConfig, opts: { confirm?: boolean } = {}): Promise<SweepReport[]> {
+  const here = db.instanceName();
+  const others = Object.entries(cfg.instances ?? {}).filter(([name]) => name !== here);
+  return Promise.all([sweep(cfg, opts), ...others.map(async ([instance, base]): Promise<SweepReport> => {
+    try {
+      const res = await fetch(new URL("/api/cleanup/sweep", base), {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ confirm: Boolean(opts.confirm), local: true }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { reports?: SweepReport[]; error?: string };
+      if (!res.ok || !data.reports?.[0]) throw new Error(data.error ?? `answered ${res.status}`);
+      return data.reports[0];
+    } catch (e) {
+      return { instance, confirmed: Boolean(opts.confirm), error: e instanceof Error ? e.message : String(e), worktrees: [], previews: [], branches: [] };
+    }
+  })]);
 }

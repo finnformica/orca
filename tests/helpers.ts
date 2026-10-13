@@ -27,7 +27,8 @@ case "$*" in *merge-async*) if [ -n "$ORCA_GH_MERGE_ASYNC" ]; then echo "$ORCA_G
 case "$1 $2" in
   "pr create") echo "https://github.com/acme/app/pull/\${ORCA_PR_NUMBER:-123}" ;;
   "pr view") cat "$ORCA_GH_FIXTURE" ;;
-  "pr list") cat "$ORCA_PRLIST_FIXTURE" ;;
+  "pr list") case "$*" in *"--state merged"*|*"--state closed"*) [ -n "$ORCA_PRLIST_DONE_FIXTURE" ] && { cat "$ORCA_PRLIST_DONE_FIXTURE"; exit 0; } ;; esac
+    cat "$ORCA_PRLIST_FIXTURE" ;;
   "pr diff") printf 'diff --git a/x.ts b/x.ts\\n@@ -1 +1 @@\\n+added line\\n-removed line\\n' ;;
   "repo view") cat "$ORCA_GH_REPO_FIXTURE" ;;
   "api graphql") cat "$ORCA_GH_GRAPHQL_FIXTURE" ;;
@@ -84,6 +85,11 @@ export async function setPrListFixture(prs: unknown[]): Promise<void> {
   const path = join(dir, "prs.json");
   await writeFile(path, JSON.stringify(prs));
   process.env.ORCA_PRLIST_FIXTURE = path;
+}
+
+/** Point the fake `gh pr list --state merged|closed` at its own list (unset: the open list's). */
+export async function setDonePrListFixture(prs: unknown[]): Promise<void> {
+  process.env.ORCA_PRLIST_DONE_FIXTURE = await fixtureEnv("done", JSON.stringify(prs));
 }
 
 async function fixtureEnv(prefix: string, value: string): Promise<string> {
