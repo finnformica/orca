@@ -38,10 +38,10 @@ function merge(incoming: Notification[], pop: boolean): void {
   const byId = new Map(state.list.map((n) => [n.id, n]));
   const fresh: Notification[] = [];
   for (const n of incoming) {
-    if (!byId.has(n.id) && !n.dismissedAt) fresh.push(n);
+    if (!byId.has(n.id)) fresh.push(n);
     byId.set(n.id, n);
   }
-  const list = [...byId.values()].filter((n) => !n.dismissedAt).sort(byNewest);
+  const list = [...byId.values()].sort(byNewest);
   for (const n of list) watermark = Math.max(watermark, n.createdAt);
   let toasts = state.toasts;
   if (pop && fresh.length) {
@@ -138,34 +138,25 @@ export function reset(): void {
   notify();
 }
 
-/** Take a toast off the stack (the centre keeps the row). */
+/** Take a toast off the stack, still unread (it auto-hid): the centre keeps the row as it was. */
 export function dismissToast(id: number): void {
-  clearTimeout(timers.get(id));
-  timers.delete(id);
-  clocks.delete(id);
-  if (state.toasts.some((t) => t.id === id)) set({ toasts: state.toasts.filter((t) => t.id !== id) });
+  dropToasts([id]);
 }
 
-/** Clear all: every toast off the stack. */
-export function clearToasts(): void {
-  for (const t of timers.values()) clearTimeout(t);
-  timers.clear();
-  clocks.clear();
-  if (state.toasts.length) set({ toasts: [] });
+function dropToasts(ids: number[] | "all"): void {
+  const hit = (id: number) => ids === "all" || ids.includes(id);
+  for (const t of state.toasts) if (hit(t.id)) { clearTimeout(timers.get(t.id)); timers.delete(t.id); clocks.delete(t.id); }
+  if (state.toasts.some((t) => hit(t.id))) set({ toasts: state.toasts.filter((t) => !hit(t.id)) });
 }
 
-/** Mark read, optimistically; the bridge's row follows. */
+/** Mark read, optimistically; the bridge's row follows. Read is the one state a notification
+ *  changes to — the ×, a quick action, opening it and Mark all as read all come here — so its toast
+ *  leaves the stack too, and under the centre's Unread filter its row drops out of view. Nothing is
+ *  deleted: All still shows it. */
 export async function markRead(ids: number[] | "all"): Promise<void> {
   const at = Date.now();
   const hit = (n: Notification) => !n.readAt && (ids === "all" || ids.includes(n.id));
+  dropToasts(ids);
   if (state.list.some(hit)) set({ list: state.list.map((n) => (hit(n) ? { ...n, readAt: at } : n)) });
   await api.notificationsRead(ids).catch(() => {});
-}
-
-/** Dismiss from the centre (and off the stack), optimistically. */
-export async function dismiss(ids: number[] | "all"): Promise<void> {
-  const hit = (n: Notification) => ids === "all" || ids.includes(n.id);
-  for (const t of state.toasts) if (hit(t)) { clearTimeout(timers.get(t.id)); timers.delete(t.id); clocks.delete(t.id); }
-  set({ list: state.list.filter((n) => !hit(n)), toasts: state.toasts.filter((t) => !hit(t)) });
-  await api.notificationsDismiss(ids).catch(() => {});
 }

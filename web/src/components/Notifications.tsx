@@ -2,26 +2,29 @@
 // just above the bell, and the bell at the sidebar's foot that opens the centre — a popover listing
 // every notification by day. The stack copies branch-demo's inbox toasts (sonner's bottom-left
 // stack: collapsed cards that spread on hover, slide-in / drop-out, swipe to dismiss, the count bar
-// with Clear all, auto-hide paused while you look) with CSS transitions instead of the dependency,
-// and is restyled flat: hairlines, 8px cards, the menu shadow only, black/white primary, blue
-// accent. Every toast and centre row carries quick actions on hover (always, on a touch screen): its
-// kind's one or two (Address PR, Fix, Reply, Retry, …) and Read — chosen by the pure
+// with Mark all as read, auto-hide paused while you look) with CSS transitions instead of the
+// dependency, and is restyled flat: hairlines, 8px cards, the menu shadow only, black/white primary,
+// blue accent. A notification is unread or read, and nothing is deleted from here: the ×, a swipe, a
+// quick action or opening it marks it read (out of the stack, out of the centre's default Unread
+// view, still under All). Every toast and centre row carries quick actions on hover (always, on a
+// touch screen): its kind's one or two (Address PR, Fix, Reply, Retry, …) — chosen by the pure
 // `notificationActions` (workstream.ts), run by the store's existing verbs. The decisions (what pops,
 // what persists, the stack's layout and motion) are pure in shared/notifications.ts; the state is
 // lib/notificationStore.ts.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtomValue, useSetAtom } from "jotai";
 import {
   AlertTriangle, Bell, BellOff, Check, CheckCheck, CircleX, GitPullRequestArrow, MessageCircleQuestion, MonitorCheck, MonitorX, OctagonPause, ShieldX, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
 import { notifyDndAtom, orchestratorOpenAtom } from "@/lib/atoms";
-import { clearToasts, dismiss, dismissToast, markRead, pauseToasts, resumeToasts, start, useNotifications } from "@/lib/notificationStore";
+import { markRead, pauseToasts, resumeToasts, start, useNotifications } from "@/lib/notificationStore";
+import { oneOf, persistedKey, usePersisted } from "@/lib/persisted";
 import { useCoarse, useNarrow } from "@/lib/viewport";
 import {
-  COUNT_BAR_HEIGHT, COUNT_BAR_SPACE, groupByDay, KIND_META, NOTIFICATION_KINDS, notificationPath, stackAnchor, stackLayout, swipeAmount, swipeOut,
-  TOAST_EXIT_MS, TOAST_WIDTH, toastMotion, toastStack, unreadCount, type Notification, type NotificationKind, type StackAnchor, type SwipeDir, type ToastPlace,
+  COUNT_BAR_HEIGHT, COUNT_BAR_SPACE, filterNotifications, groupByDay, KIND_META, NOTIFICATION_FILTERS, notificationPath, stackAnchor, stackLayout, swipeAmount, swipeOut,
+  TOAST_EXIT_MS, TOAST_WIDTH, toastMotion, toastStack, unreadCount, type Notification, type NotificationFilter, type NotificationKind, type StackAnchor, type SwipeDir, type ToastPlace,
 } from "../../../shared/notifications";
 import { addressPr, followUp, previewKeyOf, stopPreview, testLocally, useWorkstreams, type Row } from "../store";
 import { ago, notificationActions, RETRY_INSTRUCTION, type NotificationActionId, type NotificationActionSpec } from "../workstream";
@@ -30,6 +33,7 @@ import { ActionButton } from "@/components/ActionButton";
 import { detailPath } from "@/views/Agents";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Segmented } from "@/components/console";
 
 const ICON: Record<NotificationKind, typeof Bell> = {
   needs_input: MessageCircleQuestion, finished: Check, failed: CircleX, stopped: OctagonPause, check_failed: ShieldX,
@@ -97,38 +101,36 @@ function useNotificationActions() {
   return { open, specs, verb, link, rowOf };
 }
 
-/** A notification's quick-action row: its kind's actions (the first primary), then Read, and — in
- *  the centre — a dismiss ×. Hidden until the card or row is hovered or focused, always shown on a
- *  touch screen. Any action marks the notification read; `done` is what the surface does after
- *  (a toast leaves the stack). A verb's failure goes to the action-error toast, as on the board. */
-function QuickActions({ n, shown, done, onDismiss, className }: {
-  n: Notification; shown: boolean; done: () => void; onDismiss?: () => void; className?: string;
+/** A notification's quick-action row: its kind's actions (the first primary) and — in the centre,
+ *  while unread — the ×. Hidden until the card or row is hovered or focused, always shown on a touch
+ *  screen. Any action marks the notification read (so a toast leaves the stack); an agent verb's
+ *  check lingers a moment first. A verb's failure goes to the action-error toast, as on the board. */
+function QuickActions({ n, shown, onDismiss, className }: {
+  n: Notification; shown: boolean; onDismiss?: () => void; className?: string;
 }) {
   const actions = useNotificationActions();
   const row = actions.rowOf(n);
   const btn = "h-7 px-2 text-xs";
-  const variant = (a: NotificationActionSpec) => (a.primary ? "default" : a.id === "read" ? "ghost" : "outline") as "default" | "ghost" | "outline";
+  const read = () => void markRead([n.id]);
   return (
     <div data-slot="notification-actions" data-shown={shown}
       className={cn("flex items-center gap-1 transition-opacity duration-150", !shown && "pointer-events-none opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100", className)}>
       {actions.specs(n).map((a) => {
-        if (a.id === "read") {
-          return <Button key={a.id} size="sm" variant="ghost" className={btn} disabled={Boolean(n.readAt)} onClick={() => { void markRead([n.id]); done(); }}>{a.label}</Button>;
-        }
+        const variant = a.primary ? "default" : "outline";
         const run = actions.verb(a.id, n);
         if (run) {
           return (
-            <ActionButton key={a.id} variant={variant(a)} className={btn}
+            <ActionButton key={a.id} variant={variant} className={btn}
               failure={{ action: a.label, title: n.title, repo: n.repo, branch: n.branch ?? "", prNumber: row?.prNumber }}
-              onRun={async () => { await run(); void markRead([n.id]); setTimeout(done, 800); }}>
+              onRun={async () => { await run(); setTimeout(read, 800); }}>
               {a.label}
             </ActionButton>
           );
         }
         const go = actions.link(a.id, n);
-        return go ? <Button key={a.id} size="sm" variant={variant(a)} className={btn} onClick={() => { void markRead([n.id]); done(); go(); }}>{a.label}</Button> : null;
+        return go ? <Button key={a.id} size="sm" variant={variant} className={btn} onClick={() => { read(); go(); }}>{a.label}</Button> : null;
       })}
-      {onDismiss && <Button variant="ghost" size="icon" className="size-7" aria-label="Dismiss" onClick={onDismiss}><X className="size-3.5" /></Button>}
+      {onDismiss && <Button variant="ghost" size="icon" className="size-7" aria-label="Mark as read" title="Mark as read" onClick={onDismiss}><X className="size-3.5" /></Button>}
     </div>
   );
 }
@@ -175,9 +177,10 @@ type Gone = { n: Notification; place: ToastPlace };
 /** Bottom-left, its foot just above the bell (full width above the bottom bar on a phone), so the
  *  orchestrator's window in the bottom-right corner and the action-error Toaster never share its
  *  corner. Newest in front; three show, the rest wait (the bell has them all). Past one, the cards
- *  collapse behind the front one over a count bar with Clear all; hovering spreads them, and while
- *  the stack is hovered, touched or the tab hidden, nothing auto-hides. A finished run or a ready
- *  preview hides itself; a problem or a question stays until dismissed (✕, or a swipe left/down). */
+ *  collapse behind the front one over a count bar with Mark all as read; hovering spreads them, and
+ *  while the stack is hovered, touched or the tab hidden, nothing auto-hides. A finished run or a
+ *  ready preview hides itself (still unread in the centre); a problem or a question stays until you
+ *  dismiss it — the ✕ or a swipe left/down, which mark it read. */
 export function ToastHost() {
   const { toasts } = useNotifications();
   useEffect(() => { start(); }, []);
@@ -237,7 +240,7 @@ export function ToastHost() {
         {[
           ...stack.ordered.map((n, i) => (
             <Toast key={n.id} n={n} place={layout[i]!} expanded={expanded} count={stack.ordered.length} onHeight={onHeight}
-              onOpen={() => { dismissToast(n.id); open(n); }} />
+              onOpen={() => open(n)} />
           )),
           ...leaving.map(({ n, place }) => (
             <Toast key={n.id} n={n} place={place} expanded={expanded} count={stack.ordered.length} removed onHeight={onHeight} onOpen={() => open(n)} />
@@ -250,7 +253,7 @@ export function ToastHost() {
           <button type="button" className="text-muted-foreground hover:text-foreground" aria-expanded={expanded} onClick={() => setExpanded((e) => !e)}>
             {toasts.length} notifications
           </button>
-          <Button variant="ghost" size="sm" className="h-5 px-2 text-xs" onClick={clearToasts}>Clear all</Button>
+          <Button variant="ghost" size="sm" className="h-5 px-2 text-xs" onClick={() => void markRead(toasts.map((t) => t.id))}>Mark all as read</Button>
         </div>
       )}
     </>
@@ -305,7 +308,7 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
     setSwiping(false);
     if (!d?.axis) return;
     const dir = swipeOut(d.axis, d.amount, Date.now() - d.at);
-    if (dir) { setOut(dir); dismissToast(n.id); } else setSwipe(0, 0);
+    if (dir) { setOut(dir); void markRead([n.id]); } else setSwipe(0, 0);
   };
 
   const motion = toastMotion(place, { mounted, removed, expanded });
@@ -333,11 +336,11 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
           </div>
           {n.body && <div className="text-muted-foreground line-clamp-2 text-xs leading-5 break-words">{n.body}</div>}
         </div>
-        <Button variant="ghost" size="icon" className="-mt-1 -mr-1 size-6" aria-label="Dismiss" onClick={() => dismissToast(n.id)}><X className="size-3.5" /></Button>
+        <Button variant="ghost" size="icon" className="-mt-1 -mr-1 size-6" aria-label="Mark as read" title="Mark as read" onClick={() => void markRead([n.id])}><X className="size-3.5" /></Button>
       </div>
       <div className="flex items-center justify-between gap-2">
         <span data-slot="notification-time" className="text-muted-foreground shrink-0 text-xs">{ago(n.createdAt)}{n.instance ? ` · ${n.instance}` : ""}</span>
-        {!removed && <QuickActions n={n} shown={hover || coarse} done={() => dismissToast(n.id)} />}
+        {!removed && <QuickActions n={n} shown={hover || coarse} />}
       </div>
     </div>
   );
@@ -348,7 +351,7 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
 /** The bell at the sidebar's foot, with the unread count; opens the centre. */
 export function NotificationBell({ collapsed = false }: { collapsed?: boolean }) {
   const { list } = useNotifications();
-  const [dnd] = useAtom(notifyDndAtom);
+  const dnd = useAtomValue(notifyDndAtom);
   useEffect(() => { start(); }, []);
   const unread = unreadCount(list);
   return (
@@ -371,44 +374,38 @@ export function NotificationBell({ collapsed = false }: { collapsed?: boolean })
   );
 }
 
-/** The centre: every notification by day, read / unread, a kind filter, Mark all read, Clear all,
- *  and do-not-disturb. A click marks the row read and opens it. */
+const isFilter = oneOf(...NOTIFICATION_FILTERS);
+
+/** The centre: one compact header — the title, Unread (with its count) / All, Mark all as read — over
+ *  the rows by day. It opens on Unread (remembered per browser), so a row you've read or dismissed is
+ *  out of the way yet one click off under All. A click marks the row read and opens it. */
 export function NotificationPanel() {
   const { list } = useNotifications();
-  const [dnd, setDnd] = useAtom(notifyDndAtom);
-  const [kind, setKind] = useState<NotificationKind | "all">("all");
+  const dnd = useAtomValue(notifyDndAtom);
+  const [filter, setFilter] = usePersisted<NotificationFilter>(persistedKey("notificationFilter"), "unread", isFilter);
   const { open } = useNotificationActions();
-  const counts = useMemo(() => {
-    const c = new Map<NotificationKind, number>();
-    for (const n of list) c.set(n.kind, (c.get(n.kind) ?? 0) + 1);
-    return c;
-  }, [list]);
-  const shown = kind === "all" ? list : list.filter((n) => n.kind === kind);
-  const groups = groupByDay(shown);
   const unread = unreadCount(list);
+  const groups = groupByDay(filterNotifications(list, filter));
   return (
     <div data-slot="notification-centre" className="flex max-h-[70vh] flex-col">
-      <header className="flex h-11 items-center gap-1 border-b px-3">
+      <header className="flex h-11 items-center gap-2 border-b pr-1.5 pl-3">
         <h3 className="text-sm font-medium">Notifications</h3>
-        {unread > 0 && <span className="text-muted-foreground text-xs">{unread} unread</span>}
         <span className="flex-1" />
-        <IconButton label={dnd ? "Do not disturb is on — turn off" : "Do not disturb"} pressed={dnd} onClick={() => setDnd(!dnd)}>{dnd ? <BellOff className="size-3.5" /> : <Bell className="size-3.5" />}</IconButton>
-        <IconButton label="Mark all read" onClick={() => void markRead("all")} disabled={!unread}><CheckCheck className="size-3.5" /></IconButton>
-        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => void dismiss("all")} disabled={!list.length}>Clear all</Button>
+        <Segmented<NotificationFilter> label="Show" value={filter} onChange={setFilter} options={[
+          { value: "unread", label: <>Unread{unread > 0 && <span data-slot="notification-unread-count" className="text-muted-foreground ml-1 tabular-nums">{unread > 99 ? "99+" : unread}</span>}</> },
+          { value: "all", label: "All" },
+        ]} />
+        <button type="button" aria-label="Mark all as read" title="Mark all as read" onClick={() => void markRead("all")} disabled={!unread}
+          className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 items-center justify-center rounded-md disabled:pointer-events-none disabled:opacity-50">
+          <CheckCheck className="size-3.5" />
+        </button>
       </header>
-      {list.length > 0 && (
-        <div data-slot="notification-filter" className="flex flex-wrap gap-1 border-b px-3 py-2">
-          <Chip active={kind === "all"} onClick={() => setKind("all")}>All <span className="text-muted-foreground tabular-nums">{list.length}</span></Chip>
-          {NOTIFICATION_KINDS.filter((k) => counts.get(k)).map((k) => (
-            <Chip key={k} active={kind === k} onClick={() => setKind(kind === k ? "all" : k)}>{KIND_META[k].label} <span className="text-muted-foreground tabular-nums">{counts.get(k)}</span></Chip>
-          ))}
-        </div>
-      )}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {groups.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center gap-2 px-6 py-10 text-center text-sm">
-            <span className="rounded-full border p-2.5"><Bell className="size-4" /></span>
-            {list.length ? "Nothing of that kind." : dnd ? "No notifications. Do not disturb is on." : "No notifications yet."}
+            <span className="rounded-full border p-2.5">{dnd ? <BellOff className="size-4" /> : <Bell className="size-4" />}</span>
+            {filter === "unread" && list.length ? "You're all caught up." : "No notifications yet."}
+            {dnd && <span className="text-xs">Do not disturb is on.</span>}
           </div>
         ) : groups.map((g) => (
           <section key={g.label} data-slot="notification-group">
@@ -426,7 +423,7 @@ export function NotificationPanel() {
 }
 
 /** One row of the centre: a click opens it; hovering (or a touch screen) shows its quick actions
- *  over the row's foot, beside the time — Read, its kind's verbs, and a dismiss ×. */
+ *  over the row's foot, beside the time — its kind's verbs and, while unread, the × (mark read). */
 function CentreRow({ n, onOpen }: { n: Notification; onOpen: () => void }) {
   const [hover, setHover] = useState(false);
   const coarse = useCoarse();
@@ -445,21 +442,7 @@ function CentreRow({ n, onOpen }: { n: Notification; onOpen: () => void }) {
         </span>
         {!n.readAt && <span data-slot="unread-dot" className="bg-geist-blue mt-2 size-1.5 shrink-0 rounded-full" aria-label="unread" />}
       </button>
-      <QuickActions n={n} shown={hover || coarse} done={() => {}} onDismiss={() => void dismiss([n.id])} className="absolute right-2 bottom-1.5 left-9 justify-end" />
+      <QuickActions n={n} shown={hover || coarse} onDismiss={n.readAt ? undefined : () => void markRead([n.id])} className="absolute right-2 bottom-1.5 left-9 justify-end" />
     </li>
   );
 }
-
-const IconButton = ({ label, pressed, onClick, disabled, children }: { label: string; pressed?: boolean; onClick: () => void; disabled?: boolean; children: ReactNode }) => (
-  <button type="button" aria-label={label} title={label} aria-pressed={pressed} onClick={onClick} disabled={disabled}
-    className={cn("text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 items-center justify-center rounded-md disabled:opacity-50", pressed && "bg-accent text-foreground")}>
-    {children}
-  </button>
-);
-
-const Chip = ({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) => (
-  <button type="button" aria-pressed={active} onClick={onClick}
-    className={cn("inline-flex h-6 items-center gap-1 rounded-full border px-2 text-xs whitespace-nowrap", active ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground")}>
-    {children}
-  </button>
-);

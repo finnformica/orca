@@ -1,6 +1,7 @@
 // A notification's quick actions (workstream.ts `notificationActions`): every kind Orca emits gets
-// its one or two verbs — the first primary — and Read; an action whose prerequisite is missing is
-// left out, never shown broken; an unknown kind gets Read only; the orchestrator's own wake is
+// its one or two verbs — the first primary — and no Read (taking any of them marks it read, and the
+// card's × is "read and out of view"); an action whose prerequisite is missing is left out, never
+// shown broken; an unknown kind gets none; the orchestrator's own wake is
 // answered in its window. The DOM side (hover, touch, wiring to store.addressPr) is
 // tests/notificationCentre.test.tsx.
 import { describe, expect, test } from "bun:test";
@@ -11,49 +12,49 @@ const all: NotificationActionContext = { row: true, prUrl: true, failedCheck: tr
 const ids = (kind: string, ctx: NotificationActionContext = all, link?: { url?: string; orchestrator?: boolean }) => notificationActions({ kind, link }, ctx).map((a) => a.id);
 
 describe("notification quick actions", () => {
-  test("each kind: its specific actions, then Read", () => {
+  test("each kind: its specific actions, and no Read", () => {
     const url = { url: "http://orca-box:4000" };
-    expect(ids("pr_ci_failed")).toEqual(["address", "viewPr", "read"]);
-    expect(ids("pr_conflicts")).toEqual(["address", "viewPr", "read"]);
-    expect(ids("check_failed")).toEqual(["fix", "viewOutput", "read"]);
-    expect(ids("finished")).toEqual(["open", "reply", "read"]);
-    expect(ids("needs_input")).toEqual(["reply", "open", "read"]);
-    expect(ids("failed")).toEqual(["retry", "openChat", "read"]);
-    expect(ids("stopped")).toEqual(["retry", "openChat", "read"]);
-    expect(ids("preview_ready", all, url)).toEqual(["openPreview", "stopPreview", "read"]);
-    expect(ids("preview_failed")).toEqual(["retryPreview", "viewLog", "read"]);
+    expect(ids("pr_ci_failed")).toEqual(["address", "viewPr"]);
+    expect(ids("pr_conflicts")).toEqual(["address", "viewPr"]);
+    expect(ids("check_failed")).toEqual(["fix", "viewOutput"]);
+    expect(ids("finished")).toEqual(["open", "reply"]);
+    expect(ids("needs_input")).toEqual(["reply", "open"]);
+    expect(ids("failed")).toEqual(["retry", "openChat"]);
+    expect(ids("stopped")).toEqual(["retry", "openChat"]);
+    expect(ids("preview_ready", all, url)).toEqual(["openPreview", "stopPreview"]);
+    expect(ids("preview_failed")).toEqual(["retryPreview", "viewLog"]);
   });
 
-  test("every emitted kind has at least one specific action, at most two, and always ends with Read", () => {
+  test("every emitted kind has one or two actions, never a Read", () => {
     for (const kind of NOTIFICATION_KINDS) {
       const actions = notificationActions({ kind, link: { url: "http://x" } }, all);
-      expect(actions.at(-1)).toEqual({ id: "read", label: "Read" });
-      expect(actions.length).toBeGreaterThanOrEqual(2);
-      expect(actions.length).toBeLessThanOrEqual(3);
+      expect(actions.map((a) => a.label)).not.toContain("Read");
+      expect(actions.length).toBeGreaterThanOrEqual(1);
+      expect(actions.length).toBeLessThanOrEqual(2);
       expect(actions.filter((a) => a.primary)).toEqual([actions[0]!]); // exactly one primary, first
     }
   });
 
   test("the labels: the agent verbs by their board names; needs input leads with Reply", () => {
     const labels = (kind: string) => notificationActions({ kind }, all).map((a) => a.label);
-    expect(labels("pr_ci_failed")).toEqual(["Address PR", "View PR", "Read"]);
-    expect(labels("check_failed")).toEqual(["Fix", "View output", "Read"]);
-    expect(labels("needs_input")).toEqual(["Reply", "Open workstream", "Read"]);
-    expect(labels("failed")).toEqual(["Retry", "Open chat", "Read"]);
-    expect(labels("preview_failed")).toEqual(["Retry test", "View log", "Read"]);
+    expect(labels("pr_ci_failed")).toEqual(["Address PR", "View PR"]);
+    expect(labels("check_failed")).toEqual(["Fix", "View output"]);
+    expect(labels("needs_input")).toEqual(["Reply", "Open workstream"]);
+    expect(labels("failed")).toEqual(["Retry", "Open chat"]);
+    expect(labels("preview_failed")).toEqual(["Retry test", "View log"]);
   });
 
   test("an action whose prerequisite is missing is left out, not shown broken", () => {
-    expect(ids("pr_ci_failed", {})).toEqual(["read"]); // no live row, no PR URL
-    expect(ids("pr_ci_failed", { row: true })).toEqual(["address", "read"]);
-    expect(ids("check_failed", { row: true })).toEqual(["viewOutput", "read"]); // no failed check to hand over
-    expect(ids("failed", {})).toEqual(["openChat", "read"]);
-    expect(ids("preview_ready", all)).toEqual(["stopPreview", "read"]); // no URL: nothing to open
+    expect(ids("pr_ci_failed", {})).toEqual([]); // no live row, no PR URL
+    expect(ids("pr_ci_failed", { row: true })).toEqual(["address"]);
+    expect(ids("check_failed", { row: true })).toEqual(["viewOutput"]); // no failed check to hand over
+    expect(ids("failed", {})).toEqual(["openChat"]);
+    expect(ids("preview_ready", all)).toEqual(["stopPreview"]); // no URL: nothing to open
     expect(notificationActions({ kind: "failed" }, {})[0]!.primary).toBe(true); // the first remaining is primary
   });
 
-  test("an unknown kind gets Read only; the orchestrator's wake is answered in its window", () => {
-    expect(notificationActions({ kind: "review_requested" }, all)).toEqual([{ id: "read", label: "Read" }]);
-    expect(ids("failed", all, { orchestrator: true })).toEqual(["openOrchestrator", "read"]);
+  test("an unknown kind gets none; the orchestrator's wake is answered in its window", () => {
+    expect(notificationActions({ kind: "review_requested" }, all)).toEqual([]);
+    expect(ids("failed", all, { orchestrator: true })).toEqual(["openOrchestrator"]);
   });
 });

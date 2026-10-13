@@ -1952,7 +1952,7 @@ export function pullState(dy: number): { phase: "idle" | "pull" | "release"; off
 /** What a notification's quick-action row can do. The component maps each id to the existing handler
  *  (store.addressPr, followUp, testLocally, stopPreview, navigation) — none of the logic is here. */
 export type NotificationActionId =
-  | "read" | "address" | "viewPr" | "fix" | "viewOutput" | "open" | "reply" | "retry" | "openChat"
+  | "address" | "viewPr" | "fix" | "viewOutput" | "open" | "reply" | "retry" | "openChat"
   | "openPreview" | "stopPreview" | "retryPreview" | "viewLog" | "openOrchestrator";
 export type NotificationActionSpec = { id: NotificationActionId; label: string; primary?: boolean };
 
@@ -1973,21 +1973,21 @@ const NOTIFICATION_ACTION_RULES: Record<string, ActionRule[]> = {
   preview_failed: [{ id: "retryPreview", label: "Retry test", needs: "row" }, { id: "viewLog", label: "View log" }],
 };
 
-/** A notification's quick actions: up to two for its kind — the first is the primary — then Read,
- *  always. An action whose prerequisite is missing (no live row, no PR URL, no failed check) is left
- *  out rather than shown broken; an unknown kind gets Read only. The orchestrator's own wake (it died,
- *  or asked you something) is answered in its window. Dismiss is the card's own ×, not listed here. */
+/** A notification's quick actions: up to two for its kind — the first is the primary. An action whose
+ *  prerequisite is missing (no live row, no PR URL, no failed check) is left out rather than shown
+ *  broken; an unknown kind gets none. The orchestrator's own wake (it died, or asked you something)
+ *  is answered in its window. There is no Read: taking any action marks it read, and the card's own
+ *  × (not listed here) is "read, and out of view". */
 export function notificationActions(
   n: { kind: string; link?: { url?: string; orchestrator?: boolean } },
   ctx: NotificationActionContext = {},
 ): NotificationActionSpec[] {
-  const read: NotificationActionSpec = { id: "read", label: "Read" };
-  if (n.link?.orchestrator) return [{ id: "openOrchestrator", label: "Reply", primary: true }, read];
+  if (n.link?.orchestrator) return [{ id: "openOrchestrator", label: "Reply", primary: true }];
   const has = { ...ctx } as Record<string, boolean | undefined>;
   const rules = (NOTIFICATION_ACTION_RULES[n.kind] ?? [])
     .filter((r) => (r.id === "openPreview" ? Boolean(n.link?.url) : !r.needs || has[r.needs]))
     .slice(0, 2);
-  return [...rules.map((r, i) => ({ id: r.id, label: r.label, ...(i === 0 ? { primary: true } : {}) })), read];
+  return rules.map((r, i) => ({ id: r.id, label: r.label, ...(i === 0 ? { primary: true } : {}) }));
 }
 
 /** What Retry sends: a follow-up on the same session, picking up where the run stopped. */

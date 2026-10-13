@@ -95,9 +95,9 @@ export const apiFake = {
   // and assert against this instead of localStorage — it stands in for the DB, not for a cache.
   enrichmentData: new Map<string, Record<string, unknown>>(),
   stopped: [] as string[],
-  // The notification centre's rows (api.notifications) and what was marked read / dismissed.
+  // The notification centre's rows (api.notifications) and what was marked read.
   notificationsData: [] as Record<string, unknown>[],
-  notificationCalls: [] as { verb: "read" | "dismiss"; ids: number[] | "all" }[],
+  notificationCalls: [] as { verb: "read"; ids: number[] | "all" }[],
   notificationFetches: [] as (number | undefined)[],
   // The orchestrator's status (api.orchestrator) and what was typed to it (api.orchestratorMessage).
   orchestratorState: { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" } as { key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number },
@@ -146,7 +146,6 @@ mock.module("@/api", () => ({
     },
     notifications: async (since?: number) => { apiFake.notificationFetches.push(since); return apiFake.notificationsData.filter((n) => !since || Number(n.createdAt) > since); },
     notificationsRead: async (ids: number[] | "all") => { apiFake.notificationCalls.push({ verb: "read", ids }); return { ok: true, changed: 0 }; },
-    notificationsDismiss: async (ids: number[] | "all") => { apiFake.notificationCalls.push({ verb: "dismiss", ids }); return { ok: true, changed: 0 }; },
     agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
     prs: async () => {
       if (apiFake.holdPrs) await new Promise<void>((resolve) => { apiFake.releasePrs = () => { apiFake.holdPrs = false; resolve(); }; });
