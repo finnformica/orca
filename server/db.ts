@@ -28,7 +28,7 @@
 import { statSync } from "fs";
 import { hostname } from "os";
 import { join } from "path";
-import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck } from "../shared/agent";
+import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck, TurnSource } from "../shared/agent";
 import * as bus from "./bus";
 import type { Notification, NotificationInput } from "../shared/notifications";
 
@@ -125,7 +125,7 @@ export async function withRetry<T>(fn: (sql: Bun.SQL) => Promise<T>): Promise<T>
 // user_version` did this job before; Postgres needs a table, but the discipline is identical, and
 // deliberately not a migration framework.)
 //
-// TWO KINDS OF STEP. The NUMBERED steps (1–15, 17) are frozen history, recorded by id in `migration`.
+// TWO KINDS OF STEP. The NUMBERED steps (1–15, 17, 18) are frozen history, recorded by id in `migration`.
 // Every step after them is NAMED: no id, its identity is its `name`, written `YYYYMMDD-slug` (the day
 // the step was written), recorded in `migration_named`. Parallel branches kept colliding on "the next
 // integer" (16/17/18 had to be reserved by hand); two branches can't pick the same date-and-slug by
@@ -145,7 +145,7 @@ export async function withRetry<T>(fn: (sql: Bun.SQL) => Promise<T>): Promise<T>
 export type MigrationStep = { id?: number; name: string; idempotent: boolean; sql: string };
 
 /** The last numbered step. Frozen: everything after is a named step. */
-export const LAST_NUMBERED_ID = 17;
+export const LAST_NUMBERED_ID = 18;
 /** A named step's name: the day it was written, then a slug — its sort key and its identity. */
 export const NAMED_STEP = /^\d{8}-[a-z0-9]+(-[a-z0-9]+)*$/;
 
@@ -502,6 +502,27 @@ export const MIGRATIONS: MigrationStep[] = [
     // whichever range they show. Nullable: older rows read back as 0.
     sql: `ALTER TABLE instance_metric ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION`,
   },
+  {
+    // 18, not 16: #152 holds 16; 17 is instance-metric-cost.
+    id: 18,
+    name: "turn-source",
+    idempotent: true,
+    // Who an orchestrator turn answers (shared/agent.ts TurnSource): `human` (you spoke) or `agents`
+    // (woken by worker reports alone), so the chat can split its Chat and Agents channels. The backfill
+    // reads it off the stored instruction the way the wake built it — every message a
+    // `[worker finished]` report → agents — falling back to the prompt's `## New` section for rows from
+    // before `instruction` existed. Idempotent: it only fills NULLs. Nullable: a worker's turns stay
+    // NULL, and the browser infers a NULL from the text the same way.
+    sql: `
+      ALTER TABLE turn ADD COLUMN IF NOT EXISTS source TEXT;
+      UPDATE turn t SET source = CASE
+          WHEN COALESCE(t.instruction, substring(t.prompt from '## New\\n(.*)$')) ~ '^\\[worker finished\\]'
+           AND COALESCE(t.instruction, substring(t.prompt from '## New\\n(.*)$')) !~ '\\n\\n(?!\\[worker finished\\])'
+          THEN 'agents' ELSE 'human' END
+        FROM workstream w
+        WHERE w.id = t.workstream_id AND w.repo = '@orca' AND w.branch = 'orchestrator' AND t.source IS NULL;
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
@@ -749,6 +770,7 @@ export async function importEnrichment(entries: { repo: string; branch: string; 
 type TurnRow = {
   run_id: string; provider: string; status: string; instruction: string | null; prompt: string; response: string | null;
   structured: AgentOutcome | null; session_id: string | null; stop_reason: string | null; check: TurnCheck | null;
+  source?: string | null;
   started_at: string | number; finished_at: string | number | null;
 };
 
@@ -764,6 +786,7 @@ const toTurn = (r: TurnRow): AgentTurn => ({
   stopped: r.status === "stopped" ? true : undefined,
   // Rows before the column infer it from status; a running turn has none yet.
   check: r.check ?? undefined,
+  source: (r.source as TurnSource | null | undefined) ?? undefined,
   stopReason: (r.stop_reason as StopReason | null)
     ?? (r.status === "done" ? "end_turn" : r.status === "error" ? "error" : r.status === "stopped" ? "interrupted" : undefined),
   startedAt: Number(r.started_at),
@@ -775,14 +798,14 @@ const toTurn = (r: TurnRow): AgentTurn => ({
  *  previous turn the way the in-memory map (keyed by worktree path) did. */
 export async function startTurn(input: {
   repo: string; branch: string; runId: string; provider: AgentProvider;
-  instruction?: string; prompt: string; sessionId?: string; startedAt: number;
+  instruction?: string; prompt: string; sessionId?: string; startedAt: number; source?: TurnSource;
 }): Promise<void> {
   return withRetry(async (sql) => {
     const id = await workstreamId(input.repo, input.branch);
     await sql`
-      INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, session_id, raw_ref, started_at)
+      INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, session_id, raw_ref, started_at, source)
       VALUES (${id}, ${currentUser()}, ${instanceName()}, ${input.runId}, ${input.provider}, 'running', ${input.instruction ?? null}, ${input.prompt},
-              ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${input.startedAt})
+              ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${input.startedAt}, ${input.source ?? null})
       ON CONFLICT (run_id) DO NOTHING`;
     bus.publish({ kind: "turn", runId: input.runId, repo: input.repo, branch: input.branch });
   });
@@ -799,7 +822,7 @@ export async function startTurn(input: {
 export async function finishTurn(runId: string, input: {
   status: TurnStatus; response?: string; structured?: AgentOutcome; stopReason?: StopReason;
   sessionId?: string; finishedAt: number;
-  identity?: { repo: string; branch: string; provider: AgentProvider; instruction?: string; prompt: string; startedAt: number };
+  identity?: { repo: string; branch: string; provider: AgentProvider; instruction?: string; prompt: string; startedAt: number; source?: TurnSource };
 }): Promise<void> {
   return withRetry(async (sql) => {
     // Return the owning branch in the same round trip, so the bus event can be addressed to the chat
@@ -822,14 +845,14 @@ export async function finishTurn(runId: string, input: {
     if (!owner && input.identity) {
       // Nothing to update: the start write was lost. Write the whole turn now — the run happened, and
       // its steps are already recorded against this run id.
-      const { repo, branch, provider, instruction, prompt, startedAt } = input.identity;
+      const { repo, branch, provider, instruction, prompt, startedAt, source } = input.identity;
       const workstream = await workstreamId(repo, branch);
       await sql`
         INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, response,
-                          structured, stop_reason, session_id, raw_ref, started_at, finished_at)
+                          structured, stop_reason, session_id, raw_ref, started_at, finished_at, source)
         VALUES (${workstream}, ${currentUser()}, ${instanceName()}, ${runId}, ${provider}, ${input.status},
                 ${instruction ?? null}, ${prompt}, ${input.response ?? null}, ${input.structured ?? null}, ${input.stopReason ?? null},
-                ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${startedAt}, ${input.finishedAt})
+                ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${startedAt}, ${input.finishedAt}, ${source ?? null})
         ON CONFLICT (run_id) DO NOTHING`;
       owner = { repo, branch };
     }

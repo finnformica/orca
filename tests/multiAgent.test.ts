@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
-import { agentCommand, claudeSteps, codexSteps, cursorSteps, isHeadlessAgentProcess, oneShotCommand, parseClaudeStreamOutput, parseCodexOutput, parseCursorOutput, prDescriptionCommand } from "../server/agent";
+import { agentCommand, claudeDelta, claudeSteps, codexSteps, cursorSteps, isHeadlessAgentProcess, oneShotCommand, parseClaudeStreamOutput, parseCodexOutput, parseCursorOutput, prDescriptionCommand } from "../server/agent";
 import { activityLines, attachCommand, handoffPrompt, parseAgentOutcome, providerBinary, withOutcomeContract, type AgentTurn } from "../shared/agent";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
@@ -39,14 +39,14 @@ describe("provider adapters", () => {
     // `bypassPermissions` is no longer unconditional — a repo opts into it (see agentPermissionMode),
     // so the default form asks rather than bypassing.
     expect(agentCommand("claude", "/wt/x", "go", "c-1", undefined, undefined, "bypass")).toEqual([
-      "claude", "-p", "--permission-mode", "bypassPermissions", "--resume", "c-1", "--output-format", "stream-json", "--verbose", "--", "go",
+      "claude", "-p", "--permission-mode", "bypassPermissions", "--resume", "c-1", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--", "go",
     ]);
     expect(agentCommand("claude", "/wt/x", "go", "c-1")).toEqual([
-      "claude", "-p", "--permission-mode", "default", "--resume", "c-1", "--output-format", "stream-json", "--verbose", "--", "go",
+      "claude", "-p", "--permission-mode", "default", "--resume", "c-1", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--", "go",
     ]);
     // The repo's per-run cost cap rides along as the CLI's own flag.
     expect(agentCommand("claude", "/wt/x", "go", "c-1", undefined, undefined, "ask", 5)).toEqual([
-      "claude", "-p", "--permission-mode", "default", "--max-budget-usd", "5", "--resume", "c-1", "--output-format", "stream-json", "--verbose", "--", "go",
+      "claude", "-p", "--permission-mode", "default", "--max-budget-usd", "5", "--resume", "c-1", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--", "go",
     ]);
     expect(agentCommand("codex", "/wt/x", "go")).toEqual([
       "codex", "exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", "/wt/x", "--", "go",
@@ -62,7 +62,7 @@ describe("provider adapters", () => {
       "cursor-agent", "-p", "--model", "gpt-5", "--output-format", "stream-json", "--force", "--trust", "--", "go",
     ]);
     expect(agentCommand("claude", "/wt/x", "go", "c-1", undefined, "claude-fable-5-1")).toEqual([
-      "claude", "-p", "--permission-mode", "default", "--model", "claude-fable-5-1", "--resume", "c-1", "--output-format", "stream-json", "--verbose", "--", "go",
+      "claude", "-p", "--permission-mode", "default", "--model", "claude-fable-5-1", "--resume", "c-1", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--", "go",
     ]);
     // stream-json, like claude: the steps have to arrive as they happen for the chat to show them.
     expect(agentCommand("cursor", "/wt/x", "go")).toEqual([
@@ -170,6 +170,19 @@ describe("provider adapters", () => {
     expect(parsed.meta).toMatchObject({ costUsd: 0.02, numTurns: 3 });
     // A crash with no result event still yields a usable (non-throwing) outcome.
     expect(parseClaudeStreamOutput("boom, not json").isError).toBe(false);
+  });
+
+  test("claude's partial messages: text deltas stream live, add no step, and leave the outcome alone", () => {
+    const delta = (d: unknown) => ({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: d }, session_id: "c-1" });
+    expect(claudeDelta(delta({ type: "text_delta", text: "Hel" }))).toBe("Hel");
+    expect(claudeDelta(delta({ type: "input_json_delta", partial_json: "{" }))).toBeUndefined(); // a tool call's input
+    expect(claudeDelta(delta({ type: "thinking_delta", thinking: "hm" }))).toBeUndefined();
+    expect(claudeDelta({ type: "stream_event", event: { type: "message_start" } })).toBeUndefined();
+    expect(claudeSteps(delta({ type: "text_delta", text: "Hel" }))).toEqual([]); // the whole message is the step
+    const raw = [delta({ type: "text_delta", text: "Hel" }), delta({ type: "text_delta", text: "lo" }),
+      { type: "assistant", message: { content: [{ type: "text", text: "Hello" }] } },
+      { type: "result", subtype: "success", is_error: false, result: "Hello", session_id: "c-1" }].map((e) => JSON.stringify(e)).join("\n");
+    expect(parseClaudeStreamOutput(raw)).toMatchObject({ result: "Hello", isError: false, sessionId: "c-1" });
   });
 
   test("maps claude stream events to structured steps, including thinking and tool results", () => {

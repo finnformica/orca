@@ -2,7 +2,7 @@
 // so both the store and the e2e tests import it directly.
 
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
-import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentTurn, type TurnCheck } from "../../shared/agent";
+import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentTurn, type TurnCheck, type TurnSource } from "../../shared/agent";
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
 export { attachCommand } from "../../shared/agent";
 
@@ -946,6 +946,25 @@ export function sessionHint(input: { contextPct?: number; lastWakeUsd?: number; 
   if (!costly && (input.contextPct ?? 0) < 50) return undefined;
   return "Large session: each wake re-reads all of it, so a fresh session would be much cheaper.";
 }
+/** The orchestrator header's live line — what it is doing right now: "Idle", or "Working · 1m 12s",
+ *  then "2 queued" and "3 workers running" when any. The last wake's cost and the large-session
+ *  advice are the tooltip, not the text; `warn` is the small amber dot that says the advice is there. Pure. */
+export function orchestratorStatus(input: {
+  running: boolean; startedAt?: number; queued?: number; workers: number; lastWakeUsd?: number; hint?: string; now?: number;
+}): { text: string; tooltip?: string; warn: boolean } {
+  const now = input.now ?? Date.now();
+  const state = !input.running ? "Idle" : input.startedAt === undefined ? "Working" : `Working · ${formatDuration(now - input.startedAt)}`;
+  const parts = [
+    state,
+    ...(input.queued ? [`${input.queued} queued`] : []),
+    ...(input.workers ? [`${input.workers} worker${input.workers === 1 ? "" : "s"} running`] : []),
+  ];
+  const tips = [
+    ...(input.lastWakeUsd !== undefined ? [`Last wake cost $${input.lastWakeUsd.toFixed(2)}`] : []),
+    ...(input.hint ? [input.hint] : []),
+  ];
+  return { text: parts.join(" · "), tooltip: tips.length ? tips.join("\n") : undefined, warn: Boolean(input.hint) };
+}
 
 // First line of the message that wakes the orchestrator when a worker finishes. Also how a queue of
 // pending wakes is told apart from something the user typed (see server/orchestrator.ts).
@@ -957,6 +976,23 @@ export const isWorkerProblem = (text: string): boolean => {
   const [head = "", next = ""] = text.split("\n");
   return !head.endsWith(" — done") || next.startsWith("Orca's check") && next.includes("FAILED");
 };
+/** One wake can carry several messages (sent while it worked, drained together). Joined with a
+ *  break line, not a blank line — a message has paragraphs of its own, and with "\n\n" three sends
+ *  read back as one message, in the chat and to the model alike. */
+export const MESSAGE_BREAK = "\n\n—— next message ——\n\n";
+export const joinMessages = (messages: string[]): string => messages.join(MESSAGE_BREAK);
+/** A wake's instruction back into its messages. Rows written before the break was used were joined
+ *  with "\n\n": those still split there when it separates worker reports (the old reading), and
+ *  otherwise read as one message — their boundaries are gone. */
+export function splitMessages(instruction: string): string[] {
+  if (instruction.includes(MESSAGE_BREAK)) return instruction.split(MESSAGE_BREAK);
+  const parts = instruction.split("\n\n");
+  return parts.some(isWorkerEvent) ? parts : [instruction];
+}
+/** Who a wake answers, from the messages it carried: worker reports alone → `agents`; anything you
+ *  said (typed, quick-ask, the palette, a toast's Ask, the New-draft box) → `human`. */
+export const turnSource = (messages: string[]): TurnSource =>
+  messages.length > 0 && messages.every(isWorkerEvent) ? "agents" : "human";
 /** Reports that may wait: every part is a clean worker report. */
 export const onlyCleanReports = (messages: string[]): boolean =>
   messages.length > 0 && messages.every((m) => isWorkerEvent(m) && !isWorkerProblem(m));
@@ -1076,6 +1112,7 @@ const ORCHESTRATOR_ROLE = [
  *  restarts after a context reset); the notes and a fresh board go in EVERY time, because they are
  *  what makes the session disposable — everything it needs to carry on is outside its context. */
 export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[]; shell?: boolean; cutOff?: string }): string {
+  const human = input.messages.filter((m) => !isWorkerEvent(m)), reports = input.messages.filter(isWorkerEvent);
   return [
     ...(input.fresh ? [ORCHESTRATOR_ROLE, ""] : []),
     // Every wake, not just the first: the setting can change under a session that is being resumed.
@@ -1095,8 +1132,12 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     "", "## Your notes", input.notes?.trim() || "(empty)",
     "", "## Board", input.board,
     // The wake before this one died mid-turn: say so, or the user has to ask why it went quiet.
-    ...(input.cutOff ? ["", "## Previous wake was cut off", `Your previous wake ${input.cutOff} before it finished its turn, so the user got no reply. What it was handling is under New again. It may already have acted: check the board before you spawn or send (never start the same work twice), then finish the reply.`] : []),
-    "", "## New", input.messages.join("\n\n"),
+    ...(input.cutOff ? ["", "## Previous wake was cut off", `Your previous wake ${input.cutOff} before it finished its turn, so the user got no reply. What it was handling is below again. It may already have acted: check the board before you spawn or send (never start the same work twice), then finish the reply.`] : []),
+    // What the user said and what the workers reported, in separate labelled sections — the user
+    // first — so a report's text is never read as an instruction from them, nor theirs as a report.
+    // Each message stays its own: several sent while you worked are separate messages, in order.
+    ...(human.length ? ["", "## From the user", ...(human.length > 1 ? [`${human.length} separate messages, oldest first.`, ""] : []), joinMessages(human)] : []),
+    ...(reports.length ? ["", "## Worker reports", "Automated, from Orca as your workers finish — not the user.", "", joinMessages(reports)] : []),
   ].join("\n");
 }
 
@@ -2140,6 +2181,97 @@ export const anchoredScrollTop = (prevScrollTop: number, prevScrollHeight: numbe
 /** Is a scroll position "at the bottom" — within `slack` px of it — i.e. still following the tail? */
 export const atBottom = (scrollTop: number, scrollHeight: number, clientHeight: number, slack: number): boolean =>
   scrollHeight - scrollTop - clientHeight < slack;
+
+// ---- the chat's mounted window and compact history (ChatPanel) ----
+// Paging bounds what is FETCHED; this bounds what is MOUNTED. A long conversation scrolled back
+// through is hundreds of markdown turns in the DOM — the "bloated" orchestrator chat — so only a window
+// of CHAT_WINDOW turns renders. Turns outside it stay loaded (they're text) but unmounted, and come
+// back as you scroll toward them. Like Slack's and Linear's long threads, the window moves with you:
+// revealing turns on one side and trimming the far side, never both edges in one commit, so the
+// scroll anchor (anchoredScrollTop: a height delta above the viewport) stays exact.
+
+/** The most turns a chat keeps mounted: two pages. */
+export const CHAT_WINDOW = 2 * TURN_PAGE_SIZE;
+/** The mounted turns, by run id: `first` null = from the oldest loaded, `last` null = through the
+ *  newest (following the tail). `dir` is the way it last moved — the cap trims the OTHER side. */
+export type TurnWindow = { first: string | null; last: string | null; dir: "up" | "down" };
+export const TAIL_WINDOW: TurnWindow = { first: null, last: null, dir: "down" };
+
+/** The window as indices into the loaded turns, [start, end). An id no longer loaded reads as open. */
+export function windowRange(turns: Keyed[], w: TurnWindow): { start: number; end: number } {
+  const at = (id: string | null) => (id === null ? -1 : turns.findIndex((t) => t.id === id));
+  const f = at(w.first), l = at(w.last);
+  const start = f < 0 ? 0 : f;
+  return { start, end: l < 0 ? turns.length : Math.max(start, l + 1) };
+}
+
+/** Over the cap: trim the side away from the last move (moving up drops the newest mounted, moving
+ *  down — or following new output — drops the oldest). Null when within it. */
+export function capWindow(turns: Keyed[], w: TurnWindow, cap = CHAT_WINDOW): TurnWindow | null {
+  const { start, end } = windowRange(turns, w);
+  if (end - start <= cap) return null;
+  return w.dir === "up" ? { ...w, last: turns[start + cap - 1]!.id } : { ...w, first: turns[end - cap]!.id };
+}
+
+/** Bring `step` more loaded turns into the window above / below it. */
+export function revealAbove(turns: Keyed[], w: TurnWindow, step = TURN_PAGE_SIZE): TurnWindow {
+  const s = Math.max(0, windowRange(turns, w).start - step);
+  return { ...w, first: s === 0 ? null : turns[s]!.id, dir: "up" };
+}
+export function revealBelow(turns: Keyed[], w: TurnWindow, step = TURN_PAGE_SIZE): TurnWindow {
+  const e = windowRange(turns, w).end + step;
+  return { ...w, last: e >= turns.length ? null : turns[e - 1]!.id, dir: "down" };
+}
+
+/** How many of the newest turns render in full; older ones render compact (first lines + Show more). */
+export const RECENT_FULL = 3;
+/** A reply worth collapsing when old: more than a few lines, or a structured outcome. */
+export const longReply = (t: { response?: string; structured?: unknown }): boolean =>
+  Boolean(t.structured) || (t.response ?? "").split("\n").length > 4 || (t.response ?? "").length > 320;
+
+/** A message of yours too long to read at a glance in its bubble: it is cut to its first lines with a
+ *  Show more (any age — unlike a reply, which is cut only once it is old). */
+export const longMessage = (text: string): boolean => text.split("\n").length > 8 || text.length > 600;
+
+// ---- worker traffic in the orchestrator's chat ----
+// One stream. Your turns and its replies to them read as the conversation; the worker traffic — the
+// wakes worker reports caused and its replies to those — is split out of it: a run of agent turns is
+// ONE collapsed block ("3 worker reports · 2 replies"), so you know they happened without the bulk.
+// (History: a Chat | Agents toggle split them into two channels; a wake carrying your message AND
+// reports counted as yours, so most worker traffic never reached Agents — the user asked for this.)
+
+type Sourced = { source?: TurnSource; instruction?: string; prompt?: string; finishedAt?: number; startedAt?: number };
+
+/** A turn's source: recorded since migration 18; a row without it (a worker's turn, a client ahead of
+ *  the backfill) is read off its instruction the same way. */
+export const sourceOf = (t: Sourced): TurnSource =>
+  t.source ?? turnSource(splitMessages(t.instruction ?? promptInstruction(t.prompt ?? "")));
+
+export type ChatItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] };
+/** What the orchestrator's chat renders: your turns, with each run of agent turns between them as one
+ *  collapsed block. */
+export function chatItems<T extends Sourced>(turns: T[]): ChatItem<T>[] {
+  const out: ChatItem<T>[] = [];
+  for (const t of turns) {
+    const last = out[out.length - 1];
+    if (sourceOf(t) === "human") out.push({ kind: "turn", turn: t });
+    else if (last?.kind === "agents") last.turns.push(t);
+    else out.push({ kind: "agents", turns: [t] });
+  }
+  return out;
+}
+
+/** The collapsed block's line for a run of agent turns. */
+export function agentsMarker(turns: Sourced[]): string {
+  const reports = turns.reduce((n, t) => n + splitMessages(t.instruction ?? promptInstruction(t.prompt ?? "")).filter(isWorkerEvent).length, 0);
+  const replies = turns.filter((t) => t.finishedAt).length;
+  const working = turns.length - replies;
+  return [
+    `${reports} worker report${reports === 1 ? "" : "s"}`,
+    `${replies} repl${replies === 1 ? "y" : "ies"}`,
+    ...(working ? ["working"] : []),
+  ].join(" · ");
+}
 
 // ---- the PR page's checks: failing first, then running, the rest folded into one line ----
 

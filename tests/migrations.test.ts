@@ -106,7 +106,8 @@ test("every step named uniquely, ids strictly increasing, and an idempotent step
   for (const step of db.MIGRATIONS.filter((s) => s.idempotent)) {
     const statements = step.sql.replace(/--[^\n]*/g, "").split(";").map((s) => s.trim().replace(/\s+/g, " ")).filter(Boolean);
     for (const st of statements) {
-      expect(`${db.stepLabel(step)}: ${st}`).toMatch(/^[\w-]+: (CREATE (UNIQUE )?(TABLE|INDEX) IF NOT EXISTS |ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS )/i);
+      // …or a backfill that only fills NULLs, so a re-run touches nothing it already wrote.
+      expect(`${db.stepLabel(step)}: ${st}`).toMatch(/^[\w-]+: (CREATE (UNIQUE )?(TABLE|INDEX) IF NOT EXISTS |ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS |UPDATE (\S+) .* AND \S+ IS NULL$)/i);
     }
   }
 });
@@ -200,7 +201,7 @@ const fromB = step("20261014-turn-source", "branch_b");
 const namedLedger = async () => (await db.open())`SELECT name FROM migration_named ORDER BY applied_at, name`;
 const hasTable = async (t: string) => (await (await db.open())`SELECT to_regclass(${t}) AS t`)[0].t !== null;
 
-/** A database exactly as the shared one is today: numbered steps 1–15 applied, nothing after. */
+/** A database as the shared one was when named steps came in: numbered 1–15 applied, nothing after. */
 async function sharedDatabaseAt15() {
   await db.open();
   await db.close();
@@ -217,7 +218,7 @@ test("two branches' steps, merged in either order, apply in the same name order 
   // The merged code holds both steps; whichever way the array came out of the merge, the plan is one order.
   const planAB = db.planMigrations([...db.MIGRATIONS, fromA, fromB], recorded);
   const planBA = db.planMigrations([...db.MIGRATIONS, fromB, fromA], recorded);
-  expect(planAB.run.map(db.stepLabel)).toEqual(["17", "20261013-attachment", "20261014-turn-source"]);
+  expect(planAB.run.map(db.stepLabel)).toEqual(["17", "18", "20261013-attachment", "20261014-turn-source"]);
   expect(planBA.run.map(db.stepLabel)).toEqual(planAB.run.map(db.stepLabel));
   // …and the gate catches the array that disagrees with apply order.
   expect(db.checkSteps([...db.MIGRATIONS, fromB, fromA])).toEqual([
@@ -237,17 +238,17 @@ test("two branches' steps, merged in either order, apply in the same name order 
   expect(db.migrationReport()).toMatchObject({ run: [], mismatches: [], refused: [], unknown: [] });
 });
 
-test("a step a branch once applied under an integer id (18) just re-runs as its named step", async () => {
+test("a step a branch once applied under an integer id (#152's 16) just re-runs as its named step", async () => {
   await sharedDatabaseAt15();
-  // #160's test database before the rebase: its step recorded as a numbered 18.
+  // #152's test database before the rebase: its step recorded as a numbered 16.
   await raw(async (sql) => {
-    await sql.unsafe(fromB.sql);
-    await sql`INSERT INTO migration (id, applied_at, name) VALUES (18, 0, 'turn-source')`;
+    await sql.unsafe(fromA.sql);
+    await sql`INSERT INTO migration (id, applied_at, name) VALUES (16, 0, 'attachment')`;
   });
-  const { error, logged } = await captureErrors(() => raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, fromB])));
+  const { error, logged } = await captureErrors(() => raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, fromA])));
   expect(error).toBeUndefined();
-  expect(logged.some((l) => l.includes("migration 18") && l.includes("no such step"))).toBe(true);
-  expect((await namedLedger()).map((r: { name: string }) => r.name)).toEqual(["20261014-turn-source"]);
+  expect(logged.some((l) => l.includes("migration 16") && l.includes("no such step"))).toBe(true);
+  expect((await namedLedger()).map((r: { name: string }) => r.name)).toEqual(["20261013-attachment"]);
 });
 
 test("an older bridge (numbered ledger only) is unaffected by the named ledger", async () => {
@@ -258,10 +259,31 @@ test("an older bridge (numbered ledger only) is unaffected by the named ledger",
 });
 
 test("checkSteps refuses a new numbered step, a bad name, and a non-idempotent named step", async () => {
-  expect(db.checkSteps([...db.MIGRATIONS, { id: db.LAST_NUMBERED_ID + 1, name: "turn-source", idempotent: true, sql: "" }]))
-    .toEqual([`step ${db.LAST_NUMBERED_ID + 1} ("turn-source"): numbered steps are frozen at ${db.LAST_NUMBERED_ID} — drop the id and name it YYYYMMDD-slug`]);
-  expect(db.checkSteps([...db.MIGRATIONS, { name: "turn-source", idempotent: true, sql: "" }])).toEqual([`named step "turn-source" must be YYYYMMDD-slug`]);
+  expect(db.checkSteps([...db.MIGRATIONS, { id: db.LAST_NUMBERED_ID + 1, name: "attachment", idempotent: true, sql: "" }]))
+    .toEqual([`step ${db.LAST_NUMBERED_ID + 1} ("attachment"): numbered steps are frozen at ${db.LAST_NUMBERED_ID} — drop the id and name it YYYYMMDD-slug`]);
+  expect(db.checkSteps([...db.MIGRATIONS, { name: "attachment", idempotent: true, sql: "" }])).toEqual([`named step "attachment" must be YYYYMMDD-slug`]);
   expect(db.checkSteps([...db.MIGRATIONS, { ...fromA, idempotent: false }])).toEqual([`named step "20261013-attachment" must be idempotent`]);
   expect(db.checkSteps([...db.MIGRATIONS, fromA, fromA])).toEqual([`duplicate migration name "20261013-attachment"`]);
-  await expect(raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, { id: 18, name: "x", idempotent: true, sql: "" }]))).rejects.toThrow("frozen");
+  await expect(raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, { id: db.LAST_NUMBERED_ID + 1, name: "x", idempotent: true, sql: "" }]))).rejects.toThrow("frozen");
+});
+
+test("18 tags the orchestrator's turns with their source — reports alone are the agents', anything you said is yours", async () => {
+  await db.open();
+  const at = Date.now();
+  const add = (branch: string, runId: string, instruction: string | undefined, prompt = "p") =>
+    db.startTurn({ repo: branch === "orchestrator" ? "@orca" : "r", branch, runId, provider: "claude", instruction, prompt, startedAt: at });
+  await add("orchestrator", "reports", "[worker finished] r/a — done\nOutcome: ok\n\n[worker finished] r/b — error\nResponse: boom");
+  await add("orchestrator", "mixed", "[worker finished] r/a — done\nOutcome: ok\n\ncarry on");
+  await add("orchestrator", "typed", "ship the cache");
+  await add("orchestrator", "legacy", undefined, "You are Orca's orchestrator\n\n## New\n[worker finished] r/c — done\nOutcome: ok");
+  await add("feature", "worker", "[worker finished] looks like one but is a worker's own turn");
+  // A row the bridge wrote with its source (after this step) is never rewritten.
+  await db.startTurn({ repo: "@orca", branch: "orchestrator", runId: "written", provider: "claude", instruction: "[worker finished] r/d — done", prompt: "p", startedAt: at, source: "human" });
+
+  await (await db.open()).unsafe(db.MIGRATIONS.find((m) => m.id === 18)!.sql); // the backfill, re-run: idempotent
+  const sourceOf = async (branch: string) =>
+    Object.fromEntries((await db.turns(branch === "orchestrator" ? "@orca" : "r", branch)).map((t) => [t.id, t.source]));
+  expect(await sourceOf("orchestrator")).toEqual({ reports: "agents", mixed: "human", typed: "human", legacy: "agents", written: "human" });
+  expect(await sourceOf("feature")).toEqual({ worker: undefined });
+  expect(db.MIGRATIONS.find((m) => m.id === 18)).toMatchObject({ name: "turn-source", idempotent: true });
 });

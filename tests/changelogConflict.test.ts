@@ -26,10 +26,14 @@ let prev: Record<string, string | undefined> = {};
 const repoCfg = (extra: Partial<RepoConfig> = {}): RepoConfig =>
   ({ name: "r", repoPath: repo, worktreeRoot: worktrees, baseBranch: "main", previewServices: [], providers: ["claude"], ...extra });
 const cfg = (extra: Partial<RepoConfig> = {}): OrcaConfig => ({ repos: [repoCfg(extra)], portRange: [30000, 40000], staleHours: 24 });
+const GH_FIXTURES = ["ORCA_GH_FIXTURE", "ORCA_GH_REPO_FIXTURE", "ORCA_GH_GRAPHQL_FIXTURE", "ORCA_GH_RUN_LOG_FIXTURE"];
 const sh = (dir: string, ...args: string[]) => run(["git", "-C", dir, ...args]);
 
 beforeEach(async () => {
-  prev = Object.fromEntries(["ORCA_STATE_DIR", "ORCA_DATABASE_URL", "PATH", "ORCA_FAKE_LOG"].map((k) => [k, process.env[k]]));
+  prev = Object.fromEntries(["ORCA_STATE_DIR", "ORCA_DATABASE_URL", "PATH", "ORCA_FAKE_LOG", ...GH_FIXTURES].map((k) => [k, process.env[k]]));
+  // bun runs every file in one process: a fake-gh fixture an earlier file left set would answer this
+  // PR's review threads / comments with that file's, and "nothing left for an agent" would never hold.
+  for (const k of GH_FIXTURES) delete process.env[k];
   [state, shim, worktrees, log, origin] = await Promise.all(["state", "claude", "wt", "log", "origin"].map(async (n) => realpathSync(await mkdtemp(join(tmpdir(), `orca-cl-${n}-`))))) as [string, string, string, string, string];
   repo = await makeScratchRepo();
   process.env.ORCA_STATE_DIR = state;

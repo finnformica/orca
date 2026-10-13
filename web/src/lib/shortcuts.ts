@@ -9,7 +9,7 @@
 // and Linux and in Firefox, and ⌘-chords are what a composer's text editing reaches for. A plain
 // letter sits with C (new agent) and F (find), can't clash with any browser binding, and from inside
 // a text field ⌘K → "Open orchestrator" is one more key.
-export type ShortcutId = "palette" | "sidebar" | "new" | "orchestrator" | "quickAsk" | "find" | "help" | "escape";
+export type ShortcutId = "palette" | "sidebar" | "new" | "orchestrator" | "quickAsk" | "find" | "help" | "escape" | "send";
 
 export type KeyLike = { key: string; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean; shiftKey?: boolean };
 
@@ -22,6 +22,9 @@ export const SHORTCUTS: { id: ShortcutId; label: string; mod?: true; key: string
   { id: "sidebar", label: "Collapse / expand the sidebar", mod: true, key: "B" },
   { id: "help", label: "Keyboard shortcuts", key: "?" },
   { id: "escape", label: "Close the open overlay", key: "Esc" },
+  // Not a global binding (matchShortcut never returns it): the composers' own key, listed so its hint
+  // and the ? sheet come from this table like every other.
+  { id: "send", label: "Send a message (Shift+Enter for a new line)", key: "Enter" },
 ];
 
 export const isMacPlatform = (nav: { platform?: string; userAgent?: string } = typeof navigator === "undefined" ? {} : navigator): boolean =>
