@@ -236,6 +236,10 @@ export function promptFor(ws: Pick<Workstream, "title" | "branch" | "prompt">): 
 // the agent will sometimes open a ready-for-review PR on its own, which yanks the card into In
 // Review — so every launch/follow-up prompt explicitly forbids it.
 const NO_PR = "Do NOT open a pull request or run `gh pr create` — stop after committing. Promoting the branch to a PR is handled separately in Orca.";
+// The box can't afford a browser per worker (an OOM took it down), so the bridge runs ONE capped,
+// queued browser (server/screenshot.ts) and this is how a worker reaches it. Shot paths in the reply
+// ride into the orchestrator's report (`workerEvent`).
+export const SCREENSHOTS = "To see a UI, the ONLY allowed way to take a screenshot is `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--scroll <y|sel>] [--label before|after]` (it queues on Orca's one memory-capped browser and prints `shot: <path>`; Read the PNG to look at it). Never launch a browser, Playwright or Puppeteer yourself. For a UI change, list each before/after `shot: <path>` line in your Verification.";
 
 // A headless run narrates almost nothing by default: one real run produced 11 text blocks against 97
 // tool calls, so the chat showed a list of commands and nothing about why. Claude's own reasoning is
@@ -277,6 +281,7 @@ export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">
     "",
     NARRATE,
     NO_PR,
+    SCREENSHOTS,
   ].join("\n"));
 }
 
@@ -339,7 +344,7 @@ export function slackPrompt(
 
 /** Follow-up instruction for an agent already working a branch (resumes its session). */
 export function followUpPrompt(instruction: string): string {
-  return withOutcomeContract(`${instruction}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}`);
+  return withOutcomeContract(`${instruction}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}\n${SCREENSHOTS}`);
 }
 
 // Every session starts with no memory of the last one, so it starts by looking: the same three-line
@@ -377,6 +382,7 @@ export function chatPrompt(instruction: string): string {
     "what has actually happened, whatever the conversation above says.",
     SESSION_START,
     NO_PR,
+    SCREENSHOTS,
     "",
     "If (and only if) you changed something, finish with the usual sections:",
     OUTCOME_CONTRACT,
@@ -671,6 +677,7 @@ export function addressPrPrompt(ws: Pick<Workstream, "prNumber" | "branch">, par
     "## Review",
     ...reviewLines(ws, parts.feedback, parts.threads, parts.followed, parts.comments),
     NO_PR,
+    SCREENSHOTS,
   ].join(" "));
 }
 
@@ -953,6 +960,18 @@ export const onlyCleanReports = (messages: string[]): boolean =>
   messages.length > 0 && messages.every((m) => isWorkerEvent(m) && !isWorkerProblem(m));
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
 
+/** The `orca-shot` PNGs a worker's reply names, each with its line's label (`before`, `after`) —
+ *  how before/after shots ride a worker report without the transcript. Pure. */
+export function reportedShots(text: string): string[] {
+  const seen = new Map<string, string>();
+  for (const m of text.matchAll(/\/\S*\/shots\/(shot-[\w-]+)\.png/g)) {
+    if (seen.has(m[0])) continue;
+    const label = m[1]!.match(/-(before|after|[a-z]+)$/i)?.[1];
+    seen.set(m[0], label && !/^[0-9a-f]{8}$/i.test(label) ? `${label}: ${m[0]}` : m[0]);
+  }
+  return [...seen.values()].slice(0, 8);
+}
+
 /** A finished worker run, as the orchestrator hears about it: the condensed outcome (the 1–2k token
  *  summary a sub-agent hands back), Orca's own check verdict, and the run id as a reference to the
  *  full turn — never the transcript itself. */
@@ -967,6 +986,7 @@ export function workerEvent(input: {
     ...(check ? [`Orca's check \`${check.command}\` ${check.ok ? "passed" : `FAILED (exit ${check.exitCode}):\n${clip(check.output, 600)}`}`] : []),
     ...(o ? [`Outcome: ${clip(o.outcome, 1500)}`, ...list("Remaining", o.remaining), ...list("Decisions", o.decisions), ...list("Commits", o.commits)]
       : [`Response: ${clip(input.response ?? "(none)", 1500)}`]),
+    ...list("Screenshots (Read to view)", reportedShots([input.response ?? "", ...(o?.verification ?? [])].join("\n"))),
     `Full turn: orca read --run ${input.runId}`,
   ].join("\n");
 }
@@ -2369,6 +2389,23 @@ export function conversationSummary(c: PrConversation["counts"]): string {
   const threadParts = [c.unresolved && `${c.unresolved} unresolved`, c.resolved && `${c.resolved} resolved`, c.outdated && `${c.outdated} outdated`].filter(Boolean).join(", ");
   return [c.comments && plural(c.comments, "comment"), c.threads && `${plural(c.threads, "thread")}${threadParts ? ` (${threadParts})` : ""}`, c.bots && `${c.bots} bot`]
     .filter(Boolean).join(" · ") || "No comments";
+}
+
+/** The bridge that answered `/api/config` (server/index.ts `bridgeInfo`). */
+export type BridgeInfo = { preview: boolean; branch?: string; port: number };
+
+/** What a page should say about the bridge behind its `/api`, or null when there is nothing to say
+ *  (the real Orca). A branch preview's frontend once proxied to MAIN's bridge silently, so its Cost
+ *  chart read main's numbers and everyone took them for the branch's. A preview page now always
+ *  says which answered, and warns when it is main's. Pure. */
+export function bridgeLabel(bridge: BridgeInfo | undefined, previewPage: boolean): { text: string; warn: boolean; title: string } | null {
+  if (!previewPage && !bridge?.preview) return null;
+  if (bridge?.preview) {
+    return { text: `API: this branch's bridge${bridge.branch ? ` (${bridge.branch})` : ""}`, warn: false,
+      title: `Answered by the branch's own bridge on :${bridge.port}, reading the shared database. Read-only: actions are refused.` };
+  }
+  return { text: "API: main bridge — not this branch", warn: true,
+    title: `Answered by the main bridge${bridge ? ` (${bridge.branch ?? "?"} on :${bridge.port})` : ""}: data and actions here are main's code, not this branch's.` };
 }
 
 // ---- cleanup after finished work ----
