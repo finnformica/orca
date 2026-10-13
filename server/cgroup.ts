@@ -23,13 +23,19 @@ import { existsSync } from "fs";
 export const DEFAULT_MEMORY_MAX_GB = 4;
 export const DEFAULT_CPU_WEIGHT = 50;
 
+/** Set only by tests that drive this through `agent.launch` (tests/oom.test.ts) rather than calling
+ *  `available()` directly (tests/cgroup.test.ts, which passes `platform` straight in): the real call
+ *  site (server/agent.ts) never passes `platform`, so on macOS there is no other way to make the
+ *  rest of the detection (PATH shim, fake bus socket) count for anything — never set outside tests. */
+const TEST_FORCE_LINUX_ENV = "ORCA_TEST_FORCE_CGROUP_LINUX";
+
 /** Whether `systemd-run --user --scope` can actually create a scope right now: Linux, the binary on
  *  PATH, and a reachable user bus. Each check is overridable so a test can force any combination
  *  without a real systemd — `process.platform` and the filesystem can't be faked, this can. The bus
  *  check (not just the binary) is what keeps this inert on a CI runner or an unprovisioned box: the
  *  binary is on PATH there too, but with no lingering enabled there is no user manager to talk to. */
 export function available(opts: { platform?: string; hasSystemdRun?: boolean; busReachable?: boolean } = {}): boolean {
-  const platform = opts.platform ?? process.platform;
+  const platform = opts.platform ?? (process.env[TEST_FORCE_LINUX_ENV] === "1" ? "linux" : process.platform);
   if (platform !== "linux") return false;
   // Bun.which() with no options reads the PATH captured at process startup, not a later edit to
   // process.env.PATH — passed explicitly so a test's PATH shim (or a real config change) takes
