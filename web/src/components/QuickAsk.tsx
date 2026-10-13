@@ -2,7 +2,7 @@
 // the phone's bottom bar has the orchestrator instead). Click it, or press A, and the pill MORPHS
 // into a compact box — one surface whose width, height and radius animate (instant under
 // prefers-reduced-motion) — for messages to the orchestrator with no history: Enter sends, Shift+Enter
-// breaks the line, and the box grows with what you type up to a cap. The shape is Linear's / Raycast's
+// breaks the line, and the box opens three lines tall and grows with what you type up to a cap. The shape is Linear's / Raycast's
 // quick capture: fire a line without leaving what you're looking at, open the conversation only when
 // you want to read. The pill carries the orchestrator's activity dot (pulsing while a wake runs, lit
 // once one has replied unseen), so you know whether to go and look.
@@ -55,6 +55,14 @@ export function QuickAsk() {
   useLayoutEffect(() => {
     if (open) { setFailed(null); box.current?.focus(); }
   }, [open]);
+  // Grow with the text where `field-sizing: content` isn't supported (Safari, Firefox): there the box
+  // stayed one scrolling line. The CSS min / max heights still bound it.
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el || (typeof CSS !== "undefined" && CSS.supports?.("field-sizing", "content"))) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [text, open]);
   useEffect(() => {
     if (!flash) return;
     const t = setTimeout(() => setFlash(0), SENT_FLASH_MS);
@@ -98,10 +106,11 @@ export function QuickAsk() {
           <div role="dialog" aria-label="Quick ask" data-slot="quick-ask-box" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } }}>
             <div className="flex items-end gap-2 px-3 py-2">
               <span className="relative mb-1.5 inline-flex shrink-0"><Bot className="text-muted-foreground size-4" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
-              {/* Grows with its content (field-sizing), up to max-h, then scrolls. */}
-              <textarea ref={box} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} rows={1} aria-label="Message the orchestrator"
+              {/* Opens at three lines and grows with its content (field-sizing, else the effect above),
+                  up to max-h, then scrolls. */}
+              <textarea ref={box} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} rows={3} aria-label="Message the orchestrator"
                 placeholder={QUICK_ASK_PLACEHOLDER} data-slot="quick-ask-input"
-                className="placeholder:text-muted-foreground field-sizing-content max-h-40 min-h-7 min-w-0 flex-1 resize-none overflow-y-auto bg-transparent py-1 text-sm outline-none" />
+                className="placeholder:text-muted-foreground field-sizing-content max-h-40 min-h-[4.5rem] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent py-1 text-sm outline-none" />
               <span className="mb-0.5 flex shrink-0 items-center gap-1.5">
                 {/* The receipt: subtle, and it goes on its own. The box is already clear for the next. */}
                 <span role="status" aria-live="polite" data-slot="quick-ask-sent" className="text-muted-foreground flex items-center gap-1.5 text-xs">

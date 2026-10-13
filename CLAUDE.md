@@ -184,7 +184,7 @@ a small "Ask · A" pill fixed at the bottom centre of the main column (its strip
 the sidebar ends, collapsed or expanded) on every page (desktop; below md the phone's bottom
 bar has the orchestrator instead) MORPHS (one surface: width, height, radius; instant under reduced
 motion) into a box for messages to the orchestrator with no history — "Ask the orchestrator...", a
-textarea that grows to a cap, Enter sends / Shift+Enter breaks the line (the `send` keycap), no ✕ or
+textarea three lines tall that grows to a cap (a JS fallback where `field-sizing` is unsupported), Enter sends / Shift+Enter breaks the line (the `send` keycap), no ✕ or
 footer. A send is optimistic: the box clears and stays open, a brief "Sent · Open chat" fades, and
 the POSTs are chained so quick sends arrive in order (a busy orchestrator queues them); a failed send
 gives the text back. The pill, the top-bar button and the phone's bottom bar carry the orchestrator's

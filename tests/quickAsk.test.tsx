@@ -124,7 +124,9 @@ test("Q4: one surface morphs pill ↔ box (width, height, radius; none under red
   expect(box.textContent).not.toContain("One message, no history");
   // A multi-line box that grows with its content, up to a cap.
   expect(input().tagName).toBe("TEXTAREA");
-  expect(input().className.split(/\s+/)).toEqual(expect.arrayContaining(["field-sizing-content", "max-h-40", "overflow-y-auto"]));
+  // Multi-line from the moment it opens: three rows tall, not a single line.
+  expect(input().getAttribute("rows")).toBe("3");
+  expect(input().className.split(/\s+/)).toEqual(expect.arrayContaining(["field-sizing-content", "min-h-[4.5rem]", "max-h-40", "overflow-y-auto"]));
   // The send key as the shared keycap.
   expect([...box.querySelectorAll('[data-shortcut="send"] [data-slot="kbd"]')].map((k) => k.textContent)).toEqual(["Enter"]);
   // Shift+Enter is a newline (left to the textarea), not a send.
