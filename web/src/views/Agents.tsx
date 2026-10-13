@@ -11,7 +11,7 @@
 // beside the search box.
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { useAtom, useAtomValue } from "jotai";
-import { ArrowDown, Bot, Columns3, GitPullRequest, List, ListFilter, Loader2, Rows2, Rows3, Search, X } from "lucide-react";
+import { ArrowDown, Columns3, GitPullRequest, List, ListFilter, Loader2, Rows2, Rows3, Search, X } from "lucide-react";
 import { agentQueryAtom, boardViewAtom, densityAtom, instanceScopeAtom, repoFilterAtom, type BoardView } from "@/lib/atoms";
 import { navigate, useSearch } from "@/lib/route";
 import { useNow } from "@/lib/ticker";
@@ -22,7 +22,7 @@ import { BottomSheet } from "@/components/BottomSheet";
 import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
 import {
   DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed,
-  listColumns, listGridTemplate, modelBadge, notMergedHiddenCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, toggleNotMerged, toggleQuick,
+  listColumns, listGridTemplate, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, toggleNotMerged, toggleQuick,
   type ListColumn, type ListSort, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
 } from "../workstream";
 import { Button } from "@/components/ui/button";
@@ -31,7 +31,7 @@ import { Pill, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
 import { Board, ConditionBadges, CopyDone, LaneActions, useTerminalOpen } from "./Board";
 import { WorkstreamActions } from "./WorkstreamActions";
-import { PreviewCell } from "./PreviewControl";
+import { PreviewCell, PrPreviewCell, PrPreviewInline } from "./PreviewControl";
 import { ReviewCluster } from "./Review";
 
 export function Agents() {
@@ -203,7 +203,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
       onClick={() => setQuick(toggleNotMerged(quick))}
       className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors ${quick.notMerged ? "border-foreground bg-foreground text-background" : "text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
       Not merged
-      <span data-slot="quick-count" className={`tabular-nums ${quick.notMerged ? "opacity-70" : "opacity-60"}`}>{notMergedHiddenCount(scoped, quick, here)}</span>
+      <span data-slot="quick-count" className={`tabular-nums ${quick.notMerged ? "opacity-70" : "opacity-60"}`}>{notMergedCount(scoped, quick, here)}</span>
     </button>
   );
   const chipGroup = (
@@ -371,6 +371,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
         {prLink}
         {row.prNumber && !isDone && <ConditionBadges row={row} />}
         {row.prNumber && !isDone && <ReviewCluster row={row} />}
+        {row.prNumber && !isDone && <PrPreviewCell row={row} />}
         {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
       </div>
       {reasons.length > 0 && <div role="cell" data-slot="row-reasons" className="text-geist-warning-fg text-xs">{reasons.join(" · ")}</div>}
@@ -378,7 +379,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
       <div role="cell" className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-1.5 pr-2 text-xs">
         <span>{row.repo}</span>
         {model && <><span aria-hidden="true">·</span><span data-slot="model-label">{model.label}</span></>}
-        {row.orchestrated && <><span aria-hidden="true">·</span><span className="inline-flex items-center gap-1"><Bot className="size-3" />orchestrated</span></>}
+        {!isDone && <PrPreviewInline row={row} />}
         {instance && cell("instance") && <><span aria-hidden="true">·</span><span data-slot="instance-chip">{instance}</span></>}
         <span aria-hidden="true">·</span><span className="min-w-0 font-mono break-all">{row.branch}</span>
       </div>
@@ -398,7 +399,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
         <div className="text-muted-foreground flex min-w-0 items-center gap-1 text-xs">
           <span className="shrink-0">{row.repo}</span>
           {model && <><span aria-hidden="true">·</span><span data-slot="model-label" className="shrink-0" title={model.title}>{model.label}</span></>}
-          {row.orchestrated && <span className="shrink-0" title="Started or continued by the orchestrator" aria-label="Orchestrated"><Bot className="size-3" /></span>}
+          {!isDone && <PrPreviewInline row={row} />}
           {error && <><span aria-hidden="true">·</span><span data-slot="row-error" className="text-geist-red truncate" title={error}>{error}</span></>}
         </div>
       </div>

@@ -8,7 +8,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { getDefaultStore } from "jotai";
 import { App } from "@/App";
-import { orchestratorActivityAtom, orchestratorOpenAtom, quickAskOpenAtom } from "@/lib/atoms";
+import { orchestratorActivityAtom, orchestratorOpenAtom, quickAskOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -53,7 +53,7 @@ test("Q1: the pill is on every page; it opens a one-line box that sends on Enter
     expect(pill.textContent).toContain("Ask");
     expect(pill.textContent).toContain("A"); // the shortcut hint
     expect(pill.className).toContain("rounded-full");
-    expect($('[data-slot="quick-ask"]')!.className).toContain("fixed inset-x-0 bottom-5"); // bottom centre
+    expect($('[data-slot="quick-ask"]')!.className).toContain("fixed right-0 bottom-5"); // bottom centre (of the main column, Q7)
     await act(async () => { root?.unmount(); }); container?.remove();
   }
   await mount("/");
@@ -113,4 +113,26 @@ test("Q3: the indicator pulses while the orchestrator works and lights when it h
   act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
   await act(async () => { await flush(); await flush(); });
   expect(dot()).toBeNull();
+});
+
+test("Q7: the pill is centred on the main column — its strip starts where the sidebar ends, collapsed or expanded", async () => {
+  const s = getDefaultStore();
+  await mount("/");
+  const strip = () => $('[data-slot="quick-ask"]')!.className.split(/\s+/);
+  const sidebar = () => $('[data-slot="sidebar"]')!.className.split(/\s+/);
+  // Expanded: a 15rem sidebar, a strip from 15rem to the right edge, its content centred in it.
+  expect(sidebar()).toContain("md:w-60");
+  expect(strip()).toEqual(expect.arrayContaining(["fixed", "left-60", "right-0", "justify-center"]));
+  expect(strip()).not.toContain("inset-x-0");
+  // Collapsed: the icon column is 3.5rem, and the strip follows it.
+  await act(async () => { s.set(sidebarCollapsedAtom, true); await flush(); });
+  expect(sidebar()).toContain("md:w-14");
+  expect(strip()).toEqual(expect.arrayContaining(["left-14", "right-0", "justify-center"]));
+  expect(strip()).not.toContain("left-60");
+  // Below md there is no pill — the phone's bottom bar carries the orchestrator.
+  expect(strip()).toContain("max-md:hidden");
+  // The open box is sized to the strip, not the viewport.
+  await click($('[data-slot="quick-ask-pill"]')!);
+  expect($('[data-slot="quick-ask-box"]')!.className).toContain("w-[min(560px,calc(100%-2rem))]");
+  s.set(sidebarCollapsedAtom, false);
 });

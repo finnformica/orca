@@ -160,6 +160,19 @@ describe("the notification centre", () => {
     expect($("notifications-unread")!.textContent).toBe("4"); // Clear all is the stack, not the centre
   });
 
+  test("the stack and its count bar sit above the sidebar, which is also fixed and would otherwise paint over a toast anchored above the bell", async () => {
+    await open("/");
+    placeBell();
+    const s = await live();
+    const zOf = (el: Element) => Number([...el.className.matchAll(/\bz-\[?(\d+)\]?\b/g)].at(-1)?.[1]);
+    const sidebar = $("sidebar")!;
+    expect(zOf(sidebar)).toBe(50); // the fixed sidebar's own layer (Shell.tsx)
+    await push(s, note({ id: 1, title: "First" }));
+    expect(zOf($("notification-host")!)).toBeGreaterThan(zOf(sidebar));
+    await push(s, note({ id: 2, title: "Second" }));
+    expect(zOf($("notification-count")!)).toBeGreaterThan(zOf(sidebar)); // the count bar too, once it shows
+  });
+
   test("auto-hide pauses while the stack is hovered and resumes when the pointer leaves; a swipe left dismisses", async () => {
     await open("/");
     const s = await live();

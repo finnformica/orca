@@ -137,10 +137,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
 
         <TabsContent value="overview" className="space-y-6 pt-3">
           {liveRow ? (
-            <>
-              <DetailsCard row={liveRow} summary={summary} actions={<WorkstreamActions row={liveRow} />} extra={<Detail label="Pull request status">{badges}</Detail>} />
-              <ChatCard row={liveRow} />
-            </>
+            <DetailsCard row={liveRow} summary={summary} actions={<WorkstreamActions row={liveRow} />} extra={<Detail label="Pull request status">{badges}</Detail>} />
           ) : (
             <VCard slot="pr-details" title="Pull request details" aside={!pr.previewUrl ? <ActionButton onRun={() => addPreviewLabel(row)} failure={{ action: "Add preview label", title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }}>Add preview label</ActionButton> : undefined}>
               <div className="grid grid-cols-2 gap-x-6 gap-y-4 p-4 md:grid-cols-4">
@@ -173,8 +170,8 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
         </TabsContent>
 
         {liveRow && (
-          <TabsContent value="chat" className="pt-3">
-            <ChatCard row={liveRow} tall />
+          <TabsContent value="chat">
+            <ChatCard row={liveRow} />
           </TabsContent>
         )}
 

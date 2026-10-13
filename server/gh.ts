@@ -231,7 +231,7 @@ export async function createPr(
 
 export type PrSummary = PrStatus & {
   number: number; title: string; branch: string; base?: string; url: string; isDraft: boolean; autoMergeEnabled: boolean;
-  previewUrl?: string; externalFeedback: number; failingChecks?: string[]; feedback?: string[];
+  previewUrl?: string; hasPreviewLabel?: boolean; externalFeedback: number; failingChecks?: string[]; feedback?: string[];
 };
 
 /** Pull a deploy-preview URL out of a PR's comments (posted by the pr-preview action). */
@@ -268,13 +268,14 @@ type RawPr = {
   author?: { login?: string };
   comments?: Array<{ author?: { login?: string }; body?: string }>;
   reviews?: Array<{ author?: { login?: string }; state?: string; body?: string }>;
+  labels?: Array<{ name?: string }>;
 };
 const checkName = (c: { name?: string; context?: string }) => c.name ?? c.context ?? "";
 /** Keep only the checks that GATE merge (GitHub's required set). Empty `required` → keep all, so a
  *  repo with no branch protection behaves as before and advisory bots there still show. */
 const gatingChecks = <T extends { name?: string; context?: string }>(checks: T[], required: Set<string>): T[] =>
   required.size ? checks.filter((c) => required.has(checkName(c))) : checks;
-const mapSummary = (j: RawPr, required: Set<string> = new Set()): PrSummary => {
+const mapSummary = (j: RawPr, required: Set<string> = new Set(), previewLabelName?: string): PrSummary => {
   const author = j.author?.login ?? "";
   const isOther = (login?: string) => Boolean(login) && login !== author && !login!.endsWith("[bot]");
   const feedback = [
@@ -299,6 +300,7 @@ const mapSummary = (j: RawPr, required: Set<string> = new Set()): PrSummary => {
     reviewStatus: mapReview(j.reviewDecision ?? ""),
     mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",
     previewUrl: j.comments ? extractPreviewUrl(j.comments) : undefined,
+    hasPreviewLabel: previewLabelName ? (j.labels ?? []).some((l) => l.name === previewLabelName) : undefined,
     externalFeedback: countExternalFeedback(j.author?.login ?? "", j.comments, j.reviews),
     failingChecks: failingChecks.length ? failingChecks : undefined,
     feedback: feedback.length ? feedback : undefined,
@@ -308,14 +310,14 @@ const mapSummary = (j: RawPr, required: Set<string> = new Set()): PrSummary => {
 /** List the current user's open PRs with status — the source of truth for the kanban. Fetches CI,
  *  comments + reviews too (there are few of your own PRs) so the board shows checks, links the deploy
  *  preview, and "Follow PR" can react to new reviewer feedback. */
-export async function listPrs(cwd: string): Promise<PrSummary[]> {
-  const raw = await gh(cwd, "pr", "list", "--state", "open", "--author", "@me", "--json", `${PR_META_FIELDS},statusCheckRollup,comments,author,reviews`);
+export async function listPrs(cwd: string, previewLabelName = "preview"): Promise<PrSummary[]> {
+  const raw = await gh(cwd, "pr", "list", "--state", "open", "--author", "@me", "--json", `${PR_META_FIELDS},statusCheckRollup,comments,author,reviews,labels`);
   const prs = JSON.parse(raw) as RawPr[];
   // Resolve each distinct base branch's required-check set once, so CI status reflects only checks
   // that actually gate merge (advisory bots like an AI reviewer don't turn the badge red).
   const bases = [...new Set(prs.map((p) => p.baseRefName).filter((b): b is string => Boolean(b)))];
   const required = new Map(await Promise.all(bases.map(async (b) => [b, await requiredChecks(cwd, b)] as const)));
-  return prs.map((j) => mapSummary(j, (j.baseRefName && required.get(j.baseRefName)) || new Set()));
+  return prs.map((j) => mapSummary(j, (j.baseRefName && required.get(j.baseRefName)) || new Set(), previewLabelName));
 }
 
 const REQUIRED_TTL_MS = 5 * 60_000;

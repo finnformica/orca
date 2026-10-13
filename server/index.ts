@@ -501,6 +501,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const available = AGENT_PROVIDERS.filter((provider) => Boolean(Bun.which(providerBinary(provider))));
     const repos = await Promise.all(cfg.repos.map(async (r) => ({
       name: r.name, baseBranch: r.baseBranch, slackChannel: r.slackChannel, prLabels: r.prLabels,
+      previewLabel: r.previewLabel,
       hasRemote: await git.hasRemote(r.repoPath),
       defaultModel: modelFor(cfg, r), // what an unpinned card runs on (Claude), so the picker can show it
       // Opt-ins travel to the client so it can hide what the bridge would refuse — the bridge still
@@ -592,7 +593,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json(pr);
   }
   if (req.method === "GET" && p === "/api/prs") {
-    const prs = await gh.listPrs(repo.repoPath); // source of truth for the PR lanes
+    const prs = await gh.listPrs(repo.repoPath, repo.previewLabel ?? "preview"); // source of truth for the PR lanes
     void notify.prs(repo.name, prs); // CI failing / conflicts, once per PR — read off the list, no extra call
     return json(prs);
   }

@@ -220,11 +220,15 @@ export async function close(): Promise<void> {
  *  backend`, a restart — means the same thing but arrives as the generic `ERR_POSTGRES_SERVER_ERROR`
  *  with "terminating connection" in the message, so it's matched by text rather than code; a bad
  *  query (a constraint violation, say) is also `ERR_POSTGRES_SERVER_ERROR` but never says that, so
- *  this stays narrow. Not every Postgres error — a bad query must still throw. */
+ *  this stays narrow. A `pg_terminate_backend` landing while the socket is mid read/write (rather
+ *  than idle) instead surfaces as Bun's own `ERR_POSTGRES_EXPECTED_REQUEST` ("Failed to read data",
+ *  from its internal `handleClose`) — same dropped connection, a driver-level code instead of a
+ *  server message, caught on `code` alone since that shape never carries a legitimate query error.
+ *  Not every Postgres error — a bad query must still throw. */
 function isDroppedConnection(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const code = (err as { code?: string }).code;
-  if (code === "ERR_POSTGRES_CONNECTION_CLOSED") return true;
+  if (code === "ERR_POSTGRES_CONNECTION_CLOSED" || code === "ERR_POSTGRES_EXPECTED_REQUEST") return true;
   if (/Connection closed|ECONNRESET|EPIPE/.test(err.message)) return true;
   return code === "ERR_POSTGRES_SERVER_ERROR" && /terminating connection|administrator command/i.test(err.message);
 }

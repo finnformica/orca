@@ -8,11 +8,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { Bot, Check, X } from "lucide-react";
-import { orchestratorActivityAtom, quickAskOpenAtom } from "@/lib/atoms";
+import { orchestratorActivityAtom, quickAskOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
 import { api } from "../api";
 import { ActivityDot, useOrchestrator } from "@/components/Terminal";
 import { Button } from "@/components/ui/button";
+import { Kbd, Shortcut } from "@/components/ui/kbd";
+import { cn } from "@/lib/utils";
 
 /** How long the sent confirmation stays before the box closes itself (ms). */
 export const SENT_DWELL_MS = 4000;
@@ -20,6 +22,7 @@ export const SENT_DWELL_MS = 4000;
 export function QuickAsk() {
   const [open, setOpen] = useAtom(quickAskOpenAtom);
   const activity = useAtomValue(orchestratorActivityAtom);
+  const collapsed = useAtomValue(sidebarCollapsedAtom);
   const { ask } = useOrchestrator();
   const [text, setText] = useState("");
   const [state, setState] = useState<{ kind: "idle" } | { kind: "sending" } | { kind: "sent"; text: string } | { kind: "error"; message: string }>({ kind: "idle" });
@@ -55,11 +58,13 @@ export function QuickAsk() {
   };
   return (
     // Below the sticky top bar and menus (z-30 / z-50) but above the page; clear of the orchestrator's
-    // panel on the right and the toasts in the corner.
-    <div data-slot="quick-ask" className="pointer-events-none fixed inset-x-0 bottom-5 z-30 flex justify-center max-md:hidden">
+    // panel on the right and the toasts in the corner. Centred on the MAIN column, not the viewport:
+    // the fixed strip starts where the sidebar ends (Shell's md:w-14 collapsed / md:w-60 expanded).
+    <div data-slot="quick-ask" data-collapsed={collapsed}
+      className={cn("pointer-events-none fixed right-0 bottom-5 z-30 flex justify-center max-md:hidden", collapsed ? "left-14" : "left-60")}>
       {open ? (
         <div role="dialog" aria-label="Quick ask" data-slot="quick-ask-box" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } }}
-          className="bg-card text-foreground pointer-events-auto w-[min(560px,calc(100vw-2rem))] rounded-lg border shadow-modal">
+          className="bg-card text-foreground pointer-events-auto w-[min(560px,calc(100%-2rem))] rounded-lg border shadow-modal">
           {state.kind === "sent" ? (
             <div role="status" className="flex items-center gap-3 px-3 py-2.5 text-sm" data-slot="quick-ask-sent">
               <span className="bg-geist-blue/15 text-geist-blue inline-flex size-6 shrink-0 items-center justify-center rounded-full"><Check className="size-3.5" /></span>
@@ -76,13 +81,13 @@ export function QuickAsk() {
               <Button size="sm" variant="default" className="h-7 shrink-0" disabled={!text.trim() || state.kind === "sending"} onClick={() => void send()}>
                 {state.kind === "sending" ? "Sending…" : "Send"}
               </Button>
-              <Button size="icon" variant="ghost" className="size-7 shrink-0" aria-label="Close quick ask" onClick={() => setOpen(false)}><X className="size-4" /></Button>
+              <Button size="icon" variant="ghost" className="size-7 shrink-0" aria-label="Close quick ask" title="Close (Esc)" onClick={() => setOpen(false)}><X className="size-4" /></Button>
             </div>
           )}
           {state.kind === "error" && <div className="text-geist-red border-t px-3 py-1.5 text-xs" data-slot="quick-ask-error">{state.message} — not sent; your text is still here.</div>}
           {state.kind !== "sent" && (
             <div className="text-muted-foreground flex items-center justify-between border-t px-3 py-1 text-[11px]">
-              <span>One message, no history. Shift+Enter for a new line.</span>
+              <span className="flex items-center gap-1">One message, no history. <Kbd>Shift</Kbd><Kbd>Enter</Kbd> for a new line.</span>
               <button type="button" className="hover:text-foreground" onClick={() => { setOpen(false); ask(text); setText(""); }}>Open full chat</button>
             </div>
           )}
@@ -93,7 +98,7 @@ export function QuickAsk() {
           className="bg-card text-foreground hover:bg-accent/60 pointer-events-auto flex h-8 items-center gap-2 rounded-full border px-3 text-sm shadow-menu">
           <span className="relative inline-flex"><Bot className="text-muted-foreground size-3.5" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
           <span>Ask</span>
-          <kbd className="text-muted-foreground rounded border px-1 font-sans text-[10px]">{key}</kbd>
+          <Shortcut id="quickAsk" />
         </button>
       )}
     </div>

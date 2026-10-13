@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Check, ChevronDown, Copy, ExternalLink, FlaskConical, Loader2, Square, TriangleAlert } from "lucide-react";
+import { Check, ChevronDown, Copy, ExternalLink, FlaskConical, Globe, Loader2, Plus, Square, TriangleAlert } from "lucide-react";
 import { api, type PreviewSvc } from "../api";
-import { baseBranch, instanceChoices, previewKeyOf, previewsEnabled, previewStatus, startMaster, stopMaster, stopPreview, testLocally, thisInstance, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
-import { previewHref, previewLabel } from "../workstream";
+import { addPreviewLabel, baseBranch, instanceChoices, previewConfigured, previewKeyOf, previewsEnabled, previewStatus, startMaster, stopMaster, stopPreview, testLocally, thisInstance, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
+import { previewHref, previewLabel, prPreviewState } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StatusDot } from "@/components/console";
@@ -66,7 +66,9 @@ function usePreview(initialKey: string | undefined, starter: () => Promise<{ key
   const stop = async () => {
     if (!key) return;
     setBusy(true); reaping.current = true; // stop polling; nothing left to reflect
-    try { await stopPreview(key); setSvcs([]); } finally { setBusy(false); }
+    try { await stopPreview(key); setSvcs([]); }
+    catch (e) { toastFailure(e); }
+    finally { setBusy(false); }
   };
 
   // Tick once a second while starting so the elapsed timer updates (shows if a boot is hanging).
@@ -163,22 +165,33 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
  *  size-7 slot throughout, so switching between states never shifts the Actions column. Disabled
  *  (with a tooltip) when the repo hasn't opted into RepoFeatures.previews; the bridge still enforces
  *  this, the check here only saves a round trip to a button that would just 404. Starts the preview
- *  the same way the card's own "Test locally" control does (store.testLocally). */
+ *  the same way the card's own "Test locally" control does (store.testLocally). A Stop icon button
+ *  (confirm-free, same `usePreview.stop` as the card's Test-locally control) sits right beside it
+ *  while the preview is starting or running — before this it could only be stopped from the card's
+ *  own footer or the detail page's Preview tab. */
 export function PreviewCell({ row }: { row: Row }) {
   const enabled = previewsEnabled(row.repo);
-  const { busy, active, ready, failed, error, open, start } = usePreview(previewKeyOf(row), () => testLocally(row), row);
+  const { busy, active, ready, failed, error, open, start, stop } = usePreview(previewKeyOf(row), () => testLocally(row), row);
   const state: "disabled" | "none" | "starting" | "ready" | "failed" =
     !enabled ? "disabled" : failed ? "failed" : active && ready && open ? "ready" : busy || active ? "starting" : "none";
 
   const slot = "relative inline-flex size-7 shrink-0 items-center justify-center";
+  const stopBtn = (state === "ready" || state === "starting") && (
+    <Button size="icon" variant="ghost" className="size-7 shrink-0" disabled={busy} onClick={() => void stop()} title="Stop preview" aria-label="Stop preview">
+      <Square className="size-3.5 fill-current" />
+    </Button>
+  );
   if (state === "ready") {
     return (
-      <span className={slot} data-slot="preview-cell" data-state={state}>
-        <a href={hrefOf(open!)} target="_blank" rel="noreferrer" aria-label="Open preview" title={`Open preview on :${open!.port}`}
-          className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 items-center justify-center rounded-md">
-          <ExternalLink className="size-3.5" />
-        </a>
-        <StatusDot tone="ready" title="Running" className="absolute -top-0.5 -right-0.5" />
+      <span className="inline-flex shrink-0 items-center gap-1">
+        <span className={slot} data-slot="preview-cell" data-state={state}>
+          <a href={hrefOf(open!)} target="_blank" rel="noreferrer" aria-label="Open preview" title={`Open preview on :${open!.port}`}
+            className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 items-center justify-center rounded-md">
+            <ExternalLink className="size-3.5" />
+          </a>
+          <StatusDot tone="ready" title="Running" className="absolute -top-0.5 -right-0.5" />
+        </span>
+        {stopBtn}
       </span>
     );
   }
@@ -190,15 +203,116 @@ export function PreviewCell({ row }: { row: Row }) {
     : state === "failed" ? (error ? `Preview failed — ${error}` : "Preview failed — retry")
     : state === "starting" ? "Starting preview…" : "Add preview";
   return (
-    <span className={slot} data-slot="preview-cell" data-state={state}>
-      <Button size="icon" variant="ghost" className="size-7" disabled={state === "disabled" || state === "starting"}
-        onClick={() => void start()} title={title} aria-label={label}>
-        {icon}
-      </Button>
-      {(state === "starting" || state === "failed") && (
-        <StatusDot tone={state === "failed" ? "error" : "building"} title={state === "failed" ? "Failed" : "Starting…"} className="absolute -top-0.5 -right-0.5" />
-      )}
+    <span className="inline-flex shrink-0 items-center gap-1">
+      <span className={slot} data-slot="preview-cell" data-state={state}>
+        <Button size="icon" variant="ghost" className="size-7" disabled={state === "disabled" || state === "starting"}
+          onClick={() => void start()} title={title} aria-label={label}>
+          {icon}
+        </Button>
+        {(state === "starting" || state === "failed") && (
+          <StatusDot tone={state === "failed" ? "error" : "building"} title={state === "failed" ? "Failed" : "Starting…"} className="absolute -top-0.5 -right-0.5" />
+        )}
+      </span>
+      {stopBtn}
     </span>
+  );
+}
+
+/** Shared click handler for the GitHub PR-preview control: posts the repo's preview label, then
+ *  flips to the pending state at once (`justAdded`) rather than waiting for the next PR poll. */
+function usePrPreviewAdd(row: Row) {
+  const [busy, setBusy] = useState(false);
+  const [justAdded, setJustAdded] = useState(false);
+  const state = prPreviewState(row, previewConfigured(row.repo), justAdded);
+  const add = async () => {
+    setBusy(true);
+    try { await addPreviewLabel(row); setJustAdded(true); }
+    catch (e) { actionFailed({ action: "Add preview", title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }, e); }
+    finally { setBusy(false); }
+  };
+  return { state, busy, add };
+}
+
+/** The Agents-list row's (and the phone stacked row's) GitHub PR-preview cell: the deploy preview
+ *  the pr-preview action posts once the repo's preview label lands on the PR — distinct from the
+ *  LOCAL preview cell above, so both can sit side by side. A link once the PR carries a `previewUrl`,
+ *  an "Add PR preview" button before the label is on, a spinner (same slot) while the label is on but
+ *  the deploy hasn't posted its URL yet. Hidden entirely when there's no PR or the repo never
+ *  configured a preview label / the previews feature (see store.previewConfigured). */
+export function PrPreviewCell({ row }: { row: Row }) {
+  const { state, busy, add } = usePrPreviewAdd(row);
+  if (state === "hidden") return null;
+
+  const slot = "relative inline-flex size-7 shrink-0 items-center justify-center";
+  if (state === "ready") {
+    return (
+      <span className={slot} data-slot="pr-preview-cell" data-state={state}>
+        <a href={row.previewUrl} target="_blank" rel="noreferrer" aria-label="PR preview" title="PR preview"
+          className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 items-center justify-center rounded-md">
+          <Globe className="size-3.5" />
+        </a>
+      </span>
+    );
+  }
+  const pending = state === "pending";
+  const label = pending ? "Deploying preview" : "Add PR preview";
+  return (
+    <span className={slot} data-slot="pr-preview-cell" data-state={state}>
+      <Button size="icon" variant="ghost" className="size-7" disabled={pending || busy} onClick={() => void add()} title={label} aria-label={label}>
+        {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Globe className="size-3.5" />}
+      </Button>
+    </span>
+  );
+}
+
+/** The agent page's header-action equivalent of PrPreviewCell: a labelled button rather than an
+ *  icon, next to the Actions menu. Same three states (hidden/add/pending/ready). */
+export function PrPreviewButton({ row }: { row: Row }) {
+  const { state, busy, add } = usePrPreviewAdd(row);
+  if (state === "hidden") return null;
+
+  if (state === "ready") {
+    return (
+      <Button size="sm" variant="outline" asChild>
+        <a href={row.previewUrl} target="_blank" rel="noreferrer"><Globe className="size-3.5" />Open PR preview</a>
+      </Button>
+    );
+  }
+  const pending = state === "pending";
+  return (
+    <Button size="sm" variant="outline" disabled={pending || busy} onClick={() => void add()}>
+      {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Globe className="size-3.5" />}
+      {pending ? "Deploying preview" : "Add PR preview"}
+    </Button>
+  );
+}
+
+/** The same GitHub PR-preview control as PrPreviewCell, as inline text instead of an icon — sits
+ *  next to the model name in the Agents-list row's subline (desktop and the phone's stacked meta
+ *  line), Vercel-style: the deploy's own host as the link text once it's live, "+ Add preview"
+ *  before the label is on, "Deploying preview…" while it's building. Hidden under the same
+ *  conditions as PrPreviewCell (see prPreviewState) — bakes in its own leading "·" separator so a
+ *  caller can render it unconditionally alongside the subline's other dot-joined items. */
+export function PrPreviewInline({ row }: { row: Row }) {
+  const { state, busy, add } = usePrPreviewAdd(row);
+  if (state === "hidden") return null;
+  return (
+    <>
+      <span aria-hidden="true">·</span>
+      {state === "ready" ? (
+        <a href={row.previewUrl} target="_blank" rel="noreferrer" data-slot="pr-preview-inline" data-state={state}
+          title="PR preview" className="min-w-0 truncate hover:text-foreground hover:underline">
+          {previewLabel(row.previewUrl!)}
+        </a>
+      ) : state === "pending" ? (
+        <span data-slot="pr-preview-inline" data-state={state} className="shrink-0">Deploying preview…</span>
+      ) : (
+        <button type="button" data-slot="pr-preview-inline" data-state={state} disabled={busy} onClick={() => void add()}
+          title="Add PR preview" className="inline-flex shrink-0 items-center gap-0.5 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50">
+          <Plus className="size-3" />Add preview
+        </button>
+      )}
+    </>
   );
 }
 

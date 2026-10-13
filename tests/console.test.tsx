@@ -182,15 +182,27 @@ describe("the console's pages", () => {
     expect(source).toContain("Add the login form");
     // The page's actions live on the card, Vercel's Redeploy / ⋯.
     expect(details.querySelector('button[aria-label="Actions"]')).not.toBeNull();
+    // The local preview control (link/Add preview + its Stop button) sits beside the PR one — not
+    // just a click away on the Preview tab.
+    expect(details.querySelector('[data-slot="preview-cell"]')).not.toBeNull();
     const tabs = [...container!.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
     expect(tabs).toEqual(["Overview", "Chat", "Files changed (1)", "Preview"]);
   });
 
-  test("agent page: the conversation sits where Build Logs do — turn count, error / warning counters, Find in chat, timestamps", async () => {
+  test("agent page: Overview has no chat section — the conversation lives on its own Chat tab", async () => {
     seedLocal();
     await open("/r/local/feat-login");
+    expect(container!.querySelector('[data-slot="agent-chat"]')).toBeNull();
+    expect(container!.querySelector("textarea")).toBeNull(); // no composer on this tab either
+    expect(container!.querySelector('[data-slot="agent-details"]')).not.toBeNull(); // the rest of Overview stays
+  });
+
+  test("agent page: the Chat tab — no Conversation title or turn count, error / warning counters and Find in chat stand alone, composer focused", async () => {
+    seedLocal();
+    await open("/r/local/feat-login/chat");
     const chat = $("agent-chat");
-    expect(chat.querySelector('[data-slot="chat-count"]')!.textContent).toBe("3 turns");
+    expect(chat.textContent).not.toContain("Conversation"); // no card header
+    expect(chat.querySelector('[data-slot="chat-count"]')).toBeNull(); // the turns counter is gone
     expect(chat.querySelector('[data-slot="chat-errors"]')!.textContent).toBe("1");
     expect(chat.querySelector('[data-slot="chat-warnings"]')!.textContent).toBe("1");
     expect(chat.querySelectorAll('[data-slot="turn-time"]')).toHaveLength(3);
@@ -200,8 +212,30 @@ describe("the console's pages", () => {
     expect(chat.textContent).toContain("Fix the flaky login test");
     await type(chat.querySelector<HTMLInputElement>('input[aria-label="Find in chat"]')!, "nothing like it");
     expect(chat.textContent).toContain("No turn matches");
-    // The composer is at the foot of the card.
-    expect(chat.querySelector("textarea")).not.toBeNull();
+    // The composer is at the foot, with focus — opening the Chat tab is one of the ways in.
+    const box = chat.querySelector("textarea")!;
+    expect(box).not.toBeNull();
+    expect(document.activeElement).toBe(box);
+  });
+
+  test("agent page: no working indicator while idle; one appears while the agent runs", async () => {
+    seedLocal();
+    await open("/r/local/feat-login/chat");
+    expect($("agent-chat").querySelector('[data-slot="chat-working"]')).toBeNull();
+    act(() => root?.unmount()); container?.remove();
+    apiFake.agentsData = [{ branch: "feat-login", worktreePath: "/wt/feat-login", agentStatus: "running" }];
+    await open("/r/local/feat-login/chat");
+    expect($("agent-chat").querySelector('[data-slot="chat-working"]')!.textContent).toContain("working");
+  });
+
+  test("agent page: clicking the Chat tab focuses its composer without disturbing Overview's own load", async () => {
+    seedLocal();
+    await open("/r/local/feat-login");
+    expect(document.activeElement).not.toBe(container!.querySelector("textarea")); // Overview has none, and nothing stole focus
+    const tab = [...container!.querySelectorAll<HTMLElement>('[role="tab"]')].find((t) => t.textContent === "Chat")!;
+    // Radix switches tabs on mousedown, not click.
+    await act(async () => { tab.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 })); await flush(); await flush(); });
+    expect(document.activeElement).toBe($("agent-chat").querySelector("textarea"));
   });
 
   test("agent page: the Chat tab is the conversation alone; a coworker's PR has no Chat tab", async () => {
@@ -273,10 +307,11 @@ describe("surfaces: Vercel's hairlines, radii and shadows", () => {
     });
   }
 
-  test("the agent page's conversation runs full-bleed in its card: no border of its own, the page's theme", async () => {
+  test("the agent page's conversation runs full-bleed on its Chat tab: no card, no border of its own, the page's theme", async () => {
     apiFake.agentsData = [{ branch: "feat-login", worktreePath: "/wt/feat-login", agentStatus: "done" }];
-    await open("/r/local/feat-login");
+    await open("/r/local/feat-login/chat");
     const chat = container!.querySelector<HTMLElement>('[data-slot="agent-chat"]')!;
+    expect(chat.closest("section[data-slot]")).toBeNull(); // no VCard wrapper — a plain fill container
     const log = chat.querySelector<HTMLElement>(".font-mono.overflow-y-auto")!;
     expect(log.className).not.toMatch(/(^|\s)(border|rounded-md)(\s|$)/);
     expect(chat.querySelector(".log-themed")).not.toBeNull(); // follows the page's light/dark theme
