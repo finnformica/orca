@@ -369,39 +369,43 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
     onOpen={to ? () => navigate(to) : undefined} contextAt={menuAt} onContextClose={closeMenu} />;
   const prLink = row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" title={`Open PR #${row.prNumber} on GitHub`} className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>;
   if (stacked) return (
-    // A phone: the same row as a stack — title and ⋯, the latest instruction, the status line, then
-    // where it runs. Nothing hides behind a hover title: the instruction, the error and the branch
-    // are on screen. Every action (preview included, via the agent page) is in the one ⋯ menu.
+    // A phone: a taller, card-like row with no fixed-width columns — everything wraps instead of
+    // scrolling sideways. Line 1 is title + status; line 2 is branch/model/PR/preview/diffstat; the
+    // ⋯ menu sits in its own flex column at the right (never absolutely positioned over the text, so
+    // nothing can sit under it unreachable or clipped). State/condition badges, reasons and a run
+    // error follow as their own wrapping lines.
     <div
       ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-layout="stacked" data-branch={row.branch} aria-busy={busy}
       aria-label={row.title} aria-haspopup={hasMenu ? "menu" : undefined}
       onClick={openOnRowClick(row)} onContextMenu={onContextMenu} onKeyDown={onKeyDown}
-      className={`active:bg-accent/40 relative flex flex-col gap-1.5 border-b py-3 pr-2 pl-4 text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
+      className={`active:bg-accent/40 flex items-start gap-1 border-b py-3 pr-1 pl-4 text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
     >
-      <div role="cell" className="min-w-0 pr-10">
-        <div className="line-clamp-2 font-medium break-words">{row.title}</div>
-        {instruction && <div data-slot="row-instruction" className="text-muted-foreground mt-0.5 line-clamp-2 text-xs break-words">{instruction}</div>}
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <div role="cell" className="flex min-w-0 items-center justify-between gap-2">
+          <span className="min-w-0 truncate font-medium">{row.title}</span>
+          <RunStatus row={row} tone={tone} reasons={reasons} />
+        </div>
+        <div role="cell" className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
+          <span className="shrink-0">{row.repo}</span>
+          <span aria-hidden="true">·</span><span className="min-w-0 font-mono break-all">{row.branch}</span>
+          {model && <><span aria-hidden="true">·</span><span data-slot="model-label">{model.label}</span></>}
+          {prLink}
+          {!isDone && <PrPreviewInline row={row} />}
+          {diffstat && <><span aria-hidden="true">·</span>{diffstat}</>}
+          {instance && multiInstance && <><span aria-hidden="true">·</span><span data-slot="instance-chip">{instance}</span></>}
+        </div>
+        {instruction && <div data-slot="row-instruction" role="cell" className="text-muted-foreground line-clamp-2 text-xs break-words">{instruction}</div>}
+        <div role="cell" className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+          <Pill tone={LANE_PILL[row.lane]} slot="state-pill">{isDone ? "Merged" : LANE_LABELS[row.lane]}</Pill>
+          {row.prNumber && !isDone && <ConditionBadges row={row} />}
+          {row.prNumber && !isDone && <ReviewCluster row={row} />}
+          {row.prNumber && !isDone && <PrPreviewCell row={row} />}
+          {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
+        </div>
+        {reasons.length > 0 && <div role="cell" data-slot="row-reasons" className="text-geist-warning-fg text-xs">{reasons.join(" · ")}</div>}
+        {error && <div role="cell" data-slot="row-error" className="text-geist-red line-clamp-3 text-xs break-words">{error}</div>}
       </div>
-      <div className="absolute top-1 right-1 flex items-center [&_[data-slot=button]]:size-11">{menu}</div>
-      <div role="cell" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 pr-2">
-        <RunStatus row={row} tone={tone} reasons={reasons} />
-        <Pill tone={LANE_PILL[row.lane]} slot="state-pill">{isDone ? "Merged" : LANE_LABELS[row.lane]}</Pill>
-        {prLink}
-        {row.prNumber && !isDone && <ConditionBadges row={row} />}
-        {row.prNumber && !isDone && <ReviewCluster row={row} />}
-        {row.prNumber && !isDone && <PrPreviewCell row={row} />}
-        {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
-      </div>
-      {reasons.length > 0 && <div role="cell" data-slot="row-reasons" className="text-geist-warning-fg text-xs">{reasons.join(" · ")}</div>}
-      {error && <div role="cell" data-slot="row-error" className="text-geist-red line-clamp-3 text-xs break-words">{error}</div>}
-      <div role="cell" className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-1.5 pr-2 text-xs">
-        <span>{row.repo}</span>
-        {model && <><span aria-hidden="true">·</span><span data-slot="model-label">{model.label}</span></>}
-        {!isDone && <PrPreviewInline row={row} />}
-        {diffstat && <><span aria-hidden="true">·</span>{diffstat}</>}
-        {instance && multiInstance && <><span aria-hidden="true">·</span><span data-slot="instance-chip">{instance}</span></>}
-        <span aria-hidden="true">·</span><span className="min-w-0 font-mono break-all">{row.branch}</span>
-      </div>
+      <div className="flex shrink-0 items-start [&_[data-slot=button]]:size-11">{menu}</div>
       {!isDone && <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />}
     </div>
   );
