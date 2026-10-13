@@ -138,3 +138,31 @@ test("a second drop on the retry is not retried again — it surfaces to the cal
   expect(caught).toBeInstanceOf(Error); // the retry's own failure propagates…
   expect(lines).toHaveLength(1); // …without a second "reconnecting" line for a retry that wasn't attempted
 });
+
+// 2026-10-13: the chat composer bounced a message with "cached plan must not change result type" —
+// a laptop connection had prepared its statements before the box ran a migration (and before a hand
+// ALTER), and Postgres refuses a stale cached plan. The pool's OWN idle recycling surfaced the same
+// day as "Idle timeout reached after 30s" on the preview publish. Both are "get a fresh connection".
+test("a stale cached plan — the table altered by another session — is retried on a fresh connection", async () => {
+  useTaggedSchema(`orca-test-dbreconnect-plan-${process.pid}`);
+  await db.close();
+  const sql = await db.open();
+  await sql`CREATE TABLE plan_probe (id INT)`;
+  await sql`INSERT INTO plan_probe VALUES (1)`;
+  const q = (s: Bun.SQL) => s`SELECT * FROM plan_probe`;
+  expect((await db.withRetry(q)).length).toBe(1); // prepared, and its plan cached, on this connection
+  const admin = new Bun.SQL(pg.url);
+  await admin`ALTER TABLE plan_probe ADD COLUMN extra TEXT`; // another session changes the result shape
+  await admin.end();
+  const { result } = await captureErrors(() => db.withRetry(q));
+  expect(result.length).toBe(1);
+  expect(Object.keys(result[0]!)).toContain("extra"); // re-planned: the new column is visible
+});
+
+test("the pool's own idle/lifetime closes and a stale plan count as a dropped connection; a real query error does not", () => {
+  const as = (message: string, extra: Record<string, string>) => Object.assign(new Error(message), extra);
+  expect(db.isDroppedConnection(as("Idle timeout reached after 30s", { code: "ERR_POSTGRES_IDLE_TIMEOUT" }))).toBe(true);
+  expect(db.isDroppedConnection(as("Lifetime reached", { code: "ERR_POSTGRES_LIFETIME_TIMEOUT" }))).toBe(true);
+  expect(db.isDroppedConnection(as("cached plan must not change result type", { code: "ERR_POSTGRES_SERVER_ERROR", errno: "0A000" }))).toBe(true);
+  expect(db.isDroppedConnection(as("duplicate key value violates unique constraint", { code: "ERR_POSTGRES_SERVER_ERROR", errno: "23505" }))).toBe(false);
+});

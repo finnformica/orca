@@ -41,7 +41,8 @@ test("a card per machine appears once config names them, with each one's vitals 
   expect(detail(cloud, "instance-status")).toContain("Online");
   expect(detail(cloud, "instance-cpu")).toContain("12%");
   expect(detail(cloud, "instance-mem")).toContain("3.1 / 15.3 GB");
-  expect(detail(cloud, "instance-cost")).toContain("$1.23");
+  // The machine's rate, marked as Orca's on-demand estimate when IMDS supplied the type.
+  expect(detail(cloud, "instance-cost")).toBe("Rate$0.2331/hest.");
 });
 
 const lastValue = (chart: Element) => chart.querySelector('[data-slot="chart-value"]')!.textContent;
@@ -132,9 +133,10 @@ test("no history yet says so instead of an empty chart", async () => {
 test("CPU and memory stay one line each, as on main; Agents and Cost accrued are charts of the same design beside them", async () => {
   const now = Date.now();
   apiFake.healthHistoryData = [0, 1, 2].map((i) => ({
-    at: now - (2 - i) * 60_000 - 1000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: [0, 2, 1][i], costUsd: [0, 0.5, 0.25][i],
+    at: now - (2 - i) * 60_000 - 1000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: [0, 2, 1][i],
   }));
-  apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 12, load1: 0.5, load5: 0.4, memUsedGb: 3.1, memTotalGb: 15.3, uptimeS: 9, at: now, runningAgents: 3 };
+  apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 12, load1: 0.5, load5: 0.4, memUsedGb: 3.1, memTotalGb: 15.3, uptimeS: 9, at: now, runningAgents: 3,
+    rate: { hourlyUsd: 36, source: "config" } };
   await render(<InstanceCard instance="cloud" here={false} />);
   await ready();
   const chart = (slot: string) => container!.querySelector(`[data-slot="${slot}"]`)!;
@@ -151,12 +153,25 @@ test("CPU and memory stay one line each, as on main; Agents and Cost accrued are
   expect(chart("chart-agents").querySelector("figcaption")!.textContent).toBe("Agents3"); // the live count
   expect([...chart("chart-agents").querySelectorAll(".text-muted-foreground.flex.w-8 span")].map((e) => e.textContent)).toEqual(["4", "2", "0"]); // whole ticks
   expect(chart("chart-agents").querySelector("polyline")!.getAttribute("stroke")).toBe("var(--geist-pink)");
-  // Cost accrued: the running sum of each sample's cost over the range.
-  expect(chart("chart-cost").querySelector("figcaption")!.textContent).toBe("Cost accrued$0.75");
+  // Cost accrued: the MACHINE's rate over the time it was up — $36/h over the 121s from the first
+  // sample to the live reading is $1.21 — with the rate in the caption.
+  expect(chart("chart-cost").querySelector("figcaption")!.textContent).toBe("Cost accrued · $36.00/h$1.21");
   expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 24 }]); // one poll feeds all four
 });
 
-test("a bridge that sends no runningAgents or costUsd (pre-migration 13 / 17) still renders: zero agents, $0", async () => {
+test("a machine with no rate (the laptop, or an older bridge) greys the cost chart rather than drawing $0", async () => {
+  const now = Date.now();
+  apiFake.healthHistoryData = [0, 1].map((i) => ({ at: now - (1 - i) * 60_000 - 1000, cpuPct: 30, load1: 0.1, memUsedGb: 2, memTotalGb: 15.3 }));
+  apiFake.healthData = { instance: "local", hostname: "mac", cores: 8, cpuPct: 30, load1: 0.5, load5: 0.4, memUsedGb: 2, memTotalGb: 15.3, uptimeS: 9, at: now, runningAgents: 0,
+    rate: { hourlyUsd: 0, source: "none" } };
+  await render(<InstanceCard instance="local" here={false} />);
+  await ready();
+  expect(container!.querySelector('[data-slot="chart-cost"]')).toBeNull();
+  expect(container!.querySelector('[data-slot="chart-cost-off"]')!.textContent).toContain("instanceHourlyUsd");
+  expect(detail(container!, "instance-cost")).toBe("Rate—");
+});
+
+test("a bridge that sends no runningAgents or rate (pre-migration 13 / this change) still renders: zero agents, no cost line", async () => {
   const now = Date.now();
   apiFake.healthHistoryData = [0, 1].map((i) => ({ at: now - (1 - i) * 60_000 - 1000, cpuPct: 30, load1: 0.1, memUsedGb: 2, memTotalGb: 15.3 }));
   apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 30, load1: 0.5, load5: 0.4, memUsedGb: 2, memTotalGb: 15.3, uptimeS: 9, at: now };
@@ -164,7 +179,7 @@ test("a bridge that sends no runningAgents or costUsd (pre-migration 13 / 17) st
   await ready();
   expect(container!.querySelector('[data-slot="chart-cpu"]')!.querySelectorAll("polyline")).toHaveLength(1);
   expect(lastValue(container!.querySelector('[data-slot="chart-agents"]')!)).toBe("0");
-  expect(lastValue(container!.querySelector('[data-slot="chart-cost"]')!)).toBe("$0.00");
+  expect(container!.querySelector('[data-slot="chart-cost-off"]')).not.toBeNull();
 });
 
 test("the Instances refresh button refetches health and history at once, spinning until they answer", async () => {

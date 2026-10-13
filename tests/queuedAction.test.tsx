@@ -5,7 +5,7 @@
 // success (never throws) and raises no toast at all: the row/chat's own queued indicator (the
 // branch's `queued` count, Chat.tsx's `Queued` entries) already shows it, so a redundant toast would
 // just be noise. Driven against the real store + apiFake (tests/apiFake.ts), same style as
-// activeFollowing.test.tsx; a tiny probe component reads the toast stack (lib/toast) without
+// activeFollowing.test.tsx; a tiny probe component reads the toast stack (lib/notificationStore) without
 // mounting the whole App.
 import { afterEach, beforeAll, expect, test } from "bun:test";
 import { act } from "react";
@@ -13,19 +13,20 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import type { Row } from "@/store";
-import { resetToasts, useToasts, type Toast } from "@/lib/toast";
+import * as centre from "@/lib/notificationStore";
+import type { Notification } from "../shared/notifications";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
 
 let root: Root | undefined;
 let container: HTMLElement | undefined;
-let seen: Toast[] = [];
+let seen: Notification[] = [];
 
 /** Mounts a probe that mirrors the live toast stack into `seen`, so a test can assert on it without
- *  rendering the Toaster (which needs the orchestrator panel's atoms wired up). */
+ *  rendering the stack (which needs the orchestrator panel's atoms wired up). */
 function Probe() {
-  seen = useToasts();
+  seen = centre.useNotifications().toasts;
   return null;
 }
 async function mountProbe() {
@@ -40,7 +41,7 @@ afterEach(async () => {
   root = container = undefined;
   seen = [];
   apiFake.reset();
-  act(() => resetToasts());
+  act(() => centre.reset());
 });
 
 const row: Row = {
@@ -76,5 +77,5 @@ test("a genuinely failed launch still raises the error toast, not a queued one",
   await expect(store.addressPr(row)).rejects.toThrow("launch rejected");
   // addressPr itself doesn't raise the action-error toast (its caller, e.g. ActionButton, does) —
   // the point here is just that nothing queued-shaped was shown for a real failure.
-  expect(seen.some((t) => t.title === "Queued")).toBe(false);
+  expect(seen.some((t) => t.title === "Queued" || t.label === "Queued")).toBe(false);
 });

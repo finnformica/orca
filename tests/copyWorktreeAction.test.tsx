@@ -7,7 +7,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
-import { resetToasts } from "@/lib/toast";
+import * as centre from "@/lib/notificationStore";
 import { WorkstreamActions } from "@/views/WorkstreamActions";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -38,7 +38,7 @@ function mount(workstream: store.Row = row) {
 
 afterEach(async () => {
   apiFake.reset();
-  act(() => resetToasts()); // the Slack-failure test leaves an error toast in the module-level store otherwise
+  act(() => centre.reset()); // the Slack-failure test leaves a failed-action notification in the module-level store otherwise
   await act(async () => { await store.refresh(); });
   act(() => root?.unmount());
   container?.remove();

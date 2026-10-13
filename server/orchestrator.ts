@@ -25,7 +25,7 @@ import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
-  orchestratorPrompt, sessionHint, wakeExitReason, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  joinMessages, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
   type BoardRow, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
@@ -83,10 +83,13 @@ const serial = <T>(fn: () => Promise<T>): Promise<T> => {
   return next;
 };
 
-export async function status(cfg: OrcaConfig): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell: boolean; lastWakeUsd?: number; hint?: string; }> {
+export async function status(cfg: OrcaConfig): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell: boolean; lastWakeUsd?: number; hint?: string; startedAt?: number; queued: number }> {
   const b = await blob();
+  const running = agent.isRunning(dir());
   return {
-    key: dir(), running: agent.isRunning(dir()), paused: (b.wakes ?? 0) >= MAX_WAKES, notes: b.notes ?? "",
+    key: dir(), running, paused: (b.wakes ?? 0) >= MAX_WAKES, notes: b.notes ?? "",
+    startedAt: running ? agent.runStartedAt(dir()) : undefined, // when the wake in flight began — the header's elapsed time
+    queued: (await db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH)).length, // waiting for the next wake
     model: modelOf(cfg, b),
     contextPct: b.contextPct, // how full its last run left the session; absent until one has reported
     shell: cfg.orchestratorShell !== false,
@@ -132,7 +135,7 @@ export function compact(cfg: OrcaConfig): Promise<{ runId: string }> {
     if (agent.isRunning(dir())) throw new verbs.BusyError();
     const { runId } = await agent.launch(dir(), dir(), "/compact", {
       provider: "claude", resume: b.sessionId, repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
-      instruction: "/compact", action: "compact", queue: false, model: modelOf(cfg, b),
+      instruction: "/compact", action: "compact", queue: false, model: modelOf(cfg, b), source: "human", // your button
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return { runId };
@@ -291,7 +294,9 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
     const prompt = orchestratorPrompt({ fresh: !next.resume, notes: b.notes, board: boardText(await board(cfg)), messages, shell, cutOff: b.cutOff });
     const receipt = await agent.launch(dir(), dir(), prompt, {
       ...next, provider: "claude", repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
-      instruction: messages.join("\n\n"), action: "orchestrate", queue: false,
+      instruction: joinMessages(messages), action: "orchestrate", queue: false,
+      // Anything you said makes it yours; worker reports alone are the agents' (folded in the chat).
+      source: turnSource(messages),
       model: modelOf(cfg, b), maxBudgetUsd: budgetOf(cfg),
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
       // Everything Claude Code has in a terminal (bypassPermissions), as the user asked: a manager
@@ -449,8 +454,15 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const branch = required(args, "branch");
       const e = (await db.enrichment(repo.name))[branch];
       if (!e?.orchestrated) throw new Error(`${repo.name}/${branch} is not an orchestrated workstream; this command only archives ones this orchestrator spawned or sent to`);
-      await verbs.archiveWorkstream(repo, branch);
+      // The worktree is removed where it lives: a laptop's worktree by the laptop.
+      const home = await verbs.placement(repo, { branch });
+      if (home !== db.instanceName()) await viaInstance(cfg, home, "/api/workstreams/archive", { repo: repo.name, branch });
+      else await verbs.archiveWorkstream(repo, branch);
       return `Archived ${repo.name}/${branch}. Its branch, commits and transcript stay readable with \`orca chats\` / \`orca read\`.`;
+    }
+    case "sweep": {
+      // Finished worktrees, dead previews and orphan branches on every instance. Dry run unless --confirm.
+      return sweepText(await verbs.sweepAll(cfg, { confirm: "confirm" in args }));
     }
     case "preview": {
       const repo = repoNamed(cfg, args.repo);
@@ -520,6 +532,6 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, preview [--status | --push-to-template [--confirm]], chats, read, notes`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, sweep [--confirm], preview [--status | --push-to-template [--confirm]], chats, read, notes`);
   }
 }

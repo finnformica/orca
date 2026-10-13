@@ -56,10 +56,16 @@ describe("decisions (pure)", () => {
     expect(checkNotification({ ...base })).toBeUndefined();
   });
 
-  test("PRs: CI failing once per set of failing checks, conflicts once per PR, open PRs only", () => {
-    const pr = { number: 7, title: "Add login", branch: "feat", state: "OPEN", ciStatus: "failing", mergeable: "CONFLICTING", failingChecks: ["test", "lint"] };
+  test("PRs: CI failing once per head commit, conflicts once per PR, open PRs only", () => {
+    const pr = { number: 7, title: "Add login", branch: "feat", state: "OPEN", ciStatus: "failing", mergeable: "CONFLICTING", failingChecks: ["test", "lint"], head: "abc123" };
     const out = prNotifications("r", [pr, { ...pr, number: 8, state: "MERGED" }]);
-    expect(out.map((n) => [n.kind, n.key])).toEqual([["pr_ci_failed", "pr-ci:r#7:lint,test"], ["pr_conflicts", "pr-conflict:r#7"]]);
+    expect(out.map((n) => [n.kind, n.key])).toEqual([["pr_ci_failed", "pr-ci:r#7@abc123"], ["pr_conflicts", "pr-conflict:r#7"]]);
+    // Checks flapping on ONE commit (a re-run, a check finishing later) is the same event: same key.
+    const key = (p: Parameters<typeof prNotifications>[1][number]) => prNotifications("r", [p])[0]!.key;
+    expect(key({ ...pr, failingChecks: ["lint"] })).toBe(key({ ...pr, failingChecks: ["test"] }));
+    // A new push failing again is a new event; with no head known, it is once per PR.
+    expect(key({ ...pr, head: "def456" })).toBe("pr-ci:r#7@def456");
+    expect(key({ ...pr, head: undefined })).toBe("pr-ci:r#7");
     expect(out[0]).toMatchObject({ body: "Failing: lint, test", link: { pr: 7 }, title: "Add login" });
     expect(prNotifications("r", [{ ...pr, ciStatus: "passing", mergeable: "MERGEABLE" }])).toEqual([]);
   });
@@ -201,13 +207,18 @@ describe("emitting, once", () => {
     expect(await db.addNotification({ key: "run:run-x:finished", repo: "r", kind: "finished", title: "t", body: "" })).toBeUndefined();
   });
 
-  test("PRs: CI failing and conflicts, once per PR — a second poll adds nothing", async () => {
-    const prs = [{ number: 7, title: "Add login", branch: "feat", state: "OPEN", ciStatus: "failing", mergeable: "CONFLICTING", failingChecks: ["test"] }];
+  test("PRs: CI failing and conflicts, once per PR — a second poll, a check flap or the other instance adds nothing", async () => {
+    const prs = [{ number: 7, title: "Add login", branch: "feat", state: "OPEN", ciStatus: "failing", mergeable: "CONFLICTING", failingChecks: ["test"], head: "abc" }];
     await notify.prs("r", prs);
     await notify.prs("r", prs);
+    await notify.prs("r", [{ ...prs[0]!, failingChecks: ["lint", "test"] }]); // another check failed on the same commit
+    process.env.ORCA_INSTANCE = "cloud";
+    await notify.prs("r", [{ ...prs[0]!, failingChecks: ["lint"] }]); // re-run: test passed, lint still red — answered by the box
     const rows = await db.notifications();
     expect(rows.map((n) => n.kind).sort()).toEqual(["pr_ci_failed", "pr_conflicts"]);
     expect(rows[0]!.link).toEqual({ pr: 7 });
+    await notify.prs("r", [{ ...prs[0]!, head: "def" }]); // a new push failing again IS news
+    expect((await db.notifications()).filter((n) => n.kind === "pr_ci_failed")).toHaveLength(2);
   });
 
   test("a preview is watched until it answers (→ ready, with the URL) or dies (→ failed); a stopped one is forgotten", async () => {

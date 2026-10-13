@@ -7,10 +7,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as db from "../server/db";
-import { backfillCost, costSince, health, historyHours, resetCostWindow, sampleMetrics } from "../server/health";
+import { health, historyHours, sampleMetrics } from "../server/health";
 import * as lease from "../server/lease";
-import * as ledger from "../server/ledger";
-import { countMax, instanceSeries, sparklineSegments } from "../web/src/workstream";
+import { accruedCost, countMax, instanceSeries, rateLabel, sparklineSegments } from "../web/src/workstream";
 import { freshSchema, type TestDb } from "./pg";
 
 let pg: TestDb;
@@ -49,7 +48,7 @@ test("samples read back oldest first, within the hours asked for, for the instan
 
   const day = await db.metricHistory("cloud", 24, now);
   expect(day.map((p) => p.cpuPct)).toEqual([20, 30]);
-  expect(day[0]).toEqual({ at: now - 2 * H, cpuPct: 20, load1: 0.8, memUsedGb: 3.1, memTotalGb: 15.3, diskUsedGb: 11, runningAgents: 2, costUsd: 0 });
+  expect(day[0]).toEqual({ at: now - 2 * H, cpuPct: 20, load1: 0.8, memUsedGb: 3.1, memTotalGb: 15.3, diskUsedGb: 11, runningAgents: 2 });
   expect(day.map((p) => p.runningAgents)).toEqual([2, 1]);
   expect((await db.metricHistory("cloud", 48, now)).map((p) => p.cpuPct)).toEqual([10, 20, 30]);
   expect((await db.metricHistory("cloud", 1.5, now)).map((p) => p.cpuPct)).toEqual([30]);
@@ -118,64 +117,38 @@ test("the live reading counts live leases too, so the card's Agents · N is the 
   try { expect((await health()).runningAgents).toBe(1); } finally { lease.release("/wt/live"); }
 });
 
-test("cost: each sample records what the ledger's runs that finished since the previous one cost — counted once, across a restart too", async () => {
-  ledger.clear();
-  resetCostWindow();
-  await sampleMetrics(); // first sample: nothing has run
-  ledger.record({ kind: "run", provider: "claude", status: "done", costUsd: 0.5 });
-  ledger.record({ kind: "run", provider: "codex", status: "done" }); // no cost reported: 0
-  ledger.record({ kind: "pr-description", provider: "claude", status: "done", costUsd: 9 }); // not a run
-  await Bun.sleep(2);
+test("the sampler no longer writes model spend: cost_usd (migration 17) stays NULL, unused", async () => {
   await sampleMetrics();
-  await Bun.sleep(2);
-  await sampleMetrics(); // nothing new: 0, not 0.5 again
-  // A restart: the window is re-seeded from this instance's newest row, so a run that finished
-  // while the bridge was down is counted once — and nothing earlier is counted twice.
-  ledger.record({ kind: "run", provider: "claude", status: "error", costUsd: 0.25 });
-  resetCostWindow();
-  await Bun.sleep(2);
-  await sampleMetrics();
-  const rows = await db.metricHistory("cloud", 1);
-  expect(rows.map((r) => r.costUsd)).toEqual([0, 0.5, 0, 0.25]);
-  ledger.clear();
-});
-
-test("cost: a row from before migration 17 reads back as $0", async () => {
   const sql = await db.open();
-  await sql`
-    INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, running_agents)
-    VALUES (${db.currentUser()}, 'cloud', ${new Date(Date.now() - H)}, 15, 0.6, 3, 15, 1)`;
-  expect((await db.metricHistory("cloud", 24))[0]!.costUsd).toBe(0);
+  const [row] = await sql`SELECT cost_usd FROM instance_metric WHERE instance = 'cloud'`;
+  expect(row.cost_usd).toBeNull();
+  expect(Object.keys((await db.metricHistory("cloud", 1))[0]!)).not.toContain("costUsd");
 });
 
-test("cost backfill: samples written before migration 17 get the ledger's runs, each on the sample that would have counted it — once, never over the sampler's", async () => {
-  const now = Date.now(), M = 60_000;
-  const sql = await db.open();
-  // Three old samples (cost_usd NULL, as every row before migration 17) and one the sampler wrote.
-  for (const at of [now - 30 * M, now - 20 * M, now - 10 * M]) {
-    await sql`INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, running_agents)
-      VALUES (${db.currentUser()}, 'cloud', ${new Date(at)}, 10, 0.4, 3, 15, 0)`;
-  }
-  await db.recordMetric({ ...sample(10), costUsd: 0.125 }, now - 5 * M);
-  ledger.clear();
-  ledger.record({ kind: "run", provider: "claude", status: "done", costUsd: 1, at: now - 25 * M });   // → the -20m sample
-  ledger.record({ kind: "run", provider: "claude", status: "done", costUsd: 2, at: now - 22 * M });   // → the -20m sample
-  ledger.record({ kind: "run", provider: "claude", status: "done", costUsd: 4, at: now - 10 * M });   // → the -10m sample (at it, inclusive)
-  ledger.record({ kind: "run", provider: "claude", status: "done", costUsd: 8, at: now - 7 * M });    // the sampler's row counted it already
-  ledger.record({ kind: "run", provider: "claude", status: "done", costUsd: 16, at: now - 1 * M });   // after every sample: the next sample's
-  ledger.record({ kind: "run", provider: "codex", status: "done", at: now - 25 * M });                // no cost
-  await backfillCost();
-  const costs = async () => (await db.metricHistory("cloud", 1, now)).map((r) => r.costUsd);
-  expect(await costs()).toEqual([0, 3, 4, 0.125]);
-  await backfillCost(); // a restart: nothing changes
-  expect(await costs()).toEqual([0, 3, 4, 0.125]);
-  ledger.clear();
+test("accruedCost: the machine's rate over the time between samples, flat across a gap where it was down", () => {
+  const M = 60_000, H = 60 * M;
+  // Up for 30 minutes (a sample a minute), down for 2 hours, up again for 30 minutes.
+  const up = (from: number) => Array.from({ length: 31 }, (_, i) => ({ at: from + i * M }));
+  const samples = [...up(0), ...up(30 * M + 2 * H)];
+  const pts = accruedCost(samples, 0.24);
+  expect(pts[0]).toEqual({ at: 0, v: 0 }); // the range's cost starts at its first sample
+  expect(pts[30]!.v).toBeCloseTo(0.12, 10); // half an hour at $0.24/h
+  expect(pts[31]!.v).toBeCloseTo(0.12, 10); // the 2h gap adds nothing
+  expect(pts.at(-1)!.v).toBeCloseTo(0.24, 10); // an hour up in all, not 3
+  // A pause up to 5 minutes is still up (a slow sample), past it is down.
+  expect(accruedCost([{ at: 0 }, { at: 5 * M }], 12).at(-1)!.v).toBeCloseTo(1, 10);
+  expect(accruedCost([{ at: 0 }, { at: 5 * M + 1 }], 12).at(-1)!.v).toBe(0);
+  // No rate (the laptop): flat zero.
+  expect(accruedCost(samples, 0).every((p) => p.v === 0)).toBe(true);
+  expect(accruedCost([], 1)).toEqual([]);
 });
 
-test("costSince: runs only, in (from, to], summed", () => {
-  const e = (at: number, costUsd?: number, kind: "run" | "pr-description" = "run") => ({ at, kind, provider: "claude" as const, status: "done" as const, costUsd });
-  expect(costSince([e(10, 1), e(20, 2), e(30, 4), e(25, 8, "pr-description"), e(22)], 10, 30)).toBe(6);
-  expect(costSince([], 0, 1)).toBe(0);
+test("rateLabel: the rate in the chart's caption, marked when it is an estimate", () => {
+  expect(rateLabel({ hourlyUsd: 0.2331, source: "estimate", instanceType: "m7i.xlarge" })).toBe("Cost accrued · $0.23/h est. (m7i.xlarge)");
+  expect(rateLabel({ hourlyUsd: 0.24, source: "config" })).toBe("Cost accrued · $0.24/h");
+  expect(rateLabel({ hourlyUsd: 0.0472, source: "config" })).toBe("Cost accrued · $0.047/h");
+  expect(rateLabel({ hourlyUsd: 0, source: "none" })).toBe("Cost accrued");
+  expect(rateLabel(undefined)).toBe("Cost accrued");
 });
 
 test("hours: 24 by default, never past the 30 days kept", () => {
@@ -194,14 +167,15 @@ test("sparkline: x by time, y from 0 to max, broken where the sampler went quiet
   expect(sparklineSegments([{ at: -1, v: 5 }], { from, to, max: 100, w: 100, h: 10 })).toEqual([]); // outside the window
 });
 
-test("instanceSeries: the newest sample (live when newer) is every series' raw last point and the header's latest; cost cumulates", () => {
-  const rec = (at: number, cpuPct: number, costUsd = 0, runningAgents = 1) => ({ at, cpuPct, memUsedGb: 2, runningAgents, costUsd });
-  const history = [rec(-5, 99), rec(10, 10, 0.5), rec(20, 30, 0.25, 2)]; // the first is outside [0, 100]
+test("instanceSeries: the newest sample (live when newer) is every series' raw last point and the header's latest; cost accrues at the rate", () => {
+  const rec = (at: number, cpuPct: number, runningAgents = 1) => ({ at, cpuPct, memUsedGb: 2, runningAgents });
+  const history = [rec(-5, 99), rec(10, 10), rec(20, 30, 2)]; // the first is outside [0, 100]
   const live = { at: 25, cpuPct: 42, memUsedGb: 3, runningAgents: 4 };
-  const s = instanceSeries(history, live, 0, 100);
+  const s = instanceSeries(history, live, 0, 100, 300, 3_600_000); // $1 per ms, to keep the arithmetic whole
   expect(s.cpu.map((p) => p.v)).toEqual([10, 30, 42]);
-  expect(s.latest).toEqual({ at: 25, cpuPct: 42, memUsedGb: 3, runningAgents: 4, costUsd: 0.75 });
-  expect(s.cost.map((p) => p.v)).toEqual([0.5, 0.75, 0.75]);
+  expect(s.latest).toEqual({ at: 25, cpuPct: 42, memUsedGb: 3, runningAgents: 4, costUsd: 15 });
+  expect(s.cost.map((p) => p.v)).toEqual([0, 10, 15]); // from the range's first sample to the live one
+  expect(instanceSeries(history, live, 0, 100).latest!.costUsd).toBe(0); // no rate: nothing accrues
   expect(s.agents.at(-1)).toEqual({ at: 25, v: 4 });
   // An older live reading is ignored: the recorded sample is newer, and is the latest.
   expect(instanceSeries(history, { ...live, at: 15 }, 0, 100).latest!.cpuPct).toBe(30);

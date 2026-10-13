@@ -368,7 +368,9 @@ describe("the notification centre", () => {
     apiFake.notificationsData = [note({ id: 50, createdAt: Date.now() - 5_000 })];
     await open("/");
     const first = await live();
-    expect(apiFake.notificationFetches).toEqual([undefined]);
+    // The load, then the first `ready` catching up from its cursor (a row written between the two
+    // would otherwise be missed until the next gap).
+    expect(apiFake.notificationFetches).toEqual([undefined, apiFake.notificationsData[0]!.createdAt as number]);
     // The stream reconnects (a second `ready` on the same source): fetch since the newest known row.
     apiFake.notificationsData.push(note({ id: 51, kind: "failed", title: "While away" }));
     await act(async () => { emit(first, "ready", {}); await flush(); await flush(); });
@@ -407,7 +409,7 @@ describe("the notification centre", () => {
     expect(apiFake.claudePrompts.at(-1)).toContain("#7");
   });
 
-  test("a quick action's failed launch shows the action-error toast with why, and puts the notification back as unread", async () => {
+  test("a quick action's failed launch is a failed-action card in the same stack with why, and puts the notification back as unread", async () => {
     apiFake.prsData = [{ number: 7, title: "Red CI", branch: "feat-x", url: "https://github.com/o/r/pull/7", state: "OPEN", isDraft: false, ciStatus: "failing", failingChecks: ["test"], reviewStatus: "none", mergeable: "MERGEABLE", autoMergeEnabled: false }];
     apiFake.claudeError = "worktree busy";
     await open("/");
@@ -417,18 +419,21 @@ describe("the notification centre", () => {
     await mouse(toast, "mousemove");
     await click(button(toast, "Address PR"));
     // Closed and marked read at once, same as success…
-    expect(cards()).toHaveLength(0);
+    expect(cards().filter((c) => c.dataset.kind === "pr_ci_failed")).toHaveLength(0);
     expect(apiFake.notificationCalls).toContainEqual({ verb: "read", ids: [31] });
     await act(async () => { await flush(); await flush(); await flush(); });
-    // …but the launch rejected: a small error toast names the action and why, and the notification
-    // is unread again (the centre, and the bell's count, both see it).
-    const errToast = $("toast")!;
-    expect(errToast.getAttribute("data-kind")).toBe("error");
+    // …but the launch rejected: a failed-action card in the SAME stack names the action and why
+    // (no second stack), and the notification is unread again (the centre, and the bell's count —
+    // now two: it and the failure — both see it).
+    expect($("toast")).toBeNull();
+    const errToast = cards().find((c) => c.dataset.kind === "action_failed")!;
     expect(errToast.textContent).toContain("Address PR failed");
     expect(errToast.textContent).toContain("worktree busy");
-    expect($("notifications-unread")!.textContent).toBe("1");
+    expect($("notifications-unread")!.textContent).toBe("2");
+    expect(apiFake.notificationCalls.filter((c) => c.verb === "read")).toEqual([{ verb: "read", ids: [31] }]); // the failure is local
     await click($("notifications-bell"));
     expect($$("notification-row").some((r) => r.textContent!.includes("Red CI"))).toBe(true);
+    expect($$("notification-row").some((r) => r.dataset.kind === "action_failed")).toBe(true);
   });
 
   test("quick actions on a touch screen show without hover; there is no Read — the × marks it read and takes the toast off the stack", async () => {

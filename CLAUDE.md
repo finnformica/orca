@@ -182,9 +182,15 @@ composer focused. It was a text box whose keystrokes carried into the composer; 
 below now covers "fire off a line"). **The quick-ask pill** (`components/QuickAsk.tsx`, the `A` key):
 a small "Ask · A" pill fixed at the bottom centre of the main column (its strip starts where
 the sidebar ends, collapsed or expanded) on every page (desktop; below md the phone's bottom
-bar has the orchestrator instead) opens a one-line box for ONE message to the orchestrator with no
-history — Enter sends, "Sent to the orchestrator · Open chat" dwells 4s then it closes, a failed
-send keeps the text. The pill, the top-bar button and the phone's bottom bar carry the orchestrator's
+bar has the orchestrator instead) MORPHS (one surface: width, height, radius; instant under reduced
+motion) into a box for messages to the orchestrator with no history — "Ask the orchestrator...", a
+textarea three lines tall that grows to a cap (a JS fallback where `field-sizing` is unsupported), Enter sends / Shift, ⌘ or Ctrl+Enter breaks the line (as in the chat composer), no ✕. The agent icon sits top left with the text
+the whole width beside it; the row below holds only actions — a Send button carrying the `send` keycap
+(and the "Sent · Open chat" receipt). Collapsing keeps the box's contents mounted through the morph —
+faded, inert, pinned at their width — and the pill fades in after (`MORPH_MS`); swapping them at once
+made the exit janky. A send is optimistic: the box clears and stays open, a brief "Sent · Open chat" fades, and
+the POSTs are chained so quick sends arrive in order (a busy orchestrator queues them); a failed send
+gives the text back. The top-bar button and the phone's bottom bar (never the pill) carry the orchestrator's
 **activity dot** (`ActivityDot`: pulsing while a wake runs, lit once one finished while the panel was
 closed, cleared when it opens), fed by ONE subscriber (`useOrchestratorActivity` in the Shell: a
 status read on mount, then one per `turn` event on the tab's shared stream — no poll of its own).
@@ -193,7 +199,10 @@ status read on mount, then one per `turn` event on the tab's shared stream — n
 orchestrator, `A` quick ask, `F` Find, `⌘B` the sidebar, `?` the shortcuts sheet, Esc closes the
 overlay (the quick-ask box first, then the panel). Letters
 and ⌘B never fire in a field or inside a modal dialog (they'd eat a keystroke of the message); ⌘K and
-Esc fire everywhere. **O, not ⌘J**, for the orchestrator: ⌘J / Ctrl+J is the browser's Downloads
+Esc fire everywhere. **Every open path goes through `openOrchestrator`** (`lib/orchestratorOpen.ts`): the composer focuses
+in a layout effect in the commit that opens it, and keys typed before that are held by a short
+typeahead and forwarded in order (typing "Sometimes" straight after O once gave "ometimesS").
+**O, not ⌘J**, for the orchestrator: ⌘J / Ctrl+J is the browser's Downloads
 (Chrome on Windows/Linux, Firefox), and a bare letter can't clash with a browser or a composer; from a
 field, ⌘K → "Open orchestrator" is one key more. The table also feeds the tooltips, the palette's
 hints and the `?` sheet, so a key can't be documented in one place and bound in another. **Every
@@ -291,12 +300,18 @@ A workstream is a branch; its lane (`store.laneFor`):
   is clean, else In Review). **merged today** (server-local calendar day) → Done (`gh pr list --state merged`).
 
 Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
-- **A failed action is a toast, never text in the row** (`lib/toast` + `components/Toaster`, mounted
-  once in App, bottom-right above the orchestrator's window; errors stay until dismissed, info goes
-  after 8s). Title = action + workstream, body = the message (mono, scrollable), **Copy** (message +
-  repo/branch/PR/action) and **Ask the orchestrator** (the #128 `ask`, prefilled `Action … failed: …
-  Please investigate and fix.`). The button keeps only its ✗, first line as tooltip. Covers
-  `WorkstreamActions` (Merge, Slack, Move, …), `ActionButton` with `failure`, and preview start/crash.
+- **A failed action is a notification, never text in the row** — kind `action_failed`, in the ONE
+  notification toast stack and the bell's centre (see Notification centre; there is no second,
+  bottom-right stack any more — Finn found two inconsistent). It is LOCAL (`notificationStore`
+  `actionFailed` / `notifyLocal`: a negative id, never stored nor sent to the bridge — your click failing
+  is news to this browser only), persistent until dismissed, and the same failure while unread is
+  re-popped, not stacked twice. Card = repo · workstream, labelled with the verb (`Merge failed`),
+  body = the message; quick actions **Ask the orchestrator** (the #128 `ask`, prefilled `Action …
+  failed: … Please investigate and fix.`) and **Copy** (message + repo/branch/PR/action), then Open.
+  The button keeps only its ✗, first line as tooltip. Covers `WorkstreamActions` (Merge, Slack, Move,
+  …), `ActionButton` with `failure`, a preview's start / stop / add-label request, and the Usage
+  card's login switch. NOT a preview crash: the bridge's watcher already reports it as
+  `preview_failed`, so one crash is one notification.
 - **Enable auto-merge on a repo that disallows it** (`Auto merge is not allowed for this repository`):
   `enableAutoMerge` squash-merges directly if `mergeSafe`, else rethrows with "enable auto-merge in the
   repo settings, or merge when green". The stacked fallback still comes first.
@@ -355,6 +370,16 @@ so the gate can never loop. The conversational prompts also open with a session-
 
 - **Mark ready** (draft PR) = `gh pr ready`. **Merge**: PR → `gh pr merge`; local → guarded `git merge`.
 - **Discard** never deletes a branch that has an open PR (only pre-PR locals).
+- **Cleanup after finished work** (`verbs.cleanupRepo`, run by each instance's agents poll / publish
+  tick for ITS OWN worktrees): a merged or closed PR's worktree is reaped after `CLEANUP_GRACE_MS`
+  (10 min, from `mergedAt`/`closedAt`) and never while an agent runs on it — preview stopped, placement
+  cleared, a merged branch deleted (a closed one kept), the card archived. **Nothing that would lose
+  work is removed** (`cleanupDecision`): uncommitted changes, or commits on no remote, not in base and
+  not the PR's last head (`git.worktreeSafety`), flag the card (`cleanupBlocked`) instead. `orca
+  archive` goes to the worktree's home instance (`/api/workstreams/archive`). **`orca sweep
+  [--confirm]`** (`/api/cleanup/sweep`, fanned out to every instance) is the one-off: finished
+  worktrees, previews with nothing behind them and Orca's own branches left with no worktree or open
+  PR — a dry-run report unless confirmed, same safety, no grace period.
 
 Agent runs are killed on discard and on server shutdown (SIGINT/SIGTERM) so restarts don't orphan
 them. Routing: `/` = board, `/{repo}/prs/:n[/chat|/files|/preview]` = PR detail (an old `/checks` lands on Overview),
@@ -367,7 +392,12 @@ shown as `❯ …` with the agent's output below), plus the follow-up `ChatCompo
 message. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
 involved. Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every
 board action uses. A turn written at launch but not yet finished renders as `▋ working…` (that's how
-an interrupted run stays visible); a turn with a parsed outcome renders its sections. **The composer
+an interrupted run stays visible); a turn with a parsed outcome renders its sections. A Claude run's
+reply types out live: `--include-partial-messages` text deltas are pushed as `delta` events (never
+stored; the whole message's step replaces the draft). A finished reply must render from the stream
+alone: the chat applies only its NEWEST page request (a slower, older answer once reverted a finished
+turn to `working…` until the next send), every `ready` re-reads the newest page, and an EventSource an
+HTTP error closed for good is reopened (`lib/events.ts`). **The composer
 is never busy:** a send clears the box at once and the next message can go while the launch is still
 in flight (seconds, longer over the tailnet) — the log's `▋ sending…` line, until the bridge has it as
 a running turn or a queued entry, is the receipt. (It used to go busy until the launch returned, and
@@ -401,7 +431,20 @@ stays MOUNTED while closed (slid out, `aria-hidden`), so reopening is instant wi
 scroll position and draft where you left them. Its chat is `ChatPanel variant="chat"`: an
 assistant-chat styling in the page's theme (`.log-themed`) — your messages as `bg-accent` bubbles on
 the right, replies under "Orchestrator" with a bot avatar, folded steps and `⚙` worker reports,
-day dividers (`dayLabel`), timestamps on hover. (History: a modal, then a draggable/resizable corner
+day dividers (`dayLabel`), timestamps on hover, and a long message of yours cut to its first lines
+behind Show more (`longMessage`). **One stream, worker traffic split out**: your
+messages and its replies to them read as the conversation; each run of agent turns (the wakes worker
+reports caused and its replies) is ONE collapsed, blue-tinted `⚙ 3 worker reports · 2 replies` block
+that opens in place, and a wake that carried your message AND reports puts your words in the bubble
+with the reports as their own collapsed block above it (`WorkerBlock`; `chatItems` / `agentsMarker` in
+`workstream.ts`). Held reports and your queued messages both show. (History: a Chat | Agents toggle
+split these into two channels; a wake carrying your message and reports counted as yours, so most
+worker traffic never reached Agents, and the user asked for this instead.) The split rides
+`turn.source` (`human` | `agents`, `shared/agent.ts` `TurnSource`; migration 18 — 16 and 17 were held
+by open branches — backfilled from the stored text): `human` is anything you said (typed, quick-ask,
+the palette, a toast's Ask, the New-draft box, Compact), `agents` a wake whose every message is a
+`[worker finished]` report (`turnSource`, decided in `orchestrator.wake`). A row without it is read
+off its instruction the same way (`sourceOf`). (History: a modal, then a draggable/resizable corner
 window with the dark terminal styling — one more thing to place and keep out of the way.) Its composer
 carries a model
 picker (Claude models only; changing it keeps the session) and an icon button whose ring shows how
@@ -447,7 +490,7 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   project-scope MCP servers, and Claude Code's own auto-memory accrues under that cwd; user-level
   `~/.claude` config loads as in any session.
 - **`orca`** (`bin/orca` → `POST /api/orchestrator/tool` → `orchestrator.tool`): `board`, `spawn`,
-  `send`, `address`, `archive`, `preview` (`--status`; and `--push-to-template [--confirm]`,
+  `send`, `address`, `archive`, `sweep [--confirm]`, `preview` (`--status`; and `--push-to-template [--confirm]`,
   `server/pushTemplate.ts`, which makes a preview's whole database the repo's `PREVIEW_TEMPLATE_DB`
   — old one kept as `<template>_bak_<ts>` — and writes its integration env vars back to the main
   checkout's copied `.env`; dry run without `--confirm`, values masked — README), `chats`, `read`,
@@ -513,11 +556,17 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   muted `⚙ … held for the batch` line. Between wakes it checks in itself with `orca board` /
   `orca read`. (It used to be woken per completion;
   the user found that noisy and wanted it to operate like a manager.) In the chat, a wake whose
-  message was only worker reports renders as muted `⚙` system lines with the report folded, not as
-  a `❯` prompt. It is asynchronous by design: it spawns, ends its turn, and is woken; it never polls.
+  message was only worker reports is an Agents-channel turn (above): muted `⚙` system lines with the
+  report folded, not a `❯` prompt. It is asynchronous by design: it spawns, ends its turn, and is woken; it never polls.
 - **One wake per batch.** Its runs launch with `queue: false`; everything that arrived while it
-  worked (worker events, your messages) is drained into ONE resumed run, and deliveries are
-  serialised so two workers finishing together can't race a launch.
+  worked (worker events, your messages) is drained into ONE resumed run — but each message stays its
+  own: they are joined with `MESSAGE_BREAK` (`joinMessages` / `splitMessages`), not a blank line, so
+  three sends are three bubbles in the chat and "N separate messages" to the model (a blank line
+  merged them into one in both; rows from before keep their old reading), and deliveries are
+  serialised so two workers finishing together can't race a launch. In that run's prompt what you
+  said and what the workers reported are separate labelled sections, yours first — `## From the
+  user`, then `## Worker reports` (each report verbatim) — so the model never reads a report as an
+  instruction from you, or the reverse (`orchestratorPrompt`).
 - **Loop guards.** `MAX_WAKES` (12) self-wakes in a row with no message from you → it pauses and
   holds further events in the queue until you reply (the window's title says so). Each wake has a
   `--max-budget-usd`: `orchestratorWakeBudgetUsd` in the app config, 5 unless set. There is
@@ -531,9 +580,11 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   was cut off`. A message whose wake dies twice (`died`) is NOT queued a third time; the line says
   to send it again. A restart is detected at startup (`orchestrator.recover`): a claim with no live
   lease whose turn did not end on text was cut off; one that outlived the bridge and finished is
-  just drained. Stop is not a death. The popout shows the last wake's spend and, once a wake costs
-  half the cap or the context is half full, a hint that a fresh session would be cheaper
-  (`sessionHint`) — a hint only, nothing is reset. The ledger records `costUsd` per run and
+  just drained. Stop is not a death. The header (panel and page alike) carries a live status line
+  (`orchestratorStatus`): Idle, or Working · elapsed, then `N queued` and `N workers running`
+  (orchestrated rows running, from the board's own poll); the last wake's spend and, once a wake
+  costs half the cap or the context is half full, the hint that a fresh session would be cheaper
+  (`sessionHint`) are its TOOLTIP, the hint shown only as an amber dot — a hint only, nothing is reset. The ledger records `costUsd` per run and
   `errorKind` `budget` / `timeout` instead of one `nonzero-exit`.
 - **The session is disposable.** Its notes (`orca notes set`, stored in its workstream blob) and a
   fresh board go into EVERY wake prompt; the role text only when a session starts. So the ladder
@@ -552,7 +603,7 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
 Flat notifications — one row per event, no threads — in a `notification` table (migration 15 — 13 and 14 were taken by branches open at the same time; `migrate()` tolerates the gap) shared
 by both instances, so either machine shows the same centre. **One emitter, `server/notify.ts`**: the
 row is written once (`db.addNotification`, idempotent on the event's `key` — `run:<runId>:<kind>`,
-`check:<runId>`, `preview:<key>:<startedAt>:ready|failed`, `pr-ci:<repo>#<n>:<checks>`,
+`check:<runId>`, `preview:<key>:<startedAt>:ready|failed`, `pr-ci:<repo>#<n>@<head sha>` — the commit, not the failing-check set, which flaps,
 `pr-conflict:<repo>#<n>` — so a run finished twice by a restart's lease adoption, or a repo answered
 by two instances, is one row), then pushed on the bus as a `notification` event that rides the
 per-tab `/api/events` stream and is relayed between instances like steps and turns. Sources: the
@@ -570,7 +621,7 @@ cut, grouping by day); the browser mirror is `web/src/lib/notificationStore.ts` 
 the tab's stream, catches up by `since` on reconnect; toasts pop only for rows newer than the first
 load and younger than ten minutes); the surfaces are `components/Notifications.tsx`: the toast stack
 bottom-LEFT, growing up from just above the bell (`stackAnchor`, measured from the bell; full width
-above the bottom bar on a phone), so the orchestrator's window and the action-error Toaster keep the
+above the bottom bar on a phone), so the orchestrator's window keeps the
 bottom-right. It copies branch-demo's inbox toasts — sonner's stack — in CSS, no dependency
 (`stackLayout` / `toastMotion` / `swipeOut` / the `HideClock`, all pure): newest in front, three
 showing; past one they collapse behind it (14px lift, 5% smaller each) over a count bar with Mark
@@ -584,7 +635,7 @@ opening it, any quick action and Mark all as read all just `markRead`, which als
 off the stack. A toast's title opens its workstream's Chat tab (the agent page, a PR's included), composer focused.
 **Quick actions** on every toast and centre row, shown on hover / focus (always on a touch screen),
 as size-7 ghost **icon buttons** (lucide icon, aria-label, a `Tip` tooltip — `components/ui/tip.tsx`
-— with the `Kbd` keycap where a shortcut exists; the action-error Toaster's Copy / Ask use the same):
+— with the `Kbd` keycap where a shortcut exists; a failed action's Ask / Copy are two of them):
 the kind's one or two verbs, the first primary (no Read button — acting marks it read), then **Open,
 always, always last**, labelled just Open (its workstream's Chat tab with the composer focused; the
 orchestrator's panel, composer focused, for its own wake) and, on an
@@ -593,7 +644,7 @@ one whose prerequisite is missing (no live row, PR URL, failed check). CI failin
 Address PR (`store.addressPr`) + View PR (GitHub); check failed → Fix (`autofixInstruction` as a
 follow-up) + View output; finished / needs input → Reply (the Chat tab, `?reply` focuses the
 composer); failed / stopped → Retry (`RETRY_INSTRUCTION` on the same session) + Open chat; preview
-ready → Open preview + Stop; preview failed → Retry test + View log; the orchestrator's own wake →
+ready → Open preview + Stop; preview failed → Retry test + View log; a failed action (local) → Ask the orchestrator + Copy; the orchestrator's own wake →
 Open only. Verbs run in `ActionButton`, so a
 failure is the action-error toast with Ask the orchestrator), and
 the bell at the sidebar's foot with the unread count, opening the centre: one compact header —
@@ -677,12 +728,22 @@ needs no second timer; a failed write is logged and swallowed. `GET /api/health/
 either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
 CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300
 points, one line each (no overlay — the running sessions are their own chart). Beside them, in the
-same `LineChart` design, an **Agents** chart (`running_agents` over time) and **Cost accrued** (the
-running sum of `instance_metric.cost_usd`, migration 17: what the runs that finished since the
-previous sample cost, from the run ledger's `costUsd` — Claude's `total_cost_usd`; Codex/Cursor report
-none). Rows written before migration 17 are filled once from the ledger at startup
-(`health.backfillCost` → `db.backfillMetricCost`: each run onto the first sample at or after it, only
-where `cost_usd` is still NULL, so it never re-counts what the sampler did). All four come from the
+same `LineChart` design, an **Agents** chart (`running_agents` over time) and **Cost accrued** —
+what the MACHINE cost, not model spend (Finn: the first cut summed the runs' `total_cost_usd`, which
+was wrong in intent; model spend is the Usage card's business). It is the instance's hourly rate ×
+the time between consecutive samples, where a pause over 5 minutes (`UPTIME_GAP_MS`, the sparkline's
+gap) means it was down and adds nothing (`accruedCost`, pure); the caption shows the rate
+(`rateLabel`: `$0.23/h est. (m7i.xlarge)`), the value the total for the range. **The rate**
+(`health.instanceRate`, on `/api/health` as `rate`): the app config's `instanceHourlyUsd[<instance>]`
+(editable in Settings' Machine cost card → `POST /api/config/instance-rate`, which sets one entry
+and leaves the rest of the document alone), else on EC2 the type + region from IMDSv2 priced from
+the small built-in on-demand table `EC2_ON_DEMAND_USD` (source `estimate`; the box, m7i.xlarge in
+eu-west-2, is $0.2331/h), else 0 — the laptop — and a card with no rate greys the chart
+(`chart-cost-off`) rather than drawing a flat $0. The rate is today's, applied over the whole range
+(no rate history). `ORCA_HOURLY_USD` / `ORCA_BILLING_SINCE` and the month-to-date estimate are gone.
+`instance_metric.cost_usd` (migration 17) is left in place but UNUSED — nothing writes or reads it
+any more, and the ledger backfill that filled it was removed; dropping it would be a migration of
+its own for no gain. All four come from the
 one `/api/health/history` poll. Every chart and the card's header stats come from ONE series
 (`instanceSeries`): the live `/api/health` reading, when newer, is the newest sample and every line's
 raw last point, so a header stat can never disagree with where its line ends. The Instances heading's
@@ -695,7 +756,12 @@ tracks `/proc/meminfo`'s `MemAvailable`).
 **Conversation loading with a remote database:** the chat is **paged**. `GET /api/turns?limit=50`
 returns `{ turns, older }` — the newest page (oldest first) and an opaque cursor
 (`<started_at>~<turn.id>`, exact across equal timestamps; `db.turnPage`) for the page before, which
-`?before=<cursor>` fetches (null once the first turn is in hand). Without `limit` the whole array
+`?before=<cursor>` fetches (null once the first turn is in hand). Paging bounds what is fetched; a **mounted
+window** (`CHAT_WINDOW`, two pages; `capWindow` / `revealAbove` / `revealBelow` in `workstream.ts`)
+bounds the DOM: scrolling toward an edge remounts loaded turns and unmounts the far side, one edge
+per commit so the scroll anchor stays exact. In the orchestrator's chat styling, turns older than the
+newest `RECENT_FULL` show their answer's first lines + Show more, and in its Chat channel each run of
+agent turns folds into one marker line (`channelItems`; the channel filter runs over the loaded page). Without `limit` the whole array
 comes back as it always did, so an older client keeps working. `ChatPanel` opens on the newest page
 (`TURN_PAGE_SIZE`), fetches the next older page as you near the top (or on the "↑ earlier turns"
 click, for a page too short to scroll) and restores `scrollTop` by the height added above

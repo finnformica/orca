@@ -2,7 +2,7 @@
 // so both the store and the e2e tests import it directly.
 
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
-import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentTurn, type TurnCheck } from "../../shared/agent";
+import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentTurn, type TurnCheck, type TurnSource } from "../../shared/agent";
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
 export { attachCommand } from "../../shared/agent";
 
@@ -908,6 +908,25 @@ export function sessionHint(input: { contextPct?: number; lastWakeUsd?: number; 
   if (!costly && (input.contextPct ?? 0) < 50) return undefined;
   return "Large session: each wake re-reads all of it, so a fresh session would be much cheaper.";
 }
+/** The orchestrator header's live line — what it is doing right now: "Idle", or "Working · 1m 12s",
+ *  then "2 queued" and "3 workers running" when any. The last wake's cost and the large-session
+ *  advice are the tooltip, not the text; `warn` is the small amber dot that says the advice is there. Pure. */
+export function orchestratorStatus(input: {
+  running: boolean; startedAt?: number; queued?: number; workers: number; lastWakeUsd?: number; hint?: string; now?: number;
+}): { text: string; tooltip?: string; warn: boolean } {
+  const now = input.now ?? Date.now();
+  const state = !input.running ? "Idle" : input.startedAt === undefined ? "Working" : `Working · ${formatDuration(now - input.startedAt)}`;
+  const parts = [
+    state,
+    ...(input.queued ? [`${input.queued} queued`] : []),
+    ...(input.workers ? [`${input.workers} worker${input.workers === 1 ? "" : "s"} running`] : []),
+  ];
+  const tips = [
+    ...(input.lastWakeUsd !== undefined ? [`Last wake cost $${input.lastWakeUsd.toFixed(2)}`] : []),
+    ...(input.hint ? [input.hint] : []),
+  ];
+  return { text: parts.join(" · "), tooltip: tips.length ? tips.join("\n") : undefined, warn: Boolean(input.hint) };
+}
 
 // First line of the message that wakes the orchestrator when a worker finishes. Also how a queue of
 // pending wakes is told apart from something the user typed (see server/orchestrator.ts).
@@ -919,6 +938,23 @@ export const isWorkerProblem = (text: string): boolean => {
   const [head = "", next = ""] = text.split("\n");
   return !head.endsWith(" — done") || next.startsWith("Orca's check") && next.includes("FAILED");
 };
+/** One wake can carry several messages (sent while it worked, drained together). Joined with a
+ *  break line, not a blank line — a message has paragraphs of its own, and with "\n\n" three sends
+ *  read back as one message, in the chat and to the model alike. */
+export const MESSAGE_BREAK = "\n\n—— next message ——\n\n";
+export const joinMessages = (messages: string[]): string => messages.join(MESSAGE_BREAK);
+/** A wake's instruction back into its messages. Rows written before the break was used were joined
+ *  with "\n\n": those still split there when it separates worker reports (the old reading), and
+ *  otherwise read as one message — their boundaries are gone. */
+export function splitMessages(instruction: string): string[] {
+  if (instruction.includes(MESSAGE_BREAK)) return instruction.split(MESSAGE_BREAK);
+  const parts = instruction.split("\n\n");
+  return parts.some(isWorkerEvent) ? parts : [instruction];
+}
+/** Who a wake answers, from the messages it carried: worker reports alone → `agents`; anything you
+ *  said (typed, quick-ask, the palette, a toast's Ask, the New-draft box) → `human`. */
+export const turnSource = (messages: string[]): TurnSource =>
+  messages.length > 0 && messages.every(isWorkerEvent) ? "agents" : "human";
 /** Reports that may wait: every part is a clean worker report. */
 export const onlyCleanReports = (messages: string[]): boolean =>
   messages.length > 0 && messages.every((m) => isWorkerEvent(m) && !isWorkerProblem(m));
@@ -994,6 +1030,9 @@ const ORCA_COMMANDS = [
   "  orca move --repo <repo> --branch <branch> --to <instance>  move its worktree to another instance (not while it runs)",
   "  orca archive --repo <repo> --branch <branch>              cancel a workstream you spawned or sent to: stop its agent,",
   "                                  drop anything queued for it, archive the card. Refuses one you don't own.",
+  "  orca sweep [--confirm]          list finished worktrees, dead previews and orphan branches on every instance;",
+  "                                  --confirm removes the ones marked \"would remove\" (never anything with",
+  "                                  uncommitted or unpushed work). Merged PRs are already cleaned up on their own",
   "  orca preview --repo <repo> --branch <branch> [--status]   start (or restart) its local preview; --status prints",
   "                                  starting / running + URL / failed, and the tail of each service's log",
   "  orca preview --repo <repo> --branch <branch> --push-to-template [--confirm]   make that preview the",
@@ -1051,6 +1090,7 @@ const ORCHESTRATOR_ROLE = [
  *  restarts after a context reset); the notes and a fresh board go in EVERY time, because they are
  *  what makes the session disposable — everything it needs to carry on is outside its context. */
 export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[]; shell?: boolean; cutOff?: string }): string {
+  const human = input.messages.filter((m) => !isWorkerEvent(m)), reports = input.messages.filter(isWorkerEvent);
   return [
     ...(input.fresh ? [ORCHESTRATOR_ROLE, ""] : []),
     // Every wake, not just the first: the setting can change under a session that is being resumed.
@@ -1070,8 +1110,12 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     "", "## Your notes", input.notes?.trim() || "(empty)",
     "", "## Board", input.board,
     // The wake before this one died mid-turn: say so, or the user has to ask why it went quiet.
-    ...(input.cutOff ? ["", "## Previous wake was cut off", `Your previous wake ${input.cutOff} before it finished its turn, so the user got no reply. What it was handling is under New again. It may already have acted: check the board before you spawn or send (never start the same work twice), then finish the reply.`] : []),
-    "", "## New", input.messages.join("\n\n"),
+    ...(input.cutOff ? ["", "## Previous wake was cut off", `Your previous wake ${input.cutOff} before it finished its turn, so the user got no reply. What it was handling is below again. It may already have acted: check the board before you spawn or send (never start the same work twice), then finish the reply.`] : []),
+    // What the user said and what the workers reported, in separate labelled sections — the user
+    // first — so a report's text is never read as an instruction from them, nor theirs as a report.
+    // Each message stays its own: several sent while you worked are separate messages, in order.
+    ...(human.length ? ["", "## From the user", ...(human.length > 1 ? [`${human.length} separate messages, oldest first.`, ""] : []), joinMessages(human)] : []),
+    ...(reports.length ? ["", "## Worker reports", "Automated, from Orca as your workers finish — not the user.", "", joinMessages(reports)] : []),
   ].join("\n");
 }
 
@@ -1722,28 +1766,44 @@ export function downsample(points: { at: number; v: number }[], max: number, fro
 }
 
 /** One vitals sample, recorded (instance_metric) or live (/api/health). */
-export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number; costUsd?: number };
+export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number };
 type Pt = { at: number; v: number };
 export type InstanceSeries = {
   cpu: Pt[]; mem: Pt[]; agents: Pt[]; cost: Pt[];
-  /** The newest sample — what the card's header stats show, and exactly every chart's last point. */
+  /** The newest sample — what the card's header stats show, and exactly every chart's last point.
+   *  `costUsd` is what the machine cost over the range up to it. */
   latest: { at: number; cpuPct: number; memUsedGb: number; runningAgents: number; costUsd: number } | null;
 };
+
+/** The longest pause between two samples that still counts as the machine being UP — the same
+ *  5 minutes `sparklineSegments` breaks a line at (the sampler writes once a minute). */
+export const UPTIME_GAP_MS = 5 * 60_000;
+
+/** What a machine cost over its samples, cumulatively: `hourlyUsd` × the time between consecutive
+ *  samples, where a pause longer than `gapMs` means it was down (or its bridge was) and adds
+ *  nothing. The first sample is $0 — the range's cost starts there. Pure. */
+export function accruedCost(samples: { at: number }[], hourlyUsd: number, gapMs = UPTIME_GAP_MS): Pt[] {
+  let total = 0;
+  return samples.map((p, i) => {
+    const dt = i ? p.at - samples[i - 1]!.at : 0;
+    if (hourlyUsd > 0 && dt > 0 && dt <= gapMs) total += (dt / 3_600_000) * hourlyUsd;
+    return { at: p.at, v: total };
+  });
+}
 
 /** Every instance chart's points, from the recorded history plus the live reading. The header stats
  *  and the charts once disagreed for two reasons: the header read the live poll (every 15s) while the
  *  chart's newest point was the history's (every 60s, up to a minute older), and `downsample` made
  *  that point the MEAN of its bucket (at 7d, ~34 minutes of samples). Here the live reading, when it
  *  is newer, becomes the newest sample, and the newest sample is kept raw as every series' last point
- *  — so `latest` (the header) and the last point are the same reading. Cost is cumulative over the
- *  range: each sample carries what the runs that finished since the previous one cost. */
-export function instanceSeries(history: VitalSample[], live: VitalSample | null | undefined, from: number, to: number, max = 300): InstanceSeries {
+ *  — so `latest` (the header) and the last point are the same reading. Cost is the machine's: its
+ *  current `hourlyUsd` accrued over the samples (`accruedCost`), so a gap where it was down is flat. */
+export function instanceSeries(history: VitalSample[], live: VitalSample | null | undefined, from: number, to: number, max = 300, hourlyUsd = 0): InstanceSeries {
   const samples = history.filter((p) => p.at >= from && p.at <= to);
   const last = samples[samples.length - 1];
-  if (live && live.at <= to && (!last || live.at > last.at)) samples.push({ ...live, costUsd: 0 });
+  if (live && live.at <= to && (!last || live.at > last.at)) samples.push(live);
   if (!samples.length) return { cpu: [], mem: [], agents: [], cost: [], latest: null };
-  let total = 0;
-  const cumulative = samples.map((p) => ({ at: p.at, v: (total += p.costUsd ?? 0) }));
+  const cumulative = accruedCost(samples, hourlyUsd);
   const series = (pts: Pt[]) => [...downsample(pts.slice(0, -1), max - 1, from, to), pts[pts.length - 1]!];
   const newest = samples[samples.length - 1]!;
   return {
@@ -1751,8 +1811,17 @@ export function instanceSeries(history: VitalSample[], live: VitalSample | null 
     mem: series(samples.map((p) => ({ at: p.at, v: p.memUsedGb }))),
     agents: series(samples.map((p) => ({ at: p.at, v: p.runningAgents ?? 0 }))),
     cost: series(cumulative),
-    latest: { at: newest.at, cpuPct: newest.cpuPct, memUsedGb: newest.memUsedGb, runningAgents: newest.runningAgents ?? 0, costUsd: total },
+    latest: { at: newest.at, cpuPct: newest.cpuPct, memUsedGb: newest.memUsedGb, runningAgents: newest.runningAgents ?? 0, costUsd: cumulative[cumulative.length - 1]!.v },
   };
+}
+
+/** The Cost accrued chart's caption: the rate it accrues at, and whether that rate is the config's
+ *  or Orca's on-demand estimate from the EC2 type. Pure. */
+export function rateLabel(rate: { hourlyUsd: number; source: string; instanceType?: string } | undefined): string {
+  if (!rate || !(rate.hourlyUsd > 0)) return "Cost accrued";
+  const r = rate.hourlyUsd;
+  const n = r.toFixed(r >= 0.1 ? 2 : 3);
+  return `Cost accrued · $${n}/h${rate.source === "estimate" ? ` est.${rate.instanceType ? ` (${rate.instanceType})` : ""}` : ""}`;
 }
 
 /** The agents axis's top: a small whole count, even so its midpoint tick is whole too (0 · 2 · 4). */
@@ -1981,7 +2050,7 @@ export function modelBadge(ran: string | undefined, pinned: string | undefined):
   return { label, title };
 }
 
-// ---- Action failures (the toast's text — components/Toaster, lib/toast; a button's ✗ tooltip is `firstLine`) ----
+// ---- Action failures (an `action_failed` notification's text — lib/notificationStore `actionFailed`; a button's ✗ tooltip is `firstLine`) ----
 
 /** A failed action on a workstream: which verb, on what, and GitHub's/the bridge's own message. */
 export type ActionFailure = { action: string; title?: string; repo: string; branch: string; prNumber?: number; error: string };
@@ -2030,7 +2099,7 @@ export function pullState(dy: number): { phase: "idle" | "pull" | "release"; off
  *  (store.addressPr, followUp, testLocally, stopPreview, navigation) — none of the logic is here. */
 export type NotificationActionId =
   | "address" | "viewPr" | "fix" | "viewOutput" | "open" | "reply" | "retry" | "openChat"
-  | "openPreview" | "stopPreview" | "retryPreview" | "viewLog" | "openOrchestrator";
+  | "openPreview" | "stopPreview" | "retryPreview" | "viewLog" | "openOrchestrator" | "ask" | "copy";
 export type NotificationActionSpec = { id: NotificationActionId; label: string; primary?: boolean };
 
 /** What the live row behind a notification makes possible: an agent verb needs the row, View PR its
@@ -2048,6 +2117,9 @@ const NOTIFICATION_ACTION_RULES: Record<string, ActionRule[]> = {
   stopped: [{ id: "retry", label: "Retry", needs: "row" }, { id: "openChat", label: "Open chat" }],
   preview_ready: [{ id: "openPreview", label: "Open preview" }, { id: "stopPreview", label: "Stop", needs: "previewKey" }],
   preview_failed: [{ id: "retryPreview", label: "Retry test", needs: "row" }, { id: "viewLog", label: "View log" }],
+  // A failed action (a local notification): hand it to the orchestrator, or copy the message and
+  // where it happened — each only when the notification carries its text.
+  action_failed: [{ id: "ask", label: "Ask the orchestrator" }, { id: "copy", label: "Copy" }],
 };
 
 /** A notification's quick actions: up to two for its kind, then ALWAYS Open, last — so every toast
@@ -2057,13 +2129,13 @@ const NOTIFICATION_ACTION_RULES: Record<string, ActionRule[]> = {
  *  left out rather than shown broken; an unknown kind gets only Open. There is no Read: taking any
  *  action marks it read, and the card's own × (not listed here) is "read, and out of view". */
 export function notificationActions(
-  n: { kind: string; link?: { url?: string; orchestrator?: boolean } },
+  n: { kind: string; link?: { url?: string; orchestrator?: boolean }; ask?: string; copy?: string },
   ctx: NotificationActionContext = {},
 ): NotificationActionSpec[] {
   const open: ActionRule = n.link?.orchestrator ? { id: "openOrchestrator", label: "Open" } : { id: "open", label: "Open" };
   const has = { ...ctx } as Record<string, boolean | undefined>;
   const rules = n.link?.orchestrator ? [] : (NOTIFICATION_ACTION_RULES[n.kind] ?? [])
-    .filter((r) => (r.id === "openPreview" ? Boolean(n.link?.url) : !r.needs || has[r.needs]))
+    .filter((r) => (r.id === "openPreview" ? Boolean(n.link?.url) : r.id === "ask" || r.id === "copy" ? Boolean(n[r.id]) : !r.needs || has[r.needs]))
     .slice(0, 2);
   return [...rules, open].map((r, i) => ({ id: r.id, label: r.label, ...(i === 0 ? { primary: true } : {}) }));
 }
@@ -2115,6 +2187,97 @@ export const anchoredScrollTop = (prevScrollTop: number, prevScrollHeight: numbe
 /** Is a scroll position "at the bottom" — within `slack` px of it — i.e. still following the tail? */
 export const atBottom = (scrollTop: number, scrollHeight: number, clientHeight: number, slack: number): boolean =>
   scrollHeight - scrollTop - clientHeight < slack;
+
+// ---- the chat's mounted window and compact history (ChatPanel) ----
+// Paging bounds what is FETCHED; this bounds what is MOUNTED. A long conversation scrolled back
+// through is hundreds of markdown turns in the DOM — the "bloated" orchestrator chat — so only a window
+// of CHAT_WINDOW turns renders. Turns outside it stay loaded (they're text) but unmounted, and come
+// back as you scroll toward them. Like Slack's and Linear's long threads, the window moves with you:
+// revealing turns on one side and trimming the far side, never both edges in one commit, so the
+// scroll anchor (anchoredScrollTop: a height delta above the viewport) stays exact.
+
+/** The most turns a chat keeps mounted: two pages. */
+export const CHAT_WINDOW = 2 * TURN_PAGE_SIZE;
+/** The mounted turns, by run id: `first` null = from the oldest loaded, `last` null = through the
+ *  newest (following the tail). `dir` is the way it last moved — the cap trims the OTHER side. */
+export type TurnWindow = { first: string | null; last: string | null; dir: "up" | "down" };
+export const TAIL_WINDOW: TurnWindow = { first: null, last: null, dir: "down" };
+
+/** The window as indices into the loaded turns, [start, end). An id no longer loaded reads as open. */
+export function windowRange(turns: Keyed[], w: TurnWindow): { start: number; end: number } {
+  const at = (id: string | null) => (id === null ? -1 : turns.findIndex((t) => t.id === id));
+  const f = at(w.first), l = at(w.last);
+  const start = f < 0 ? 0 : f;
+  return { start, end: l < 0 ? turns.length : Math.max(start, l + 1) };
+}
+
+/** Over the cap: trim the side away from the last move (moving up drops the newest mounted, moving
+ *  down — or following new output — drops the oldest). Null when within it. */
+export function capWindow(turns: Keyed[], w: TurnWindow, cap = CHAT_WINDOW): TurnWindow | null {
+  const { start, end } = windowRange(turns, w);
+  if (end - start <= cap) return null;
+  return w.dir === "up" ? { ...w, last: turns[start + cap - 1]!.id } : { ...w, first: turns[end - cap]!.id };
+}
+
+/** Bring `step` more loaded turns into the window above / below it. */
+export function revealAbove(turns: Keyed[], w: TurnWindow, step = TURN_PAGE_SIZE): TurnWindow {
+  const s = Math.max(0, windowRange(turns, w).start - step);
+  return { ...w, first: s === 0 ? null : turns[s]!.id, dir: "up" };
+}
+export function revealBelow(turns: Keyed[], w: TurnWindow, step = TURN_PAGE_SIZE): TurnWindow {
+  const e = windowRange(turns, w).end + step;
+  return { ...w, last: e >= turns.length ? null : turns[e - 1]!.id, dir: "down" };
+}
+
+/** How many of the newest turns render in full; older ones render compact (first lines + Show more). */
+export const RECENT_FULL = 3;
+/** A reply worth collapsing when old: more than a few lines, or a structured outcome. */
+export const longReply = (t: { response?: string; structured?: unknown }): boolean =>
+  Boolean(t.structured) || (t.response ?? "").split("\n").length > 4 || (t.response ?? "").length > 320;
+
+/** A message of yours too long to read at a glance in its bubble: it is cut to its first lines with a
+ *  Show more (any age — unlike a reply, which is cut only once it is old). */
+export const longMessage = (text: string): boolean => text.split("\n").length > 8 || text.length > 600;
+
+// ---- worker traffic in the orchestrator's chat ----
+// One stream. Your turns and its replies to them read as the conversation; the worker traffic — the
+// wakes worker reports caused and its replies to those — is split out of it: a run of agent turns is
+// ONE collapsed block ("3 worker reports · 2 replies"), so you know they happened without the bulk.
+// (History: a Chat | Agents toggle split them into two channels; a wake carrying your message AND
+// reports counted as yours, so most worker traffic never reached Agents — the user asked for this.)
+
+type Sourced = { source?: TurnSource; instruction?: string; prompt?: string; finishedAt?: number; startedAt?: number };
+
+/** A turn's source: recorded since migration 18; a row without it (a worker's turn, a client ahead of
+ *  the backfill) is read off its instruction the same way. */
+export const sourceOf = (t: Sourced): TurnSource =>
+  t.source ?? turnSource(splitMessages(t.instruction ?? promptInstruction(t.prompt ?? "")));
+
+export type ChatItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] };
+/** What the orchestrator's chat renders: your turns, with each run of agent turns between them as one
+ *  collapsed block. */
+export function chatItems<T extends Sourced>(turns: T[]): ChatItem<T>[] {
+  const out: ChatItem<T>[] = [];
+  for (const t of turns) {
+    const last = out[out.length - 1];
+    if (sourceOf(t) === "human") out.push({ kind: "turn", turn: t });
+    else if (last?.kind === "agents") last.turns.push(t);
+    else out.push({ kind: "agents", turns: [t] });
+  }
+  return out;
+}
+
+/** The collapsed block's line for a run of agent turns. */
+export function agentsMarker(turns: Sourced[]): string {
+  const reports = turns.reduce((n, t) => n + splitMessages(t.instruction ?? promptInstruction(t.prompt ?? "")).filter(isWorkerEvent).length, 0);
+  const replies = turns.filter((t) => t.finishedAt).length;
+  const working = turns.length - replies;
+  return [
+    `${reports} worker report${reports === 1 ? "" : "s"}`,
+    `${replies} repl${replies === 1 ? "y" : "ies"}`,
+    ...(working ? ["working"] : []),
+  ].join(" · ");
+}
 
 // ---- the PR page's checks: failing first, then running, the rest folded into one line ----
 
@@ -2243,4 +2406,57 @@ export function bridgeLabel(bridge: BridgeInfo | undefined, previewPage: boolean
   }
   return { text: "API: main bridge — not this branch", warn: true,
     title: `Answered by the main bridge${bridge ? ` (${bridge.branch ?? "?"} on :${bridge.port})` : ""}: data and actions here are main's code, not this branch's.` };
+}
+
+// ---- cleanup after finished work ----
+
+/** How long a merged / closed PR's worktree is kept before it is reaped: long enough to glance at
+ *  the Done card, re-open a closed PR or catch a late follow-up, short enough that finished work
+ *  doesn't pile up on disk. */
+export const CLEANUP_GRACE_MS = 10 * 60_000;
+
+export type CleanupDecision = { action: "reap" } | { action: "wait" | "flag"; why: string };
+
+/** What to do with a worktree whose work is finished (its PR merged or closed, or its workstream
+ *  archived). Wait while an agent runs on it or within the grace period; then never remove anything
+ *  that would lose work — uncommitted changes or commits that exist nowhere else are FLAGGED for you
+ *  instead; otherwise reap. `doneAt` unknown counts as past the grace period. */
+export function cleanupDecision(f: {
+  doneAt?: number; now: number; graceMs?: number; running: boolean; dirty: string[]; unpushed: number;
+}): CleanupDecision {
+  if (f.running) return { action: "wait", why: "an agent is running on it" };
+  const grace = f.graceMs ?? CLEANUP_GRACE_MS;
+  if (f.doneAt !== undefined && f.now - f.doneAt < grace) {
+    return { action: "wait", why: `grace period (${Math.ceil((grace - (f.now - f.doneAt)) / 60_000)} min left)` };
+  }
+  const why = [
+    f.dirty.length ? `${f.dirty.length} uncommitted change${f.dirty.length === 1 ? "" : "s"} (${f.dirty.slice(0, 3).join(", ")}${f.dirty.length > 3 ? ", …" : ""})` : "",
+    f.unpushed ? `${f.unpushed} unpushed commit${f.unpushed === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join("; ");
+  return why ? { action: "flag", why } : { action: "reap" };
+}
+
+/** One instance's sweep: finished worktrees still on disk, previews with nothing behind them, and
+ *  Orca's own branches left with no worktree and no open PR. `done` says whether it was applied. */
+export type SweepReport = {
+  instance: string; confirmed: boolean; error?: string;
+  worktrees: { repo: string; branch: string; worktreePath: string; reason: string; action: "remove" | "keep"; why?: string; done?: boolean }[];
+  previews: { key: string; why: string; done?: boolean }[];
+  branches: { repo: string; branch: string; action: "remove" | "keep"; why: string; done?: boolean }[];
+};
+
+/** The sweep as text — what `orca sweep` prints, dry run or applied. */
+export function sweepText(reports: SweepReport[]): string {
+  const confirmed = reports.some((r) => r.confirmed);
+  const verb = (done?: boolean) => (confirmed ? (done ? "removed" : "FAILED") : "would remove");
+  const out: string[] = [confirmed ? "Sweep applied." : "Sweep dry run — nothing was changed. Re-run with --confirm to remove what is marked \"would remove\"."];
+  for (const r of reports) {
+    out.push("", `## ${r.instance}`);
+    if (r.error) { out.push(`  unreachable: ${r.error}`); continue; }
+    const wts = r.worktrees.map((w) => `  ${w.action === "remove" ? verb(w.done) : "keep"}  ${w.repo}/${w.branch} (${w.reason}) ${w.worktreePath}${w.why ? ` — ${w.why}` : ""}`);
+    const pvs = r.previews.map((p) => `  ${verb(p.done)}  ${p.key} — ${p.why}`);
+    const brs = r.branches.map((b) => `  ${b.action === "remove" ? verb(b.done) : "keep"}  ${b.repo}/${b.branch} — ${b.why}`);
+    out.push("Worktrees:", ...(wts.length ? wts : ["  (none)"]), "Previews:", ...(pvs.length ? pvs : ["  (none)"]), "Branches:", ...(brs.length ? brs : ["  (none)"]));
+  }
+  return out.join("\n");
 }

@@ -7,7 +7,6 @@ import { launchOverlay } from "./workstream";
 import { expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
 import { Shell, Crumb, AddNew } from "@/components/Shell";
 import { OrchestratorPanel, OrchestratorPage } from "@/components/Terminal";
-import { Toaster } from "@/components/Toaster";
 import { ToastHost } from "@/components/Notifications";
 import { useWorkstreams } from "./store";
 import { NewDraft } from "./views/Board";
@@ -19,7 +18,7 @@ import { LocalDetail } from "./views/LocalDetail";
 
 // The console: Vercel's shell (sidebar + top bar) around one page per route. The orchestrator's
 // window floats outside it, on every route; the top bar's "Ask the orchestrator" opens it. Action
-// failures surface as toasts (lib/toast), stacked above it.
+// failures are notifications (lib/notificationStore `actionFailed`), in the one toast stack.
 export function App() {
   const route = useRoute();
   // The phone layout's two global listeners: the visible viewport's size (sheets stay above the
@@ -42,7 +41,6 @@ export function App() {
       </Shell>
       <ToastHost />
       <OrchestratorPanel />
-      <Toaster />
     </>
   );
 }

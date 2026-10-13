@@ -28,7 +28,7 @@
 import { statSync } from "fs";
 import { hostname } from "os";
 import { join } from "path";
-import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck } from "../shared/agent";
+import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck, TurnSource } from "../shared/agent";
 import * as bus from "./bus";
 import type { Notification, NotificationInput } from "../shared/notifications";
 
@@ -94,10 +94,19 @@ export async function close(): Promise<void> {
  *  from its internal `handleClose`) — same dropped connection, a driver-level code instead of a
  *  server message, caught on `code` alone since that shape never carries a legitimate query error.
  *  Not every Postgres error — a bad query must still throw. */
-function isDroppedConnection(err: unknown): boolean {
+export function isDroppedConnection(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const code = (err as { code?: string }).code;
   if (code === "ERR_POSTGRES_CONNECTION_CLOSED" || code === "ERR_POSTGRES_EXPECTED_REQUEST") return true;
+  // The pool's OWN recycling (idleTimeout / maxLifetime above) closes a connection, and Bun reports
+  // that close to whichever query next touches it — the 10s inventory/preview publish saw
+  // "Idle timeout reached after 30s" as a failure. Same remedy: a fresh connection.
+  if (code === "ERR_POSTGRES_IDLE_TIMEOUT" || code === "ERR_POSTGRES_LIFETIME_TIMEOUT") return true;
+  // SQLSTATE 0A000 "cached plan must not change result type": this connection prepared a statement
+  // BEFORE another session altered the table (the other instance ran a migration, or a hand ALTER),
+  // so its cached plan is stale. Postgres re-plans only on a fresh prepare; reopening the pool is
+  // how Bun.SQL gets one. Reached the chat composer as "not sent" on 2026-10-13.
+  if ((err as { errno?: string }).errno === "0A000" || /cached plan must not change result type/.test(err.message)) return true;
   if (/Connection closed|ECONNRESET|EPIPE/.test(err.message)) return true;
   return code === "ERR_POSTGRES_SERVER_ERROR" && /terminating connection|administrator command/i.test(err.message);
 }
@@ -455,7 +464,31 @@ export const MIGRATIONS: MigrationStep[] = [
     // the providers' own reported cost (Claude's `total_cost_usd`, as the run ledger records it). A
     // per-sample delta, not a running total, so the instance cards' Cost accrued chart is a sum over
     // whichever range they show. Nullable: older rows read back as 0.
+    // UNUSED since the chart became the MACHINE's cost (hourly rate × time up, in the browser): no
+    // code writes or reads `cost_usd` any more. Left in place — dropping it would be a migration of
+    // its own for no gain, and this step stays as applied (append-only).
     sql: `ALTER TABLE instance_metric ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION`,
+  },
+  {
+    // 18, not 16: #152 holds 16; 17 is instance-metric-cost.
+    id: 18,
+    name: "turn-source",
+    idempotent: true,
+    // Who an orchestrator turn answers (shared/agent.ts TurnSource): `human` (you spoke) or `agents`
+    // (woken by worker reports alone), so the chat can split its Chat and Agents channels. The backfill
+    // reads it off the stored instruction the way the wake built it — every message a
+    // `[worker finished]` report → agents — falling back to the prompt's `## New` section for rows from
+    // before `instruction` existed. Idempotent: it only fills NULLs. Nullable: a worker's turns stay
+    // NULL, and the browser infers a NULL from the text the same way.
+    sql: `
+      ALTER TABLE turn ADD COLUMN IF NOT EXISTS source TEXT;
+      UPDATE turn t SET source = CASE
+          WHEN COALESCE(t.instruction, substring(t.prompt from '## New\\n(.*)$')) ~ '^\\[worker finished\\]'
+           AND COALESCE(t.instruction, substring(t.prompt from '## New\\n(.*)$')) !~ '\\n\\n(?!\\[worker finished\\])'
+          THEN 'agents' ELSE 'human' END
+        FROM workstream w
+        WHERE w.id = t.workstream_id AND w.repo = '@orca' AND w.branch = 'orchestrator' AND t.source IS NULL;
+    `,
   },
 ];
 
@@ -677,6 +710,7 @@ export async function importEnrichment(entries: { repo: string; branch: string; 
 type TurnRow = {
   run_id: string; provider: string; status: string; instruction: string | null; prompt: string; response: string | null;
   structured: AgentOutcome | null; session_id: string | null; stop_reason: string | null; check: TurnCheck | null;
+  source?: string | null;
   started_at: string | number; finished_at: string | number | null;
 };
 
@@ -692,6 +726,7 @@ const toTurn = (r: TurnRow): AgentTurn => ({
   stopped: r.status === "stopped" ? true : undefined,
   // Rows before the column infer it from status; a running turn has none yet.
   check: r.check ?? undefined,
+  source: (r.source as TurnSource | null | undefined) ?? undefined,
   stopReason: (r.stop_reason as StopReason | null)
     ?? (r.status === "done" ? "end_turn" : r.status === "error" ? "error" : r.status === "stopped" ? "interrupted" : undefined),
   startedAt: Number(r.started_at),
@@ -703,14 +738,14 @@ const toTurn = (r: TurnRow): AgentTurn => ({
  *  previous turn the way the in-memory map (keyed by worktree path) did. */
 export async function startTurn(input: {
   repo: string; branch: string; runId: string; provider: AgentProvider;
-  instruction?: string; prompt: string; sessionId?: string; startedAt: number;
+  instruction?: string; prompt: string; sessionId?: string; startedAt: number; source?: TurnSource;
 }): Promise<void> {
   return withRetry(async (sql) => {
     const id = await workstreamId(input.repo, input.branch);
     await sql`
-      INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, session_id, raw_ref, started_at)
+      INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, session_id, raw_ref, started_at, source)
       VALUES (${id}, ${currentUser()}, ${instanceName()}, ${input.runId}, ${input.provider}, 'running', ${input.instruction ?? null}, ${input.prompt},
-              ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${input.startedAt})
+              ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${input.startedAt}, ${input.source ?? null})
       ON CONFLICT (run_id) DO NOTHING`;
     bus.publish({ kind: "turn", runId: input.runId, repo: input.repo, branch: input.branch });
   });
@@ -727,7 +762,7 @@ export async function startTurn(input: {
 export async function finishTurn(runId: string, input: {
   status: TurnStatus; response?: string; structured?: AgentOutcome; stopReason?: StopReason;
   sessionId?: string; finishedAt: number;
-  identity?: { repo: string; branch: string; provider: AgentProvider; instruction?: string; prompt: string; startedAt: number };
+  identity?: { repo: string; branch: string; provider: AgentProvider; instruction?: string; prompt: string; startedAt: number; source?: TurnSource };
 }): Promise<void> {
   return withRetry(async (sql) => {
     // Return the owning branch in the same round trip, so the bus event can be addressed to the chat
@@ -750,14 +785,14 @@ export async function finishTurn(runId: string, input: {
     if (!owner && input.identity) {
       // Nothing to update: the start write was lost. Write the whole turn now — the run happened, and
       // its steps are already recorded against this run id.
-      const { repo, branch, provider, instruction, prompt, startedAt } = input.identity;
+      const { repo, branch, provider, instruction, prompt, startedAt, source } = input.identity;
       const workstream = await workstreamId(repo, branch);
       await sql`
         INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, response,
-                          structured, stop_reason, session_id, raw_ref, started_at, finished_at)
+                          structured, stop_reason, session_id, raw_ref, started_at, finished_at, source)
         VALUES (${workstream}, ${currentUser()}, ${instanceName()}, ${runId}, ${provider}, ${input.status},
                 ${instruction ?? null}, ${prompt}, ${input.response ?? null}, ${input.structured ?? null}, ${input.stopReason ?? null},
-                ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${startedAt}, ${input.finishedAt})
+                ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${startedAt}, ${input.finishedAt}, ${source ?? null})
         ON CONFLICT (run_id) DO NOTHING`;
       owner = { repo, branch };
     }
@@ -909,6 +944,18 @@ export async function archive(repo: string, branch: string): Promise<void> {
   });
 }
 
+/** Branches in a repo whose workstream is archived and not live again (a reused name is live) —
+ *  the sweep's "archived, but its worktree is still on disk". */
+export async function archivedBranches(repo: string): Promise<Set<string>> {
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      SELECT DISTINCT w.branch FROM workstream w
+      WHERE w.user_id = ${currentUser()} AND w.repo = ${repo} AND w.archived_at IS NOT NULL AND w.branch IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM workstream l WHERE l.user_id = w.user_id AND l.repo = w.repo AND l.branch = w.branch AND l.archived_at IS NULL)`;
+    return new Set((rows as { branch: string }[]).map((r) => r.branch));
+  });
+}
+
 // ---- conversations, read across workstreams (the orchestrator's memory of past work) ----
 
 export type Conversation = { id: number; repo: string; branch: string; title?: string; archived: boolean; turns: number; lastAt?: number };
@@ -984,6 +1031,24 @@ export async function appConfig(): Promise<Fields> {
   return withRetry(async (sql) => {
     const rows = await sql`SELECT config FROM app_config WHERE user_id = ${currentUser()}`;
     return (rows[0]?.config as Fields) ?? {};
+  });
+}
+
+/** Set (or, with null, clear) one instance's `instanceHourlyUsd` in the app config, leaving every
+ *  other setting as it is — Settings' Machine cost row, which edits one number, not the document. */
+export async function setInstanceHourlyUsd(instance: string, usd: number | null): Promise<void> {
+  return withRetry(async (sql) => {
+    const user = currentUser();
+    await sql.begin(async (tx: Bun.SQL) => {
+      const rows = await tx`SELECT config FROM app_config WHERE user_id = ${user} FOR UPDATE`;
+      const app = { ...((rows[0]?.config as Fields) ?? {}) };
+      const rates = { ...((app.instanceHourlyUsd as Record<string, number> | undefined) ?? {}) };
+      if (usd === null) delete rates[instance]; else rates[instance] = usd;
+      if (Object.keys(rates).length) app.instanceHourlyUsd = rates; else delete app.instanceHourlyUsd;
+      await tx`
+        INSERT INTO app_config (user_id, config, updated_at) VALUES (${user}, ${app}, ${Date.now()})
+        ON CONFLICT (user_id) DO UPDATE SET config = EXCLUDED.config, updated_at = EXCLUDED.updated_at`;
+    });
   });
 }
 
@@ -1126,8 +1191,6 @@ export async function instances(): Promise<{ name: string; seenAt: number }[]> {
 
 export type MetricPoint = {
   at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; runningAgents: number;
-  /** USD of the runs that finished here since the previous sample (migration 17); 0 before it. */
-  costUsd: number;
 };
 
 /** How long a metric row is kept. */
@@ -1137,7 +1200,7 @@ export const METRIC_RETENTION_MS = 30 * 24 * 3_600_000;
  *  a delete per insert is cheap on the (instance, at) index, and it needs no second timer. Each
  *  instance prunes only its own rows: the other may be on an older build, but never on someone
  *  else's timer. `at` is injectable for tests. */
-export async function recordMetric(p: Omit<MetricPoint, "at" | "costUsd"> & { costUsd?: number }, at = Date.now()): Promise<void> {
+export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()): Promise<void> {
   if (previewBridge()) return; // the instance samples itself once, from its real bridge
   return withRetry(async (sql) => {
     const instance = instanceName();
@@ -1147,47 +1210,10 @@ export async function recordMetric(p: Omit<MetricPoint, "at" | "costUsd"> & { co
     // neither.
     await sql.begin(async (tx: Bun.SQL) => {
       await tx`
-        INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents, cost_usd)
-        VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null}, ${p.runningAgents}, ${p.costUsd ?? 0})`;
+        INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents)
+        VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null}, ${p.runningAgents})`;
       await tx`DELETE FROM instance_metric WHERE instance = ${instance} AND at < ${new Date(at - METRIC_RETENTION_MS)}`;
     });
-  });
-}
-
-/** Fill in the cost of samples written before migration 17 (their `cost_usd` is NULL) from the runs
- *  this instance's ledger remembers: each run goes to the first sample at or after it — the one whose
- *  window would have counted it. A row the sampler wrote is never NULL, so a run it already counted
- *  is skipped and re-running this changes nothing. Returns how many rows were filled. */
-export async function backfillMetricCost(runs: { at: number; usd: number }[], instance = instanceName()): Promise<number> {
-  if (!runs.length) return 0;
-  return withRetry(async (sql) => {
-    const from = Math.min(...runs.map((r) => r.at));
-    const rows = (await sql`
-      SELECT id, at, cost_usd IS NULL AS open FROM instance_metric
-      WHERE user_id = ${currentUser()} AND instance = ${instance} AND at >= ${new Date(from)}
-      ORDER BY at`) as { id: string; at: Date; open: boolean }[];
-    const ats = rows.map((r) => new Date(r.at).getTime());
-    const fill = new Map<string, number>();
-    for (const run of runs) {
-      let lo = 0, hi = ats.length;
-      while (lo < hi) { const mid = (lo + hi) >> 1; if (ats[mid]! < run.at) lo = mid + 1; else hi = mid; }
-      const row = rows[lo];
-      if (row?.open) fill.set(row.id, (fill.get(row.id) ?? 0) + run.usd);
-    }
-    if (!fill.size) return 0;
-    await sql.begin(async (tx: Bun.SQL) => {
-      for (const [id, usd] of fill) await tx`UPDATE instance_metric SET cost_usd = ${Math.round(usd * 1e6) / 1e6} WHERE id = ${id} AND cost_usd IS NULL`;
-    });
-    return fill.size;
-  });
-}
-
-/** When this instance last sampled itself — where the sampler's first cost window starts after a
- *  restart, so a run that finished while the bridge was down is still counted once. */
-export async function lastMetricAt(instance = instanceName()): Promise<number | null> {
-  return withRetry(async (sql) => {
-    const [r] = await sql`SELECT max(at) AS at FROM instance_metric WHERE user_id = ${currentUser()} AND instance = ${instance}`;
-    return r?.at ? new Date(r.at).getTime() : null;
   });
 }
 
@@ -1195,13 +1221,12 @@ export async function lastMetricAt(instance = instanceName()): Promise<number | 
 export async function metricHistory(instance: string, hours: number, now = Date.now()): Promise<MetricPoint[]> {
   return withRetry(async (sql) => {
     const rows = await sql`
-      SELECT at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents, cost_usd FROM instance_metric
+      SELECT at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents FROM instance_metric
       WHERE user_id = ${currentUser()} AND instance = ${instance} AND at >= ${new Date(now - hours * 3_600_000)}
       ORDER BY at`;
-    return (rows as { at: Date; cpu_pct: number; load1: number; mem_used_gb: number; mem_total_gb: number; disk_used_gb: number | null; running_agents: number | null; cost_usd: number | null }[]).map((r) => ({
+    return (rows as { at: Date; cpu_pct: number; load1: number; mem_used_gb: number; mem_total_gb: number; disk_used_gb: number | null; running_agents: number | null }[]).map((r) => ({
       at: new Date(r.at).getTime(), cpuPct: Number(r.cpu_pct), load1: Number(r.load1), memUsedGb: Number(r.mem_used_gb), memTotalGb: Number(r.mem_total_gb),
       runningAgents: r.running_agents == null ? 0 : Number(r.running_agents),
-      costUsd: r.cost_usd == null ? 0 : Number(r.cost_usd),
       ...(r.disk_used_gb == null ? {} : { diskUsedGb: Number(r.disk_used_gb) }),
     }));
   });
