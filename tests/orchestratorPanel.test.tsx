@@ -64,7 +64,8 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   const p = panel()!;
   expect(p.className).toContain("fixed inset-y-0 right-0"); // a right-hand rail…
   expect(p.className).toContain("translate-x-0"); // …slid in (a transform, so the page never reflows)
-  expect(p.className).toContain("transition-[transform,visibility]");
+  // Opening, visibility flips at once (only the transform animates): a hidden element can't take focus.
+  expect(p.className).toContain("visible translate-x-0 transition-transform");
   expect(p.getAttribute("role")).toBe("dialog");
   expect(p.getAttribute("aria-modal")).toBe("false");
   expect(p.getAttribute("aria-hidden")).toBe("false");
@@ -116,6 +117,7 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   expect(panelEl()!.dataset.state).toBe("closed");
   expect(panelEl()!.getAttribute("aria-hidden")).toBe("true");
   expect(panelEl()!.className).toContain("translate-x-full");
+  expect(panelEl()!.className).toContain("transition-[transform,visibility]"); // closing, hidden only after the slide
   expect(document.activeElement).toBe(launcher());
   const pagesBefore = apiFake.turnPageCalls.length;
   await click(launcher());
