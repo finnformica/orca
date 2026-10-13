@@ -1,7 +1,7 @@
 // E2E for optimistic follow-up submit: hitting send on the follow-up box must close it the instant
 // you send — launching the agent (ensureWorktree + upload + claude) takes a few seconds and the old
 // behaviour left a spinner up the whole time. The typed prompt stays persisted, so if the launch
-// FAILS the box reopens with the same text (and the error is a toast, lib/toast); on SUCCESS the draft
+// FAILS the box reopens with the same text (and the error is a failed-action notification toast, lib/notificationStore); on SUCCESS the draft
 // is dropped. Driven
 // against the preloaded fake `api` (tests/apiFake.ts, no network) and rendered into a real DOM.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
@@ -10,8 +10,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { WorkstreamActions } from "@/views/WorkstreamActions";
-import { Toaster } from "@/components/Toaster";
-import { resetToasts } from "@/lib/toast";
+import { ToastHost } from "@/components/Notifications";
+import * as centre from "@/lib/notificationStore";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -23,8 +23,8 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 const row: store.Row = { repo: "r", hasRemote: false, branch: "feat", title: "Feat", prompt: "", lane: "LOCAL", worktreePath: "/wt/feat" };
 const draftKey = `orca.followup.${row.repo}::${row.branch}`;
 
-// The card's actions, and the Toaster App mounts once — where a failure's message goes.
-const tree = (r: store.Row) => <><div data-slot="actions"><WorkstreamActions row={r} /></div><Toaster /></>;
+// The card's actions, and the toast stack App mounts once — where a failure's message goes.
+const tree = (r: store.Row) => <><div data-slot="actions"><WorkstreamActions row={r} /></div><ToastHost /></>;
 let root: Root | undefined;
 let container: HTMLElement | undefined;
 function mount(): HTMLElement {
@@ -44,7 +44,7 @@ const type = async (el: HTMLTextAreaElement, text: string) => {
 afterEach(async () => {
   localStorage.clear();
   apiFake.reset();
-  act(() => resetToasts());
+  act(() => centre.reset());
   await act(async () => { await store.refresh(); });
   act(() => root?.unmount());
   container?.remove();
@@ -120,8 +120,9 @@ describe("optimistic follow-up submit", () => {
     // card's own toolbar never holds the message (only the ⋯'s ✗ and its tooltip).
     expect(textarea()).not.toBeNull();
     expect(textarea()!.value).toBe("fix the flake");
-    const t = container!.querySelector('[data-slot="toast"]')!;
-    expect(t.textContent).toContain("Follow up failed · Feat");
+    const t = container!.querySelector('[data-slot="notification-toast"][data-kind="action_failed"]')!;
+    expect(t.textContent).toContain("Feat");
+    expect(t.textContent).toContain("Follow up failed");
     expect(t.textContent).toContain("worktree busy");
     expect(container!.querySelector('[data-slot="actions"]')!.textContent).not.toContain("worktree busy");
     expect(container!.querySelector<HTMLElement>('button[aria-label="Actions"]')!.title).toBe("worktree busy");

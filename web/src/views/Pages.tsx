@@ -1,15 +1,20 @@
 // The sidebar's other pages. Repos: one row per configured repo with its agents' numbers (a click
 // opens Agents scoped to it). Usage: the Usage card with every login expanded, and every machine's
-// card. Settings: appearance, the board's density, and the configuration this bridge runs with
-// (read-only — it is edited in orca.config.ts / the config table, not here). Notifications: do not
+// card. Settings: appearance, the board's density, each machine's hourly cost (editable: the
+// instance cards' Cost accrued chart), and the configuration this bridge runs with (read-only — it
+// is edited in orca.config.ts / the config table, not here). Notifications: do not
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
+import { useEffect, useState } from "react";
 import { useAtom, useSetAtom } from "jotai";
 import { FolderGit2, GitBranch } from "lucide-react";
+import { refreshVitals } from "@/lib/vitals";
+import { notifyLocal } from "@/lib/notificationStore";
+import { Button } from "@/components/ui/button";
 import { browserNotifyAtom, densityAtom, notifyDndAtom, repoFilterAtom, toastPrefsAtom } from "@/lib/atoms";
 import { KIND_META, NOTIFICATION_KINDS } from "../../../shared/notifications";
 import { navigate } from "@/lib/route";
 import { useTheme, type Theme } from "@/lib/theme";
-import { instanceChoices, staleHours, thisInstance, useAgentProviders, useRepos, useWorkstreams } from "../store";
+import { instanceChoices, setInstanceRate, staleHours, thisInstance, useAgentProviders, useInstanceRates, useRepos, useWorkstreams } from "../store";
 import { ago, repoSummaries } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
 import { THEMES } from "@/components/Shell";
@@ -98,6 +103,7 @@ export function Settings() {
         </Setting>
       </VCard>
       <NotificationSettings />
+      <MachineCostSettings />
       <VCard slot="settings-config" title="Configuration" aside={<span className="text-muted-foreground text-xs">read-only · orca.config.ts</span>}>
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-b p-4 sm:grid-cols-4">
           <Detail label="This instance"><StatusDot tone="ready" />{here ?? "—"}</Detail>
@@ -158,6 +164,55 @@ function NotificationSettings() {
         </ul>
       </div>
     </VCard>
+  );
+}
+
+/** Each machine's USD/hour — `instanceHourlyUsd` in the app config, what its card's Cost accrued
+ *  chart accrues. Empty means automatic: an EC2 on-demand estimate, else 0. Read from the store's
+ *  config mirror (no fetch of its own), written through the bridge. */
+function MachineCostSettings() {
+  const rates = useInstanceRates();
+  const here = thisInstance();
+  const machines = instanceChoices().length ? instanceChoices() : here ? [here] : [];
+  if (!machines.length) return null;
+  return (
+    <VCard slot="settings-machine-cost" title="Machine cost" bodyClass="divide-y">
+      {machines.map((m) => <MachineRate key={m} instance={m} saved={rates[m]} />)}
+    </VCard>
+  );
+}
+
+function MachineRate({ instance, saved }: { instance: string; saved: number | undefined }) {
+  const [text, setText] = useState(saved === undefined ? "" : String(saved));
+  useEffect(() => { setText(saved === undefined ? "" : String(saved)); }, [saved]);
+  const [busy, setBusy] = useState(false);
+  const value = text.trim() === "" ? null : Number(text);
+  const valid = value === null || (Number.isFinite(value) && value >= 0);
+  const dirty = (saved ?? null) !== value;
+  const save = async () => {
+    setBusy(true);
+    try { await setInstanceRate(instance, value); void refreshVitals(); }
+    catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      notifyLocal({
+        kind: "action_failed", repo: "", title: `Machine cost · ${instance}`, label: "Save rate failed", body: error,
+        copy: `Action: Save rate for ${instance}\nError:\n${error}`,
+        ask: `Save rate for ${instance} failed: ${error}. Please investigate and fix.`,
+      });
+    }
+    finally { setBusy(false); }
+  };
+  return (
+    <Setting label={instance} hint="USD per hour. Empty: an EC2 on-demand estimate, else 0.">
+      <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); if (valid && dirty) void save(); }}>
+        <span className="text-muted-foreground text-sm">$</span>
+        <input data-slot="machine-rate" aria-label={`${instance} USD per hour`} inputMode="decimal" placeholder="auto" value={text}
+          onChange={(e) => setText(e.target.value)} aria-invalid={!valid}
+          className="border-input bg-background h-8 w-24 rounded-md border px-2 text-sm tabular-nums" />
+        <span className="text-muted-foreground text-sm">/h</span>
+        <Button type="submit" variant="secondary" size="sm" disabled={!valid || !dirty || busy}>Save</Button>
+      </form>
+    </Setting>
   );
 }
 
