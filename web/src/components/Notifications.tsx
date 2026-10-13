@@ -15,8 +15,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useAtomValue } from "jotai";
 import {
-  AlertTriangle, ArrowUpRight, Bell, BellOff, Check, CheckCheck, CircleX, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, Hammer, MessageCircleQuestion,
-  MessagesSquare, MonitorCheck, MonitorX, OctagonPause, PanelRight, Reply, RotateCcw, ScrollText, ShieldX, Square, Wrench, X,
+  AlertTriangle, ArrowUpRight, Bell, BellOff, Bot, Check, CheckCheck, CircleX, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, Hammer, MessageCircleQuestion,
+  MessagesSquare, MonitorCheck, MonitorX, OctagonPause, Reply, RotateCcw, ScrollText, ShieldX, Square, Wrench, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
@@ -36,6 +36,7 @@ import { detailPath } from "@/views/Agents";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Segmented } from "@/components/console";
+import { Kbd } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { useOrchestrator } from "@/components/Terminal";
 import type { ShortcutId } from "@/lib/shortcuts";
@@ -54,7 +55,10 @@ const KindIcon = ({ kind, className }: { kind: NotificationKind; className?: str
 /** Each quick action's icon (the label is its tooltip and aria-label); a shortcut where one exists. */
 const ACTION_ICON: Record<NotificationActionId, typeof Bell> = {
   address: Wrench, viewPr: GitPullRequest, fix: Hammer, viewOutput: FileText, open: ArrowUpRight, reply: Reply, retry: RotateCcw,
-  openChat: MessagesSquare, openPreview: ExternalLink, stopPreview: Square, retryPreview: RotateCcw, viewLog: ScrollText, openOrchestrator: PanelRight,
+  // openOrchestrator is exclusively the orchestrator's OWN notifications' Open action (see
+  // notificationActions) — its icon is the orchestrator's own avatar everywhere else, not the panel
+  // it opens.
+  openChat: MessagesSquare, openPreview: ExternalLink, stopPreview: Square, retryPreview: RotateCcw, viewLog: ScrollText, openOrchestrator: Bot,
 };
 const ACTION_SHORTCUT: Partial<Record<NotificationActionId, ShortcutId>> = { openOrchestrator: "orchestrator" };
 
@@ -406,11 +410,11 @@ export function NotificationPanel() {
   const groups = groupByDay(filterNotifications(list, filter));
   return (
     <div data-slot="notification-centre" className="flex max-h-[70vh] flex-col">
-      <header className="flex h-11 items-center gap-2 border-b pr-1.5 pl-3">
+      <header className="flex h-14 items-center gap-2 border-b pr-1.5 pl-3">
         <h3 className="text-sm font-medium">Notifications</h3>
         <span className="flex-1" />
         <Segmented<NotificationFilter> label="Show" value={filter} onChange={setFilter} options={[
-          { value: "unread", label: <>Unread{unread > 0 && <span data-slot="notification-unread-count" className="text-muted-foreground ml-1 tabular-nums">{unread > 99 ? "99+" : unread}</span>}</> },
+          { value: "unread", label: <>Unread{unread > 0 && <Kbd data-slot="notification-unread-count" className="ml-1">{unread > 99 ? "99+" : unread}</Kbd>}</> },
           { value: "all", label: "All" },
         ]} />
         <button type="button" aria-label="Mark all as read" title="Mark all as read" onClick={() => void markRead("all")} disabled={!unread}
@@ -427,7 +431,10 @@ export function NotificationPanel() {
           </div>
         ) : groups.map((g) => (
           <section key={g.label} data-slot="notification-group">
-            <h4 className="text-muted-foreground bg-card sticky top-0 border-b px-3 py-1.5 text-xs font-medium">{g.label}</h4>
+            {/* z-10: a row below is `position: relative` (for its absolute quick-actions strip), so
+                without an explicit z-index it paints ABOVE this sticky header once scrolled under it
+                — the opaque bg-card alone doesn't stop that (see Chat.tsx's day divider, same fix). */}
+            <h4 className="text-muted-foreground bg-card sticky top-0 z-10 border-b px-3 py-1.5 text-xs font-medium">{g.label}</h4>
             <ul className="divide-y">
               {g.items.map((n) => (
                 <CentreRow key={n.id} n={n} onOpen={() => open(n)} />

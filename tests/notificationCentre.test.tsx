@@ -263,16 +263,29 @@ describe("the notification centre", () => {
     await click($("notifications-bell"));
     const panel = $("notification-centre")!;
     const header = panel.querySelector("header")!;
-    // The header: title, Unread (its count) / All, Mark all as read — nothing else.
+    // The header: title, Unread (its count) / All, Mark all as read — nothing else — tall enough
+    // to give the segmented toggle room (h-14, not the original cramped h-11).
+    expect(header.className).toContain("h-14");
+    expect(header.className).not.toContain("h-11");
     expect(header.querySelector("h3")!.textContent).toBe("Notifications");
     const seg = header.querySelector<HTMLElement>('[role="group"]')!;
     expect([...seg.querySelectorAll("button")].map((b) => [b.textContent, b.getAttribute("aria-pressed")])).toEqual([["Unread2", "true"], ["All", "false"]]);
     expect([...header.querySelectorAll("button")].map((b) => b.textContent || b.getAttribute("aria-label"))).toEqual(["Unread2", "All", "Mark all as read"]);
+    // The unread count is a keycap-styled chip, the same shared Kbd component as a shortcut hint.
+    const unreadCount = header.querySelector('[data-slot="notification-unread-count"]')!;
+    expect(unreadCount.tagName).toBe("KBD");
+    expect(unreadCount.getAttribute("data-slot")).toBe("notification-unread-count"); // not just a <Kbd>'s own default
     expect(panel.querySelector('[data-slot="notification-filter"]')).toBeNull(); // the per-kind chips are gone
     expect(panel.textContent).not.toMatch(/Clear/);
     // Unread: the read row is out of view.
     expect($$("notification-row").map((r) => r.textContent!.includes("Yesterday's CI"))).toEqual([false, false]);
     expect($$("notification-group").map((g) => g.querySelector("h4")!.textContent)).toEqual(["Today", expect.stringMatching(/\w{3} \d+ \w{3}/)]);
+    // The sticky day header is opaque (bg-card) AND raised above the rows (z-10) — a row's own
+    // `position: relative` (for its absolute quick-actions strip) would otherwise paint over a
+    // merely-opaque sticky header once scrolled underneath it.
+    const dayHeader = $$("notification-group")[0]!.querySelector("h4")!;
+    expect(dayHeader.className).toContain("bg-card");
+    expect(dayHeader.className).toContain("z-10");
     // All: every row, read ones dimmed, grouped by day; the choice is remembered.
     await click(button(panel, "All"));
     expect($$("notification-group").map((g) => g.querySelector("h4")!.textContent)).toEqual(["Today", "Yesterday", expect.stringMatching(/\w{3} \d+ \w{3}/)]);
@@ -433,6 +446,8 @@ describe("the notification centre", () => {
     const tip = actionsOf(toast).querySelector('[role="tooltip"]')!;
     expect(tip.textContent).toContain("Open");
     expect(tip.querySelector('kbd[data-slot="kbd"]')!.textContent).toBe("O");
+    // The orchestrator's own notification: Open carries its robot avatar, not the side-panel icon.
+    expect(button(toast, "Open")!.querySelector("svg")!.classList.contains("lucide-bot")).toBe(true);
     await click(button(toast, "Open"));
     expect($("orchestrator-panel")!.getAttribute("data-state")).toBe("open");
     expect(document.activeElement?.tagName).toBe("TEXTAREA"); // its composer, focused
