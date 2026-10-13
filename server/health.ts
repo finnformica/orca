@@ -5,6 +5,7 @@
 import * as os from "os";
 import * as db from "./db";
 import * as lease from "./lease";
+import * as ledger from "./ledger";
 import { run } from "./run";
 
 export type Health = {
@@ -12,6 +13,9 @@ export type Health = {
   memUsedGb: number; memTotalGb: number; memPressurePct?: number; memPressure?: boolean;
   disk?: { usedGb: number; totalGb: number }; uptimeS: number;
   cost?: { monthUsd: number; hourlyUsd: number; sinceIso: string }; at: number;
+  /** Live leases right now — the same count the sampler records, so the card's "Agents · N" and
+   *  the agents line's newest point are one reading. */
+  runningAgents: number;
 };
 
 // ---- darwin memory: os.freemem() is only the truly-free page count, and the kernel keeps nearly
@@ -110,6 +114,7 @@ export async function health(): Promise<Health> {
     memUsedGb, memTotalGb: Math.round((os.totalmem() / 1073741824) * 10) / 10, memPressurePct, memPressure,
     disk, uptimeS: Math.round(os.uptime()),
     cost: costEstimate(Number(process.env.ORCA_HOURLY_USD), process.env.ORCA_BILLING_SINCE), at: Date.now(),
+    runningAgents: lease.live().length,
   };
 }
 
@@ -124,23 +129,55 @@ export function historyHours(raw: string | null | undefined): number {
   return raw && Number.isFinite(n) && n > 0 ? Math.min(n, 24 * 30) : 24;
 }
 
+/** USD the agent runs in the ledger that finished in (from, to] cost. Only Claude reports a cost
+ *  (`total_cost_usd`); a Codex/Cursor run counts as 0. Pure, for the test. */
+export function costSince(entries: ledger.LedgerEntry[], from: number, to: number): number {
+  let usd = 0;
+  for (const e of entries) if (e.kind === "run" && e.at > from && e.at <= to && e.costUsd) usd += e.costUsd;
+  return Math.round(usd * 1e6) / 1e6;
+}
+
+// Where the next sample's cost window starts. Seeded from this instance's newest row on the first
+// sample after a start, so a restart neither loses nor double-counts a run (the ledger is on disk).
+let costFrom: number | null = null;
+/** Tests: forget the window, as a fresh process would. */
+export function resetCostWindow(): void { costFrom = null; }
+
 /** Sample this machine and record it. Never throws: a metrics write must not touch anything else.
  *  Running agents come from the leases (durable, per-host) rather than agent.ts's in-memory `runs`
- *  map, so a sample taken right after a restart still counts what's genuinely live. */
+ *  map, so a sample taken right after a restart still counts what's genuinely live. The cost is
+ *  what the runs that finished since the previous sample cost, from the run ledger. */
 export async function sampleMetrics(): Promise<void> {
   try {
     const h = await health();
+    costFrom ??= (await db.lastMetricAt()) ?? h.at - METRIC_SAMPLE_MS;
+    const costUsd = costSince(ledger.all(), costFrom, h.at);
     await db.recordMetric({
       cpuPct: h.cpuPct, load1: h.load1, memUsedGb: h.memUsedGb, memTotalGb: h.memTotalGb, diskUsedGb: h.disk?.usedGb,
-      runningAgents: lease.live().length,
-    });
+      runningAgents: h.runningAgents, costUsd,
+    }, h.at);
+    costFrom = h.at;
   } catch (e) {
     console.error("orca: metrics sample failed", e instanceof Error ? e.message : e);
   }
 }
 
+/** Give the samples recorded before migration 17 their cost, from the run ledger (30 days, the same
+ *  as the metrics kept) — without it the Cost accrued chart would start flat at deploy and only fill
+ *  from then on. Never throws. */
+export async function backfillCost(): Promise<void> {
+  try {
+    const runs = ledger.all().filter((e) => e.kind === "run" && e.costUsd).map((e) => ({ at: e.at, usd: e.costUsd! }));
+    const n = await db.backfillMetricCost(runs);
+    if (n) console.log(`orca: cost backfilled onto ${n} metric samples from the run ledger`);
+  } catch (e) {
+    console.error("orca: cost backfill failed", e instanceof Error ? e.message : e);
+  }
+}
+
 /** Each instance samples ITSELF once a minute (and once at startup, so a fresh box has a point). */
 export function startMetricsSampler(ms = METRIC_SAMPLE_MS): ReturnType<typeof setInterval> {
+  void backfillCost();
   void sampleMetrics();
   return setInterval(() => void sampleMetrics(), ms).unref();
 }

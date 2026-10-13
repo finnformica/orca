@@ -13,7 +13,7 @@ import { instanceChoices, staleHours, thisInstance, useAgentProviders, useRepos,
 import { ago, repoSummaries } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
 import { THEMES } from "@/components/Shell";
-import { InstanceCard, UsageCard } from "./Vitals";
+import { InstanceCard, RefreshVitals, UsageCard } from "./Vitals";
 import { RunningPreviews, TestMaster } from "./PreviewControl";
 
 export function Repos() {
@@ -73,7 +73,7 @@ export function UsagePage() {
       <h1 className="text-2xl font-semibold tracking-tight">Usage</h1>
       <UsageCard />
       <div>
-        <SectionTitle>Machines</SectionTitle>
+        <SectionTitle aside={<RefreshVitals />}>Machines</SectionTitle>
         <div className="space-y-4">{machines.map((m) => <InstanceCard key={m} instance={m} here={m === here || !instances.length} />)}</div>
       </div>
     </div>

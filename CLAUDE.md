@@ -668,10 +668,17 @@ needs no second timer; a failed write is logged and swallowed. `GET /api/health/
 (24 by default, at most 720) is database-only and its `instance` is a filter, never a forward, so
 either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
 CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300
-points, with running sessions overlaid on BOTH as a pink series on its own right-hand axis
-(`LineChart`'s `overlay` prop, `components/console.tsx`) — a different scale (a small integer count)
-sharing the same [from, to] window and downsampling as the main series, from the one
-`/api/health/history` poll, never a second fetch.
+points, one line each (no overlay — the running sessions are their own chart). Beside them, in the
+same `LineChart` design, an **Agents** chart (`running_agents` over time) and **Cost accrued** (the
+running sum of `instance_metric.cost_usd`, migration 17: what the runs that finished since the
+previous sample cost, from the run ledger's `costUsd` — Claude's `total_cost_usd`; Codex/Cursor report
+none). Rows written before migration 17 are filled once from the ledger at startup
+(`health.backfillCost` → `db.backfillMetricCost`: each run onto the first sample at or after it, only
+where `cost_usd` is still NULL, so it never re-counts what the sampler did). All four come from the
+one `/api/health/history` poll. Every chart and the card's header stats come from ONE series
+(`instanceSeries`): the live `/api/health` reading, when newer, is the newest sample and every line's
+raw last point, so a header stat can never disagree with where its line ends. The Instances heading's
+refresh (`RefreshVitals`) refetches every shown health + history at once.
 **On darwin, memory used comes from `vm_stat`** (active + wired + occupied-by-compressor pages,
 Activity Monitor's own formula), not `totalmem() − freemem()` — macOS's `freemem()` is only the
 truly-free page count and reads near-100% on every healthy Mac; `sysctl -n kern.memorystatus_level`
