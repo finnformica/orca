@@ -412,6 +412,9 @@ export const MIGRATIONS: MigrationStep[] = [
     id: 15,
     name: "notification",
     idempotent: true,
+    // Idempotent because this table ALREADY EXISTED on the shared database before this step ran on
+    // main: an unmerged branch's bridge had created it under another id (the collision the names
+    // above exist to catch). A plain CREATE TABLE crashed both bridges at boot on 2026-10-13.
     // The notification centre (shared/notifications.ts): one flat row per event — an agent that
     // finished, asked for input, failed or was stopped; a check that failed; a PR whose CI fails or
     // that conflicts; a preview that came up or didn't. Written ONCE by the instance where it
@@ -835,9 +838,9 @@ export type TurnPage = { turns: AgentTurn[]; older: TurnCursor | null };
  *  the next page back, null once the conversation's first turn is in hand. The orchestrator's
  *  conversation runs to hundreds of turns, and the chat shows its tail first. */
 export async function turnPage(repo: string, branch: string, opts: { limit?: number; before?: TurnCursor } = {}): Promise<TurnPage> {
-  const sql = await open();
   const limit = Math.max(1, Math.min(500, Math.floor(opts.limit ?? 50)));
   const cursor = parseCursor(opts.before);
+  return withRetry(async (sql) => {
   const rows = cursor
     ? await sql`
       SELECT t.* FROM turn t JOIN workstream w ON w.id = t.workstream_id
@@ -858,6 +861,7 @@ export async function turnPage(repo: string, branch: string, opts: { limit?: num
     turns: page.map(toTurn),
     older: hasMore && oldest ? `${Number(oldest.started_at)}~${String(oldest.id)}` : null,
   };
+  });
 }
 
 /** A cursor is `<started_at>~<turn.id>` (the row's surrogate id, not the run id — it is what the
