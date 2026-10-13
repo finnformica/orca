@@ -25,7 +25,9 @@
 //
 // Contains prompts and responses in plaintext: keep the database off the public internet (it is
 // reached over the tailnet) and never inside a worktree, so it can't leak into a diff or PR.
+import { statSync } from "fs";
 import { hostname } from "os";
+import { join } from "path";
 import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck } from "../shared/agent";
 import * as bus from "./bus";
 import type { Notification, NotificationInput } from "../shared/notifications";
@@ -115,14 +117,26 @@ export async function withRetry<T>(fn: (sql: Bun.SQL) => Promise<T>): Promise<T>
   }
 }
 
-// Numbered, append-only steps recorded in `migration`. Never edit an existing step — add another.
-// (SQLite's `PRAGMA user_version` did this job before; Postgres needs the table, but the discipline
-// is identical, and deliberately not a migration framework.)
-export const MIGRATIONS: { id: number; sql: string }[] = [
+// Numbered, append-only steps recorded in `migration`. Never change what an applied step DOES — add
+// another. (SQLite's `PRAGMA user_version` did this job before; Postgres needs the table, but the
+// discipline is identical, and deliberately not a migration framework.)
+//
+// A step's identity is its id AND its `name`. Keying on the id alone let two parallel branches each
+// append "the next id": one branch's 13 and 14 reached the shared database first, and main's 13 (the
+// `running_agents` column) was then skipped as "already applied" — every metrics sample failed. The
+// runner now compares the recorded name with the code's before it applies anything (`planMigrations`).
+// `idempotent` steps are safe to run again — every statement is IF NOT EXISTS — so a recorded-but-
+// foreign id is healed by simply running main; a step that is not (an UPDATE whose re-run would
+// change later data) refuses to start instead. Write new steps idempotently wherever Postgres allows.
+export type MigrationStep = { id: number; name: string; idempotent: boolean; sql: string };
+
+export const MIGRATIONS: MigrationStep[] = [
   {
     id: 1,
+    name: "workstream-and-turn",
+    idempotent: true,
     sql: `
-      CREATE TABLE workstream (
+      CREATE TABLE IF NOT EXISTS workstream (
         id BIGSERIAL PRIMARY KEY,
         user_id TEXT NOT NULL,
         repo TEXT NOT NULL,
@@ -133,10 +147,10 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
       );
       -- Only ONE live workstream per (user, repo, branch). Archived rows are exempt, so a branch name
       -- can be reused after its predecessor is merged without colliding with the dead one's history.
-      CREATE UNIQUE INDEX workstream_live ON workstream (user_id, repo, branch)
+      CREATE UNIQUE INDEX IF NOT EXISTS workstream_live ON workstream (user_id, repo, branch)
         WHERE archived_at IS NULL;
 
-      CREATE TABLE turn (
+      CREATE TABLE IF NOT EXISTS turn (
         id BIGSERIAL PRIMARY KEY,
         workstream_id BIGINT NOT NULL REFERENCES workstream(id),
         user_id TEXT NOT NULL,
@@ -151,16 +165,18 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
         started_at BIGINT NOT NULL,
         finished_at BIGINT
       );
-      CREATE INDEX turn_ws ON turn (workstream_id, started_at);
+      CREATE INDEX IF NOT EXISTS turn_ws ON turn (workstream_id, started_at);
     `,
   },
   {
     id: 2,
+    name: "repo-and-app-config",
+    idempotent: true,
     sql: `
       -- One row per managed repo, so adding a project is an insert rather than a redeploy. The
       -- RepoConfig lives as JSONB because its shape is the app's and grows regularly; a column per
       -- field would mean a migration per field for no query we actually run.
-      CREATE TABLE repo_config (
+      CREATE TABLE IF NOT EXISTS repo_config (
         id BIGSERIAL PRIMARY KEY,
         user_id TEXT NOT NULL,
         name TEXT NOT NULL,
@@ -169,10 +185,10 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
         created_at BIGINT NOT NULL,
         updated_at BIGINT NOT NULL
       );
-      CREATE UNIQUE INDEX repo_config_name ON repo_config (user_id, name);
+      CREATE UNIQUE INDEX IF NOT EXISTS repo_config_name ON repo_config (user_id, name);
 
       -- The handful of settings that aren't per-repo (port range, stale hours, run timeout).
-      CREATE TABLE app_config (
+      CREATE TABLE IF NOT EXISTS app_config (
         user_id TEXT PRIMARY KEY,
         config JSONB NOT NULL,
         updated_at BIGINT NOT NULL
@@ -181,6 +197,8 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
   },
   {
     id: 3,
+    name: "repo-features-backfill",
+    idempotent: false,
     // Per-repo opt-ins default to OFF, but a repo configured BEFORE they existed was already doing
     // all of this — so record what it was doing rather than silently switching it off underneath a
     // working board. New repos start closed; existing ones become explicit and revocable.
@@ -205,13 +223,15 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
   },
   {
     id: 4,
+    name: "worktree-inventory-and-instance",
+    idempotent: true,
     // What each instance can see. The board used to be computed live from the local filesystem on
     // every poll, which stops working the moment a second instance owns some of the worktrees: the
     // laptop cannot stat the cloud box's disk. Each instance PUBLISHES what it sees instead, and the
     // board is served from here — so an instance that is asleep leaves its rows stale rather than
     // making the whole board slow or empty.
     sql: `
-      CREATE TABLE worktree_inventory (
+      CREATE TABLE IF NOT EXISTS worktree_inventory (
         id BIGSERIAL PRIMARY KEY,
         user_id TEXT NOT NULL,
         instance TEXT NOT NULL,
@@ -220,12 +240,12 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
         data JSONB NOT NULL,
         seen_at BIGINT NOT NULL
       );
-      CREATE UNIQUE INDEX worktree_inventory_key
+      CREATE UNIQUE INDEX IF NOT EXISTS worktree_inventory_key
         ON worktree_inventory (user_id, instance, repo, branch);
 
       -- Liveness, so the board can say "this machine last checked in 40 minutes ago" instead of
       -- silently presenting stale rows as current.
-      CREATE TABLE instance (
+      CREATE TABLE IF NOT EXISTS instance (
         user_id TEXT NOT NULL,
         name TEXT NOT NULL,
         seen_at BIGINT NOT NULL,
@@ -235,6 +255,8 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
   },
   {
     id: 5,
+    name: "turn-step",
+    idempotent: true,
     // The agent's recorded steps. These lived as JSONL files under the state dir, which is right for
     // one machine and wrong for two: a transcript on the cloud box's disk cannot be read by a board
     // open on the laptop, so opening that conversation showed nothing. Making the database the source
@@ -243,7 +265,7 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
     // `seq` is per run and unique, which also makes ingestion idempotent — a retried write cannot
     // duplicate a step.
     sql: `
-      CREATE TABLE turn_step (
+      CREATE TABLE IF NOT EXISTS turn_step (
         id BIGSERIAL PRIMARY KEY,
         user_id TEXT NOT NULL,
         run_id TEXT NOT NULL,
@@ -251,23 +273,27 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
         step JSONB NOT NULL,
         at BIGINT NOT NULL
       );
-      CREATE UNIQUE INDEX turn_step_key ON turn_step (run_id, seq);
+      CREATE UNIQUE INDEX IF NOT EXISTS turn_step_key ON turn_step (run_id, seq);
     `,
   },
   {
     id: 6,
+    name: "turn-instance",
+    idempotent: true,
     // Which instance ran a turn. Without it, startup reconciliation is dangerous once two instances
     // share a database: leases are per-instance state, so instance B sees instance A's live runs as
     // orphans with no lease and closes them mid-flight. (Found by running a second instance locally —
     // it printed "closed 1 turn(s) left running by a previous bridge" while the first was working.)
     // Backfilled to this instance, which is correct for a single-machine history.
     sql: `
-      ALTER TABLE turn ADD COLUMN instance TEXT;
-      CREATE INDEX turn_instance ON turn (user_id, instance) WHERE finished_at IS NULL;
+      ALTER TABLE turn ADD COLUMN IF NOT EXISTS instance TEXT;
+      CREATE INDEX IF NOT EXISTS turn_instance ON turn (user_id, instance) WHERE finished_at IS NULL;
     `,
   },
   {
     id: 7,
+    name: "queued-message",
+    idempotent: true,
     // Instructions typed while a run is in flight. The composer has always invited this ("The agent
     // is working — queue the next instruction…") and then rejected it with a 409, so the message was
     // simply lost. Queued here and dispatched when the run finishes.
@@ -275,7 +301,7 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
     // In the database rather than in memory because the point is that it survives: a bridge restart
     // between typing and dispatch is exactly when losing the message would be most galling.
     sql: `
-      CREATE TABLE queued_message (
+      CREATE TABLE IF NOT EXISTS queued_message (
         id BIGSERIAL PRIMARY KEY,
         user_id TEXT NOT NULL,
         repo TEXT NOT NULL,
@@ -287,40 +313,48 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
         created_at BIGINT NOT NULL,
         dispatched_at BIGINT
       );
-      CREATE INDEX queued_message_pending ON queued_message (user_id, repo, branch)
+      CREATE INDEX IF NOT EXISTS queued_message_pending ON queued_message (user_id, repo, branch)
         WHERE dispatched_at IS NULL;
     `,
   },
   {
     id: 8,
+    name: "turn-instruction",
+    idempotent: true,
     // What the user actually typed, separate from the prompt the CLI was given. `prompt` is the
     // instruction wrapped in scenario scaffolding and the outcome contract; the chat used to strip
     // that back out by searching for known marker lines, which failed for any prompt shape the list
     // didn't know and showed the whole prompt. Nullable: rows from before this keep using the
     // marker fallback.
-    sql: `ALTER TABLE turn ADD COLUMN instruction TEXT`,
+    sql: `ALTER TABLE turn ADD COLUMN IF NOT EXISTS instruction TEXT`,
   },
   {
     id: 9,
+    name: "turn-stop-reason",
+    idempotent: true,
     // Why the turn ended (shared/agent.ts StopReason). `status` says whether it finished; this says
     // how — end_turn / budget_reached / interrupted / error — so a list of conversations can be
     // filtered on it. Nullable: older rows infer it from status at read time.
-    sql: `ALTER TABLE turn ADD COLUMN stop_reason TEXT`,
+    sql: `ALTER TABLE turn ADD COLUMN IF NOT EXISTS stop_reason TEXT`,
   },
   {
     id: 10,
+    name: "turn-check",
+    idempotent: true,
     // Orca's own post-run verification (shared/agent.ts TurnCheck): the repo's check command run in
     // the worktree after a run that committed, with the output tail as evidence. Nullable: most
     // turns commit nothing, and repos without a checkCommand never get one.
-    sql: `ALTER TABLE turn ADD COLUMN "check" JSONB`,
+    sql: `ALTER TABLE turn ADD COLUMN IF NOT EXISTS "check" JSONB`,
   },
   {
     id: 11,
+    name: "instance-metric",
+    idempotent: true,
     // Machine metrics over time (server/health.ts's sampler): each instance writes ITS OWN vitals
     // once a minute, so the header chip can graph the other box's last day from either machine.
     // Pruned to 30 days by the writer; ~43k rows per instance at most.
     sql: `
-      CREATE TABLE instance_metric (
+      CREATE TABLE IF NOT EXISTS instance_metric (
         id BIGSERIAL PRIMARY KEY,
         user_id TEXT NOT NULL,
         instance TEXT NOT NULL,
@@ -331,17 +365,19 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
         mem_total_gb DOUBLE PRECISION NOT NULL,
         disk_used_gb DOUBLE PRECISION
       );
-      CREATE INDEX instance_metric_instance_at ON instance_metric (instance, at);
+      CREATE INDEX IF NOT EXISTS instance_metric_instance_at ON instance_metric (instance, at);
     `,
   },
   {
     id: 12,
+    name: "preview-inventory",
+    idempotent: true,
     // Running previews, published by the instance that runs them (the worktree_inventory pattern),
     // so the running-previews menu on any machine — a phone pointed at the box included — lists
     // every instance's previews. Keyed by the preview key (a worktree path), not a branch: a
     // base-branch ("test master") preview has none.
     sql: `
-      CREATE TABLE preview_inventory (
+      CREATE TABLE IF NOT EXISTS preview_inventory (
         user_id TEXT NOT NULL,
         instance TEXT NOT NULL,
         key TEXT NOT NULL,
@@ -353,10 +389,21 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
   },
   {
     id: 13,
+    name: "instance-metric-running-agents",
+    idempotent: true,
     // How many agents were live on this instance at sample time, alongside its cpu/mem (the Usage
     // dashboard overlays it on the CPU/memory graphs). Nullable: rows written before this migration
     // have none; metricHistory reads them back as 0 rather than null.
-    sql: `ALTER TABLE instance_metric ADD COLUMN running_agents INTEGER`,
+    sql: `ALTER TABLE instance_metric ADD COLUMN IF NOT EXISTS running_agents INTEGER`,
+  },
+  {
+    id: 14,
+    name: "migration-name",
+    idempotent: true,
+    // The name half of a step's identity (above). The runner itself adds this column before it reads
+    // the table — it needs the names to plan — so on a running database this step is a no-op that
+    // records the column in the ledger like every other schema change.
+    sql: `ALTER TABLE migration ADD COLUMN IF NOT EXISTS name TEXT`,
   },
   {
     // 15, not 13: two branches open alongside this one each add a step too (usage → 13, insights →
@@ -392,18 +439,120 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
   },
 ];
 
+export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
+
+/** What the runner decided for one database. */
+export type MigrationPlan = {
+  /** Applied in id order, each in its own transaction: never recorded; recorded under another name
+   *  but idempotent; or recorded with NO name and idempotent — a row from before names existed can't
+   *  be verified, and re-running an idempotent step costs nothing. */
+  run: MigrationStep[];
+  /** Recorded with no name and NOT idempotent: trusted (it predates names) and named in place. */
+  stamp: MigrationStep[];
+  /** The id is recorded under a DIFFERENT name — another branch's step got there first. */
+  mismatches: MigrationMismatch[];
+  /** The mismatches re-running can't heal: the bridge refuses to start. */
+  refused: MigrationMismatch[];
+  /** Recorded ids with no step in this code (a foreign branch's, or a newer main's). */
+  unknown: { id: number; name: string | null }[];
+};
+
+/** Pure: what to do, given the steps in code and the `migration` rows recorded. */
+export function planMigrations(steps: MigrationStep[], recorded: { id: number; name: string | null }[]): MigrationPlan {
+  const byId = new Map(recorded.map((r) => [Number(r.id), r.name ?? null]));
+  const plan: MigrationPlan = { run: [], stamp: [], mismatches: [], refused: [], unknown: [] };
+  for (const step of steps) {
+    if (!byId.has(step.id)) { plan.run.push(step); continue; }
+    const name = byId.get(step.id) ?? null;
+    if (name === step.name) continue;
+    if (name === null) { (step.idempotent ? plan.run : plan.stamp).push(step); continue; }
+    const mismatch = { id: step.id, recorded: name, expected: step.name, idempotent: step.idempotent };
+    plan.mismatches.push(mismatch);
+    if (step.idempotent) plan.run.push(step); else plan.refused.push(mismatch);
+  }
+  const known = new Set(steps.map((s) => s.id));
+  plan.unknown = recorded.filter((r) => !known.has(Number(r.id))).map((r) => ({ id: Number(r.id), name: r.name ?? null }));
+  return plan;
+}
+
+/** One line per mismatch — the startup log, `/api/diagnostics` and `bun run db:check` all say it the
+ *  same way. */
+export function describeMismatch(m: MigrationMismatch): string {
+  return `migration ${m.id} is recorded as "${m.recorded}" but this code's ${m.id} is "${m.expected}" — `
+    + (m.idempotent ? "not treated as applied; re-running it (idempotent)" : "it is not idempotent, so it cannot be re-run safely");
+}
+
+/** Thrown when the database can't be brought to this code's schema without a human. */
+export class MigrationRefused extends Error {}
+
+function refusal(refused: MigrationMismatch[]): MigrationRefused {
+  return new MigrationRefused([
+    "orca: refusing to start — the database's migration ledger disagrees with this code:",
+    ...refused.map((m) => `  ${describeMismatch(m)}`),
+    "Another branch applied its own step under the same id. Apply this code's step by hand (its SQL is",
+    "MIGRATIONS in server/db.ts), then record it: UPDATE migration SET name = '<expected>' WHERE id = <id>;",
+    "then restart. `bun run db:check` prints the ledger. Never point a worktree's bridge or tests at the",
+    "shared database — a migration id is reserved only by merging to main.",
+  ].join("\n"));
+}
+
+/** Under `bun test`, the only database a test may migrate is its own `orca_test_*` schema
+ *  (tests/pg.ts). A worktree has a copied `.env` whose ORCA_DATABASE_URL is the SHARED database, and
+ *  Bun loads it into the test process — so a test that forgot to repoint the URL would migrate it. */
+export function testDatabaseRefusal(url: string, nodeEnv = process.env.NODE_ENV): string | undefined {
+  if (nodeEnv !== "test") return undefined;
+  let decoded = url;
+  try { decoded = decodeURIComponent(url); } catch { /* keep it raw */ }
+  if (/search_path=orca_test_/.test(decoded)) return undefined;
+  return "orca: refusing to open a non-test database under `bun test` — point ORCA_DATABASE_URL at a "
+    + "schema from tests/pg.ts's freshSchema(), never the shared one";
+}
+
+/** Whether this checkout is a linked git worktree (`.git` is a file there, a directory in the main
+ *  checkout). A worktree's bridge applying ITS branch's migrations to the shared database is how a
+ *  foreign step took main's id; `ORCA_ALLOW_WORKTREE_MIGRATIONS=1` is for a worktree whose database
+ *  is genuinely its own. */
+function inLinkedWorktree(): boolean {
+  try { return statSync(join(import.meta.dir, "..", ".git")).isFile(); } catch { return false; }
+}
+
+let lastReport: (MigrationPlan & { at: number }) | undefined;
+/** The last migration pass on this process's database, for `/api/diagnostics`. */
+export const migrationReport = () => lastReport;
+
+/** The recorded ledger, tolerating a database the runner has never touched or one from before names. */
+export async function recordedMigrations(sql: Bun.SQL): Promise<{ id: number; name: string | null }[]> {
+  const [exists] = await sql`SELECT to_regclass('migration') AS t`;
+  if (!exists?.t) return [];
+  return (await sql`SELECT * FROM migration ORDER BY id`).map((r: { id: number; name?: string | null }) => ({ id: Number(r.id), name: r.name ?? null }));
+}
+
 async function migrate(sql: Bun.SQL): Promise<void> {
+  const notTest = testDatabaseRefusal(handleUrl ?? databaseUrl());
+  if (notTest) throw new Error(notTest);
   await sql`CREATE TABLE IF NOT EXISTS migration (id INT PRIMARY KEY, applied_at BIGINT NOT NULL)`;
-  const applied = new Set((await sql`SELECT id FROM migration`).map((r: { id: number }) => Number(r.id)));
-  for (const step of MIGRATIONS) {
-    if (applied.has(step.id)) continue;
+  // Before reading: planning needs the names (step 14 records the same column in the ledger).
+  await sql`ALTER TABLE migration ADD COLUMN IF NOT EXISTS name TEXT`;
+  const plan = planMigrations(MIGRATIONS, await recordedMigrations(sql));
+  lastReport = { ...plan, at: Date.now() };
+  for (const m of plan.mismatches) console.error(`orca: MIGRATION MISMATCH — ${describeMismatch(m)}`);
+  for (const u of plan.unknown) console.error(`orca: migration ${u.id}${u.name ? ` ("${u.name}")` : ""} is recorded but this code has no such step — a branch ahead of this one, or another branch's`);
+  if (plan.refused.length) throw refusal(plan.refused);
+  if (plan.run.length && process.env.NODE_ENV !== "test" && inLinkedWorktree() && process.env.ORCA_ALLOW_WORKTREE_MIGRATIONS !== "1") {
+    throw new MigrationRefused(`orca: refusing to apply migration(s) ${plan.run.map((s) => s.id).join(", ")} from a git worktree — `
+      + "this database may be the shared one, and a migration id is reserved only by merging to main. "
+      + "Point ORCA_DATABASE_URL at a database of your own and set ORCA_ALLOW_WORKTREE_MIGRATIONS=1.");
+  }
+  for (const step of plan.run) {
     // One transaction per step: a half-applied migration is the single failure mode that would need a
-    // human, so make it impossible rather than recoverable.
+    // human, so make it impossible rather than recoverable. Upsert, so a re-run step takes its id back.
     await sql.begin(async (tx: Bun.SQL) => {
       await tx.unsafe(step.sql);
-      await tx`INSERT INTO migration (id, applied_at) VALUES (${step.id}, ${Date.now()})`;
+      await tx`INSERT INTO migration (id, applied_at, name) VALUES (${step.id}, ${Date.now()}, ${step.name})
+        ON CONFLICT (id) DO UPDATE SET applied_at = EXCLUDED.applied_at, name = EXCLUDED.name`;
     });
   }
+  for (const step of plan.stamp) await sql`UPDATE migration SET name = ${step.name} WHERE id = ${step.id} AND name IS NULL`;
 }
 
 // ---- workstreams ----

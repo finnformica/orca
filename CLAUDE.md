@@ -75,7 +75,17 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   prompt + final response + structured outcome (what you'd feed a model), NOT the provider's raw event
   stream — that's far larger, mostly tool output, and the provider already keeps it; `turn.raw_ref`
   points back at it. Migrations are numbered, append-only steps in a `migration` table — never edit an
-  applied step, add another — and each runs in one transaction. A history write must never break the
+  applied step, add another — and each runs in one transaction. **A step's identity is id + `name`**:
+  the runner compares the recorded name with the code's before applying anything, re-runs an
+  `idempotent` step recorded under a foreign name (so write steps `IF NOT EXISTS` wherever Postgres
+  allows) and refuses to start on a non-idempotent one; `bun run db:check` prints the ledger,
+  read-only. (History: two branches each took id 13; a branch's 13 reached the shared database
+  first and main's `running_agents` column was skipped as "applied".) **Workers: a migration id is
+  reserved only by MERGING to main** — if main gained a step while your branch was open, rebase and
+  renumber yours before opening the PR — and never point a running bridge or a test at the shared
+  database from a worktree (a worktree's copied `.env` names it; `bun test` refuses any database
+  that isn't a `tests/pg.ts` schema, and a worktree's bridge refuses to apply migrations unless
+  `ORCA_ALLOW_WORKTREE_MIGRATIONS=1`). A history write must never break the
   run that produced it (`recordTurn` logs and swallows). The API is async throughout: `launch()`
   **awaits** the start write, because "the turn exists before the run can produce output" is the whole
   point of writing at launch; the finish write is fire-and-forget, tracked so `agent.flushHistory()`

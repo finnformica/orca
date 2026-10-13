@@ -6,7 +6,9 @@
 // at it is near-instant, where creating a database per file costs hundreds of ms. The schema is
 // dropped afterwards, so a crashed run leaves at most one stray `orca_test_*` schema.
 //
-// Point ORCA_TEST_DATABASE_URL at any Postgres; it defaults to a local one.
+// Point ORCA_TEST_DATABASE_URL at any Postgres; it defaults to a local one. Under `bun test` the app
+// refuses to migrate any database that is not one of these schemas (server/db.ts `testDatabaseRefusal`):
+// a worktree's copied .env names the SHARED database, and Bun loads it into the test process.
 const BASE_URL = process.env.ORCA_TEST_DATABASE_URL || "postgres://localhost:5432/postgres";
 
 let counter = 0;
