@@ -992,6 +992,14 @@ export async function autoMerge(row: Row) {
   await refresh();
 }
 
+/** Orca's own merge queue (server/mergeQueue.ts): squash-merged once green and clean, under the
+ *  repo's mergePolicy — which refuses, with its reason, a PR it keeps for a person. */
+export async function mergeWhenGreen(row: Row) {
+  if (!row.prNumber) return;
+  await api.mergeWhenGreen(row.repo, row.prNumber, row.branch);
+  await refresh();
+}
+
 export async function disableAutoMerge(row: Row) {
   if (!row.prNumber) return;
   await api.disableAutoMerge(row.repo, row.prNumber);
