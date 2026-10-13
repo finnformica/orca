@@ -1235,6 +1235,14 @@ export function turnsByHour(rows: OverviewRow[], now = Date.now(), hours = 24): 
   return buckets;
 }
 
+/** Instance display order: `cloud` first, then `local`, then any others alphabetically — so cloud
+ *  always leads wherever instances are listed or stacked (Overview, the switcher, filters), no
+ *  matter which machine is viewing. The one place this is decided, so it can't drift per call site. */
+export function instanceOrder(names: string[]): string[] {
+  const rank = (n: string) => (n === "cloud" ? 0 : n === "local" ? 1 : 2);
+  return [...names].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
+}
+
 export type ListFilter = {
   repo: string; // "all" or a repo name
   instance: string; // "all" or an instance name
@@ -1646,14 +1654,6 @@ export function downsample(points: { at: number; v: number }[], max: number, fro
   }
   flush();
   return out;
-}
-
-/** The axis maximum for a whole-number count (running sessions): an even integer above the peak,
- *  at least 2, so all three ticks (top, middle, 0) are whole numbers and the peak sits below the
- *  top. `niceMax` gave 1 → a "0.5" middle tick shown as 1, and 2.5 → "3". */
-export function countMax(peak: number): number {
-  const m = Math.max(2, Math.floor(peak) + 1);
-  return m % 2 ? m + 1 : m;
 }
 
 /** A round axis maximum at or above `v`: 1, 2, 2.5 or 5 × 10^k. */

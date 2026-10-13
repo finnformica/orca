@@ -9,7 +9,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
 import {
-  addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, followUpPrompt, launchPrompt,
+  addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, followUpPrompt, instanceOrder, launchPrompt,
   newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { ReviewDigest } from "./workstream";
@@ -87,10 +87,11 @@ export const slackChannel = (repo: string) => repoInfo(repo)?.slackChannel;
  *  this; the client reads it only to grey out the Add-preview control before a click round-trips. */
 export const previewsEnabled = (repo: string) => repoInfo(repo)?.features?.previews ?? false;
 export const staleHours = () => cfg?.staleHours ?? 24;
-/** This bridge's instance name, and every instance a workstream can be placed on (this one first).
- *  Empty `others` means a single machine — placement UI stays hidden. */
+/** This bridge's instance name, and every instance a workstream can be placed on, in display order
+ *  (`instanceOrder`: cloud, then local, then any others alphabetically — not "this one first").
+ *  Empty means a single machine — placement UI stays hidden. */
 export const thisInstance = (): string | undefined => cfg?.instance;
-export const instanceChoices = (): string[] => cfg?.instance ? [cfg.instance, ...(cfg.instances ?? []).filter((i) => i !== cfg!.instance)] : [];
+export const instanceChoices = (): string[] => cfg?.instance ? instanceOrder([...new Set([cfg.instance, ...(cfg.instances ?? [])])]) : [];
 /** Where a new workstream in a repo goes unless you pick: the repo's default, else here. */
 export const defaultInstanceFor = (repo: string): string | undefined => repoInfo(repo)?.runsOn ?? cfg?.instance;
 
