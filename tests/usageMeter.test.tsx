@@ -292,3 +292,45 @@ test("the usage toggle reads back on a reload: default collapsed, bad JSON falls
   localStorage.setItem("orca.usageExpanded", "true"); // saved before the versioned key existed
   expect(reload().get(usageExpandedAtom)).toBe(true);
 });
+
+test("a hydra login's row shows a switch on hover: flipping it disables/enables the rotation through POST /api/usage/profile", async () => {
+  const login = (name: string, state: string) => ({ name, state, usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
+  apiFake.usageData = { claude: null, codex: null, profiles: [login("work", "ok")] };
+  await mount("/usage");
+  const mouse = (el: Element, type: "mouseover" | "mouseout") => act(async () => { el.dispatchEvent(new MouseEvent(type, { bubbles: true, relatedTarget: null })); await flush(); });
+  const click = (el: Element) => act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  await click(card().querySelector("[data-slot='usage-toggle']")!); // the logins wait behind the chevron
+  const row = () => group("login:work")!.querySelector<HTMLElement>("[data-slot='login-toggle']")!;
+
+  // Hidden until the row is hovered (opacity-0, not actually removed — always there for a touch screen).
+  expect(row().className).toContain("opacity-0");
+  expect(row().getAttribute("aria-checked")).toBe("true");
+  expect(row().getAttribute("title")).toBe("Take work out of hydra's rotation");
+  await mouse(group("login:work")!.querySelector(".flex.items-baseline")!, "mouseover");
+  expect(row().className).not.toContain("opacity-0");
+
+  await click(row());
+  expect(apiFake.setProfileEnabledCalls).toEqual([{ name: "work", enabled: false, instance: "laptop" }]);
+  expect(row().getAttribute("aria-checked")).toBe("false"); // flipped from the refreshed profile list
+  expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("disabled");
+  expect(group("login:work")!.className).toContain("opacity-50"); // muted, same as any out-of-rotation login
+  expect(row().getAttribute("title")).toBe("Put work back");
+
+  await click(row()); // and back
+  expect(apiFake.setProfileEnabledCalls[1]).toEqual({ name: "work", enabled: true, instance: "laptop" });
+  expect(row().getAttribute("aria-checked")).toBe("true");
+  expect(group("login:work")!.className).not.toContain("opacity-50");
+});
+
+test("a failed toggle goes to the error toast and the switch reverts", async () => {
+  apiFake.usageData = { claude: null, codex: null, profiles: [{ name: "work", state: "ok", usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } }] };
+  apiFake.setProfileEnabledError = "hydra: no such profile";
+  await mount("/usage");
+  await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  const row = () => group("login:work")!.querySelector<HTMLElement>("[data-slot='login-toggle']")!;
+  await act(async () => { row().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(row().getAttribute("aria-checked")).toBe("true"); // unchanged — the server refused it
+  const toast = container!.querySelector('[data-slot="toast"]')!;
+  expect(toast.textContent).toContain("Disable failed");
+  expect(toast.textContent).toContain("hydra: no such profile");
+});

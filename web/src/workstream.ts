@@ -1567,8 +1567,9 @@ type UsageReading = {
 /** One line of the Usage card, Vercel's shape: a ring at `pct`, a label, and value / limit. */
 export type UsageRow = { key: string; label: string; pct: number; value: string; limit: string; resetsIn: string | null };
 /** A block of rows under one heading: the fleet, one hydra login, Codex. `state` is hydra's verdict
- *  when it isn't "ok"; `dim` when hydra can't route to that login. */
-export type UsageGroup = { key: string; title: string; subtitle?: string; state?: string; dim?: boolean; rows: UsageRow[] };
+ *  when it isn't "ok"; `dim` when hydra can't route to that login. `name` is the hydra login name
+ *  (set only for a `login:` group) — what the enable/disable toggle sends back to the server. */
+export type UsageGroup = { key: string; title: string; subtitle?: string; state?: string; dim?: boolean; name?: string; rows: UsageRow[] };
 
 const CLAUDE_WINDOWS: [keyof Pick<ClaudeReading, "fiveHour" | "sevenDay" | "fable">, string][] = [["fiveHour", "5-hour window"], ["sevenDay", "Weekly"], ["fable", "Fable weekly"]];
 type LoginReading = { name: string; usage: ClaudeReading | null; state?: string; email?: string };
@@ -1625,7 +1626,7 @@ export function usageGroups(u: UsageReading | null, now = Date.now()): UsageGrou
     } : { key: "fleet", title: "Claude", subtitle: "no login in rotation", rows: [] });
     for (const p of profiles) {
       groups.push({
-        key: `login:${p.name}`, title: p.name, subtitle: p.email, state: p.state && p.state !== "ok" ? p.state : undefined, dim: outOfRotation(p),
+        key: `login:${p.name}`, title: p.name, subtitle: p.email, state: p.state && p.state !== "ok" ? p.state : undefined, dim: outOfRotation(p), name: p.name,
         rows: p.usage ? claudeRows(`login:${p.name}`, p.usage, now) : [],
       });
     }

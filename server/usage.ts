@@ -150,6 +150,23 @@ export async function hydraUsage(): Promise<ProfileUsage[] | null> {
   }
 }
 
+/** Take a hydra login out of its rotation (`enabled: false`) or put it back (`true`) — `hydra
+ *  disable|enable <name>`. Keeps the login signed in; it just stops being a launch target. Refuses
+ *  a name hydra doesn't currently report (a stale row, a typo) rather than shelling out with it.
+ *  Returns the refreshed profile list so the caller need not poll again to see the new state. */
+export async function setProfileEnabled(name: string, enabled: boolean): Promise<ProfileUsage[]> {
+  const hydra = Bun.which("hydra", { PATH: process.env.PATH ?? "" });
+  if (!hydra) throw new Error("hydra is not installed on this host");
+  const before = await hydraUsage();
+  if (!before?.some((p) => p.name === name)) throw new Error(`"${name}" is not a hydra login on this host`);
+  const proc = Bun.spawn([hydra, enabled ? "enable" : "disable", name], { env: process.env, stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => proc.kill(), 15_000);
+  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  clearTimeout(timer);
+  if (code !== 0) throw new Error((err || out).trim() || `hydra ${enabled ? "enable" : "disable"} ${name} failed`);
+  return (await hydraUsage()) ?? before;
+}
+
 export const DEFAULT_CLAUDE_DIR = join(homedir(), ".claude");
 
 /** The macOS Keychain service the CLI stores a login's OAuth token under. Read out of the CLI
