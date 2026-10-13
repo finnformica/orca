@@ -184,7 +184,7 @@ a small "Ask · A" pill fixed at the bottom centre of the main column (its strip
 the sidebar ends, collapsed or expanded) on every page (desktop; below md the phone's bottom
 bar has the orchestrator instead) MORPHS (one surface: width, height, radius; instant under reduced
 motion) into a box for messages to the orchestrator with no history — "Ask the orchestrator...", a
-textarea three lines tall that grows to a cap (a JS fallback where `field-sizing` is unsupported), Enter sends / Shift+Enter breaks the line, no ✕. The agent icon sits top left with the text
+textarea three lines tall that grows to a cap (a JS fallback where `field-sizing` is unsupported), Enter sends / Shift, ⌘ or Ctrl+Enter breaks the line (as in the chat composer), no ✕. The agent icon sits top left with the text
 the whole width beside it; the row below holds only actions — a Send button carrying the `send` keycap
 (and the "Sent · Open chat" receipt). Collapsing keeps the box's contents mounted through the morph —
 faded, inert, pinned at their width — and the pill fades in after (`MORPH_MS`); swapping them at once

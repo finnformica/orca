@@ -140,6 +140,11 @@ test("Q4: one surface morphs pill ↔ box (width, height, radius; none under red
   await type(input(), "line one");
   await enter(input(), { shiftKey: true });
   expect(apiFake.orchestratorMessages).toEqual([]);
+  // ⌘+Enter (Ctrl+Enter elsewhere) breaks the line too — put in at the caret, never a send.
+  await enter(input(), { metaKey: true });
+  await enter(input(), { ctrlKey: true });
+  expect(apiFake.orchestratorMessages).toEqual([]);
+  expect(input().value).toBe("line one\n\n");
   // Closing morphs back on the same element. The box's contents stay through the collapse — faded,
   // inert, pinned — and only then does the pill fade in (swapping at once was the jank).
   await act(async () => { input().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await flush(); });

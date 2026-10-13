@@ -1,7 +1,7 @@
 // The quick-ask launcher: a small pill fixed at the bottom centre of every page (desktop; below md
 // the phone's bottom bar has the orchestrator instead). Click it, or press A, and the pill MORPHS
 // into a compact box — one surface whose width, height and radius animate (instant under
-// prefers-reduced-motion) — for messages to the orchestrator with no history: Enter sends, Shift+Enter
+// prefers-reduced-motion) — for messages to the orchestrator with no history: Enter sends, Shift/⌘/Ctrl+Enter
 // breaks the line, and the box opens three lines tall and grows with what you type up to a cap. The shape is Linear's / Raycast's
 // quick capture: fire a line without leaving what you're looking at, open the conversation only when
 // you want to read. It carries no activity dot: that lives only on the orchestrator's own entry points
@@ -102,7 +102,14 @@ export function QuickAsk() {
     });
   };
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
+    // Enter sends; Shift/⌘/Ctrl+Enter breaks the line, as in the chat composer. A textarea inserts
+    // Shift's newline itself; ⌘/Ctrl's has to be put in by hand.
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      const el = e.currentTarget;
+      el.setRangeText("\n", el.selectionStart, el.selectionEnd, "end");
+      setText(el.value);
+    } else if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
     else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setOpen(false); }
   };
   return (
