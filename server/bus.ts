@@ -18,6 +18,9 @@ import type { Notification } from "../shared/notifications";
 export type BusEvent =
   | { kind: "step"; runId: string; repo: string; branch: string; steps: AgentStep[] }
   | { kind: "turn"; runId: string; repo: string; branch: string }
+  // Reply text as it is generated (claude's partial messages) — live only, never stored: the whole
+  // message follows as a step, and a client that missed deltas simply waits for it.
+  | { kind: "delta"; runId: string; repo: string; branch: string; text: string }
   // A notification just recorded here (server/notify.ts) — pushed to every tab, and relayed to the
   // other instance's tabs, so both machines pop the same toast once.
   | { kind: "notification"; notification: Notification };
