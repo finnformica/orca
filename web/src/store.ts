@@ -302,9 +302,13 @@ export const pollMerged = coalesced(async () => {
   // solo TTL caller below via `.then(notify)`.
 });
 
+// Flips once the first refresh settles — see useWorkstreamsLoaded.
+let liveLoaded = false;
+
 // One render off the fully-settled view — never mid-flight (see pollAgents).
 async function refreshAll(streams: Promise<void>[]): Promise<void> {
   await Promise.all(streams);
+  liveLoaded = true;
   notify();
 }
 
@@ -510,6 +514,17 @@ export function useWorkstreams(): Row[] {
   useSyncExternalStore(subscribe, () => version); // re-render on any store change (live, enrichment, optimistic)
   return assembleRows();
 }
+
+/** Whether the first agents+PRs refresh has settled — `useWorkstreams()` returns `[]` both before
+ *  that and once it has genuinely nothing, so the Overview's stat tiles read this for their loading
+ *  skeleton rather than treating an empty row list as "zero of everything". */
+export function useWorkstreamsLoaded(): boolean {
+  useSyncExternalStore(subscribe, () => version);
+  return liveLoaded;
+}
+/** Test-only: `liveLoaded` is a module singleton that stays true for the rest of the run once the
+ *  first refresh settles, so a test of the pre-load skeleton must reset it first. */
+export const _resetWorkstreamsLoaded = () => { liveLoaded = false; };
 
 /** Build the board rows from the current live/enrichment/optimistic state. Pure over module state,
  *  so a non-React test can read assembled rows after a poll (see remoteDuplicate.test.ts). */

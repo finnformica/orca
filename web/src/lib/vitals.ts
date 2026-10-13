@@ -37,6 +37,16 @@ export function mergeUsage(prev: Usage | null, next: Usage): Usage {
 // app-server handshake timing out, or a just-restarted bridge with a cold cache — must not drop the
 // OTHER provider that's already showing. Until both are present, retry soon (bounded) so a cold
 // start fills the bar in seconds; once complete, settle into the slow cadence.
+//
+// `usageLoaded` is a SEPARATE signal from the value itself: a genuine "no provider signed in"
+// answer is also `null` on the wire, so the card can't tell "not answered yet" from "answered with
+// nothing" by reading `useUsage()` alone — it needs to know whether the first poll has landed at
+// all, for the loading skeleton. It resets with the same lifecycle as the value (the last
+// subscriber leaving), so a later mount starts from "not yet loaded" rather than a stale true.
+let usageLoaded = false;
+const usageLoadedSubs = new Set<() => void>();
+const notifyUsageLoaded = () => usageLoadedSubs.forEach((s) => s());
+
 const usageSource = sharedSource<Usage>((set) => {
   let cancelled = false;
   let timer: ReturnType<typeof setTimeout>;
@@ -52,14 +62,20 @@ const usageSource = sharedSource<Usage>((set) => {
       set(latest);
       complete = Boolean(latest.claude && latest.codex);
     }
+    if (!usageLoaded) { usageLoaded = true; notifyUsageLoaded(); }
     schedule(complete || ++fastTries > MAX_FAST ? SLOW : FAST);
-  }).catch(() => schedule(FAST));
+  }).catch(() => { if (!usageLoaded) { usageLoaded = true; notifyUsageLoaded(); } schedule(FAST); });
   load();
-  return () => { cancelled = true; clearTimeout(timer); };
+  return () => { cancelled = true; clearTimeout(timer); usageLoaded = false; notifyUsageLoaded(); };
 });
 
 /** Provider usage (/api/usage), null until the first answer (or when no provider is signed in). */
 export const useUsage = (): Usage | null => useSyncExternalStore(usageSource.subscribe, usageSource.get);
+
+/** Whether the first usage poll has answered yet — the Usage card's loading skeleton reads this
+ *  instead of `useUsage() === null`, which is ALSO what "no provider signed in" looks like. */
+export const useUsageLoaded = (): boolean =>
+  useSyncExternalStore((cb) => { usageLoadedSubs.add(cb); return () => usageLoadedSubs.delete(cb); }, () => usageLoaded);
 
 export type HealthReading = { health: InstanceHealth | null; down: boolean };
 const healthSources = new Map<string, ReturnType<typeof sharedSource<HealthReading>>>();

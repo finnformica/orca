@@ -35,8 +35,8 @@ export const boardViewAtom = persistedAtom<BoardView>("agents.view", "list", one
 export const sidebarCollapsedAtom = persistedAtom("sidebarCollapsed", false, isBoolean, "orca.sidebarCollapsed");
 export const instanceScopeAtom = persistedAtom("instanceScope", "all", isString, "orca.instanceScope");
 export const agentQueryAtom = atom("");
-// The Overview's Usage card: just the fleet + Codex, or every hydra login too. Persisted.
-export const usageExpandedAtom = atomWithStorage("orca.usageExpanded", false);
+// The Usage card (Overview and Usage page alike): just the fleet + Codex, or every hydra login too. Persisted.
+export const usageExpandedAtom = persistedAtom("usageExpanded", false, isBoolean, "orca.usageExpanded");
 
 // Overlays any key, the palette or a button can open (components/Shortcuts.tsx). The orchestrator's
 // window is open or closed here, so the top bar's "Ask the orchestrator", O and the palette all drive

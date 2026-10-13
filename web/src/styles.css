@@ -36,6 +36,7 @@
   --geist-amber: #f5a623;
   --geist-red: #e5484d;
   --geist-gray: #8f8f8f;
+  --geist-pink: #ff0080;
   --geist-warning-bg: #fff8e6;
   --geist-warning-fg: #a35200;
   --geist-error-bg: #fff0f0;
@@ -88,6 +89,7 @@
   --color-geist-amber: var(--geist-amber);
   --color-geist-red: var(--geist-red);
   --color-geist-gray: var(--geist-gray);
+  --color-geist-pink: var(--geist-pink);
   --color-geist-warning-bg: var(--geist-warning-bg);
   --color-geist-warning-fg: var(--geist-warning-fg);
   --color-geist-error-bg: var(--geist-error-bg);
