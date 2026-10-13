@@ -25,7 +25,7 @@ import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
-  orchestratorPrompt, sessionHint, turnSource, wakeExitReason, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  joinMessages, orchestratorPrompt, sessionHint, turnSource, wakeExitReason, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
   type BoardRow, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
@@ -294,7 +294,7 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
     const prompt = orchestratorPrompt({ fresh: !next.resume, notes: b.notes, board: boardText(await board(cfg)), messages, shell, cutOff: b.cutOff });
     const receipt = await agent.launch(dir(), dir(), prompt, {
       ...next, provider: "claude", repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
-      instruction: messages.join("\n\n"), action: "orchestrate", queue: false,
+      instruction: joinMessages(messages), action: "orchestrate", queue: false,
       // Anything you said makes it yours; worker reports alone are the agents' (folded in the chat).
       source: turnSource(messages),
       model: modelOf(cfg, b), maxBudgetUsd: budgetOf(cfg),

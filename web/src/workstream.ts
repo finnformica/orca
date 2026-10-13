@@ -931,6 +931,19 @@ export const isWorkerProblem = (text: string): boolean => {
   const [head = "", next = ""] = text.split("\n");
   return !head.endsWith(" — done") || next.startsWith("Orca's check") && next.includes("FAILED");
 };
+/** One wake can carry several messages (sent while it worked, drained together). Joined with a
+ *  break line, not a blank line — a message has paragraphs of its own, and with "\n\n" three sends
+ *  read back as one message, in the chat and to the model alike. */
+export const MESSAGE_BREAK = "\n\n—— next message ——\n\n";
+export const joinMessages = (messages: string[]): string => messages.join(MESSAGE_BREAK);
+/** A wake's instruction back into its messages. Rows written before the break was used were joined
+ *  with "\n\n": those still split there when it separates worker reports (the old reading), and
+ *  otherwise read as one message — their boundaries are gone. */
+export function splitMessages(instruction: string): string[] {
+  if (instruction.includes(MESSAGE_BREAK)) return instruction.split(MESSAGE_BREAK);
+  const parts = instruction.split("\n\n");
+  return parts.some(isWorkerEvent) ? parts : [instruction];
+}
 /** Who a wake answers, from the messages it carried: worker reports alone → `agents`; anything you
  *  said (typed, quick-ask, the palette, a toast's Ask, the New-draft box) → `human`. */
 export const turnSource = (messages: string[]): TurnSource =>
@@ -1077,8 +1090,9 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     ...(input.cutOff ? ["", "## Previous wake was cut off", `Your previous wake ${input.cutOff} before it finished its turn, so the user got no reply. What it was handling is below again. It may already have acted: check the board before you spawn or send (never start the same work twice), then finish the reply.`] : []),
     // What the user said and what the workers reported, in separate labelled sections — the user
     // first — so a report's text is never read as an instruction from them, nor theirs as a report.
-    ...(human.length ? ["", "## From the user", human.join("\n\n")] : []),
-    ...(reports.length ? ["", "## Worker reports", "Automated, from Orca as your workers finish — not the user.", "", reports.join("\n\n")] : []),
+    // Each message stays its own: several sent while you worked are separate messages, in order.
+    ...(human.length ? ["", "## From the user", ...(human.length > 1 ? [`${human.length} separate messages, oldest first.`, ""] : []), joinMessages(human)] : []),
+    ...(reports.length ? ["", "## Worker reports", "Automated, from Orca as your workers finish — not the user.", "", joinMessages(reports)] : []),
   ].join("\n");
 }
 
@@ -2186,7 +2200,7 @@ type Sourced = { source?: TurnSource; instruction?: string; prompt?: string; fin
 /** A turn's source: recorded since migration 18; a row without it (a worker's turn, a client ahead of
  *  the backfill) is read off its instruction the same way. */
 export const sourceOf = (t: Sourced): TurnSource =>
-  t.source ?? turnSource((t.instruction ?? promptInstruction(t.prompt ?? "")).split("\n\n"));
+  t.source ?? turnSource(splitMessages(t.instruction ?? promptInstruction(t.prompt ?? "")));
 
 export type ChatItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] };
 /** What the orchestrator's chat renders: your turns, with each run of agent turns between them as one
@@ -2204,7 +2218,7 @@ export function chatItems<T extends Sourced>(turns: T[]): ChatItem<T>[] {
 
 /** The collapsed block's line for a run of agent turns. */
 export function agentsMarker(turns: Sourced[]): string {
-  const reports = turns.reduce((n, t) => n + (t.instruction ?? promptInstruction(t.prompt ?? "")).split("\n\n").filter(isWorkerEvent).length, 0);
+  const reports = turns.reduce((n, t) => n + splitMessages(t.instruction ?? promptInstruction(t.prompt ?? "")).filter(isWorkerEvent).length, 0);
   const replies = turns.filter((t) => t.finishedAt).length;
   const working = turns.length - replies;
   return [

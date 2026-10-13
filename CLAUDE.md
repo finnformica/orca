@@ -543,7 +543,10 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   message was only worker reports is an Agents-channel turn (above): muted `⚙` system lines with the
   report folded, not a `❯` prompt. It is asynchronous by design: it spawns, ends its turn, and is woken; it never polls.
 - **One wake per batch.** Its runs launch with `queue: false`; everything that arrived while it
-  worked (worker events, your messages) is drained into ONE resumed run, and deliveries are
+  worked (worker events, your messages) is drained into ONE resumed run — but each message stays its
+  own: they are joined with `MESSAGE_BREAK` (`joinMessages` / `splitMessages`), not a blank line, so
+  three sends are three bubbles in the chat and "N separate messages" to the model (a blank line
+  merged them into one in both; rows from before keep their old reading), and deliveries are
   serialised so two workers finishing together can't race a launch. In that run's prompt what you
   said and what the workers reported are separate labelled sections, yours first — `## From the
   user`, then `## Worker reports` (each report verbatim) — so the model never reads a report as an

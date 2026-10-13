@@ -12,7 +12,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
-import { CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, capWindow, chatItems, longMessage, longReply, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, turnSource, windowRange, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
+import { CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, MESSAGE_BREAK, capWindow, chatItems, longMessage, longReply, splitMessages, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, turnSource, windowRange, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -160,7 +160,7 @@ test("P6: the orchestrator's chat is one stream — worker traffic split out as 
   const wake = (i: number, source?: "agents") => ({ id: `run-${i}`, provider: "claude", instruction: `${WORKER_EVENT_MARKER} r/feat-${i} — done\nOutcome: done`, prompt: "", response: `noted ${i}`, startedAt: 1000 + i, finishedAt: 1001 + i, source });
   const mixed = { ...turn(6), instruction: `${WORKER_EVENT_MARKER} r/feat-x — done\nOutcome: ok\n\nask 6`, response: long(6), source: "human" as const };
   apiFake.turnsData.set("r::long", [
-    { ...turn(0), response: long(0), source: "human" }, wake(1, "agents"), wake(2), wake(3, "agents"), { ...turn(4), response: long(4) },
+    { ...turn(0), response: long(0), source: "human" }, wake(1, "agents"), wake(2), wake(3, "agents"), { ...turn(4), instruction: `ask 4a${MESSAGE_BREAK}ask 4b\n\nwith a paragraph${MESSAGE_BREAK}ask 4c`, response: long(4) },
     wake(5), mixed, { ...turn(7), instruction: Array.from({ length: 12 }, (_, l) => `ask 7 line ${l}`).join("\n"), response: long(7) }, wake(8, "agents"),
   ]);
   apiFake.queuedData.set("long", [
@@ -190,6 +190,9 @@ test("P6: the orchestrator's chat is one stream — worker traffic split out as 
   expect(sixth.querySelector('[data-slot="chat-user"]')!.textContent).not.toContain("r/feat-x");
   await act(async () => { reports.querySelector("button")!.click(); await flush(); });
   expect(reports.querySelector('[data-slot="worker-reports"]')!.textContent).toContain("r/feat-x — done");
+  // Three messages one wake drained: three bubbles, in order — a paragraph inside one stays in it.
+  const fourth = [...c.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].find((t) => t.textContent!.includes("reply 4 line 0"))!;
+  expect([...fourth.querySelectorAll('[data-slot="chat-user"]')].map((b) => b.textContent!.replace(/\d{1,2}:\d{2}.*$/, ""))).toEqual(["ask 4a", "ask 4b\n\nwith a paragraph", "ask 4c"]);
   // Queued: your message and the held report, both in the one stream.
   expect(c.textContent).toContain("and then this");
   expect(c.querySelector('[data-slot="worker-report-held"]')).not.toBeNull();
@@ -231,6 +234,10 @@ test("the pure pieces: the window, compact replies and the worker blocks", () =>
   expect(longReply({ response: "x".repeat(400) })).toBe(true);
   expect(longReply({ response: "short", structured: {} })).toBe(true);
   expect(longMessage("a\nb\nc")).toBe(false);
+  // A wake's messages: split at the break; an old row (blank-line joined) splits only to find reports.
+  expect(splitMessages(`a${MESSAGE_BREAK}b\n\nc`)).toEqual(["a", "b\n\nc"]);
+  expect(splitMessages("one\n\nparagraph")).toEqual(["one\n\nparagraph"]);
+  expect(splitMessages(`${WORKER_EVENT_MARKER} x\n\nsaid`)).toEqual([`${WORKER_EVENT_MARKER} x`, "said"]);
   expect(longMessage(Array.from({ length: 9 }, () => "l").join("\n"))).toBe(true);
   expect(longMessage("x".repeat(601))).toBe(true);
   const w = (id: string, startedAt = 1) => ({ id, instruction: `${WORKER_EVENT_MARKER} x`, finishedAt: 1, startedAt });

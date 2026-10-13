@@ -15,7 +15,7 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, anchoredScrollTop, capWindow, chatItems, longMessage, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, anchoredScrollTop, capWindow, chatItems, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -254,9 +254,10 @@ const clockOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString(undefined
  *  (and days are grouped by the divider ChatPanel draws). Colours are the theme's tokens, so it
  *  follows light and dark like the rest of the console. */
 function ChatTurn({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean }) {
-  const parts = (turn.instruction ?? promptInstruction(turn.prompt)).split("\n\n");
-  // A wake that carried your message AND worker reports: your words in the bubble, the reports folded.
-  const reports = parts.filter(isWorkerEvent), said = parts.filter((p) => !isWorkerEvent(p)).join("\n\n");
+  const parts = splitMessages(turn.instruction ?? promptInstruction(turn.prompt));
+  // A wake that carried your messages AND worker reports: your words in bubbles — one per message you
+  // sent, however many one wake drained — and the reports folded.
+  const reports = parts.filter(isWorkerEvent), said = parts.filter((p) => !isWorkerEvent(p));
   const time = clockOf(turn.startedAt);
   return (
     <div className="mb-4" data-slot="chat-turn" data-failed={turn.failed || undefined} data-style="chat">
@@ -267,17 +268,17 @@ function ChatTurn({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: (
           <WorkerReports parts={reports} />
         </WorkerBlock>
       )}
-      {said && (
-        <div className="group mb-2 flex justify-end" data-slot="chat-user">
+      {said.map((text, i) => (
+        <div key={i} className="group mb-2 flex justify-end" data-slot="chat-user">
           <div className="max-w-[85%]">
             <div className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">
               {/* A long message is cut to its first lines, like an old reply. */}
-              <Clamp on={longMessage(said)} cut="max-h-[9rem]">{said}</Clamp>
+              <Clamp on={longMessage(text)} cut="max-h-[9rem]">{text}</Clamp>
             </div>
-            <div className="text-muted-foreground mt-0.5 text-right text-[10px] opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{time}</div>
+            {i === said.length - 1 && <div className="text-muted-foreground mt-0.5 text-right text-[10px] opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{time}</div>}
           </div>
         </div>
-      )}
+      ))}
       <div className="group flex gap-2" data-slot="chat-reply">
         <span className="bg-accent text-foreground mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3.5" /></span>
         <div className="min-w-0 flex-1">
@@ -343,16 +344,19 @@ function AgentsMarker({ turns, render }: { turns: AgentTurn[]; render: (t: Agent
  *  Vercel tints error and warning lines in Build Logs. */
 function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; stamped?: boolean }) {
   const instruction = turn.instruction ?? promptInstruction(turn.prompt);
+  const parts = splitMessages(instruction);
   const tint = !stamped ? "" : turn.failed ? "bg-red-500/10 -mx-3 px-3" : turn.stopped || (turn.check && !turn.check.ok) ? "bg-amber-500/10 -mx-3 px-3" : "";
   const body = (
     <div className={`mb-3 ${tint}`} data-slot="chat-turn" data-failed={turn.failed || undefined}>
-      {instruction.split("\n\n").every(isWorkerEvent) ? <WorkerReports parts={instruction.split("\n\n")} /> : (
-        <div className="flex gap-2 text-emerald-400">
-          <span className="shrink-0 select-none">❯</span>
-          {/* What you typed, recorded with the turn. Turns from before that was stored fall back to
-              trimming the scaffolding off the prompt by its known marker lines. */}
-          <span className="min-w-0 whitespace-pre-wrap break-words">{instruction}</span>
-        </div>
+      {parts.every(isWorkerEvent) ? <WorkerReports parts={parts} /> : (
+        // What you typed, recorded with the turn — one ❯ line per message a wake carried. Turns from
+        // before that was stored fall back to trimming the scaffolding off the prompt by its marker lines.
+        <>{parts.map((text, i) => (
+          <div key={i} className="flex gap-2 text-emerald-400" data-slot="turn-instruction">
+            <span className="shrink-0 select-none">❯</span>
+            <span className="min-w-0 whitespace-pre-wrap break-words">{text}</span>
+          </div>
+        ))}</>
       )}
       <div className="mt-1 pl-4">
         <div className="text-[10px] tracking-widest text-neutral-500 uppercase">

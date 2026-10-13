@@ -20,7 +20,7 @@ import * as verbs from "../server/verbs";
 import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
 import {
-  ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isWorkerProblem, onlyCleanReports, orchestratorStatus, sessionHint, wakeExitReason,
+  MESSAGE_BREAK, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isWorkerProblem, onlyCleanReports, orchestratorStatus, sessionHint, splitMessages, wakeExitReason,
   wakeStoppedLine, workerEvent,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
@@ -216,7 +216,7 @@ test("O17: a clean finish waits for the batch (or the user); a failure wakes it 
   // …until the last running worker finishes, which delivers both in ONE wake.
   await rm(holdWorkers);
   const turns = await settled(orchTurns, 2);
-  expect(turns[1]!.instruction!.split("\n\n").map((p) => p.split("\n")[0])).toEqual([
+  expect(splitMessages(turns[1]!.instruction!).map((p) => p.split("\n")[0])).toEqual([
     '[worker finished] r/c "C" — done',
     expect.stringMatching(/^\[worker finished\] r\/orca\/add-cache-\w+ "Add cache" — done$/),
   ]);
@@ -249,7 +249,7 @@ test("O18: clean reports that queued while it worked also wait for the batch; a 
   await rm(hold);
   await orchIdle();
   const turns = await (async () => { for (let i = 0; i < 400; i++) { const t = await orchTurns(); if (t.length >= 3 && t.every((x) => x.finishedAt)) return t; await new Promise((r) => setTimeout(r, 25)); } throw new Error("no third wake"); })();
-  expect(turns[1]!.instruction!.split("\n\n").map((p) => p.split("\n")[0])).toEqual(['[worker finished] r/a "A" — done', "status?"]);
+  expect(splitMessages(turns[1]!.instruction!).map((p) => p.split("\n")[0])).toEqual(['[worker finished] r/a "A" — done', "status?"]);
   expect(turns[2]!.instruction!.split("\n\n").map((p) => p.split("\n")[0])).toEqual(['[worker finished] r/b "B" — error']);
   await rm(holdWorkers);
 });
@@ -284,7 +284,11 @@ test("O3: messages that arrive mid-run are queued and drained as ONE resumed wak
 
   const turns = await settled(orchTurns, 2);
   expect(turns).toHaveLength(2); // not three
-  expect(turns[1]!.instruction).toBe("second\n\nthird");
+  // …but still two messages: kept apart by the break, so the chat draws two bubbles and the model reads
+  // two messages (a blank line merged them into one, in both).
+  expect(turns[1]!.instruction).toBe(`second${MESSAGE_BREAK}third`);
+  expect(splitMessages(turns[1]!.instruction!)).toEqual(["second", "third"]);
+  expect(turns[1]!.prompt).toContain(`## From the user\n2 separate messages, oldest first.\n\nsecond${MESSAGE_BREAK}third`);
   expect(await db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH)).toEqual([]);
   const idle = await orchestrator.status(cfg());
   expect(idle.startedAt).toBeUndefined();
@@ -321,7 +325,7 @@ test("O4: the wake cap pauses self-waking; your next message resumes it with wha
 
   await orchestrator.message(cfg(), "carry on");
   const [turn] = await settled(orchTurns, 1);
-  expect(turn!.instruction).toBe(`${WORKER_EVENT_MARKER} r/mine "Mine" — error\nResponse: boom\nFull turn: orca read --run run-mine\n\ncarry on`);
+  expect(turn!.instruction).toBe(`${WORKER_EVENT_MARKER} r/mine "Mine" — error\nResponse: boom\nFull turn: orca read --run run-mine${MESSAGE_BREAK}carry on`);
   // You spoke, so it is a Chat turn; in its prompt your words come first, under their own heading,
   // and the held report after them under the workers' — never one blob the model has to untangle.
   expect(turn!.source).toBe("human");
