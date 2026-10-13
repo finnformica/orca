@@ -541,12 +541,43 @@ export function prDescriptionPrompt(input: { template?: string | null; diff: str
   ].join("\n");
 }
 
-/** Point the agent at pasted/dropped files of any type (absolute paths) for extra context. */
+export const ATTACHED_FILES_HEADER = "Attached files (Read these for extra context):";
+
+/** Point the agent at pasted/dropped files of any type for extra context: `orca-attachment://`
+ *  references (server/attachments.ts turns each into a local path where the run launches), or a
+ *  legacy absolute path. */
 export function withAttachments(prompt: string, paths: string[]): string {
   if (!paths.length) return prompt;
   const list = paths.map((p) => `- ${p}`).join("\n");
-  return `${prompt}\n\nAttached files (Read these for extra context):\n${list}`;
+  return `${prompt}\n\n${ATTACHED_FILES_HEADER}\n${list}`;
 }
+
+/** One stored attachment a message carried: its id (served at `/api/attachments/<id>`) and name. */
+export type AttachmentRef = { id: string; name: string };
+
+/** Every `orca-attachment://<id>/<name>` reference in a text, first occurrence of each id. */
+export function attachmentRefs(text: string): AttachmentRef[] {
+  const seen = new Map<string, AttachmentRef>();
+  for (const m of text.matchAll(/orca-attachment:\/\/([0-9a-f-]{36})(?:\/([\w.-]+))?/g)) {
+    if (!seen.has(m[1]!)) seen.set(m[1]!, { id: m[1]!, name: m[2] ?? "file" });
+  }
+  return [...seen.values()];
+}
+
+/** The message as typed: the "Attached files" block `withAttachments` appended is dropped, since the
+ *  chat shows those files as chips / thumbnails instead of a list of references. */
+export function withoutAttachmentList(text: string): string {
+  return text.replace(new RegExp(`\\n*${ATTACHED_FILES_HEADER.replace(/[()]/g, "\\$&")}(?:\\n- [^\\n]*)*`, "g"), "").trimEnd();
+}
+
+function attachmentSection(messages: string[]): string[] {
+  const files = attachmentRefs(messages.join("\n"));
+  if (!files.length) return [];
+  return ["", "## Attachments", "Files attached to the messages above. To give one to a worker, pass `--attach <id>` to orca spawn / orca send (repeatable):",
+    ...files.map((f) => `- ${f.id}  ${f.name}`)];
+}
+
+export const isImageName = (name: string) => /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name);
 
 /** Instruction for Claude to resolve a PR's merge conflicts in its worktree, then push. */
 // The three PR blockers as SECTIONS (no intro, no outcome contract), so one composed "Address PR"
@@ -1022,10 +1053,11 @@ export function boardText(rows: BoardRow[]): string {
 // send → archive → re-spawn when `orca move` would have done.
 const ORCA_COMMANDS = [
   "  orca board                      every workstream: PR state, agent status, Orca's check verdict",
-  "  orca spawn --repo <repo> --title \"<2-5 words>\" --model <id> [--on <instance>] --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"]",
+  "  orca spawn --repo <repo> --title \"<2-5 words>\" --model <id> [--on <instance>] --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"] [--attach <id|path>]…",
   "      --on places the worktree on another instance (the board shows each workstream's `on:`; a `[new draft]`",
   "      that says `on: <instance>` wants that one). Without it, the repo's default instance.",
-  "  orca send --repo <repo> --branch <branch> [--model <id>] \"<message>\"     continue an existing workstream (--model moves it to another model)",
+  "  orca send --repo <repo> --branch <branch> [--model <id>] [--attach <id|path>]… \"<message>\"     continue an existing workstream (--model moves it to another model)",
+  "      --attach (repeatable) hands the worker a file on whatever instance it runs on: an id from ## Attachments, or a file path on this machine",
   "  orca address --repo <repo> --branch <branch>              have its agent fix conflicts, CI and review on its PR",
   "  orca move --repo <repo> --branch <branch> --to <instance>  move its worktree to another instance (not while it runs)",
   "  orca archive --repo <repo> --branch <branch>              cancel a workstream you spawned or sent to: stop its agent,",
@@ -1116,6 +1148,9 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     // Each message stays its own: several sent while you worked are separate messages, in order.
     ...(human.length ? ["", "## From the user", ...(human.length > 1 ? [`${human.length} separate messages, oldest first.`, ""] : []), joinMessages(human)] : []),
     ...(reports.length ? ["", "## Worker reports", "Automated, from Orca as your workers finish — not the user.", "", joinMessages(reports)] : []),
+    // The files those messages carried, by id: the paths above are on THIS machine, so a worker
+    // elsewhere gets one only through `--attach <id>`.
+    ...attachmentSection(input.messages),
   ].join("\n");
 }
 

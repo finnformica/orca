@@ -10,7 +10,7 @@ import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
 import { groupSteps, type AgentStep } from "../shared/agent";
 import { toolDetail, toolLabel } from "@/steps";
-import { chatPrompt, followUpPrompt, promptInstruction } from "@/workstream";
+import { chatPrompt, followUpPrompt, promptInstruction, withAttachments } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -628,4 +628,36 @@ test("an older turn that arrived without its steps loads them on unfold", async 
   expect(unfold).toBeTruthy();
   await act(async () => { unfold.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
   expect(text()).toContain("1 step"); // fetched from /api/turns/steps from seq 0, then folded like any finished turn
+});
+
+test("a sent message shows its attachments — a thumbnail for an image, a named chip otherwise, each served from the bridge", async () => {
+  const img = "55555555-5555-5555-5555-555555555555", doc = "66666666-6666-6666-6666-666666666666";
+  // An agent chat: the bridge decorates the turn with the files its prompt carried.
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", instruction: "what's wrong here?", prompt: "", response: "A typo.", finishedAt: 2,
+    attachments: [{ id: img, name: "Screen-Shot.png" }, { id: doc, name: "notes.txt" }],
+  }]);
+  await mount(base);
+  const thumb = container!.querySelector<HTMLImageElement>('[data-slot="attachment-image"] img');
+  expect(thumb?.getAttribute("src")).toBe(`/api/attachments/${img}`);
+  expect(thumb?.closest("a")?.getAttribute("href")).toBe(`/api/attachments/${img}`);
+  const chip = container!.querySelector<HTMLAnchorElement>('[data-slot="attachment-file"]');
+  expect(chip?.textContent).toBe("notes.txt");
+  expect(chip?.getAttribute("href")).toBe(`/api/attachments/${doc}`);
+  await act(async () => { root?.unmount(); });
+  container?.remove();
+
+  // The orchestrator's composer: its turn's instruction carries the list; the chat shows chips instead.
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-2", provider: "claude", prompt: "", response: "Looking.", finishedAt: 4,
+    instruction: withAttachments("look at this", [`orca-attachment://${img}/bug.png`]),
+    attachments: [{ id: img, name: "bug.png" }],
+  }]);
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  await act(async () => { root = createRoot(container!); root.render(<ChatPanel row={base} variant="chat" />); await flush(); await flush(); });
+  expect(container.querySelector('[data-slot="chat-user"]')?.textContent).toContain("look at this");
+  expect(text()).not.toContain("orca-attachment://");
+  expect(text()).not.toContain("Attached files");
+  expect(container.querySelector<HTMLImageElement>('[data-slot="chat-user"] [data-slot="attachment-image"] img')?.getAttribute("src")).toBe(`/api/attachments/${img}`);
 });

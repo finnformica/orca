@@ -714,6 +714,22 @@ Plain TCP, so
 Vite's HMR websocket rides it; dropped on stop; a port a local preview holds gets no `localUrl`. The
 browser opens `localUrl` only from a page on localhost (`previewHref`), else `url` — a phone opens the
 owner's tailnet URL, which still lacks a secure context until the tailnet has HTTPS certificates.
+**Attachments are in the database, not on a host** (`server/attachments.ts`, migration 16): the
+upload stores the bytes (20 MB per file, pruned past 30 days) and answers `orca-attachment://<id>/<name>`
+references in its `paths` field; `agent.launch` — the one place every launch passes, whether queued,
+proxied to `orchestratorOn` or forwarded to a workstream's home — swaps each for a file under ITS
+state dir (`attachments/<id>/`, cached by id). A legacy plain path is kept if it exists there, else
+reduced to its name and marked unavailable — another machine's temp path never reaches an agent.
+The chat shows a message's files (`/api/turns` decorates each turn with `attachments`, read off its
+stored prompt; `Attachments` in `views/Chat.tsx`: a thumbnail for an image, a named chip otherwise),
+each opening `GET /api/attachments/<id>` — served from Postgres by any instance, sandboxed and
+`nosniff`. **The orchestrator forwards them:** its wake prompt lists the ids under `## Attachments`,
+and `orca spawn` / `orca send` take `--attach <id|path>` (repeatable; `bin/orca` collects a repeated
+flag) — an id, or a file on its own machine, which is stored like an upload (`attachments.forward`) —
+appended to the brief / message as references, so the worker's instance materialises them at launch.
+`tests/attachmentsRelay.test.ts` drives two real bridges (upload on one, run, the orchestratorOn
+proxy and spawn/send `--attach` on the other). (History: a laptop's `/var/folders` path reached the box's
+agents, which couldn't open it.)
 **Slack posts from the instance you click on** (`/api/slack` is in the answer-here set): it needs no
 worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box it failed with no token.
 **Machine metrics history:** each instance samples ITSELF once a minute (`startMetricsSampler` in
