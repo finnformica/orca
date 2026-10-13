@@ -98,6 +98,18 @@ describe("installable app (PWA files)", () => {
     expect(launchOverlay("?open=nope")).toBeNull();
   });
 
+  test("installed-app feel: standalone CSS stops overscroll, tap delay and highlight, chrome selection; touch gets pressed states", async () => {
+    const css = await read("src/styles.css").text();
+    const block = (open: string) => { const i = css.indexOf(open); expect(i).toBeGreaterThan(-1); let depth = 0, j = css.indexOf("{", i); const start = j; for (; j < css.length; j++) { if (css[j] === "{") depth++; else if (css[j] === "}" && --depth === 0) break; } return css.slice(start, j); };
+    const standalone = block("@media (display-mode: standalone)");
+    for (const decl of ["overscroll-behavior: none", "touch-action: manipulation", "-webkit-tap-highlight-color: transparent", "user-select: none", "-webkit-touch-callout: none"]) expect(standalone).toContain(decl);
+    expect(standalone).toMatch(/:where\(input, textarea, \[contenteditable="true"\]\) \{\s*-webkit-user-select: text;\s*user-select: text;/); // fields stay editable
+    expect(standalone).not.toMatch(/\bmain\b|\.prose|body \{[^}]*user-select/); // content stays selectable
+    const touch = block("@media (hover: none)");
+    expect(touch).toContain(":active");
+    expect(touch).toContain("currentColor");
+  });
+
   test("index.html: manifest, theme-color per scheme, Apple tags, safe-area viewport", async () => {
     const html = await read("index.html").text();
     expect(html).toContain('<link rel="manifest" href="/manifest.webmanifest" />');

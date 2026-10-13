@@ -276,3 +276,44 @@
     min-width: 44px;
   }
 }
+
+/* ---- The installed app (display-mode: standalone): it should feel like an app, not a page. ---- */
+@media (display-mode: standalone) {
+  /* No rubber-band bounce or pull-to-refresh fighting the app's own scroll areas (and its own pull
+     to refresh on the Agents list). */
+  html,
+  body {
+    overscroll-behavior: none;
+  }
+  /* No double-tap-to-zoom wait on every tap, and no grey flash where a finger lands. */
+  html {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* The chrome — bars, the sidebar, buttons, tabs, menus — isn't text to select; content still is. */
+  header,
+  nav,
+  aside,
+  button,
+  [role="button"],
+  [role="tab"],
+  [role="menuitem"],
+  [role="menuitemradio"],
+  [data-slot="bottom-bar"] {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  :where(input, textarea, [contenteditable="true"]) {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}
+
+/* Touch has no hover: a control shows it was pressed. A tint of its own text colour over whatever its
+   background is, so it reads on filled, outline and ghost buttons alike. */
+@media (hover: none) {
+  :where(button, a, [role="button"], [role="row"], [role="menuitem"], [role="menuitemradio"], [role="option"], [role="tab"], [data-slot="quick-filter"]):not(:disabled):active {
+    background-image: linear-gradient(color-mix(in oklch, currentColor 12%, transparent), color-mix(in oklch, currentColor 12%, transparent));
+  }
+}
