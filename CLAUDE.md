@@ -38,9 +38,9 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
 
 - **One Bun process** (`server/index.ts`, via `Bun.serve`) serves the built React SPA *and*
   a plain-JSON API. `Vite` is dev-only (HMR + proxy). The one streaming surface is the SSE turn
-  stream (`/api/events`, ONE per tab, multiplexing every chat and relaying the other instances' buses —
-  a browser gets six HTTP/1.1 connections per host across all tabs, and a stream per chat starved the
-  PR page's fetches) — everything else is request/response. **The API has no auth of its
+  stream (`/api/events`, ONE per tab, multiplexing every chat, the notification centre's pushes, and
+  relaying the other instances' buses — a browser gets six HTTP/1.1 connections per host across all
+  tabs, and a stream per chat starved the PR page's fetches) — everything else is request/response. **The API has no auth of its
   own**, so the listen socket is loopback by default (`ORCA_BIND`, comma-separated addresses). A deployed
   instance binds loopback PLUS its tailnet address (`127.0.0.1,<tailnet ip>`) and is reached from other
   machines only over Tailscale — never `0.0.0.0`. Loopback is not optional on the box: `bin/orca` and an
@@ -65,13 +65,27 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   database) — which a file on one host cannot be. `Bun.SQL` ships with the runtime, so it costs no
   dependency. **Every table carries `user_id`** from the first migration: there is no auth yet
   (`db.currentUser()` returns a constant) and exactly one user, but retrofitting row-level scoping
-  later would mean revisiting every query, so the column goes in while it is free.
+  later would mean revisiting every query, so the column goes in while it is free. **A connection the
+  remote Postgres dropped out from under us** (a laptop asleep long enough that it drops every pooled
+  connection, not just `ERR_POSTGRES_CONNECTION_CLOSED` but a `pg_terminate_backend`-style FATAL too)
+  **is reopened and the one query retried once** — every exported function routes through `withRetry`
+  rather than hand-catching, so this lives in one place.
   **Nothing is deleted — finished workstreams are ARCHIVED**, because the conversations most worth
   chaining from later are exactly the ones whose branches got merged and reaped. Granularity is
   prompt + final response + structured outcome (what you'd feed a model), NOT the provider's raw event
   stream — that's far larger, mostly tool output, and the provider already keeps it; `turn.raw_ref`
   points back at it. Migrations are numbered, append-only steps in a `migration` table — never edit an
-  applied step, add another — and each runs in one transaction. A history write must never break the
+  applied step, add another — and each runs in one transaction. **A step's identity is id + `name`**:
+  the runner compares the recorded name with the code's before applying anything, re-runs an
+  `idempotent` step recorded under a foreign name (so write steps `IF NOT EXISTS` wherever Postgres
+  allows) and refuses to start on a non-idempotent one; `bun run db:check` prints the ledger,
+  read-only. (History: two branches each took id 13; a branch's 13 reached the shared database
+  first and main's `running_agents` column was skipped as "applied".) **Workers: a migration id is
+  reserved only by MERGING to main** — if main gained a step while your branch was open, rebase and
+  renumber yours before opening the PR — and never point a running bridge or a test at the shared
+  database from a worktree (a worktree's copied `.env` names it; `bun test` refuses any database
+  that isn't a `tests/pg.ts` schema, and a worktree's bridge refuses to apply migrations unless
+  `ORCA_ALLOW_WORKTREE_MIGRATIONS=1`). A history write must never break the
   run that produced it (`recordTurn` logs and swallows). The API is async throughout: `launch()`
   **awaits** the start write, because "the turn exists before the run can produce output" is the whole
   point of writing at launch; the finish write is fire-and-forget, tracked so `agent.flushHistory()`
@@ -212,10 +226,14 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   `useUsageLoaded` in `lib/vitals.ts`): both `useWorkstreams()` and `useUsage()` read `null`/`[]` for
   either case on the wire, which the skeleton can't tell apart from the real value alone.
 - **Agents** (`/agents`, `views/Agents.tsx`): Vercel's Deployments list — one-click **quick
-  filter chips** (Needs attention, Running, Mine, Orchestrated, Open PRs, Mergeable, Merged today,
-  per instance, per repo; AND across groups, OR within one, each with its count) held in the URL
-  query (`?status=attention&pr=open&on=cloud`, `parseQuickFilter` / `quickFilterQuery`), so a
-  filtered view is a link and the Overview's numbers open exactly their chips; search, sort; one ~56px row per workstream (repo
+  filter chips**, grouped into families with a muted caption (State: Open PRs, Mergeable, Merged
+  today, Not merged; Activity: Running, Needs attention; Repo: one per repo; AND across groups, OR
+  within one, each with its count) held in the URL query (`?status=attention&pr=open`,
+  `parseQuickFilter` / `quickFilterQuery`), so a filtered view is a link and the Overview's numbers
+  open exactly their chips. The Mine/Orchestrated and per-instance pills were dropped as redundant
+  with the row's own orchestrated badge and instance column — their `by`/`on` URL params and pure
+  filtering logic still work for a link someone already has, just with no pill to toggle them.
+  search, sort; one ~56px row per workstream (repo
   icon + title, latest instruction, status dot + duration, state pill, CI/conflict badges + the
   review cluster, PR, branch, instance, updated, the model as avatar); every action in the trailing
   ⋯ (`WorkstreamActions menuOnly`). The swimlanes stay behind a persisted List | Board toggle.
@@ -514,6 +532,37 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   must not both drive it at once (the run lease is per host); a worker's outcome text is model
   output fed to something that can spawn and send, which is why its authority stops there.
 
+## Notification centre (toasts + the bell)
+
+Flat notifications — one row per event, no threads — in a `notification` table (migration 15 — 13 and 14 were taken by branches open at the same time; `migrate()` tolerates the gap) shared
+by both instances, so either machine shows the same centre. **One emitter, `server/notify.ts`**: the
+row is written once (`db.addNotification`, idempotent on the event's `key` — `run:<runId>:<kind>`,
+`check:<runId>`, `preview:<key>:<startedAt>:ready|failed`, `pr-ci:<repo>#<n>:<checks>`,
+`pr-conflict:<repo>#<n>` — so a run finished twice by a restart's lease adoption, or a repo answered
+by two instances, is one row), then pushed on the bus as a `notification` event that rides the
+per-tab `/api/events` stream and is relayed between instances like steps and turns. Sources: the
+run-finished hook (`finished`, `needs_input`, `failed`; `check_failed` beside the run's own event,
+even when an autofix continues the branch; a `compact` is silent; the orchestrator's own wake is
+reported only when it died or asked you something, and its Open opens the window), the Stop route
+(`stopped` — a stopped run is superseded in `agent.ts` and never reaches the hook, and a discard is
+not news), a watcher after `preview.start` (`preview_ready` with the URL you'd open, else
+`preview_failed`; a preview you stop mid-boot is forgotten), and the `/api/prs` answer
+(`pr_ci_failed`, `pr_conflicts`). **Needs input is a heuristic** (`asksForInput`): a reply whose last
+line is a question, or `requires_action` — nobody has a cleaner signal (CLAUDE: a question is still
+`end_turn`). Titles are the card's title, else the branch. Rows are pruned past 30 days by the writer.
+The decisions are pure in `shared/notifications.ts` (what an event is, what pops, how the stack is
+cut, grouping by day); the browser mirror is `web/src/lib/notificationStore.ts` (loads once, holds
+the tab's stream, catches up by `since` on reconnect; toasts pop only for rows newer than the first
+load and younger than ten minutes); the surfaces are `components/Notifications.tsx`: the toast stack
+bottom-right above the orchestrator's launcher (newest on top; past one it collapses to the top three
+with a count bar, hover or click expands; Clear all; a toast for a finished run or a ready preview
+hides itself after 6s, a problem or a question stays until dismissed — `KIND_META.persistent`), and
+the bell at the sidebar's foot with the unread count, opening the centre (grouped by day, read /
+unread, a kind filter, Mark all read, Clear all = dismiss, do-not-disturb). Dismissing a toast keeps
+the row; clearing the centre keeps nothing. Settings: do not disturb, per-kind toasts, and browser
+notifications (urgent kinds only, while the tab is hidden; the permission is asked for when switched
+on). Preferences are per browser (`orca.notifications.*` in localStorage); the rows are not.
+
 ## Deploying (a cloud box + the laptop, one database)
 
 The two instances are named **`local`** (the laptop, `ORCA_INSTANCE=local`, bound to
@@ -628,6 +677,17 @@ laptop points `ORCA_DATABASE_URL` at the box's Postgres over the tailnet. Modell
 macOS-only path (Keychain, `clonefile`) or a tool-flag difference would show first. **Pin the
 Claude Code version on the server:** `--bare` is slated to become the default for `-p`, and bare
 mode never reads OAuth credentials, which would silently break every subscription-login launch.
+**Auto-deploy:** `orca-autodeploy.timer` runs `deploy/autodeploy.sh` every minute so the box picks
+up `main` without a manual deploy. Each tick: fetch `origin/main`; if HEAD already matches, no-op.
+Otherwise, refuse while busy — the orchestrator is mid-wake (`GET /api/orchestrator` →
+`running:true`) or any agent run holds a live lease (`~/.orca/leases`) — and just log `deferred:
+busy` to try again next tick; a worker survives a bridge restart (`agent.adoptLeases`) but an
+orchestrator wake does not, which is the whole reason for the busy rule. Otherwise `git pull
+--ff-only`, `bun run build`, and only on a successful build `systemctl restart orca`, then poll
+`/api/config` until it's back. A failed build never restarts the service — the old build keeps
+serving — and its log tail goes to `~/.orca/autodeploy.log` (one line per tick). Pause it with
+`systemctl stop orca-autodeploy.timer`; `deploy/bootstrap.sh` installs and enables it, scoped by
+`deploy/orca-autodeploy.sudoers` to exactly `systemctl restart orca` for the `orca` user.
 **Orphan reaper:** a preview that dies with a bridge crash, a reaped worktree, or a worker's own
 test run leaves its `orca_*` database behind — nothing else drops it, and the box had 8 of them
 (~6.6 GB) accumulate before `server/preview.ts`'s `reap()` existed. It runs at startup and hourly

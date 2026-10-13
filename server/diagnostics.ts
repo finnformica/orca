@@ -3,6 +3,7 @@
 // /api/diagnostics endpoint is a thin wrapper that hands it ledger.all() + metrics().
 import type { LedgerEntry, RunMode } from "./ledger";
 import type { Routing } from "./usage";
+import { describeMismatch, type MigrationMismatch } from "./db";
 
 const MODES: RunMode[] = ["fresh", "resume", "reset", "handoff"];
 
@@ -31,6 +32,9 @@ export type Diagnostics = {
   /** This instance's last orphan-preview-db / stale-test-container reap (server/preview.ts's `reap`,
    *  run at startup and hourly). Undefined until one has run. */
   reap?: { at: number; droppedDbs: string[]; removedContainers: string[] };
+  /** This process's migration pass (server/db.ts `planMigrations`): an id recorded under another
+   *  branch's name is a `mismatch`; `unknown` ids are recorded with no step in this code. */
+  migrations?: { at: number; ran: number[]; mismatches: MigrationMismatch[]; unknown: { id: number; name: string | null }[] };
 };
 
 export function summarize(
@@ -38,6 +42,7 @@ export function summarize(
   gh: { ghCalls: number; agentPolls: number; uptimeMs: number },
   routing?: Routing,
   reap?: Diagnostics["reap"],
+  migrations?: { at: number; run: { id: number }[]; mismatches: MigrationMismatch[]; unknown: { id: number; name: string | null }[] },
 ): Diagnostics {
   const runs = entries.filter((e) => e.kind === "run");
   const prs = entries.filter((e) => e.kind === "pr-description");
@@ -65,6 +70,7 @@ export function summarize(
     gh,
     ...(routing ? { routing } : {}),
     ...(reap ? { reap } : {}),
+    ...(migrations ? { migrations: { at: migrations.at, ran: migrations.run.map((s) => s.id), mismatches: migrations.mismatches, unknown: migrations.unknown } } : {}),
   };
 }
 
@@ -75,6 +81,16 @@ export function renderRouting(r: Routing | undefined): string {
   return r.shim
     ? `Claude routing: hydra shim active${r.bin ? ` → ${r.bin}` : ""}`
     : "Claude routing: OFF — claude on PATH isn't hydra's shim (Claude Code's updater rewrites it; re-run install.sh --shim)";
+}
+
+/** The migration pass — loud (one line each) for an id recorded under another branch's name. */
+export function renderMigrations(m: Diagnostics["migrations"]): string[] {
+  if (!m) return ["Migrations: not run yet"];
+  return [
+    `Migrations: ${m.ran.length ? `applied ${m.ran.join(", ")}` : "up to date"}${m.mismatches.length ? `, ${m.mismatches.length} MISMATCH` : ""}`,
+    ...m.mismatches.map((x) => `  MISMATCH: ${describeMismatch(x)}`),
+    ...m.unknown.map((u) => `  unknown: ${u.id}${u.name ? ` ("${u.name}")` : ""} recorded, no such step in this code`),
+  ];
 }
 
 const pct = (n: number) => `${Math.round(n * 100)}%`;
@@ -101,6 +117,7 @@ export function renderText(d: Diagnostics): string {
     d.reap
       ? `Reaper: last run ${new Date(d.reap.at).toISOString()} — dropped ${d.reap.droppedDbs.length} db(s), removed ${d.reap.removedContainers.length} container(s)`
       : "Reaper: hasn't run yet",
+    ...renderMigrations(d.migrations),
   ];
   return lines.join("\n");
 }

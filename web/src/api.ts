@@ -4,6 +4,7 @@ import type { ChangeSummary } from "../../server/git";
 import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSummary, ReviewSignal, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
 import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
+import type { Notification } from "../../shared/notifications";
 import type { SyncResult } from "./workstream";
 
 export type LiveAgent = {
@@ -123,6 +124,11 @@ export const api = {
   orchestratorMessage: (text: string, attachments: string[] = []): Promise<{ status: "running" | "queued" }> =>
     post("/api/orchestrator/message", { text, attachments }),
   slack: (repo: string, text: string): Promise<{ ok: true }> => post("/api/slack", { repo, text }),
+  // The notification centre (one table, any instance answers). `since` (ms) is the catch-up cursor
+  // after the live stream was dropped; the live rows themselves arrive on /api/events.
+  notifications: (since?: number): Promise<Notification[]> => fetch(`/api/notifications${since ? `?since=${since}` : ""}`).then(res),
+  notificationsRead: (ids: number[] | "all"): Promise<{ ok: true; changed: number }> => post("/api/notifications/read", ids === "all" ? { all: true } : { ids }),
+  notificationsDismiss: (ids: number[] | "all"): Promise<{ ok: true; changed: number }> => post("/api/notifications/dismiss", ids === "all" ? { all: true } : { ids }),
   agents: (repo: string): Promise<LiveAgent[]> => fetch(`/api/agents${q(repo)}`).then(res),
   prs: (repo: string): Promise<PrSummary[]> => fetch(`/api/prs${q(repo)}`).then(res),
   // The client sends its own local midnight: "merged today" belongs to the person reading the board,

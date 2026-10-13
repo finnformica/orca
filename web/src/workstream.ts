@@ -1742,30 +1742,36 @@ export type QuickFilter = {
   by: ("mine" | "orchestrated")[];
   on: string[];
   repo: string[];
+  notMerged: boolean; // default ON: hide merged workstreams unless the "merged" pr chip asks for them
 };
-export type QuickGroup = keyof QuickFilter;
-export const NO_QUICK_FILTER: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [] };
-const QUICK_GROUPS: QuickGroup[] = ["status", "pr", "by", "on", "repo"];
+export type QuickGroup = Exclude<keyof QuickFilter, "notMerged">;
+// The identity element for the URL round-trip: a plain `/agents` has no query, so parsing "" must
+// produce exactly this — which is why notMerged defaults true here, not false.
+export const NO_QUICK_FILTER: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [], notMerged: true };
+export const QUICK_GROUPS: QuickGroup[] = ["status", "pr", "by", "on", "repo"];
 const QUICK_VALUES: Partial<Record<QuickGroup, readonly string[]>> = {
   status: ["attention", "running"], pr: ["open", "mergeable", "merged"], by: ["mine", "orchestrated"],
 };
 
 /** `?status=attention&on=cloud,local` → the filter. Unknown values are dropped, so a stale link is
- *  merely less filtered, never broken. */
+ *  merely less filtered, never broken. `notMerged` is omitted from the query when it's at its
+ *  default (true), so a bare URL still means "not merged" is on. */
 export function parseQuickFilter(search: string): QuickFilter {
   const params = new URLSearchParams(search);
-  const out: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [] };
+  const out: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [], notMerged: true };
   for (const g of QUICK_GROUPS) {
     const values = [...new Set((params.get(g) ?? "").split(",").map((v) => v.trim()).filter(Boolean))];
     const allowed = QUICK_VALUES[g];
     (out[g] as string[]) = allowed ? values.filter((v) => allowed.includes(v)) : values;
   }
+  if (params.has("notMerged")) out.notMerged = params.get("notMerged") !== "0";
   return out;
 }
 
 /** The filter as a query string ("" when nothing is on), groups in a fixed order so a link is stable. */
 export function quickFilterQuery(f: QuickFilter): string {
   const parts = QUICK_GROUPS.filter((g) => f[g].length).map((g) => `${g}=${f[g].map(encodeURIComponent).join(",")}`);
+  if (!f.notMerged) parts.push("notMerged=0"); // only carried when it differs from the default (on)
   return parts.length ? `?${parts.join("&")}` : "";
 }
 
@@ -1773,6 +1779,11 @@ export function quickFilterQuery(f: QuickFilter): string {
 export function toggleQuick(f: QuickFilter, group: QuickGroup, value: string): QuickFilter {
   const has = (f[group] as string[]).includes(value);
   return { ...f, [group]: has ? (f[group] as string[]).filter((v) => v !== value) : [...(f[group] as string[]), value] };
+}
+
+/** Flip the "Not merged" toggle. */
+export function toggleNotMerged(f: QuickFilter): QuickFilter {
+  return { ...f, notMerged: !f.notMerged };
 }
 
 function matchesChip(row: OverviewRow, group: QuickGroup, value: string, here?: string): boolean {
@@ -1785,8 +1796,15 @@ function matchesChip(row: OverviewRow, group: QuickGroup, value: string, here?: 
   }
 }
 
-const passes = (row: OverviewRow, f: QuickFilter, here: string | undefined, skip?: QuickGroup) =>
-  QUICK_GROUPS.every((g) => g === skip || !f[g].length || (f[g] as string[]).some((v) => matchesChip(row, g, v, here)));
+// `notMerged` hides merged (DONE) rows unless the pr group explicitly asks for them ("Merged
+// today") — otherwise the default-on toggle would make that chip permanently empty. When probing
+// the pr group's own chips (skip === "pr", from quickCount), the exclusion is suspended entirely:
+// it only ever matches a DONE row through the "merged" value anyway, so this is a no-op for the
+// other pr values and exactly what's needed for "merged"'s own count.
+const passes = (row: OverviewRow, f: QuickFilter, here: string | undefined, skip?: QuickGroup) => {
+  if (skip !== "pr" && f.notMerged && !f.pr.includes("merged") && row.lane === "DONE") return false;
+  return QUICK_GROUPS.every((g) => g === skip || !f[g].length || (f[g] as string[]).some((v) => matchesChip(row, g, v, here)));
+};
 
 export function applyQuickFilter<R extends OverviewRow>(rows: R[], f: QuickFilter, here?: string): R[] {
   return rows.filter((r) => passes(r, f, here));
@@ -1798,7 +1816,14 @@ export function quickCount(rows: OverviewRow[], f: QuickFilter, group: QuickGrou
   return rows.filter((r) => passes(r, f, here, group) && matchesChip(r, group, value, here)).length;
 }
 
-export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) => f[g].length > 0);
+/** The "Not merged" chip's count: how many merged workstreams it hides (or would hide), under the
+ *  other groups' chips — ignoring `pr` itself, since merged-ness is exactly what it and `notMerged`
+ *  both turn on. */
+export function notMergedHiddenCount(rows: OverviewRow[], f: QuickFilter, here?: string): number {
+  return rows.filter((r) => r.lane === "DONE" && passes(r, f, here, "pr")).length;
+}
+
+export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) => f[g].length > 0) || !f.notMerged;
 
 // ---- the Agents list's columns ----
 // Only what you act on: the workstream, its run status, the PR (state + number), checks and the

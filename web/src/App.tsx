@@ -8,6 +8,7 @@ import { expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
 import { Shell, Crumb, AddNew } from "@/components/Shell";
 import { OrchestratorPanel } from "@/components/Terminal";
 import { Toaster } from "@/components/Toaster";
+import { ToastHost } from "@/components/Notifications";
 import { useWorkstreams } from "./store";
 import { NewDraft } from "./views/Board";
 import { Overview } from "./views/Overview";
@@ -39,6 +40,7 @@ export function App() {
       <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarAction collapsed={collapsed} />}>
         <Page route={route} />
       </Shell>
+      <ToastHost />
       <OrchestratorPanel />
       <Toaster />
     </>

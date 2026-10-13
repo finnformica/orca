@@ -1,0 +1,135 @@
+// The notification centre's state in the browser: the rows (mirrored from GET /api/notifications,
+// pushed to over the tab's one live stream) and the toasts currently showing. Reads are synchronous
+// for render; writes go to the bridge and are applied optimistically. Pure decisions — what pops,
+// what persists, how the stack is cut — are in shared/notifications.ts.
+import { useSyncExternalStore } from "react";
+import { getDefaultStore } from "jotai";
+import { api } from "../api";
+import { subscribeNotifications } from "./events";
+import { browserNotifyAtom, notifyDndAtom, orchestratorOpenAtom, toastPrefsAtom } from "./atoms";
+import { KIND_META, TOAST_AUTO_HIDE_MS, notificationPath, shouldNotifyBrowser, shouldToast, type Notification, type ToastPrefs } from "../../../shared/notifications";
+import { navigate } from "./route";
+
+type State = { list: Notification[]; toasts: Notification[] };
+let state: State = { list: [], toasts: [] };
+let watermark = 0; // newest createdAt known — the catch-up cursor after a dropped stream
+let started = false;
+let stop: (() => void) | undefined;
+const timers = new Map<number, ReturnType<typeof setTimeout>>();
+const listeners = new Set<() => void>();
+const notify = () => listeners.forEach((l) => l());
+const set = (patch: Partial<State>) => { state = { ...state, ...patch }; notify(); };
+
+/** The auto-hide delay, overridable by tests so a "finished" toast needn't take six seconds to go. */
+export const toastTiming = { autoHideMs: TOAST_AUTO_HIDE_MS };
+
+export const useNotifications = (): State =>
+  useSyncExternalStore((l) => { listeners.add(l); return () => listeners.delete(l); }, () => state);
+
+const byNewest = (a: Notification, b: Notification) => b.createdAt - a.createdAt || b.id - a.id;
+
+/** Fold rows into the mirror. `pop`: ones not seen before may toast (never on the first load — those
+ *  are for the centre, not the corner). */
+function merge(incoming: Notification[], pop: boolean): void {
+  const byId = new Map(state.list.map((n) => [n.id, n]));
+  const fresh: Notification[] = [];
+  for (const n of incoming) {
+    if (!byId.has(n.id) && !n.dismissedAt) fresh.push(n);
+    byId.set(n.id, n);
+  }
+  const list = [...byId.values()].filter((n) => !n.dismissedAt).sort(byNewest);
+  for (const n of list) watermark = Math.max(watermark, n.createdAt);
+  let toasts = state.toasts;
+  if (pop && fresh.length) {
+    const store = getDefaultStore();
+    const dnd = store.get(notifyDndAtom);
+    const prefs = store.get(toastPrefsAtom) as ToastPrefs;
+    const add = fresh.filter((n) => shouldToast(n, { dnd, prefs }));
+    toasts = [...toasts.filter((t) => !add.some((a) => a.id === t.id)), ...add];
+    for (const n of add) if (!KIND_META[n.kind].persistent) scheduleHide(n.id);
+    const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+    for (const n of fresh) if (shouldNotifyBrowser(n, { enabled: store.get(browserNotifyAtom), hidden, dnd })) browserNotify(n);
+  }
+  set({ list, toasts });
+}
+
+function scheduleHide(id: number): void {
+  clearTimeout(timers.get(id));
+  timers.set(id, setTimeout(() => { timers.delete(id); dismissToast(id); }, toastTiming.autoHideMs));
+}
+
+/** A browser notification for an urgent event while the tab is hidden; clicking it brings the tab
+ *  back and opens the thing. Silently nothing without the permission. */
+function browserNotify(n: Notification): void {
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
+  try {
+    const note = new Notification(`${KIND_META[n.kind].label} · ${n.title}`, { body: n.body, tag: `orca-${n.id}` });
+    note.onclick = () => {
+      window.focus();
+      const path = notificationPath(n);
+      if (n.link?.orchestrator) getDefaultStore().set(orchestratorOpenAtom, true);
+      else if (path) navigate(path);
+      void markRead([n.id]);
+    };
+  } catch { /* the platform refused — the centre still has it */ }
+}
+
+/** Load the centre (all rows) or catch up from the cursor (rows since it, which may toast). */
+export async function hydrate(since?: number): Promise<void> {
+  try {
+    merge(await api.notifications(since), since !== undefined);
+  } catch { /* the next poll or push will */ }
+}
+
+/** Start the mirror: load once and hold the tab's live stream for pushes. Idempotent. */
+export function start(): void {
+  if (started) return;
+  started = true;
+  void hydrate();
+  stop = subscribeNotifications({
+    notification: (n) => merge([n], true),
+    resync: () => void hydrate(watermark), // the stream was away: anything pushed meanwhile is fetched
+  });
+}
+
+/** Tests: tear the mirror down so the next mount starts clean. */
+export function reset(): void {
+  stop?.();
+  stop = undefined;
+  started = false;
+  for (const t of timers.values()) clearTimeout(t);
+  timers.clear();
+  watermark = 0;
+  state = { list: [], toasts: [] };
+  notify();
+}
+
+/** Take a toast off the stack (the centre keeps the row). */
+export function dismissToast(id: number): void {
+  clearTimeout(timers.get(id));
+  timers.delete(id);
+  if (state.toasts.some((t) => t.id === id)) set({ toasts: state.toasts.filter((t) => t.id !== id) });
+}
+
+/** Clear all: every toast off the stack. */
+export function clearToasts(): void {
+  for (const t of timers.values()) clearTimeout(t);
+  timers.clear();
+  if (state.toasts.length) set({ toasts: [] });
+}
+
+/** Mark read, optimistically; the bridge's row follows. */
+export async function markRead(ids: number[] | "all"): Promise<void> {
+  const at = Date.now();
+  const hit = (n: Notification) => !n.readAt && (ids === "all" || ids.includes(n.id));
+  if (state.list.some(hit)) set({ list: state.list.map((n) => (hit(n) ? { ...n, readAt: at } : n)) });
+  await api.notificationsRead(ids).catch(() => {});
+}
+
+/** Dismiss from the centre (and off the stack), optimistically. */
+export async function dismiss(ids: number[] | "all"): Promise<void> {
+  const hit = (n: Notification) => ids === "all" || ids.includes(n.id);
+  for (const t of state.toasts) if (hit(t)) { clearTimeout(timers.get(t.id)); timers.delete(t.id); }
+  set({ list: state.list.filter((n) => !hit(n)), toasts: state.toasts.filter((t) => !hit(t)) });
+  await api.notificationsDismiss(ids).catch(() => {});
+}

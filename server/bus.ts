@@ -1,6 +1,6 @@
 // In-process pub/sub, so the chat's stream is a real push rather than the server polling itself.
-// Publishers: the step recorder (a step landed) and the turn lifecycle (started/finished, so a client
-// knows to refetch the durable turn).
+// Publishers: the step recorder (a step landed), the turn lifecycle (started/finished, so a client
+// knows to refetch the durable turn) and the notification emitter (a new row for the centre).
 //
 // It is per-process ON PURPOSE, and that is not a limitation to engineer around: a stream is always
 // served by the instance that OWNS the repo (a request for someone else's repo is proxied there), so
@@ -11,12 +11,16 @@
 // Deliberately tiny: no topics, no buffering, no replay. A subscriber that misses an event resumes
 // from its cursor via /api/turns/steps; Postgres holds the durable copy either way.
 import type { AgentStep } from "../shared/agent";
+import type { Notification } from "../shared/notifications";
 
 // Events carry the branch they belong to, so a chat stream can filter without a database read on
 // what is the hottest path in the system (one event per recorded step).
 export type BusEvent =
   | { kind: "step"; runId: string; repo: string; branch: string; steps: AgentStep[] }
-  | { kind: "turn"; runId: string; repo: string; branch: string };
+  | { kind: "turn"; runId: string; repo: string; branch: string }
+  // A notification just recorded here (server/notify.ts) — pushed to every tab, and relayed to the
+  // other instance's tabs, so both machines pop the same toast once.
+  | { kind: "notification"; notification: Notification };
 
 type Listener = (event: BusEvent) => void;
 const listeners = new Set<Listener>();

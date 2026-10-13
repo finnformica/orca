@@ -13,6 +13,7 @@ import * as agent from "./agent";
 import * as db from "./db";
 import * as preview from "./preview";
 import * as forward from "./forward";
+import * as notify from "./notify";
 import { existsSync } from "fs";
 import { featuresOf, modelFor, providerAllowed, type OrcaConfig, type RepoConfig } from "./config";
 import { addressPrPrompt, chatPrompt, continuation, launchPrompt, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
@@ -68,11 +69,15 @@ export async function startPreview(cfg: OrcaConfig, repo: RepoConfig, key: strin
   // Re-copy what's missing here, leaving any worktree-local edit intact.
   await git.copyToWorktree(repo.repoPath, worktree, repo.copyToWorktree, { keepExisting: true });
   await preview.start(key, worktree, repo.previewServices, cfg.portRange);
+  const host = preview.ownerHost(cfg.instances, db.instanceName());
   if (branch) {
     await db.patchEnrichment(repo.name, branch, { previewInstance: { instance: db.instanceName(), key, startedAt: new Date().toISOString() } })
       .catch((e) => console.error("orca: preview placement write failed", e)); // advisory — never fail the start
   }
-  return preview.status(key, preview.ownerHost(cfg.instances, db.instanceName()));
+  // Tell the centre when it comes up (with the URL) or doesn't — headed by the card's title.
+  const title = branch ? (await db.enrichment(repo.name).catch(() => ({}) as Record<string, db.Fields>))[branch]?.title : undefined;
+  void notify.watchPreview({ key, repo: repo.name, branch, title: typeof title === "string" && title ? title : branch ?? key, host });
+  return preview.status(key, host);
 }
 
 /** A published preview older than this is a machine that stopped reporting (asleep, down): its

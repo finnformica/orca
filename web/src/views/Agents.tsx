@@ -1,6 +1,7 @@
-// The Agents page — Vercel's Deployments list, adapted: an "Add Filter" chip row (repo, state,
-// instance, needs attention) with the active filters as dashed chips, then one dense row per
-// workstream with only what you act on (workstream.listColumns): the title over repo · model, the
+// The Agents page — Vercel's Deployments list, adapted: a quick-filter row grouped into families
+// (State, Activity, Repo) with the active filters as dashed chips — instance and orchestrated stay
+// as the row's own column/badge rather than a pill — then one dense row per workstream with only
+// what you act on (workstream.listColumns): the title over repo · model, the
 // status (a spinner and a live elapsed time while running), the PR state + number, checks and the
 // review cluster, the instance, when it last moved, and the actions. Columns flex and truncate, so
 // the list never scrolls sideways. Clicking a row opens its agent page; every action is in the
@@ -8,7 +9,7 @@
 // On a phone (below md) each row stacks — title, latest instruction, status, then where it runs —
 // with every action in its one ⋯ menu, and the chips and sort move into a Filters bottom sheet
 // beside the search box.
-import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { ArrowDown, Bot, Columns3, GitPullRequest, List, ListFilter, Loader2, Rows2, Rows3, Search, X } from "lucide-react";
 import { agentQueryAtom, boardViewAtom, densityAtom, instanceScopeAtom, repoFilterAtom, type BoardView } from "@/lib/atoms";
@@ -20,8 +21,8 @@ import { usePullToRefresh } from "@/lib/gestures";
 import { BottomSheet } from "@/components/BottomSheet";
 import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
 import {
-  DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed,
-  listColumns, listGridTemplate, modelBadge, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, toggleQuick,
+  DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed,
+  listColumns, listGridTemplate, modelBadge, notMergedHiddenCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, toggleNotMerged, toggleQuick,
   type ListColumn, type ListSort, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
 } from "../workstream";
 import { Button } from "@/components/ui/button";
@@ -126,7 +127,7 @@ function AgentsList() {
         </div>
       )}
       <FilterRow scoped={scoped} quick={quick} setQuick={setQuick} clear={clear} visible={visible} total={all.length} q={q} setQ={setQ} sort={sort} setSort={setSort}
-        showRepos={repo === "all"} showInstances={instance === "all"} />
+        showRepos={repo === "all"} />
       <div data-slot="workstream-list" role="table" aria-label="Workstreams" className="bg-card overflow-hidden rounded-lg border">
         {visible.length > 0 && !stacked && <ListHeader cols={cols} />}
         {visible.length === 0 ? (
@@ -148,46 +149,69 @@ const isSavedFilters = (v: unknown): v is SavedFilters =>
 
 type Chip = { group: QuickGroup; value: string; label: string; dot?: DotTone };
 
+// A segmented group of chips with a muted caption — State, Activity, Repo — so related pills read
+// as one family instead of a flat row.
+function ChipFamily({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div data-slot="quick-filter-group" data-group={label.toLowerCase()} className="flex items-center gap-1.5">
+      <span className="text-muted-foreground text-[10px] font-medium tracking-wide uppercase">{label}</span>
+      {children}
+    </div>
+  );
+}
+
 // Vercel's filter row: one-click chips, each with its count, toggleable and combinable (AND across
 // groups, OR within one); the URL query holds them, so a filtered view is a link. Search and sort sit
 // at the end.
-function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, sort, setSort, showRepos, showInstances }: {
+function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, sort, setSort, showRepos }: {
   scoped: Row[]; quick: QuickFilter; setQuick: (f: QuickFilter) => void; clear: () => void; visible: Row[]; total: number;
   q: string; setQ: (v: string) => void; sort: ListSort; setSort: (s: ListSort) => void;
-  showRepos: boolean; showInstances: boolean;
+  showRepos: boolean;
 }) {
   const repos = useRepos();
-  const instances = instanceChoices();
   const here = thisInstance();
-  const chips: Chip[] = [
-    { group: "status", value: "attention", label: "Needs attention", dot: "warning" },
-    { group: "status", value: "running", label: "Running", dot: "building" },
-    { group: "by", value: "mine", label: "Mine" },
-    { group: "by", value: "orchestrated", label: "Orchestrated" },
+  // State and instance/by are columns and badges already (instance column, the orchestrated bot
+  // icon); only the lane-ish and activity chips earn a pill here. Grouped Vercel-style: a muted
+  // caption per family, chips within a family read as one segmented row.
+  const stateChips: Chip[] = [
     { group: "pr", value: "open", label: "Open PRs" },
     { group: "pr", value: "mergeable", label: "Mergeable", dot: "queued" },
     { group: "pr", value: "merged", label: "Merged today", dot: "ready" },
-    ...(showInstances && instances.length > 1 ? instances.map((i): Chip => ({ group: "on", value: i, label: i })) : []),
-    ...(showRepos && repos.length > 1 ? repos.map((r): Chip => ({ group: "repo", value: r.name, label: r.name })) : []),
   ];
+  const activityChips: Chip[] = [
+    { group: "status", value: "running", label: "Running", dot: "building" },
+    { group: "status", value: "attention", label: "Needs attention", dot: "warning" },
+  ];
+  const repoChips: Chip[] = showRepos && repos.length > 1 ? repos.map((r): Chip => ({ group: "repo", value: r.name, label: r.name })) : [];
   // The lane the chips narrow to, when exactly one: the swimlanes' bulk verbs apply to it.
   const lane: OverviewLane | null = quick.pr.length === 1 && quick.pr[0] !== "open" ? (quick.pr[0] === "merged" ? "DONE" : "MERGEABLE") : null;
   const narrow = useNarrow();
   const [sheet, setSheet] = useState(false);
+  const renderChip = (c: Chip) => {
+    const on = (quick[c.group] as string[]).includes(c.value);
+    return (
+      <button key={`${c.group}:${c.value}`} type="button" data-slot="quick-filter" data-chip={`${c.group}:${c.value}`} aria-pressed={on}
+        onClick={() => setQuick(toggleQuick(quick, c.group, c.value))}
+        className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors ${on ? "border-foreground bg-foreground text-background" : "text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
+        {c.dot && <StatusDot tone={c.dot} className="size-2" />}
+        {c.label}
+        <span data-slot="quick-count" className={`tabular-nums ${on ? "opacity-70" : "opacity-60"}`}>{quickCount(scoped, quick, c.group, c.value, here)}</span>
+      </button>
+    );
+  };
+  const notMergedChip = (
+    <button key="notMerged" type="button" data-slot="quick-filter" data-chip="notMerged" aria-pressed={quick.notMerged}
+      onClick={() => setQuick(toggleNotMerged(quick))}
+      className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors ${quick.notMerged ? "border-foreground bg-foreground text-background" : "text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
+      Not merged
+      <span data-slot="quick-count" className={`tabular-nums ${quick.notMerged ? "opacity-70" : "opacity-60"}`}>{notMergedHiddenCount(scoped, quick, here)}</span>
+    </button>
+  );
   const chipGroup = (
-      <div role="group" aria-label="Quick filters" className="flex flex-wrap items-center gap-1.5">
-        {chips.map((c) => {
-          const on = (quick[c.group] as string[]).includes(c.value);
-          return (
-            <button key={`${c.group}:${c.value}`} type="button" data-slot="quick-filter" data-chip={`${c.group}:${c.value}`} aria-pressed={on}
-              onClick={() => setQuick(toggleQuick(quick, c.group, c.value))}
-              className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors ${on ? "border-foreground bg-foreground text-background" : "text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
-              {c.dot && <StatusDot tone={c.dot} className="size-2" />}
-              {c.label}
-              <span data-slot="quick-count" className={`tabular-nums ${on ? "opacity-70" : "opacity-60"}`}>{quickCount(scoped, quick, c.group, c.value, here)}</span>
-            </button>
-          );
-        })}
+      <div role="group" aria-label="Quick filters" className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+        <ChipFamily label="State">{stateChips.map(renderChip)}{notMergedChip}</ChipFamily>
+        <ChipFamily label="Activity">{activityChips.map(renderChip)}</ChipFamily>
+        {repoChips.length > 0 && <ChipFamily label="Repo">{repoChips.map(renderChip)}</ChipFamily>}
         {(quickActive(quick) || q) && (
           <button type="button" data-slot="clear-filters" onClick={clear} title="Clear the chips and the search (here and in what's remembered)" className="text-muted-foreground hover:text-foreground inline-flex h-7 items-center gap-1 px-1.5 text-[13px]">
             <X className="size-3.5" /> Clear
@@ -218,7 +242,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
   if (narrow) {
     // A phone: the search box and a Filters button (with how many chips are on) on one line; the
     // chips and the sort live in a bottom sheet. The count and the lane's bulk verbs stay in view.
-    const active = (Object.values(quick) as string[][]).reduce((n, v) => n + v.length, 0);
+    const active = QUICK_GROUPS.reduce((n, g) => n + quick[g].length, 0) + (quick.notMerged ? 0 : 1);
     return (
       <div data-slot="filter-bar" className="space-y-2">
         <div className="flex items-center gap-2">

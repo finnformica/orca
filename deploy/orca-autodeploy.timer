@@ -1,0 +1,12 @@
+# Fires orca-autodeploy.service every minute (after a 2-minute grace period on boot). See
+# deploy/orca-autodeploy.service for install steps.
+[Unit]
+Description=Run Orca auto-deploy periodically
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=1min
+Unit=orca-autodeploy.service
+
+[Install]
+WantedBy=timers.target
