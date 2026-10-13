@@ -234,6 +234,8 @@ export type PrSummary = PrStatus & {
   previewUrl?: string; hasPreviewLabel?: boolean; externalFeedback: number; failingChecks?: string[]; feedback?: string[];
   /** The PR's own diffstat — gh computes it in the same list call, so the Agents row's +/- is free. */
   additions: number; deletions: number;
+  /** The PR's head commit — what a CI notification is keyed on, and what cleanup calls "pushed". */
+  head?: string;
 };
 
 /** Pull a deploy-preview URL out of a PR's comments (posted by the pr-preview action). */
@@ -262,9 +264,9 @@ export function countExternalFeedback(
 // PRs into ~14s, so both are detail-only (see listReviewPrs / prDetail). What's left are plain
 // index fields (state/draft/mergeable/reviewDecision) that come back in the single list call —
 // additions/deletions among them, so the Agents row's diffstat costs nothing extra.
-const PR_META_FIELDS = "number,title,headRefName,baseRefName,url,state,isDraft,mergeable,reviewDecision,autoMergeRequest,additions,deletions";
+const PR_META_FIELDS = "number,title,headRefName,headRefOid,baseRefName,url,state,isDraft,mergeable,reviewDecision,autoMergeRequest,additions,deletions";
 type RawPr = {
-  number: number; title: string; headRefName: string; baseRefName?: string; url: string;
+  number: number; title: string; headRefName: string; headRefOid?: string; baseRefName?: string; url: string;
   state: string; isDraft: boolean; mergeable: string; reviewDecision: string;
   autoMergeRequest?: { enabledAt?: string } | null;
   additions?: number; deletions?: number;
@@ -295,6 +297,7 @@ const mapSummary = (j: RawPr, required: Set<string> = new Set(), previewLabelNam
     number: j.number,
     title: j.title,
     branch: j.headRefName,
+    head: j.headRefOid || undefined,
     base: j.baseRefName, // the PR's target — diffstats must be measured against it, not the repo default
     url: j.url,
     state: j.state,

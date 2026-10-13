@@ -129,10 +129,13 @@ export function previewNotification(p: {
     : { repo: p.repo, branch: p.branch, title: p.title, kind: "preview_failed", key: `preview:${p.key}:${p.startedAt}:failed`, body: oneLine(p.error || "A service did not come up.") };
 }
 
-/** What an open PR's state says, once per PR per set of failing checks (CI) or once per PR
- *  (conflicts). Read off the ordinary PR list, so it costs nothing extra. */
+/** What an open PR's state says: CI failing once per head commit, conflicts once per PR. Read off
+ *  the ordinary PR list, so it costs nothing extra. The CI key is the COMMIT, never the set of
+ *  failing checks: that set changes while checks run, re-run and flap on one commit (lint fails,
+ *  then lint + test, then test after a re-run), and each new set was a new key — the same failure
+ *  notified three times. A new push failing again is news; without a head SHA, once per PR. */
 export function prNotifications(repo: string, prs: {
-  number: number; title: string; branch: string; state: string; ciStatus: string; mergeable: string; failingChecks?: string[];
+  number: number; title: string; branch: string; state: string; ciStatus: string; mergeable: string; failingChecks?: string[]; head?: string;
 }[]): NotificationInput[] {
   const out: NotificationInput[] = [];
   for (const pr of prs) {
@@ -140,7 +143,7 @@ export function prNotifications(repo: string, prs: {
     const base = { repo, branch: pr.branch, title: pr.title || pr.branch, link: { pr: pr.number } };
     if (pr.ciStatus === "failing") {
       const checks = [...(pr.failingChecks ?? [])].sort();
-      out.push({ ...base, kind: "pr_ci_failed", key: `pr-ci:${repo}#${pr.number}:${checks.join(",")}`, body: checks.length ? oneLine(`Failing: ${checks.join(", ")}`) : "CI is failing." });
+      out.push({ ...base, kind: "pr_ci_failed", key: `pr-ci:${repo}#${pr.number}${pr.head ? `@${pr.head}` : ""}`, body: checks.length ? oneLine(`Failing: ${checks.join(", ")}`) : "CI is failing." });
     }
     if (pr.mergeable === "CONFLICTING") {
       out.push({ ...base, kind: "pr_conflicts", key: `pr-conflict:${repo}#${pr.number}`, body: "Has merge conflicts with its base." });
