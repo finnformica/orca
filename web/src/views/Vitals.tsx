@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
-import { HISTORY_RANGES, countMax, instanceSeries, loginStatus, niceMax, rateLabel, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { HISTORY_RANGES, countMax, instanceSeries, loginStatus, monthCostLabel, niceMax, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
@@ -157,7 +157,6 @@ export function RefreshVitals() {
 
 const pct = (v: number) => `${Math.round(v)}%`;
 const count = (v: number) => String(Math.round(v));
-const usd = (v: number) => `$${v.toFixed(2)}`;
 
 /** One machine. `here`: the instance answering this page (its health needs no `?instance=`). */
 export function InstanceCard({ instance, here }: { instance: string; here: boolean }) {
@@ -168,13 +167,14 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const h = reading?.health;
   const down = Boolean(reading?.down);
   const to = Date.now(), from = to - hours * 3_600_000;
+  // The machine's rate and this month's cost, from its own /api/health (kept from the last answer
+  // while it is down).
+  const cost = monthCostLabel(h?.month, h?.rate);
   // One series for every chart AND the header stats: the newest sample (the live reading when it is
   // newer than the last recorded one) is both what the grid shows and where every line ends.
-  // The machine's rate, from its own /api/health (kept from the last answer while it is down).
-  const rate = h?.rate;
-  const priced = Boolean(rate && rate.hourlyUsd > 0);
-  const s = instanceSeries(history ?? [], h, from, to, 300, rate?.hourlyUsd ?? 0);
+  const s = instanceSeries(history ?? [], h && { ...h, diskUsedGb: h.disk?.usedGb }, from, to, 300);
   const now = s.latest;
+  const ooms = s.ooms.reduce((n, o) => n + o.n, 0);
   const memTotal = h?.memTotalGb ?? Math.max(1, ...(history ?? []).map((p) => p.memTotalGb));
   const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
   return (
@@ -193,32 +193,23 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
         </Detail>
         <Detail label="Disk">{h?.disk ? <span className="tabular-nums">{h.disk.usedGb} / {h.disk.totalGb} GB</span> : "—"}</Detail>
         <Detail label="Uptime">{h ? fmtUptime(h.uptimeS) : "—"}</Detail>
-        <Detail label="Rate" slot="instance-cost">{priced ? <span className="tabular-nums" title={rate!.source === "estimate" ? `on-demand estimate for ${rate!.instanceType} in ${rate!.region}` : "instanceHourlyUsd in Settings"}>${rate!.hourlyUsd}/h{rate!.source === "estimate" && <span className="text-muted-foreground ml-1 text-xs">est.</span>}</span> : "—"}</Detail>
+        <Detail label="Cost · this month" slot="instance-cost">{cost ? <span className="tabular-nums" title={cost.detail}>{cost.value}{h?.rate?.source === "estimate" && <span className="text-muted-foreground ml-1 text-xs">est.</span>}</span> : "—"}</Detail>
       </div>
       {history === null ? (
           <div className="grid gap-6 p-4 md:grid-cols-2">
             <ChartSkeleton slot="chart-cpu-skeleton" /><ChartSkeleton slot="chart-mem-skeleton" />
-            <ChartSkeleton slot="chart-agents-skeleton" /><ChartSkeleton slot="chart-cost-skeleton" />
+            <ChartSkeleton slot="chart-agents-skeleton" /><ChartSkeleton slot="chart-disk-skeleton" />
           </div>
         )
         : !history.length ? <Empty>No history recorded yet — the sampler writes once a minute.</Empty>
         : (
           <div className="grid gap-6 p-4 md:grid-cols-2">
             <LineChart slot="chart-cpu" label="CPU" points={s.cpu} from={from} to={to} max={100} fmt={pct} />
-            <LineChart slot="chart-mem" label="Memory used" points={s.mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" />
+            <LineChart slot="chart-mem" label={<>Memory used{ooms > 0 && <span data-slot="chart-oom" className="text-[var(--geist-red)]"> · {ooms} OOM kill{ooms === 1 ? "" : "s"}</span>}</>} points={s.mem}
+              marks={s.ooms.map((o) => ({ at: o.at, title: `${o.n} agent run${o.n === 1 ? "" : "s"} out of memory` }))} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" />
             <LineChart slot="chart-agents" label="Agents" points={s.agents} from={from} to={to} max={countMax(Math.max(0, ...s.agents.map((p) => p.v)))} fmt={count} color="var(--geist-pink)" />
-            {priced ? (
-              <LineChart slot="chart-cost" label={rateLabel(rate)} points={s.cost} from={from} to={to} max={niceMax(Math.max(0, ...s.cost.map((p) => p.v)) * 1.1)} fmt={usd}
-                axis={(v) => `$${v >= 10 ? Math.round(v) : v.toFixed(v >= 1 ? 1 : 2)}`} color="var(--geist-amber)" />
-            ) : (
-              // No rate (the laptop, or a type the table doesn't know): greyed, not a flat $0 line.
-              <figure data-slot="chart-cost-off" className="text-muted-foreground flex flex-col gap-2 opacity-60">
-                <figcaption className="text-xs">Cost accrued</figcaption>
-                <div className="flex h-[120px] items-center justify-center rounded-md border border-dashed px-4 text-center text-xs">
-                  No hourly rate for this machine — set instanceHourlyUsd in Settings.
-                </div>
-              </figure>
-            )}
+            <LineChart slot="chart-disk" label="Disk used" points={s.disk} from={from} to={to} max={h?.disk?.totalGb ?? niceMax(Math.max(1, ...s.disk.map((p) => p.v)) * 1.1)}
+              fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-amber)" />
           </div>
         )}
     </VCard>

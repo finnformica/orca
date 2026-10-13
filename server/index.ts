@@ -22,8 +22,9 @@ import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
+import * as mergeQueue from "./mergeQueue";
 import * as notify from "./notify";
-import { health, historyHours, instanceRate, startMetricsSampler } from "./health";
+import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, attachmentRefs, followUpPrompt, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
@@ -143,6 +144,12 @@ agent.onRunFinished(async (run) => {
   await notify.onRunFinished(run);
   await orchestrator.onRunFinished(await loadConfig(), run);
 });
+// The merge queue (server/mergeQueue.ts): every marked PR this instance drives, once a minute. A red
+// or refused PR the orchestrator owns is reported to it like a worker's problem; a merge, like a finish.
+mergeQueue.onReport(async (text) => orchestrator.report(await loadConfig(), text));
+setInterval(() => {
+  void loadConfig().then((cfg) => mergeQueue.tick(cfg)).catch((e) => console.error("orca: merge queue pass failed", e));
+}, mergeQueue.MERGE_POLL_MS).unref();
 // Warm the review queue (gh.listReviewPrs) so its slow cold fetch is paid here, not by a caller. A
 // local-only repo just fails quietly.
 void loadConfig().then((cfg) => cfg.repos.filter(verbs.repoHere)
@@ -485,9 +492,11 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/health") {
     // This machine's vitals, for the header's instance chip. `?instance=` reaches another instance
     // through the ordinary placement forwarding (an explicit instance beats everything). The rate is
-    // this machine's (config → IMDS estimate → 0), for the card's Cost accrued chart.
+    // this machine's (config → IMDS estimate → 0); `month` is that rate over this month's uptime,
+    // for the card's Cost cell (absent when the query fails — vitals must still answer).
     const [h, rate] = await Promise.all([health(), loadConfig().then((c) => instanceRate(c.instanceHourlyUsd))]);
-    return json({ ...h, rate, database: db.databaseStatus(), outbox: outbox.summary() });
+    const month = rate.hourlyUsd > 0 ? await monthCost(rate.hourlyUsd).catch(() => undefined) : undefined;
+    return json({ ...h, rate, month, database: db.databaseStatus(), outbox: outbox.summary() });
   }
   if (req.method === "GET" && p === "/api/notifications") {
     // The centre's rows (any instance answers: one table). `since` is the catch-up cursor after a
@@ -701,6 +710,15 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && diffMatch) {
     return json({ diff: await gh.prDiff(repo.repoPath, Number(diffMatch[1])) });
   }
+  if (req.method === "POST" && p === "/api/prs/merge-when-green") {
+    // Mark (or with `cancel`, unmark) a PR merge-when-green — the PR menu's and `orca merge`'s route.
+    try {
+      const pr = body.pr === undefined ? undefined : Number(body.pr);
+      return json({ text: await orchestrator.mergeWhenGreen(cfg, repo, { pr, branch: body.branch, small: Boolean(body.small), by: body.by, cancel: Boolean(body.cancel) }) });
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  }
   if (req.method === "POST" && p === "/api/merge") {
     const status = await gh.prStatus(repo.repoPath, body.pr);
     if (!mergeSafe(status)) {
@@ -719,7 +737,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     await gh.closePr(repo.repoPath, body.pr); // abandon without merging
     if (body.worktreePath) {
       agent.stop(body.worktreePath);
-      if (body.branch) await agent.killByBranch(body.branch);
+      await agent.killInWorktree(body.worktreePath);
       preview.stop(body.worktreePath, true); // teardown: drop this preview's DB
       await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     }
@@ -1089,7 +1107,7 @@ for (const hostname of BIND) Bun.serve({
 });
 
 // Shutdown. Agents are deliberately left running — a restart shouldn't lose in-progress work; they're
-// re-surfaced via ps (agent.detectRunning) and killed explicitly on discard (agent.killByBranch).
+// re-surfaced via ps (agent.detectRunning) and killed explicitly on discard (agent.killInWorktree).
 //
 // SIGINT and SIGTERM differ on purpose:
 //  - SIGINT is you at a terminal pressing Ctrl-C. You want your ports back, so previews are killed.

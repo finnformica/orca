@@ -2,7 +2,7 @@
 // so both the store and the e2e tests import it directly.
 
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
-import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentTurn, type TurnCheck, type TurnSource } from "../../shared/agent";
+import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type TurnCheck, type TurnSource } from "../../shared/agent";
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
 export { attachCommand } from "../../shared/agent";
 
@@ -946,6 +946,34 @@ export const MODEL_LADDER: { id: string; when: string }[] = [
   { id: "claude-fable-5-1", when: "ONLY work that has already defeated Opus, or genuinely novel, ambiguous design work" },
 ];
 
+/** Model-ladder automation: a worker that fails — the run errors, or its commit fails Orca's check —
+ *  `LADDER_FAILURES` times in a row on the same model gets the next model up for the retry. The
+ *  streak lives on the workstream's enrichment (`failStreak`), so a restart doesn't reset it. */
+export const LADDER_FAILURES = 2;
+export type FailStreak = { model: string; count: number };
+/** The next model up the ladder, or undefined at the top or for a model not on it (Codex, Cursor). */
+export const nextLadderModel = (model: string): string | undefined => {
+  const i = MODEL_LADDER.findIndex((m) => m.id === model);
+  return i < 0 ? undefined : MODEL_LADDER[i + 1]?.id;
+};
+/** The streak after a run on `model`: a failure extends it (or starts one on a new model), a clean
+ *  run ends it. A run you stopped is neither — pass the previous streak through instead. */
+export function nextFailStreak(prev: FailStreak | undefined, model: string | undefined, failed: boolean): FailStreak | undefined {
+  if (!failed || !model) return undefined;
+  return { model, count: prev?.model === model ? prev.count + 1 : 1 };
+}
+/** What the ladder says about a streak: nothing below the threshold or off the ladder; at it, a line
+ *  for the worker report — a suggestion, or (the repo's `modelEscalation: "apply"`) the move Orca
+ *  made, in `moveTo`. At the top there is nowhere to go, and the line says so. */
+export function ladderStep(streak: FailStreak | undefined, mode: "suggest" | "apply", at: { repo: string; branch: string }): { line: string; moveTo?: string } | undefined {
+  if (!streak || streak.count < LADDER_FAILURES || !MODEL_LADDER.some((m) => m.id === streak.model)) return undefined;
+  const head = `Model ladder: ${streak.count} failures in a row on ${streak.model}`;
+  const next = nextLadderModel(streak.model);
+  if (!next) return { line: `${head}, the top of the ladder — another attempt is unlikely to differ; tell the user.` };
+  if (mode === "apply") return { moveTo: next, line: `${head} — Orca moved this workstream up to ${next}; your retry (orca send) runs on it.` };
+  return { line: `${head} — Orca suggests the next model up for the retry: orca send --repo ${at.repo} --branch ${at.branch} --model ${next} "…"` };
+}
+
 /** Why an orchestrator wake died before finishing its turn. `no-reply` is the CLI ending "cleanly"
  *  on its own placeholder instead of an answer. */
 export type WakeExit =
@@ -975,6 +1003,33 @@ export function wakeStoppedLine(input: { reason: string; toolCalls: number; cost
     `Wake stopped: ${input.reason} after ${input.toolCalls} tool call${input.toolCalls === 1 ? "" : "s"}${spent}.`,
     ...(input.retried ? ["Re-queued what it was handling; the next wake is told why and finishes the reply."] : []),
     ...(input.dropped ? ["Not retried again: the wake handling this has now died twice. Send it again to retry."] : []),
+  ].join("\n");
+}
+/** Commands that change something — what a wake that died must not repeat. `orca` verbs and the
+ *  `gh pr` writes the orchestrator runs with its shell. */
+const ACTING_COMMAND = /\b(orca\s+(?:spawn|send|address|archive|move|merge|preview|notes\s+set)|gh\s+pr\s+(?:merge|create|ready|close|edit|comment))\b/g;
+/** What a wake that was cut off had already done, condensed for the next wake's prompt: each acting
+ *  command it ran with the first line of what it printed, then the reply it had started (its text,
+ *  tail-clipped). Built from the steps the run recorded as it went, so it survives the process. Empty
+ *  when it had done nothing that matters. Pure. */
+export function wakeProgress(steps: AgentStep[] | undefined): string {
+  if (!steps?.length) return "";
+  const results = new Map(steps.filter((s) => s.kind === "result" && s.id).map((s) => [s.id!, s]));
+  const actions: string[] = [];
+  for (const s of steps) {
+    if (s.kind !== "tool" || s.name !== "Bash") continue;
+    const command = String(((s.input ?? {}) as { command?: unknown }).command ?? s.detail ?? "");
+    const verbs = [...new Set([...command.matchAll(ACTING_COMMAND)].map((m) => m[1]!.replace(/\s+/g, " ")))];
+    if (!verbs.length) continue;
+    const r = s.id ? results.get(s.id) : undefined;
+    const said = r?.output?.trim().split("\n").filter(Boolean).slice(0, 3).join(" / ");
+    const outcome = !r ? "no result recorded — it may or may not have happened" : r.isError ? `failed: ${clip(said ?? "", 200)}` : clip(said || "(no output)", 300);
+    actions.push(`- ${verbs.join(", ")}: \`${clip(command.replace(/\s+/g, " ").trim(), 240)}\` → ${outcome}`);
+  }
+  const text = steps.filter((s) => s.kind === "text" && s.text?.trim()).map((s) => s.text!.trim()).join("\n\n");
+  return [
+    ...(actions.length ? ["What it had already done (do NOT do these again; check the board for their effect):", ...actions] : []),
+    ...(text ? [`${actions.length ? "\n" : ""}What it had started to tell the user:`, text.length > 1500 ? `…${text.slice(-1500)}` : text] : []),
   ].join("\n");
 }
 /** A resumed session re-reads its whole history on every wake, so cost per wake grows with it. Says
@@ -1012,7 +1067,7 @@ export const isWorkerEvent = (text: string): boolean => text.startsWith(WORKER_E
  *  Orca's check. Read off the report text, so a queued one can be judged after the fact. */
 export const isWorkerProblem = (text: string): boolean => {
   const [head = "", next = ""] = text.split("\n");
-  return !head.endsWith(" — done") || next.startsWith("Orca's check") && next.includes("FAILED");
+  return !(head.endsWith(" — done") || head.endsWith(" — merged")) || next.startsWith("Orca's check") && next.includes("FAILED");
 };
 /** One wake can carry several messages (sent while it worked, drained together). Joined with a
  *  break line, not a blank line — a message has paragraphs of its own, and with "\n\n" three sends
@@ -1067,6 +1122,146 @@ export function workerEvent(input: {
   ].join("\n");
 }
 
+// ---- merge queue (server/mergeQueue.ts): merge-when-green, decided here ----
+
+/** A repo's merge policy (`mergePolicy` in its config). Absent = nothing is merged on its own. */
+export type MergePolicy = {
+  /** Which PRs may be marked merge-when-green: `never` (the default), `small` (only ones marked
+   *  small — `orca merge --small`), or `any`. */
+  whenGreen?: "never" | "small" | "any";
+  /** Paths never merged on their own, whatever the mark: globs (`*` within a segment, `**` across),
+   *  a trailing `/` or a bare directory covering everything under it. E.g. `server/db.ts` (Orca's
+   *  migrations), `server/cgroup.ts`, `deploy/`. */
+  denyPaths?: string[];
+  /** Open a PR for an orchestrated worker's branch when its run finishes clean (title from the
+   *  workstream, body from its outcome), so the orchestrator never opens one by hand. */
+  autoPr?: boolean;
+};
+export const MERGE_WHEN_GREEN = ["never", "small", "any"] as const;
+
+/** Does `path` match one deny glob? Pure. */
+export function pathMatches(path: string, glob: string): boolean {
+  const g = glob.trim().replace(/^\.?\//, "");
+  if (!g) return false;
+  if (g.endsWith("/")) return path.startsWith(g);
+  if (!/[*?]/.test(g)) return path === g || path.startsWith(`${g}/`);
+  const re = g.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*\//g, "\u0000").replace(/\*\*/g, "\u0001").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]")
+    .replace(/\u0000/g, "(?:.*/)?").replace(/\u0001/g, ".*");
+  return new RegExp(`^${re}$`).test(path);
+}
+/** The changed paths a policy's denylist catches. Pure. */
+export const deniedPaths = (files: string[], globs: string[] | undefined): string[] =>
+  files.filter((f) => (globs ?? []).some((g) => pathMatches(f, g)));
+
+/** A PR marked merge-when-green, as stored on its branch's enrichment (`mergeWhenGreen`). */
+export type MergeMark = {
+  pr?: number; // absent until the branch has a PR (marked before the worker finished)
+  small?: boolean; by?: "orchestrator" | "user"; at: number;
+  /** The head commit a red/conflict was last reported for — once per push, not once per poll. */
+  reportedSha?: string;
+};
+/** What the queue reads about the PR (gh.prMergeGate's shape, minus what it doesn't need). */
+export type MergeGateLike = {
+  state: string; isDraft?: boolean; mergeable: string; ciStatus: string;
+  files: string[]; changedFiles: number; failingChecks?: string[];
+};
+export type MergeVerdict =
+  | { action: "merge" }
+  | { action: "wait"; why: string }
+  | { action: "red"; why: string } // keep the mark: it merges once fixed and green
+  | { action: "refuse"; why: string } // drop the mark: the policy says a person merges this
+  | { action: "gone"; why: string };
+
+/** Why the policy refuses to merge this PR on its own, or undefined when it may. The files are
+ *  re-read on every poll, since a push can add a denied path after the mark. Pure. */
+export function mergeRefusal(policy: MergePolicy | undefined, mark: Pick<MergeMark, "small">, pr?: Pick<MergeGateLike, "files" | "changedFiles">): string | undefined {
+  const when = policy?.whenGreen ?? "never";
+  if (when === "never") return "this repo's mergePolicy.whenGreen is \"never\": merging is the user's";
+  if (when === "small" && !mark.small) return "this repo only merges PRs marked small on green (--small); merging this one is the user's";
+  if (!pr) return undefined;
+  const denied = deniedPaths(pr.files, policy?.denyPaths);
+  if (denied.length) return `it touches ${denied.slice(0, 5).join(", ")}${denied.length > 5 ? ` and ${denied.length - 5} more` : ""}, which this repo never merges on its own (mergePolicy.denyPaths)`;
+  if (policy?.denyPaths?.length && pr.changedFiles > pr.files.length) return `it changes ${pr.changedFiles} files, more than GitHub lists, so the denylist can't be checked`;
+  return undefined;
+}
+
+/** The merge queue's one decision for a marked PR. Never merges red; merges only when every check
+ *  passed (no checks yet is not green — a fresh push has none) and GitHub says it merges clean. Pure. */
+export function mergeVerdict(policy: MergePolicy | undefined, mark: Pick<MergeMark, "small">, pr: MergeGateLike): MergeVerdict {
+  if (pr.state !== "OPEN") return { action: "gone", why: `the PR is ${pr.state.toLowerCase()}` };
+  const refused = mergeRefusal(policy, mark, pr);
+  if (refused) return { action: "refuse", why: refused };
+  if (pr.ciStatus === "failing") return { action: "red", why: `CI failing${pr.failingChecks?.length ? `: ${pr.failingChecks.join(", ")}` : ""}` };
+  if (pr.mergeable === "CONFLICTING") return { action: "red", why: "merge conflicts with its base" };
+  if (pr.ciStatus !== "passing") return { action: "wait", why: pr.ciStatus === "none" ? "no checks reported yet" : "checks still running" };
+  if (pr.mergeable !== "MERGEABLE") return { action: "wait", why: "GitHub is still computing mergeability" };
+  return { action: "merge" };
+}
+
+/** The report the orchestrator hears from the queue — a worker-report line, so the chat and the
+ *  batching rules treat it like one: `— merged` is clean, `— merge blocked: …` wakes it. Pure. */
+export function mergeQueueReport(input: { repo: string; branch: string; title?: string; pr: number; verdict: MergeVerdict; url?: string }): string {
+  const head = `${WORKER_EVENT_MARKER} ${input.repo}/${input.branch}${input.title ? ` "${input.title}"` : ""}`;
+  const v = input.verdict;
+  if (v.action === "merge") return [`${head} — merged`, `Merge queue: squash-merged PR #${input.pr} on green.${input.url ? ` ${input.url}` : ""}`].join("\n");
+  if (v.action === "red") return [`${head} — merge blocked: ${v.why} (PR #${input.pr})`, `Merge queue: still marked merge-when-green; it merges itself once this is fixed and green. To fix it: orca address --repo ${input.repo} --branch ${input.branch}`].join("\n");
+  return [`${head} — merge refused: ${v.why} (PR #${input.pr})`, "Merge queue: unmarked. Say it is ready for the user to merge."].join("\n");
+}
+
+/** The body Orca opens a finished worker's PR with: its outcome, decisions and verification, then
+ *  the commits — what a reviewer needs, from what the worker already reported. Pure. */
+export function workerPrBody(input: { outcome?: AgentOutcome; response?: string; commits: string[] }): string {
+  const o = input.outcome;
+  const list = (label: string, items: string[] | undefined) => (items?.length ? [`## ${label}`, ...items.map((i) => `- ${i}`), ""] : []);
+  return [
+    ...(o?.outcome ? ["## Outcome", o.outcome.trim(), ""] : input.response?.trim() ? ["## Summary", clip(input.response.trim(), 4000), ""] : []),
+    ...list("Decisions", o?.decisions), ...list("Verification", o?.verification), ...list("Remaining", o?.remaining),
+    ...list("Commits", input.commits),
+    "Opened by Orca when the workstream's agent finished.",
+  ].join("\n");
+}
+
+/** The orchestrator's own short record of a workstream (`orca status`), stored on its enrichment as
+ *  `orchStatus` and shown on the board: its plan for it, what it is waiting on, and its merge class —
+ *  `small` (fine to merge on green) or `needs-finn` (the user merges). Per workstream, so the
+ *  orchestrator's free-text notes are left holding only preferences and standing facts. */
+export const MERGE_CLASSES = ["small", "needs-finn"] as const;
+export type MergeClass = (typeof MERGE_CLASSES)[number];
+export type OrchStatus = { plan?: string; waitingOn?: string; mergeClass?: MergeClass; at?: string };
+export const MERGE_CLASS_LABEL: Record<MergeClass, string> = { small: "Small", "needs-finn": "Needs Finn" };
+export const ORCH_STATUS_MAX = 300; // per field: a status line, not a second notes blob
+const ORCH_STATUS_FLAGS = { plan: "plan", waiting: "waitingOn", merge: "mergeClass" } as const;
+
+/** `orca status`'s flags applied to the current record: a flag sets its field, an empty one clears
+ *  it, `clear` drops them all. Returns the new record (null when nothing is left), or undefined when
+ *  no flag was given — a read. Throws with a message the model can act on. */
+export function orchStatusUpdate(prev: OrchStatus | undefined, args: Record<string, unknown>, now: string): OrchStatus | null | undefined {
+  if ("clear" in args) return null;
+  const given = Object.keys(ORCH_STATUS_FLAGS).filter((f) => f in args) as (keyof typeof ORCH_STATUS_FLAGS)[];
+  if (!given.length) return undefined;
+  const next: OrchStatus = { ...prev };
+  for (const flag of given) {
+    const value = String(args[flag] ?? "").replace(/\s+/g, " ").trim();
+    if (value.length > ORCH_STATUS_MAX) throw new Error(`--${flag} is limited to ${ORCH_STATUS_MAX} characters (got ${value.length}); keep the detail in the brief or your notes`);
+    if (flag === "merge" && value && !(MERGE_CLASSES as readonly string[]).includes(value)) throw new Error(`--merge must be one of: ${MERGE_CLASSES.join(", ")}`);
+    const field = ORCH_STATUS_FLAGS[flag];
+    if (value) (next as Record<string, string>)[field] = value; else delete next[field];
+  }
+  delete next.at;
+  return Object.keys(next).length ? { ...next, at: now } : null;
+}
+
+/** The record as one line — the board's `status:` and `orca status`'s answer. */
+export function orchStatusText(s: OrchStatus | undefined): string {
+  if (!s) return "";
+  return [
+    s.plan && `plan: ${s.plan}`,
+    s.waitingOn && `waiting on: ${s.waitingOn}`,
+    s.mergeClass && `merge: ${s.mergeClass}`,
+  ].filter(Boolean).join("; ");
+}
+
 /** One line of the board as the orchestrator reads it. */
 export type BoardRow = {
   repo: string; branch: string; title?: string; worktreePath?: string; agent: string;
@@ -1074,6 +1269,8 @@ export type BoardRow = {
   check?: boolean; orchestrated?: boolean; last?: string;
   /** The instance holding its worktree, when there is more than one instance. */
   instance?: string;
+  /** Its `orca status` record. */
+  status?: OrchStatus;
 };
 export function boardText(rows: BoardRow[]): string {
   if (!rows.length) return "(no workstreams)";
@@ -1088,6 +1285,7 @@ export function boardText(rows: BoardRow[]): string {
       ...(r.check === undefined ? [] : [`check:${r.check ? "passed" : "FAILED"}`]),
       ...(r.orchestrated ? ["yours"] : []),
       ...(r.worktreePath ? [r.worktreePath] : []),
+      ...(r.status && orchStatusText(r.status) ? [`status: ${orchStatusText(r.status)}`] : []),
       ...(r.last ? [`last: ${clip(r.last.replace(/\s+/g, " "), 160)}`] : []),
     ].join(" | ");
   }).join("\n");
@@ -1117,8 +1315,17 @@ const ORCA_COMMANDS = [
   "                                  repo's template database (the old one kept as a backup) and its",
   "                                  integration env vars go back into the source env file. Without --confirm",
   "                                  it only prints the plan and the env diff (values masked)",
+  "  orca merge --repo <repo> (--pr <n> | --branch <branch>) --when-green [--small]   Orca squash-merges it once",
+  "                                  checks pass and it merges clean — never red; you hear back when it merges or",
+  "                                  goes red. Don't watch CI yourself. The repo's mergePolicy decides what may be",
+  "                                  queued (--small for a small PR); a refusal says why. --cancel unmarks it.",
   "  orca chats [\"<search terms>\"]   list conversations, or full-text search every past one (merged ones too)",
   "  orca read --chat <id> | --run <runId>                     one conversation's turns, or one full turn",
+  "  orca status --repo <repo> --branch <branch> [--plan \"…\"] [--waiting \"…\"] [--merge small|needs-finn] [--clear]",
+  "                                  your short record of one workstream, shown on the board and the user's",
+  "                                  cards: your plan for it, what it waits on, its merge class (small: fine to",
+  "                                  merge on green; needs-finn: the user merges). An empty flag clears that",
+  "                                  field; no flags prints it",
   "  orca notes                      print your notes",
   "  orca notes set \"<the whole new text>\"",
 ].join("\n");
@@ -1155,18 +1362,27 @@ const ORCHESTRATOR_ROLE = [
   "  when it matters. A code fault in the log goes to the workstream; a machine fault goes to the user.",
   "- `--push-to-template` replaces what every future preview starts from, so run it only when the user",
   "  asks: first without --confirm, show them the plan, then with it. Relay its restore instructions.",
-  "- You cannot promote, merge or post to Slack. Say when something is ready for the user to do that.",
+  "- You cannot promote or post to Slack, and you merge only through `orca merge --when-green` — never",
+  "  `gh pr merge`. Where the repo's policy refuses, say the PR is ready for the user to merge.",
   "- When the user cancels a workstream you own, `orca archive` it rather than just telling the worker",
   "  to stop — one step removes the card and can't be restarted by a message still queued behind it.",
-  "- Your notes are your memory across context resets: keep them current with the plan, the open",
-  "  workstreams, decisions and the user's preferences, in roughly 1500 words or fewer.",
+  "- Per-workstream state — the plan for it, what it waits on, whether it is small or needs the user",
+  "  to merge — goes in `orca status` on that workstream, which the board carries back every wake.",
+  "  Your notes are your memory across context resets for everything else: the user's preferences,",
+  "  standing facts and decisions that span workstreams, in roughly 1500 words or fewer.",
   "- Keep replies short and concrete: what you did, what is running, what needs the user.",
 ].join("\n");
+
+/** The dead wake's own record (wakeProgress), under the cut-off notice — kept apart from it so a
+ *  wake that died twice (its message dropped, no notice) still tells the next one what it did. */
+function cutOffProgressSection(progress: string | undefined): string[] {
+  return progress?.trim() ? ["", "## What the cut-off wake did", progress.trim(), "Finish the reply from here: say what was done, and do only what is left."] : [];
+}
 
 /** The orchestrator's prompt for one wake. The role goes in only when the session starts (or
  *  restarts after a context reset); the notes and a fresh board go in EVERY time, because they are
  *  what makes the session disposable — everything it needs to carry on is outside its context. */
-export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[]; shell?: boolean; cutOff?: string }): string {
+export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[]; shell?: boolean; cutOff?: string; cutOffProgress?: string }): string {
   const human = input.messages.filter((m) => !isWorkerEvent(m)), reports = input.messages.filter(isWorkerEvent);
   return [
     ...(input.fresh ? [ORCHESTRATOR_ROLE, ""] : []),
@@ -1183,11 +1399,13 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     "`spawn` requires --model. Start from Opus; step DOWN to Sonnet for small, clear tasks and UP to Fable only when Opus has failed:",
     ...MODEL_LADDER.map((m) => `  ${m.id}: ${m.when}`),
     "Move a workstream along the ladder with send --model when a run fails, stalls, or turns out smaller than it looked; say which model you chose and why.",
+    `Orca counts a worker's failures on one model: after ${LADDER_FAILURES} in a row its report carries a \`Model ladder:\` line — the next model up to retry on, or that Orca has already moved it there.`,
     `A message opening with \`${NEW_DRAFT_MARKER}\` is the user's New-draft box: spawn exactly ONE workstream for it, in the repo it names, with a brief you write from it and a model you choose. Reply with one line: branch and model.`,
     "", "## Your notes", input.notes?.trim() || "(empty)",
     "", "## Board", input.board,
     // The wake before this one died mid-turn: say so, or the user has to ask why it went quiet.
     ...(input.cutOff ? ["", "## Previous wake was cut off", `Your previous wake ${input.cutOff} before it finished its turn, so the user got no reply. What it was handling is below again. It may already have acted: check the board before you spawn or send (never start the same work twice), then finish the reply.`] : []),
+    ...cutOffProgressSection(input.cutOffProgress),
     // What the user said and what the workers reported, in separate labelled sections — the user
     // first — so a report's text is never read as an instruction from them, nor theirs as a report.
     // Each message stays its own: several sent while you worked are separate messages, in order.
@@ -1217,26 +1435,26 @@ export function dayLabel(at: number, now = Date.now()): string {
   return new Date(at).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
 }
 
-// ---- # PR picker (the chat composer's autocomplete) ----
-// Typing `#` in a composer lists the PRs the board already polled; picking one inserts `#123`, or
+// ---- @ PR picker (the chat composer's autocomplete) ----
+// Typing `@` in a composer lists the PRs the board already polled; picking one inserts `#123`, or
 // `repo#123` when the number alone wouldn't say which repo. Pure, so the trigger/filter/insert rules
 // are unit-tested without a DOM.
 
 export type PrRefState = "open" | "draft" | "approved" | "merged";
 export type PrRef = { repo: string; number: number; title: string; state: PrRefState; mergedAt?: string };
 
-/** The `#query` the caret is in, if any: a `#` at the start of the text or after whitespace or an
- *  opening bracket (so `a#1` and `https://x.dev/#frag` don't fire), followed by a non-blank query on
+/** The `@query` the caret is in, if any: an `@` at the start of the text or after whitespace or an
+ *  opening bracket (so `a@b.dev` and `https://x.dev/@user` don't fire), followed by a non-blank query on
  *  the same line up to the caret. Spaces are allowed after the first character so title words can
  *  narrow it; the picker closes by itself once nothing matches. */
 export function prTrigger(text: string, caret: number): { start: number; query: string } | null {
   const line = text.slice(0, caret).split("\n").pop()!;
-  const at = line.lastIndexOf("#");
+  const at = line.lastIndexOf("@");
   if (at < 0) return null;
   const before = line[at - 1];
   if (before !== undefined && !/[\s([{]/.test(before)) return null;
   const query = line.slice(at + 1);
-  if (/^\s/.test(query) || query.length > 60) return null; // `# heading`, or a long-dead trigger
+  if (/^\s/.test(query) || query.length > 60) return null; // a lone `@ `, or a long-dead trigger
   return { start: caret - line.length + at, query };
 }
 
@@ -1244,7 +1462,7 @@ export function prTrigger(text: string, caret: number): { start: number; query: 
  *  activity), merged most-recently-merged first. Each word of the query must prefix the number, the
  *  repo name or a word of the title. */
 export function filterPrRefs(refs: PrRef[], query: string, limit = 8): PrRef[] {
-  const words = query.toLowerCase().replace(/^#/, "").split(/\s+/).filter(Boolean);
+  const words = query.toLowerCase().replace(/^[#@]/, "").split(/\s+/).filter(Boolean);
   const hit = (r: PrRef) => {
     const titleWords = r.title.toLowerCase().split(/[^a-z0-9]+/);
     return words.every((w) => String(r.number).startsWith(w) || r.repo.toLowerCase().startsWith(w) || titleWords.some((t) => t.startsWith(w)));
@@ -1263,7 +1481,7 @@ export function prRefLabel(ref: PrRef, refs: PrRef[], repoCount: number, context
   return clash || (repoCount > 1 && contextRepo !== ref.repo) ? `${ref.repo}#${ref.number}` : `#${ref.number}`;
 }
 
-/** Replace the typed `#query` (from `start` to the caret) with `label`, plus a space unless one
+/** Replace the typed `@query` (from `start` to the caret) with `label`, plus a space unless one
  *  already follows; returns the new text and where the caret goes. */
 export function insertPrRef(text: string, start: number, caret: number, label: string): { text: string; caret: number } {
   const rest = text.slice(caret);
@@ -1846,62 +2064,51 @@ export function downsample(points: { at: number; v: number }[], max: number, fro
 }
 
 /** One vitals sample, recorded (instance_metric) or live (/api/health). */
-export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number };
+export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number; diskUsedGb?: number; oomKills?: number };
 type Pt = { at: number; v: number };
 export type InstanceSeries = {
-  cpu: Pt[]; mem: Pt[]; agents: Pt[]; cost: Pt[];
-  /** The newest sample — what the card's header stats show, and exactly every chart's last point.
-   *  `costUsd` is what the machine cost over the range up to it. */
-  latest: { at: number; cpuPct: number; memUsedGb: number; runningAgents: number; costUsd: number } | null;
+  cpu: Pt[]; mem: Pt[]; agents: Pt[]; disk: Pt[];
+  /** Samples that recorded agent runs OOM-killed in their own scope — the Memory chart's markers. */
+  ooms: { at: number; n: number }[];
+  /** The newest sample — what the card's header stats show, and exactly every chart's last point. */
+  latest: { at: number; cpuPct: number; memUsedGb: number; runningAgents: number } | null;
 };
 
 /** The longest pause between two samples that still counts as the machine being UP — the same
- *  5 minutes `sparklineSegments` breaks a line at (the sampler writes once a minute). */
+ *  5 minutes `sparklineSegments` breaks a line at (the sampler writes once a minute). The month's
+ *  cost (`db.uptimeMs`, server-side) counts only the time up by this rule. */
 export const UPTIME_GAP_MS = 5 * 60_000;
-
-/** What a machine cost over its samples, cumulatively: `hourlyUsd` × the time between consecutive
- *  samples, where a pause longer than `gapMs` means it was down (or its bridge was) and adds
- *  nothing. The first sample is $0 — the range's cost starts there. Pure. */
-export function accruedCost(samples: { at: number }[], hourlyUsd: number, gapMs = UPTIME_GAP_MS): Pt[] {
-  let total = 0;
-  return samples.map((p, i) => {
-    const dt = i ? p.at - samples[i - 1]!.at : 0;
-    if (hourlyUsd > 0 && dt > 0 && dt <= gapMs) total += (dt / 3_600_000) * hourlyUsd;
-    return { at: p.at, v: total };
-  });
-}
 
 /** Every instance chart's points, from the recorded history plus the live reading. The header stats
  *  and the charts once disagreed for two reasons: the header read the live poll (every 15s) while the
  *  chart's newest point was the history's (every 60s, up to a minute older), and `downsample` made
  *  that point the MEAN of its bucket (at 7d, ~34 minutes of samples). Here the live reading, when it
  *  is newer, becomes the newest sample, and the newest sample is kept raw as every series' last point
- *  — so `latest` (the header) and the last point are the same reading. Cost is the machine's: its
- *  current `hourlyUsd` accrued over the samples (`accruedCost`), so a gap where it was down is flat. */
-export function instanceSeries(history: VitalSample[], live: VitalSample | null | undefined, from: number, to: number, max = 300, hourlyUsd = 0): InstanceSeries {
+ *  — so `latest` (the header) and the last point are the same reading. Disk skips samples with no
+ *  reading (a `df` that failed) rather than drawing them as 0. */
+export function instanceSeries(history: VitalSample[], live: VitalSample | null | undefined, from: number, to: number, max = 300): InstanceSeries {
   const samples = history.filter((p) => p.at >= from && p.at <= to);
   const last = samples[samples.length - 1];
-  if (live && live.at <= to && (!last || live.at > last.at)) samples.push(live);
-  if (!samples.length) return { cpu: [], mem: [], agents: [], cost: [], latest: null };
-  const cumulative = accruedCost(samples, hourlyUsd);
-  const series = (pts: Pt[]) => [...downsample(pts.slice(0, -1), max - 1, from, to), pts[pts.length - 1]!];
+  if (live && live.at <= to && (!last || live.at > last.at)) samples.push({ ...live, oomKills: 0 });
+  if (!samples.length) return { cpu: [], mem: [], agents: [], disk: [], ooms: [], latest: null };
+  const series = (pts: Pt[]) => pts.length ? [...downsample(pts.slice(0, -1), max - 1, from, to), pts[pts.length - 1]!] : [];
   const newest = samples[samples.length - 1]!;
   return {
     cpu: series(samples.map((p) => ({ at: p.at, v: p.cpuPct }))),
     mem: series(samples.map((p) => ({ at: p.at, v: p.memUsedGb }))),
     agents: series(samples.map((p) => ({ at: p.at, v: p.runningAgents ?? 0 }))),
-    cost: series(cumulative),
-    latest: { at: newest.at, cpuPct: newest.cpuPct, memUsedGb: newest.memUsedGb, runningAgents: newest.runningAgents ?? 0, costUsd: cumulative[cumulative.length - 1]!.v },
+    disk: series(samples.flatMap((p) => (p.diskUsedGb == null ? [] : [{ at: p.at, v: p.diskUsedGb }]))),
+    ooms: samples.flatMap((p) => (p.oomKills ? [{ at: p.at, n: p.oomKills }] : [])),
+    latest: { at: newest.at, cpuPct: newest.cpuPct, memUsedGb: newest.memUsedGb, runningAgents: newest.runningAgents ?? 0 },
   };
 }
 
-/** The Cost accrued chart's caption: the rate it accrues at, and whether that rate is the config's
- *  or Orca's on-demand estimate from the EC2 type. Pure. */
-export function rateLabel(rate: { hourlyUsd: number; source: string; instanceType?: string } | undefined): string {
-  if (!rate || !(rate.hourlyUsd > 0)) return "Cost accrued";
+/** The instance card's Cost cell: this month's cost, and how it was reached (its tooltip). Pure. */
+export function monthCostLabel(month: { usd: number; upHours: number } | undefined, rate: { hourlyUsd: number; source: string; instanceType?: string } | undefined): { value: string; detail: string } | null {
+  if (!month || !rate || !(rate.hourlyUsd > 0)) return null;
   const r = rate.hourlyUsd;
-  const n = r.toFixed(r >= 0.1 ? 2 : 3);
-  return `Cost accrued · $${n}/h${rate.source === "estimate" ? ` est.${rate.instanceType ? ` (${rate.instanceType})` : ""}` : ""}`;
+  const est = rate.source === "estimate" ? ` est.${rate.instanceType ? ` (${rate.instanceType})` : ""}` : "";
+  return { value: `$${month.usd.toFixed(2)}`, detail: `$${r.toFixed(r >= 0.1 ? 2 : 3)}/h${est} × ${Math.round(month.upHours * 10) / 10} h up this month (UTC)` };
 }
 
 /** The agents axis's top: a small whole count, even so its midpoint tick is whole too (0 · 2 · 4). */
@@ -2197,6 +2404,8 @@ const NOTIFICATION_ACTION_RULES: Record<string, ActionRule[]> = {
   stopped: [{ id: "retry", label: "Retry", needs: "row" }, { id: "openChat", label: "Open chat" }],
   preview_ready: [{ id: "openPreview", label: "Open preview" }, { id: "stopPreview", label: "Stop", needs: "previewKey" }],
   preview_failed: [{ id: "retryPreview", label: "Retry test", needs: "row" }, { id: "viewLog", label: "View log" }],
+  merged: [{ id: "viewPr", label: "View PR", needs: "prUrl" }],
+  merge_refused: [{ id: "viewPr", label: "View PR", needs: "prUrl" }],
   // A failed action (a local notification): hand it to the orchestrator, or copy the message and
   // where it happened — each only when the notification carries its text.
   action_failed: [{ id: "ask", label: "Ask the orchestrator" }, { id: "copy", label: "Copy" }],

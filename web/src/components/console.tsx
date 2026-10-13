@@ -2,8 +2,9 @@
 // usage ring, a status dot, an environment-style pill, a details grid and a line chart. Every page
 // of the console is assembled from these, so the look is decided in one place.
 import { useState, type ReactNode } from "react";
+import { Bot } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { niceMax, sparklineSegments, timeTicks, usageZone } from "../workstream";
+import { MERGE_CLASS_LABEL, niceMax, orchStatusText, sparklineSegments, timeTicks, usageZone, type OrchStatus } from "../workstream";
 
 /** A card: hairline border, no shadow, a 48px header row with the title left and controls right. */
 export function VCard({ title, aside, children, className, slot, bodyClass, onHeaderClick, expanded }: {
@@ -79,6 +80,28 @@ export function Pill({ children, tone = "default", slot, title }: { children: Re
   );
 }
 
+/** The orchestrator's `orca status` for a workstream: its plan and what it waits on as one muted
+ *  line, its merge class as a chip. `chipOnly` is the Agents row's fixed-height cell, where the line
+ *  rides the chip's tooltip instead. Nothing when the orchestrator has set none. */
+export function OrchStatusNote({ status, chipOnly, className }: { status?: OrchStatus; chipOnly?: boolean; className?: string }) {
+  const text = orchStatusText(status);
+  if (!status || !text) return null;
+  const line = [status.plan, status.waitingOn && `waiting on ${status.waitingOn}`].filter(Boolean).join(" · ");
+  if (chipOnly && !status.mergeClass && !line) return null;
+  return (
+    <div data-slot="orch-status" title={`Orchestrator — ${text}`} className={cn("text-muted-foreground flex min-w-0 items-center gap-1 text-xs", className)}>
+      <Bot className="size-3 shrink-0" aria-hidden="true" />
+      {!chipOnly && line && <span className="min-w-0 truncate">{line}</span>}
+      {status.mergeClass && (
+        <span data-slot="merge-class" className={cn("shrink-0 rounded px-1 text-[10px] leading-4 font-medium",
+          status.mergeClass === "small" ? "bg-geist-green/15 text-geist-green" : "bg-geist-amber/15 text-geist-warning-fg")}>
+          {MERGE_CLASS_LABEL[status.mergeClass]}
+        </span>
+      )}
+    </div>
+  );
+}
+
 /** A label over a value — the cells of Vercel's details grids ("Created", "Status", …). */
 export const Detail = ({ label, children, slot }: { label: string; children: ReactNode; slot?: string }) => (
   <div data-slot={slot} className="min-w-0">
@@ -103,11 +126,13 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
 
 /** A line chart with a y-axis (0 → a round max), time ticks under it and a hover readout — Vercel's
  *  Observability graphs. Gaps in the samples (a box that was down) break the line. */
-export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot, color = "var(--geist-blue)", height = 120 }: {
+export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot, color = "var(--geist-blue)", height = 120, marks = [] }: {
   points: { at: number; v: number }[]; from: number; to: number; max?: number; fmt: (v: number) => string;
   /** The y-axis labels' format, when the readout's is too long for the gutter ("36G", not "36.0 GB"). */
   axis?: (v: number) => string;
-  label: string; slot?: string; color?: string; height?: number;
+  label: ReactNode; slot?: string; color?: string; height?: number;
+  /** Events drawn as red vertical lines at their time (the Memory chart's OOM kills). */
+  marks?: { at: number; title: string }[];
 }) {
   const W = 600, H = height;
   const top = max ?? niceMax(Math.max(0, ...points.map((p) => p.v)) * 1.1);
@@ -137,9 +162,12 @@ export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot,
           <span className="-translate-y-1/2">{axis(top)}</span><span>{axis(top / 2)}</span><span className="translate-y-1/2">{axis(0)}</span>
         </div>
         <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ height: H }} className="w-full min-w-0 overflow-visible" role="img"
-          aria-label={`${label}${last ? `, now ${fmt(last.v)}` : ", no samples"}`} onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
+          aria-label={`${typeof label === "string" ? label : slot ?? "chart"}${last ? `, now ${fmt(last.v)}` : ", no samples"}`} onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
           {[0, 0.5, 1].map((f) => <line key={f} x1={0} x2={W} y1={H * f} y2={H * f} className="stroke-border" strokeWidth={1} strokeDasharray={f === 1 ? undefined : "3 3"} vectorEffect="non-scaling-stroke" />)}
           {segs.map((pts, i) => <polyline key={i} points={pts} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />)}
+          {marks.filter((m) => m.at >= from && m.at <= to).map((m) => (
+            <line key={m.at} data-slot="chart-mark" x1={x(m.at)} x2={x(m.at)} y1={0} y2={H} stroke="var(--geist-red)" strokeWidth={1.5} vectorEffect="non-scaling-stroke"><title>{m.title}</title></line>
+          ))}
           {hover && <line x1={x(hover.at)} x2={x(hover.at)} y1={0} y2={H} className="stroke-muted-foreground" strokeWidth={1} strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />}
         </svg>
       </div>
