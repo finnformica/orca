@@ -174,6 +174,11 @@ test("the Instances refresh button refetches health and history at once, spinnin
   apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 77, load1: 3, load5: 1, memUsedGb: 3.1, memTotalGb: 15.3, uptimeS: 9, at: Date.now(), runningAgents: 0 };
   apiFake.holdHealthHistory = true;
   const button = container!.querySelector<HTMLButtonElement>('[data-slot="instances-refresh"]')!;
+  // It sits just under the sticky top bar (z-30): its tooltip opens BELOW the button, never up under the bar.
+  const tip = button.closest('[data-slot="tip"]')!.querySelector('[data-slot="tip-content"]')!;
+  expect(tip.getAttribute("data-side")).toBe("bottom");
+  expect(tip.className).toContain("top-full");
+  expect(tip.className).not.toContain("bottom-full");
   await act(async () => { button.click(); await flush(); });
   expect(apiFake.healthHistoryCalls).toHaveLength(2);
   expect(button.getAttribute("aria-busy")).toBe("true");

@@ -141,7 +141,7 @@ export function RefreshVitals() {
     try { await refreshVitals(); } finally { setBusy(false); }
   };
   return (
-    <Tip label="Refresh">
+    <Tip label="Refresh" side="bottom">
       <Button type="button" variant="soft" size="icon" data-slot="instances-refresh" aria-label="Refresh" aria-busy={busy} disabled={busy}
         onClick={() => void refresh()} className="size-7">
         {busy ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
