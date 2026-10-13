@@ -47,12 +47,16 @@ export type InstanceHealth = {
   /** What this machine costs per hour (config → EC2 on-demand estimate → 0).
    *  Absent from an older bridge. */
   rate?: { hourlyUsd: number; source: "config" | "estimate" | "none"; instanceType?: string; region?: string };
+  /** This calendar month's (UTC) cost: the rate over the hours the samples show it up. Absent with no rate. */
+  month?: { usd: number; upHours: number; since: number };
   /** Absent from an older bridge. */
   runningAgents?: number;
 };
 /** One recorded sample of an instance's vitals (instance_metric), for the chip's history graphs. */
 export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; /** Absent from a bridge older than migration 13 — unknown, not 0. */
-  runningAgents?: number };
+  runningAgents?: number;
+  /** Agent runs OOM-killed in their own scope since the previous sample (absent = none). */
+  oomKills?: number };
 export type PreviewSvc = { name: string; port: number; url: string; localUrl?: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const post = (path: string, body: unknown) =>

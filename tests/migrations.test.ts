@@ -203,6 +203,8 @@ const hasTable = async (t: string) => (await (await db.open())`SELECT to_regclas
 // A fixture name guaranteed not to collide with a real step's — derived from the real list, so these
 // tests can't silently start colliding again the way "attachment"/16 did once #152 landed for real.
 const realStepNames = new Set(db.MIGRATIONS.map((s) => s.name));
+// The real named steps (no id) — on a database with no named ledger yet, they apply first, in order.
+const realNamed = db.MIGRATIONS.filter((s) => s.id === undefined).map((s) => s.name);
 const placeholderName = (base: string): string => {
   let name = base;
   while (realStepNames.has(name)) name += "-x";
@@ -222,7 +224,7 @@ test("two branches' steps, merged in either order, apply in the same name order 
   // The merged code holds both steps; whichever way the array came out of the merge, the plan is one order.
   const planAB = db.planMigrations([...db.MIGRATIONS, fromA, fromB], recorded);
   const planBA = db.planMigrations([...db.MIGRATIONS, fromB, fromA], recorded);
-  expect(planAB.run.map(db.stepLabel)).toEqual(["20261013-placeholder-a", "20261014-placeholder-b"]);
+  expect(planAB.run.map(db.stepLabel)).toEqual([...realNamed, "20261013-placeholder-a", "20261014-placeholder-b"]);
   expect(planBA.run.map(db.stepLabel)).toEqual(planAB.run.map(db.stepLabel));
   // …and the gate catches the array that disagrees with apply order.
   expect(db.checkSteps([...db.MIGRATIONS, fromB, fromA])).toEqual([
@@ -234,7 +236,7 @@ test("two branches' steps, merged in either order, apply in the same name order 
   await raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, fromA, fromB]));
   expect(await hasTable("branch_a")).toBe(true);
   expect(await hasTable("branch_b")).toBe(true);
-  expect((await namedLedger()).map((r: { name: string }) => r.name).sort()).toEqual(["20261013-placeholder-a", "20261014-placeholder-b"]);
+  expect((await namedLedger()).map((r: { name: string }) => r.name).sort()).toEqual([...realNamed, "20261013-placeholder-a", "20261014-placeholder-b"].sort());
   // The numbered ledger is untouched by named steps.
   expect((await ledger()).map((r: { id: number }) => Number(r.id))).toEqual(numbered().map((s) => s.id));
   // A further start is a no-op.
@@ -255,7 +257,7 @@ test("a step a branch once applied under a numbered id outside today's range jus
   const { error, logged } = await captureErrors(() => raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, fromA])));
   expect(error).toBeUndefined();
   expect(logged.some((l) => l.includes(`migration ${foreignId}`) && l.includes("no such step"))).toBe(true);
-  expect((await namedLedger()).map((r: { name: string }) => r.name)).toEqual(["20261013-placeholder-a"]);
+  expect((await namedLedger()).map((r: { name: string }) => r.name).filter((n: string) => !realNamed.includes(n))).toEqual(["20261013-placeholder-a"]);
 });
 
 test("an older bridge (numbered ledger only) is unaffected by the named ledger", async () => {
@@ -268,7 +270,7 @@ test("an older bridge (numbered ledger only) is unaffected by the named ledger",
 test("checkSteps refuses a new numbered step, a bad name, and a non-idempotent named step", async () => {
   const name = placeholderName("attachment");
   expect(db.checkSteps([...db.MIGRATIONS, { id: db.LAST_NUMBERED_ID + 1, name, idempotent: true, sql: "" }]))
-    .toEqual([`step ${db.LAST_NUMBERED_ID + 1} ("${name}"): numbered steps are frozen at ${db.LAST_NUMBERED_ID} — drop the id and name it YYYYMMDD-slug`]);
+    .toContain(`step ${db.LAST_NUMBERED_ID + 1} ("${name}"): numbered steps are frozen at ${db.LAST_NUMBERED_ID} — drop the id and name it YYYYMMDD-slug`); // (and, after a real named step, out of order too)
   expect(db.checkSteps([...db.MIGRATIONS, { name, idempotent: true, sql: "" }])).toEqual([`named step "${name}" must be YYYYMMDD-slug`]);
   expect(db.checkSteps([...db.MIGRATIONS, { ...fromA, idempotent: false }])).toEqual([`named step "20261013-placeholder-a" must be idempotent`]);
   expect(db.checkSteps([...db.MIGRATIONS, fromA, fromA])).toEqual([`duplicate migration name "20261013-placeholder-a"`]);
