@@ -5,29 +5,31 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  /* Vercel's Geist design language, as the app's tokens: every component reads these. Light pages
-     sit on #fafafa with white cards; dark on #000 with #0a0a0a cards; 1px hairlines, no shadows,
-     one accent (blue), status dots green / amber / red / blue. */
+  /* Vercel's Geist design language, softened Notion-style: less contrast on surfaces that hold
+     information, easier to read, same shapes. Halfway between Geist's original flat grays and a
+     first, too-soft pass (#128 review): light pages sit on a barely-warm #f9f9f8 with white
+     cards; dark on #111111 with #161616 cards; 1px hairlines (translucent, not flat gray),
+     no shadows, one accent (blue), status dots green / amber / red / blue. */
   --radius: 0.5rem; /* 8px cards; controls are radius-md (6px) */
-  --background: #fafafa;
-  --foreground: #171717;
+  --background: #f9f9f8;
+  --foreground: #222222;
   --card: #ffffff;
-  --card-foreground: #171717;
+  --card-foreground: #222222;
   --popover: #ffffff;
-  --popover-foreground: #171717;
+  --popover-foreground: #222222;
   --primary: #171717;
   --primary-foreground: #ffffff;
-  --secondary: #f2f2f2;
-  --secondary-foreground: #171717;
-  --muted: #f2f2f2;
+  --secondary: #f4f4f3;
+  --secondary-foreground: #222222;
+  --muted: #f4f4f3;
   --muted-foreground: #666666;
-  --accent: #ebebeb;
-  --accent-foreground: #171717;
+  --accent: #ececeb;
+  --accent-foreground: #222222;
   --destructive: #e5484d;
-  --border: #eaeaea;
-  --input: #eaeaea;
+  --border: rgba(0, 0, 0, 0.1);
+  --input: rgba(0, 0, 0, 0.1);
   --ring: #0070f3;
-  --sidebar: #fafafa;
+  --sidebar: #f9f9f8;
   --geist-blue: #0070f3;
   --geist-green: #45a557;
   --geist-teal: #50e3c2;
@@ -43,25 +45,25 @@
 }
 
 .dark {
-  --background: #000000;
-  --foreground: #ededed;
-  --card: #0a0a0a;
-  --card-foreground: #ededed;
-  --popover: #0a0a0a;
-  --popover-foreground: #ededed;
+  --background: #111111;
+  --foreground: #e8e8e8;
+  --card: #161616;
+  --card-foreground: #e8e8e8;
+  --popover: #1c1c1c;
+  --popover-foreground: #e8e8e8;
   --primary: #ededed;
   --primary-foreground: #0a0a0a;
-  --secondary: #1a1a1a;
-  --secondary-foreground: #ededed;
-  --muted: #1a1a1a;
-  --muted-foreground: #a1a1a1;
-  --accent: #1a1a1a;
-  --accent-foreground: #ededed;
+  --secondary: #222222;
+  --secondary-foreground: #e8e8e8;
+  --muted: #222222;
+  --muted-foreground: #9e9e9e;
+  --accent: #222222;
+  --accent-foreground: #e8e8e8;
   --destructive: #e5484d;
-  --border: #333333;
-  --input: #333333;
+  --border: rgba(255, 255, 255, 0.12);
+  --input: rgba(255, 255, 255, 0.12);
   --ring: #0070f3;
-  --sidebar: #000000;
+  --sidebar: #111111;
   --geist-warning-bg: #2a1d03;
   --geist-warning-fg: #ffb224;
   --geist-error-bg: #2a0e0f;
@@ -130,13 +132,13 @@
    dark palette is remapped here, in one scope, instead of restyling each line of Chat.tsx. */
 :root:not(.dark) .log-themed {
   --color-neutral-950: var(--card);
-  --color-neutral-900: #f2f2f2;
+  --color-neutral-900: var(--muted);
   --color-neutral-800: var(--border);
   --color-neutral-600: #8f8f8f;
   --color-neutral-500: #8f8f8f;
-  --color-neutral-400: #666666;
+  --color-neutral-400: var(--muted-foreground);
   --color-neutral-300: #4d4d4d;
-  --color-neutral-200: #171717;
+  --color-neutral-200: var(--foreground);
   --color-emerald-400: #297a3a;
   --color-red-400: #cb2a2f;
   --color-amber-300: #a35200;
@@ -146,8 +148,8 @@
   --color-sky-300: #0068d6;
   --color-sky-400: #0068d6;
   --tw-prose-invert-body: #4d4d4d;
-  --tw-prose-invert-headings: #171717;
-  --tw-prose-invert-bold: #171717;
+  --tw-prose-invert-headings: var(--foreground);
+  --tw-prose-invert-bold: var(--foreground);
   --tw-prose-invert-links: #0068d6;
   --tw-prose-invert-code: #0068d6;
   --tw-prose-invert-bullets: #8f8f8f;
@@ -157,8 +159,24 @@
   --tw-prose-invert-hr: var(--border);
   --tw-prose-invert-th-borders: var(--border);
   --tw-prose-invert-td-borders: var(--border);
-  --tw-prose-invert-pre-bg: #f2f2f2;
-  --tw-prose-invert-pre-code: #171717;
+  --tw-prose-invert-pre-bg: var(--muted);
+  --tw-prose-invert-pre-code: var(--foreground);
+}
+
+/* The terminal modal, the orchestrator window and an unthemed (dark-page) chat log are always
+   dark regardless of page theme, built on Tailwind's raw neutral-* palette. Softening the dark
+   surface tokens above without updating these left the log a different shade of black than the
+   cards around it — bind the stops it actually uses to the same tokens (so this can't drift out
+   of step again) and keep the text stops with no token of their own in the same family. */
+.dark {
+  --color-neutral-950: var(--background);
+  --color-neutral-900: var(--card);
+  --color-neutral-800: var(--border);
+  --color-neutral-600: #6a6a6a;
+  --color-neutral-500: #848484;
+  --color-neutral-400: var(--muted-foreground);
+  --color-neutral-300: #d2d2d2;
+  --color-neutral-200: var(--foreground);
 }
 
 @layer base {
