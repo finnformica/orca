@@ -1,9 +1,8 @@
 // The agent page — Vercel's single-deployment page, adapted, shared by the PR page and the local-
 // session page. A Details card (the failure box where Vercel shows "Build Failed", else the agent's
 // last outcome; then Created / Status / Duration / State, Model / Instance / PR / Preview, and the
-// Source: branch → base and the latest commit), and the CHAT where Vercel puts Build Logs: the
-// conversation (ChatPanel) in a card with turn / error / warning counters, Find in chat, and the
-// composer at its foot.
+// Source: branch → base and the latest commit) on Overview; the conversation lives on its own Chat
+// tab — exactly the viewport below the header and tabs, no card, no page scroll.
 import type { ReactNode } from "react";
 import { AlertTriangle, ExternalLink, GitBranch, GitCommitHorizontal, GitPullRequest } from "lucide-react";
 import type { ChangeSummary } from "../../../server/git";
@@ -67,13 +66,19 @@ export function DetailsCard({ row, summary, actions, extra }: { row: Row; summar
   );
 }
 
-/** The conversation in Build Logs' place: a card, the log bar, the terminal log, the composer. */
-export function ChatCard({ row, tall = false }: { row: Row; tall?: boolean }) {
+/** The Chat tab's content: no card, no title row, no page-level scroll — a flex column sized to
+ *  exactly the viewport below the page's sticky header and tabs (`CHAT_FILL_HEIGHT`, 100dvh-based so
+ *  it also works on a phone and clears the PWA safe areas). The transcript scrolls inside it; the
+ *  composer stays pinned at its foot; `ChatPanel`'s own slim toolbar (working indicator, error /
+ *  warning counts, Find in chat) stands in for a card header. */
+const CHAT_FILL_HEIGHT =
+  "h-[calc(var(--vvh,100dvh)-11.5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom)-var(--stick,0px))] " +
+  "md:h-[calc(var(--vvh,100dvh)-7.5rem-env(safe-area-inset-top)-var(--stick,0px))]";
+
+export function ChatCard({ row }: { row: Row }) {
   return (
-    <VCard slot="agent-chat" title="Conversation" aside={row.agentStatus === "running" ? <span className="flex items-center gap-1.5 text-xs"><StatusDot tone="building" className="size-2" />working</span> : undefined}>
-      <div className={tall ? "h-[calc(100vh-14rem)] min-h-[28rem]" : "h-[36rem]"}>
-        <ChatPanel row={row} logBar />
-      </div>
-    </VCard>
+    <div data-slot="agent-chat" className={CHAT_FILL_HEIGHT}>
+      <ChatPanel row={row} logBar />
+    </div>
   );
 }

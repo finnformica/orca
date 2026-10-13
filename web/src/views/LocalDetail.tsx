@@ -12,8 +12,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { poll } from "@/lib/poll";
 
 // The agent page for a local session (a worktree + its agent, pre-PR), Vercel's deployment page:
-// Overview (the Details card, then the conversation where Build Logs sit, then files and commits),
-// Chat (the conversation alone, full height), Files changed (branch-vs-base diff), Preview.
+// Overview (the Details card, then files and commits), Chat (the conversation, filling the
+// viewport below the header and tabs), Files changed (branch-vs-base diff), Preview.
 export function LocalDetail({ repo, branch, sub }: { repo: string; branch: string; sub: LocalTab }) {
   const row = useWorkstreams().find((r) => r.repo === repo && r.branch === branch && !r.mergedAt);
   const [summary, setSummary] = useState<ChangeSummary | null>(null);
@@ -53,7 +53,6 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
 
         <TabsContent value="overview" className="space-y-6 pt-3">
           <DetailsCard row={row} summary={summary} actions={<WorkstreamActions row={row} hasWork={hasWork} />} />
-          <ChatCard row={row} />
           <div className="grid gap-6 lg:grid-cols-2">
             <VCard title={`Files changed (${summary?.files.length ?? 0})`}>
               {summary && summary.files.length > 0 ? (
@@ -80,8 +79,8 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
           {row.prompt && <VCard title="Prompt"><p className="p-4 text-sm whitespace-pre-wrap">{row.prompt}</p></VCard>}
         </TabsContent>
 
-        <TabsContent value="chat" className="pt-3">
-          <ChatCard row={row} tall />
+        <TabsContent value="chat">
+          <ChatCard row={row} />
         </TabsContent>
 
         <TabsContent value="files" className="space-y-3 pt-3">
