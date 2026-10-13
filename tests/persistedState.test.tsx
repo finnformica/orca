@@ -148,7 +148,12 @@ describe("the Agents page remembers its filters", () => {
   test("sort restores from storage; an unknown value falls back to Last activity", async () => {
     writePersisted(persistedKey("agents.sort"), "title");
     await open("/agents");
-    expect(container!.querySelector('[aria-label="Sort"]')!.textContent).toContain("Title");
+    const trigger = container!.querySelector<HTMLElement>('[aria-label="Sort"]')!;
+    expect(trigger.textContent).toContain("Title");
+    expect(trigger.title).toBe("Sort: Title"); // full label readable on hover even when the value truncates
+    // the value fills the remaining width and truncates instead of centering between the label and chevron
+    expect(trigger.className).toContain("[&_[data-slot=select-value]]:flex-1");
+    expect(trigger.className).toContain("[&_[data-slot=select-value]]:truncate");
     writePersisted(persistedKey("agents.sort"), "nonsense");
     await reload();
     expect(container!.querySelector('[aria-label="Sort"]')!.textContent).toContain("Last activity");
