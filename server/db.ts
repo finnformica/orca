@@ -410,6 +410,11 @@ export const MIGRATIONS: MigrationStep[] = [
     // 14), and migrate() skips ids already applied without needing them contiguous, so a gap is
     // harmless whichever lands first. Never renumber an applied step.
     id: 15,
+    name: "notification",
+    idempotent: true,
+    // Idempotent because this table ALREADY EXISTED on the shared database before this step ran on
+    // main: an unmerged branch's bridge had created it under another id (the collision the names
+    // above exist to catch). A plain CREATE TABLE crashed both bridges at boot on 2026-10-13.
     // The notification centre (shared/notifications.ts): one flat row per event — an agent that
     // finished, asked for input, failed or was stopped; a check that failed; a PR whose CI fails or
     // that conflicts; a preview that came up or didn't. Written ONCE by the instance where it
@@ -418,7 +423,7 @@ export const MIGRATIONS: MigrationStep[] = [
     // produce a second row, and a unique index makes that a no-op insert rather than a check.
     // Pruned to 30 days by the writer, like instance_metric.
     sql: `
-      CREATE TABLE notification (
+      CREATE TABLE IF NOT EXISTS notification (
         id BIGSERIAL PRIMARY KEY,
         user_id TEXT NOT NULL,
         key TEXT NOT NULL,
@@ -433,8 +438,8 @@ export const MIGRATIONS: MigrationStep[] = [
         read_at BIGINT,
         dismissed_at BIGINT
       );
-      CREATE UNIQUE INDEX notification_key ON notification (user_id, key);
-      CREATE INDEX notification_recent ON notification (user_id, created_at DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS notification_key ON notification (user_id, key);
+      CREATE INDEX IF NOT EXISTS notification_recent ON notification (user_id, created_at DESC);
     `,
   },
 ];
