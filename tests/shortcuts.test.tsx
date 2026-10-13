@@ -14,7 +14,7 @@ import { navigate } from "@/lib/route";
 import {
   addNewOpenAtom, orchestratorOpenAtom, orchestratorPrefillAtom, paletteOpenAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom,
 } from "@/lib/atoms";
-import { SHORTCUTS, isMacPlatform, isTypingTarget, matchShortcut, shortcutKeys, shortcutLabel, type ShortcutId } from "@/lib/shortcuts";
+import { CHORD_TIMEOUT_MS, SHORTCUTS, isMacPlatform, isTypingTarget, matchShortcut, pageShortcut, shortcutKeys, shortcutLabel, type KeyLike, type ShortcutId } from "@/lib/shortcuts";
 import { Kbd, KbdGroup, Shortcut } from "@/components/ui/kbd";
 import { fuzzyScore, joinPrefill, moveSelection, pushRecent, rankPalette, type PaletteItem } from "@/lib/palette";
 
@@ -38,6 +38,36 @@ describe("the shortcut matcher", () => {
     expect(matchShortcut({ key: "c", metaKey: true }, false, true)).toBeNull(); // ⌘C is copy
     expect(matchShortcut({ key: "C", shiftKey: true }, false)).toBeNull();
     expect(matchShortcut({ key: "x" }, false)).toBeNull();
+  });
+
+  test("G chords: G arms, the next bare letter is a page — never also O / A / C / F", () => {
+    expect(matchShortcut({ key: "g" }, false)).toBe("go");
+    expect(matchShortcut({ key: "g" }, true)).toBeNull(); // never while typing
+    const after = (key: string, init: Partial<KeyLike> = {}, typing = false) => matchShortcut({ key, ...init }, typing, true, true);
+    expect(after("o")).toBe("goOverview");
+    expect(after("a")).toBe("goAgents");
+    expect(after("p")).toBe("goPreviews");
+    expect(after("r")).toBe("goRepos");
+    expect(after("u")).toBe("goUsage");
+    expect(after("s")).toBe("goSettings");
+    expect(after("O")).toBe("goOverview"); // caps lock
+    for (const k of ["c", "f", "x", "g"]) expect(after(k)).toBeNull(); // a stray key ends the chord, firing nothing
+    expect(after("a", {}, true)).toBeNull(); // a field took focus in between
+    expect(after("a", { metaKey: true })).toBeNull();
+    expect(after("A", { shiftKey: true })).toBeNull();
+    expect(after("Escape")).toBe("escape"); // ⌘K and Esc still work mid-chord
+    expect(after("k", { metaKey: true })).toBe("palette");
+    // Without the G, the letters are what they always were.
+    expect(matchShortcut({ key: "o" }, false, true, false)).toBe("orchestrator");
+    expect(matchShortcut({ key: "a" }, false, true, false)).toBe("quickAsk");
+    // Every page chord is in the table with its destination, and labels as two keycaps.
+    expect(SHORTCUTS.filter((s) => s.chord).map((s) => [s.id, s.to])).toEqual([
+      ["goOverview", "/"], ["goAgents", "/agents"], ["goPreviews", "/previews"], ["goRepos", "/repos"], ["goUsage", "/usage"], ["goSettings", "/settings"],
+    ]);
+    expect(shortcutKeys("goAgents", true)).toEqual(["G", "A"]);
+    expect(shortcutLabel("goSettings")).toBe("G then S");
+    expect(pageShortcut("/usage")).toBe("goUsage");
+    expect(pageShortcut("/orchestrator")).toBeUndefined();
   });
 
   test("typing targets: fields, editable regions and anything inside a modal dialog", () => {
@@ -232,6 +262,11 @@ test("S1: C, O, ?, ⌘B and Esc work from the page — and never while typing in
   for (const t of ["Command palette", "New agent", "Ask the orchestrator", "Esc"]) expect(help.textContent).toContain(t);
   // Every registered shortcut, as its keycaps (⌘ K / Ctrl K).
   for (const s of SHORTCUTS) expect(keycaps(help.querySelector(`li [data-shortcut="${s.id}"]`))).toEqual(shortcutKeys(s.id));
+  // The page chords under their own Navigation heading.
+  const nav = help.querySelector('[data-group="Navigation"]')!;
+  expect(nav.querySelector("h3")!.textContent).toBe("Navigation");
+  expect([...nav.querySelectorAll("li [data-shortcut]")].map((k) => k.getAttribute("data-shortcut"))).toEqual(["goOverview", "goAgents", "goPreviews", "goRepos", "goUsage", "goSettings"]);
+  expect(help.querySelector('[data-group="General"] [data-shortcut="goAgents"]')).toBeNull();
 
   // The tooltips carry the keys too.
   expect(q('[data-slot="add-new"]')!.getAttribute("title")).toBe("Add New (C)");
@@ -401,4 +436,79 @@ describe("narrow screen: every orchestrator entry navigates instead of opening t
     expect(location.pathname).toBe("/orchestrator");
     expect(panel()).toBeNull();
   });
+});
+
+test("S9: G then a letter goes to the page — and never also fires that letter's own shortcut", async () => {
+  await mount("/");
+  for (const [key, path] of [["a", "/agents"], ["p", "/previews"], ["r", "/repos"], ["u", "/usage"], ["s", "/settings"], ["o", "/"]] as const) {
+    await press(document.body, "g");
+    await press(document.body, key);
+    expect(location.pathname).toBe(path);
+  }
+  // G O went to Overview: the orchestrator didn't open. G A didn't open quick ask, nor G C / G F anything.
+  expect(panel()).toBeNull();
+  expect(quickAsk()).toBeNull();
+  await press(document.body, "g");
+  await press(document.body, "c");
+  expect(dialogOpen("add-new-dialog")).toBe(false);
+  // A Shift on its own (on the way to a capital) doesn't end the chord.
+  await press(document.body, "g");
+  await press(document.body, "Shift", { shiftKey: true });
+  await press(document.body, "u");
+  expect(location.pathname).toBe("/usage");
+  // The chord ended: the next O is the orchestrator again, as it always was.
+  await press(document.body, "o");
+  expect(panel()).not.toBeNull();
+  (document.activeElement as HTMLElement).blur();
+  await press(document.body, "Escape");
+
+  // Never while typing: G A in the Find box is text.
+  await act(async () => { navigate("/settings"); await flush(); });
+  find().focus();
+  await press(find(), "g");
+  await press(find(), "a");
+  expect(location.pathname).toBe("/settings");
+  find().blur();
+
+  // Past the timeout the G has lapsed: A is quick ask, not Agents.
+  const realNow = Date.now;
+  try {
+    await press(document.body, "g");
+    const later = realNow() + CHORD_TIMEOUT_MS + 50;
+    Date.now = () => later;
+    await press(document.body, "a");
+    expect(location.pathname).toBe("/settings");
+    expect(quickAsk()).not.toBeNull();
+  } finally { Date.now = realNow; }
+});
+
+test("S10: every sidebar page shows its G chord — keycaps on hover expanded, in the tooltip collapsed — and the palette's pages carry them", async () => {
+  await mount("/");
+  const items = () => [...document.querySelectorAll<HTMLElement>('nav[aria-label="Main"] button')];
+  const expected: [string, ShortcutId][] = [["Overview", "goOverview"], ["Agents", "goAgents"], ["Previews", "goPreviews"], ["Repos", "goRepos"], ["Usage", "goUsage"], ["Settings", "goSettings"]];
+  expect(items().map((b) => b.querySelector('[data-slot="nav-label"]')!.textContent)).toEqual(expected.map(([l]) => l));
+  for (const [i, b] of items().entries()) {
+    const id = expected[i]![1];
+    const hint = b.querySelector(`[data-shortcut="${id}"]`)!;
+    expect(keycaps(hint)).toEqual(shortcutKeys(id as ShortcutId));
+    // Subtle: shown on hover / focus only, and never on a phone or a touch screen.
+    for (const c of ["opacity-0", "group-hover/nav:opacity-100", "max-md:hidden", "[@media(pointer:coarse)]:hidden"]) expect(hint.className.split(/\s+/)).toContain(c);
+    expect(b.getAttribute("aria-keyshortcuts")).toBe(`G ${shortcutKeys(id as ShortcutId)[1]}`);
+  }
+  // Collapsed: the icons' tooltips carry the label and the keycaps.
+  await press(document.body, "b", MOD);
+  for (const [i, b] of items().entries()) {
+    const [label, id] = expected[i]!;
+    const tip = b.closest('[data-slot="tip"]')!.querySelector('[role="tooltip"]')!;
+    expect(tip.getAttribute("data-side")).toBe("right");
+    expect(tip.textContent).toContain(label);
+    expect(keycaps(tip.querySelector(`[data-shortcut="${id}"]`))).toEqual(["G", label.charAt(0)]);
+  }
+  await press(document.body, "b", MOD);
+  // The palette's Go-to pages: the chord in the row's shortcut slot.
+  await press(document.body, "k", MOD);
+  const pal = q('[data-slot="command-palette"]')!;
+  for (const [to, id] of [["/", "goOverview"], ["/agents", "goAgents"], ["/previews", "goPreviews"], ["/repos", "goRepos"], ["/usage", "goUsage"], ["/settings", "goSettings"]]) {
+    expect(keycaps(pal.querySelector(`[role="option"][data-id="page:${to}"] [data-shortcut="${id}"]`))).toEqual(shortcutKeys(id as ShortcutId));
+  }
 });
