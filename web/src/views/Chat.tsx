@@ -20,6 +20,7 @@ import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent"
 import { ChatComposer } from "@/components/ChatComposer";
 import { subscribeTurns } from "@/lib/events";
 import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
+import { StatusDot } from "@/components/console";
 import type { OrchestratorPrefill } from "@/lib/atoms";
 
 // How close to the bottom still counts as "following". A few pixels of slack absorbs sub-pixel
@@ -318,8 +319,8 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   variant?: "terminal" | "chat";
   /** Text for the composer from outside it (the orchestrator's entry) — see ChatComposer. */
   prefill?: OrchestratorPrefill | null;
-  /** The Agent page's Build-Logs framing: a bar with the turn count, error / warning counters and
-   *  Find in chat, and timestamped, tinted turns. */
+  /** The Agent page's Chat tab: a slim toolbar (working indicator, error / warning counters, Find
+   *  in chat) instead of a card header, and timestamped, tinted turns. */
   logBar?: boolean;
 }) {
   const [find, setFind] = useState("");
@@ -534,7 +535,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
     <div className={`flex h-full flex-col ${flush || logBar ? "" : "gap-3"} ${logBar || chatStyle ? "log-themed" : ""}`} data-variant={variant}>
       {logBar && (
         <div data-slot="chat-logbar" className="flex flex-wrap items-center gap-3 border-b px-4 py-2 text-sm">
-          <span className="text-muted-foreground tabular-nums" data-slot="chat-count" title={older ? "Older turns load as you scroll up" : undefined}>{counts.turns}{older ? "+" : ""} turn{counts.turns === 1 && !older ? "" : "s"}</span>
+          {running && <span className="text-muted-foreground flex items-center gap-1.5 text-xs" data-slot="chat-working"><StatusDot tone="building" className="size-2" />working</span>}
           <span className="ml-auto flex items-center gap-3">
             <span className="inline-flex items-center gap-1 tabular-nums" title="Failed turns" data-slot="chat-errors"><CircleX className="text-geist-red size-4" />{counts.errors}</span>
             <span className="inline-flex items-center gap-1 tabular-nums" title="Stopped turns and failed checks" data-slot="chat-warnings"><AlertTriangle className="text-geist-amber size-4" />{counts.warnings}</span>
@@ -625,8 +626,10 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
         history={row.followUps}
         onSubmit={submit}
         prefill={prefill}
-        // A notification's Reply opens the agent page's Chat tab with `?reply`: the box takes focus.
-        autoFocus={logBar && new URLSearchParams(location.search).has("reply")}
+        // The Chat tab's own panel only ever mounts while that tab is active (Radix unmounts the
+        // others), so focusing on mount covers opening it by click, by route, or via a
+        // notification's `?reply` — one condition, not three.
+        autoFocus={logBar}
         // Interrupt + message as ONE gesture, the way Managed Agents pairs user.interrupt with the
         // next user.message: the run is stopped and the text goes straight after it. If the process
         // hasn't exited by the time the message arrives it is queued and dispatched on exit, so the
