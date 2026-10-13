@@ -1,8 +1,11 @@
 // The Agents page's quick filters (views/Agents.tsx, workstream.ts parseQuickFilter / applyQuickFilter
-// / quickCount): one-click chips above the list — Needs attention, Running, Mine, Orchestrated, Open
-// PRs, Mergeable, Merged today, per instance, per repo — toggleable and combinable (AND across groups,
-// OR within one), each with its count, and held in the URL query so a filtered view is a link. The
-// pure model first, then the page against the fake api (tests/apiFake.ts) in a real DOM.
+// / quickCount): one-click chips above the list, grouped into families — State (Open PRs, Mergeable,
+// Merged today, Not merged), Activity (Running, Needs attention) and Repo (one per repo) — toggleable
+// and combinable (AND across groups, OR within one), each with its count, and held in the URL query so
+// a filtered view is a link. "Mine"/"Orchestrated" and per-instance pills were dropped (orchestrated
+// and instance stay visible as the row's own badge/column), but their URL params and pure filtering
+// still work for a link someone already has. The pure model first, then the page against the fake api
+// (tests/apiFake.ts) in a real DOM.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -132,18 +135,22 @@ describe("quick filter chips on the Agents page", () => {
     apiFake.enrichmentData.set("r::cloud-bot", { title: "Bot work", orchestrated: true });
   };
 
-  test("chips toggle and combine, each shows its count, and the URL holds the view", async () => {
+  test("chips toggle and combine, each shows its count, grouped into families, and the URL holds the view", async () => {
     seed();
     await open("/agents");
     expect(listed()).toEqual(["cloud-bot", "feat-ci", "feat-ok", "local-held", "local-run"]);
     const labels = [...container!.querySelectorAll('[data-slot="quick-filter"]')].map((c) => c.getAttribute("data-chip"));
-    expect(labels).toEqual(["status:attention", "status:running", "by:mine", "by:orchestrated", "pr:open", "pr:mergeable", "pr:merged", "on:laptop", "on:cloud", "notMerged"]); // one repo: no repo chips
+    expect(labels).toEqual(["pr:open", "pr:mergeable", "pr:merged", "notMerged", "status:running", "status:attention"]); // one repo: no repo chips; no mine/orchestrated/instance pills
+    // Grouped into families: State (the pr chips + not merged), Activity (status).
+    const groups = [...container!.querySelectorAll('[data-slot="quick-filter-group"]')].map((g) => g.getAttribute("data-group"));
+    expect(groups).toEqual(["state", "activity"]);
+    expect(chip("pr:open").closest('[data-slot="quick-filter-group"]')!.getAttribute("data-group")).toBe("state");
+    expect(chip("notMerged").closest('[data-slot="quick-filter-group"]')!.getAttribute("data-group")).toBe("state");
+    expect(chip("status:running").closest('[data-slot="quick-filter-group"]')!.getAttribute("data-group")).toBe("activity");
     expect(chip("notMerged").getAttribute("aria-pressed")).toBe("true"); // on by default
     expect(count("status:attention")).toBe("2"); // CI red + the held message
     expect(count("status:running")).toBe("1");
-    expect(count("by:orchestrated")).toBe("1");
     expect(count("pr:open")).toBe("2");
-    expect(count("on:cloud")).toBe("1");
 
     await click(chip("status:attention"));
     expect(chip("status:attention").getAttribute("aria-pressed")).toBe("true");
@@ -155,7 +162,7 @@ describe("quick filter chips on the Agents page", () => {
     await click(chip("pr:open")); // another group → AND
     expect(listed()).toEqual(["feat-ci"]);
     expect(location.search).toBe("?status=attention,running&pr=open");
-    expect(count("by:mine")).toBe("1"); // counts follow the other groups' chips
+    expect(count("pr:mergeable")).toBe("0"); // counts follow the other groups' chips
     await click(chip("status:attention"));
     await click(chip("status:running"));
     expect(location.search).toBe("?pr=open");
@@ -165,13 +172,12 @@ describe("quick filter chips on the Agents page", () => {
     expect(listed()).toHaveLength(5);
   });
 
-  test("a filtered view is a link: opening the URL applies its chips", async () => {
+  test("a link using the retired by/on params still filters, though their pills are gone", async () => {
     seed();
     await open("/agents?by=orchestrated&on=cloud");
     expect(listed()).toEqual(["cloud-bot"]);
-    expect(chip("by:orchestrated").getAttribute("aria-pressed")).toBe("true");
-    expect(chip("on:cloud").getAttribute("aria-pressed")).toBe("true");
-    expect(chip("on:laptop").getAttribute("aria-pressed")).toBe("false");
+    expect(container!.querySelector('[data-chip^="by:"]')).toBeNull();
+    expect(container!.querySelector('[data-chip^="on:"]')).toBeNull();
     // Back to plain /agents clears them (the query is part of where you are).
     await act(async () => { navigate("/agents"); await flush(); });
     expect(listed()).toHaveLength(5);
@@ -199,11 +205,12 @@ describe("quick filter chips on the Agents page", () => {
     expect(chip("notMerged").getAttribute("aria-pressed")).toBe("true");
   });
 
-  test("the sidebar's instance scope hides the instance chips (it already decides them)", async () => {
+  test("the sidebar's instance scope narrows the list with no instance pills in the row (dropped with mine/orchestrated)", async () => {
     seed();
     getDefaultStore().set(instanceScopeAtom, "cloud");
     await open("/agents");
     expect(listed()).toEqual(["cloud-bot"]);
     expect(container!.querySelector('[data-chip^="on:"]')).toBeNull();
+    expect(container!.querySelector('[data-chip^="by:"]')).toBeNull();
   });
 });
