@@ -48,6 +48,10 @@ let handle: Bun.SQL | null = null;
 let handleUrl: string | null = null;
 let ready: Promise<void> | null = null;
 
+/** How long one connect attempt may take (seconds). Bounded, because a hung remote (the box wedged,
+ *  not refusing) otherwise holds every caller for the full TCP timeout. */
+const CONNECT_TIMEOUT_S = Number(process.env.ORCA_DB_CONNECT_TIMEOUT_S) || 5;
+
 /** The connection pool, migrated on first use. Lazy so ORCA_DATABASE_URL can be set after import —
  *  and so a test that repoints it gets a fresh pool rather than the previous one's.
  *
@@ -59,18 +63,143 @@ export function db(): Bun.SQL {
   const url = databaseUrl();
   if (handle && handleUrl === url) return handle;
   void handle?.end();
-  handle = new Bun.SQL(url, { idleTimeout: 30, maxLifetime: 3600, connectionTimeout: 10 });
+  handle = new Bun.SQL(url, { idleTimeout: 30, maxLifetime: 3600, connectionTimeout: CONNECT_TIMEOUT_S });
   handleUrl = url;
   ready = migrate(handle);
   return handle;
 }
 
-/** The pool, with migrations applied. Every query goes through this. */
+// ---- degraded mode: the database is unreachable ----
+//
+// The laptop must keep working when the shared Postgres (on the cloud box) is down: the bridge boots
+// without it, agents run, and their turns are journaled to the state dir (server/outbox.ts) until it
+// comes back. So an unreachable database is a STATE, not a crash: the first failed connect records
+// when it went away, every later query fails fast with `DbUnavailable` (no 5s connect timeout per
+// request), and ONE background loop probes with exponential backoff (capped at 30s). The first
+// successful probe runs the migrations and tells the `onAvailable` listeners — the outbox replay,
+// the deferred boot steps.
+
+/** Thrown instead of a connect error while the database is unreachable. Callers that can degrade
+ *  (reads → empty, history writes → the outbox) catch exactly this; anything else still throws. */
+export class DbUnavailable extends Error {
+  constructor(readonly since: number) { super(`database unreachable since ${new Date(since).toISOString()}`); }
+}
+
+let downSince: number | null = null;
+let downUrl: string | null = null;
+let retryTimer: ReturnType<typeof setTimeout> | null = null;
+let retryDelay = 0;
+const RETRY_MIN_MS = 1_000;
+const RETRY_MAX_MS = Number(process.env.ORCA_DB_RETRY_MAX_MS) || 30_000;
+const availableListeners = new Set<() => unknown>();
+let fatal: (e: Error) => void = (e) => console.error(e.message);
+
+/** Whether `err` means "could not reach the database at all" (refused, timed out, DNS) — as opposed
+ *  to a query the database rejected, or a connection that WAS open and got dropped (CONNECTION_CLOSED:
+ *  that is `withRetry`'s reopen-and-retry case, not an outage — until the reopen itself fails). */
+export function isConnectFailure(err: unknown): boolean {
+  if (err instanceof DbUnavailable) return true;
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: string }).code ?? "";
+  return /^ERR_POSTGRES_CONNECTION_(REFUSED|TIMEOUT)$/.test(code)
+    || /ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|Failed to connect/.test(err.message);
+}
+
+/** When the database went away, or null while it is reachable. */
+export const unavailableSince = (): number | null => (downSince !== null && downUrl === databaseUrl() ? downSince : null);
+let probing = false;
+
+/** `ok`, or `unreachable since <iso>` — what /api/health and /api/config report. */
+export const databaseStatus = (): string => {
+  const since = unavailableSince();
+  return since === null ? "ok" : `unreachable since ${new Date(since).toISOString()}`;
+};
+
+/** Run `fn` every time the database becomes reachable — the first successful connect included. A
+ *  listener's failure is logged, never thrown into the connect. Returns an unsubscribe. */
+export function onAvailable(fn: () => unknown): () => void {
+  availableListeners.add(fn);
+  return () => availableListeners.delete(fn);
+}
+
+/** What to do when a background reconnect finds a migration ledger this code refuses (the boot
+ *  path exits; tests leave the default, which logs). */
+export function onFatal(fn: (e: Error) => void): void { fatal = fn; }
+
+async function announceAvailable(): Promise<void> {
+  for (const fn of [...availableListeners]) {
+    try { await fn(); } catch (e) { console.error("orca: database-available listener failed", e); }
+  }
+}
+
+function markDown(err: unknown): DbUnavailable {
+  const url = databaseUrl();
+  if (downSince === null || downUrl !== url) {
+    downSince = Date.now();
+    downUrl = url;
+    console.error(`orca: database unreachable (${err instanceof Error ? err.message : String(err)}) — running degraded; retrying in the background`);
+  }
+  // Drop the pool: its migrate promise is rejected for good, and the next probe needs a fresh one.
+  const closing = handle;
+  handle = null; handleUrl = null; ready = null;
+  void closing?.end().catch(() => {});
+  scheduleRetry();
+  return new DbUnavailable(downSince);
+}
+
+function scheduleRetry(): void {
+  if (retryTimer) return;
+  retryDelay = retryDelay ? Math.min(retryDelay * 2, RETRY_MAX_MS) : RETRY_MIN_MS;
+  retryTimer = setTimeout(() => { retryTimer = null; void probe(); }, retryDelay);
+  retryTimer.unref?.();
+}
+
+/** Try the database now (the background loop's tick; tests call it to "bring it back"). True when it
+ *  is reachable and migrated — and then every `onAvailable` listener has run, the outbox replay
+ *  included. False reschedules the loop. */
+export async function probe(): Promise<boolean> {
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  probing = true; // let open() actually try, rather than fail fast
+  try {
+    await open();
+    await announcing;
+    return true;
+  } catch (e) {
+    if (e instanceof MigrationRefused) fatal(e);
+    else if (downSince !== null) scheduleRetry(); // still down (a connect failure already rescheduled; this covers the rest)
+    return false;
+  } finally {
+    probing = false;
+  }
+}
+
+/** The pool, with migrations applied. Every query goes through this. While the database is known to
+ *  be down this fails fast with `DbUnavailable` (the background loop does the probing). */
 export async function open(): Promise<Bun.SQL> {
+  const since = unavailableSince();
+  if (since !== null && !probing) throw new DbUnavailable(since);
   const sql = db();
-  await ready;
+  try {
+    await ready;
+  } catch (e) {
+    if (!isConnectFailure(e)) throw e;
+    throw markDown(e);
+  }
+  if (downSince !== null || !announced) {
+    // Reachable — for the first time, or again. Clear the state first, so a listener's own queries
+    // (the replay) go straight through; the listeners run beside this query, never in front of it.
+    if (downSince !== null) console.log(`orca: database reachable again (down since ${new Date(downSince).toISOString()})`);
+    downSince = null; downUrl = null; retryDelay = 0; announced = true;
+    announcing = announceAvailable();
+  }
   return sql;
 }
+let announced = false;
+let announcing: Promise<void> = Promise.resolve();
+
+/** A short identity for the database this process is pointed at — no credentials, so it can be
+ *  written next to journaled history (server/outbox.ts replays only into the database it was for). */
+export const databaseKey = (): string => new Bun.CryptoHasher("sha256").update(databaseUrl()).digest("hex").slice(0, 16);
 
 /** Close the pool (tests, so a repointed database opens cleanly). */
 export async function close(): Promise<void> {
@@ -78,6 +207,8 @@ export async function close(): Promise<void> {
   handle = null;
   handleUrl = null;
   ready = null;
+  if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
+  downSince = null; downUrl = null; retryDelay = 0;
   await closing?.end().catch(() => {});
 }
 
@@ -103,17 +234,25 @@ function isDroppedConnection(err: unknown): boolean {
  *  connection, the pool is discarded and reopened and `fn` is retried exactly once against the fresh
  *  pool — including a `sql.begin(...)` inside `fn`, which re-runs the WHOLE transaction rather than
  *  resuming it, since a dropped connection mid-transaction has already rolled it back. A second
- *  failure (dropped connection or otherwise) is not retried again and surfaces to the caller.
+ *  failure (dropped connection or otherwise) is not retried again and surfaces to the caller — as
+ *  `DbUnavailable` when the reopen could not reach the database at all.
  *  Exported so a test can drive it directly with a real dropped connection (`tests/pg.ts`), rather
  *  than only through whichever exported function happens to run one query. */
 export async function withRetry<T>(fn: (sql: Bun.SQL) => Promise<T>): Promise<T> {
   try {
     return await fn(await open());
   } catch (err) {
+    if (err instanceof DbUnavailable) throw err;
+    if (isConnectFailure(err)) throw markDown(err);
     if (!isDroppedConnection(err)) throw err;
     console.error("[db] connection dropped, reopening pool:", err instanceof Error ? err.message : err);
     await close();
-    return fn(await open());
+    try {
+      return await fn(await open());
+    } catch (again) {
+      if (isConnectFailure(again) && !(again instanceof DbUnavailable)) throw markDown(again);
+      throw again;
+    }
   }
 }
 

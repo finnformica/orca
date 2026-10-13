@@ -12,6 +12,7 @@ import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { routingInfo, usage } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
+import * as outbox from "./outbox";
 import * as transcript from "./transcript";
 import { backfillRun } from "./backfill";
 import { eventStream } from "./events";
@@ -26,7 +27,7 @@ import { health, historyHours, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
-import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep } from "../shared/agent";
+import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
@@ -72,12 +73,18 @@ if (!(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
   console.log(`orca: reclaimed :${API_PORT} from a stale bridge`);
   await waitForPortFree(API_PORT);
 }
-// Migrate before anything touches the database. A migration ledger this code can't reconcile (another
-// branch's step under one of main's ids, not safely re-runnable) refuses to start with instructions.
-await db.open().catch((e) => {
-  if (!(e instanceof db.MigrationRefused)) throw e;
-  console.error(e.message);
-  process.exit(1);
+// The database is NOT awaited: the shared Postgres lives on the cloud box, and a laptop whose box is
+// down must still serve the board and run agents (turns journal to the outbox until it is back —
+// server/outbox.ts). `db.open()` migrates on the first successful connect, whenever that is; until
+// then queries fail fast with `DbUnavailable` and db.ts retries in the background. A migration ledger
+// this code can't reconcile (another branch's step under one of main's ids, not safely re-runnable)
+// still refuses to start, with instructions — at boot or at the first reconnect.
+const refuse = (e: Error) => { console.error(e.message); process.exit(1); };
+db.onFatal(refuse);
+void db.open().catch((e) => {
+  if (e instanceof db.MigrationRefused) refuse(e);
+  else if (e instanceof db.DbUnavailable) console.error("orca: starting WITHOUT the database — agents run, history journals to the outbox");
+  else console.error("orca: database open failed", e);
 });
 await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-killed prior bridge
 // Turns whose run died with a previous bridge would otherwise render "working…" forever. Leases are
@@ -88,8 +95,16 @@ const reconcile = () => db.reconcileRunning(lease.liveRunIds(), async ({ runId, 
   const found = await backfillRun(runId, sessionId);
   return found?.response ? { response: found.response, structured: found.outcome } : undefined;
 });
-const { closed, recovered } = await reconcile();
-if (closed) console.log(`orca: closed ${closed} interrupted turn(s), recovered ${recovered} from the provider's session`);
+// Once the database answers (now, or after an outage the bridge booted into): close what died.
+let reconciled = false;
+db.onAvailable(async () => {
+  if (reconciled) return;
+  reconciled = true;
+  const { closed, recovered } = await reconcile();
+  if (closed) console.log(`orca: closed ${closed} interrupted turn(s), recovered ${recovered} from the provider's session`);
+  // A wake that was in flight when the previous bridge stopped: re-queue what it was handling.
+  await loadConfig().then((cfg) => orchestrator.recover(cfg, reconcile)).catch((e) => console.error("orca: orchestrator recovery failed", e));
+});
 // Runs still going under a lease are adopted, not written off: when each exits, its turn is finished
 // from the session file and the orchestrator hears about it, as if the bridge had never restarted.
 const adopted = agent.adoptLeases(async (runId, sessionId, worktreePath) => {
@@ -125,9 +140,7 @@ agent.onRunFinished(async (run) => {
 // Warm the review queue (gh.listReviewPrs) so its slow cold fetch is paid here, not by a caller. A
 // local-only repo just fails quietly.
 void loadConfig().then((cfg) => cfg.repos.filter(verbs.repoHere)
-  .forEach((r) => void gh.listReviewPrs(r.repoPath).catch(() => {})));
-// A wake that was in flight when the previous bridge stopped: re-queue what it was handling.
-void loadConfig().then((cfg) => orchestrator.recover(cfg, reconcile)).catch((e) => console.error("orca: orchestrator recovery failed", e));
+  .forEach((r) => void gh.listReviewPrs(r.repoPath).catch(() => {}))).catch(() => {});
 
 // Publish this instance's worktrees whether or not a browser is polling it: with two instances,
 // the board on the OTHER machine shows this one's workstreams from the shared inventory, which
@@ -135,7 +148,7 @@ void loadConfig().then((cfg) => orchestrator.recover(cfg, reconcile)).catch((e) 
 // appeared only while someone's board happened to be forwarded to it.)
 const INVENTORY_PUBLISH_MS = 10_000;
 setInterval(() => {
-  void loadConfig().then((cfg) => Promise.all(cfg.repos.filter(verbs.repoHere).map((r) => agentRows(r).catch((e) => console.error(`orca: inventory publish failed for ${r.name}`, e)))));
+  void loadConfig().then((cfg) => Promise.all(cfg.repos.filter(verbs.repoHere).map((r) => agentRows(r).catch((e) => console.error(`orca: inventory publish failed for ${r.name}`, e))))).catch(() => {});
   void publishPreviews(); // the same for previews: the running-previews menu on any machine lists them
 }, INVENTORY_PUBLISH_MS).unref();
 
@@ -172,6 +185,29 @@ const DIST = new URL("../web/dist/", import.meta.url).pathname;
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 
+/** A read answered without the database: the marker rides in a header (an array body has nowhere
+ *  else to put it), and an object body also gets `dbUnavailable: true`. */
+const degradedJson = (data: unknown, status = 200) => Response.json(
+  data && typeof data === "object" && !Array.isArray(data) ? { ...data, dbUnavailable: true } : data,
+  { status, headers: { "x-orca-database": db.databaseStatus() } },
+);
+
+// Reads whose honest answer, with the database unreachable, is "nothing" — everything else that
+// needed it is a 503 (an empty answer to a write, or to the orchestrator's status, would mislead).
+const EMPTY_WHEN_DOWN: Record<string, () => unknown> = {
+  "/api/queued": () => [],
+  "/api/notifications": () => [],
+  "/api/health/history": () => [],
+  "/api/config/document": () => ({}),
+};
+
+/** What a request that hit `DbUnavailable` gets instead of a 500. */
+function whenDatabaseDown(req: Request, url: URL, e: db.DbUnavailable): Response {
+  const empty = req.method === "GET" ? EMPTY_WHEN_DOWN[url.pathname] : undefined;
+  if (empty) return degradedJson(empty());
+  return degradedJson({ error: `${e.message} — this needs the database; it will work again once it is back` }, 503);
+}
+
 /** A caller-supplied base ref, rejected unless it looks like a branch name (never a `-flag` that git
  *  would read as an option). */
 const baseParam = (url: URL): string | undefined => {
@@ -189,7 +225,7 @@ async function foreignInventory(repo: string, exclude?: string): Promise<unknown
       .filter((r) => r.instance !== (exclude ?? db.instanceName()))
       .map((r) => ({ ...r.data, instance: r.instance, instanceSeenAt: r.seenAt, remote: true }));
   } catch (e) {
-    console.error("orca: inventory read failed", e);
+    if (!(e instanceof db.DbUnavailable)) console.error("orca: inventory read failed", e);
     return [];
   }
 }
@@ -203,7 +239,7 @@ const notEnabled = (repo: RepoConfig, feature: string) =>
 // the machine that produced it is asleep. Everything else touches a worktree or spawns a process and
 // must run where the repo lives.
 const DATABASE_ONLY = new Set([
-  "/api/turns", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
+  "/api/turns", "/api/turns/local", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
   "/api/usage", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
   "/api/health/history",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -293,7 +329,9 @@ async function agentRows(repo: RepoConfig): Promise<unknown[]> {
     await agent.killByBranch(w.branch);
     preview.stop(w.worktreePath, true); // reaped → drop its preview DB too
   });
-  for (const r of reaped) await db.archive(repo.name, r.branch); // reaped from disk; its conversation is kept
+  // Reaped from disk; its conversation is kept. With the database down the archive waits for the next
+  // reap of a merged branch — the worktree is gone either way.
+  for (const r of reaped) await db.archive(repo.name, r.branch).catch((e) => { if (!(e instanceof db.DbUnavailable)) throw e; });
   const reapedBranches = new Set(reaped.map((r) => r.branch));
   wts = wts.filter((w) => !reapedBranches.has(w.branch));
   const live = await agent.detectRunning(wts.map((w) => w.branch)); // recover status lost on restart
@@ -320,7 +358,7 @@ async function agentRows(repo: RepoConfig): Promise<unknown[]> {
   }));
   // Publish before responding, so the other instance's next poll sees this one's work.
   await db.publishInventory(repo.name, mine.map((w) => ({ branch: w.branch, data: w as unknown as db.Fields })))
-    .catch((e) => console.error("orca: inventory publish failed", e)); // advisory — never fail a poll
+    .catch((e) => { if (!(e instanceof db.DbUnavailable)) console.error("orca: inventory publish failed", e); }); // advisory — never fail a poll
   return [...mine, ...(await foreignInventory(repo.name, instance))];
 }
 
@@ -415,7 +453,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/health") {
     // This machine's vitals, for the header's instance chip. `?instance=` reaches another instance
     // through the ordinary placement forwarding (an explicit instance beats everything).
-    return json(await health());
+    return json({ ...(await health()), database: db.databaseStatus(), outbox: outbox.summary() });
   }
   if (req.method === "GET" && p === "/api/notifications") {
     // The centre's rows (any instance answers: one table). `since` is the catch-up cursor after a
@@ -479,6 +517,9 @@ async function api(req: Request, url: URL): Promise<Response> {
       repos: repos.map((r, i) => ({ ...r, runsOn: cfg.repos[i]!.runsOn })),
       staleHours: cfg.staleHours, agentProviders, apiPort: API_PORT,
       instance: db.instanceName(), instances: Object.keys(cfg.instances ?? {}),
+      // `ok`, or `unreachable since <iso>`: the bridge serves (and runs agents) without the database,
+      // from the last good config, journaling history until it is back.
+      database: db.databaseStatus(),
     });
   }
   // The orchestrator's verbs over HTTP, so an orchestrator on one instance can spawn / send /
@@ -759,12 +800,14 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/enrichment") {
     // What git/gh can't recover about a branch — prompt, title, provider/session pointer, follow
     // state, Slack timestamps. Lived in localStorage until it outgrew a 5MB shared bucket.
-    return json(await db.enrichment(repo.name));
+    // With the database down: the last copy it gave, with the queued patches over it.
+    const { data, degraded } = await outbox.enrichment(repo.name);
+    return degraded ? degradedJson(data) : json(data);
   }
   if (req.method === "POST" && p === "/api/enrichment") {
     if (!body.branch) return json({ error: "branch required" }, 400);
-    await db.patchEnrichment(repo.name, body.branch, body.fields ?? {});
-    return json({ ok: true });
+    const { queued } = await outbox.patchEnrichment(repo.name, body.branch, body.fields ?? {}); // queued while the database is down
+    return json({ ok: true, ...(queued ? { queued: true, dbUnavailable: true } : {}) });
   }
   if (req.method === "POST" && p === "/api/suggest-title") {
     if (!featuresOf(repo).aiTitles) return notEnabled(repo, "AI titles");
@@ -793,7 +836,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const title = String(body.title ?? "").trim();
     if (!body.branch || !title) return json({ error: "branch and title required" }, 400);
     if (body.pr) await gh.editTitle(repo.repoPath, body.pr, title); // PR title is the card title; make it stick on GitHub
-    await db.patchEnrichment(repo.name, body.branch, { title }); // record it locally too (shown for pre-PR locals)
+    await outbox.patchEnrichment(repo.name, body.branch, { title }); // record it locally too (shown for pre-PR locals)
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/enrichment/import") {
@@ -812,8 +855,22 @@ async function api(req: Request, url: URL): Promise<Response> {
     // The orchestrator's conversation is hundreds of turns; a chat opens on its tail and fetches
     // older pages as you scroll up.
     const pageSize = Number(url.searchParams.get("limit")) || 0;
-    const page = pageSize ? await db.turnPage(repo.name, branch, { limit: pageSize, before: url.searchParams.get("before") ?? undefined }) : null;
-    const turns = page ? page.turns : await db.turns(repo.name, branch);
+    const before = url.searchParams.get("before") ?? undefined;
+    // With the database unreachable the conversation is what this machine journaled (server/outbox.ts)
+    // — the live run included — flagged `dbUnavailable` so the chat says it will sync later.
+    let page: db.TurnPage | null = null, turns: AgentTurn[], degraded = false;
+    try {
+      page = pageSize ? await db.turnPage(repo.name, branch, { limit: pageSize, before }) : null;
+      turns = page ? page.turns : await db.turns(repo.name, branch);
+    } catch (e) {
+      if (!(e instanceof db.DbUnavailable)) throw e;
+      degraded = true;
+      page = pageSize ? { turns: [], older: null } : null;
+      turns = [];
+    }
+    // Journaled turns the replay hasn't landed yet belong at the newest end.
+    if (!before) turns = outbox.mergeTurns(turns, repo.name, branch);
+    if (page) page.turns = turns;
     // Each turn carries its recorded steps (the agent's thought process) — for the NEWEST
     // `STEPS_FOR_TURNS` turns, in ONE query. Older turns come without; the chat fetches a turn's
     // steps when you unfold it (/api/turns/steps from seq 0). A 300-turn conversation used to mean
@@ -824,7 +881,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     // 450 KB of the orchestrator's 620 KB first page.
     const limit = Number(url.searchParams.get("steps")) || (page ? STEPS_FOR_PAGE : STEPS_FOR_TURNS);
     const recent = page && url.searchParams.get("before") ? [] : turns.slice(-limit);
-    const bySteps = await db.stepsForRuns(recent.map((t) => t.id));
+    const bySteps = degraded ? new Map<string, { seq: number; step: db.Fields }[]>() : await db.stepsForRuns(recent.map((t) => t.id));
     for (const t of recent) {
       const numbered = bySteps.get(t.id) ?? [];
       if (numbered.length) {
@@ -837,7 +894,15 @@ async function api(req: Request, url: URL): Promise<Response> {
     // turns recorded before the instruction was stored. For the orchestrator's 375 turns the prompts
     // were 3.6 MB of a 5.3 MB response — seconds over the tailnet, for nothing on screen.
     for (const t of turns) if (t.instruction !== undefined) t.prompt = "";
-    return json(page ? { turns, older: page.older } : turns);
+    const body = page ? { turns, older: page.older } : turns;
+    return degraded ? degradedJson(body) : json(body);
+  }
+  if (req.method === "GET" && p === "/api/turns/local") {
+    // THIS machine's journaled turns for a branch (server/outbox.ts): what ran while the database
+    // was unreachable and hasn't been replayed into it yet. Never forwarded — it is this disk.
+    const branch = url.searchParams.get("branch");
+    if (!branch) return json({ error: "branch required" }, 400);
+    return json({ turns: outbox.turns(repo.name, branch), database: db.databaseStatus() });
   }
   if (req.method === "GET" && p === "/api/queued") {
     const branch = url.searchParams.get("branch");
@@ -857,7 +922,10 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!branch || !runId) return json({ error: "branch and runId required" }, 400);
     const since = Number(url.searchParams.get("since")) || 0;
     const fresh = await transcript.numbered(runId, { afterSeq: since });
-    const turn = (await db.turns(repo.name, branch)).find((t) => t.id === runId);
+    const turn = outbox.mergeTurns(await db.turns(repo.name, branch).catch((e) => {
+      if (e instanceof db.DbUnavailable) return [];
+      throw e;
+    }), repo.name, branch).find((t) => t.id === runId);
     return json({
       steps: fresh.map((f) => f.step),
       seq: fresh.length ? fresh[fresh.length - 1]!.seq : since,
@@ -917,8 +985,13 @@ for (const hostname of BIND) Bun.serve({
   async fetch(req) {
     const url = new URL(req.url);
     try {
-      return url.pathname.startsWith("/api/") ? await api(req, url) : await serveStatic(url);
+      if (!url.pathname.startsWith("/api/")) return await serveStatic(url);
+      const res = await api(req, url);
+      // Every API answer says when it was given without the database, so any caller can tell.
+      if (db.unavailableSince() !== null) { try { res.headers.set("x-orca-database", db.databaseStatus()); } catch { /* immutable */ } }
+      return res;
     } catch (e) {
+      if (e instanceof db.DbUnavailable) return whenDatabaseDown(req, url, e);
       return json({ error: e instanceof Error ? e.message : String(e) }, 500);
     }
   },

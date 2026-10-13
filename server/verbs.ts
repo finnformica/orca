@@ -269,8 +269,8 @@ export const repoHere = (repo: RepoConfig): boolean => existsSync(repo.repoPath)
 
 /** The instance a request should run on. Explicit (`instance` in the body or query — the New-draft
  *  box's choice, the orchestrator's --on) beats the worktree's home (the instance whose inventory
- *  lists the branch or path — a workstream lives where its worktree is), which beats the repo's
- *  default (`runsOn`), which beats here. */
+ *  lists the branch or path, else this disk's worktrees — a workstream lives where its worktree is),
+ *  which beats the repo's default (`runsOn`), which beats here. */
 export async function placement(
   repo: RepoConfig,
   want: { instance?: unknown; branch?: unknown; worktreePath?: unknown; key?: unknown },
@@ -282,6 +282,13 @@ export async function placement(
     const rows = await db.inventory(repo.name).catch(() => []);
     const home = rows.find((r) => (branch && r.branch === branch) || (path && r.data.worktreePath === path));
     if (home) return home.instance;
+    // Not in the inventory — always the case while the database is unreachable (the shared Postgres
+    // lives on the box). A worktree on THIS disk lives here, so local work stays local rather than
+    // being forwarded to a `runsOn` instance that may be the one that's down.
+    if (repoHere(repo)) {
+      const mine = await git.listWorktrees(repo.repoPath, repo.worktreeRoot).catch(() => []);
+      if (mine.some((w) => (branch && w.branch === branch) || (path && w.worktreePath === path))) return db.instanceName();
+    }
   }
   return repo.runsOn ?? db.instanceName();
 }
