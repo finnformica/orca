@@ -444,7 +444,7 @@ export function NotificationPanel() {
   const groups = groupByDay(filterNotifications(list, filter));
   return (
     <div data-slot="notification-centre" className="flex max-h-[70vh] flex-col">
-      <header className="flex h-14 items-center gap-2 border-b pr-1.5 pl-3">
+      <header className="flex h-14 shrink-0 items-center gap-2 border-b pr-1.5 pl-3">
         <h3 className="text-sm font-medium">Notifications</h3>
         <span className="flex-1" />
         <Segmented<NotificationFilter> label="Show" value={filter} onChange={setFilter} options={[

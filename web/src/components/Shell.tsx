@@ -316,10 +316,9 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
   const swipe = useSwipeToClose(() => dialog, () => setOpen(false), useNarrow()); // a phone's full-screen sheet
   return (
     <>
-      <Button size="sm" data-slot="add-new" title={`Add New (${shortcutLabel("new")})`} aria-label="Add New" onClick={() => setOpen(true)} className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
+      <Button variant="secondary" size="sm" data-slot="add-new" title={`Add New (${shortcutLabel("new")})`} aria-label="Add New" onClick={() => setOpen(true)} className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
         <Plus className="size-4" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
-        {/* Inverted (primary) button: the keycap takes the button's own foreground, not the page's muted. */}
-        <Shortcut id="new" className={cn("ml-auto max-md:hidden", collapsed && "md:hidden")} keyClassName="text-primary-foreground/70 border-primary-foreground/25" />
+        <Shortcut id="new" className={cn("ml-auto max-md:hidden", collapsed && "md:hidden")} />
       </Button>
       <dialog
         ref={setDialog} data-slot="add-new-dialog" aria-label="New agent"
