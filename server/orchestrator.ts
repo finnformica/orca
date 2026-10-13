@@ -83,10 +83,13 @@ const serial = <T>(fn: () => Promise<T>): Promise<T> => {
   return next;
 };
 
-export async function status(cfg: OrcaConfig): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell: boolean; lastWakeUsd?: number; hint?: string; }> {
+export async function status(cfg: OrcaConfig): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell: boolean; lastWakeUsd?: number; hint?: string; startedAt?: number; queued: number }> {
   const b = await blob();
+  const running = agent.isRunning(dir());
   return {
-    key: dir(), running: agent.isRunning(dir()), paused: (b.wakes ?? 0) >= MAX_WAKES, notes: b.notes ?? "",
+    key: dir(), running, paused: (b.wakes ?? 0) >= MAX_WAKES, notes: b.notes ?? "",
+    startedAt: running ? agent.runStartedAt(dir()) : undefined, // when the wake in flight began — the header's elapsed time
+    queued: (await db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH)).length, // waiting for the next wake
     model: modelOf(cfg, b),
     contextPct: b.contextPct, // how full its last run left the session; absent until one has reported
     shell: cfg.orchestratorShell !== false,

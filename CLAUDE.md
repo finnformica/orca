@@ -550,9 +550,11 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   was cut off`. A message whose wake dies twice (`died`) is NOT queued a third time; the line says
   to send it again. A restart is detected at startup (`orchestrator.recover`): a claim with no live
   lease whose turn did not end on text was cut off; one that outlived the bridge and finished is
-  just drained. Stop is not a death. The popout shows the last wake's spend and, once a wake costs
-  half the cap or the context is half full, a hint that a fresh session would be cheaper
-  (`sessionHint`) — a hint only, nothing is reset. The ledger records `costUsd` per run and
+  just drained. Stop is not a death. The header (panel and page alike) carries a live status line
+  (`orchestratorStatus`): Idle, or Working · elapsed, then `N queued` and `N workers running`
+  (orchestrated rows running, from the board's own poll); the last wake's spend and, once a wake
+  costs half the cap or the context is half full, the hint that a fresh session would be cheaper
+  (`sessionHint`) are its TOOLTIP, the hint shown only as an amber dot — a hint only, nothing is reset. The ledger records `costUsd` per run and
   `errorKind` `budget` / `timeout` instead of one `nonzero-exit`.
 - **The session is disposable.** Its notes (`orca notes set`, stored in its workstream blob) and a
   fresh board go into EVERY wake prompt; the role text only when a session starts. So the ladder

@@ -20,7 +20,7 @@ import * as verbs from "../server/verbs";
 import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
 import {
-  ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isWorkerProblem, onlyCleanReports, sessionHint, wakeExitReason,
+  ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isWorkerProblem, onlyCleanReports, orchestratorStatus, sessionHint, wakeExitReason,
   wakeStoppedLine, workerEvent,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
@@ -274,13 +274,21 @@ test("O3: messages that arrive mid-run are queued and drained as ONE resumed wak
   expect(await orchestrator.message(cfg(), "first")).toEqual({ status: "running" });
   expect(await orchestrator.message(cfg(), "second")).toEqual({ status: "queued" });
   expect(await orchestrator.message(cfg(), "third")).toEqual({ status: "queued" });
-  expect((await orchestrator.status(cfg())).running).toBe(true);
+  const live = await orchestrator.status(cfg());
+  expect(live.running).toBe(true);
+  // The header's live line: the wake in flight's start, and what waits for the next one.
+  expect(live.startedAt).toBeNumber();
+  expect(Date.now() - live.startedAt!).toBeLessThan(60_000);
+  expect(live.queued).toBe(2);
   await rm(hold);
 
   const turns = await settled(orchTurns, 2);
   expect(turns).toHaveLength(2); // not three
   expect(turns[1]!.instruction).toBe("second\n\nthird");
   expect(await db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH)).toEqual([]);
+  const idle = await orchestrator.status(cfg());
+  expect(idle.startedAt).toBeUndefined();
+  expect(idle.queued).toBe(0);
   // Rung 1 of the ladder: the same session, so the role is not repeated — but notes and board are.
   expect((await launches())[1]).toContain(`--resume ${turns[0]!.sessionId}`);
   expect(turns[1]!.prompt).not.toContain("You are Orca's orchestrator");
@@ -668,6 +676,20 @@ test("O17: the exit line and the large-session hint are pure", () => {
   expect(sessionHint({ budgetUsd: 5, lastWakeUsd: 2.4, contextPct: 49 })).toBeUndefined();
   expect(sessionHint({ budgetUsd: 5, lastWakeUsd: 2.5 })).toContain("fresh session");
   expect(sessionHint({ budgetUsd: 10, lastWakeUsd: 2.5, contextPct: 50 })).toContain("fresh session");
+});
+
+test("O17b: the header's live line says what it is doing now; cost and advice are only the tooltip", () => {
+  const now = 1_000_000;
+  expect(orchestratorStatus({ running: false, workers: 0, now })).toEqual({ text: "Idle", tooltip: undefined, warn: false });
+  expect(orchestratorStatus({ running: true, startedAt: now - 72_000, workers: 0, now }).text).toBe("Working · 1m 12s");
+  expect(orchestratorStatus({ running: true, workers: 0, now }).text).toBe("Working"); // start unknown
+  expect(orchestratorStatus({ running: true, startedAt: now - 5_000, queued: 2, workers: 3, now }).text).toBe("Working · 5s · 2 queued · 3 workers running");
+  expect(orchestratorStatus({ running: false, queued: 1, workers: 1, now }).text).toBe("Idle · 1 queued · 1 worker running");
+  const big = orchestratorStatus({ running: false, workers: 0, lastWakeUsd: 3.456, hint: "Large session: fresh session", now });
+  expect(big.text).toBe("Idle"); // neither the cost nor the advice is in the visible text
+  expect(big.tooltip).toBe("Last wake cost $3.46\nLarge session: fresh session");
+  expect(big.warn).toBe(true);
+  expect(orchestratorStatus({ running: false, workers: 0, lastWakeUsd: 0.5, now })).toEqual({ text: "Idle", tooltip: "Last wake cost $0.50", warn: false });
 });
 
 test("O18: archive removes an idle workstream's worktree and card, keeping its transcript readable", async () => {

@@ -749,6 +749,12 @@ async function headOf(cwd: string): Promise<string | undefined> {
 export const runAgent = (worktreePath: string, prompt: string, options?: LaunchOptions): Promise<LaunchReceipt> => launch(worktreePath, worktreePath, prompt, options);
 
 export const isRunning = (key: string): boolean => runs.get(key)?.status === "running" || lease.leased(key);
+/** When the run on this key started: its in-memory run, else an adopted lease's. Undefined when idle. */
+export const runStartedAt = (key: string): number | undefined => {
+  const run = runs.get(key);
+  if (run?.status === "running") return run.startedAt;
+  return lease.leased(key) ? lease.current(key)?.startedAt : undefined;
+};
 
 /** A provider-isolated one-shot: never falls through to a different provider. */
 export function oneShotCommand(provider: AgentProvider, cwd: string, prompt: string, purpose: "title" | "description"): string[] {

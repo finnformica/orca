@@ -9,7 +9,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { getDefaultStore } from "jotai";
-import { AskOrchestrator, OrchestratorPanel } from "@/components/Terminal";
+import { AskOrchestrator, OrchestratorPage, OrchestratorPanel } from "@/components/Terminal";
 import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
 import { WorkstreamCard } from "@/views/Board";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, dayLabel } from "@/workstream";
@@ -136,6 +136,42 @@ test("a paused orchestrator says so, and an orchestrated card is marked", async 
   expect(panel()!.textContent).toContain("Orchestrator · paused until you reply");
   const ring = panel()!.querySelector<HTMLElement>('[data-slot="context-ring"]')!;
   expect(ring.className).toContain("text-amber-400");
+});
+
+test("the header's live line — panel and page alike: working time, queued, workers; cost and advice only on hover", async () => {
+  apiFake.agentsData = [
+    { branch: "w1", worktreePath: "/wt/w1", agentStatus: "running" },
+    { branch: "w2", worktreePath: "/wt/w2", agentStatus: "running" },
+    { branch: "mine", worktreePath: "/wt/mine", agentStatus: "running" }, // not orchestrated: not its worker
+    { branch: "w3", worktreePath: "/wt/w3", agentStatus: "done" },
+  ];
+  for (const b of ["w1", "w2", "w3"]) apiFake.enrichmentData.set(`r::${b}`, { title: b, orchestrated: true });
+  apiFake.orchestratorState = {
+    ...apiFake.orchestratorState, running: true, startedAt: Date.now() - 72_000, queued: 2,
+    lastWakeUsd: 3.2, hint: "Large session: each wake re-reads all of it, so a fresh session would be much cheaper.",
+  };
+  await mount(<><Entry /><OrchestratorPage /></>);
+  await act(async () => { await store.refresh(); await flush(); await flush(); });
+  getDefaultStore().set(orchestratorOpenAtom, true);
+  await act(async () => { await flush(); await flush(); });
+  const lines = [...container!.querySelectorAll<HTMLElement>('[data-slot="orchestrator-status"]')];
+  expect(lines).toHaveLength(2); // the panel's header and the page's
+  for (const line of lines) {
+    expect(line.textContent).toMatch(/^Working · 1m 1[23]s · 2 queued · 2 workers running$/);
+    expect(line.textContent).not.toContain("$"); // the cost is the tooltip, not the text
+    expect(line.title).toBe("Last wake cost $3.20\nLarge session: each wake re-reads all of it, so a fresh session would be much cheaper.");
+    expect(line.querySelector('[data-slot="orchestrator-status-warn"]')).not.toBeNull(); // the amber dot, nothing more
+  }
+  expect(lines[0]!.outerHTML.replace(/1m 1[23]s/, "T")).toBe(lines[1]!.outerHTML.replace(/1m 1[23]s/, "T")); // both places match
+
+  apiFake.orchestratorState = { ...apiFake.orchestratorState, running: false, startedAt: undefined, queued: 0, hint: undefined, lastWakeUsd: undefined };
+  apiFake.agentsData = [];
+  await act(async () => { await store.refresh(); await new Promise((r) => setTimeout(r, 2100)); await flush(); });
+  for (const line of container!.querySelectorAll<HTMLElement>('[data-slot="orchestrator-status"]')) {
+    expect(line.textContent).toBe("Idle");
+    expect(line.title).toBe("");
+    expect(line.querySelector('[data-slot="orchestrator-status-warn"]')).toBeNull();
+  }
 });
 
 test("the panel is resized from its left edge and the width is remembered (clamped to the viewport)", async () => {

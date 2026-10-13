@@ -100,7 +100,7 @@ export const apiFake = {
   notificationCalls: [] as { verb: "read"; ids: number[] | "all" }[],
   notificationFetches: [] as (number | undefined)[],
   // The orchestrator's status (api.orchestrator) and what was typed to it (api.orchestratorMessage).
-  orchestratorState: { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" } as { key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number },
+  orchestratorState: { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" } as { key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number },
   orchestratorMessages: [] as { text: string; attachments: string[] }[],
   orchestratorMessageError: null as string | null, // api.orchestratorMessage rejects with this (a bridge that is down)
   // Per-call latency (ms), consumed in call order: a message is recorded when it ARRIVES, so a slow

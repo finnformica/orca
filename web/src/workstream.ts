@@ -901,6 +901,25 @@ export function sessionHint(input: { contextPct?: number; lastWakeUsd?: number; 
   if (!costly && (input.contextPct ?? 0) < 50) return undefined;
   return "Large session: each wake re-reads all of it, so a fresh session would be much cheaper.";
 }
+/** The orchestrator header's live line — what it is doing right now: "Idle", or "Working · 1m 12s",
+ *  then "2 queued" and "3 workers running" when any. The last wake's cost and the large-session
+ *  advice are the tooltip, not the text; `warn` is the small amber dot that says the advice is there. Pure. */
+export function orchestratorStatus(input: {
+  running: boolean; startedAt?: number; queued?: number; workers: number; lastWakeUsd?: number; hint?: string; now?: number;
+}): { text: string; tooltip?: string; warn: boolean } {
+  const now = input.now ?? Date.now();
+  const state = !input.running ? "Idle" : input.startedAt === undefined ? "Working" : `Working · ${formatDuration(now - input.startedAt)}`;
+  const parts = [
+    state,
+    ...(input.queued ? [`${input.queued} queued`] : []),
+    ...(input.workers ? [`${input.workers} worker${input.workers === 1 ? "" : "s"} running`] : []),
+  ];
+  const tips = [
+    ...(input.lastWakeUsd !== undefined ? [`Last wake cost $${input.lastWakeUsd.toFixed(2)}`] : []),
+    ...(input.hint ? [input.hint] : []),
+  ];
+  return { text: parts.join(" · "), tooltip: tips.length ? tips.join("\n") : undefined, warn: Boolean(input.hint) };
+}
 
 // First line of the message that wakes the orchestrator when a worker finishes. Also how a queue of
 // pending wakes is told apart from something the user typed (see server/orchestrator.ts).

@@ -5,8 +5,8 @@ import { ArrowLeft, Bot, PictureInPicture2, PanelBottomClose, X } from "lucide-r
 import { subscribeTurns, syncEvents } from "@/lib/events";
 import { ChatPanel } from "@/views/Chat";
 import { api } from "../api";
-import type { Row } from "../store";
-import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth } from "../workstream";
+import { useWorkstreams, type Row } from "../store";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, orchestratorStatus } from "../workstream";
 import { PortalContainer, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
@@ -163,6 +163,30 @@ function ChannelToggle() {
   );
 }
 
+/** The header's live line under "Orchestrator", the same in the panel and the page: Idle, or Working
+ *  with the wake's elapsed time, plus what's queued for it and how many of its workers are running
+ *  (the board's own rows — orchestrated and running — so no endpoint of its own). The last wake's
+ *  cost and the large-session advice are its tooltip; a large session shows only an amber dot. */
+function OrchestratorStatusLine({ state }: { state: { running: boolean; startedAt?: number; queued?: number; lastWakeUsd?: number; hint?: string } | null }) {
+  const workers = useWorkstreams().filter((r) => r.orchestrated && r.agentStatus === "running").length;
+  // Ticks once a second while a wake runs, so the elapsed time counts up between polls.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!state?.running) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [state?.running]);
+  if (!state) return null;
+  const line = orchestratorStatus({ ...state, workers, now });
+  return (
+    <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-[11px]" title={line.tooltip} data-slot="orchestrator-status">
+      {line.warn && <span data-slot="orchestrator-status-warn" aria-label="Large session" className="bg-geist-amber size-1.5 shrink-0 rounded-full" />}
+      <span className="truncate">{line.text}</span>
+    </div>
+  );
+}
+
 export function OrchestratorPanel() {
   const [open, setOpen] = useAtom(orchestratorOpenAtom);
   // Never opened while narrow — useOrchestrator routes a phone to /orchestrator instead (see
@@ -171,7 +195,7 @@ export function OrchestratorPanel() {
   const narrow = useNarrow();
   const prefill = useAtomValue(orchestratorPrefillAtom);
   const setPrefill = useSetAtom(orchestratorPrefillAtom);
-  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
+  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number } | null>(null);
   const load = () => api.orchestrator().then(setState).catch(() => {});
   // Once opened, the chat stays MOUNTED while closed (slid out, hidden): reopening is instant, with
   // the transcript, scroll position and draft exactly where you left them — the way an editor's
@@ -276,12 +300,7 @@ export function OrchestratorPanel() {
         <div className="min-w-0">
           {/* Paused = it has woken itself as many times as it may without hearing from you. */}
           <div className="truncate text-sm font-medium" id="orchestrator-title">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
-          {/* What the last wake cost; amber once the session is big enough that a fresh one would be much cheaper. */}
-          {state?.lastWakeUsd !== undefined && (
-            <div className={`truncate text-[11px] ${state.hint ? "text-geist-amber" : "text-muted-foreground"}`} title={state.hint} data-slot="orchestrator-spend">
-              last wake ${state.lastWakeUsd.toFixed(2)}{state.hint ? ` · ${state.hint}` : ""}
-            </div>
-          )}
+          <OrchestratorStatusLine state={state} />
         </div>
       </div>
       <div className="flex shrink-0 items-center">
@@ -378,7 +397,7 @@ const ORCHESTRATOR_PAGE_HEIGHT =
  *  while it's the current route. */
 export function OrchestratorPage() {
   const prefill = useAtomValue(orchestratorPrefillAtom);
-  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
+  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number } | null>(null);
   const load = () => api.orchestrator().then(setState).catch(() => {});
   useEffect(() => poll(load, 2000), []);
   const row: Row = {
@@ -394,11 +413,7 @@ export function OrchestratorPage() {
         <div className="min-w-0">
           {/* Paused = it has woken itself as many times as it may without hearing from you. */}
           <div className="truncate text-sm font-medium">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
-          {state?.lastWakeUsd !== undefined && (
-            <div className={`truncate text-[11px] ${state.hint ? "text-geist-amber" : "text-muted-foreground"}`} title={state.hint}>
-              last wake ${state.lastWakeUsd.toFixed(2)}{state.hint ? ` · ${state.hint}` : ""}
-            </div>
-          )}
+          <OrchestratorStatusLine state={state} />
         </div>
         <span className="ml-auto shrink-0"><ChannelToggle /></span>
       </div>
