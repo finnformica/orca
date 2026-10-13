@@ -19,8 +19,8 @@ function apply(theme: Theme) {
   }
 }
 
-/** The page background in each theme (styles.css `--background`): what the browser chrome is tinted. */
-export const themeColor = (dark: boolean): string => (dark ? "#000000" : "#fafafa");
+/** The page background in each theme (styles.css `--background`, PR 134's tokens): what the browser chrome is tinted. */
+export const themeColor = (dark: boolean): string => (dark ? "#111111" : "#f9f9f8");
 
 const themeAtom = atom<Theme>(read());
 

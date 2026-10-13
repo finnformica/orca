@@ -92,7 +92,11 @@ describe("installable app (PWA files)", () => {
     };
     expect(m.id).toBe("/");
     expect(m.orientation).toBe("any");
+    expect([themeColor(false), themeColor(true)]).toEqual(["#f9f9f8", "#111111"]); // PR 134's --background tokens
     expect([m.theme_color, m.background_color]).toEqual([themeColor(false), themeColor(false)]);
+    const html = await read("index.html").text();
+    expect(html).toContain(`<meta name="theme-color" media="(prefers-color-scheme: light)" content="${themeColor(false)}" />`);
+    expect(html).toContain(`<meta name="theme-color" media="(prefers-color-scheme: dark)" content="${themeColor(true)}" />`);
     expect(m.user_preferences.color_scheme_dark).toEqual({ theme_color: themeColor(true), background_color: themeColor(true) });
     expect(m.shortcuts.map((s) => [s.name, launchOverlay(new URL(s.url, "http://x").search)])).toEqual([["New agent", "new"], ["Orchestrator", "orchestrator"]]);
     expect(launchOverlay("?open=nope")).toBeNull();
