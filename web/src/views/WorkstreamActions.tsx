@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreHorizontal, Sparkles } from "lucide-react";
+import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreVertical, Sparkles, X } from "lucide-react";
 import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, moveWorkstream, thisInstance,
   cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, staleHours, suggestTitle, toggleFollow, useRepos, type Row,
 } from "../store";
-import { prMenuActions, shouldBump } from "../workstream";
+import { firstLine, prMenuActions, shouldBump } from "../workstream";
+import { actionFailed } from "@/lib/toast";
 import { ChatComposer } from "@/components/ChatComposer";
 import { clearDraft, hasDraft } from "@/lib/composerDraft";
 import { Button } from "@/components/ui/button";
@@ -44,12 +45,18 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   // Wrap every action so it (a) surfaces errors — menu items are fire-and-forget, so a failed
-  // promote/merge would otherwise vanish silently — and (b) reports busy up to the card, which
+  // promote/merge would otherwise vanish silently — as a toast (lib/toast: the message, Copy, Ask
+  // the orchestrator), never as text in the row, where it broke the Agents list's layout; the ⋯
+  // keeps only a ✗ with the first line as its tooltip; and (b) reports busy up to the card, which
   // shows a loading overlay (actions like promote push + open a PR and take a few seconds).
-  const run = (fn: () => Promise<unknown>) => async () => {
+  const fail = (action: string, e: unknown) => {
+    setErr(e instanceof Error ? e.message : String(e));
+    actionFailed({ action, title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }, e);
+  };
+  const run = (action: string, fn: () => Promise<unknown>) => async () => {
     setErr(null); onBusy?.(true);
     try { await fn(); }
-    catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    catch (e) { fail(action, e); }
     finally { onBusy?.(false); }
   };
 
@@ -98,10 +105,10 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
         <>
           {onOpen && <DropdownMenuItem onSelect={onOpen}>Open</DropdownMenuItem>}
           {row.prUrl && <DropdownMenuItem onSelect={() => window.open(row.prUrl, "_blank", "noreferrer")}>Open PR #{row.prNumber}</DropdownMenuItem>}
-          <DropdownMenuItem onSelect={run(copyBranch)}>Copy branch</DropdownMenuItem>
+          <DropdownMenuItem onSelect={run("Copy branch", copyBranch)}>Copy branch</DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuItem disabled={submitting} onSelect={() => (onFollowUp ? onFollowUp() : setComposing(true))}>Follow up…</DropdownMenuItem>
-          {row.lane === "MERGEABLE" && <DropdownMenuItem onSelect={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }}>{mergeLabel}</DropdownMenuItem>}
+          {row.lane === "MERGEABLE" && <DropdownMenuItem onSelect={() => { if (window.confirm(mergeConfirm)) run("Merge", () => merge(row))(); }}>{mergeLabel}</DropdownMenuItem>}
           <DropdownMenuSeparator />
         </>
       )}
@@ -119,9 +126,9 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
       {/* Lifecycle: promote a local branch, or merge from a lane where Merge isn't already a header button */}
       {isLocalLane && (row.hasRemote
         ? <PromoteSubmenu row={row} disabled={!hasWork} run={run} />
-        : <DropdownMenuItem disabled={!hasWork} onSelect={run(() => promote(row))}>Promote</DropdownMenuItem>)}
+        : <DropdownMenuItem disabled={!hasWork} onSelect={run("Promote", () => promote(row))}>Promote</DropdownMenuItem>)}
       {canMergeNow && row.lane !== "MERGEABLE" && (
-        <DropdownMenuItem onSelect={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }}>
+        <DropdownMenuItem onSelect={() => { if (window.confirm(mergeConfirm)) run("Merge", () => merge(row))(); }}>
           Merge{unreviewed ? " (unreviewed)" : ""}
         </DropdownMenuItem>
       )}
@@ -129,7 +136,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
       <DropdownMenuItem onSelect={() => setRenaming(true)}>Rename…</DropdownMenuItem>
       {/* Move the worktree to another instance (verbs.moveWorkstream). Not while its agent runs. */}
       {row.worktreePath && instanceChoices().filter((i) => i !== (row.instance ?? thisInstance())).map((to) => (
-        <DropdownMenuItem key={to} disabled={row.agentStatus === "running"} onSelect={run(() => moveWorkstream(row, to))} title={row.agentStatus === "running" ? "Wait for the agent to finish first" : `Push the branch and re-open its worktree on ${to}; the next run starts a fresh session there`}>
+        <DropdownMenuItem key={to} disabled={row.agentStatus === "running"} onSelect={run(`Move to ${to}`, () => moveWorkstream(row, to))} title={row.agentStatus === "running" ? "Wait for the agent to finish first" : `Push the branch and re-open its worktree on ${to}; the next run starts a fresh session there`}>
           Move to {to}
         </DropdownMenuItem>
       ))}
@@ -139,15 +146,15 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>PR</DropdownMenuSubTrigger>
           <DropdownMenuSubContent>
-            {prActions.includes("markReady") && <DropdownMenuItem onSelect={run(() => markReady(row))}>Mark ready for review</DropdownMenuItem>}
-            {prActions.includes("moveToDraft") && <DropdownMenuItem onSelect={run(() => convertToDraft(row))}>Move to draft</DropdownMenuItem>}
+            {prActions.includes("markReady") && <DropdownMenuItem onSelect={run("Mark ready", () => markReady(row))}>Mark ready for review</DropdownMenuItem>}
+            {prActions.includes("moveToDraft") && <DropdownMenuItem onSelect={run("Move to draft", () => convertToDraft(row))}>Move to draft</DropdownMenuItem>}
             {prActions.includes("autoMerge") && (row.autoMergeEnabled
-              ? <DropdownMenuItem onSelect={run(() => disableAutoMerge(row))}>Disable auto-merge</DropdownMenuItem>
-              : <DropdownMenuItem onSelect={run(() => autoMerge(row))}>Enable auto-merge</DropdownMenuItem>)}
+              ? <DropdownMenuItem onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</DropdownMenuItem>
+              : <DropdownMenuItem onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</DropdownMenuItem>)}
             {/* One agent verb: conflicts, CI and review in a single run (store.addressPr). */}
-            {prActions.includes("addressPr") && <DropdownMenuItem onSelect={run(() => addressPr(row))} title="One run that resolves conflicts, fixes CI and addresses review threads/comments — whichever apply">Address PR</DropdownMenuItem>}
-            {prActions.includes("addPreview") && <DropdownMenuItem onSelect={run(() => addPreviewLabel(row))}>Add preview</DropdownMenuItem>}
-            {prActions.includes("copyLink") && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={run(copyLink)}>Copy link</DropdownMenuItem></>}
+            {prActions.includes("addressPr") && <DropdownMenuItem onSelect={run("Address PR", () => addressPr(row))} title="One run that resolves conflicts, fixes CI and addresses review threads/comments — whichever apply">Address PR</DropdownMenuItem>}
+            {prActions.includes("addPreview") && <DropdownMenuItem onSelect={run("Add preview", () => addPreviewLabel(row))}>Add preview</DropdownMenuItem>}
+            {prActions.includes("copyLink") && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={run("Copy link", copyLink)}>Copy link</DropdownMenuItem></>}
           </DropdownMenuSubContent>
         </DropdownMenuSub>
       )}
@@ -158,10 +165,10 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>Agent</DropdownMenuSubTrigger>
         <DropdownMenuSubContent>
-          {!isPr && conflicting && <DropdownMenuItem onSelect={run(() => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
+          {!isPr && conflicting && <DropdownMenuItem onSelect={run("Resolve conflicts", () => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
           {/* Local only — see the card's copy menu. */}
-          {!row.remote && <DropdownMenuItem onSelect={run(copyCli)}>Copy CLI</DropdownMenuItem>}
-          <DropdownMenuItem onSelect={run(copyWorktree)}>Copy worktree</DropdownMenuItem>
+          {!row.remote && <DropdownMenuItem onSelect={run("Copy CLI", copyCli)}>Copy CLI</DropdownMenuItem>}
+          <DropdownMenuItem onSelect={run("Copy worktree", copyWorktree)}>Copy worktree</DropdownMenuItem>
         </DropdownMenuSubContent>
       </DropdownMenuSub>
 
@@ -170,8 +177,8 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>Slack</DropdownMenuSubTrigger>
           <DropdownMenuSubContent>
-            <DropdownMenuItem onSelect={run(() => sendSlack(row, "notify"))}>Send message{notified ? " again" : ""}</DropdownMenuItem>
-            <DropdownMenuItem disabled={!notified} onSelect={run(() => sendSlack(row, "bump"))}>Send bump{bumpDue ? " (due)" : ""}</DropdownMenuItem>
+            <DropdownMenuItem onSelect={run("Slack message", () => sendSlack(row, "notify"))}>Send message{notified ? " again" : ""}</DropdownMenuItem>
+            <DropdownMenuItem disabled={!notified} onSelect={run("Slack bump", () => sendSlack(row, "bump"))}>Send bump{bumpDue ? " (due)" : ""}</DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
       )}
@@ -181,7 +188,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
       {isPr ? (
         <DropdownMenuItem
           className="text-destructive focus:text-destructive"
-          onSelect={() => { if (window.confirm(`Close PR #${row.prNumber} "${row.title}" without merging? Removes the worktree and local branch.`)) run(() => closePr(row))(); }}
+          onSelect={() => { if (window.confirm(`Close PR #${row.prNumber} "${row.title}" without merging? Removes the worktree and local branch.`)) run("Close PR", () => closePr(row))(); }}
         >
           Close PR
         </DropdownMenuItem>
@@ -205,14 +212,15 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
             : <>{submitting && <Loader2 className="size-4 animate-spin" />}Follow up</>}
         </Button>}
         {!menuOnly && row.lane === "MERGEABLE" && (
-          <Button size={icon} className={iconClass} variant="success" onClick={() => { if (window.confirm(mergeConfirm)) run(() => merge(row))(); }} title={mergeLabel} aria-label={mergeLabel}>
+          <Button size={icon} className={iconClass} variant="success" onClick={() => { if (window.confirm(mergeConfirm)) run("Merge", () => merge(row))(); }} title={mergeLabel} aria-label={mergeLabel}>
             {compact ? <GitMerge className="size-3.5" /> : mergeLabel}
           </Button>
         )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button size={icon} className={iconClass} variant="ghost" title="Actions" aria-label="Actions">
-              {compact ? <MoreHorizontal className="size-4" /> : <>Actions <ChevronDown className="size-3.5" /></>}
+            <Button size={icon} className={iconClass} variant="ghost" title={err ? firstLine(err) : "Actions"} aria-label="Actions" data-state-error={err ? "" : undefined}>
+              {err && <X className="text-destructive size-3.5" />}
+              {compact ? (!err && <MoreVertical className="size-4" />) : <>Actions <ChevronDown className="size-3.5" /></>}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align={menuOnly ? "end" : "start"} className="min-w-[12rem]">
@@ -233,14 +241,13 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
           </DropdownMenu>
         )}
       </div>
-      {err && <p className="text-destructive text-xs break-words">{err}</p>}
       <RenameDialog row={row} open={renaming} onClose={() => setRenaming(false)} />
       {composing && (
         <FollowUpComposer
           row={row}
           onClose={() => setComposing(false)}
           // Launch failed: reopen with the (still-persisted) prompt and surface why.
-          onFail={(msg) => { setErr(msg); setComposing(true); }}
+          onFail={(msg) => { fail("Follow up", new Error(msg)); setComposing(true); }}
           onSubmitting={setSubmitting}
         />
       )}
@@ -316,7 +323,7 @@ function RenameDialog({ row, open, onClose }: { row: Row; open: boolean; onClose
 
 // Promote a local branch into a PR — choose ready/draft and toggle the repo's configured PR labels
 // (config `prLabels`; entries with `default: true` start checked). Repos with none show no toggles.
-function PromoteSubmenu({ row, disabled, run }: { row: Row; disabled?: boolean; run: (fn: () => Promise<unknown>) => () => void }) {
+function PromoteSubmenu({ row, disabled, run }: { row: Row; disabled?: boolean; run: (action: string, fn: () => Promise<unknown>) => () => void }) {
   const prLabels = useRepos().find((r) => r.name === row.repo)?.prLabels ?? [];
   const [checked, setChecked] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(prLabels.map((l) => [l.name, l.default ?? false])));
@@ -333,8 +340,8 @@ function PromoteSubmenu({ row, disabled, run }: { row: Row; disabled?: boolean; 
           </DropdownMenuCheckboxItem>
         ))}
         {prLabels.length > 0 && <DropdownMenuSeparator />}
-        <DropdownMenuItem onSelect={run(() => promote(row, { draft: false, labels }))}>Create PR (ready)</DropdownMenuItem>
-        <DropdownMenuItem onSelect={run(() => promote(row, { draft: true, labels }))}>Create draft PR</DropdownMenuItem>
+        <DropdownMenuItem onSelect={run("Create PR", () => promote(row, { draft: false, labels }))}>Create PR (ready)</DropdownMenuItem>
+        <DropdownMenuItem onSelect={run("Create draft PR", () => promote(row, { draft: true, labels }))}>Create draft PR</DropdownMenuItem>
       </DropdownMenuSubContent>
     </DropdownMenuSub>
   );

@@ -146,8 +146,10 @@ is the chat panel over its recorded turns; a wake is `claude -p --resume` on its
 
 **The console is Vercel's, copied outright** (Finn's re-brief after the first, swimlane-ish
 overview: "copy the design theme of Vercel completely and reuse all of their design decisions").
-Theme: Geist Sans/Mono (a Google Fonts `<link>`, no dependency), `#fafafa`/`#fff` light and
-`#000`/`#0a0a0a` dark, the Geist grays, 1px hairlines, no card shadows, `#0070f3` as the one accent,
+Theme: Geist Sans/Mono (a Google Fonts `<link>`, no dependency), softened Notion-style, pulled back
+to a middle ground between Geist's flat grays and a first, too-soft pass after review (#134) —
+`#f9f9f8`/`#fff` light and `#111111`/`#161616` dark, translucent hairline borders rather than flat
+gray, the Geist grays elsewhere, 1px hairlines, no card shadows, `#0070f3` as the one accent,
 status dots and pills as `--geist-*` tokens — all CSS variables in `styles.css`, so every component
 inherits it. **Surface rules** (Finn found the first pass heavy-handed; `tests/console.test.tsx`
 asserts them on every page): 1px hairlines only, never 2px; rows use dividers, never a box inside a
@@ -196,8 +198,14 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   (`attentionReasons`): check failed, conflicts, CI red, changes requested, a run error or stop, or a
   message held behind a run that isn't coming (`/api/agents` attaches each branch's undispatched
   count, `db.queuedCounts`). The Usage card's per-login breakdown is a remembered toggle (the
-  chevron at its foot or its header row, `orca.usageExpanded`). The first cut's
-  separate Awaiting-you tiles were dropped as redundant.
+  chevron at its foot or its header row, `orca.ui.v1.usageExpanded`); each machine card's range is remembered per machine (`orca.ui.v1.instanceRange:<instance>`). The first cut's
+  separate Awaiting-you tiles were dropped as redundant. **Loading states are skeletons, not text**:
+  the Agents card's four stat tiles (`StatSkeleton`), the Usage card's rows (`RowSkeleton`) and each
+  machine's CPU/memory graphs (`ChartSkeleton`, `components/console.tsx`) render placeholders sized
+  like the real content — nothing shifts once the first poll lands. "Not loaded yet" is tracked
+  SEPARATELY from "loaded, genuinely nothing" (`useWorkstreamsLoaded` in `store.ts`,
+  `useUsageLoaded` in `lib/vitals.ts`): both `useWorkstreams()` and `useUsage()` read `null`/`[]` for
+  either case on the wire, which the skeleton can't tell apart from the real value alone.
 - **Agents** (`/agents`, `views/Agents.tsx`): Vercel's Deployments list — one-click **quick
   filter chips** (Needs attention, Running, Mine, Orchestrated, Open PRs, Mergeable, Merged today,
   per instance, per repo; AND across groups, OR within one, each with its count) held in the URL
@@ -213,7 +221,9 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   Source (branch → base, latest commit); then the conversation where Build Logs sit (`ChatPanel
   logBar`: turn / error / warning counters, Find in chat, timestamped, tinted turns, the composer).
 - **Repos**, **Usage** (every login, every machine) and **Settings** (theme, density, the
-  read-only config).
+  read-only config). The Usage page shows the SAME `UsageCard` as the Overview — the high-level rows,
+  with every hydra login behind the one remembered chevron (`orca.ui.v1.usageExpanded`, shared by
+  both pages).
 Every number is a pure derivation over the assembled rows (`workstream.ts`: `overviewStats`,
 `attentionReasons`, `filterRows`, `sortRows`, `recentActivity`, `usageGroups`, `rowDuration`,
 `chatSummary`, `repoSummaries`, `agentFailure`) — no endpoint of its own, so the views can't
@@ -221,7 +231,21 @@ disagree. Usage, health and health history are one shared poll each (`lib/vitals
 `sharedSource`; history only while a card shows it). Each PR row also carries a **review cluster**
 (approvers, `N unresolved`, a severity dot) and the PR page a **Review panel** — `reviewDigest`
 over `GET /api/prs/:n/review-signal`, fetched lazily per rendered PR (`store.useReviewDigest`).
-Mobile is backlog.
+**The phone** (below md, 768px — `lib/viewport.ts` `useNarrow` / Tailwind `max-md:`, so nothing changes
+at desktop widths): a bottom bar (Menu · Agents · New agent · Orchestrator) replaces the top bar's Ask
+box; Agents rows stack with every action in the one ⋯ and the chips + sort in a Filters bottom sheet;
+the orchestrator, the terminal and Add New are full-screen `sheet`s sized to the visual viewport
+(`--vvh`, so the composer clears the keyboard; no drag / resize / PiP); menus and selects open as bottom
+sheets; inputs are 16px, touch targets 44px, Enter on a touch screen is a newline. Swipe a sheet's
+header down to close it; pull the Agents list down to refresh (`lib/gestures.ts`). It installs as a PWA
+(`web/public/manifest.webmanifest`: round icons plus a full-bleed maskable one, New agent /
+Orchestrator shortcuts as `/?open=…`). `vite build` writes `version.json` and `sw.js` (from
+`web/sw.template.js`: this build's shell + hashed assets precached, `offline.html` with neither, and
+**never** `/api` or `version.json`); a new build's worker waits until the "new version · Refresh"
+banner tells it to skip waiting. A service worker needs a secure context, so over the plain-http
+tailnet it stays inert (and Android won't offer an install) until that has HTTPS. Standalone CSS: no
+overscroll, no tap delay or flash, chrome not selectable. A hidden tab polls nothing; the top bar says
+when the board is stale; an unreachable bridge shows the offline screen.
 
 The board (`web/src/views/Board.tsx`), lanes: **Local → Draft → In Review → Mergeable → Done·today**.
 A workstream is a branch; its lane (`store.laneFor`):
@@ -230,6 +254,15 @@ A workstream is a branch; its lane (`store.laneFor`):
   is clean, else In Review). **merged today** (server-local calendar day) → Done (`gh pr list --state merged`).
 
 Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
+- **A failed action is a toast, never text in the row** (`lib/toast` + `components/Toaster`, mounted
+  once in App, bottom-right above the orchestrator's window; errors stay until dismissed, info goes
+  after 8s). Title = action + workstream, body = the message (mono, scrollable), **Copy** (message +
+  repo/branch/PR/action) and **Ask the orchestrator** (the #128 `ask`, prefilled `Action … failed: …
+  Please investigate and fix.`). The button keeps only its ✗, first line as tooltip. Covers
+  `WorkstreamActions` (Merge, Slack, Move, …), `ActionButton` with `failure`, and preview start/crash.
+- **Enable auto-merge on a repo that disallows it** (`Auto merge is not allowed for this repository`):
+  `enableAutoMerge` squash-merges directly if `mergeSafe`, else rethrows with "enable auto-merge in the
+  repo settings, or merge when green". The stacked fallback still comes first.
 - **Promote** (Local, remote repo) = a dropdown: Create PR ready / draft, ± add preview label.
   Local repo → plain Promote (sets `promoted`).
 - **Address PR / Follow up** = launch the selected provider headlessly in the branch's
@@ -529,12 +562,19 @@ owner's tailnet URL, which still lacks a secure context until the tailnet has HT
 worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box it failed with no token.
 **Machine metrics history:** each instance samples ITSELF once a minute (`startMetricsSampler` in
 `server/health.ts`, started from `server/index.ts`, reusing `health()`) into `instance_metric`
-(migration 11: instance, `at`, cpu %, load1, memory used/total, disk used; indexed on
-`(instance, at)`). Every insert also deletes that instance's own rows older than 30 days, so retention
+(migration 11: instance, `at`, cpu %, load1, memory used/total, disk used; migration 13 added
+`running_agents` — the count of leases `lease.live()` finds live at sample time, not agent.ts's
+in-memory `runs` map, so a sample taken right after a restart still counts what's genuinely live;
+nullable, so a pre-migration row reads back as 0 rather than null; indexed on `(instance, at)`).
+Every insert also deletes that instance's own rows older than 30 days, so retention
 needs no second timer; a failed write is logged and swallowed. `GET /api/health/history?instance=&hours=`
 (24 by default, at most 720) is database-only and its `instance` is a filter, never a forward, so
 either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
-CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300 points.
+CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300
+points, with running sessions overlaid on BOTH as a pink series on its own right-hand axis
+(`LineChart`'s `overlay` prop, `components/console.tsx`) — a different scale (a small integer count)
+sharing the same [from, to] window and downsampling as the main series, from the one
+`/api/health/history` poll, never a second fetch.
 **On darwin, memory used comes from `vm_stat`** (active + wired + occupied-by-compressor pages,
 Activity Monitor's own formula), not `totalmem() − freemem()` — macOS's `freemem()` is only the
 truly-free page count and reads near-100% on every healthy Mac; `sysctl -n kern.memorystatus_level`

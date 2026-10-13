@@ -1,6 +1,13 @@
-import { useRoute, type Route } from "@/lib/route";
+import { useEffect } from "react";
+import { useSetAtom } from "jotai";
+import { navigate, useRoute, type Route } from "@/lib/route";
+import { addNewOpenAtom } from "@/lib/atoms";
+import { useOrchestrator } from "@/components/Terminal";
+import { launchOverlay } from "./workstream";
+import { expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
 import { Shell, Crumb, AddNew } from "@/components/Shell";
 import { OrchestratorWindow } from "@/components/Terminal";
+import { Toaster } from "@/components/Toaster";
 import { useWorkstreams } from "./store";
 import { NewDraft } from "./views/Board";
 import { Overview } from "./views/Overview";
@@ -10,15 +17,30 @@ import { PrDetail } from "./views/PrDetail";
 import { LocalDetail } from "./views/LocalDetail";
 
 // The console: Vercel's shell (sidebar + top bar) around one page per route. The orchestrator's
-// window floats outside it, on every route; the top bar's "Ask the orchestrator" opens it.
+// window floats outside it, on every route; the top bar's "Ask the orchestrator" opens it. Action
+// failures surface as toasts (lib/toast), stacked above it.
 export function App() {
   const route = useRoute();
+  // The phone layout's two global listeners: the visible viewport's size (sheets stay above the
+  // keyboard) and tap-to-expand for truncated text.
+  useEffect(() => { const a = trackVisualViewport(), b = expandTruncatedOnTap(); return () => { a(); b(); }; }, []);
+  // A home-screen shortcut (manifest `shortcuts`) launches with ?open=new|orchestrator: open that
+  // overlay once, and drop the parameter so a reload doesn't reopen it.
+  const setAddNew = useSetAtom(addNewOpenAtom);
+  const { ask } = useOrchestrator();
+  useEffect(() => {
+    const open = launchOverlay(location.search);
+    if (!open) return;
+    navigate(location.pathname, true);
+    if (open === "new") setAddNew(true); else ask();
+  }, []);
   return (
     <>
       <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarAction collapsed={collapsed} />}>
         <Page route={route} />
       </Shell>
       <OrchestratorWindow />
+      <Toaster />
     </>
   );
 }

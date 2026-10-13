@@ -142,7 +142,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
               <ChatCard row={liveRow} />
             </>
           ) : (
-            <VCard slot="pr-details" title="Pull request details" aside={!pr.previewUrl ? <ActionButton onRun={() => addPreviewLabel(row)}>Add preview label</ActionButton> : undefined}>
+            <VCard slot="pr-details" title="Pull request details" aside={!pr.previewUrl ? <ActionButton onRun={() => addPreviewLabel(row)} failure={{ action: "Add preview label", title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }}>Add preview label</ActionButton> : undefined}>
               <div className="grid grid-cols-2 gap-x-6 gap-y-4 p-4 md:grid-cols-4">
                 <Detail label="Author">{pr.author || "?"}</Detail>
                 <Detail label="Source"><code className="truncate font-mono">{pr.head}</code><span className="text-muted-foreground">→ {pr.base}</span></Detail>

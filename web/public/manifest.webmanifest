@@ -1,0 +1,25 @@
+{
+  "id": "/",
+  "name": "Orca",
+  "short_name": "Orca",
+  "description": "Drive coding agents and their PRs to merge.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f9f9f8",
+  "theme_color": "#f9f9f8",
+  "user_preferences": {
+    "color_scheme_dark": { "background_color": "#111111", "theme_color": "#111111" }
+  },
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "shortcuts": [
+    { "name": "New agent", "short_name": "New", "url": "/?open=new", "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Orchestrator", "short_name": "Ask", "url": "/?open=orchestrator", "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }] }
+  ]
+}
