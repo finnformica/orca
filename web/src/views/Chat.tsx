@@ -15,7 +15,7 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, anchoredScrollTop, capWindow, chatItems, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, anchoredScrollTop, capWindow, chatItems, longMessage, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -270,7 +270,10 @@ function ChatTurn({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: (
       {said && (
         <div className="group mb-2 flex justify-end" data-slot="chat-user">
           <div className="max-w-[85%]">
-            <div className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">{said}</div>
+            <div className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">
+              {/* A long message is cut to its first lines, like an old reply. */}
+              <Clamp on={longMessage(said)} cut="max-h-[9rem]">{said}</Clamp>
+            </div>
             <div className="text-muted-foreground mt-0.5 text-right text-[10px] opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{time}</div>
           </div>
         </div>
@@ -292,12 +295,12 @@ function ChatTurn({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: (
 
 /** An old turn's reply, cut to its first lines with a Show more — the history reads as a list of
  *  exchanges, not a wall of past answers. The newest RECENT_FULL turns always render in full. */
-function Clamp({ on, children }: { on: boolean; children: React.ReactNode }) {
+function Clamp({ on, children, cut = "max-h-[4.5rem]" }: { on: boolean; children: React.ReactNode; cut?: string }) {
   const [open, setOpen] = useState(false);
   if (!on) return <>{children}</>;
   return (
     <div data-slot="turn-clamp" data-open={open || undefined}>
-      <div className={open ? "" : "max-h-[4.5rem] overflow-hidden [mask-image:linear-gradient(to_bottom,black_55%,transparent)]"}>{children}</div>
+      <div className={open ? "" : cn(cut, "overflow-hidden [mask-image:linear-gradient(to_bottom,black_55%,transparent)]")}>{children}</div>
       <button type="button" onClick={() => setOpen((v) => !v)} className="text-muted-foreground hover:text-foreground mt-0.5 text-[11px]">
         {open ? "Show less" : "Show more"}
       </button>

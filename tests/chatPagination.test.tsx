@@ -12,7 +12,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
-import { CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, capWindow, chatItems, longReply, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, turnSource, windowRange, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
+import { CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, capWindow, chatItems, longMessage, longReply, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, turnSource, windowRange, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -161,7 +161,7 @@ test("P6: the orchestrator's chat is one stream — worker traffic split out as 
   const mixed = { ...turn(6), instruction: `${WORKER_EVENT_MARKER} r/feat-x — done\nOutcome: ok\n\nask 6`, response: long(6), source: "human" as const };
   apiFake.turnsData.set("r::long", [
     { ...turn(0), response: long(0), source: "human" }, wake(1, "agents"), wake(2), wake(3, "agents"), { ...turn(4), response: long(4) },
-    wake(5), mixed, { ...turn(7), response: long(7) }, wake(8, "agents"),
+    wake(5), mixed, { ...turn(7), instruction: Array.from({ length: 12 }, (_, l) => `ask 7 line ${l}`).join("\n"), response: long(7) }, wake(8, "agents"),
   ]);
   apiFake.queuedData.set("long", [
     { id: 1, instruction: `${WORKER_EVENT_MARKER} r/held — done\nOutcome: ok`, attachments: [] },
@@ -194,7 +194,7 @@ test("P6: the orchestrator's chat is one stream — worker traffic split out as 
   expect(c.textContent).toContain("and then this");
   expect(c.querySelector('[data-slot="worker-report-held"]')).not.toBeNull();
   // Old long replies are clamped with a Show more; the newest RECENT_FULL (6, 7, 8) are in full.
-  const clampOf = (n: number) => [...c.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].find((t) => t.textContent!.includes(`reply ${n} line 0`))!.querySelector<HTMLElement>('[data-slot="turn-clamp"]');
+  const clampOf = (n: number) => [...c.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].find((t) => t.textContent!.includes(`reply ${n} line 0`))!.querySelector<HTMLElement>('[data-slot="chat-reply"] [data-slot="turn-clamp"]');
   expect(clampOf(0)).not.toBeNull();
   expect(clampOf(4)).not.toBeNull();
   expect(clampOf(6)).toBeNull();
@@ -205,6 +205,13 @@ test("P6: the orchestrator's chat is one stream — worker traffic split out as 
   await act(async () => { more.click(); await flush(); });
   expect(clampOf(0)!.dataset.open).toBe("true");
   expect(clampOf(0)!.querySelector("button")!.textContent).toBe("Show less");
+  // A long message of yours is cut too, at any age (the newest here), with its own Show more; a short one is not.
+  const bubble = (n: number) => [...c.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].find((t) => t.textContent!.includes(`reply ${n} line 0`))!.querySelector<HTMLElement>('[data-slot="chat-user"]')!;
+  expect(bubble(6).querySelector('[data-slot="turn-clamp"]')).toBeNull();
+  const cut = bubble(7).querySelector<HTMLElement>('[data-slot="turn-clamp"]')!;
+  expect(cut.firstElementChild!.className).toContain("max-h-[9rem]");
+  await act(async () => { cut.querySelector("button")!.click(); await flush(); });
+  expect(bubble(7).querySelector<HTMLElement>('[data-slot="turn-clamp"]')!.dataset.open).toBe("true");
 });
 
 test("the pure pieces: the window, compact replies and the worker blocks", () => {
@@ -223,6 +230,9 @@ test("the pure pieces: the window, compact replies and the worker blocks", () =>
   expect(longReply({ response: "a\nb\nc\nd\ne" })).toBe(true);
   expect(longReply({ response: "x".repeat(400) })).toBe(true);
   expect(longReply({ response: "short", structured: {} })).toBe(true);
+  expect(longMessage("a\nb\nc")).toBe(false);
+  expect(longMessage(Array.from({ length: 9 }, () => "l").join("\n"))).toBe(true);
+  expect(longMessage("x".repeat(601))).toBe(true);
   const w = (id: string, startedAt = 1) => ({ id, instruction: `${WORKER_EVENT_MARKER} x`, finishedAt: 1, startedAt });
   const u = (id: string) => ({ id, instruction: "hi", finishedAt: 1 });
   const kinds = <T extends { id: string }>(items: ChatItem<T>[]) => items.map((i) => (i.kind === "turn" ? i.turn.id : `[${i.turns.map((t) => t.id).join(",")}]`));

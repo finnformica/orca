@@ -13,7 +13,7 @@
 // successive sends are chained so they reach it in the order they were typed.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
-import { ArrowUp, Bot, Check } from "lucide-react";
+import { Bot, Check } from "lucide-react";
 import { quickAskOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
 import { api } from "../api";
@@ -25,6 +25,9 @@ import { cn } from "@/lib/utils";
 /** How long the "Sent" confirmation shows after a send (ms). The box itself stays open. */
 export const SENT_FLASH_MS = 2500;
 export const QUICK_ASK_PLACEHOLDER = "Ask the orchestrator...";
+/** The pill ↔ box morph (ms) — the surface's `duration-200`. */
+export const MORPH_MS = 200;
+const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // One chain for the whole tab: each POST starts only once the previous one has answered, so three
 // quick sends arrive as typed (in parallel, the second could reach the bridge first). A failure does
@@ -48,6 +51,21 @@ export function QuickAsk() {
   const [flash, setFlash] = useState(0); // >0 while "Sent" shows; bumped per send to restart its timer
   const [failed, setFailed] = useState<string | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
+  // The box's contents stay mounted through the collapse (`leaving`): faded out, pinned at the width
+  // they had, while the surface shrinks around them — then the pill fades in. Swapping them for the
+  // pill in the commit that closed it was the jank: a blank box shrinking around a popped-in pill.
+  const [mounted, setMounted] = useState(open);
+  if (open && !mounted) setMounted(true);
+  if (!open && mounted && reducedMotion()) setMounted(false);
+  const leaving = mounted && !open;
+  const content = useRef<HTMLDivElement>(null);
+  const [leaveWidth, setLeaveWidth] = useState<number>();
+  useLayoutEffect(() => {
+    if (!leaving) { setLeaveWidth(undefined); return; }
+    setLeaveWidth(content.current?.offsetWidth); // mid-transition this is still the open width
+    const t = setTimeout(() => setMounted(false), MORPH_MS);
+    return () => clearTimeout(t);
+  }, [leaving]);
   const key = shortcutLabel("quickAsk");
   // Open: focus the box in the commit that opens it, before the next keystroke. Closed: the text is
   // kept until it is sent — a half-typed line survives an Esc.
@@ -98,38 +116,48 @@ export function QuickAsk() {
           card / accent fills — never a translucent hover, which let the page show through. */}
       <div data-slot="quick-ask-surface" data-state={open ? "open" : "closed"}
         className={cn(
-          "[interpolate-size:allow-keywords] bg-card text-foreground pointer-events-auto overflow-hidden border transition-[width,height,border-radius,box-shadow] duration-200 ease-out motion-reduce:transition-none",
-          open ? "h-auto w-[min(560px,calc(100%-2rem))] rounded-xl shadow-modal" : "hover:bg-accent h-8 w-[6.5rem] rounded-[16px] shadow-menu",
+          "[interpolate-size:allow-keywords] bg-card text-foreground pointer-events-auto overflow-hidden border transition-[width,height,border-radius,box-shadow,background-color] duration-200 ease-out motion-reduce:transition-none",
+          open ? "h-auto w-[min(560px,calc(100%-2rem))] rounded-xl shadow-modal" : "h-8 w-[6.5rem] rounded-[16px] shadow-menu",
+          !mounted && "hover:bg-accent",
         )}>
-        {open ? (
-          <div role="dialog" aria-label="Quick ask" data-slot="quick-ask-box" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } }}>
-            <div className="flex items-end gap-2 px-3 py-2">
-              <Bot className="text-muted-foreground mb-1.5 size-4 shrink-0" />
-              {/* Opens at three lines and grows with its content (field-sizing, else the effect above),
-                  up to max-h, then scrolls. */}
+        {mounted ? (
+          // While leaving it is the same tree, faded, inert and out of the accessibility tree — no
+          // longer "the box" to anything that looks for it.
+          <div ref={content} role={leaving ? undefined : "dialog"} aria-label={leaving ? undefined : "Quick ask"} aria-hidden={leaving || undefined}
+            data-slot={leaving ? "quick-ask-leaving" : "quick-ask-box"}
+            {...(leaving ? { inert: "" } : {}) as React.HTMLAttributes<HTMLDivElement>}
+            style={leaving && leaveWidth ? { width: leaveWidth } : undefined}
+            className={cn(leaving && "pointer-events-none opacity-0 transition-opacity duration-100")}
+            onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } }}>
+            {/* The agent at the top left; the text takes the whole width beside it. Opens at three
+                lines and grows with its content (field-sizing, else the effect above), up to max-h. */}
+            <div className="flex items-start gap-2 px-3 pt-2.5">
+              <Bot className="text-muted-foreground mt-1 size-4 shrink-0" />
               <textarea ref={box} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} rows={3} aria-label="Message the orchestrator"
                 placeholder={QUICK_ASK_PLACEHOLDER} data-slot="quick-ask-input"
-                className="placeholder:text-muted-foreground field-sizing-content max-h-40 min-h-[4.5rem] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent py-1 text-sm outline-none" />
-              <span className="mb-0.5 flex shrink-0 items-center gap-1.5">
-                {/* The receipt: subtle, and it goes on its own. The box is already clear for the next. */}
-                <span role="status" aria-live="polite" data-slot="quick-ask-sent" className="text-muted-foreground flex items-center gap-1.5 text-xs">
-                  {flash > 0 && <>
-                    <Check className="text-geist-blue size-3.5" />Sent
-                    <button type="button" className="text-geist-blue hover:underline" onClick={() => { setOpen(false); ask(); }}>Open chat</button>
-                  </>}
-                </span>
-                <Shortcut id="send" />
-                <Button size="icon" variant="ghost" className="size-7" aria-label="Send" title="Send (Enter)" disabled={!text.trim()} onClick={send}>
-                  <ArrowUp className="size-4" />
-                </Button>
+                className="placeholder:text-muted-foreground field-sizing-content max-h-40 min-h-[4.5rem] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent py-0.5 text-sm outline-none" />
+            </div>
+            {/* The action row: the receipt on the left, Send (with its key) on the right — room for
+                more actions later. */}
+            <div className="flex items-center justify-between gap-2 px-2 pt-1 pb-2" data-slot="quick-ask-actions">
+              {/* The receipt: subtle, and it goes on its own. The box is already clear for the next. */}
+              <span role="status" aria-live="polite" data-slot="quick-ask-sent" className="text-muted-foreground flex items-center gap-1.5 pl-1 text-xs">
+                {flash > 0 && <>
+                  <Check className="text-geist-blue size-3.5" />Sent
+                  <button type="button" className="text-geist-blue hover:underline" onClick={() => { setOpen(false); ask(); }}>Open chat</button>
+                </>}
               </span>
+              <Button size="sm" variant="secondary" className="h-7 gap-1.5 pr-1.5 pl-2.5" aria-label="Send" title="Send (Enter)" disabled={!text.trim()} onClick={send}>
+                Send
+                <Shortcut id="send" />
+              </Button>
             </div>
             {failed && <div className="text-geist-red border-t px-3 py-1.5 text-xs" data-slot="quick-ask-error">{failed}</div>}
           </div>
         ) : (
           <button type="button" data-slot="quick-ask-pill" onClick={() => setOpen(true)} aria-label="Ask the orchestrator (quick)"
             title={`Quick ask (${key}): a message to the orchestrator`}
-            className="flex size-full items-center justify-center gap-2 px-3 text-sm whitespace-nowrap">
+            className="animate-in fade-in-0 flex size-full items-center justify-center gap-2 px-3 text-sm whitespace-nowrap duration-150 motion-reduce:animate-none">
             <Bot className="text-muted-foreground size-3.5" />
             <span>Ask</span>
             <Shortcut id="quickAsk" />

@@ -11,7 +11,7 @@ import { getDefaultStore } from "jotai";
 import { App } from "@/App";
 import { orchestratorActivityAtom, orchestratorOpenAtom, quickAskOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
-import { SENT_FLASH_MS } from "@/components/QuickAsk";
+import { MORPH_MS, SENT_FLASH_MS } from "@/components/QuickAsk";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -110,7 +110,7 @@ test("Q4: one surface morphs pill ↔ box (width, height, radius; none under red
   const closed = surface();
   expect(closed.dataset.state).toBe("closed");
   const cls = () => surface().className.split(/\s+/);
-  expect(cls()).toEqual(expect.arrayContaining(["transition-[width,height,border-radius,box-shadow]", "motion-reduce:transition-none", "h-8", "rounded-[16px]", "bg-card", "hover:bg-accent"]));
+  expect(cls()).toEqual(expect.arrayContaining(["transition-[width,height,border-radius,box-shadow,background-color]", "motion-reduce:transition-none", "h-8", "rounded-[16px]", "bg-card", "hover:bg-accent"]));
   expect(surface().className).not.toMatch(/hover:bg-[\w-]+\/\d+/); // no translucent hover: the page never shows through
   expect(cls()).toContain("[interpolate-size:allow-keywords]"); // height can animate to auto
   await click($('[data-slot="quick-ask-pill"]')!);
@@ -127,16 +127,33 @@ test("Q4: one surface morphs pill ↔ box (width, height, radius; none under red
   // Multi-line from the moment it opens: three rows tall, not a single line.
   expect(input().getAttribute("rows")).toBe("3");
   expect(input().className.split(/\s+/)).toEqual(expect.arrayContaining(["field-sizing-content", "min-h-[4.5rem]", "max-h-40", "overflow-y-auto"]));
-  // The send key as the shared keycap.
-  expect([...box.querySelectorAll('[data-shortcut="send"] [data-slot="kbd"]')].map((k) => k.textContent)).toEqual(["Enter"]);
+  // The agent at the top left beside the text; the row below holds only the actions — Send, carrying
+  // the send key as the shared keycap.
+  expect(box.firstElementChild!.contains(input())).toBe(true);
+  expect(box.firstElementChild!.querySelector("svg.lucide-bot")).not.toBeNull();
+  const actions = box.querySelector('[data-slot="quick-ask-actions"]')!;
+  expect(actions.contains(input())).toBe(false);
+  const sendBtn = actions.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
+  expect(sendBtn.textContent).toContain("Send");
+  expect([...sendBtn.querySelectorAll('[data-shortcut="send"] [data-slot="kbd"]')].map((k) => k.textContent)).toEqual(["Enter"]);
   // Shift+Enter is a newline (left to the textarea), not a send.
   await type(input(), "line one");
   await enter(input(), { shiftKey: true });
   expect(apiFake.orchestratorMessages).toEqual([]);
-  // Closing morphs back on the same element.
+  // Closing morphs back on the same element. The box's contents stay through the collapse — faded,
+  // inert, pinned — and only then does the pill fade in (swapping at once was the jank).
   await act(async () => { input().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await flush(); });
   expect(surface()).toBe(closed);
   expect(surface().dataset.state).toBe("closed");
+  expect($('[data-slot="quick-ask-box"]')).toBeNull(); // no longer the box to anything looking for it…
+  const leaving = $('[data-slot="quick-ask-leaving"]')!;
+  expect(leaving.className).toContain("opacity-0"); // …but still there, fading
+  expect(leaving.hasAttribute("inert")).toBe(true);
+  expect($('[data-slot="quick-ask-pill"]')).toBeNull();
+  await act(async () => { await new Promise((r) => setTimeout(r, MORPH_MS + 20)); });
+  expect($('[data-slot="quick-ask-leaving"]')).toBeNull();
+  expect($('[data-slot="quick-ask-pill"]')!.className).toContain("fade-in-0");
+  expect(cls()).toContain("hover:bg-accent");
 });
 
 test("Q5: a send is optimistic — cleared, still open and focused at once; quick successive sends all arrive, in order", async () => {

@@ -2170,6 +2170,10 @@ export const RECENT_FULL = 3;
 export const longReply = (t: { response?: string; structured?: unknown }): boolean =>
   Boolean(t.structured) || (t.response ?? "").split("\n").length > 4 || (t.response ?? "").length > 320;
 
+/** A message of yours too long to read at a glance in its bubble: it is cut to its first lines with a
+ *  Show more (any age — unlike a reply, which is cut only once it is old). */
+export const longMessage = (text: string): boolean => text.split("\n").length > 8 || text.length > 600;
+
 // ---- worker traffic in the orchestrator's chat ----
 // One stream. Your turns and its replies to them read as the conversation; the worker traffic — the
 // wakes worker reports caused and its replies to those — is split out of it: a run of agent turns is

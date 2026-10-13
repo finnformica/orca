@@ -184,8 +184,11 @@ a small "Ask · A" pill fixed at the bottom centre of the main column (its strip
 the sidebar ends, collapsed or expanded) on every page (desktop; below md the phone's bottom
 bar has the orchestrator instead) MORPHS (one surface: width, height, radius; instant under reduced
 motion) into a box for messages to the orchestrator with no history — "Ask the orchestrator...", a
-textarea three lines tall that grows to a cap (a JS fallback where `field-sizing` is unsupported), Enter sends / Shift+Enter breaks the line (the `send` keycap), no ✕ or
-footer. A send is optimistic: the box clears and stays open, a brief "Sent · Open chat" fades, and
+textarea three lines tall that grows to a cap (a JS fallback where `field-sizing` is unsupported), Enter sends / Shift+Enter breaks the line, no ✕. The agent icon sits top left with the text
+the whole width beside it; the row below holds only actions — a Send button carrying the `send` keycap
+(and the "Sent · Open chat" receipt). Collapsing keeps the box's contents mounted through the morph —
+faded, inert, pinned at their width — and the pill fades in after (`MORPH_MS`); swapping them at once
+made the exit janky. A send is optimistic: the box clears and stays open, a brief "Sent · Open chat" fades, and
 the POSTs are chained so quick sends arrive in order (a busy orchestrator queues them); a failed send
 gives the text back. The top-bar button and the phone's bottom bar (never the pill) carry the orchestrator's
 **activity dot** (`ActivityDot`: pulsing while a wake runs, lit once one finished while the panel was
@@ -412,7 +415,8 @@ stays MOUNTED while closed (slid out, `aria-hidden`), so reopening is instant wi
 scroll position and draft where you left them. Its chat is `ChatPanel variant="chat"`: an
 assistant-chat styling in the page's theme (`.log-themed`) — your messages as `bg-accent` bubbles on
 the right, replies under "Orchestrator" with a bot avatar, folded steps and `⚙` worker reports,
-day dividers (`dayLabel`), timestamps on hover. **One stream, worker traffic split out**: your
+day dividers (`dayLabel`), timestamps on hover, and a long message of yours cut to its first lines
+behind Show more (`longMessage`). **One stream, worker traffic split out**: your
 messages and its replies to them read as the conversation; each run of agent turns (the wakes worker
 reports caused and its replies) is ONE collapsed, blue-tinted `⚙ 3 worker reports · 2 replies` block
 that opens in place, and a wake that carried your message AND reports puts your words in the bubble
