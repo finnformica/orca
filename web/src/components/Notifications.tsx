@@ -226,7 +226,9 @@ export function ToastHost() {
   return (
     <>
       <div data-slot="notification-host" data-expanded={expanded || undefined} role="region" aria-label="Notification centre"
-        className="fixed z-40" style={{ left: anchor.left, bottom: anchor.bottom + (showCount ? COUNT_BAR_SPACE : 0), ...width }}
+        // z-[45]: above the orchestrator's side panel (z-40 — on a phone the full-width stack would
+        // otherwise sit under it), still under the action-error Toaster (z-50) and menus.
+        className="fixed z-[45]" style={{ left: anchor.left, bottom: anchor.bottom + (showCount ? COUNT_BAR_SPACE : 0), ...width }}
         onMouseEnter={() => setExpanded(true)} onMouseMove={() => setExpanded(true)}
         onMouseLeave={() => { if (!interacting) setExpanded(false); }}
         onPointerDown={() => setInteracting(true)} onPointerUp={() => setInteracting(false)}
@@ -242,7 +244,7 @@ export function ToastHost() {
         ]}
       </div>
       {showCount && (
-        <div data-slot="notification-count" className="bg-card fixed z-40 flex items-center justify-between rounded-lg border pl-3 pr-1 text-xs shadow-menu"
+        <div data-slot="notification-count" className="bg-card fixed z-[45] flex items-center justify-between rounded-lg border pl-3 pr-1 text-xs shadow-menu"
           style={{ left: anchor.left, bottom: anchor.bottom, height: COUNT_BAR_HEIGHT, ...width }}>
           <button type="button" className="text-muted-foreground hover:text-foreground" aria-expanded={expanded} onClick={() => setExpanded((e) => !e)}>
             {toasts.length} notifications

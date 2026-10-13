@@ -14,7 +14,8 @@ import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, repoFilterAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
 import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPalette";
-import { AskOrchestrator, useOrchestrator } from "@/components/Terminal";
+import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
+import { QuickAsk } from "@/components/QuickAsk";
 import { OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
 import { cn, PortalContainer } from "@/lib/utils";
@@ -52,6 +53,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
   const [open, setOpen] = useState(false); // off-canvas sidebar on a narrow screen
   const offline = useConfigFailed();
   useShellFallbacks();
+  const activity = useOrchestratorActivity(); // the ONE subscriber feeding every launcher's indicator
   const route = useRoute();
   useEffect(() => setOpen(false), [route]); // navigating closes the off-canvas sidebar
   useEffect(() => { // …and so does Esc
@@ -86,7 +88,9 @@ export function Shell({ crumbs, sidebarActions, children }: {
         </header>
         <main className="w-full flex-1 px-4 py-6 md:px-6 max-md:min-w-0 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pb-[calc(5.5rem+env(safe-area-inset-bottom))]">{offline ? <OfflineScreen /> : children}</main>
       </div>
-      <BottomBar onMenu={() => setOpen(true)} />
+      <BottomBar onMenu={() => setOpen(true)} activity={activity} />
+      {/* The quick-ask pill, bottom centre of every page (desktop; the phone's bottom bar has the orchestrator). */}
+      <QuickAsk />
       <Shortcuts />
       <CommandPalette />
       <ShortcutsHelp />
@@ -165,7 +169,7 @@ export const RoundMark = ({ className }: { className?: string }) => (
 
 /** The phone's bottom bar (below md only): what a thumb needs — the menu, Agents, New agent and the
  *  orchestrator — at the foot of the screen, above the home indicator. */
-function BottomBar({ onMenu }: { onMenu: () => void }) {
+function BottomBar({ onMenu, activity }: { onMenu: () => void; activity: { running: boolean; unread: boolean } }) {
   const route = useRoute();
   const [, setAddNew] = useAtom(addNewOpenAtom);
   const { ask } = useOrchestrator();
@@ -179,7 +183,8 @@ function BottomBar({ onMenu }: { onMenu: () => void }) {
       <button type="button" className={cn(item, "text-foreground")} onClick={() => setAddNew(true)}>
         <span className="bg-foreground text-background inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span>New agent
       </button>
-      <button type="button" className={item} onClick={() => ask()}><Bot className="size-5" />Orchestrator</button>
+      {/* The orchestrator, carrying the activity dot the desktop's quick-ask pill shows (there is no pill below md). */}
+      <button type="button" className={cn(item, "relative")} onClick={() => ask()}><Bot className="size-5" /><ActivityDot activity={activity} className="absolute top-1.5 right-[calc(50%-0.9rem)]" />Orchestrator</button>
     </nav>
   );
 }

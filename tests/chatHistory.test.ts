@@ -506,3 +506,32 @@ test("an archived branch can be reused, since only live workstreams are unique",
   await db.startTurn({ repo: "r", branch: "reused", runId: "run-new", provider: "claude", prompt: "new", startedAt: 2 });
   expect((await db.turns("r", "reused")).map((t) => t.id)).toEqual(["run-new"]); // the live one only
 });
+
+// ---- cursor pagination (the chat opens on the tail of a long conversation) ----
+
+test("turnPage: the newest page first, exact cursors back through equal timestamps, and the end", async () => {
+  // 7 turns; two of them share a start millisecond, which a timestamp-only cursor would split wrong.
+  const at = [1000, 2000, 3000, 3000, 4000, 5000, 6000];
+  for (const [i, startedAt] of at.entries()) {
+    await db.startTurn({ repo: "r", branch: "long", runId: `run-${i}`, provider: "claude", instruction: `ask ${i}`, prompt: `ask ${i} + scaffolding`, startedAt });
+  }
+  const page1 = await db.turnPage("r", "long", { limit: 3 });
+  expect(page1.turns.map((t) => t.id)).toEqual(["run-4", "run-5", "run-6"]); // oldest first, like turns()
+  expect(page1.older).not.toBeNull();
+  const page2 = await db.turnPage("r", "long", { limit: 3, before: page1.older! });
+  expect(page2.turns.map((t) => t.id)).toEqual(["run-1", "run-2", "run-3"]); // run-3 and run-2 share 3000: neither lost nor repeated
+  const page3 = await db.turnPage("r", "long", { limit: 3, before: page2.older! });
+  expect(page3.turns.map((t) => t.id)).toEqual(["run-0"]);
+  expect(page3.older).toBeNull(); // the first turn is in hand
+  // The pages stitch back into the whole conversation, in order.
+  const all = [...page3.turns, ...page2.turns, ...page1.turns].map((t) => t.id);
+  expect(all).toEqual((await db.turns("r", "long")).map((t) => t.id));
+  // A page exactly the size of what's left reports no older page rather than an empty one.
+  const exact = await db.turnPage("r", "long", { limit: 7 });
+  expect(exact.turns).toHaveLength(7);
+  expect(exact.older).toBeNull();
+  // A malformed cursor is not an error: it reads as the newest page.
+  expect((await db.turnPage("r", "long", { limit: 2, before: "garbage" })).turns.map((t) => t.id)).toEqual(["run-5", "run-6"]);
+  // Nothing recorded yet: an empty page with no cursor.
+  expect(await db.turnPage("r", "nothing", { limit: 3 })).toEqual({ turns: [], older: null });
+});
