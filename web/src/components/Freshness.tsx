@@ -4,13 +4,25 @@
 // than the one this tab runs (a deploy happened) — one tap hands over to the new build's service
 // worker (lib/sw.ts applyUpdate) and reloads.
 import { useEffect, useState } from "react";
-import { CloudOff, RefreshCw, WifiOff } from "lucide-react";
+import { CloudOff, RefreshCw, Server, WifiOff } from "lucide-react";
 import { poll } from "@/lib/poll";
 import { applyUpdate } from "@/lib/sw";
-import { useLastSync } from "../store";
-import { ago, newerBuild, staleAge } from "../workstream";
+import { useBridge, useLastSync } from "../store";
+import { ago, bridgeLabel, newerBuild, staleAge } from "../workstream";
 
 const RUNNING_BUILD = typeof __ORCA_BUILD__ === "undefined" ? undefined : __ORCA_BUILD__;
+const PREVIEW_PAGE = typeof __ORCA_PREVIEW__ === "undefined" ? false : __ORCA_PREVIEW__;
+
+/** On a branch preview, which bridge answers its /api — the branch's own, or (warning) main's. */
+export function BridgeLabel({ previewPage = PREVIEW_PAGE }: { previewPage?: boolean }) {
+  const label = bridgeLabel(useBridge(), previewPage);
+  if (!label) return null;
+  return (
+    <span role="status" data-slot="bridge-label" title={label.title} className={`${label.warn ? "bg-geist-warning-bg text-geist-warning-fg" : "bg-muted text-muted-foreground"} inline-flex h-6 shrink-0 items-center gap-1 truncate rounded-full px-2 text-xs font-medium`}>
+      <Server className="size-3.5" aria-hidden="true" />{label.text}
+    </span>
+  );
+}
 
 export function StaleIndicator() {
   const last = useLastSync();

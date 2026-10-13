@@ -11,7 +11,8 @@ if (!DEV) throw new Error("ORCA_DEV_ROOT is not set — point it at the base dir
 // any branch without the app carrying the script. Absolute path resolved from this config's own
 // location, so it's laptop-portable. See scripts/preview-db.sh.
 const previewDb = join(import.meta.dir, "scripts/preview-db.sh");
-const previewDeps = join(import.meta.dir, "scripts/preview-deps.sh"); // reinstall a worktree's node_modules iff drifted from its lockfile (stale CoW clone)
+const previewDeps = join(import.meta.dir, "scripts/preview-deps.sh");
+const previewOrca = join(import.meta.dir, "scripts/preview-orca.sh"); // an Orca preview's own read-only bridge (see the orca repo below) // reinstall a worktree's node_modules iff drifted from its lockfile (stale CoW clone)
 
 // Repos Orca manages. Add/remove entries here. The first is the default.
 const config: OrcaConfig = {
@@ -126,7 +127,12 @@ const config: OrcaConfig = {
       previewServices: [
         // The standard for a preview on a box: listen on {bind}, embed {host}, and let Vite accept it.
         // No previewSecureContext: Orca runs fine on the plain-http tailnet URL.
-        { name: "web", command: "cd web && export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS={host} && bunx --bun vite --host {bind} --port {port}", open: true },
+        // `bridge` is the BRANCH's own bridge in read-only preview mode (shared database, no migrations,
+        // no writes), and `web` proxies /api to it — not to main's :8787, which showed main's numbers
+        // under the branch's UI. A branch too old for preview mode, or with migrations the database
+        // lacks, falls back to forwarding to main; the page's label says which answered.
+        { name: "bridge", command: `bash '${previewOrca}' {port}` },
+        { name: "web", command: "cd web && export ORCA_API_PORT={svc:bridge} ORCA_PREVIEW_UI=1 __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS={host} && bunx --bun vite --host {bind} --port {port}", open: true },
       ],
     },
   ],

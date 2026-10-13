@@ -44,7 +44,11 @@ const buildVersion = (): Plugin => ({
 
 export default defineConfig(({ command }) => ({
   plugins: [react(), tailwindcss(), buildVersion()],
-  define: { __ORCA_BUILD__: JSON.stringify(command === "build" ? BUILD_ID : "dev") },
+  define: {
+    __ORCA_BUILD__: JSON.stringify(command === "build" ? BUILD_ID : "dev"),
+    // A branch preview (scripts/preview-orca.sh) sets ORCA_PREVIEW_UI=1 so the page labels its bridge.
+    __ORCA_PREVIEW__: JSON.stringify(process.env.ORCA_PREVIEW_UI === "1"),
+  },
   resolve: { alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) } },
   server: {
     port: Number(process.env.ORCA_UI_PORT ?? 8788),

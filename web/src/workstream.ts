@@ -2227,3 +2227,20 @@ export function conversationSummary(c: PrConversation["counts"]): string {
   return [c.comments && plural(c.comments, "comment"), c.threads && `${plural(c.threads, "thread")}${threadParts ? ` (${threadParts})` : ""}`, c.bots && `${c.bots} bot`]
     .filter(Boolean).join(" · ") || "No comments";
 }
+
+/** The bridge that answered `/api/config` (server/index.ts `bridgeInfo`). */
+export type BridgeInfo = { preview: boolean; branch?: string; port: number };
+
+/** What a page should say about the bridge behind its `/api`, or null when there is nothing to say
+ *  (the real Orca). A branch preview's frontend once proxied to MAIN's bridge silently, so its Cost
+ *  chart read main's numbers and everyone took them for the branch's. A preview page now always
+ *  says which answered, and warns when it is main's. Pure. */
+export function bridgeLabel(bridge: BridgeInfo | undefined, previewPage: boolean): { text: string; warn: boolean; title: string } | null {
+  if (!previewPage && !bridge?.preview) return null;
+  if (bridge?.preview) {
+    return { text: `API: this branch's bridge${bridge.branch ? ` (${bridge.branch})` : ""}`, warn: false,
+      title: `Answered by the branch's own bridge on :${bridge.port}, reading the shared database. Read-only: actions are refused.` };
+  }
+  return { text: "API: main bridge — not this branch", warn: true,
+    title: `Answered by the main bridge${bridge ? ` (${bridge.branch ?? "?"} on :${bridge.port})` : ""}: data and actions here are main's code, not this branch's.` };
+}

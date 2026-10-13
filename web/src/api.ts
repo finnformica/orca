@@ -5,7 +5,7 @@ import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSumm
 import type { Usage } from "../../server/usage";
 import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
 import type { Notification } from "../../shared/notifications";
-import type { SyncResult } from "./workstream";
+import type { BridgeInfo, SyncResult } from "./workstream";
 
 export type LiveAgent = {
   branch: string;
@@ -71,7 +71,7 @@ export type RepoInfo = {
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
 export const api = {
-  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[] }> => fetch("/api/config").then(res),
+  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[]; bridge?: BridgeInfo }> => fetch("/api/config").then(res),
   usage: (): Promise<Usage | null> => fetch("/api/usage").then(res),
   // Take a hydra login out of its rotation or put it back; `instance` names the host it's signed
   // in on (hydra state is per host) — the usage card's own, today.
