@@ -62,11 +62,13 @@ function UsageGroupRows({ group: g }: { group: UsageGroup }) {
   return (
     <div data-slot="usage-group" data-group={g.key} className={`mb-1 last:mb-0 ${g.dim ? "opacity-50" : ""}`}>
       <div className="flex items-baseline justify-between gap-2 px-2 pt-1.5 pb-1" onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
-        <span className="truncate text-xs font-medium" title={g.subtitle}>{g.title}</span>
+        <span className="flex min-w-0 items-baseline gap-1.5">
+          <span className="truncate text-xs font-medium" title={g.subtitle}>{g.title}</span>
+          {g.name && (hover || coarse) && <LoginToggle name={g.name} enabled={g.state !== "disabled"} />}
+        </span>
         <span className="flex items-center gap-1.5">
           {g.subtitle && <span className="text-muted-foreground truncate text-xs">{g.subtitle}</span>}
           {g.state && <Pill tone={g.state === "exhausted" || g.state === "locked" ? "red" : "default"} slot="usage-state">{g.state}</Pill>}
-          {g.name && <LoginToggle name={g.name} enabled={g.state !== "disabled"} shown={hover || coarse} />}
         </span>
       </div>
       {g.rows.map((r) => (
@@ -84,11 +86,12 @@ function UsageGroupRows({ group: g }: { group: UsageGroup }) {
 
 type SwitchState = "idle" | "loading" | "done" | "error";
 
-/** A hydra login's rotation switch — hover-revealed on its row (always shown on a touch screen via
- *  `shown`), ActionButton's own semantics (spinner → ✓/✗) in switch form: flipping it calls
- *  `POST /api/usage/profile`, applies the refreshed profile list it hands back at once (so the row
- *  doesn't wait for the next poll tick), and a failure goes to the error toast. */
-function LoginToggle({ name, enabled, shown }: { name: string; enabled: boolean; shown: boolean }) {
+/** A hydra login's rotation switch, next to its name — the caller mounts it only on hover (or
+ *  always, on a touch screen), so it reserves no space on a row that isn't. ActionButton's own
+ *  semantics (spinner → ✓/✗) in switch form: flipping it calls `POST /api/usage/profile`, applies
+ *  the refreshed profile list it hands back at once (so the row doesn't wait for the next poll
+ *  tick), and a failure goes to the error toast. */
+function LoginToggle({ name, enabled }: { name: string; enabled: boolean }) {
   const [state, setState] = useState<SwitchState>("idle");
   const toggle = async () => {
     if (state === "loading") return;
@@ -110,7 +113,6 @@ function LoginToggle({ name, enabled, shown }: { name: string; enabled: boolean;
       className={cn(
         "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors",
         state === "error" ? "bg-destructive" : enabled ? "bg-geist-blue" : "bg-input",
-        !shown && "pointer-events-none opacity-0",
       )}>
       <span className={cn("flex size-3 items-center justify-center rounded-full bg-white transition-transform", enabled ? "translate-x-3.5" : "translate-x-0.5")}>
         {state === "loading" && <Loader2 className="size-2.5 animate-spin" />}

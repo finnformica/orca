@@ -300,26 +300,33 @@ test("a hydra login's row shows a switch on hover: flipping it disables/enables 
   const mouse = (el: Element, type: "mouseover" | "mouseout") => act(async () => { el.dispatchEvent(new MouseEvent(type, { bubbles: true, relatedTarget: null })); await flush(); });
   const click = (el: Element) => act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   await click(card().querySelector("[data-slot='usage-toggle']")!); // the logins wait behind the chevron
-  const row = () => group("login:work")!.querySelector<HTMLElement>("[data-slot='login-toggle']")!;
+  const header = () => group("login:work")!.querySelector<HTMLElement>(".flex.items-baseline")!;
+  const row = () => group("login:work")!.querySelector<HTMLElement>("[data-slot='login-toggle']");
 
-  // Hidden until the row is hovered (opacity-0, not actually removed — always there for a touch screen).
-  expect(row().className).toContain("opacity-0");
-  expect(row().getAttribute("aria-checked")).toBe("true");
-  expect(row().getAttribute("title")).toBe("Take work out of hydra's rotation");
-  await mouse(group("login:work")!.querySelector(".flex.items-baseline")!, "mouseover");
-  expect(row().className).not.toContain("opacity-0");
+  // Not in the DOM at all until the row is hovered — no reserved space on a row that isn't (always
+  // mounted on a touch screen, covered separately).
+  expect(row()).toBeNull();
+  await mouse(header(), "mouseover");
+  expect(row()).not.toBeNull();
+  expect(row()!.getAttribute("aria-checked")).toBe("true");
+  expect(row()!.getAttribute("title")).toBe("Take work out of hydra's rotation");
+  // Sits right next to the login's name, not out among the state pill/subtitle.
+  expect(header().querySelector("span.truncate")!.nextElementSibling).toBe(row());
 
-  await click(row());
+  await click(row()!);
   expect(apiFake.setProfileEnabledCalls).toEqual([{ name: "work", enabled: false, instance: "laptop" }]);
-  expect(row().getAttribute("aria-checked")).toBe("false"); // flipped from the refreshed profile list
+  expect(row()!.getAttribute("aria-checked")).toBe("false"); // flipped from the refreshed profile list
   expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("disabled");
   expect(group("login:work")!.className).toContain("opacity-50"); // muted, same as any out-of-rotation login
-  expect(row().getAttribute("title")).toBe("Put work back");
+  expect(row()!.getAttribute("title")).toBe("Put work back");
 
-  await click(row()); // and back
+  await click(row()!); // and back
   expect(apiFake.setProfileEnabledCalls[1]).toEqual({ name: "work", enabled: true, instance: "laptop" });
-  expect(row().getAttribute("aria-checked")).toBe("true");
+  expect(row()!.getAttribute("aria-checked")).toBe("true");
   expect(group("login:work")!.className).not.toContain("opacity-50");
+
+  await mouse(header(), "mouseout");
+  expect(row()).toBeNull(); // leaves the DOM again once the row isn't hovered
 });
 
 test("a failed toggle goes to the error toast and the switch reverts", async () => {
@@ -327,9 +334,11 @@ test("a failed toggle goes to the error toast and the switch reverts", async () 
   apiFake.setProfileEnabledError = "hydra: no such profile";
   await mount("/usage");
   await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
-  const row = () => group("login:work")!.querySelector<HTMLElement>("[data-slot='login-toggle']")!;
-  await act(async () => { row().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
-  expect(row().getAttribute("aria-checked")).toBe("true"); // unchanged — the server refused it
+  const header = group("login:work")!.querySelector<HTMLElement>(".flex.items-baseline")!;
+  await act(async () => { header.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: null })); await flush(); });
+  const row = group("login:work")!.querySelector<HTMLElement>("[data-slot='login-toggle']")!;
+  await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(row.getAttribute("aria-checked")).toBe("true"); // unchanged — the server refused it
   const toast = container!.querySelector('[data-slot="toast"]')!;
   expect(toast.textContent).toContain("Disable failed");
   expect(toast.textContent).toContain("hydra: no such profile");
