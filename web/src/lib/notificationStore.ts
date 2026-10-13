@@ -6,10 +6,10 @@ import { useSyncExternalStore } from "react";
 import { getDefaultStore } from "jotai";
 import { api } from "../api";
 import { subscribeNotifications } from "./events";
-import { browserNotifyAtom, notifyDndAtom, orchestratorOpenAtom, toastPrefsAtom } from "./atoms";
+import { browserNotifyAtom, notifyDndAtom, toastPrefsAtom } from "./atoms";
+import { openOrchestrator } from "./orchestratorOpen";
 import { KIND_META, TOAST_AUTO_HIDE_MS, clockPause, clockResume, clockStart, notificationPath, shouldNotifyBrowser, shouldToast, type HideClock, type Notification, type ToastPrefs } from "../../../shared/notifications";
 import { navigate } from "./route";
-import { isNarrow } from "./viewport";
 import { actionFailureAsk, actionFailureCopy, type ActionFailure } from "../workstream";
 
 type State = { list: Notification[]; toasts: Notification[] };
@@ -101,7 +101,7 @@ function browserNotify(n: Notification): void {
     note.onclick = () => {
       window.focus();
       const path = notificationPath(n);
-      if (n.link?.orchestrator) { if (isNarrow()) navigate("/orchestrator"); else getDefaultStore().set(orchestratorOpenAtom, true); }
+      if (n.link?.orchestrator) openOrchestrator();
       else if (path) navigate(path);
       void markRead([n.id]);
     };

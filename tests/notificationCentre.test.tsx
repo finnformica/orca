@@ -368,7 +368,9 @@ describe("the notification centre", () => {
     apiFake.notificationsData = [note({ id: 50, createdAt: Date.now() - 5_000 })];
     await open("/");
     const first = await live();
-    expect(apiFake.notificationFetches).toEqual([undefined]);
+    // The load, then the first `ready` catching up from its cursor (a row written between the two
+    // would otherwise be missed until the next gap).
+    expect(apiFake.notificationFetches).toEqual([undefined, apiFake.notificationsData[0]!.createdAt as number]);
     // The stream reconnects (a second `ready` on the same source): fetch since the newest known row.
     apiFake.notificationsData.push(note({ id: 51, kind: "failed", title: "While away" }));
     await act(async () => { emit(first, "ready", {}); await flush(); await flush(); });
