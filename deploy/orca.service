@@ -7,6 +7,16 @@
 # Assumes a checkout at /opt/orca owned by a user `orca` who has run `bun install`, `bun run build`,
 # and signed in each CLI (`claude login`, `codex login --device-auth`, `gh auth login`) — see README
 # "Deploy". Bun auto-loads /opt/orca/.env, so every ORCA_* setting lives there, not here.
+#
+# Memory headroom (see CLAUDE.md "Deploying" and server/cgroup.ts): EVERY agent run gets its own
+# memory-limited systemd scope, so one worker's runaway build/browser is killed on its own — but
+# that only bounds ONE run at a time, not the box's bun process itself (previews, git, gh, anything
+# it runs directly) nor the aggregate of many workers at once. MemoryMax below reserves ~15% of the
+# box's RAM for Postgres, Tailscale and the kernel, which live OUTSIDE this unit (separate systemd
+# units, never children of it) and must never be the one the kernel picks when memory gets tight.
+# OOMScoreAdjust makes the bridge itself the LAST thing the kernel's system-wide OOM killer would
+# pick if it ever has to look outside a single run's own scope. Sized for the default m7i.xlarge
+# (16GB, deploy/provision.sh) — adjust both if the box's RAM changes.
 [Unit]
 Description=Orca bridge
 After=network-online.target
@@ -24,6 +34,10 @@ Environment=HOME=/home/orca
 ExecStart=/home/orca/.bun/bin/bun run server/index.ts
 Restart=always
 RestartSec=3
+# ~85% of 16GB — the bridge plus anything it runs directly (previews, one-off git/gh calls); each
+# agent run is capped separately in its own scope (server/cgroup.ts) and is not part of this number.
+MemoryMax=13G
+OOMScoreAdjust=-500
 # SIGTERM is "a deploy, a reboot": the bridge drains its history writes and leaves preview servers
 # running (server/index.ts). Give it the drain window before systemd escalates.
 KillSignal=SIGTERM

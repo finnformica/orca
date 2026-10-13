@@ -342,3 +342,16 @@ test("a top-level agentModel is the default for every repo's Claude runs; a repo
   expect(modelFor(cfg, cfg.repos[1]!)).toBe("claude-opus-5[1m]");
   expect(modelFor({}, { })).toBeUndefined(); // neither set → the CLI's own default
 });
+
+test("a repo's agentMemoryMaxGb and the app's agentCpuWeight are validated and round-trip through the database", async () => {
+  expect(parseConfigDocument(doc({ repos: [{ name: "app", repoPath: "/a", worktreeRoot: "/a/.wt", baseBranch: "main", agentMemoryMaxGb: -1 }] })).errors)
+    .toContain("repos[0].agentMemoryMaxGb must be a positive number of GB");
+  expect(parseConfigDocument(doc({ agentCpuWeight: 0 })).errors).toContain("agentCpuWeight must be a positive number (systemd CPUWeight, 1-10000)");
+  await saveConfigDocument(parseConfigDocument(doc({
+    agentCpuWeight: 20,
+    repos: [{ name: "app", repoPath: "/a", worktreeRoot: "/a/.wt", baseBranch: "main", agentMemoryMaxGb: 8 }],
+  })).config!);
+  const cfg = await loadConfig();
+  expect(cfg.agentCpuWeight).toBe(20);
+  expect(cfg.repos[0]!.agentMemoryMaxGb).toBe(8);
+});
