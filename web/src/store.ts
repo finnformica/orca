@@ -86,6 +86,10 @@ export const slackChannel = (repo: string) => repoInfo(repo)?.slackChannel;
 /** Whether the repo opted into preview services (RepoFeatures.previews) — the bridge still enforces
  *  this; the client reads it only to grey out the Add-preview control before a click round-trips. */
 export const previewsEnabled = (repo: string) => repoInfo(repo)?.features?.previews ?? false;
+/** Whether this repo has the deploy-preview workflow configured at all (a `previewLabel`) or has
+ *  opted into Orca's own local previews — either is reason enough to show the GitHub PR-preview
+ *  control; a repo with neither hides it entirely rather than offering a button that 404s. */
+export const previewConfigured = (repo: string) => Boolean(repoInfo(repo)?.previewLabel) || previewsEnabled(repo);
 export const staleHours = () => cfg?.staleHours ?? 24;
 /** This bridge's instance name, and every instance a workstream can be placed on, in display order
  *  (`instanceOrder`: cloud, then local, then any others alphabetically — not "this one first").
@@ -436,6 +440,9 @@ export type Row = {
   prBase?: string;
   prUrl?: string;
   previewUrl?: string;
+  /** The PR already carries the repo's preview label — the deploy preview is building but hasn't
+   *  posted its URL yet. Drives the "Deploying preview" pending state (see PrPreviewControl). */
+  hasPreviewLabel?: boolean;
   ciStatus?: CiStatus;
   reviewStatus?: ReviewStatus;
   mergeable?: Mergeable;
@@ -565,7 +572,7 @@ export function assembleRows(): Row[] {
         sessionId: e.sessionId ?? wt?.sessionId, // prefer the persisted id (survives restarts)
         transcript: e.transcript,
         mergeClean: wt?.mergeClean, remote: wt?.remote, instance: wt?.instance, promoted: e.promoted,
-        prNumber: pr?.number, prBase: pr?.base, prUrl: pr?.url, previewUrl: pr?.previewUrl, isDraft: pr?.isDraft,
+        prNumber: pr?.number, prBase: pr?.base, prUrl: pr?.url, previewUrl: pr?.previewUrl, hasPreviewLabel: pr?.hasPreviewLabel, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
         following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, previewInstance: e.previewInstance,
         failingChecks: pr?.failingChecks, feedback: pr?.feedback,
@@ -1024,9 +1031,10 @@ export async function resolveConflicts(row: Row) {
   await refresh();
 }
 
-export function addPreviewLabel(row: Row) {
-  if (!row.prNumber) return Promise.resolve();
-  return api.addPreviewLabel(row.repo, row.prNumber);
+export async function addPreviewLabel(row: Row) {
+  if (!row.prNumber) return;
+  await api.addPreviewLabel(row.repo, row.prNumber);
+  await refresh(); // pulls the label onto the row at once, so it reads "Deploying preview" without waiting for the next poll
 }
 
 /** THE agent action for a PR: one run that resolves conflicts, fixes CI and addresses the review —

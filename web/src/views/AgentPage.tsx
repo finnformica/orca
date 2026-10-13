@@ -13,6 +13,7 @@ import { Detail, Pill, StatusDot, VCard } from "@/components/console";
 import { ChatPanel } from "./Chat";
 import { TONE_DOT, TONE_LABEL } from "./Agents";
 import { Markdown } from "./PrDetail";
+import { PreviewCell, PrPreviewButton } from "./PreviewControl";
 
 export function DetailsCard({ row, summary, actions, extra }: { row: Row; summary: ChangeSummary | null; actions?: ReactNode; extra?: ReactNode }) {
   const failure = agentFailure(row);
@@ -24,7 +25,7 @@ export function DetailsCard({ row, summary, actions, extra }: { row: Row; summar
   const model = row.agentMeta?.model ?? modelLabel(modelFor(row));
   const outcome = row.agentOutcome?.outcome || row.agentResult;
   return (
-    <VCard slot="agent-details" title="Agent details" aside={actions}>
+    <VCard slot="agent-details" title="Agent details" aside={<><PreviewCell row={row} /><PrPreviewButton row={row} />{actions}</>}>
       <div className="grid gap-6 p-4 lg:grid-cols-[minmax(0,26rem)_minmax(0,1fr)]">
         {failure ? (
           <div data-slot="failure-box" className="border-geist-red min-h-32 rounded-lg border">
