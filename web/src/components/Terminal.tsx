@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { createPortal } from "react-dom";
-import { Bot, PictureInPicture2, PanelBottomClose, X } from "lucide-react";
+import { ArrowLeft, Bot, PictureInPicture2, PanelBottomClose, X } from "lucide-react";
 import { subscribeTurns, syncEvents } from "@/lib/events";
 import { ChatPanel } from "@/views/Chat";
 import { api } from "../api";
@@ -13,8 +13,9 @@ import { Shortcut } from "@/components/ui/kbd";
 import { poll } from "@/lib/poll";
 import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorWidthAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
-import { useNarrow } from "@/lib/viewport";
+import { isNarrow, useNarrow } from "@/lib/viewport";
 import { useSwipeToClose } from "@/lib/gestures";
+import { navigate, useRoute } from "@/lib/route";
 
 // The card's terminal: a modal you open in place (no navigating to the detail page) showing the
 // branch's conversation as a terminal-style log — the durable turns Orca records — with the follow-up
@@ -73,34 +74,45 @@ export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean
 let askSeq = 0;
 /** A new ask session: the keystrokes of one ask replace each other in the composer (see ChatComposer). */
 export const newAskSession = (): number => ++askSeq;
-/** Open the orchestrator's panel and focus its composer, with `text` after its draft. */
+/** Open the orchestrator and focus its composer, with `text` after its draft. On a narrow screen
+ *  (phones) this NAVIGATES to its routed page (`/orchestrator`) instead of opening the side panel —
+ *  an overlay sheet scrolled the page behind it rather than the chat, so the page is now a real route
+ *  with its own scroll container. Every entry point (the bottom bar, the O key, the palette, a
+ *  notification's Open, quick-ask's Open) goes through this one function, so they all redirect the
+ *  same way; desktop is untouched. */
 export function useOrchestrator() {
   const [open, setOpen] = useAtom(orchestratorOpenAtom);
   const setPrefill = useSetAtom(orchestratorPrefillAtom);
-  const ask = (text = "", session = newAskSession()) => { setOpen(true); setPrefill({ text, session, seq: ++askSeq }); };
+  const ask = (text = "", session = newAskSession()) => {
+    if (isNarrow()) navigate("/orchestrator"); else setOpen(true);
+    setPrefill({ text, session, seq: ++askSeq });
+  };
   return { open, ask, close: () => setOpen(false) };
 }
 
 /** The orchestrator's activity for the launchers' indicator: running, and whether a wake finished
- *  while the panel was closed. ONE subscriber (the Shell) keeps the atom current — a status read on
- *  mount, then one per `turn` event on the tab's shared live stream (a run started or finished), so
- *  it costs no poll of its own on every page. The panel opening clears `unread`. */
+ *  while it wasn't being looked at. ONE subscriber (the Shell) keeps the atom current — a status read
+ *  on mount, then one per `turn` event on the tab's shared live stream (a run started or finished), so
+ *  it costs no poll of its own on every page. "Being looked at" is the side panel open (desktop) OR
+ *  the routed page (narrow) — either clears `unread`. */
 export function useOrchestratorActivity(): { running: boolean; unread: boolean } {
   const [activity, setActivity] = useAtom(orchestratorActivityAtom);
   const open = useAtomValue(orchestratorOpenAtom);
-  const openRef = useRef(open);
-  openRef.current = open;
+  const route = useRoute();
+  const viewing = open || route.name === "orchestrator";
+  const viewingRef = useRef(viewing);
+  viewingRef.current = viewing;
   useEffect(() => {
     let live = true;
     const read = (finished: boolean) => api.orchestrator().then((s) => {
       if (!live) return;
-      setActivity((a) => ({ running: s.running, unread: a.unread || (finished && !s.running && !openRef.current) }));
+      setActivity((a) => ({ running: s.running, unread: a.unread || (finished && !s.running && !viewingRef.current) }));
     }).catch(() => {});
     void read(false);
     const unsubscribe = subscribeTurns(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { turn: () => void read(true), step: () => {}, resync: () => void read(false) });
     return () => { live = false; unsubscribe(); };
   }, []);
-  useEffect(() => { if (open) setActivity((a) => (a.unread ? { ...a, unread: false } : a)); }, [open]);
+  useEffect(() => { if (viewing) setActivity((a) => (a.unread ? { ...a, unread: false } : a)); }, [viewing]);
   return activity;
 }
 
@@ -138,10 +150,10 @@ const SLIDE_MS = 200;
 
 export function OrchestratorPanel() {
   const [open, setOpen] = useAtom(orchestratorOpenAtom);
-  // On a phone the panel is a full-screen sheet: no resizing or picture-in-picture.
+  // Never opened while narrow — useOrchestrator routes a phone to /orchestrator instead (see
+  // OrchestratorPage) — but `narrow` still hides Pop out if a desktop window is resized down below
+  // 768px with the panel already open.
   const narrow = useNarrow();
-  const sheetRef = useRef<HTMLDivElement>(null);
-  const swipe = useSwipeToClose(() => sheetRef.current, () => setOpen(false), narrow);
   const prefill = useAtomValue(orchestratorPrefillAtom);
   const setPrefill = useSetAtom(orchestratorPrefillAtom);
   const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
@@ -238,10 +250,7 @@ export function OrchestratorPanel() {
     e.preventDefault();
   };
   const header = (
-    <div
-      className={`flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3 select-none ${narrow && !pip ? "touch-none" : ""}`}
-      onPointerDown={!pip && narrow ? swipe.onPointerDown : undefined} data-slot="orchestrator-handle"
-    >
+    <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3 select-none" data-slot="orchestrator-handle">
       <div className="flex min-w-0 items-center gap-2">
         <span className="bg-accent text-foreground inline-flex size-6 shrink-0 items-center justify-center rounded-full"><Bot className="size-3.5" /></span>
         <div className="min-w-0">
@@ -301,10 +310,7 @@ export function OrchestratorPanel() {
         </PortalContainer.Provider>,
         pip.document.body,
       )}
-      {!pip && narrow && open && (
-        <div ref={sheetRef} role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel" data-sheet="" data-state="open" className={`${panelClass} sheet`}>{header}{chat}</div>
-      )}
-      {!pip && !narrow && (
+      {!pip && (
         // z-40: above the page and its sticky top bar (z-30), below menus and popovers (z-50), which
         // must still open over it. `aria-modal=false`: the page behind stays usable. Slid out, it is
         // hidden (visibility, after the transform finishes) and inert to assistive tech.
@@ -323,6 +329,65 @@ export function OrchestratorPanel() {
           {chat}
         </div>
       )}
+    </div>
+  );
+}
+
+// The viewport below the top bar and above the bottom bar (narrow), or below the top bar alone
+// (desktop, where the route still works if visited directly): topbar + this page's own h-12 header +
+// the shell's main padding + the reserved strip above the fixed bottom bar, all in `--vvh`/safe-area
+// terms like the Agent page's Chat tab (`CHAT_FILL_HEIGHT` in views/AgentPage.tsx) — so the chat's OWN
+// scroller (inside ChatPanel) is what scrolls, never the page.
+const ORCHESTRATOR_PAGE_HEIGHT =
+  "h-[calc(var(--vvh,100dvh)-13.5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] " +
+  "md:h-[calc(var(--vvh,100dvh)-9.5rem)]";
+
+/** The orchestrator as a routed page (`/orchestrator`): the phone destination every narrow-screen
+ *  entry point (the bottom bar, O, the palette, a notification's Open, quick-ask's Open — all via
+ *  `useOrchestrator`'s `ask`) navigates to instead of opening the side panel. Same conversation, same
+ *  turns, in the page's own scroll container — scrolling an overlay sheet used to scroll the page
+ *  behind it instead of the chat. Back (the header's arrow, or the browser/gesture back) returns to
+ *  wherever you were, because the route was PUSHED onto history rather than replacing it. No resize,
+ *  pop-out or pause-on-close bookkeeping: a page doesn't need any of that, it just mounts and polls
+ *  while it's the current route. */
+export function OrchestratorPage() {
+  const prefill = useAtomValue(orchestratorPrefillAtom);
+  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
+  const load = () => api.orchestrator().then(setState).catch(() => {});
+  useEffect(() => poll(load, 2000), []);
+  const row: Row = {
+    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
+    worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
+  };
+  return (
+    <div data-slot="orchestrator-page" className="flex flex-col">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b">
+        <Button size="icon" variant="ghost" className="-ml-2 size-9 shrink-0" title="Back" aria-label="Back" onClick={() => history.back()}>
+          <ArrowLeft className="size-4" />
+        </Button>
+        <div className="min-w-0">
+          {/* Paused = it has woken itself as many times as it may without hearing from you. */}
+          <div className="truncate text-sm font-medium">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
+          {state?.lastWakeUsd !== undefined && (
+            <div className={`truncate text-[11px] ${state.hint ? "text-geist-amber" : "text-muted-foreground"}`} title={state.hint}>
+              last wake ${state.lastWakeUsd.toFixed(2)}{state.hint ? ` · ${state.hint}` : ""}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className={cn("min-h-0", ORCHESTRATOR_PAGE_HEIGHT)}>
+        {state && <ChatPanel
+          row={row} flush variant="chat" prefill={prefill}
+          controls={{
+            model: state.model, only: "claude", contextPct: state.contextPct,
+            onModel: (model) => { setState({ ...state, model }); void api.orchestratorModel(model).then(load); },
+          }}
+          send={async (text, images) => {
+            await api.orchestratorMessage(text, images.length ? await api.uploadAttachments(images) : []);
+            await load();
+          }}
+        />}
+      </div>
     </div>
   );
 }

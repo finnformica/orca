@@ -71,6 +71,10 @@ const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extr
 export const api = {
   config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[] }> => fetch("/api/config").then(res),
   usage: (): Promise<Usage | null> => fetch("/api/usage").then(res),
+  // Take a hydra login out of its rotation or put it back; `instance` names the host it's signed
+  // in on (hydra state is per host) — the usage card's own, today.
+  setProfileEnabled: (name: string, enabled: boolean, instance?: string): Promise<{ profiles: Usage["profiles"] }> =>
+    post("/api/usage/profile", { name, enabled, instance }),
   // `instance` places the worktree on that instance (the bridge forwards there); the reply says where it landed.
   createWorktree: (repo: string, prompt: string, provider: AgentProvider, instance?: string): Promise<{ branch: string; worktreePath: string; title: string; instance?: string }> =>
     post("/api/workstreams", { repo, prompt, provider, instance }),

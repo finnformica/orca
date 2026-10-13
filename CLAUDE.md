@@ -345,6 +345,8 @@ context between turns.
    session-file copy; both deleted when hydra took over). An explicit `CLAUDE_CONFIG_DIR` bypasses
    hydra. If the shim is missing (Claude Code's updater rewrites `~/.local/bin/claude`), every run
    silently lands on the default login — `/api/usage` reports `routing.shim` and the meter warns.
+   The Usage card's per-login row has a hover switch (`POST /api/usage/profile`, per host) to take a
+   login out of hydra's rotation — still signed in, just skipped by this ladder — or put it back.
 3. **Portable transcript** (lossy, bounded). Used for a provider switch, a Claude session at ≥80%
    context, a Codex/Cursor session past 12 turns or three straight failures, a session the provider
    can't find, or a login switch whose session file is missing. `handoffPrompt` (`shared/agent.ts`)
