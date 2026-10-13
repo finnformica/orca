@@ -80,6 +80,10 @@ export function withoutFinalEcho(steps: AgentStep[], response: string): AgentSte
  *  run's cost cap; `interrupted` is you stopping it (kept distinct because the session stays
  *  resumable); `error` is everything else. */
 export type StopReason = "end_turn" | "requires_action" | "budget_reached" | "interrupted" | "error";
+/** Who a turn answers. `human`: you spoke — typed, the quick-ask box, the palette, a toast's Ask, the
+ *  New-draft box. `agents`: an automated wake, woken by worker reports alone. Recorded on the
+ *  orchestrator's turns (the chat's Chat / Agents channels); a worker's turns leave it unset. */
+export type TurnSource = "human" | "agents";
 
 /** Orca's own verification of a run that committed: the repo's `checkCommand` run in the worktree
  *  afterwards (server/check.ts). Deterministic evidence, as opposed to the agent's self-reported
@@ -99,6 +103,7 @@ export type AgentTurn = {
   provider: AgentProvider;
   stopReason?: StopReason;
   check?: TurnCheck;
+  source?: TurnSource;
   /** What the user actually typed (or the board action's label). `prompt` is the full text the CLI
    *  was given — the instruction plus the scenario's scaffolding and the outcome contract. */
   instruction?: string;

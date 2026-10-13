@@ -182,9 +182,15 @@ composer focused. It was a text box whose keystrokes carried into the composer; 
 below now covers "fire off a line"). **The quick-ask pill** (`components/QuickAsk.tsx`, the `A` key):
 a small "Ask · A" pill fixed at the bottom centre of the main column (its strip starts where
 the sidebar ends, collapsed or expanded) on every page (desktop; below md the phone's bottom
-bar has the orchestrator instead) opens a one-line box for ONE message to the orchestrator with no
-history — Enter sends, "Sent to the orchestrator · Open chat" dwells 4s then it closes, a failed
-send keeps the text. The pill, the top-bar button and the phone's bottom bar carry the orchestrator's
+bar has the orchestrator instead) MORPHS (one surface: width, height, radius; instant under reduced
+motion) into a box for messages to the orchestrator with no history — "Ask the orchestrator...", a
+textarea three lines tall that grows to a cap (a JS fallback where `field-sizing` is unsupported), Enter sends / Shift, ⌘ or Ctrl+Enter breaks the line (as in the chat composer), no ✕. The agent icon sits top left with the text
+the whole width beside it; the row below holds only actions — a Send button carrying the `send` keycap
+(and the "Sent · Open chat" receipt). Collapsing keeps the box's contents mounted through the morph —
+faded, inert, pinned at their width — and the pill fades in after (`MORPH_MS`); swapping them at once
+made the exit janky. A send is optimistic: the box clears and stays open, a brief "Sent · Open chat" fades, and
+the POSTs are chained so quick sends arrive in order (a busy orchestrator queues them); a failed send
+gives the text back. The top-bar button and the phone's bottom bar (never the pill) carry the orchestrator's
 **activity dot** (`ActivityDot`: pulsing while a wake runs, lit once one finished while the panel was
 closed, cleared when it opens), fed by ONE subscriber (`useOrchestratorActivity` in the Shell: a
 status read on mount, then one per `turn` event on the tab's shared stream — no poll of its own).
@@ -193,7 +199,10 @@ status read on mount, then one per `turn` event on the tab's shared stream — n
 orchestrator, `A` quick ask, `F` Find, `⌘B` the sidebar, `?` the shortcuts sheet, Esc closes the
 overlay (the quick-ask box first, then the panel). Letters
 and ⌘B never fire in a field or inside a modal dialog (they'd eat a keystroke of the message); ⌘K and
-Esc fire everywhere. **O, not ⌘J**, for the orchestrator: ⌘J / Ctrl+J is the browser's Downloads
+Esc fire everywhere. **Every open path goes through `openOrchestrator`** (`lib/orchestratorOpen.ts`): the composer focuses
+in a layout effect in the commit that opens it, and keys typed before that are held by a short
+typeahead and forwarded in order (typing "Sometimes" straight after O once gave "ometimesS").
+**O, not ⌘J**, for the orchestrator: ⌘J / Ctrl+J is the browser's Downloads
 (Chrome on Windows/Linux, Firefox), and a bare letter can't clash with a browser or a composer; from a
 field, ⌘K → "Open orchestrator" is one key more. The table also feeds the tooltips, the palette's
 hints and the `?` sheet, so a key can't be documented in one place and bound in another. **Every
@@ -367,7 +376,12 @@ shown as `❯ …` with the agent's output below), plus the follow-up `ChatCompo
 message. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
 involved. Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every
 board action uses. A turn written at launch but not yet finished renders as `▋ working…` (that's how
-an interrupted run stays visible); a turn with a parsed outcome renders its sections. **The composer
+an interrupted run stays visible); a turn with a parsed outcome renders its sections. A Claude run's
+reply types out live: `--include-partial-messages` text deltas are pushed as `delta` events (never
+stored; the whole message's step replaces the draft). A finished reply must render from the stream
+alone: the chat applies only its NEWEST page request (a slower, older answer once reverted a finished
+turn to `working…` until the next send), every `ready` re-reads the newest page, and an EventSource an
+HTTP error closed for good is reopened (`lib/events.ts`). **The composer
 is never busy:** a send clears the box at once and the next message can go while the launch is still
 in flight (seconds, longer over the tailnet) — the log's `▋ sending…` line, until the bridge has it as
 a running turn or a queued entry, is the receipt. (It used to go busy until the launch returned, and
@@ -401,7 +415,20 @@ stays MOUNTED while closed (slid out, `aria-hidden`), so reopening is instant wi
 scroll position and draft where you left them. Its chat is `ChatPanel variant="chat"`: an
 assistant-chat styling in the page's theme (`.log-themed`) — your messages as `bg-accent` bubbles on
 the right, replies under "Orchestrator" with a bot avatar, folded steps and `⚙` worker reports,
-day dividers (`dayLabel`), timestamps on hover. (History: a modal, then a draggable/resizable corner
+day dividers (`dayLabel`), timestamps on hover, and a long message of yours cut to its first lines
+behind Show more (`longMessage`). **One stream, worker traffic split out**: your
+messages and its replies to them read as the conversation; each run of agent turns (the wakes worker
+reports caused and its replies) is ONE collapsed, blue-tinted `⚙ 3 worker reports · 2 replies` block
+that opens in place, and a wake that carried your message AND reports puts your words in the bubble
+with the reports as their own collapsed block above it (`WorkerBlock`; `chatItems` / `agentsMarker` in
+`workstream.ts`). Held reports and your queued messages both show. (History: a Chat | Agents toggle
+split these into two channels; a wake carrying your message and reports counted as yours, so most
+worker traffic never reached Agents, and the user asked for this instead.) The split rides
+`turn.source` (`human` | `agents`, `shared/agent.ts` `TurnSource`; migration 18 — 16 and 17 were held
+by open branches — backfilled from the stored text): `human` is anything you said (typed, quick-ask,
+the palette, a toast's Ask, the New-draft box, Compact), `agents` a wake whose every message is a
+`[worker finished]` report (`turnSource`, decided in `orchestrator.wake`). A row without it is read
+off its instruction the same way (`sourceOf`). (History: a modal, then a draggable/resizable corner
 window with the dark terminal styling — one more thing to place and keep out of the way.) Its composer
 carries a model
 picker (Claude models only; changing it keeps the session) and an icon button whose ring shows how
@@ -513,11 +540,17 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   muted `⚙ … held for the batch` line. Between wakes it checks in itself with `orca board` /
   `orca read`. (It used to be woken per completion;
   the user found that noisy and wanted it to operate like a manager.) In the chat, a wake whose
-  message was only worker reports renders as muted `⚙` system lines with the report folded, not as
-  a `❯` prompt. It is asynchronous by design: it spawns, ends its turn, and is woken; it never polls.
+  message was only worker reports is an Agents-channel turn (above): muted `⚙` system lines with the
+  report folded, not a `❯` prompt. It is asynchronous by design: it spawns, ends its turn, and is woken; it never polls.
 - **One wake per batch.** Its runs launch with `queue: false`; everything that arrived while it
-  worked (worker events, your messages) is drained into ONE resumed run, and deliveries are
-  serialised so two workers finishing together can't race a launch.
+  worked (worker events, your messages) is drained into ONE resumed run — but each message stays its
+  own: they are joined with `MESSAGE_BREAK` (`joinMessages` / `splitMessages`), not a blank line, so
+  three sends are three bubbles in the chat and "N separate messages" to the model (a blank line
+  merged them into one in both; rows from before keep their old reading), and deliveries are
+  serialised so two workers finishing together can't race a launch. In that run's prompt what you
+  said and what the workers reported are separate labelled sections, yours first — `## From the
+  user`, then `## Worker reports` (each report verbatim) — so the model never reads a report as an
+  instruction from you, or the reverse (`orchestratorPrompt`).
 - **Loop guards.** `MAX_WAKES` (12) self-wakes in a row with no message from you → it pauses and
   holds further events in the queue until you reply (the window's title says so). Each wake has a
   `--max-budget-usd`: `orchestratorWakeBudgetUsd` in the app config, 5 unless set. There is
@@ -531,9 +564,11 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   was cut off`. A message whose wake dies twice (`died`) is NOT queued a third time; the line says
   to send it again. A restart is detected at startup (`orchestrator.recover`): a claim with no live
   lease whose turn did not end on text was cut off; one that outlived the bridge and finished is
-  just drained. Stop is not a death. The popout shows the last wake's spend and, once a wake costs
-  half the cap or the context is half full, a hint that a fresh session would be cheaper
-  (`sessionHint`) — a hint only, nothing is reset. The ledger records `costUsd` per run and
+  just drained. Stop is not a death. The header (panel and page alike) carries a live status line
+  (`orchestratorStatus`): Idle, or Working · elapsed, then `N queued` and `N workers running`
+  (orchestrated rows running, from the board's own poll); the last wake's spend and, once a wake
+  costs half the cap or the context is half full, the hint that a fresh session would be cheaper
+  (`sessionHint`) are its TOOLTIP, the hint shown only as an amber dot — a hint only, nothing is reset. The ledger records `costUsd` per run and
   `errorKind` `budget` / `timeout` instead of one `nonzero-exit`.
 - **The session is disposable.** Its notes (`orca notes set`, stored in its workstream blob) and a
   fresh board go into EVERY wake prompt; the role text only when a session starts. So the ladder
@@ -711,7 +746,12 @@ tracks `/proc/meminfo`'s `MemAvailable`).
 **Conversation loading with a remote database:** the chat is **paged**. `GET /api/turns?limit=50`
 returns `{ turns, older }` — the newest page (oldest first) and an opaque cursor
 (`<started_at>~<turn.id>`, exact across equal timestamps; `db.turnPage`) for the page before, which
-`?before=<cursor>` fetches (null once the first turn is in hand). Without `limit` the whole array
+`?before=<cursor>` fetches (null once the first turn is in hand). Paging bounds what is fetched; a **mounted
+window** (`CHAT_WINDOW`, two pages; `capWindow` / `revealAbove` / `revealBelow` in `workstream.ts`)
+bounds the DOM: scrolling toward an edge remounts loaded turns and unmounts the far side, one edge
+per commit so the scroll anchor stays exact. In the orchestrator's chat styling, turns older than the
+newest `RECENT_FULL` show their answer's first lines + Show more, and in its Chat channel each run of
+agent turns folds into one marker line (`channelItems`; the channel filter runs over the loaded page). Without `limit` the whole array
 comes back as it always did, so an older client keeps working. `ChatPanel` opens on the newest page
 (`TURN_PAGE_SIZE`), fetches the next older page as you near the top (or on the "↑ earlier turns"
 click, for a page too short to scroll) and restores `scrollTop` by the height added above
