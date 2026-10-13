@@ -565,6 +565,12 @@ export function testDatabaseRefusal(url: string, nodeEnv = process.env.NODE_ENV)
  *  checkout). A worktree's bridge applying ITS branch's migrations to the shared database is how a
  *  foreign step took main's id; `ORCA_ALLOW_WORKTREE_MIGRATIONS=1` is for a worktree whose database
  *  is genuinely its own. */
+/** A branch preview's own bridge (`ORCA_PREVIEW_BRIDGE=1`, scripts/preview-orca.sh): the branch's
+ *  code reading the SHARED database for its preview's `/api`. It shares the instance's name but none
+ *  of its runs or previews, so it never applies a migration and never publishes this instance's
+ *  state — and server/index.ts refuses every write route and skips every startup side effect. */
+export const previewBridge = (): boolean => process.env.ORCA_PREVIEW_BRIDGE === "1";
+
 function inLinkedWorktree(): boolean {
   try { return statSync(join(import.meta.dir, "..", ".git")).isFile(); } catch { return false; }
 }
@@ -591,6 +597,10 @@ async function migrate(sql: Bun.SQL): Promise<void> {
   for (const m of plan.mismatches) console.error(`orca: MIGRATION MISMATCH — ${describeMismatch(m)}`);
   for (const u of plan.unknown) console.error(`orca: migration ${u.id}${u.name ? ` ("${u.name}")` : ""} is recorded but this code has no such step — a branch ahead of this one, or another branch's`);
   if (plan.refused.length) throw refusal(plan.refused);
+  if (plan.run.length && previewBridge()) {
+    throw new MigrationRefused(`orca: a preview bridge never applies migrations (pending: ${plan.run.map((s) => s.id).join(", ")}) — `
+      + "this branch's schema is ahead of the shared database, so its preview's /api answers from the main bridge instead.");
+  }
   if (plan.run.length && process.env.NODE_ENV !== "test" && inLinkedWorktree() && process.env.ORCA_ALLOW_WORKTREE_MIGRATIONS !== "1") {
     throw new MigrationRefused(`orca: refusing to apply migration(s) ${plan.run.map((s) => s.id).join(", ")} from a git worktree — `
       + "this database may be the shared one, and a migration id is reserved only by merging to main. "
@@ -1091,6 +1101,7 @@ export function instanceName(): string {
  *  gone away without needing to name them — which also avoids binding an array, since a concurrent
  *  publish would otherwise have to agree on the list. */
 export async function publishInventory(repo: string, worktrees: { branch: string; data: Fields }[]): Promise<void> {
+  if (previewBridge()) return; // it has none of this instance's runs: publishing would mark them idle
   return withRetry(async (sql) => {
     const user = currentUser();
     const instance = instanceName();
@@ -1131,6 +1142,7 @@ export async function inventory(repo: string): Promise<{ instance: string; branc
 /** Publish THIS instance's running previews (upsert-then-sweep, as `publishInventory`): a preview
  *  this publish didn't name has stopped. */
 export async function publishPreviews(previews: { key: string; data: Fields }[]): Promise<void> {
+  if (previewBridge()) return; // its preview map is empty: publishing would wipe this instance's
   return withRetry(async (sql) => {
     const user = currentUser();
     const instance = instanceName();
@@ -1189,6 +1201,7 @@ export const METRIC_RETENTION_MS = 30 * 24 * 3_600_000;
  *  instance prunes only its own rows: the other may be on an older build, but never on someone
  *  else's timer. `at` is injectable for tests. */
 export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()): Promise<void> {
+  if (previewBridge()) return; // the instance samples itself once, from its real bridge
   return withRetry(async (sql) => {
     const instance = instanceName();
     // `instance_metric` has no unique constraint on (instance, at) — a retry that re-ran just the

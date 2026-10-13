@@ -1,0 +1,42 @@
+#!/usr/bin/env bun
+// `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--scroll <y|sel>]
+//  [--wait <ms>] [--full-page] [--label before|after] [--out <file>]` — the ONLY way a worker takes a
+// screenshot. It asks the bridge's capped, one-at-a-time browser (server/screenshot.ts) and prints the
+// PNG's path as `shot: <path>`; never start a browser yourself. --click/--scroll/--wait run in the
+// order given, after the page (and --wait-for) is ready.
+import { copyFileSync } from "fs";
+import { API_PORT } from "../../server/ports";
+
+const argv = process.argv.slice(2);
+const body: Record<string, unknown> = { steps: [] as unknown[] };
+const steps = body.steps as unknown[];
+let out: string | undefined;
+const value = (i: number, name: string) => {
+  const v = argv[i + 1];
+  if (v === undefined) { console.error(`orca-shot: ${name} needs a value`); process.exit(2); }
+  return v;
+};
+for (let i = 0; i < argv.length; i++) {
+  const a = argv[i]!;
+  if (a === "--viewport") body.viewport = value(i++, a);
+  else if (a === "--dark") body.dark = true;
+  else if (a === "--full-page") body.fullPage = true;
+  else if (a === "--wait-for") body.waitFor = value(i++, a);
+  else if (a === "--label") body.label = value(i++, a);
+  else if (a === "--out") out = value(i++, a);
+  else if (a === "--click") steps.push({ click: value(i++, a) });
+  else if (a === "--scroll") { const v = value(i++, a); steps.push({ scroll: /^\d+$/.test(v) ? Number(v) : v }); }
+  else if (a === "--wait") steps.push({ wait: Number(value(i++, a)) });
+  else if (a === "-h" || a === "--help") { console.log("usage: orca-shot <url> [--viewport WxH] [--dark] [--wait-for sel] [--click sel] [--scroll y|sel] [--wait ms] [--full-page] [--label name] [--out file]"); process.exit(0); }
+  else if (a.startsWith("--")) { console.error(`orca-shot: unknown flag ${a}`); process.exit(2); }
+  else body.url = a;
+}
+if (!body.url) { console.error("orca-shot: a URL is required (e.g. orca-shot http://localhost:5173 --viewport 390x844)"); process.exit(2); }
+
+const res = await fetch(`${process.env.ORCA_URL ?? `http://127.0.0.1:${API_PORT}`}/api/screenshot`, {
+  method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+});
+const shot = (await res.json().catch(() => ({ error: `bridge answered ${res.status}` }))) as { path?: string; bytes?: number; error?: string };
+if (!res.ok || !shot.path) { console.error(`orca-shot: ${shot.error ?? `bridge answered ${res.status}`}`); process.exit(1); }
+if (out) copyFileSync(shot.path, out);
+console.log(`shot: ${shot.path}${body.label ? ` (${body.label})` : ""}`);
