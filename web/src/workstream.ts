@@ -1816,9 +1816,12 @@ function matchesChip(row: OverviewRow, group: QuickGroup, value: string, here?: 
 // today") — otherwise the default-on toggle would make that chip permanently empty. When probing
 // the pr group's own chips (skip === "pr", from quickCount), the exclusion is suspended entirely:
 // it only ever matches a DONE row through the "merged" value anyway, so this is a no-op for the
-// other pr values and exactly what's needed for "merged"'s own count.
-const passes = (row: OverviewRow, f: QuickFilter, here: string | undefined, skip?: QuickGroup) => {
-  if (skip !== "pr" && f.notMerged && !f.pr.includes("merged") && row.lane === "DONE") return false;
+// other pr values and exactly what's needed for "merged"'s own count. `skip === "notMerged"` (from
+// notMergedCount) suspends it too, for the same reason `quickCount` skips a chip's OWN group: the
+// count must not depend on whether the toggle it's labelling happens to be on or off right now.
+type PassesSkip = QuickGroup | "notMerged";
+const passes = (row: OverviewRow, f: QuickFilter, here: string | undefined, skip?: PassesSkip) => {
+  if (skip !== "pr" && skip !== "notMerged" && f.notMerged && !f.pr.includes("merged") && row.lane === "DONE") return false;
   return QUICK_GROUPS.every((g) => g === skip || !f[g].length || (f[g] as string[]).some((v) => matchesChip(row, g, v, here)));
 };
 
@@ -1832,11 +1835,13 @@ export function quickCount(rows: OverviewRow[], f: QuickFilter, group: QuickGrou
   return rows.filter((r) => passes(r, f, here, group) && matchesChip(r, group, value, here)).length;
 }
 
-/** The "Not merged" chip's count: how many merged workstreams it hides (or would hide), under the
- *  other groups' chips — ignoring `pr` itself, since merged-ness is exactly what it and `notMerged`
- *  both turn on. */
-export function notMergedHiddenCount(rows: OverviewRow[], f: QuickFilter, here?: string): number {
-  return rows.filter((r) => r.lane === "DONE" && passes(r, f, here, "pr")).length;
+/** The "Not merged" chip's count: the number of NOT merged workstreams — rows that pass every
+ *  OTHER active group's chips (status/pr/by/on/repo, exactly as currently selected) and aren't
+ *  DONE, the same question `quickCount` answers for a real chip, with the toggle's own effect (the
+ *  `notMerged` exclusion above) ignored so the count doesn't flip depending on whether it's
+ *  currently on or off. */
+export function notMergedCount(rows: OverviewRow[], f: QuickFilter, here?: string): number {
+  return rows.filter((r) => passes(r, f, here, "notMerged") && r.lane !== "DONE").length;
 }
 
 export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) => f[g].length > 0) || !f.notMerged;
