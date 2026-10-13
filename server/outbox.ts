@@ -316,4 +316,5 @@ export function summary(): { turns: number; enrichment: number } {
   return { turns: allJournals().filter((j) => j.db === db.databaseKey()).length, enrichment: queuedPatches().filter((p) => p.db === db.databaseKey()).length };
 }
 
-db.onAvailable(() => replay());
+// A branch preview's read-only bridge shares this state dir but never writes: the real bridge replays.
+db.onAvailable(() => (db.previewBridge() ? undefined : replay()));

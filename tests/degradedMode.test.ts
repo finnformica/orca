@@ -101,7 +101,7 @@ function forwarder(port: number, target: { hostname: string; port: number }) {
 const viaPort = (url: string, port: number) => { const u = new URL(url); u.hostname = "127.0.0.1"; u.port = String(port); return u.toString(); };
 
 beforeEach(async () => {
-  prev = Object.fromEntries(["ORCA_STATE_DIR", "ORCA_DATABASE_URL", "PATH", "ORCA_INSTANCE"].map((k) => [k, process.env[k]]));
+  prev = Object.fromEntries(["ORCA_STATE_DIR", "ORCA_DATABASE_URL", "PATH", "ORCA_INSTANCE", "ORCA_PREVIEW_BRIDGE"].map((k) => [k, process.env[k]]));
   state = await mkdtemp(join(tmpdir(), "orca-degraded-"));
   shim = await mkdtemp(join(tmpdir(), "orca-claude-"));
   repo = await makeScratchRepo();
@@ -230,6 +230,45 @@ test("D3 placement keeps a worktree on this disk local without the inventory", a
   expect(await placement(cfg, { worktreePath: join(root, "local-work") })).toBe("local");
   expect(await placement(cfg, { branch: "somewhere-else" })).toBe("cloud"); // not here: the repo's default
 });
+
+test("D5 a branch preview's read-only bridge never replays the outbox; the real bridge does", async () => {
+  // A preview bridge (ORCA_PREVIEW_BRIDGE=1, scripts/preview-orca.sh) shares this machine's state dir
+  // but refuses every write — the main bridge's journal is the main bridge's to replay.
+  const port = freePort();
+  const target = new URL(pg.url);
+  const pgAt = { hostname: target.hostname === "localhost" ? "127.0.0.1" : target.hostname, port: Number(target.port || 5432) };
+  // The schema exists already (the real bridge migrated it); the preview bridge never migrates.
+  process.env.ORCA_DATABASE_URL = pg.url;
+  await db.turns("r", "feat");
+  process.env.ORCA_DATABASE_URL = viaPort(pg.url, port);
+  await db.close();
+
+  // An outage: a turn is journaled.
+  const runId = crypto.randomUUID();
+  expect(await outbox.startTurn({ repo: "r", branch: "feat", runId, provider: "claude", instruction: "offline", prompt: "offline", startedAt: Date.now() })).toBe("outbox");
+  const file = join(state, "outbox", `${runId}.json`);
+  let proxy = forwarder(port, pgAt);
+  try {
+    // Back, under a preview bridge: reachable, but nothing written and the journal kept.
+    process.env.ORCA_PREVIEW_BRIDGE = "1";
+    expect(await db.probe()).toBe(true);
+    expect(await db.turns("r", "feat")).toEqual([]);
+    expect(existsSync(file)).toBe(true);
+
+    // Down again, then back under the real bridge: its reconnect replays the journal.
+    delete process.env.ORCA_PREVIEW_BRIDGE;
+    proxy.stop(true);
+    await db.close();
+    await expect(db.turns("r", "feat")).rejects.toBeInstanceOf(db.DbUnavailable);
+    proxy = forwarder(port, pgAt);
+    expect(await db.probe()).toBe(true);
+    expect((await db.turns("r", "feat")).map((t) => t.id)).toEqual([runId]);
+    expect(existsSync(file)).toBe(false);
+  } finally {
+    await db.close();
+    proxy.stop(true);
+  }
+}, 30_000);
 
 test("D4 the dev launcher's supervisor restarts a crashing bridge, and restarts on demand", async () => {
   const dir = await mkdtemp(join(tmpdir(), "orca-supervise-"));

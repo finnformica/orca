@@ -29,6 +29,7 @@ import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, r
 import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
+import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -69,7 +70,11 @@ async function resolvePrDescription(
 // Take the API port from a stale bridge (a prior dev run, or another checkout's instance) before
 // binding — otherwise a fresh bridge with newer routes silently loses the bind and the UI proxies
 // `/api` to the old code, 404ing on anything new (this is what made "Test master" report "not found").
-if (!(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
+// A branch preview's own bridge (db.previewBridge, scripts/preview-orca.sh) reads the shared database
+// for its preview and does NOTHING else: none of the startup work below, which acts on this
+// instance's runs, previews and metrics, and no write route (see `api`).
+const PREVIEW_BRIDGE = db.previewBridge();
+if (!PREVIEW_BRIDGE && !(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
   console.log(`orca: reclaimed :${API_PORT} from a stale bridge`);
   await waitForPortFree(API_PORT);
 }
@@ -86,7 +91,7 @@ void db.open().catch((e) => {
   else if (e instanceof db.DbUnavailable) console.error("orca: starting WITHOUT the database — agents run, history journals to the outbox");
   else console.error("orca: database open failed", e);
 });
-await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-killed prior bridge
+if (!PREVIEW_BRIDGE) await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-killed prior bridge
 // Turns whose run died with a previous bridge would otherwise render "working…" forever. Leases are
 // the authority on what's genuinely still running (they deliberately survive shutdown). Before
 // writing one off, try to recover what it actually did from the provider's own session file — the
@@ -95,10 +100,11 @@ const reconcile = () => db.reconcileRunning(lease.liveRunIds(), async ({ runId, 
   const found = await backfillRun(runId, sessionId);
   return found?.response ? { response: found.response, structured: found.outcome } : undefined;
 });
-// Once the database answers (now, or after an outage the bridge booted into): close what died.
+// Once the database answers (now, or after an outage the bridge booted into): close what died. A
+// preview bridge acts on none of this instance's runs, so it skips both.
 let reconciled = false;
 db.onAvailable(async () => {
-  if (reconciled) return;
+  if (reconciled || PREVIEW_BRIDGE) return;
   reconciled = true;
   const { closed, recovered } = await reconcile();
   if (closed) console.log(`orca: closed ${closed} interrupted turn(s), recovered ${recovered} from the provider's session`);
@@ -107,7 +113,7 @@ db.onAvailable(async () => {
 });
 // Runs still going under a lease are adopted, not written off: when each exits, its turn is finished
 // from the session file and the orchestrator hears about it, as if the bridge had never restarted.
-const adopted = agent.adoptLeases(async (runId, sessionId, worktreePath) => {
+const adopted = PREVIEW_BRIDGE ? 0 : agent.adoptLeases(async (runId, sessionId, worktreePath) => {
   const found = await backfillRun(runId, sessionId, worktreePath);
   return found?.response ? { response: found.response, structured: found.outcome } : undefined;
 }, orchestrator.dir());
@@ -147,7 +153,7 @@ void loadConfig().then((cfg) => cfg.repos.filter(verbs.repoHere)
 // only the owner can write. (A cloud box has no browser of its own; before this, its worktrees
 // appeared only while someone's board happened to be forwarded to it.)
 const INVENTORY_PUBLISH_MS = 10_000;
-setInterval(() => {
+if (!PREVIEW_BRIDGE) setInterval(() => {
   void loadConfig().then((cfg) => Promise.all(cfg.repos.filter(verbs.repoHere).map((r) => agentRows(r).catch((e) => console.error(`orca: inventory publish failed for ${r.name}`, e))))).catch(() => {});
   void publishPreviews(); // the same for previews: the running-previews menu on any machine lists them
 }, INVENTORY_PUBLISH_MS).unref();
@@ -160,7 +166,7 @@ const publishPreviews = () => loadConfig().then((cfg) => verbs.previewRows(cfg, 
 
 // This machine's vitals into instance_metric once a minute, for the header chip's 24h graphs
 // (server/health.ts). Each instance samples itself; either answers the history from Postgres.
-startMetricsSampler();
+if (!PREVIEW_BRIDGE) startMetricsSampler();
 
 // Orphaned preview databases (a bridge crash / reaped worktree / worker test run that never dropped
 // its own) and stale test-harness Docker containers — on this instance's repos only. At startup
@@ -171,8 +177,10 @@ function runReaper(): void {
   void loadConfig().then((cfg) => preview.reap(cfg.repos.filter(verbs.repoHere)))
     .catch((e) => console.error("orca: preview/container reap failed", e));
 }
-runReaper();
-setInterval(runReaper, REAP_INTERVAL_MS).unref();
+if (!PREVIEW_BRIDGE) {
+  runReaper();
+  setInterval(runReaper, REAP_INTERVAL_MS).unref();
+}
 
 // How many of a conversation's newest turns are sent with their steps attached (older ones load on unfold).
 const STEPS_FOR_TURNS = 40;
@@ -207,6 +215,9 @@ function whenDatabaseDown(req: Request, url: URL, e: db.DbUnavailable): Response
   if (empty) return degradedJson(empty());
   return degradedJson({ error: `${e.message} — this needs the database; it will work again once it is back` }, 503);
 }
+
+const BRIDGE_BRANCH = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: import.meta.dir }).stdout.toString().trim() || undefined;
+const bridgeInfo = () => ({ preview: PREVIEW_BRIDGE, branch: BRIDGE_BRANCH, port: API_PORT });
 
 /** A caller-supplied base ref, rejected unless it looks like a branch name (never a `-flag` that git
  *  would read as an option). */
@@ -355,6 +366,9 @@ async function api(req: Request, url: URL): Promise<Response> {
   // repo or changing a setting takes effect on the next call rather than the next deploy. Cached in
   // config.ts and invalidated on write, so this is a map lookup in the common case.
   const cfg = await loadConfig();
+  if (PREVIEW_BRIDGE && req.method !== "GET") {
+    return json({ error: "This is a branch preview's bridge: it reads the shared database but changes nothing. Use the main Orca for actions." }, 403);
+  }
   // Pasted/dropped files (any type): save each to a temp dir, hand back absolute paths the agent Reads.
   // Handled before the JSON body parse below — this is the one multipart route.
   if (req.method === "POST" && p === "/api/attachments") {
@@ -381,6 +395,18 @@ async function api(req: Request, url: URL): Promise<Response> {
     const self = db.instanceName();
     const others = url.searchParams.get("local") ? [] : Object.entries(cfg.instances ?? {}).filter(([n]) => n !== self).map(([, base]) => base);
     return eventStream(req, others);
+  }
+  // Screenshots (server/screenshot.ts): the one capped browser on this box, behind one queue. Never
+  // forwarded — a worker shoots a preview on its own instance.
+  if (req.method === "POST" && p === "/api/screenshot") {
+    let shot: ShotRequest;
+    try { shot = parseShotRequest(body); } catch (e) { return json({ error: (e as Error).message }, 400); }
+    return json(await shooter().shoot(shot));
+  }
+  const shotId = p.match(/^\/api\/screenshots\/(shot-[\w-]+)$/)?.[1];
+  if (req.method === "GET" && shotId) {
+    const file = diskStore().path(shotId);
+    return file ? new Response(Bun.file(file), { headers: { "content-type": "image/png" } }) : json({ error: "not found" }, 404);
   }
   if (p.startsWith("/api/orchestrator") && cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName()) {
     // ONE instance hosts the orchestrator (orchestratorOn); everything about it goes there.
@@ -539,6 +565,9 @@ async function api(req: Request, url: URL): Promise<Response> {
       // `ok`, or `unreachable since <iso>`: the bridge serves (and runs agents) without the database,
       // from the last good config, journaling history until it is back.
       database: db.databaseStatus(),
+      // Which bridge answered — a branch preview labels itself with it (BridgeLabel), so a number
+      // read from main's bridge is never mistaken for the branch's.
+      bridge: bridgeInfo(),
     });
   }
   // The orchestrator's verbs over HTTP, so an orchestrator on one instance can spawn / send /

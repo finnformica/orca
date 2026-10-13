@@ -16,7 +16,7 @@ import { shortcutLabel } from "@/lib/shortcuts";
 import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPalette";
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
-import { OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
+import { BridgeLabel, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
 import { cn, PortalContainer } from "@/lib/utils";
 import { validChoice } from "@/lib/persisted";
@@ -85,7 +85,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
           <button type="button" data-slot="topbar-mark" onClick={() => navigate("/")} aria-label="Orca — go to overview" className="shrink-0 md:hidden"><RoundMark /></button>
           <RepoSwitcher />
           <nav aria-label="Breadcrumb" className="text-muted-foreground flex min-w-0 items-center gap-2 text-sm">{crumbs}</nav>
-          <span className="contents max-md:ml-auto max-md:flex"><StaleIndicator /></span>
+          <span className="contents max-md:ml-auto max-md:flex"><BridgeLabel /><StaleIndicator /></span>
           <AskOrchestrator />
         </header>
         <main className="w-full flex-1 px-4 py-6 md:px-6 max-md:min-w-0 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pb-[calc(5.5rem+env(safe-area-inset-bottom))]">{offline ? <OfflineScreen /> : children}</main>

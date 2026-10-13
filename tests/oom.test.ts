@@ -32,7 +32,7 @@ exec "\${args[@]}"
 `;
 
 beforeEach(async () => {
-  prev = { ORCA_STATE_DIR: process.env.ORCA_STATE_DIR, ORCA_DATABASE_URL: process.env.ORCA_DATABASE_URL, PATH: process.env.PATH, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, SLACK_TOKEN: process.env.SLACK_TOKEN };
+  prev = { ORCA_STATE_DIR: process.env.ORCA_STATE_DIR, ORCA_DATABASE_URL: process.env.ORCA_DATABASE_URL, PATH: process.env.PATH, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, SLACK_TOKEN: process.env.SLACK_TOKEN, ORCA_TEST_FORCE_CGROUP_LINUX: process.env.ORCA_TEST_FORCE_CGROUP_LINUX };
   dir = await mkdtemp(join(tmpdir(), "orca-oom-"));
   shim = await mkdtemp(join(tmpdir(), "orca-oom-shim-"));
   runtimeDir = await mkdtemp(join(tmpdir(), "orca-oom-runtime-"));
@@ -46,6 +46,9 @@ beforeEach(async () => {
   process.env.PATH = `${shim}:${prev.PATH}`;
   process.env.XDG_RUNTIME_DIR = runtimeDir;
   process.env.SLACK_TOKEN = "xoxp-secret";
+  // server/agent.ts calls cgroup.available() with no `platform` override, so off Linux (macOS) it
+  // would read false regardless of the PATH/bus shims below — force the Linux path for this test only.
+  process.env.ORCA_TEST_FORCE_CGROUP_LINUX = "1";
   ledger.clear();
   pg = await freshSchema("oom");
   process.env.ORCA_DATABASE_URL = pg.url;
