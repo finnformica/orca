@@ -2039,3 +2039,74 @@ export const anchoredScrollTop = (prevScrollTop: number, prevScrollHeight: numbe
 /** Is a scroll position "at the bottom" — within `slack` px of it — i.e. still following the tail? */
 export const atBottom = (scrollTop: number, scrollHeight: number, clientHeight: number, slack: number): boolean =>
   scrollHeight - scrollTop - clientHeight < slack;
+
+// ---- the chat's mounted window and compact history (ChatPanel) ----
+// Paging bounds what is FETCHED; this bounds what is MOUNTED. A long conversation scrolled back
+// through is hundreds of markdown turns in the DOM — the "bloated" orchestrator chat — so only a window
+// of CHAT_WINDOW turns renders. Turns outside it stay loaded (they're text) but unmounted, and come
+// back as you scroll toward them. Like Slack's and Linear's long threads, the window moves with you:
+// revealing turns on one side and trimming the far side, never both edges in one commit, so the
+// scroll anchor (anchoredScrollTop: a height delta above the viewport) stays exact.
+
+/** The most turns a chat keeps mounted: two pages. */
+export const CHAT_WINDOW = 2 * TURN_PAGE_SIZE;
+/** The mounted turns, by run id: `first` null = from the oldest loaded, `last` null = through the
+ *  newest (following the tail). `dir` is the way it last moved — the cap trims the OTHER side. */
+export type TurnWindow = { first: string | null; last: string | null; dir: "up" | "down" };
+export const TAIL_WINDOW: TurnWindow = { first: null, last: null, dir: "down" };
+
+/** The window as indices into the loaded turns, [start, end). An id no longer loaded reads as open. */
+export function windowRange(turns: Keyed[], w: TurnWindow): { start: number; end: number } {
+  const at = (id: string | null) => (id === null ? -1 : turns.findIndex((t) => t.id === id));
+  const f = at(w.first), l = at(w.last);
+  const start = f < 0 ? 0 : f;
+  return { start, end: l < 0 ? turns.length : Math.max(start, l + 1) };
+}
+
+/** Over the cap: trim the side away from the last move (moving up drops the newest mounted, moving
+ *  down — or following new output — drops the oldest). Null when within it. */
+export function capWindow(turns: Keyed[], w: TurnWindow, cap = CHAT_WINDOW): TurnWindow | null {
+  const { start, end } = windowRange(turns, w);
+  if (end - start <= cap) return null;
+  return w.dir === "up" ? { ...w, last: turns[start + cap - 1]!.id } : { ...w, first: turns[end - cap]!.id };
+}
+
+/** Bring `step` more loaded turns into the window above / below it. */
+export function revealAbove(turns: Keyed[], w: TurnWindow, step = TURN_PAGE_SIZE): TurnWindow {
+  const s = Math.max(0, windowRange(turns, w).start - step);
+  return { ...w, first: s === 0 ? null : turns[s]!.id, dir: "up" };
+}
+export function revealBelow(turns: Keyed[], w: TurnWindow, step = TURN_PAGE_SIZE): TurnWindow {
+  const e = windowRange(turns, w).end + step;
+  return { ...w, last: e >= turns.length ? null : turns[e - 1]!.id, dir: "down" };
+}
+
+/** How many of the newest turns render in full; older ones render compact (first lines + Show more). */
+export const RECENT_FULL = 3;
+/** A reply worth collapsing when old: more than a few lines, or a structured outcome. */
+export const longReply = (t: { response?: string; structured?: unknown }): boolean =>
+  Boolean(t.structured) || (t.response ?? "").split("\n").length > 4 || (t.response ?? "").length > 320;
+
+/** Is a turn an automated wake — the orchestrator woken by worker reports alone, nothing you typed? */
+export const isAutomatedWake = (t: { instruction?: string; prompt?: string; finishedAt?: number }): boolean =>
+  Boolean(t.finishedAt) && (t.instruction ?? promptInstruction(t.prompt ?? "")).split("\n\n").every(isWorkerEvent);
+
+/** The chat's items: runs of 2+ consecutive automated wakes become ONE group (a muted, expandable
+ *  line); everything else stays a turn. The newest turn is never grouped — the latest reply shows. */
+export function groupWakes<T extends Keyed & { instruction?: string; prompt?: string; finishedAt?: number }>(
+  turns: T[], isNewest: (t: T) => boolean = (t) => t === turns[turns.length - 1],
+): ({ kind: "turn"; turn: T } | { kind: "wakes"; turns: T[] })[] {
+  const out: ({ kind: "turn"; turn: T } | { kind: "wakes"; turns: T[] })[] = [];
+  let run: T[] = [];
+  const close = () => {
+    if (run.length > 1) out.push({ kind: "wakes", turns: run });
+    else for (const turn of run) out.push({ kind: "turn", turn });
+    run = [];
+  };
+  for (const t of turns) {
+    if (isAutomatedWake(t) && !isNewest(t)) run.push(t);
+    else { close(); out.push({ kind: "turn", turn: t }); }
+  }
+  close();
+  return out;
+}

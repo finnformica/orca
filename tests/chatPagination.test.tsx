@@ -2,6 +2,8 @@
 // turns, fetches the page before as you reach the top — keeping the turn you were reading where it
 // was — and only follows the tail while you are at it, offering a jump back down otherwise. Before
 // this the orchestrator's whole conversation (hundreds of turns, megabytes) loaded on every open.
+// Paging bounds what is fetched; the mounted WINDOW (CHAT_WINDOW turns) bounds the DOM as you scroll,
+// and the orchestrator's older turns render compact, with runs of automated wakes folded.
 import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -9,7 +11,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
-import { TURN_PAGE_SIZE, anchoredScrollTop, asTurnPage, atBottom, mergeLatestPage, prependOlderPage } from "@/workstream";
+import { CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, anchoredScrollTop, asTurnPage, atBottom, capWindow, groupWakes, longReply, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, windowRange, WORKER_EVENT_MARKER } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -62,11 +64,13 @@ test("P1: opens on the newest page only, and an older page is fetched at the top
   expect(apiFake.turnPageCalls[1]).toEqual({ branch: "long", limit: TURN_PAGE_SIZE, before: "70" });
   expect(shown()).toEqual(Array.from({ length: 100 }, (_, i) => 20 + i));
   expect(el.scrollTop).toBe(100 + 50 * 20);
-  // Once more reaches the first turn; the affordance goes away.
+  // Once more reaches the first turn; the affordance goes away. Only CHAT_WINDOW stay MOUNTED: the
+  // newest 20 are unmounted below (still loaded), offered as "newer turns".
   await scrollTo(el, 50);
   expect(shown()[0]).toBe(0);
-  expect(shown()).toHaveLength(120);
+  expect(shown()).toEqual(Array.from({ length: CHAT_WINDOW }, (_, i) => i));
   expect(container!.querySelector('[data-slot="chat-older"]')).toBeNull();
+  expect(container!.querySelector('[data-slot="chat-newer"]')!.textContent).toContain("20 newer turns");
   expect(apiFake.turnPageCalls).toHaveLength(3);
   // At the top with nothing older, scrolling fetches nothing more.
   await scrollTo(el, 0);
@@ -108,6 +112,95 @@ test("P3: the log follows the tail only while you are at it; scrolled up, new ou
   await act(async () => { jump()!.click(); await flush(); });
   expect(el.scrollTop).toBe(el.scrollHeight); // back at the tail…
   expect(jump()).toBeNull(); // …following again
+});
+
+test("P5: the mounted window is bounded — far-off turns unmount as you scroll, and the turn under your eye stays put", async () => {
+  apiFake.turnsData.set("r::long", Array.from({ length: 120 }, (_, i) => turn(i)));
+  await mount();
+  const el = log();
+  layout(el);
+  await scrollTo(el, 300);
+  await scrollTo(el, 100); // 20…119
+  await scrollTo(el, 50); // 0…99 mounted, 100…119 loaded but unmounted
+  expect(shown()).toHaveLength(CHAT_WINDOW);
+  expect(apiFake.turnPageCalls).toHaveLength(3);
+  // Scrolling down toward the end of the window remounts the newer turns from memory (no fetch) and
+  // unmounts the oldest — the window slides, still CHAT_WINDOW turns. At 1500px (20px a turn) the
+  // reader looks at turn 75; with 20 turns gone from above, the scroller moves up by 400px to keep it.
+  await scrollTo(el, 1500);
+  expect(shown()).toEqual(Array.from({ length: CHAT_WINDOW }, (_, i) => 20 + i));
+  expect(el.scrollTop).toBe(1100);
+  expect(20 + el.scrollTop / 20).toBe(75); // the same turn under the eye
+  expect(apiFake.turnPageCalls).toHaveLength(3);
+  expect(container!.querySelector('[data-slot="chat-newer"]')).toBeNull(); // the tail is mounted again
+  // And back up: the 20 above come back from memory, the newest 20 unmount, the anchor holds (turn 25).
+  await scrollTo(el, 100);
+  expect(shown()).toEqual(Array.from({ length: CHAT_WINDOW }, (_, i) => i));
+  expect(el.scrollTop / 20).toBe(25);
+  expect(apiFake.turnPageCalls).toHaveLength(3);
+  // Jump to latest remounts the tail window and goes there.
+  const jump = container!.querySelector<HTMLButtonElement>('[data-slot="chat-jump"]')!;
+  await act(async () => { jump.click(); await flush(); await flush(); });
+  expect(shown()).toEqual(Array.from({ length: CHAT_WINDOW }, (_, i) => 20 + i));
+  expect(el.scrollTop).toBe(el.scrollHeight);
+});
+
+test("P6: the orchestrator's older turns render compact — first lines + Show more — and runs of automated wakes fold into one line", async () => {
+  const long = (i: number) => Array.from({ length: 8 }, (_, l) => `reply ${i} line ${l}`).join("\n");
+  const wake = (i: number) => ({ id: `run-${i}`, provider: "claude", instruction: `${WORKER_EVENT_MARKER} r/feat-${i} finished: ok\nOutcome: done`, prompt: "", response: `noted ${i}`, startedAt: 1000 + i, finishedAt: 1001 + i });
+  apiFake.turnsData.set("r::long", [
+    { ...turn(0), response: long(0) }, wake(1), wake(2), wake(3), { ...turn(4), response: long(4) },
+    wake(5), { ...turn(6), response: long(6) }, { ...turn(7), response: long(7) }, wake(8),
+  ]);
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  await act(async () => { root = createRoot(container!); root.render(<ChatPanel row={row} variant="chat" />); await flush(); await flush(); });
+  const c = container!;
+  // Three wakes in a row are ONE muted line, their turns unmounted until opened; a lone wake (5) and
+  // the newest turn (8, a wake too) stay as they are.
+  const groups = c.querySelectorAll<HTMLElement>('[data-slot="wake-group"]');
+  expect(groups).toHaveLength(1);
+  expect(groups[0]!.textContent).toContain("3 automated wakes");
+  expect(c.textContent).not.toContain("noted 2");
+  expect(c.textContent).toContain("noted 5");
+  expect(c.textContent).toContain("noted 8");
+  await act(async () => { groups[0]!.querySelector("button")!.click(); await flush(); });
+  expect(c.textContent).toContain("noted 2");
+  // Old long replies are clamped with a Show more; the newest RECENT_FULL (6, 7, 8) are in full.
+  const clampOf = (n: number) => [...c.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].find((t) => t.textContent!.includes(`reply ${n} line 0`))!.querySelector<HTMLElement>('[data-slot="turn-clamp"]');
+  expect(clampOf(0)).not.toBeNull();
+  expect(clampOf(4)).not.toBeNull();
+  expect(clampOf(6)).toBeNull();
+  expect(clampOf(7)).toBeNull();
+  const more = clampOf(0)!.querySelector("button")!;
+  expect(more.textContent).toBe("Show more");
+  expect(clampOf(0)!.firstElementChild!.className).toContain("max-h-[4.5rem]");
+  await act(async () => { more.click(); await flush(); });
+  expect(clampOf(0)!.dataset.open).toBe("true");
+  expect(clampOf(0)!.querySelector("button")!.textContent).toBe("Show less");
+});
+
+test("the pure pieces: the window, compact replies and wake groups", () => {
+  const ts = Array.from({ length: 10 }, (_, i) => ({ id: `t${i}` }));
+  expect(windowRange(ts, TAIL_WINDOW)).toEqual({ start: 0, end: 10 });
+  expect(windowRange(ts, { first: "t3", last: "t6", dir: "up" })).toEqual({ start: 3, end: 7 });
+  expect(windowRange(ts, { first: "gone", last: null, dir: "down" })).toEqual({ start: 0, end: 10 }); // an id no longer loaded reads as open
+  expect(capWindow(ts, TAIL_WINDOW, 10)).toBeNull();
+  expect(capWindow(ts, TAIL_WINDOW, 4)).toEqual({ first: "t6", last: null, dir: "down" }); // following: drop the oldest
+  expect(capWindow(ts, { first: null, last: null, dir: "up" }, 4)).toEqual({ first: null, last: "t3", dir: "up" }); // reading back: drop the newest
+  expect(revealAbove(ts, { first: "t6", last: null, dir: "down" }, 4)).toEqual({ first: "t2", last: null, dir: "up" });
+  expect(revealAbove(ts, { first: "t2", last: null, dir: "down" }, 4)).toEqual({ first: null, last: null, dir: "up" });
+  expect(revealBelow(ts, { first: null, last: "t3", dir: "up" }, 4)).toEqual({ first: null, last: "t7", dir: "down" });
+  expect(revealBelow(ts, { first: null, last: "t7", dir: "up" }, 4)).toEqual({ first: null, last: null, dir: "down" });
+  expect(longReply({ response: "one\ntwo" })).toBe(false);
+  expect(longReply({ response: "a\nb\nc\nd\ne" })).toBe(true);
+  expect(longReply({ response: "x".repeat(400) })).toBe(true);
+  expect(longReply({ response: "short", structured: {} })).toBe(true);
+  const w = (id: string) => ({ id, instruction: `${WORKER_EVENT_MARKER} x`, finishedAt: 1 });
+  const u = (id: string) => ({ id, instruction: "hi", finishedAt: 1 });
+  const kinds = (items: ReturnType<typeof groupWakes>) => items.map((i) => (i.kind === "turn" ? i.turn.id : `[${i.turns.map((t) => t.id).join(",")}]`));
+  expect(kinds(groupWakes([u("a"), w("b"), w("c"), u("d"), w("e"), w("f")]))).toEqual(["a", "[b,c]", "d", "e", "f"]); // f is the newest: not grouped, so e is alone
+  expect(kinds(groupWakes([w("a"), { ...w("b"), finishedAt: undefined }, w("c")]))).toEqual(["a", "b", "c"]); // a running wake breaks a run
 });
 
 test("the pure pieces: merging pages and anchoring", () => {

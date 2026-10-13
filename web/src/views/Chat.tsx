@@ -14,7 +14,7 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { TURN_PAGE_SIZE, WORKER_EVENT_MARKER, anchoredScrollTop, asTurnPage, atBottom, chatSummary, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, turnMatches } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, anchoredScrollTop, capWindow, groupWakes, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, chatSummary, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, turnMatches } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -211,7 +211,7 @@ const CheckVerdict = ({ check }: { check: NonNullable<AgentTurn["check"]> }) => 
 
 /** The agent's side of a turn — live steps and the cursor while it runs; folded steps, the output and
  *  Orca's check once it has answered. Shared by both stylings. */
-function Reply({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]> }) {
+function Reply({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean }) {
   // A turn is written at launch, so an interrupted run (bridge restart, kill) stays visible as an
   // unfinished exchange rather than vanishing.
   if (!turn.finishedAt) {
@@ -228,7 +228,8 @@ function Reply({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Promise
     <>
       {/* The final message is the turn's response, rendered by Output — not twice. */}
       <Steps steps={withoutFinalEcho(turn.steps ?? [], turn.response)} live={false} load={turn.steps ? undefined : loadSteps} />
-      <Output turn={turn} />
+      {/* An old turn (compact) shows its answer's first lines; the steps toggle above stays outside. */}
+      <Clamp on={Boolean(compact && longReply(turn))}><Output turn={turn} /></Clamp>
       {turn.check && <CheckVerdict check={turn.check} />}
     </>
   );
@@ -241,7 +242,7 @@ const clockOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString(undefined
  *  name, in readable prose; its tool steps and worker reports stay folded; the time shows on hover
  *  (and days are grouped by the divider ChatPanel draws). Colours are the theme's tokens, so it
  *  follows light and dark like the rest of the console. */
-function ChatTurn({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]> }) {
+function ChatTurn({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean }) {
   const instruction = turn.instruction ?? promptInstruction(turn.prompt);
   const reports = instruction.split("\n\n").every(isWorkerEvent);
   const time = clockOf(turn.startedAt);
@@ -266,9 +267,42 @@ function ChatTurn({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Prom
             {turn.failed ? <span className="text-red-400">failed</span> : turn.stopped ? <span className="text-amber-400">stopped by you</span> : null}
             <span className="opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{clockOf(turn.finishedAt) || time}</span>
           </div>
-          <Reply turn={turn} loadSteps={loadSteps} />
+          <Reply turn={turn} loadSteps={loadSteps} compact={compact} />
         </div>
       </div>
+    </div>
+  );
+}
+
+/** An old turn's reply, cut to its first lines with a Show more — the history reads as a list of
+ *  exchanges, not a wall of past answers. The newest RECENT_FULL turns always render in full. */
+function Clamp({ on, children }: { on: boolean; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  if (!on) return <>{children}</>;
+  return (
+    <div data-slot="turn-clamp" data-open={open || undefined}>
+      <div className={open ? "" : "max-h-[4.5rem] overflow-hidden [mask-image:linear-gradient(to_bottom,black_55%,transparent)]"}>{children}</div>
+      <button type="button" onClick={() => setOpen((v) => !v)} className="text-muted-foreground hover:text-foreground mt-0.5 text-[11px]">
+        {open ? "Show less" : "Show more"}
+      </button>
+    </div>
+  );
+}
+
+/** Consecutive automated wakes (worker reports in, a reply out, nothing you typed) as ONE muted line
+ *  that expands to the turns — a day of workers finishing is otherwise a screenful of system chatter. */
+function WakeGroup({ turns, render }: { turns: AgentTurn[]; render: (t: AgentTurn) => React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const reports = turns.reduce((n, t) => n + (t.instruction ?? promptInstruction(t.prompt)).split("\n\n").length, 0);
+  const span = [clockOf(turns[0]!.startedAt), clockOf(turns[turns.length - 1]!.finishedAt)].filter(Boolean).join("–");
+  return (
+    <div className="mb-4" data-slot="wake-group" data-open={open || undefined}>
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        className="text-muted-foreground hover:text-foreground flex w-full items-center gap-2 text-left text-[11px]">
+        <span>{open ? "⏷" : "⏵"}</span>
+        <span>⚙ {turns.length} automated wakes · {reports} worker report{reports === 1 ? "" : "s"}{span ? ` · ${span}` : ""}</span>
+      </button>
+      {open && <div className="mt-2 border-l pl-3">{turns.map(render)}</div>}
     </div>
   );
 }
@@ -359,6 +393,12 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   const olderRef = useRef<string | null>(null);
   const loadingOlderRef = useRef(false);
   const anchor = useRef<{ top: number; height: number } | null>(null); // scroll position to restore after a prepend
+  // The MOUNTED window over the loaded turns (workstream.ts: CHAT_WINDOW, capWindow). Paging bounds
+  // what is fetched; this bounds the DOM, so a conversation scrolled far back stays light.
+  const [win, setWin] = useState<TurnWindow>(TAIL_WINDOW);
+  const winRef = useRef(win);
+  winRef.current = win;
+  const toTail = useRef(false); // jump-to-latest: scroll down once the window is back at the tail
   const cursors = useRef(new Map<string, number>()); // per-run high-water mark, for reconnect catch-up
   const running = row.agentStatus === "running";
   /** (Re)fetch the newest page. What was already loaded above it stays; a turn the page re-delivers
@@ -386,6 +426,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
       olderRef.current = page.older;
       setOlder(page.older);
       setTurns((prev) => prependOlderPage(page.turns, prev ?? []));
+      setWin((w) => ({ ...w, first: null, dir: "up" })); // mount the page that arrived; the cap trims below
     } catch { /* the affordance stays; a scroll or click tries again */ } finally {
       loadingOlderRef.current = false;
       setLoadingOlder(false);
@@ -393,12 +434,24 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   };
   // Content was added ABOVE the viewport: move the scroller by the same amount, so the turn you were
   // reading doesn't jump. Layout effect: before the browser paints the shifted content.
+  // The same for content REMOVED above (the window trimming its top), which moves it the other way.
   useLayoutEffect(() => {
     const a = anchor.current, el = scroller.current;
-    if (!a || !el) return;
-    anchor.current = null;
-    el.scrollTop = anchoredScrollTop(a.top, a.height, el.scrollHeight);
-  }, [turns]);
+    if (a && el) {
+      anchor.current = null;
+      el.scrollTop = anchoredScrollTop(a.top, a.height, el.scrollHeight);
+    }
+    // Then hold the window to its cap — trimming one side per commit, so the anchor above stays exact:
+    // the far side below needs no anchor; the top does, and is restored on the commit this causes.
+    const capped = turns ? capWindow(turns, win) : null;
+    if (capped) {
+      if (capped.first !== win.first && el) anchor.current = { top: el.scrollTop, height: el.scrollHeight };
+      setWin(capped);
+    } else if (toTail.current && win.last === null && el) {
+      toTail.current = false;
+      el.scrollTo({ top: el.scrollHeight });
+    }
+  }, [turns, win]);
 
   // The conversation loads once, then steps are PUSHED as the agent records them — that's the
   // terminal-like feel. They arrive on the tab's one shared stream (lib/events.ts), which carries
@@ -453,6 +506,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
     follow.current = true;
     setAtTail(true);
     setUnseen(false);
+    if (winRef.current.last !== null) { toTail.current = true; setWin(TAIL_WINDOW); return; } // remount the tail, then go there
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
   };
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
@@ -499,12 +553,27 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
-    const tail = atBottom(el.scrollTop, el.scrollHeight, el.clientHeight, FOLLOW_SLACK);
+    const loaded = turnsRef.current ?? [];
+    const range = windowRange(loaded, winRef.current);
+    const below = loaded.length - range.end; // loaded, but unmounted below the window
+    // At the bottom of the WINDOW is not the tail while newer turns are unmounted below it.
+    const bottom = atBottom(el.scrollTop, el.scrollHeight, el.clientHeight, FOLLOW_SLACK);
+    const tail = bottom && below === 0;
     follow.current = tail;
     if (tail !== atTail) setAtTail(tail);
     if (tail) setUnseen(false);
-    // Near the top with more history behind: fetch the next page before you hit the edge.
-    if (el.scrollTop < OLDER_THRESHOLD && olderRef.current) void loadOlder();
+    if (el.scrollTop < OLDER_THRESHOLD) {
+      // Near the top: remount the turns above the window if they are loaded, else fetch the next page.
+      if (range.start > 0) { anchor.current = { top: el.scrollTop, height: el.scrollHeight }; setWin(revealAbove(loaded, winRef.current)); }
+      else if (olderRef.current) void loadOlder();
+    } else if (below > 0 && atBottom(el.scrollTop, el.scrollHeight, el.clientHeight, OLDER_THRESHOLD)) {
+      setWin(revealBelow(loaded, winRef.current)); // added below the viewport: nothing to anchor
+    }
+  };
+  const showAbove = () => {
+    const el = scroller.current;
+    if (el) anchor.current = { top: el.scrollTop, height: el.scrollHeight };
+    setWin(revealAbove(turns ?? [], win));
   };
 
   // Compact is offered once the ring has a reading: only a Claude session reports one, and only a
@@ -513,23 +582,36 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
     model: modelFor(row), onModel: (m: string) => setCardModel(row, m), ran: row.agentMeta?.model, contextPct: row.agentMeta?.contextPct,
   };
   const counts = chatSummary(turns ?? []);
-  const shownTurns = logBar && find.trim() ? (turns ?? []).filter((t) => turnMatches(t, find)) : turns;
+  // Find shows every match; otherwise only the mounted window renders.
+  const range = windowRange(turns ?? [], win);
+  const hiddenAbove = range.start, hiddenBelow = (turns?.length ?? 0) - range.end;
+  const shownTurns = logBar && find.trim() ? (turns ?? []).filter((t) => turnMatches(t, find)) : turns?.slice(range.start, range.end) ?? null;
+  // Older turns render compact (chat styling): the newest RECENT_FULL in full, the rest cut to their
+  // first lines; runs of automated wakes fold into one line.
+  const position = new Map((turns ?? []).map((t, i) => [t.id, i]));
+  const compactBefore = (turns?.length ?? 0) - RECENT_FULL;
+  const newestId = turns?.[turns.length - 1]?.id;
   const chatStyle = variant === "chat";
-  const renderTurn = (turn: AgentTurn, i: number, list: AgentTurn[]) => {
-    const loadSteps = () => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response));
-    if (!chatStyle) return <Turn key={turn.id} turn={turn} stamped={logBar} loadSteps={loadSteps} />;
-    const prev = i > 0 ? list[i - 1]!.startedAt : undefined;
-    const divider = turn.startedAt && (prev === undefined || !sameDay(prev, turn.startedAt));
-    return (
-      <div key={turn.id}>
-        {divider && (
-          <div className="text-muted-foreground my-3 flex items-center gap-3 text-[10px] tracking-widest uppercase" data-slot="chat-day">
-            <span className="h-px flex-1 bg-border" /><span>{dayLabel(turn.startedAt!)}</span><span className="h-px flex-1 bg-border" />
-          </div>
-        )}
-        <ChatTurn turn={turn} loadSteps={loadSteps} />
-      </div>
-    );
+  const stepsOf = (turn: AgentTurn) => () => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response));
+  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadSteps={stepsOf(turn)} compact={(position.get(turn.id) ?? 0) < compactBefore} />;
+  const renderTurns = (list: AgentTurn[]) => {
+    if (!chatStyle) return list.map((turn) => <Turn key={turn.id} turn={turn} stamped={logBar} loadSteps={stepsOf(turn)} />);
+    let prev: number | undefined;
+    return groupWakes(list, (t) => t.id === newestId).map((item) => {
+      const first = item.kind === "turn" ? item.turn : item.turns[0]!;
+      const divider = first.startedAt && (prev === undefined || !sameDay(prev, first.startedAt));
+      prev = (item.kind === "turn" ? item.turn : item.turns[item.turns.length - 1]!).startedAt ?? prev;
+      return (
+        <div key={first.id}>
+          {divider && (
+            <div className="text-muted-foreground my-3 flex items-center gap-3 text-[10px] tracking-widest uppercase" data-slot="chat-day">
+              <span className="h-px flex-1 bg-border" /><span>{dayLabel(first.startedAt!)}</span><span className="h-px flex-1 bg-border" />
+            </div>
+          )}
+          {item.kind === "turn" ? chatTurn(item.turn) : <WakeGroup turns={item.turns} render={chatTurn} />}
+        </div>
+      );
+    });
   };
   return (
     <div className={`flex h-full flex-col ${flush || logBar ? "" : "gap-3"} ${logBar || chatStyle ? "log-themed" : ""}`} data-variant={variant}>
@@ -567,10 +649,10 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
         )}
         {/* Earlier pages: fetched as you near the top, or on a click (a page shorter than the window
             can't be scrolled). A skeleton while the page is in flight. */}
-        {turns !== null && older && (
+        {turns !== null && (older || hiddenAbove > 0) && !find.trim() && (
           <div className="mb-3 flex justify-center" data-slot="chat-older">
             {loadingOlder ? <ChatSkeleton rows={2} /> : (
-              <button type="button" onClick={() => void loadOlder()} className="rounded-md border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200">
+              <button type="button" onClick={() => (hiddenAbove > 0 ? showAbove() : void loadOlder())} className="rounded-md border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200">
                 ↑ earlier turns
               </button>
             )}
@@ -579,7 +661,14 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
         {turns === null ? <ChatSkeleton rows={4} />
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
           : shownTurns!.length === 0 ? <p className="text-neutral-500">No turn matches “{find}”.</p>
-          : shownTurns!.map(renderTurn)}
+          : renderTurns(shownTurns!)}
+        {hiddenBelow > 0 && !find.trim() && (
+          <div className="mb-3 flex justify-center" data-slot="chat-newer">
+            <button type="button" onClick={() => setWin(revealBelow(turns ?? [], win))} className="rounded-md border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200">
+              ↓ {hiddenBelow} newer turn{hiddenBelow === 1 ? "" : "s"}
+            </button>
+          </div>
+        )}
         {/* Not drawn once the real thing has arrived over the stream — the same text twice, one of
             them "sending", is worse than the moment's gap it would cover. */}
         {sending.filter((m) => !landed(m.text)).map((m) => chatStyle ? (
