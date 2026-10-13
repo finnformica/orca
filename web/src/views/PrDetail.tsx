@@ -16,15 +16,22 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ReviewPanel, reviewSig } from "./Review";
-import { ChatCard, DetailsCard } from "./AgentPage";
-import { AgentTitle } from "./LocalDetail";
+import { AGENT_TABS, AgentHeader, ChatCard, DetailsCard, HeaderSource, RowStatus } from "./AgentPage";
+import { useNarrow } from "@/lib/viewport";
+import { ChecksCard, ConversationCard } from "./PrPanels";
 import { Detail, VCard } from "@/components/console";
 import { useSummary } from "./Board";
 
-/** Both detail pages pin their header — back / title / actions / tabs stay reachable while a long
+/** Both detail pages pin their header — title / status / actions / tabs stay reachable while a long
  *  diff scrolls under them. Opaque + full-bleed (negative margins) so nothing peeks past the page
- *  padding. Shared so the PR page and the local-session page can't drift apart. */
-export const STICKY_HEADER = "bg-background sticky top-14 z-20 -mx-4 space-y-2 px-4 py-2 md:-mx-6 md:px-6";
+ *  padding, and pulled up over `main`'s top padding (-mt-6) so it sits flush under the top bar — every
+ *  rem it doesn't take is the Chat tab's (`CHAT_FILL_HEIGHT`). Shared so the PR page and the
+ *  local-session page can't drift apart. */
+export const STICKY_HEADER = "bg-background sticky top-14 z-20 -mx-4 -mt-6 flex flex-col gap-1 border-b px-4 py-2 md:-mx-6 md:px-6";
+
+/** The tab row under the header: shorter than the default, and pulled left by a trigger's own
+ *  padding and border (px-3 + 1px) so the "Overview" label lines up with the repo name above it. */
+export const HEADER_TABS = "-ml-[13px] h-8";
 
 /** Ref for that header plus the wrapper style publishing its LIVE height as --stick, so the diff's
  *  own sticky file headers park below it instead of sliding underneath. `ready` flips once the page
@@ -49,6 +56,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
   const liveRow = useWorkstreams().find((r) => r.repo === repo && r.prNumber === number); // your own PR, if tracked
   const summary = useSummary(liveRow); // its commits, for the Details card's Source
   const header = useStickyHeader(Boolean(pr));
+  const narrow = useNarrow();
 
   // `attempt` re-runs the fetch for Retry. A load that is taking a while says so, rather than an
   // indefinite "Loading…" that looks like a hang.
@@ -110,34 +118,30 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
       {pr.autoMergeEnabled && <Badge variant="outline" className="border-transparent bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
     </div>
   );
-  const sub2 = !liveRow && sub === "chat" ? "overview" : sub; // a coworker's PR has no conversation here
+  // A coworker's PR has no conversation here; the checks moved onto Overview, so an old /checks link lands there.
+  const sig = liveRow ? reviewSig(liveRow) : undefined;
+  const sub2 = (!liveRow && sub === "chat") || sub === "checks" ? "overview" : sub;
 
   return (
     <div style={header.style}>
-      <Tabs value={sub2} onValueChange={(v) => go(v as PrTab)}>
+      <Tabs value={sub2} onValueChange={(v) => go(v as PrTab)} className={AGENT_TABS}>
         <div ref={header.ref} className={STICKY_HEADER}>
-          <AgentTitle repo={repo} title={<><span className="text-muted-foreground font-normal">#{pr.number}</span>{pr.title}</>}>
-            <a className="text-muted-foreground inline-flex items-center gap-1 text-sm font-normal hover:underline" href={pr.url} target="_blank" rel="noreferrer">
-              View on GitHub <ExternalLink className="size-3.5" />
-            </a>
-            {pr.previewUrl && (
-              <a className="text-muted-foreground inline-flex items-center gap-1 text-sm font-normal hover:underline" href={pr.previewUrl} target="_blank" rel="noreferrer">
-                PR preview <ExternalLink className="size-3.5" />
-              </a>
-            )}
-          </AgentTitle>
-          <TabsList>
+          <AgentHeader repo={repo}
+            title={<><span className="text-muted-foreground mr-1.5 font-normal">#{pr.number}</span>{pr.title}</>}
+            status={liveRow ? <RowStatus row={liveRow} /> : <Badge variant="outline" className="capitalize">{(pr.state ?? "").toLowerCase()}</Badge>}
+            source={<HeaderSource branch={pr.head} prNumber={pr.number} prUrl={pr.url} />}
+            actions={liveRow && <WorkstreamActions row={liveRow} compact={narrow} />} />
+          <TabsList className={HEADER_TABS}>
             <TabsTrigger value="overview">Overview</TabsTrigger>
             {liveRow && <TabsTrigger value="chat">Chat</TabsTrigger>}
             <TabsTrigger value="files">Files changed ({pr.changedFiles})</TabsTrigger>
-            <TabsTrigger value="checks">Checks ({pr.checks.length})</TabsTrigger>
             <TabsTrigger value="preview">Preview</TabsTrigger>
           </TabsList>
         </div>
 
-        <TabsContent value="overview" className="space-y-6 pt-3">
+        <TabsContent value="overview" className="space-y-6 pt-4">
           {liveRow ? (
-            <DetailsCard row={liveRow} summary={summary} actions={<WorkstreamActions row={liveRow} />} extra={<Detail label="Pull request status">{badges}</Detail>} />
+            <DetailsCard row={liveRow} summary={summary} extra={<Detail label="Pull request status">{badges}</Detail>} />
           ) : (
             <VCard slot="pr-details" title="Pull request details" aside={!pr.previewUrl ? <ActionButton onRun={() => addPreviewLabel(row)} failure={{ action: "Add preview label", title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }}>Add preview label</ActionButton> : undefined}>
               <div className="grid grid-cols-2 gap-x-6 gap-y-4 p-4 md:grid-cols-4">
@@ -145,28 +149,18 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
                 <Detail label="Source"><code className="truncate font-mono">{pr.head}</code><span className="text-muted-foreground">→ {pr.base}</span></Detail>
                 <Detail label="Changes"><span className="text-geist-green">+{pr.additions}</span><span className="text-geist-red">−{pr.deletions}</span><span className="text-muted-foreground">in {pr.changedFiles} files</span></Detail>
                 <Detail label="Status">{badges}</Detail>
+                {pr.previewUrl && <Detail label="PR preview"><a className="inline-flex items-center gap-1 hover:underline" href={pr.previewUrl} target="_blank" rel="noreferrer">Open <ExternalLink className="size-3" /></a></Detail>}
               </div>
             </VCard>
           )}
-          <ReviewPanel repo={repo} prNumber={number} sig={liveRow ? reviewSig(liveRow) : undefined} />
+          <ReviewPanel repo={repo} prNumber={number} sig={sig} />
+          <ChecksCard checks={pr.checks} />
           <VCard slot="pr-description" title="Description">
-            <div className="space-y-4 p-4">
+            <div className="p-4">
               {pr.body ? <Markdown>{pr.body}</Markdown> : <p className="text-muted-foreground text-sm">No description.</p>}
-              {(pr.reviews.length > 0 || pr.comments.length > 0) && (
-                <div className="space-y-2 border-t pt-3 text-sm">
-                  {pr.reviews.map((r, i) => (
-                    <div key={`r${i}`}><span className="text-muted-foreground">{r.author}</span> — {r.state.toLowerCase().replace(/_/g, " ")}</div>
-                  ))}
-                  {pr.comments.map((c, i) => (
-                    <div key={`c${i}`} className="border-l pl-3">
-                      <div className="text-muted-foreground text-xs">{c.author}</div>
-                      <Markdown>{c.body}</Markdown>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           </VCard>
+          <ConversationCard repo={repo} prNumber={number} sig={sig} comments={pr.comments} reviews={pr.reviews} />
         </TabsContent>
 
         {liveRow && (
@@ -175,21 +169,11 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
           </TabsContent>
         )}
 
-        <TabsContent value="files" className="space-y-3 pt-3">
+        <TabsContent value="files" className="space-y-3 pt-4">
           {diff === null ? <p className="text-muted-foreground text-sm">Loading diff…</p> : <DiffView text={diff} />}
         </TabsContent>
 
-        <TabsContent value="checks" className="space-y-1 pt-3">
-          {pr.checks.length === 0 && <p className="text-muted-foreground text-sm">No checks.</p>}
-          {pr.checks.map((c, i) => (
-            <div key={i} className="flex items-center justify-between gap-3 text-sm">
-              <span className="truncate">{c.name}</span>
-              <Badge variant={c.status === "passing" ? "success" : c.status === "failing" ? "destructive" : "outline"} className="capitalize">{c.status}</Badge>
-            </div>
-          ))}
-        </TabsContent>
-
-        <TabsContent value="preview">
+        <TabsContent value="preview" className="pt-4">
           <PreviewPanel row={row} />
         </TabsContent>
       </Tabs>
