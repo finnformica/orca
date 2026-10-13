@@ -29,7 +29,7 @@ import {
   TOAST_EXIT_MS, TOAST_WIDTH, toastMotion, toastStack, unreadCount, type Notification, type NotificationFilter, type NotificationKind, type StackAnchor, type SwipeDir, type ToastPlace,
 } from "../../../shared/notifications";
 import { addressPr, followUp, previewKeyOf, stopPreview, testLocally, useWorkstreams, type Row } from "../store";
-import { ago, notificationActions, RETRY_INSTRUCTION, type NotificationActionId, type NotificationActionSpec } from "../workstream";
+import { ago, notificationActions, ORCHESTRATOR_REPO, RETRY_INSTRUCTION, type NotificationActionId, type NotificationActionSpec } from "../workstream";
 import { autofixInstruction } from "../../../shared/agent";
 import { ActionButton } from "@/components/ActionButton";
 import { detailPath } from "@/views/Agents";
@@ -51,6 +51,13 @@ const KindIcon = ({ kind, className }: { kind: NotificationKind; className?: str
   const Icon = ICON[kind];
   return <Icon className={cn("size-4 shrink-0", TONE_TEXT[KIND_META[kind].tone], className)} aria-hidden="true" />;
 };
+
+/** A small muted tag before the title — which repo this is about. Left out for the orchestrator's
+ *  own notifications (it has no repo behind it); truncated with ellipsis if the name runs long. */
+const RepoLabel = ({ repo }: { repo: string }) =>
+  repo && repo !== ORCHESTRATOR_REPO ? (
+    <span data-slot="notification-repo" className="text-muted-foreground max-w-20 shrink-0 truncate text-xs" title={repo}>{repo}</span>
+  ) : null;
 
 /** Each quick action's icon (the label is its tooltip and aria-label); a shortcut where one exists. */
 const ACTION_ICON: Record<NotificationActionId, typeof Bell> = {
@@ -353,6 +360,7 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
         <KindIcon kind={n.kind} className="mt-0.5" />
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-1.5 text-sm leading-5">
+            <RepoLabel repo={n.repo} />
             <button type="button" data-slot="notification-title" className="truncate font-medium hover:underline" onClick={onOpen}>{n.title}</button>
             <span className={cn("shrink-0 text-xs", TONE_TEXT[meta.tone])}>{meta.label}</span>
           </div>
@@ -459,11 +467,12 @@ function CentreRow({ n, onOpen }: { n: Notification; onOpen: () => void }) {
         <KindIcon kind={n.kind} className="mt-0.5" />
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-1.5 text-sm leading-5">
+            <RepoLabel repo={n.repo} />
             <span className="truncate font-medium">{n.title}</span>
             <span className={cn("shrink-0 text-xs", TONE_TEXT[KIND_META[n.kind].tone])}>{KIND_META[n.kind].label}</span>
           </span>
           {n.body && <span className="text-muted-foreground block truncate text-xs leading-5">{n.body}</span>}
-          <span className="text-muted-foreground block text-xs">{ago(n.createdAt)}{n.repo && n.repo !== "@orca" ? ` · ${n.repo}` : ""}{n.instance ? ` · ${n.instance}` : ""}</span>
+          <span className="text-muted-foreground block text-xs">{ago(n.createdAt)}{n.instance ? ` · ${n.instance}` : ""}</span>
         </span>
         {!n.readAt && <span data-slot="unread-dot" className="bg-geist-blue mt-2 size-1.5 shrink-0 rounded-full" aria-label="unread" />}
       </button>

@@ -129,6 +129,23 @@ describe("the notification centre", () => {
     expect($("notification-row")!.hasAttribute("data-unread")).toBe(false);
   });
 
+  test("the toast and the centre row carry the repo as a muted label before the title; the orchestrator's own notifications have none", async () => {
+    await open("/");
+    const s = await live();
+    await push(s, note({ id: 80, repo: "branch-demo", title: "Fix login" }));
+    const toast = cards()[0]!;
+    expect(toast.querySelector('[data-slot="notification-repo"]')!.textContent).toBe("branch-demo");
+    await click($("notifications-bell"));
+    await click(button($("notification-centre")!, "All"));
+    const row = $$("notification-row").find((r) => r.textContent!.includes("Fix login"))!;
+    expect(row.querySelector('[data-slot="notification-repo"]')!.textContent).toBe("branch-demo");
+    await push(s, note({ id: 81, repo: "@orca", branch: "orchestrator", title: "Orchestrator", link: { orchestrator: true } }));
+    const orchestratorToast = $$("notification-toast").find((t) => t.textContent!.includes("Orchestrator"))!;
+    expect(orchestratorToast.querySelector('[data-slot="notification-repo"]')).toBeNull();
+    const orchestratorRow = $$("notification-row").find((r) => r.textContent!.includes("Orchestrator"))!;
+    expect(orchestratorRow.querySelector('[data-slot="notification-repo"]')).toBeNull();
+  });
+
   test("bottom-left, its foot just above the bell; the stack collapsed past one over a count bar, three showing; hover spreads it; Mark all as read", async () => {
     await open("/");
     placeBell();
