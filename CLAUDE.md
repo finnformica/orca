@@ -774,6 +774,23 @@ Postgres and Tailscale are untouched: they are separate systemd units, never chi
 `orca.service`, so they were never inside either limit — the two settings just make sure nothing
 Orca does crowds them out of the 15% left over.
 
+**Screenshots** (`server/screenshot.ts`): workers can't run a browser (the OOM above), so the bridge
+runs ONE — `POST /api/screenshot` (url, viewport, dark, wait-for, click/scroll/wait steps) queues on a
+box-wide queue (one capture at a time), launches a fresh `chrome-headless-shell` over CDP inside its
+own `systemd-run --user --scope` (`cgroup.scopedCommand`, `MemoryMax=1.5G`, no swap), times out at
+45s, and kills the browser after EVERY job — nothing idles. The PNG goes to an `AttachmentStore`
+(disk, `~/.orca/attachments/shots`, until attachments move to Postgres); `GET /api/screenshots/:id`
+serves it. Workers get `bin/worker/` on PATH (`agentEnv` — not `bin/`, whose `orca` is the
+orchestrator's) and `orca-shot <url> [--viewport 390x844] [--dark] …`, which prints `shot: <path>`;
+every worker prompt says it is the ONLY way to take a screenshot (`SCREENSHOTS`), and shot paths in a
+reply ride the worker report (`reportedShots` in `workerEvent`).
+**An Orca preview's `/api` is the branch's own bridge**, not main's :8787 (which made a branch's
+Cost chart read main's numbers): `scripts/preview-orca.sh` runs the branch's `server/index.ts` with
+`ORCA_PREVIEW_BRIDGE=1` (`db.previewBridge`) — shared database, never migrates, never publishes
+inventory/previews/metrics, none of the startup side effects, every non-GET refused — and `web`
+proxies to it (`ORCA_API_PORT={svc:bridge}`). A branch that predates the mode, or whose migrations
+the database lacks, forwards to main instead; the top bar's `BridgeLabel` names whichever answered.
+
 ## Conventions (follow these)
 
 - **Adapter boundary:** all shell/network I/O lives in `server/{git,gh,slack}.ts` behind
