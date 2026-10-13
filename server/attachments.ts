@@ -5,7 +5,8 @@
 // reference for a file in its own state dir (`resolvePrompt`, called from `agent.launch` — the one
 // place every launch path goes through), cached by id so a re-read costs no query.
 import { existsSync } from "fs";
-import { writeFile } from "fs/promises";
+import { readFile, writeFile } from "fs/promises";
+import { basename, relative } from "path";
 import * as db from "./db";
 import { statePath } from "./state";
 
@@ -52,6 +53,24 @@ async function localPath(id: string, name?: string): Promise<string | undefined>
     if (existsSync(cached)) return cached;
   }
   return materialise(id);
+}
+
+/** An `--attach` value from the orchestrator's `orca spawn` / `orca send` as a stored reference, so
+ *  the file reaches a worker on any instance: an attachment id (from its prompt's `## Attachments`),
+ *  a reference, or a file on THIS machine — a path under this instance's attachment cache keeps its
+ *  id; any other file (a screenshot it took, a log it saved) is stored like an upload, same cap. */
+export async function forward(value: string): Promise<string> {
+  const v = value.trim();
+  const id = v.match(/^(?:orca-attachment:\/\/)?([0-9a-f-]{36})(?:\/.*)?$/)?.[1]
+    ?? relative(statePath("attachments"), v).match(/^([0-9a-f-]{36})\//)?.[1];
+  if (id) {
+    const row = await db.attachment(id);
+    if (!row) throw new Error(`no attachment ${id} (pruned after 30 days, or never stored) — attach the file by path instead`);
+    return attachmentRef(id, row.filename);
+  }
+  if (!v.startsWith("/") || !existsSync(v)) throw new Error(`--attach ${v}: not an attachment id or an absolute path to a file on this machine`);
+  const [ref] = await store([new File([await readFile(v)], basename(v))]);
+  return ref!;
 }
 
 const unavailable = (what: string) => `${what} (unavailable on this machine — it was attached elsewhere and is gone; ask the user to attach it again)`;

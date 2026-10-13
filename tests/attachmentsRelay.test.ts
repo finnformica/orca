@@ -156,7 +156,57 @@ test("an orchestrator message sent to A is proxied to B (orchestratorOn) and its
   assertBoxLocal(prompt);
   const path = listed(prompt).find((l) => l.endsWith("bug.png"));
   expect(path).toStartWith(join(box, "attachments"));
-  expect(new Uint8Array(await readFile(path!))).toEqual(PNG);
+  expect(new Uint8Array(await readFile(path!))).toEqual(PNG);  // It sees the ids, so it can hand the file on with `orca spawn|send --attach <id>`.
+  expect(prompt).toContain("## Attachments");
+  expect(prompt).toContain(`- ${ref!.split("/")[2]}  bug.png`);
+});
+
+/** `orca …` exactly as the orchestrator runs it, against the box (where it lives). */
+async function orca(...argv: string[]): Promise<string> {
+  const p = Bun.spawn(["bun", join(ROOT, "bin", "orca"), ...argv], { env: { ...process.env, ORCA_URL: B } as Record<string, string>, stdout: "pipe", stderr: "pipe" });
+  const [out, err, code] = [await new Response(p.stdout).text(), await new Response(p.stderr).text(), await p.exited];
+  if (code !== 0) throw new Error(`orca ${argv[0]} failed: ${err}`);
+  return out.trim();
+}
+
+test("orca spawn --attach / orca send --attach (repeatable): the orchestrator on the box hands files to a worker on the laptop", async () => {
+  const { paths: [ref] } = await upload(A, [{ name: "crash.png", type: "image/png", bytes: PNG }]).then((r) => r.json()) as { paths: string[] };
+  const id = ref!.split("/")[2]!;
+
+  const spawned = await orca("spawn", "--repo", "r", "--title", "Fix crash", "--model", "claude-opus-5-5", "--on", "laptop",
+    "--objective", "spawn-relay: fix the crash in the screenshot", "--output", "a commit", "--boundaries", "only the crash", "--attach", id);
+  const branch = spawned.match(/Spawned r\/(\S+)/)?.[1];
+  expect(branch).toBeTruthy();
+  const brief = await promptWith("spawn-relay");
+  expect(brief).not.toContain("orca-attachment://"); // no reference, no box path…
+  expect(brief).not.toContain(box);
+  const [shot] = listed(brief).filter((l) => l.endsWith("crash.png"));
+  expect(shot).toStartWith(join(laptop, "attachments")); // …the laptop's own file, materialised there
+  expect(new Uint8Array(await readFile(shot!))).toEqual(PNG);
+
+  // The workstream's home, as the laptop's /api/agents would publish it (both bridges share one
+  // scratch repo here, so only one may claim the branch).
+  const prevInstance = process.env.ORCA_INSTANCE;
+  process.env.ORCA_INSTANCE = "laptop";
+  await db.publishInventory("r", [{ branch: branch!, data: { branch: branch! } }]);
+  if (prevInstance === undefined) delete process.env.ORCA_INSTANCE; else process.env.ORCA_INSTANCE = prevInstance;
+
+  // A file the orchestrator made on ITS machine (a log it saved), plus the stored screenshot again.
+  const onBox = join(box, "trace.log");
+  await writeFile(onBox, "stack trace");
+  const sent = await orca("send", "--repo", "r", "--branch", branch!, "--attach", id, "--attach", onBox, "send-relay: here is the trace too");
+  expect(sent).toMatch(/Sent to|Queued/);
+  const message = await promptWith("send-relay");
+  expect(message).not.toContain("orca-attachment://");
+  expect(message).not.toContain(box); // the box's path never reaches the laptop's worker
+  const files = listed(message).filter((l) => l.startsWith(laptop));
+  expect(files.map((f) => f.split("/").pop())).toEqual(["crash.png", "trace.log"]);
+  expect(await readFile(files[1]!, "utf8")).toBe("stack trace");
+});
+
+test("orca send --attach refuses what it can't forward, with a message the model can act on", async () => {
+  await expect(orca("send", "--repo", "r", "--branch", "nope", "--attach", "/no/such/file.png", "hi")).rejects.toThrow("not an attachment id or an absolute path");
+  await expect(orca("send", "--repo", "r", "--branch", "nope", "--attach", "77777777-7777-7777-7777-777777777777", "hi")).rejects.toThrow("no attachment 77777777");
 });
 
 test("a file over 20 MB is refused by the route with a 413 and nothing is stored", async () => {

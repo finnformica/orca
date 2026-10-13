@@ -564,6 +564,13 @@ export function withoutAttachmentList(text: string): string {
   return text.replace(new RegExp(`\\n*${ATTACHED_FILES_HEADER.replace(/[()]/g, "\\$&")}(?:\\n- [^\\n]*)*`, "g"), "").trimEnd();
 }
 
+function attachmentSection(messages: string[]): string[] {
+  const files = attachmentRefs(messages.join("\n"));
+  if (!files.length) return [];
+  return ["", "## Attachments", "Files attached to the messages above. To give one to a worker, pass `--attach <id>` to orca spawn / orca send (repeatable):",
+    ...files.map((f) => `- ${f.id}  ${f.name}`)];
+}
+
 export const isImageName = (name: string) => /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(name);
 
 /** Instruction for Claude to resolve a PR's merge conflicts in its worktree, then push. */
@@ -990,10 +997,11 @@ export function boardText(rows: BoardRow[]): string {
 // send → archive → re-spawn when `orca move` would have done.
 const ORCA_COMMANDS = [
   "  orca board                      every workstream: PR state, agent status, Orca's check verdict",
-  "  orca spawn --repo <repo> --title \"<2-5 words>\" --model <id> [--on <instance>] --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"]",
+  "  orca spawn --repo <repo> --title \"<2-5 words>\" --model <id> [--on <instance>] --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"] [--attach <id|path>]…",
   "      --on places the worktree on another instance (the board shows each workstream's `on:`; a `[new draft]`",
   "      that says `on: <instance>` wants that one). Without it, the repo's default instance.",
-  "  orca send --repo <repo> --branch <branch> [--model <id>] \"<message>\"     continue an existing workstream (--model moves it to another model)",
+  "  orca send --repo <repo> --branch <branch> [--model <id>] [--attach <id|path>]… \"<message>\"     continue an existing workstream (--model moves it to another model)",
+  "      --attach (repeatable) hands the worker a file on whatever instance it runs on: an id from ## Attachments, or a file path on this machine",
   "  orca address --repo <repo> --branch <branch>              have its agent fix conflicts, CI and review on its PR",
   "  orca move --repo <repo> --branch <branch> --to <instance>  move its worktree to another instance (not while it runs)",
   "  orca archive --repo <repo> --branch <branch>              cancel a workstream you spawned or sent to: stop its agent,",
@@ -1076,6 +1084,9 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     // The wake before this one died mid-turn: say so, or the user has to ask why it went quiet.
     ...(input.cutOff ? ["", "## Previous wake was cut off", `Your previous wake ${input.cutOff} before it finished its turn, so the user got no reply. What it was handling is under New again. It may already have acted: check the board before you spawn or send (never start the same work twice), then finish the reply.`] : []),
     "", "## New", input.messages.join("\n\n"),
+    // The files those messages carried, by id: the paths above are on THIS machine, so a worker
+    // elsewhere gets one only through `--attach <id>`.
+    ...attachmentSection(input.messages),
   ].join("\n");
 }
 
