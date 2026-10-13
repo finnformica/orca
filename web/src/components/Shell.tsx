@@ -5,13 +5,13 @@
 // (below md) the top bar carries the round mark, and a bottom bar within thumb reach holds the menu,
 // Agents, New agent and the orchestrator; every inset clears the notch and the home indicator.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { useAtom } from "jotai";
+import { useAtom, useSetAtom } from "jotai";
 import {
   Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderGit2, FolderSync, Gauge, LayoutGrid, Loader2, Menu,
-  Bot, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
+  Bot, Command, Keyboard, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
-import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, repoFilterAtom, sidebarCollapsedAtom } from "@/lib/atoms";
+import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
 import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPalette";
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
@@ -28,6 +28,7 @@ import { summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
 import { NotificationBell } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
+import { MenuShortcut, Shortcut } from "@/components/ui/kbd";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
@@ -251,7 +252,7 @@ function FindBox() {
       <input value={q} aria-label="Find agents" placeholder="Find…"
         onChange={(e) => { setQ(e.target.value); if (location.pathname !== "/agents") navigate("/agents"); }}
         className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-sm outline-none" />
-      <kbd className="text-muted-foreground rounded border px-1 font-sans text-[10px]">{shortcutLabel("find")}</kbd>
+      <Shortcut id="find" />
     </label>
   );
 }
@@ -309,6 +310,8 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
     <>
       <Button size="sm" data-slot="add-new" title={`Add New (${shortcutLabel("new")})`} aria-label="Add New" onClick={() => setOpen(true)} className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
         <Plus className="size-4" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
+        {/* Inverted (primary) button: the keycap takes the button's own foreground, not the page's muted. */}
+        <Shortcut id="new" className={cn("ml-auto max-md:hidden", collapsed && "md:hidden")} keyClassName="text-primary-foreground/70 border-primary-foreground/25" />
       </Button>
       <dialog
         ref={setDialog} data-slot="add-new-dialog" aria-label="New agent"
@@ -381,6 +384,8 @@ export const THEMES: { value: Theme; label: string; Icon: typeof Sun }[] = [
 // You, at the foot of the sidebar: refresh the app, sync worktrees, the theme.
 export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
   const [theme, setTheme] = useTheme();
+  const setPalette = useSetAtom(paletteOpenAtom);
+  const setHelp = useSetAtom(shortcutsHelpOpenAtom);
   useRepos(); // the instance name arrives with config, after first paint
   return (
     <DropdownMenu>
@@ -399,6 +404,14 @@ export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
           <RefreshCw className="size-3.5" /> Refresh
         </DropdownMenuItem>
         <SyncWorktreesItem />
+        <DropdownMenuSeparator />
+        {/* The keyboard's two overlays, findable without knowing their keys. */}
+        <DropdownMenuItem data-slot="open-palette" onSelect={() => setPalette(true)}>
+          <Command className="size-3.5" /> Command palette <MenuShortcut id="palette" />
+        </DropdownMenuItem>
+        <DropdownMenuItem data-slot="open-shortcuts" onSelect={() => setHelp(true)}>
+          <Keyboard className="size-3.5" /> Keyboard shortcuts <MenuShortcut id="help" />
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>Theme</DropdownMenuSubTrigger>

@@ -9,6 +9,7 @@ import type { Row } from "../store";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth } from "../workstream";
 import { PortalContainer, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Shortcut } from "@/components/ui/kbd";
 import { poll } from "@/lib/poll";
 import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorWidthAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
@@ -127,7 +128,7 @@ export function AskOrchestrator() {
       className="bg-card hover:bg-accent/60 text-foreground ml-auto flex h-8 shrink-0 items-center gap-2 rounded-md border px-2.5 text-sm max-md:hidden">
       <span className="relative inline-flex"><Bot className="text-muted-foreground size-3.5 shrink-0" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
       <span className="text-muted-foreground">Ask the orchestrator</span>
-      <kbd className="text-muted-foreground rounded border px-1 font-sans text-[10px]">{key}</kbd>
+      <Shortcut id="orchestrator" />
     </button>
   );
 }
