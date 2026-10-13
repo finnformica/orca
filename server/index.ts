@@ -71,6 +71,13 @@ if (!(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
   console.log(`orca: reclaimed :${API_PORT} from a stale bridge`);
   await waitForPortFree(API_PORT);
 }
+// Migrate before anything touches the database. A migration ledger this code can't reconcile (another
+// branch's step under one of main's ids, not safely re-runnable) refuses to start with instructions.
+await db.open().catch((e) => {
+  if (!(e instanceof db.MigrationRefused)) throw e;
+  console.error(e.message);
+  process.exit(1);
+});
 await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-killed prior bridge
 // Turns whose run died with a previous bridge would otherwise render "working…" forever. Leases are
 // the authority on what's genuinely still running (they deliberately survive shutdown). Before
@@ -414,7 +421,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "GET" && p === "/api/diagnostics") {
     // Efficiency report over the run ledger + process metrics. `?format=text` for the terminal.
-    const report = summarize(ledger.all(), metrics(), await routingInfo(), preview.lastReapReport());
+    const report = summarize(ledger.all(), metrics(), await routingInfo(), preview.lastReapReport(), db.migrationReport());
     return url.searchParams.get("format") === "text"
       ? new Response(renderText(report), { headers: { "content-type": "text/plain; charset=utf-8" } })
       : json(report);
