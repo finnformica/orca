@@ -439,4 +439,18 @@ describe("the notification centre", () => {
     expect($("orchestrator-panel")!.contains(document.activeElement)).toBe(true);
     expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "read", ids: [71] });
   });
+
+  test("on a narrow screen, Open on the orchestrator's own notification routes to its page instead of the panel", async () => {
+    const was = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ matches: q === "(max-width: 767px)", media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+    try {
+      await open("/");
+      const s = await live();
+      await push(s, note({ id: 72, kind: "failed", repo: "@orca", branch: "orchestrator", title: "Orchestrator", link: { orchestrator: true } }));
+      await click(button(cards()[0]!, "Open"));
+      expect(location.pathname).toBe("/orchestrator");
+      expect($("orchestrator-panel")).toBeNull();
+      expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "read", ids: [72] });
+    } finally { window.matchMedia = was; }
+  });
 });
