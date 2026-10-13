@@ -1,59 +1,115 @@
 // The quick-ask launcher: a small pill fixed at the bottom centre of every page (desktop; below md
-// the phone's bottom bar has the orchestrator instead). Click it, or press A, and a compact box
-// opens for ONE message to the orchestrator — no history, no transcript: Enter sends, a brief "Sent"
-// confirms, with a link to the full panel, and it closes. The shape is Linear's / Raycast's quick
-// capture and Intercom's launcher: fire a line without leaving what you're looking at, and open the
-// conversation only when you want to read. The pill carries the orchestrator's activity dot (pulsing
-// while a wake runs, lit once one has replied unseen), so you know whether to go and look.
-import { useEffect, useRef, useState } from "react";
+// the phone's bottom bar has the orchestrator instead). Click it, or press A, and the pill MORPHS
+// into a compact box — one surface whose width, height and radius animate (instant under
+// prefers-reduced-motion) — for messages to the orchestrator with no history: Enter sends, Shift/⌘/Ctrl+Enter
+// breaks the line, and the box opens three lines tall and grows with what you type up to a cap. The shape is Linear's / Raycast's
+// quick capture: fire a line without leaving what you're looking at, open the conversation only when
+// you want to read. It carries no activity dot: that lives only on the orchestrator's own entry points
+// (the top bar's button, the phone's bottom bar), the things that open the conversation.
+//
+// Sending is OPTIMISTIC: the box clears and stays open for the next task at once, a subtle "Sent"
+// confirms, and the message goes to the orchestrator in the background. A busy orchestrator is not an
+// error — the bridge queues the message behind its wake (the same queue busy agents use) — and quick
+// successive sends are chained so they reach it in the order they were typed.
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
-import { Bot, Check, X } from "lucide-react";
-import { orchestratorActivityAtom, quickAskOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
+import { Bot, Check } from "lucide-react";
+import { quickAskOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
 import { api } from "../api";
-import { ActivityDot, useOrchestrator } from "@/components/Terminal";
+import { useOrchestrator } from "@/components/Terminal";
 import { Button } from "@/components/ui/button";
-import { Kbd, Shortcut } from "@/components/ui/kbd";
+import { Shortcut } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
 
-/** How long the sent confirmation stays before the box closes itself (ms). */
-export const SENT_DWELL_MS = 4000;
+/** How long the "Sent" confirmation shows after a send (ms). The box itself stays open. */
+export const SENT_FLASH_MS = 2500;
+export const QUICK_ASK_PLACEHOLDER = "Ask the orchestrator...";
+/** The pill ↔ box morph (ms) — the surface's `duration-200`. */
+export const MORPH_MS = 200;
+const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// One chain for the whole tab: each POST starts only once the previous one has answered, so three
+// quick sends arrive as typed (in parallel, the second could reach the bridge first). A failure does
+// not break the chain for the messages behind it.
+let chain: Promise<unknown> = Promise.resolve();
+export function queueOrchestratorMessage(text: string): Promise<{ status: "running" | "queued" }> {
+  const sent = chain.then(() => api.orchestratorMessage(text, []));
+  chain = sent.catch(() => {});
+  return sent;
+}
 
 export function QuickAsk() {
   const [open, setOpen] = useAtom(quickAskOpenAtom);
-  const activity = useAtomValue(orchestratorActivityAtom);
   const collapsed = useAtomValue(sidebarCollapsedAtom);
   const { ask } = useOrchestrator();
-  const [text, setText] = useState("");
-  const [state, setState] = useState<{ kind: "idle" } | { kind: "sending" } | { kind: "sent"; text: string } | { kind: "error"; message: string }>({ kind: "idle" });
+  const [text, setRaw] = useState("");
+  // What the box holds as of the last edit, rendered or not: a send that fails fast can land before
+  // React has rendered the clear (as in ChatComposer).
+  const latest = useRef(text);
+  const setText = (v: string) => { latest.current = v; setRaw(v); };
+  const [flash, setFlash] = useState(0); // >0 while "Sent" shows; bumped per send to restart its timer
+  const [failed, setFailed] = useState<string | null>(null);
   const box = useRef<HTMLTextAreaElement>(null);
-  const key = shortcutLabel("quickAsk");
-  // Open: focus the box. Closed: back to idle, so the next open starts clean (the text is kept until
-  // it is sent — a half-typed line survives an Esc).
-  useEffect(() => {
-    if (open) { setState({ kind: "idle" }); box.current?.focus(); }
-  }, [open]);
-  // The confirmation dwells, then the box closes on its own. A keystroke meanwhile cancels that.
-  useEffect(() => {
-    if (state.kind !== "sent") return;
-    const t = setTimeout(() => setOpen(false), SENT_DWELL_MS);
+  // The box's contents stay mounted through the collapse (`leaving`): faded out, pinned at the width
+  // they had, while the surface shrinks around them — then the pill fades in. Swapping them for the
+  // pill in the commit that closed it was the jank: a blank box shrinking around a popped-in pill.
+  const [mounted, setMounted] = useState(open);
+  if (open && !mounted) setMounted(true);
+  if (!open && mounted && reducedMotion()) setMounted(false);
+  const leaving = mounted && !open;
+  const content = useRef<HTMLDivElement>(null);
+  const [leaveWidth, setLeaveWidth] = useState<number>();
+  useLayoutEffect(() => {
+    if (!leaving) { setLeaveWidth(undefined); return; }
+    setLeaveWidth(content.current?.offsetWidth); // mid-transition this is still the open width
+    const t = setTimeout(() => setMounted(false), MORPH_MS);
     return () => clearTimeout(t);
-  }, [state]);
-  const send = async () => {
+  }, [leaving]);
+  const key = shortcutLabel("quickAsk");
+  // Open: focus the box in the commit that opens it, before the next keystroke. Closed: the text is
+  // kept until it is sent — a half-typed line survives an Esc.
+  useLayoutEffect(() => {
+    if (open) { setFailed(null); box.current?.focus(); }
+  }, [open]);
+  // Grow with the text where `field-sizing: content` isn't supported (Safari, Firefox): there the box
+  // stayed one scrolling line. The CSS min / max heights still bound it.
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el || (typeof CSS !== "undefined" && CSS.supports?.("field-sizing", "content"))) return;
+    el.style.height = "auto";
+    el.style.height = `${el.scrollHeight}px`;
+  }, [text, open]);
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(0), SENT_FLASH_MS);
+    return () => clearTimeout(t);
+  }, [flash]);
+  const send = () => {
     const message = text.trim();
-    if (!message || state.kind === "sending") return;
-    setState({ kind: "sending" });
-    try {
-      await api.orchestratorMessage(message, []);
-      setText("");
-      setState({ kind: "sent", text: message });
-    } catch (e) {
-      // The text stays in the box: nothing typed is lost.
-      setState({ kind: "error", message: e instanceof Error ? e.message : String(e) });
-    }
+    if (!message) return;
+    setText("");
+    setFailed(null);
+    setFlash((n) => n + 1);
+    box.current?.focus();
+    queueOrchestratorMessage(message).catch((e) => {
+      // Only a bridge that could not take it lands here (busy is queued, not refused). Nothing typed
+      // is lost: back into the box if it is still empty, else quoted in the error line.
+      const reason = e instanceof Error ? e.message : String(e);
+      setFlash(0);
+      if (!latest.current.trim()) { setText(message); setFailed(`${reason} — not sent; your text is back in the box.`); }
+      else setFailed(`${reason} — not sent: “${message}”`);
+    });
   };
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); }
+    // Enter sends; Shift/⌘/Ctrl+Enter breaks the line, as in the chat composer. A textarea inserts
+    // Shift's newline itself; ⌘/Ctrl's has to be put in by hand.
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
+      e.preventDefault();
+      const el = e.currentTarget;
+      el.setRangeText("\n", el.selectionStart, el.selectionEnd, "end");
+      setText(el.value);
+    } else if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
     else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setOpen(false); }
   };
   return (
@@ -62,45 +118,59 @@ export function QuickAsk() {
     // the fixed strip starts where the sidebar ends (Shell's md:w-14 collapsed / md:w-60 expanded).
     <div data-slot="quick-ask" data-collapsed={collapsed}
       className={cn("pointer-events-none fixed right-0 bottom-5 z-30 flex justify-center max-md:hidden", collapsed ? "left-14" : "left-60")}>
-      {open ? (
-        <div role="dialog" aria-label="Quick ask" data-slot="quick-ask-box" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } }}
-          className="bg-card text-foreground pointer-events-auto w-[min(560px,calc(100%-2rem))] rounded-lg border shadow-modal">
-          {state.kind === "sent" ? (
-            <div role="status" className="flex items-center gap-3 px-3 py-2.5 text-sm" data-slot="quick-ask-sent">
-              <span className="bg-geist-blue/15 text-geist-blue inline-flex size-6 shrink-0 items-center justify-center rounded-full"><Check className="size-3.5" /></span>
-              <span className="min-w-0 flex-1 truncate">Sent to the orchestrator</span>
-              <button type="button" className="text-geist-blue shrink-0 text-sm hover:underline" onClick={() => { setOpen(false); ask(); }}>Open chat</button>
-              <Button size="icon" variant="ghost" className="size-7 shrink-0" aria-label="Close quick ask" onClick={() => setOpen(false)}><X className="size-4" /></Button>
+      {/* ONE surface for both states, so the pill grows into the box rather than being swapped for it.
+          `interpolate-size` lets the height animate to `auto` (Chromium; elsewhere it snaps). Solid
+          card / accent fills — never a translucent hover, which let the page show through. */}
+      <div data-slot="quick-ask-surface" data-state={open ? "open" : "closed"}
+        className={cn(
+          "[interpolate-size:allow-keywords] bg-card text-foreground pointer-events-auto overflow-hidden border transition-[width,height,border-radius,box-shadow,background-color] duration-200 ease-out motion-reduce:transition-none",
+          open ? "h-auto w-[min(560px,calc(100%-2rem))] rounded-xl shadow-modal" : "h-8 w-[6.5rem] rounded-[16px] shadow-menu",
+          !mounted && "hover:bg-accent",
+        )}>
+        {mounted ? (
+          // While leaving it is the same tree, faded, inert and out of the accessibility tree — no
+          // longer "the box" to anything that looks for it.
+          <div ref={content} role={leaving ? undefined : "dialog"} aria-label={leaving ? undefined : "Quick ask"} aria-hidden={leaving || undefined}
+            data-slot={leaving ? "quick-ask-leaving" : "quick-ask-box"}
+            {...(leaving ? { inert: "" } : {}) as React.HTMLAttributes<HTMLDivElement>}
+            style={leaving && leaveWidth ? { width: leaveWidth } : undefined}
+            className={cn(leaving && "pointer-events-none opacity-0 transition-opacity duration-100")}
+            onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } }}>
+            {/* The agent at the top left; the text takes the whole width beside it. Opens at three
+                lines and grows with its content (field-sizing, else the effect above), up to max-h. */}
+            <div className="flex items-start gap-2 px-3 pt-2.5">
+              <Bot className="text-muted-foreground mt-1 size-4 shrink-0" />
+              <textarea ref={box} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} rows={3} aria-label="Message the orchestrator"
+                placeholder={QUICK_ASK_PLACEHOLDER} data-slot="quick-ask-input"
+                className="placeholder:text-muted-foreground field-sizing-content max-h-40 min-h-[4.5rem] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent py-0.5 text-sm outline-none" />
             </div>
-          ) : (
-            <div className="flex items-start gap-2 px-3 py-2">
-              <span className="relative mt-1.5 inline-flex shrink-0"><Bot className="text-muted-foreground size-4" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
-              <textarea ref={box} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} rows={1} aria-label="Message the orchestrator"
-                placeholder={activity.running ? "The orchestrator is working — queue a message…" : "Ask the orchestrator… (Enter to send)"}
-                className="placeholder:text-muted-foreground max-h-32 min-h-7 min-w-0 flex-1 resize-none bg-transparent py-1 text-sm outline-none" />
-              <Button size="sm" variant="default" className="h-7 shrink-0" disabled={!text.trim() || state.kind === "sending"} onClick={() => void send()}>
-                {state.kind === "sending" ? "Sending…" : "Send"}
+            {/* The action row: the receipt on the left, Send (with its key) on the right — room for
+                more actions later. */}
+            <div className="flex items-center justify-between gap-2 px-2 pt-1 pb-2" data-slot="quick-ask-actions">
+              {/* The receipt: subtle, and it goes on its own. The box is already clear for the next. */}
+              <span role="status" aria-live="polite" data-slot="quick-ask-sent" className="text-muted-foreground flex items-center gap-1.5 pl-1 text-xs">
+                {flash > 0 && <>
+                  <Check className="text-geist-blue size-3.5" />Sent
+                  <button type="button" className="text-geist-blue hover:underline" onClick={() => { setOpen(false); ask(); }}>Open chat</button>
+                </>}
+              </span>
+              <Button size="sm" variant="secondary" className="h-7 gap-1.5 pr-1.5 pl-2.5" aria-label="Send" title="Send (Enter)" disabled={!text.trim()} onClick={send}>
+                Send
+                <Shortcut id="send" />
               </Button>
-              <Button size="icon" variant="ghost" className="size-7 shrink-0" aria-label="Close quick ask" title="Close (Esc)" onClick={() => setOpen(false)}><X className="size-4" /></Button>
             </div>
-          )}
-          {state.kind === "error" && <div className="text-geist-red border-t px-3 py-1.5 text-xs" data-slot="quick-ask-error">{state.message} — not sent; your text is still here.</div>}
-          {state.kind !== "sent" && (
-            <div className="text-muted-foreground flex items-center justify-between border-t px-3 py-1 text-[11px]">
-              <span className="flex items-center gap-1">One message, no history. <Kbd>Shift</Kbd><Kbd>Enter</Kbd> for a new line.</span>
-              <button type="button" className="hover:text-foreground" onClick={() => { setOpen(false); ask(text); setText(""); }}>Open full chat</button>
-            </div>
-          )}
-        </div>
-      ) : (
-        <button type="button" data-slot="quick-ask-pill" onClick={() => setOpen(true)} aria-label="Ask the orchestrator (quick)"
-          title={`Quick ask (${key}): one message to the orchestrator`}
-          className="bg-card text-foreground hover:bg-accent/60 pointer-events-auto flex h-8 items-center gap-2 rounded-full border px-3 text-sm shadow-menu">
-          <span className="relative inline-flex"><Bot className="text-muted-foreground size-3.5" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
-          <span>Ask</span>
-          <Shortcut id="quickAsk" />
-        </button>
-      )}
+            {failed && <div className="text-geist-red border-t px-3 py-1.5 text-xs" data-slot="quick-ask-error">{failed}</div>}
+          </div>
+        ) : (
+          <button type="button" data-slot="quick-ask-pill" onClick={() => setOpen(true)} aria-label="Ask the orchestrator (quick)"
+            title={`Quick ask (${key}): a message to the orchestrator`}
+            className="animate-in fade-in-0 flex size-full items-center justify-center gap-2 px-3 text-sm whitespace-nowrap duration-150 motion-reduce:animate-none">
+            <Bot className="text-muted-foreground size-3.5" />
+            <span>Ask</span>
+            <Shortcut id="quickAsk" />
+          </button>
+        )}
+      </div>
     </div>
   );
 }

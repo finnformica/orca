@@ -5,17 +5,18 @@ import { ArrowLeft, Bot, PictureInPicture2, PanelBottomClose, X } from "lucide-r
 import { subscribeTurns, syncEvents } from "@/lib/events";
 import { ChatPanel } from "@/views/Chat";
 import { api } from "../api";
-import type { Row } from "../store";
-import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth } from "../workstream";
+import { useWorkstreams, type Row } from "../store";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, orchestratorStatus } from "../workstream";
 import { PortalContainer, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
 import { poll } from "@/lib/poll";
 import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorWidthAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
-import { isNarrow, useNarrow } from "@/lib/viewport";
+import { useNarrow } from "@/lib/viewport";
+import { openOrchestrator } from "@/lib/orchestratorOpen";
 import { useSwipeToClose } from "@/lib/gestures";
-import { navigate, useRoute } from "@/lib/route";
+import { useRoute } from "@/lib/route";
 
 // The card's terminal: a modal you open in place (no navigating to the detail page) showing the
 // branch's conversation as a terminal-style log — the durable turns Orca records — with the follow-up
@@ -71,23 +72,16 @@ export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean
 // (History: it was a draggable, resizable corner window first — one more thing to place and keep
 // out of the way — and before that a modal.)
 
-let askSeq = 0;
-/** A new ask session: the keystrokes of one ask replace each other in the composer (see ChatComposer). */
-export const newAskSession = (): number => ++askSeq;
+export { newAskSession } from "@/lib/orchestratorOpen";
 /** Open the orchestrator and focus its composer, with `text` after its draft. On a narrow screen
  *  (phones) this NAVIGATES to its routed page (`/orchestrator`) instead of opening the side panel —
  *  an overlay sheet scrolled the page behind it rather than the chat, so the page is now a real route
  *  with its own scroll container. Every entry point (the bottom bar, the O key, the palette, a
- *  notification's Open, quick-ask's Open) goes through this one function, so they all redirect the
- *  same way; desktop is untouched. */
+ *  notification's Open, quick-ask's Open) goes through `openOrchestrator` (lib/orchestratorOpen), so
+ *  they all redirect, focus and catch early keystrokes the same way; desktop is untouched. */
 export function useOrchestrator() {
   const [open, setOpen] = useAtom(orchestratorOpenAtom);
-  const setPrefill = useSetAtom(orchestratorPrefillAtom);
-  const ask = (text = "", session = newAskSession()) => {
-    if (isNarrow()) navigate("/orchestrator"); else setOpen(true);
-    setPrefill({ text, session, seq: ++askSeq });
-  };
-  return { open, ask, close: () => setOpen(false) };
+  return { open, ask: openOrchestrator, close: () => setOpen(false) };
 }
 
 /** The orchestrator's activity for the launchers' indicator: running, and whether a wake finished
@@ -145,8 +139,35 @@ export function AskOrchestrator() {
   );
 }
 
+/** The orchestrator's model until its status read answers (server/orchestrator.ts's default). */
+const ORCHESTRATOR_DEFAULT_MODEL = "claude-opus-5-5";
+
 /** How long the slide takes (ms); the panel is hidden from assistive tech once it has slid out. */
 const SLIDE_MS = 200;
+
+/** The header's live line under "Orchestrator", the same in the panel and the page: Idle, or Working
+ *  with the wake's elapsed time, plus what's queued for it and how many of its workers are running
+ *  (the board's own rows — orchestrated and running — so no endpoint of its own). The last wake's
+ *  cost and the large-session advice are its tooltip; a large session shows only an amber dot. */
+function OrchestratorStatusLine({ state }: { state: { running: boolean; startedAt?: number; queued?: number; lastWakeUsd?: number; hint?: string } | null }) {
+  const workers = useWorkstreams().filter((r) => r.orchestrated && r.agentStatus === "running").length;
+  // Ticks once a second while a wake runs, so the elapsed time counts up between polls.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!state?.running) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [state?.running]);
+  if (!state) return null;
+  const line = orchestratorStatus({ ...state, workers, now });
+  return (
+    <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-[11px]" title={line.tooltip} data-slot="orchestrator-status">
+      {line.warn && <span data-slot="orchestrator-status-warn" aria-label="Large session" className="bg-geist-amber size-1.5 shrink-0 rounded-full" />}
+      <span className="truncate">{line.text}</span>
+    </div>
+  );
+}
 
 export function OrchestratorPanel() {
   const [open, setOpen] = useAtom(orchestratorOpenAtom);
@@ -156,13 +177,15 @@ export function OrchestratorPanel() {
   const narrow = useNarrow();
   const prefill = useAtomValue(orchestratorPrefillAtom);
   const setPrefill = useSetAtom(orchestratorPrefillAtom);
-  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
+  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number } | null>(null);
   const load = () => api.orchestrator().then(setState).catch(() => {});
   // Once opened, the chat stays MOUNTED while closed (slid out, hidden): reopening is instant, with
   // the transcript, scroll position and draft exactly where you left them — the way an editor's
   // assistant rail behaves — instead of refetching and re-rendering the conversation every time.
+  // Set DURING render, not in an effect: the panel and its composer must mount in the commit that
+  // opens it, so the composer's layout effect can focus it before the first keystroke.
   const [mounted, setMounted] = useState(false);
-  useEffect(() => { if (open) setMounted(true); }, [open]);
+  if (open && !mounted) setMounted(true);
   // Popped out: the chat lives in an always-on-top Document Picture-in-Picture window (Chrome/Edge
   // 116+), rendered there by a PORTAL — the same React tree, so its state, composer draft, SSE and
   // popovers carry over rather than being copied. Browsers without the API get no Pop out button.
@@ -178,13 +201,16 @@ export function OrchestratorPanel() {
   useEffect(() => { if (!open) { pip?.close(); setPrefill(null); } }, [open]);
   // An ask while popped out lands in the PiP window's composer; bring that window forward.
   useEffect(() => { if (prefill) pip?.focus(); }, [prefill?.seq]);
-  // Focus: the composer takes it on open (ChatComposer's prefill effect); on close it goes back to
-  // where it was — the button or key that opened the panel — so a keyboard user isn't dropped on <body>.
+  // Focus: the composer takes it on open (ChatComposer's prefill layout effect); on close it goes back
+  // to where it was — the button or key that opened the panel — so a keyboard user isn't dropped on
+  // <body>. The opener is read DURING the render that opens it: the composer focuses itself in a
+  // layout effect, which runs before any effect of this parent's.
   const opener = useRef<Element | null>(null);
-  // A LAYOUT effect: the composer takes focus in a passive effect of its own, which would run first
-  // (children's effects before the parent's) and leave "the opener" being the composer itself.
+  const wasOpen = useRef(false);
+  if (open && !wasOpen.current) opener.current = document.activeElement;
+  wasOpen.current = open;
   useLayoutEffect(() => {
-    if (open) { opener.current = document.activeElement; return; }
+    if (open) return;
     const el = opener.current as HTMLElement | null;
     opener.current = null;
     if (el && document.contains(el) && typeof el.focus === "function") el.focus();
@@ -256,12 +282,7 @@ export function OrchestratorPanel() {
         <div className="min-w-0">
           {/* Paused = it has woken itself as many times as it may without hearing from you. */}
           <div className="truncate text-sm font-medium" id="orchestrator-title">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
-          {/* What the last wake cost; amber once the session is big enough that a fresh one would be much cheaper. */}
-          {state?.lastWakeUsd !== undefined && (
-            <div className={`truncate text-[11px] ${state.hint ? "text-geist-amber" : "text-muted-foreground"}`} title={state.hint} data-slot="orchestrator-spend">
-              last wake ${state.lastWakeUsd.toFixed(2)}{state.hint ? ` · ${state.hint}` : ""}
-            </div>
-          )}
+          <OrchestratorStatusLine state={state} />
         </div>
       </div>
       <div className="flex shrink-0 items-center">
@@ -283,19 +304,21 @@ export function OrchestratorPanel() {
   // The conversation fills the panel edge to edge, in the chat styling that follows the page's theme.
   const chat = (
     <div className="min-h-0 flex-1">
-      {state && <ChatPanel
+      {/* Mounted at once, not after the status read: the composer must exist to take focus in the
+          same commit that opens the panel, or the first keystrokes go nowhere. */}
+      <ChatPanel
         row={row} flush variant="chat" prefill={prefill}
         // The same toolbar a card's terminal has, fed the orchestrator's own values. Claude
         // only; changing the model keeps the session.
         controls={{
-          model: state.model, only: "claude", contextPct: state.contextPct,
-          onModel: (model) => { setState({ ...state, model }); void api.orchestratorModel(model).then(load); },
+          model: state?.model ?? ORCHESTRATOR_DEFAULT_MODEL, only: "claude", contextPct: state?.contextPct,
+          onModel: (model) => { setState((s) => (s ? { ...s, model } : s)); void api.orchestratorModel(model).then(load); },
         }}
         send={async (text, images) => {
           await api.orchestratorMessage(text, images.length ? await api.uploadAttachments(images) : []);
           await load();
         }}
-      />}
+      />
     </div>
   );
   const panelClass = "bg-card text-foreground flex flex-col overflow-hidden";
@@ -318,8 +341,11 @@ export function OrchestratorPanel() {
           ref={panelRef}
           role="dialog" aria-modal="false" aria-label="Orchestrator" aria-labelledby="orchestrator-title" aria-hidden={!open}
           data-slot="orchestrator-panel" data-state={open ? "open" : "closed"}
-          className={cn(panelClass, "fixed inset-y-0 right-0 z-40 border-l shadow-modal transition-[transform,visibility] ease-out motion-reduce:transition-none",
-            open ? "translate-x-0" : "invisible translate-x-full")}
+          // Opening, only the transform transitions — `visibility` flips to visible AT ONCE, so the
+          // composer can take focus in the same commit (a hidden element refuses focus, and a
+          // visibility transition starts at its old value). Closing, visibility waits for the slide.
+          className={cn(panelClass, "fixed inset-y-0 right-0 z-40 border-l shadow-modal ease-out motion-reduce:transition-none",
+            open ? "visible translate-x-0 transition-transform" : "invisible translate-x-full transition-[transform,visibility]")}
           style={{ width, maxWidth: "100vw", minWidth: Math.min(PANEL_MIN_W, vw), transitionDuration: `${SLIDE_MS}ms` }}
         >
           {/* The resize handle: the panel's left edge. Dragging left widens; the width is remembered. */}
@@ -352,7 +378,7 @@ const ORCHESTRATOR_PAGE_HEIGHT =
  *  while it's the current route. */
 export function OrchestratorPage() {
   const prefill = useAtomValue(orchestratorPrefillAtom);
-  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
+  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number } | null>(null);
   const load = () => api.orchestrator().then(setState).catch(() => {});
   useEffect(() => poll(load, 2000), []);
   const row: Row = {
@@ -368,25 +394,21 @@ export function OrchestratorPage() {
         <div className="min-w-0">
           {/* Paused = it has woken itself as many times as it may without hearing from you. */}
           <div className="truncate text-sm font-medium">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
-          {state?.lastWakeUsd !== undefined && (
-            <div className={`truncate text-[11px] ${state.hint ? "text-geist-amber" : "text-muted-foreground"}`} title={state.hint}>
-              last wake ${state.lastWakeUsd.toFixed(2)}{state.hint ? ` · ${state.hint}` : ""}
-            </div>
-          )}
+          <OrchestratorStatusLine state={state} />
         </div>
       </div>
       <div className={cn("min-h-0", ORCHESTRATOR_PAGE_HEIGHT)}>
-        {state && <ChatPanel
+        <ChatPanel
           row={row} flush variant="chat" prefill={prefill}
           controls={{
-            model: state.model, only: "claude", contextPct: state.contextPct,
-            onModel: (model) => { setState({ ...state, model }); void api.orchestratorModel(model).then(load); },
+            model: state?.model ?? ORCHESTRATOR_DEFAULT_MODEL, only: "claude", contextPct: state?.contextPct,
+            onModel: (model) => { setState((s) => (s ? { ...s, model } : s)); void api.orchestratorModel(model).then(load); },
           }}
           send={async (text, images) => {
             await api.orchestratorMessage(text, images.length ? await api.uploadAttachments(images) : []);
             await load();
           }}
-        />}
+        />
       </div>
     </div>
   );
