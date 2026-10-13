@@ -129,6 +129,15 @@ describe("agents list view", () => {
     // The row menu's trigger is vertical dots, not horizontal — same menu, same right-click.
     expect(rowOf("feat-ci").querySelector('button[aria-label="Actions"] svg')!.classList.contains("lucide-ellipsis-vertical")).toBe(true);
     expect(rowOf("feat-ci").querySelector(".lucide-ellipsis")).toBeNull(); // the old horizontal icon is gone
+    // Regression: the ⋯ button's wrapper must space itself with flex/gap, not a margin-based
+    // space-y-* utility — that still reserves space for its `display:none` siblings (the closed
+    // rename/terminal dialogs), which inflated the wrapper past the button's own height and threw
+    // its vertical centering off from its neighbours in the Actions cell. jsdom has no real layout
+    // engine to catch the pixel offset itself (verified separately with Playwright), so this pins
+    // the markup shape that causes it.
+    const actionsBtn = rowOf("feat-ci").querySelector<HTMLElement>('button[aria-label="Actions"]')!;
+    const actionsWrapper = actionsBtn.parentElement!.parentElement!;
+    expect(actionsWrapper.className).not.toMatch(/\bspace-y-/);
     // Preview cell: idle, enabled (the fake config's repo "r" has RepoFeatures.previews on).
     expect(rowOf("feat-ci").querySelector<HTMLElement>('[data-slot="preview-cell"]')!.dataset.state).toBe("none");
     // Readable models: the run's reported model, else the pinned one — no initials avatar.

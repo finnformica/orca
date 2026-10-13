@@ -206,7 +206,11 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
     </>
   );
   return (
-    <div className="space-y-2">
+    // `flex flex-col gap-2`, not `space-y-2`: a margin-based gap still reserves space for a
+    // `display:none` sibling (the closed RenameDialog, or the TerminalDialog above this component),
+    // which inflated this wrapper past the toolbar's own height and threw off the Actions cell's
+    // vertical centering on every row. `gap` only spaces boxes the layout actually generates.
+    <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
         {!menuOnly && leading}
         {!menuOnly && <Button size={icon} className={iconClass} variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)} title="Follow up" aria-label="Follow up">
