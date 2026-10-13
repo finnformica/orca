@@ -774,13 +774,21 @@ async function api(req: Request, url: URL): Promise<Response> {
     // a bridge restart, a closed tab, and follow-ups that land faster than the client polls.
     const branch = url.searchParams.get("branch");
     if (!branch) return json({ error: "branch required" }, 400);
-    const turns = await db.turns(repo.name, branch);
+    // Paged when the client asks for a page (`limit`, and `before` = the cursor the previous page
+    // returned): the newest `limit` turns as `{ turns, older }`. Without `limit` the whole
+    // conversation comes back as a plain array, as it always did — an older client keeps working.
+    // The orchestrator's conversation is hundreds of turns; a chat opens on its tail and fetches
+    // older pages as you scroll up.
+    const pageSize = Number(url.searchParams.get("limit")) || 0;
+    const page = pageSize ? await db.turnPage(repo.name, branch, { limit: pageSize, before: url.searchParams.get("before") ?? undefined }) : null;
+    const turns = page ? page.turns : await db.turns(repo.name, branch);
     // Each turn carries its recorded steps (the agent's thought process) — for the NEWEST
     // `STEPS_FOR_TURNS` turns, in ONE query. Older turns come without; the chat fetches a turn's
     // steps when you unfold it (/api/turns/steps from seq 0). A 300-turn conversation used to mean
     // 300 queries and megabytes on every open, and the database may be on the other machine now.
+    // An older PAGE comes with no steps at all — its turns are finished, and unfolding fetches them.
     const limit = Number(url.searchParams.get("steps")) || STEPS_FOR_TURNS;
-    const recent = turns.slice(-limit);
+    const recent = page && url.searchParams.get("before") ? [] : turns.slice(-limit);
     const bySteps = await db.stepsForRuns(recent.map((t) => t.id));
     for (const t of recent) {
       const numbered = bySteps.get(t.id) ?? [];
@@ -789,7 +797,12 @@ async function api(req: Request, url: URL): Promise<Response> {
         t.stepSeq = numbered[numbered.length - 1]!.seq; // where the live tail resumes from
       }
     }
-    return json(turns);
+    // The full prompt (instruction + scaffolding + the orchestrator's board snapshot and notes) is
+    // never shown: the chat renders `instruction`, and falls back to trimming the prompt only for
+    // turns recorded before the instruction was stored. For the orchestrator's 375 turns the prompts
+    // were 3.6 MB of a 5.3 MB response — seconds over the tailnet, for nothing on screen.
+    for (const t of turns) if (t.instruction !== undefined) t.prompt = "";
+    return json(page ? { turns, older: page.older } : turns);
   }
   if (req.method === "GET" && p === "/api/queued") {
     const branch = url.searchParams.get("branch");
