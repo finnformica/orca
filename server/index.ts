@@ -150,6 +150,7 @@ setInterval(runReaper, REAP_INTERVAL_MS).unref();
 
 // How many of a conversation's newest turns are sent with their steps attached (older ones load on unfold).
 const STEPS_FOR_TURNS = 40;
+const STEPS_FOR_PAGE = 10;
 
 // How long shutdown waits for outstanding history writes before leaving anyway.
 const DRAIN_TIMEOUT_MS = 5_000;
@@ -787,7 +788,10 @@ async function api(req: Request, url: URL): Promise<Response> {
     // steps when you unfold it (/api/turns/steps from seq 0). A 300-turn conversation used to mean
     // 300 queries and megabytes on every open, and the database may be on the other machine now.
     // An older PAGE comes with no steps at all — its turns are finished, and unfolding fetches them.
-    const limit = Number(url.searchParams.get("steps")) || STEPS_FOR_TURNS;
+    // A paged request is the chat opening: steps ride along for the newest STEPS_FOR_PAGE turns only
+    // (the running one, and the few you'd unfold without scrolling); the 40-turn attachment was
+    // 450 KB of the orchestrator's 620 KB first page.
+    const limit = Number(url.searchParams.get("steps")) || (page ? STEPS_FOR_PAGE : STEPS_FOR_TURNS);
     const recent = page && url.searchParams.get("before") ? [] : turns.slice(-limit);
     const bySteps = await db.stepsForRuns(recent.map((t) => t.id));
     for (const t of recent) {

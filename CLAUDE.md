@@ -135,7 +135,7 @@ rows tagged by repo (each row carries `repo`; actions use `row.repo`). Enrichmen
 
 There is deliberately no tmux/xterm lane. One existed per card (deleted as unused) and came back
 once for the orchestrator's window (#96: Claude Code's TUI in tmux, streamed over a WebSocket) —
-the user found it didn't work for them and had it reverted the next day. The orchestrator's window
+the user found it didn't work for them and had it reverted the next day. The orchestrator's panel
 is the chat panel over its recorded turns; a wake is `claude -p --resume` on its session.
 
 ## The one board & model
@@ -151,7 +151,7 @@ inherits it. **Surface rules** (Finn found the first pass heavy-handed; `tests/c
 asserts them on every page): 1px hairlines only, never 2px; rows use dividers, never a box inside a
 card's border; 8px cards (`rounded-lg`), 6px controls (`rounded-md`); 13px body / 12px meta; icons at
 1.5 stroke (a global `svg.lucide` rule); NO shadows except Geist's menu / modal tokens
-(`shadow-menu`, `shadow-modal`) and the orchestrator's floating window; badges are tinted fills
+(`shadow-menu`, `shadow-modal`) and the orchestrator's side panel (`shadow-modal`); badges are tinted fills
 with no border; buttons are Geist's three — primary (inverted; Merge too), secondary (hairline),
 tertiary (ghost: every icon-only row / toolbar button). The agent page's conversation runs
 full-bleed in its card and follows the page's theme (`.log-themed` remaps the terminal palette in
@@ -163,11 +163,20 @@ of the page inert; sending closes it and leaves "Sent to … · Undo" for 6s; th
 below it you on one thin line — "You · local" — with the collapse toggle;
 collapsed it is one icon column, expand toggle above you; off-canvas when narrow; `⌘B` / Ctrl+B
 toggles it, remembered) and a top bar (repo switcher, breadcrumb, and **Ask the orchestrator** at its
-right on every page — Vercel's "Ask AI": click it and the orchestrator's window opens with its
-composer focused; type in it and the text carries on in that composer, after any draft it held).
+right on every page — Vercel's "Ask AI", as a BUTTON: it opens the orchestrator's side panel with its
+composer focused. It was a text box whose keystrokes carried into the composer; the quick-ask pill
+below now covers "fire off a line"). **The quick-ask pill** (`components/QuickAsk.tsx`, the `A` key):
+a small "Ask · A" pill fixed at the bottom centre of every page (desktop; below md the phone's bottom
+bar has the orchestrator instead) opens a one-line box for ONE message to the orchestrator with no
+history — Enter sends, "Sent to the orchestrator · Open chat" dwells 4s then it closes, a failed
+send keeps the text. The pill, the top-bar button and the phone's bottom bar carry the orchestrator's
+**activity dot** (`ActivityDot`: pulsing while a wake runs, lit once one finished while the panel was
+closed, cleared when it opens), fed by ONE subscriber (`useOrchestratorActivity` in the Shell: a
+status read on mount, then one per `turn` event on the tab's shared stream — no poll of its own).
 **Keyboard** (`lib/shortcuts.ts`: ONE table + a pure matcher; ONE listener, `Shortcuts` in
 `components/CommandPalette.tsx`): `⌘K` / Ctrl+K the command palette, `C` New agent, `O` the
-orchestrator, `F` Find, `⌘B` the sidebar, `?` the shortcuts sheet, Esc closes the overlay. Letters
+orchestrator, `A` quick ask, `F` Find, `⌘B` the sidebar, `?` the shortcuts sheet, Esc closes the
+overlay (the quick-ask box first, then the panel). Letters
 and ⌘B never fire in a field or inside a modal dialog (they'd eat a keystroke of the message); ⌘K and
 Esc fire everywhere. **O, not ⌘J**, for the orchestrator: ⌘J / Ctrl+J is the browser's Downloads
 (Chrome on Windows/Linux, Firefox), and a bare letter can't clash with a browser or a composer; from a
@@ -183,7 +192,7 @@ the palette open the same one. **Previews** is a page (running previews with Ope
 master per repo); its nav item carries the badges the old header buttons had — the running count
 and a spinner / dot for a base-branch preview — from one shared `/api/previews` poll
 (`usePreviewList`). The
-orchestrator's window floats outside the shell (`App`'s `OrchestratorWindow`). Building blocks (card, ring,
+orchestrator's side panel is rendered outside the shell (`App`'s `OrchestratorPanel`). Building blocks (card, ring,
 status dot, pill, details grid, line chart) are `components/console.tsx`.
 - **Overview** (`/`, `views/Overview.tsx`): a Usage card — Claude per window as ring + value / limit
   rows (the fleet, every hydra login on expand) and Codex; it REPLACED the header usage meter — one
@@ -231,7 +240,8 @@ over `GET /api/prs/:n/review-signal`, fetched lazily per rendered PR (`store.use
 at desktop widths): a bottom bar (Menu · Agents · New agent · Orchestrator) replaces the top bar's Ask
 box; Agents rows stack with every action in the one ⋯ and the chips + sort in a Filters bottom sheet;
 the orchestrator, the terminal and Add New are full-screen `sheet`s sized to the visual viewport
-(`--vvh`, so the composer clears the keyboard; no drag / resize / PiP); menus and selects open as bottom
+(`--vvh`, so the composer clears the keyboard; no resize / PiP; the quick-ask pill is hidden — the
+bottom bar's Orchestrator carries its dot); menus and selects open as bottom
 sheets; inputs are 16px, touch targets 44px, Enter on a touch screen is a newline. Swipe a sheet's
 header down to close it; pull the Agents list down to refresh (`lib/gestures.ts`). It installs as a PWA
 (`web/public/manifest.webmanifest`: round icons plus a full-bleed maskable one, New agent /
@@ -348,9 +358,19 @@ the workstream's selected provider; Slack posting uses a lightweight model of th
 
 ## The orchestrator (one conversation that delegates)
 
-**Ask the orchestrator** in the top bar (every page), the `O` key or the palette open a chat window
-in the bottom-right corner — a popout like a site's chat widget, deliberately not a modal, so the board it
-is moving stays visible. Its composer sits on the terminal's own background and carries a model
+**Ask the orchestrator** in the top bar (every page), the `O` key, the palette, a failed action's
+toast and the quick-ask box's "Open chat" open a **right-hand side panel** that slides over the page
+(`OrchestratorPanel`, `components/Terminal.tsx`: a `transform`, so nothing reflows; `role=dialog`
+`aria-modal=false` — no backdrop, the board it is moving stays visible and usable; Esc or ✕ closes
+and focus returns to the opener; resized from its LEFT edge, width remembered as
+`orca.ui.v1.orchestratorWidth` and clamped to the viewport by `clampPanelWidth`). Once opened it
+stays MOUNTED while closed (slid out, `aria-hidden`), so reopening is instant with the transcript,
+scroll position and draft where you left them. Its chat is `ChatPanel variant="chat"`: an
+assistant-chat styling in the page's theme (`.log-themed`) — your messages as `bg-accent` bubbles on
+the right, replies under "Orchestrator" with a bot avatar, folded steps and `⚙` worker reports,
+day dividers (`dayLabel`), timestamps on hover. (History: a modal, then a draggable/resizable corner
+window with the dark terminal styling — one more thing to place and keep out of the way.) Its composer
+carries a model
 picker (Claude models only; changing it keeps the session) and an icon button whose ring shows how
 full its context is (the percentage is in its hover popover) — the same `ChatControls` every card's
 terminal composer has, fed the orchestrator's values instead of the card's. The popover's **Compact**
@@ -363,16 +383,15 @@ until its turn finishes, then the ring re-reads from the CLI's post-compaction c
 queued, because a queued message reaches the model as prose and `/compact` only works as its own
 run. A compact is housekeeping: it neither counts as an orchestrator wake nor reports a worker
 event.
-The window is dragged by
-its header and resized from any edge, and can never leave the viewport (`clampFrame`/`resizeFrame`
-in `workstream.ts`: on every move, on browser resize, and on load, which also fixes a saved spot
-from a bigger screen). **Pop out** moves it into an always-on-top Document Picture-in-Picture window
+**Pop out** (kept: it costs one button on the portal) moves it into an always-on-top Document
+Picture-in-Picture window
 (Chrome/Edge 116+) via a React **portal**: the same tree, so draft, SSE, popovers and keys carry
 over. The page's stylesheets are copied into it and `<html>`'s class/style mirrored (theme). Radix
 popovers/selects portal into it through `PortalContainer` (`lib/utils.ts`). Return to tab or its own
 close brings it back (an ask while popped out lands in the PiP composer), and its size is remembered.
 (History: a floating round launcher in the corner opened it; the top-bar entry replaced it — two
-ways to do one thing, and the launcher covered the corner the window sits in.) Browsers without the API get no
+ways to do one thing, and the launcher covered the corner the window sat in. The quick-ask pill is
+not that launcher: it sends a line without opening the conversation.) Browsers without the API get no
 button (a plain popup can't stay on top, so it was not worth having).
 It is one conversation you talk to; it starts and steers
 workstreams itself. Anthropic's orchestrator-workers pattern, kept to **two layers** — it, and the
@@ -576,10 +595,24 @@ Activity Monitor's own formula), not `totalmem() − freemem()` — macOS's `fre
 truly-free page count and reads near-100% on every healthy Mac; `sysctl -n kern.memorystatus_level`
 rides along as `memPressurePct`/`memPressure` (linux keeps `totalmem() − freemem()`, which already
 tracks `/proc/meminfo`'s `MemAvailable`).
-**Conversation loading with a remote database:** `/api/turns` attaches steps to the newest
-`STEPS_FOR_TURNS` (40) turns in ONE query (`db.stepsForRuns`); older turns fetch theirs on unfold
+**Conversation loading with a remote database:** the chat is **paged**. `GET /api/turns?limit=50`
+returns `{ turns, older }` — the newest page (oldest first) and an opaque cursor
+(`<started_at>~<turn.id>`, exact across equal timestamps; `db.turnPage`) for the page before, which
+`?before=<cursor>` fetches (null once the first turn is in hand). Without `limit` the whole array
+comes back as it always did, so an older client keeps working. `ChatPanel` opens on the newest page
+(`TURN_PAGE_SIZE`), fetches the next older page as you near the top (or on the "↑ earlier turns"
+click, for a page too short to scroll) and restores `scrollTop` by the height added above
+(`anchoredScrollTop`) so the turn under the eye stays put; a refresh (a `turn` event, a send)
+re-reads the newest page and merges it over what is loaded (`mergeLatestPage` /
+`prependOlderPage`). It follows the tail only while at it; scrolled up, new output lights a "New
+messages" jump button instead of yanking the reader down. Turns whose `instruction` is stored ship
+`prompt: ""` — the chat never shows the prompt, and the orchestrator's 375 prompts (its board
+snapshot and notes, every wake) were 3.6 MB of its 5.3 MB conversation. Steps ride along for the
+newest `STEPS_FOR_PAGE` (10) turns of a paged request, `STEPS_FOR_TURNS` (40) of an unpaged one,
+in ONE query (`db.stepsForRuns`); other turns fetch theirs on unfold
 (`/api/turns/steps` from seq 0). One query per turn over a 6ms link made a 300-turn conversation
-take seconds to open. Leases, the ledger, handoff
+take seconds to open; the whole 5 MB over the tailnet did too, and 375 markdown turns took ~0.8s to
+render where 50 take ~0.1s. Leases, the ledger, handoff
 files, `~/.claude/projects` backfill, preview ports, and `/api/usage` are **per host** — they
 describe the instance that answered, which is right for leases and wrong-but-tolerable for the
 usage meter. `deploy/orca.service` is the systemd unit; `bun run build` then `bun run server` is

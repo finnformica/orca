@@ -85,10 +85,7 @@ test("Q2: the confirmation dwells then the box closes itself; Esc closes; a fail
   const input = $<HTMLTextAreaElement>('[data-slot="quick-ask-box"] textarea')!;
   await type(input, "a line");
   // The bridge refuses: the error shows and the text is still in the box.
-  const real = apiFake.orchestratorMessages;
-  const fail = store as unknown as { api?: unknown };
-  void fail; void real;
-  (await import("../web/src/api")).api.orchestratorMessage = (async () => { throw new Error("bridge offline"); }) as never;
+  apiFake.orchestratorMessageError = "bridge offline";
   await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); await flush(); await flush(); });
   expect($('[data-slot="quick-ask-error"]')!.textContent).toContain("bridge offline");
   expect($<HTMLTextAreaElement>('[data-slot="quick-ask-box"] textarea')!.value).toBe("a line");
