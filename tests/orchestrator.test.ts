@@ -21,7 +21,7 @@ import { run } from "../server/run";
 import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
 import {
-  ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, ladderStep, nextFailStreak, isWorkerProblem, onlyCleanReports, sessionHint, wakeExitReason,
+  MESSAGE_BREAK, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isWorkerProblem, ladderStep, nextFailStreak, onlyCleanReports, orchestratorStatus, sessionHint, splitMessages, wakeExitReason,
   wakeProgress, wakeStoppedLine, workerEvent,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
@@ -123,6 +123,10 @@ test("O1: spawn creates a briefed workstream, and the worker finishing wakes the
   expect(wake!.instruction).toStartWith(`${WORKER_EVENT_MARKER} r/${branch} "Add cache" — done`);
   expect(wake!.instruction).toContain("Outcome: Done.");
   expect(wake!.instruction).toContain(`orca read --run ${(await db.turns("r", branch))[0]!.id}`);
+  // Woken by a report alone: the Agents channel's, and the report sits under its own heading.
+  expect(wake!.source).toBe("agents");
+  expect(wake!.prompt).toContain(`## Worker reports\nAutomated, from Orca as your workers finish — not the user.\n\n${WORKER_EVENT_MARKER} r/${branch}`);
+  expect(wake!.prompt).not.toContain("## From the user");
   // A first wake carries the role, its notes, and a board that shows the workstream as its own.
   expect(wake!.prompt).toContain("You are Orca's orchestrator");
   expect(wake!.prompt).toContain("## Your notes\n(empty)");
@@ -232,7 +236,7 @@ test("O17: a clean finish waits for the batch (or the user); a failure wakes it 
   // …until the last running worker finishes, which delivers both in ONE wake.
   await rm(holdWorkers);
   const turns = await settled(orchTurns, 2);
-  expect(turns[1]!.instruction!.split("\n\n").map((p) => p.split("\n")[0])).toEqual([
+  expect(splitMessages(turns[1]!.instruction!).map((p) => p.split("\n")[0])).toEqual([
     '[worker finished] r/c "C" — done',
     expect.stringMatching(/^\[worker finished\] r\/orca\/add-cache-\w+ "Add cache" — done$/),
   ]);
@@ -265,7 +269,7 @@ test("O18: clean reports that queued while it worked also wait for the batch; a 
   await rm(hold);
   await orchIdle();
   const turns = await (async () => { for (let i = 0; i < 400; i++) { const t = await orchTurns(); if (t.length >= 3 && t.every((x) => x.finishedAt)) return t; await new Promise((r) => setTimeout(r, 25)); } throw new Error("no third wake"); })();
-  expect(turns[1]!.instruction!.split("\n\n").map((p) => p.split("\n")[0])).toEqual(['[worker finished] r/a "A" — done', "status?"]);
+  expect(splitMessages(turns[1]!.instruction!).map((p) => p.split("\n")[0])).toEqual(['[worker finished] r/a "A" — done', "status?"]);
   expect(turns[2]!.instruction!.split("\n\n").map((p) => p.split("\n")[0])).toEqual(['[worker finished] r/b "B" — error']);
   await rm(holdWorkers);
 });
@@ -290,13 +294,25 @@ test("O3: messages that arrive mid-run are queued and drained as ONE resumed wak
   expect(await orchestrator.message(cfg(), "first")).toEqual({ status: "running" });
   expect(await orchestrator.message(cfg(), "second")).toEqual({ status: "queued" });
   expect(await orchestrator.message(cfg(), "third")).toEqual({ status: "queued" });
-  expect((await orchestrator.status(cfg())).running).toBe(true);
+  const live = await orchestrator.status(cfg());
+  expect(live.running).toBe(true);
+  // The header's live line: the wake in flight's start, and what waits for the next one.
+  expect(live.startedAt).toBeNumber();
+  expect(Date.now() - live.startedAt!).toBeLessThan(60_000);
+  expect(live.queued).toBe(2);
   await rm(hold);
 
   const turns = await settled(orchTurns, 2);
   expect(turns).toHaveLength(2); // not three
-  expect(turns[1]!.instruction).toBe("second\n\nthird");
+  // …but still two messages: kept apart by the break, so the chat draws two bubbles and the model reads
+  // two messages (a blank line merged them into one, in both).
+  expect(turns[1]!.instruction).toBe(`second${MESSAGE_BREAK}third`);
+  expect(splitMessages(turns[1]!.instruction!)).toEqual(["second", "third"]);
+  expect(turns[1]!.prompt).toContain(`## From the user\n2 separate messages, oldest first.\n\nsecond${MESSAGE_BREAK}third`);
   expect(await db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH)).toEqual([]);
+  const idle = await orchestrator.status(cfg());
+  expect(idle.startedAt).toBeUndefined();
+  expect(idle.queued).toBe(0);
   // Rung 1 of the ladder: the same session, so the role is not repeated — but notes and board are.
   expect((await launches())[1]).toContain(`--resume ${turns[0]!.sessionId}`);
   expect(turns[1]!.prompt).not.toContain("You are Orca's orchestrator");
@@ -329,7 +345,15 @@ test("O4: the wake cap pauses self-waking; your next message resumes it with wha
 
   await orchestrator.message(cfg(), "carry on");
   const [turn] = await settled(orchTurns, 1);
-  expect(turn!.instruction).toBe(`${WORKER_EVENT_MARKER} r/mine "Mine" — error\nResponse: boom\nFull turn: orca read --run run-mine\n\ncarry on`);
+  expect(turn!.instruction).toBe(`${WORKER_EVENT_MARKER} r/mine "Mine" — error\nResponse: boom\nFull turn: orca read --run run-mine${MESSAGE_BREAK}carry on`);
+  // You spoke, so it is a Chat turn; in its prompt your words come first, under their own heading,
+  // and the held report after them under the workers' — never one blob the model has to untangle.
+  expect(turn!.source).toBe("human");
+  const user = turn!.prompt.indexOf("## From the user\ncarry on"), reports = turn!.prompt.indexOf(`## Worker reports\n`);
+  expect(user).toBeGreaterThan(-1);
+  expect(reports).toBeGreaterThan(user);
+  expect(turn!.prompt.slice(reports)).toContain(`${WORKER_EVENT_MARKER} r/mine "Mine" — error`);
+  expect(turn!.prompt.slice(user, reports)).not.toContain(WORKER_EVENT_MARKER);
   expect((await orchestrator.status(cfg())).paused).toBe(false);
 });
 
@@ -719,6 +743,20 @@ test("O17: the exit line and the large-session hint are pure", () => {
   expect(sessionHint({ budgetUsd: 5, lastWakeUsd: 2.4, contextPct: 49 })).toBeUndefined();
   expect(sessionHint({ budgetUsd: 5, lastWakeUsd: 2.5 })).toContain("fresh session");
   expect(sessionHint({ budgetUsd: 10, lastWakeUsd: 2.5, contextPct: 50 })).toContain("fresh session");
+});
+
+test("O17b: the header's live line says what it is doing now; cost and advice are only the tooltip", () => {
+  const now = 1_000_000;
+  expect(orchestratorStatus({ running: false, workers: 0, now })).toEqual({ text: "Idle", tooltip: undefined, warn: false });
+  expect(orchestratorStatus({ running: true, startedAt: now - 72_000, workers: 0, now }).text).toBe("Working · 1m 12s");
+  expect(orchestratorStatus({ running: true, workers: 0, now }).text).toBe("Working"); // start unknown
+  expect(orchestratorStatus({ running: true, startedAt: now - 5_000, queued: 2, workers: 3, now }).text).toBe("Working · 5s · 2 queued · 3 workers running");
+  expect(orchestratorStatus({ running: false, queued: 1, workers: 1, now }).text).toBe("Idle · 1 queued · 1 worker running");
+  const big = orchestratorStatus({ running: false, workers: 0, lastWakeUsd: 3.456, hint: "Large session: fresh session", now });
+  expect(big.text).toBe("Idle"); // neither the cost nor the advice is in the visible text
+  expect(big.tooltip).toBe("Last wake cost $3.46\nLarge session: fresh session");
+  expect(big.warn).toBe(true);
+  expect(orchestratorStatus({ running: false, workers: 0, lastWakeUsd: 0.5, now })).toEqual({ text: "Idle", tooltip: "Last wake cost $0.50", warn: false });
 });
 
 test("O18: archive removes an idle workstream's worktree and card, keeping its transcript readable", async () => {

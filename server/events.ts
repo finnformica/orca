@@ -13,7 +13,7 @@ import * as bus from "./bus";
 
 const RETRY_MS = 3_000;
 /** The events relayed from another instance (its `ready` and keep-alives are dropped). */
-export const RELAYED = ["step", "turn", "notification"] as const;
+export const RELAYED = ["step", "delta", "turn", "notification"] as const;
 
 /** The stream. `upstreams` are the other instances' base URLs (empty for a `?local=1` relay). An
  *  upstream that drops is retried; when it comes back, a `ready` tells the client to catch up from
@@ -31,6 +31,7 @@ export function eventStream(req: Request, upstreams: string[]): Response {
       const off = bus.subscribe((e) => {
         if (e.kind === "step") event("step", { repo: e.repo, branch: e.branch, runId: e.runId, steps: e.steps });
         else if (e.kind === "turn") event("turn", { repo: e.repo, branch: e.branch, runId: e.runId });
+        else if (e.kind === "delta") event("delta", { repo: e.repo, branch: e.branch, runId: e.runId, text: e.text });
         else event("notification", e.notification);
       });
       const aborts = new AbortController();

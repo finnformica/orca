@@ -26,7 +26,7 @@ import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
-  ladderStep, nextFailStreak, orchStatusText, orchStatusUpdate, orchestratorPrompt, sessionHint, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  joinMessages, ladderStep, nextFailStreak, orchStatusText, orchStatusUpdate, orchestratorPrompt, sessionHint, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
   type BoardRow, type FailStreak, type OrchStatus, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
@@ -85,10 +85,13 @@ const serial = <T>(fn: () => Promise<T>): Promise<T> => {
   return next;
 };
 
-export async function status(cfg: OrcaConfig): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell: boolean; lastWakeUsd?: number; hint?: string; }> {
+export async function status(cfg: OrcaConfig): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell: boolean; lastWakeUsd?: number; hint?: string; startedAt?: number; queued: number }> {
   const b = await blob();
+  const running = agent.isRunning(dir());
   return {
-    key: dir(), running: agent.isRunning(dir()), paused: (b.wakes ?? 0) >= MAX_WAKES, notes: b.notes ?? "",
+    key: dir(), running, paused: (b.wakes ?? 0) >= MAX_WAKES, notes: b.notes ?? "",
+    startedAt: running ? agent.runStartedAt(dir()) : undefined, // when the wake in flight began — the header's elapsed time
+    queued: (await db.queuedMessages(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH)).length, // waiting for the next wake
     model: modelOf(cfg, b),
     contextPct: b.contextPct, // how full its last run left the session; absent until one has reported
     shell: cfg.orchestratorShell !== false,
@@ -134,7 +137,7 @@ export function compact(cfg: OrcaConfig): Promise<{ runId: string }> {
     if (agent.isRunning(dir())) throw new verbs.BusyError();
     const { runId } = await agent.launch(dir(), dir(), "/compact", {
       provider: "claude", resume: b.sessionId, repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
-      instruction: "/compact", action: "compact", queue: false, model: modelOf(cfg, b),
+      instruction: "/compact", action: "compact", queue: false, model: modelOf(cfg, b), source: "human", // your button
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return { runId };
@@ -338,7 +341,9 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
     const prompt = orchestratorPrompt({ fresh: !next.resume, notes: b.notes, board: boardText(await board(cfg)), messages, shell, cutOff: b.cutOff, cutOffProgress: b.cutOffProgress });
     const receipt = await agent.launch(dir(), dir(), prompt, {
       ...next, provider: "claude", repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
-      instruction: messages.join("\n\n"), action: "orchestrate", queue: false,
+      instruction: joinMessages(messages), action: "orchestrate", queue: false,
+      // Anything you said makes it yours; worker reports alone are the agents' (folded in the chat).
+      source: turnSource(messages),
       model: modelOf(cfg, b), maxBudgetUsd: budgetOf(cfg),
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
       // Everything Claude Code has in a terminal (bypassPermissions), as the user asked: a manager

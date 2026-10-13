@@ -6,15 +6,16 @@
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowDown, Bot } from "lucide-react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ArrowDown, Bot, ChevronRight, Cog } from "lucide-react";
+import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { TURN_PAGE_SIZE, WORKER_EVENT_MARKER, anchoredScrollTop, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, anchoredScrollTop, capWindow, chatItems, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -180,8 +181,7 @@ function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () =>
 /** The orchestrator's wake messages that were worker reports, not something you typed: each shown
  *  as one muted system line (what finished, how), with the full report behind a toggle. Only when
  *  EVERY part of the instruction is a report — a wake that also carried your message stays a prompt. */
-function WorkerReports({ instruction }: { instruction: string }) {
-  const parts = instruction.split("\n\n");
+function WorkerReports({ parts }: { parts: string[] }) {
   return (
     <div data-slot="worker-reports" className="space-y-0.5 text-neutral-500">
       {parts.map((part, i) => (
@@ -208,9 +208,19 @@ const CheckVerdict = ({ check }: { check: NonNullable<AgentTurn["check"]> }) => 
   </details>
 );
 
+/** Each running turn's streamed reply text, by run id (ChatPanel's `drafts`) — a context, so it reaches
+ *  the reply under either styling without threading through every turn component. */
+const DraftContext = createContext<Record<string, string>>({});
+const omit = (d: Record<string, string>, ...ids: string[]) => {
+  const next = { ...d };
+  for (const id of ids) delete next[id];
+  return next;
+};
+
 /** The agent's side of a turn — live steps and the cursor while it runs; folded steps, the output and
  *  Orca's check once it has answered. Shared by both stylings. */
-function Reply({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]> }) {
+function Reply({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean }) {
+  const draft = useContext(DraftContext)[turn.id];
   // A turn is written at launch, so an interrupted run (bridge restart, kill) stays visible as an
   // unfinished exchange rather than vanishing.
   if (!turn.finishedAt) {
@@ -219,7 +229,9 @@ function Reply({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Promise
         {/* The run's steps as they land — this is the live view. A turn with none yet (a non-claude
             provider, or the first seconds) still shows the cursor. */}
         <Steps steps={turn.steps ?? []} live />
-        <span>▋ working…</span>
+        {/* The message being written, as it streams — replaced by its step once it is whole. */}
+        {draft && <div className="text-neutral-200 whitespace-pre-wrap break-words" data-slot="turn-draft">{draft}</div>}
+        <span>▋ {draft ? "" : "working…"}</span>
       </div>
     );
   }
@@ -227,7 +239,8 @@ function Reply({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Promise
     <>
       {/* The final message is the turn's response, rendered by Output — not twice. */}
       <Steps steps={withoutFinalEcho(turn.steps ?? [], turn.response)} live={false} load={turn.steps ? undefined : loadSteps} />
-      <Output turn={turn} />
+      {/* An old turn (compact) shows its answer's first lines; the steps toggle above stays outside. */}
+      <Clamp on={Boolean(compact && longReply(turn))}><Output turn={turn} /></Clamp>
       {turn.check && <CheckVerdict check={turn.check} />}
     </>
   );
@@ -240,23 +253,32 @@ const clockOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString(undefined
  *  name, in readable prose; its tool steps and worker reports stay folded; the time shows on hover
  *  (and days are grouped by the divider ChatPanel draws). Colours are the theme's tokens, so it
  *  follows light and dark like the rest of the console. */
-function ChatTurn({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]> }) {
-  const instruction = turn.instruction ?? promptInstruction(turn.prompt);
-  const reports = instruction.split("\n\n").every(isWorkerEvent);
+function ChatTurn({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean }) {
+  const parts = splitMessages(turn.instruction ?? promptInstruction(turn.prompt));
+  // A wake that carried your messages AND worker reports: your words in bubbles — one per message you
+  // sent, however many one wake drained — and the reports folded.
+  const reports = parts.filter(isWorkerEvent), said = parts.filter((p) => !isWorkerEvent(p));
   const time = clockOf(turn.startedAt);
   return (
     <div className="mb-4" data-slot="chat-turn" data-failed={turn.failed || undefined} data-style="chat">
-      {reports ? (
-        // Worker reports that woke it: a compact, folded system line — not something you said.
-        <div className="mb-2 text-[11px]"><WorkerReports instruction={instruction} /></div>
-      ) : (
-        <div className="group mb-2 flex justify-end" data-slot="chat-user">
+      {/* Worker reports that woke it, split out of what you said: a collapsed block of their own. */}
+      {reports.length > 0 && (
+        <WorkerBlock slot="turn-reports" className="mb-2"
+          label={reports.length === 1 ? `Worker report · ${reportTitle(reports[0]!)}` : `${reports.length} worker reports`}>
+          <WorkerReports parts={reports} />
+        </WorkerBlock>
+      )}
+      {said.map((text, i) => (
+        <div key={i} className="group mb-2 flex justify-end" data-slot="chat-user">
           <div className="max-w-[85%]">
-            <div className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">{instruction}</div>
-            <div className="text-muted-foreground mt-0.5 text-right text-[10px] opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{time}</div>
+            <div className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">
+              {/* A long message is cut to its first lines, like an old reply. */}
+              <Clamp on={longMessage(text)} cut="max-h-[9rem]">{text}</Clamp>
+            </div>
+            {i === said.length - 1 && <div className="text-muted-foreground mt-0.5 text-right text-[10px] opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{time}</div>}
           </div>
         </div>
-      )}
+      ))}
       <div className="group flex gap-2" data-slot="chat-reply">
         <span className="bg-accent text-foreground mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3.5" /></span>
         <div className="min-w-0 flex-1">
@@ -265,10 +287,56 @@ function ChatTurn({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Prom
             {turn.failed ? <span className="text-red-400">failed</span> : turn.stopped ? <span className="text-amber-400">stopped by you</span> : null}
             <span className="opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{clockOf(turn.finishedAt) || time}</span>
           </div>
-          <Reply turn={turn} loadSteps={loadSteps} />
+          <Reply turn={turn} loadSteps={loadSteps} compact={compact} />
         </div>
       </div>
     </div>
+  );
+}
+
+/** An old turn's reply, cut to its first lines with a Show more — the history reads as a list of
+ *  exchanges, not a wall of past answers. The newest RECENT_FULL turns always render in full. */
+function Clamp({ on, children, cut = "max-h-[4.5rem]" }: { on: boolean; children: React.ReactNode; cut?: string }) {
+  const [open, setOpen] = useState(false);
+  if (!on) return <>{children}</>;
+  return (
+    <div data-slot="turn-clamp" data-open={open || undefined}>
+      <div className={open ? "" : cn(cut, "overflow-hidden [mask-image:linear-gradient(to_bottom,black_55%,transparent)]")}>{children}</div>
+      <button type="button" onClick={() => setOpen((v) => !v)} className="text-muted-foreground hover:text-foreground mt-0.5 text-[11px]">
+        {open ? "Show less" : "Show more"}
+      </button>
+    </div>
+  );
+}
+
+const reportTitle = (report: string) => report.split("\n")[0]!.slice(WORKER_EVENT_MARKER.length).trim();
+
+/** Worker traffic in the orchestrator's chat, split out of your conversation: its own tinted card,
+ *  collapsed to one ⚙ line by default, opening in place. */
+function WorkerBlock({ label, slot, className, children }: { label: string; slot: string; className?: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div data-slot={slot} data-open={open || undefined} className={cn("border-geist-blue/20 bg-geist-blue/5 rounded-md border text-[12px]", className)}>
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        className="text-muted-foreground hover:text-foreground flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left">
+        <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+        <Cog className="text-geist-blue size-3.5 shrink-0" />
+        <span className="min-w-0 truncate" data-slot="worker-block-label">{label}</span>
+      </button>
+      {open && <div className="border-geist-blue/20 border-t px-2.5 pt-2">{children}</div>}
+    </div>
+  );
+}
+
+/** A run of worker-driven turns (reports in, its replies out, nothing you said) as ONE collapsed
+ *  block — "3 worker reports · 2 replies" — that opens to the turns, so you know they happened
+ *  without the bulk. */
+function AgentsMarker({ turns, render }: { turns: AgentTurn[]; render: (t: AgentTurn) => React.ReactNode }) {
+  const span = [clockOf(turns[0]!.startedAt), clockOf(turns[turns.length - 1]!.finishedAt)].filter(Boolean).join("–");
+  return (
+    <WorkerBlock slot="agents-marker" className="mb-4" label={`${agentsMarker(turns)}${span ? ` · ${span}` : ""}`}>
+      {turns.map(render)}
+    </WorkerBlock>
   );
 }
 
@@ -276,16 +344,19 @@ function ChatTurn({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Prom
  *  Vercel tints error and warning lines in Build Logs. */
 function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; stamped?: boolean }) {
   const instruction = turn.instruction ?? promptInstruction(turn.prompt);
+  const parts = splitMessages(instruction);
   const tint = !stamped ? "" : turn.failed ? "bg-red-500/10 -mx-3 px-3" : turn.stopped || (turn.check && !turn.check.ok) ? "bg-amber-500/10 -mx-3 px-3" : "";
   const body = (
     <div className={`mb-3 ${tint}`} data-slot="chat-turn" data-failed={turn.failed || undefined}>
-      {instruction.split("\n\n").every(isWorkerEvent) ? <WorkerReports instruction={instruction} /> : (
-        <div className="flex gap-2 text-emerald-400">
-          <span className="shrink-0 select-none">❯</span>
-          {/* What you typed, recorded with the turn. Turns from before that was stored fall back to
-              trimming the scaffolding off the prompt by its known marker lines. */}
-          <span className="min-w-0 whitespace-pre-wrap break-words">{instruction}</span>
-        </div>
+      {parts.every(isWorkerEvent) ? <WorkerReports parts={parts} /> : (
+        // What you typed, recorded with the turn — one ❯ line per message a wake carried. Turns from
+        // before that was stored fall back to trimming the scaffolding off the prompt by its marker lines.
+        <>{parts.map((text, i) => (
+          <div key={i} className="flex gap-2 text-emerald-400" data-slot="turn-instruction">
+            <span className="shrink-0 select-none">❯</span>
+            <span className="min-w-0 whitespace-pre-wrap break-words">{text}</span>
+          </div>
+        ))}</>
       )}
       <div className="mt-1 pl-4">
         <div className="text-[10px] tracking-widest text-neutral-500 uppercase">
@@ -361,18 +432,39 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   const olderRef = useRef<string | null>(null);
   const loadingOlderRef = useRef(false);
   const anchor = useRef<{ top: number; height: number } | null>(null); // scroll position to restore after a prepend
+  // The MOUNTED window over the loaded turns (workstream.ts: CHAT_WINDOW, capWindow). Paging bounds
+  // what is fetched; this bounds the DOM, so a conversation scrolled far back stays light.
+  const [win, setWin] = useState<TurnWindow>(TAIL_WINDOW);
+  const winRef = useRef(win);
+  winRef.current = win;
+  const toTail = useRef(false); // jump-to-latest: scroll down once the window is back at the tail
   const cursors = useRef(new Map<string, number>()); // per-run high-water mark, for reconnect catch-up
+  const latestAsked = useRef(0), latestApplied = useRef(0); // loadLatest's request order (see there)
+  // Reply text streaming in for a running turn (claude's partial messages), by run id — shown under
+  // its steps until the whole message lands as a step, or the turn finishes.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const running = row.agentStatus === "running";
   /** (Re)fetch the newest page. What was already loaded above it stays; a turn the page re-delivers
    *  (now finished) takes its fresh form. The first fetch also sets where the older pages start. */
   const loadLatest = async () => {
+    // The newest REQUEST wins, not the last answer: a page fetched while a run was still running can
+    // answer after the one its finish triggered, and applying it put the turn back to `working…` with
+    // nothing left to fetch again — the reply "only appeared once I sent another message".
+    const ticket = ++latestAsked.current;
     // asTurnPage again at the render boundary: whatever answered (an older bridge sends an array),
     // nothing undefined reaches `turns`, which must be null (loading) or a list.
     const page = await api.turnPage(row.repo, row.branch, { limit: TURN_PAGE_SIZE }).then(asTurnPage<AgentTurn>).catch(() => null);
-    if (!page) return;
+    if (!page || ticket < latestApplied.current) return;
+    latestApplied.current = ticket;
     const had = turnsRef.current;
     if (!had || !had.length) { olderRef.current = page.older; setOlder(page.older); }
-    setTurns(had ? mergeLatestPage(had, page.turns) : page.turns);
+    // A page turn without steps (past the newest few the bridge ships them for) keeps the ones
+    // already pushed or caught up, rather than folding them away.
+    setTurns((prev) => {
+      if (!prev) return page.turns;
+      const had = new Map(prev.map((t) => [t.id, t.steps]));
+      return mergeLatestPage(prev, page.turns.map((t) => (t.steps || !had.get(t.id) ? t : { ...t, steps: had.get(t.id) })));
+    });
   };
   /** The page before the oldest loaded turn, put in front of it with the scroll position anchored on
    *  what you were reading (useLayoutEffect below). */
@@ -388,6 +480,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
       olderRef.current = page.older;
       setOlder(page.older);
       setTurns((prev) => prependOlderPage(page.turns, prev ?? []));
+      setWin((w) => ({ ...w, first: null, dir: "up" })); // mount the page that arrived; the cap trims below
     } catch { /* the affordance stays; a scroll or click tries again */ } finally {
       loadingOlderRef.current = false;
       setLoadingOlder(false);
@@ -395,12 +488,24 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   };
   // Content was added ABOVE the viewport: move the scroller by the same amount, so the turn you were
   // reading doesn't jump. Layout effect: before the browser paints the shifted content.
+  // The same for content REMOVED above (the window trimming its top), which moves it the other way.
   useLayoutEffect(() => {
     const a = anchor.current, el = scroller.current;
-    if (!a || !el) return;
-    anchor.current = null;
-    el.scrollTop = anchoredScrollTop(a.top, a.height, el.scrollHeight);
-  }, [turns]);
+    if (a && el) {
+      anchor.current = null;
+      el.scrollTop = anchoredScrollTop(a.top, a.height, el.scrollHeight);
+    }
+    // Then hold the window to its cap — trimming one side per commit, so the anchor above stays exact:
+    // the far side below needs no anchor; the top does, and is restored on the commit this causes.
+    const capped = turns ? capWindow(turns, win) : null;
+    if (capped) {
+      if (capped.first !== win.first && el) anchor.current = { top: el.scrollTop, height: el.scrollHeight };
+      setWin(capped);
+    } else if (toTail.current && win.last === null && el) {
+      toTail.current = false;
+      el.scrollTo({ top: el.scrollHeight });
+    }
+  }, [turns, win]);
 
   // The conversation loads once, then steps are PUSHED as the agent records them — that's the
   // terminal-like feel. They arrive on the tab's one shared stream (lib/events.ts), which carries
@@ -417,29 +522,41 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
       // A `turn` event means a run started or finished — either way the queue may have moved.
       turn: () => { void load(); void loadQueued(); },
       step: (runId, steps) => {
+        // A whole message supersedes the text that streamed ahead of it.
+        if (steps.some((st) => st.kind === "text")) setDrafts((d) => (runId in d ? omit(d, runId) : d));
         setTurns((prev) => prev?.map((t) => (t.id === runId ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
       },
+      delta: (runId, text) => setDrafts((d) => ({ ...d, [runId]: (d[runId] ?? "") + text })),
       // We were disconnected (or the tab was hidden), so catch up from the cursor — anything
       // recorded while we were away would otherwise be silently missing.
+      // The newest page is ALWAYS re-read: a turn that started or finished while we were away (or an
+      // older interrupted turn sitting unfinished above it) is only visible that way.
       resync: () => void (async () => {
-        const pending = turnsRef.current?.find((t) => !t.finishedAt);
-        if (!pending) return void load();
-        try {
-          const cursor = cursors.current.get(pending.id) ?? pending.stepSeq ?? 0;
-          const { steps, seq, finished } = await api.turnSteps(row.repo, row.branch, pending.id, cursor);
-          if (!live) return;
-          if (steps.length) {
-            cursors.current.set(pending.id, seq);
-            setTurns((prev) => prev?.map((t) => (t.id === pending.id ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
-          }
-          if (finished) await load();
-        } catch { void load(); }
+        const pending = turnsRef.current?.findLast((t) => !t.finishedAt);
+        if (pending) {
+          try {
+            const cursor = cursors.current.get(pending.id) ?? pending.stepSeq ?? 0;
+            const { steps, seq } = await api.turnSteps(row.repo, row.branch, pending.id, cursor);
+            if (!live) return;
+            if (steps.length) {
+              cursors.current.set(pending.id, seq);
+              setTurns((prev) => prev?.map((t) => (t.id === pending.id ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
+            }
+          } catch { /* the page below carries the turn's steps anyway */ }
+        }
+        await load();
       })(),
     });
     return () => { live = false; unsubscribe(); };
   }, [row.repo, row.branch]);
 
-  useEffect(() => { turnsRef.current = turns; }, [turns]);
+  useEffect(() => {
+    turnsRef.current = turns;
+    setDrafts((d) => {
+      const done = Object.keys(d).filter((id) => turns?.find((t) => t.id === id)?.finishedAt);
+      return done.length ? omit(d, ...done) : d;
+    });
+  }, [turns]);
 
   // Follow the tail as output arrives, the way a terminal does — but only while the reader is AT the
   // bottom. Scrolling up to read something is an intent to stay there (a stream of steps yanking you
@@ -455,6 +572,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
     follow.current = true;
     setAtTail(true);
     setUnseen(false);
+    if (winRef.current.last !== null) { toTail.current = true; setWin(TAIL_WINDOW); return; } // remount the tail, then go there
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
   };
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
@@ -501,12 +619,27 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
-    const tail = atBottom(el.scrollTop, el.scrollHeight, el.clientHeight, FOLLOW_SLACK);
+    const loaded = turnsRef.current ?? [];
+    const range = windowRange(loaded, winRef.current);
+    const below = loaded.length - range.end; // loaded, but unmounted below the window
+    // At the bottom of the WINDOW is not the tail while newer turns are unmounted below it.
+    const bottom = atBottom(el.scrollTop, el.scrollHeight, el.clientHeight, FOLLOW_SLACK);
+    const tail = bottom && below === 0;
     follow.current = tail;
     if (tail !== atTail) setAtTail(tail);
     if (tail) setUnseen(false);
-    // Near the top with more history behind: fetch the next page before you hit the edge.
-    if (el.scrollTop < OLDER_THRESHOLD && olderRef.current) void loadOlder();
+    if (el.scrollTop < OLDER_THRESHOLD) {
+      // Near the top: remount the turns above the window if they are loaded, else fetch the next page.
+      if (range.start > 0) { anchor.current = { top: el.scrollTop, height: el.scrollHeight }; setWin(revealAbove(loaded, winRef.current)); }
+      else if (olderRef.current) void loadOlder();
+    } else if (below > 0 && atBottom(el.scrollTop, el.scrollHeight, el.clientHeight, OLDER_THRESHOLD)) {
+      setWin(revealBelow(loaded, winRef.current)); // added below the viewport: nothing to anchor
+    }
+  };
+  const showAbove = () => {
+    const el = scroller.current;
+    if (el) anchor.current = { top: el.scrollTop, height: el.scrollHeight };
+    setWin(revealAbove(turns ?? [], win));
   };
 
   // Compact is offered once the ring has a reading: only a Claude session reports one, and only a
@@ -514,29 +647,45 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   const ctl = controls ?? {
     model: modelFor(row), onModel: (m: string) => setCardModel(row, m), ran: row.agentMeta?.model, contextPct: row.agentMeta?.contextPct,
   };
+  // Only the mounted window renders.
+  const range = windowRange(turns ?? [], win);
+  const hiddenAbove = range.start, hiddenBelow = (turns?.length ?? 0) - range.end;
+  const shownTurns = turns?.slice(range.start, range.end) ?? null;
+  // Older turns render compact (chat styling): the newest RECENT_FULL in full, the rest cut to their
+  // first lines; runs of automated wakes fold into one line.
+  const position = new Map((turns ?? []).map((t, i) => [t.id, i]));
+  const compactBefore = (turns?.length ?? 0) - RECENT_FULL;
   const chatStyle = variant === "chat";
-  const renderTurn = (turn: AgentTurn, i: number, list: AgentTurn[]) => {
-    const loadSteps = () => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response));
-    if (!chatStyle) return <Turn key={turn.id} turn={turn} stamped={logBar} loadSteps={loadSteps} />;
-    const prev = i > 0 ? list[i - 1]!.startedAt : undefined;
-    const divider = turn.startedAt && (prev === undefined || !sameDay(prev, turn.startedAt));
-    return (
-      <div key={turn.id}>
-        {divider && (
-          <div className="text-muted-foreground my-3 flex items-center gap-3 text-[10px] tracking-widest uppercase" data-slot="chat-day">
-            <span className="h-px flex-1 bg-border" /><span>{dayLabel(turn.startedAt!)}</span><span className="h-px flex-1 bg-border" />
-          </div>
-        )}
-        <ChatTurn turn={turn} loadSteps={loadSteps} />
-      </div>
-    );
+  const stepsOf = (turn: AgentTurn) => () => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response));
+  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadSteps={stepsOf(turn)} compact={(position.get(turn.id) ?? 0) < compactBefore} />;
+  const renderTurns = (list: AgentTurn[]) => {
+    if (!chatStyle) return list.map((turn) => <Turn key={turn.id} turn={turn} stamped={logBar} loadSteps={stepsOf(turn)} />);
+    const items = chatItems(list);
+    let prev: number | undefined;
+    return items.map((item) => {
+      const first = item.kind === "turn" ? item.turn : item.turns[0]!;
+      const divider = first.startedAt && (prev === undefined || !sameDay(prev, first.startedAt));
+      prev = (item.kind === "turn" ? item.turn : item.turns[item.turns.length - 1]!).startedAt ?? prev;
+      return (
+        <div key={first.id}>
+          {divider && (
+            <div className="text-muted-foreground my-3 flex items-center gap-3 text-[10px] tracking-widest uppercase" data-slot="chat-day">
+              <span className="h-px flex-1 bg-border" /><span>{dayLabel(first.startedAt!)}</span><span className="h-px flex-1 bg-border" />
+            </div>
+          )}
+          {item.kind === "turn" ? chatTurn(item.turn) : <AgentsMarker turns={item.turns} render={chatTurn} />}
+        </div>
+      );
+    });
   };
   return (
     <div className={`flex h-full flex-col ${flush || logBar ? "" : "gap-3"} ${logBar || chatStyle ? "log-themed" : ""}`} data-variant={variant}>
       <div
         ref={scroller}
         onScroll={onScroll}
-        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-neutral-950 leading-relaxed ${logBar ? "px-4 py-3 md:px-6" : "p-3"} text-neutral-200 ${chatStyle ? "font-sans text-[13px] [&_.prose]:text-[13px]" : logBar ? LOG_TEXT : "font-mono text-xs"} ${flush || logBar ? "" : "rounded-md border border-neutral-800"}`}
+        // overscroll-contain: hitting the chat's top or bottom must not hand the gesture to the page —
+        // it did, and the page then kept scrolling when you turned back to scroll the chat up.
+        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain bg-neutral-950 leading-relaxed ${logBar ? "px-4 py-3 md:px-6" : "p-3"} text-neutral-200 ${chatStyle ? "font-sans text-[13px] [&_.prose]:text-[13px]" : logBar ? LOG_TEXT : "font-mono text-xs"} ${flush || logBar ? "" : "rounded-md border border-neutral-800"}`}
       >
         {running && (
           <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-end">
@@ -553,10 +702,10 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
         )}
         {/* Earlier pages: fetched as you near the top, or on a click (a page shorter than the window
             can't be scrolled). A skeleton while the page is in flight. */}
-        {turns !== null && older && (
+        {turns !== null && (older || hiddenAbove > 0) && (
           <div className="mb-3 flex justify-center" data-slot="chat-older">
             {loadingOlder ? <ChatSkeleton rows={2} /> : (
-              <button type="button" onClick={() => void loadOlder()} className="rounded-md border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200">
+              <button type="button" onClick={() => (hiddenAbove > 0 ? showAbove() : void loadOlder())} className="rounded-md border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200">
                 ↑ earlier turns
               </button>
             )}
@@ -564,7 +713,14 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
         )}
         {turns === null ? <ChatSkeleton rows={4} />
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
-          : turns.map(renderTurn)}
+          : <DraftContext.Provider value={drafts}>{renderTurns(shownTurns!)}</DraftContext.Provider>}
+        {hiddenBelow > 0 && (
+          <div className="mb-3 flex justify-center" data-slot="chat-newer">
+            <button type="button" onClick={() => setWin(revealBelow(turns ?? [], win))} className="rounded-md border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200">
+              ↓ {hiddenBelow} newer turn{hiddenBelow === 1 ? "" : "s"}
+            </button>
+          </div>
+        )}
         {/* Not drawn once the real thing has arrived over the stream — the same text twice, one of
             them "sending", is worse than the moment's gap it would cover. */}
         {sending.filter((m) => !landed(m.text)).map((m) => chatStyle ? (

@@ -28,7 +28,7 @@
 import { statSync } from "fs";
 import { hostname } from "os";
 import { join } from "path";
-import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck } from "../shared/agent";
+import type { AgentOutcome, AgentProvider, AgentTurn, StopReason, TurnCheck, TurnSource } from "../shared/agent";
 import * as bus from "./bus";
 import type { Notification, NotificationInput } from "../shared/notifications";
 
@@ -94,10 +94,19 @@ export async function close(): Promise<void> {
  *  from its internal `handleClose`) — same dropped connection, a driver-level code instead of a
  *  server message, caught on `code` alone since that shape never carries a legitimate query error.
  *  Not every Postgres error — a bad query must still throw. */
-function isDroppedConnection(err: unknown): boolean {
+export function isDroppedConnection(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const code = (err as { code?: string }).code;
   if (code === "ERR_POSTGRES_CONNECTION_CLOSED" || code === "ERR_POSTGRES_EXPECTED_REQUEST") return true;
+  // The pool's OWN recycling (idleTimeout / maxLifetime above) closes a connection, and Bun reports
+  // that close to whichever query next touches it — the 10s inventory/preview publish saw
+  // "Idle timeout reached after 30s" as a failure. Same remedy: a fresh connection.
+  if (code === "ERR_POSTGRES_IDLE_TIMEOUT" || code === "ERR_POSTGRES_LIFETIME_TIMEOUT") return true;
+  // SQLSTATE 0A000 "cached plan must not change result type": this connection prepared a statement
+  // BEFORE another session altered the table (the other instance ran a migration, or a hand ALTER),
+  // so its cached plan is stale. Postgres re-plans only on a fresh prepare; reopening the pool is
+  // how Bun.SQL gets one. Reached the chat composer as "not sent" on 2026-10-13.
+  if ((err as { errno?: string }).errno === "0A000" || /cached plan must not change result type/.test(err.message)) return true;
   if (/Connection closed|ECONNRESET|EPIPE/.test(err.message)) return true;
   return code === "ERR_POSTGRES_SERVER_ERROR" && /terminating connection|administrator command/i.test(err.message);
 }
@@ -457,6 +466,27 @@ export const MIGRATIONS: MigrationStep[] = [
     // whichever range they show. Nullable: older rows read back as 0.
     sql: `ALTER TABLE instance_metric ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION`,
   },
+  {
+    // 18, not 16: #152 holds 16; 17 is instance-metric-cost.
+    id: 18,
+    name: "turn-source",
+    idempotent: true,
+    // Who an orchestrator turn answers (shared/agent.ts TurnSource): `human` (you spoke) or `agents`
+    // (woken by worker reports alone), so the chat can split its Chat and Agents channels. The backfill
+    // reads it off the stored instruction the way the wake built it — every message a
+    // `[worker finished]` report → agents — falling back to the prompt's `## New` section for rows from
+    // before `instruction` existed. Idempotent: it only fills NULLs. Nullable: a worker's turns stay
+    // NULL, and the browser infers a NULL from the text the same way.
+    sql: `
+      ALTER TABLE turn ADD COLUMN IF NOT EXISTS source TEXT;
+      UPDATE turn t SET source = CASE
+          WHEN COALESCE(t.instruction, substring(t.prompt from '## New\\n(.*)$')) ~ '^\\[worker finished\\]'
+           AND COALESCE(t.instruction, substring(t.prompt from '## New\\n(.*)$')) !~ '\\n\\n(?!\\[worker finished\\])'
+          THEN 'agents' ELSE 'human' END
+        FROM workstream w
+        WHERE w.id = t.workstream_id AND w.repo = '@orca' AND w.branch = 'orchestrator' AND t.source IS NULL;
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
@@ -667,6 +697,7 @@ export async function importEnrichment(entries: { repo: string; branch: string; 
 type TurnRow = {
   run_id: string; provider: string; status: string; instruction: string | null; prompt: string; response: string | null;
   structured: AgentOutcome | null; session_id: string | null; stop_reason: string | null; check: TurnCheck | null;
+  source?: string | null;
   started_at: string | number; finished_at: string | number | null;
 };
 
@@ -682,6 +713,7 @@ const toTurn = (r: TurnRow): AgentTurn => ({
   stopped: r.status === "stopped" ? true : undefined,
   // Rows before the column infer it from status; a running turn has none yet.
   check: r.check ?? undefined,
+  source: (r.source as TurnSource | null | undefined) ?? undefined,
   stopReason: (r.stop_reason as StopReason | null)
     ?? (r.status === "done" ? "end_turn" : r.status === "error" ? "error" : r.status === "stopped" ? "interrupted" : undefined),
   startedAt: Number(r.started_at),
@@ -693,14 +725,14 @@ const toTurn = (r: TurnRow): AgentTurn => ({
  *  previous turn the way the in-memory map (keyed by worktree path) did. */
 export async function startTurn(input: {
   repo: string; branch: string; runId: string; provider: AgentProvider;
-  instruction?: string; prompt: string; sessionId?: string; startedAt: number;
+  instruction?: string; prompt: string; sessionId?: string; startedAt: number; source?: TurnSource;
 }): Promise<void> {
   return withRetry(async (sql) => {
     const id = await workstreamId(input.repo, input.branch);
     await sql`
-      INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, session_id, raw_ref, started_at)
+      INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, session_id, raw_ref, started_at, source)
       VALUES (${id}, ${currentUser()}, ${instanceName()}, ${input.runId}, ${input.provider}, 'running', ${input.instruction ?? null}, ${input.prompt},
-              ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${input.startedAt})
+              ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${input.startedAt}, ${input.source ?? null})
       ON CONFLICT (run_id) DO NOTHING`;
     bus.publish({ kind: "turn", runId: input.runId, repo: input.repo, branch: input.branch });
   });
@@ -717,7 +749,7 @@ export async function startTurn(input: {
 export async function finishTurn(runId: string, input: {
   status: TurnStatus; response?: string; structured?: AgentOutcome; stopReason?: StopReason;
   sessionId?: string; finishedAt: number;
-  identity?: { repo: string; branch: string; provider: AgentProvider; instruction?: string; prompt: string; startedAt: number };
+  identity?: { repo: string; branch: string; provider: AgentProvider; instruction?: string; prompt: string; startedAt: number; source?: TurnSource };
 }): Promise<void> {
   return withRetry(async (sql) => {
     // Return the owning branch in the same round trip, so the bus event can be addressed to the chat
@@ -740,14 +772,14 @@ export async function finishTurn(runId: string, input: {
     if (!owner && input.identity) {
       // Nothing to update: the start write was lost. Write the whole turn now — the run happened, and
       // its steps are already recorded against this run id.
-      const { repo, branch, provider, instruction, prompt, startedAt } = input.identity;
+      const { repo, branch, provider, instruction, prompt, startedAt, source } = input.identity;
       const workstream = await workstreamId(repo, branch);
       await sql`
         INSERT INTO turn (workstream_id, user_id, instance, run_id, provider, status, instruction, prompt, response,
-                          structured, stop_reason, session_id, raw_ref, started_at, finished_at)
+                          structured, stop_reason, session_id, raw_ref, started_at, finished_at, source)
         VALUES (${workstream}, ${currentUser()}, ${instanceName()}, ${runId}, ${provider}, ${input.status},
                 ${instruction ?? null}, ${prompt}, ${input.response ?? null}, ${input.structured ?? null}, ${input.stopReason ?? null},
-                ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${startedAt}, ${input.finishedAt})
+                ${input.sessionId ?? null}, ${input.sessionId ?? null}, ${startedAt}, ${input.finishedAt}, ${source ?? null})
         ON CONFLICT (run_id) DO NOTHING`;
       owner = { repo, branch };
     }
