@@ -146,6 +146,14 @@ test("P5: the mounted window is bounded — far-off turns unmount as you scroll,
   expect(el.scrollTop).toBe(el.scrollHeight);
 });
 
+test("P7: the chat's scroller keeps the gesture — reaching its end never scrolls the page behind it", async () => {
+  apiFake.turnsData.set("r::long", [turn(0)]);
+  await mount();
+  expect(log().className).toContain("overscroll-contain");
+  await act(async () => { root!.render(<ChatPanel row={row} variant="chat" />); await flush(); });
+  expect(log().className).toContain("overscroll-contain");
+});
+
 test("P6: the orchestrator's chat is one stream — worker traffic split out as collapsed, tinted blocks; older replies render compact", async () => {
   const long = (i: number) => Array.from({ length: 8 }, (_, l) => `reply ${i} line ${l}`).join("\n");
   // Some carry the recorded source, some (rows from before it) are read off their instruction.

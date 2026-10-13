@@ -689,7 +689,9 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
       <div
         ref={scroller}
         onScroll={onScroll}
-        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-neutral-950 p-3 leading-relaxed text-neutral-200 ${chatStyle ? "font-sans text-[13px] [&_.prose]:text-[13px]" : "font-mono text-xs"} ${flush || logBar ? "" : "rounded-md border border-neutral-800"}`}
+        // overscroll-contain: hitting the chat's top or bottom must not hand the gesture to the page —
+        // it did, and the page then kept scrolling when you turned back to scroll the chat up.
+        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain bg-neutral-950 p-3 leading-relaxed text-neutral-200 ${chatStyle ? "font-sans text-[13px] [&_.prose]:text-[13px]" : "font-mono text-xs"} ${flush || logBar ? "" : "rounded-md border border-neutral-800"}`}
       >
         {running && (
           <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-end">
