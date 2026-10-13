@@ -12,6 +12,7 @@ import { aggregateProfiles, App, mergeUsage, untilReset } from "@/App";
 import { navigate } from "@/lib/route";
 import { createStore, getDefaultStore } from "jotai";
 import { usageExpandedAtom } from "@/lib/atoms";
+import { resetToasts } from "@/lib/toast";
 import { shapeCodexUsage, shapeUsage } from "../server/usage";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -34,6 +35,7 @@ afterEach(async () => {
   container?.remove();
   root = container = undefined;
   apiFake.reset();
+  act(() => resetToasts()); // the toast store is a module-level singleton that outlives this file's tests
   localStorage.clear();
   getDefaultStore().set(usageExpandedAtom, false); // the atom outlives localStorage within a run
   navigate("/");
