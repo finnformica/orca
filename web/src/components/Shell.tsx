@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
-import { shortcutLabel } from "@/lib/shortcuts";
+import { pageShortcut, shortcutKeys, shortcutLabel } from "@/lib/shortcuts";
 import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPalette";
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
@@ -29,6 +29,7 @@ import { PreviewsBadge } from "@/views/PreviewControl";
 import { NotificationBell } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
 import { MenuShortcut, Shortcut } from "@/components/ui/kbd";
+import { Tip } from "@/components/ui/tip";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
@@ -117,6 +118,7 @@ function Sidebar({ collapsed, onToggle, onClose, actions }: {
   collapsed: boolean; onToggle: () => void; onClose: () => void; actions?: (collapsed: boolean) => ReactNode;
 }) {
   const route = useRoute();
+  const narrow = useNarrow();
   return (
     <>
       <div className="flex h-14 items-center gap-2 px-3">
@@ -127,14 +129,23 @@ function Sidebar({ collapsed, onToggle, onClose, actions }: {
       <nav aria-label="Main" className="flex flex-col gap-0.5 px-2 py-1">
         {NAV.map(({ to, label, Icon, match, badge }) => {
           const active = match(route);
-          return (
-            <button key={to} type="button" onClick={() => navigate(to)} aria-current={active ? "page" : undefined} title={collapsed ? label : undefined}
-              className={cn("relative flex h-9 items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-accent text-foreground font-medium" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
+          const shortcut = pageShortcut(to);
+          const item = (
+            <button key={to} type="button" onClick={() => navigate(to)} aria-current={active ? "page" : undefined}
+              aria-keyshortcuts={shortcut ? shortcutKeys(shortcut).join(" ") : undefined}
+              className={cn("group/nav relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-accent text-foreground font-medium" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
               <Icon className="size-4 shrink-0" />
-              <span className={cn(collapsed && "md:hidden")}>{label}</span>
+              <span data-slot="nav-label" className={cn(collapsed && "md:hidden")}>{label}</span>
               {badge?.(collapsed)}
+              {/* G then a letter: subtle keycaps on hover / keyboard focus. Never on a phone or a touch
+                  screen (no keyboard to press them with); collapsed, the tooltip carries them. */}
+              {shortcut && !collapsed && (
+                <Shortcut id={shortcut} className={cn("opacity-0 transition-opacity group-hover/nav:opacity-100 group-focus-visible/nav:opacity-100 max-md:hidden [@media(pointer:coarse)]:hidden", !badge && "ml-auto")} />
+              )}
             </button>
           );
+          // Collapsed to icons: the label and its keycaps as the tooltip, to the icon's right.
+          return collapsed && !narrow ? <Tip key={to} label={label} shortcut={shortcut} side="right" className="flex">{item}</Tip> : item;
         })}
       </nav>
       {/* Add New is the last of the actions — pushed to the bottom, just above the divider and you.
