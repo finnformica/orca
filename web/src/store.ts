@@ -250,11 +250,17 @@ export function coalesced(run: () => Promise<void>): () => Promise<void> {
   return fn;
 }
 
+// When the bridge last answered the board's poll (0 = not yet): the top bar's stale indicator reads
+// it, so a phone that slept or lost the tailnet says its numbers are old instead of looking current.
+let lastSyncAt = 0;
+export const useLastSync = (): number => useSyncExternalStore(subscribe, () => lastSyncAt);
+
 export const pollAgents = coalesced(async () => {
   const polled = await Promise.all((cfg?.repos ?? []).map((r) =>
     settle(api.agents(r.name), [] as LiveAgent[]).then((s) => [r.name, s] as const)));
   pollCounts.agents++;
   for (const [name, s] of polled) agentsByRepo.set(name, s);
+  if (polled.some(([, s]) => s.ok)) lastSyncAt = Date.now();
   rebuildLive();
   // Enrichment rides the agents stream: both are local-only bridge calls (no GitHub quota), and it
   // keeps the mirror in step with the run status it decorates. A failed fetch leaves the mirror as-is
@@ -308,15 +314,19 @@ setInterval(() => {
   const active = optimistic.length > 0 || live.some((repo) =>
     repo.agents.some((agent) => agent.agentStatus === "running")
     || repo.prs.some((pr) => enrichOf(repo.repo, pr.branch).following));
-  const hidden = document.visibilityState === "hidden";
-  // Keep transitions responsive; idle boards poll every 32s, hidden idle tabs every 64s.
-  const every = active ? 1 : hidden ? 8 : 4;
+  // A hidden tab polls nothing (a phone in a pocket, a background tab); showing it again refreshes
+  // at once (below). Keep transitions responsive; idle boards poll every 32s.
+  if (document.visibilityState === "hidden") return;
+  const every = active ? 1 : 4;
   if (pollTick % every === 0) void refreshAll([pollAgents(), pollPrs()]); // agents + PRs together; GC on the settled pair
-  // Merged history changes slowly — poll on a TTL, and far slower when the tab is hidden. It only
+  // Merged history changes slowly — poll on a TTL. It only
   // ever ADDS branches to the "alive" set, so it can't trigger a prune and needs no GC of its own.
-  const mergedTtl = hidden ? MERGED_TTL_MS * 8 : MERGED_TTL_MS;
-  if (Date.now() - lastMergedAt >= mergedTtl) { lastMergedAt = Date.now(); void pollMerged().then(notify); }
+  if (Date.now() - lastMergedAt >= MERGED_TTL_MS) { lastMergedAt = Date.now(); void pollMerged().then(notify); }
 }, 8_000);
+// Back from hidden: catch up now rather than on the next tick, so the stale indicator clears fast.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && cfg) void refreshAll([pollAgents(), pollPrs()]);
+});
 
 // No enrichment GC. It existed to bound a 5MB localStorage bucket; the bridge's SQLite store keeps
 // history on purpose (a merged branch's conversation is exactly what a future chain would reference),

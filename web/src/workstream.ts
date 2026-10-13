@@ -1472,9 +1472,39 @@ export function sparklineSegments(
  *  localhost (the laptop's own bridge) opens `localUrl` when there is one; anything else (a phone,
  *  a browser pointed at the box) opens `url`, since ITS localhost is not that bridge. */
 export function previewHref(svc: { url: string; localUrl?: string }, pageHost: string): string {
-  const loopback = pageHost === "localhost" || pageHost === "127.0.0.1" || pageHost === "[::1]" || pageHost === "::1";
-  return loopback && svc.localUrl ? svc.localUrl : svc.url;
+  if (isLoopbackHost(pageHost)) return svc.localUrl ?? svc.url;
+  // A page reached over the tailnet (a phone) never opens localhost: that is the phone itself. An
+  // owner with no ORCA_PREVIEW_HOST and no `instances` entry hands out `http://localhost:<port>`;
+  // the bridge that served this page is the one that answered, so its tailnet name is the host.
+  try {
+    const u = new URL(svc.url);
+    if (isLoopbackHost(u.hostname)) { u.hostname = pageHost; return svc.url.endsWith("/") ? u.toString() : u.toString().replace(/\/$/, ""); }
+  } catch { /* not a URL — hand it back as-is */ }
+  return svc.url;
 }
+
+const isLoopbackHost = (h: string): boolean => h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1";
+
+/** The host:port a preview link shows as its label — the address it will open, so a phone shows the
+ *  tailnet name rather than a bare port. */
+export const previewLabel = (href: string): string => { try { return new URL(href).host; } catch { return href; } };
+
+// ---- freshness: the stale indicator and the new-build banner ----
+
+/** How long the board's data may go unrefreshed before the top bar says so: two idle poll periods. */
+export const STALE_AFTER_MS = 75_000;
+/** The age of the board's data when it is stale, else null (fresh, or nothing loaded yet). Pure. */
+export function staleAge(lastSyncAt: number, now: number, after = STALE_AFTER_MS): number | null {
+  if (!lastSyncAt) return null;
+  const age = now - lastSyncAt;
+  return age > after ? age : null;
+}
+
+/** A newer build has been deployed: the served `version.json` names a different build than the one
+ *  running. A dev server (no build id) or an unreadable answer never prompts. Pure. */
+export const newerBuild = (running: string | undefined, served: unknown): boolean =>
+  !!running && running !== "dev" && typeof served === "object" && served !== null
+  && typeof (served as { build?: unknown }).build === "string" && (served as { build: string }).build !== running;
 
 // ---- the Vercel-style console: usage rows, metric charts, durations, chat log, repos ----
 // Pure pieces the Overview / Agents / Agent / Usage / Repos pages render, so each number is tested

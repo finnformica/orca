@@ -1,4 +1,6 @@
+import { useEffect } from "react";
 import { useRoute, type Route } from "@/lib/route";
+import { expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
 import { Shell, Crumb, AddNew } from "@/components/Shell";
 import { OrchestratorWindow } from "@/components/Terminal";
 import { useWorkstreams } from "./store";
@@ -13,6 +15,9 @@ import { LocalDetail } from "./views/LocalDetail";
 // window floats outside it, on every route; the top bar's "Ask the orchestrator" opens it.
 export function App() {
   const route = useRoute();
+  // The phone layout's two global listeners: the visible viewport's size (sheets stay above the
+  // keyboard) and tap-to-expand for truncated text.
+  useEffect(() => { const a = trackVisualViewport(), b = expandTruncatedOnTap(); return () => { a(); b(); }; }, []);
   return (
     <>
       <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarAction collapsed={collapsed} />}>

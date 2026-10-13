@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { poll } from "@/lib/poll";
 import { orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
+import { useNarrow } from "@/lib/viewport";
 
 // The card's terminal: a modal you open in place (no navigating to the detail page) showing the
 // branch's conversation as a terminal-style log — the durable turns Orca records — with the follow-up
@@ -36,16 +37,18 @@ export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean
       // UA `dialog:not([open]) { display: none }` (UA origin loses to author regardless of
       // specificity), so a closed dialog would render inline in the swimlane. Layout goes on the
       // inner wrapper instead; the dialog stays hidden until showModal().
-      className="bg-card text-foreground m-auto h-[80vh] w-[90vw] max-w-4xl rounded-lg border p-0 shadow-modal backdrop:bg-black/50"
+      // On a phone it is a full-screen sheet sized to the visible viewport, so the composer at its foot
+      // stays above the on-screen keyboard (styles.css `sheet`).
+      className="bg-card text-foreground m-auto h-[80vh] w-[90vw] max-w-4xl rounded-lg border p-0 shadow-modal backdrop:bg-black/50 max-md:sheet"
     >
       <div className="flex h-full flex-col">
         <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
           <div className="truncate text-sm font-medium">Terminal · {row.title}</div>
-          <Button size="icon" variant="ghost" className="size-7 shrink-0" title="Close" aria-label="Close terminal" onClick={onClose}>
+          <Button size="icon" variant="ghost" className="size-7 shrink-0 max-md:size-11" title="Close" aria-label="Close terminal" onClick={onClose}>
             <X className="size-4" />
           </Button>
         </div>
-        <div className="min-h-0 flex-1 p-3">{open && <ChatPanel row={row} />}</div>
+        <div className="min-h-0 flex-1 p-3 max-md:p-0">{open && <ChatPanel row={row} />}</div>
       </div>
     </dialog>
   );
@@ -80,7 +83,8 @@ export function AskOrchestrator() {
   const key = shortcutLabel("orchestrator");
   return (
     <label data-slot="ask-orchestrator" title={`Ask the orchestrator (${key}): it starts and steers workstreams for you`}
-      className="bg-card focus-within:ring-ring/40 hover:border-ring/60 ml-auto flex h-8 w-40 shrink-0 cursor-text items-center gap-2 rounded-md border px-2 focus-within:ring-2 sm:w-64">
+      // Below md the bottom bar's Orchestrator button takes its place.
+      className="bg-card focus-within:ring-ring/40 hover:border-ring/60 ml-auto flex h-8 w-40 shrink-0 cursor-text items-center gap-2 rounded-md border px-2 focus-within:ring-2 sm:w-64 max-md:hidden">
       <Bot className="text-muted-foreground size-3.5 shrink-0" />
       <input value={text} aria-label="Ask the orchestrator" placeholder="Ask the orchestrator…"
         onClick={() => { session.current = newAskSession(); ask(text, session.current); }}
@@ -94,6 +98,8 @@ export function AskOrchestrator() {
 
 export function OrchestratorWindow() {
   const [open, setOpen] = useAtom(orchestratorOpenAtom);
+  // On a phone the window is a full-screen sheet: no dragging, resizing or picture-in-picture.
+  const narrow = useNarrow();
   const prefill = useAtomValue(orchestratorPrefillAtom);
   const setPrefill = useSetAtom(orchestratorPrefillAtom);
   const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
@@ -190,8 +196,8 @@ export function OrchestratorWindow() {
   const placed = frame.x !== undefined && frame.y !== undefined;
   const header = (
     <div
-      className={`flex items-center justify-between gap-2 border-b px-3 py-2 select-none ${pip ? "" : "cursor-move"}`}
-      onPointerDown={pip ? undefined : onDragStart} data-slot="orchestrator-handle" title={pip ? undefined : "Drag to move"}
+      className={`flex items-center justify-between gap-2 border-b px-3 py-2 select-none ${pip || narrow ? "" : "cursor-move"}`}
+      onPointerDown={pip || narrow ? undefined : onDragStart} data-slot="orchestrator-handle" title={pip || narrow ? undefined : "Drag to move"}
     >
       {/* Paused = it has woken itself as many times as it may without hearing from you. */}
       <div className="min-w-0">
@@ -208,12 +214,12 @@ export function OrchestratorWindow() {
           <Button size="icon" variant="ghost" className="size-7" title="Return to tab" aria-label="Return to tab" onClick={() => pip.close()}>
             <PanelBottomClose className="size-4" />
           </Button>
-        ) : pipApi() && (
+        ) : pipApi() && !narrow && (
           <Button size="icon" variant="ghost" className="size-7" title="Pop out: keep it on top of every window" aria-label="Pop out" onClick={() => void popOut()}>
             <PictureInPicture2 className="size-4" />
           </Button>
         )}
-        <Button size="icon" variant="ghost" className="size-7" title="Close" aria-label="Close orchestrator" onClick={() => setOpen(false)}>
+        <Button size="icon" variant="ghost" className="size-7 max-md:size-11" title="Close" aria-label="Close orchestrator" onClick={() => setOpen(false)}>
           <X className="size-4" />
         </Button>
       </div>
@@ -242,7 +248,8 @@ export function OrchestratorWindow() {
   // markdown in a `prose-sm` block that sets ITS OWN font-size (0.875rem), so shrinking the
   // log's `text-xs` alone left the replies large — the prose block is scaled too, and its
   // children follow (typography sizes them in em).
-  const panelClass = "dark bg-neutral-950 text-foreground flex flex-col overflow-hidden [&_.text-xs]:text-[10px] [&_.prose]:text-[10.5px] [&_.prose]:leading-snug [&_textarea]:text-[11px]";
+  // A phone's full-screen sheet keeps the normal sizes — the small corner window is why they shrink.
+  const panelClass = `dark bg-neutral-950 text-foreground flex flex-col overflow-hidden${narrow ? "" : " [&_.text-xs]:text-[10px] [&_.prose]:text-[10.5px] [&_.prose]:leading-snug [&_textarea]:text-[11px]"}`;
   return (
     // z-40: above the board, below menus and popovers (z-50), which must still open over it.
     <div className="fixed right-4 bottom-4 z-40 flex flex-col items-end" onKeyDown={(e) => { if (e.key === "Escape" && !pip) setOpen(false); }}>
@@ -253,7 +260,10 @@ export function OrchestratorWindow() {
         </PortalContainer.Provider>,
         pip.document.body,
       )}
-      {open && !pip && (
+      {open && !pip && narrow && (
+        <div role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel" data-sheet="" className={`${panelClass} sheet`}>{header}{chat}</div>
+      )}
+      {open && !pip && !narrow && (
         <div
           ref={panelRef}
           role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel"
