@@ -12,16 +12,20 @@ export function sharedSource<T>(start: (set: (v: T) => void) => () => void) {
   let value: T | null = null;
   let stop: (() => void) | null = null;
   const subs = new Set<() => void>();
+  const set = (v: T) => { value = v; subs.forEach((s) => s()); };
   return {
     subscribe(cb: () => void) {
       subs.add(cb);
-      if (subs.size === 1) stop = start((v) => { value = v; subs.forEach((s) => s()); });
+      if (subs.size === 1) stop = start(set);
       return () => {
         subs.delete(cb);
         if (!subs.size) { stop?.(); stop = null; value = null; }
       };
     },
     get: () => value,
+    // Push a value in from OUTSIDE the poll loop (a mutation's own response) — e.g. the usage
+    // card's enable/disable switch, so the row updates at once rather than waiting for the next tick.
+    push: set,
   };
 }
 
@@ -76,6 +80,13 @@ export const useUsage = (): Usage | null => useSyncExternalStore(usageSource.sub
  *  instead of `useUsage() === null`, which is ALSO what "no provider signed in" looks like. */
 export const useUsageLoaded = (): boolean =>
   useSyncExternalStore((cb) => { usageLoadedSubs.add(cb); return () => usageLoadedSubs.delete(cb); }, () => usageLoaded);
+
+/** Apply the profile list POST /api/usage/profile hands back, so the row the switch is on shows
+ *  the new state at once rather than waiting for the next (up to 5-minute) poll tick. */
+export function applyProfiles(profiles: NonNullable<Usage["profiles"]>): void {
+  const current = usageSource.get();
+  if (current) usageSource.push({ ...current, profiles });
+}
 
 export type HealthReading = { health: InstanceHealth | null; down: boolean };
 const healthSources = new Map<string, ReturnType<typeof sharedSource<HealthReading>>>();
