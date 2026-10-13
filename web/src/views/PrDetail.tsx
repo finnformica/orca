@@ -18,6 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ReviewPanel, reviewSig } from "./Review";
 import { AGENT_TABS, AgentHeader, ChatCard, DetailsCard, HeaderSource, RowStatus } from "./AgentPage";
 import { useNarrow } from "@/lib/viewport";
+import { ChecksCard, ConversationCard } from "./PrPanels";
 import { Detail, VCard } from "@/components/console";
 import { useSummary } from "./Board";
 
@@ -116,7 +117,9 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
       {pr.autoMergeEnabled && <Badge variant="outline" className="border-transparent bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
     </div>
   );
-  const sub2 = !liveRow && sub === "chat" ? "overview" : sub; // a coworker's PR has no conversation here
+  // A coworker's PR has no conversation here; the checks moved onto Overview, so an old /checks link lands there.
+  const sig = liveRow ? reviewSig(liveRow) : undefined;
+  const sub2 = (!liveRow && sub === "chat") || sub === "checks" ? "overview" : sub;
 
   return (
     <div style={header.style}>
@@ -149,25 +152,14 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
               </div>
             </VCard>
           )}
-          <ReviewPanel repo={repo} prNumber={number} sig={liveRow ? reviewSig(liveRow) : undefined} />
+          <ReviewPanel repo={repo} prNumber={number} sig={sig} />
+          <ChecksCard checks={pr.checks} />
           <VCard slot="pr-description" title="Description">
-            <div className="space-y-4 p-4">
+            <div className="p-4">
               {pr.body ? <Markdown>{pr.body}</Markdown> : <p className="text-muted-foreground text-sm">No description.</p>}
-              {(pr.reviews.length > 0 || pr.comments.length > 0) && (
-                <div className="space-y-2 border-t pt-3 text-sm">
-                  {pr.reviews.map((r, i) => (
-                    <div key={`r${i}`}><span className="text-muted-foreground">{r.author}</span> — {r.state.toLowerCase().replace(/_/g, " ")}</div>
-                  ))}
-                  {pr.comments.map((c, i) => (
-                    <div key={`c${i}`} className="border-l pl-3">
-                      <div className="text-muted-foreground text-xs">{c.author}</div>
-                      <Markdown>{c.body}</Markdown>
-                    </div>
-                  ))}
-                </div>
-              )}
             </div>
           </VCard>
+          <ConversationCard repo={repo} prNumber={number} sig={sig} comments={pr.comments} reviews={pr.reviews} />
         </TabsContent>
 
         {liveRow && (
@@ -178,16 +170,6 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
 
         <TabsContent value="files" className="space-y-3 pt-4">
           {diff === null ? <p className="text-muted-foreground text-sm">Loading diff…</p> : <DiffView text={diff} />}
-        </TabsContent>
-
-        <TabsContent value="checks" className="space-y-1 pt-3">
-          {pr.checks.length === 0 && <p className="text-muted-foreground text-sm">No checks.</p>}
-          {pr.checks.map((c, i) => (
-            <div key={i} className="flex items-center justify-between gap-3 text-sm">
-              <span className="truncate">{c.name}</span>
-              <Badge variant={c.status === "passing" ? "success" : c.status === "failing" ? "destructive" : "outline"} className="capitalize">{c.status}</Badge>
-            </div>
-          ))}
         </TabsContent>
 
         <TabsContent value="preview" className="pt-4">

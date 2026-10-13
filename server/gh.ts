@@ -402,12 +402,28 @@ export type PrDetail = PrStatus & {
   deletions: number;
   changedFiles: number;
   files: { path: string; additions: number; deletions: number }[];
-  reviews: { author: string; state: string }[];
-  comments: { author: string; body: string }[];
-  checks: { name: string; status: CiStatus }[];
+  /** A submitted review: its state, plus (when it has one) its top-level body, when and where. */
+  reviews: { author: string; state: string; body?: string; submittedAt?: string; url?: string; bot?: boolean }[];
+  comments: { author: string; body: string; createdAt?: string; url?: string; bot?: boolean }[];
+  checks: PrCheck[];
   previewUrl?: string;
   autoMergeEnabled: boolean;
 };
+
+/** One check on the PR page: its outcome, the logs link, and when it ran (for its duration).
+ *  `skipped` marks a SKIPPED / NEUTRAL conclusion — passing for the rollup, but not worth a row. */
+export type PrCheck = { name: string; status: CiStatus; url?: string; startedAt?: string; completedAt?: string; skipped?: boolean };
+
+function prCheck(c: any): PrCheck {
+  const o = c.conclusion || c.state || "";
+  const check: PrCheck = { name: c.name ?? c.context ?? "check", status: checkOutcome(c) };
+  const url = c.detailsUrl || c.targetUrl;
+  if (url) check.url = url;
+  if (c.startedAt) check.startedAt = c.startedAt;
+  if (c.completedAt) check.completedAt = c.completedAt;
+  if (o === "SKIPPED" || o === "NEUTRAL") check.skipped = true;
+  return check;
+}
 
 function checkOutcome(c: { conclusion?: string; state?: string }): CiStatus {
   const o = c.conclusion || c.state || "PENDING";
@@ -415,6 +431,9 @@ function checkOutcome(c: { conclusion?: string; state?: string }): CiStatus {
   if (PASS.has(o)) return "passing";
   return "pending";
 }
+
+/** Drop the keys gh didn't give us, so a sparse fixture or an old PR reads back unchanged. */
+const defined = <T extends Record<string, unknown>>(o: T): T => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as T;
 
 /** Full detail for one PR — overview, files, reviews, comments. */
 export async function prDetail(cwd: string, pr: number): Promise<PrDetail> {
@@ -435,9 +454,13 @@ export async function prDetail(cwd: string, pr: number): Promise<PrDetail> {
     deletions: j.deletions ?? 0,
     changedFiles: j.changedFiles ?? 0,
     files: (j.files ?? []).map((f: any) => ({ path: f.path, additions: f.additions ?? 0, deletions: f.deletions ?? 0 })),
-    reviews: (j.reviews ?? []).map((r: any) => ({ author: r.author?.login ?? "", state: r.state })),
-    comments: (j.comments ?? []).map((c: any) => ({ author: c.author?.login ?? "", body: c.body ?? "" })),
-    checks: (j.statusCheckRollup ?? []).map((c: any) => ({ name: c.name ?? c.context ?? "check", status: checkOutcome(c) })),
+    reviews: (j.reviews ?? []).map((r: any) => defined({
+      author: r.author?.login ?? "", state: r.state, body: r.body?.trim() || undefined, submittedAt: r.submittedAt, url: r.url, bot: botLogin(r.author?.login) || r.author?.is_bot || undefined,
+    })),
+    comments: (j.comments ?? []).map((c: any) => defined({
+      author: c.author?.login ?? "", body: c.body ?? "", createdAt: c.createdAt, url: c.url, bot: botLogin(c.author?.login) || c.author?.is_bot || undefined,
+    })),
+    checks: (j.statusCheckRollup ?? []).map(prCheck),
     ciStatus: rollupCi(j.statusCheckRollup ?? []),
     reviewStatus: mapReview(j.reviewDecision ?? ""),
     mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",
