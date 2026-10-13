@@ -250,6 +250,15 @@ A workstream is a branch; its lane (`store.laneFor`):
   is clean, else In Review). **merged today** (server-local calendar day) → Done (`gh pr list --state merged`).
 
 Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
+- **A failed action is a toast, never text in the row** (`lib/toast` + `components/Toaster`, mounted
+  once in App, bottom-right above the orchestrator's window; errors stay until dismissed, info goes
+  after 8s). Title = action + workstream, body = the message (mono, scrollable), **Copy** (message +
+  repo/branch/PR/action) and **Ask the orchestrator** (the #128 `ask`, prefilled `Action … failed: …
+  Please investigate and fix.`). The button keeps only its ✗, first line as tooltip. Covers
+  `WorkstreamActions` (Merge, Slack, Move, …), `ActionButton` with `failure`, and preview start/crash.
+- **Enable auto-merge on a repo that disallows it** (`Auto merge is not allowed for this repository`):
+  `enableAutoMerge` squash-merges directly if `mergeSafe`, else rethrows with "enable auto-merge in the
+  repo settings, or merge when green". The stacked fallback still comes first.
 - **Promote** (Local, remote repo) = a dropdown: Create PR ready / draft, ± add preview label.
   Local repo → plain Promote (sets `promoted`).
 - **Address PR / Follow up** = launch the selected provider headlessly in the branch's
