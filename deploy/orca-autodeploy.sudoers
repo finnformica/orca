@@ -1,0 +1,13 @@
+# Lets `orca` restart the bridge from the auto-deploy timer with no broader privilege than that —
+# deploy/autodeploy.sh runs as `orca` for everything else (git fetch/pull, bun run build) and only
+# escalates for this one command. Install as its own file under sudoers.d (never append to the main
+# sudoers file) and validate before trusting it:
+#
+#   sudo cp deploy/orca-autodeploy.sudoers /etc/sudoers.d/orca-autodeploy
+#   sudo chmod 440 /etc/sudoers.d/orca-autodeploy
+#   sudo visudo -c
+#
+# (The box's cloud-init already grants `orca` blanket NOPASSWD:ALL sudo — this rule is here so
+# auto-deploy keeps working if that blanket grant is ever tightened, and so the privilege this
+# timer actually needs is documented in one place.)
+orca ALL=(root) NOPASSWD: /usr/bin/systemctl restart orca
