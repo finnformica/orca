@@ -444,7 +444,10 @@ export function NotificationPanel() {
   const groups = groupByDay(filterNotifications(list, filter));
   return (
     <div data-slot="notification-centre" className="flex max-h-[70vh] flex-col">
-      <header className="flex shrink-0 items-center gap-2 border-b py-3 pr-1.5 pl-3">
+      {/* No fixed/min height: the row's tallest child (the h-7 Segmented toggle, matching the size-7
+          Mark-as-read button — both already the compact size this design system offers) plus p-3 on
+          every side, equal horizontally and vertically, is the whole height. */}
+      <header className="flex shrink-0 items-center gap-2 border-b p-3">
         <h3 className="text-sm font-medium">Notifications</h3>
         <span className="flex-1" />
         <Segmented<NotificationFilter> label="Show" value={filter} onChange={setFilter} options={[

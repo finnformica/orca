@@ -281,11 +281,16 @@ describe("the notification centre", () => {
     const panel = $("notification-centre")!;
     const header = panel.querySelector("header")!;
     // The header: title, Unread (its count) / All, Mark all as read — nothing else — padded evenly
-    // (py matching the left/right padding) rather than pinned to a fixed height.
-    expect(header.className).toContain("py-3");
-    expect(header.className).not.toContain("h-14");
+    // (one p-3 on every side, not a separate py/px split) rather than pinned to a fixed height; its
+    // toggle and button are already the design system's compact size (h-7 / size-7).
+    expect(header.className).toContain("p-3");
+    expect(header.className).not.toMatch(/\bpy-\d|\bpx-\d|\bpr-\d|\bpl-\d/);
+    expect(header.className).not.toMatch(/\bh-\d|\bmin-h-/);
+    const markRead = header.querySelector<HTMLElement>('[aria-label="Mark all as read"]')!;
+    expect(markRead.className).toContain("size-7");
     expect(header.querySelector("h3")!.textContent).toBe("Notifications");
     const seg = header.querySelector<HTMLElement>('[role="group"]')!;
+    expect(seg.className).toContain("h-7"); // the toggle's own compact size, not forced taller by the header
     expect([...seg.querySelectorAll("button")].map((b) => [b.textContent, b.getAttribute("aria-pressed")])).toEqual([["Unread2", "true"], ["All", "false"]]);
     expect([...header.querySelectorAll("button")].map((b) => b.textContent || b.getAttribute("aria-label"))).toEqual(["Unread2", "All", "Mark all as read"]);
     // The unread count is a keycap-styled chip, the same shared Kbd component as a shortcut hint.
