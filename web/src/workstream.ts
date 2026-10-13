@@ -1010,6 +1010,9 @@ const ORCA_COMMANDS = [
   "  orca move --repo <repo> --branch <branch> --to <instance>  move its worktree to another instance (not while it runs)",
   "  orca archive --repo <repo> --branch <branch>              cancel a workstream you spawned or sent to: stop its agent,",
   "                                  drop anything queued for it, archive the card. Refuses one you don't own.",
+  "  orca sweep [--confirm]          list finished worktrees, dead previews and orphan branches on every instance;",
+  "                                  --confirm removes the ones marked \"would remove\" (never anything with",
+  "                                  uncommitted or unpushed work). Merged PRs are already cleaned up on their own",
   "  orca preview --repo <repo> --branch <branch> [--status]   start (or restart) its local preview; --status prints",
   "                                  starting / running + URL / failed, and the tail of each service's log",
   "  orca preview --repo <repo> --branch <branch> --push-to-template [--confirm]   make that preview the",
@@ -2366,4 +2369,57 @@ export function conversationSummary(c: PrConversation["counts"]): string {
   const threadParts = [c.unresolved && `${c.unresolved} unresolved`, c.resolved && `${c.resolved} resolved`, c.outdated && `${c.outdated} outdated`].filter(Boolean).join(", ");
   return [c.comments && plural(c.comments, "comment"), c.threads && `${plural(c.threads, "thread")}${threadParts ? ` (${threadParts})` : ""}`, c.bots && `${c.bots} bot`]
     .filter(Boolean).join(" · ") || "No comments";
+}
+
+// ---- cleanup after finished work ----
+
+/** How long a merged / closed PR's worktree is kept before it is reaped: long enough to glance at
+ *  the Done card, re-open a closed PR or catch a late follow-up, short enough that finished work
+ *  doesn't pile up on disk. */
+export const CLEANUP_GRACE_MS = 10 * 60_000;
+
+export type CleanupDecision = { action: "reap" } | { action: "wait" | "flag"; why: string };
+
+/** What to do with a worktree whose work is finished (its PR merged or closed, or its workstream
+ *  archived). Wait while an agent runs on it or within the grace period; then never remove anything
+ *  that would lose work — uncommitted changes or commits that exist nowhere else are FLAGGED for you
+ *  instead; otherwise reap. `doneAt` unknown counts as past the grace period. */
+export function cleanupDecision(f: {
+  doneAt?: number; now: number; graceMs?: number; running: boolean; dirty: string[]; unpushed: number;
+}): CleanupDecision {
+  if (f.running) return { action: "wait", why: "an agent is running on it" };
+  const grace = f.graceMs ?? CLEANUP_GRACE_MS;
+  if (f.doneAt !== undefined && f.now - f.doneAt < grace) {
+    return { action: "wait", why: `grace period (${Math.ceil((grace - (f.now - f.doneAt)) / 60_000)} min left)` };
+  }
+  const why = [
+    f.dirty.length ? `${f.dirty.length} uncommitted change${f.dirty.length === 1 ? "" : "s"} (${f.dirty.slice(0, 3).join(", ")}${f.dirty.length > 3 ? ", …" : ""})` : "",
+    f.unpushed ? `${f.unpushed} unpushed commit${f.unpushed === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join("; ");
+  return why ? { action: "flag", why } : { action: "reap" };
+}
+
+/** One instance's sweep: finished worktrees still on disk, previews with nothing behind them, and
+ *  Orca's own branches left with no worktree and no open PR. `done` says whether it was applied. */
+export type SweepReport = {
+  instance: string; confirmed: boolean; error?: string;
+  worktrees: { repo: string; branch: string; worktreePath: string; reason: string; action: "remove" | "keep"; why?: string; done?: boolean }[];
+  previews: { key: string; why: string; done?: boolean }[];
+  branches: { repo: string; branch: string; action: "remove" | "keep"; why: string; done?: boolean }[];
+};
+
+/** The sweep as text — what `orca sweep` prints, dry run or applied. */
+export function sweepText(reports: SweepReport[]): string {
+  const confirmed = reports.some((r) => r.confirmed);
+  const verb = (done?: boolean) => (confirmed ? (done ? "removed" : "FAILED") : "would remove");
+  const out: string[] = [confirmed ? "Sweep applied." : "Sweep dry run — nothing was changed. Re-run with --confirm to remove what is marked \"would remove\"."];
+  for (const r of reports) {
+    out.push("", `## ${r.instance}`);
+    if (r.error) { out.push(`  unreachable: ${r.error}`); continue; }
+    const wts = r.worktrees.map((w) => `  ${w.action === "remove" ? verb(w.done) : "keep"}  ${w.repo}/${w.branch} (${w.reason}) ${w.worktreePath}${w.why ? ` — ${w.why}` : ""}`);
+    const pvs = r.previews.map((p) => `  ${verb(p.done)}  ${p.key} — ${p.why}`);
+    const brs = r.branches.map((b) => `  ${b.action === "remove" ? verb(b.done) : "keep"}  ${b.repo}/${b.branch} — ${b.why}`);
+    out.push("Worktrees:", ...(wts.length ? wts : ["  (none)"]), "Previews:", ...(pvs.length ? pvs : ["  (none)"]), "Branches:", ...(brs.length ? brs : ["  (none)"]));
+  }
+  return out.join("\n");
 }

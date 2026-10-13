@@ -370,6 +370,16 @@ so the gate can never loop. The conversational prompts also open with a session-
 
 - **Mark ready** (draft PR) = `gh pr ready`. **Merge**: PR → `gh pr merge`; local → guarded `git merge`.
 - **Discard** never deletes a branch that has an open PR (only pre-PR locals).
+- **Cleanup after finished work** (`verbs.cleanupRepo`, run by each instance's agents poll / publish
+  tick for ITS OWN worktrees): a merged or closed PR's worktree is reaped after `CLEANUP_GRACE_MS`
+  (10 min, from `mergedAt`/`closedAt`) and never while an agent runs on it — preview stopped, placement
+  cleared, a merged branch deleted (a closed one kept), the card archived. **Nothing that would lose
+  work is removed** (`cleanupDecision`): uncommitted changes, or commits on no remote, not in base and
+  not the PR's last head (`git.worktreeSafety`), flag the card (`cleanupBlocked`) instead. `orca
+  archive` goes to the worktree's home instance (`/api/workstreams/archive`). **`orca sweep
+  [--confirm]`** (`/api/cleanup/sweep`, fanned out to every instance) is the one-off: finished
+  worktrees, previews with nothing behind them and Orca's own branches left with no worktree or open
+  PR — a dry-run report unless confirmed, same safety, no grace period.
 
 Agent runs are killed on discard and on server shutdown (SIGINT/SIGTERM) so restarts don't orphan
 them. Routing: `/` = board, `/{repo}/prs/:n[/chat|/files|/preview]` = PR detail (an old `/checks` lands on Overview),
@@ -480,7 +490,7 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   project-scope MCP servers, and Claude Code's own auto-memory accrues under that cwd; user-level
   `~/.claude` config loads as in any session.
 - **`orca`** (`bin/orca` → `POST /api/orchestrator/tool` → `orchestrator.tool`): `board`, `spawn`,
-  `send`, `address`, `archive`, `preview` (`--status`; and `--push-to-template [--confirm]`,
+  `send`, `address`, `archive`, `sweep [--confirm]`, `preview` (`--status`; and `--push-to-template [--confirm]`,
   `server/pushTemplate.ts`, which makes a preview's whole database the repo's `PREVIEW_TEMPLATE_DB`
   — old one kept as `<template>_bak_<ts>` — and writes its integration env vars back to the main
   checkout's copied `.env`; dry run without `--confirm`, values masked — README), `chats`, `read`,
@@ -593,7 +603,7 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
 Flat notifications — one row per event, no threads — in a `notification` table (migration 15 — 13 and 14 were taken by branches open at the same time; `migrate()` tolerates the gap) shared
 by both instances, so either machine shows the same centre. **One emitter, `server/notify.ts`**: the
 row is written once (`db.addNotification`, idempotent on the event's `key` — `run:<runId>:<kind>`,
-`check:<runId>`, `preview:<key>:<startedAt>:ready|failed`, `pr-ci:<repo>#<n>:<checks>`,
+`check:<runId>`, `preview:<key>:<startedAt>:ready|failed`, `pr-ci:<repo>#<n>@<head sha>` — the commit, not the failing-check set, which flaps,
 `pr-conflict:<repo>#<n>` — so a run finished twice by a restart's lease adoption, or a repo answered
 by two instances, is one row), then pushed on the bus as a `notification` event that rides the
 per-tab `/api/events` stream and is relayed between instances like steps and turns. Sources: the
