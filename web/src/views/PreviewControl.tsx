@@ -9,7 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { StatusDot } from "@/components/console";
 import { poll } from "@/lib/poll";
 import { sharedSource } from "@/lib/vitals";
-import { actionFailed } from "@/lib/toast";
+import { actionFailed } from "@/lib/notificationStore";
 
 // Shared preview lifecycle: start in the background, poll status, expose ready/failed/link. Driven
 // by a preview `key` (the worktree path) and a `starter` that spins it up — so the same hook powers
@@ -17,7 +17,8 @@ import { actionFailed } from "@/lib/toast";
 /** The URL this page opens for a service — see `previewHref`. */
 const hrefOf = (svc: PreviewSvc): string => previewHref(svc, window.location.hostname);
 
-// `row`: a branch preview's start/crash failure also goes to a toast (Copy + Ask the orchestrator).
+// `row`: a branch preview's start / stop REQUEST failing also goes to the notification toasts (Copy +
+// Ask the orchestrator). A crash does not: the bridge's watcher already reports it as `preview_failed`.
 function usePreview(initialKey: string | undefined, starter: () => Promise<{ key: string; svcs: PreviewSvc[] }>, row?: Row) {
   const toastFailure = (e: unknown) => { if (row) actionFailed({ action: "Preview", title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }, e); };
   const [key, setKey] = useState(initialKey);
@@ -51,8 +52,7 @@ function usePreview(initialKey: string | undefined, starter: () => Promise<{ key
   useEffect(() => {
     if (!crashed || !key || reaping.current) return;
     reaping.current = true;
-    setError(crashed.error ?? "a service failed to start");
-    toastFailure(crashed.error ?? "a service failed to start");
+    setError(crashed.error ?? "a service failed to start"); // no toast: the bridge's preview_failed is the one
     setSvcs([]);
     void stopPreview(key).catch(() => {});
   }, [crashed, key]);

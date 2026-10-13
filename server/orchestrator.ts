@@ -26,7 +26,7 @@ import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
-  joinMessages, orchestratorPrompt, sessionHint, turnSource, wakeExitReason, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  joinMessages, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
   type BoardRow, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
@@ -469,8 +469,15 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const branch = required(args, "branch");
       const e = (await db.enrichment(repo.name))[branch];
       if (!e?.orchestrated) throw new Error(`${repo.name}/${branch} is not an orchestrated workstream; this command only archives ones this orchestrator spawned or sent to`);
-      await verbs.archiveWorkstream(repo, branch);
+      // The worktree is removed where it lives: a laptop's worktree by the laptop.
+      const home = await verbs.placement(repo, { branch });
+      if (home !== db.instanceName()) await viaInstance(cfg, home, "/api/workstreams/archive", { repo: repo.name, branch });
+      else await verbs.archiveWorkstream(repo, branch);
       return `Archived ${repo.name}/${branch}. Its branch, commits and transcript stay readable with \`orca chats\` / \`orca read\`.`;
+    }
+    case "sweep": {
+      // Finished worktrees, dead previews and orphan branches on every instance. Dry run unless --confirm.
+      return sweepText(await verbs.sweepAll(cfg, { confirm: "confirm" in args }));
     }
     case "preview": {
       const repo = repoNamed(cfg, args.repo);
@@ -540,6 +547,6 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, preview [--status | --push-to-template [--confirm]], chats, read, notes`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, sweep [--confirm], preview [--status | --push-to-template [--confirm]], chats, read, notes`);
   }
 }

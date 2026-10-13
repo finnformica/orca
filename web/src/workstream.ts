@@ -1042,6 +1042,9 @@ const ORCA_COMMANDS = [
   "  orca move --repo <repo> --branch <branch> --to <instance>  move its worktree to another instance (not while it runs)",
   "  orca archive --repo <repo> --branch <branch>              cancel a workstream you spawned or sent to: stop its agent,",
   "                                  drop anything queued for it, archive the card. Refuses one you don't own.",
+  "  orca sweep [--confirm]          list finished worktrees, dead previews and orphan branches on every instance;",
+  "                                  --confirm removes the ones marked \"would remove\" (never anything with",
+  "                                  uncommitted or unpushed work). Merged PRs are already cleaned up on their own",
   "  orca preview --repo <repo> --branch <branch> [--status]   start (or restart) its local preview; --status prints",
   "                                  starting / running + URL / failed, and the tail of each service's log",
   "  orca preview --repo <repo> --branch <branch> --push-to-template [--confirm]   make that preview the",
@@ -1778,28 +1781,44 @@ export function downsample(points: { at: number; v: number }[], max: number, fro
 }
 
 /** One vitals sample, recorded (instance_metric) or live (/api/health). */
-export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number; costUsd?: number };
+export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number };
 type Pt = { at: number; v: number };
 export type InstanceSeries = {
   cpu: Pt[]; mem: Pt[]; agents: Pt[]; cost: Pt[];
-  /** The newest sample — what the card's header stats show, and exactly every chart's last point. */
+  /** The newest sample — what the card's header stats show, and exactly every chart's last point.
+   *  `costUsd` is what the machine cost over the range up to it. */
   latest: { at: number; cpuPct: number; memUsedGb: number; runningAgents: number; costUsd: number } | null;
 };
+
+/** The longest pause between two samples that still counts as the machine being UP — the same
+ *  5 minutes `sparklineSegments` breaks a line at (the sampler writes once a minute). */
+export const UPTIME_GAP_MS = 5 * 60_000;
+
+/** What a machine cost over its samples, cumulatively: `hourlyUsd` × the time between consecutive
+ *  samples, where a pause longer than `gapMs` means it was down (or its bridge was) and adds
+ *  nothing. The first sample is $0 — the range's cost starts there. Pure. */
+export function accruedCost(samples: { at: number }[], hourlyUsd: number, gapMs = UPTIME_GAP_MS): Pt[] {
+  let total = 0;
+  return samples.map((p, i) => {
+    const dt = i ? p.at - samples[i - 1]!.at : 0;
+    if (hourlyUsd > 0 && dt > 0 && dt <= gapMs) total += (dt / 3_600_000) * hourlyUsd;
+    return { at: p.at, v: total };
+  });
+}
 
 /** Every instance chart's points, from the recorded history plus the live reading. The header stats
  *  and the charts once disagreed for two reasons: the header read the live poll (every 15s) while the
  *  chart's newest point was the history's (every 60s, up to a minute older), and `downsample` made
  *  that point the MEAN of its bucket (at 7d, ~34 minutes of samples). Here the live reading, when it
  *  is newer, becomes the newest sample, and the newest sample is kept raw as every series' last point
- *  — so `latest` (the header) and the last point are the same reading. Cost is cumulative over the
- *  range: each sample carries what the runs that finished since the previous one cost. */
-export function instanceSeries(history: VitalSample[], live: VitalSample | null | undefined, from: number, to: number, max = 300): InstanceSeries {
+ *  — so `latest` (the header) and the last point are the same reading. Cost is the machine's: its
+ *  current `hourlyUsd` accrued over the samples (`accruedCost`), so a gap where it was down is flat. */
+export function instanceSeries(history: VitalSample[], live: VitalSample | null | undefined, from: number, to: number, max = 300, hourlyUsd = 0): InstanceSeries {
   const samples = history.filter((p) => p.at >= from && p.at <= to);
   const last = samples[samples.length - 1];
-  if (live && live.at <= to && (!last || live.at > last.at)) samples.push({ ...live, costUsd: 0 });
+  if (live && live.at <= to && (!last || live.at > last.at)) samples.push(live);
   if (!samples.length) return { cpu: [], mem: [], agents: [], cost: [], latest: null };
-  let total = 0;
-  const cumulative = samples.map((p) => ({ at: p.at, v: (total += p.costUsd ?? 0) }));
+  const cumulative = accruedCost(samples, hourlyUsd);
   const series = (pts: Pt[]) => [...downsample(pts.slice(0, -1), max - 1, from, to), pts[pts.length - 1]!];
   const newest = samples[samples.length - 1]!;
   return {
@@ -1807,8 +1826,17 @@ export function instanceSeries(history: VitalSample[], live: VitalSample | null 
     mem: series(samples.map((p) => ({ at: p.at, v: p.memUsedGb }))),
     agents: series(samples.map((p) => ({ at: p.at, v: p.runningAgents ?? 0 }))),
     cost: series(cumulative),
-    latest: { at: newest.at, cpuPct: newest.cpuPct, memUsedGb: newest.memUsedGb, runningAgents: newest.runningAgents ?? 0, costUsd: total },
+    latest: { at: newest.at, cpuPct: newest.cpuPct, memUsedGb: newest.memUsedGb, runningAgents: newest.runningAgents ?? 0, costUsd: cumulative[cumulative.length - 1]!.v },
   };
+}
+
+/** The Cost accrued chart's caption: the rate it accrues at, and whether that rate is the config's
+ *  or Orca's on-demand estimate from the EC2 type. Pure. */
+export function rateLabel(rate: { hourlyUsd: number; source: string; instanceType?: string } | undefined): string {
+  if (!rate || !(rate.hourlyUsd > 0)) return "Cost accrued";
+  const r = rate.hourlyUsd;
+  const n = r.toFixed(r >= 0.1 ? 2 : 3);
+  return `Cost accrued · $${n}/h${rate.source === "estimate" ? ` est.${rate.instanceType ? ` (${rate.instanceType})` : ""}` : ""}`;
 }
 
 /** The agents axis's top: a small whole count, even so its midpoint tick is whole too (0 · 2 · 4). */
@@ -2037,7 +2065,7 @@ export function modelBadge(ran: string | undefined, pinned: string | undefined):
   return { label, title };
 }
 
-// ---- Action failures (the toast's text — components/Toaster, lib/toast; a button's ✗ tooltip is `firstLine`) ----
+// ---- Action failures (an `action_failed` notification's text — lib/notificationStore `actionFailed`; a button's ✗ tooltip is `firstLine`) ----
 
 /** A failed action on a workstream: which verb, on what, and GitHub's/the bridge's own message. */
 export type ActionFailure = { action: string; title?: string; repo: string; branch: string; prNumber?: number; error: string };
@@ -2086,7 +2114,7 @@ export function pullState(dy: number): { phase: "idle" | "pull" | "release"; off
  *  (store.addressPr, followUp, testLocally, stopPreview, navigation) — none of the logic is here. */
 export type NotificationActionId =
   | "address" | "viewPr" | "fix" | "viewOutput" | "open" | "reply" | "retry" | "openChat"
-  | "openPreview" | "stopPreview" | "retryPreview" | "viewLog" | "openOrchestrator";
+  | "openPreview" | "stopPreview" | "retryPreview" | "viewLog" | "openOrchestrator" | "ask" | "copy";
 export type NotificationActionSpec = { id: NotificationActionId; label: string; primary?: boolean };
 
 /** What the live row behind a notification makes possible: an agent verb needs the row, View PR its
@@ -2104,6 +2132,9 @@ const NOTIFICATION_ACTION_RULES: Record<string, ActionRule[]> = {
   stopped: [{ id: "retry", label: "Retry", needs: "row" }, { id: "openChat", label: "Open chat" }],
   preview_ready: [{ id: "openPreview", label: "Open preview" }, { id: "stopPreview", label: "Stop", needs: "previewKey" }],
   preview_failed: [{ id: "retryPreview", label: "Retry test", needs: "row" }, { id: "viewLog", label: "View log" }],
+  // A failed action (a local notification): hand it to the orchestrator, or copy the message and
+  // where it happened — each only when the notification carries its text.
+  action_failed: [{ id: "ask", label: "Ask the orchestrator" }, { id: "copy", label: "Copy" }],
 };
 
 /** A notification's quick actions: up to two for its kind, then ALWAYS Open, last — so every toast
@@ -2113,13 +2144,13 @@ const NOTIFICATION_ACTION_RULES: Record<string, ActionRule[]> = {
  *  left out rather than shown broken; an unknown kind gets only Open. There is no Read: taking any
  *  action marks it read, and the card's own × (not listed here) is "read, and out of view". */
 export function notificationActions(
-  n: { kind: string; link?: { url?: string; orchestrator?: boolean } },
+  n: { kind: string; link?: { url?: string; orchestrator?: boolean }; ask?: string; copy?: string },
   ctx: NotificationActionContext = {},
 ): NotificationActionSpec[] {
   const open: ActionRule = n.link?.orchestrator ? { id: "openOrchestrator", label: "Open" } : { id: "open", label: "Open" };
   const has = { ...ctx } as Record<string, boolean | undefined>;
   const rules = n.link?.orchestrator ? [] : (NOTIFICATION_ACTION_RULES[n.kind] ?? [])
-    .filter((r) => (r.id === "openPreview" ? Boolean(n.link?.url) : !r.needs || has[r.needs]))
+    .filter((r) => (r.id === "openPreview" ? Boolean(n.link?.url) : r.id === "ask" || r.id === "copy" ? Boolean(n[r.id]) : !r.needs || has[r.needs]))
     .slice(0, 2);
   return [...rules, open].map((r, i) => ({ id: r.id, label: r.label, ...(i === 0 ? { primary: true } : {}) }));
 }
@@ -2373,4 +2404,57 @@ export function conversationSummary(c: PrConversation["counts"]): string {
   const threadParts = [c.unresolved && `${c.unresolved} unresolved`, c.resolved && `${c.resolved} resolved`, c.outdated && `${c.outdated} outdated`].filter(Boolean).join(", ");
   return [c.comments && plural(c.comments, "comment"), c.threads && `${plural(c.threads, "thread")}${threadParts ? ` (${threadParts})` : ""}`, c.bots && `${c.bots} bot`]
     .filter(Boolean).join(" · ") || "No comments";
+}
+
+// ---- cleanup after finished work ----
+
+/** How long a merged / closed PR's worktree is kept before it is reaped: long enough to glance at
+ *  the Done card, re-open a closed PR or catch a late follow-up, short enough that finished work
+ *  doesn't pile up on disk. */
+export const CLEANUP_GRACE_MS = 10 * 60_000;
+
+export type CleanupDecision = { action: "reap" } | { action: "wait" | "flag"; why: string };
+
+/** What to do with a worktree whose work is finished (its PR merged or closed, or its workstream
+ *  archived). Wait while an agent runs on it or within the grace period; then never remove anything
+ *  that would lose work — uncommitted changes or commits that exist nowhere else are FLAGGED for you
+ *  instead; otherwise reap. `doneAt` unknown counts as past the grace period. */
+export function cleanupDecision(f: {
+  doneAt?: number; now: number; graceMs?: number; running: boolean; dirty: string[]; unpushed: number;
+}): CleanupDecision {
+  if (f.running) return { action: "wait", why: "an agent is running on it" };
+  const grace = f.graceMs ?? CLEANUP_GRACE_MS;
+  if (f.doneAt !== undefined && f.now - f.doneAt < grace) {
+    return { action: "wait", why: `grace period (${Math.ceil((grace - (f.now - f.doneAt)) / 60_000)} min left)` };
+  }
+  const why = [
+    f.dirty.length ? `${f.dirty.length} uncommitted change${f.dirty.length === 1 ? "" : "s"} (${f.dirty.slice(0, 3).join(", ")}${f.dirty.length > 3 ? ", …" : ""})` : "",
+    f.unpushed ? `${f.unpushed} unpushed commit${f.unpushed === 1 ? "" : "s"}` : "",
+  ].filter(Boolean).join("; ");
+  return why ? { action: "flag", why } : { action: "reap" };
+}
+
+/** One instance's sweep: finished worktrees still on disk, previews with nothing behind them, and
+ *  Orca's own branches left with no worktree and no open PR. `done` says whether it was applied. */
+export type SweepReport = {
+  instance: string; confirmed: boolean; error?: string;
+  worktrees: { repo: string; branch: string; worktreePath: string; reason: string; action: "remove" | "keep"; why?: string; done?: boolean }[];
+  previews: { key: string; why: string; done?: boolean }[];
+  branches: { repo: string; branch: string; action: "remove" | "keep"; why: string; done?: boolean }[];
+};
+
+/** The sweep as text — what `orca sweep` prints, dry run or applied. */
+export function sweepText(reports: SweepReport[]): string {
+  const confirmed = reports.some((r) => r.confirmed);
+  const verb = (done?: boolean) => (confirmed ? (done ? "removed" : "FAILED") : "would remove");
+  const out: string[] = [confirmed ? "Sweep applied." : "Sweep dry run — nothing was changed. Re-run with --confirm to remove what is marked \"would remove\"."];
+  for (const r of reports) {
+    out.push("", `## ${r.instance}`);
+    if (r.error) { out.push(`  unreachable: ${r.error}`); continue; }
+    const wts = r.worktrees.map((w) => `  ${w.action === "remove" ? verb(w.done) : "keep"}  ${w.repo}/${w.branch} (${w.reason}) ${w.worktreePath}${w.why ? ` — ${w.why}` : ""}`);
+    const pvs = r.previews.map((p) => `  ${verb(p.done)}  ${p.key} — ${p.why}`);
+    const brs = r.branches.map((b) => `  ${b.action === "remove" ? verb(b.done) : "keep"}  ${b.repo}/${b.branch} — ${b.why}`);
+    out.push("Worktrees:", ...(wts.length ? wts : ["  (none)"]), "Previews:", ...(pvs.length ? pvs : ["  (none)"]), "Branches:", ...(brs.length ? brs : ["  (none)"]));
+  }
+  return out.join("\n");
 }

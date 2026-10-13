@@ -1,18 +1,20 @@
 // This machine's vitals for the header's instance chip (GET /api/health). Shells out to `df` for
-// the root disk; everything else is the os module. The cost is an ESTIMATE from two env vars the
-// box sets (ORCA_HOURLY_USD, ORCA_BILLING_SINCE) — Cost Explorer needs AWS credentials the instance
-// role doesn't have, and an estimate that is always there beats a bill that needs a login.
+// the root disk; everything else is the os module. What the MACHINE costs is an hourly rate
+// (`instanceRate`): the config's `instanceHourlyUsd` (Settings), else an on-demand estimate from the EC2 instance type IMDSv2 reports, else 0 — Cost Explorer needs AWS credentials
+// the instance role doesn't have, and a rate that is always there beats a bill that needs a login.
 import * as os from "os";
 import * as db from "./db";
 import * as lease from "./lease";
-import * as ledger from "./ledger";
 import { run } from "./run";
 
 export type Health = {
   instance: string; hostname: string; cores: number; cpuPct: number; load1: number; load5: number;
   memUsedGb: number; memTotalGb: number; memPressurePct?: number; memPressure?: boolean;
   disk?: { usedGb: number; totalGb: number }; uptimeS: number;
-  cost?: { monthUsd: number; hourlyUsd: number; sinceIso: string }; at: number;
+  at: number;
+  /** What this machine costs per hour — `/api/health` adds it (`instanceRate`), so the card's Cost
+   *  accrued chart can integrate it over the samples. Absent from `health()` itself. */
+  rate?: InstanceRate;
   /** Live leases right now — the same count the sampler records, so the card's "Agents · N" and
    *  the agents line's newest point are one reading. */
   runningAgents: number;
@@ -77,17 +79,6 @@ export async function darwinMemory(): Promise<{ memUsedGb?: number; memPressureP
   return { memUsedGb, memPressurePct, memPressure };
 }
 
-/** Month-to-date cost: hours since the later of the billing start and the first of the month, at
- *  the hourly rate. Pure, so the arithmetic is tested; `now` is injectable for that. */
-export function costEstimate(hourlyUsd: number, billingSince: string | undefined, now = Date.now()): Health["cost"] | undefined {
-  if (!(hourlyUsd > 0)) return undefined;
-  const since = billingSince ? Date.parse(billingSince) : NaN;
-  const d = new Date(now);
-  const monthStart = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
-  const from = Math.max(monthStart, Number.isFinite(since) ? since : 0);
-  return { monthUsd: Math.round(((now - from) / 3_600_000) * hourlyUsd * 100) / 100, hourlyUsd, sinceIso: new Date(from).toISOString() };
-}
-
 export async function health(): Promise<Health> {
   const cores = os.cpus().length || 1;
   const [load1 = 0, load5 = 0] = os.loadavg();
@@ -113,7 +104,7 @@ export async function health(): Promise<Health> {
     cpuPct: Math.min(100, Math.round((load1 / cores) * 100)), load1, load5,
     memUsedGb, memTotalGb: Math.round((os.totalmem() / 1073741824) * 10) / 10, memPressurePct, memPressure,
     disk, uptimeS: Math.round(os.uptime()),
-    cost: costEstimate(Number(process.env.ORCA_HOURLY_USD), process.env.ORCA_BILLING_SINCE), at: Date.now(),
+    at: Date.now(),
     runningAgents: lease.live().length,
   };
 }
@@ -129,55 +120,92 @@ export function historyHours(raw: string | null | undefined): number {
   return raw && Number.isFinite(n) && n > 0 ? Math.min(n, 24 * 30) : 24;
 }
 
-/** USD the agent runs in the ledger that finished in (from, to] cost. Only Claude reports a cost
- *  (`total_cost_usd`); a Codex/Cursor run counts as 0. Pure, for the test. */
-export function costSince(entries: ledger.LedgerEntry[], from: number, to: number): number {
-  let usd = 0;
-  for (const e of entries) if (e.kind === "run" && e.at > from && e.at <= to && e.costUsd) usd += e.costUsd;
-  return Math.round(usd * 1e6) / 1e6;
-}
-
-// Where the next sample's cost window starts. Seeded from this instance's newest row on the first
-// sample after a start, so a restart neither loses nor double-counts a run (the ledger is on disk).
-let costFrom: number | null = null;
-/** Tests: forget the window, as a fresh process would. */
-export function resetCostWindow(): void { costFrom = null; }
-
 /** Sample this machine and record it. Never throws: a metrics write must not touch anything else.
  *  Running agents come from the leases (durable, per-host) rather than agent.ts's in-memory `runs`
- *  map, so a sample taken right after a restart still counts what's genuinely live. The cost is
- *  what the runs that finished since the previous sample cost, from the run ledger. */
+ *  map, so a sample taken right after a restart still counts what's genuinely live. No cost is
+ *  recorded: the machine's cost is its hourly rate over the time these samples show it up. */
 export async function sampleMetrics(): Promise<void> {
   try {
     const h = await health();
-    costFrom ??= (await db.lastMetricAt()) ?? h.at - METRIC_SAMPLE_MS;
-    const costUsd = costSince(ledger.all(), costFrom, h.at);
     await db.recordMetric({
       cpuPct: h.cpuPct, load1: h.load1, memUsedGb: h.memUsedGb, memTotalGb: h.memTotalGb, diskUsedGb: h.disk?.usedGb,
-      runningAgents: h.runningAgents, costUsd,
+      runningAgents: h.runningAgents,
     }, h.at);
-    costFrom = h.at;
   } catch (e) {
     console.error("orca: metrics sample failed", e instanceof Error ? e.message : e);
   }
 }
 
-/** Give the samples recorded before migration 17 their cost, from the run ledger (30 days, the same
- *  as the metrics kept) — without it the Cost accrued chart would start flat at deploy and only fill
- *  from then on. Never throws. */
-export async function backfillCost(): Promise<void> {
+/** Each instance samples ITSELF once a minute (and once at startup, so a fresh box has a point). */
+export function startMetricsSampler(ms = METRIC_SAMPLE_MS): ReturnType<typeof setInterval> {
+  void sampleMetrics();
+  return setInterval(() => void sampleMetrics(), ms).unref();
+}
+
+// ---- the machine's hourly rate ----
+
+export type InstanceRate = {
+  hourlyUsd: number;
+  /** config: the app config's `instanceHourlyUsd`; estimate: the built-in on-demand table for the
+   *  type IMDS reported; none: nothing known (the laptop) — 0. */
+  source: "config" | "estimate" | "none";
+  instanceType?: string; region?: string;
+};
+
+/** On-demand Linux USD/hour for common types, by region. An ESTIMATE (list price, no savings plan,
+ *  no EBS/transfer) — a type or region not here reads as unknown, never a guess. Checked 2026-10. */
+export const EC2_ON_DEMAND_USD: Record<string, Record<string, number>> = {
+  "eu-west-2": {
+    "t3.medium": 0.0472, "t3.large": 0.0944, "t3.xlarge": 0.1888,
+    "m6i.large": 0.111, "m6i.xlarge": 0.222, "m6i.2xlarge": 0.444,
+    "m7i.large": 0.11655, "m7i.xlarge": 0.2331, "m7i.2xlarge": 0.4662,
+  },
+  "us-east-1": {
+    "t3.medium": 0.0416, "t3.large": 0.0832, "t3.xlarge": 0.1664,
+    "m6i.large": 0.096, "m6i.xlarge": 0.192, "m6i.2xlarge": 0.384,
+    "m7i.large": 0.1008, "m7i.xlarge": 0.2016, "m7i.2xlarge": 0.4032,
+  },
+};
+
+/** The instance type and region from EC2's metadata service (IMDSv2: a session token, then two
+ *  reads). Undefined off EC2 — a laptop has nothing at 169.254.169.254, so a short timeout. */
+export async function imdsInstance(base = process.env.ORCA_IMDS_URL ?? "http://169.254.169.254", timeoutMs = 1000): Promise<{ instanceType: string; region: string } | undefined> {
+  // Bun.fetch, not the global (the test DOM shim swaps that for one with a same-origin policy), and a
+  // timer race rather than an AbortSignal (the shim swaps that too): off EC2 the connect just hangs.
+  const ask = async () => {
+    const tr = await Bun.fetch(`${base}/latest/api/token`, { method: "PUT", headers: { "X-aws-ec2-metadata-token-ttl-seconds": "60" } });
+    if (!tr.ok) return undefined;
+    const headers = { "X-aws-ec2-metadata-token": await tr.text() };
+    const get = async (path: string) => {
+      const r = await Bun.fetch(`${base}/latest/meta-data/${path}`, { headers });
+      return r.ok ? (await r.text()).trim() : "";
+    };
+    const [instanceType, region] = await Promise.all([get("instance-type"), get("placement/region")]);
+    return instanceType && region ? { instanceType, region } : undefined;
+  };
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const runs = ledger.all().filter((e) => e.kind === "run" && e.costUsd).map((e) => ({ at: e.at, usd: e.costUsd! }));
-    const n = await db.backfillMetricCost(runs);
-    if (n) console.log(`orca: cost backfilled onto ${n} metric samples from the run ledger`);
-  } catch (e) {
-    console.error("orca: cost backfill failed", e instanceof Error ? e.message : e);
+    return await Promise.race([ask(), new Promise<undefined>((r) => { timer = setTimeout(() => r(undefined), timeoutMs); })]);
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-/** Each instance samples ITSELF once a minute (and once at startup, so a fresh box has a point). */
-export function startMetricsSampler(ms = METRIC_SAMPLE_MS): ReturnType<typeof setInterval> {
-  void backfillCost();
-  void sampleMetrics();
-  return setInterval(() => void sampleMetrics(), ms).unref();
+// IMDS answers once per process: the instance type can't change under a running bridge.
+let imdsCache: Promise<{ instanceType: string; region: string } | undefined> | null = null;
+/** Tests: forget the IMDS answer. */
+export function resetImds(): void { imdsCache = null; }
+
+/** This machine's rate: the config's per-instance `instanceHourlyUsd` (Settings), else the IMDS
+ *  type looked up in `EC2_ON_DEMAND_USD` (an estimate), else 0. (The old ORCA_HOURLY_USD /
+ *  ORCA_BILLING_SINCE month-to-date estimate is gone: one override, in the shared config.) */
+export async function instanceRate(configured: Record<string, number> | undefined, instance = db.instanceName()): Promise<InstanceRate> {
+  const set = configured?.[instance];
+  if (typeof set === "number" && set >= 0) return { hourlyUsd: set, source: "config" };
+  const ec2 = await (imdsCache ??= imdsInstance());
+  const price = ec2 && EC2_ON_DEMAND_USD[ec2.region]?.[ec2.instanceType];
+  if (ec2 && price !== undefined) return { hourlyUsd: price, source: "estimate", ...ec2 };
+  return { hourlyUsd: 0, source: "none", ...(ec2 ?? {}) };
 }
