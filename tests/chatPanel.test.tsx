@@ -452,6 +452,11 @@ test("the composer carries the card's model picker and context ring — the same
   // The model the next message runs on, changeable where you type (every installed provider's models).
   const picker = container!.querySelector<HTMLElement>('[data-slot="chat-composer-leading"] [aria-label="Model"]')!;
   expect(picker.textContent).toBe("Codex · GPT-5.5");
+  // The label is passed as raw children, not a <SelectValue> — the shared trigger still left-aligns
+  // it and pins the chevron right (ml-auto on the icon, not a justify-between that centres a label
+  // with no flex-grow of its own between it and the chevron).
+  expect(picker.className).not.toContain("justify-between");
+  expect(picker.className).toContain("[&_svg]:ml-auto");
   // And how full the session is, from the card's last run.
   const ring = container!.querySelector<HTMLButtonElement>('[data-slot="chat-composer-leading"] button[data-slot="context-ring"]')!;
   expect(ring.getAttribute("aria-label")).toBe("Context 61% full");

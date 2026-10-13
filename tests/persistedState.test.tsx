@@ -154,6 +154,10 @@ describe("the Agents page remembers its filters", () => {
     // the value fills the remaining width and truncates instead of centering between the label and chevron
     expect(trigger.className).toContain("[&_[data-slot=select-value]]:flex-1");
     expect(trigger.className).toContain("[&_[data-slot=select-value]]:truncate");
+    // the chevron is pinned right by its own margin, not by a justify-between that could re-centre
+    // a label with no flex-grow of its own (ModelPicker's raw-children trigger has exactly that shape)
+    expect(trigger.className).not.toContain("justify-between");
+    expect(trigger.className).toContain("[&_svg]:ml-auto");
     writePersisted(persistedKey("agents.sort"), "nonsense");
     await reload();
     expect(container!.querySelector('[aria-label="Sort"]')!.textContent).toContain("Last activity");
