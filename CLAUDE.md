@@ -217,10 +217,14 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   `useUsageLoaded` in `lib/vitals.ts`): both `useWorkstreams()` and `useUsage()` read `null`/`[]` for
   either case on the wire, which the skeleton can't tell apart from the real value alone.
 - **Agents** (`/agents`, `views/Agents.tsx`): Vercel's Deployments list — one-click **quick
-  filter chips** (Needs attention, Running, Mine, Orchestrated, Open PRs, Mergeable, Merged today,
-  per instance, per repo; AND across groups, OR within one, each with its count) held in the URL
-  query (`?status=attention&pr=open&on=cloud`, `parseQuickFilter` / `quickFilterQuery`), so a
-  filtered view is a link and the Overview's numbers open exactly their chips; search, sort; one ~56px row per workstream (repo
+  filter chips**, grouped into families with a muted caption (State: Open PRs, Mergeable, Merged
+  today, Not merged; Activity: Running, Needs attention; Repo: one per repo; AND across groups, OR
+  within one, each with its count) held in the URL query (`?status=attention&pr=open`,
+  `parseQuickFilter` / `quickFilterQuery`), so a filtered view is a link and the Overview's numbers
+  open exactly their chips. The Mine/Orchestrated and per-instance pills were dropped as redundant
+  with the row's own orchestrated badge and instance column — their `by`/`on` URL params and pure
+  filtering logic still work for a link someone already has, just with no pill to toggle them.
+  search, sort; one ~56px row per workstream (repo
   icon + title, latest instruction, status dot + duration, state pill, CI/conflict badges + the
   review cluster, PR, branch, instance, updated, the model as avatar); every action in the trailing
   ⋯ (`WorkstreamActions menuOnly`). The swimlanes stay behind a persisted List | Board toggle.
