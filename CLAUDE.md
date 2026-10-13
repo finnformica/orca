@@ -206,8 +206,10 @@ paste, Enter sends / Shift, ⌘ or Ctrl+Enter breaks the line and focus are the 
 picker is portaled out of the surface's `overflow-hidden`. A pointerdown outside the box closes it like
 Esc (the draft is kept) — not one in the box, in the `@` picker or a Radix popover, nor while "Sent"
 shows. The agent icon sits top left with the text
-the whole width beside it; the row below holds only actions — a Send button carrying the `send` keycap
-(and the "Sent · Open chat" receipt). Collapsing keeps the box's contents mounted through the morph —
+the whole width beside it; the row below is every composer's toolbar — the orchestrator's model picker
+and context ring (`ChatControls`, fed by `useOrchestratorState`, the side panel's own status poll, so a
+model change there is the panel's), the "Sent · Open chat" receipt, attach, and a Send button
+carrying the `send` keycap. Only its look differs from the panel's composer. Collapsing keeps the box's contents mounted through the morph —
 faded, inert, pinned at their width — and the pill fades in after (`MORPH_MS`); swapping them at once
 made the exit janky. A send is optimistic: the box clears and stays open, a brief "Sent · Open chat" fades, and
 the POSTs are chained so quick sends arrive in order (a busy orchestrator queues them); a failed send

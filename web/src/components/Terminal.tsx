@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 import { ArrowLeft, Bot, PictureInPicture2, PanelBottomClose, X } from "lucide-react";
 import { subscribeTurns, syncEvents } from "@/lib/events";
 import { ChatPanel } from "@/views/Chat";
+import type { ChatControlsProps, CompactControl } from "@/components/ChatControls";
 import { api } from "../api";
 import { useWorkstreams, type Row } from "../store";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, orchestratorStatus } from "../workstream";
@@ -169,6 +170,38 @@ function OrchestratorStatusLine({ state }: { state: { running: boolean; startedA
   );
 }
 
+/** The orchestrator's status, polled every 2s while `active` (on `win`'s timers), and the composer
+ *  toolbar's values built from it — ONE source for every box that talks to it (the side panel, the
+ *  routed page, the quick-ask box), so a model change or a context reading is the same in each.
+ *  `compact` is for a box with no turn stream of its own (quick ask): pending from the request until
+ *  the status shows the orchestrator idle again. The chat panel tracks its own, by the turn. */
+export type OrchestratorState = { key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number };
+export function useOrchestratorState(active: boolean, win: Window = window) {
+  const [state, setState] = useState<OrchestratorState | null>(null);
+  const load = () => api.orchestrator().then(setState).catch(() => {});
+  useEffect(() => {
+    if (!active) return;
+    return poll(load, 2000, win);
+  }, [active, win]);
+  const controls: ChatControlsProps = {
+    model: state?.model ?? ORCHESTRATOR_DEFAULT_MODEL, only: "claude", contextPct: state?.contextPct,
+    onModel: (model) => { setState((s) => (s ? { ...s, model } : s)); void api.orchestratorModel(model).then(load); },
+  };
+  const [compacting, setCompacting] = useState<"sent" | "started" | null>(null);
+  const [compactError, setCompactError] = useState<string>();
+  useEffect(() => { if (compacting === "started" && state && !state.running) setCompacting(null); }, [compacting, state]);
+  const compact: CompactControl | undefined = state?.contextPct === undefined && compacting === null ? undefined : {
+    pending: compacting !== null, busy: !!state?.running, error: compactError,
+    onCompact: async () => {
+      setCompactError(undefined);
+      setCompacting("sent");
+      try { await api.compact(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH); setCompacting("started"); await load(); }
+      catch (e) { setCompacting(null); setCompactError(e instanceof Error ? e.message : String(e)); }
+    },
+  };
+  return { state, load, controls, compact };
+}
+
 export function OrchestratorPanel() {
   const [open, setOpen] = useAtom(orchestratorOpenAtom);
   // Never opened while narrow — useOrchestrator routes a phone to /orchestrator instead (see
@@ -177,8 +210,6 @@ export function OrchestratorPanel() {
   const narrow = useNarrow();
   const prefill = useAtomValue(orchestratorPrefillAtom);
   const setPrefill = useSetAtom(orchestratorPrefillAtom);
-  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number } | null>(null);
-  const load = () => api.orchestrator().then(setState).catch(() => {});
   // Once opened, the chat stays MOUNTED while closed (slid out, hidden): reopening is instant, with
   // the transcript, scroll position and draft exactly where you left them — the way an editor's
   // assistant rail behaves — instead of refetching and re-rendering the conversation every time.
@@ -193,10 +224,7 @@ export function OrchestratorPanel() {
   const [pip, setPip] = useState<Window | null>(null);
   // The poll runs on the PiP window's timers while popped out: that window is the visible one, and
   // a hidden tab's timers get throttled (to once a minute after a while).
-  useEffect(() => {
-    if (!open) return;
-    return poll(load, 2000, pip ?? window);
-  }, [open, pip]);
+  const { state, load, controls } = useOrchestratorState(open, pip ?? window);
   // Closing drops the pending ask, so a later open can't re-apply it to a freshly mounted composer.
   useEffect(() => { if (!open) { pip?.close(); setPrefill(null); } }, [open]);
   // An ask while popped out lands in the PiP window's composer; bring that window forward.
@@ -310,10 +338,7 @@ export function OrchestratorPanel() {
         row={row} flush variant="chat" prefill={prefill}
         // The same toolbar a card's terminal has, fed the orchestrator's own values. Claude
         // only; changing the model keeps the session.
-        controls={{
-          model: state?.model ?? ORCHESTRATOR_DEFAULT_MODEL, only: "claude", contextPct: state?.contextPct,
-          onModel: (model) => { setState((s) => (s ? { ...s, model } : s)); void api.orchestratorModel(model).then(load); },
-        }}
+        controls={controls}
         send={async (text, images) => {
           await api.orchestratorMessage(text, images.length ? await api.uploadAttachments(images) : []);
           await load();
@@ -378,9 +403,7 @@ const ORCHESTRATOR_PAGE_HEIGHT =
  *  while it's the current route. */
 export function OrchestratorPage() {
   const prefill = useAtomValue(orchestratorPrefillAtom);
-  const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number } | null>(null);
-  const load = () => api.orchestrator().then(setState).catch(() => {});
-  useEffect(() => poll(load, 2000), []);
+  const { state, load, controls } = useOrchestratorState(true);
   const row: Row = {
     repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
     worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
@@ -400,10 +423,7 @@ export function OrchestratorPage() {
       <div className={cn("min-h-0", ORCHESTRATOR_PAGE_HEIGHT)}>
         <ChatPanel
           row={row} flush variant="chat" prefill={prefill}
-          controls={{
-            model: state?.model ?? ORCHESTRATOR_DEFAULT_MODEL, only: "claude", contextPct: state?.contextPct,
-            onModel: (model) => { setState((s) => (s ? { ...s, model } : s)); void api.orchestratorModel(model).then(load); },
-          }}
+          controls={controls}
           send={async (text, images) => {
             await api.orchestratorMessage(text, images.length ? await api.uploadAttachments(images) : []);
             await load();

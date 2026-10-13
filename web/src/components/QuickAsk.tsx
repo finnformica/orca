@@ -3,7 +3,9 @@
 // into a compact box — one surface whose width, height and radius animate (instant under
 // prefers-reduced-motion) — for messages to the orchestrator with no history. The input IS the shared
 // ChatComposer (`variant="quick"`), so @ mentions, attachments, paste, Enter to send / Shift, ⌘ or
-// Ctrl+Enter for a newline and focus behave as in every other box; it opens three lines tall and
+// Ctrl+Enter for a newline and focus behave as in every other box — and so is its toolbar: the
+// orchestrator's model picker and context ring (`useOrchestratorState`, the side panel's own source),
+// attach, Send. Only the look differs: no border of its own, the agent icon, the morph. It opens three lines tall and
 // grows with what you type up to a cap. The shape is Linear's / Raycast's
 // quick capture: fire a line without leaving what you're looking at, open the conversation only when
 // you want to read. It carries no activity dot: that lives only on the orchestrator's own entry points
@@ -19,8 +21,9 @@ import { Bot, Check } from "lucide-react";
 import { quickAskOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
 import { api } from "../api";
-import { useOrchestrator } from "@/components/Terminal";
+import { useOrchestrator, useOrchestratorState } from "@/components/Terminal";
 import { ChatComposer } from "@/components/ChatComposer";
+import { ChatControls } from "@/components/ChatControls";
 import { Shortcut } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
 
@@ -45,6 +48,9 @@ export function QuickAsk() {
   const [open, setOpen] = useAtom(quickAskOpenAtom);
   const collapsed = useAtomValue(sidebarCollapsedAtom);
   const { ask } = useOrchestrator();
+  // The same toolbar as every other composer — the orchestrator's model and its context ring — fed
+  // from the same status poll the side panel uses, running only while the box is open.
+  const { controls, compact } = useOrchestratorState(open);
   const [flash, setFlash] = useState(0); // >0 while "Sent" shows; bumped per send to restart its timer
   // The box's contents stay mounted through the collapse (`leaving`): faded out, pinned at the width
   // they had, while the surface shrinks around them — then the pill fades in. Swapping them for the
@@ -121,18 +127,22 @@ export function QuickAsk() {
             style={leaving && leaveWidth ? { width: leaveWidth } : undefined}
             className={cn(leaving && "pointer-events-none opacity-0 transition-opacity duration-100")}
             onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setOpen(false); } }}>
-            {/* The agent at the top left; the text takes the whole width beside it. The row below holds
-                the actions: the receipt on the left, Send (with its key) on the right. */}
+            {/* The agent at the top left; the text takes the whole width beside it. The row below is
+                every composer's toolbar: model and context on the left (then the receipt), attach
+                and Send (with its key) on the right. */}
             <ChatComposer variant="quick" persistKey="orca.quickAsk" onSubmit={send} placeholder={QUICK_ASK_PLACEHOLDER}
               inputLabel="Message the orchestrator" icon={<Bot className="text-muted-foreground mt-1 size-4 shrink-0" />}
               leading={
-                // The receipt: subtle, and it goes on its own. The box is already clear for the next.
-                <span role="status" aria-live="polite" data-slot="quick-ask-sent" className="text-muted-foreground flex items-center gap-1.5 pl-1 text-xs">
-                  {flash > 0 && <>
-                    <Check className="text-geist-blue size-3.5" />Sent
-                    <button type="button" className="text-geist-blue hover:underline" onClick={() => { setOpen(false); ask(); }}>Open chat</button>
-                  </>}
-                </span>
+                <div className="flex min-w-0 items-center gap-1">
+                  <ChatControls {...controls} compact={compact} />
+                  {/* The receipt: subtle, and it goes on its own. The box is already clear for the next. */}
+                  <span role="status" aria-live="polite" data-slot="quick-ask-sent" className="text-muted-foreground flex min-w-0 items-center gap-1.5 pl-1 text-xs whitespace-nowrap">
+                    {flash > 0 && <>
+                      <Check className="text-geist-blue size-3.5" />Sent
+                      <button type="button" className="text-geist-blue hover:underline" onClick={() => { setOpen(false); ask(); }}>Open chat</button>
+                    </>}
+                  </span>
+                </div>
               } />
           </div>
         ) : (
