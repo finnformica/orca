@@ -7,14 +7,16 @@
 // blue accent. A notification is unread or read, and nothing is deleted from here: the ×, a swipe, a
 // quick action or opening it marks it read (out of the stack, out of the centre's default Unread
 // view, still under All). Every toast and centre row carries quick actions on hover (always, on a
-// touch screen): its kind's one or two (Address PR, Fix, Reply, Retry, …) — chosen by the pure
-// `notificationActions` (workstream.ts), run by the store's existing verbs. The decisions (what pops,
+// touch screen) as icon buttons with tooltips: its kind's one or two (Address PR, Fix, Reply, Retry,
+// …), then Open, always last — chosen by the pure `notificationActions` (workstream.ts), run by the
+// store's existing verbs. The decisions (what pops,
 // what persists, the stack's layout and motion) are pure in shared/notifications.ts; the state is
 // lib/notificationStore.ts.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useAtomValue, useSetAtom } from "jotai";
 import {
-  AlertTriangle, Bell, BellOff, Check, CheckCheck, CircleX, GitPullRequestArrow, MessageCircleQuestion, MonitorCheck, MonitorX, OctagonPause, ShieldX, X,
+  AlertTriangle, ArrowUpRight, Bell, BellOff, Check, CheckCheck, CircleX, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, Hammer, MessageCircleQuestion,
+  MessagesSquare, MonitorCheck, MonitorX, OctagonPause, PanelRight, Reply, RotateCcw, ScrollText, ShieldX, Square, Wrench, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
@@ -34,6 +36,8 @@ import { detailPath } from "@/views/Agents";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Segmented } from "@/components/console";
+import { Tip } from "@/components/ui/tip";
+import type { ShortcutId } from "@/lib/shortcuts";
 
 const ICON: Record<NotificationKind, typeof Bell> = {
   needs_input: MessageCircleQuestion, finished: Check, failed: CircleX, stopped: OctagonPause, check_failed: ShieldX,
@@ -45,6 +49,13 @@ const KindIcon = ({ kind, className }: { kind: NotificationKind; className?: str
   const Icon = ICON[kind];
   return <Icon className={cn("size-4 shrink-0", TONE_TEXT[KIND_META[kind].tone], className)} aria-hidden="true" />;
 };
+
+/** Each quick action's icon (the label is its tooltip and aria-label); a shortcut where one exists. */
+const ACTION_ICON: Record<NotificationActionId, typeof Bell> = {
+  address: Wrench, viewPr: GitPullRequest, fix: Hammer, viewOutput: FileText, open: ArrowUpRight, reply: Reply, retry: RotateCcw,
+  openChat: MessagesSquare, openPreview: ExternalLink, stopPreview: Square, retryPreview: RotateCcw, viewLog: ScrollText, openOrchestrator: PanelRight,
+};
+const ACTION_SHORTCUT: Partial<Record<NotificationActionId, ShortcutId>> = { openOrchestrator: "orchestrator" };
 
 /** Where a notification opens and what its quick actions do, resolved against the live rows (its
  *  PR page once it has a PR). Every handler is the store's own verb; nothing is re-implemented. */
@@ -58,11 +69,11 @@ function useNotificationActions() {
     return path && path + tail;
   };
   const go = (path: string | undefined) => { if (path) navigate(path); };
-  /** The notification's own page: the workstream (a preview's URL, the orchestrator's window). */
+  /** The notification's own page: its workstream's (the orchestrator's window for its own wake) —
+   *  what the title and the Open action do. A preview's URL is its own action, Open preview. */
   const open = (n: Notification) => {
     void markRead([n.id]);
     if (n.link?.orchestrator) return void openOrchestrator(true);
-    if (n.link?.url) return void window.open(n.link.url, "_blank", "noopener");
     go(pathOf(n));
   };
   const specs = (n: Notification): NotificationActionSpec[] => {
@@ -101,7 +112,8 @@ function useNotificationActions() {
   return { open, specs, verb, link, rowOf };
 }
 
-/** A notification's quick-action row: its kind's actions (the first primary) and — in the centre,
+/** A notification's quick-action row of size-7 ghost icon buttons, each with its tooltip: its kind's
+ *  actions (the first primary, in the foreground colour), Open always last and — in the centre,
  *  while unread — the ×. Hidden until the card or row is hovered or focused, always shown on a touch
  *  screen. Any action marks the notification read (so a toast leaves the stack); an agent verb's
  *  check lingers a moment first. A verb's failure goes to the action-error toast, as on the board. */
@@ -110,27 +122,31 @@ function QuickActions({ n, shown, onDismiss, className }: {
 }) {
   const actions = useNotificationActions();
   const row = actions.rowOf(n);
-  const btn = "h-7 px-2 text-xs";
   const read = () => void markRead([n.id]);
   return (
     <div data-slot="notification-actions" data-shown={shown}
       className={cn("flex items-center gap-1 transition-opacity duration-150", !shown && "pointer-events-none opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100", className)}>
       {actions.specs(n).map((a) => {
-        const variant = a.primary ? "default" : "outline";
+        const Icon = ACTION_ICON[a.id];
+        const btn = cn("size-7", a.primary ? "text-foreground" : "text-muted-foreground hover:text-foreground");
         const run = actions.verb(a.id, n);
-        if (run) {
-          return (
-            <ActionButton key={a.id} variant={variant} className={btn}
-              failure={{ action: a.label, title: n.title, repo: n.repo, branch: n.branch ?? "", prNumber: row?.prNumber }}
-              onRun={async () => { await run(); setTimeout(read, 800); }}>
-              {a.label}
-            </ActionButton>
-          );
-        }
-        const go = actions.link(a.id, n);
-        return go ? <Button key={a.id} size="sm" variant={variant} className={btn} onClick={() => { read(); go(); }}>{a.label}</Button> : null;
+        const go = run ? undefined : actions.link(a.id, n);
+        if (!run && !go) return null;
+        return (
+          <Tip key={a.id} label={a.label} shortcut={ACTION_SHORTCUT[a.id]}>
+            {run ? (
+              <ActionButton size="icon" variant="ghost" className={btn} label={a.label}
+                failure={{ action: a.label, title: n.title, repo: n.repo, branch: n.branch ?? "", prNumber: row?.prNumber }}
+                onRun={async () => { await run(); setTimeout(read, 800); }}>
+                <Icon className="size-3.5" />
+              </ActionButton>
+            ) : (
+              <Button variant="ghost" size="icon" className={btn} aria-label={a.label} onClick={() => { read(); go!(); }}><Icon className="size-3.5" /></Button>
+            )}
+          </Tip>
+        );
       })}
-      {onDismiss && <Button variant="ghost" size="icon" className="size-7" aria-label="Mark as read" title="Mark as read" onClick={onDismiss}><X className="size-3.5" /></Button>}
+      {onDismiss && <Tip label="Mark as read"><Button variant="ghost" size="icon" className="text-muted-foreground hover:text-foreground size-7" aria-label="Mark as read" onClick={onDismiss}><X className="size-3.5" /></Button></Tip>}
     </div>
   );
 }

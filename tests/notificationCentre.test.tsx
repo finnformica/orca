@@ -62,8 +62,11 @@ function placeBell(bell = { left: 180, top: window.innerHeight - 48 }) {
   $("notifications-bell")!.getBoundingClientRect = rect({ ...bell, width: 32, height: 32 });
   $("sidebar-foot")!.getBoundingClientRect = rect({ left: 0, top: bell.top - 8, width: 240, height: 48 });
 }
-const button = (el: Element, text: string) => [...el.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === text);
+/** A button by its text, or an icon button (no text) by its aria-label. */
+const button = (el: Element, text: string) => [...el.querySelectorAll<HTMLButtonElement>("button")].find((b) => (b.textContent || b.getAttribute("aria-label")) === text);
 const actionsOf = (el: Element) => el.querySelector<HTMLElement>('[data-slot="notification-actions"]')!;
+/** The quick actions, by aria-label: icon buttons, so no text of their own. */
+const actionLabels = (el: Element) => [...actionsOf(el).querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
 /** A touch screen: `(pointer: coarse)` matches (and nothing else does). */
 function touchScreen(): () => void {
   const was = window.matchMedia;
@@ -111,7 +114,7 @@ describe("the notification centre", () => {
     expect(toast.textContent).toContain("Should I migrate the old rows?");
     expect(toast.querySelector('[data-slot="notification-time"]')!.textContent).toContain("just now");
     expect($("notifications-unread")!.textContent).toBe("1"); // the centre has it too
-    expect([...toast.querySelectorAll("button")].map((b) => b.textContent)).toContain("Open workstream");
+    expect(actionLabels(toast)).toContain("Open workstream");
     await click(toast.querySelector('button[aria-label="Mark as read"]'));
     expect(toast.getAttribute("data-removed")).toBe("true"); // dropping out…
     await exit();
@@ -352,7 +355,14 @@ describe("the notification centre", () => {
     expect(actionsOf(toast).getAttribute("data-shown")).toBe("false"); // a mouse: hidden until hover
     await mouse(toast, "mousemove");
     expect(actionsOf(toast).getAttribute("data-shown")).toBe("true");
-    expect([...actionsOf(toast).querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Address PR", "View PR"]);
+    expect(actionLabels(toast)).toEqual(["Address PR", "View PR", "Open workstream"]);
+    // Icon buttons: size-7 ghost, no text, each with its tooltip.
+    for (const b of actionsOf(toast).querySelectorAll("button")) {
+      expect(b.textContent).toBe("");
+      expect(b.className).toContain("size-7");
+      expect(b.querySelector("svg.lucide")).not.toBeNull();
+    }
+    expect([...actionsOf(toast).querySelectorAll('[role="tooltip"]')].map((t) => t.textContent)).toEqual(["Address PR", "View PR", "Open workstream"]);
     await click(button(toast, "Address PR"));
     await act(async () => { await flush(); await flush(); await flush(); });
     expect(apiFake.calls.some((c) => c.startsWith("agent:"))).toBe(true); // the same launch the board's Address PR makes
@@ -371,7 +381,7 @@ describe("the notification centre", () => {
       await push(s, note({ id: 40, kind: "needs_input", title: "Question" }));
       const toast = cards()[0]!;
       expect(actionsOf(toast).getAttribute("data-shown")).toBe("true");
-      expect([...actionsOf(toast).querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Reply", "Open workstream"]);
+      expect(actionLabels(toast)).toEqual(["Reply", "Open workstream"]);
       await click(toast.querySelector('button[aria-label="Mark as read"]'));
       expect(apiFake.notificationCalls).toEqual([{ verb: "read", ids: [40] }]);
       expect(cards()).toHaveLength(0);
@@ -395,7 +405,7 @@ describe("the notification centre", () => {
     expect(actionsOf(row).getAttribute("data-shown")).toBe("false");
     await mouse(row, "mousemove");
     expect(actionsOf(row).getAttribute("data-shown")).toBe("true");
-    expect([...actionsOf(row).querySelectorAll("button")].map((b) => b.textContent || b.getAttribute("aria-label"))).toEqual(["Open chat", "Mark as read"]);
+    expect(actionLabels(row)).toEqual(["Open chat", "Open workstream", "Mark as read"]);
     await click(actionsOf(row).querySelector('button[aria-label="Mark as read"]'));
     expect(apiFake.notificationCalls).toEqual([{ verb: "read", ids: [60] }]);
     expect($$("notification-row")).toHaveLength(0); // out of the Unread view…
@@ -404,5 +414,26 @@ describe("the notification centre", () => {
     const kept = $("notification-row")!; // …never deleted
     expect(kept.hasAttribute("data-unread")).toBe(false);
     expect(actionsOf(kept.closest("li")!).querySelector('button[aria-label="Mark as read"]')).toBeNull(); // read: nothing to ×
+    expect(actionLabels(kept.closest("li")!)).toEqual(["Open chat", "Open workstream"]); // …but Open is always there
+  });
+
+  test("every toast and row ends with Open: a preview's opens its workstream (the URL is Open preview); the orchestrator's opens its window, with the O keycap in the tooltip", async () => {
+    await open("/");
+    const s = await live();
+    await push(s, note({ id: 70, kind: "preview_failed", title: "Preview" }));
+    expect(actionLabels(cards()[0]!).at(-1)).toBe("Open workstream");
+    await click(button(cards()[0]!, "Open workstream"));
+    expect(location.pathname).toBe("/r/local/feat-x");
+    expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "read", ids: [70] });
+    navigate("/");
+    await push(s, note({ id: 71, kind: "failed", repo: "@orca", branch: "orchestrator", title: "Orchestrator", link: { orchestrator: true } }));
+    const toast = cards()[0]!;
+    expect(actionLabels(toast)).toEqual(["Open orchestrator"]);
+    const tip = actionsOf(toast).querySelector('[role="tooltip"]')!;
+    expect(tip.textContent).toContain("Open orchestrator");
+    expect(tip.querySelector('kbd[data-slot="kbd"]')!.textContent).toBe("O");
+    await click(button(toast, "Open orchestrator"));
+    expect($("orchestrator-panel")!.getAttribute("data-state")).toBe("open");
+    expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "read", ids: [71] });
   });
 });

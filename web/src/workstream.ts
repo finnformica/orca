@@ -1965,29 +1965,30 @@ const NOTIFICATION_ACTION_RULES: Record<string, ActionRule[]> = {
   pr_ci_failed: [{ id: "address", label: "Address PR", needs: "row" }, { id: "viewPr", label: "View PR", needs: "prUrl" }],
   pr_conflicts: [{ id: "address", label: "Address PR", needs: "row" }, { id: "viewPr", label: "View PR", needs: "prUrl" }],
   check_failed: [{ id: "fix", label: "Fix", needs: "failedCheck" }, { id: "viewOutput", label: "View output" }],
-  finished: [{ id: "open", label: "Open workstream" }, { id: "reply", label: "Reply" }],
-  needs_input: [{ id: "reply", label: "Reply" }, { id: "open", label: "Open workstream" }],
+  finished: [{ id: "reply", label: "Reply" }],
+  needs_input: [{ id: "reply", label: "Reply" }],
   failed: [{ id: "retry", label: "Retry", needs: "row" }, { id: "openChat", label: "Open chat" }],
   stopped: [{ id: "retry", label: "Retry", needs: "row" }, { id: "openChat", label: "Open chat" }],
   preview_ready: [{ id: "openPreview", label: "Open preview" }, { id: "stopPreview", label: "Stop", needs: "previewKey" }],
   preview_failed: [{ id: "retryPreview", label: "Retry test", needs: "row" }, { id: "viewLog", label: "View log" }],
 };
 
-/** A notification's quick actions: up to two for its kind — the first is the primary. An action whose
- *  prerequisite is missing (no live row, no PR URL, no failed check) is left out rather than shown
- *  broken; an unknown kind gets none. The orchestrator's own wake (it died, or asked you something)
- *  is answered in its window. There is no Read: taking any action marks it read, and the card's own
- *  × (not listed here) is "read, and out of view". */
+/** A notification's quick actions: up to two for its kind, then ALWAYS Open, last — so every toast
+ *  and centre row has it in the same place: the workstream's page, or the orchestrator's window for
+ *  its own wake (which has nothing else; Reply there would be the same window). The first action is
+ *  the primary. An action whose prerequisite is missing (no live row, no PR URL, no failed check) is
+ *  left out rather than shown broken; an unknown kind gets only Open. There is no Read: taking any
+ *  action marks it read, and the card's own × (not listed here) is "read, and out of view". */
 export function notificationActions(
   n: { kind: string; link?: { url?: string; orchestrator?: boolean } },
   ctx: NotificationActionContext = {},
 ): NotificationActionSpec[] {
-  if (n.link?.orchestrator) return [{ id: "openOrchestrator", label: "Reply", primary: true }];
+  const open: ActionRule = n.link?.orchestrator ? { id: "openOrchestrator", label: "Open orchestrator" } : { id: "open", label: "Open workstream" };
   const has = { ...ctx } as Record<string, boolean | undefined>;
-  const rules = (NOTIFICATION_ACTION_RULES[n.kind] ?? [])
+  const rules = n.link?.orchestrator ? [] : (NOTIFICATION_ACTION_RULES[n.kind] ?? [])
     .filter((r) => (r.id === "openPreview" ? Boolean(n.link?.url) : !r.needs || has[r.needs]))
     .slice(0, 2);
-  return rules.map((r, i) => ({ id: r.id, label: r.label, ...(i === 0 ? { primary: true } : {}) }));
+  return [...rules, open].map((r, i) => ({ id: r.id, label: r.label, ...(i === 0 ? { primary: true } : {}) }));
 }
 
 /** What Retry sends: a follow-up on the same session, picking up where the run stopped. */

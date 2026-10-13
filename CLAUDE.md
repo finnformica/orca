@@ -572,15 +572,18 @@ unread or read.** There is no Clear and no delete route (only the 30-day prune r
 `dismissed_at` column is ignored, its rows read as read): the × on a toast or a centre row, a swipe,
 opening it, any quick action and Mark all as read all just `markRead`, which also takes its toast
 off the stack. A toast's title opens its workstream (the agent page, a PR's included).
-**Quick actions** on every toast and centre row, shown on hover / focus (always on a touch screen):
-the kind's one or two verbs, the first primary (no Read button — acting marks it read) and, on an
+**Quick actions** on every toast and centre row, shown on hover / focus (always on a touch screen),
+as size-7 ghost **icon buttons** (lucide icon, aria-label, a `Tip` tooltip — `components/ui/tip.tsx`
+— with the `Kbd` keycap where a shortcut exists; the action-error Toaster's Copy / Ask use the same):
+the kind's one or two verbs, the first primary (no Read button — acting marks it read), then **Open,
+always, always last** (its workstream's page; the orchestrator's window for its own wake) and, on an
 unread centre row, the × — chosen by the pure `notificationActions` (`workstream.ts`), which drops
 one whose prerequisite is missing (no live row, PR URL, failed check). CI failing / conflicts →
 Address PR (`store.addressPr`) + View PR (GitHub); check failed → Fix (`autofixInstruction` as a
-follow-up) + View output; finished → Open workstream + Reply; needs input → Reply (the Chat tab,
-`?reply` focuses the composer) + Open workstream; failed / stopped → Retry (`RETRY_INSTRUCTION` on
-the same session) + Open chat; preview ready → Open preview + Stop; preview failed → Retry test +
-View log; the orchestrator's own wake → Reply in its window. Verbs run in `ActionButton`, so a
+follow-up) + View output; finished / needs input → Reply (the Chat tab, `?reply` focuses the
+composer); failed / stopped → Retry (`RETRY_INSTRUCTION` on the same session) + Open chat; preview
+ready → Open preview + Stop; preview failed → Retry test + View log; the orchestrator's own wake →
+Open orchestrator only. Verbs run in `ActionButton`, so a
 failure is the action-error toast with Ask the orchestrator), and
 the bell at the sidebar's foot with the unread count, opening the centre: one compact header —
 the title, an Unread (its count) / All `Segmented`, a Mark all as read icon — over the rows grouped
