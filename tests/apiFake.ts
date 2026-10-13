@@ -95,9 +95,9 @@ export const apiFake = {
   // and assert against this instead of localStorage — it stands in for the DB, not for a cache.
   enrichmentData: new Map<string, Record<string, unknown>>(),
   stopped: [] as string[],
-  // The notification centre's rows (api.notifications) and what was marked read / dismissed.
+  // The notification centre's rows (api.notifications) and what was marked read.
   notificationsData: [] as Record<string, unknown>[],
-  notificationCalls: [] as { verb: "read" | "dismiss"; ids: number[] | "all" }[],
+  notificationCalls: [] as { verb: "read"; ids: number[] | "all" }[],
   notificationFetches: [] as (number | undefined)[],
   // The orchestrator's status (api.orchestrator) and what was typed to it (api.orchestratorMessage).
   orchestratorState: { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" } as { key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number },
@@ -124,6 +124,9 @@ export const apiFake = {
   // EVERY held launch, and claudeError is read again after it, so a held launch can fail.
   holdClaude: false,
   releaseClaude: null as null | (() => void),
+  // When set, api.agent/api.claude answer `{ status: "queued" }` instead of launching — simulates
+  // the bridge finding an agent already running for the worktree (server/index.ts's /api/agent).
+  agentQueued: null as null | { id: number; repo: string; branch: string; worktreePath: string; instruction: string; attachments: string[]; createdAt: number },
   // Provider usage served by api.usage (the header meter) — null hides the widget (default).
   usageData: null as null | {
     claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
@@ -136,7 +139,7 @@ export const apiFake = {
   // real route.
   setProfileEnabledCalls: [] as { name: string; enabled: boolean; instance?: string }[],
   setProfileEnabledError: null as null | string,
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.orchestratorMessageError = null; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.orchestratorMessageError = null; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; },
 };
 
 mock.module("@/api", () => ({
@@ -158,7 +161,6 @@ mock.module("@/api", () => ({
     },
     notifications: async (since?: number) => { apiFake.notificationFetches.push(since); return apiFake.notificationsData.filter((n) => !since || Number(n.createdAt) > since); },
     notificationsRead: async (ids: number[] | "all") => { apiFake.notificationCalls.push({ verb: "read", ids }); return { ok: true, changed: 0 }; },
-    notificationsDismiss: async (ids: number[] | "all") => { apiFake.notificationCalls.push({ verb: "dismiss", ids }); return { ok: true, changed: 0 }; },
     agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
     prs: async () => {
       if (apiFake.holdPrs) await new Promise<void>((resolve) => { apiFake.releasePrs = () => { apiFake.holdPrs = false; resolve(); }; });
@@ -339,6 +341,7 @@ mock.module("@/api", () => ({
     agent: async (_repo: string, key: string, prompt: string, options: { provider?: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider; model?: string } = {}) => {
       apiFake.calls.push(`agent:${key}`); apiFake.claudePrompts.push(prompt);
       apiFake.agentLaunches.push({ key, prompt, provider: options.provider ?? "claude", resume: options.resume, history: options.history, handoffFrom: options.handoffFrom, model: options.model });
+      if (apiFake.agentQueued) return { status: "queued" as const, queued: apiFake.agentQueued };
       if (apiFake.claudeError) throw new Error(apiFake.claudeError);
       if (apiFake.holdClaude) await holdLaunch();
       return { status: "ok" };

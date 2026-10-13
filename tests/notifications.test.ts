@@ -2,7 +2,7 @@
 // event kind is recorded ONCE — a run finishing (done / asked a question / failed / stopped), Orca's
 // check failing, a PR's CI failing or conflicting, a preview coming up or not — pushed on the bus,
 // deduped across a restart (the same run finished twice) and across instances (the same key from
-// another machine), pruned after 30 days, and marked read / dismissed through the db API. Same
+// another machine), pruned after 30 days, and marked read through the db API (never deleted by you). Same
 // harness as verifyGate.test.ts: a fake `claude` on PATH, a scratch repo, real Postgres.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -14,7 +14,7 @@ import * as bus from "../server/bus";
 import * as notify from "../server/notify";
 import * as preview from "../server/preview";
 import { eventStream, RELAYED } from "../server/events";
-import { asksForInput, checkNotification, groupByDay, prNotifications, previewNotification, runNotification, shouldToast, toastStack, unreadCount, type Notification } from "../shared/notifications";
+import { asksForInput, checkNotification, filterNotifications, groupByDay, prNotifications, previewNotification, runNotification, shouldToast, toastStack, unreadCount, type Notification } from "../shared/notifications";
 import { makeScratchRepo } from "./helpers";
 import { freshSchema, type TestDb } from "./pg";
 import { native } from "./happydom";
@@ -73,8 +73,11 @@ describe("decisions (pure)", () => {
   test("the UI's cuts: unread count, grouping by day, the stack, what pops", () => {
     const NOW = Date.parse("2026-10-12T12:00:00");
     const n = (id: number, ago: number, extra: Partial<Notification> = {}): Notification => ({ id, instance: "local", repo: "r", kind: "finished", title: "t", body: "", createdAt: NOW - ago, ...extra });
-    const list = [n(1, 60_000), n(2, 26 * 3_600_000, { readAt: NOW }), n(3, 3 * 86_400_000), n(4, 10, { dismissedAt: NOW })];
+    const list = [n(1, 60_000), n(2, 26 * 3_600_000, { readAt: NOW }), n(3, 3 * 86_400_000), n(4, 10, { readAt: NOW })];
     expect(unreadCount(list)).toBe(2);
+    // The centre's one filter: Unread drops the read rows, All keeps every one (nothing is deleted).
+    expect(filterNotifications(list, "unread").map((i) => i.id)).toEqual([1, 3]);
+    expect(filterNotifications(list, "all").map((i) => i.id)).toEqual([1, 2, 3, 4]);
     expect(groupByDay(list, NOW).map((g) => [g.label, g.items.map((i) => i.id)])).toEqual([["Today", [4, 1]], ["Yesterday", [2]], ["Fri 9 Oct", [3]]]);
     const stack = toastStack([n(1, 3), n(2, 2), n(3, 1), n(4, 0)]);
     expect(stack.hidden).toBe(1); // three show, collapsed or expanded (sonner's cut); the bell has the rest
@@ -82,6 +85,7 @@ describe("decisions (pure)", () => {
     expect(stack.ordered.map((t) => t.id)).toEqual([4, 3, 2, 1]);
     expect(shouldToast(n(1, 0), { dnd: false, prefs: {}, now: NOW })).toBe(true);
     expect(shouldToast(n(1, 0), { dnd: true, prefs: {}, now: NOW })).toBe(false);
+    expect(shouldToast(n(1, 0, { readAt: NOW }), { dnd: false, prefs: {}, now: NOW })).toBe(false); // read elsewhere first
     expect(shouldToast(n(1, 0), { dnd: false, prefs: { finished: false }, now: NOW })).toBe(false);
     expect(shouldToast(n(1, 3_600_000), { dnd: false, prefs: {}, now: NOW })).toBe(false); // an hour old: for the centre, not the corner
     expect(RELAYED).toContain("notification");
@@ -230,7 +234,7 @@ describe("emitting, once", () => {
     expect(await db.notifications()).toHaveLength(2); // nothing new
   });
 
-  test("the centre's API: newest first, `since` catches up, read / dismiss (all or some), pruned past 30 days", async () => {
+  test("the centre's API: newest first, `since` catches up, mark read (some or all) keeps every row, pruned past 30 days", async () => {
     const t0 = Date.now() - 10_000;
     const old = await db.addNotification({ key: "k-old", repo: "r", kind: "finished", title: "old", body: "" }, t0 - 31 * 86_400_000);
     const a = (await db.addNotification({ key: "k-a", repo: "r", kind: "finished", title: "a", body: "" }, t0))!;
@@ -243,10 +247,14 @@ describe("emitting, once", () => {
     expect(await db.markNotificationsRead([a.id])).toBe(0); // already read
     expect((await db.notifications()).map((n) => [n.title, Boolean(n.readAt)])).toEqual([["c", false], ["b", true], ["a", true]]);
     expect(await db.markNotificationsRead("all")).toBe(1);
-    expect(await db.dismissNotifications([c.id])).toBe(1);
-    expect((await db.notifications()).map((n) => n.title)).toEqual(["b", "a"]);
-    expect(await db.dismissNotifications("all")).toBe(2);
-    expect(await db.notifications()).toEqual([]);
+    // Read is the only state change: nothing leaves the centre but the 30-day prune.
+    expect((await db.notifications()).map((n) => [n.title, Boolean(n.readAt)])).toEqual([["c", true], ["b", true], ["a", true]]);
+    expect("dismissNotifications" in db).toBe(false);
+    // A row "cleared" back when the centre had Clear (dismissed_at set, read with it) is back, as read.
+    const d = (await db.addNotification({ key: "k-d", repo: "r", kind: "failed", title: "d", body: "" }, t0 + 3_000))!;
+    const sql = await db.open();
+    await sql`UPDATE notification SET dismissed_at = ${t0 + 4_000}, read_at = ${t0 + 4_000} WHERE id = ${d.id}`;
+    expect((await db.notifications()).find((n) => n.id === d.id)).toMatchObject({ title: "d", readAt: t0 + 4_000 });
   });
 
   test("the tab's stream carries a `notification` frame", async () => {
