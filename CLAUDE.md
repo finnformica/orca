@@ -668,7 +668,13 @@ upload stores the bytes (20 MB per file, pruned past 30 days) and answers `orca-
 references in its `paths` field; `agent.launch` — the one place every launch passes, whether queued,
 proxied to `orchestratorOn` or forwarded to a workstream's home — swaps each for a file under ITS
 state dir (`attachments/<id>/`, cached by id). A legacy plain path is kept if it exists there, else
-marked unavailable. (History: a laptop's `/var/folders` path reached the box's agents, which couldn't open it.)
+reduced to its name and marked unavailable — another machine's temp path never reaches an agent.
+The chat shows a message's files (`/api/turns` decorates each turn with `attachments`, read off its
+stored prompt; `Attachments` in `views/Chat.tsx`: a thumbnail for an image, a named chip otherwise),
+each opening `GET /api/attachments/<id>` — served from Postgres by any instance, sandboxed and
+`nosniff`. `tests/attachmentsRelay.test.ts` drives two real bridges (upload on one, run and the
+orchestratorOn proxy on the other). (History: a laptop's `/var/folders` path reached the box's
+agents, which couldn't open it.)
 **Slack posts from the instance you click on** (`/api/slack` is in the answer-here set): it needs no
 worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box it failed with no token.
 **Machine metrics history:** each instance samples ITSELF once a minute (`startMetricsSampler` in

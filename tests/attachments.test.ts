@@ -10,7 +10,7 @@ import { join } from "node:path";
 import * as db from "../server/db";
 import * as agent from "../server/agent";
 import { AttachmentTooLarge, MAX_ATTACHMENT_BYTES, resolvePrompt, store } from "../server/attachments";
-import { withAttachments } from "../web/src/workstream";
+import { attachmentRefs, withAttachments, withoutAttachmentList } from "../web/src/workstream";
 import { makeScratchRepo } from "./helpers";
 import { freshSchema, type TestDb } from "./pg";
 
@@ -77,7 +77,7 @@ test("a run launched on the box gets the box's local path in its prompt (queued,
   expect((await readFile(path!)).byteLength).toBe(64);
 });
 
-test("legacy messages with a plain path: kept when the file is here, marked unavailable when it isn't", async () => {
+test("legacy messages with a plain path: kept when the file is here, reduced to its name and marked unavailable when it isn't", async () => {
   process.env.ORCA_STATE_DIR = box;
   const here = join(box, "legacy.png");
   await writeFile(here, "x");
@@ -86,7 +86,9 @@ test("legacy messages with a plain path: kept when the file is here, marked unav
   expect(out.startsWith("see - /not/a/list/item")).toBe(true);
   const [a, b] = listed(out);
   expect(a).toBe(here);
-  expect(b).toStartWith(`${gone} (unavailable on this machine`);
+  // Only the name: another machine's temp path must never reach the agent.
+  expect(b).toStartWith("1234.png (unavailable on this machine");
+  expect(out).not.toContain("/var/folders");
   expect(await resolvePrompt("no attachments at all")).toBe("no attachments at all");
 });
 
@@ -112,4 +114,14 @@ test("the attachment migration is idempotent: re-running it on a migrated databa
   await db.addAttachment({ id: "33333333-3333-3333-3333-333333333333", filename: "a.png", mimeType: "image/png", bytes: new Uint8Array([3]) });
   await db.withRetry((sql) => sql.unsafe(step.sql));
   expect(await db.attachment("33333333-3333-3333-3333-333333333333")).toBeDefined();
+});
+
+test("the chat's view of a message: its references parsed, the attachment list dropped from the text", () => {
+  const ref = "orca-attachment://44444444-4444-4444-4444-444444444444/Screen-Shot.png";
+  const sent = withAttachments("what's wrong here?", [ref, ref, "/tmp/legacy.txt"]);
+  expect(attachmentRefs(sent)).toEqual([{ id: "44444444-4444-4444-4444-444444444444", name: "Screen-Shot.png" }]);
+  expect(withoutAttachmentList(sent)).toBe("what's wrong here?");
+  // The orchestrator joins a wake's messages with a blank line: only the list goes, the rest stays.
+  expect(withoutAttachmentList(`${sent}\n\n⚙ worker report`)).toBe("what's wrong here?\n\n⚙ worker report");
+  expect(withoutAttachmentList("no files")).toBe("no files");
 });

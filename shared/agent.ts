@@ -118,6 +118,8 @@ export type AgentTurn = {
   steps?: AgentStep[];
   /** Sequence number of the last step above — the cursor the chat's live tail resumes from. */
   stepSeq?: number;
+  /** Files the message carried (stored attachments, `/api/attachments/<id>`) — server-decorated. */
+  attachments?: { id: string; name: string }[];
 };
 
 const OUTCOME_HEADINGS = ["outcome", "verification", "decisions", "remaining", "commits"] as const;

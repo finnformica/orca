@@ -7,14 +7,14 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowDown, Bot } from "lucide-react";
+import { ArrowDown, Bot, Paperclip } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { TURN_PAGE_SIZE, WORKER_EVENT_MARKER, anchoredScrollTop, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay } from "../workstream";
+import { TURN_PAGE_SIZE, WORKER_EVENT_MARKER, anchoredScrollTop, asTurnPage, atBottom, attachmentRefs, dayLabel, isImageName, isWorkerEvent, withoutAttachmentList, type AttachmentRef, mergeLatestPage, prependOlderPage, promptInstruction, sameDay } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -151,6 +151,30 @@ const Facet = ({ title, items, tone }: { title: string; items: string[]; tone: s
   </div>
 );
 
+/** The files a message carried: a thumbnail for an image, a named chip for anything else. Each opens
+ *  the stored file from the bridge (`/api/attachments/<id>`, read from Postgres), so it works from
+ *  any instance, whichever one took the upload. */
+export function Attachments({ files, className = "" }: { files: AttachmentRef[]; className?: string }) {
+  if (!files.length) return null;
+  return (
+    <div className={`flex flex-wrap gap-1.5 ${className}`} data-slot="message-attachments">
+      {files.map((f) => {
+        const href = `/api/attachments/${f.id}`;
+        return isImageName(f.name) ? (
+          <a key={f.id} href={href} target="_blank" rel="noreferrer" title={f.name} data-slot="attachment-image">
+            <img src={href} alt={f.name} loading="lazy" className="max-h-32 max-w-48 rounded-md border object-cover" />
+          </a>
+        ) : (
+          <a key={f.id} href={href} target="_blank" rel="noreferrer" title={f.name} data-slot="attachment-file"
+            className="bg-muted text-foreground hover:bg-accent inline-flex max-w-56 items-center gap-1 rounded-md border px-2 py-1 text-[11px]">
+            <Paperclip className="size-3 shrink-0" /><span className="truncate">{f.name}</span>
+          </a>
+        );
+      })}
+    </div>
+  );
+}
+
 /** An instruction typed while the agent was working. It hasn't been sent yet — shown so it's visibly
  *  waiting rather than silently in limbo, and cancellable while it still is. */
 function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () => void }) {
@@ -167,8 +191,9 @@ function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () =>
     <div className="mb-3 opacity-60">
       <div className="flex gap-2 text-emerald-400">
         <span className="shrink-0 select-none">❯</span>
-        <span className="min-w-0 whitespace-pre-wrap break-words">{message.instruction}</span>
+        <span className="min-w-0 whitespace-pre-wrap break-words">{withoutAttachmentList(message.instruction)}</span>
       </div>
+      <Attachments files={attachmentRefs((message.attachments ?? []).join("\n"))} className="mt-1 pl-4" />
       <div className="mt-1 flex items-center gap-2 pl-4 text-[10px] tracking-widest text-neutral-500 uppercase">
         <span>queued — sends when the current run finishes</span>
         <button type="button" onClick={onCancel} className="tracking-normal text-neutral-400 normal-case hover:text-red-400">cancel</button>
@@ -241,7 +266,7 @@ const clockOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString(undefined
  *  (and days are grouped by the divider ChatPanel draws). Colours are the theme's tokens, so it
  *  follows light and dark like the rest of the console. */
 function ChatTurn({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]> }) {
-  const instruction = turn.instruction ?? promptInstruction(turn.prompt);
+  const instruction = withoutAttachmentList(turn.instruction ?? promptInstruction(turn.prompt));
   const reports = instruction.split("\n\n").every(isWorkerEvent);
   const time = clockOf(turn.startedAt);
   return (
@@ -252,7 +277,8 @@ function ChatTurn({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Prom
       ) : (
         <div className="group mb-2 flex justify-end" data-slot="chat-user">
           <div className="max-w-[85%]">
-            <div className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">{instruction}</div>
+            {instruction && <div className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">{instruction}</div>}
+            <Attachments files={turn.attachments ?? []} className="mt-1 justify-end" />
             <div className="text-muted-foreground mt-0.5 text-right text-[10px] opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{time}</div>
           </div>
         </div>
@@ -275,7 +301,7 @@ function ChatTurn({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Prom
 /** `stamped`: the Agent page's log mode — a time gutter, and failed / warned turns tinted the way
  *  Vercel tints error and warning lines in Build Logs. */
 function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; stamped?: boolean }) {
-  const instruction = turn.instruction ?? promptInstruction(turn.prompt);
+  const instruction = withoutAttachmentList(turn.instruction ?? promptInstruction(turn.prompt));
   const tint = !stamped ? "" : turn.failed ? "bg-red-500/10 -mx-3 px-3" : turn.stopped || (turn.check && !turn.check.ok) ? "bg-amber-500/10 -mx-3 px-3" : "";
   const body = (
     <div className={`mb-3 ${tint}`} data-slot="chat-turn" data-failed={turn.failed || undefined}>
@@ -287,6 +313,7 @@ function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () =>
           <span className="min-w-0 whitespace-pre-wrap break-words">{instruction}</span>
         </div>
       )}
+      <Attachments files={turn.attachments ?? []} className="mt-1 pl-4" />
       <div className="mt-1 pl-4">
         <div className="text-[10px] tracking-widest text-neutral-500 uppercase">
           {agentLabel(turn.provider)}{turn.failed ? " · failed" : turn.stopped ? " · stopped by you" : ""}

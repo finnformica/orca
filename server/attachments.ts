@@ -57,8 +57,8 @@ async function localPath(id: string, name?: string): Promise<string | undefined>
 const unavailable = (what: string) => `${what} (unavailable on this machine — it was attached elsewhere and is gone; ask the user to attach it again)`;
 
 /** The prompt the agent sees: every attachment reference replaced by a real local path, and a
- *  legacy plain path (from before references) kept when the file exists here, else marked
- *  unavailable rather than handed over as a path the agent will fail to open. Never throws: a
+ *  legacy plain path (from before references) kept when the file exists here, else replaced by its
+ *  name marked unavailable rather than handed over as a path the agent will fail to open. Never throws: a
  *  database hiccup degrades to the "unavailable" note, it does not cost the run. */
 export async function resolvePrompt(prompt: string): Promise<string> {
   const found = new Map<string, string>();
@@ -75,6 +75,7 @@ export async function resolvePrompt(prompt: string): Promise<string> {
     if (line === HEADER) { inList = true; return line; }
     const path = inList ? line.match(/^- (\/\S.*)$/)?.[1] : undefined;
     if (!path) { if (line.trim()) inList = false; return line; }
-    return existsSync(path) ? line : `- ${unavailable(path)}`;
+    // Only the name: another machine's temp path (a laptop's /var/folders/…) must never reach the agent.
+    return existsSync(path) ? line : `- ${unavailable(path.split("/").pop() || "file")}`;
   }).join("\n");
 }

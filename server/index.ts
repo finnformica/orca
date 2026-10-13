@@ -25,7 +25,7 @@ import * as notify from "./notify";
 import { health, historyHours, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
-import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import { ORCHESTRATOR_REPO, attachmentRefs, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 
@@ -342,6 +342,19 @@ async function api(req: Request, url: URL): Promise<Response> {
       if (e instanceof attachments.AttachmentTooLarge) return json({ error: e.message }, 413);
       throw e;
     }
+  }
+  // One stored attachment's bytes, for the chat's thumbnail / file chip. Read from Postgres, so any
+  // instance answers it whichever one took the upload. Served inline but sandboxed and never sniffed:
+  // a pasted SVG or HTML file must not run as this (unauthenticated) origin.
+  const stored = req.method === "GET" && p.match(/^\/api\/attachments\/([0-9a-f-]{36})$/);
+  if (stored) {
+    const file = await db.attachment(stored[1]!);
+    if (!file) return json({ error: "attachment not found (pruned after 30 days, or never stored)" }, 404);
+    return new Response(file.bytes as Uint8Array<ArrayBuffer>, { headers: {
+      "Content-Type": file.mimeType, "Content-Disposition": `inline; filename="${file.filename.replace(/["\\\r\n]/g, "_")}"`,
+      "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
+      "Cache-Control": "private, max-age=86400, immutable",
+    } });
   }
   // PUT carries a body too (the pasted config document) — parsing only POST silently handed the
   // handler an empty object, which then failed validation as "repos must be a non-empty array".
@@ -861,6 +874,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     // never shown: the chat renders `instruction`, and falls back to trimming the prompt only for
     // turns recorded before the instruction was stored. For the orchestrator's 375 turns the prompts
     // were 3.6 MB of a 5.3 MB response — seconds over the tailnet, for nothing on screen.
+    // Files the message carried, read off the stored prompt (an agent chat's instruction is just the
+    // typed text; the references live in the prompt, which is blanked next) — the chat shows them.
+    for (const t of turns) {
+      const files = attachmentRefs(`${t.instruction ?? ""}\n${t.prompt}`);
+      if (files.length) t.attachments = files;
+    }
     for (const t of turns) if (t.instruction !== undefined) t.prompt = "";
     return json(page ? { turns, older: page.older } : turns);
   }
