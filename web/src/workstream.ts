@@ -1822,3 +1822,22 @@ export function modelBadge(ran: string | undefined, pinned: string | undefined):
     : `Model: ${next}`;
   return { label, title };
 }
+
+// ---- Action failures (the toast's text — components/Toaster, lib/toast; a button's ✗ tooltip is `firstLine`) ----
+
+/** A failed action on a workstream: which verb, on what, and GitHub's/the bridge's own message. */
+export type ActionFailure = { action: string; title?: string; repo: string; branch: string; prNumber?: number; error: string };
+
+/** What Copy puts on the clipboard: the message plus where it happened, ready to paste anywhere. */
+export function actionFailureCopy(f: ActionFailure): string {
+  return [
+    `Action: ${f.action}`, `Repo: ${f.repo}`, `Branch: ${f.branch}`,
+    ...(f.prNumber ? [`PR: #${f.prNumber}`] : []),
+    `Error:`, f.error,
+  ].join("\n");
+}
+
+/** What "Ask the orchestrator" prefills in its composer — one message it can act on. */
+export function actionFailureAsk(f: ActionFailure): string {
+  return `Action ${f.action} on ${f.repo}/${f.branch}${f.prNumber ? ` (PR #${f.prNumber})` : ""} failed: ${f.error}. Please investigate and fix.`;
+}

@@ -542,6 +542,27 @@ test("W9 auto-merge: enableAutoMerge shells out to `gh pr merge --auto` (queues 
   await expect(enableAutoMerge(repo, 1)).resolves.toBeDefined();
 });
 
+test("W9c auto-merge not allowed: a repo without auto-merge enabled gets a direct squash merge when the PR is mergeable, else the refusal with a hint", async () => {
+  process.env.ORCA_GH_NO_AUTO = "1";
+  try {
+    await fixture({ mergeable: "MERGEABLE", statusCheckRollup: [{ conclusion: "SUCCESS" }] });
+    const read = await recordGhArgs();
+    await enableAutoMerge(repo, 77);
+    process.env.ORCA_GH_ARGS_LOG = "";
+    const log = await read();
+    expect(log).toContain("pr merge 77 --auto --squash"); // tried auto-merge first
+    expect(log).toMatch(/^pr merge 77 --squash$/m);       // then merged directly, without --auto
+
+    // CI still running → no direct merge; the original error plus what to do about it.
+    await fixture({ mergeable: "MERGEABLE", statusCheckRollup: [{ state: "PENDING" }] });
+    const err = await enableAutoMerge(repo, 77).catch((e: Error) => e);
+    expect(String(err)).toContain("Auto merge is not allowed for this repository");
+    expect(String(err)).toContain("Enable auto-merge in the repo settings, or merge when green.");
+  } finally {
+    delete process.env.ORCA_GH_NO_AUTO;
+  }
+});
+
 test("S1 source-of-truth: listWorktrees returns live worktrees under the root", async () => {
   const root = join(repo, ".worktrees");
   await createWorktree(repo, root, "feat-list", "main");

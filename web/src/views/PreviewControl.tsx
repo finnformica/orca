@@ -9,6 +9,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { StatusDot } from "@/components/console";
 import { poll } from "@/lib/poll";
 import { sharedSource } from "@/lib/vitals";
+import { actionFailed } from "@/lib/toast";
 
 // Shared preview lifecycle: start in the background, poll status, expose ready/failed/link. Driven
 // by a preview `key` (the worktree path) and a `starter` that spins it up — so the same hook powers
@@ -16,7 +17,9 @@ import { sharedSource } from "@/lib/vitals";
 /** The URL this page opens for a service — see `previewHref`. */
 const hrefOf = (svc: PreviewSvc): string => previewHref(svc, window.location.hostname);
 
-function usePreview(initialKey: string | undefined, starter: () => Promise<{ key: string; svcs: PreviewSvc[] }>) {
+// `row`: a branch preview's start/crash failure also goes to a toast (Copy + Ask the orchestrator).
+function usePreview(initialKey: string | undefined, starter: () => Promise<{ key: string; svcs: PreviewSvc[] }>, row?: Row) {
+  const toastFailure = (e: unknown) => { if (row) actionFailed({ action: "Preview", title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }, e); };
   const [key, setKey] = useState(initialKey);
   const [svcs, setSvcs] = useState<PreviewSvc[]>([]);
   const [busy, setBusy] = useState(false);
@@ -49,6 +52,7 @@ function usePreview(initialKey: string | undefined, starter: () => Promise<{ key
     if (!crashed || !key || reaping.current) return;
     reaping.current = true;
     setError(crashed.error ?? "a service failed to start");
+    toastFailure(crashed.error ?? "a service failed to start");
     setSvcs([]);
     void stopPreview(key).catch(() => {});
   }, [crashed, key]);
@@ -56,7 +60,7 @@ function usePreview(initialKey: string | undefined, starter: () => Promise<{ key
   const start = async (run: () => Promise<{ key: string; svcs: PreviewSvc[] }> = starter) => {
     setBusy(true); setError(null); reaping.current = false; // fresh run: re-enable polling, clear the last error
     try { const r = await run(); setKey(r.key); setSvcs(r.svcs); }
-    catch (e) { setError(e instanceof Error ? e.message : String(e)); } // don't revert silently
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); toastFailure(e); } // don't revert silently
     finally { setBusy(false); }
   };
   const stop = async () => {
@@ -108,7 +112,7 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
   const choices = instanceChoices();
   // Keyed by the server-recorded placement when there is one, so a preview starting on another
   // instance shows as Starting/Open the moment the page loads, not after a click.
-  const { svcs, busy, active, error, start, stop } = usePreview(previewKeyOf(row), () => testLocally(row, where));
+  const { svcs, busy, active, error, start, stop } = usePreview(previewKeyOf(row), () => testLocally(row, where), row);
   const startOn = (instance: string) => { setWhere(instance); return testLocally(row, instance); };
   // The picker is joined to the Test button as one split control (same radius trim as Open·Stop).
   const split = choices.length > 1 ? "rounded-r-none" : "";
@@ -162,7 +166,7 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
  *  the same way the card's own "Test locally" control does (store.testLocally). */
 export function PreviewCell({ row }: { row: Row }) {
   const enabled = previewsEnabled(row.repo);
-  const { busy, active, ready, failed, error, open, start } = usePreview(previewKeyOf(row), () => testLocally(row));
+  const { busy, active, ready, failed, error, open, start } = usePreview(previewKeyOf(row), () => testLocally(row), row);
   const state: "disabled" | "none" | "starting" | "ready" | "failed" =
     !enabled ? "disabled" : failed ? "failed" : active && ready && open ? "ready" : busy || active ? "starting" : "none";
 
@@ -376,7 +380,7 @@ export function TestMaster() {
 
 /** Full panel for the detail Preview tab: embeds the running frontend once it's ready. */
 export function PreviewPanel({ row }: { row: Row }) {
-  const { open, active, ready, failed, busy, error, start, stop } = usePreview(previewKeyOf(row), () => testLocally(row));
+  const { open, active, ready, failed, busy, error, start, stop } = usePreview(previewKeyOf(row), () => testLocally(row), row);
 
   return (
     <div className="space-y-2 pt-3">

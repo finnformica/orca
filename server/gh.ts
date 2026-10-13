@@ -1,5 +1,6 @@
 import { run } from "./run";
 import { countGhCall } from "./metrics";
+import { mergeSafe } from "../web/src/workstream";
 
 export type CiStatus = "none" | "pending" | "passing" | "failing";
 export type ReviewStatus = "none" | "review_required" | "changes_requested" | "approved";
@@ -552,10 +553,21 @@ export async function mergePr(cwd: string, pr: number): Promise<void> {
   await gh(cwd, "pr", "merge", String(pr), "--squash").catch((e: Error) => STACKED.test(e.message) ? mergeAsync(cwd, pr, false) : Promise.reject(e));
 }
 
+// A repo without "Allow auto-merge" in its settings refuses `--auto` outright: "GraphQL: Auto merge is
+// not allowed for this repository (enablePullRequestAutoMerge)".
+const AUTO_NOT_ALLOWED = /auto merge is not allowed/i;
+
 /** Enable auto-merge: GitHub squash-merges the PR once its required checks + reviews pass. A stacked
- *  PR has no auto-merge toggle; it goes through the asynchronous merge API instead. */
+ *  PR has no auto-merge toggle; it goes through the asynchronous merge API instead. On a repo that
+ *  doesn't allow auto-merge, a PR that is safe to merge now is merged directly (`mergePr`, which keeps
+ *  the stacked fallback); otherwise the refusal surfaces with what to do about it. */
 export const enableAutoMerge = (cwd: string, pr: number) =>
-  gh(cwd, "pr", "merge", String(pr), "--auto", "--squash").catch((e: Error) => STACKED.test(e.message) ? mergeAsync(cwd, pr, true) : Promise.reject(e));
+  gh(cwd, "pr", "merge", String(pr), "--auto", "--squash").catch(async (e: Error) => {
+    if (STACKED.test(e.message)) return mergeAsync(cwd, pr, true);
+    if (!AUTO_NOT_ALLOWED.test(e.message)) throw e;
+    if (mergeSafe(await prStatus(cwd, pr))) return mergePr(cwd, pr);
+    throw new Error(`${e.message}\nEnable auto-merge in the repo settings, or merge when green.`);
+  });
 
 /** Disable auto-merge: GitHub cancels the queued auto-merge on the PR. */
 export const disableAutoMerge = (cwd: string, pr: number) =>
