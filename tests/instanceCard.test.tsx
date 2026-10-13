@@ -115,7 +115,8 @@ test("running sessions overlay on CPU and memory, as a pink series on its own ri
     expect(overlay.getAttribute("stroke")).toBe("var(--geist-pink)");
     // Same 3 samples, same [from, to] window as the main series — not a separate, misaligned fetch.
     expect(overlay.getAttribute("points")!.split(" ")).toHaveLength(lines[0]!.getAttribute("points")!.split(" ").length);
-    expect(chart.querySelector('[data-slot="chart-axis-right"]')).toBeTruthy();
+    // Whole-number ticks above the peak of 2 (top, middle, 0) — never "1, 1, 0" or a 2.5 read as "3".
+    expect([...chart.querySelectorAll('[data-slot="chart-axis-right"] span')].map((e) => e.textContent)).toEqual(["4", "2", "0"]);
     // The newest sample (i=2) had 1 running session.
     expect(chart.querySelector('[data-slot="chart-overlay-value"]')!.textContent).toContain("1");
   }

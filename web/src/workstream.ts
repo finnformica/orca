@@ -1618,6 +1618,14 @@ export function downsample(points: { at: number; v: number }[], max: number, fro
   return out;
 }
 
+/** The axis maximum for a whole-number count (running sessions): an even integer above the peak,
+ *  at least 2, so all three ticks (top, middle, 0) are whole numbers and the peak sits below the
+ *  top. `niceMax` gave 1 → a "0.5" middle tick shown as 1, and 2.5 → "3". */
+export function countMax(peak: number): number {
+  const m = Math.max(2, Math.floor(peak) + 1);
+  return m % 2 ? m + 1 : m;
+}
+
 /** A round axis maximum at or above `v`: 1, 2, 2.5 or 5 × 10^k. */
 export function niceMax(v: number): number {
   if (!(v > 0)) return 1;

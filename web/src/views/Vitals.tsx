@@ -8,7 +8,7 @@ import { AlertTriangle, ChevronDown, ChevronUp, Server } from "lucide-react";
 import { usageExpandedAtom, usageStatsExpandedAtom } from "@/lib/atoms";
 import { persistedKey, usePersisted } from "@/lib/persisted";
 import { useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
-import { HISTORY_RANGES, downsample, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { HISTORY_RANGES, countMax, downsample, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, RowSkeleton, Segmented, StatusDot, VCard, type ChartOverlay } from "@/components/console";
 
 /** `all`: the Usage page — every login (never just the fleet), and the whole card is itself
@@ -101,7 +101,8 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   // Running sessions on this instance, same window and downsampling as cpu/mem — overlaid on both
   // graphs as a pink series on its own right-hand axis (a different scale: a small integer count).
   const sessions = downsample((history ?? []).map((p) => ({ at: p.at, v: p.runningAgents ?? 0 })), 300, from, to);
-  const sessionsOverlay: ChartOverlay = { points: sessions, label: "Sessions", fmt: (v) => `${Math.round(v)}`, color: "var(--geist-pink)" };
+  const sessionsOverlay: ChartOverlay = { points: sessions, label: "Sessions", fmt: (v) => `${Math.round(v)}`, color: "var(--geist-pink)",
+    max: countMax(Math.max(0, ...sessions.map((p) => p.v))) };
   const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
   return (
     <VCard
