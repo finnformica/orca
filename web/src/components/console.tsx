@@ -88,7 +88,7 @@ export const Detail = ({ label, children, slot }: { label: string; children: Rea
 );
 
 /** A filter / segmented chip — the "6h | 24h | 7d" range picker and the like. */
-export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: { value: T; label: string }[]; onChange: (v: T) => void; label: string }) {
+export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: { value: T; label: ReactNode }[]; onChange: (v: T) => void; label: string }) {
   return (
     <div role="group" aria-label={label} className="inline-flex h-7 items-center rounded-md border p-0.5">
       {options.map((o) => (
