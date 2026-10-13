@@ -94,10 +94,19 @@ export async function close(): Promise<void> {
  *  from its internal `handleClose`) — same dropped connection, a driver-level code instead of a
  *  server message, caught on `code` alone since that shape never carries a legitimate query error.
  *  Not every Postgres error — a bad query must still throw. */
-function isDroppedConnection(err: unknown): boolean {
+export function isDroppedConnection(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const code = (err as { code?: string }).code;
   if (code === "ERR_POSTGRES_CONNECTION_CLOSED" || code === "ERR_POSTGRES_EXPECTED_REQUEST") return true;
+  // The pool's OWN recycling (idleTimeout / maxLifetime above) closes a connection, and Bun reports
+  // that close to whichever query next touches it — the 10s inventory/preview publish saw
+  // "Idle timeout reached after 30s" as a failure. Same remedy: a fresh connection.
+  if (code === "ERR_POSTGRES_IDLE_TIMEOUT" || code === "ERR_POSTGRES_LIFETIME_TIMEOUT") return true;
+  // SQLSTATE 0A000 "cached plan must not change result type": this connection prepared a statement
+  // BEFORE another session altered the table (the other instance ran a migration, or a hand ALTER),
+  // so its cached plan is stale. Postgres re-plans only on a fresh prepare; reopening the pool is
+  // how Bun.SQL gets one. Reached the chat composer as "not sent" on 2026-10-13.
+  if ((err as { errno?: string }).errno === "0A000" || /cached plan must not change result type/.test(err.message)) return true;
   if (/Connection closed|ECONNRESET|EPIPE/.test(err.message)) return true;
   return code === "ERR_POSTGRES_SERVER_ERROR" && /terminating connection|administrator command/i.test(err.message);
 }
