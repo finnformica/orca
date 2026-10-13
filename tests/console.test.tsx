@@ -300,21 +300,21 @@ describe("the console's pages", () => {
   });
 
   test("Settings: each machine's hourly cost is editable — a rate saves, empty clears it back to automatic", async () => {
-    apiFake.instanceRates = { cloud: 0.25 };
     await open("/settings");
-    await act(async () => { await flush(); });
-    const inputs = [...$("settings-machine-cost").querySelectorAll<HTMLInputElement>('[data-slot="machine-rate"]')];
-    expect(inputs.map((i) => i.getAttribute("aria-label"))).toEqual(["cloud USD per hour", "laptop USD per hour"]);
-    const cloud = inputs[0]!;
-    expect(cloud.value).toBe("0.25");
-    const type = async (input: HTMLInputElement, v: string) => {
+    const input = (name: string) => $("settings-machine-cost").querySelector<HTMLInputElement>(`[aria-label="${name} USD per hour"]`)!;
+    expect([...$("settings-machine-cost").querySelectorAll('[data-slot="machine-rate"]')].map((i) => i.getAttribute("aria-label")))
+      .toEqual(["cloud USD per hour", "laptop USD per hour"]);
+    expect(input("cloud").value).toBe(""); // nothing configured: automatic
+    const type = async (el: HTMLInputElement, v: string) => {
       const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
-      await act(async () => { set.call(input, v); input.dispatchEvent(new Event("input", { bubbles: true })); });
-      await act(async () => { input.form!.requestSubmit(); await flush(); });
+      await act(async () => { set.call(el, v); el.dispatchEvent(new Event("input", { bubbles: true })); });
+      await act(async () => { el.form!.requestSubmit(); await flush(); });
     };
-    await type(cloud, "0.2331");
-    await type(cloud, "");
+    await type(input("cloud"), "0.2331");
+    expect(input("cloud").value).toBe("0.2331"); // the store's mirror now holds it
+    await type(input("cloud"), "");
     expect(apiFake.setInstanceRateCalls).toEqual([{ instance: "cloud", hourlyUsd: 0.2331 }, { instance: "cloud", hourlyUsd: null }]);
+    expect(input("cloud").value).toBe("");
   });
 });
 

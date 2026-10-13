@@ -100,9 +100,12 @@ export const apiFake = {
   notificationCalls: [] as { verb: "read"; ids: number[] | "all" }[],
   notificationFetches: [] as (number | undefined)[],
   // The orchestrator's status (api.orchestrator) and what was typed to it (api.orchestratorMessage).
-  orchestratorState: { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" } as { key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number },
+  orchestratorState: { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" } as { key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number },
   orchestratorMessages: [] as { text: string; attachments: string[] }[],
   orchestratorMessageError: null as string | null, // api.orchestratorMessage rejects with this (a bridge that is down)
+  // Per-call latency (ms), consumed in call order: a message is recorded when it ARRIVES, so a slow
+  // first send and a fast second one would land swapped unless the client chains them.
+  orchestratorMessageDelays: [] as number[],
   // Steps the chat's tail will serve, keyed by runId, and which runs have completed.
   turnStepsData: new Map<string, unknown[]>(),
   // Instructions held because a run was in flight, keyed by branch.
@@ -110,6 +113,10 @@ export const apiFake = {
   turnFinished: new Set<string>(),
   turnsData: new Map<string, unknown[]>(),
   turnPageCalls: [] as { branch: string; limit: number; before?: string }[],
+  // Hold turn-page answers: each is computed at CALL time (what the database said then) and released
+  // later by the test, in any order — a slow fetch overtaken by a newer one.
+  holdTurnPages: false,
+  heldTurnPages: [] as (() => void)[],
   // When set, importEnrichment rejects — the migration must then KEEP the browser's blob, since it
   // is the only copy of that history.
   importError: null as null | string,
@@ -141,7 +148,7 @@ export const apiFake = {
   setProfileEnabledError: null as null | string,
   instanceRates: {} as Record<string, number>,
   setInstanceRateCalls: [] as { instance: string; hourlyUsd: number | null }[],
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.orchestratorMessageError = null; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.instanceRates = {}; this.setInstanceRateCalls = []; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.instanceRates = {}; this.setInstanceRateCalls = []; },
 };
 
 mock.module("@/api", () => ({
@@ -295,7 +302,9 @@ mock.module("@/api", () => ({
       const all = (apiFake.turnsData.get(`${repo}::${branch}`) ?? []) as unknown[];
       const end = opts.before === undefined ? all.length : Number(opts.before);
       const start = Math.max(0, end - opts.limit);
-      return { turns: all.slice(start, end), older: start > 0 ? String(start) : null };
+      const page = { turns: structuredClone(all.slice(start, end)), older: start > 0 ? String(start) : null };
+      if (apiFake.holdTurnPages) await new Promise<void>((resolve) => apiFake.heldTurnPages.push(resolve));
+      return page;
     },
     // The tab's one live stream (stubbed EventSource in happydom.ts) plus the chats' catch-up.
     eventsUrl: () => "/api/events",
@@ -328,8 +337,11 @@ mock.module("@/api", () => ({
     orchestrator: async () => apiFake.orchestratorState,
     orchestratorModel: async (model: string) => { apiFake.orchestratorState = { ...apiFake.orchestratorState, model }; return { ok: true as const }; },
     orchestratorMessage: async (text: string, attachments: string[] = []) => {
+      const delay = apiFake.orchestratorMessageDelays.shift();
+      if (delay) await new Promise((r) => setTimeout(r, delay));
       if (apiFake.orchestratorMessageError) throw new Error(apiFake.orchestratorMessageError);
-      apiFake.orchestratorMessages.push({ text, attachments }); return { status: "running" as const };
+      // A busy orchestrator queues the message behind its wake (the bridge's own queue), never refuses it.
+      apiFake.orchestratorMessages.push({ text, attachments }); return { status: apiFake.orchestratorState.running ? "queued" as const : "running" as const };
     },
     handoff: async (_repo: string, branch: string, content: string) => {
       apiFake.handoffs.push({ branch, content }); return { path: `/state/handoff/${branch}.md` };

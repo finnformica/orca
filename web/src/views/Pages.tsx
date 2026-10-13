@@ -7,7 +7,6 @@
 import { useEffect, useState } from "react";
 import { useAtom, useSetAtom } from "jotai";
 import { FolderGit2, GitBranch } from "lucide-react";
-import { api } from "@/api";
 import { refreshVitals } from "@/lib/vitals";
 import { toast } from "@/lib/toast";
 import { Button } from "@/components/ui/button";
@@ -15,7 +14,7 @@ import { browserNotifyAtom, densityAtom, notifyDndAtom, repoFilterAtom, toastPre
 import { KIND_META, NOTIFICATION_KINDS } from "../../../shared/notifications";
 import { navigate } from "@/lib/route";
 import { useTheme, type Theme } from "@/lib/theme";
-import { instanceChoices, staleHours, thisInstance, useAgentProviders, useRepos, useWorkstreams } from "../store";
+import { instanceChoices, setInstanceRate, staleHours, thisInstance, useAgentProviders, useInstanceRates, useRepos, useWorkstreams } from "../store";
 import { ago, repoSummaries } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
 import { THEMES } from "@/components/Shell";
@@ -169,31 +168,30 @@ function NotificationSettings() {
 }
 
 /** Each machine's USD/hour — `instanceHourlyUsd` in the app config, what its card's Cost accrued
- *  chart accrues. Empty means automatic: an EC2 on-demand estimate, else 0. */
+ *  chart accrues. Empty means automatic: an EC2 on-demand estimate, else 0. Read from the store's
+ *  config mirror (no fetch of its own), written through the bridge. */
 function MachineCostSettings() {
+  const rates = useInstanceRates();
   const here = thisInstance();
   const machines = instanceChoices().length ? instanceChoices() : here ? [here] : [];
-  const [rates, setRates] = useState<Record<string, number> | null>(null);
-  useEffect(() => { api.config().then((c) => setRates(c.instanceHourlyUsd ?? {}), () => setRates({})); }, []);
   if (!machines.length) return null;
   return (
     <VCard slot="settings-machine-cost" title="Machine cost" bodyClass="divide-y">
-      {machines.map((m) => <MachineRate key={m} instance={m} saved={rates?.[m]} loaded={rates !== null}
-        onSaved={(v) => setRates((r) => { const next = { ...r }; if (v === null) delete next[m]; else next[m] = v; return next; })} />)}
+      {machines.map((m) => <MachineRate key={m} instance={m} saved={rates[m]} />)}
     </VCard>
   );
 }
 
-function MachineRate({ instance, saved, loaded, onSaved }: { instance: string; saved: number | undefined; loaded: boolean; onSaved: (v: number | null) => void }) {
-  const [text, setText] = useState("");
-  useEffect(() => { setText(saved === undefined ? "" : String(saved)); }, [saved, loaded]);
+function MachineRate({ instance, saved }: { instance: string; saved: number | undefined }) {
+  const [text, setText] = useState(saved === undefined ? "" : String(saved));
+  useEffect(() => { setText(saved === undefined ? "" : String(saved)); }, [saved]);
   const [busy, setBusy] = useState(false);
   const value = text.trim() === "" ? null : Number(text);
   const valid = value === null || (Number.isFinite(value) && value >= 0);
   const dirty = (saved ?? null) !== value;
   const save = async () => {
     setBusy(true);
-    try { await api.setInstanceRate(instance, value); onSaved(value); void refreshVitals(); }
+    try { await setInstanceRate(instance, value); void refreshVitals(); }
     catch (e) { toast({ kind: "error", title: `Save rate failed · ${instance}`, body: e instanceof Error ? e.message : String(e) }); }
     finally { setBusy(false); }
   };
@@ -201,7 +199,7 @@ function MachineRate({ instance, saved, loaded, onSaved }: { instance: string; s
     <Setting label={instance} hint="USD per hour. Empty: an EC2 on-demand estimate, else 0.">
       <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); if (valid && dirty) void save(); }}>
         <span className="text-muted-foreground text-sm">$</span>
-        <input data-slot="machine-rate" aria-label={`${instance} USD per hour`} inputMode="decimal" placeholder="auto" value={text} disabled={!loaded}
+        <input data-slot="machine-rate" aria-label={`${instance} USD per hour`} inputMode="decimal" placeholder="auto" value={text}
           onChange={(e) => setText(e.target.value)} aria-invalid={!valid}
           className="border-input bg-background h-8 w-24 rounded-md border px-2 text-sm tabular-nums" />
         <span className="text-muted-foreground text-sm">/h</span>

@@ -36,7 +36,7 @@ const notify = () => { version++; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.delete(l); };
 
 // ---- config ----
-let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number; instance?: string; instances?: string[] } | null = null;
+let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number> } | null = null;
 export const configReady = api.config()
   .then(async (c) => { cfg = c; notify(); await migrateLocalEnrichment(); void refresh(); })
   .catch(() => { cfg = { repos: EMPTY_REPOS, staleHours: 24, agentProviders: DEFAULT_AGENT_PROVIDERS }; configFailed = true; notify(); });
@@ -92,6 +92,18 @@ export const previewsEnabled = (repo: string) => repoInfo(repo)?.features?.previ
  *  control; a repo with neither hides it entirely rather than offering a button that 404s. */
 export const previewConfigured = (repo: string) => Boolean(repoInfo(repo)?.previewLabel) || previewsEnabled(repo);
 export const staleHours = () => cfg?.staleHours ?? 24;
+/** Each machine's configured USD/hour (`instanceHourlyUsd`) — Settings' Machine cost card. */
+const NO_RATES: Record<string, number> = {};
+export const useInstanceRates = (): Record<string, number> => useSyncExternalStore(subscribe, () => cfg?.instanceHourlyUsd ?? NO_RATES);
+/** Set (null: clear) one machine's rate on the bridge, then in the config mirror. */
+export async function setInstanceRate(instance: string, hourlyUsd: number | null): Promise<void> {
+  await api.setInstanceRate(instance, hourlyUsd);
+  if (!cfg) return;
+  const next = { ...(cfg.instanceHourlyUsd ?? {}) };
+  if (hourlyUsd === null) delete next[instance]; else next[instance] = hourlyUsd;
+  cfg = { ...cfg, instanceHourlyUsd: next };
+  notify();
+}
 /** This bridge's instance name, and every instance a workstream can be placed on, in display order
  *  (`instanceOrder`: cloud, then local, then any others alphabetically — not "this one first").
  *  Empty means a single machine — placement UI stays hidden. */
