@@ -300,12 +300,18 @@ A workstream is a branch; its lane (`store.laneFor`):
   is clean, else In Review). **merged today** (server-local calendar day) → Done (`gh pr list --state merged`).
 
 Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
-- **A failed action is a toast, never text in the row** (`lib/toast` + `components/Toaster`, mounted
-  once in App, bottom-right above the orchestrator's window; errors stay until dismissed, info goes
-  after 8s). Title = action + workstream, body = the message (mono, scrollable), **Copy** (message +
-  repo/branch/PR/action) and **Ask the orchestrator** (the #128 `ask`, prefilled `Action … failed: …
-  Please investigate and fix.`). The button keeps only its ✗, first line as tooltip. Covers
-  `WorkstreamActions` (Merge, Slack, Move, …), `ActionButton` with `failure`, and preview start/crash.
+- **A failed action is a notification, never text in the row** — kind `action_failed`, in the ONE
+  notification toast stack and the bell's centre (see Notification centre; there is no second,
+  bottom-right stack any more — Finn found two inconsistent). It is LOCAL (`notificationStore`
+  `actionFailed` / `notifyLocal`: a negative id, never stored nor sent to the bridge — your click failing
+  is news to this browser only), persistent until dismissed, and the same failure while unread is
+  re-popped, not stacked twice. Card = repo · workstream, labelled with the verb (`Merge failed`),
+  body = the message; quick actions **Ask the orchestrator** (the #128 `ask`, prefilled `Action …
+  failed: … Please investigate and fix.`) and **Copy** (message + repo/branch/PR/action), then Open.
+  The button keeps only its ✗, first line as tooltip. Covers `WorkstreamActions` (Merge, Slack, Move,
+  …), `ActionButton` with `failure`, a preview's start / stop / add-label request, and the Usage
+  card's login switch. NOT a preview crash: the bridge's watcher already reports it as
+  `preview_failed`, so one crash is one notification.
 - **Enable auto-merge on a repo that disallows it** (`Auto merge is not allowed for this repository`):
   `enableAutoMerge` squash-merges directly if `mergeSafe`, else rethrows with "enable auto-merge in the
   repo settings, or merge when green". The stacked fallback still comes first.
@@ -605,7 +611,7 @@ cut, grouping by day); the browser mirror is `web/src/lib/notificationStore.ts` 
 the tab's stream, catches up by `since` on reconnect; toasts pop only for rows newer than the first
 load and younger than ten minutes); the surfaces are `components/Notifications.tsx`: the toast stack
 bottom-LEFT, growing up from just above the bell (`stackAnchor`, measured from the bell; full width
-above the bottom bar on a phone), so the orchestrator's window and the action-error Toaster keep the
+above the bottom bar on a phone), so the orchestrator's window keeps the
 bottom-right. It copies branch-demo's inbox toasts — sonner's stack — in CSS, no dependency
 (`stackLayout` / `toastMotion` / `swipeOut` / the `HideClock`, all pure): newest in front, three
 showing; past one they collapse behind it (14px lift, 5% smaller each) over a count bar with Mark
@@ -619,7 +625,7 @@ opening it, any quick action and Mark all as read all just `markRead`, which als
 off the stack. A toast's title opens its workstream's Chat tab (the agent page, a PR's included), composer focused.
 **Quick actions** on every toast and centre row, shown on hover / focus (always on a touch screen),
 as size-7 ghost **icon buttons** (lucide icon, aria-label, a `Tip` tooltip — `components/ui/tip.tsx`
-— with the `Kbd` keycap where a shortcut exists; the action-error Toaster's Copy / Ask use the same):
+— with the `Kbd` keycap where a shortcut exists; a failed action's Ask / Copy are two of them):
 the kind's one or two verbs, the first primary (no Read button — acting marks it read), then **Open,
 always, always last**, labelled just Open (its workstream's Chat tab with the composer focused; the
 orchestrator's panel, composer focused, for its own wake) and, on an
@@ -628,7 +634,7 @@ one whose prerequisite is missing (no live row, PR URL, failed check). CI failin
 Address PR (`store.addressPr`) + View PR (GitHub); check failed → Fix (`autofixInstruction` as a
 follow-up) + View output; finished / needs input → Reply (the Chat tab, `?reply` focuses the
 composer); failed / stopped → Retry (`RETRY_INSTRUCTION` on the same session) + Open chat; preview
-ready → Open preview + Stop; preview failed → Retry test + View log; the orchestrator's own wake →
+ready → Open preview + Stop; preview failed → Retry test + View log; a failed action (local) → Ask the orchestrator + Copy; the orchestrator's own wake →
 Open only. Verbs run in `ActionButton`, so a
 failure is the action-error toast with Ask the orchestrator), and
 the bell at the sidebar's foot with the unread count, opening the centre: one compact header —
