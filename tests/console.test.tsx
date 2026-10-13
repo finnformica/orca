@@ -233,6 +233,21 @@ describe("the console's pages", () => {
     const box = chat.querySelector("textarea")!;
     expect(box).not.toBeNull();
     expect(document.activeElement).toBe(box);
+    // Even padding all round the composer, and the messages smaller than the modal's terminal.
+    expect(box.closest(".border-t")!.className.split(/\s+/)).toEqual(["border-t", "p-4"]);
+    const log = chat.querySelector<HTMLElement>(".font-mono.overflow-y-auto")!;
+    expect(log.className).toContain("text-[11px]");
+    expect(log.className).toContain("[&_.prose]:text-[12px]");
+  });
+
+  // Finn: the Ask pill sat on top of the Chat tab's composer, which fills the viewport's foot.
+  test("agent page: the quick-ask pill is hidden on the Chat tab, and back on Overview", async () => {
+    seedLocal();
+    await open("/r/local/feat-login/chat");
+    expect(container!.querySelector('[data-slot="quick-ask"]')).toBeNull();
+    act(() => root?.unmount()); container?.remove();
+    await open("/r/local/feat-login");
+    expect(container!.querySelector('[data-slot="quick-ask"]')).not.toBeNull();
   });
 
   test("agent page: a running agent shows in the header's status (the chat has no toolbar for it)", async () => {

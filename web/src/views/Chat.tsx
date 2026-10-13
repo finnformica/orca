@@ -304,6 +304,10 @@ function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () =>
   );
 }
 
+/** The Agent page's Chat tab reads smaller than the modal's terminal: your messages at 11px mono and
+ *  the agent's replies (prose, which is 14px at prose-sm) at 12px. */
+const LOG_TEXT = "font-mono text-[11px] [&_.prose]:text-[12px]";
+
 /** `send` replaces the follow-up launch for a conversation that isn't a branch's agent — the
  *  orchestrator's, which goes to its own route. `flush` is for a host that IS the window (the
  *  orchestrator's popout): the log runs edge to edge with no frame of its own, and the composer sits
@@ -532,7 +536,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
       <div
         ref={scroller}
         onScroll={onScroll}
-        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-neutral-950 leading-relaxed ${logBar ? "px-4 py-3 md:px-6" : "p-3"} text-neutral-200 ${chatStyle ? "font-sans text-[13px] [&_.prose]:text-[13px]" : "font-mono text-xs"} ${flush || logBar ? "" : "rounded-md border border-neutral-800"}`}
+        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-neutral-950 leading-relaxed ${logBar ? "px-4 py-3 md:px-6" : "p-3"} text-neutral-200 ${chatStyle ? "font-sans text-[13px] [&_.prose]:text-[13px]" : logBar ? LOG_TEXT : "font-mono text-xs"} ${flush || logBar ? "" : "rounded-md border border-neutral-800"}`}
       >
         {running && (
           <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-end">
@@ -596,7 +600,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
       </div>
       {/* `dark` scopes the theme tokens: the composer's text and border must read on the terminal
           background whatever the page's theme is. */}
-      <div className={chatStyle ? "border-t p-2" : flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : logBar ? "border-t px-4 pt-3 pb-2 md:px-6" : undefined}>
+      <div className={chatStyle ? "border-t p-2" : flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : logBar ? "border-t p-4" : undefined}>
       <ChatComposer
         className={chatStyle ? "shadow-none" : flush ? "border-neutral-800 bg-neutral-950 shadow-none" : undefined}
         leading={<ChatControls {...ctl} compact={ctl.contextPct === undefined && compacting === null ? undefined

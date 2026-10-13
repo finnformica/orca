@@ -91,14 +91,18 @@ export function Shell({ crumbs, sidebarActions, children }: {
         <main className="w-full flex-1 px-4 py-6 md:px-6 max-md:min-w-0 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pb-[calc(5.5rem+env(safe-area-inset-bottom))]">{offline ? <OfflineScreen /> : children}</main>
       </div>
       <BottomBar onMenu={() => setOpen(true)} activity={activity} />
-      {/* The quick-ask pill, bottom centre of every page (desktop; the phone's bottom bar has the orchestrator). */}
-      <QuickAsk />
+      {/* The quick-ask pill, bottom centre of every page but an agent's Chat tab (desktop; the phone's bottom bar has the orchestrator). */}
+      {!chatTab(route) && <QuickAsk />}
       <Shortcuts />
       <CommandPalette />
       <ShortcutsHelp />
     </div>
   );
 }
+
+/** An agent page's Chat tab: its composer fills the viewport's foot, so the quick-ask pill (which
+ *  floats there) would sit on top of it — the tab is a conversation already, the pill is hidden. */
+export const chatTab = (route: Route) => (route.name === "pr" || route.name === "local") && route.sub === "chat";
 
 /** "/" then a page name, Vercel's top-bar breadcrumb. */
 export const Crumb = ({ children, to }: { children: ReactNode; to?: string }) => (
