@@ -80,9 +80,25 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   `idempotent` step recorded under a foreign name (so write steps `IF NOT EXISTS` wherever Postgres
   allows) and refuses to start on a non-idempotent one; `bun run db:check` prints the ledger,
   read-only. (History: two branches each took id 13; a branch's 13 reached the shared database
-  first and main's `running_agents` column was skipped as "applied".) **Workers: a migration id is
-  reserved only by MERGING to main** — if main gained a step while your branch was open, rebase and
-  renumber yours before opening the PR — and never point a running bridge or a test at the shared
+  first and main's `running_agents` column was skipped as "applied".) **Numbered steps are frozen
+  at 17 (`LAST_NUMBERED_ID`); every new step is NAMED** — no `id`, `name: "YYYYMMDD-slug"` (the day
+  you write it), `IF NOT EXISTS` throughout — and recorded in its own ledger, `migration_named`
+  (name → applied_at). (History: parallel branches kept taking "the next integer" — 16, 17 and 18
+  were reserved by hand across #152, #157 and #160.) Pending named steps apply after the numbered
+  ones in NAME order, so two branches that never coordinated land in one stable order on every
+  database. `checkSteps` (run at boot, and by the gate over `MIGRATIONS`) refuses a new numbered
+  step, a malformed or duplicate name, a non-idempotent named step, and a named step that sorts
+  before one above it in the array — code order IS apply order, so a step that depends on one it
+  was rebased onto must be re-dated (today) to sort after it; an independent one may move above.
+  **Compatibility:** an existing database keeps its numbered ledger (1–15 on the shared one; 17
+  applies as a numbered step); the runner creates `migration_named` on first boot. A bridge still on
+  older code reads only `migration`, so it never sees a row it can't parse. A database where a branch
+  once recorded its step under an integer (a test DB with #160's 18) logs that id as unknown and
+  re-runs the named step, harmlessly, because it is idempotent. **Rebasing an open PR that adds a
+  numbered step (#152's 16 `attachment`, #160's 18 `turn-source`):** drop the `id`, rename it
+  `YYYYMMDD-<old name>` (e.g. `20261013-turn-source`), append it after the last step in name order,
+  and change any test that finds it by id to find it by name. **Workers: a migration name is reserved
+  only by MERGING to main** — never point a running bridge or a test at the shared
   database from a worktree (a worktree's copied `.env` names it; `bun test` refuses any database
   that isn't a `tests/pg.ts` schema, and a worktree's bridge refuses to apply migrations unless
   `ORCA_ALLOW_WORKTREE_MIGRATIONS=1`). A history write must never break the
