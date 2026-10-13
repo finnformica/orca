@@ -85,6 +85,21 @@ export function QuickAsk() {
     const t = setTimeout(() => setFlash(0), SENT_FLASH_MS);
     return () => clearTimeout(t);
   }, [flash]);
+  // A pointerdown outside the open box closes it like Esc — but not a click on the box itself (the
+  // Send button included), on a popover/portal the box opened (Radix's own popper wrapper), or while
+  // the "Sent" receipt is still showing (closing would cut it short before its own timer does).
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (content.current?.contains(target)) return;
+      if (target instanceof Element && target.closest("[data-radix-popper-content-wrapper]")) return;
+      if (flash > 0) return;
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [open, flash, setOpen]);
   const send = () => {
     const message = text.trim();
     if (!message) return;

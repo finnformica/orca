@@ -215,6 +215,20 @@ test("Q3: the indicator pulses on the orchestrator button (never the Ask pill) w
   expect(dot()).toBeNull();
 });
 
+test("Q8: a pointerdown outside the open box closes it like Esc; inside the box it stays open", async () => {
+  await mount("/");
+  await click($('[data-slot="quick-ask-pill"]')!);
+  expect(surface().dataset.state).toBe("open");
+  // Inside the box (the textarea itself): no close.
+  await act(async () => { input().dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); await flush(); });
+  expect(surface().dataset.state).toBe("open");
+  expect($('[data-slot="quick-ask-box"]')).not.toBeNull();
+  // Outside, on the page body: closes with the same collapse the pill↔box morph uses.
+  await act(async () => { document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); await flush(); });
+  expect(surface().dataset.state).toBe("closed");
+  expect($('[data-slot="quick-ask-box"]')).toBeNull();
+});
+
 test("Q7: the pill is centred on the main column — its strip starts where the sidebar ends, collapsed or expanded", async () => {
   const s = getDefaultStore();
   await mount("/");
