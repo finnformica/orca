@@ -365,7 +365,12 @@ shown as `❯ …` with the agent's output below), plus the follow-up `ChatCompo
 message. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
 involved. Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every
 board action uses. A turn written at launch but not yet finished renders as `▋ working…` (that's how
-an interrupted run stays visible); a turn with a parsed outcome renders its sections. **The composer
+an interrupted run stays visible); a turn with a parsed outcome renders its sections. A Claude run's
+reply types out live: `--include-partial-messages` text deltas are pushed as `delta` events (never
+stored; the whole message's step replaces the draft). A finished reply must render from the stream
+alone: the chat applies only its NEWEST page request (a slower, older answer once reverted a finished
+turn to `working…` until the next send), every `ready` re-reads the newest page, and an EventSource an
+HTTP error closed for good is reopened (`lib/events.ts`). **The composer
 is never busy:** a send clears the box at once and the next message can go while the launch is still
 in flight (seconds, longer over the tailnet) — the log's `▋ sending…` line, until the bridge has it as
 a running turn or a queued entry, is the receipt. (It used to go busy until the launch returned, and
