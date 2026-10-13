@@ -142,8 +142,9 @@ is the chat panel over its recorded turns; a wake is `claude -p --resume` on its
 
 **The console is Vercel's, copied outright** (Finn's re-brief after the first, swimlane-ish
 overview: "copy the design theme of Vercel completely and reuse all of their design decisions").
-Theme: Geist Sans/Mono (a Google Fonts `<link>`, no dependency), softened Notion-style —
-`#f7f7f5`/`#fff` light and `#191919`/`#202020` dark, translucent hairline borders rather than flat
+Theme: Geist Sans/Mono (a Google Fonts `<link>`, no dependency), softened Notion-style, pulled back
+to a middle ground between Geist's flat grays and a first, too-soft pass after review (#134) —
+`#f9f9f8`/`#fff` light and `#111111`/`#161616` dark, translucent hairline borders rather than flat
 gray, the Geist grays elsewhere, 1px hairlines, no card shadows, `#0070f3` as the one accent,
 status dots and pills as `--geist-*` tokens — all CSS variables in `styles.css`, so every component
 inherits it. **Surface rules** (Finn found the first pass heavy-handed; `tests/console.test.tsx`
