@@ -115,7 +115,7 @@ describe("the notification centre", () => {
     expect(toast.textContent).toContain("Should I migrate the old rows?");
     expect(toast.querySelector('[data-slot="notification-time"]')!.textContent).toContain("just now");
     expect($("notifications-unread")!.textContent).toBe("1"); // the centre has it too
-    expect(actionLabels(toast)).toContain("Open workstream");
+    expect(actionLabels(toast)).toContain("Open");
     await click(toast.querySelector('button[aria-label="Mark as read"]'));
     expect(toast.getAttribute("data-removed")).toBe("true"); // dropping out…
     await exit();
@@ -278,13 +278,13 @@ describe("the notification centre", () => {
     expect($$("notification-group").map((g) => g.querySelector("h4")!.textContent)).toEqual(["Today", "Yesterday", expect.stringMatching(/\w{3} \d+ \w{3}/)]);
     expect($$("notification-row").filter((r) => r.hasAttribute("data-unread"))).toHaveLength(2);
     expect(localStorage.getItem("orca.ui.v1.notificationFilter")).toBe('"all"');
-    // A click marks the row read and opens it: the PR page for a PR event…
+    // A click marks the row read and opens it: the PR's Chat tab for a PR event…
     await click($$("notification-row").find((r) => r.textContent!.includes("Yesterday's CI")));
-    expect(location.pathname).toBe("/r/prs/7");
+    expect(location.pathname + location.search).toBe("/r/prs/7/chat?reply=1");
     expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "read", ids: [2] });
-    // …the workstream's page otherwise (no live row for it: its local page).
+    // …the workstream's Chat tab otherwise (no live row for it: its local page's).
     await click($$("notification-row").find((r) => r.textContent!.includes("Today's question")));
-    expect(location.pathname).toBe("/r/local/feat-x");
+    expect(location.pathname + location.search).toBe("/r/local/feat-x/chat?reply=1");
     expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "read", ids: [1] });
     expect($$("notification-row").filter((r) => r.hasAttribute("data-unread"))).toHaveLength(1);
     expect($$("notification-row")).toHaveLength(3); // read under All, still listed
@@ -315,22 +315,22 @@ describe("the notification centre", () => {
     expect($$("notification-row").map((r) => r.textContent!.includes("Seen"))).toEqual([true]);
   });
 
-  test("a toast's title opens the workstream's page (its PR's agent page, not GitHub) and marks it read; Open workstream too", async () => {
+  test("a toast's title opens the workstream's Chat tab, composer focused (its PR's agent page, not GitHub) and marks it read; Open too", async () => {
     await open("/");
     const s = await live();
     await push(s, note({ id: 9, kind: "failed" }));
     await click($("notification-title"));
-    expect(location.pathname).toBe("/r/local/feat-x");
+    expect(location.pathname + location.search).toBe("/r/local/feat-x/chat?reply=1");
     expect(apiFake.notificationCalls).toEqual([{ verb: "read", ids: [9] }]);
     expect(cards()).toHaveLength(0);
     // A PR's CI failing is the workstream too — its agent page, not GitHub.
     await push(s, note({ id: 10, kind: "pr_ci_failed", link: { pr: 7 } }));
     await click(cards()[0]!.querySelector('[data-slot="notification-title"]'));
-    expect(location.pathname).toBe("/r/prs/7");
+    expect(location.pathname + location.search).toBe("/r/prs/7/chat?reply=1");
     navigate("/");
     await push(s, note({ id: 11, kind: "needs_input" })); // a toast that stays (a finished one auto-hides in the test's 40ms)
-    await click(button(cards()[0]!, "Open workstream"));
-    expect(location.pathname).toBe("/r/local/feat-x");
+    await click(button(cards()[0]!, "Open"));
+    expect(location.pathname + location.search).toBe("/r/local/feat-x/chat?reply=1");
     expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "read", ids: [11] });
   });
 
@@ -356,14 +356,14 @@ describe("the notification centre", () => {
     expect(actionsOf(toast).getAttribute("data-shown")).toBe("false"); // a mouse: hidden until hover
     await mouse(toast, "mousemove");
     expect(actionsOf(toast).getAttribute("data-shown")).toBe("true");
-    expect(actionLabels(toast)).toEqual(["Address PR", "View PR", "Open workstream"]);
+    expect(actionLabels(toast)).toEqual(["Address PR", "View PR", "Open"]);
     // Icon buttons: size-7 ghost, no text, each with its tooltip.
     for (const b of actionsOf(toast).querySelectorAll("button")) {
       expect(b.textContent).toBe("");
       expect(b.className).toContain("size-7");
       expect(b.querySelector("svg.lucide")).not.toBeNull();
     }
-    expect([...actionsOf(toast).querySelectorAll('[role="tooltip"]')].map((t) => t.textContent)).toEqual(["Address PR", "View PR", "Open workstream"]);
+    expect([...actionsOf(toast).querySelectorAll('[role="tooltip"]')].map((t) => t.textContent)).toEqual(["Address PR", "View PR", "Open"]);
     await click(button(toast, "Address PR"));
     await act(async () => { await flush(); await flush(); await flush(); });
     expect(apiFake.calls.some((c) => c.startsWith("agent:"))).toBe(true); // the same launch the board's Address PR makes
@@ -382,7 +382,7 @@ describe("the notification centre", () => {
       await push(s, note({ id: 40, kind: "needs_input", title: "Question" }));
       const toast = cards()[0]!;
       expect(actionsOf(toast).getAttribute("data-shown")).toBe("true");
-      expect(actionLabels(toast)).toEqual(["Reply", "Open workstream"]);
+      expect(actionLabels(toast)).toEqual(["Reply", "Open"]);
       await click(toast.querySelector('button[aria-label="Mark as read"]'));
       expect(apiFake.notificationCalls).toEqual([{ verb: "read", ids: [40] }]);
       expect(cards()).toHaveLength(0);
@@ -406,7 +406,7 @@ describe("the notification centre", () => {
     expect(actionsOf(row).getAttribute("data-shown")).toBe("false");
     await mouse(row, "mousemove");
     expect(actionsOf(row).getAttribute("data-shown")).toBe("true");
-    expect(actionLabels(row)).toEqual(["Open chat", "Open workstream", "Mark as read"]);
+    expect(actionLabels(row)).toEqual(["Open chat", "Open", "Mark as read"]);
     await click(actionsOf(row).querySelector('button[aria-label="Mark as read"]'));
     expect(apiFake.notificationCalls).toEqual([{ verb: "read", ids: [60] }]);
     expect($$("notification-row")).toHaveLength(0); // out of the Unread view…
@@ -415,26 +415,28 @@ describe("the notification centre", () => {
     const kept = $("notification-row")!; // …never deleted
     expect(kept.hasAttribute("data-unread")).toBe(false);
     expect(actionsOf(kept.closest("li")!).querySelector('button[aria-label="Mark as read"]')).toBeNull(); // read: nothing to ×
-    expect(actionLabels(kept.closest("li")!)).toEqual(["Open chat", "Open workstream"]); // …but Open is always there
+    expect(actionLabels(kept.closest("li")!)).toEqual(["Open chat", "Open"]); // …but Open is always there
   });
 
-  test("every toast and row ends with Open: a preview's opens its workstream (the URL is Open preview); the orchestrator's opens its window, with the O keycap in the tooltip", async () => {
+  test("every toast and row ends with Open: a preview's opens its workstream's Chat tab (the URL is Open preview); the orchestrator's opens its panel, composer focused, with the O keycap in the tooltip", async () => {
     await open("/");
     const s = await live();
     await push(s, note({ id: 70, kind: "preview_failed", title: "Preview" }));
-    expect(actionLabels(cards()[0]!).at(-1)).toBe("Open workstream");
-    await click(button(cards()[0]!, "Open workstream"));
-    expect(location.pathname).toBe("/r/local/feat-x");
+    expect(actionLabels(cards()[0]!).at(-1)).toBe("Open");
+    await click(button(cards()[0]!, "Open"));
+    expect(location.pathname + location.search).toBe("/r/local/feat-x/chat?reply=1");
     expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "read", ids: [70] });
     navigate("/");
     await push(s, note({ id: 71, kind: "failed", repo: "@orca", branch: "orchestrator", title: "Orchestrator", link: { orchestrator: true } }));
     const toast = cards()[0]!;
-    expect(actionLabels(toast)).toEqual(["Open orchestrator"]);
+    expect(actionLabels(toast)).toEqual(["Open"]);
     const tip = actionsOf(toast).querySelector('[role="tooltip"]')!;
-    expect(tip.textContent).toContain("Open orchestrator");
+    expect(tip.textContent).toContain("Open");
     expect(tip.querySelector('kbd[data-slot="kbd"]')!.textContent).toBe("O");
-    await click(button(toast, "Open orchestrator"));
+    await click(button(toast, "Open"));
     expect($("orchestrator-panel")!.getAttribute("data-state")).toBe("open");
+    expect(document.activeElement?.tagName).toBe("TEXTAREA"); // its composer, focused
+    expect($("orchestrator-panel")!.contains(document.activeElement)).toBe(true);
     expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "read", ids: [71] });
   });
 });

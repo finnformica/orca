@@ -13,14 +13,14 @@
 // what persists, the stack's layout and motion) are pure in shared/notifications.ts; the state is
 // lib/notificationStore.ts.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtomValue } from "jotai";
 import {
   AlertTriangle, ArrowUpRight, Bell, BellOff, Check, CheckCheck, CircleX, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, Hammer, MessageCircleQuestion,
   MessagesSquare, MonitorCheck, MonitorX, OctagonPause, PanelRight, Reply, RotateCcw, ScrollText, ShieldX, Square, Wrench, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
-import { notifyDndAtom, orchestratorOpenAtom } from "@/lib/atoms";
+import { notifyDndAtom } from "@/lib/atoms";
 import { markRead, pauseToasts, resumeToasts, start, useNotifications } from "@/lib/notificationStore";
 import { oneOf, persistedKey, usePersisted } from "@/lib/persisted";
 import { useCoarse, useNarrow } from "@/lib/viewport";
@@ -37,6 +37,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Segmented } from "@/components/console";
 import { Tip } from "@/components/ui/tip";
+import { useOrchestrator } from "@/components/Terminal";
 import type { ShortcutId } from "@/lib/shortcuts";
 
 const ICON: Record<NotificationKind, typeof Bell> = {
@@ -61,7 +62,7 @@ const ACTION_SHORTCUT: Partial<Record<NotificationActionId, ShortcutId>> = { ope
  *  PR page once it has a PR). Every handler is the store's own verb; nothing is re-implemented. */
 function useNotificationActions() {
   const rows = useWorkstreams();
-  const openOrchestrator = useSetAtom(orchestratorOpenAtom);
+  const { ask: openOrchestrator } = useOrchestrator();
   const rowOf = (n: Notification): Row | undefined => rows.find((r) => r.repo === n.repo && r.branch === n.branch);
   const pathOf = (n: Notification, tail = ""): string | undefined => {
     const row = rowOf(n);
@@ -69,12 +70,14 @@ function useNotificationActions() {
     return path && path + tail;
   };
   const go = (path: string | undefined) => { if (path) navigate(path); };
-  /** The notification's own page: its workstream's (the orchestrator's window for its own wake) —
-   *  what the title and the Open action do. A preview's URL is its own action, Open preview. */
+  /** The notification's own place: its workstream's Chat tab with the composer focused (the tab
+   *  focuses it on mount; `?reply` as Reply sends) — the orchestrator's panel, composer focused, for
+   *  its own wake. What the title and the Open action do. A preview's URL is its own action. */
+  const openChatOf = (n: Notification) => go(pathOf(n, "/chat?reply=1"));
   const open = (n: Notification) => {
     void markRead([n.id]);
-    if (n.link?.orchestrator) return void openOrchestrator(true);
-    go(pathOf(n));
+    if (n.link?.orchestrator) return void openOrchestrator();
+    openChatOf(n);
   };
   const specs = (n: Notification): NotificationActionSpec[] => {
     const row = rowOf(n);
@@ -99,13 +102,12 @@ function useNotificationActions() {
   /** A link: where it goes. */
   const link = (id: NotificationActionId, n: Notification): (() => void) | undefined => {
     switch (id) {
-      case "open": return () => go(pathOf(n));
-      case "reply": return () => go(pathOf(n, "/chat?reply=1"));
+      case "open": case "reply": return () => openChatOf(n);
       case "openChat": case "viewOutput": return () => go(pathOf(n, "/chat"));
       case "viewLog": return () => go(pathOf(n, "/preview"));
       case "viewPr": { const url = rowOf(n)?.prUrl; return url ? () => void window.open(url, "_blank", "noopener") : undefined; }
       case "openPreview": return n.link?.url ? () => void window.open(n.link!.url, "_blank", "noopener") : undefined;
-      case "openOrchestrator": return () => openOrchestrator(true);
+      case "openOrchestrator": return () => openOrchestrator();
       default: return undefined;
     }
   };

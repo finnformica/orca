@@ -1974,8 +1974,8 @@ const NOTIFICATION_ACTION_RULES: Record<string, ActionRule[]> = {
 };
 
 /** A notification's quick actions: up to two for its kind, then ALWAYS Open, last — so every toast
- *  and centre row has it in the same place: the workstream's page, or the orchestrator's window for
- *  its own wake (which has nothing else; Reply there would be the same window). The first action is
+ *  and centre row has it in the same place, labelled just "Open": the workstream's Chat tab, or the
+ *  orchestrator's panel for its own wake (which has nothing else; Reply there would be the same window). The first action is
  *  the primary. An action whose prerequisite is missing (no live row, no PR URL, no failed check) is
  *  left out rather than shown broken; an unknown kind gets only Open. There is no Read: taking any
  *  action marks it read, and the card's own × (not listed here) is "read, and out of view". */
@@ -1983,7 +1983,7 @@ export function notificationActions(
   n: { kind: string; link?: { url?: string; orchestrator?: boolean } },
   ctx: NotificationActionContext = {},
 ): NotificationActionSpec[] {
-  const open: ActionRule = n.link?.orchestrator ? { id: "openOrchestrator", label: "Open orchestrator" } : { id: "open", label: "Open workstream" };
+  const open: ActionRule = n.link?.orchestrator ? { id: "openOrchestrator", label: "Open" } : { id: "open", label: "Open" };
   const has = { ...ctx } as Record<string, boolean | undefined>;
   const rules = n.link?.orchestrator ? [] : (NOTIFICATION_ACTION_RULES[n.kind] ?? [])
     .filter((r) => (r.id === "openPreview" ? Boolean(n.link?.url) : !r.needs || has[r.needs]))

@@ -30,7 +30,7 @@ describe("notification quick actions", () => {
       for (const ctx of [all, {}]) {
         const actions = notificationActions({ kind, link: { url: "http://x" } }, ctx);
         expect(actions.map((a) => a.label)).not.toContain("Read");
-        expect(actions.at(-1)).toMatchObject({ id: "open", label: "Open workstream" });
+        expect(actions.at(-1)).toMatchObject({ id: "open", label: "Open" });
         expect(actions.filter((a) => a.id === "open")).toHaveLength(1);
         expect(actions.length).toBeLessThanOrEqual(3);
       }
@@ -41,11 +41,11 @@ describe("notification quick actions", () => {
 
   test("the labels: the agent verbs by their board names; needs input leads with Reply", () => {
     const labels = (kind: string) => notificationActions({ kind }, all).map((a) => a.label);
-    expect(labels("pr_ci_failed")).toEqual(["Address PR", "View PR", "Open workstream"]);
-    expect(labels("check_failed")).toEqual(["Fix", "View output", "Open workstream"]);
-    expect(labels("needs_input")).toEqual(["Reply", "Open workstream"]);
-    expect(labels("failed")).toEqual(["Retry", "Open chat", "Open workstream"]);
-    expect(labels("preview_failed")).toEqual(["Retry test", "View log", "Open workstream"]);
+    expect(labels("pr_ci_failed")).toEqual(["Address PR", "View PR", "Open"]);
+    expect(labels("check_failed")).toEqual(["Fix", "View output", "Open"]);
+    expect(labels("needs_input")).toEqual(["Reply", "Open"]);
+    expect(labels("failed")).toEqual(["Retry", "Open chat", "Open"]);
+    expect(labels("preview_failed")).toEqual(["Retry test", "View log", "Open"]);
   });
 
   test("an action whose prerequisite is missing is left out, not shown broken", () => {
@@ -58,7 +58,7 @@ describe("notification quick actions", () => {
   });
 
   test("an unknown kind gets only Open; the orchestrator's wake gets only Open, into its window", () => {
-    expect(notificationActions({ kind: "review_requested" }, all)).toEqual([{ id: "open", label: "Open workstream", primary: true }]);
-    expect(notificationActions({ kind: "failed", link: { orchestrator: true } }, all)).toEqual([{ id: "openOrchestrator", label: "Open orchestrator", primary: true }]);
+    expect(notificationActions({ kind: "review_requested" }, all)).toEqual([{ id: "open", label: "Open", primary: true }]);
+    expect(notificationActions({ kind: "failed", link: { orchestrator: true } }, all)).toEqual([{ id: "openOrchestrator", label: "Open", primary: true }]);
   });
 });
