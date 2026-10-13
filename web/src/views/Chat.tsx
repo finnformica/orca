@@ -795,7 +795,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
       </div>
       {/* `dark` scopes the theme tokens: the composer's text and border must read on the terminal
           background whatever the page's theme is. */}
-      <div className={chatStyle ? "border-t p-2" : flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : logBar ? "border-t p-4" : undefined}>
+      <div data-slot="chat-composer-dock" className={chatStyle ? "border-t p-2 max-md:p-3" : flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : logBar ? "border-t p-4" : undefined}>
       <ChatComposer
         className={chatStyle ? "shadow-none" : flush ? "border-neutral-800 bg-neutral-950 shadow-none" : undefined}
         leading={<ChatControls {...ctl} compact={ctl.contextPct === undefined && compacting === null ? undefined
