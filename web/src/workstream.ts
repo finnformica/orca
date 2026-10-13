@@ -1472,9 +1472,39 @@ export function sparklineSegments(
  *  localhost (the laptop's own bridge) opens `localUrl` when there is one; anything else (a phone,
  *  a browser pointed at the box) opens `url`, since ITS localhost is not that bridge. */
 export function previewHref(svc: { url: string; localUrl?: string }, pageHost: string): string {
-  const loopback = pageHost === "localhost" || pageHost === "127.0.0.1" || pageHost === "[::1]" || pageHost === "::1";
-  return loopback && svc.localUrl ? svc.localUrl : svc.url;
+  if (isLoopbackHost(pageHost)) return svc.localUrl ?? svc.url;
+  // A page reached over the tailnet (a phone) never opens localhost: that is the phone itself. An
+  // owner with no ORCA_PREVIEW_HOST and no `instances` entry hands out `http://localhost:<port>`;
+  // the bridge that served this page is the one that answered, so its tailnet name is the host.
+  try {
+    const u = new URL(svc.url);
+    if (isLoopbackHost(u.hostname)) { u.hostname = pageHost; return svc.url.endsWith("/") ? u.toString() : u.toString().replace(/\/$/, ""); }
+  } catch { /* not a URL — hand it back as-is */ }
+  return svc.url;
 }
+
+const isLoopbackHost = (h: string): boolean => h === "localhost" || h === "127.0.0.1" || h === "[::1]" || h === "::1";
+
+/** The host:port a preview link shows as its label — the address it will open, so a phone shows the
+ *  tailnet name rather than a bare port. */
+export const previewLabel = (href: string): string => { try { return new URL(href).host; } catch { return href; } };
+
+// ---- freshness: the stale indicator and the new-build banner ----
+
+/** How long the board's data may go unrefreshed before the top bar says so: two idle poll periods. */
+export const STALE_AFTER_MS = 75_000;
+/** The age of the board's data when it is stale, else null (fresh, or nothing loaded yet). Pure. */
+export function staleAge(lastSyncAt: number, now: number, after = STALE_AFTER_MS): number | null {
+  if (!lastSyncAt) return null;
+  const age = now - lastSyncAt;
+  return age > after ? age : null;
+}
+
+/** A newer build has been deployed: the served `version.json` names a different build than the one
+ *  running. A dev server (no build id) or an unreadable answer never prompts. Pure. */
+export const newerBuild = (running: string | undefined, served: unknown): boolean =>
+  !!running && running !== "dev" && typeof served === "object" && served !== null
+  && typeof (served as { build?: unknown }).build === "string" && (served as { build: string }).build !== running;
 
 // ---- the Vercel-style console: usage rows, metric charts, durations, chat log, repos ----
 // Pure pieces the Overview / Agents / Agent / Usage / Repos pages render, so each number is tested
@@ -1840,4 +1870,28 @@ export function actionFailureCopy(f: ActionFailure): string {
 /** What "Ask the orchestrator" prefills in its composer — one message it can act on. */
 export function actionFailureAsk(f: ActionFailure): string {
   return `Action ${f.action} on ${f.repo}/${f.branch}${f.prNumber ? ` (PR #${f.prNumber})` : ""} failed: ${f.error}. Please investigate and fix.`;
+}
+
+/** The overlay an installed app's home-screen shortcut asks for (`/?open=new`, `/?open=orchestrator`,
+ *  web/public/manifest.webmanifest), or null. Pure. */
+export function launchOverlay(search: string): "new" | "orchestrator" | null {
+  const v = new URLSearchParams(search).get("open");
+  return v === "new" || v === "orchestrator" ? v : null;
+}
+
+// ---- touch gestures (lib/gestures.ts): the thresholds, pure ----
+
+/** A swipe down on a sheet's handle: close when dragged a quarter of the sheet (at most 120px), or
+ *  flicked — 40px+ at more than 0.6px/ms. Anything less springs back. */
+export function swipeDecision(g: { dy: number; ms: number; height: number }): "close" | "snap" {
+  if (g.dy >= Math.min(120, g.height * 0.25)) return "close";
+  return g.dy >= 40 && g.dy / Math.max(1, g.ms) > 0.6 ? "close" : "snap";
+}
+
+/** Pull to refresh: how far the finger has pulled (from the top of the page) → what the indicator
+ *  shows and how tall it is (damped, capped). Past PULL_REFRESH_PX, letting go refreshes. */
+export const PULL_REFRESH_PX = 70;
+export function pullState(dy: number): { phase: "idle" | "pull" | "release"; offset: number } {
+  if (dy < 10) return { phase: "idle", offset: 0 };
+  return { phase: dy * 0.5 >= PULL_REFRESH_PX ? "release" : "pull", offset: Math.min(Math.round(dy * 0.5), 96) };
 }
