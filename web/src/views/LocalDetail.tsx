@@ -1,10 +1,11 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 import type { ChangeSummary } from "../../../server/git";
 import { api } from "../api";
 import { summary as fetchSummary, useWorkstreams } from "../store";
 import { navigate, type LocalTab } from "@/lib/route";
-import { DiffView, STICKY_HEADER, useStickyHeader } from "./PrDetail";
-import { ChatCard, DetailsCard } from "./AgentPage";
+import { DiffView, HEADER_TABS, STICKY_HEADER, useStickyHeader } from "./PrDetail";
+import { AGENT_TABS, AgentHeader, ChatCard, DetailsCard, HeaderSource, RowStatus } from "./AgentPage";
+import { useNarrow } from "@/lib/viewport";
 import { VCard } from "@/components/console";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewPanel } from "./PreviewControl";
@@ -20,6 +21,7 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
   const [diff, setDiff] = useState<string | null>(null);
   const wt = row?.worktreePath;
   const header = useStickyHeader(Boolean(row));
+  const narrow = useNarrow();
 
   useEffect(() => {
     if (!wt) { setSummary(null); return; }
@@ -40,10 +42,11 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
 
   return (
     <div style={header.style}>
-      <Tabs value={sub} onValueChange={(v) => go(v as LocalTab)}>
+      <Tabs value={sub} onValueChange={(v) => go(v as LocalTab)} className={AGENT_TABS}>
         <div ref={header.ref} className={STICKY_HEADER}>
-          <AgentTitle repo={repo} title={row.title} />
-          <TabsList>
+          <AgentHeader repo={repo} title={row.title} status={<RowStatus row={row} />} source={<HeaderSource branch={row.branch} />}
+            actions={<WorkstreamActions row={row} hasWork={hasWork} compact={narrow} />} />
+          <TabsList className={HEADER_TABS}>
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="chat">Chat</TabsTrigger>
             <TabsTrigger value="files">Files changed{summary ? ` (${summary.files.length})` : ""}</TabsTrigger>
@@ -51,8 +54,8 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
           </TabsList>
         </div>
 
-        <TabsContent value="overview" className="space-y-6 pt-3">
-          <DetailsCard row={row} summary={summary} actions={<WorkstreamActions row={row} hasWork={hasWork} />} />
+        <TabsContent value="overview" className="space-y-6 pt-4">
+          <DetailsCard row={row} summary={summary} />
           <div className="grid gap-6 lg:grid-cols-2">
             <VCard title={`Files changed (${summary?.files.length ?? 0})`}>
               {summary && summary.files.length > 0 ? (
@@ -83,25 +86,16 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
           <ChatCard row={row} />
         </TabsContent>
 
-        <TabsContent value="files" className="space-y-3 pt-3">
+        <TabsContent value="files" className="space-y-3 pt-4">
           {!wt ? <p className="text-muted-foreground text-sm">No worktree checked out.</p>
             : diff === null ? <p className="text-muted-foreground text-sm">Loading diff…</p>
             : <DiffView text={diff} />}
         </TabsContent>
 
-        <TabsContent value="preview">
+        <TabsContent value="preview" className="pt-4">
           <PreviewPanel row={row} />
         </TabsContent>
       </Tabs>
     </div>
   );
 }
-
-/** The page's title row, Vercel's: the repo above, the agent's name large. */
-export const AgentTitle = ({ repo, title, children }: { repo: string; title: ReactNode; children?: ReactNode }) => (
-  <div className="space-y-0.5 pt-1">
-    <div className="text-muted-foreground text-xs">{repo}</div>
-    <h1 className="flex flex-wrap items-center gap-2 text-2xl font-semibold tracking-tight">{title}{children}</h1>
-  </div>
-);
-

@@ -180,13 +180,37 @@ describe("the console's pages", () => {
     expect(source).toContain("feat-login");
     expect(source).toContain("6eaab29");
     expect(source).toContain("Add the login form");
-    // The page's actions live on the card, Vercel's Redeploy / ⋯.
-    expect(details.querySelector('button[aria-label="Actions"]')).not.toBeNull();
+    // The page's actions live in the compact header row now, not on the card.
+    expect(details.querySelector('button[aria-label="Actions"]')).toBeNull();
+    expect($("agent-header").querySelector('button[aria-label="Actions"]')).not.toBeNull();
     // The local preview control (link/Add preview + its Stop button) sits beside the PR one — not
     // just a click away on the Preview tab.
     expect(details.querySelector('[data-slot="preview-cell"]')).not.toBeNull();
     const tabs = [...container!.querySelectorAll('[role="tab"]')].map((t) => t.textContent);
     expect(tabs).toEqual(["Overview", "Chat", "Files changed (1)", "Preview"]);
+  });
+
+  // Finn: the header wasted height (a repo line, a 2xl title, links, then the tabs on their own
+  // row) and the Chat tab's window was short. Now ONE row — title, status, branch, actions — with the
+  // tabs directly under it, both in the sticky block flush under the top bar, and the chat sized to
+  // the viewport minus the top bar, main's bottom padding and that header's live height.
+  test("agent page: one compact sticky header row — title, status, branch, actions — with the tabs right under it; the chat fills the rest", async () => {
+    seedLocal();
+    await open("/r/local/feat-login/chat");
+    const head = $("agent-header");
+    expect(head.querySelector("h1")!.textContent).toContain("Login form");
+    expect(head.querySelector("h1")!.className).not.toContain("text-2xl");
+    expect(head.querySelector('[data-slot="agent-header-status"]')!.textContent).toBe("Error");
+    expect(head.querySelector('[data-slot="agent-header-source"]')!.textContent).toContain("feat-login");
+    expect(head.querySelector('button[aria-label="Actions"]')).not.toBeNull();
+    const sticky = head.closest(".sticky")!;
+    expect(sticky.querySelector('[role="tablist"]')).not.toBeNull(); // tabs in the same pinned block
+    expect(sticky.className).toMatch(/(^|\s)-mt-6(\s|$)/); // flush under the top bar, over main's top padding
+    expect(sticky.children).toHaveLength(2); // the row and the tabs — nothing else stacked in it
+    expect(sticky.closest('[data-slot="tabs"]')!.className).toContain("gap-0");
+    const chat = $("agent-chat");
+    expect(chat.className).toContain("md:h-[calc(var(--vvh,100dvh)-5rem-env(safe-area-inset-top)-var(--stick,0px))]");
+    expect(chat.className).toContain("h-[calc(var(--vvh,100dvh)-9rem-");
   });
 
   test("agent page: Overview has no chat section — the conversation lives on its own Chat tab", async () => {
