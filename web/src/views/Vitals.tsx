@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
-import { HISTORY_RANGES, countMax, instanceSeries, niceMax, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { HISTORY_RANGES, countMax, instanceSeries, loginStatus, niceMax, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
@@ -61,24 +61,26 @@ export function UsageCard() {
 function UsageGroupRows({ group: g }: { group: UsageGroup }) {
   const [hover, setHover] = useState(false);
   const coarse = useCoarse();
+  const status = g.state ? loginStatus(g.state) : null;
   return (
     <div data-slot="usage-group" data-group={g.key} className={`mb-1 last:mb-0 ${g.dim ? "opacity-50" : ""}`}>
-      <div className="flex items-baseline justify-between gap-2 px-2 pt-1.5 pb-1" onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
-        <span className="flex min-w-0 items-baseline gap-1.5">
-          <span className="truncate text-xs font-medium" title={g.subtitle}>{g.title}</span>
+      {/* One line however long the name or the reason: the status is one word right after the name
+          (its reason in the tooltip), the name truncates rather than pushing the row out, and the
+          email gives way first. */}
+      <div data-slot="usage-group-header" className="flex max-w-full min-w-0 items-center justify-between gap-2 px-2 pt-1.5 pb-1" onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span data-slot="usage-group-title" className="min-w-0 truncate text-xs font-medium" title={g.subtitle ? `${g.title} · ${g.subtitle}` : g.title}>{g.title}</span>
+          {status && <Pill tone={status.tone} slot="usage-state" title={status.detail}>{status.label}</Pill>}
           {g.name && (hover || coarse) && <LoginToggle name={g.name} enabled={g.state !== "disabled"} />}
         </span>
-        <span className="flex items-center gap-1.5">
-          {g.subtitle && <span className="text-muted-foreground truncate text-xs">{g.subtitle}</span>}
-          {g.state && <Pill tone={g.state === "exhausted" || g.state === "locked" ? "red" : "default"} slot="usage-state">{g.state}</Pill>}
-        </span>
+        {g.subtitle && <span className="text-muted-foreground min-w-0 shrink-[2] truncate text-xs">{g.subtitle}</span>}
       </div>
       {g.rows.map((r) => (
         <div key={r.key} data-slot="usage-row" title={r.resetsIn ? `resets in ${r.resetsIn}` : undefined}
           className="hover:bg-accent/60 flex h-9 items-center gap-2.5 rounded-md px-2 text-sm">
           <Ring pct={r.pct} />
           <span className="min-w-0 flex-1 truncate">{r.label}</span>
-          {r.resetsIn && <span className="text-muted-foreground hidden text-xs sm:inline">resets {r.resetsIn}</span>}
+          {(r.resetsIn || r.resetNote) && <span data-slot="usage-reset" className="text-muted-foreground hidden text-xs sm:inline">{r.resetsIn ? `resets ${r.resetsIn}` : r.resetNote}</span>}
           <span className="text-muted-foreground shrink-0 tabular-nums"><span className="text-foreground">{r.value}</span> / {r.limit}</span>
         </div>
       ))}

@@ -189,11 +189,12 @@ test("logins that can't be routed to are excluded from the fleet mean but still 
   await act(async () => { header().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   expect(group("fleet")!.textContent).toContain("1 login in rotation · 1 exhausted"); // only `work` is in rotation…
   expect(rows("fleet")[0]).toBe("5-hour window 95% / 100%");                          // …so the mean IS its reading
-  expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("exhausted");
-  expect(group("login:spare")!.textContent).toContain("not signed in on this machine");
+  expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Limited");
+  expect(group("login:spare")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Signed-out");
+  expect(group("login:spare")!.querySelector("[data-slot='usage-state']")!.getAttribute("title")).toContain("Not signed in on this machine");
   expect(rows("login:spare")).toEqual([]);
   expect(group("login:spare")!.className).toContain("opacity-50");
-  expect(group("login:old")!.textContent).toContain("disabled");
+  expect(group("login:old")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Disabled");
 });
 
 test("aggregateProfiles: mean per window over the rotation, soonest reset, null when nothing is in rotation", () => {
@@ -202,7 +203,7 @@ test("aggregateProfiles: mean per window over the rotation, soonest reset, null 
     { name: "a", state: "ok", usage: { fiveHour: w(10, "2026-09-14T15:00:00Z"), sevenDay: w(20), extra: null, fable: w(30) } },
     { name: "b", state: "exhausted", usage: { fiveHour: w(90, "2026-09-14T13:00:00Z"), sevenDay: w(40), extra: null, fable: null } },
     { name: "c", state: "disabled", usage: { fiveHour: w(0), sevenDay: w(0), extra: null, fable: null } },
-  ])).toEqual({ count: 2, exhausted: 1, fiveHour: w(50, "2026-09-14T13:00:00Z"), sevenDay: w(30), fable: w(30) });
+  ], Date.parse("2026-09-14T12:00:00Z"))).toEqual({ count: 2, exhausted: 1, fiveHour: w(50, "2026-09-14T13:00:00Z"), sevenDay: w(30), fable: w(30) });
   expect(aggregateProfiles([{ name: "x", state: "not signed in on this machine", usage: null }])).toBeNull();
 });
 
@@ -302,7 +303,7 @@ test("a hydra login's row shows a switch on hover: flipping it disables/enables 
   const mouse = (el: Element, type: "mouseover" | "mouseout") => act(async () => { el.dispatchEvent(new MouseEvent(type, { bubbles: true, relatedTarget: null })); await flush(); });
   const click = (el: Element) => act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   await click(card().querySelector("[data-slot='usage-toggle']")!); // the logins wait behind the chevron
-  const header = () => group("login:work")!.querySelector<HTMLElement>(".flex.items-baseline")!;
+  const header = () => group("login:work")!.querySelector<HTMLElement>("[data-slot='usage-group-header']")!;
   const row = () => group("login:work")!.querySelector<HTMLElement>("[data-slot='login-toggle']");
 
   // Not in the DOM at all until the row is hovered — no reserved space on a row that isn't (always
@@ -318,7 +319,7 @@ test("a hydra login's row shows a switch on hover: flipping it disables/enables 
   await click(row()!);
   expect(apiFake.setProfileEnabledCalls).toEqual([{ name: "work", enabled: false, instance: "laptop" }]);
   expect(row()!.getAttribute("aria-checked")).toBe("false"); // flipped from the refreshed profile list
-  expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("disabled");
+  expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Disabled");
   expect(group("login:work")!.className).toContain("opacity-50"); // muted, same as any out-of-rotation login
   expect(row()!.getAttribute("title")).toBe("Put work back");
 
@@ -336,7 +337,7 @@ test("a failed toggle goes to the error toast and the switch reverts", async () 
   apiFake.setProfileEnabledError = "hydra: no such profile";
   await mount("/usage");
   await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
-  const header = group("login:work")!.querySelector<HTMLElement>(".flex.items-baseline")!;
+  const header = group("login:work")!.querySelector<HTMLElement>("[data-slot='usage-group-header']")!;
   await act(async () => { header.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: null })); await flush(); });
   const row = group("login:work")!.querySelector<HTMLElement>("[data-slot='login-toggle']")!;
   await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
@@ -344,4 +345,54 @@ test("a failed toggle goes to the error toast and the switch reverts", async () 
   const toast = container!.querySelector('[data-slot="toast"]')!;
   expect(toast.textContent).toContain("Disable failed");
   expect(toast.textContent).toContain("hydra: no such profile");
+});
+
+test("the fleet's 5-hour countdown shows even when a stale login's window already reset — that window reads empty, as hydra counts it", async () => {
+  const at = (mins: number) => new Date(Date.now() + mins * 60_000).toISOString();
+  apiFake.usageData = {
+    claude: null, codex: null,
+    profiles: [
+      { name: "personal", state: "ok", usage: { fiveHour: { utilization: 38, resetsAt: at(125) }, sevenDay: { utilization: 9, resetsAt: at(5 * 1440) }, extra: null, fable: null } },
+      // A stale token: its last reading says 100% with a reset time that has since passed.
+      { name: "default", state: "token stale — refreshes on next launch", usage: { fiveHour: { utilization: 100, resetsAt: at(-90) }, sevenDay: { utilization: 39, resetsAt: at(3 * 1440) }, extra: null, fable: null } },
+      // No 5-hour usage yet: hydra has no reset for a window that hasn't opened.
+      { name: "work", state: "ok", usage: { fiveHour: { utilization: 0, resetsAt: null }, sevenDay: { utilization: 39, resetsAt: at(2 * 1440) }, extra: null, fable: null } },
+    ],
+  };
+  await mount();
+  // Mean of 38, 0 (rolled over) and 0 → 13; the soonest reset STILL TO COME is personal's.
+  expect(rows("fleet")[0]).toBe("5-hour window resets 2h 5m 13% / 100%");
+  expect(rows("fleet")[1]).toContain("resets 2d");
+  await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(rows("login:personal")[0]).toBe("5-hour window resets 2h 5m 38% / 100%");
+  expect(rows("login:default")[0]).toBe("5-hour window starts on next use 0% / 100%");
+  expect(rows("login:work")[0]).toBe("5-hour window starts on next use 0% / 100%");
+});
+
+test("a login's status is one word right after its name, the reason in a tooltip, and a long name truncates instead of pushing the row out", async () => {
+  const one = { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null };
+  const long = "a-very-long-hydra-login-name-that-would-not-fit";
+  apiFake.usageData = { claude: null, codex: null, profiles: [{ name: long, email: "someone@example.com", state: "token stale — refreshes on next launch", usage: one }] };
+  getDefaultStore().set(usageExpandedAtom, true);
+  await mount();
+  const header = group(`login:${long}`)!.querySelector("[data-slot='usage-group-header']")!;
+  const [left] = [...header.children];
+  const title = left!.querySelector("[data-slot='usage-group-title']")!;
+  const pill = left!.querySelector("[data-slot='usage-state']")!;
+  expect(pill.textContent).toBe("Stale");
+  expect(pill.getAttribute("title")).toBe("Token stale — refreshes on next launch; the usage shown may be old");
+  expect(title.nextElementSibling).toBe(pill); // straight after the name
+  expect(title.className).toContain("truncate");
+  expect(title.className).toContain("min-w-0");
+  expect(header.className).toContain("max-w-full");
+  expect(header.lastElementChild!.className).toContain("truncate"); // the email gives way too
+});
+
+test("loginStatus: every hydra state is one word, with the full reason kept for the tooltip", async () => {
+  const { loginStatus } = await import("../web/src/workstream");
+  const states = ["not signed in on this machine", "disabled", "locked", "exhausted", "token stale — refreshes on next launch", "no usage data yet", "token expired", "rate-limited by upstream"];
+  const labels = states.map((s) => loginStatus(s).label);
+  expect(labels).toEqual(["Signed-out", "Disabled", "Locked", "Limited", "Stale", "New", "Expired", "Rate"]);
+  for (const l of labels) expect(l).not.toContain(" ");
+  expect(loginStatus("rate-limited by upstream").detail).toBe("Rate-limited by upstream");
 });

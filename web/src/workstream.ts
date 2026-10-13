@@ -1565,7 +1565,11 @@ type UsageReading = {
 };
 
 /** One line of the Usage card, Vercel's shape: a ring at `pct`, a label, and value / limit. */
-export type UsageRow = { key: string; label: string; pct: number; value: string; limit: string; resetsIn: string | null };
+export type UsageRow = {
+  key: string; label: string; pct: number; value: string; limit: string; resetsIn: string | null;
+  /** Said in the countdown's place when there is no reset to count to: a window not yet opened. */
+  resetNote?: string;
+};
 /** A block of rows under one heading: the fleet, one hydra login, Codex. `state` is hydra's verdict
  *  when it isn't "ok"; `dim` when hydra can't route to that login. `name` is the hydra login name
  *  (set only for a `login:` group) — what the enable/disable toggle sends back to the server. */
@@ -1576,19 +1580,45 @@ type LoginReading = { name: string; usage: ClaudeReading | null; state?: string;
 
 /** Logins hydra can't route to right now: no reading, or deliberately out of the rotation. Exhausted
  *  and locked logins DO count — they hold a real reading and are exactly what pulls the fleet up. */
+/** A window as it stands NOW — hydra's own rule (its `eff`): once the reset time has passed, the
+ *  window has rolled over and is empty, whatever the (older) reading said. A stale login's reading
+ *  keeps a past `resets`; carried as-is it hid the fleet's 5-hour countdown (the soonest reset was
+ *  that past time, which `untilReset` drops) and showed a used-up window that had already reset. */
+export function liveWindow(w: Window, now = Date.now()): Window {
+  return w.resetsAt && Date.parse(w.resetsAt) <= now ? { utilization: 0, resetsAt: null } : w;
+}
+
+/** A hydra login's state as ONE word for its pill, the full reason in its tooltip. hydra's states:
+ *  `hydra`'s `state()` — not signed in on this machine, disabled, locked, exhausted, token stale —
+ *  refreshes on next launch, no usage data yet, ok. Anything newer reads as its first word. */
+export function loginStatus(state: string): { label: string; detail: string; tone: "default" | "amber" | "red" } {
+  if (state === "not signed in on this machine") return { label: "Signed-out", detail: "Not signed in on this machine — hydra login <name> to add it", tone: "default" };
+  if (state === "disabled") return { label: "Disabled", detail: "Disabled — out of hydra's rotation until you enable it", tone: "default" };
+  if (state === "locked") return { label: "Locked", detail: "Locked — hydra won't route to this login", tone: "red" };
+  if (state === "exhausted") return { label: "Limited", detail: "Exhausted — a usage window is at hydra's threshold; skipped until it resets", tone: "red" };
+  if (state.startsWith("token stale")) return { label: "Stale", detail: "Token stale — refreshes on next launch; the usage shown may be old", tone: "amber" };
+  if (state === "no usage data yet") return { label: "New", detail: "No usage data yet — it fills in after the first run", tone: "default" };
+  if (/expired/i.test(state)) return { label: "Expired", detail: state.charAt(0).toUpperCase() + state.slice(1), tone: "red" };
+  const word = state.split(/[\s—-]+/)[0] ?? state;
+  return { label: word.charAt(0).toUpperCase() + word.slice(1), detail: state.charAt(0).toUpperCase() + state.slice(1), tone: "default" };
+}
+
 export const outOfRotation = (p: { usage: unknown; state?: string }): boolean => !p.usage || p.state === "disabled" || p.state === "not signed in on this machine";
 
 export type FleetUsage = { count: number; exhausted: number; fiveHour: Window; sevenDay: Window; fable: Window | null };
 
 /** One reading for the whole fleet: the mean utilization per window across the logins in rotation,
- *  with the soonest reset. Null when nothing is in rotation. */
-export function aggregateProfiles(profiles: LoginReading[]): FleetUsage | null {
+ *  with the soonest reset still to come (`liveWindow`). Null when nothing is in rotation. */
+export function aggregateProfiles(profiles: LoginReading[], now = Date.now()): FleetUsage | null {
   const live = profiles.filter((p) => !outOfRotation(p));
   if (!live.length) return null;
-  const mean = (ws: Window[]): Window => ({
-    utilization: Math.round(ws.reduce((s, w) => s + w.utilization, 0) / ws.length),
-    resetsAt: ws.map((w) => w.resetsAt).filter((r): r is string => Boolean(r)).sort()[0] ?? null,
-  });
+  const mean = (raw: Window[]): Window => {
+    const ws = raw.map((w) => liveWindow(w, now));
+    return {
+      utilization: Math.round(ws.reduce((s, w) => s + w.utilization, 0) / ws.length),
+      resetsAt: ws.map((w) => w.resetsAt).filter((r): r is string => Boolean(r)).sort()[0] ?? null,
+    };
+  };
   const fables = live.map((p) => p.usage!.fable).filter((w): w is Window => Boolean(w));
   return {
     count: live.length,
@@ -1602,8 +1632,13 @@ export function aggregateProfiles(profiles: LoginReading[]): FleetUsage | null {
 function claudeRows(key: string, c: ClaudeReading, now: number): UsageRow[] {
   const rows: UsageRow[] = [];
   for (const [field, label] of CLAUDE_WINDOWS) {
-    const w = c[field] as Window | null | undefined;
-    if (w) rows.push({ key: `${key}:${field}`, label, pct: w.utilization, value: `${w.utilization}%`, limit: "100%", resetsIn: untilReset(w.resetsAt, now) });
+    const raw = c[field] as Window | null | undefined;
+    if (!raw) continue;
+    const w = liveWindow(raw, now);
+    // No reset and nothing used: the window opens on the next message (Claude's 5-hour window is
+    // counted from its first use), so there is nothing to count down to yet — say that, not nothing.
+    rows.push({ key: `${key}:${field}`, label, pct: w.utilization, value: `${w.utilization}%`, limit: "100%", resetsIn: untilReset(w.resetsAt, now),
+      ...(!w.resetsAt && w.utilization === 0 ? { resetNote: "starts on next use" } : {}) });
   }
   if (c.extra) rows.push({
     key: `${key}:extra`, label: "Extra usage", pct: c.extra.utilization,
@@ -1619,7 +1654,7 @@ export function usageGroups(u: UsageReading | null, now = Date.now()): UsageGrou
   const groups: UsageGroup[] = [];
   const profiles = u.profiles ?? [];
   if (profiles.length) {
-    const fleet = aggregateProfiles(profiles);
+    const fleet = aggregateProfiles(profiles, now);
     groups.push(fleet ? {
       key: "fleet", title: "Claude", subtitle: `${fleet.count} login${fleet.count === 1 ? "" : "s"} in rotation${fleet.exhausted ? ` · ${fleet.exhausted} exhausted` : ""}`,
       rows: claudeRows("fleet", { fiveHour: fleet.fiveHour, sevenDay: fleet.sevenDay, fable: fleet.fable, extra: null }, now),
