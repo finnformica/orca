@@ -232,6 +232,8 @@ export async function createPr(
 export type PrSummary = PrStatus & {
   number: number; title: string; branch: string; base?: string; url: string; isDraft: boolean; autoMergeEnabled: boolean;
   previewUrl?: string; hasPreviewLabel?: boolean; externalFeedback: number; failingChecks?: string[]; feedback?: string[];
+  /** The PR's own diffstat — gh computes it in the same list call, so the Agents row's +/- is free. */
+  additions: number; deletions: number;
 };
 
 /** Pull a deploy-preview URL out of a PR's comments (posted by the pr-preview action). */
@@ -258,12 +260,14 @@ export function countExternalFeedback(
 // High-level PR fields, cheap to list. Deliberately EXCLUDES the two per-PR fields gh fetches one
 // call at a time — `comments` and `statusCheckRollup` (CI). Together they turn a ~3s list of 200
 // PRs into ~14s, so both are detail-only (see listReviewPrs / prDetail). What's left are plain
-// index fields (state/draft/mergeable/reviewDecision) that come back in the single list call.
-const PR_META_FIELDS = "number,title,headRefName,baseRefName,url,state,isDraft,mergeable,reviewDecision,autoMergeRequest";
+// index fields (state/draft/mergeable/reviewDecision) that come back in the single list call —
+// additions/deletions among them, so the Agents row's diffstat costs nothing extra.
+const PR_META_FIELDS = "number,title,headRefName,baseRefName,url,state,isDraft,mergeable,reviewDecision,autoMergeRequest,additions,deletions";
 type RawPr = {
   number: number; title: string; headRefName: string; baseRefName?: string; url: string;
   state: string; isDraft: boolean; mergeable: string; reviewDecision: string;
   autoMergeRequest?: { enabledAt?: string } | null;
+  additions?: number; deletions?: number;
   statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string }>;
   author?: { login?: string };
   comments?: Array<{ author?: { login?: string }; body?: string }>;
@@ -304,6 +308,8 @@ const mapSummary = (j: RawPr, required: Set<string> = new Set(), previewLabelNam
     externalFeedback: countExternalFeedback(j.author?.login ?? "", j.comments, j.reviews),
     failingChecks: failingChecks.length ? failingChecks : undefined,
     feedback: feedback.length ? feedback : undefined,
+    additions: j.additions ?? 0,
+    deletions: j.deletions ?? 0,
   };
 };
 

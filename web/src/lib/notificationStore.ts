@@ -161,3 +161,12 @@ export async function markRead(ids: number[] | "all"): Promise<void> {
   if (state.list.some(hit)) set({ list: state.list.map((n) => (hit(n) ? { ...n, readAt: at } : n)) });
   await api.notificationsRead(ids).catch(() => {});
 }
+
+/** Undo an optimistic `markRead`: a quick action marked its notification read before firing its
+ *  verb in the background, and the verb failed — back to unread, local-only (there is no "unread"
+ *  route on the bridge; this reverts our own prediction, it doesn't ask the bridge for anything). */
+export function restoreUnread(ids: number[]): void {
+  if (state.list.some((n) => ids.includes(n.id) && n.readAt)) {
+    set({ list: state.list.map((n) => (ids.includes(n.id) ? { ...n, readAt: undefined } : n)) });
+  }
+}

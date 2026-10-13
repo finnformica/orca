@@ -217,6 +217,38 @@ describe("the phone layout (390px, touch)", () => {
     expect($('[data-slot="filters-active"]')!.textContent).toBe("1");
   });
 
+  test("Agents at 390px: a PR row is a taller card — title+status on line 1, branch/model/PR/preview/diffstat on line 2, the ⋯ off to the side (no fixed-width columns, nothing sits under it)", async () => {
+    apiFake.prsData = [{
+      number: 12, title: "feat wide", branch: "feat-wide", url: "https://x/12", state: "OPEN", isDraft: false,
+      ciStatus: "passing", reviewStatus: "review_required", mergeable: "MERGEABLE", autoMergeEnabled: false,
+      additions: 42, deletions: 9,
+    }];
+    await mount("/agents", true);
+    const row = $('[data-branch="feat-wide"]')!;
+    expect(row.dataset.layout).toBe("stacked");
+    // No fixed-width columns on a phone: no inline grid template, no arbitrary min-width class.
+    expect(row.style.gridTemplateColumns).toBe("");
+    expect(row.querySelector('[class*="min-w-["]')).toBeNull();
+    const cells = [...row.querySelectorAll('[role="cell"]')];
+    const [line1, line2, line3] = cells;
+    // Line 1: title and status share the row.
+    expect(line1!.textContent).toContain("feat wide");
+    expect(line1!.querySelector('[data-slot="run-status"]')).not.toBeNull();
+    // Line 2: branch, model, PR, preview info, diffstat — none of that spills into line 1 or line 3.
+    expect(line2!.textContent).toContain("feat-wide");
+    expect(line2!.querySelector('a[title="Open PR #12 on GitHub"]')).not.toBeNull();
+    expect(line2!.querySelector('[data-slot="pr-preview-inline"]')).not.toBeNull();
+    expect(line2!.querySelector('[data-slot="diffstat"]')!.textContent).toBe("+42 −9");
+    expect(line1!.querySelector('[data-slot="diffstat"]')).toBeNull();
+    expect(line2!.querySelector('[data-slot="state-pill"]')).toBeNull();
+    // The state pill and PR condition badges are their own wrapping line, after line 2.
+    expect(line3!.querySelector('[data-slot="state-pill"]')).not.toBeNull();
+    // The ⋯ menu is a flex sibling of the text column, not absolutely positioned over it.
+    expect(row.className).not.toContain("relative");
+    const menuButton = row.querySelector<HTMLElement>('button[aria-label="Actions"]')!;
+    expect(menuButton.closest('[class*="absolute"]')).toBeNull();
+  });
+
   test("the orchestrator opens as a routed page, not the overlay panel: no drag, resize or pop out", async () => {
     await mount("/", true);
     expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false);

@@ -15,7 +15,7 @@ import {
   type ActivityItem, type OverviewLane,
 } from "../workstream";
 import { Empty, SectionTitle, StatSkeleton, StatusDot, VCard, type DotTone } from "@/components/console";
-import { InstanceCard, UsageCard } from "./Vitals";
+import { InstanceCard, RefreshVitals, UsageCard } from "./Vitals";
 import { detailPath } from "./Agents";
 
 export function Overview() {
@@ -35,7 +35,7 @@ export function Overview() {
       </div>
       <div className="min-w-0 space-y-6">
         <div>
-          <SectionTitle>{machines.length > 1 ? "Instances" : "Instance"}</SectionTitle>
+          <SectionTitle aside={<RefreshVitals />}>{machines.length > 1 ? "Instances" : "Instance"}</SectionTitle>
           <div className="space-y-4">
             {machines.length ? machines.map((m) => <InstanceCard key={m} instance={m} here={m === here || !instances.length} />)
               : <VCard><Empty>Loading…</Empty></VCard>}
@@ -112,18 +112,22 @@ function Stat({ slot, label, value, onClick, dot, below }: { slot: string; label
   );
 }
 
-/** Runs started per hour over the last 24h — a one-line trend under "Running". */
+/** Runs started per hour over the last 24h — a one-line trend under "Running". The viewBox is padded
+ *  by half the stroke on every side: a peak sits on y=0 and a quiet hour on y=H, and an unpadded
+ *  18px box clipped half the line away there, so it read 0.75px at the extremes and 1.5px between.
+ *  The stroke itself is non-scaling, so the box stretching with the card never thickens it. */
 function RunsSparkline({ values }: { values: number[] }) {
-  const W = 120, H = 18, max = Math.max(1, ...values);
+  const W = 120, H = 18, PAD = SPARK_STROKE / 2, max = Math.max(1, ...values);
   const pts = values.map((v, i) => ({ at: i, v }));
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" className="text-geist-blue h-[18px] w-full" role="img" aria-label={`Runs started per hour, last 24 hours: ${values.reduce((a, b) => a + b, 0)} total`}>
+    <svg viewBox={`0 ${-PAD} ${W} ${H + 2 * PAD}`} preserveAspectRatio="none" className="text-geist-blue h-[18px] w-full" role="img" aria-label={`Runs started per hour, last 24 hours: ${values.reduce((a, b) => a + b, 0)} total`}>
       {sparklineSegments(pts, { from: 0, to: Math.max(1, values.length - 1), max, w: W, h: H, gapMs: Infinity }).map((p, i) => (
-        <polyline key={i} points={p} fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+        <polyline key={i} points={p} fill="none" stroke="currentColor" strokeWidth={SPARK_STROKE} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
       ))}
     </svg>
   );
 }
+const SPARK_STROKE = 1.5;
 
 // ---- Recent activity (Vercel's Recent Previews) ----
 

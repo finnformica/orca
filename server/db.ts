@@ -447,7 +447,18 @@ export const MIGRATIONS: MigrationStep[] = [
     `,
   },
   {
-    // 18, not 16: #152 and the instance-charts branch were open with 16 and 17 when this was written.
+    // 17, not 16: the attachments branch (#152) holds 16 while both are open.
+    id: 17,
+    name: "instance-metric-cost",
+    idempotent: true,
+    // What the agent runs that finished on this instance since its previous sample cost, in USD —
+    // the providers' own reported cost (Claude's `total_cost_usd`, as the run ledger records it). A
+    // per-sample delta, not a running total, so the instance cards' Cost accrued chart is a sum over
+    // whichever range they show. Nullable: older rows read back as 0.
+    sql: `ALTER TABLE instance_metric ADD COLUMN IF NOT EXISTS cost_usd DOUBLE PRECISION`,
+  },
+  {
+    // 18, not 16: #152 holds 16; 17 is instance-metric-cost.
     id: 18,
     name: "turn-source",
     idempotent: true,
@@ -1124,7 +1135,11 @@ export async function instances(): Promise<{ name: string; seenAt: number }[]> {
 
 // ---- instance metrics (the health chip's history) ----
 
-export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; runningAgents: number };
+export type MetricPoint = {
+  at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; runningAgents: number;
+  /** USD of the runs that finished here since the previous sample (migration 17); 0 before it. */
+  costUsd: number;
+};
 
 /** How long a metric row is kept. */
 export const METRIC_RETENTION_MS = 30 * 24 * 3_600_000;
@@ -1133,7 +1148,7 @@ export const METRIC_RETENTION_MS = 30 * 24 * 3_600_000;
  *  a delete per insert is cheap on the (instance, at) index, and it needs no second timer. Each
  *  instance prunes only its own rows: the other may be on an older build, but never on someone
  *  else's timer. `at` is injectable for tests. */
-export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()): Promise<void> {
+export async function recordMetric(p: Omit<MetricPoint, "at" | "costUsd"> & { costUsd?: number }, at = Date.now()): Promise<void> {
   return withRetry(async (sql) => {
     const instance = instanceName();
     // `instance_metric` has no unique constraint on (instance, at) — a retry that re-ran just the
@@ -1142,10 +1157,47 @@ export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()):
     // neither.
     await sql.begin(async (tx: Bun.SQL) => {
       await tx`
-        INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents)
-        VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null}, ${p.runningAgents})`;
+        INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents, cost_usd)
+        VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null}, ${p.runningAgents}, ${p.costUsd ?? 0})`;
       await tx`DELETE FROM instance_metric WHERE instance = ${instance} AND at < ${new Date(at - METRIC_RETENTION_MS)}`;
     });
+  });
+}
+
+/** Fill in the cost of samples written before migration 17 (their `cost_usd` is NULL) from the runs
+ *  this instance's ledger remembers: each run goes to the first sample at or after it — the one whose
+ *  window would have counted it. A row the sampler wrote is never NULL, so a run it already counted
+ *  is skipped and re-running this changes nothing. Returns how many rows were filled. */
+export async function backfillMetricCost(runs: { at: number; usd: number }[], instance = instanceName()): Promise<number> {
+  if (!runs.length) return 0;
+  return withRetry(async (sql) => {
+    const from = Math.min(...runs.map((r) => r.at));
+    const rows = (await sql`
+      SELECT id, at, cost_usd IS NULL AS open FROM instance_metric
+      WHERE user_id = ${currentUser()} AND instance = ${instance} AND at >= ${new Date(from)}
+      ORDER BY at`) as { id: string; at: Date; open: boolean }[];
+    const ats = rows.map((r) => new Date(r.at).getTime());
+    const fill = new Map<string, number>();
+    for (const run of runs) {
+      let lo = 0, hi = ats.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (ats[mid]! < run.at) lo = mid + 1; else hi = mid; }
+      const row = rows[lo];
+      if (row?.open) fill.set(row.id, (fill.get(row.id) ?? 0) + run.usd);
+    }
+    if (!fill.size) return 0;
+    await sql.begin(async (tx: Bun.SQL) => {
+      for (const [id, usd] of fill) await tx`UPDATE instance_metric SET cost_usd = ${Math.round(usd * 1e6) / 1e6} WHERE id = ${id} AND cost_usd IS NULL`;
+    });
+    return fill.size;
+  });
+}
+
+/** When this instance last sampled itself — where the sampler's first cost window starts after a
+ *  restart, so a run that finished while the bridge was down is still counted once. */
+export async function lastMetricAt(instance = instanceName()): Promise<number | null> {
+  return withRetry(async (sql) => {
+    const [r] = await sql`SELECT max(at) AS at FROM instance_metric WHERE user_id = ${currentUser()} AND instance = ${instance}`;
+    return r?.at ? new Date(r.at).getTime() : null;
   });
 }
 
@@ -1153,12 +1205,13 @@ export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()):
 export async function metricHistory(instance: string, hours: number, now = Date.now()): Promise<MetricPoint[]> {
   return withRetry(async (sql) => {
     const rows = await sql`
-      SELECT at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents FROM instance_metric
+      SELECT at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents, cost_usd FROM instance_metric
       WHERE user_id = ${currentUser()} AND instance = ${instance} AND at >= ${new Date(now - hours * 3_600_000)}
       ORDER BY at`;
-    return (rows as { at: Date; cpu_pct: number; load1: number; mem_used_gb: number; mem_total_gb: number; disk_used_gb: number | null; running_agents: number | null }[]).map((r) => ({
+    return (rows as { at: Date; cpu_pct: number; load1: number; mem_used_gb: number; mem_total_gb: number; disk_used_gb: number | null; running_agents: number | null; cost_usd: number | null }[]).map((r) => ({
       at: new Date(r.at).getTime(), cpuPct: Number(r.cpu_pct), load1: Number(r.load1), memUsedGb: Number(r.mem_used_gb), memTotalGb: Number(r.mem_total_gb),
       runningAgents: r.running_agents == null ? 0 : Number(r.running_agents),
+      costUsd: r.cost_usd == null ? 0 : Number(r.cost_usd),
       ...(r.disk_used_gb == null ? {} : { diskUsedGb: Number(r.disk_used_gb) }),
     }));
   });
