@@ -54,14 +54,6 @@ export const quickAskOpenAtom = atom(false);
 // `unread` once a wake finished while the panel was closed (cleared when it opens). One subscriber
 // (useOrchestratorActivity in components/Terminal) keeps it current from the live stream.
 export const orchestratorActivityAtom = atom<{ running: boolean; unread: boolean }>({ running: false, unread: false });
-// The orchestrator chat's channel (workstream.ts OrchestratorChannel): Chat — you and its replies, the
-// default on every load — or Agents, the worker traffic. Shared by the side panel and the routed page,
-// whose headers hold the toggle. `agentsSeen` is when you last looked at Agents (0 = never: the first
-// load starts the count from then); `agentsUnread` is the toggle's count, kept by the ChatPanel that
-// has the turns.
-export const orchestratorChannelAtom = atom<"chat" | "agents">("chat");
-export const orchestratorAgentsSeenAtom = persistedAtom<number>("orchestratorAgentsSeen", 0, isNumber);
-export const orchestratorAgentsUnreadAtom = atom(0);
 export const addNewOpenAtom = atom(false);
 export const paletteOpenAtom = atom(false);
 export const shortcutsHelpOpenAtom = atom(false);

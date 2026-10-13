@@ -2114,12 +2114,13 @@ export const RECENT_FULL = 3;
 export const longReply = (t: { response?: string; structured?: unknown }): boolean =>
   Boolean(t.structured) || (t.response ?? "").split("\n").length > 4 || (t.response ?? "").length > 320;
 
-// ---- the orchestrator's two channels ----
-// Chat is the conversation with you: your turns and its replies to them. Agents is the worker
-// traffic: the wakes worker reports caused and its replies to those. In Chat, a run of agent turns is
-// ONE collapsed marker ("3 worker reports · 2 replies"), so you know they happened without the bulk.
+// ---- worker traffic in the orchestrator's chat ----
+// One stream. Your turns and its replies to them read as the conversation; the worker traffic — the
+// wakes worker reports caused and its replies to those — is split out of it: a run of agent turns is
+// ONE collapsed block ("3 worker reports · 2 replies"), so you know they happened without the bulk.
+// (History: a Chat | Agents toggle split them into two channels; a wake carrying your message AND
+// reports counted as yours, so most worker traffic never reached Agents — the user asked for this.)
 
-export type OrchestratorChannel = "chat" | "agents";
 type Sourced = { source?: TurnSource; instruction?: string; prompt?: string; finishedAt?: number; startedAt?: number };
 
 /** A turn's source: recorded since migration 18; a row without it (a worker's turn, a client ahead of
@@ -2127,12 +2128,11 @@ type Sourced = { source?: TurnSource; instruction?: string; prompt?: string; fin
 export const sourceOf = (t: Sourced): TurnSource =>
   t.source ?? turnSource((t.instruction ?? promptInstruction(t.prompt ?? "")).split("\n\n"));
 
-export type ChannelItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] };
-/** What a channel renders. Chat: your turns, with each run of agent turns between them as one marker.
- *  Agents: the agent turns alone, each in full. */
-export function channelItems<T extends Sourced>(turns: T[], channel: OrchestratorChannel): ChannelItem<T>[] {
-  if (channel === "agents") return turns.filter((t) => sourceOf(t) === "agents").map((turn) => ({ kind: "turn", turn }));
-  const out: ChannelItem<T>[] = [];
+export type ChatItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] };
+/** What the orchestrator's chat renders: your turns, with each run of agent turns between them as one
+ *  collapsed block. */
+export function chatItems<T extends Sourced>(turns: T[]): ChatItem<T>[] {
+  const out: ChatItem<T>[] = [];
   for (const t of turns) {
     const last = out[out.length - 1];
     if (sourceOf(t) === "human") out.push({ kind: "turn", turn: t });
@@ -2142,7 +2142,7 @@ export function channelItems<T extends Sourced>(turns: T[], channel: Orchestrato
   return out;
 }
 
-/** The Chat channel's marker line for a run of agent turns. */
+/** The collapsed block's line for a run of agent turns. */
 export function agentsMarker(turns: Sourced[]): string {
   const reports = turns.reduce((n, t) => n + (t.instruction ?? promptInstruction(t.prompt ?? "")).split("\n\n").filter(isWorkerEvent).length, 0);
   const replies = turns.filter((t) => t.finishedAt).length;
@@ -2154,6 +2154,3 @@ export function agentsMarker(turns: Sourced[]): string {
   ].join(" · ");
 }
 
-/** The Agents toggle's count: agent turns that started after you last looked at that channel. */
-export const agentsUnread = (turns: Sourced[], seenAt: number): number =>
-  turns.filter((t) => sourceOf(t) === "agents" && (t.startedAt ?? 0) > seenAt).length;

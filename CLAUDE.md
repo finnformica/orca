@@ -404,18 +404,17 @@ stays MOUNTED while closed (slid out, `aria-hidden`), so reopening is instant wi
 scroll position and draft where you left them. Its chat is `ChatPanel variant="chat"`: an
 assistant-chat styling in the page's theme (`.log-themed`) — your messages as `bg-accent` bubbles on
 the right, replies under "Orchestrator" with a bot avatar, folded steps and `⚙` worker reports,
-day dividers (`dayLabel`), timestamps on hover. **Two channels**, a Chat | Agents `Segmented` in the
-panel's and the `/orchestrator` page's header (`orchestratorChannelAtom`, Chat on every load):
-**Chat** is you and its replies to you; **Agents** is the worker traffic — the wakes worker reports
-caused and its replies to those — with a count on the toggle of agent turns since you last looked
-there (`agentsUnread`, the mark `orca.ui.v1.orchestratorAgentsSeen`; the first load starts it at
-now). In Chat a run of agent turns is ONE collapsed line, `⚙ 3 worker reports · 2 replies`, that
-expands inline (`channelItems` / `agentsMarker` in `workstream.ts`); a wake that carried your message
-AND reports is a Chat turn, your words in the bubble and the reports folded above. Held reports show
-in Agents, your queued messages in Chat; sending switches to Chat. The split rides `turn.source`
-(`human` | `agents`, `shared/agent.ts` `TurnSource`; migration 18 — 16 and 17 were held by open
-branches — backfilled from the stored text): `human` is anything you said (typed, quick-ask, the
-palette, a toast's Ask, the New-draft box, Compact), `agents` a wake whose every message is a
+day dividers (`dayLabel`), timestamps on hover. **One stream, worker traffic split out**: your
+messages and its replies to them read as the conversation; each run of agent turns (the wakes worker
+reports caused and its replies) is ONE collapsed, blue-tinted `⚙ 3 worker reports · 2 replies` block
+that opens in place, and a wake that carried your message AND reports puts your words in the bubble
+with the reports as their own collapsed block above it (`WorkerBlock`; `chatItems` / `agentsMarker` in
+`workstream.ts`). Held reports and your queued messages both show. (History: a Chat | Agents toggle
+split these into two channels; a wake carrying your message and reports counted as yours, so most
+worker traffic never reached Agents, and the user asked for this instead.) The split rides
+`turn.source` (`human` | `agents`, `shared/agent.ts` `TurnSource`; migration 18 — 16 and 17 were held
+by open branches — backfilled from the stored text): `human` is anything you said (typed, quick-ask,
+the palette, a toast's Ask, the New-draft box, Compact), `agents` a wake whose every message is a
 `[worker finished]` report (`turnSource`, decided in `orchestrator.wake`). A row without it is read
 off its instruction the same way (`sourceOf`). (History: a modal, then a draggable/resizable corner
 window with the dark terminal styling — one more thing to place and keep out of the way.) Its composer

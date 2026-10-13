@@ -7,22 +7,22 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowDown, Bot, CircleX, Search } from "lucide-react";
+import { AlertTriangle, ArrowDown, Bot, ChevronRight, CircleX, Cog, Search } from "lucide-react";
+import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, agentsUnread, anchoredScrollTop, capWindow, channelItems, longReply, sourceOf, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, chatSummary, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, turnMatches } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, anchoredScrollTop, capWindow, chatItems, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, chatSummary, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, turnMatches } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { subscribeTurns } from "@/lib/events";
 import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
 import { StatusDot } from "@/components/console";
-import { orchestratorAgentsSeenAtom, orchestratorAgentsUnreadAtom, orchestratorChannelAtom, type OrchestratorPrefill } from "@/lib/atoms";
-import { useAtom, useSetAtom } from "jotai";
+import type { OrchestratorPrefill } from "@/lib/atoms";
 
 // How close to the bottom still counts as "following". A few pixels of slack absorbs sub-pixel
 // rounding and the composer resizing, so following doesn't switch off on its own.
@@ -261,8 +261,13 @@ function ChatTurn({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: (
   const time = clockOf(turn.startedAt);
   return (
     <div className="mb-4" data-slot="chat-turn" data-failed={turn.failed || undefined} data-style="chat">
-      {/* Worker reports that woke it: compact, folded system lines — not something you said. */}
-      {reports.length > 0 && <div className="mb-2 text-[11px]"><WorkerReports parts={reports} /></div>}
+      {/* Worker reports that woke it, split out of what you said: a collapsed block of their own. */}
+      {reports.length > 0 && (
+        <WorkerBlock slot="turn-reports" className="mb-2"
+          label={reports.length === 1 ? `Worker report · ${reportTitle(reports[0]!)}` : `${reports.length} worker reports`}>
+          <WorkerReports parts={reports} />
+        </WorkerBlock>
+      )}
       {said && (
         <div className="group mb-2 flex justify-end" data-slot="chat-user">
           <div className="max-w-[85%]">
@@ -301,21 +306,34 @@ function Clamp({ on, children }: { on: boolean; children: React.ReactNode }) {
   );
 }
 
-/** The Chat channel's trace of agent traffic: a run of worker-driven turns (reports in, its replies
- *  out, nothing you said) as ONE muted line — "3 worker reports · 2 replies" — that expands inline to
- *  the turns, so you know they happened without the bulk. The Agents channel shows them in full. */
-function AgentsMarker({ turns, render }: { turns: AgentTurn[]; render: (t: AgentTurn) => React.ReactNode }) {
+const reportTitle = (report: string) => report.split("\n")[0]!.slice(WORKER_EVENT_MARKER.length).trim();
+
+/** Worker traffic in the orchestrator's chat, split out of your conversation: its own tinted card,
+ *  collapsed to one ⚙ line by default, opening in place. */
+function WorkerBlock({ label, slot, className, children }: { label: string; slot: string; className?: string; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
+  return (
+    <div data-slot={slot} data-open={open || undefined} className={cn("border-geist-blue/20 bg-geist-blue/5 rounded-md border text-[12px]", className)}>
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        className="text-muted-foreground hover:text-foreground flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left">
+        <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+        <Cog className="text-geist-blue size-3.5 shrink-0" />
+        <span className="min-w-0 truncate" data-slot="worker-block-label">{label}</span>
+      </button>
+      {open && <div className="border-geist-blue/20 border-t px-2.5 pt-2">{children}</div>}
+    </div>
+  );
+}
+
+/** A run of worker-driven turns (reports in, its replies out, nothing you said) as ONE collapsed
+ *  block — "3 worker reports · 2 replies" — that opens to the turns, so you know they happened
+ *  without the bulk. */
+function AgentsMarker({ turns, render }: { turns: AgentTurn[]; render: (t: AgentTurn) => React.ReactNode }) {
   const span = [clockOf(turns[0]!.startedAt), clockOf(turns[turns.length - 1]!.finishedAt)].filter(Boolean).join("–");
   return (
-    <div className="mb-4" data-slot="agents-marker" data-open={open || undefined}>
-      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
-        className="text-muted-foreground hover:text-foreground flex w-full items-center gap-2 text-left text-[11px]">
-        <span>{open ? "⏷" : "⏵"}</span>
-        <span>⚙ {agentsMarker(turns)}{span ? ` · ${span}` : ""}</span>
-      </button>
-      {open && <div className="mt-2 border-l pl-3">{turns.map(render)}</div>}
-    </div>
+    <WorkerBlock slot="agents-marker" className="mb-4" label={`${agentsMarker(turns)}${span ? ` · ${span}` : ""}`}>
+      {turns.map(render)}
+    </WorkerBlock>
   );
 }
 
@@ -358,7 +376,7 @@ function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () =>
  *  differently coloured strip under it. The composer's toolbar always carries the model picker and
  *  the context ring (ChatControls); `controls` supplies their values when they don't come from the
  *  row's card. Everything else about the panel is the same. */
-export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant = "terminal", channels }: {
+export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant = "terminal" }: {
   row: Row; send?: (text: string, images: File[]) => Promise<void>; flush?: boolean; controls?: ChatControlsProps;
   /** "terminal" (default): the dark monospace log. "chat": the orchestrator panel's assistant-chat
    *  styling — bubbles, prose, day dividers, hover timestamps — in the page's theme (see ChatTurn). */
@@ -368,15 +386,8 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   /** The Agent page's Chat tab: a slim toolbar (working indicator, error / warning counters, Find
    *  in chat) instead of a card header, and timestamped, tinted turns. */
   logBar?: boolean;
-  /** The orchestrator's two channels (workstream.ts channelItems): Chat or Agents, as the header's
-   *  toggle (orchestratorChannelAtom) says; this panel keeps the toggle's unread count. */
-  channels?: boolean;
 }) {
   const [find, setFind] = useState("");
-  const [channelValue, setChannel] = useAtom(orchestratorChannelAtom);
-  const channel = channels ? channelValue : undefined;
-  const [agentsSeen, setAgentsSeen] = useAtom(orchestratorAgentsSeenAtom);
-  const setAgentsUnread = useSetAtom(orchestratorAgentsUnreadAtom);
   const deliver = send ?? ((text: string, images: File[]) => followUp(row, text, images));
   // Messages on their way to the bridge. Sending one launches an agent — an upload, a worktree
   // lookup, the board snapshot the orchestrator is handed — which takes seconds, and a log that
@@ -388,7 +399,6 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   const submit = async (text: string, images: File[]) => {
     const id = ++sendSeq.current;
     follow.current = true; // you just spoke: jump to it, wherever you had scrolled
-    if (channels) setChannel("chat"); // what you said, and the reply to it, are in Chat
     setSending((s) => [...s, { id, text }]);
     try {
       await deliver(text, images);
@@ -538,18 +548,6 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
       return done.length ? omit(d, ...done) : d;
     });
   }, [turns]);
-  // The Agents toggle's count: agent turns newer than your last look at that channel. Looking at it
-  // (it is the channel shown) moves the mark to the newest; the very first load starts it at now,
-  // rather than calling a whole page of history unread.
-  useEffect(() => {
-    if (!channels || !turns) return;
-    if (!agentsSeen) return void setAgentsSeen(Date.now());
-    if (channel === "agents") {
-      const newest = Math.max(0, ...turns.filter((t) => sourceOf(t) === "agents").map((t) => t.startedAt ?? 0));
-      if (newest > agentsSeen) setAgentsSeen(newest);
-    }
-    setAgentsUnread(channel === "agents" ? 0 : agentsUnread(turns, agentsSeen));
-  }, [channels, turns, channel, agentsSeen]);
 
   // Follow the tail as output arrives, the way a terminal does — but only while the reader is AT the
   // bottom. Scrolling up to read something is an intent to stay there (a stream of steps yanking you
@@ -654,8 +652,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadSteps={stepsOf(turn)} compact={(position.get(turn.id) ?? 0) < compactBefore} />;
   const renderTurns = (list: AgentTurn[]) => {
     if (!chatStyle) return list.map((turn) => <Turn key={turn.id} turn={turn} stamped={logBar} loadSteps={stepsOf(turn)} />);
-    const items = channelItems(list, channel ?? "chat");
-    if (!items.length) return <p className="text-muted-foreground" data-slot="channel-empty">{channel === "agents" ? "No worker reports here yet." : "Nothing from you here yet. Send a message below."}</p>;
+    const items = chatItems(list);
     let prev: number | undefined;
     return items.map((item) => {
       const first = item.kind === "turn" ? item.turn : item.turns[0]!;
@@ -731,7 +728,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
         )}
         {/* Not drawn once the real thing has arrived over the stream — the same text twice, one of
             them "sending", is worse than the moment's gap it would cover. */}
-        {sending.filter((m) => !landed(m.text) && channel !== "agents").map((m) => chatStyle ? (
+        {sending.filter((m) => !landed(m.text)).map((m) => chatStyle ? (
           <div key={m.id} className="mb-4" data-slot="chat-sending">
             <div className="mb-2 flex justify-end"><div className="bg-accent text-foreground max-w-[85%] rounded-lg px-3 py-2 whitespace-pre-wrap break-words opacity-70">{m.text}</div></div>
             <div className="text-muted-foreground pl-8 text-[11px]">▋ sending…</div>
@@ -745,8 +742,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
             <div className="mt-1 pl-4 text-neutral-500">▋ sending…</div>
           </div>
         ))}
-        {/* Held worker reports belong to Agents; your queued messages to Chat. */}
-        {queued.filter((m) => !channel || (channel === "agents") === isWorkerEvent(m.instruction)).map((m) => (
+        {queued.map((m) => (
           <Queued
             key={m.id}
             message={m}

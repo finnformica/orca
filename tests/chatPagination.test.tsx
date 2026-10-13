@@ -3,8 +3,8 @@
 // was — and only follows the tail while you are at it, offering a jump back down otherwise. Before
 // this the orchestrator's whole conversation (hundreds of turns, megabytes) loaded on every open.
 // Paging bounds what is fetched; the mounted WINDOW (CHAT_WINDOW turns) bounds the DOM as you scroll,
-// and the orchestrator's older turns render compact. Its chat has two channels: Chat (you and its
-// replies, agent traffic as one-line markers) and Agents (the worker reports and its replies to them).
+// and the orchestrator's older turns render compact. Its chat is one stream with the worker traffic
+// split out of your conversation: collapsed, tinted blocks.
 import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -12,9 +12,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
-import { CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, agentsUnread, anchoredScrollTop, asTurnPage, atBottom, capWindow, channelItems, longReply, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, turnSource, windowRange, WORKER_EVENT_MARKER, type ChannelItem } from "@/workstream";
-import { Provider, createStore } from "jotai";
-import { orchestratorAgentsSeenAtom, orchestratorAgentsUnreadAtom, orchestratorChannelAtom } from "@/lib/atoms";
+import { CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, capWindow, chatItems, longReply, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, turnSource, windowRange, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -29,10 +27,10 @@ let container: HTMLElement | undefined;
 const row: Row = { repo: "r", hasRemote: false, branch: "long", title: "Long", prompt: "", lane: "LOCAL", worktreePath: "/wt/long", agentProvider: "claude" };
 const turn = (i: number) => ({ id: `run-${i}`, provider: "claude", instruction: `ask ${i}`, prompt: "", response: `reply ${i}`, startedAt: 1000 + i, finishedAt: 1001 + i });
 
-async function mount() {
+async function mount(node: React.ReactNode = <ChatPanel row={row} />) {
   container = document.createElement("div");
   document.body.appendChild(container);
-  await act(async () => { root = createRoot(container!); root.render(<ChatPanel row={row} />); await flush(); await flush(); });
+  await act(async () => { root = createRoot(container!); root.render(node); await flush(); await flush(); });
 }
 beforeEach(() => { localStorage.clear(); apiFake.reset(); });
 afterEach(async () => { await act(async () => { root?.unmount(); }); container?.remove(); apiFake.reset(); });
@@ -148,7 +146,7 @@ test("P5: the mounted window is bounded — far-off turns unmount as you scroll,
   expect(el.scrollTop).toBe(el.scrollHeight);
 });
 
-test("P6: the orchestrator's chat splits into Chat and Agents — agent traffic is a one-line marker in Chat, unread on the toggle; older replies render compact", async () => {
+test("P6: the orchestrator's chat is one stream — worker traffic split out as collapsed, tinted blocks; older replies render compact", async () => {
   const long = (i: number) => Array.from({ length: 8 }, (_, l) => `reply ${i} line ${l}`).join("\n");
   // Some carry the recorded source, some (rows from before it) are read off their instruction.
   const wake = (i: number, source?: "agents") => ({ id: `run-${i}`, provider: "claude", instruction: `${WORKER_EVENT_MARKER} r/feat-${i} — done\nOutcome: done`, prompt: "", response: `noted ${i}`, startedAt: 1000 + i, finishedAt: 1001 + i, source });
@@ -161,28 +159,32 @@ test("P6: the orchestrator's chat splits into Chat and Agents — agent traffic 
     { id: 1, instruction: `${WORKER_EVENT_MARKER} r/held — done\nOutcome: ok`, attachments: [] },
     { id: 2, instruction: "and then this", attachments: [] },
   ]);
-  const jotai = createStore();
-  jotai.set(orchestratorAgentsSeenAtom, 1004); // you last looked at Agents after wake 3
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  await act(async () => { root = createRoot(container!); root.render(<Provider store={jotai}><ChatPanel row={row} variant="chat" channels /></Provider>); await flush(); await flush(); });
+  await mount(<ChatPanel row={row} variant="chat" />);
   const c = container!;
-  // Chat (the default): your turns; each run of agent turns between them is ONE marker line, its
-  // turns unmounted until opened — wakes 1–3, 5 and 8, the newest included.
+  // No channel toggle: your turns, and each run of agent turns between them as ONE collapsed block,
+  // its turns unmounted until opened — wakes 1–3, 5 and 8, the newest included.
   const markers = () => [...c.querySelectorAll<HTMLElement>('[data-slot="agents-marker"]')];
-  expect(markers().map((m) => m.textContent!.replace(/ · \d\d:\d\d.*$/, ""))).toEqual(["⏵⚙ 3 worker reports · 3 replies", "⏵⚙ 1 worker report · 1 reply", "⏵⚙ 1 worker report · 1 reply"]);
+  expect(markers().map((m) => m.querySelector('[data-slot="worker-block-label"]')!.textContent!.replace(/ · \d\d:\d\d.*$/, ""))).toEqual(["3 worker reports · 3 replies", "1 worker report · 1 reply", "1 worker report · 1 reply"]);
+  for (const m of markers()) {
+    expect(m.className).toContain("bg-geist-blue/5"); // a style of its own, apart from your bubbles
+    expect(m.querySelector("button")!.getAttribute("aria-expanded")).toBe("false");
+  }
   for (const n of [1, 2, 3, 5, 8]) expect(c.textContent).not.toContain(`noted ${n}`);
   await act(async () => { markers()[0]!.querySelector("button")!.click(); await flush(); });
   expect(c.textContent).toContain("noted 2"); // expanded inline
-  // A wake that carried your message AND a report: your words in the bubble, the report folded.
+  // A wake that carried your message AND a report: your words in the bubble, the report split out
+  // above it as its own collapsed block.
   const sixth = [...c.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].find((t) => t.textContent!.includes("reply 6 line 0"))!;
   expect(sixth.querySelector('[data-slot="chat-user"]')!.textContent).toStartWith("ask 6");
-  expect(sixth.querySelector('[data-slot="worker-reports"]')!.textContent).toContain("r/feat-x — done");
-  // Held: your queued message here, the held report in Agents.
+  const reports = sixth.querySelector<HTMLElement>('[data-slot="turn-reports"]')!;
+  expect(reports.querySelector('[data-slot="worker-block-label"]')!.textContent).toBe("Worker report · r/feat-x — done");
+  expect(reports.querySelector('[data-slot="worker-reports"]')).toBeNull(); // collapsed by default
+  expect(sixth.querySelector('[data-slot="chat-user"]')!.textContent).not.toContain("r/feat-x");
+  await act(async () => { reports.querySelector("button")!.click(); await flush(); });
+  expect(reports.querySelector('[data-slot="worker-reports"]')!.textContent).toContain("r/feat-x — done");
+  // Queued: your message and the held report, both in the one stream.
   expect(c.textContent).toContain("and then this");
-  expect(c.querySelector('[data-slot="worker-report-held"]')).toBeNull();
-  // The toggle's count: the agent turns since your last look (5 and 8).
-  expect(jotai.get(orchestratorAgentsUnreadAtom)).toBe(2);
+  expect(c.querySelector('[data-slot="worker-report-held"]')).not.toBeNull();
   // Old long replies are clamped with a Show more; the newest RECENT_FULL (6, 7, 8) are in full.
   const clampOf = (n: number) => [...c.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].find((t) => t.textContent!.includes(`reply ${n} line 0`))!.querySelector<HTMLElement>('[data-slot="turn-clamp"]');
   expect(clampOf(0)).not.toBeNull();
@@ -195,52 +197,9 @@ test("P6: the orchestrator's chat splits into Chat and Agents — agent traffic 
   await act(async () => { more.click(); await flush(); });
   expect(clampOf(0)!.dataset.open).toBe("true");
   expect(clampOf(0)!.querySelector("button")!.textContent).toBe("Show less");
-
-  // Agents: the worker-driven turns alone, in full, and nothing you said; looking clears the count.
-  await act(async () => { jotai.set(orchestratorChannelAtom, "agents"); await flush(); });
-  expect(markers()).toHaveLength(0);
-  expect(c.querySelectorAll('[data-slot="chat-user"]')).toHaveLength(0);
-  for (const n of [1, 2, 3, 5, 8]) expect(c.textContent).toContain(`noted ${n}`);
-  expect(c.textContent).not.toContain("reply 0");
-  expect(c.querySelector('[data-slot="worker-report-held"]')).not.toBeNull();
-  expect(c.textContent).not.toContain("and then this");
-  expect(jotai.get(orchestratorAgentsUnreadAtom)).toBe(0);
-  expect(jotai.get(orchestratorAgentsSeenAtom)).toBe(1008);
 });
 
-test("P6b: the first load starts the Agents count from now, not from the whole history; an empty channel says so; sending returns you to Chat", async () => {
-  const wake = { id: "w", provider: "claude", instruction: `${WORKER_EVENT_MARKER} r/a — done`, prompt: "", response: "ok", startedAt: 1000, finishedAt: 1001 };
-  apiFake.turnsData.set("r::long", [wake]);
-  const jotai = createStore();
-  container = document.createElement("div");
-  document.body.appendChild(container);
-  const sent: string[] = [];
-  await act(async () => {
-    root = createRoot(container!);
-    root.render(<Provider store={jotai}><ChatPanel row={row} variant="chat" channels send={async (t) => { sent.push(t); }} /></Provider>);
-    await flush(); await flush();
-  });
-  expect(jotai.get(orchestratorAgentsSeenAtom)).toBeGreaterThan(1000);
-  expect(jotai.get(orchestratorAgentsUnreadAtom)).toBe(0);
-  expect(container!.querySelector('[data-slot="agents-marker"]')).not.toBeNull();
-  apiFake.turnsData.set("r::long", []);
-  await act(async () => { root!.render(<Provider store={jotai}><ChatPanel key="2" row={{ ...row, branch: "empty" }} variant="chat" channels send={async (t) => { sent.push(t); }} /></Provider>); await flush(); await flush(); });
-  apiFake.turnsData.set("r::empty", [{ ...wake, instruction: "hi there" }]);
-  await act(async () => { root!.render(<Provider store={jotai}><ChatPanel key="3" row={{ ...row, branch: "empty" }} variant="chat" channels send={async (t) => { sent.push(t); }} /></Provider>); await flush(); await flush(); });
-  await act(async () => { jotai.set(orchestratorChannelAtom, "agents"); await flush(); });
-  expect(container!.querySelector('[data-slot="channel-empty"]')!.textContent).toContain("No worker reports");
-  const box = container!.querySelector("textarea")!;
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "hello");
-    box.dispatchEvent(new Event("input", { bubbles: true }));
-    await flush();
-  });
-  await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); await flush(); await flush(); });
-  expect(sent).toEqual(["hello"]);
-  expect(jotai.get(orchestratorChannelAtom)).toBe("chat");
-});
-
-test("the pure pieces: the window, compact replies and the two channels", () => {
+test("the pure pieces: the window, compact replies and the worker blocks", () => {
   const ts = Array.from({ length: 10 }, (_, i) => ({ id: `t${i}` }));
   expect(windowRange(ts, TAIL_WINDOW)).toEqual({ start: 0, end: 10 });
   expect(windowRange(ts, { first: "t3", last: "t6", dir: "up" })).toEqual({ start: 3, end: 7 });
@@ -258,18 +217,17 @@ test("the pure pieces: the window, compact replies and the two channels", () => 
   expect(longReply({ response: "short", structured: {} })).toBe(true);
   const w = (id: string, startedAt = 1) => ({ id, instruction: `${WORKER_EVENT_MARKER} x`, finishedAt: 1, startedAt });
   const u = (id: string) => ({ id, instruction: "hi", finishedAt: 1 });
-  const kinds = <T extends { id: string }>(items: ChannelItem<T>[]) => items.map((i) => (i.kind === "turn" ? i.turn.id : `[${i.turns.map((t) => t.id).join(",")}]`));
-  // Chat: your turns, each run of agent turns between them as one marker — even a single one, even the newest.
-  expect(kinds(channelItems([u("a"), w("b"), w("c"), u("d"), w("e"), w("f")], "chat"))).toEqual(["a", "[b,c]", "d", "[e,f]"]);
-  expect(kinds(channelItems([w("a"), u("b")], "chat"))).toEqual(["[a]", "b"]);
-  // Agents: the agent turns alone. The recorded source wins over the text.
-  expect(kinds(channelItems([u("a"), w("b"), { ...w("c"), source: "human" as const }, { ...u("d"), source: "agents" as const }], "agents"))).toEqual(["b", "d"]);
+  const kinds = <T extends { id: string }>(items: ChatItem<T>[]) => items.map((i) => (i.kind === "turn" ? i.turn.id : `[${i.turns.map((t) => t.id).join(",")}]`));
+  // Your turns, each run of agent turns between them as one block — even a single one, even the newest.
+  expect(kinds(chatItems([u("a"), w("b"), w("c"), u("d"), w("e"), w("f")]))).toEqual(["a", "[b,c]", "d", "[e,f]"]);
+  expect(kinds(chatItems([w("a"), u("b")]))).toEqual(["[a]", "b"]);
+  // The recorded source wins over the text.
+  expect(kinds(chatItems([u("a"), w("b"), { ...w("c"), source: "human" as const }, { ...u("d"), source: "agents" as const }]))).toEqual(["a", "[b]", "c", "[d]"]);
   expect(turnSource([`${WORKER_EVENT_MARKER} a`, `${WORKER_EVENT_MARKER} b`])).toBe("agents");
   expect(turnSource([`${WORKER_EVENT_MARKER} a`, "carry on"])).toBe("human");
   expect(turnSource(["[new draft] repo: r\n\nbuild it"])).toBe("human");
   expect(sourceOf({ instruction: `${WORKER_EVENT_MARKER} a\n\n${WORKER_EVENT_MARKER} b` })).toBe("agents");
   expect(agentsMarker([{ instruction: `${WORKER_EVENT_MARKER} a\n\n${WORKER_EVENT_MARKER} b`, finishedAt: 1 }, { instruction: `${WORKER_EVENT_MARKER} c` }])).toBe("3 worker reports · 1 reply · working");
-  expect(agentsUnread([w("a", 5), w("b", 9), { ...u("c"), startedAt: 9 }], 5)).toBe(1);
 });
 
 test("the pure pieces: merging pages and anchoring", () => {

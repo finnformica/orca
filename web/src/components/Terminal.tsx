@@ -11,8 +11,7 @@ import { PortalContainer, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
 import { poll } from "@/lib/poll";
-import { orchestratorActivityAtom, orchestratorAgentsUnreadAtom, orchestratorChannelAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorWidthAtom } from "@/lib/atoms";
-import { Segmented } from "@/components/console";
+import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorWidthAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
 import { useNarrow } from "@/lib/viewport";
 import { openOrchestrator } from "@/lib/orchestratorOpen";
@@ -145,23 +144,6 @@ const ORCHESTRATOR_DEFAULT_MODEL = "claude-opus-5-5";
 
 /** How long the slide takes (ms); the panel is hidden from assistive tech once it has slid out. */
 const SLIDE_MS = 200;
-
-/** The orchestrator's header toggle: Chat (you and its replies — the default) or Agents (the worker
- *  traffic), with the count of agent turns since you last looked at Agents. */
-function ChannelToggle() {
-  const [channel, setChannel] = useAtom(orchestratorChannelAtom);
-  const unread = useAtomValue(orchestratorAgentsUnreadAtom);
-  return (
-    <Segmented label="Channel" value={channel} onChange={setChannel} options={[
-      { value: "chat", label: "Chat" },
-      { value: "agents", label: (
-        <span className="inline-flex items-center gap-1">Agents{unread > 0 && (
-          <span data-slot="agents-unread" aria-label={`${unread} unread`} className="bg-geist-blue/15 text-geist-blue rounded px-1 text-[10px] tabular-nums">{unread}</span>
-        )}</span>
-      ) },
-    ]} />
-  );
-}
 
 /** The header's live line under "Orchestrator", the same in the panel and the page: Idle, or Working
  *  with the wake's elapsed time, plus what's queued for it and how many of its workers are running
@@ -304,7 +286,6 @@ export function OrchestratorPanel() {
         </div>
       </div>
       <div className="flex shrink-0 items-center">
-        <span className="mr-1"><ChannelToggle /></span>
         {pip ? (
           <Button size="icon" variant="ghost" className="size-7" title="Return to tab" aria-label="Return to tab" onClick={() => pip.close()}>
             <PanelBottomClose className="size-4" />
@@ -326,7 +307,7 @@ export function OrchestratorPanel() {
       {/* Mounted at once, not after the status read: the composer must exist to take focus in the
           same commit that opens the panel, or the first keystrokes go nowhere. */}
       <ChatPanel
-        row={row} flush variant="chat" prefill={prefill} channels
+        row={row} flush variant="chat" prefill={prefill}
         // The same toolbar a card's terminal has, fed the orchestrator's own values. Claude
         // only; changing the model keeps the session.
         controls={{
@@ -415,11 +396,10 @@ export function OrchestratorPage() {
           <div className="truncate text-sm font-medium">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
           <OrchestratorStatusLine state={state} />
         </div>
-        <span className="ml-auto shrink-0"><ChannelToggle /></span>
       </div>
       <div className={cn("min-h-0", ORCHESTRATOR_PAGE_HEIGHT)}>
         <ChatPanel
-          row={row} flush variant="chat" prefill={prefill} channels
+          row={row} flush variant="chat" prefill={prefill}
           controls={{
             model: state?.model ?? ORCHESTRATOR_DEFAULT_MODEL, only: "claude", contextPct: state?.contextPct,
             onModel: (model) => { setState((s) => (s ? { ...s, model } : s)); void api.orchestratorModel(model).then(load); },

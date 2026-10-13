@@ -295,7 +295,7 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
     const receipt = await agent.launch(dir(), dir(), prompt, {
       ...next, provider: "claude", repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
       instruction: messages.join("\n\n"), action: "orchestrate", queue: false,
-      // Chat or Agents channel: anything you said makes it yours; worker reports alone are the agents'.
+      // Anything you said makes it yours; worker reports alone are the agents' (folded in the chat).
       source: turnSource(messages),
       model: modelOf(cfg, b), maxBudgetUsd: budgetOf(cfg),
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
