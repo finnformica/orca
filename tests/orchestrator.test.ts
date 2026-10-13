@@ -17,6 +17,7 @@ import * as transcript from "../server/transcript";
 import * as orchestrator from "../server/orchestrator";
 import * as preview from "../server/preview";
 import * as verbs from "../server/verbs";
+import { run } from "../server/run";
 import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
 import {
@@ -136,6 +137,25 @@ test("O1: spawn creates a briefed workstream, and the worker finishing wakes the
   expect(wake!.prompt).toContain("## Models\n`spawn` requires --model.");
   expect(wake!.prompt).toContain("claude-fable-5-1: ONLY work that has already defeated Opus");
   expect(wake!.prompt).toContain("A message opening with `[new draft]` is the user's New-draft box");
+});
+
+test("O1b: with mergePolicy.autoPr, a worker's clean finish opens its PR and the report names it", async () => {
+  const auto = (): OrcaConfig => ({ ...cfg(), repos: [{ ...cfg().repos[0]!, mergePolicy: { autoPr: true } }] });
+  agent.onRunFinished((run) => orchestrator.onRunFinished(auto(), run));
+  const origin = await makeScratchRepo();
+  await run(["git", "-C", repo, "remote", "add", "origin", origin]);
+  await run(["git", "-C", repo, "fetch", "-q", "origin"]);
+  // The worker commits in its worktree; the orchestrator just answers.
+  await fakeClaude(`case "$PWD" in */orchestrator) ;; *) echo x > cache.ts && git add cache.ts && git -c user.email=t@t -c user.name=t commit -qm "Add the cache" ;; esac
+${OK}`);
+  await orchestrator.tool(auto(), "spawn", brief);
+  const branch = Object.keys(await db.enrichment("r"))[0]!;
+  const [wake] = await settled(orchTurns, 1);
+  expect(wake!.instruction).toStartWith(`${WORKER_EVENT_MARKER} r/${branch} "Add cache" — done`);
+  expect(wake!.instruction).toContain("Orca opened PR #123: https://github.com/acme/app/pull/123");
+  // On origin, so `gh pr create` had a head to open.
+  expect(await run(["git", "-C", origin, "branch", "--list", branch])).toContain(branch);
+  await rm(origin, { recursive: true, force: true });
 });
 
 test("O11: send --model moves a workstream to another model for this and later messages", async () => {
