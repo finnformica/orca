@@ -65,7 +65,11 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   database) — which a file on one host cannot be. `Bun.SQL` ships with the runtime, so it costs no
   dependency. **Every table carries `user_id`** from the first migration: there is no auth yet
   (`db.currentUser()` returns a constant) and exactly one user, but retrofitting row-level scoping
-  later would mean revisiting every query, so the column goes in while it is free.
+  later would mean revisiting every query, so the column goes in while it is free. **A connection the
+  remote Postgres dropped out from under us** (a laptop asleep long enough that it drops every pooled
+  connection, not just `ERR_POSTGRES_CONNECTION_CLOSED` but a `pg_terminate_backend`-style FATAL too)
+  **is reopened and the one query retried once** — every exported function routes through `withRetry`
+  rather than hand-catching, so this lives in one place.
   **Nothing is deleted — finished workstreams are ARCHIVED**, because the conversations most worth
   chaining from later are exactly the ones whose branches got merged and reaped. Granularity is
   prompt + final response + structured outcome (what you'd feed a model), NOT the provider's raw event
