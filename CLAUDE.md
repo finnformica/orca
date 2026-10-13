@@ -395,8 +395,8 @@ opened from the card's terminal button, rendering `ChatPanel` (`web/src/views/Ch
 whole conversation from `GET /api/turns` as a **terminal-style log** (dark monospace, each instruction
 shown as `❯ …` with the agent's output below), plus the follow-up `ChatComposer` to send the next
 message. Every `ChatComposer` has the **`@` PR picker** (`prTrigger`: `@` at the start or after a
-space/bracket lists the board's polled PRs; a pick inserts `#123`, or `repo#123`). It was `#` — `@` is
-the mention key everywhere else, and `#` collided with markdown headings and URL fragments. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
+space/bracket lists the board's polled PRs; a pick inserts `#123`, or `repo#123`). It opened on `#`
+until Finn asked for `@`; `#` now opens nothing. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
 involved. Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every
 board action uses. A turn written at launch but not yet finished renders as `▋ working…` (that's how
 an interrupted run stays visible); a turn with a parsed outcome renders its sections. A Claude run's
