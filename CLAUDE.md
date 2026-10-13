@@ -725,6 +725,33 @@ anything younger than 2 hours (a preview mid-clone), and drops the rest via `pre
 The same pass removes a repo's `testContainerPrefix` Docker containers (branch-demo's test harness
 leaves `branch_demo_test_postgres_<port>` running) older than 3 hours, via `server/docker.ts` —
 silently skipped when `docker` isn't on the box. `/api/diagnostics` reports the last pass (`reap`).
+**Per-worker memory ceiling** (`server/cgroup.ts`): the incident this exists for — an m7i.xlarge
+(16GB) ran 4-5 concurrent builds, the kernel OOM killer fired on the whole system, load average hit
+49, and Postgres/Tailscale/SSM were unreachable for 12 minutes. Every agent run now gets its own
+`systemd-run --user --scope -p MemoryMax=<repo's agentMemoryMaxGb, default 4>G -p
+MemorySwapMax=0 -p CPUWeight=<agentCpuWeight, default 50>` — a worker's runaway build or headless
+browser is OOM-killed inside its OWN cgroup, never the box's. There is deliberately no cap on
+concurrent workers (Finn removed the orchestrator's once, for the same reason): the fix is bounding
+the blast radius of ONE, not limiting how many run. `--user` (not the system manager): a non-root
+`systemd-run --scope` against the system manager needs polkit authorization a headless box can't
+grant interactively, but `--user` has no such check — it only needs a reachable user bus, which
+`orca` (a service account, never logged in) doesn't have by default. `loginctl enable-linger orca`
+(`deploy/bootstrap.sh`, once) starts a user manager at boot regardless; `cgroup.available()` checks
+the bus socket itself (`/run/user/<uid>/bus`), not just the `systemd-run` binary, so a CI runner or
+an unprovisioned box — which has the binary but no lingering — degrades to unwrapped, unchanged
+behaviour rather than failing every run. `prlimit --as` was considered and rejected: it bounds one
+process's own address space, not the tree a build or a browser spawns, so it would not have capped
+the incident at all. A run killed this way is detected from BOTH signals — exit 137 (plain SIGKILL)
+AND `systemctl --user show <scope> -p Result` reporting `oom-kill` (briefly, before the scope is
+GC'd) — so a run you stopped yourself, which also exits non-zero, is never mislabelled; its turn
+gets stop reason `error` and a response of `out of memory (<N> GB ceiling)`, and the ledger records
+`errorKind: "oom"`. `deploy/orca.service` separately reserves `MemoryMax=` ~85% of the box's RAM for
+the bridge's own tree (previews, git/gh, anything it runs directly — NOT agent runs, which have
+already left this cgroup for their own scope by the time they'd count against it) and sets
+`OOMScoreAdjust=-500` so the bridge is the last thing a true system-wide OOM kill would pick.
+Postgres and Tailscale are untouched: they are separate systemd units, never children of
+`orca.service`, so they were never inside either limit — the two settings just make sure nothing
+Orca does crowds them out of the 15% left over.
 
 ## Conventions (follow these)
 

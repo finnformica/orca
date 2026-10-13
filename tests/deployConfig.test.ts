@@ -44,3 +44,9 @@ test("the systemd unit starts the same entrypoint as `bun run server`", () => {
   expect(unit).toContain(`ExecStart=/home/orca/.bun/bin/bun run ${entry}`);
   expect(unit).toContain("KillSignal=SIGTERM"); // the "deploy, not Ctrl-C" signal the bridge distinguishes
 });
+
+test("the systemd unit reserves headroom for Postgres/Tailscale and protects the bridge from the system OOM killer", () => {
+  const unit = readFileSync(join(root, "deploy", "orca.service"), "utf8");
+  expect(unit).toMatch(/^MemoryMax=\d+[GM]$/m); // per-run ceilings (server/cgroup.ts) are separate scopes, not inside this number
+  expect(unit).toContain("OOMScoreAdjust=-500");
+});
