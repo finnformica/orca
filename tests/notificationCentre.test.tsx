@@ -377,7 +377,7 @@ describe("the notification centre", () => {
     expect($("notifications-unread")!.textContent).toBe("2");
   });
 
-  test("quick actions: hovering a CI-failed toast shows Address PR + View PR; Address PR runs the store's one agent verb, marks it read and clears the toast", async () => {
+  test("quick actions: hovering a CI-failed toast shows Address PR + View PR; Address PR marks it read and clears the toast at once, the launch runs after", async () => {
     apiFake.prsData = [{ number: 7, title: "Red CI", branch: "feat-x", url: "https://github.com/o/r/pull/7", state: "OPEN", isDraft: false, ciStatus: "failing", failingChecks: ["test"], reviewStatus: "none", mergeable: "MERGEABLE", autoMergeEnabled: false }];
     await open("/");
     const s = await live();
@@ -394,14 +394,41 @@ describe("the notification centre", () => {
       expect(b.querySelector("svg.lucide")).not.toBeNull();
     }
     expect([...actionsOf(toast).querySelectorAll('[role="tooltip"]')].map((t) => t.textContent)).toEqual(["Address PR", "View PR", "Open"]);
+    // The launch is held: the click still marks it read and clears the toast immediately, before
+    // the launch (the "request") resolves — optimistic, not waited on.
+    apiFake.holdClaude = true;
     await click(button(toast, "Address PR"));
-    await act(async () => { await flush(); await flush(); await flush(); });
-    expect(apiFake.calls.some((c) => c.startsWith("agent:"))).toBe(true); // the same launch the board's Address PR makes
-    expect(apiFake.claudePrompts.at(-1)).toContain("#7");
-    await act(async () => { await wait(900); }); // the ✓ lingers, then the action marks it read
+    // Marked read and the toast gone at once — the launch is still blocked on releaseClaude below,
+    // so neither can have waited on it.
     expect(apiFake.notificationCalls).toContainEqual({ verb: "read", ids: [30] });
     expect(cards()).toHaveLength(0);
-    await mouse(toast, "mouseout", document.body);
+    expect(apiFake.calls.some((c) => c.startsWith("agent:"))).toBe(true); // fired in the background…
+    await act(async () => { apiFake.releaseClaude!(); await flush(); await flush(); await flush(); }); // …and only now resolves
+    expect(apiFake.claudePrompts.at(-1)).toContain("#7");
+  });
+
+  test("a quick action's failed launch shows the action-error toast with why, and puts the notification back as unread", async () => {
+    apiFake.prsData = [{ number: 7, title: "Red CI", branch: "feat-x", url: "https://github.com/o/r/pull/7", state: "OPEN", isDraft: false, ciStatus: "failing", failingChecks: ["test"], reviewStatus: "none", mergeable: "MERGEABLE", autoMergeEnabled: false }];
+    apiFake.claudeError = "worktree busy";
+    await open("/");
+    const s = await live();
+    await push(s, note({ id: 31, kind: "pr_ci_failed", title: "Red CI", link: { pr: 7 } }));
+    const toast = cards()[0]!;
+    await mouse(toast, "mousemove");
+    await click(button(toast, "Address PR"));
+    // Closed and marked read at once, same as success…
+    expect(cards()).toHaveLength(0);
+    expect(apiFake.notificationCalls).toContainEqual({ verb: "read", ids: [31] });
+    await act(async () => { await flush(); await flush(); await flush(); });
+    // …but the launch rejected: a small error toast names the action and why, and the notification
+    // is unread again (the centre, and the bell's count, both see it).
+    const errToast = $("toast")!;
+    expect(errToast.getAttribute("data-kind")).toBe("error");
+    expect(errToast.textContent).toContain("Address PR failed");
+    expect(errToast.textContent).toContain("worktree busy");
+    expect($("notifications-unread")!.textContent).toBe("1");
+    await click($("notifications-bell"));
+    expect($$("notification-row").some((r) => r.textContent!.includes("Red CI"))).toBe(true);
   });
 
   test("quick actions on a touch screen show without hover; there is no Read — the × marks it read and takes the toast off the stack", async () => {

@@ -21,7 +21,7 @@ import {
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
 import { notifyDndAtom } from "@/lib/atoms";
-import { markRead, pauseToasts, resumeToasts, start, useNotifications } from "@/lib/notificationStore";
+import { markRead, pauseToasts, resumeToasts, restoreUnread, start, useNotifications } from "@/lib/notificationStore";
 import { oneOf, persistedKey, usePersisted } from "@/lib/persisted";
 import { useCoarse, useNarrow } from "@/lib/viewport";
 import {
@@ -128,8 +128,10 @@ function useNotificationActions() {
 /** A notification's quick-action row of size-7 ghost icon buttons, each with its tooltip: its kind's
  *  actions (the first primary, in the foreground colour), Open always last and — in the centre,
  *  while unread — the ×. Hidden until the card or row is hovered or focused, always shown on a touch
- *  screen. Any action marks the notification read (so a toast leaves the stack); an agent verb's
- *  check lingers a moment first. A verb's failure goes to the action-error toast, as on the board. */
+ *  screen. Every action is optimistic: the toast/row closes or marks read AT ONCE, the verb (or
+ *  navigation) runs after — never waited on. A verb that fails shows the action-error toast with why
+ *  (as on the board) and, if the notification was unread, puts it back — the click shouldn't have to
+ *  wait on a launch to know whether it worked. */
 function QuickActions({ n, shown, onDismiss, className }: {
   n: Notification; shown: boolean; onDismiss?: () => void; className?: string;
 }) {
@@ -150,7 +152,16 @@ function QuickActions({ n, shown, onDismiss, className }: {
             {run ? (
               <ActionButton size="icon" variant="ghost" className={btn} label={a.label}
                 failure={{ action: a.label, title: n.title, repo: n.repo, branch: n.branch ?? "", prNumber: row?.prNumber }}
-                onRun={async () => { await run(); setTimeout(read, 800); }}>
+                onRun={async () => {
+                  const wasUnread = !n.readAt;
+                  read(); // close/mark-read at once; the verb runs in the background below
+                  try {
+                    await run();
+                  } catch (e) {
+                    if (wasUnread) restoreUnread([n.id]);
+                    throw e;
+                  }
+                }}>
                 <Icon className="size-3.5" />
               </ActionButton>
             ) : (
