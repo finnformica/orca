@@ -119,14 +119,25 @@ describe("installable app (PWA files)", () => {
     expect(html).toContain('<link rel="manifest" href="/manifest.webmanifest" />');
     expect(html).toMatch(/<meta name="theme-color" media="\(prefers-color-scheme: light\)"/);
     expect(html).toMatch(/<meta name="theme-color" media="\(prefers-color-scheme: dark\)"/);
-    expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png" />');
+    expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2" />');
     expect(html).toContain('name="apple-mobile-web-app-capable" content="yes"');
     expect(html).toContain("viewport-fit=cover");
   });
 
-  test("the logo is round, like Vercel's: favicon and home-screen icon draw the mark in a circle", async () => {
+  test("favicon is round, like Vercel's: a black circle with the white mark", async () => {
     expect(await read("public/favicon.svg").text()).toContain("<circle");
-    expect(await read("public/icon.svg").text()).toContain("<circle");
+  });
+
+  test("home-screen icon survives iOS tinted mode: full-bleed black tile, no white background or inner circle, mark in the safe zone", async () => {
+    // iOS derives a tinted/dark-mode variant from the image's luminance with no say from the app —
+    // a white tile or a black circle on white comes out as a near-invisible grey blob once tinted.
+    const svg = await read("public/icon.svg").text();
+    expect(svg).not.toContain("<circle");
+    expect(svg).not.toContain('fill="#fff" />'); // no white tile behind the mark
+    expect(svg).toContain('<rect width="24" height="24" fill="#000" />'); // full bleed, like icon-maskable.svg
+    const [, tx, ty, k] = svg.match(/translate\(([\d.]+) ([\d.]+)\) scale\(([\d.]+)\)/)!.map(Number);
+    // The mark's path spans x 2…22.5, y 3…15.5; every corner of that box must fall within r = 0.4 × 24.
+    for (const [x, y] of [[2, 3], [22.5, 3], [2, 15.5], [22.5, 15.5]]) expect(Math.hypot(tx! + k! * x! - 12, ty! + k! * y! - 12)).toBeLessThanOrEqual(9.6);
   });
 });
 
