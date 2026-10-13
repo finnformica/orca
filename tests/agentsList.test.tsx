@@ -31,7 +31,7 @@ describe("agents list layout (pure)", () => {
       expect(listMinWidth(cols)).toBeLessThanOrEqual(1280 - LIST_CHROME_PX);
     }
     const t = listGridTemplate(listColumns({ multiInstance: true }));
-    expect(t).toBe("minmax(10rem,2fr) 8.5rem 8.5rem minmax(6rem,1fr) 5rem 4.5rem");
+    expect(t).toBe("minmax(10rem,2fr) 8.5rem 8.5rem minmax(6rem,1fr) 5rem 8rem");
     expect(listColumns({ multiInstance: false }).at(-1)).toMatchObject({ key: "actions", label: "Actions" });
     expect(t).not.toContain("auto"); // a content-sized track could push the row wider than the card
   });
@@ -129,8 +129,24 @@ describe("agents list view", () => {
     // The row menu's trigger is vertical dots, not horizontal — same menu, same right-click.
     expect(rowOf("feat-ci").querySelector('button[aria-label="Actions"] svg')!.classList.contains("lucide-ellipsis-vertical")).toBe(true);
     expect(rowOf("feat-ci").querySelector(".lucide-ellipsis")).toBeNull(); // the old horizontal icon is gone
+    // Regression: the ⋯ button's wrapper must space itself with flex/gap, not a margin-based
+    // space-y-* utility — that still reserves space for its `display:none` siblings (the closed
+    // rename/terminal dialogs), which inflated the wrapper past the button's own height and threw
+    // its vertical centering off from its neighbours in the Actions cell. jsdom has no real layout
+    // engine to catch the pixel offset itself (verified separately with Playwright), so this pins
+    // the markup shape that causes it.
+    const actionsBtn = rowOf("feat-ci").querySelector<HTMLElement>('button[aria-label="Actions"]')!;
+    const actionsWrapper = actionsBtn.parentElement!.parentElement!;
+    expect(actionsWrapper.className).not.toMatch(/\bspace-y-/);
     // Preview cell: idle, enabled (the fake config's repo "r" has RepoFeatures.previews on).
     expect(rowOf("feat-ci").querySelector<HTMLElement>('[data-slot="preview-cell"]')!.dataset.state).toBe("none");
+    // The PR-preview text link sits right next to the model name in the subline — "add" state,
+    // since feat-ci has neither a previewUrl nor the preview label yet.
+    const inline = rowOf("feat-ci").querySelector<HTMLElement>('[data-slot="pr-preview-inline"]')!;
+    expect(inline.dataset.state).toBe("add");
+    expect(inline.textContent).toContain("Add preview");
+    // (its own leading "·" separator sits between the two)
+    expect(inline.previousElementSibling?.previousElementSibling).toBe(rowOf("feat-ci").querySelector('[data-slot="model-label"]'));
     // Readable models: the run's reported model, else the pinned one — no initials avatar.
     expect(rowOf("local-idle").querySelector('[data-slot="model-label"]')!.textContent).toBe("Opus 5.5");
     expect(container!.querySelector('[data-slot="model-avatar"]')).toBeNull();

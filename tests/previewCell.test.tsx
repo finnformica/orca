@@ -9,6 +9,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { PreviewCell } from "@/views/PreviewControl";
+import { Toaster } from "@/components/Toaster";
+import { resetToasts } from "@/lib/toast";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -18,10 +20,10 @@ let container: HTMLElement | undefined;
 async function mount(node: React.ReactNode) {
   container = document.createElement("div");
   document.body.appendChild(container);
-  await act(async () => { root = createRoot(container!); root.render(node); await flush(); await flush(); });
+  await act(async () => { root = createRoot(container!); root.render(<>{node}<Toaster /></>); await flush(); await flush(); });
 }
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
-afterEach(async () => { await act(async () => { root?.unmount(); }); container?.remove(); apiFake.reset(); });
+afterEach(async () => { await act(async () => { root?.unmount(); }); container?.remove(); apiFake.reset(); act(() => resetToasts()); });
 
 // repo "r" (the fake config's only repo) carries RepoFeatures.previews: true; a row on a repo the
 // config knows nothing about reads as previews-disabled — there is no entry saying otherwise.
@@ -29,6 +31,7 @@ const row: store.Row = { repo: "r", hasRemote: true, branch: "feat", title: "Fea
 const disabledRow: store.Row = { ...row, repo: "nopreview", branch: "feat2", worktreePath: "/wt/feat2" };
 
 const cell = () => container!.querySelector<HTMLElement>('[data-slot="preview-cell"]')!;
+const stopBtn = () => container!.querySelector<HTMLButtonElement>('button[aria-label="Stop preview"]');
 
 test("none: an enabled Add-preview button, no status dot", async () => {
   await mount(<PreviewCell row={row} />);
@@ -39,6 +42,7 @@ test("none: an enabled Add-preview button, no status dot", async () => {
   expect(btn.getAttribute("aria-label")).toBe("Add preview");
   expect(btn.querySelector(".lucide-flask-conical")).not.toBeNull();
   expect(c.querySelector('[data-slot="status-dot"]')).toBeNull();
+  expect(stopBtn()).toBeNull(); // nothing to stop yet
 });
 
 test("disabled: previews not enabled for the repo — a disabled button with a tooltip, same slot", async () => {
@@ -51,6 +55,7 @@ test("disabled: previews not enabled for the repo — a disabled button with a t
   expect(btn.querySelector(".lucide-flask-conical")).not.toBeNull();
   await click(btn); // disabled: clicking does nothing
   expect(apiFake.previewCalls).toEqual([]);
+  expect(stopBtn()).toBeNull();
 });
 
 test("starting: clicking Add preview shows a spinner and a building-tone dot, in the same slot", async () => {
@@ -68,6 +73,9 @@ test("starting: clicking Add preview shows a spinner and a building-tone dot, in
   expect(btn.querySelector(".lucide-loader-circle, svg.animate-spin")).not.toBeNull();
   const dot = c.querySelector<HTMLElement>('[data-slot="status-dot"]')!;
   expect(dot.dataset.tone).toBe("building");
+  // A Stop button sits right beside it while it boots — confirm-free.
+  expect(stopBtn()).not.toBeNull();
+  expect(stopBtn()!.disabled).toBe(false);
 });
 
 test("running: a link to the right URL (the owner's, not localUrl on this non-local test page) with a ready-tone dot", async () => {
@@ -86,6 +94,31 @@ test("running: a link to the right URL (the owner's, not localUrl on this non-lo
   expect(link.getAttribute("aria-label")).toBe("Open preview");
   const dot = c.querySelector<HTMLElement>('[data-slot="status-dot"]')!;
   expect(dot.dataset.tone).toBe("ready");
+  expect(stopBtn()).not.toBeNull();
+});
+
+test("stop: clicking the Stop button next to the link stops the preview, no confirm, same slot clears to idle", async () => {
+  await mount(<PreviewCell row={row} />);
+  apiFake.previewSvcs = [{ name: "frontend", port: 9001, url: "http://orca-box:9001", open: true, running: true, ready: true, startedAt: Date.now() }];
+  await click(cell().querySelector("button")!);
+  expect(cell().dataset.state).toBe("ready");
+  await click(stopBtn()!);
+  expect(apiFake.previewStopCalls).toEqual([{ key: "/wt/feat", instance: "laptop" }]);
+  expect(cell().dataset.state).toBe("none");
+  expect(stopBtn()).toBeNull(); // gone once there's nothing running
+});
+
+test("stop failure: the preview stays up and the error goes to the action-error toast, not the row", async () => {
+  await mount(<PreviewCell row={row} />);
+  apiFake.previewSvcs = [{ name: "frontend", port: 9001, url: "http://orca-box:9001", open: true, running: true, ready: true, startedAt: Date.now() }];
+  await click(cell().querySelector("button")!);
+  apiFake.previewStopError = "stop failed: port busy";
+  await click(stopBtn()!);
+  expect(cell().dataset.state).toBe("ready"); // the control doesn't lie about a preview still running
+  expect(stopBtn()).not.toBeNull();
+  const toast = container!.querySelector('[data-slot="toast"]')!;
+  expect(toast.textContent).toContain("Preview");
+  expect(toast.textContent).toContain("stop failed: port busy");
 });
 
 test("failed: a crashed service reaps to a retry icon with an error-tone dot, same slot", async () => {
@@ -102,4 +135,5 @@ test("failed: a crashed service reaps to a retry icon with an error-tone dot, sa
   expect(btn.querySelector(".lucide-triangle-alert")).not.toBeNull();
   const dot = c.querySelector<HTMLElement>('[data-slot="status-dot"]')!;
   expect(dot.dataset.tone).toBe("error");
+  expect(stopBtn()).toBeNull(); // already reaped — nothing left to stop
 });

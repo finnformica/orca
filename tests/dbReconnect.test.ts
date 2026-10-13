@@ -9,7 +9,17 @@
 // server-side termination on its own and quietly swaps in a fresh connection before the next
 // query is even sent — nothing for `withRetry` to do, and nothing for the test to observe. So
 // every case here runs a `pg_sleep`-delayed query and kills the backend while it is `active`,
-// which is deterministic: the write Bun already has in flight fails outright.
+// which is deterministic: the write Bun already has in flight fails outright — PROVIDED the first
+// connection against the fresh schema is already past `migrate()` (server/db.ts): that's a chain of
+// one transaction per step, each its own round trip, and on a brand-new schema it is itself
+// "active" for a stretch before the test's own query ever dispatches. A single-shot kill loop
+// (`killNextActive`, test 1) takes the FIRST active backend it sees, which raced the migration far
+// more often than the intended query — the retry's own fresh `migrate()` then ran clean, so the
+// test still passed (one drop logged, the query answered two), just not for the reason its name
+// says, and the loop occasionally caught neither phase and logged none. `warmUp()` runs `db.open()`
+// once, unraced, before any killer starts, so the only "active" window left for one to catch is the
+// query it's named for. Half a second of `pg_sleep`, not the 100ms this started as, leaves comfortable
+// margin for the killer's own `pg_stat_activity` round trip against that one window.
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import * as db from "../server/db";
 import { freshSchema, type TestDb } from "./pg";
@@ -32,6 +42,14 @@ afterEach(async () => {
  *  time against the same throwaway Postgres. */
 function useTaggedSchema(appName: string): void {
   process.env.ORCA_DATABASE_URL = `${pg.url}&application_name=${encodeURIComponent(appName)}`;
+}
+
+/** Open the pool and run its migrations now, on the tagged schema, before any killer starts polling
+ *  — otherwise a kill loop's first "active" sighting is as likely to be a migration step as the
+ *  test's own query (see the file header). The connection this opens stays pooled and warm, so the
+ *  test's own query runs on it (or a sibling from the same pool) with nothing left to migrate. */
+async function warmUp(): Promise<void> {
+  await db.open();
 }
 
 /** Kill the next backend tagged `appName` to go `active` (i.e. actually running a query) and stop.
@@ -79,6 +97,7 @@ test("a dropped connection is reopened and the query retried once, logged a sing
   const appName = `orca-test-dbreconnect-single-${process.pid}`;
   useTaggedSchema(appName);
   await db.close();
+  await warmUp();
 
   const admin = new Bun.SQL(pg.url);
   // Kill the FIRST attempt's connection the moment it's actually running — then stop, so the
@@ -86,7 +105,7 @@ test("a dropped connection is reopened and the query retried once, logged a sing
   const killOnce = killNextActive(admin, appName);
 
   const { result, lines } = await captureErrors(() =>
-    db.withRetry(async (s) => s`select pg_sleep(0.1), 1 + 1 as two`));
+    db.withRetry(async (s) => s`select pg_sleep(0.5), 1 + 1 as two`));
   await killOnce;
   await admin.end();
 
@@ -98,6 +117,7 @@ test("a second drop on the retry is not retried again — it surfaces to the cal
   const appName = `orca-test-dbreconnect-double-${process.pid}`;
   useTaggedSchema(appName);
   await db.close();
+  await warmUp();
 
   const killer = new Bun.SQL(pg.url);
   let killing = true;
@@ -105,7 +125,7 @@ test("a second drop on the retry is not retried again — it surfaces to the cal
 
   const { result: caught, lines } = await captureErrors(async () => {
     try {
-      await db.withRetry(async (sql) => sql`select pg_sleep(0.1), 1`);
+      await db.withRetry(async (sql) => sql`select pg_sleep(0.5), 1`);
       return undefined;
     } catch (err) {
       return err;
