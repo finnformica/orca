@@ -344,8 +344,11 @@ export function ChatComposer({
                 <Shortcut id="send" />
               </Button>
             ) : (
-              <Button type="button" size="icon" className="size-8" disabled={!canSubmit} title="Send (Enter)" aria-label="Send" onClick={() => void submit()}>
-                <ArrowUp className="size-4" />
+              // Narrow: the filled square read as far bigger than its ghost neighbours (attach, the
+              // model picker, the context ring), which show only an icon. The fill shrinks to a 28px
+              // chip inside a transparent button, so the touch target stays 44px.
+              <Button type="button" size="icon" className="size-8 max-md:border-transparent max-md:bg-transparent max-md:hover:bg-transparent pointer-coarse:max-md:min-w-11" disabled={!canSubmit} title="Send (Enter)" aria-label="Send" onClick={() => void submit()}>
+                <span className="max-md:bg-primary inline-flex items-center justify-center max-md:size-7 max-md:rounded-md"><ArrowUp className="size-4" /></span>
               </Button>
             )}
           </div>

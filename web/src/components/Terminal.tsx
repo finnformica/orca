@@ -384,14 +384,17 @@ export function OrchestratorPanel() {
   );
 }
 
-// The viewport below the top bar and above the bottom bar (narrow), or below the top bar alone
-// (desktop, where the route still works if visited directly): topbar + this page's own h-12 header +
-// the shell's main padding + the reserved strip above the fixed bottom bar, all in `--vvh`/safe-area
-// terms like the Agent page's Chat tab (`CHAT_FILL_HEIGHT` in views/AgentPage.tsx) — so the chat's OWN
-// scroller (inside ChatPanel) is what scrolls, never the page.
-const ORCHESTRATOR_PAGE_HEIGHT =
-  "h-[calc(var(--vvh,100dvh)-13.5rem-env(safe-area-inset-top)-env(safe-area-inset-bottom))] " +
-  "md:h-[calc(var(--vvh,100dvh)-9.5rem)]";
+// Desktop (where the route still works if visited directly): the viewport below the top bar, this
+// page's own h-12 header and the shell's main padding. Narrow: the WHOLE page (header + chat) bleeds
+// out of <main>'s padding — so its dividers run edge to edge — and ends exactly at the bottom bar's
+// top edge (Shell's BottomBar: 1px border + 6px + a 44px row + max(6px, the safe-area inset)), so the
+// bar alone accounts for the home indicator and the composer gets no stray gap under it. Both in
+// `--vvh`/safe-area terms like the Agent page's Chat tab (`CHAT_FILL_HEIGHT` in views/AgentPage.tsx),
+// so the chat's OWN scroller (inside ChatPanel) is what scrolls, never the page.
+const ORCHESTRATOR_PAGE_HEIGHT = "md:h-[calc(var(--vvh,100dvh)-9.5rem)]";
+const ORCHESTRATOR_PAGE_NARROW =
+  "max-md:-mx-[max(1rem,env(safe-area-inset-left))] max-md:-mt-6 max-md:-mb-[calc(5.5rem+env(safe-area-inset-bottom))] " +
+  "max-md:h-[calc(var(--vvh,100dvh)-3.5rem-env(safe-area-inset-top)-3.1875rem-max(0.375rem,env(safe-area-inset-bottom)))]";
 
 /** The orchestrator as a routed page (`/orchestrator`): the phone destination every narrow-screen
  *  entry point (the bottom bar, O, the palette, a notification's Open, quick-ask's Open — all via
@@ -409,9 +412,10 @@ export function OrchestratorPage() {
     worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
   };
   return (
-    <div data-slot="orchestrator-page" className="flex flex-col">
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b">
-        <Button size="icon" variant="ghost" className="-ml-2 size-9 shrink-0" title="Back" aria-label="Back" onClick={() => history.back()}>
+    <div data-slot="orchestrator-page" className={cn("flex flex-col", ORCHESTRATOR_PAGE_NARROW)}>
+      {/* Narrow: the same 12px on every side as the conversation's and the composer's padding. */}
+      <div data-slot="orchestrator-page-header" className="flex h-12 shrink-0 items-center gap-2 border-b max-md:h-auto max-md:p-3">
+        <Button size="icon" variant="ghost" className="-ml-2 size-9 shrink-0 max-md:-my-1.5" title="Back" aria-label="Back" onClick={() => history.back()}>
           <ArrowLeft className="size-4" />
         </Button>
         <div className="min-w-0">
@@ -420,7 +424,7 @@ export function OrchestratorPage() {
           <OrchestratorStatusLine state={state} />
         </div>
       </div>
-      <div className={cn("min-h-0", ORCHESTRATOR_PAGE_HEIGHT)}>
+      <div className={cn("min-h-0 max-md:flex-1", ORCHESTRATOR_PAGE_HEIGHT)}>
         <ChatPanel
           row={row} flush variant="chat" prefill={prefill}
           controls={controls}

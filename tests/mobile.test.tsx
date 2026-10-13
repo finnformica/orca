@@ -279,6 +279,30 @@ describe("the phone layout (390px, touch)", () => {
     expect(location.pathname).toBe("/agents");
   });
 
+  test("the orchestrator page on a phone: edge-to-edge dividers, even 12px padding, a compact Send", async () => {
+    await mount("/", true);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await act(async () => { await flush(); await flush(); });
+    const page = $('[data-slot="orchestrator-page"]')!;
+    const cls = (el: Element) => el.className.split(/\s+/);
+    // Bleeds out of <main>'s padding, so the header's and composer's borders reach both edges, and
+    // ends at the bottom bar's top — main's bottom padding (which holds the safe area) is cancelled,
+    // not added to, and the bar's own max(…, safe-area) is the only inset left.
+    expect(cls(page)).toContain("max-md:-mx-[max(1rem,env(safe-area-inset-left))]");
+    expect(cls(page)).toContain("max-md:-mt-6");
+    expect(cls(page)).toContain("max-md:-mb-[calc(5.5rem+env(safe-area-inset-bottom))]");
+    expect(page.className).toContain("max(0.375rem,env(safe-area-inset-bottom))");
+    // Header, conversation and composer: the same 12px all round.
+    const header = page.querySelector('[data-slot="orchestrator-page-header"]')!;
+    expect(cls(header)).toEqual(expect.arrayContaining(["border-b", "max-md:p-3"]));
+    expect(cls(page.querySelector('[data-slot="chat-composer-dock"]')!)).toEqual(expect.arrayContaining(["border-t", "max-md:p-3"]));
+    expect(cls(page.querySelector(".overflow-y-auto")!)).toContain("p-3");
+    // Send: a 28px filled chip in a transparent, still-44px touch target; desktop keeps the size-8 square.
+    const send = page.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
+    expect(cls(send)).toEqual(expect.arrayContaining(["size-8", "max-md:bg-transparent", "pointer-coarse:max-md:min-w-11"]));
+    expect(cls(send.querySelector("span")!)).toEqual(expect.arrayContaining(["max-md:size-7", "max-md:bg-primary"]));
+  });
+
   test("on a touch screen Enter in the composer is a newline, not a send", async () => {
     await mount("/", true);
     act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
