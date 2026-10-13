@@ -22,7 +22,7 @@ import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
 import * as notify from "./notify";
-import { health, historyHours, startMetricsSampler } from "./health";
+import { health, historyHours, instanceRate, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
@@ -205,7 +205,7 @@ const notEnabled = (repo: RepoConfig, feature: string) =>
 const DATABASE_ONLY = new Set([
   "/api/turns", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
   "/api/usage", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history",
+  "/api/health/history", "/api/config/instance-rate",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
   // others published — a repo can live on several instances now, so no one instance owns the list.
   "/api/agents",
@@ -414,8 +414,10 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "GET" && p === "/api/health") {
     // This machine's vitals, for the header's instance chip. `?instance=` reaches another instance
-    // through the ordinary placement forwarding (an explicit instance beats everything).
-    return json(await health());
+    // through the ordinary placement forwarding (an explicit instance beats everything). The rate is
+    // this machine's (config → IMDS estimate → 0), for the card's Cost accrued chart.
+    const [h, rate] = await Promise.all([health(), loadConfig().then((c) => instanceRate(c.instanceHourlyUsd))]);
+    return json({ ...h, rate });
   }
   if (req.method === "GET" && p === "/api/notifications") {
     // The centre's rows (any instance answers: one table). `since` is the catch-up cursor after a
@@ -471,6 +473,15 @@ async function api(req: Request, url: URL): Promise<Response> {
     await saveConfigDocument(config);
     return json({ ok: true, repos: config.repos.map((r) => r.name) });
   }
+  if (req.method === "POST" && p === "/api/config/instance-rate") {
+    // Settings' Machine cost: one instance's USD/hour (null clears it, back to the IMDS estimate / 0).
+    const instance = typeof body.instance === "string" ? body.instance.trim() : "";
+    const usd = body.hourlyUsd === null || body.hourlyUsd === "" ? null : Number(body.hourlyUsd);
+    if (!instance || (usd !== null && !(Number.isFinite(usd) && usd >= 0))) return json({ error: "instance and a non-negative hourlyUsd (or null) are required" }, 400);
+    await db.setInstanceHourlyUsd(instance, usd);
+    invalidateConfig();
+    return json({ ok: true });
+  }
   if (req.method === "GET" && p === "/api/config") {
     const available = AGENT_PROVIDERS.filter((provider) => Boolean(Bun.which(providerBinary(provider))));
     const repos = await Promise.all(cfg.repos.map(async (r) => ({
@@ -492,6 +503,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       repos: repos.map((r, i) => ({ ...r, runsOn: cfg.repos[i]!.runsOn })),
       staleHours: cfg.staleHours, agentProviders, apiPort: API_PORT,
       instance: db.instanceName(), instances: Object.keys(cfg.instances ?? {}),
+      instanceHourlyUsd: cfg.instanceHourlyUsd ?? {},
     });
   }
   // The orchestrator's verbs over HTTP, so an orchestrator on one instance can spawn / send /

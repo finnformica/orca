@@ -718,12 +718,22 @@ needs no second timer; a failed write is logged and swallowed. `GET /api/health/
 either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
 CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300
 points, one line each (no overlay — the running sessions are their own chart). Beside them, in the
-same `LineChart` design, an **Agents** chart (`running_agents` over time) and **Cost accrued** (the
-running sum of `instance_metric.cost_usd`, migration 17: what the runs that finished since the
-previous sample cost, from the run ledger's `costUsd` — Claude's `total_cost_usd`; Codex/Cursor report
-none). Rows written before migration 17 are filled once from the ledger at startup
-(`health.backfillCost` → `db.backfillMetricCost`: each run onto the first sample at or after it, only
-where `cost_usd` is still NULL, so it never re-counts what the sampler did). All four come from the
+same `LineChart` design, an **Agents** chart (`running_agents` over time) and **Cost accrued** —
+what the MACHINE cost, not model spend (Finn: the first cut summed the runs' `total_cost_usd`, which
+was wrong in intent; model spend is the Usage card's business). It is the instance's hourly rate ×
+the time between consecutive samples, where a pause over 5 minutes (`UPTIME_GAP_MS`, the sparkline's
+gap) means it was down and adds nothing (`accruedCost`, pure); the caption shows the rate
+(`rateLabel`: `$0.23/h est. (m7i.xlarge)`), the value the total for the range. **The rate**
+(`health.instanceRate`, on `/api/health` as `rate`): the app config's `instanceHourlyUsd[<instance>]`
+(editable in Settings' Machine cost card → `POST /api/config/instance-rate`, which sets one entry
+and leaves the rest of the document alone), else on EC2 the type + region from IMDSv2 priced from
+the small built-in on-demand table `EC2_ON_DEMAND_USD` (source `estimate`; the box, m7i.xlarge in
+eu-west-2, is $0.2331/h), else 0 — the laptop — and a card with no rate greys the chart
+(`chart-cost-off`) rather than drawing a flat $0. The rate is today's, applied over the whole range
+(no rate history). `ORCA_HOURLY_USD` / `ORCA_BILLING_SINCE` and the month-to-date estimate are gone.
+`instance_metric.cost_usd` (migration 17) is left in place but UNUSED — nothing writes or reads it
+any more, and the ledger backfill that filled it was removed; dropping it would be a migration of
+its own for no gain. All four come from the
 one `/api/health/history` poll. Every chart and the card's header stats come from ONE series
 (`instanceSeries`): the live `/api/health` reading, when newer, is the newest sample and every line's
 raw last point, so a header stat can never disagree with where its line ends. The Instances heading's
