@@ -720,7 +720,19 @@ async function api(req: Request, url: URL): Promise<Response> {
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
     if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
-    if (agent.isRunning(body.worktreePath)) return json({ error: "an agent is already running for this worktree" }, 409);
+    if (agent.isRunning(body.worktreePath)) {
+      // Queued rather than refused: the run in flight finishes and this goes next, exactly as a
+      // follow-up typed mid-run does (see /api/agent below) — a board action landing on a busy
+      // worktree is a double-click or a race, not an error.
+      if (body.branch) {
+        const queued = await db.queueMessage({
+          repo: repo.name, branch: body.branch, worktreePath: body.worktreePath,
+          instruction: body.instruction ?? body.prompt, attachments: body.attachments ?? [], provider,
+        });
+        return json({ status: "queued", queued });
+      }
+      return json({ error: "an agent is already running for this worktree" }, 409);
+    }
     const receipt = await agent.runAgent(body.worktreePath, body.prompt, {
       ...launchOptions(cfg, repo, provider, body.model),
       resume: body.resume, history: body.history, handoffFrom: body.handoffFrom, branch: body.branch,
@@ -735,10 +747,11 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
     if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
     if (agent.isRunning(body.key)) {
-      // A follow-up typed mid-run is QUEUED. The composer invites exactly that ("the agent is
-      // working — queue the next instruction") and this route used to answer 409, losing the
-      // message. Board actions arriving mid-run are a double-click and are still refused.
-      if (body.action === "followup" && body.branch && body.worktree) {
+      // Any action landing on a busy worktree (a typed follow-up, Address PR, Resolve conflicts,
+      // Retry, Fix) is QUEUED rather than refused — the composer already invited exactly that ("the
+      // agent is working — queue the next instruction"), and this route used to 409 every other
+      // board action, losing the message. The CLI's `address`/`send` queue the same way (verbs.ts).
+      if (body.branch && body.worktree) {
         const queued = await db.queueMessage({
           repo: repo.name, branch: body.branch, worktreePath: body.worktree,
           instruction: body.instruction ?? body.prompt, attachments: body.attachments ?? [], provider,
