@@ -289,3 +289,37 @@ test("Q7: the pill is centred on the main column — its strip starts where the 
   expect($('[data-slot="quick-ask-surface"]')!.className).toContain("w-[min(560px,calc(100%-2rem))]");
   s.set(sidebarCollapsedAtom, false);
 });
+
+test("Q8: the box carries every composer's toolbar — the orchestrator's model picker and context ring, attach, Send — and a model change sets the orchestrator's model as the panel does", async () => {
+  apiFake.orchestratorState = { ...apiFake.orchestratorState, model: "claude-opus-5-5", contextPct: 42 };
+  await mount("/");
+  await click($('[data-slot="quick-ask-pill"]')!);
+  const toolbar = $('[data-slot="quick-ask-box"] [data-slot="chat-composer-toolbar"]')!;
+  const picker = toolbar.querySelector<HTMLElement>('[data-slot="chat-composer-leading"] [aria-label="Model"]')!;
+  expect(picker.textContent).toBe("Claude · Opus 5.5"); // the orchestrator's own setting, not a card's
+  const ring = toolbar.querySelector<HTMLButtonElement>('[data-slot="chat-composer-leading"] button[data-slot="context-ring"]')!;
+  expect(ring.getAttribute("aria-label")).toBe("Context 42% full");
+  expect(toolbar.querySelector('button[title="Attach files"]')).not.toBeNull();
+  expect(toolbar.querySelector('button[aria-label="Send"]')!.textContent).toContain("Send");
+  // The ring's Compact compacts the orchestrator's session, as in the panel.
+  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
+  await act(async () => { document.body.querySelector<HTMLButtonElement>('button[data-slot="context-compact"]')!.click(); await flush(); await flush(); });
+  expect(apiFake.calls).toContain("compact:@orca:orchestrator");
+  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })); await new Promise((r) => setTimeout(r, 200)); });
+  // Pick another model: the orchestrator's setting changes (api.orchestratorModel), the box stays open.
+  await act(async () => {
+    picker.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" }));
+    await flush(); await flush();
+  });
+  const sonnet = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((o) => o.textContent?.includes("Sonnet"))!;
+  expect(sonnet).toBeDefined();
+  await act(async () => {
+    sonnet.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" }));
+    sonnet.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, button: 0, pointerType: "mouse" }));
+    sonnet.click();
+    await flush(); await flush();
+  });
+  expect(apiFake.orchestratorState.model).toContain("sonnet");
+  expect(surface().dataset.state).toBe("open");
+  expect($('[data-slot="quick-ask-box"] [aria-label="Model"]')!.textContent).toContain("Sonnet");
+});
