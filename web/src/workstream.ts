@@ -1852,3 +1852,10 @@ export function modelBadge(ran: string | undefined, pinned: string | undefined):
     : `Model: ${next}`;
   return { label, title };
 }
+
+/** The overlay an installed app's home-screen shortcut asks for (`/?open=new`, `/?open=orchestrator`,
+ *  web/public/manifest.webmanifest), or null. Pure. */
+export function launchOverlay(search: string): "new" | "orchestrator" | null {
+  const v = new URLSearchParams(search).get("open");
+  return v === "new" || v === "orchestrator" ? v : null;
+}

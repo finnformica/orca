@@ -13,7 +13,8 @@ import { getDefaultStore } from "jotai";
 import { orchestratorOpenAtom } from "@/lib/atoms";
 import { COARSE_QUERY, NARROW_QUERY, enterSends, expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
 import { poll } from "@/lib/poll";
-import { STALE_AFTER_MS, newerBuild, previewHref, previewLabel, staleAge } from "@/workstream";
+import { STALE_AFTER_MS, launchOverlay, newerBuild, previewHref, previewLabel, staleAge } from "@/workstream";
+import { themeColor } from "@/lib/theme";
 import { UpdateBanner } from "@/components/Freshness";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -68,6 +69,33 @@ describe("installable app (PWA files)", () => {
     }
     expect(m.icons.some((i) => i.purpose === "maskable")).toBe(true);
     expect(await pngSize("public/apple-touch-icon.png")).toEqual([180, 180]);
+  });
+
+  test("maskable icon: its own file, full-bleed, the whole mark inside the 80% safe zone", async () => {
+    const m = await read("public/manifest.webmanifest").json() as { icons: { src: string; sizes: string; purpose?: string }[] };
+    const maskable = m.icons.filter((i) => i.purpose === "maskable");
+    expect(maskable.map((i) => i.src)).toEqual(["/icon-maskable-512.png"]); // never the round "any" icon, which Android would crop
+    expect(m.icons.filter((i) => i.purpose !== "maskable").map((i) => i.src)).not.toContain("/icon-maskable-512.png");
+    expect(await pngSize("public/icon-maskable-512.png")).toEqual([512, 512]);
+    const svg = await read("public/icon-maskable.svg").text();
+    expect(svg).toContain('<rect width="24" height="24" fill="#000" />'); // full bleed
+    const [, tx, ty, k] = svg.match(/translate\(([\d.]+) ([\d.]+)\) scale\(([\d.]+)\)/)!.map(Number);
+    // The mark's path spans x 2…22.5, y 3…15.5; every corner of that box must fall within r = 0.4 × 24.
+    for (const [x, y] of [[2, 3], [22.5, 3], [2, 15.5], [22.5, 15.5]]) expect(Math.hypot(tx! + k! * x! - 12, ty! + k! * y! - 12)).toBeLessThanOrEqual(9.6);
+  });
+
+  test("manifest polish: an id, any orientation, the theme tokens' colours, shortcuts the app understands", async () => {
+    const m = await read("public/manifest.webmanifest").json() as {
+      id: string; orientation: string; theme_color: string; background_color: string;
+      user_preferences: { color_scheme_dark: { theme_color: string; background_color: string } };
+      shortcuts: { name: string; url: string }[];
+    };
+    expect(m.id).toBe("/");
+    expect(m.orientation).toBe("any");
+    expect([m.theme_color, m.background_color]).toEqual([themeColor(false), themeColor(false)]);
+    expect(m.user_preferences.color_scheme_dark).toEqual({ theme_color: themeColor(true), background_color: themeColor(true) });
+    expect(m.shortcuts.map((s) => [s.name, launchOverlay(new URL(s.url, "http://x").search)])).toEqual([["New agent", "new"], ["Orchestrator", "orchestrator"]]);
+    expect(launchOverlay("?open=nope")).toBeNull();
   });
 
   test("index.html: manifest, theme-color per scheme, Apple tags, safe-area viewport", async () => {
@@ -226,6 +254,14 @@ describe("the phone layout (390px, touch)", () => {
     expect(document.documentElement.style.getPropertyValue("--vvh")).toBe("300px");
     expect(document.documentElement.style.getPropertyValue("--vv-top")).toBe("40px");
     off();
+  });
+});
+
+describe("home-screen shortcuts", () => {
+  test("/?open=orchestrator opens the orchestrator once, and the parameter is dropped", async () => {
+    await mount("/?open=orchestrator", true);
+    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(true);
+    expect(location.search).toBe("");
   });
 });
 

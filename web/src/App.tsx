@@ -1,5 +1,9 @@
 import { useEffect } from "react";
-import { useRoute, type Route } from "@/lib/route";
+import { useSetAtom } from "jotai";
+import { navigate, useRoute, type Route } from "@/lib/route";
+import { addNewOpenAtom } from "@/lib/atoms";
+import { useOrchestrator } from "@/components/Terminal";
+import { launchOverlay } from "./workstream";
 import { expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
 import { Shell, Crumb, AddNew } from "@/components/Shell";
 import { OrchestratorWindow } from "@/components/Terminal";
@@ -18,6 +22,16 @@ export function App() {
   // The phone layout's two global listeners: the visible viewport's size (sheets stay above the
   // keyboard) and tap-to-expand for truncated text.
   useEffect(() => { const a = trackVisualViewport(), b = expandTruncatedOnTap(); return () => { a(); b(); }; }, []);
+  // A home-screen shortcut (manifest `shortcuts`) launches with ?open=new|orchestrator: open that
+  // overlay once, and drop the parameter so a reload doesn't reopen it.
+  const setAddNew = useSetAtom(addNewOpenAtom);
+  const { ask } = useOrchestrator();
+  useEffect(() => {
+    const open = launchOverlay(location.search);
+    if (!open) return;
+    navigate(location.pathname, true);
+    if (open === "new") setAddNew(true); else ask();
+  }, []);
   return (
     <>
       <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarAction collapsed={collapsed} />}>
