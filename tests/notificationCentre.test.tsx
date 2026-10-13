@@ -280,10 +280,10 @@ describe("the notification centre", () => {
     await click($("notifications-bell"));
     const panel = $("notification-centre")!;
     const header = panel.querySelector("header")!;
-    // The header: title, Unread (its count) / All, Mark all as read — nothing else — tall enough
-    // to give the segmented toggle room (h-14, not the original cramped h-11).
-    expect(header.className).toContain("h-14");
-    expect(header.className).not.toContain("h-11");
+    // The header: title, Unread (its count) / All, Mark all as read — nothing else — padded evenly
+    // (py matching the left/right padding) rather than pinned to a fixed height.
+    expect(header.className).toContain("py-3");
+    expect(header.className).not.toContain("h-14");
     expect(header.querySelector("h3")!.textContent).toBe("Notifications");
     const seg = header.querySelector<HTMLElement>('[role="group"]')!;
     expect([...seg.querySelectorAll("button")].map((b) => [b.textContent, b.getAttribute("aria-pressed")])).toEqual([["Unread2", "true"], ["All", "false"]]);
