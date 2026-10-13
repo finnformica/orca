@@ -214,7 +214,7 @@ const DATABASE_ONLY = new Set([
   // Every instance's running previews: this one's live, the others' as they published them.
   "/api/previews",
   // The notification centre: one table, written once by the instance where each event happened.
-  "/api/notifications", "/api/notifications/read", "/api/notifications/dismiss",
+  "/api/notifications", "/api/notifications/read",
 ]);
 
 // DATABASE_ONLY routes whose `?instance=` selects rows rather than a machine — never forwarded.
@@ -423,9 +423,10 @@ async function api(req: Request, url: URL): Promise<Response> {
     const since = Number(url.searchParams.get("since"));
     return json(await db.notifications({ since: Number.isFinite(since) && since > 0 ? since : undefined, limit: Number(url.searchParams.get("limit")) || undefined }));
   }
-  if (req.method === "POST" && (p === "/api/notifications/read" || p === "/api/notifications/dismiss")) {
+  if (req.method === "POST" && p === "/api/notifications/read") {
+    // The only write: a notification is unread or read, and nothing is deleted from here.
     const ids = body.all === true ? "all" : Array.isArray(body.ids) ? body.ids.map(Number).filter(Number.isFinite) : [];
-    const changed = p.endsWith("/read") ? await db.markNotificationsRead(ids) : await db.dismissNotifications(ids);
+    const changed = await db.markNotificationsRead(ids);
     return json({ ok: true, changed });
   }
   if (req.method === "GET" && p === "/api/health/history") {
