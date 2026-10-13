@@ -21,6 +21,7 @@ import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
+import * as mergeQueue from "./mergeQueue";
 import * as notify from "./notify";
 import { health, historyHours, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
@@ -122,6 +123,12 @@ agent.onRunFinished(async (run) => {
   await notify.onRunFinished(run);
   await orchestrator.onRunFinished(await loadConfig(), run);
 });
+// The merge queue (server/mergeQueue.ts): every marked PR this instance drives, once a minute. A red
+// or refused PR the orchestrator owns is reported to it like a worker's problem; a merge, like a finish.
+mergeQueue.onReport(async (text) => orchestrator.report(await loadConfig(), text));
+setInterval(() => {
+  void loadConfig().then((cfg) => mergeQueue.tick(cfg)).catch((e) => console.error("orca: merge queue pass failed", e));
+}, mergeQueue.MERGE_POLL_MS).unref();
 // Warm the review queue (gh.listReviewPrs) so its slow cold fetch is paid here, not by a caller. A
 // local-only repo just fails quietly.
 void loadConfig().then((cfg) => cfg.repos.filter(verbs.repoHere)
@@ -600,6 +607,15 @@ async function api(req: Request, url: URL): Promise<Response> {
   const diffMatch = p.match(/^\/api\/prs\/(\d+)\/diff$/);
   if (req.method === "GET" && diffMatch) {
     return json({ diff: await gh.prDiff(repo.repoPath, Number(diffMatch[1])) });
+  }
+  if (req.method === "POST" && p === "/api/prs/merge-when-green") {
+    // Mark (or with `cancel`, unmark) a PR merge-when-green — the PR menu's and `orca merge`'s route.
+    try {
+      const pr = body.pr === undefined ? undefined : Number(body.pr);
+      return json({ text: await orchestrator.mergeWhenGreen(cfg, repo, { pr, branch: body.branch, small: Boolean(body.small), by: body.by, cancel: Boolean(body.cancel) }) });
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
   }
   if (req.method === "POST" && p === "/api/merge") {
     const status = await gh.prStatus(repo.repoPath, body.pr);

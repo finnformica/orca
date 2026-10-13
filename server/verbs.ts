@@ -16,9 +16,9 @@ import * as forward from "./forward";
 import * as notify from "./notify";
 import { existsSync } from "fs";
 import { featuresOf, modelFor, providerAllowed, type OrcaConfig, type RepoConfig } from "./config";
-import { addressPrPrompt, chatPrompt, continuation, launchPrompt, slugifyBranch, titleFromPrompt } from "../web/src/workstream";
+import { addressPrPrompt, chatPrompt, continuation, launchPrompt, slugifyBranch, titleFromPrompt, workerPrBody } from "../web/src/workstream";
 import { providerOfModel } from "../shared/models";
-import { isAgentProvider, type AgentProvider } from "../shared/agent";
+import { isAgentProvider, type AgentOutcome, type AgentProvider } from "../shared/agent";
 
 /** The --model for a run: the card's pinned model, else the config's default — a Claude id, so it
  *  applies to Claude only (an unpinned Codex/Cursor run takes that CLI's own default). */
@@ -284,6 +284,26 @@ export async function placement(
     if (home) return home.instance;
   }
   return repo.runsOn ?? db.instanceName();
+}
+
+/** Open the PR for a finished worker's branch (the repo's `mergePolicy.autoPr`): title from the
+ *  workstream, body from the worker's outcome and its commits, ready for review — not a draft, so the
+ *  merge queue can take it. Nothing when the repo has no remote, the branch already has a PR, or it
+ *  has no commits of its own. */
+export async function openWorkerPr(repo: RepoConfig, branch: string, worktreePath: string, result: { outcome?: AgentOutcome; response?: string }): Promise<{ number: number; url: string } | undefined> {
+  if (!(await git.hasRemote(repo.repoPath))) return undefined;
+  if ((await gh.listPrs(repo.repoPath)).some((p) => p.branch === branch)) return undefined;
+  const base = await git.resolveBase(repo.repoPath, repo.baseBranch);
+  const { commits } = await git.changeSummary(worktreePath, base);
+  if (!commits.length) return undefined;
+  const e = (await db.enrichment(repo.name))[branch] ?? {};
+  const title = (typeof e.title === "string" && e.title.trim()) || branch;
+  await git.pushBranch(worktreePath, branch);
+  const pr = await gh.createPr(worktreePath, {
+    title, base: repo.baseBranch, head: branch,
+    body: workerPrBody({ ...result, commits: commits.map((c) => c.subject).reverse() }), // changeSummary is newest-first
+  });
+  return pr;
 }
 
 /** Move a workstream's worktree from THIS instance to another. The branch goes up to origin, the

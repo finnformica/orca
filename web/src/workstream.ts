@@ -937,7 +937,7 @@ export const isWorkerEvent = (text: string): boolean => text.startsWith(WORKER_E
  *  Orca's check. Read off the report text, so a queued one can be judged after the fact. */
 export const isWorkerProblem = (text: string): boolean => {
   const [head = "", next = ""] = text.split("\n");
-  return !head.endsWith(" — done") || next.startsWith("Orca's check") && next.includes("FAILED");
+  return !(head.endsWith(" — done") || head.endsWith(" — merged")) || next.startsWith("Orca's check") && next.includes("FAILED");
 };
 /** Reports that may wait: every part is a clean worker report. */
 export const onlyCleanReports = (messages: string[]): boolean =>
@@ -959,6 +959,106 @@ export function workerEvent(input: {
     ...(o ? [`Outcome: ${clip(o.outcome, 1500)}`, ...list("Remaining", o.remaining), ...list("Decisions", o.decisions), ...list("Commits", o.commits)]
       : [`Response: ${clip(input.response ?? "(none)", 1500)}`]),
     `Full turn: orca read --run ${input.runId}`,
+  ].join("\n");
+}
+
+// ---- merge queue (server/mergeQueue.ts): merge-when-green, decided here ----
+
+/** A repo's merge policy (`mergePolicy` in its config). Absent = nothing is merged on its own. */
+export type MergePolicy = {
+  /** Which PRs may be marked merge-when-green: `never` (the default), `small` (only ones marked
+   *  small — `orca merge --small`), or `any`. */
+  whenGreen?: "never" | "small" | "any";
+  /** Paths never merged on their own, whatever the mark: globs (`*` within a segment, `**` across),
+   *  a trailing `/` or a bare directory covering everything under it. E.g. `server/db.ts` (Orca's
+   *  migrations), `server/cgroup.ts`, `deploy/`. */
+  denyPaths?: string[];
+  /** Open a PR for an orchestrated worker's branch when its run finishes clean (title from the
+   *  workstream, body from its outcome), so the orchestrator never opens one by hand. */
+  autoPr?: boolean;
+};
+export const MERGE_WHEN_GREEN = ["never", "small", "any"] as const;
+
+/** Does `path` match one deny glob? Pure. */
+export function pathMatches(path: string, glob: string): boolean {
+  const g = glob.trim().replace(/^\.?\//, "");
+  if (!g) return false;
+  if (g.endsWith("/")) return path.startsWith(g);
+  if (!/[*?]/.test(g)) return path === g || path.startsWith(`${g}/`);
+  const re = g.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*\//g, "\u0000").replace(/\*\*/g, "\u0001").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]")
+    .replace(/\u0000/g, "(?:.*/)?").replace(/\u0001/g, ".*");
+  return new RegExp(`^${re}$`).test(path);
+}
+/** The changed paths a policy's denylist catches. Pure. */
+export const deniedPaths = (files: string[], globs: string[] | undefined): string[] =>
+  files.filter((f) => (globs ?? []).some((g) => pathMatches(f, g)));
+
+/** A PR marked merge-when-green, as stored on its branch's enrichment (`mergeWhenGreen`). */
+export type MergeMark = {
+  pr?: number; // absent until the branch has a PR (marked before the worker finished)
+  small?: boolean; by?: "orchestrator" | "user"; at: number;
+  /** The head commit a red/conflict was last reported for — once per push, not once per poll. */
+  reportedSha?: string;
+};
+/** What the queue reads about the PR (gh.prMergeGate's shape, minus what it doesn't need). */
+export type MergeGateLike = {
+  state: string; isDraft?: boolean; mergeable: string; ciStatus: string;
+  files: string[]; changedFiles: number; failingChecks?: string[];
+};
+export type MergeVerdict =
+  | { action: "merge" }
+  | { action: "wait"; why: string }
+  | { action: "red"; why: string } // keep the mark: it merges once fixed and green
+  | { action: "refuse"; why: string } // drop the mark: the policy says a person merges this
+  | { action: "gone"; why: string };
+
+/** Why the policy refuses to merge this PR on its own, or undefined when it may. The files are
+ *  re-read on every poll, since a push can add a denied path after the mark. Pure. */
+export function mergeRefusal(policy: MergePolicy | undefined, mark: Pick<MergeMark, "small">, pr?: Pick<MergeGateLike, "files" | "changedFiles">): string | undefined {
+  const when = policy?.whenGreen ?? "never";
+  if (when === "never") return "this repo's mergePolicy.whenGreen is \"never\": merging is the user's";
+  if (when === "small" && !mark.small) return "this repo only merges PRs marked small on green (--small); merging this one is the user's";
+  if (!pr) return undefined;
+  const denied = deniedPaths(pr.files, policy?.denyPaths);
+  if (denied.length) return `it touches ${denied.slice(0, 5).join(", ")}${denied.length > 5 ? ` and ${denied.length - 5} more` : ""}, which this repo never merges on its own (mergePolicy.denyPaths)`;
+  if (policy?.denyPaths?.length && pr.changedFiles > pr.files.length) return `it changes ${pr.changedFiles} files, more than GitHub lists, so the denylist can't be checked`;
+  return undefined;
+}
+
+/** The merge queue's one decision for a marked PR. Never merges red; merges only when every check
+ *  passed (no checks yet is not green — a fresh push has none) and GitHub says it merges clean. Pure. */
+export function mergeVerdict(policy: MergePolicy | undefined, mark: Pick<MergeMark, "small">, pr: MergeGateLike): MergeVerdict {
+  if (pr.state !== "OPEN") return { action: "gone", why: `the PR is ${pr.state.toLowerCase()}` };
+  const refused = mergeRefusal(policy, mark, pr);
+  if (refused) return { action: "refuse", why: refused };
+  if (pr.ciStatus === "failing") return { action: "red", why: `CI failing${pr.failingChecks?.length ? `: ${pr.failingChecks.join(", ")}` : ""}` };
+  if (pr.mergeable === "CONFLICTING") return { action: "red", why: "merge conflicts with its base" };
+  if (pr.ciStatus !== "passing") return { action: "wait", why: pr.ciStatus === "none" ? "no checks reported yet" : "checks still running" };
+  if (pr.mergeable !== "MERGEABLE") return { action: "wait", why: "GitHub is still computing mergeability" };
+  return { action: "merge" };
+}
+
+/** The report the orchestrator hears from the queue — a worker-report line, so the chat and the
+ *  batching rules treat it like one: `— merged` is clean, `— merge blocked: …` wakes it. Pure. */
+export function mergeQueueReport(input: { repo: string; branch: string; title?: string; pr: number; verdict: MergeVerdict; url?: string }): string {
+  const head = `${WORKER_EVENT_MARKER} ${input.repo}/${input.branch}${input.title ? ` "${input.title}"` : ""}`;
+  const v = input.verdict;
+  if (v.action === "merge") return [`${head} — merged`, `Merge queue: squash-merged PR #${input.pr} on green.${input.url ? ` ${input.url}` : ""}`].join("\n");
+  if (v.action === "red") return [`${head} — merge blocked: ${v.why} (PR #${input.pr})`, `Merge queue: still marked merge-when-green; it merges itself once this is fixed and green. To fix it: orca address --repo ${input.repo} --branch ${input.branch}`].join("\n");
+  return [`${head} — merge refused: ${v.why} (PR #${input.pr})`, "Merge queue: unmarked. Say it is ready for the user to merge."].join("\n");
+}
+
+/** The body Orca opens a finished worker's PR with: its outcome, decisions and verification, then
+ *  the commits — what a reviewer needs, from what the worker already reported. Pure. */
+export function workerPrBody(input: { outcome?: AgentOutcome; response?: string; commits: string[] }): string {
+  const o = input.outcome;
+  const list = (label: string, items: string[] | undefined) => (items?.length ? [`## ${label}`, ...items.map((i) => `- ${i}`), ""] : []);
+  return [
+    ...(o?.outcome ? ["## Outcome", o.outcome.trim(), ""] : input.response?.trim() ? ["## Summary", clip(input.response.trim(), 4000), ""] : []),
+    ...list("Decisions", o?.decisions), ...list("Verification", o?.verification), ...list("Remaining", o?.remaining),
+    ...list("Commits", input.commits),
+    "Opened by Orca when the workstream's agent finished.",
   ].join("\n");
 }
 
@@ -1008,6 +1108,10 @@ const ORCA_COMMANDS = [
   "                                  repo's template database (the old one kept as a backup) and its",
   "                                  integration env vars go back into the source env file. Without --confirm",
   "                                  it only prints the plan and the env diff (values masked)",
+  "  orca merge --repo <repo> (--pr <n> | --branch <branch>) --when-green [--small]   Orca squash-merges it once",
+  "                                  checks pass and it merges clean — never red; you hear back when it merges or",
+  "                                  goes red. Don't watch CI yourself. The repo's mergePolicy decides what may be",
+  "                                  queued (--small for a small PR); a refusal says why. --cancel unmarks it.",
   "  orca chats [\"<search terms>\"]   list conversations, or full-text search every past one (merged ones too)",
   "  orca read --chat <id> | --run <runId>                     one conversation's turns, or one full turn",
   "  orca notes                      print your notes",
@@ -1046,7 +1150,8 @@ const ORCHESTRATOR_ROLE = [
   "  when it matters. A code fault in the log goes to the workstream; a machine fault goes to the user.",
   "- `--push-to-template` replaces what every future preview starts from, so run it only when the user",
   "  asks: first without --confirm, show them the plan, then with it. Relay its restore instructions.",
-  "- You cannot promote, merge or post to Slack. Say when something is ready for the user to do that.",
+  "- You cannot promote or post to Slack, and you merge only through `orca merge --when-green` — never",
+  "  `gh pr merge`. Where the repo's policy refuses, say the PR is ready for the user to merge.",
   "- When the user cancels a workstream you own, `orca archive` it rather than just telling the worker",
   "  to stop — one step removes the card and can't be restarted by a message still queued behind it.",
   "- Your notes are your memory across context resets: keep them current with the plan, the open",
@@ -2062,6 +2167,8 @@ const NOTIFICATION_ACTION_RULES: Record<string, ActionRule[]> = {
   stopped: [{ id: "retry", label: "Retry", needs: "row" }, { id: "openChat", label: "Open chat" }],
   preview_ready: [{ id: "openPreview", label: "Open preview" }, { id: "stopPreview", label: "Stop", needs: "previewKey" }],
   preview_failed: [{ id: "retryPreview", label: "Retry test", needs: "row" }, { id: "viewLog", label: "View log" }],
+  merged: [{ id: "viewPr", label: "View PR", needs: "prUrl" }],
+  merge_refused: [{ id: "viewPr", label: "View PR", needs: "prUrl" }],
 };
 
 /** A notification's quick actions: up to two for its kind, then ALWAYS Open, last — so every toast

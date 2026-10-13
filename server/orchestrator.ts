@@ -19,6 +19,7 @@ import * as git from "./git";
 import * as gh from "./gh";
 import * as verbs from "./verbs";
 import * as preview from "./preview";
+import * as mergeQueue from "./mergeQueue";
 import { pushToTemplate } from "./pushTemplate";
 import { stateDir } from "./state";
 import { API_PORT } from "./ports";
@@ -168,21 +169,43 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   if (run.sessionId && e.sessionId !== run.sessionId) await db.patchEnrichment(repo, branch, { sessionId: run.sessionId });
   if (run.continued) return; // a queued follow-up (an autofix) took over — not idle yet
   if (run.options.action === "compact") return; // housekeeping you asked for, not work to report
+  const opened = await autoPr(cfg, repo, branch, run);
   const text = workerEvent({
     repo, branch, title: e.title as string | undefined, runId: run.runId, status: run.status,
     outcome: run.structured, response: run.result, check: run.check,
-  });
-  // The orchestrator lives on ONE instance: a report from another is posted there, so one process
-  // wakes it (two resuming the same session at once was the "one message behind" bug).
+  }) + (opened ? `\n${opened}` : "");
+  await report(cfg, text, run.key);
+}
+
+/** The repo's `mergePolicy.autoPr`: a clean finish opens the branch's PR (verbs.openWorkerPr), and
+ *  a branch marked merge-when-green before it had one joins the queue. Returns the line the worker
+ *  report carries, or nothing. A failure is reported, never thrown — the report still goes. */
+async function autoPr(cfg: OrcaConfig, repoName: string, branch: string, run: agent.RunFinished): Promise<string | undefined> {
+  const repo = cfg.repos.find((r) => r.name === repoName);
+  if (!repo?.mergePolicy?.autoPr || run.status !== "done" || run.check?.ok === false) return undefined;
+  try {
+    const pr = await verbs.openWorkerPr(repo, branch, run.key, { outcome: run.structured, response: run.result });
+    if (!pr) return undefined;
+    void mergeQueue.tick(cfg).catch(() => {}); // a branch already marked merge-when-green is picked up now
+    return `Orca opened PR #${pr.number}: ${pr.url}`;
+  } catch (e) {
+    return `Orca could not open its PR: ${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
+/** Hand a report to the orchestrator: here, or posted to the instance it lives on (ONE process wakes
+ *  it — two resuming the same session at once was the "one message behind" bug). Worker reports and
+ *  the merge queue's both go through this. */
+export async function report(cfg: OrcaConfig, text: string, key?: string): Promise<void> {
   const host = cfg.orchestratorOn;
   if (host && host !== db.instanceName()) {
     const base = cfg.instances?.[host];
     if (!base) { console.error(`orca: orchestratorOn "${host}" has no address; report dropped`); return; }
-    await fetch(new URL("/api/orchestrator/event", base), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, key: run.key }) })
+    await fetch(new URL("/api/orchestrator/event", base), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, key }) })
       .catch((e) => console.error("orca: could not deliver a worker report to the orchestrator's instance", e));
     return;
   }
-  await deliverReport(cfg, text, run.key);
+  await deliverReport(cfg, text, key);
 }
 
 /** Deliver a worker's report by the management-by-exception rules, from this or another instance. */
@@ -517,6 +540,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const turns = await db.conversationTurns(id);
       return turns.map((t) => `run ${t.id} — ${turnStatus(t)} (${when(t.startedAt)})\n❯ ${clip(t.instruction ?? "", 500)}\n→ ${clip(answer(t), 1200)}`).join("\n\n") || `No conversation #${id}.`;
     }
+    case "merge": return mergeVerb(cfg, args);
     case "notes": {
       if (words[0] !== "set") return (await blob()).notes || "(empty)";
       const text = words.slice(1).join(" ").trim();
@@ -524,6 +548,36 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, preview [--status | --push-to-template [--confirm]], chats, read, notes`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, merge --when-green, preview [--status | --push-to-template [--confirm]], chats, read, notes`);
   }
+}
+
+/** `orca merge --repo r (--pr N | --branch b) --when-green [--small]` (or `--cancel`): the merge
+ *  queue, never a direct merge — Orca merges on green under the repo's mergePolicy. Runs where the
+ *  repo is checked out (its `runsOn` when that is not here). */
+async function mergeVerb(cfg: OrcaConfig, args: ToolArgs): Promise<string> {
+  const repo = repoNamed(cfg, args.repo);
+  const pr = args.pr === undefined ? undefined : Number(args.pr);
+  if (pr !== undefined && !(pr > 0)) throw new Error("--pr must be a PR number");
+  const branch = typeof args.branch === "string" && args.branch.trim() ? args.branch.trim() : undefined;
+  if (!pr && !branch) throw new Error("merge needs --pr <number> or --branch <branch>");
+  const cancel = "cancel" in args;
+  if (!cancel && !("when-green" in args)) throw new Error("orca merge only queues: add --when-green (Orca squash-merges once checks pass and it merges clean), or --cancel");
+  const body = { repo: repo.name, pr, branch, small: "small" in args, by: "orchestrator", cancel };
+  if (!verbs.repoHere(repo) && repo.runsOn && repo.runsOn !== db.instanceName()) {
+    return String((await viaInstance(cfg, repo.runsOn, "/api/prs/merge-when-green", body)).text ?? "");
+  }
+  return mergeWhenGreen(cfg, repo, body);
+}
+
+/** The body of `orca merge` and of the PR menu's route (index.ts). */
+export async function mergeWhenGreen(cfg: OrcaConfig, repo: RepoConfig, body: { pr?: number; branch?: string; small?: boolean; by?: string; cancel?: boolean }): Promise<string> {
+  const by = body.by === "orchestrator" ? "orchestrator" as const : "user" as const;
+  if (body.cancel) {
+    const branch = body.branch ?? (body.pr ? (await gh.prMergeGate(repo.repoPath, body.pr)).branch : undefined);
+    if (!branch) throw new Error("cancel needs --pr or --branch");
+    await mergeQueue.cancel(repo, branch);
+    return `Unmarked ${repo.name}/${branch}: it is no longer merged on green.`;
+  }
+  return mergeQueue.request(cfg, repo, { pr: body.pr, branch: body.branch }, { small: body.small, by });
 }
