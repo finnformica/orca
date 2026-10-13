@@ -7,7 +7,7 @@
 // (theme, density, composer drafts) — see the migration below for the one-shot handover.
 import { useEffect, useSyncExternalStore } from "react";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
-import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus } from "../../server/gh";
+import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import {
   addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, followUpPrompt, instanceOrder, launchPrompt,
   newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
@@ -501,25 +501,32 @@ export function usePrRefs(): { refs: PrRef[]; repoCount: number } {
 // every poll. Cached per PR; refetched when the PR's review state or feedback count moves (the
 // /api/prs poll already carries both) or after REVIEW_SIGNAL_TTL.
 const REVIEW_SIGNAL_TTL = 5 * 60_000;
-type SignalEntry = { digest?: ReviewDigest; sig: string; at: number; inflight?: boolean };
+type SignalEntry = { digest?: ReviewDigest; threads?: ReviewThreadEvidence[]; sig: string; at: number; inflight?: boolean };
 const reviewSignals = new Map<string, SignalEntry>();
 
-export function useReviewDigest(repo: string, prNumber: number | undefined, sig = ""): ReviewDigest | undefined {
+function useReviewSignalEntry(repo: string, prNumber: number | undefined, sig: string): SignalEntry | undefined {
   const key = prNumber ? `${repo}#${prNumber}` : "";
   const entry = useSyncExternalStore(subscribe, () => (key ? reviewSignals.get(key) : undefined));
   useEffect(() => {
     if (!key || !prNumber) return;
     const e = reviewSignals.get(key);
     if (e && (e.inflight || (e.sig === sig && Date.now() - e.at < REVIEW_SIGNAL_TTL))) return;
-    reviewSignals.set(key, { digest: e?.digest, sig, at: Date.now(), inflight: true });
+    reviewSignals.set(key, { digest: e?.digest, threads: e?.threads, sig, at: Date.now(), inflight: true });
     notify();
     api.reviewSignal(repo, prNumber)
-      .then((s) => reviewSignals.set(key, { digest: reviewDigest(s), sig, at: Date.now() }))
-      .catch(() => reviewSignals.set(key, { digest: e?.digest, sig, at: Date.now() })) // keep the last good one; retry after the TTL
+      .then((s) => reviewSignals.set(key, { digest: reviewDigest(s), threads: s.threads, sig, at: Date.now() }))
+      .catch(() => reviewSignals.set(key, { digest: e?.digest, threads: e?.threads, sig, at: Date.now() })) // keep the last good one; retry after the TTL
       .finally(notify);
   }, [key, repo, prNumber, sig]);
-  return entry?.digest;
+  return entry;
 }
+
+export const useReviewDigest = (repo: string, prNumber: number | undefined, sig = ""): ReviewDigest | undefined =>
+  useReviewSignalEntry(repo, prNumber, sig)?.digest;
+/** The PR's inline review threads (resolved / outdated included) from the SAME cached fetch as the
+ *  digest — the PR page's conversation folds them like GitHub does. */
+export const useReviewThreads = (repo: string, prNumber: number | undefined, sig = ""): ReviewThreadEvidence[] | undefined =>
+  useReviewSignalEntry(repo, prNumber, sig)?.threads;
 export const _resetReviewSignals = () => reviewSignals.clear();
 
 export function useWorkstreams(): Row[] {
