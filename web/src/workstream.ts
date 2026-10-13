@@ -1117,26 +1117,26 @@ export function dayLabel(at: number, now = Date.now()): string {
   return new Date(at).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
 }
 
-// ---- # PR picker (the chat composer's autocomplete) ----
-// Typing `#` in a composer lists the PRs the board already polled; picking one inserts `#123`, or
+// ---- @ PR picker (the chat composer's autocomplete) ----
+// Typing `@` in a composer lists the PRs the board already polled; picking one inserts `#123`, or
 // `repo#123` when the number alone wouldn't say which repo. Pure, so the trigger/filter/insert rules
 // are unit-tested without a DOM.
 
 export type PrRefState = "open" | "draft" | "approved" | "merged";
 export type PrRef = { repo: string; number: number; title: string; state: PrRefState; mergedAt?: string };
 
-/** The `#query` the caret is in, if any: a `#` at the start of the text or after whitespace or an
- *  opening bracket (so `a#1` and `https://x.dev/#frag` don't fire), followed by a non-blank query on
+/** The `@query` the caret is in, if any: an `@` at the start of the text or after whitespace or an
+ *  opening bracket (so `a@b.dev` and `https://x.dev/@user` don't fire), followed by a non-blank query on
  *  the same line up to the caret. Spaces are allowed after the first character so title words can
  *  narrow it; the picker closes by itself once nothing matches. */
 export function prTrigger(text: string, caret: number): { start: number; query: string } | null {
   const line = text.slice(0, caret).split("\n").pop()!;
-  const at = line.lastIndexOf("#");
+  const at = line.lastIndexOf("@");
   if (at < 0) return null;
   const before = line[at - 1];
   if (before !== undefined && !/[\s([{]/.test(before)) return null;
   const query = line.slice(at + 1);
-  if (/^\s/.test(query) || query.length > 60) return null; // `# heading`, or a long-dead trigger
+  if (/^\s/.test(query) || query.length > 60) return null; // a lone `@ `, or a long-dead trigger
   return { start: caret - line.length + at, query };
 }
 
@@ -1144,7 +1144,7 @@ export function prTrigger(text: string, caret: number): { start: number; query: 
  *  activity), merged most-recently-merged first. Each word of the query must prefix the number, the
  *  repo name or a word of the title. */
 export function filterPrRefs(refs: PrRef[], query: string, limit = 8): PrRef[] {
-  const words = query.toLowerCase().replace(/^#/, "").split(/\s+/).filter(Boolean);
+  const words = query.toLowerCase().replace(/^[#@]/, "").split(/\s+/).filter(Boolean);
   const hit = (r: PrRef) => {
     const titleWords = r.title.toLowerCase().split(/[^a-z0-9]+/);
     return words.every((w) => String(r.number).startsWith(w) || r.repo.toLowerCase().startsWith(w) || titleWords.some((t) => t.startsWith(w)));
@@ -1163,7 +1163,7 @@ export function prRefLabel(ref: PrRef, refs: PrRef[], repoCount: number, context
   return clash || (repoCount > 1 && contextRepo !== ref.repo) ? `${ref.repo}#${ref.number}` : `#${ref.number}`;
 }
 
-/** Replace the typed `#query` (from `start` to the caret) with `label`, plus a space unless one
+/** Replace the typed `@query` (from `start` to the caret) with `label`, plus a space unless one
  *  already follows; returns the new text and where the caret goes. */
 export function insertPrRef(text: string, start: number, caret: number, label: string): { text: string; caret: number } {
   const rest = text.slice(caret);

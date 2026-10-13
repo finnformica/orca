@@ -1,8 +1,10 @@
 // The quick-ask launcher: a small pill fixed at the bottom centre of every page (desktop; below md
 // the phone's bottom bar has the orchestrator instead). Click it, or press A, and the pill MORPHS
 // into a compact box — one surface whose width, height and radius animate (instant under
-// prefers-reduced-motion) — for messages to the orchestrator with no history: Enter sends, Shift/⌘/Ctrl+Enter
-// breaks the line, and the box opens three lines tall and grows with what you type up to a cap. The shape is Linear's / Raycast's
+// prefers-reduced-motion) — for messages to the orchestrator with no history. The input IS the shared
+// ChatComposer (`variant="quick"`), so @ mentions, attachments, paste, Enter to send / Shift, ⌘ or
+// Ctrl+Enter for a newline and focus behave as in every other box; it opens three lines tall and
+// grows with what you type up to a cap. The shape is Linear's / Raycast's
 // quick capture: fire a line without leaving what you're looking at, open the conversation only when
 // you want to read. It carries no activity dot: that lives only on the orchestrator's own entry points
 // (the top bar's button, the phone's bottom bar), the things that open the conversation.
@@ -18,7 +20,7 @@ import { quickAskOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
 import { api } from "../api";
 import { useOrchestrator } from "@/components/Terminal";
-import { Button } from "@/components/ui/button";
+import { ChatComposer } from "@/components/ChatComposer";
 import { Shortcut } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
 
@@ -33,8 +35,8 @@ const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(pre
 // quick sends arrive as typed (in parallel, the second could reach the bridge first). A failure does
 // not break the chain for the messages behind it.
 let chain: Promise<unknown> = Promise.resolve();
-export function queueOrchestratorMessage(text: string): Promise<{ status: "running" | "queued" }> {
-  const sent = chain.then(() => api.orchestratorMessage(text, []));
+export function queueOrchestratorMessage(text: string, files: File[] = []): Promise<{ status: "running" | "queued" }> {
+  const sent = chain.then(async () => api.orchestratorMessage(text, files.length ? await api.uploadAttachments(files) : []));
   chain = sent.catch(() => {});
   return sent;
 }
@@ -43,14 +45,7 @@ export function QuickAsk() {
   const [open, setOpen] = useAtom(quickAskOpenAtom);
   const collapsed = useAtomValue(sidebarCollapsedAtom);
   const { ask } = useOrchestrator();
-  const [text, setRaw] = useState("");
-  // What the box holds as of the last edit, rendered or not: a send that fails fast can land before
-  // React has rendered the clear (as in ChatComposer).
-  const latest = useRef(text);
-  const setText = (v: string) => { latest.current = v; setRaw(v); };
   const [flash, setFlash] = useState(0); // >0 while "Sent" shows; bumped per send to restart its timer
-  const [failed, setFailed] = useState<string | null>(null);
-  const box = useRef<HTMLTextAreaElement>(null);
   // The box's contents stay mounted through the collapse (`leaving`): faded out, pinned at the width
   // they had, while the surface shrinks around them — then the pill fades in. Swapping them for the
   // pill in the commit that closed it was the jank: a blank box shrinking around a popped-in pill.
@@ -67,65 +62,40 @@ export function QuickAsk() {
     return () => clearTimeout(t);
   }, [leaving]);
   const key = shortcutLabel("quickAsk");
+  const input = () => content.current?.querySelector("textarea");
   // Open: focus the box in the commit that opens it, before the next keystroke. Closed: the text is
-  // kept until it is sent — a half-typed line survives an Esc.
+  // kept (the composer's persisted draft) until it is sent — a half-typed line survives an Esc.
   useLayoutEffect(() => {
-    if (open) { setFailed(null); box.current?.focus(); }
+    if (open) input()?.focus();
   }, [open]);
-  // Grow with the text where `field-sizing: content` isn't supported (Safari, Firefox): there the box
-  // stayed one scrolling line. The CSS min / max heights still bound it.
-  useLayoutEffect(() => {
-    const el = box.current;
-    if (!el || (typeof CSS !== "undefined" && CSS.supports?.("field-sizing", "content"))) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
-  }, [text, open]);
   useEffect(() => {
     if (!flash) return;
     const t = setTimeout(() => setFlash(0), SENT_FLASH_MS);
     return () => clearTimeout(t);
   }, [flash]);
   // A pointerdown outside the open box closes it like Esc — but not a click on the box itself (the
-  // Send button included), on a popover/portal the box opened (Radix's own popper wrapper), or while
+  // Send button included), on a popover/portal the box opened (Radix's own popper wrapper, the
+  // composer's @ picker, which is portaled out of the clipping surface), or while
   // the "Sent" receipt is still showing (closing would cut it short before its own timer does).
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (e: PointerEvent) => {
       const target = e.target as Node;
       if (content.current?.contains(target)) return;
-      if (target instanceof Element && target.closest("[data-radix-popper-content-wrapper]")) return;
+      if (target instanceof Element && target.closest('[data-radix-popper-content-wrapper], [data-slot="chat-composer-mentions"]')) return;
       if (flash > 0) return;
       setOpen(false);
     };
     document.addEventListener("pointerdown", onPointerDown);
     return () => document.removeEventListener("pointerdown", onPointerDown);
   }, [open, flash, setOpen]);
-  const send = () => {
-    const message = text.trim();
-    if (!message) return;
-    setText("");
-    setFailed(null);
+  // The composer clears the box at once and, if this throws, gives the text back (into the box if it
+  // is still empty, else quoted in its error line). Busy is queued by the bridge, not refused.
+  const send = async (message: string, files: File[]) => {
     setFlash((n) => n + 1);
-    box.current?.focus();
-    queueOrchestratorMessage(message).catch((e) => {
-      // Only a bridge that could not take it lands here (busy is queued, not refused). Nothing typed
-      // is lost: back into the box if it is still empty, else quoted in the error line.
-      const reason = e instanceof Error ? e.message : String(e);
-      setFlash(0);
-      if (!latest.current.trim()) { setText(message); setFailed(`${reason} — not sent; your text is back in the box.`); }
-      else setFailed(`${reason} — not sent: “${message}”`);
-    });
-  };
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter sends; Shift/⌘/Ctrl+Enter breaks the line, as in the chat composer. A textarea inserts
-    // Shift's newline itself; ⌘/Ctrl's has to be put in by hand.
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      const el = e.currentTarget;
-      el.setRangeText("\n", el.selectionStart, el.selectionEnd, "end");
-      setText(el.value);
-    } else if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(); }
-    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setOpen(false); }
+    input()?.focus();
+    try { await queueOrchestratorMessage(message, files); }
+    catch (e) { setFlash(0); throw e; }
   };
   return (
     // Below the sticky top bar and menus (z-30 / z-50) but above the page; clear of the orchestrator's
@@ -150,31 +120,20 @@ export function QuickAsk() {
             {...(leaving ? { inert: "" } : {}) as React.HTMLAttributes<HTMLDivElement>}
             style={leaving && leaveWidth ? { width: leaveWidth } : undefined}
             className={cn(leaving && "pointer-events-none opacity-0 transition-opacity duration-100")}
-            onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } }}>
-            {/* The agent at the top left; the text takes the whole width beside it. Opens at three
-                lines and grows with its content (field-sizing, else the effect above), up to max-h. */}
-            <div className="flex items-start gap-2 px-3 pt-2.5">
-              <Bot className="text-muted-foreground mt-1 size-4 shrink-0" />
-              <textarea ref={box} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} rows={3} aria-label="Message the orchestrator"
-                placeholder={QUICK_ASK_PLACEHOLDER} data-slot="quick-ask-input"
-                className="placeholder:text-muted-foreground field-sizing-content max-h-40 min-h-[4.5rem] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent py-0.5 text-sm outline-none" />
-            </div>
-            {/* The action row: the receipt on the left, Send (with its key) on the right — room for
-                more actions later. */}
-            <div className="flex items-center justify-between gap-2 px-2 pt-1 pb-2" data-slot="quick-ask-actions">
-              {/* The receipt: subtle, and it goes on its own. The box is already clear for the next. */}
-              <span role="status" aria-live="polite" data-slot="quick-ask-sent" className="text-muted-foreground flex items-center gap-1.5 pl-1 text-xs">
-                {flash > 0 && <>
-                  <Check className="text-geist-blue size-3.5" />Sent
-                  <button type="button" className="text-geist-blue hover:underline" onClick={() => { setOpen(false); ask(); }}>Open chat</button>
-                </>}
-              </span>
-              <Button size="sm" variant="secondary" className="h-7 gap-1.5 pr-1.5 pl-2.5" aria-label="Send" title="Send (Enter)" disabled={!text.trim()} onClick={send}>
-                Send
-                <Shortcut id="send" />
-              </Button>
-            </div>
-            {failed && <div className="text-geist-red border-t px-3 py-1.5 text-xs" data-slot="quick-ask-error">{failed}</div>}
+            onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setOpen(false); } }}>
+            {/* The agent at the top left; the text takes the whole width beside it. The row below holds
+                the actions: the receipt on the left, Send (with its key) on the right. */}
+            <ChatComposer variant="quick" persistKey="orca.quickAsk" onSubmit={send} placeholder={QUICK_ASK_PLACEHOLDER}
+              inputLabel="Message the orchestrator" icon={<Bot className="text-muted-foreground mt-1 size-4 shrink-0" />}
+              leading={
+                // The receipt: subtle, and it goes on its own. The box is already clear for the next.
+                <span role="status" aria-live="polite" data-slot="quick-ask-sent" className="text-muted-foreground flex items-center gap-1.5 pl-1 text-xs">
+                  {flash > 0 && <>
+                    <Check className="text-geist-blue size-3.5" />Sent
+                    <button type="button" className="text-geist-blue hover:underline" onClick={() => { setOpen(false); ask(); }}>Open chat</button>
+                  </>}
+                </span>
+              } />
           </div>
         ) : (
           <button type="button" data-slot="quick-ask-pill" onClick={() => setOpen(true)} aria-label="Ask the orchestrator (quick)"

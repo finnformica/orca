@@ -1,4 +1,4 @@
-// The composer's # PR picker: typing `#` lists the PRs the board already polled (no extra GitHub
+// The composer's @ PR picker: typing `@` lists the PRs the board already polled (no extra GitHub
 // call), filtered as you type; ↑/↓ + Enter/Tab or a click inserts `#123` (or `repo#123`) at the
 // caret, Escape closes it. Pure rules first, then the real composer against the fake api.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
@@ -10,20 +10,24 @@ import { ChatComposer } from "@/components/ChatComposer";
 import { filterPrRefs, insertPrRef, prRefLabel, prTrigger, type PrRef } from "@/workstream";
 
 describe("prTrigger", () => {
-  test("fires on a # at the start, after whitespace or a bracket, up to the caret", () => {
-    expect(prTrigger("#", 1)).toEqual({ start: 0, query: "" });
-    expect(prTrigger("see #61", 7)).toEqual({ start: 4, query: "61" });
-    expect(prTrigger("fix (#6", 7)).toEqual({ start: 5, query: "6" });
-    expect(prTrigger("line one\n#auth fl", 17)).toEqual({ start: 9, query: "auth fl" }); // title words
-    expect(prTrigger("see #61 and more", 7)).toEqual({ start: 4, query: "61" }); // caret mid-text
+  test("fires on an @ at the start, after whitespace or a bracket, up to the caret", () => {
+    expect(prTrigger("@", 1)).toEqual({ start: 0, query: "" });
+    expect(prTrigger("see @61", 7)).toEqual({ start: 4, query: "61" });
+    expect(prTrigger("fix (@6", 7)).toEqual({ start: 5, query: "6" });
+    expect(prTrigger("line one\n@auth fl", 17)).toEqual({ start: 9, query: "auth fl" }); // title words
+    expect(prTrigger("see @61 and more", 7)).toEqual({ start: 4, query: "61" }); // caret mid-text
   });
-  test("does not fire inside a word, a URL, a heading, or once the caret leaves the line", () => {
-    expect(prTrigger("a#1", 3)).toBeNull();
-    expect(prTrigger("https://x.dev/#frag", 19)).toBeNull();
-    expect(prTrigger("page.html#top", 13)).toBeNull();
-    expect(prTrigger("# Heading", 9)).toBeNull();
-    expect(prTrigger("#12\nnext", 8)).toBeNull();
-    expect(prTrigger("no hash here", 12)).toBeNull();
+  test("does not fire inside a word, an email, a URL, after a lone @, or once the caret leaves the line", () => {
+    expect(prTrigger("a@1", 3)).toBeNull();
+    expect(prTrigger("me@x.dev", 8)).toBeNull();
+    expect(prTrigger("https://x.dev/@user", 19)).toBeNull();
+    expect(prTrigger("@ spaced", 8)).toBeNull();
+    expect(prTrigger("@12\nnext", 8)).toBeNull();
+    expect(prTrigger("no at here", 10)).toBeNull();
+  });
+  test("# no longer triggers it — a PR ref is still written #123, but you type @ to pick one", () => {
+    expect(prTrigger("#", 1)).toBeNull();
+    expect(prTrigger("see #61", 7)).toBeNull();
   });
 });
 
@@ -58,10 +62,10 @@ describe("prRefLabel + insertPrRef", () => {
     const clash = [...refs, { repo: "api", number: 6101, title: "Same number", state: "open" as const }];
     expect(prRefLabel(refs[1]!, clash, 2, "web")).toBe("web#6101");
   });
-  test("replaces the typed #query at the caret and adds a space unless one follows", () => {
-    expect(insertPrRef("see #61", 4, 7, "#6101")).toEqual({ text: "see #6101 ", caret: 10 });
-    expect(insertPrRef("see #61 now", 4, 7, "#6101")).toEqual({ text: "see #6101 now", caret: 9 });
-    expect(insertPrRef("#", 0, 1, "web#6101")).toEqual({ text: "web#6101 ", caret: 9 });
+  test("replaces the typed @query at the caret and adds a space unless one follows", () => {
+    expect(insertPrRef("see @61", 4, 7, "#6101")).toEqual({ text: "see #6101 ", caret: 10 });
+    expect(insertPrRef("see @61 now", 4, 7, "#6101")).toEqual({ text: "see #6101 now", caret: 9 });
+    expect(insertPrRef("@", 0, 1, "web#6101")).toEqual({ text: "web#6101 ", caret: 9 });
   });
 });
 
@@ -114,10 +118,10 @@ async function key(box: HTMLTextAreaElement, k: string) {
 const options = () => [...container!.querySelectorAll('[role="option"]')];
 const selected = () => container!.querySelector('[role="option"][aria-selected="true"]');
 
-describe("ChatComposer # picker", () => {
+describe("ChatComposer @ picker", () => {
   test("↑/↓ move the active option (aria-activedescendant), Enter inserts it instead of sending", async () => {
     const box = await mountComposer();
-    await type(box, "look at #");
+    await type(box, "look at @");
     expect(container!.querySelector('[role="listbox"]')).not.toBeNull();
     expect(box.getAttribute("aria-expanded")).toBe("true");
     expect(options().map((o) => o.textContent)).toEqual(["#6150Billing pagedraft", "#6101Fix auth flowapproved"]);
@@ -140,37 +144,41 @@ describe("ChatComposer # picker", () => {
 
   test("filters as you type; Tab picks; a click picks", async () => {
     const box = await mountComposer();
-    await type(box, "#bill");
+    await type(box, "@bill");
     expect(options()).toHaveLength(1);
     await key(box, "Tab");
     expect(box.value).toBe("#6150 ");
 
-    await type(box, "and #fix");
+    await type(box, "and @fix");
     await act(async () => { options()[0]!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
     expect(box.value).toBe("and #6101 ");
   });
 
-  test("Escape closes it for that #, and Enter then sends as usual", async () => {
+  test("Escape closes it for that @, and Enter then sends as usual", async () => {
     const box = await mountComposer();
-    await type(box, "ship #61");
+    await type(box, "ship @61");
     expect(options()).toHaveLength(2);
     await key(box, "Escape");
     expect(container!.querySelector('[role="listbox"]')).toBeNull();
-    await type(box, "ship #610"); // still the dismissed #
+    await type(box, "ship @610"); // still the dismissed @
     expect(container!.querySelector('[role="listbox"]')).toBeNull();
-    await type(box, "ship "); // that # is gone…
-    await type(box, "ship #6"); // …so a new one at the same spot re-arms it
+    await type(box, "ship "); // that @ is gone…
+    await type(box, "ship @6"); // …so a new one at the same spot re-arms it
     expect(options()).toHaveLength(2);
     await key(box, "Escape");
     await key(box, "Enter");
-    expect(sent).toEqual(["ship #6"]);
+    expect(sent).toEqual(["ship @6"]);
   });
 
-  test("a # inside a word or URL opens nothing", async () => {
+  test("an @ inside a word or URL opens nothing, and # opens nothing at all", async () => {
     const box = await mountComposer();
-    await type(box, "https://x.dev/#6");
+    await type(box, "https://x.dev/@6");
     expect(container!.querySelector('[role="listbox"]')).toBeNull();
-    await type(box, "abc#6");
+    await type(box, "abc@6");
+    expect(container!.querySelector('[role="listbox"]')).toBeNull();
+    await type(box, "look at #");
+    expect(container!.querySelector('[role="listbox"]')).toBeNull();
+    await type(box, "#61");
     expect(container!.querySelector('[role="listbox"]')).toBeNull();
   });
 });

@@ -97,7 +97,7 @@ test("Q2: the confirmation fades on its own and the box stays open; Esc closes; 
   await type(input(), "another line");
   await enter(input());
   await act(async () => { await flush(); await flush(); });
-  expect($('[data-slot="quick-ask-error"]')!.textContent).toContain("bridge offline");
+  expect($('[data-slot="quick-ask-box"] [data-slot="chat-composer-error"]')!.textContent).toContain("bridge offline");
   expect(input().value).toBe("another line");
   // Esc closes the box (the panel, untouched, stays closed).
   await act(async () => { input().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await flush(); });
@@ -131,7 +131,7 @@ test("Q4: one surface morphs pill ↔ box (width, height, radius; none under red
   // the send key as the shared keycap.
   expect(box.firstElementChild!.contains(input())).toBe(true);
   expect(box.firstElementChild!.querySelector("svg.lucide-bot")).not.toBeNull();
-  const actions = box.querySelector('[data-slot="quick-ask-actions"]')!;
+  const actions = box.querySelector('[data-slot="chat-composer-toolbar"]')!;
   expect(actions.contains(input())).toBe(false);
   const sendBtn = actions.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
   expect(sendBtn.textContent).toContain("Send");
@@ -189,7 +189,7 @@ test("Q6: a busy orchestrator queues the message — no error, nothing blocked",
   await enter(input());
   await act(async () => { await flush(); await flush(); });
   expect(apiFake.orchestratorMessages.map((m) => m.text)).toEqual(["when you're done, rebase", "and then ship it"]);
-  expect($('[data-slot="quick-ask-error"]')).toBeNull();
+  expect($('[data-slot="chat-composer-error"]')).toBeNull();
   expect(input().value).toBe("");
 });
 
@@ -227,6 +227,45 @@ test("Q8: a pointerdown outside the open box closes it like Esc; inside the box 
   await act(async () => { document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); await flush(); });
   expect(surface().dataset.state).toBe("closed");
   expect($('[data-slot="quick-ask-box"]')).toBeNull();
+});
+
+test("Q9: the box is the shared composer — @ opens the PR picker (# does not); a click in the portaled picker is not outside", async () => {
+  apiFake.prsData = [{ branch: "auth", number: 6101, title: "Fix auth flow", url: "u", isDraft: false }];
+  await act(async () => { await store.refresh(); });
+  await mount("/");
+  await click($('[data-slot="quick-ask-pill"]')!);
+  const listbox = () => $('[role="listbox"][aria-label="Pull requests"]');
+  const typeAt = async (v: string) => act(async () => {
+    const el = input();
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(el, v);
+    el.setSelectionRange(v.length, v.length);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+  });
+  expect(input().getAttribute("role")).toBe("combobox"); // ChatComposer's textarea, not a fork
+  expect($('[data-slot="quick-ask-box"] button[title="Attach files"]')).not.toBeNull(); // attachments too
+  await typeAt("look at #");
+  expect(listbox()).toBeNull();
+  await typeAt("look at @fix");
+  const option = listbox()!.querySelector('[role="option"]')!;
+  expect(option.textContent).toContain("6101");
+  // The picker is portaled out of the surface's overflow-hidden, yet a pointerdown on it keeps the box…
+  expect($('[data-slot="quick-ask-box"]')!.contains(option)).toBe(false);
+  await act(async () => { option.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); await flush(); });
+  expect(surface().dataset.state).toBe("open");
+  // …and the click picks it.
+  await act(async () => { option.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(input().value).toBe("look at #6101 ");
+  expect(listbox()).toBeNull();
+  // Escape with the picker open closes only the picker.
+  await typeAt("look at #6101 @fi");
+  expect(listbox()).not.toBeNull();
+  await act(async () => { input().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); await flush(); });
+  expect(listbox()).toBeNull();
+  expect(surface().dataset.state).toBe("open");
+  // Enter sends it, as anywhere.
+  await enter(input());
+  expect(apiFake.orchestratorMessages).toEqual([{ text: "look at #6101 @fi", attachments: [] }]);
 });
 
 test("Q7: the pill is centred on the main column — its strip starts where the sidebar ends, collapsed or expanded", async () => {
