@@ -103,27 +103,27 @@ export const HeaderSource = ({ branch, prNumber, prUrl }: { branch: string; prNu
   </>
 );
 
-/** The Chat tab's content: no card, no title row, no page-level scroll — a flex column sized to
- *  exactly the viewport below the page's sticky header (`CHAT_FILL_HEIGHT`, 100dvh-based so it also
- *  works on a phone and clears the PWA safe areas). The transcript scrolls inside it; the composer
- *  stays pinned at its foot; `ChatPanel`'s own slim toolbar (working indicator, error / warning
- *  counts, Find in chat) stands in for a card header.
+/** The Chat tab's content: no card, no title row, no toolbar, no page-level scroll — a flex column
+ *  sized to exactly the viewport below the page's sticky header (`CHAT_FILL_HEIGHT`, 100dvh-based so
+ *  it also works on a phone and clears the PWA safe areas). The transcript scrolls inside it; the
+ *  composer stays pinned at its foot. Full-bleed like the header (-mx), so the log's and composer's
+ *  divider lines run to the column's edges, and on desktop it takes `main`'s bottom padding too
+ *  (-mb-6), so the composer sits near the bottom of the viewport.
  *
- *  What it subtracts: the top bar (3.5rem) and `main`'s bottom padding (1.5rem on desktop — kept, the
- *  quick-ask pill floats there; 5.5rem on a phone, the bottom bar), plus the sticky header's live
- *  height (--stick). `main`'s top padding is NOT subtracted: `STICKY_HEADER` pulls itself up over it
- *  (-mt-6), and the Tabs root's gap is zeroed (`AGENT_TABS`), so the header sits flush under the top
- *  bar and the conversation starts right under the tabs. */
+ *  What it subtracts: the top bar (3.5rem) — plus, on a phone, `main`'s 5.5rem bottom padding (the
+ *  bottom bar) — and the sticky header's live height (--stick). `main`'s top padding is NOT
+ *  subtracted: `STICKY_HEADER` pulls itself up over it (-mt-6), and the Tabs root's gap is zeroed
+ *  (`AGENT_TABS`), so the header sits flush under the top bar and the conversation right under it. */
 const CHAT_FILL_HEIGHT =
   "h-[calc(var(--vvh,100dvh)-9rem-env(safe-area-inset-top)-env(safe-area-inset-bottom)-var(--stick,0px))] " +
-  "md:h-[calc(var(--vvh,100dvh)-5rem-env(safe-area-inset-top)-var(--stick,0px))]";
+  "md:h-[calc(var(--vvh,100dvh)-3.5rem-env(safe-area-inset-top)-var(--stick,0px))]";
 
 /** The agent page's Tabs root: no gap — the header's own padding and each tab's top padding space it. */
 export const AGENT_TABS = "gap-0";
 
 export function ChatCard({ row }: { row: Row }) {
   return (
-    <div data-slot="agent-chat" className={`pt-2 ${CHAT_FILL_HEIGHT}`}>
+    <div data-slot="agent-chat" className={`-mx-4 md:-mx-6 md:-mb-6 ${CHAT_FILL_HEIGHT}`}>
       <ChatPanel row={row} logBar />
     </div>
   );

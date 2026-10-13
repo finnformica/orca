@@ -250,7 +250,8 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   the failure box where Vercel shows "Build Failed" (`agentFailure`: the run's error, else the
   failed check), Created / Status / Duration / State / Model / Instance / PR / Preview and the
   Source (branch → base, latest commit); then the conversation where Build Logs sit (`ChatPanel
-  logBar`: turn / error / warning counters, Find in chat, timestamped, tinted turns, the composer).
+  logBar`: timestamped, tinted turns and the composer, full-bleed to the viewport's foot — no toolbar;
+  the error / warning counters and Find in chat were removed as unclear).
   A PR's Overview then has Review, **Checks** (no tab of its own any more: failing, then running,
   passing + skipped folded into one expandable line — `checkGroups`), Description and the
   **Conversation** (`prConversation`: chronological like GitHub, a counts line + Jump to unresolved,
@@ -261,7 +262,7 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   both pages).
 Every number is a pure derivation over the assembled rows (`workstream.ts`: `overviewStats`,
 `attentionReasons`, `filterRows`, `sortRows`, `recentActivity`, `usageGroups`, `rowDuration`,
-`chatSummary`, `repoSummaries`, `agentFailure`) — no endpoint of its own, so the views can't
+`repoSummaries`, `agentFailure`) — no endpoint of its own, so the views can't
 disagree. Usage, health and health history are one shared poll each (`lib/vitals.ts`
 `sharedSource`; history only while a card shows it). Each PR row also carries a **review cluster**
 (approvers, `N unresolved`, a severity dot) and the PR page a **Review panel** — `reviewDigest`

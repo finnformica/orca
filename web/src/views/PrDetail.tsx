@@ -27,10 +27,11 @@ import { useSummary } from "./Board";
  *  padding, and pulled up over `main`'s top padding (-mt-6) so it sits flush under the top bar — every
  *  rem it doesn't take is the Chat tab's (`CHAT_FILL_HEIGHT`). Shared so the PR page and the
  *  local-session page can't drift apart. */
-export const STICKY_HEADER = "bg-background sticky top-14 z-20 -mx-4 -mt-6 border-b px-4 pt-1.5 md:-mx-6 md:px-6";
+export const STICKY_HEADER = "bg-background sticky top-14 z-20 -mx-4 -mt-6 flex flex-col gap-1 border-b px-4 py-2 md:-mx-6 md:px-6";
 
-/** The tab row under the header: shorter than the default, no gap above it. */
-export const HEADER_TABS = "h-8 mb-1.5";
+/** The tab row under the header: shorter than the default, and pulled left by a trigger's own
+ *  padding and border (px-3 + 1px) so the "Overview" label lines up with the repo name above it. */
+export const HEADER_TABS = "-ml-[13px] h-8";
 
 /** Ref for that header plus the wrapper style publishing its LIVE height as --stick, so the diff's
  *  own sticky file headers park below it instead of sliding underneath. `ready` flips once the page

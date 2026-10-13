@@ -1705,24 +1705,6 @@ export function rowDuration(row: Pick<OverviewRow, "agentStatus" | "agentStarted
   return last?.startedAt && last.finishedAt ? last.finishedAt - last.startedAt : undefined;
 }
 
-/** The chat card's header counters, like Build Logs' line / error / warning counts: a failed turn is
- *  an error; a stopped one or a commit whose check failed is a warning. */
-export function chatSummary(turns: Pick<AgentTurn, "failed" | "stopped" | "check">[]): { turns: number; errors: number; warnings: number } {
-  return {
-    turns: turns.length,
-    errors: turns.filter((t) => t.failed).length,
-    warnings: turns.filter((t) => !t.failed && (t.stopped || (t.check && !t.check.ok))).length,
-  };
-}
-
-/** Find in chat: every word appears in the turn's instruction or response (case-insensitive). */
-export function turnMatches(turn: Pick<AgentTurn, "instruction" | "prompt" | "response">, q: string): boolean {
-  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!words.length) return true;
-  const hay = `${turn.instruction ?? promptInstruction(turn.prompt)}\n${turn.response ?? ""}`.toLowerCase();
-  return words.every((w) => hay.includes(w));
-}
-
 export type RepoSummary = { repo: string; total: number; running: number; attention: number; openPrs: number; local: number; mergedToday: number; lastActivity: number };
 
 /** One line per configured repo for the Repos page — the overview's numbers, scoped. */
