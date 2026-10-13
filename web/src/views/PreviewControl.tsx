@@ -3,7 +3,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Check, ChevronDown, Copy, ExternalLink, FlaskConical, Loader2, Square, TriangleAlert } from "lucide-react";
 import { api, type PreviewSvc } from "../api";
 import { baseBranch, instanceChoices, previewKeyOf, previewsEnabled, previewStatus, startMaster, stopMaster, stopPreview, testLocally, thisInstance, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
-import { previewHref } from "../workstream";
+import { previewHref, previewLabel } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StatusDot } from "@/components/console";
@@ -351,10 +351,10 @@ export function RunningPreviews() {
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-medium" title={titleOf(p.key)}>{titleOf(p.key)}</div>
             <div className="text-muted-foreground truncate text-xs">
-              {p.instance ? `${p.instance} · ` : ""}{p.svcs.map((s) => `${s.name} :${s.port}`).join(" · ")}
+              {p.instance ? `${p.instance} · ` : ""}{p.svcs.map((s) => `${s.name} ${previewLabel(hrefOf(s))}`).join(" · ")}
             </div>
           </div>
-          <div className="w-56"><PreviewLiveControl svcs={p.svcs} busy={false} onStop={() => void stopPreview(p.key, p.instance).catch(() => {}).then(() => reloadPreviews?.())} openLabel="Open" startingLabel="Starting…" /></div>
+          <div className="w-56 max-md:w-full"><PreviewLiveControl svcs={p.svcs} busy={false} onStop={() => void stopPreview(p.key, p.instance).catch(() => {}).then(() => reloadPreviews?.())} openLabel="Open" startingLabel="Starting…" /></div>
         </li>
       ))}
     </ul>
@@ -385,7 +385,7 @@ export function PreviewPanel({ row }: { row: Row }) {
         {active && <Button size="sm" variant="outline" disabled={busy} onClick={() => void stop()}>Stop preview</Button>}
         {active && !ready && <span className="text-muted-foreground text-sm">starting the frontend + backend… (~10s)</span>}
         {failed && <span className="text-destructive text-sm">a service failed to start — expand the log for details</span>}
-        {ready && open && <a className="text-muted-foreground inline-flex items-center gap-1 text-sm hover:underline" href={hrefOf(open)} target="_blank" rel="noreferrer">open :{open.port} <ExternalLink className="size-3.5" /></a>}
+        {ready && open && <a className="text-muted-foreground inline-flex items-center gap-1 text-sm hover:underline" href={hrefOf(open)} target="_blank" rel="noreferrer">open {previewLabel(hrefOf(open))} <ExternalLink className="size-3.5" /></a>}
       </div>
       {error && <ErrorLog error={error} />}
       {ready && open && <iframe title="preview" src={hrefOf(open)} className="h-[70vh] w-full rounded-md border" />}
