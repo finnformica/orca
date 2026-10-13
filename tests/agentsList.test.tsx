@@ -126,6 +126,11 @@ describe("agents list view", () => {
     expect(rowOf("feat-ci").style.gridTemplateColumns).toBe(listGridTemplate(listColumns({ multiInstance: true })));
     expect(rowOf("feat-ci").querySelectorAll('[role="cell"]')).toHaveLength(6); // one per header, the last holding preview + ⋯
     expect(rowOf("feat-ci").querySelector(".lucide-folder-git2")).toBeNull();
+    // The row menu's trigger is vertical dots, not horizontal — same menu, same right-click.
+    expect(rowOf("feat-ci").querySelector('button[aria-label="Actions"] svg')!.classList.contains("lucide-ellipsis-vertical")).toBe(true);
+    expect(rowOf("feat-ci").querySelector(".lucide-ellipsis")).toBeNull(); // the old horizontal icon is gone
+    // Preview cell: idle, enabled (the fake config's repo "r" has RepoFeatures.previews on).
+    expect(rowOf("feat-ci").querySelector<HTMLElement>('[data-slot="preview-cell"]')!.dataset.state).toBe("none");
     // Readable models: the run's reported model, else the pinned one — no initials avatar.
     expect(rowOf("local-idle").querySelector('[data-slot="model-label"]')!.textContent).toBe("Opus 5.5");
     expect(container!.querySelector('[data-slot="model-avatar"]')).toBeNull();
