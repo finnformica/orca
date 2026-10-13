@@ -595,7 +595,7 @@ test("M1 test-master: baseWorktree makes a detached checkout of the latest base,
 
 test("S2 source-of-truth: listPrs maps gh json to kanban rows", async () => {
   await setPrListFixture([
-    { number: 10, title: "Add A", headRefName: "feat-a", url: "u10", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", author: { login: "me" }, comments: [{ author: { login: "alex" }, body: "Please add a regression test" }], statusCheckRollup: [{ name: "unit", conclusion: "FAILURE" }] },
+    { number: 10, title: "Add A", headRefName: "feat-a", url: "u10", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", author: { login: "me" }, comments: [{ author: { login: "alex" }, body: "Please add a regression test" }], statusCheckRollup: [{ name: "unit", conclusion: "FAILURE" }], additions: 42, deletions: 8 },
     { number: 11, title: "Add B", headRefName: "feat-b", url: "u11", state: "OPEN", isDraft: true, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [] },
   ]);
   const prs = await listPrs(repo);
@@ -604,6 +604,9 @@ test("S2 source-of-truth: listPrs maps gh json to kanban rows", async () => {
   expect([prs[0]!.isDraft, prs[1]!.isDraft]).toEqual([false, true]); // draft flag flows through for the Draft lane
   expect(prs[0]!.failingChecks).toEqual(["unit"]);
   expect(prs[0]!.feedback).toEqual(["Please add a regression test"]);
+  // Diffstat rides the same list call (the Agents row's +/- costs nothing extra); missing → 0, not undefined.
+  expect([prs[0]!.additions, prs[0]!.deletions]).toEqual([42, 8]);
+  expect([prs[1]!.additions, prs[1]!.deletions]).toEqual([0, 0]);
 });
 
 test("S2b required-check gating: only merge-gating checks decide CI (advisory bots ignored)", async () => {
@@ -802,10 +805,15 @@ test("D1 pr-detail: gh view json maps to a detail object", async () => {
     state: "OPEN", url: "u", headRefName: "feat-a", baseRefName: "main",
     additions: 10, deletions: 2, changedFiles: 1,
     files: [{ path: "a.ts", additions: 10, deletions: 2 }],
-    reviews: [{ author: { login: "bob" }, state: "APPROVED" }],
-    comments: [{ author: { login: "carol" }, body: "nice" }, { author: { login: "bot" }, body: "Deploy preview: https://feat-a.preview.example.com is ready" }],
+    reviews: [{ author: { login: "bob" }, state: "APPROVED" }, { author: { login: "dan" }, state: "COMMENTED", body: "One thing", submittedAt: "2026-07-07T09:00:00Z", url: "r2" }],
+    comments: [{ author: { login: "carol" }, body: "nice" }, { author: { login: "github-actions" }, body: "Deploy preview: https://feat-a.preview.example.com is ready", createdAt: "2026-07-07T08:00:00Z", url: "c2" }],
     mergeable: "MERGEABLE", reviewDecision: "APPROVED",
-    statusCheckRollup: [{ name: "build", conclusion: "SUCCESS" }, { name: "lint", conclusion: "FAILURE" }],
+    statusCheckRollup: [
+      { name: "build", conclusion: "SUCCESS", detailsUrl: "https://ci/build", startedAt: "2026-07-07T10:00:00Z", completedAt: "2026-07-07T10:02:05Z" },
+      { name: "lint", conclusion: "FAILURE" },
+      { name: "deploy", conclusion: "SKIPPED" },
+      { context: "ext/status", state: "PENDING", targetUrl: "https://ext" },
+    ],
     autoMergeRequest: { enabledAt: "2026-07-07T10:00:00Z", mergeMethod: "SQUASH" },
   });
   const d = await prDetail(repo, 5);
@@ -813,7 +821,16 @@ test("D1 pr-detail: gh view json maps to a detail object", async () => {
   expect(d.author).toBe("finn");
   expect(d.files[0]?.path).toBe("a.ts");
   expect(d.reviews[0]).toEqual({ author: "bob", state: "APPROVED" });
-  expect(d.checks).toEqual([{ name: "build", status: "passing" }, { name: "lint", status: "failing" }]);
+  expect(d.reviews[1]).toEqual({ author: "dan", state: "COMMENTED", body: "One thing", submittedAt: "2026-07-07T09:00:00Z", url: "r2" });
+  // Comments carry when / where / whether a bot wrote it — the PR page collapses bots into one row.
+  expect(d.comments).toEqual([{ author: "carol", body: "nice" }, { author: "github-actions", body: "Deploy preview: https://feat-a.preview.example.com is ready", createdAt: "2026-07-07T08:00:00Z", url: "c2", bot: true }]);
+  // Checks carry the logs link and timing; SKIPPED is passing for the rollup but flagged.
+  expect(d.checks).toEqual([
+    { name: "build", status: "passing", url: "https://ci/build", startedAt: "2026-07-07T10:00:00Z", completedAt: "2026-07-07T10:02:05Z" },
+    { name: "lint", status: "failing" },
+    { name: "deploy", status: "passing", skipped: true },
+    { name: "ext/status", status: "pending", url: "https://ext" },
+  ]);
   expect(d.ciStatus).toBe("failing"); // any failing check fails the rollup
   expect(d.previewUrl).toBe("https://feat-a.preview.example.com"); // deep fetch surfaces the deploy preview
   expect(d.autoMergeEnabled).toBe(true); // gh's autoMergeRequest object → the detail page's auto-merge badge

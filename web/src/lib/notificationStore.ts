@@ -6,10 +6,10 @@ import { useSyncExternalStore } from "react";
 import { getDefaultStore } from "jotai";
 import { api } from "../api";
 import { subscribeNotifications } from "./events";
-import { browserNotifyAtom, notifyDndAtom, orchestratorOpenAtom, toastPrefsAtom } from "./atoms";
+import { browserNotifyAtom, notifyDndAtom, toastPrefsAtom } from "./atoms";
+import { openOrchestrator } from "./orchestratorOpen";
 import { KIND_META, TOAST_AUTO_HIDE_MS, clockPause, clockResume, clockStart, notificationPath, shouldNotifyBrowser, shouldToast, type HideClock, type Notification, type ToastPrefs } from "../../../shared/notifications";
 import { navigate } from "./route";
-import { isNarrow } from "./viewport";
 
 type State = { list: Notification[]; toasts: Notification[] };
 let state: State = { list: [], toasts: [] };
@@ -100,7 +100,7 @@ function browserNotify(n: Notification): void {
     note.onclick = () => {
       window.focus();
       const path = notificationPath(n);
-      if (n.link?.orchestrator) { if (isNarrow()) navigate("/orchestrator"); else getDefaultStore().set(orchestratorOpenAtom, true); }
+      if (n.link?.orchestrator) openOrchestrator();
       else if (path) navigate(path);
       void markRead([n.id]);
     };
@@ -160,4 +160,13 @@ export async function markRead(ids: number[] | "all"): Promise<void> {
   dropToasts(ids);
   if (state.list.some(hit)) set({ list: state.list.map((n) => (hit(n) ? { ...n, readAt: at } : n)) });
   await api.notificationsRead(ids).catch(() => {});
+}
+
+/** Undo an optimistic `markRead`: a quick action marked its notification read before firing its
+ *  verb in the background, and the verb failed — back to unread, local-only (there is no "unread"
+ *  route on the bridge; this reverts our own prediction, it doesn't ask the bridge for anything). */
+export function restoreUnread(ids: number[]): void {
+  if (state.list.some((n) => ids.includes(n.id) && n.readAt)) {
+    set({ list: state.list.map((n) => (ids.includes(n.id) ? { ...n, readAt: undefined } : n)) });
+  }
 }

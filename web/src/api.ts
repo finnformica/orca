@@ -46,10 +46,14 @@ export type InstanceHealth = {
   memUsedGb: number; memTotalGb: number; memPressurePct?: number; memPressure?: boolean;
   disk?: { usedGb: number; totalGb: number }; uptimeS: number;
   cost?: { monthUsd: number; hourlyUsd: number; sinceIso: string }; at: number;
+  /** Absent from an older bridge. */
+  runningAgents?: number;
 };
 /** One recorded sample of an instance's vitals (instance_metric), for the chip's history graphs. */
 export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; /** Absent from a bridge older than migration 13 — unknown, not 0. */
-  runningAgents?: number };
+  runningAgents?: number;
+  /** USD of the runs that finished since the previous sample (migration 17); absent from an older bridge. */
+  costUsd?: number };
 export type PreviewSvc = { name: string; port: number; url: string; localUrl?: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const post = (path: string, body: unknown) =>
@@ -129,7 +133,7 @@ export const api = {
   compact: (repo: string, branch: string): Promise<{ runId: string }> => post("/api/compact", { repo, branch }),
   // The orchestrator: one conversation that delegates to workstreams (server/orchestrator.ts). Its
   // turns are read through the ordinary chat routes under its reserved repo/branch.
-  orchestrator: (): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell?: boolean; lastWakeUsd?: number; hint?: string }> => fetch("/api/orchestrator").then(res),
+  orchestrator: (): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell?: boolean; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number }> => fetch("/api/orchestrator").then(res),
   orchestratorModel: (model: string): Promise<{ ok: true }> => post("/api/orchestrator/model", { model }),
   orchestratorMessage: (text: string, attachments: string[] = []): Promise<{ status: "running" | "queued" }> =>
     post("/api/orchestrator/message", { text, attachments }),

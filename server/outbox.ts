@@ -180,6 +180,7 @@ export function turns(repo: string, branch: string): AgentTurn[] {
         id: j.runId,
         provider: s?.provider ?? id!.provider,
         instruction: s?.instruction ?? id?.instruction,
+        source: s?.source ?? id?.source,
         prompt: s?.prompt ?? id?.prompt ?? "",
         response: f?.response ?? "",
         structured: f?.structured,

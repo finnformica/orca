@@ -301,7 +301,7 @@ export function PrPreviewInline({ row }: { row: Row }) {
       <span aria-hidden="true">·</span>
       {state === "ready" ? (
         <a href={row.previewUrl} target="_blank" rel="noreferrer" data-slot="pr-preview-inline" data-state={state}
-          title="PR preview" className="min-w-0 truncate hover:text-foreground hover:underline">
+          title="PR preview" className="min-w-0 truncate underline hover:text-foreground">
           {previewLabel(row.previewUrl!)}
         </a>
       ) : state === "pending" ? (

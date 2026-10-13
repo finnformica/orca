@@ -2,9 +2,11 @@
 // Resolve conflicts / a follow-up landing on a worktree the bridge reports as already running used
 // to surface the server's 409 as the action-error toast. The bridge now queues instead and answers
 // `{ status: "queued" }` (server/index.ts's /api/agent) — this pins that the store treats that as
-// success (never throws) and shows a neutral INFO toast, not the error one. Driven against the real
-// store + apiFake (tests/apiFake.ts), same style as activeFollowing.test.tsx; a tiny probe component
-// reads the toast stack (lib/toast) without mounting the whole App.
+// success (never throws) and raises no toast at all: the row/chat's own queued indicator (the
+// branch's `queued` count, Chat.tsx's `Queued` entries) already shows it, so a redundant toast would
+// just be noise. Driven against the real store + apiFake (tests/apiFake.ts), same style as
+// activeFollowing.test.tsx; a tiny probe component reads the toast stack (lib/toast) without
+// mounting the whole App.
 import { afterEach, beforeAll, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -46,32 +48,29 @@ const row: Row = {
   worktreePath: "/wt/feat", prNumber: 7, prUrl: "https://x/7",
 };
 
-test("Address PR on a busy worktree: the store doesn't throw, and an info Queued toast appears — never the error toast", async () => {
+test("Address PR on a busy worktree: the store doesn't throw, and raises no toast", async () => {
   await mountProbe();
   apiFake.agentQueued = { id: 1, repo: "r", branch: "feat", worktreePath: "/wt/feat", instruction: "Address the PR: conflicts, CI, review", attachments: [], createdAt: Date.now() };
   await act(async () => { await store.addressPr(row); });
 
-  expect(seen).toHaveLength(1);
-  expect(seen[0]).toMatchObject({ kind: "info", title: "Queued" });
-  expect(seen[0]!.body).toContain("finishes");
+  expect(seen).toHaveLength(0);
 });
 
-test("Resolve conflicts on a busy worktree queues the same way", async () => {
+test("Resolve conflicts on a busy worktree queues the same way, with no toast", async () => {
   await mountProbe();
   apiFake.agentQueued = { id: 2, repo: "r", branch: "feat", worktreePath: "/wt/feat", instruction: "Resolve merge conflicts with main", attachments: [], createdAt: Date.now() };
   await act(async () => { await store.resolveConflicts({ ...row, prNumber: undefined, prUrl: undefined, lane: "LOCAL" }); });
 
-  expect(seen).toHaveLength(1);
-  expect(seen[0]!.kind).toBe("info");
+  expect(seen).toHaveLength(0);
 });
 
-test("a follow-up that actually launches (not queued) shows no toast at all", async () => {
+test("a follow-up that actually launches (not queued) also shows no toast", async () => {
   await mountProbe();
   await act(async () => { await store.followUp(row, "carry on"); });
   expect(seen).toHaveLength(0);
 });
 
-test("a genuinely failed launch still raises the error toast, not the queued one", async () => {
+test("a genuinely failed launch still raises the error toast, not a queued one", async () => {
   await mountProbe();
   apiFake.claudeError = "launch rejected";
   await expect(store.addressPr(row)).rejects.toThrow("launch rejected");

@@ -15,13 +15,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useAtomValue } from "jotai";
 import {
-  AlertTriangle, ArrowUpRight, Bell, BellOff, Check, CheckCheck, CircleX, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, Hammer, MessageCircleQuestion,
-  MessagesSquare, MonitorCheck, MonitorX, OctagonPause, PanelRight, Reply, RotateCcw, ScrollText, ShieldX, Square, Wrench, X,
+  AlertTriangle, ArrowUpRight, Bell, BellOff, Bot, Check, CheckCheck, CircleX, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, Hammer, MessageCircleQuestion,
+  MessagesSquare, MonitorCheck, MonitorX, OctagonPause, Reply, RotateCcw, ScrollText, ShieldX, Square, Wrench, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
 import { notifyDndAtom } from "@/lib/atoms";
-import { markRead, pauseToasts, resumeToasts, start, useNotifications } from "@/lib/notificationStore";
+import { markRead, pauseToasts, resumeToasts, restoreUnread, start, useNotifications } from "@/lib/notificationStore";
 import { oneOf, persistedKey, usePersisted } from "@/lib/persisted";
 import { useCoarse, useNarrow } from "@/lib/viewport";
 import {
@@ -29,13 +29,14 @@ import {
   TOAST_EXIT_MS, TOAST_WIDTH, toastMotion, toastStack, unreadCount, type Notification, type NotificationFilter, type NotificationKind, type StackAnchor, type SwipeDir, type ToastPlace,
 } from "../../../shared/notifications";
 import { addressPr, followUp, previewKeyOf, stopPreview, testLocally, useWorkstreams, type Row } from "../store";
-import { ago, notificationActions, RETRY_INSTRUCTION, type NotificationActionId, type NotificationActionSpec } from "../workstream";
+import { ago, notificationActions, ORCHESTRATOR_REPO, RETRY_INSTRUCTION, type NotificationActionId, type NotificationActionSpec } from "../workstream";
 import { autofixInstruction } from "../../../shared/agent";
 import { ActionButton } from "@/components/ActionButton";
 import { detailPath } from "@/views/Agents";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Segmented } from "@/components/console";
+import { Kbd } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { useOrchestrator } from "@/components/Terminal";
 import type { ShortcutId } from "@/lib/shortcuts";
@@ -51,10 +52,20 @@ const KindIcon = ({ kind, className }: { kind: NotificationKind; className?: str
   return <Icon className={cn("size-4 shrink-0", TONE_TEXT[KIND_META[kind].tone], className)} aria-hidden="true" />;
 };
 
+/** A small muted tag before the title — which repo this is about. Left out for the orchestrator's
+ *  own notifications (it has no repo behind it); truncated with ellipsis if the name runs long. */
+const RepoLabel = ({ repo }: { repo: string }) =>
+  repo && repo !== ORCHESTRATOR_REPO ? (
+    <span data-slot="notification-repo" className="text-muted-foreground max-w-20 shrink-0 truncate text-xs" title={repo}>{repo}</span>
+  ) : null;
+
 /** Each quick action's icon (the label is its tooltip and aria-label); a shortcut where one exists. */
 const ACTION_ICON: Record<NotificationActionId, typeof Bell> = {
   address: Wrench, viewPr: GitPullRequest, fix: Hammer, viewOutput: FileText, open: ArrowUpRight, reply: Reply, retry: RotateCcw,
-  openChat: MessagesSquare, openPreview: ExternalLink, stopPreview: Square, retryPreview: RotateCcw, viewLog: ScrollText, openOrchestrator: PanelRight,
+  // openOrchestrator is exclusively the orchestrator's OWN notifications' Open action (see
+  // notificationActions) — its icon is the orchestrator's own avatar everywhere else, not the panel
+  // it opens.
+  openChat: MessagesSquare, openPreview: ExternalLink, stopPreview: Square, retryPreview: RotateCcw, viewLog: ScrollText, openOrchestrator: Bot,
 };
 const ACTION_SHORTCUT: Partial<Record<NotificationActionId, ShortcutId>> = { openOrchestrator: "orchestrator" };
 
@@ -117,8 +128,10 @@ function useNotificationActions() {
 /** A notification's quick-action row of size-7 ghost icon buttons, each with its tooltip: its kind's
  *  actions (the first primary, in the foreground colour), Open always last and — in the centre,
  *  while unread — the ×. Hidden until the card or row is hovered or focused, always shown on a touch
- *  screen. Any action marks the notification read (so a toast leaves the stack); an agent verb's
- *  check lingers a moment first. A verb's failure goes to the action-error toast, as on the board. */
+ *  screen. Every action is optimistic: the toast/row closes or marks read AT ONCE, the verb (or
+ *  navigation) runs after — never waited on. A verb that fails shows the action-error toast with why
+ *  (as on the board) and, if the notification was unread, puts it back — the click shouldn't have to
+ *  wait on a launch to know whether it worked. */
 function QuickActions({ n, shown, onDismiss, className }: {
   n: Notification; shown: boolean; onDismiss?: () => void; className?: string;
 }) {
@@ -139,7 +152,16 @@ function QuickActions({ n, shown, onDismiss, className }: {
             {run ? (
               <ActionButton size="icon" variant="ghost" className={btn} label={a.label}
                 failure={{ action: a.label, title: n.title, repo: n.repo, branch: n.branch ?? "", prNumber: row?.prNumber }}
-                onRun={async () => { await run(); setTimeout(read, 800); }}>
+                onRun={async () => {
+                  const wasUnread = !n.readAt;
+                  read(); // close/mark-read at once; the verb runs in the background below
+                  try {
+                    await run();
+                  } catch (e) {
+                    if (wasUnread) restoreUnread([n.id]);
+                    throw e;
+                  }
+                }}>
                 <Icon className="size-3.5" />
               </ActionButton>
             ) : (
@@ -349,6 +371,7 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
         <KindIcon kind={n.kind} className="mt-0.5" />
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-1.5 text-sm leading-5">
+            <RepoLabel repo={n.repo} />
             <button type="button" data-slot="notification-title" className="truncate font-medium hover:underline" onClick={onOpen}>{n.title}</button>
             <span className={cn("shrink-0 text-xs", TONE_TEXT[meta.tone])}>{meta.label}</span>
           </div>
@@ -406,11 +429,11 @@ export function NotificationPanel() {
   const groups = groupByDay(filterNotifications(list, filter));
   return (
     <div data-slot="notification-centre" className="flex max-h-[70vh] flex-col">
-      <header className="flex h-11 items-center gap-2 border-b pr-1.5 pl-3">
+      <header className="flex h-14 items-center gap-2 border-b pr-1.5 pl-3">
         <h3 className="text-sm font-medium">Notifications</h3>
         <span className="flex-1" />
         <Segmented<NotificationFilter> label="Show" value={filter} onChange={setFilter} options={[
-          { value: "unread", label: <>Unread{unread > 0 && <span data-slot="notification-unread-count" className="text-muted-foreground ml-1 tabular-nums">{unread > 99 ? "99+" : unread}</span>}</> },
+          { value: "unread", label: <>Unread{unread > 0 && <Kbd data-slot="notification-unread-count" className="ml-1">{unread > 99 ? "99+" : unread}</Kbd>}</> },
           { value: "all", label: "All" },
         ]} />
         <button type="button" aria-label="Mark all as read" title="Mark all as read" onClick={() => void markRead("all")} disabled={!unread}
@@ -427,7 +450,10 @@ export function NotificationPanel() {
           </div>
         ) : groups.map((g) => (
           <section key={g.label} data-slot="notification-group">
-            <h4 className="text-muted-foreground bg-card sticky top-0 border-b px-3 py-1.5 text-xs font-medium">{g.label}</h4>
+            {/* z-10: a row below is `position: relative` (for its absolute quick-actions strip), so
+                without an explicit z-index it paints ABOVE this sticky header once scrolled under it
+                — the opaque bg-card alone doesn't stop that (see Chat.tsx's day divider, same fix). */}
+            <h4 className="text-muted-foreground bg-card sticky top-0 z-10 border-b px-3 py-1.5 text-xs font-medium">{g.label}</h4>
             <ul className="divide-y">
               {g.items.map((n) => (
                 <CentreRow key={n.id} n={n} onOpen={() => open(n)} />
@@ -452,11 +478,12 @@ function CentreRow({ n, onOpen }: { n: Notification; onOpen: () => void }) {
         <KindIcon kind={n.kind} className="mt-0.5" />
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-1.5 text-sm leading-5">
+            <RepoLabel repo={n.repo} />
             <span className="truncate font-medium">{n.title}</span>
             <span className={cn("shrink-0 text-xs", TONE_TEXT[KIND_META[n.kind].tone])}>{KIND_META[n.kind].label}</span>
           </span>
           {n.body && <span className="text-muted-foreground block truncate text-xs leading-5">{n.body}</span>}
-          <span className="text-muted-foreground block text-xs">{ago(n.createdAt)}{n.repo && n.repo !== "@orca" ? ` · ${n.repo}` : ""}{n.instance ? ` · ${n.instance}` : ""}</span>
+          <span className="text-muted-foreground block text-xs">{ago(n.createdAt)}{n.instance ? ` · ${n.instance}` : ""}</span>
         </span>
         {!n.readAt && <span data-slot="unread-dot" className="bg-geist-blue mt-2 size-1.5 shrink-0 rounded-full" aria-label="unread" />}
       </button>
