@@ -215,10 +215,9 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   Source (branch → base, latest commit); then the conversation where Build Logs sit (`ChatPanel
   logBar`: turn / error / warning counters, Find in chat, timestamped, tinted turns, the composer).
 - **Repos**, **Usage** (every login, every machine) and **Settings** (theme, density, the
-  read-only config). The Usage page's whole "Current windows" card is ITSELF collapsible — starts
-  collapsed, remembered (`orca.ui.v1.usageStatsExpanded`), independent of the Overview card's per-login
-  toggle above — since someone visiting `/usage` to read one number shouldn't have to scroll past
-  every hydra login first.
+  read-only config). The Usage page shows the SAME `UsageCard` as the Overview — the high-level rows,
+  with every hydra login behind the one remembered chevron (`orca.ui.v1.usageExpanded`, shared by
+  both pages).
 Every number is a pure derivation over the assembled rows (`workstream.ts`: `overviewStats`,
 `attentionReasons`, `filterRows`, `sortRows`, `recentActivity`, `usageGroups`, `rowDuration`,
 `chatSummary`, `repoSummaries`, `agentFailure`) — no endpoint of its own, so the views can't

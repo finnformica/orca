@@ -11,7 +11,7 @@ import * as store from "@/store";
 import { aggregateProfiles, App, mergeUsage, untilReset } from "@/App";
 import { navigate } from "@/lib/route";
 import { createStore, getDefaultStore } from "jotai";
-import { usageExpandedAtom, usageStatsExpandedAtom } from "@/lib/atoms";
+import { usageExpandedAtom } from "@/lib/atoms";
 import { shapeCodexUsage, shapeUsage } from "../server/usage";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -36,7 +36,6 @@ afterEach(async () => {
   apiFake.reset();
   localStorage.clear();
   getDefaultStore().set(usageExpandedAtom, false); // the atom outlives localStorage within a run
-  getDefaultStore().set(usageStatsExpandedAtom, false);
   navigate("/");
   await act(async () => { await store.refresh(); });
 });
@@ -256,42 +255,36 @@ test("the card collapses again: Vercel's chevron and the header row both toggle,
   expect(group("login:home")).not.toBeNull();
   await click(header());
   expect(group("login:home")).toBeNull();
-  // The Usage page's whole "Current windows" card is itself collapsible — starts collapsed,
-  // remembered independently of orca.usageExpanded above — and lists every login with no per-login
-  // toggle once open.
+  // The Usage page renders the SAME card: the fleet rows show, the logins wait behind the same
+  // chevron, and the one remembered toggle carries over between the pages.
   act(() => root?.unmount()); container?.remove();
   await mount("/usage");
-  expect(group("login:work")).toBeNull(); // starts collapsed
-  expect(header().getAttribute("aria-expanded")).toBe("false");
-  await click(header());
+  expect(group("login:work")).toBeNull();
+  expect(toggle().getAttribute("aria-expanded")).toBe("false");
+  await click(toggle());
   expect(group("login:work")).not.toBeNull();
-  expect(card().querySelector("[data-slot='usage-toggle']")).toBeNull();
-  expect(localStorage.getItem("orca.ui.v1.usageStatsExpanded")).toBe("true");
-  // …and a remount (a reload) keeps it open.
+  expect(localStorage.getItem("orca.ui.v1.usageExpanded")).toBe("true");
   act(() => root?.unmount()); container?.remove();
-  await mount("/usage");
+  await mount(); // back on the Overview, still expanded
   expect(group("login:work")).not.toBeNull();
 });
 
-test("the Usage page's card starts collapsed even with no hydra logins — just the fleet/Codex rows wait behind the chevron", async () => {
+test("the Usage page shows the high-level rows at once — with no hydra logins there is nothing to expand", async () => {
   apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
   await mount("/usage");
-  const header = () => card().querySelector<HTMLElement>("[data-slot='card-header']")!;
-  expect(rows("claude")).toEqual([]);
-  expect(header().getAttribute("aria-expanded")).toBe("false");
-  await act(async () => { header().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   expect(rows("claude")).toEqual(["5-hour window 38% / 100%", "Weekly 55% / 100%"]);
+  expect(card().querySelector("[data-slot='usage-toggle']")).toBeNull();
+  expect(card().querySelector("[data-slot='card-header']")!.getAttribute("aria-expanded")).toBeNull();
 });
 
-test("the two usage toggles read back on a reload: default collapsed, bad JSON falls back, a pre-v1 choice carries over", () => {
+test("the usage toggle reads back on a reload: default collapsed, bad JSON falls back, a pre-v1 choice carries over", () => {
   // A fresh jotai store is a reload: mounting the atoms reads localStorage.
-  const reload = () => { const s = createStore(); s.sub(usageExpandedAtom, () => {}); s.sub(usageStatsExpandedAtom, () => {}); return s; };
+  const reload = () => { const s = createStore(); s.sub(usageExpandedAtom, () => {}); return s; };
   expect(reload().get(usageExpandedAtom)).toBe(false);
-  expect(reload().get(usageStatsExpandedAtom)).toBe(false);
-  localStorage.setItem("orca.ui.v1.usageStatsExpanded", "true");
-  expect(reload().get(usageStatsExpandedAtom)).toBe(true);
-  localStorage.setItem("orca.ui.v1.usageStatsExpanded", "{not json");
-  expect(reload().get(usageStatsExpandedAtom)).toBe(false);
+  localStorage.setItem("orca.ui.v1.usageExpanded", "true");
+  expect(reload().get(usageExpandedAtom)).toBe(true);
+  localStorage.setItem("orca.ui.v1.usageExpanded", "{not json");
+  expect(reload().get(usageExpandedAtom)).toBe(false);
   localStorage.setItem("orca.ui.v1.usageExpanded", '"yes"'); // the wrong shape
   expect(reload().get(usageExpandedAtom)).toBe(false);
   localStorage.clear();
