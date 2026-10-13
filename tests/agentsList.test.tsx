@@ -140,6 +140,13 @@ describe("agents list view", () => {
     expect(actionsWrapper.className).not.toMatch(/\bspace-y-/);
     // Preview cell: idle, enabled (the fake config's repo "r" has RepoFeatures.previews on).
     expect(rowOf("feat-ci").querySelector<HTMLElement>('[data-slot="preview-cell"]')!.dataset.state).toBe("none");
+    // The PR-preview text link sits right next to the model name in the subline — "add" state,
+    // since feat-ci has neither a previewUrl nor the preview label yet.
+    const inline = rowOf("feat-ci").querySelector<HTMLElement>('[data-slot="pr-preview-inline"]')!;
+    expect(inline.dataset.state).toBe("add");
+    expect(inline.textContent).toContain("Add preview");
+    // (its own leading "·" separator sits between the two)
+    expect(inline.previousElementSibling?.previousElementSibling).toBe(rowOf("feat-ci").querySelector('[data-slot="model-label"]'));
     // Readable models: the run's reported model, else the pinned one — no initials avatar.
     expect(rowOf("local-idle").querySelector('[data-slot="model-label"]')!.textContent).toBe("Opus 5.5");
     expect(container!.querySelector('[data-slot="model-avatar"]')).toBeNull();

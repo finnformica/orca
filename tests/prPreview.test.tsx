@@ -4,15 +4,16 @@
 // the label is on, a "Deploying preview" pending state once the label is on but no URL has posted
 // yet (persists across reloads — it's read straight off the PR, not local-only state), hidden
 // entirely without a PR or without the repo opting into a preview label / RepoFeatures.previews.
-// Three surfaces share the same pure state machine (workstream.prPreviewState): the Agents-list /
-// phone cell (PrPreviewCell), the agent page's header button (PrPreviewButton), and the PR submenu
-// item in WorkstreamActions — all exercised here.
+// Four surfaces share the same pure state machine (workstream.prPreviewState): the Agents-list /
+// phone cell (PrPreviewCell), the agent page's header button (PrPreviewButton), the PR submenu
+// item in WorkstreamActions, and the inline text link next to the model name in the Agents-list
+// row's subline (PrPreviewInline) — all exercised here.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
-import { PrPreviewCell, PrPreviewButton } from "@/views/PreviewControl";
+import { PrPreviewCell, PrPreviewButton, PrPreviewInline } from "@/views/PreviewControl";
 import { WorkstreamActions } from "@/views/WorkstreamActions";
 import { prPreviewState } from "@/workstream";
 
@@ -134,6 +135,47 @@ describe("PrPreviewButton (agent page header)", () => {
     const link = container!.querySelector("a")!;
     expect(link.getAttribute("href")).toBe("https://feat-6.preview.branch-demo.dev");
     expect(link.textContent).toContain("Open PR preview");
+  });
+});
+
+describe("PrPreviewInline (next to the model name in the Agents-list subline)", () => {
+  test("hidden without a PR: no leading separator, nothing rendered", async () => {
+    await mount(<PrPreviewInline row={noPr} />);
+    expect(container!.querySelector('[data-slot="pr-preview-inline"]')).toBeNull();
+    expect(container!.textContent).toBe("");
+  });
+
+  test("hidden: repo not configured for a preview label / previews feature", async () => {
+    await mount(<PrPreviewInline row={unconfiguredRow} />);
+    expect(container!.querySelector('[data-slot="pr-preview-inline"]')).toBeNull();
+  });
+
+  test("add: a '+ Add preview' text link before the label is on", async () => {
+    await mount(<PrPreviewInline row={addRow} />);
+    const el = container!.querySelector<HTMLElement>('[data-slot="pr-preview-inline"]')!;
+    expect(el.dataset.state).toBe("add");
+    expect(el.tagName).toBe("BUTTON");
+    expect(el.textContent).toContain("Add preview");
+    expect(el.querySelector(".lucide-plus")).not.toBeNull();
+  });
+
+  test("clicking Add posts the repo's preview label and flips to pending", async () => {
+    await mount(<PrPreviewInline row={addRow} />);
+    await click(container!.querySelector('[data-slot="pr-preview-inline"]')!);
+    expect(apiFake.calls).toContain("addPreviewLabel:6");
+    const el = container!.querySelector<HTMLElement>('[data-slot="pr-preview-inline"]')!;
+    expect(el.dataset.state).toBe("pending");
+    expect(el.textContent).toContain("Deploying preview");
+  });
+
+  test("ready: the preview's own host as the link text, once previewUrl has posted", async () => {
+    await mount(<PrPreviewInline row={{ ...addRow, previewUrl: "https://feat-6.preview.branch-demo.dev" }} />);
+    const el = container!.querySelector<HTMLElement>('[data-slot="pr-preview-inline"]')!;
+    expect(el.dataset.state).toBe("ready");
+    expect(el.tagName).toBe("A");
+    expect(el.getAttribute("href")).toBe("https://feat-6.preview.branch-demo.dev");
+    expect(el.getAttribute("target")).toBe("_blank");
+    expect(el.textContent).toBe("feat-6.preview.branch-demo.dev");
   });
 });
 

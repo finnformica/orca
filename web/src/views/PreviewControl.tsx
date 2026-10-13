@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Check, ChevronDown, Copy, ExternalLink, FlaskConical, Globe, Loader2, Square, TriangleAlert } from "lucide-react";
+import { Check, ChevronDown, Copy, ExternalLink, FlaskConical, Globe, Loader2, Plus, Square, TriangleAlert } from "lucide-react";
 import { api, type PreviewSvc } from "../api";
 import { addPreviewLabel, baseBranch, instanceChoices, previewConfigured, previewKeyOf, previewsEnabled, previewStatus, startMaster, stopMaster, stopPreview, testLocally, thisInstance, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
 import { previewHref, previewLabel, prPreviewState } from "../workstream";
@@ -284,6 +284,35 @@ export function PrPreviewButton({ row }: { row: Row }) {
       {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Globe className="size-3.5" />}
       {pending ? "Deploying preview" : "Add PR preview"}
     </Button>
+  );
+}
+
+/** The same GitHub PR-preview control as PrPreviewCell, as inline text instead of an icon — sits
+ *  next to the model name in the Agents-list row's subline (desktop and the phone's stacked meta
+ *  line), Vercel-style: the deploy's own host as the link text once it's live, "+ Add preview"
+ *  before the label is on, "Deploying preview…" while it's building. Hidden under the same
+ *  conditions as PrPreviewCell (see prPreviewState) — bakes in its own leading "·" separator so a
+ *  caller can render it unconditionally alongside the subline's other dot-joined items. */
+export function PrPreviewInline({ row }: { row: Row }) {
+  const { state, busy, add } = usePrPreviewAdd(row);
+  if (state === "hidden") return null;
+  return (
+    <>
+      <span aria-hidden="true">·</span>
+      {state === "ready" ? (
+        <a href={row.previewUrl} target="_blank" rel="noreferrer" data-slot="pr-preview-inline" data-state={state}
+          title="PR preview" className="min-w-0 truncate hover:text-foreground hover:underline">
+          {previewLabel(row.previewUrl!)}
+        </a>
+      ) : state === "pending" ? (
+        <span data-slot="pr-preview-inline" data-state={state} className="shrink-0">Deploying preview…</span>
+      ) : (
+        <button type="button" data-slot="pr-preview-inline" data-state={state} disabled={busy} onClick={() => void add()}
+          title="Add PR preview" className="inline-flex shrink-0 items-center gap-0.5 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50">
+          <Plus className="size-3" />Add preview
+        </button>
+      )}
+    </>
   );
 }
 

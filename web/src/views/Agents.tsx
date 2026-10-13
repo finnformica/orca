@@ -31,7 +31,7 @@ import { Pill, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
 import { Board, ConditionBadges, CopyDone, LaneActions, useTerminalOpen } from "./Board";
 import { WorkstreamActions } from "./WorkstreamActions";
-import { PreviewCell, PrPreviewCell } from "./PreviewControl";
+import { PreviewCell, PrPreviewCell, PrPreviewInline } from "./PreviewControl";
 import { ReviewCluster } from "./Review";
 
 export function Agents() {
@@ -379,6 +379,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
       <div role="cell" className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-1.5 pr-2 text-xs">
         <span>{row.repo}</span>
         {model && <><span aria-hidden="true">·</span><span data-slot="model-label">{model.label}</span></>}
+        {!isDone && <PrPreviewInline row={row} />}
         {row.orchestrated && <><span aria-hidden="true">·</span><span className="inline-flex items-center gap-1"><Bot className="size-3" />orchestrated</span></>}
         {instance && cell("instance") && <><span aria-hidden="true">·</span><span data-slot="instance-chip">{instance}</span></>}
         <span aria-hidden="true">·</span><span className="min-w-0 font-mono break-all">{row.branch}</span>
@@ -399,6 +400,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
         <div className="text-muted-foreground flex min-w-0 items-center gap-1 text-xs">
           <span className="shrink-0">{row.repo}</span>
           {model && <><span aria-hidden="true">·</span><span data-slot="model-label" className="shrink-0" title={model.title}>{model.label}</span></>}
+          {!isDone && <PrPreviewInline row={row} />}
           {row.orchestrated && <span className="shrink-0" title="Started or continued by the orchestrator" aria-label="Orchestrated"><Bot className="size-3" /></span>}
           {error && <><span aria-hidden="true">·</span><span data-slot="row-error" className="text-geist-red truncate" title={error}>{error}</span></>}
         </div>
