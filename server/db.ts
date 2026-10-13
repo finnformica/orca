@@ -446,6 +446,28 @@ export const MIGRATIONS: MigrationStep[] = [
       CREATE INDEX IF NOT EXISTS notification_recent ON notification (user_id, created_at DESC);
     `,
   },
+  {
+    id: 16,
+    name: "attachment",
+    idempotent: true,
+    // Pasted/dropped files (server/attachments.ts). They were a file in the receiving bridge's
+    // tmpdir and the message carried that host path, so an agent on the OTHER instance (the
+    // orchestrator on the box, a worker there) got a path that didn't exist. The bytes live here
+    // now; a message carries an `orca-attachment://<id>/<name>` reference, and whichever instance
+    // launches the run writes the file into its own state dir. Pruned to 30 days by the writer.
+    sql: `
+      CREATE TABLE IF NOT EXISTS attachment (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        bytes BYTEA NOT NULL,
+        created_at BIGINT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS attachment_created ON attachment (user_id, created_at);
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
@@ -1351,4 +1373,31 @@ export async function dismissNotifications(ids: number[] | "all", at = Date.now(
     ? await sql`UPDATE notification SET dismissed_at = ${at}, read_at = COALESCE(read_at, ${at}) WHERE user_id = ${user} AND dismissed_at IS NULL RETURNING id`
     : ids.length ? await sql`UPDATE notification SET dismissed_at = ${at}, read_at = COALESCE(read_at, ${at}) WHERE user_id = ${user} AND dismissed_at IS NULL AND id IN ${sql(ids)} RETURNING id` : [];
   return rows.length;
+}
+
+// ── Attachments (server/attachments.ts owns the reference format and the per-host cache) ──────────
+
+export const ATTACHMENT_RETENTION_MS = 30 * 24 * 3_600_000;
+
+export type AttachmentInput = { id: string; filename: string; mimeType: string; bytes: Uint8Array };
+
+/** Store one uploaded file; prunes this user's attachments past 30 days, like notifications. */
+export async function addAttachment(input: AttachmentInput, at = Date.now()): Promise<void> {
+  return withRetry(async (sql) => {
+    const user = currentUser();
+    await sql`
+      INSERT INTO attachment (id, user_id, filename, mime_type, size, bytes, created_at)
+      VALUES (${input.id}, ${user}, ${input.filename}, ${input.mimeType}, ${input.bytes.byteLength}, ${input.bytes}, ${at})
+      ON CONFLICT (id) DO NOTHING`;
+    await sql`DELETE FROM attachment WHERE user_id = ${user} AND created_at < ${at - ATTACHMENT_RETENTION_MS}`;
+  });
+}
+
+/** One attachment's bytes, or undefined once pruned (or never stored). */
+export async function attachment(id: string): Promise<{ filename: string; mimeType: string; bytes: Uint8Array } | undefined> {
+  return withRetry(async (sql) => {
+    const rows = await sql`SELECT filename, mime_type, bytes FROM attachment WHERE user_id = ${currentUser()} AND id = ${id}`;
+    const r = (rows as { filename: string; mime_type: string; bytes: Uint8Array }[])[0];
+    return r ? { filename: r.filename, mimeType: r.mime_type, bytes: new Uint8Array(r.bytes) } : undefined;
+  });
 }

@@ -11,6 +11,7 @@ import * as ledger from "./ledger";
 import * as db from "./db";
 import * as transcript from "./transcript";
 import * as bus from "./bus";
+import { resolvePrompt } from "./attachments";
 import { tmpdir } from "os";
 
 /** Persist a turn, but never let the history write break the run that produced it. Repo-level runs
@@ -544,9 +545,11 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   if (options.resume && lease.sessionBusy(options.resume)) throw new Error("an agent is already running on this session");
   const provider = options.provider ?? "claude";
   const sessionId = options.resume ?? (provider === "claude" ? crypto.randomUUID() : undefined);
-  const effectivePrompt = !options.resume && (options.handoffFrom || options.history?.length)
+  // Attachment references become files on THIS instance (server/attachments.ts): the message may
+  // have been uploaded on another machine.
+  const effectivePrompt = await resolvePrompt(!options.resume && (options.handoffFrom || options.history?.length)
     ? handoffPrompt(options.history ?? [], prompt, options.handoffFrom, provider)
-    : prompt;
+    : prompt);
   const runId = crypto.randomUUID();
   const startedAt = Date.now();
   // HEAD before the run, so "did it commit?" is a comparison, not a guess from the outcome text.

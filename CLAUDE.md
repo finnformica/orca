@@ -643,6 +643,12 @@ Plain TCP, so
 Vite's HMR websocket rides it; dropped on stop; a port a local preview holds gets no `localUrl`. The
 browser opens `localUrl` only from a page on localhost (`previewHref`), else `url` — a phone opens the
 owner's tailnet URL, which still lacks a secure context until the tailnet has HTTPS certificates.
+**Attachments are in the database, not on a host** (`server/attachments.ts`, migration 16): the
+upload stores the bytes (20 MB per file, pruned past 30 days) and answers `orca-attachment://<id>/<name>`
+references in its `paths` field; `agent.launch` — the one place every launch passes, whether queued,
+proxied to `orchestratorOn` or forwarded to a workstream's home — swaps each for a file under ITS
+state dir (`attachments/<id>/`, cached by id). A legacy plain path is kept if it exists there, else
+marked unavailable. (History: a laptop's `/var/folders` path reached the box's agents, which couldn't open it.)
 **Slack posts from the instance you click on** (`/api/slack` is in the answer-here set): it needs no
 worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box it failed with no token.
 **Machine metrics history:** each instance samples ITSELF once a minute (`startMetricsSampler` in

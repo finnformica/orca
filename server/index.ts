@@ -1,4 +1,3 @@
-import { tmpdir } from "os";
 import {
   API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
@@ -6,6 +5,7 @@ import {
 import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
+import * as attachments from "./attachments";
 import * as preview from "./preview";
 import * as forward from "./forward";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
@@ -330,19 +330,18 @@ async function api(req: Request, url: URL): Promise<Response> {
   // repo or changing a setting takes effect on the next call rather than the next deploy. Cached in
   // config.ts and invalidated on write, so this is a map lookup in the common case.
   const cfg = await loadConfig();
-  // Pasted/dropped files (any type): save each to a temp dir, hand back absolute paths the agent Reads.
-  // Handled before the JSON body parse below — this is the one multipart route.
+  // Pasted/dropped files (any type): stored in the shared database, answered as references
+  // (server/attachments.ts) that whichever instance runs the agent turns into a local file. The
+  // field is still `paths` so the composer needn't care. Handled before the JSON body parse below —
+  // this is the one multipart route.
   if (req.method === "POST" && p === "/api/attachments") {
-    const dir = `${tmpdir()}/orca-attachments`;
-    const paths: string[] = [];
-    for (const f of (await req.formData()).getAll("files")) {
-      if (typeof f === "string") continue;
-      const ext = f.name.match(/\.[a-z0-9]+$/i)?.[0]?.toLowerCase() ?? "";
-      const file = `${dir}/${crypto.randomUUID()}${ext}`;
-      await Bun.write(file, f); // Bun.write creates the parent dir
-      paths.push(file);
+    const files = (await req.formData()).getAll("files").filter((f): f is File => typeof f !== "string");
+    try {
+      return json({ paths: await attachments.store(files) });
+    } catch (e) {
+      if (e instanceof attachments.AttachmentTooLarge) return json({ error: e.message }, 413);
+      throw e;
     }
-    return json({ paths });
   }
   // PUT carries a body too (the pasted config document) — parsing only POST silently handed the
   // handler an empty object, which then failed validation as "repos must be a non-empty array".
