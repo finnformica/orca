@@ -52,9 +52,10 @@ test("CPU and memory as line graphs from the last 24h, labelled with the newest 
   expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 24 }]);
   const cpu = container!.querySelector('[data-slot="chart-cpu"]')!;
   const mem = container!.querySelector('[data-slot="chart-mem"]')!;
-  // The main reading, plus the sessions overlay's value tucked in beside it (0 — none running here).
-  expect(cpu.querySelector('[data-slot="chart-value"]')!.textContent).toBe("23%0 sessions");
-  expect(mem.querySelector('[data-slot="chart-value"]')!.textContent).toBe("4.2 GB0 sessions");
+  // The main reading on the right; the sessions overlay's value beside the title (0 — none running here).
+  expect(cpu.querySelector('[data-slot="chart-value"]')!.textContent).toBe("23%");
+  expect(mem.querySelector('[data-slot="chart-value"]')!.textContent).toBe("4.2 GB");
+  expect(cpu.querySelector("figcaption")!.textContent).toBe("CPU0 sessions23%");
   expect(cpu.querySelector("polyline")!.getAttribute("points")!.split(" ")).toHaveLength(3);
   expect(mem.querySelector("polyline")).toBeTruthy();
   expect(cpu.querySelector("svg")!.getAttribute("aria-label")).toBe("CPU, now 23%");
@@ -118,10 +119,24 @@ test("running sessions overlay on CPU and memory, as a pink series on its own ri
     // Whole-number ticks above the peak of 2 (top, middle, 0) — never "1, 1, 0" or a 2.5 read as "3".
     expect([...chart.querySelectorAll('[data-slot="chart-axis-right"] span')].map((e) => e.textContent)).toEqual(["4", "2", "0"]);
     // The newest sample (i=2) had 1 running session.
-    expect(chart.querySelector('[data-slot="chart-overlay-value"]')!.textContent).toContain("1");
+    expect(chart.querySelector('[data-slot="chart-overlay-value"]')!.textContent).toBe("1 sessions");
+    // Beside the title, not squeezed in after the CPU % / GB value.
+    expect(chart.querySelector('[data-slot="chart-value"] [data-slot="chart-overlay-value"]')).toBeNull();
+    expect(chart.querySelector("figcaption > span:first-child [data-slot='chart-overlay-value']")).not.toBeNull();
   }
   // One poll of /api/health/history feeds both the vitals and the sessions overlay — no second fetch.
   expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 24 }]);
+});
+
+test("a bridge that sends no runningAgents (pre-migration 13) gets no sessions overlay, not a flat 0", async () => {
+  const now = Date.now();
+  apiFake.healthHistoryData = [0, 1].map((i) => ({ at: now - (1 - i) * 60_000, cpuPct: 30, load1: 0.1, memUsedGb: 2, memTotalGb: 15.3 }));
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  const chart = container!.querySelector('[data-slot="chart-cpu"]')!;
+  expect(chart.querySelectorAll("polyline")).toHaveLength(1);
+  expect(chart.querySelector('[data-slot="chart-overlay-value"]')).toBeNull();
+  expect(chart.querySelector('[data-slot="chart-axis-right"]')).toBeNull();
 });
 
 test("the machine graphs show a skeleton, sized like the chart, while history is still loading", async () => {

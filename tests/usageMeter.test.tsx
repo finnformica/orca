@@ -83,7 +83,8 @@ test("shows skeleton rows, sized like the real ones, until the first poll answer
   apiFake.holdUsage = true;
   await mount();
   expect(card().querySelector("[data-slot='usage-skeleton']")).not.toBeNull();
-  expect(card().querySelector("[data-slot='row-skeleton']")).not.toBeNull();
+  // The collapsed card's shape: a group's three window rows (5-hour, weekly, Fable), not two.
+  expect(card().querySelectorAll("[data-slot='usage-skeleton'] [data-slot='row-skeleton']")).toHaveLength(3);
   expect(card().textContent).not.toContain("No provider is signed in"); // not yet answered — not the same as answered-empty
   expect(card().querySelector("[data-slot='usage-row']")).toBeNull();
   apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };

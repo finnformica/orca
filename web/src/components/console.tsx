@@ -142,10 +142,15 @@ export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot,
   return (
     <figure data-slot={slot} className="min-w-0">
       <figcaption className="mb-2 flex items-baseline justify-between gap-2">
-        <span className="text-muted-foreground text-xs">{label}</span>
-        <span data-slot="chart-value" className="text-sm font-medium tabular-nums">
+        {/* The overlay's readout sits beside the title, not after the value — a long value ("12.4 GB")
+            squeezed it off the line. */}
+        <span className="text-muted-foreground flex min-w-0 items-baseline gap-1.5 text-xs whitespace-nowrap">
+          {label}
+          {overlay && overlayShown && <span data-slot="chart-overlay-value" className="flex items-center gap-1 tabular-nums" style={{ color: overlayColor }}>
+            <span aria-hidden="true" className="inline-block size-1.5 rounded-full bg-current" />{overlay.fmt(overlayShown.v)} {overlay.label.toLowerCase()}</span>}
+        </span>
+        <span data-slot="chart-value" className="text-sm font-medium whitespace-nowrap tabular-nums">
           {shown ? fmt(shown.v) : "—"}
-          {overlay && overlayShown && <span data-slot="chart-overlay-value" className="ml-1.5 text-xs font-normal" style={{ color: overlayColor }}>{overlay.fmt(overlayShown.v)} {overlay.label.toLowerCase()}</span>}
           {hover && <span className="text-muted-foreground ml-1 text-xs font-normal">at {new Date(hover.at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}</span>}
         </span>
       </figcaption>
@@ -196,6 +201,21 @@ export function ChartSkeleton({ slot }: { slot?: string }) {
 }
 
 /** A usage-row-shaped placeholder: ring + label + value. */
+/** The Usage card's loading shape: one group (title + subtitle line), its three window rows
+ *  (5-hour, weekly, Fable) and the "Show N logins" foot — the collapsed card's exact height. */
+export const UsageSkeleton = () => (
+  <div data-slot="usage-skeleton" className="p-2">
+    <div className="mb-1">
+      <div className="flex h-[26px] items-center justify-between gap-2 px-2 pt-1.5 pb-1">
+        <Skeleton className="h-3 w-12" />
+        <Skeleton className="h-3 w-28" />
+      </div>
+      <RowSkeleton /><RowSkeleton /><RowSkeleton />
+    </div>
+    <div className="flex h-7 items-center justify-center"><Skeleton className="h-3 w-24" /></div>
+  </div>
+);
+
 export const RowSkeleton = ({ slot }: { slot?: string }) => (
   <div data-slot={slot ?? "row-skeleton"} className="flex h-9 items-center gap-2.5 rounded-md px-2">
     <Skeleton className="size-4 shrink-0 rounded-full" />
