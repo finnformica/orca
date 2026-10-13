@@ -7,8 +7,7 @@ import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboard
 import { useAtom, useSetAtom } from "jotai";
 import { Search } from "lucide-react";
 import {
-  addNewOpenAtom, instanceScopeAtom, paletteOpenAtom, paletteRecentAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom,
-} from "@/lib/atoms";
+  addNewOpenAtom, instanceScopeAtom, paletteOpenAtom, paletteRecentAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom, quickAskOpenAtom } from "@/lib/atoms";
 import { moveSelection, pushRecent, rankPalette, type PaletteItem } from "@/lib/palette";
 import { SHORTCUTS, isTypingTarget, matchShortcut, shortcutLabel, type ShortcutId } from "@/lib/shortcuts";
 import { navigate, useRoute, type Route } from "@/lib/route";
@@ -189,8 +188,9 @@ export function Shortcuts() {
   const setHelp = useSetAtom(shortcutsHelpOpenAtom);
   const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
   const { open: orchestrator, ask, close } = useOrchestrator();
-  const state = useRef({ palette, collapsed, orchestrator });
-  state.current = { palette, collapsed, orchestrator };
+  const [quickAsk, setQuickAsk] = useAtom(quickAskOpenAtom);
+  const state = useRef({ palette, collapsed, orchestrator, quickAsk });
+  state.current = { palette, collapsed, orchestrator, quickAsk };
   const actions = useRef({ ask, close });
   actions.current = { ask, close };
   useEffect(() => {
@@ -201,13 +201,17 @@ export function Shortcuts() {
       const s = state.current;
       if (id === "escape") {
         const t = e.target instanceof Element ? e.target : null;
-        if (s.orchestrator && !t?.closest("dialog") && !document.querySelector('[role="menu"], [role="listbox"]:not([data-slot])')) actions.current.close();
+        if (t?.closest("dialog") || document.querySelector('[role="menu"], [role="listbox"]:not([data-slot])')) return;
+        // The quick-ask box first (it sits over the panel), then the panel.
+        if (s.quickAsk) setQuickAsk(false);
+        else if (s.orchestrator) actions.current.close();
         return;
       }
       e.preventDefault();
       if (id === "palette") setPalette(!s.palette);
       else if (id === "new") setAddNew(true);
       else if (id === "orchestrator") actions.current.ask();
+      else if (id === "quickAsk") setQuickAsk(true);
       else if (id === "help") setHelp(true);
       else if (id === "sidebar") setCollapsed(!s.collapsed);
       else if (id === "find") {

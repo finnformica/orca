@@ -827,6 +827,53 @@ export async function turns(repo: string, branch: string): Promise<AgentTurn[]> 
   });
 }
 
+/** A cursor into a conversation: the position of the oldest turn a page holds, as
+ *  `<started_at>~<run_id>` — the same key the conversation is ordered by, so a page boundary is
+ *  exact even when two turns share a millisecond. Opaque to the client. */
+export type TurnCursor = string;
+export type TurnPage = { turns: AgentTurn[]; older: TurnCursor | null };
+
+/** The newest `limit` turns of a conversation (oldest first, as `turns()` orders them), or the
+ *  `limit` turns before `before` — the cursor a previous page returned. `older` is the cursor for
+ *  the next page back, null once the conversation's first turn is in hand. The orchestrator's
+ *  conversation runs to hundreds of turns, and the chat shows its tail first. */
+export async function turnPage(repo: string, branch: string, opts: { limit?: number; before?: TurnCursor } = {}): Promise<TurnPage> {
+  const limit = Math.max(1, Math.min(500, Math.floor(opts.limit ?? 50)));
+  const cursor = parseCursor(opts.before);
+  return withRetry(async (sql) => {
+  const rows = cursor
+    ? await sql`
+      SELECT t.* FROM turn t JOIN workstream w ON w.id = t.workstream_id
+      WHERE w.user_id = ${currentUser()} AND w.repo = ${repo} AND w.branch = ${branch}
+        AND w.archived_at IS NULL
+        AND (t.started_at < ${cursor.startedAt} OR (t.started_at = ${cursor.startedAt} AND t.id < ${cursor.id}))
+      ORDER BY t.started_at DESC, t.id DESC LIMIT ${limit + 1}`
+    : await sql`
+      SELECT t.* FROM turn t JOIN workstream w ON w.id = t.workstream_id
+      WHERE w.user_id = ${currentUser()} AND w.repo = ${repo} AND w.branch = ${branch}
+        AND w.archived_at IS NULL
+      ORDER BY t.started_at DESC, t.id DESC LIMIT ${limit + 1}`;
+  const got = rows as (TurnRow & { id: string | number })[];
+  const hasMore = got.length > limit;
+  const page = got.slice(0, limit).reverse();
+  const oldest = page[0];
+  return {
+    turns: page.map(toTurn),
+    older: hasMore && oldest ? `${Number(oldest.started_at)}~${String(oldest.id)}` : null,
+  };
+  });
+}
+
+/** A cursor is `<started_at>~<turn.id>` (the row's surrogate id, not the run id — it is what the
+ *  ORDER BY breaks ties on). Anything malformed reads as "no cursor": the newest page. */
+function parseCursor(c?: string): { startedAt: number; id: number } | null {
+  if (!c) return null;
+  const at = c.indexOf("~");
+  if (at < 0) return null;
+  const startedAt = Number(c.slice(0, at)), id = Number(c.slice(at + 1));
+  return Number.isFinite(startedAt) && Number.isFinite(id) ? { startedAt, id } : null;
+}
+
 /** Mark a workstream finished without deleting anything — merged/discarded branches keep their
  *  history so future features can summarise and chain from them. */
 export async function archive(repo: string, branch: string): Promise<void> {

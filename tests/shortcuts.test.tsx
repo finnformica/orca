@@ -131,7 +131,9 @@ const press = async (target: EventTarget, key: string, init: KeyboardEventInit =
 };
 const q = <T extends Element = HTMLElement>(sel: string) => document.querySelector<T>(sel);
 const dialogOpen = (slot: string) => q<HTMLDialogElement>(`[data-slot="${slot}"]`)!.open;
-const panel = () => q('[data-slot="orchestrator-panel"]');
+// The side panel stays mounted once opened (reopening is instant): "closed" is its data-state.
+const panel = () => { const p = q('[data-slot="orchestrator-panel"]'); return p && p.dataset.state === "open" ? p : null; };
+const quickAsk = () => q('[data-slot="quick-ask-box"]');
 const find = () => q<HTMLInputElement>('input[aria-label="Find agents"]')!;
 async function typeInto(el: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => {
@@ -146,10 +148,11 @@ test("S1: C, O, ?, ⌘B and Esc work from the page — and never while typing in
   await mount("/");
   // Typing in the Find box: the letters are text, not shortcuts.
   find().focus();
-  for (const k of ["c", "o", "?"]) await press(find(), k);
+  for (const k of ["c", "o", "a", "?"]) await press(find(), k);
   await press(find(), "b", MOD);
   expect(dialogOpen("add-new-dialog")).toBe(false);
   expect(panel()).toBeNull();
+  expect(quickAsk()).toBeNull();
   expect(dialogOpen("shortcuts-help")).toBe(false);
   expect(q('[data-slot="sidebar"]')!.getAttribute("data-collapsed")).toBe("false");
   find().blur();
@@ -166,6 +169,14 @@ test("S1: C, O, ?, ⌘B and Esc work from the page — and never while typing in
   (document.activeElement as HTMLElement).blur();
   await press(document.body, "Escape");
   expect(panel()).toBeNull();
+
+  // A opens the quick-ask box with its one text box focused; Esc closes it (and leaves the panel alone).
+  await press(document.body, "a");
+  expect(quickAsk()).not.toBeNull();
+  expect(document.activeElement).toBe(quickAsk()!.querySelector("textarea"));
+  (document.activeElement as HTMLElement).blur();
+  await press(document.body, "Escape");
+  expect(quickAsk()).toBeNull();
 
   // ⌘B collapses the sidebar and the choice is remembered.
   await press(document.body, "b", MOD);
@@ -259,25 +270,26 @@ test("S4: typed text with no match goes to the orchestrator, prefilled in its co
   expect(apiFake.orchestratorMessages).toEqual([]); // prefilled, not sent
 });
 
-test("S5: Ask the orchestrator is in the top bar of every page; typing in it continues in the composer, after any draft", async () => {
+test("S5: the top bar of every page has an Ask-the-orchestrator BUTTON that opens the side panel, composer focused", async () => {
   for (const path of ["/", "/agents", "/usage", "/settings"]) {
     await mount(path);
-    expect(q('header[data-slot="topbar"] [data-slot="ask-orchestrator"]')).not.toBeNull();
+    const entry = q<HTMLButtonElement>('header[data-slot="topbar"] button[data-slot="ask-orchestrator"]');
+    expect(entry).not.toBeNull();
+    expect(entry!.textContent).toContain("Ask the orchestrator");
+    expect(entry!.textContent).toContain(shortcutLabel("orchestrator"));
+    expect(q('header[data-slot="topbar"] input[aria-label="Ask the orchestrator"]')).toBeNull(); // no text box in the chrome any more
     act(() => root?.unmount()); container?.remove();
   }
   localStorage.setItem("orca.chat.@orca::orchestrator", JSON.stringify({ text: "earlier draft", images: [] }));
   await mount("/agents");
-  const entry = q<HTMLInputElement>('input[aria-label="Ask the orchestrator"]')!;
-  entry.focus();
-  await typeInto(entry, "what is running?");
+  await act(async () => { q('button[data-slot="ask-orchestrator"]')!.click(); await flush(); await flush(); });
   expect(panel()).not.toBeNull();
   const box = panel()!.querySelector("textarea")!;
-  expect(box.value).toBe("earlier draft\nwhat is running?");
   expect(document.activeElement).toBe(box);
-  expect(entry.value).toBe(""); // the text moved, it isn't in two places
+  expect(box.value).toBe("earlier draft"); // the draft is where you left it
   // Clicking it while open just brings focus back to the composer, text intact.
   box.blur();
-  await act(async () => { entry.click(); await flush(); });
+  await act(async () => { q('button[data-slot="ask-orchestrator"]')!.click(); await flush(); });
   expect(document.activeElement).toBe(box);
-  expect(box.value).toBe("earlier draft\nwhat is running?");
+  expect(box.value).toBe("earlier draft");
 });

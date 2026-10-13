@@ -6,7 +6,7 @@ import { useOrchestrator } from "@/components/Terminal";
 import { launchOverlay } from "./workstream";
 import { expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
 import { Shell, Crumb, AddNew } from "@/components/Shell";
-import { OrchestratorWindow } from "@/components/Terminal";
+import { OrchestratorPanel } from "@/components/Terminal";
 import { Toaster } from "@/components/Toaster";
 import { ToastHost } from "@/components/Notifications";
 import { useWorkstreams } from "./store";
@@ -41,7 +41,7 @@ export function App() {
         <Page route={route} />
       </Shell>
       <ToastHost />
-      <OrchestratorWindow />
+      <OrchestratorPanel />
       <Toaster />
     </>
   );
