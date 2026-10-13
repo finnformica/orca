@@ -199,14 +199,27 @@ describe("the phone layout (390px, touch)", () => {
   test("a bottom bar within thumb reach; the top bar trades its Ask box for the round mark", async () => {
     await mount("/", true);
     const bar = $('[data-slot="bottom-bar"]')!;
-    expect([...bar.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Menu", "Agents", "New agent", "Orchestrator"]);
+    const items = [...bar.querySelectorAll("button")];
+    expect(items.map((b) => b.textContent)).toEqual(["Menu", "Agents", "New agent", "Orchestrator", "Settings"]);
     expect(bar.className).toContain("md:hidden"); // never on a desktop-width screen
     expect(bar.className).toContain("safe-area-inset-bottom");
     expect($('[data-slot="topbar-mark"]')!.className).toContain("md:hidden");
     expect($('[data-slot="ask-orchestrator"]')!.className).toContain("max-md:hidden");
     expect($('[data-slot="quick-ask"]')!.className).toContain("max-md:hidden"); // …and the pill folds into the bottom bar's Orchestrator
-    await click([...bar.querySelectorAll("button")].find((b) => b.textContent === "Agents")!);
+    // New agent is the centred, third of five items.
+    expect(items[2]!.textContent).toBe("New agent");
+    await click(items.find((b) => b.textContent === "Agents")!);
     expect(location.pathname).toBe("/agents");
+  });
+
+  test("the bottom bar's Settings navigates to /settings and is marked current there", async () => {
+    await mount("/", true);
+    const bar = $('[data-slot="bottom-bar"]')!;
+    const settings = [...bar.querySelectorAll("button")].find((b) => b.textContent === "Settings")!;
+    expect(settings.getAttribute("aria-current")).toBeNull();
+    await click(settings);
+    expect(location.pathname).toBe("/settings");
+    expect(settings.getAttribute("aria-current")).toBe("page");
   });
 
   test("Agents: rows stack with the instruction, error and branch on screen; one ⋯ per row; filters in a sheet", async () => {

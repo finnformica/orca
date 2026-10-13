@@ -3,7 +3,8 @@
 // context switcher, a breadcrumb and, on the right, "Ask the orchestrator" (on every page). It also
 // hosts the ⌘K palette, the ? shortcuts sheet and the one keyboard-shortcut listener. On a phone
 // (below md) the top bar carries the round mark, and a bottom bar within thumb reach holds the menu,
-// Agents, New agent and the orchestrator; every inset clears the notch and the home indicator.
+// Agents, New agent, the orchestrator and Settings (New agent centred); every inset clears the notch
+// and the home indicator.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtom, useSetAtom } from "jotai";
 import {
@@ -192,27 +193,30 @@ export const RoundMark = ({ className }: { className?: string }) => (
   </span>
 );
 
-/** The phone's bottom bar (below md only): what a thumb needs — the menu, Agents, New agent and the
- *  orchestrator — at the foot of the screen, above the home indicator. */
+/** The phone's bottom bar (below md only): what a thumb needs — the menu, Agents, New agent, the
+ *  orchestrator and Settings, New agent centred — at the foot of the screen, above the home indicator. */
 function BottomBar({ onMenu, activity }: { onMenu: () => void; activity: { running: boolean; unread: boolean } }) {
   const route = useRoute();
   const [, setAddNew] = useAtom(addNewOpenAtom);
   const { ask } = useOrchestrator();
   const item = "text-muted-foreground flex min-h-11 min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-md text-[11px] font-medium";
+  const label = "truncate";
   const agents = NAV[1]!;
+  const settings = NAV[5]!;
   return (
     <nav aria-label="Quick actions" data-slot="bottom-bar"
       className="bg-background/95 fixed inset-x-0 bottom-0 z-30 flex items-stretch gap-1 border-t px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] backdrop-blur md:hidden">
-      <button type="button" className={item} onClick={onMenu}><Menu className="size-5" />Menu</button>
-      <button type="button" className={cn(item, agents.match(route) && "text-foreground")} aria-current={agents.match(route) ? "page" : undefined} onClick={() => navigate("/agents")}><Boxes className="size-5" />Agents</button>
+      <button type="button" className={item} onClick={onMenu}><Menu className="size-5" /><span className={label}>Menu</span></button>
+      <button type="button" className={cn(item, agents.match(route) && "text-foreground")} aria-current={agents.match(route) ? "page" : undefined} onClick={() => navigate("/agents")}><Boxes className="size-5" /><span className={label}>Agents</span></button>
       <button type="button" className={cn(item, "text-foreground")} onClick={() => setAddNew(true)}>
-        <span className="bg-foreground text-background inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span>New agent
+        <span className="bg-foreground text-background inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span><span className={label}>New agent</span>
       </button>
       {/* The orchestrator, carrying the activity dot the desktop's quick-ask pill shows (there is no pill below md).
           `ask()` routes here to /orchestrator on a narrow screen rather than opening the side panel. */}
       <button type="button" className={cn(item, "relative", route.name === "orchestrator" && "text-foreground")} aria-current={route.name === "orchestrator" ? "page" : undefined} onClick={() => ask()}>
-        <Bot className="size-5" /><ActivityDot activity={activity} className="absolute top-1.5 right-[calc(50%-0.9rem)]" />Orchestrator
+        <Bot className="size-5" /><ActivityDot activity={activity} className="absolute top-1.5 right-[calc(50%-0.9rem)]" /><span className={label}>Orchestrator</span>
       </button>
+      <button type="button" className={cn(item, settings.match(route) && "text-foreground")} aria-current={settings.match(route) ? "page" : undefined} onClick={() => navigate("/settings")}><Settings className="size-5" /><span className={label}>Settings</span></button>
     </nav>
   );
 }
