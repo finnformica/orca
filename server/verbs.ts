@@ -211,7 +211,7 @@ export class BusyError extends Error {
  *  deletes a branch with an open PR. */
 export async function removeWorktree(repo: RepoConfig, worktreePath: string, branch: string | undefined, deleteBranch: boolean): Promise<void> {
   agent.stop(worktreePath);
-  if (branch) await agent.killByBranch(branch);
+  await agent.killInWorktree(worktreePath);
   preview.stop(worktreePath);
   await git.removeWorktree(repo.repoPath, worktreePath).catch(() => {});
   if (deleteBranch && branch) await git.deleteBranch(repo.repoPath, branch);
@@ -225,8 +225,7 @@ export async function archiveWorkstream(repo: RepoConfig, branch: string): Promi
   await db.dropQueuedMessages(repo.name, branch); // before stopping, so a racing exit handler can't claim one
   const hasPr = (await gh.listPrs(repo.repoPath)).some((p) => p.branch === branch);
   const existing = (await git.listWorktrees(repo.repoPath, repo.worktreeRoot)).find((w) => w.branch === branch);
-  if (existing) await removeWorktree(repo, existing.worktreePath, branch, !hasPr);
-  else await agent.killByBranch(branch);
+  if (existing) await removeWorktree(repo, existing.worktreePath, branch, !hasPr); // no worktree, nothing can run in it
   await db.archive(repo.name, branch); // idempotent — a no-op if removeWorktree already archived it
 }
 

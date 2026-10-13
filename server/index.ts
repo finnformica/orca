@@ -290,7 +290,7 @@ async function agentRows(repo: RepoConfig): Promise<unknown[]> {
   ]);
   const reaped = await git.reapWorktrees(repo.repoPath, repo.worktreeRoot, merged, closed, async (w) => {
     agent.stop(w.worktreePath);
-    await agent.killByBranch(w.branch);
+    await agent.killInWorktree(w.worktreePath);
     preview.stop(w.worktreePath, true); // reaped → drop its preview DB too
   });
   for (const r of reaped) await db.archive(repo.name, r.branch); // reaped from disk; its conversation is kept
@@ -619,7 +619,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     await gh.closePr(repo.repoPath, body.pr); // abandon without merging
     if (body.worktreePath) {
       agent.stop(body.worktreePath);
-      if (body.branch) await agent.killByBranch(body.branch);
+      await agent.killInWorktree(body.worktreePath);
       preview.stop(body.worktreePath, true); // teardown: drop this preview's DB
       await git.removeWorktree(repo.repoPath, body.worktreePath).catch(() => {});
     }
@@ -951,7 +951,7 @@ for (const hostname of BIND) Bun.serve({
 });
 
 // Shutdown. Agents are deliberately left running — a restart shouldn't lose in-progress work; they're
-// re-surfaced via ps (agent.detectRunning) and killed explicitly on discard (agent.killByBranch).
+// re-surfaced via ps (agent.detectRunning) and killed explicitly on discard (agent.killInWorktree).
 //
 // SIGINT and SIGTERM differ on purpose:
 //  - SIGINT is you at a terminal pressing Ctrl-C. You want your ports back, so previews are killed.
