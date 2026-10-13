@@ -1,4 +1,5 @@
 import type { LaunchReceipt, RunMeta } from "../../server/agent";
+import type { RepoFeatures } from "../../server/config";
 import type { ChangeSummary } from "../../server/git";
 import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSummary, ReviewSignal, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
@@ -52,7 +53,10 @@ async function res(r: Response) {
   return data;
 }
 
-export type RepoInfo = { name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; prLabels?: { name: string; default?: boolean }[]; defaultModel?: string; runsOn?: string };
+export type RepoInfo = {
+  name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; prLabels?: { name: string; default?: boolean }[];
+  defaultModel?: string; runsOn?: string; features?: RepoFeatures;
+};
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
 export const api = {

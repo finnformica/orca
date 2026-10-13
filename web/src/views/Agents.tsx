@@ -30,7 +30,7 @@ import { Pill, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
 import { Board, ConditionBadges, CopyDone, LaneActions, useTerminalOpen } from "./Board";
 import { WorkstreamActions } from "./WorkstreamActions";
-import { PreviewControl } from "./PreviewControl";
+import { PreviewCell } from "./PreviewControl";
 import { ReviewCluster } from "./Review";
 
 export function Agents() {
@@ -392,7 +392,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
       </div>
       {cell("instance") && <div role="cell" className="text-muted-foreground truncate text-xs" data-slot="instance-chip" title={instance}>{instance ?? "—"}</div>}
       <div role="cell" className="flex items-center justify-end gap-1">
-        {!isDone && <PreviewControl row={row} compact />}
+        {!isDone && <PreviewCell row={row} />}
         {hasMenu && <WorkstreamActions row={row} compact menuOnly onBusy={setBusy} onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}
           onOpen={to ? () => navigate(to) : undefined} contextAt={menuAt} onContextClose={closeMenu} />}
         {!isDone && <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />}

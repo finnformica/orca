@@ -83,6 +83,9 @@ export const agentProviders = (): AgentProvider[] => cfg?.agentProviders ?? DEFA
 export const useAgentProviders = (): AgentProvider[] => useSyncExternalStore(subscribe, agentProviders);
 export const baseBranch = (repo: string) => repoInfo(repo)?.baseBranch ?? "main";
 export const slackChannel = (repo: string) => repoInfo(repo)?.slackChannel;
+/** Whether the repo opted into preview services (RepoFeatures.previews) — the bridge still enforces
+ *  this; the client reads it only to grey out the Add-preview control before a click round-trips. */
+export const previewsEnabled = (repo: string) => repoInfo(repo)?.features?.previews ?? false;
 export const staleHours = () => cfg?.staleHours ?? 24;
 /** This bridge's instance name, and every instance a workstream can be placed on (this one first).
  *  Empty `others` means a single machine — placement UI stays hidden. */

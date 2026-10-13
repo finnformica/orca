@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreHorizontal, Sparkles } from "lucide-react";
+import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreVertical, Sparkles } from "lucide-react";
 import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, moveWorkstream, thisInstance,
   cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, staleHours, suggestTitle, toggleFollow, useRepos, type Row,
@@ -212,7 +212,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button size={icon} className={iconClass} variant="ghost" title="Actions" aria-label="Actions">
-              {compact ? <MoreHorizontal className="size-4" /> : <>Actions <ChevronDown className="size-3.5" /></>}
+              {compact ? <MoreVertical className="size-4" /> : <>Actions <ChevronDown className="size-3.5" /></>}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align={menuOnly ? "end" : "start"} className="min-w-[12rem]">
