@@ -28,6 +28,7 @@ import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, r
 import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
+import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -356,6 +357,18 @@ async function api(req: Request, url: URL): Promise<Response> {
     const self = db.instanceName();
     const others = url.searchParams.get("local") ? [] : Object.entries(cfg.instances ?? {}).filter(([n]) => n !== self).map(([, base]) => base);
     return eventStream(req, others);
+  }
+  // Screenshots (server/screenshot.ts): the one capped browser on this box, behind one queue. Never
+  // forwarded — a worker shoots a preview on its own instance.
+  if (req.method === "POST" && p === "/api/screenshot") {
+    let shot: ShotRequest;
+    try { shot = parseShotRequest(body); } catch (e) { return json({ error: (e as Error).message }, 400); }
+    return json(await shooter().shoot(shot));
+  }
+  const shotId = p.match(/^\/api\/screenshots\/(shot-[\w-]+)$/)?.[1];
+  if (req.method === "GET" && shotId) {
+    const file = diskStore().path(shotId);
+    return file ? new Response(Bun.file(file), { headers: { "content-type": "image/png" } }) : json({ error: "not found" }, 404);
   }
   if (p.startsWith("/api/orchestrator") && cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName()) {
     // ONE instance hosts the orchestrator (orchestratorOn); everything about it goes there.
