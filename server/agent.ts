@@ -13,6 +13,7 @@ import * as transcript from "./transcript";
 import * as bus from "./bus";
 import { resolvePrompt } from "./attachments";
 import * as cgroup from "./cgroup";
+import { noteOomKill } from "./health";
 import { tmpdir } from "os";
 
 /** Persist a turn, but never let the history write break the run that produced it. Repo-level runs
@@ -680,6 +681,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     // one — see cgroup.wasOomKilled) rather than assume, so a run you stopped or that died some other
     // way at 137 isn't mislabelled.
     const oomKilled = scoped && !ok && !wasStopped && code === 137 && await cgroup.wasOomKilled(scopeUnit, { ...process.env, ...scopedEnv });
+    if (oomKilled) noteOomKill(); // the instance card's Memory chart marks it at the next sample
     const error = ok ? undefined : oomKilled ? `out of memory (${memoryMaxGb} GB ceiling)` : (err.trim() || result || `exit ${code}`).slice(0, 300);
     const stopReason: StopReason = wasStopped ? "interrupted" : budgetReached ? "budget_reached" : ok ? "end_turn" : "error";
     await started; // finish can never overtake start, however fast the run was

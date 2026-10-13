@@ -103,11 +103,13 @@ export function Segmented<T extends string>({ value, options, onChange, label }:
 
 /** A line chart with a y-axis (0 → a round max), time ticks under it and a hover readout — Vercel's
  *  Observability graphs. Gaps in the samples (a box that was down) break the line. */
-export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot, color = "var(--geist-blue)", height = 120 }: {
+export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot, color = "var(--geist-blue)", height = 120, marks = [] }: {
   points: { at: number; v: number }[]; from: number; to: number; max?: number; fmt: (v: number) => string;
   /** The y-axis labels' format, when the readout's is too long for the gutter ("36G", not "36.0 GB"). */
   axis?: (v: number) => string;
-  label: string; slot?: string; color?: string; height?: number;
+  label: ReactNode; slot?: string; color?: string; height?: number;
+  /** Events drawn as red vertical lines at their time (the Memory chart's OOM kills). */
+  marks?: { at: number; title: string }[];
 }) {
   const W = 600, H = height;
   const top = max ?? niceMax(Math.max(0, ...points.map((p) => p.v)) * 1.1);
@@ -137,9 +139,12 @@ export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot,
           <span className="-translate-y-1/2">{axis(top)}</span><span>{axis(top / 2)}</span><span className="translate-y-1/2">{axis(0)}</span>
         </div>
         <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ height: H }} className="w-full min-w-0 overflow-visible" role="img"
-          aria-label={`${label}${last ? `, now ${fmt(last.v)}` : ", no samples"}`} onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
+          aria-label={`${typeof label === "string" ? label : slot ?? "chart"}${last ? `, now ${fmt(last.v)}` : ", no samples"}`} onPointerMove={onMove} onPointerLeave={() => setHover(null)}>
           {[0, 0.5, 1].map((f) => <line key={f} x1={0} x2={W} y1={H * f} y2={H * f} className="stroke-border" strokeWidth={1} strokeDasharray={f === 1 ? undefined : "3 3"} vectorEffect="non-scaling-stroke" />)}
           {segs.map((pts, i) => <polyline key={i} points={pts} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />)}
+          {marks.filter((m) => m.at >= from && m.at <= to).map((m) => (
+            <line key={m.at} data-slot="chart-mark" x1={x(m.at)} x2={x(m.at)} y1={0} y2={H} stroke="var(--geist-red)" strokeWidth={1.5} vectorEffect="non-scaling-stroke"><title>{m.title}</title></line>
+          ))}
           {hover && <line x1={x(hover.at)} x2={x(hover.at)} y1={0} y2={H} className="stroke-muted-foreground" strokeWidth={1} strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />}
         </svg>
       </div>

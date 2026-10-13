@@ -1846,62 +1846,51 @@ export function downsample(points: { at: number; v: number }[], max: number, fro
 }
 
 /** One vitals sample, recorded (instance_metric) or live (/api/health). */
-export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number };
+export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number; diskUsedGb?: number; oomKills?: number };
 type Pt = { at: number; v: number };
 export type InstanceSeries = {
-  cpu: Pt[]; mem: Pt[]; agents: Pt[]; cost: Pt[];
-  /** The newest sample — what the card's header stats show, and exactly every chart's last point.
-   *  `costUsd` is what the machine cost over the range up to it. */
-  latest: { at: number; cpuPct: number; memUsedGb: number; runningAgents: number; costUsd: number } | null;
+  cpu: Pt[]; mem: Pt[]; agents: Pt[]; disk: Pt[];
+  /** Samples that recorded agent runs OOM-killed in their own scope — the Memory chart's markers. */
+  ooms: { at: number; n: number }[];
+  /** The newest sample — what the card's header stats show, and exactly every chart's last point. */
+  latest: { at: number; cpuPct: number; memUsedGb: number; runningAgents: number } | null;
 };
 
 /** The longest pause between two samples that still counts as the machine being UP — the same
- *  5 minutes `sparklineSegments` breaks a line at (the sampler writes once a minute). */
+ *  5 minutes `sparklineSegments` breaks a line at (the sampler writes once a minute). The month's
+ *  cost (`db.uptimeMs`, server-side) counts only the time up by this rule. */
 export const UPTIME_GAP_MS = 5 * 60_000;
-
-/** What a machine cost over its samples, cumulatively: `hourlyUsd` × the time between consecutive
- *  samples, where a pause longer than `gapMs` means it was down (or its bridge was) and adds
- *  nothing. The first sample is $0 — the range's cost starts there. Pure. */
-export function accruedCost(samples: { at: number }[], hourlyUsd: number, gapMs = UPTIME_GAP_MS): Pt[] {
-  let total = 0;
-  return samples.map((p, i) => {
-    const dt = i ? p.at - samples[i - 1]!.at : 0;
-    if (hourlyUsd > 0 && dt > 0 && dt <= gapMs) total += (dt / 3_600_000) * hourlyUsd;
-    return { at: p.at, v: total };
-  });
-}
 
 /** Every instance chart's points, from the recorded history plus the live reading. The header stats
  *  and the charts once disagreed for two reasons: the header read the live poll (every 15s) while the
  *  chart's newest point was the history's (every 60s, up to a minute older), and `downsample` made
  *  that point the MEAN of its bucket (at 7d, ~34 minutes of samples). Here the live reading, when it
  *  is newer, becomes the newest sample, and the newest sample is kept raw as every series' last point
- *  — so `latest` (the header) and the last point are the same reading. Cost is the machine's: its
- *  current `hourlyUsd` accrued over the samples (`accruedCost`), so a gap where it was down is flat. */
-export function instanceSeries(history: VitalSample[], live: VitalSample | null | undefined, from: number, to: number, max = 300, hourlyUsd = 0): InstanceSeries {
+ *  — so `latest` (the header) and the last point are the same reading. Disk skips samples with no
+ *  reading (a `df` that failed) rather than drawing them as 0. */
+export function instanceSeries(history: VitalSample[], live: VitalSample | null | undefined, from: number, to: number, max = 300): InstanceSeries {
   const samples = history.filter((p) => p.at >= from && p.at <= to);
   const last = samples[samples.length - 1];
-  if (live && live.at <= to && (!last || live.at > last.at)) samples.push(live);
-  if (!samples.length) return { cpu: [], mem: [], agents: [], cost: [], latest: null };
-  const cumulative = accruedCost(samples, hourlyUsd);
-  const series = (pts: Pt[]) => [...downsample(pts.slice(0, -1), max - 1, from, to), pts[pts.length - 1]!];
+  if (live && live.at <= to && (!last || live.at > last.at)) samples.push({ ...live, oomKills: 0 });
+  if (!samples.length) return { cpu: [], mem: [], agents: [], disk: [], ooms: [], latest: null };
+  const series = (pts: Pt[]) => pts.length ? [...downsample(pts.slice(0, -1), max - 1, from, to), pts[pts.length - 1]!] : [];
   const newest = samples[samples.length - 1]!;
   return {
     cpu: series(samples.map((p) => ({ at: p.at, v: p.cpuPct }))),
     mem: series(samples.map((p) => ({ at: p.at, v: p.memUsedGb }))),
     agents: series(samples.map((p) => ({ at: p.at, v: p.runningAgents ?? 0 }))),
-    cost: series(cumulative),
-    latest: { at: newest.at, cpuPct: newest.cpuPct, memUsedGb: newest.memUsedGb, runningAgents: newest.runningAgents ?? 0, costUsd: cumulative[cumulative.length - 1]!.v },
+    disk: series(samples.flatMap((p) => (p.diskUsedGb == null ? [] : [{ at: p.at, v: p.diskUsedGb }]))),
+    ooms: samples.flatMap((p) => (p.oomKills ? [{ at: p.at, n: p.oomKills }] : [])),
+    latest: { at: newest.at, cpuPct: newest.cpuPct, memUsedGb: newest.memUsedGb, runningAgents: newest.runningAgents ?? 0 },
   };
 }
 
-/** The Cost accrued chart's caption: the rate it accrues at, and whether that rate is the config's
- *  or Orca's on-demand estimate from the EC2 type. Pure. */
-export function rateLabel(rate: { hourlyUsd: number; source: string; instanceType?: string } | undefined): string {
-  if (!rate || !(rate.hourlyUsd > 0)) return "Cost accrued";
+/** The instance card's Cost cell: this month's cost, and how it was reached (its tooltip). Pure. */
+export function monthCostLabel(month: { usd: number; upHours: number } | undefined, rate: { hourlyUsd: number; source: string; instanceType?: string } | undefined): { value: string; detail: string } | null {
+  if (!month || !rate || !(rate.hourlyUsd > 0)) return null;
   const r = rate.hourlyUsd;
-  const n = r.toFixed(r >= 0.1 ? 2 : 3);
-  return `Cost accrued · $${n}/h${rate.source === "estimate" ? ` est.${rate.instanceType ? ` (${rate.instanceType})` : ""}` : ""}`;
+  const est = rate.source === "estimate" ? ` est.${rate.instanceType ? ` (${rate.instanceType})` : ""}` : "";
+  return { value: `$${month.usd.toFixed(2)}`, detail: `$${r.toFixed(r >= 0.1 ? 2 : 3)}/h${est} × ${Math.round(month.upHours * 10) / 10} h up this month (UTC)` };
 }
 
 /** The agents axis's top: a small whole count, even so its midpoint tick is whole too (0 · 2 · 4). */

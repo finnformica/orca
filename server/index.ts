@@ -22,7 +22,7 @@ import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
 import * as notify from "./notify";
-import { health, historyHours, instanceRate, startMetricsSampler } from "./health";
+import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, attachmentRefs, followUpPrompt, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
@@ -448,9 +448,11 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/health") {
     // This machine's vitals, for the header's instance chip. `?instance=` reaches another instance
     // through the ordinary placement forwarding (an explicit instance beats everything). The rate is
-    // this machine's (config → IMDS estimate → 0), for the card's Cost accrued chart.
+    // this machine's (config → IMDS estimate → 0); `month` is that rate over this month's uptime,
+    // for the card's Cost cell (absent when the query fails — vitals must still answer).
     const [h, rate] = await Promise.all([health(), loadConfig().then((c) => instanceRate(c.instanceHourlyUsd))]);
-    return json({ ...h, rate });
+    const month = rate.hourlyUsd > 0 ? await monthCost(rate.hourlyUsd).catch(() => undefined) : undefined;
+    return json({ ...h, rate, month });
   }
   if (req.method === "GET" && p === "/api/notifications") {
     // The centre's rows (any instance answers: one table). `since` is the catch-up cursor after a

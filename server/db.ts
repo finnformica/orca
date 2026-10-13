@@ -557,6 +557,14 @@ export const MIGRATIONS: MigrationStep[] = [
         WHERE w.id = t.workstream_id AND w.repo = '@orca' AND w.branch = 'orchestrator' AND t.source IS NULL;
     `,
   },
+  {
+    name: "20261013-instance-metric-oom-kills",
+    idempotent: true,
+    // How many agent runs on this instance were OOM-killed inside their own cgroup scope since its
+    // previous sample (server/cgroup.ts) — the instance card's Memory chart marks them. Nullable:
+    // older rows read back as 0.
+    sql: `ALTER TABLE instance_metric ADD COLUMN IF NOT EXISTS oom_kills INTEGER`,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
@@ -1295,10 +1303,13 @@ export async function instances(): Promise<{ name: string; seenAt: number }[]> {
 
 export type MetricPoint = {
   at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; runningAgents: number;
+  /** Agent runs OOM-killed in their own scope since the previous sample. */
+  oomKills?: number;
 };
 
-/** How long a metric row is kept. */
-export const METRIC_RETENTION_MS = 30 * 24 * 3_600_000;
+/** How long a metric row is kept: 32 days, so the card's "this month" cost always has the whole of
+ *  a 31-day month behind it. */
+export const METRIC_RETENTION_MS = 32 * 24 * 3_600_000;
 
 /** Record one sample of THIS instance's vitals, and drop its rows past retention in the same breath —
  *  a delete per insert is cheap on the (instance, at) index, and it needs no second timer. Each
@@ -1314,8 +1325,8 @@ export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()):
     // neither.
     await sql.begin(async (tx: Bun.SQL) => {
       await tx`
-        INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents)
-        VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null}, ${p.runningAgents})`;
+        INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents, oom_kills)
+        VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null}, ${p.runningAgents}, ${p.oomKills ?? 0})`;
       await tx`DELETE FROM instance_metric WHERE instance = ${instance} AND at < ${new Date(at - METRIC_RETENTION_MS)}`;
     });
   });
@@ -1325,14 +1336,29 @@ export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()):
 export async function metricHistory(instance: string, hours: number, now = Date.now()): Promise<MetricPoint[]> {
   return withRetry(async (sql) => {
     const rows = await sql`
-      SELECT at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents FROM instance_metric
+      SELECT at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents, oom_kills FROM instance_metric
       WHERE user_id = ${currentUser()} AND instance = ${instance} AND at >= ${new Date(now - hours * 3_600_000)}
       ORDER BY at`;
-    return (rows as { at: Date; cpu_pct: number; load1: number; mem_used_gb: number; mem_total_gb: number; disk_used_gb: number | null; running_agents: number | null }[]).map((r) => ({
+    return (rows as { at: Date; cpu_pct: number; load1: number; mem_used_gb: number; mem_total_gb: number; disk_used_gb: number | null; running_agents: number | null; oom_kills: number | null }[]).map((r) => ({
       at: new Date(r.at).getTime(), cpuPct: Number(r.cpu_pct), load1: Number(r.load1), memUsedGb: Number(r.mem_used_gb), memTotalGb: Number(r.mem_total_gb),
       runningAgents: r.running_agents == null ? 0 : Number(r.running_agents),
       ...(r.disk_used_gb == null ? {} : { diskUsedGb: Number(r.disk_used_gb) }),
+      ...(r.oom_kills ? { oomKills: Number(r.oom_kills) } : {}),
     }));
+  });
+}
+
+/** How long an instance was UP since `from`, in ms: the time between its consecutive samples, where
+ *  a pause longer than `gapMs` means it was down and adds nothing — `UPTIME_GAP_MS`'s rule
+ *  (web/src/workstream.ts), done in SQL so a month of minute samples never leaves the database. */
+export async function uptimeMs(instance: string, from: number, gapMs: number): Promise<number> {
+  return withRetry(async (sql) => {
+    const [row] = await sql`
+      SELECT COALESCE(SUM(d) FILTER (WHERE d > 0 AND d <= ${gapMs}), 0) AS ms FROM (
+        SELECT EXTRACT(EPOCH FROM at - LAG(at) OVER (ORDER BY at)) * 1000 AS d FROM instance_metric
+        WHERE user_id = ${currentUser()} AND instance = ${instance} AND at >= ${new Date(from)}
+      ) s`;
+    return Number((row as { ms: number | string }).ms);
   });
 }
 

@@ -195,9 +195,10 @@ test("a table a foreign branch already created does not crash the runner: its st
 
 const step = (name: string, table: string): db.MigrationStep =>
   ({ name, idempotent: true, sql: `CREATE TABLE IF NOT EXISTS ${table} (id INT)` });
-// Two branches, cut the same day from main, each adding one step without knowing of the other.
-const fromA = step("20261013-attachment", "branch_a");
-const fromB = step("20261014-turn-source", "branch_b");
+// Two branches, cut the same day from main, each adding one step without knowing of the other —
+// dated far ahead so they sort after every real named step in MIGRATIONS.
+const fromA = step("29991013-attachment", "branch_a");
+const fromB = step("29991014-turn-source", "branch_b");
 const namedLedger = async () => (await db.open())`SELECT name FROM migration_named ORDER BY applied_at, name`;
 const hasTable = async (t: string) => (await (await db.open())`SELECT to_regclass(${t}) AS t`)[0].t !== null;
 
@@ -218,11 +219,11 @@ test("two branches' steps, merged in either order, apply in the same name order 
   // The merged code holds both steps; whichever way the array came out of the merge, the plan is one order.
   const planAB = db.planMigrations([...db.MIGRATIONS, fromA, fromB], recorded);
   const planBA = db.planMigrations([...db.MIGRATIONS, fromB, fromA], recorded);
-  expect(planAB.run.map(db.stepLabel)).toEqual(["17", "18", "20261013-attachment", "20261014-turn-source"]);
+  expect(planAB.run.map(db.stepLabel)).toEqual(["17", "18", "20261013-instance-metric-oom-kills", "29991013-attachment", "29991014-turn-source"]);
   expect(planBA.run.map(db.stepLabel)).toEqual(planAB.run.map(db.stepLabel));
   // …and the gate catches the array that disagrees with apply order.
   expect(db.checkSteps([...db.MIGRATIONS, fromB, fromA])).toEqual([
-    `named step "20261013-attachment" sorts before "20261014-turn-source" above it — named steps apply in name order; re-date it, or move it above if it doesn't depend on that step`,
+    `named step "29991013-attachment" sorts before "29991014-turn-source" above it — named steps apply in name order; re-date it, or move it above if it doesn't depend on that step`,
   ]);
 
   // Applied for real: B merges and deploys first, then A lands. Neither needed to know the other's number.
@@ -230,7 +231,7 @@ test("two branches' steps, merged in either order, apply in the same name order 
   await raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, fromA, fromB]));
   expect(await hasTable("branch_a")).toBe(true);
   expect(await hasTable("branch_b")).toBe(true);
-  expect((await namedLedger()).map((r: { name: string }) => r.name).sort()).toEqual(["20261013-attachment", "20261014-turn-source"]);
+  expect((await namedLedger()).map((r: { name: string }) => r.name).sort()).toEqual(["29991013-attachment", "29991014-turn-source"]);
   // The numbered ledger is untouched by named steps, and 17 caught up.
   expect((await ledger()).map((r: { id: number }) => Number(r.id))).toEqual(numbered().map((s) => s.id));
   // A further start is a no-op.
@@ -248,7 +249,7 @@ test("a step a branch once applied under an integer id (#152's 16) just re-runs 
   const { error, logged } = await captureErrors(() => raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, fromA])));
   expect(error).toBeUndefined();
   expect(logged.some((l) => l.includes("migration 16") && l.includes("no such step"))).toBe(true);
-  expect((await namedLedger()).map((r: { name: string }) => r.name)).toEqual(["20261013-attachment"]);
+  expect((await namedLedger()).map((r: { name: string }) => r.name)).toEqual(["29991013-attachment"]);
 });
 
 test("an older bridge (numbered ledger only) is unaffected by the named ledger", async () => {
@@ -259,11 +260,12 @@ test("an older bridge (numbered ledger only) is unaffected by the named ledger",
 });
 
 test("checkSteps refuses a new numbered step, a bad name, and a non-idempotent named step", async () => {
+  // (Among others: after a named step, a numbered one is also out of order.)
   expect(db.checkSteps([...db.MIGRATIONS, { id: db.LAST_NUMBERED_ID + 1, name: "attachment", idempotent: true, sql: "" }]))
-    .toEqual([`step ${db.LAST_NUMBERED_ID + 1} ("attachment"): numbered steps are frozen at ${db.LAST_NUMBERED_ID} — drop the id and name it YYYYMMDD-slug`]);
+    .toContain(`step ${db.LAST_NUMBERED_ID + 1} ("attachment"): numbered steps are frozen at ${db.LAST_NUMBERED_ID} — drop the id and name it YYYYMMDD-slug`);
   expect(db.checkSteps([...db.MIGRATIONS, { name: "attachment", idempotent: true, sql: "" }])).toEqual([`named step "attachment" must be YYYYMMDD-slug`]);
-  expect(db.checkSteps([...db.MIGRATIONS, { ...fromA, idempotent: false }])).toEqual([`named step "20261013-attachment" must be idempotent`]);
-  expect(db.checkSteps([...db.MIGRATIONS, fromA, fromA])).toEqual([`duplicate migration name "20261013-attachment"`]);
+  expect(db.checkSteps([...db.MIGRATIONS, { ...fromA, idempotent: false }])).toEqual([`named step "29991013-attachment" must be idempotent`]);
+  expect(db.checkSteps([...db.MIGRATIONS, fromA, fromA])).toEqual([`duplicate migration name "29991013-attachment"`]);
   await expect(raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, { id: db.LAST_NUMBERED_ID + 1, name: "x", idempotent: true, sql: "" }]))).rejects.toThrow("frozen");
 });
 

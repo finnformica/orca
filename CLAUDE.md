@@ -764,27 +764,36 @@ worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box
 `running_agents` — the count of leases `lease.live()` finds live at sample time, not agent.ts's
 in-memory `runs` map, so a sample taken right after a restart still counts what's genuinely live;
 nullable, so a pre-migration row reads back as 0 rather than null; indexed on `(instance, at)`).
-Every insert also deletes that instance's own rows older than 30 days, so retention
+Every insert also deletes that instance's own rows older than 32 days (a whole month for the Cost
+cell), so retention
 needs no second timer; a failed write is logged and swallowed. `GET /api/health/history?instance=&hours=`
 (24 by default, at most 720) is database-only and its `instance` is a filter, never a forward, so
 either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
 CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300
 points, one line each (no overlay — the running sessions are their own chart). Beside them, in the
-same `LineChart` design, an **Agents** chart (`running_agents` over time) and **Cost accrued** —
-what the MACHINE cost, not model spend (Finn: the first cut summed the runs' `total_cost_usd`, which
-was wrong in intent; model spend is the Usage card's business). It is the instance's hourly rate ×
-the time between consecutive samples, where a pause over 5 minutes (`UPTIME_GAP_MS`, the sparkline's
-gap) means it was down and adds nothing (`accruedCost`, pure); the caption shows the rate
-(`rateLabel`: `$0.23/h est. (m7i.xlarge)`), the value the total for the range. **The rate**
+same `LineChart` design, an **Agents** chart (`running_agents` over time) and **Disk used** (axis to
+the disk's size; worktrees, preview databases and test containers are what fill the box).
+**OOM kills** are red marks on the Memory chart, counted in its caption: a run the cgroup ceiling
+killed (`server/cgroup.ts`) bumps `health.noteOomKill`, and the next sample writes the count to
+`instance_metric.oom_kills` (named step `20261013-instance-metric-oom-kills`; a failed write carries
+it to the next). **Cost** is NOT a chart (a constant rate made a straight ramp that said nothing the
+rate didn't; before that, the first cut summed the runs' `total_cost_usd` — model spend, wrong in
+intent, the Usage card's business). It is the details grid's **Cost · this month** cell: the
+instance's hourly rate × the hours its samples show it UP since the 1st (UTC) — consecutive samples
+more than 5 minutes apart (`UPTIME_GAP_MS`, the sparkline's gap) mean it was down and add nothing
+(`db.uptimeMs`, one SQL window query; `health.monthCost`, on `/api/health` as `month`), the rate ×
+hours in its tooltip (`monthCostLabel`). Cost Explorer was considered: the instance role is SSM-only,
+and its data is daily with a ~24h lag, so at best it could add a "billed" figure, never a live one.
+**The rate**
 (`health.instanceRate`, on `/api/health` as `rate`): the app config's `instanceHourlyUsd[<instance>]`
 (editable in Settings' Machine cost card → `POST /api/config/instance-rate`, which sets one entry
 and leaves the rest of the document alone), else on EC2 the type + region from IMDSv2 priced from
 the small built-in on-demand table `EC2_ON_DEMAND_USD` (source `estimate`; the box, m7i.xlarge in
-eu-west-2, is $0.2331/h), else 0 — the laptop — and a card with no rate greys the chart
-(`chart-cost-off`) rather than drawing a flat $0. The rate is today's, applied over the whole range
-(no rate history). `ORCA_HOURLY_USD` / `ORCA_BILLING_SINCE` and the month-to-date estimate are gone.
-`instance_metric.cost_usd` (migration 17) is left in place but UNUSED — nothing writes or reads it
-any more, and the ledger backfill that filled it was removed; dropping it would be a migration of
+eu-west-2, is $0.2331/h), else 0 — the laptop — whose Cost cell is "—". The rate is today's, applied
+over the whole month (no rate history). `ORCA_HOURLY_USD` / `ORCA_BILLING_SINCE` are gone.
+`instance_metric.cost_usd` (migration 17) is left in place but UNUSED by current code — an
+instance still on a build before #165 keeps backfilling model spend into it (a laptop on old code
+once showed $1770 on its "Cost accrued" for the same reason); dropping it would be a migration of
 its own for no gain. All four come from the
 one `/api/health/history` poll. Every chart and the card's header stats come from ONE series
 (`instanceSeries`): the live `/api/health` reading, when newer, is the newest sample and every line's
