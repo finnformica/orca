@@ -21,6 +21,7 @@ import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
+import * as notify from "./notify";
 import { health, historyHours, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
@@ -107,8 +108,13 @@ agent.onQueuedMessage(async (message) => {
 });
 
 // The orchestrator's wake loop: a worker it is responsible for going idle wakes it, and its own run
-// ending drains what queued up meanwhile. Config is read per event, like every request.
-agent.onRunFinished(async (run) => orchestrator.onRunFinished(await loadConfig(), run));
+// ending drains what queued up meanwhile. Config is read per event, like every request. The
+// notification centre hears the same event first (it swallows its own failures), so a toast never
+// waits on a wake.
+agent.onRunFinished(async (run) => {
+  await notify.onRunFinished(run);
+  await orchestrator.onRunFinished(await loadConfig(), run);
+});
 // Warm the review queue (gh.listReviewPrs) so its slow cold fetch is paid here, not by a caller. A
 // local-only repo just fails quietly.
 void loadConfig().then((cfg) => cfg.repos.filter(verbs.repoHere)
@@ -199,6 +205,8 @@ const DATABASE_ONLY = new Set([
   "/api/slack",
   // Every instance's running previews: this one's live, the others' as they published them.
   "/api/previews",
+  // The notification centre: one table, written once by the instance where each event happened.
+  "/api/notifications", "/api/notifications/read", "/api/notifications/dismiss",
 ]);
 
 // DATABASE_ONLY routes whose `?instance=` selects rows rather than a machine — never forwarded.
@@ -401,6 +409,17 @@ async function api(req: Request, url: URL): Promise<Response> {
     // through the ordinary placement forwarding (an explicit instance beats everything).
     return json(await health());
   }
+  if (req.method === "GET" && p === "/api/notifications") {
+    // The centre's rows (any instance answers: one table). `since` is the catch-up cursor after a
+    // dropped stream, in ms.
+    const since = Number(url.searchParams.get("since"));
+    return json(await db.notifications({ since: Number.isFinite(since) && since > 0 ? since : undefined, limit: Number(url.searchParams.get("limit")) || undefined }));
+  }
+  if (req.method === "POST" && (p === "/api/notifications/read" || p === "/api/notifications/dismiss")) {
+    const ids = body.all === true ? "all" : Array.isArray(body.ids) ? body.ids.map(Number).filter(Number.isFinite) : [];
+    const changed = p.endsWith("/read") ? await db.markNotificationsRead(ids) : await db.dismissNotifications(ids);
+    return json({ ok: true, changed });
+  }
   if (req.method === "GET" && p === "/api/health/history") {
     // An instance's recorded vitals (instance_metric), oldest first — read from Postgres, so either
     // instance answers for either, even when the one asked about is down.
@@ -524,7 +543,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json(pr);
   }
   if (req.method === "GET" && p === "/api/prs") {
-    return json(await gh.listPrs(repo.repoPath)); // source of truth for the PR lanes
+    const prs = await gh.listPrs(repo.repoPath); // source of truth for the PR lanes
+    void notify.prs(repo.name, prs); // CI failing / conflicts, once per PR — read off the list, no extra call
+    return json(prs);
   }
   if (req.method === "GET" && p === "/api/prs/merged") {
     // `since` is the client's local midnight in ms — see gh.listMerged.
@@ -601,7 +622,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     await git.linkToWorktree(repo.repoPath, worktreePath, repo.linkToWorktree);
     await preview.start(worktreePath, worktreePath, repo.previewServices, cfg.portRange);
     void publishPreviews();
-    return json({ worktreePath, svcs: await preview.status(worktreePath, preview.ownerHost(cfg.instances, db.instanceName())) });
+    const host = preview.ownerHost(cfg.instances, db.instanceName());
+    void notify.watchPreview({ key: worktreePath, repo: repo.name, title: `${repo.name} ${repo.baseBranch}`, host });
+    return json({ worktreePath, svcs: await preview.status(worktreePath, host) });
   }
   if (req.method === "GET" && p === "/api/previews") {
     // Every instance's running previews (not repo-scoped): this one's live, the others' published.
@@ -615,6 +638,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/preview/stop") {
     preview.stop(body.key, true); // teardown: drop this preview's DB
+    notify.forgetPreview(String(body.key ?? "")); // a preview you stopped mid-boot is not a failed one
     // The placement goes with it, so a refreshed page stops looking for it here.
     await db.clearPreviewPlacement(String(body.key ?? "")).catch((e) => console.error("orca: preview placement clear failed", e));
     void publishPreviews();
@@ -823,6 +847,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     // going the wrong way" button — NOT Discard, which reaps the branch.
     if (!body.key) return json({ error: "key required" }, 400);
     const runId = agent.stop(body.key);
+    if (runId) void notify.stopped(runId); // the centre hears it from here: a stopped run never reaches the run-finished hook
     return json({ ok: true, runId });
   }
   if (req.method === "GET" && (p === "/api/agent/status" || p === "/api/claude/status")) {
