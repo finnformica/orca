@@ -1,0 +1,22 @@
+# Runs deploy/autodeploy.sh once; triggered every minute by orca-autodeploy.timer. Install:
+#
+#   sudo cp deploy/orca-autodeploy.service deploy/orca-autodeploy.timer /etc/systemd/system/
+#   sudo cp deploy/orca-autodeploy.sudoers /etc/sudoers.d/orca-autodeploy && sudo chmod 440 /etc/sudoers.d/orca-autodeploy
+#   sudo visudo -c   # verify before relying on it
+#   sudo systemctl daemon-reload && sudo systemctl enable --now orca-autodeploy.timer
+#
+# Runs as `orca`, same as the bridge itself (orca.service) — git/bun need nothing special, and the
+# one privileged step (restarting orca.service) is scoped by orca-autodeploy.sudoers rather than
+# running this whole unit as root. Pause auto-deploy with `systemctl stop orca-autodeploy.timer`.
+[Unit]
+Description=Orca auto-deploy (pull main, build, restart the bridge)
+After=network-online.target orca.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=orca
+WorkingDirectory=/opt/orca
+Environment=PATH=/home/orca/.hydra/bin:/home/orca/.bun/bin:/home/orca/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/orca
+ExecStart=/opt/orca/deploy/autodeploy.sh

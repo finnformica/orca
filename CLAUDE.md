@@ -571,6 +571,17 @@ laptop points `ORCA_DATABASE_URL` at the box's Postgres over the tailnet. Modell
 macOS-only path (Keychain, `clonefile`) or a tool-flag difference would show first. **Pin the
 Claude Code version on the server:** `--bare` is slated to become the default for `-p`, and bare
 mode never reads OAuth credentials, which would silently break every subscription-login launch.
+**Auto-deploy:** `orca-autodeploy.timer` runs `deploy/autodeploy.sh` every minute so the box picks
+up `main` without a manual deploy. Each tick: fetch `origin/main`; if HEAD already matches, no-op.
+Otherwise, refuse while busy — the orchestrator is mid-wake (`GET /api/orchestrator` →
+`running:true`) or any agent run holds a live lease (`~/.orca/leases`) — and just log `deferred:
+busy` to try again next tick; a worker survives a bridge restart (`agent.adoptLeases`) but an
+orchestrator wake does not, which is the whole reason for the busy rule. Otherwise `git pull
+--ff-only`, `bun run build`, and only on a successful build `systemctl restart orca`, then poll
+`/api/config` until it's back. A failed build never restarts the service — the old build keeps
+serving — and its log tail goes to `~/.orca/autodeploy.log` (one line per tick). Pause it with
+`systemctl stop orca-autodeploy.timer`; `deploy/bootstrap.sh` installs and enables it, scoped by
+`deploy/orca-autodeploy.sudoers` to exactly `systemctl restart orca` for the `orca` user.
 **Orphan reaper:** a preview that dies with a bridge crash, a reaped worktree, or a worker's own
 test run leaves its `orca_*` database behind — nothing else drops it, and the box had 8 of them
 (~6.6 GB) accumulate before `server/preview.ts`'s `reap()` existed. It runs at startup and hourly
