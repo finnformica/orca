@@ -60,4 +60,5 @@ export const validChoice = (value: string, choices: readonly string[], fallback:
 
 export const isString = (v: unknown): v is string => typeof v === "string";
 export const isBoolean = (v: unknown): v is boolean => typeof v === "boolean";
+export const isNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 export const isStringArray = (v: unknown): v is string[] => Array.isArray(v) && v.every(isString);

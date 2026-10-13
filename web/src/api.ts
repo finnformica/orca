@@ -31,6 +31,10 @@ export type LiveAgent = {
   instance?: string;
 };
 
+import { asTurnPage } from "./workstream";
+
+export type TurnPage = { turns: AgentTurn[]; older: string | null };
+
 export type QueuedMessage = {
   id: number; repo: string; branch: string; instruction: string; attachments: string[]; createdAt: number;
 };
@@ -95,6 +99,12 @@ export const api = {
     post("/api/enrichment/import", { entries }),
   turns: (repo: string, branch: string): Promise<AgentTurn[]> =>
     fetch(`/api/turns${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
+  /** One page of a conversation: the newest `limit` turns, or the `limit` before the `before` cursor
+   *  a previous page returned (`older`, null at the conversation's first turn). The chat opens on the
+   *  tail and walks back as you scroll up, instead of loading hundreds of turns to show the last few. */
+  turnPage: (repo: string, branch: string, opts: { limit: number; before?: string }): Promise<TurnPage> =>
+    fetch(`/api/turns${q(repo, `&branch=${encodeURIComponent(branch)}&limit=${opts.limit}${opts.before ? `&before=${encodeURIComponent(opts.before)}` : ""}`)}`)
+      .then(res).then((body) => asTurnPage<AgentTurn>(body)), // a pre-paging bridge answers with the whole array
   /** URL for the tab's ONE live feed (every chat's steps and turn events, multiplexed — see
    *  lib/events.ts). A URL, not a fetch, because EventSource opens it itself and reconnects on its own. */
   eventsUrl: (): string => "/api/events",

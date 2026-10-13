@@ -63,7 +63,9 @@ export function ToastHost() {
   if (!toasts.length) return null;
   return (
     <div data-slot="notification-host" data-expanded={expanded || undefined} role="region" aria-label="Notification centre"
-      className="fixed right-4 bottom-4 z-40 flex w-[22rem] max-w-[calc(100vw-2rem)] flex-col items-stretch gap-2"
+      // z-[45]: above the orchestrator's side panel (z-40, which would otherwise cover the corner while
+      // open), still under the action-error Toaster (z-50) and menus.
+      className="fixed right-4 bottom-4 z-[45] flex w-[22rem] max-w-[calc(100vw-2rem)] flex-col items-stretch gap-2"
       onMouseEnter={() => setExpanded(true)} onMouseLeave={() => setExpanded(false)}>
       {stack.visible.map((n, i) => (stack.collapsed && i > 0
         ? <div key={n.id} data-slot="notification-peek" aria-hidden="true" className={cn("bg-card -mt-1 h-1.5 rounded-b-lg border border-t-0", i === 1 ? "mx-2" : "mx-4")} />
