@@ -6,7 +6,7 @@
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AlertTriangle, ArrowDown, Bot, CircleX, Search } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -209,9 +209,19 @@ const CheckVerdict = ({ check }: { check: NonNullable<AgentTurn["check"]> }) => 
   </details>
 );
 
+/** Each running turn's streamed reply text, by run id (ChatPanel's `drafts`) — a context, so it reaches
+ *  the reply under either styling without threading through every turn component. */
+const DraftContext = createContext<Record<string, string>>({});
+const omit = (d: Record<string, string>, ...ids: string[]) => {
+  const next = { ...d };
+  for (const id of ids) delete next[id];
+  return next;
+};
+
 /** The agent's side of a turn — live steps and the cursor while it runs; folded steps, the output and
  *  Orca's check once it has answered. Shared by both stylings. */
 function Reply({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean }) {
+  const draft = useContext(DraftContext)[turn.id];
   // A turn is written at launch, so an interrupted run (bridge restart, kill) stays visible as an
   // unfinished exchange rather than vanishing.
   if (!turn.finishedAt) {
@@ -220,7 +230,9 @@ function Reply({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () =
         {/* The run's steps as they land — this is the live view. A turn with none yet (a non-claude
             provider, or the first seconds) still shows the cursor. */}
         <Steps steps={turn.steps ?? []} live />
-        <span>▋ working…</span>
+        {/* The message being written, as it streams — replaced by its step once it is whole. */}
+        {draft && <div className="text-neutral-200 whitespace-pre-wrap break-words" data-slot="turn-draft">{draft}</div>}
+        <span>▋ {draft ? "" : "working…"}</span>
       </div>
     );
   }
@@ -409,6 +421,9 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   const toTail = useRef(false); // jump-to-latest: scroll down once the window is back at the tail
   const cursors = useRef(new Map<string, number>()); // per-run high-water mark, for reconnect catch-up
   const latestAsked = useRef(0), latestApplied = useRef(0); // loadLatest's request order (see there)
+  // Reply text streaming in for a running turn (claude's partial messages), by run id — shown under
+  // its steps until the whole message lands as a step, or the turn finishes.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const running = row.agentStatus === "running";
   /** (Re)fetch the newest page. What was already loaded above it stays; a turn the page re-delivers
    *  (now finished) takes its fresh form. The first fetch also sets where the older pages start. */
@@ -488,8 +503,11 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
       // A `turn` event means a run started or finished — either way the queue may have moved.
       turn: () => { void load(); void loadQueued(); },
       step: (runId, steps) => {
+        // A whole message supersedes the text that streamed ahead of it.
+        if (steps.some((st) => st.kind === "text")) setDrafts((d) => (runId in d ? omit(d, runId) : d));
         setTurns((prev) => prev?.map((t) => (t.id === runId ? { ...t, steps: [...(t.steps ?? []), ...steps] } : t)) ?? prev);
       },
+      delta: (runId, text) => setDrafts((d) => ({ ...d, [runId]: (d[runId] ?? "") + text })),
       // We were disconnected (or the tab was hidden), so catch up from the cursor — anything
       // recorded while we were away would otherwise be silently missing.
       // The newest page is ALWAYS re-read: a turn that started or finished while we were away (or an
@@ -513,7 +531,13 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
     return () => { live = false; unsubscribe(); };
   }, [row.repo, row.branch]);
 
-  useEffect(() => { turnsRef.current = turns; }, [turns]);
+  useEffect(() => {
+    turnsRef.current = turns;
+    setDrafts((d) => {
+      const done = Object.keys(d).filter((id) => turns?.find((t) => t.id === id)?.finishedAt);
+      return done.length ? omit(d, ...done) : d;
+    });
+  }, [turns]);
   // The Agents toggle's count: agent turns newer than your last look at that channel. Looking at it
   // (it is the channel shown) moves the mark to the newest; the very first load starts it at now,
   // rather than calling a whole page of history unread.
@@ -697,7 +721,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
         {turns === null ? <ChatSkeleton rows={4} />
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
           : shownTurns!.length === 0 ? <p className="text-neutral-500">No turn matches “{find}”.</p>
-          : renderTurns(shownTurns!)}
+          : <DraftContext.Provider value={drafts}>{renderTurns(shownTurns!)}</DraftContext.Provider>}
         {hiddenBelow > 0 && !find.trim() && (
           <div className="mb-3 flex justify-center" data-slot="chat-newer">
             <button type="button" onClick={() => setWin(revealBelow(turns ?? [], win))} className="rounded-md border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200">

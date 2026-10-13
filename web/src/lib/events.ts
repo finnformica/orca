@@ -13,6 +13,10 @@ import { api } from "../api";
 export type TurnHandlers = {
   step: (runId: string, steps: AgentStep[]) => void;
   turn: (runId: string) => void;
+  /** Reply text as it is generated (claude only) — live, never stored; the whole message follows as a
+   *  `text` step, which replaces whatever streamed. Optional: a chat that ignores it still gets the
+   *  message, a message later. */
+  delta?: (runId: string, text: string) => void;
   /** The feed (re)started — the first open, a reconnect, the tab shown again, another instance came
    *  back: events may have been missed since the chat last read, so catch up. Called on EVERY
    *  `ready`, the first included: a chat that loaded before the stream was live (opened while the
@@ -61,6 +65,7 @@ function open(): void {
   };
   s.addEventListener("step", (e) => route(e, (sub, d) => sub.step(d.runId, d.steps)));
   s.addEventListener("turn", (e) => route(e, (sub, d) => sub.turn(d.runId)));
+  s.addEventListener("delta", (e) => route(e, (sub, d) => sub.delta?.(d.runId, (d as unknown as { text: string }).text)));
   s.addEventListener("notification", (e) => {
     const n = JSON.parse((e as MessageEvent).data) as Notification;
     for (const sub of [...subs]) sub.notification?.(n);

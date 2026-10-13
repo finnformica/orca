@@ -386,6 +386,18 @@ function toolResultText(content: unknown): string | undefined {
   return text || undefined;
 }
 
+/** The reply text one `--include-partial-messages` event adds, if any — a `text_delta` of the
+ *  message being generated. Pure. */
+export function claudeDelta(event: unknown): string | undefined {
+  const e = event as { type?: string; event?: { type?: string; delta?: { type?: string; text?: unknown } } };
+  if (e?.type !== "stream_event" || e.event?.type !== "content_block_delta" || e.event.delta?.type !== "text_delta") return undefined;
+  return typeof e.event.delta.text === "string" && e.event.delta.text ? e.event.delta.text : undefined;
+}
+
+/** How often a run's streamed text is pushed: tokens arrive tens of times a second, and each push is
+ *  an SSE frame to every tab (and relayed between instances). */
+const DELTA_FLUSH_MS = 100;
+
 /** Read claude's `--output-format stream-json` JSONL without waiting for exit, persisting each step
  *  to the run's transcript so `/api/turns` can show it live AND after the fact. Returns the full raw
  *  stream for parseClaudeStreamOutput to extract the final outcome at exit. */
@@ -393,6 +405,14 @@ async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "p
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
   let raw = "";
   let pending = "";
+  // Streamed reply text, coalesced and pushed live; never written anywhere (see claudeDelta).
+  let delta = "";
+  let flushAt: ReturnType<typeof setTimeout> | undefined;
+  const flush = () => {
+    flushAt = undefined;
+    if (delta && owner?.repo && owner.branch) bus.publish({ kind: "delta", runId, repo: owner.repo, branch: owner.branch, text: delta });
+    delta = "";
+  };
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -405,6 +425,14 @@ async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "p
       if (!line.trim()) continue;
       let event: unknown;
       try { event = JSON.parse(line); } catch { continue; }
+      const text = claudeDelta(event);
+      if (text) {
+        delta += text;
+        flushAt ??= setTimeout(flush, DELTA_FLUSH_MS);
+        continue;
+      }
+      // A whole message landed: what streamed before it goes first, so the step supersedes it.
+      if (flushAt) { clearTimeout(flushAt); flush(); }
       const written = await transcript.append(runId, claudeSteps(event));
       // Push to any chat stream open on THIS instance — which is the only place a stream for this
       // run can be served, since a request for a repo owned elsewhere is proxied to its owner.
@@ -413,6 +441,7 @@ async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "p
       }
     }
   }
+  if (flushAt) { clearTimeout(flushAt); flush(); }
   transcript.forget(runId);
   return raw;
 }
@@ -533,13 +562,16 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
   // readClaudeStream to feed the chat modal's live activity trail. --verbose is mandatory with
   // stream-json under -p. The final `result` event is the same object the old `json` form emitted,
   // so parseClaudeStreamOutput extracts the identical outcome/meta at exit.
+  // --include-partial-messages adds `stream_event` lines carrying the reply's text as it is generated
+  // (claudeDelta): the chat types it out live. They are never stored — the whole message still
+  // arrives as its `assistant` event, which is the step.
   // The permission
   // mode is the repo's: `bypassPermissions` was unconditional, which is fine for your own repo and
   // much less so for a client's, so a repo now opts into it.
   // `maxBudgetUsd` is the repo's cost ceiling per run: the CLI stops issuing model requests once
   // the run's spend reaches it and reports a budget result, which the turn records as
   // `budget_reached` — the same stop reason Managed Agents uses for a session budget.
-  return ["claude", "-p", "--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...m, ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), ...(allowedTools?.length ? ["--allowedTools", allowedTools.join(",")] : []), "--output-format", "stream-json", "--verbose", "--", prompt];
+  return ["claude", "-p", "--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...m, ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), ...(allowedTools?.length ? ["--allowedTools", allowedTools.join(",")] : []), "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--", prompt];
 }
 
 export async function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): Promise<LaunchReceipt> {

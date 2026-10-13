@@ -85,6 +85,10 @@ test("one stream carries this instance's events and relays the other's; a relay 
   bus.publish({ kind: "step", runId: "laptop-run", repo: "orca", branch: "feat", steps: [{ at: 1, kind: "text", text: "hi" }] });
   const step = await feed.until((f) => f.startsWith("event: step"));
   expect(JSON.parse(step.split("data: ")[1]!)).toMatchObject({ repo: "orca", branch: "feat", runId: "laptop-run" });
+  // Streamed reply text rides the same stream (never stored, so it is only ever pushed).
+  bus.publish({ kind: "delta", runId: "laptop-run", repo: "orca", branch: "feat", text: "Hel" });
+  const delta = await feed.until((f) => f.startsWith("event: delta"));
+  expect(JSON.parse(delta.split("data: ")[1]!)).toEqual({ repo: "orca", branch: "feat", runId: "laptop-run", text: "Hel" });
 
   // The other instance's bus, relayed (poke until the relay is connected).
   const relayed = async () => {

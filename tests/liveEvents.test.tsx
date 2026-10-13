@@ -149,3 +149,33 @@ test("L5: a stream the browser gave up on (an HTTP error closes an EventSource f
   await act(async () => { emit(second, "ready", {}); await flush(); await flush(); });
   expect(container!.textContent).toContain("AFTER_THE_OUTAGE");
 });
+
+test("L6: a claude reply types out live from `delta` events, and its whole message replaces the draft", async () => {
+  apiFake.turnsData.set("r::typing", [pending("run-1", "say hi")]);
+  await mountOne("typing");
+  const stream = opened().at(-1)!;
+  await act(async () => { emit(stream, "ready", {}); await flush(); });
+  const draft = () => container!.querySelector('[data-slot="turn-draft"]')?.textContent;
+  await act(async () => {
+    emit(stream, "delta", { repo: "r", branch: "typing", runId: "run-1", text: "Hello, " });
+    emit(stream, "delta", { repo: "r", branch: "typing", runId: "run-1", text: "wor" });
+    emit(stream, "delta", { repo: "r", branch: "other", runId: "run-x", text: "NOT_MINE" });
+    await flush();
+  });
+  expect(draft()).toBe("Hello, wor");
+  expect(container!.textContent).not.toContain("NOT_MINE");
+  // The whole message lands as a step: shown once, the draft gone.
+  await act(async () => {
+    emit(stream, "step", { repo: "r", branch: "typing", runId: "run-1", steps: [{ at: 1, kind: "text", text: "Hello, world." }] });
+    await flush();
+  });
+  expect(draft()).toBeUndefined();
+  expect(container!.textContent).toContain("Hello, world.");
+  // Deltas for the next message, then the turn finishes: no draft outlives it.
+  await act(async () => { emit(stream, "delta", { repo: "r", branch: "typing", runId: "run-1", text: "More" }); await flush(); });
+  expect(draft()).toBe("More");
+  apiFake.turnsData.set("r::typing", [finished("run-1", "say hi", "Hello, world. More.")]);
+  await act(async () => { emit(stream, "turn", { repo: "r", branch: "typing", runId: "run-1" }); await flush(); await flush(); });
+  expect(draft()).toBeUndefined();
+  expect(container!.textContent).toContain("Hello, world. More.");
+});
