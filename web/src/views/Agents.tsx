@@ -10,14 +10,15 @@
 // beside the search box.
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useAtom, useAtomValue } from "jotai";
-import { Bot, Columns3, GitPullRequest, List, ListFilter, Loader2, Rows2, Rows3, Search, X } from "lucide-react";
+import { ArrowDown, Bot, Columns3, GitPullRequest, List, ListFilter, Loader2, Rows2, Rows3, Search, X } from "lucide-react";
 import { agentQueryAtom, boardViewAtom, densityAtom, instanceScopeAtom, repoFilterAtom, type BoardView } from "@/lib/atoms";
 import { navigate, useSearch } from "@/lib/route";
 import { useNow } from "@/lib/ticker";
 import { oneOf, persistedKey, readPersisted, usePersisted, writePersisted } from "@/lib/persisted";
 import { useNarrow } from "@/lib/viewport";
+import { usePullToRefresh } from "@/lib/gestures";
 import { BottomSheet } from "@/components/BottomSheet";
-import { instanceChoices, modelFor, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
+import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
 import {
   DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed,
   listColumns, listGridTemplate, modelBadge, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, toggleQuick,
@@ -112,8 +113,18 @@ function AgentsList() {
   const clear = () => { setQ(""); setQuick(NO_QUICK_FILTER); };
   const cols = listColumns({ multiInstance: instanceChoices().length > 1 });
   const stacked = useNarrow(); // a phone: rows stack, no column header
+  const sectionRef = useRef<HTMLElement>(null);
+  const pull = usePullToRefresh(sectionRef, refresh, stacked); // a phone: pull down from the top to refresh
   return (
-    <section aria-label="Agents" className="space-y-3">
+    <section ref={sectionRef} aria-label="Agents" className="space-y-3">
+      {stacked && pull.phase !== "idle" && (
+        <div data-slot="pull-to-refresh" data-phase={pull.phase} role="status" style={{ height: pull.offset }}
+          className="text-muted-foreground flex items-end justify-center gap-1.5 overflow-hidden pb-2 text-xs">
+          {pull.phase === "refreshing" ? <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+            : <ArrowDown className={`size-4 transition-transform ${pull.phase === "release" ? "rotate-180" : ""}`} aria-hidden="true" />}
+          {pull.phase === "refreshing" ? "Refreshing…" : pull.phase === "release" ? "Release to refresh" : "Pull to refresh"}
+        </div>
+      )}
       <FilterRow scoped={scoped} quick={quick} setQuick={setQuick} clear={clear} visible={visible} total={all.length} q={q} setQ={setQ} sort={sort} setSort={setSort}
         showRepos={repo === "all"} showInstances={instance === "all"} />
       <div data-slot="workstream-list" role="table" aria-label="Workstreams" className="bg-card overflow-hidden rounded-lg border">

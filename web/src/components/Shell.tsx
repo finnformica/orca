@@ -19,6 +19,8 @@ import { OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshn
 import { useTheme, type Theme } from "@/lib/theme";
 import { cn, PortalContainer } from "@/lib/utils";
 import { validChoice } from "@/lib/persisted";
+import { useSwipeToClose } from "@/lib/gestures";
+import { useNarrow } from "@/lib/viewport";
 import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
 import { summarizeSync } from "../workstream";
@@ -295,6 +297,7 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
     return () => clearTimeout(t);
   }, [sent]);
   const onSent = (draft: OptimisticDraft) => { setOpen(false); setSent(draft); };
+  const swipe = useSwipeToClose(() => dialog, () => setOpen(false), useNarrow()); // a phone's full-screen sheet
   return (
     <>
       <Button size="sm" data-slot="add-new" title={`Add New (${shortcutLabel("new")})`} aria-label="Add New" onClick={() => setOpen(true)} className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
@@ -307,7 +310,7 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
         className="bg-card text-foreground m-auto mt-[12vh] w-[92vw] max-w-2xl rounded-lg border p-0 shadow-modal backdrop:bg-black/50 max-md:sheet"
       >
         <PortalContainer.Provider value={dialog ?? undefined}>
-          <header className="flex h-12 items-center justify-between border-b px-4">
+          <header {...swipe} className="flex h-12 items-center justify-between border-b px-4 max-md:touch-none">
             <h2 className="text-sm font-medium">New agent</h2>
             <Button size="icon" variant="ghost" className="size-7" onClick={() => setOpen(false)} aria-label="Close"><X className="size-4" /></Button>
           </header>

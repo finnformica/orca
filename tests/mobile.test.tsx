@@ -13,7 +13,7 @@ import { getDefaultStore } from "jotai";
 import { orchestratorOpenAtom } from "@/lib/atoms";
 import { COARSE_QUERY, NARROW_QUERY, enterSends, expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
 import { poll } from "@/lib/poll";
-import { STALE_AFTER_MS, launchOverlay, newerBuild, previewHref, previewLabel, staleAge } from "@/workstream";
+import { PULL_REFRESH_PX, pullState, swipeDecision, STALE_AFTER_MS, launchOverlay, newerBuild, previewHref, previewLabel, staleAge } from "@/workstream";
 import { themeColor } from "@/lib/theme";
 import { UpdateBanner } from "@/components/Freshness";
 
@@ -266,6 +266,74 @@ describe("the phone layout (390px, touch)", () => {
     expect(document.documentElement.style.getPropertyValue("--vvh")).toBe("300px");
     expect(document.documentElement.style.getPropertyValue("--vv-top")).toBe("40px");
     off();
+  });
+});
+
+describe("gestures", () => {
+  test("swipe thresholds: a quarter of the sheet (≤120px) or a flick closes; less springs back", () => {
+    expect(swipeDecision({ dy: 130, ms: 800, height: 800 })).toBe("close");
+    expect(swipeDecision({ dy: 100, ms: 800, height: 800 })).toBe("snap");
+    expect(swipeDecision({ dy: 50, ms: 50, height: 800 })).toBe("close"); // a flick
+    expect(swipeDecision({ dy: 30, ms: 10, height: 800 })).toBe("snap"); // too short to be one
+    expect(swipeDecision({ dy: 50, ms: 900, height: 200 })).toBe("close"); // a short sheet's quarter
+  });
+
+  test("pull states: idle, pull, then release past the threshold; the indicator is damped and capped", () => {
+    expect(pullState(5)).toEqual({ phase: "idle", offset: 0 });
+    expect(pullState(60)).toEqual({ phase: "pull", offset: 30 });
+    expect(pullState(PULL_REFRESH_PX * 2).phase).toBe("release");
+    expect(pullState(1000).offset).toBe(96);
+  });
+
+  let clock = 0; // each event 400ms after the last: a deliberate drag, not a flick
+  const pointer = (type: string, y: number, target: EventTarget = window) => {
+    const e = new PointerEvent(type, { bubbles: true, button: 0, clientY: y });
+    Object.defineProperty(e, "timeStamp", { value: (clock += 400) });
+    target.dispatchEvent(e);
+  };
+
+  test("a bottom sheet closes on a swipe down its header, and stays on a short one", async () => {
+    await mount("/agents", true);
+    await click($('[data-slot="filters-button"]')!);
+    const sheet = $<HTMLDialogElement>('dialog[data-slot="filter-sheet"]')!;
+    const handle = sheet.querySelector<HTMLElement>("[data-swipe-handle]")!;
+    await act(async () => { pointer("pointerdown", 100, handle); pointer("pointermove", 140); pointer("pointerup", 140); await flush(); });
+    expect(sheet.open).toBe(true); // 40px, slowly enough: springs back
+    expect(sheet.style.transform).toBe("");
+    await act(async () => { pointer("pointerdown", 100, handle); pointer("pointermove", 200); expect(sheet.style.transform).toBe("translateY(100px)"); pointer("pointermove", 400); pointer("pointerup", 400); await flush(); });
+    expect(sheet.open).toBe(false);
+  });
+
+  test("the orchestrator's phone sheet closes on a swipe down its header", async () => {
+    await mount("/", true);
+    act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
+    await act(async () => { await flush(); await flush(); });
+    const handle = $('[data-slot="orchestrator-handle"]')!;
+    await act(async () => { pointer("pointerdown", 50, handle); pointer("pointermove", 400); pointer("pointerup", 400); await flush(); });
+    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false);
+  });
+
+  test("pull to refresh on the Agents list: the indicator follows the finger, and letting go past it refreshes", async () => {
+    await mount("/agents", true);
+    const list = $('section[aria-label="Agents"]')!;
+    const touch = (type: string, y?: number, target: Element = list) => {
+      const e = new Event(type, { bubbles: true });
+      Object.defineProperty(e, "touches", { value: y === undefined ? [] : [{ clientY: y }] });
+      target.dispatchEvent(e);
+    };
+    // A swipe on the Filters sheet (a dialog inside the list) is the sheet's, never a pull.
+    const sheetHandle = list.querySelector('dialog[data-slot="filter-sheet"] [data-swipe-handle]')!;
+    await act(async () => { touch("touchstart", 100, sheetHandle); touch("touchmove", 400, sheetHandle); await flush(); });
+    expect($('[data-slot="pull-to-refresh"]')).toBeNull();
+    await act(async () => { touch("touchend", undefined, sheetHandle); await flush(); });
+    const before = store.clientPollCounts().agents;
+    await act(async () => { touch("touchstart", 100); touch("touchmove", 160); await flush(); });
+    expect($('[data-slot="pull-to-refresh"]')!.textContent).toBe("Pull to refresh");
+    await act(async () => { touch("touchmove", 100 + PULL_REFRESH_PX * 2 + 10); await flush(); });
+    expect($('[data-slot="pull-to-refresh"]')!.textContent).toBe("Release to refresh");
+    await act(async () => { touch("touchend"); await flush(); await flush(); await flush(); });
+    expect(store.clientPollCounts().agents).toBeGreaterThan(before);
+    expect($('[data-slot="pull-to-refresh"]')).toBeNull(); // done: back to idle
   });
 });
 

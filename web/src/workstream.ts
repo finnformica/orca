@@ -1859,3 +1859,20 @@ export function launchOverlay(search: string): "new" | "orchestrator" | null {
   const v = new URLSearchParams(search).get("open");
   return v === "new" || v === "orchestrator" ? v : null;
 }
+
+// ---- touch gestures (lib/gestures.ts): the thresholds, pure ----
+
+/** A swipe down on a sheet's handle: close when dragged a quarter of the sheet (at most 120px), or
+ *  flicked — 40px+ at more than 0.6px/ms. Anything less springs back. */
+export function swipeDecision(g: { dy: number; ms: number; height: number }): "close" | "snap" {
+  if (g.dy >= Math.min(120, g.height * 0.25)) return "close";
+  return g.dy >= 40 && g.dy / Math.max(1, g.ms) > 0.6 ? "close" : "snap";
+}
+
+/** Pull to refresh: how far the finger has pulled (from the top of the page) → what the indicator
+ *  shows and how tall it is (damped, capped). Past PULL_REFRESH_PX, letting go refreshes. */
+export const PULL_REFRESH_PX = 70;
+export function pullState(dy: number): { phase: "idle" | "pull" | "release"; offset: number } {
+  if (dy < 10) return { phase: "idle", offset: 0 };
+  return { phase: dy * 0.5 >= PULL_REFRESH_PX ? "release" : "pull", offset: Math.min(Math.round(dy * 0.5), 96) };
+}

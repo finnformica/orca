@@ -13,6 +13,7 @@ import { poll } from "@/lib/poll";
 import { orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
 import { useNarrow } from "@/lib/viewport";
+import { useSwipeToClose } from "@/lib/gestures";
 
 // The card's terminal: a modal you open in place (no navigating to the detail page) showing the
 // branch's conversation as a terminal-style log — the durable turns Orca records — with the follow-up
@@ -21,6 +22,7 @@ import { useNarrow } from "@/lib/viewport";
 // ChatPanel mounts ONLY while open so its poll/composer aren't running behind a closed dialog.
 export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean; onClose: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const swipe = useSwipeToClose(() => ref.current, onClose, useNarrow()); // a phone's sheet: swipe its header down
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
@@ -42,7 +44,7 @@ export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean
       className="bg-card text-foreground m-auto h-[80vh] w-[90vw] max-w-4xl rounded-lg border p-0 shadow-modal backdrop:bg-black/50 max-md:sheet"
     >
       <div className="flex h-full flex-col">
-        <div className="flex items-center justify-between gap-2 border-b px-3 py-2">
+        <div {...swipe} className="flex items-center justify-between gap-2 border-b px-3 py-2 max-md:touch-none">
           <div className="truncate text-sm font-medium">Terminal · {row.title}</div>
           <Button size="icon" variant="ghost" className="size-7 shrink-0 max-md:size-11" title="Close" aria-label="Close terminal" onClick={onClose}>
             <X className="size-4" />
@@ -100,6 +102,8 @@ export function OrchestratorWindow() {
   const [open, setOpen] = useAtom(orchestratorOpenAtom);
   // On a phone the window is a full-screen sheet: no dragging, resizing or picture-in-picture.
   const narrow = useNarrow();
+  const sheetRef = useRef<HTMLDivElement>(null);
+  const swipe = useSwipeToClose(() => sheetRef.current, () => setOpen(false), narrow);
   const prefill = useAtomValue(orchestratorPrefillAtom);
   const setPrefill = useSetAtom(orchestratorPrefillAtom);
   const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
@@ -196,8 +200,8 @@ export function OrchestratorWindow() {
   const placed = frame.x !== undefined && frame.y !== undefined;
   const header = (
     <div
-      className={`flex items-center justify-between gap-2 border-b px-3 py-2 select-none ${pip || narrow ? "" : "cursor-move"}`}
-      onPointerDown={pip || narrow ? undefined : onDragStart} data-slot="orchestrator-handle" title={pip || narrow ? undefined : "Drag to move"}
+      className={`flex items-center justify-between gap-2 border-b px-3 py-2 select-none ${pip || narrow ? "" : "cursor-move"} ${narrow && !pip ? "touch-none" : ""}`}
+      onPointerDown={pip ? undefined : narrow ? swipe.onPointerDown : onDragStart} data-slot="orchestrator-handle" title={pip || narrow ? undefined : "Drag to move"}
     >
       {/* Paused = it has woken itself as many times as it may without hearing from you. */}
       <div className="min-w-0">
@@ -261,7 +265,7 @@ export function OrchestratorWindow() {
         pip.document.body,
       )}
       {open && !pip && narrow && (
-        <div role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel" data-sheet="" className={`${panelClass} sheet`}>{header}{chat}</div>
+        <div ref={sheetRef} role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel" data-sheet="" className={`${panelClass} sheet`}>{header}{chat}</div>
       )}
       {open && !pip && !narrow && (
         <div
