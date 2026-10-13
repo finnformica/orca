@@ -3,7 +3,7 @@
 // /api/diagnostics endpoint is a thin wrapper that hands it ledger.all() + metrics().
 import type { LedgerEntry, RunMode } from "./ledger";
 import type { Routing } from "./usage";
-import { describeMismatch, type MigrationMismatch } from "./db";
+import { describeMismatch, stepLabel, type MigrationMismatch, type RecordedStep } from "./db";
 
 const MODES: RunMode[] = ["fresh", "resume", "reset", "handoff"];
 
@@ -34,7 +34,7 @@ export type Diagnostics = {
   reap?: { at: number; droppedDbs: string[]; removedContainers: string[] };
   /** This process's migration pass (server/db.ts `planMigrations`): an id recorded under another
    *  branch's name is a `mismatch`; `unknown` ids are recorded with no step in this code. */
-  migrations?: { at: number; ran: number[]; mismatches: MigrationMismatch[]; unknown: { id: number; name: string | null }[] };
+  migrations?: { at: number; ran: string[]; mismatches: MigrationMismatch[]; unknown: RecordedStep[] };
 };
 
 export function summarize(
@@ -42,7 +42,7 @@ export function summarize(
   gh: { ghCalls: number; agentPolls: number; uptimeMs: number },
   routing?: Routing,
   reap?: Diagnostics["reap"],
-  migrations?: { at: number; run: { id: number }[]; mismatches: MigrationMismatch[]; unknown: { id: number; name: string | null }[] },
+  migrations?: { at: number; run: { id?: number; name: string }[]; mismatches: MigrationMismatch[]; unknown: RecordedStep[] },
 ): Diagnostics {
   const runs = entries.filter((e) => e.kind === "run");
   const prs = entries.filter((e) => e.kind === "pr-description");
@@ -70,7 +70,7 @@ export function summarize(
     gh,
     ...(routing ? { routing } : {}),
     ...(reap ? { reap } : {}),
-    ...(migrations ? { migrations: { at: migrations.at, ran: migrations.run.map((s) => s.id), mismatches: migrations.mismatches, unknown: migrations.unknown } } : {}),
+    ...(migrations ? { migrations: { at: migrations.at, ran: migrations.run.map(stepLabel), mismatches: migrations.mismatches, unknown: migrations.unknown } } : {}),
   };
 }
 
@@ -89,7 +89,7 @@ export function renderMigrations(m: Diagnostics["migrations"]): string[] {
   return [
     `Migrations: ${m.ran.length ? `applied ${m.ran.join(", ")}` : "up to date"}${m.mismatches.length ? `, ${m.mismatches.length} MISMATCH` : ""}`,
     ...m.mismatches.map((x) => `  MISMATCH: ${describeMismatch(x)}`),
-    ...m.unknown.map((u) => `  unknown: ${u.id}${u.name ? ` ("${u.name}")` : ""} recorded, no such step in this code`),
+    ...m.unknown.map((u) => `  unknown: ${u.id != null ? `${u.id}${u.name ? ` ("${u.name}")` : ""}` : `"${u.name}"`} recorded, no such step in this code`),
   ];
 }
 

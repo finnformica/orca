@@ -566,6 +566,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     await db.patchEnrichment(repo.name, String(body.branch), { orchestrated: true });
     return json({ ...r, instance: db.instanceName() });
   }
+  if (req.method === "POST" && p === "/api/conflicts/settle") {
+    // The board's Address PR / Resolve conflicts call this first: a changelog-only conflict is merged,
+    // unioned and pushed here, and the agent is asked only about what's left.
+    if (!body.branch) return json({ error: "branch required" }, 400);
+    return json(await verbs.settleConflict(repo, String(body.branch)));
+  }
   if (req.method === "POST" && p === "/api/workstreams/address") {
     const r = await verbs.addressPr(cfg, repo, String(body.branch));
     await db.patchEnrichment(repo.name, String(body.branch), { orchestrated: true });

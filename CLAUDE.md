@@ -80,9 +80,25 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   `idempotent` step recorded under a foreign name (so write steps `IF NOT EXISTS` wherever Postgres
   allows) and refuses to start on a non-idempotent one; `bun run db:check` prints the ledger,
   read-only. (History: two branches each took id 13; a branch's 13 reached the shared database
-  first and main's `running_agents` column was skipped as "applied".) **Workers: a migration id is
-  reserved only by MERGING to main** — if main gained a step while your branch was open, rebase and
-  renumber yours before opening the PR — and never point a running bridge or a test at the shared
+  first and main's `running_agents` column was skipped as "applied".) **Numbered steps are frozen
+  at 18 (`LAST_NUMBERED_ID`); every new step is NAMED** — no `id`, `name: "YYYYMMDD-slug"` (the day
+  you write it), `IF NOT EXISTS` throughout — and recorded in its own ledger, `migration_named`
+  (name → applied_at). (History: parallel branches kept taking "the next integer" — 16, 17 and 18
+  were reserved by hand across #152, #157 and #160.) Pending named steps apply after the numbered
+  ones in NAME order, so two branches that never coordinated land in one stable order on every
+  database. `checkSteps` (run at boot, and by the gate over `MIGRATIONS`) refuses a new numbered
+  step, a malformed or duplicate name, a non-idempotent named step, and a named step that sorts
+  before one above it in the array — code order IS apply order, so a step that depends on one it
+  was rebased onto must be re-dated (today) to sort after it; an independent one may move above.
+  **Compatibility:** an existing database keeps its numbered ledger (1–15 on the shared one; 17
+  and 18 — #160 merged with its integer first — apply as numbered steps); the runner creates `migration_named` on first boot. A bridge still on
+  older code reads only `migration`, so it never sees a row it can't parse. A database where a branch
+  once recorded its step under an integer (a test DB with #152's 16) logs that id as unknown and
+  re-runs the named step, harmlessly, because it is idempotent. **Rebasing an open PR that adds a
+  numbered step (#152's 16 `attachment`):** drop the `id`, rename it
+  `YYYYMMDD-<old name>` (e.g. `20261013-attachment`), append it after the last step in name order,
+  and change any test that finds it by id to find it by name. **Workers: a migration name is reserved
+  only by MERGING to main** — never point a running bridge or a test at the shared
   database from a worktree (a worktree's copied `.env` names it; `bun test` refuses any database
   that isn't a `tests/pg.ts` schema, and a worktree's bridge refuses to apply migrations unless
   `ORCA_ALLOW_WORKTREE_MIGRATIONS=1`). A history write must never break the
@@ -321,7 +337,17 @@ Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
   worktree. **Address PR is the one agent verb for a PR** (`store.addressPr`, `addressPrPrompt`): a
   single run that resolves merge conflicts, fixes failing CI and addresses the review — whichever
   apply, in that order — instead of three buttons the user had to triage between. Resolve conflicts
-  remains on its own only for a LOCAL branch with no PR. They
+  remains on its own only for a LOCAL branch with no PR. **A changelog-only conflict never reaches
+  the agent** (branch-demo #6189 spent five runs re-merging one CHANGELOG hunk where both sides added
+  an entry under the same heading): before either verb, Orca merges the base into the worktree itself
+  (`POST /api/conflicts/settle` → `verbs.settleConflict` → `git.mergeBaseUnioningChangelogs`, on the
+  worktree's instance). If every conflicted path matches the repo's `changelogFiles` globs (default
+  `**/CHANGELOG.md`, `[]` turns it off), each is resolved by `git merge-file --union` — both sides'
+  lines, ours first — then committed and pushed; a clean merge is pushed too. If that leaves nothing
+  else (no failing CI, threads, comments or change request), NO agent starts (`status: "resolved"`,
+  a self-hiding local notification); otherwise the agent runs without the conflict section. Any other conflict, a dirty
+  tree, a running agent or a rejected push leaves the worktree exactly as it was, and the agent
+  gets the conflict as before. A manual Address PR with no conflict still always runs. They
   worktree. They **`ensureWorktree` first** (`store.ts`): use the existing worktree, else adopt one
   via `git worktree add` from the branch (incl. PRs with no Orca history) — so no action ever
   requires a manual "check out" step or a copied prompt. Follow up continues the conversation by

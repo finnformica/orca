@@ -22,9 +22,9 @@ afterEach(async () => {
 });
 
 /** Run `fn` against the schema with a plain connection — what another branch's runner would do. */
-async function raw(fn: (sql: Bun.SQL) => Promise<unknown>): Promise<void> {
+async function raw<T>(fn: (sql: Bun.SQL) => Promise<T>): Promise<T> {
   const sql = new Bun.SQL(pg.url);
-  try { await fn(sql); } finally { await sql.end(); }
+  try { return await fn(sql); } finally { await sql.end(); }
 }
 const ledger = async () => (await db.open())`SELECT id, name FROM migration ORDER BY id`;
 const hasRunningAgents = async () =>
@@ -36,9 +36,11 @@ async function captureErrors<T>(fn: () => Promise<T>): Promise<{ result?: T; err
   try { return { result: await fn(), logged }; } catch (error) { return { error, logged }; } finally { console.error = orig; }
 }
 
+const numbered = () => db.MIGRATIONS.filter((s) => s.id != null);
+
 test("a fresh database records every step under its name", async () => {
   const rows = await ledger();
-  expect(rows.map((r: { id: number; name: string }) => [Number(r.id), r.name])).toEqual(db.MIGRATIONS.map((s) => [s.id, s.name]));
+  expect(rows.map((r: { id: number; name: string }) => [Number(r.id), r.name])).toEqual(numbered().map((s) => [s.id, s.name]));
   expect(await hasRunningAgents()).toBe(true);
   expect(db.migrationReport()).toMatchObject({ mismatches: [], refused: [], unknown: [] });
 });
@@ -80,7 +82,7 @@ test("a ledger from before names (the shared database today): unnamed idempotent
   expect(error).toBeUndefined();
   expect(logged.filter((l) => l.includes("MISMATCH"))).toEqual([]); // no name isn't a conflict
   expect(await hasRunningAgents()).toBe(true);
-  expect((await ledger()).map((r: { name: string }) => r.name)).toEqual(db.MIGRATIONS.map((s) => s.name));
+  expect((await ledger()).map((r: { name: string }) => r.name)).toEqual(numbered().map((s) => s.name));
 });
 
 test("a mismatch on a step that isn't idempotent refuses to start, with instructions", async () => {
@@ -98,17 +100,14 @@ test("a mismatch on a step that isn't idempotent refuses to start, with instruct
 });
 
 test("every step named uniquely, ids strictly increasing, and an idempotent step is IF NOT EXISTS throughout", () => {
-  // Increasing, not consecutive: an id held by another open branch (16, #152's) leaves a gap until it
-  // lands, and migrate() needs only the order.
-  const ids = db.MIGRATIONS.map((s) => s.id);
-  expect(ids).toEqual([...ids].sort((a, b) => a - b));
-  expect(new Set(ids).size).toBe(ids.length);
-  expect(new Set(db.MIGRATIONS.map((s) => s.name)).size).toBe(db.MIGRATIONS.length);
+  // checkSteps: unique names, numbered steps increasing (16 is a gap — #152 held it, then moved to a
+  // named step) and frozen at LAST_NUMBERED_ID, named steps YYYYMMDD-slug, idempotent, in name order.
+  expect(db.checkSteps(db.MIGRATIONS)).toEqual([]);
   for (const step of db.MIGRATIONS.filter((s) => s.idempotent)) {
     const statements = step.sql.replace(/--[^\n]*/g, "").split(";").map((s) => s.trim().replace(/\s+/g, " ")).filter(Boolean);
     for (const st of statements) {
       // …or a backfill that only fills NULLs, so a re-run touches nothing it already wrote.
-      expect(`${step.id}: ${st}`).toMatch(/^\d+: (CREATE (UNIQUE )?(TABLE|INDEX) IF NOT EXISTS |ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS |UPDATE (\S+) .* AND \S+ IS NULL$)/i);
+      expect(`${db.stepLabel(step)}: ${st}`).toMatch(/^[\w-]+: (CREATE (UNIQUE )?(TABLE|INDEX) IF NOT EXISTS |ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS |UPDATE (\S+) .* AND \S+ IS NULL$)/i);
     }
   }
 });
@@ -119,7 +118,7 @@ test("re-running every step on a migrated database is harmless", async () => {
   await raw((sql) => sql`UPDATE migration SET name = NULL`);
   const { error } = await captureErrors(() => db.open());
   expect(error).toBeUndefined();
-  expect(db.migrationReport()!.run.map((s) => s.id)).toEqual(db.MIGRATIONS.filter((s) => s.idempotent).map((s) => s.id));
+  expect(db.migrationReport()!.run.map((s) => s.id)).toEqual(numbered().filter((s) => s.idempotent).map((s) => s.id));
   expect(db.migrationReport()!.stamp.map((s) => s.id)).toEqual([3]);
 });
 
@@ -174,8 +173,8 @@ test("bun run db:check prints applied vs expected and exits 1 when a start would
 test("every step is idempotent: marked so, and no bare CREATE TABLE / INDEX", () => {
   for (const s of db.MIGRATIONS) {
     // A pure data backfill (3) may be one-shot; anything that creates or alters schema must re-run cleanly.
-    if (/\b(CREATE|ALTER)\b/.test(s.sql)) expect({ id: s.id, idempotent: s.idempotent }).toEqual({ id: s.id, idempotent: true });
-    expect({ id: s.id, bare: s.sql.match(/CREATE (UNIQUE )?(TABLE|INDEX) (?!IF NOT EXISTS)/g) ?? [] }).toEqual({ id: s.id, bare: [] });
+    if (/\b(CREATE|ALTER)\b/.test(s.sql)) expect({ id: db.stepLabel(s), idempotent: s.idempotent }).toEqual({ id: db.stepLabel(s), idempotent: true });
+    expect({ id: db.stepLabel(s), bare: s.sql.match(/CREATE (UNIQUE )?(TABLE|INDEX) (?!IF NOT EXISTS)/g) ?? [] }).toEqual({ id: db.stepLabel(s), bare: [] });
   }
 });
 
@@ -187,6 +186,85 @@ test("a table a foreign branch already created does not crash the runner: its st
   const rows = await ledger();
   expect(rows.map((r: { id: number; name: string }) => r.name)).toContain("notification");
   expect(db.migrationReport()).toMatchObject({ refused: [] });
+});
+
+// ---- named steps: no integer to collide on ----
+// Parallel branches each took "the next id" (16/17/18 had to be reserved by hand). Every step after
+// LAST_NUMBERED_ID is identified by a YYYYMMDD-slug name, recorded in `migration_named`, and pending
+// named steps apply in name order — so two branches that never coordinated land in one stable order.
+
+const step = (name: string, table: string): db.MigrationStep =>
+  ({ name, idempotent: true, sql: `CREATE TABLE IF NOT EXISTS ${table} (id INT)` });
+// Two branches, cut the same day from main, each adding one step without knowing of the other.
+const fromA = step("20261013-attachment", "branch_a");
+const fromB = step("20261014-turn-source", "branch_b");
+const namedLedger = async () => (await db.open())`SELECT name FROM migration_named ORDER BY applied_at, name`;
+const hasTable = async (t: string) => (await (await db.open())`SELECT to_regclass(${t}) AS t`)[0].t !== null;
+
+/** A database as the shared one was when named steps came in: numbered 1–15 applied, nothing after. */
+async function sharedDatabaseAt15() {
+  await db.open();
+  await db.close();
+  await raw(async (sql) => {
+    await sql`DELETE FROM migration WHERE id > 15`;
+    await sql`ALTER TABLE instance_metric DROP COLUMN cost_usd`;
+    await sql`DROP TABLE migration_named`;
+  });
+}
+
+test("two branches' steps, merged in either order, apply in the same name order on a database at 1–15", async () => {
+  await sharedDatabaseAt15();
+  const recorded = await raw((sql) => db.recordedMigrations(sql));
+  // The merged code holds both steps; whichever way the array came out of the merge, the plan is one order.
+  const planAB = db.planMigrations([...db.MIGRATIONS, fromA, fromB], recorded);
+  const planBA = db.planMigrations([...db.MIGRATIONS, fromB, fromA], recorded);
+  expect(planAB.run.map(db.stepLabel)).toEqual(["17", "18", "20261013-attachment", "20261014-turn-source"]);
+  expect(planBA.run.map(db.stepLabel)).toEqual(planAB.run.map(db.stepLabel));
+  // …and the gate catches the array that disagrees with apply order.
+  expect(db.checkSteps([...db.MIGRATIONS, fromB, fromA])).toEqual([
+    `named step "20261013-attachment" sorts before "20261014-turn-source" above it — named steps apply in name order; re-date it, or move it above if it doesn't depend on that step`,
+  ]);
+
+  // Applied for real: B merges and deploys first, then A lands. Neither needed to know the other's number.
+  await raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, fromB]));
+  await raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, fromA, fromB]));
+  expect(await hasTable("branch_a")).toBe(true);
+  expect(await hasTable("branch_b")).toBe(true);
+  expect((await namedLedger()).map((r: { name: string }) => r.name).sort()).toEqual(["20261013-attachment", "20261014-turn-source"]);
+  // The numbered ledger is untouched by named steps, and 17 caught up.
+  expect((await ledger()).map((r: { id: number }) => Number(r.id))).toEqual(numbered().map((s) => s.id));
+  // A further start is a no-op.
+  await raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, fromA, fromB]));
+  expect(db.migrationReport()).toMatchObject({ run: [], mismatches: [], refused: [], unknown: [] });
+});
+
+test("a step a branch once applied under an integer id (#152's 16) just re-runs as its named step", async () => {
+  await sharedDatabaseAt15();
+  // #152's test database before the rebase: its step recorded as a numbered 16.
+  await raw(async (sql) => {
+    await sql.unsafe(fromA.sql);
+    await sql`INSERT INTO migration (id, applied_at, name) VALUES (16, 0, 'attachment')`;
+  });
+  const { error, logged } = await captureErrors(() => raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, fromA])));
+  expect(error).toBeUndefined();
+  expect(logged.some((l) => l.includes("migration 16") && l.includes("no such step"))).toBe(true);
+  expect((await namedLedger()).map((r: { name: string }) => r.name)).toEqual(["20261013-attachment"]);
+});
+
+test("an older bridge (numbered ledger only) is unaffected by the named ledger", async () => {
+  await raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, fromA]));
+  // What an older main reads: `migration` alone — no row it can't parse, nothing unknown.
+  const plan = db.planMigrations(numbered(), (await ledger()).map((r: { id: number; name: string }) => ({ id: Number(r.id), name: r.name })));
+  expect(plan).toMatchObject({ run: [], unknown: [], mismatches: [] });
+});
+
+test("checkSteps refuses a new numbered step, a bad name, and a non-idempotent named step", async () => {
+  expect(db.checkSteps([...db.MIGRATIONS, { id: db.LAST_NUMBERED_ID + 1, name: "attachment", idempotent: true, sql: "" }]))
+    .toEqual([`step ${db.LAST_NUMBERED_ID + 1} ("attachment"): numbered steps are frozen at ${db.LAST_NUMBERED_ID} — drop the id and name it YYYYMMDD-slug`]);
+  expect(db.checkSteps([...db.MIGRATIONS, { name: "attachment", idempotent: true, sql: "" }])).toEqual([`named step "attachment" must be YYYYMMDD-slug`]);
+  expect(db.checkSteps([...db.MIGRATIONS, { ...fromA, idempotent: false }])).toEqual([`named step "20261013-attachment" must be idempotent`]);
+  expect(db.checkSteps([...db.MIGRATIONS, fromA, fromA])).toEqual([`duplicate migration name "20261013-attachment"`]);
+  await expect(raw((sql) => db.applyMigrations(sql, [...db.MIGRATIONS, { id: db.LAST_NUMBERED_ID + 1, name: "x", idempotent: true, sql: "" }]))).rejects.toThrow("frozen");
 });
 
 test("18 tags the orchestrator's turns with their source — reports alone are the agents', anything you said is yours", async () => {
