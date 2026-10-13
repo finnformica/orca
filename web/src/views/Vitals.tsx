@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
-import { HISTORY_RANGES, countMax, instanceSeries, loginStatus, niceMax, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { HISTORY_RANGES, countMax, instanceSeries, loginStatus, niceMax, rateLabel, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
@@ -165,7 +165,10 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const to = Date.now(), from = to - hours * 3_600_000;
   // One series for every chart AND the header stats: the newest sample (the live reading when it is
   // newer than the last recorded one) is both what the grid shows and where every line ends.
-  const s = instanceSeries(history ?? [], h, from, to);
+  // The machine's rate, from its own /api/health (kept from the last answer while it is down).
+  const rate = h?.rate;
+  const priced = Boolean(rate && rate.hourlyUsd > 0);
+  const s = instanceSeries(history ?? [], h, from, to, 300, rate?.hourlyUsd ?? 0);
   const now = s.latest;
   const memTotal = h?.memTotalGb ?? Math.max(1, ...(history ?? []).map((p) => p.memTotalGb));
   const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
@@ -185,7 +188,7 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
         </Detail>
         <Detail label="Disk">{h?.disk ? <span className="tabular-nums">{h.disk.usedGb} / {h.disk.totalGb} GB</span> : "—"}</Detail>
         <Detail label="Uptime">{h ? fmtUptime(h.uptimeS) : "—"}</Detail>
-        <Detail label="Cost" slot="instance-cost">{h?.cost ? <span className="tabular-nums" title={`estimated at $${h.cost.hourlyUsd}/h since ${h.cost.sinceIso.slice(0, 10)}`}>${h.cost.monthUsd.toFixed(2)} <span className="text-muted-foreground text-xs">this month</span></span> : "—"}</Detail>
+        <Detail label="Rate" slot="instance-cost">{priced ? <span className="tabular-nums" title={rate!.source === "estimate" ? `on-demand estimate for ${rate!.instanceType} in ${rate!.region}` : "instanceHourlyUsd in Settings"}>${rate!.hourlyUsd}/h{rate!.source === "estimate" && <span className="text-muted-foreground ml-1 text-xs">est.</span>}</span> : "—"}</Detail>
       </div>
       {history === null ? (
           <div className="grid gap-6 p-4 md:grid-cols-2">
@@ -199,8 +202,18 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
             <LineChart slot="chart-cpu" label="CPU" points={s.cpu} from={from} to={to} max={100} fmt={pct} />
             <LineChart slot="chart-mem" label="Memory used" points={s.mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" />
             <LineChart slot="chart-agents" label="Agents" points={s.agents} from={from} to={to} max={countMax(Math.max(0, ...s.agents.map((p) => p.v)))} fmt={count} color="var(--geist-pink)" />
-            <LineChart slot="chart-cost" label="Cost accrued" points={s.cost} from={from} to={to} max={niceMax(Math.max(0, ...s.cost.map((p) => p.v)) * 1.1)} fmt={usd}
-              axis={(v) => `$${v >= 10 ? Math.round(v) : v.toFixed(v >= 1 ? 1 : 2)}`} color="var(--geist-amber)" />
+            {priced ? (
+              <LineChart slot="chart-cost" label={rateLabel(rate)} points={s.cost} from={from} to={to} max={niceMax(Math.max(0, ...s.cost.map((p) => p.v)) * 1.1)} fmt={usd}
+                axis={(v) => `$${v >= 10 ? Math.round(v) : v.toFixed(v >= 1 ? 1 : 2)}`} color="var(--geist-amber)" />
+            ) : (
+              // No rate (the laptop, or a type the table doesn't know): greyed, not a flat $0 line.
+              <figure data-slot="chart-cost-off" className="text-muted-foreground flex flex-col gap-2 opacity-60">
+                <figcaption className="text-xs">Cost accrued</figcaption>
+                <div className="flex h-[120px] items-center justify-center rounded-md border border-dashed px-4 text-center text-xs">
+                  No hourly rate for this machine — set instanceHourlyUsd in Settings.
+                </div>
+              </figure>
+            )}
           </div>
         )}
     </VCard>

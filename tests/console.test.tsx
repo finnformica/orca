@@ -298,6 +298,24 @@ describe("the console's pages", () => {
     expect(cfg.textContent).toContain("laptop");
     expect(cfg.textContent).toContain("base main");
   });
+
+  test("Settings: each machine's hourly cost is editable — a rate saves, empty clears it back to automatic", async () => {
+    apiFake.instanceRates = { cloud: 0.25 };
+    await open("/settings");
+    await act(async () => { await flush(); });
+    const inputs = [...$("settings-machine-cost").querySelectorAll<HTMLInputElement>('[data-slot="machine-rate"]')];
+    expect(inputs.map((i) => i.getAttribute("aria-label"))).toEqual(["cloud USD per hour", "laptop USD per hour"]);
+    const cloud = inputs[0]!;
+    expect(cloud.value).toBe("0.25");
+    const type = async (input: HTMLInputElement, v: string) => {
+      const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+      await act(async () => { set.call(input, v); input.dispatchEvent(new Event("input", { bubbles: true })); });
+      await act(async () => { input.form!.requestSubmit(); await flush(); });
+    };
+    await type(cloud, "0.2331");
+    await type(cloud, "");
+    expect(apiFake.setInstanceRateCalls).toEqual([{ instance: "cloud", hourlyUsd: 0.2331 }, { instance: "cloud", hourlyUsd: null }]);
+  });
 });
 
 // The surface rules from Finn's audit, asserted on the rendered pages so they can't drift back:

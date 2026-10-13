@@ -1,10 +1,16 @@
 // The sidebar's other pages. Repos: one row per configured repo with its agents' numbers (a click
 // opens Agents scoped to it). Usage: the Usage card with every login expanded, and every machine's
-// card. Settings: appearance, the board's density, and the configuration this bridge runs with
-// (read-only — it is edited in orca.config.ts / the config table, not here). Notifications: do not
+// card. Settings: appearance, the board's density, each machine's hourly cost (editable: the
+// instance cards' Cost accrued chart), and the configuration this bridge runs with (read-only — it
+// is edited in orca.config.ts / the config table, not here). Notifications: do not
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
+import { useEffect, useState } from "react";
 import { useAtom, useSetAtom } from "jotai";
 import { FolderGit2, GitBranch } from "lucide-react";
+import { api } from "@/api";
+import { refreshVitals } from "@/lib/vitals";
+import { toast } from "@/lib/toast";
+import { Button } from "@/components/ui/button";
 import { browserNotifyAtom, densityAtom, notifyDndAtom, repoFilterAtom, toastPrefsAtom } from "@/lib/atoms";
 import { KIND_META, NOTIFICATION_KINDS } from "../../../shared/notifications";
 import { navigate } from "@/lib/route";
@@ -98,6 +104,7 @@ export function Settings() {
         </Setting>
       </VCard>
       <NotificationSettings />
+      <MachineCostSettings />
       <VCard slot="settings-config" title="Configuration" aside={<span className="text-muted-foreground text-xs">read-only · orca.config.ts</span>}>
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-b p-4 sm:grid-cols-4">
           <Detail label="This instance"><StatusDot tone="ready" />{here ?? "—"}</Detail>
@@ -158,6 +165,49 @@ function NotificationSettings() {
         </ul>
       </div>
     </VCard>
+  );
+}
+
+/** Each machine's USD/hour — `instanceHourlyUsd` in the app config, what its card's Cost accrued
+ *  chart accrues. Empty means automatic: an EC2 on-demand estimate, else 0. */
+function MachineCostSettings() {
+  const here = thisInstance();
+  const machines = instanceChoices().length ? instanceChoices() : here ? [here] : [];
+  const [rates, setRates] = useState<Record<string, number> | null>(null);
+  useEffect(() => { api.config().then((c) => setRates(c.instanceHourlyUsd ?? {}), () => setRates({})); }, []);
+  if (!machines.length) return null;
+  return (
+    <VCard slot="settings-machine-cost" title="Machine cost" bodyClass="divide-y">
+      {machines.map((m) => <MachineRate key={m} instance={m} saved={rates?.[m]} loaded={rates !== null}
+        onSaved={(v) => setRates((r) => { const next = { ...r }; if (v === null) delete next[m]; else next[m] = v; return next; })} />)}
+    </VCard>
+  );
+}
+
+function MachineRate({ instance, saved, loaded, onSaved }: { instance: string; saved: number | undefined; loaded: boolean; onSaved: (v: number | null) => void }) {
+  const [text, setText] = useState("");
+  useEffect(() => { setText(saved === undefined ? "" : String(saved)); }, [saved, loaded]);
+  const [busy, setBusy] = useState(false);
+  const value = text.trim() === "" ? null : Number(text);
+  const valid = value === null || (Number.isFinite(value) && value >= 0);
+  const dirty = (saved ?? null) !== value;
+  const save = async () => {
+    setBusy(true);
+    try { await api.setInstanceRate(instance, value); onSaved(value); void refreshVitals(); }
+    catch (e) { toast({ kind: "error", title: `Save rate failed · ${instance}`, body: e instanceof Error ? e.message : String(e) }); }
+    finally { setBusy(false); }
+  };
+  return (
+    <Setting label={instance} hint="USD per hour. Empty: an EC2 on-demand estimate, else 0.">
+      <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); if (valid && dirty) void save(); }}>
+        <span className="text-muted-foreground text-sm">$</span>
+        <input data-slot="machine-rate" aria-label={`${instance} USD per hour`} inputMode="decimal" placeholder="auto" value={text} disabled={!loaded}
+          onChange={(e) => setText(e.target.value)} aria-invalid={!valid}
+          className="border-input bg-background h-8 w-24 rounded-md border px-2 text-sm tabular-nums" />
+        <span className="text-muted-foreground text-sm">/h</span>
+        <Button type="submit" variant="secondary" size="sm" disabled={!valid || !dirty || busy}>Save</Button>
+      </form>
+    </Setting>
   );
 }
 
