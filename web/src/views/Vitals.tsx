@@ -8,7 +8,7 @@ import { useAtom } from "jotai";
 import { AlertTriangle, Check, ChevronDown, ChevronUp, Loader2, RefreshCw, Server, X } from "lucide-react";
 import { api } from "@/api";
 import { usageExpandedAtom } from "@/lib/atoms";
-import { toast } from "@/lib/toast";
+import { notifyLocal } from "@/lib/notificationStore";
 import { persistedKey, usePersisted } from "@/lib/persisted";
 import { useCoarse } from "@/lib/viewport";
 import { applyProfiles, refreshVitals, useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
@@ -94,7 +94,7 @@ type SwitchState = "idle" | "loading" | "done" | "error";
  *  always, on a touch screen), so it reserves no space on a row that isn't. ActionButton's own
  *  semantics (spinner → ✓/✗) in switch form: flipping it calls `POST /api/usage/profile`, applies
  *  the refreshed profile list it hands back at once (so the row doesn't wait for the next poll
- *  tick), and a failure goes to the error toast. */
+ *  tick), and a failure is a failed-action notification. */
 function LoginToggle({ name, enabled }: { name: string; enabled: boolean }) {
   const [state, setState] = useState<SwitchState>("idle");
   const toggle = async () => {
@@ -105,7 +105,12 @@ function LoginToggle({ name, enabled }: { name: string; enabled: boolean }) {
       if (profiles) applyProfiles(profiles);
       setState("done");
     } catch (e) {
-      toast({ kind: "error", title: `${enabled ? "Disable" : "Enable"} failed · ${name}`, body: e instanceof Error ? e.message : String(e) });
+      const verb = enabled ? "Disable" : "Enable", error = e instanceof Error ? e.message : String(e);
+      notifyLocal({
+        kind: "action_failed", repo: "", title: `Login ${name}`, label: `${verb} failed`, body: error,
+        copy: `Action: ${verb} hydra login ${name}\nError:\n${error}`,
+        ask: `${verb} hydra login ${name} failed: ${error}. Please investigate and fix.`,
+      });
       setState("error");
     }
     setTimeout(() => setState("idle"), 2000);

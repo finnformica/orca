@@ -10,6 +10,7 @@ import { browserNotifyAtom, notifyDndAtom, orchestratorOpenAtom, toastPrefsAtom 
 import { KIND_META, TOAST_AUTO_HIDE_MS, clockPause, clockResume, clockStart, notificationPath, shouldNotifyBrowser, shouldToast, type HideClock, type Notification, type ToastPrefs } from "../../../shared/notifications";
 import { navigate } from "./route";
 import { isNarrow } from "./viewport";
+import { actionFailureAsk, actionFailureCopy, type ActionFailure } from "../workstream";
 
 type State = { list: Notification[]; toasts: Notification[] };
 let state: State = { list: [], toasts: [] };
@@ -35,15 +36,15 @@ const byNewest = (a: Notification, b: Notification) => b.createdAt - a.createdAt
 
 /** Fold rows into the mirror. `pop`: ones not seen before may toast (never on the first load — those
  *  are for the centre, not the corner). */
-function merge(incoming: Notification[], pop: boolean): void {
+function merge(incoming: Notification[], pop: boolean, repop: number[] = []): void {
   const byId = new Map(state.list.map((n) => [n.id, n]));
   const fresh: Notification[] = [];
   for (const n of incoming) {
-    if (!byId.has(n.id)) fresh.push(n);
+    if (!byId.has(n.id) || repop.includes(n.id)) fresh.push(n);
     byId.set(n.id, n);
   }
   const list = [...byId.values()].sort(byNewest);
-  for (const n of list) watermark = Math.max(watermark, n.createdAt);
+  for (const n of list) if (!isLocal(n.id)) watermark = Math.max(watermark, n.createdAt); // a local row is not the bridge's cursor
   let toasts = state.toasts;
   if (pop && fresh.length) {
     const store = getDefaultStore();
@@ -107,6 +108,41 @@ function browserNotify(n: Notification): void {
   } catch { /* the platform refused — the centre still has it */ }
 }
 
+// ---- local notifications: a button you clicked failed ----
+// Raised in this browser and never stored: no other tab or machine needs to hear that your click
+// failed, and the bridge may be the very thing that failed. Otherwise they are ordinary rows — the
+// same stack, card, centre, read state and quick actions — told apart only by a negative id (the
+// bridge's ids are positive), so `markRead` never sends one to the bridge.
+let localSeq = 0;
+export const isLocal = (id: number): boolean => id < 0;
+
+/** Raise a local notification and pop it (subject to do-not-disturb and the kind's toast switch,
+ *  like any other). The same failure while its first is still unread is not stacked twice — two
+ *  views of one control both see one failure; it is popped again instead. Returns its id. */
+export function notifyLocal(n: Omit<Notification, "id" | "instance" | "createdAt" | "readAt">): number {
+  const same = state.list.find((x) => isLocal(x.id) && !x.readAt && x.kind === n.kind && x.title === n.title && x.label === n.label && x.body === n.body);
+  if (same) {
+    if (!state.toasts.some((t) => t.id === same.id)) merge([{ ...same, createdAt: Date.now() }], true, [same.id]); // back to the front
+    return same.id;
+  }
+  const row: Notification = { ...n, id: --localSeq, instance: "", createdAt: Date.now() };
+  merge([row], true);
+  return row.id;
+}
+
+/** A failed action on a workstream: headed with the workstream (its repo beside it), labelled with
+ *  the verb ("Merge failed"), the message as its body, with Copy (the message plus repo/branch/PR/
+ *  action) and Ask the orchestrator (a prefilled hand-off) as its quick actions. */
+export function actionFailed(f: Omit<ActionFailure, "error">, e: unknown): number {
+  const error = e instanceof Error ? e.message : String(e);
+  const full = { ...f, error };
+  return notifyLocal({
+    kind: "action_failed", repo: f.repo, branch: f.branch || undefined, title: f.title || f.branch || f.repo,
+    label: `${f.action} failed`, body: error, copy: actionFailureCopy(full), ask: actionFailureAsk(full),
+    link: f.prNumber ? { pr: f.prNumber } : undefined,
+  });
+}
+
 /** Load the centre (all rows) or catch up from the cursor (rows since it, which may toast). */
 export async function hydrate(since?: number): Promise<void> {
   try {
@@ -135,6 +171,7 @@ export function reset(): void {
   clocks.clear();
   paused = false;
   watermark = 0;
+  localSeq = 0;
   state = { list: [], toasts: [] };
   notify();
 }
@@ -159,7 +196,8 @@ export async function markRead(ids: number[] | "all"): Promise<void> {
   const hit = (n: Notification) => !n.readAt && (ids === "all" || ids.includes(n.id));
   dropToasts(ids);
   if (state.list.some(hit)) set({ list: state.list.map((n) => (hit(n) ? { ...n, readAt: at } : n)) });
-  await api.notificationsRead(ids).catch(() => {});
+  const remote = ids === "all" ? ids : ids.filter((id) => !isLocal(id));
+  if (remote === "all" || remote.length) await api.notificationsRead(remote).catch(() => {});
 }
 
 /** Undo an optimistic `markRead`: a quick action marked its notification read before firing its

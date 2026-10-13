@@ -4,7 +4,7 @@
 import { parseAgentOutcome, type AgentOutcome, type StopReason, type TurnCheck } from "./agent";
 
 export const NOTIFICATION_KINDS = [
-  "needs_input", "finished", "failed", "stopped", "check_failed", "pr_ci_failed", "pr_conflicts", "preview_ready", "preview_failed",
+  "needs_input", "finished", "failed", "stopped", "check_failed", "pr_ci_failed", "pr_conflicts", "preview_ready", "preview_failed", "action_failed",
 ] as const;
 export type NotificationKind = typeof NOTIFICATION_KINDS[number];
 
@@ -29,6 +29,13 @@ export type Notification = {
   /** The one state a notification has: unread until this is set. Nothing is ever deleted by you —
    *  X, a quick action, Open and Mark all as read all just set it (rows go after 30 days). */
   readAt?: number;
+  /** A LOCAL notification's extras (`action_failed`, raised in this browser and never stored — a
+   *  button you clicked failed, which no other tab or machine needs to hear about): `label` names
+   *  the failed verb in place of the kind's label ("Merge failed"), `copy` is what Copy puts on the
+   *  clipboard and `ask` what Ask the orchestrator prefills. */
+  label?: string;
+  copy?: string;
+  ask?: string;
 };
 
 /** What the emitter writes: a `key` makes the insert idempotent (unique per user), so a run that is
@@ -54,6 +61,7 @@ export const KIND_META: Record<NotificationKind, KindMeta> = {
   pr_conflicts: { label: "Conflicts", persistent: true, urgent: false, tone: "warning" },
   preview_ready: { label: "Preview ready", persistent: false, urgent: false, tone: "ready" },
   preview_failed: { label: "Preview failed", persistent: true, urgent: false, tone: "error" },
+  action_failed: { label: "Action failed", persistent: true, urgent: false, tone: "error" },
 };
 
 /** How long a non-persistent toast stays. */

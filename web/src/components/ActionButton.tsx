@@ -1,15 +1,15 @@
 import { useState, type ReactNode } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { actionFailed } from "@/lib/toast";
+import { actionFailed } from "@/lib/notificationStore";
 import { firstLine, type ActionFailure } from "../workstream";
 
 type Variant = "default" | "outline" | "ghost" | "secondary" | "destructive";
 type State = "idle" | "loading" | "done" | "error";
 
 /** Button that runs an async action with inline feedback: spinner → ✓/✗ (reverts after 2s).
- *  Disabled while running so it can't be double-fired. A failure's message goes to a toast (with
- *  Copy + Ask the orchestrator) when `failure` names the action and workstream; the button itself
+ *  Disabled while running so it can't be double-fired. A failure's message goes to the notification
+ *  toasts (an `action_failed` with Copy + Ask the orchestrator) when `failure` names the action and workstream; the button itself
  *  keeps only the ✗, with the message's first line as its tooltip. `size="icon"` is an icon-only
  *  button (its `label` the aria-label): the spinner / ✓ / ✗ stand in for the icon while they show. */
 export function ActionButton({
