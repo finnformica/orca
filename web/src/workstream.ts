@@ -1849,25 +1849,25 @@ export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) =>
 
 // ---- the Agents list's columns ----
 // Only what you act on: the workstream, its run status, the PR (state + number), checks and the
-// review signal, the instance (only with more than one), when it last moved, and the actions. The
-// latest instruction, branch and model went into the title's subline and tooltip, the PR # into the
-// state cell, and the per-row repo icon was dropped (the repo is in the subline). Each column has a
-// floor in rem; the flexible ones share what is left, so the row never needs a horizontal scroll.
-export type ListColumn = { key: "workstream" | "status" | "pr" | "signals" | "instance" | "actions"; label: string; minRem: number; grow?: number };
-export function listColumns(opts: { multiInstance: boolean }): ListColumn[] {
-  const cols: ListColumn[] = [
+// review signal, and the actions. The latest instruction, branch and model went into the title's
+// subline and tooltip, the PR # into the state cell, and the per-row repo icon was dropped (the
+// repo is in the subline). The instance column was dropped too — it's a row menu action ("Move to
+// …") and a tooltip, not something worth a whole column — and the width it held goes to the
+// flexible tracks (workstream, signals) via their own `grow`. Each column has a floor in rem; the
+// flexible ones share what is left, so the row never needs a horizontal scroll.
+export type ListColumn = { key: "workstream" | "status" | "pr" | "signals" | "actions"; label: string; minRem: number; grow?: number };
+export function listColumns(): ListColumn[] {
+  return [
     { key: "workstream", label: "Workstream", minRem: 10, grow: 2 },
     { key: "status", label: "Status", minRem: 8.5 },
     { key: "pr", label: "PR", minRem: 8.5 },
     { key: "signals", label: "Checks & review", minRem: 6, grow: 1 },
-    { key: "instance", label: "Instance", minRem: 5 },
     // Fixed at up to 3 size-7 slots (local preview link + its Stop, the ⋯ menu) so the column never
     // shifts between states and nothing overflows into a sideways scroll. The PR-preview icon that
     // used to sit here moved to a text link next to the model name (PrPreviewInline) — the ⋯ menu's
     // PR submenu still carries Open/Add PR preview.
     { key: "actions", label: "Actions", minRem: 8 },
   ];
-  return opts.multiInstance ? cols : cols.filter((c) => c.key !== "instance");
 }
 /** The CSS grid-template-columns for a column set: fixed floors, `minmax(floor, Nfr)` for the flexible. */
 export const listGridTemplate = (cols: ListColumn[]): string =>

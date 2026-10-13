@@ -176,6 +176,7 @@ describe("PrPreviewInline (next to the model name in the Agents-list subline)", 
     expect(el.getAttribute("href")).toBe("https://feat-6.preview.branch-demo.dev");
     expect(el.getAttribute("target")).toBe("_blank");
     expect(el.textContent).toBe("feat-6.preview.branch-demo.dev");
+    expect(el.className).toContain("underline"); // always underlined, not just on hover
   });
 });
 

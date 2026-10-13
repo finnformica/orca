@@ -439,6 +439,9 @@ export type Row = {
   prNumber?: number;
   /** The PR's target branch — what its diffstat is measured against. */
   prBase?: string;
+  /** The PR's own diffstat (gh), for a row with no worktree to measure `git diff` against. */
+  prAdditions?: number;
+  prDeletions?: number;
   prUrl?: string;
   previewUrl?: string;
   /** The PR already carries the repo's preview label — the deploy preview is building but hasn't
@@ -573,7 +576,8 @@ export function assembleRows(): Row[] {
         sessionId: e.sessionId ?? wt?.sessionId, // prefer the persisted id (survives restarts)
         transcript: e.transcript,
         mergeClean: wt?.mergeClean, remote: wt?.remote, instance: wt?.instance, promoted: e.promoted,
-        prNumber: pr?.number, prBase: pr?.base, prUrl: pr?.url, previewUrl: pr?.previewUrl, hasPreviewLabel: pr?.hasPreviewLabel, isDraft: pr?.isDraft,
+        prNumber: pr?.number, prBase: pr?.base, prAdditions: pr?.additions, prDeletions: pr?.deletions,
+        prUrl: pr?.url, previewUrl: pr?.previewUrl, hasPreviewLabel: pr?.hasPreviewLabel, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
         following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, previewInstance: e.previewInstance,
         failingChecks: pr?.failingChecks, feedback: pr?.feedback,
