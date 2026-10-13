@@ -790,3 +790,35 @@ test("O21: placement — explicit instance, then the worktree's home from the in
   // A send to a workstream living elsewhere goes there too.
   await expect(orchestrator.tool(two, "send", { repo: "r", branch: "feat", _: ["hi"] })).rejects.toThrow(/cloud answered|Unable to connect|fetch/i);
 });
+
+test("O22: orca status keeps a short per-workstream record on its enrichment, and the board carries it every wake", async () => {
+  wire();
+  await orchestrator.tool(cfg(), "spawn", brief);
+  const branch = Object.keys(await db.enrichment("r"))[0]!;
+  await settled(orchTurns, 1);
+  const at = { repo: "r", branch };
+
+  expect(await orchestrator.tool(cfg(), "status", at)).toBe(`(no status for r/${branch})`);
+  expect(await orchestrator.tool(cfg(), "status", { ...at, plan: "Cache first, then the eviction policy", waiting: "Finn's call on TTL", merge: "needs-finn" }))
+    .toBe(`Status of r/${branch}: plan: Cache first, then the eviction policy; waiting on: Finn's call on TTL; merge: needs-finn`);
+  // Stored with the workstream (shared, restart-proof), beside — not inside — the orchestrator's notes.
+  expect((await db.enrichment("r"))[branch]!.orchStatus).toMatchObject({ plan: "Cache first, then the eviction policy", waitingOn: "Finn's call on TTL", mergeClass: "needs-finn" });
+  expect(await orchestrator.tool(cfg(), "notes")).toBe("(empty)");
+
+  // A flag sets its field and leaves the others; an empty one (`--waiting ""`) clears it.
+  await orchestrator.tool(cfg(), "status", { ...at, waiting: "", merge: "small" });
+  expect(await orchestrator.tool(cfg(), "status", at)).toBe("plan: Cache first, then the eviction policy; merge: small");
+  await expect(orchestrator.tool(cfg(), "status", { ...at, merge: "huge" })).rejects.toThrow("--merge must be one of: small, needs-finn");
+  await expect(orchestrator.tool(cfg(), "status", { ...at, plan: "x".repeat(301) })).rejects.toThrow("limited to 300 characters");
+  await expect(orchestrator.tool(cfg(), "status", { repo: "r" })).rejects.toThrow("--branch is required");
+
+  // The board — what every wake's prompt carries — shows it on the workstream's line.
+  expect(boardText(await orchestrator.board(cfg()))).toContain("| status: plan: Cache first, then the eviction policy; merge: small");
+  await orchestrator.message(cfg(), "where are we?");
+  const turns = await settled(orchTurns, 2);
+  expect(turns[1]!.prompt).toContain("status: plan: Cache first, then the eviction policy; merge: small");
+  expect(turns[1]!.prompt).toContain("orca status --repo <repo> --branch <branch>");
+
+  expect(await orchestrator.tool(cfg(), "status", { ...at, clear: "" })).toBe(`Cleared the status of r/${branch}.`);
+  expect((await db.enrichment("r"))[branch]).not.toHaveProperty("orchStatus");
+});

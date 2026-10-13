@@ -1062,6 +1062,46 @@ export function workerPrBody(input: { outcome?: AgentOutcome; response?: string;
   ].join("\n");
 }
 
+/** The orchestrator's own short record of a workstream (`orca status`), stored on its enrichment as
+ *  `orchStatus` and shown on the board: its plan for it, what it is waiting on, and its merge class —
+ *  `small` (fine to merge on green) or `needs-finn` (the user merges). Per workstream, so the
+ *  orchestrator's free-text notes are left holding only preferences and standing facts. */
+export const MERGE_CLASSES = ["small", "needs-finn"] as const;
+export type MergeClass = (typeof MERGE_CLASSES)[number];
+export type OrchStatus = { plan?: string; waitingOn?: string; mergeClass?: MergeClass; at?: string };
+export const MERGE_CLASS_LABEL: Record<MergeClass, string> = { small: "Small", "needs-finn": "Needs Finn" };
+export const ORCH_STATUS_MAX = 300; // per field: a status line, not a second notes blob
+const ORCH_STATUS_FLAGS = { plan: "plan", waiting: "waitingOn", merge: "mergeClass" } as const;
+
+/** `orca status`'s flags applied to the current record: a flag sets its field, an empty one clears
+ *  it, `clear` drops them all. Returns the new record (null when nothing is left), or undefined when
+ *  no flag was given — a read. Throws with a message the model can act on. */
+export function orchStatusUpdate(prev: OrchStatus | undefined, args: Record<string, unknown>, now: string): OrchStatus | null | undefined {
+  if ("clear" in args) return null;
+  const given = Object.keys(ORCH_STATUS_FLAGS).filter((f) => f in args) as (keyof typeof ORCH_STATUS_FLAGS)[];
+  if (!given.length) return undefined;
+  const next: OrchStatus = { ...prev };
+  for (const flag of given) {
+    const value = String(args[flag] ?? "").replace(/\s+/g, " ").trim();
+    if (value.length > ORCH_STATUS_MAX) throw new Error(`--${flag} is limited to ${ORCH_STATUS_MAX} characters (got ${value.length}); keep the detail in the brief or your notes`);
+    if (flag === "merge" && value && !(MERGE_CLASSES as readonly string[]).includes(value)) throw new Error(`--merge must be one of: ${MERGE_CLASSES.join(", ")}`);
+    const field = ORCH_STATUS_FLAGS[flag];
+    if (value) (next as Record<string, string>)[field] = value; else delete next[field];
+  }
+  delete next.at;
+  return Object.keys(next).length ? { ...next, at: now } : null;
+}
+
+/** The record as one line — the board's `status:` and `orca status`'s answer. */
+export function orchStatusText(s: OrchStatus | undefined): string {
+  if (!s) return "";
+  return [
+    s.plan && `plan: ${s.plan}`,
+    s.waitingOn && `waiting on: ${s.waitingOn}`,
+    s.mergeClass && `merge: ${s.mergeClass}`,
+  ].filter(Boolean).join("; ");
+}
+
 /** One line of the board as the orchestrator reads it. */
 export type BoardRow = {
   repo: string; branch: string; title?: string; worktreePath?: string; agent: string;
@@ -1069,6 +1109,8 @@ export type BoardRow = {
   check?: boolean; orchestrated?: boolean; last?: string;
   /** The instance holding its worktree, when there is more than one instance. */
   instance?: string;
+  /** Its `orca status` record. */
+  status?: OrchStatus;
 };
 export function boardText(rows: BoardRow[]): string {
   if (!rows.length) return "(no workstreams)";
@@ -1083,6 +1125,7 @@ export function boardText(rows: BoardRow[]): string {
       ...(r.check === undefined ? [] : [`check:${r.check ? "passed" : "FAILED"}`]),
       ...(r.orchestrated ? ["yours"] : []),
       ...(r.worktreePath ? [r.worktreePath] : []),
+      ...(r.status && orchStatusText(r.status) ? [`status: ${orchStatusText(r.status)}`] : []),
       ...(r.last ? [`last: ${clip(r.last.replace(/\s+/g, " "), 160)}`] : []),
     ].join(" | ");
   }).join("\n");
@@ -1114,6 +1157,11 @@ const ORCA_COMMANDS = [
   "                                  queued (--small for a small PR); a refusal says why. --cancel unmarks it.",
   "  orca chats [\"<search terms>\"]   list conversations, or full-text search every past one (merged ones too)",
   "  orca read --chat <id> | --run <runId>                     one conversation's turns, or one full turn",
+  "  orca status --repo <repo> --branch <branch> [--plan \"…\"] [--waiting \"…\"] [--merge small|needs-finn] [--clear]",
+  "                                  your short record of one workstream, shown on the board and the user's",
+  "                                  cards: your plan for it, what it waits on, its merge class (small: fine to",
+  "                                  merge on green; needs-finn: the user merges). An empty flag clears that",
+  "                                  field; no flags prints it",
   "  orca notes                      print your notes",
   "  orca notes set \"<the whole new text>\"",
 ].join("\n");
@@ -1154,8 +1202,10 @@ const ORCHESTRATOR_ROLE = [
   "  `gh pr merge`. Where the repo's policy refuses, say the PR is ready for the user to merge.",
   "- When the user cancels a workstream you own, `orca archive` it rather than just telling the worker",
   "  to stop — one step removes the card and can't be restarted by a message still queued behind it.",
-  "- Your notes are your memory across context resets: keep them current with the plan, the open",
-  "  workstreams, decisions and the user's preferences, in roughly 1500 words or fewer.",
+  "- Per-workstream state — the plan for it, what it waits on, whether it is small or needs the user",
+  "  to merge — goes in `orca status` on that workstream, which the board carries back every wake.",
+  "  Your notes are your memory across context resets for everything else: the user's preferences,",
+  "  standing facts and decisions that span workstreams, in roughly 1500 words or fewer.",
   "- Keep replies short and concrete: what you did, what is running, what needs the user.",
 ].join("\n");
 

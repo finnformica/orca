@@ -26,8 +26,8 @@ import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
-  orchestratorPrompt, sessionHint, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
-  type BoardRow, type WakeExit,
+  orchStatusText, orchStatusUpdate, orchestratorPrompt, sessionHint, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  type BoardRow, type OrchStatus, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
@@ -371,6 +371,7 @@ export async function board(cfg: OrcaConfig): Promise<BoardRow[]> {
         check: run?.check?.ok ?? ((remote?.data.agentCheck as { ok?: boolean } | undefined)?.ok), orchestrated: Boolean(e.orchestrated),
         last: run?.structured?.outcome ?? run?.error ?? ((remote?.data.agentOutcome as { outcome?: string } | undefined)?.outcome),
         instance: several ? (remote?.instance ?? (worktreePath ? here : undefined)) : undefined,
+        status: e.orchStatus as OrchStatus | undefined,
       });
     }
   }
@@ -541,6 +542,16 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       return turns.map((t) => `run ${t.id} — ${turnStatus(t)} (${when(t.startedAt)})\n❯ ${clip(t.instruction ?? "", 500)}\n→ ${clip(answer(t), 1200)}`).join("\n\n") || `No conversation #${id}.`;
     }
     case "merge": return mergeVerb(cfg, args);
+    case "status": {
+      // Enrichment is in the shared database, so any instance can write it — no forwarding.
+      const repo = repoNamed(cfg, args.repo);
+      const branch = required(args, "branch");
+      const prev = (await db.enrichment(repo.name))[branch]?.orchStatus as OrchStatus | undefined;
+      const next = orchStatusUpdate(prev, args, new Date().toISOString());
+      if (next === undefined) return orchStatusText(prev) || `(no status for ${repo.name}/${branch})`;
+      await db.patchEnrichment(repo.name, branch, { orchStatus: next });
+      return next ? `Status of ${repo.name}/${branch}: ${orchStatusText(next)}` : `Cleared the status of ${repo.name}/${branch}.`;
+    }
     case "notes": {
       if (words[0] !== "set") return (await blob()).notes || "(empty)";
       const text = words.slice(1).join(" ").trim();
@@ -548,7 +559,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, merge --when-green, preview [--status | --push-to-template [--confirm]], chats, read, notes`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes`);
   }
 }
 

@@ -570,6 +570,12 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   applies as for any conversation — resume while healthy, reset onto the portable transcript at 80%
   context — and a reset loses nothing it was told to keep. If it seems amnesiac, read its notes
   before blaming the model.
+- **Per-workstream state is structured, not notes** (`orca status --repo r --branch b [--plan …]
+  [--waiting …] [--merge small|needs-finn] [--clear]`): a short orchestrator-owned record on the
+  workstream's enrichment (`orchStatus`, 300 chars a field — `orchStatusUpdate` / `orchStatusText`),
+  on its board line every wake and on the user's card / Agents row (`OrchStatusNote`). The notes keep
+  only the user's preferences and standing facts. The merge class is a label for the user; the
+  merge queue still reads only `--small` and the repo's `mergePolicy`.
 - **Memory of past work** is the turn table: `orca chats "<terms>"` is Postgres full-text over every
   instruction and response, archived workstreams included; `orca read` loads one on demand
   (just-in-time retrieval, no embeddings, no index yet).

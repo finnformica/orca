@@ -13,7 +13,7 @@ import {
   newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { ReviewDigest } from "./workstream";
-import type { PrRef } from "./workstream";
+import type { OrchStatus, PrRef } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
 import { attachCommand, handoffPrompt } from "../../shared/agent";
@@ -109,6 +109,7 @@ export type Enrichment = {
   commentsSeenAt?: string; // ISO: conversation comments up to here have been handed to the agent (see addressReview)
   slackNotifiedAt?: string; slackLastBumpedAt?: string; createdAt?: string;
   orchestrated?: boolean; // started or continued by the orchestrator, which is woken when its run ends
+  orchStatus?: OrchStatus; // the orchestrator's `orca status` record: plan, what it waits on, merge class
   previewInstance?: PreviewPlacement; // written by the bridge that started the preview, cleared on stop
 };
 /** Where a branch's preview runs: the instance, and its key there (a worktree path ON that instance —
@@ -454,6 +455,8 @@ export type Row = {
   following?: boolean;
   /** The orchestrator started or continued this one, and hears when its agent finishes. */
   orchestrated?: boolean;
+  /** The orchestrator's `orca status` record for it (plan, waiting on, merge class). */
+  orchStatus?: OrchStatus;
   /** Its running preview's placement, from the server — so a fresh page finds it without a click. */
   previewInstance?: PreviewPlacement;
   followUps?: string[];
@@ -586,7 +589,7 @@ export function assembleRows(): Row[] {
         prNumber: pr?.number, prBase: pr?.base, prAdditions: pr?.additions, prDeletions: pr?.deletions,
         prUrl: pr?.url, previewUrl: pr?.previewUrl, hasPreviewLabel: pr?.hasPreviewLabel, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled,
-        following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, previewInstance: e.previewInstance,
+        following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, orchStatus: e.orchStatus, previewInstance: e.previewInstance,
         failingChecks: pr?.failingChecks, feedback: pr?.feedback,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
         lane: "DRAFT",
