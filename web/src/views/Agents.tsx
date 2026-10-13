@@ -5,13 +5,18 @@
 // review cluster, the instance, when it last moved, and the actions. Columns flex and truncate, so
 // the list never scrolls sideways. Clicking a row opens its agent page; every action is in the
 // trailing ⋯ and on right-click (WorkstreamActions, menu-only). The swimlanes stay behind List | Board.
+// On a phone (below md) each row stacks — title, latest instruction, status, then where it runs —
+// with every action in its one ⋯ menu, and the chips and sort move into a Filters bottom sheet
+// beside the search box.
 import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
 import { useAtom, useAtomValue } from "jotai";
-import { Bot, Columns3, GitPullRequest, List, Loader2, Rows2, Rows3, Search, X } from "lucide-react";
+import { Bot, Columns3, GitPullRequest, List, ListFilter, Loader2, Rows2, Rows3, Search, X } from "lucide-react";
 import { agentQueryAtom, boardViewAtom, densityAtom, instanceScopeAtom, repoFilterAtom, type BoardView } from "@/lib/atoms";
 import { navigate, useSearch } from "@/lib/route";
 import { useNow } from "@/lib/ticker";
 import { oneOf, persistedKey, readPersisted, usePersisted, writePersisted } from "@/lib/persisted";
+import { useNarrow } from "@/lib/viewport";
+import { BottomSheet } from "@/components/BottomSheet";
 import { instanceChoices, modelFor, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
 import {
   DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed,
@@ -106,18 +111,19 @@ function AgentsList() {
   const setQuick = (f: QuickFilter) => navigate(`/agents${quickFilterQuery(f)}`, true); // a filter change is not a history step
   const clear = () => { setQ(""); setQuick(NO_QUICK_FILTER); };
   const cols = listColumns({ multiInstance: instanceChoices().length > 1 });
+  const stacked = useNarrow(); // a phone: rows stack, no column header
   return (
     <section aria-label="Agents" className="space-y-3">
       <FilterRow scoped={scoped} quick={quick} setQuick={setQuick} clear={clear} visible={visible} total={all.length} q={q} setQ={setQ} sort={sort} setSort={setSort}
         showRepos={repo === "all"} showInstances={instance === "all"} />
       <div data-slot="workstream-list" role="table" aria-label="Workstreams" className="bg-card overflow-hidden rounded-lg border">
-        {visible.length > 0 && <ListHeader cols={cols} />}
+        {visible.length > 0 && !stacked && <ListHeader cols={cols} />}
         {visible.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center gap-3 px-4 py-14 text-sm">
             No agents match.
             <Button size="sm" variant="outline" onClick={clear}>Clear filters</Button>
           </div>
-        ) : visible.map((r) => <AgentRow key={r.repo + r.branch} row={r} cols={cols} />)}
+        ) : visible.map((r) => <AgentRow key={r.repo + r.branch} row={r} cols={cols} stacked={stacked} />)}
       </div>
     </section>
   );
@@ -155,8 +161,9 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
   ];
   // The lane the chips narrow to, when exactly one: the swimlanes' bulk verbs apply to it.
   const lane: OverviewLane | null = quick.pr.length === 1 && quick.pr[0] !== "open" ? (quick.pr[0] === "merged" ? "DONE" : "MERGEABLE") : null;
-  return (
-    <div data-slot="filter-bar" className="space-y-2">
+  const narrow = useNarrow();
+  const [sheet, setSheet] = useState(false);
+  const chipGroup = (
       <div role="group" aria-label="Quick filters" className="flex flex-wrap items-center gap-1.5">
         {chips.map((c) => {
           const on = (quick[c.group] as string[]).includes(c.value);
@@ -176,21 +183,59 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
           </button>
         )}
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <label className="bg-card focus-within:ring-ring/40 flex h-8 min-w-48 flex-1 items-center gap-2 rounded-md border px-2.5 focus-within:ring-2 sm:max-w-72">
-          <Search className="text-muted-foreground size-4 shrink-0" strokeWidth={1.5} />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search agents…" aria-label="Search workstreams"
-            className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-[13px] outline-none" />
-          {q && <button type="button" onClick={() => setQ("")} aria-label="Clear search" className="text-muted-foreground hover:text-foreground"><X className="size-3.5" /></button>}
-        </label>
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-muted-foreground text-xs tabular-nums" data-slot="agents-count">{visible.length} of {total}</span>
-          {lane === "DONE" && visible.length > 0 && <span className="text-muted-foreground"><CopyDone cards={visible} /></span>}
-          {lane && <span className="text-muted-foreground"><LaneActions lane={lane} cards={visible} /></span>}
+  );
+  const sortSelect = (
           <Select value={sort} onValueChange={(v) => setSort(v as ListSort)}>
             <SelectTrigger className="h-8 w-40" aria-label="Sort"><span className="text-muted-foreground text-xs">Sort</span><SelectValue /></SelectTrigger>
             <SelectContent>{(Object.keys(SORT_LABELS) as ListSort[]).map((k) => <SelectItem key={k} value={k}>{SORT_LABELS[k]}</SelectItem>)}</SelectContent>
           </Select>
+  );
+  const searchBox = (
+        <label className="bg-card focus-within:ring-ring/40 flex h-8 min-w-48 flex-1 items-center gap-2 rounded-md border px-2.5 focus-within:ring-2 sm:max-w-72 max-md:h-11 max-md:min-w-0">
+          <Search className="text-muted-foreground size-4 shrink-0" strokeWidth={1.5} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search agents…" aria-label="Search workstreams"
+            className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-[13px] outline-none" />
+          {q && <button type="button" onClick={() => setQ("")} aria-label="Clear search" className="text-muted-foreground hover:text-foreground max-md:-mr-2 max-md:inline-flex max-md:size-11 max-md:items-center max-md:justify-center"><X className="size-3.5" /></button>}
+        </label>
+  );
+  const laneActions = (
+    <>
+      {lane === "DONE" && visible.length > 0 && <span className="text-muted-foreground"><CopyDone cards={visible} /></span>}
+      {lane && <span className="text-muted-foreground"><LaneActions lane={lane} cards={visible} /></span>}
+    </>
+  );
+  if (narrow) {
+    // A phone: the search box and a Filters button (with how many chips are on) on one line; the
+    // chips and the sort live in a bottom sheet. The count and the lane's bulk verbs stay in view.
+    const active = (Object.values(quick) as string[][]).reduce((n, v) => n + v.length, 0);
+    return (
+      <div data-slot="filter-bar" className="space-y-2">
+        <div className="flex items-center gap-2">
+          {searchBox}
+          <Button variant="outline" className="h-11 shrink-0" data-slot="filters-button" aria-haspopup="dialog" onClick={() => setSheet(true)}>
+            <ListFilter className="size-4" />Filters{active > 0 && <span data-slot="filters-active" className="bg-foreground text-background rounded-full px-1.5 text-[11px] tabular-nums">{active}</span>}
+          </Button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-muted-foreground text-xs tabular-nums" data-slot="agents-count">{visible.length} of {total}</span>
+          <span className="ml-auto flex items-center gap-2">{laneActions}</span>
+        </div>
+        <BottomSheet open={sheet} onClose={() => setSheet(false)} title="Filters" slot="filter-sheet">
+          {chipGroup}
+          <div className="flex items-center justify-between gap-2">{sortSelect}<Button onClick={() => setSheet(false)}>Show {visible.length}</Button></div>
+        </BottomSheet>
+      </div>
+    );
+  }
+  return (
+    <div data-slot="filter-bar" className="space-y-2">
+      {chipGroup}
+      <div className="flex flex-wrap items-center gap-2">
+        {searchBox}
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-muted-foreground text-xs tabular-nums" data-slot="agents-count">{visible.length} of {total}</span>
+          {laneActions}
+          {sortSelect}
         </div>
       </div>
     </div>
@@ -240,7 +285,7 @@ export function latestInstruction(row: Row): string {
   return (text || "").replace(/\s+/g, " ").trim();
 }
 
-export function AgentRow({ row, cols }: { row: Row; cols: ListColumn[] }) {
+export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListColumn[]; stacked?: boolean }) {
   const isDone = row.lane === "DONE";
   const [busy, setBusy] = useState(false);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
@@ -268,6 +313,44 @@ export function AgentRow({ row, cols }: { row: Row; cols: ListColumn[] }) {
   };
   const closeMenu = () => { setMenuAt(null); if (!document.activeElement || document.activeElement === document.body) ref.current?.focus({ preventScroll: true }); };
   const cell = (key: ListColumn["key"]) => cols.some((c) => c.key === key);
+  const menu = hasMenu && <WorkstreamActions row={row} compact menuOnly onBusy={setBusy} onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}
+    onOpen={to ? () => navigate(to) : undefined} contextAt={menuAt} onContextClose={closeMenu} />;
+  const prLink = row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" title={`Open PR #${row.prNumber} on GitHub`} className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>;
+  if (stacked) return (
+    // A phone: the same row as a stack — title and ⋯, the latest instruction, the status line, then
+    // where it runs. Nothing hides behind a hover title: the instruction, the error and the branch
+    // are on screen. Every action (preview included, via the agent page) is in the one ⋯ menu.
+    <div
+      ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-layout="stacked" data-branch={row.branch} aria-busy={busy}
+      aria-label={row.title} aria-haspopup={hasMenu ? "menu" : undefined}
+      onClick={openOnRowClick(row)} onContextMenu={onContextMenu} onKeyDown={onKeyDown}
+      className={`active:bg-accent/40 relative flex flex-col gap-1.5 border-b py-3 pr-2 pl-4 text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
+    >
+      <div role="cell" className="min-w-0 pr-10">
+        <div className="line-clamp-2 font-medium break-words">{row.title}</div>
+        {instruction && <div data-slot="row-instruction" className="text-muted-foreground mt-0.5 line-clamp-2 text-xs break-words">{instruction}</div>}
+      </div>
+      <div className="absolute top-1 right-1 flex items-center [&_[data-slot=button]]:size-11">{menu}</div>
+      <div role="cell" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 pr-2">
+        <RunStatus row={row} tone={tone} reasons={reasons} />
+        <Pill tone={LANE_PILL[row.lane]} slot="state-pill">{isDone ? "Merged" : LANE_LABELS[row.lane]}</Pill>
+        {prLink}
+        {row.prNumber && !isDone && <ConditionBadges row={row} />}
+        {row.prNumber && !isDone && <ReviewCluster row={row} />}
+        {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
+      </div>
+      {reasons.length > 0 && <div role="cell" data-slot="row-reasons" className="text-geist-warning-fg text-xs">{reasons.join(" · ")}</div>}
+      {error && <div role="cell" data-slot="row-error" className="text-geist-red line-clamp-3 text-xs break-words">{error}</div>}
+      <div role="cell" className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-1.5 pr-2 text-xs">
+        <span>{row.repo}</span>
+        {model && <><span aria-hidden="true">·</span><span data-slot="model-label">{model.label}</span></>}
+        {row.orchestrated && <><span aria-hidden="true">·</span><span className="inline-flex items-center gap-1"><Bot className="size-3" />orchestrated</span></>}
+        {instance && cell("instance") && <><span aria-hidden="true">·</span><span data-slot="instance-chip">{instance}</span></>}
+        <span aria-hidden="true">·</span><span className="min-w-0 font-mono break-all">{row.branch}</span>
+      </div>
+      {!isDone && <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />}
+    </div>
+  );
   return (
     <div
       ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-branch={row.branch} aria-busy={busy}
