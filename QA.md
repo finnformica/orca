@@ -103,3 +103,18 @@ Open **Agents** (List view) with a few workstreams, at least one running and one
 
 Delete the test PRs/branches and remove any leftover worktrees:
 `git -C $ORCA_REPO_PATH worktree prune`.
+
+## Usage dashboard — visual checks the fakes can't cover
+
+The automated tests cover the data (overlay alignment, collapse persistence, skeleton markup);
+these are the things only a real screen shows.
+
+- **Overview** → a machine card's CPU and memory graphs: a pink dashed line (running sessions)
+  should sit on its OWN right-hand axis, legible against both light and dark theme, and track an
+  actual agent run you start/stop while watching (give the sampler a minute to pick it up). Switch
+  6h / 24h / 7d and confirm the pink line stays aligned with the blue/green one at every range.
+- **Usage page** (`/usage`) → the "Current windows" card should load already collapsed; reload the
+  page after opening it once and confirm it stays open.
+- **Cold load** → hard-refresh the Overview and the Usage page on a slow connection (or throttle it
+  in devtools) and confirm the stat tiles / usage rows / machine graphs show shimmering placeholders
+  sized like the real content, with no layout jump when the real data lands.

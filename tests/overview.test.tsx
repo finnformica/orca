@@ -160,6 +160,23 @@ describe("overview: the Agents card", () => {
     expect(container!.querySelector('[data-slot="stat-tiles"]')).toBeNull();
   });
 
+  test("shows stat-tile skeletons, sized like the real tiles, until the first agents+PRs refresh settles", async () => {
+    store._resetWorkstreamsLoaded(); // a module singleton that an earlier test's mount() already flipped
+    seed();
+    apiFake.holdPrs = true;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    await act(async () => { root = createRoot(container!); root.render(<Overview />); await flush(); });
+    void store.refresh(); // fired, not awaited — it's held on pollPrs until releasePrs()
+    await flush();
+    const card = container!.querySelector('[data-slot="agents-card"]')!;
+    expect(card.querySelectorAll('[data-slot="stat-skeleton"]')).toHaveLength(4);
+    expect(card.querySelector('[data-slot="stat-running"]')).toBeNull();
+    await act(async () => { apiFake.releasePrs!(); await flush(); await flush(); });
+    expect(card.querySelectorAll('[data-slot="stat-skeleton"]')).toHaveLength(0);
+    expect(value("running")).toBe("1");
+  });
+
   test("each number links to the Agents list's quick chips that count exactly it", async () => {
     seed();
     await mount();

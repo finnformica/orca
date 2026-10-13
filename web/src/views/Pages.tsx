@@ -69,7 +69,7 @@ export function UsagePage() {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-semibold tracking-tight">Usage</h1>
-      <UsageCard all />
+      <UsageCard />
       <div>
         <SectionTitle>Machines</SectionTitle>
         <div className="space-y-4">{machines.map((m) => <InstanceCard key={m} instance={m} here={m === here || !instances.length} />)}</div>
