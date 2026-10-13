@@ -20,8 +20,8 @@ import { usePullToRefresh } from "@/lib/gestures";
 import { BottomSheet } from "@/components/BottomSheet";
 import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
 import {
-  DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed,
-  listColumns, listGridTemplate, modelBadge, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, toggleQuick,
+  DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed,
+  listColumns, listGridTemplate, modelBadge, notMergedHiddenCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, toggleNotMerged, toggleQuick,
   type ListColumn, type ListSort, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
 } from "../workstream";
 import { Button } from "@/components/ui/button";
@@ -188,6 +188,12 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
             </button>
           );
         })}
+        <button type="button" data-slot="quick-filter" data-chip="notMerged" aria-pressed={quick.notMerged}
+          onClick={() => setQuick(toggleNotMerged(quick))}
+          className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors ${quick.notMerged ? "border-foreground bg-foreground text-background" : "text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
+          Not merged
+          <span data-slot="quick-count" className={`tabular-nums ${quick.notMerged ? "opacity-70" : "opacity-60"}`}>{notMergedHiddenCount(scoped, quick, here)}</span>
+        </button>
         {(quickActive(quick) || q) && (
           <button type="button" data-slot="clear-filters" onClick={clear} title="Clear the chips and the search (here and in what's remembered)" className="text-muted-foreground hover:text-foreground inline-flex h-7 items-center gap-1 px-1.5 text-[13px]">
             <X className="size-3.5" /> Clear
@@ -218,7 +224,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
   if (narrow) {
     // A phone: the search box and a Filters button (with how many chips are on) on one line; the
     // chips and the sort live in a bottom sheet. The count and the lane's bulk verbs stay in view.
-    const active = (Object.values(quick) as string[][]).reduce((n, v) => n + v.length, 0);
+    const active = QUICK_GROUPS.reduce((n, g) => n + quick[g].length, 0) + (quick.notMerged ? 0 : 1);
     return (
       <div data-slot="filter-bar" className="space-y-2">
         <div className="flex items-center gap-2">
