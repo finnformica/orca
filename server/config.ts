@@ -67,6 +67,13 @@ export type RepoConfig = {
    */
   copyToWorktree?: string[];
   /**
+   * Repo-relative globs for changelog files (`**` any directories, `*` within one). A merge of the base
+   * whose ONLY conflicts are in these is resolved by Orca itself — both sides' added lines kept, in
+   * order — and pushed, with no agent run (`git.mergeBaseUnioningChangelogs`). Default
+   * `["**\/CHANGELOG.md"]`; `[]` turns it off.
+   */
+  changelogFiles?: string[];
+  /**
    * Model for this repo's headless Claude agent runs, e.g. `claude-opus-5[1m]` or a shorthand like
    * `opus`. Overrides the top-level `agentModel` default; with neither set the `claude` CLI's own
    * default applies (`model` in ~/.claude/settings.json), which is what your interactive sessions use.

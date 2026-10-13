@@ -452,6 +452,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         ? (await viaInstance(cfg, home, "/api/workstreams/address", { repo: repo.name, branch }) as { status: string; pr: number })
         : await verbs.addressPr(cfg, repo, branch);
       await db.patchEnrichment(repo.name, branch, { orchestrated: true });
+      if (status === "resolved") return `#${pr}'s only conflict was in its changelog: Orca merged the base, kept both sides' entries and pushed. Nothing else needed an agent, so none was started.`;
       return `${status === "queued" ? "Queued" : "Started"} Address PR for #${pr}. End your turn; you are woken when it finishes.`;
     }
     case "move": {

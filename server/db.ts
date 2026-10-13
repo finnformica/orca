@@ -130,18 +130,63 @@ export async function withRetry<T>(fn: (sql: Bun.SQL) => Promise<T>): Promise<T>
   }
 }
 
-// Numbered, append-only steps recorded in `migration`. Never change what an applied step DOES — add
-// another. (SQLite's `PRAGMA user_version` did this job before; Postgres needs the table, but the
-// discipline is identical, and deliberately not a migration framework.)
+// Append-only steps. Never change what an applied step DOES — add another. (SQLite's `PRAGMA
+// user_version` did this job before; Postgres needs a table, but the discipline is identical, and
+// deliberately not a migration framework.)
 //
-// A step's identity is its id AND its `name`. Keying on the id alone let two parallel branches each
-// append "the next id": one branch's 13 and 14 reached the shared database first, and main's 13 (the
-// `running_agents` column) was then skipped as "already applied" — every metrics sample failed. The
-// runner now compares the recorded name with the code's before it applies anything (`planMigrations`).
-// `idempotent` steps are safe to run again — every statement is IF NOT EXISTS — so a recorded-but-
-// foreign id is healed by simply running main; a step that is not (an UPDATE whose re-run would
-// change later data) refuses to start instead. Write new steps idempotently wherever Postgres allows.
-export type MigrationStep = { id: number; name: string; idempotent: boolean; sql: string };
+// TWO KINDS OF STEP. The NUMBERED steps (1–15, 17, 18) are frozen history, recorded by id in `migration`.
+// Every step after them is NAMED: no id, its identity is its `name`, written `YYYYMMDD-slug` (the day
+// the step was written), recorded in `migration_named`. Parallel branches kept colliding on "the next
+// integer" (16/17/18 had to be reserved by hand); two branches can't pick the same date-and-slug by
+// accident, and the order a database applies pending named steps in is the names' sort order — not
+// the array's, not whichever branch merged first — so it is stable with no coordination. A named step
+// must be idempotent (IF NOT EXISTS throughout): a branch's database that ran it under an old integer
+// id, or a foreign branch's step that got there first, is healed by running it again. NEVER add
+// another numbered step — `checkSteps` refuses an id past LAST_NUMBERED_ID.
+//
+// A numbered step's identity is its id AND its `name`. Keying on the id alone let two parallel
+// branches each append "the next id": one branch's 13 and 14 reached the shared database first, and
+// main's 13 (the `running_agents` column) was then skipped as "already applied" — every metrics sample
+// failed. The runner compares the recorded name with the code's before it applies anything
+// (`planMigrations`). `idempotent` steps are safe to run again — every statement is IF NOT EXISTS — so
+// a recorded-but-foreign id is healed by simply running main; a step that is not (an UPDATE whose
+// re-run would change later data) refuses to start instead.
+export type MigrationStep = { id?: number; name: string; idempotent: boolean; sql: string };
+
+/** The last numbered step. Frozen: everything after is a named step. */
+export const LAST_NUMBERED_ID = 18;
+/** A named step's name: the day it was written, then a slug — its sort key and its identity. */
+export const NAMED_STEP = /^\d{8}-[a-z0-9]+(-[a-z0-9]+)*$/;
+
+/** How a step is referred to in logs and the ledger printout: its id if numbered, else its name. */
+export const stepLabel = (s: { id?: number | null; name: string | null }): string => s.id != null ? String(s.id) : s.name ?? "?";
+
+/** What's wrong with a list of steps, one line each (empty = fine). Pure — the runner throws on any, and
+ *  a test runs it over MIGRATIONS so a bad merge fails the gate rather than a boot. */
+export function checkSteps(steps: MigrationStep[]): string[] {
+  const problems: string[] = [];
+  const names = new Set<string>();
+  let seenNamed = false, lastId = 0, lastName = "";
+  for (const s of steps) {
+    if (names.has(s.name)) problems.push(`duplicate migration name "${s.name}"`);
+    names.add(s.name);
+    if (s.id != null) {
+      if (seenNamed) problems.push(`numbered step ${s.id} after a named step`);
+      if (s.id > LAST_NUMBERED_ID) problems.push(`step ${s.id} ("${s.name}"): numbered steps are frozen at ${LAST_NUMBERED_ID} — drop the id and name it YYYYMMDD-slug`);
+      if (s.id <= lastId) problems.push(`numbered step ${s.id} out of order`);
+      lastId = s.id;
+    } else {
+      seenNamed = true;
+      if (!NAMED_STEP.test(s.name)) problems.push(`named step "${s.name}" must be YYYYMMDD-slug`);
+      if (!s.idempotent) problems.push(`named step "${s.name}" must be idempotent`);
+      // Code order IS apply order: a step written after rebasing onto one it depends on must sort
+      // after it, so re-date it (today) rather than keep the day the branch was cut.
+      if (s.name < lastName) problems.push(`named step "${s.name}" sorts before "${lastName}" above it — named steps apply in name order; re-date it, or move it above if it doesn't depend on that step`);
+      lastName = s.name;
+    }
+  }
+  return problems;
+}
 
 export const MIGRATIONS: MigrationStep[] = [
   {
@@ -516,11 +561,15 @@ export const MIGRATIONS: MigrationStep[] = [
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
 
+/** One row of either ledger: `migration` (id, name) or `migration_named` (name only, id null). */
+export type RecordedStep = { id: number | null; name: string | null };
+
 /** What the runner decided for one database. */
 export type MigrationPlan = {
-  /** Applied in id order, each in its own transaction: never recorded; recorded under another name
-   *  but idempotent; or recorded with NO name and idempotent — a row from before names existed can't
-   *  be verified, and re-running an idempotent step costs nothing. */
+  /** Applied in this order, each in its own transaction — numbered steps by id, then named steps by
+   *  name. A numbered step: never recorded; recorded under another name but idempotent; or recorded
+   *  with NO name and idempotent — a row from before names existed can't be verified, and re-running
+   *  an idempotent step costs nothing. A named step: not in `migration_named`. */
   run: MigrationStep[];
   /** Recorded with no name and NOT idempotent: trusted (it predates names) and named in place. */
   stamp: MigrationStep[];
@@ -528,25 +577,36 @@ export type MigrationPlan = {
   mismatches: MigrationMismatch[];
   /** The mismatches re-running can't heal: the bridge refuses to start. */
   refused: MigrationMismatch[];
-  /** Recorded ids with no step in this code (a foreign branch's, or a newer main's). */
-  unknown: { id: number; name: string | null }[];
+  /** Recorded steps with no step in this code (a foreign branch's, or a newer main's). */
+  unknown: RecordedStep[];
 };
 
-/** Pure: what to do, given the steps in code and the `migration` rows recorded. */
-export function planMigrations(steps: MigrationStep[], recorded: { id: number; name: string | null }[]): MigrationPlan {
-  const byId = new Map(recorded.map((r) => [Number(r.id), r.name ?? null]));
+/** Pure: what to do, given the steps in code and the rows recorded in both ledgers. */
+export function planMigrations(steps: MigrationStep[], recorded: RecordedStep[]): MigrationPlan {
+  const numbered = recorded.filter((r) => r.id != null);
+  const byId = new Map(numbered.map((r) => [Number(r.id), r.name ?? null]));
+  const namedDone = new Set(recorded.filter((r) => r.id == null).map((r) => r.name));
   const plan: MigrationPlan = { run: [], stamp: [], mismatches: [], refused: [], unknown: [] };
-  for (const step of steps) {
-    if (!byId.has(step.id)) { plan.run.push(step); continue; }
-    const name = byId.get(step.id) ?? null;
+  for (const step of steps.filter((s) => s.id != null).sort((a, b) => a.id! - b.id!)) {
+    const id = step.id!;
+    if (!byId.has(id)) { plan.run.push(step); continue; }
+    const name = byId.get(id) ?? null;
     if (name === step.name) continue;
     if (name === null) { (step.idempotent ? plan.run : plan.stamp).push(step); continue; }
-    const mismatch = { id: step.id, recorded: name, expected: step.name, idempotent: step.idempotent };
+    const mismatch = { id, recorded: name, expected: step.name, idempotent: step.idempotent };
     plan.mismatches.push(mismatch);
     if (step.idempotent) plan.run.push(step); else plan.refused.push(mismatch);
   }
-  const known = new Set(steps.map((s) => s.id));
-  plan.unknown = recorded.filter((r) => !known.has(Number(r.id))).map((r) => ({ id: Number(r.id), name: r.name ?? null }));
+  // Named steps: by name, so two branches' steps apply in the same order on every database however
+  // they were merged. (Code-point order, not locale: the order must not depend on the host.)
+  const named = steps.filter((s) => s.id == null).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  for (const step of named) if (!namedDone.has(step.name)) plan.run.push(step);
+  const knownIds = new Set(steps.filter((s) => s.id != null).map((s) => s.id));
+  const knownNames = new Set(named.map((s) => s.name));
+  plan.unknown = [
+    ...numbered.filter((r) => !knownIds.has(Number(r.id))).map((r) => ({ id: Number(r.id), name: r.name ?? null })),
+    ...recorded.filter((r) => r.id == null && !knownNames.has(r.name ?? "")).map((r) => ({ id: null, name: r.name })),
+  ];
   return plan;
 }
 
@@ -567,7 +627,7 @@ function refusal(refused: MigrationMismatch[]): MigrationRefused {
     "Another branch applied its own step under the same id. Apply this code's step by hand (its SQL is",
     "MIGRATIONS in server/db.ts), then record it: UPDATE migration SET name = '<expected>' WHERE id = <id>;",
     "then restart. `bun run db:check` prints the ledger. Never point a worktree's bridge or tests at the",
-    "shared database — a migration id is reserved only by merging to main.",
+    "shared database — a migration is reserved only by merging to main.",
   ].join("\n"));
 }
 
@@ -601,31 +661,48 @@ let lastReport: (MigrationPlan & { at: number }) | undefined;
 /** The last migration pass on this process's database, for `/api/diagnostics`. */
 export const migrationReport = () => lastReport;
 
-/** The recorded ledger, tolerating a database the runner has never touched or one from before names. */
-export async function recordedMigrations(sql: Bun.SQL): Promise<{ id: number; name: string | null }[]> {
-  const [exists] = await sql`SELECT to_regclass('migration') AS t`;
-  if (!exists?.t) return [];
-  return (await sql`SELECT * FROM migration ORDER BY id`).map((r: { id: number; name?: string | null }) => ({ id: Number(r.id), name: r.name ?? null }));
+/** Both recorded ledgers, tolerating a database the runner has never touched, one from before names,
+ *  and one from before named steps (no `migration_named` yet). */
+export async function recordedMigrations(sql: Bun.SQL): Promise<RecordedStep[]> {
+  const [exists] = await sql`SELECT to_regclass('migration') AS m, to_regclass('migration_named') AS n`;
+  const numbered = exists?.m
+    ? (await sql`SELECT * FROM migration ORDER BY id`).map((r: { id: number; name?: string | null }) => ({ id: Number(r.id), name: r.name ?? null }))
+    : [];
+  const named = exists?.n
+    ? (await sql`SELECT name FROM migration_named ORDER BY name`).map((r: { name: string }) => ({ id: null, name: r.name }))
+    : [];
+  return [...numbered, ...named];
 }
 
 async function migrate(sql: Bun.SQL): Promise<void> {
   const notTest = testDatabaseRefusal(handleUrl ?? databaseUrl());
   if (notTest) throw new Error(notTest);
+  await applyMigrations(sql, MIGRATIONS);
+}
+
+/** Bring `sql`'s database to `steps` (exported so a test can play two branches' step lists against one
+ *  database; the bridge only ever passes MIGRATIONS). */
+export async function applyMigrations(sql: Bun.SQL, steps: MigrationStep[]): Promise<void> {
+  const bad = checkSteps(steps);
+  if (bad.length) throw new MigrationRefused(`orca: refusing to start — MIGRATIONS in server/db.ts is malformed:\n  ${bad.join("\n  ")}`);
   await sql`CREATE TABLE IF NOT EXISTS migration (id INT PRIMARY KEY, applied_at BIGINT NOT NULL)`;
   // Before reading: planning needs the names (step 14 records the same column in the ledger).
   await sql`ALTER TABLE migration ADD COLUMN IF NOT EXISTS name TEXT`;
-  const plan = planMigrations(MIGRATIONS, await recordedMigrations(sql));
+  // The named steps' ledger. Its own table, not a nullable id in `migration`: a bridge still running
+  // older code reads `migration` only, so it never sees a row it can't parse.
+  await sql`CREATE TABLE IF NOT EXISTS migration_named (name TEXT PRIMARY KEY, applied_at BIGINT NOT NULL)`;
+  const plan = planMigrations(steps, await recordedMigrations(sql));
   lastReport = { ...plan, at: Date.now() };
   for (const m of plan.mismatches) console.error(`orca: MIGRATION MISMATCH — ${describeMismatch(m)}`);
-  for (const u of plan.unknown) console.error(`orca: migration ${u.id}${u.name ? ` ("${u.name}")` : ""} is recorded but this code has no such step — a branch ahead of this one, or another branch's`);
+  for (const u of plan.unknown) console.error(`orca: migration ${u.id != null ? `${u.id}${u.name ? ` ("${u.name}")` : ""}` : `"${u.name}"`} is recorded but this code has no such step — a branch ahead of this one, or another branch's`);
   if (plan.refused.length) throw refusal(plan.refused);
   if (plan.run.length && previewBridge()) {
     throw new MigrationRefused(`orca: a preview bridge never applies migrations (pending: ${plan.run.map((s) => s.id).join(", ")}) — `
       + "this branch's schema is ahead of the shared database, so its preview's /api answers from the main bridge instead.");
   }
   if (plan.run.length && process.env.NODE_ENV !== "test" && inLinkedWorktree() && process.env.ORCA_ALLOW_WORKTREE_MIGRATIONS !== "1") {
-    throw new MigrationRefused(`orca: refusing to apply migration(s) ${plan.run.map((s) => s.id).join(", ")} from a git worktree — `
-      + "this database may be the shared one, and a migration id is reserved only by merging to main. "
+    throw new MigrationRefused(`orca: refusing to apply migration(s) ${plan.run.map(stepLabel).join(", ")} from a git worktree — `
+      + "this database may be the shared one, and a migration is reserved only by merging to main. "
       + "Point ORCA_DATABASE_URL at a database of your own and set ORCA_ALLOW_WORKTREE_MIGRATIONS=1.");
   }
   for (const step of plan.run) {
@@ -633,11 +710,16 @@ async function migrate(sql: Bun.SQL): Promise<void> {
     // human, so make it impossible rather than recoverable. Upsert, so a re-run step takes its id back.
     await sql.begin(async (tx: Bun.SQL) => {
       await tx.unsafe(step.sql);
-      await tx`INSERT INTO migration (id, applied_at, name) VALUES (${step.id}, ${Date.now()}, ${step.name})
-        ON CONFLICT (id) DO UPDATE SET applied_at = EXCLUDED.applied_at, name = EXCLUDED.name`;
+      if (step.id != null) {
+        await tx`INSERT INTO migration (id, applied_at, name) VALUES (${step.id}, ${Date.now()}, ${step.name})
+          ON CONFLICT (id) DO UPDATE SET applied_at = EXCLUDED.applied_at, name = EXCLUDED.name`;
+      } else {
+        await tx`INSERT INTO migration_named (name, applied_at) VALUES (${step.name}, ${Date.now()})
+          ON CONFLICT (name) DO NOTHING`;
+      }
     });
   }
-  for (const step of plan.stamp) await sql`UPDATE migration SET name = ${step.name} WHERE id = ${step.id} AND name IS NULL`;
+  for (const step of plan.stamp) await sql`UPDATE migration SET name = ${step.name} WHERE id = ${step.id!} AND name IS NULL`;
 }
 
 // ---- workstreams ----
