@@ -19,6 +19,7 @@ export function ActionButton({
   disabled,
   confirm,
   failure,
+  className,
 }: {
   onRun: () => Promise<unknown>;
   children: ReactNode;
@@ -27,6 +28,7 @@ export function ActionButton({
   disabled?: boolean;
   confirm?: string;
   failure?: Omit<ActionFailure, "error">;
+  className?: string;
 }) {
   const [state, setState] = useState<State>("idle");
   const [error, setError] = useState("");
@@ -47,7 +49,7 @@ export function ActionButton({
   };
 
   return (
-    <Button size={size} variant={state === "error" ? "destructive" : variant} disabled={disabled || state === "loading"} title={state === "error" ? error : undefined} onClick={() => void run()}>
+    <Button size={size} className={className} variant={state === "error" ? "destructive" : variant} disabled={disabled || state === "loading"} title={state === "error" ? error : undefined} onClick={() => void run()}>
       {state === "loading" && <Loader2 className="animate-spin" />}
       {state === "done" && <Check />}
       {state === "error" && <X />}

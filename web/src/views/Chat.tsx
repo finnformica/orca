@@ -625,6 +625,8 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
         history={row.followUps}
         onSubmit={submit}
         prefill={prefill}
+        // A notification's Reply opens the agent page's Chat tab with `?reply`: the box takes focus.
+        autoFocus={logBar && new URLSearchParams(location.search).has("reply")}
         // Interrupt + message as ONE gesture, the way Managed Agents pairs user.interrupt with the
         // next user.message: the run is stopped and the text goes straight after it. If the process
         // hasn't exited by the time the message arrives it is queued and dispatched on exit, so the

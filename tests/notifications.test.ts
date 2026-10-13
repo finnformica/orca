@@ -76,11 +76,10 @@ describe("decisions (pure)", () => {
     const list = [n(1, 60_000), n(2, 26 * 3_600_000, { readAt: NOW }), n(3, 3 * 86_400_000), n(4, 10, { dismissedAt: NOW })];
     expect(unreadCount(list)).toBe(2);
     expect(groupByDay(list, NOW).map((g) => [g.label, g.items.map((i) => i.id)])).toEqual([["Today", [4, 1]], ["Yesterday", [2]], ["Fri 9 Oct", [3]]]);
-    const stack = toastStack([n(1, 3), n(2, 2), n(3, 1), n(4, 0)], false);
-    expect(stack).toMatchObject({ collapsed: true, hidden: 1 });
+    const stack = toastStack([n(1, 3), n(2, 2), n(3, 1), n(4, 0)]);
+    expect(stack.hidden).toBe(1); // three show, collapsed or expanded (sonner's cut); the bell has the rest
     expect(stack.visible.map((t) => t.id)).toEqual([4, 3, 2]); // newest on top
-    expect(toastStack([n(1, 3), n(2, 2), n(3, 1), n(4, 0)], true)).toMatchObject({ collapsed: false, hidden: 0 });
-    expect(toastStack([n(1, 0)], false).collapsed).toBe(false);
+    expect(stack.ordered.map((t) => t.id)).toEqual([4, 3, 2, 1]);
     expect(shouldToast(n(1, 0), { dnd: false, prefs: {}, now: NOW })).toBe(true);
     expect(shouldToast(n(1, 0), { dnd: true, prefs: {}, now: NOW })).toBe(false);
     expect(shouldToast(n(1, 0), { dnd: false, prefs: { finished: false }, now: NOW })).toBe(false);
