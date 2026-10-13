@@ -1055,29 +1055,22 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
   ].join("\n");
 }
 
-/** A floating window's frame: left/top once placed (absent while anchored bottom-right), and size. */
-export type Frame = { x?: number; y?: number; w: number; h: number };
-export const FRAME_MIN_W = 320, FRAME_MIN_H = 240;
-
-/** Keep a placed frame WHOLLY inside a `vw`×`vh` viewport: shrink it to fit (not below the minimum
- *  size), then slide it in. Used on every drag move, on browser resize and on load, so a window can
- *  never be dragged or left partly off-screen. An unplaced frame keeps its anchor; only its size fits. */
-export function clampFrame(f: Frame, vw: number, vh: number): Frame {
-  const w = Math.max(Math.min(f.w, vw), Math.min(FRAME_MIN_W, vw)), h = Math.max(Math.min(f.h, vh), Math.min(FRAME_MIN_H, vh));
-  if (f.x === undefined || f.y === undefined) return { w, h };
-  return { x: Math.max(0, Math.min(vw - w, f.x)), y: Math.max(0, Math.min(vh - h, f.y)), w, h };
+/** The orchestrator's side panel: how wide it may be on a `vw`-wide viewport. Never narrower than a
+ *  readable chat, never wider than leaves the page beside it usable — and a width remembered from a
+ *  bigger screen is pulled back in. */
+export const PANEL_MIN_W = 360, PANEL_DEFAULT_W = 460;
+export function clampPanelWidth(w: number, vw: number): number {
+  const max = Math.max(PANEL_MIN_W, Math.min(960, vw - 240));
+  return Math.round(Math.min(vw, Math.max(PANEL_MIN_W, Math.min(max, Number.isFinite(w) ? w : PANEL_DEFAULT_W))));
 }
 
-/** Resize `s` by dragging handle `edge` (n/s/e/w and corners) by dx,dy. Each moved edge stops at the
- *  viewport and at the minimum size; the left/top edges move the origin, the opposite edge stays put. */
-export function resizeFrame(s: Required<Frame>, edge: string, dx: number, dy: number, vw: number, vh: number): Required<Frame> {
-  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
-  let { x, y, w, h } = s;
-  if (edge.includes("e")) w = clamp(s.w + dx, FRAME_MIN_W, vw - s.x);
-  if (edge.includes("s")) h = clamp(s.h + dy, FRAME_MIN_H, vh - s.y);
-  if (edge.includes("w")) { w = clamp(s.w - dx, FRAME_MIN_W, s.x + s.w); x = s.x + s.w - w; }
-  if (edge.includes("n")) { h = clamp(s.h - dy, FRAME_MIN_H, s.y + s.h); y = s.y + s.h - h; }
-  return { x, y, w, h };
+/** Chat timestamps are grouped by day: a divider where the calendar day changes between two turns,
+ *  reading "Today", "Yesterday", or the date. */
+export const sameDay = (a: number, b: number): boolean => new Date(a).toDateString() === new Date(b).toDateString();
+export function dayLabel(at: number, now = Date.now()): string {
+  if (sameDay(at, now)) return "Today";
+  if (sameDay(at, now - 86_400_000)) return "Yesterday";
+  return new Date(at).toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
 }
 
 // ---- # PR picker (the chat composer's autocomplete) ----
@@ -1233,6 +1226,14 @@ export function turnsByHour(rows: OverviewRow[], now = Date.now(), hours = 24): 
     }
   }
   return buckets;
+}
+
+/** Instance display order: `cloud` first, then `local`, then any others alphabetically — so cloud
+ *  always leads wherever instances are listed or stacked (Overview, the switcher, filters), no
+ *  matter which machine is viewing. The one place this is decided, so it can't drift per call site. */
+export function instanceOrder(names: string[]): string[] {
+  const rank = (n: string) => (n === "cloud" ? 0 : n === "local" ? 1 : 2);
+  return [...names].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 }
 
 export type ListFilter = {
@@ -1664,14 +1665,6 @@ export function downsample(points: { at: number; v: number }[], max: number, fro
   return out;
 }
 
-/** The axis maximum for a whole-number count (running sessions): an even integer above the peak,
- *  at least 2, so all three ticks (top, middle, 0) are whole numbers and the peak sits below the
- *  top. `niceMax` gave 1 → a "0.5" middle tick shown as 1, and 2.5 → "3". */
-export function countMax(peak: number): number {
-  const m = Math.max(2, Math.floor(peak) + 1);
-  return m % 2 ? m + 1 : m;
-}
-
 /** A round axis maximum at or above `v`: 1, 2, 2.5 or 5 × 10^k. */
 export function niceMax(v: number): number {
   if (!(v > 0)) return 1;
@@ -1946,3 +1939,94 @@ export function pullState(dy: number): { phase: "idle" | "pull" | "release"; off
   if (dy < 10) return { phase: "idle", offset: 0 };
   return { phase: dy * 0.5 >= PULL_REFRESH_PX ? "release" : "pull", offset: Math.min(Math.round(dy * 0.5), 96) };
 }
+
+// ---- notification quick actions ----
+
+/** What a notification's quick-action row can do. The component maps each id to the existing handler
+ *  (store.addressPr, followUp, testLocally, stopPreview, navigation) — none of the logic is here. */
+export type NotificationActionId =
+  | "read" | "address" | "viewPr" | "fix" | "viewOutput" | "open" | "reply" | "retry" | "openChat"
+  | "openPreview" | "stopPreview" | "retryPreview" | "viewLog" | "openOrchestrator";
+export type NotificationActionSpec = { id: NotificationActionId; label: string; primary?: boolean };
+
+/** What the live row behind a notification makes possible: an agent verb needs the row, View PR its
+ *  GitHub URL, Fix a failed check to hand over, Stop a running preview's key. */
+export type NotificationActionContext = { row?: boolean; prUrl?: boolean; failedCheck?: boolean; previewKey?: boolean };
+
+type ActionRule = { id: NotificationActionId; label: string; needs?: keyof NotificationActionContext };
+const NOTIFICATION_ACTION_RULES: Record<string, ActionRule[]> = {
+  pr_ci_failed: [{ id: "address", label: "Address PR", needs: "row" }, { id: "viewPr", label: "View PR", needs: "prUrl" }],
+  pr_conflicts: [{ id: "address", label: "Address PR", needs: "row" }, { id: "viewPr", label: "View PR", needs: "prUrl" }],
+  check_failed: [{ id: "fix", label: "Fix", needs: "failedCheck" }, { id: "viewOutput", label: "View output" }],
+  finished: [{ id: "open", label: "Open workstream" }, { id: "reply", label: "Reply" }],
+  needs_input: [{ id: "reply", label: "Reply" }, { id: "open", label: "Open workstream" }],
+  failed: [{ id: "retry", label: "Retry", needs: "row" }, { id: "openChat", label: "Open chat" }],
+  stopped: [{ id: "retry", label: "Retry", needs: "row" }, { id: "openChat", label: "Open chat" }],
+  preview_ready: [{ id: "openPreview", label: "Open preview" }, { id: "stopPreview", label: "Stop", needs: "previewKey" }],
+  preview_failed: [{ id: "retryPreview", label: "Retry test", needs: "row" }, { id: "viewLog", label: "View log" }],
+};
+
+/** A notification's quick actions: up to two for its kind — the first is the primary — then Read,
+ *  always. An action whose prerequisite is missing (no live row, no PR URL, no failed check) is left
+ *  out rather than shown broken; an unknown kind gets Read only. The orchestrator's own wake (it died,
+ *  or asked you something) is answered in its window. Dismiss is the card's own ×, not listed here. */
+export function notificationActions(
+  n: { kind: string; link?: { url?: string; orchestrator?: boolean } },
+  ctx: NotificationActionContext = {},
+): NotificationActionSpec[] {
+  const read: NotificationActionSpec = { id: "read", label: "Read" };
+  if (n.link?.orchestrator) return [{ id: "openOrchestrator", label: "Reply", primary: true }, read];
+  const has = { ...ctx } as Record<string, boolean | undefined>;
+  const rules = (NOTIFICATION_ACTION_RULES[n.kind] ?? [])
+    .filter((r) => (r.id === "openPreview" ? Boolean(n.link?.url) : !r.needs || has[r.needs]))
+    .slice(0, 2);
+  return [...rules.map((r, i) => ({ id: r.id, label: r.label, ...(i === 0 ? { primary: true } : {}) })), read];
+}
+
+/** What Retry sends: a follow-up on the same session, picking up where the run stopped. */
+export const RETRY_INSTRUCTION = "Continue where you left off.";
+
+// ---- chat pagination: pure pieces of ChatPanel's paging and scroll anchoring ----
+
+/** How many turns a chat loads at a time: the newest page on open, one more each time you reach
+ *  the top. The orchestrator's conversation runs to hundreds of turns, nearly all of them old. */
+export const TURN_PAGE_SIZE = 50;
+
+/** What `/api/turns?limit=` answered, as a page. A bridge from before paging ignores `limit` and
+ *  sends the whole conversation as a plain array (a preview's Vite proxy points at the main
+ *  checkout's bridge; a deploy window has one side ahead of the other): that is the page, with
+ *  nothing older. Anything else malformed is an empty page rather than a crash mid-render. */
+export function asTurnPage<T>(body: unknown): { turns: T[]; older: string | null } {
+  if (Array.isArray(body)) return { turns: body as T[], older: null };
+  const page = body as { turns?: unknown; older?: unknown } | null;
+  if (!page || !Array.isArray(page.turns)) return { turns: [], older: null };
+  return { turns: page.turns as T[], older: typeof page.older === "string" ? page.older : null };
+}
+
+/** Turns identify by run id; a re-fetched page replaces what it covers and keeps what it doesn't. */
+type Keyed = { id: string };
+
+/** The conversation after the NEWEST page is re-fetched (a turn started or finished): everything
+ *  already loaded that the fresh page doesn't carry stays in front of it — the older pages you
+ *  scrolled back through aren't thrown away by a refresh — and a turn the page re-delivers (now
+ *  finished, with its steps) takes its fresh form. */
+export function mergeLatestPage<T extends Keyed>(loaded: T[], latest: T[]): T[] {
+  const fresh = new Set(latest.map((t) => t.id));
+  return [...loaded.filter((t) => !fresh.has(t.id)), ...latest];
+}
+
+/** An older page arrives: it goes in front of what's loaded, minus anything already there (a turn
+ *  that moved between the two fetches, or a page requested twice). */
+export function prependOlderPage<T extends Keyed>(older: T[], loaded: T[]): T[] {
+  const have = new Set(loaded.map((t) => t.id));
+  return [...older.filter((t) => !have.has(t.id)), ...loaded];
+}
+
+/** Where the scroller must sit so the turn you were reading stays put after content was added ABOVE
+ *  it: the old offset plus however much taller the content got. */
+export const anchoredScrollTop = (prevScrollTop: number, prevScrollHeight: number, nextScrollHeight: number): number =>
+  prevScrollTop + (nextScrollHeight - prevScrollHeight);
+
+/** Is a scroll position "at the bottom" — within `slack` px of it — i.e. still following the tail? */
+export const atBottom = (scrollTop: number, scrollHeight: number, clientHeight: number, slack: number): boolean =>
+  scrollHeight - scrollTop - clientHeight < slack;

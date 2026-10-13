@@ -1,6 +1,6 @@
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
-import { isBoolean, isString, isStringArray, oneOf, persistedAtom } from "./persisted";
+import { isBoolean, isNumber, isString, isStringArray, oneOf, persistedAtom } from "./persisted";
 
 // New-draft composer's selected repo, persisted. The prompt + attachments are persisted by
 // ChatComposer itself (see lib/composerDraft), so a reload never loses an in-progress draft.
@@ -46,6 +46,14 @@ export const usageExpandedAtom = persistedAtom("usageExpanded", false, isBoolean
 export const orchestratorOpenAtom = atom(false);
 export type OrchestratorPrefill = { text: string; session: number; seq: number };
 export const orchestratorPrefillAtom = atom<OrchestratorPrefill | null>(null);
+// The side panel's width (px), remembered per browser; clamped to the viewport on use.
+export const orchestratorWidthAtom = persistedAtom<number>("orchestratorWidth", 460, isNumber);
+// The quick-ask box (the bottom-centre pill, the A key): one message to the orchestrator, no history.
+export const quickAskOpenAtom = atom(false);
+// What the orchestrator is up to, for the launcher's indicator: `running` while a wake is in flight,
+// `unread` once a wake finished while the panel was closed (cleared when it opens). One subscriber
+// (useOrchestratorActivity in components/Terminal) keeps it current from the live stream.
+export const orchestratorActivityAtom = atom<{ running: boolean; unread: boolean }>({ running: false, unread: false });
 export const addNewOpenAtom = atom(false);
 export const paletteOpenAtom = atom(false);
 export const shortcutsHelpOpenAtom = atom(false);

@@ -2,14 +2,14 @@
 // one listener (components/Shortcuts.tsx). The table also feeds the ? help sheet, the palette's
 // hints and the tooltips, so a key can't be documented in one place and bound to another.
 //
-// Letters (C, F, O, ?) and ⌘B never fire while you type in a field or inside a modal dialog —
+// Letters (A, C, F, O, ?) and ⌘B never fire while you type in a field or inside a modal dialog —
 // they would eat a keystroke of the message. ⌘K and Esc work everywhere.
 //
 // Why O for the orchestrator, not ⌘J: ⌘J / Ctrl+J is the browser's Downloads in Chrome on Windows
 // and Linux and in Firefox, and ⌘-chords are what a composer's text editing reaches for. A plain
 // letter sits with C (new agent) and F (find), can't clash with any browser binding, and from inside
 // a text field ⌘K → "Open orchestrator" is one more key.
-export type ShortcutId = "palette" | "sidebar" | "new" | "orchestrator" | "find" | "help" | "escape";
+export type ShortcutId = "palette" | "sidebar" | "new" | "orchestrator" | "quickAsk" | "find" | "help" | "escape";
 
 export type KeyLike = { key: string; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean; shiftKey?: boolean };
 
@@ -17,6 +17,7 @@ export const SHORTCUTS: { id: ShortcutId; label: string; mod?: true; key: string
   { id: "palette", label: "Command palette", mod: true, key: "K" },
   { id: "new", label: "New agent", key: "C" },
   { id: "orchestrator", label: "Ask the orchestrator", key: "O" },
+  { id: "quickAsk", label: "Quick ask (one message, no history)", key: "A" },
   { id: "find", label: "Find agents", key: "F" },
   { id: "sidebar", label: "Collapse / expand the sidebar", mod: true, key: "B" },
   { id: "help", label: "Keyboard shortcuts", key: "?" },
@@ -50,5 +51,5 @@ export function matchShortcut(e: KeyLike, typing: boolean, mac = isMacPlatform()
   if (e.metaKey || e.ctrlKey || e.altKey) return null;
   if (key === "?") return "help";
   if (e.shiftKey) return null;
-  return key === "c" ? "new" : key === "o" ? "orchestrator" : key === "f" ? "find" : null;
+  return key === "c" ? "new" : key === "o" ? "orchestrator" : key === "a" ? "quickAsk" : key === "f" ? "find" : null;
 }

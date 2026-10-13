@@ -1,6 +1,8 @@
 // The notification centre in the browser (components/Notifications.tsx + lib/notificationStore.ts):
 // the bell's unread count from the catch-up fetch; a push on the tab's one stream popping a Geist
-// toast; the stack collapsing past one with a count bar and expanding on click; Clear all; a
+// toast bottom-left, just above the bell; the stack (branch-demo's / sonner's) collapsing past one
+// over a count bar, three showing, spreading on hover (and the count bar's toggle), the auto-hide
+// pausing while hovered, a swipe dismissing, removed cards playing their exit; Clear all; a
 // finished toast hiding itself while a needs-input one stays; do-not-disturb and a kind switched off
 // in Settings; the centre's panel grouped by day, a click marking read and opening the thing, Mark
 // all read, Clear all.
@@ -14,7 +16,7 @@ import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import { notifyDndAtom, toastPrefsAtom } from "@/lib/atoms";
 import * as centre from "@/lib/notificationStore";
-import type { Notification } from "../shared/notifications";
+import { COUNT_BAR_SPACE, TOAST_EXIT_MS, type Notification } from "../shared/notifications";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -46,6 +48,27 @@ async function live(): Promise<FakeSource> {
 const push = async (s: FakeSource, n: Notification) => act(async () => { emit(s, "notification", n); await flush(); });
 const $ = (slot: string) => document.body.querySelector<HTMLElement>(`[data-slot="${slot}"]`);
 const $$ = (slot: string) => [...document.body.querySelectorAll<HTMLElement>(`[data-slot="${slot}"]`)];
+/** The cards still on the stack (a removed one plays its exit for TOAST_EXIT_MS first). */
+const cards = () => $$("notification-toast").filter((t) => t.getAttribute("data-removed") !== "true");
+const exit = () => act(async () => { await wait(TOAST_EXIT_MS + 30); });
+const mouse = async (el: Element, type: "mousemove" | "mouseover" | "mouseout", relatedTarget?: Element) =>
+  act(async () => { el.dispatchEvent(new MouseEvent(type, { bubbles: true, relatedTarget: relatedTarget ?? null })); await flush(); });
+const pointer = async (el: Element, type: string, x: number, y: number) =>
+  act(async () => { el.dispatchEvent(new PointerEvent(type, { bubbles: true, clientX: x, clientY: y, pointerId: 1, button: 0 })); await flush(); });
+/** Give the bell and the sidebar's foot a layout (happy-dom has none), as a 900px-high desktop. */
+function placeBell(bell = { left: 180, top: window.innerHeight - 48 }) {
+  const rect = (r: { left: number; top: number; width: number; height: number }) => () => ({ ...r, right: r.left + r.width, bottom: r.top + r.height, x: r.left, y: r.top, toJSON() {} }) as DOMRect;
+  $("notifications-bell")!.getBoundingClientRect = rect({ ...bell, width: 32, height: 32 });
+  $("sidebar-foot")!.getBoundingClientRect = rect({ left: 0, top: bell.top - 8, width: 240, height: 48 });
+}
+const button = (el: Element, text: string) => [...el.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === text);
+const actionsOf = (el: Element) => el.querySelector<HTMLElement>('[data-slot="notification-actions"]')!;
+/** A touch screen: `(pointer: coarse)` matches (and nothing else does). */
+function touchScreen(): () => void {
+  const was = window.matchMedia;
+  window.matchMedia = ((q: string) => ({ matches: q === "(pointer: coarse)", media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  return () => { window.matchMedia = was; };
+}
 const click = async (el: Element | null | undefined) => act(async () => { el!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
 
 describe("the notification centre", () => {
@@ -86,28 +109,79 @@ describe("the notification centre", () => {
     expect(toast.textContent).toContain("Should I migrate the old rows?");
     expect(toast.querySelector('[data-slot="notification-time"]')!.textContent).toContain("just now");
     expect($("notifications-unread")!.textContent).toBe("1"); // the centre has it too
+    expect([...toast.querySelectorAll("button")].map((b) => b.textContent)).toContain("Open workstream");
     await click(toast.querySelector('button[aria-label="Dismiss"]'));
-    expect($("notification-toast")).toBeNull();
+    expect(toast.getAttribute("data-removed")).toBe("true"); // dropping out…
+    await exit();
+    expect($("notification-toast")).toBeNull(); // …then gone
     expect($("notifications-unread")!.textContent).toBe("1"); // dismissing the toast keeps the row
   });
 
-  test("the stack: newest on top, collapsed past one with a count bar, expanded on click, Clear all", async () => {
+  test("bottom-left, its foot just above the bell; the stack collapsed past one over a count bar, three showing; hover spreads it; Clear all", async () => {
     await open("/");
+    placeBell();
     const s = await live();
     await push(s, note({ id: 1, title: "First", kind: "failed", createdAt: Date.now() - 3 }));
+    const host = $("notification-host")!;
+    const bellTop = $("notifications-bell")!.getBoundingClientRect().top;
+    expect(host.style.left).toBe("8px"); // the sidebar foot's padding: the left-hand side, not the right
+    expect(host.style.right).toBe("");
+    expect(host.style.bottom).toBe(`${window.innerHeight - bellTop + 8}px`); // just above the bell
     await push(s, note({ id: 2, title: "Second", kind: "failed", createdAt: Date.now() - 2 }));
     await push(s, note({ id: 3, title: "Third", kind: "failed", createdAt: Date.now() - 1 }));
     await push(s, note({ id: 4, title: "Fourth", kind: "failed" }));
-    expect($$("notification-toast")).toHaveLength(1); // the top one in full…
-    expect($("notification-toast")!.textContent).toContain("Fourth");
-    expect($$("notification-peek")).toHaveLength(2); // …two peeking under it
-    expect($("notification-count")!.textContent).toContain("4 notifications · 1 more");
-    await click($("notification-count")!.querySelector("button[aria-expanded]"));
-    expect($$("notification-toast").map((t) => t.querySelector(".font-medium")!.textContent)).toEqual(["Fourth", "Third", "Second", "First"]);
-    expect($$("notification-peek")).toHaveLength(0);
-    await click([...$("notification-count")!.querySelectorAll("button")].find((b) => b.textContent === "Clear all")!);
+    // The count bar takes the bell's spot and the stack sits on it.
+    const bar = $("notification-count")!;
+    expect(bar.style.bottom).toBe(`${window.innerHeight - bellTop + 8}px`);
+    expect(host.style.bottom).toBe(`${window.innerHeight - bellTop + 8 + COUNT_BAR_SPACE}px`);
+    expect(bar.textContent).toContain("4 notifications");
+    const stacked = cards();
+    const byTitle = (t: HTMLElement) => t.querySelector(".font-medium")!.textContent;
+    const front = stacked.find((t) => t.getAttribute("data-front") === "true")!;
+    expect(byTitle(front)).toBe("Fourth"); // newest in front
+    expect(stacked.filter((t) => t.getAttribute("data-visible") === "true").map(byTitle).sort()).toEqual(["Fourth", "Second", "Third"]); // three show
+    expect(stacked.find((t) => byTitle(t) === "First")!.getAttribute("aria-hidden")).toBe("true"); // the fourth waits
+    expect(stacked.every((t) => t.getAttribute("data-expanded") === "false")).toBe(true);
+    expect(stacked.find((t) => t.getAttribute("data-index") === "1")!.style.getPropertyValue("--y")).toContain("scale(0.95)"); // lifted, smaller
+    // Hover spreads the stack and holds every auto-hide clock; leaving collapses it again.
+    await mouse(front, "mousemove");
+    expect(cards().every((t) => t.getAttribute("data-expanded") === "true")).toBe(true);
+    expect(centre.toastsPaused()).toBe(true);
+    await mouse(front, "mouseout", document.body);
+    expect(cards().every((t) => t.getAttribute("data-expanded") === "false")).toBe(true);
+    expect(centre.toastsPaused()).toBe(false);
+    // The count bar's toggle does the same, for a keyboard or a finger.
+    await click(bar.querySelector("button[aria-expanded]"));
+    expect(cards().every((t) => t.getAttribute("data-expanded") === "true")).toBe(true);
+    await click([...bar.querySelectorAll("button")].find((b) => b.textContent === "Clear all")!);
+    expect(cards()).toHaveLength(0);
+    await exit();
     expect($("notification-host")).toBeNull();
     expect($("notifications-unread")!.textContent).toBe("4"); // Clear all is the stack, not the centre
+  });
+
+  test("auto-hide pauses while the stack is hovered and resumes when the pointer leaves; a swipe left dismisses", async () => {
+    await open("/");
+    const s = await live();
+    await push(s, note({ id: 20, kind: "finished", title: "Quick" }));
+    const card = cards()[0]!;
+    await mouse(card, "mousemove");
+    await act(async () => { await wait(90); }); // past the 40ms auto-hide: held
+    expect(cards()).toHaveLength(1);
+    await mouse(card, "mouseout", document.body);
+    await act(async () => { await wait(90); });
+    expect(cards()).toHaveLength(0); // the clock ran out once you looked away
+    await exit();
+    await push(s, note({ id: 21, kind: "failed", title: "Swipe me" }));
+    const swiped = cards()[0]!;
+    const body = swiped.querySelector('[data-slot="notification-time"]')!;
+    await pointer(body, "pointerdown", 200, 500);
+    await pointer(body, "pointermove", 150, 501);
+    await pointer(body, "pointermove", 140, 501);
+    await pointer(body, "pointerup", 140, 501);
+    expect(swiped.getAttribute("data-swipe-out")).toBe("left");
+    expect(cards()).toHaveLength(0);
+    expect($("notifications-unread")!.textContent).toBe("2"); // a swipe is a dismiss: the centre keeps it
   });
 
   test("a finished toast hides itself; a needs-input or failed one stays until dismissed", async () => {
@@ -115,11 +189,11 @@ describe("the notification centre", () => {
     const s = await live();
     await push(s, note({ kind: "finished", title: "Quick" }));
     await push(s, note({ kind: "needs_input", title: "Waiting" }));
-    expect($$("notification-toast").length + $$("notification-peek").length).toBe(2);
+    expect(cards()).toHaveLength(2);
     await act(async () => { await wait(90); });
-    expect($$("notification-toast").map((t) => t.getAttribute("data-kind"))).toEqual(["needs_input"]);
+    expect(cards().map((t) => t.getAttribute("data-kind"))).toEqual(["needs_input"]);
     await act(async () => { await wait(90); });
-    expect($$("notification-toast")).toHaveLength(1); // still there
+    expect(cards()).toHaveLength(1); // still there
   });
 
   test("do-not-disturb and a kind switched off in Settings silence the toast; the centre still fills; a stale catch-up never pops", async () => {
@@ -133,7 +207,8 @@ describe("the notification centre", () => {
     expect($("notification-host")).toBeNull();
     await push(s, note({ kind: "failed" }));
     expect($$("notification-toast")).toHaveLength(1);
-    centre.clearToasts();
+    await act(async () => { centre.clearToasts(); await flush(); });
+    await exit();
     await act(async () => { getDefaultStore().set(notifyDndAtom, true); await flush(); });
     await push(s, note({ kind: "needs_input" }));
     expect($("notification-host")).toBeNull();
@@ -183,14 +258,22 @@ describe("the notification centre", () => {
     expect(panel.textContent).toContain("No notifications yet.");
   });
 
-  test("a toast's Open takes you to the workstream (or the preview URL) and marks it read; the centre's DND toggle", async () => {
+  test("a toast's title opens the workstream's page (its PR's agent page, not GitHub) and marks it read; Open workstream too; the centre's DND toggle", async () => {
     await open("/");
     const s = await live();
     await push(s, note({ id: 9, kind: "failed" }));
-    await click([...$("notification-toast")!.querySelectorAll("button")].find((b) => b.textContent === "Open"));
+    await click($("notification-title"));
     expect(location.pathname).toBe("/r/local/feat-x");
     expect(apiFake.notificationCalls).toEqual([{ verb: "read", ids: [9] }]);
-    expect($("notification-toast")).toBeNull();
+    expect(cards()).toHaveLength(0);
+    // A PR's CI failing is the workstream too — its agent page, not GitHub.
+    await push(s, note({ id: 10, kind: "pr_ci_failed", link: { pr: 7 } }));
+    await click(cards()[0]!.querySelector('[data-slot="notification-title"]'));
+    expect(location.pathname).toBe("/r/prs/7");
+    navigate("/");
+    await push(s, note({ id: 11, kind: "finished" }));
+    await click(button(cards()[0]!, "Open workstream"));
+    expect(location.pathname).toBe("/r/local/feat-x");
     await click($("notifications-bell"));
     await click(document.body.querySelector('button[aria-label="Do not disturb"]'));
     expect(getDefaultStore().get(notifyDndAtom)).toBe(true);
@@ -206,7 +289,68 @@ describe("the notification centre", () => {
     apiFake.notificationsData.push(note({ id: 51, kind: "failed", title: "While away" }));
     await act(async () => { emit(first, "ready", {}); await flush(); await flush(); });
     expect(apiFake.notificationFetches.at(-1)).toBe(apiFake.notificationsData[0]!.createdAt as number);
-    expect($("notification-toast")!.textContent).toContain("While away");
+    expect(cards()[0]!.textContent).toContain("While away");
     expect($("notifications-unread")!.textContent).toBe("2");
+  });
+
+  test("quick actions: hovering a CI-failed toast shows Address PR + View PR + Read; Address PR runs the store's one agent verb, marks it read and clears the toast", async () => {
+    apiFake.prsData = [{ number: 7, title: "Red CI", branch: "feat-x", url: "https://github.com/o/r/pull/7", state: "OPEN", isDraft: false, ciStatus: "failing", failingChecks: ["test"], reviewStatus: "none", mergeable: "MERGEABLE", autoMergeEnabled: false }];
+    await open("/");
+    const s = await live();
+    await push(s, note({ id: 30, kind: "pr_ci_failed", title: "Red CI", link: { pr: 7 } }));
+    const toast = cards()[0]!;
+    expect(actionsOf(toast).getAttribute("data-shown")).toBe("false"); // a mouse: hidden until hover
+    await mouse(toast, "mousemove");
+    expect(actionsOf(toast).getAttribute("data-shown")).toBe("true");
+    expect([...actionsOf(toast).querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Address PR", "View PR", "Read"]);
+    await click(button(toast, "Address PR"));
+    await act(async () => { await flush(); await flush(); await flush(); });
+    expect(apiFake.calls.some((c) => c.startsWith("agent:"))).toBe(true); // the same launch the board's Address PR makes
+    expect(apiFake.claudePrompts.at(-1)).toContain("#7");
+    expect(apiFake.notificationCalls).toContainEqual({ verb: "read", ids: [30] });
+    await act(async () => { await wait(900); });
+    expect(cards()).toHaveLength(0);
+    await mouse(toast, "mouseout", document.body);
+  });
+
+  test("quick actions on a touch screen show without hover; Read marks it read and takes the toast off the stack", async () => {
+    const restore = touchScreen();
+    try {
+      await open("/");
+      const s = await live();
+      await push(s, note({ id: 40, kind: "needs_input", title: "Question" }));
+      const toast = cards()[0]!;
+      expect(actionsOf(toast).getAttribute("data-shown")).toBe("true");
+      expect([...actionsOf(toast).querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Reply", "Open workstream", "Read"]);
+      await click(button(toast, "Read"));
+      expect(apiFake.notificationCalls).toEqual([{ verb: "read", ids: [40] }]);
+      expect(cards()).toHaveLength(0);
+      expect($("notifications-unread")).toBeNull();
+    } finally { restore(); }
+  });
+
+  test("Reply opens the agent page's Chat tab with its composer focused", async () => {
+    await open("/");
+    const s = await live();
+    await push(s, note({ id: 41, kind: "needs_input", title: "Question" }));
+    await click(button(cards()[0]!, "Reply"));
+    expect(location.pathname + location.search).toBe("/r/local/feat-x/chat?reply=1");
+  });
+
+  test("the centre's rows carry the same quick actions on hover: Read, a kind's verb, and a dismiss ×", async () => {
+    apiFake.notificationsData = [note({ id: 60, kind: "failed", title: "Broke" })];
+    await open("/");
+    await click($("notifications-bell"));
+    const row = $("notification-row")!.closest("li")!;
+    expect(actionsOf(row).getAttribute("data-shown")).toBe("false");
+    await mouse(row, "mousemove");
+    expect(actionsOf(row).getAttribute("data-shown")).toBe("true");
+    expect([...actionsOf(row).querySelectorAll("button")].map((b) => b.textContent || b.getAttribute("aria-label"))).toEqual(["Open chat", "Read", "Dismiss"]);
+    await click(button(row, "Read"));
+    expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "read", ids: [60] });
+    expect($("notification-row")!.hasAttribute("data-unread")).toBe(false);
+    await click(actionsOf($("notification-row")!.closest("li")!).querySelector('button[aria-label="Dismiss"]'));
+    expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "dismiss", ids: [60] });
+    expect($$("notification-row")).toHaveLength(0);
   });
 });

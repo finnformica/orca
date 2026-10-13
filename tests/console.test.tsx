@@ -11,7 +11,7 @@ import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import { repoFilterAtom } from "@/lib/atoms";
 import {
-  agentFailure, chatSummary, countMax, downsample, formatDuration, niceMax, repoSummaries, routingBroken, rowDuration, timeTicks, turnMatches, untilReset,
+  agentFailure, chatSummary, downsample, formatDuration, instanceOrder, niceMax, repoSummaries, routingBroken, rowDuration, timeTicks, turnMatches, untilReset,
   usageGroups, type OverviewRow,
 } from "@/workstream";
 
@@ -64,13 +64,19 @@ describe("console derivations (pure)", () => {
     expect(d.every((p) => Math.abs(p.v - 20) < 1)).toBe(true); // alternating 10/30 averages to 20
     expect(downsample(week.slice(0, 10), 300, from, NOW)).toHaveLength(10);
     expect([niceMax(0), niceMax(15.3), niceMax(31), niceMax(100), niceMax(0.4)]).toEqual([1, 20, 50, 100, 0.5]);
-    // A session count's axis: an even integer above the peak, so the middle tick is whole too.
-    expect([0, 1, 2, 3, 4, 5, 9].map(countMax)).toEqual([2, 2, 4, 4, 6, 6, 10]);
     const t = timeTicks(NOW - 6 * 3_600_000, NOW, 4);
     expect(t).toHaveLength(4);
     expect(t[3]!.label).toBe("now"); // the right edge
     expect(t[0]!.label).toBe(new Date(NOW - 6 * 3_600_000).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })); // clock time within a day
     expect(timeTicks(NOW - 168 * 3_600_000, NOW)[0]!.label).toBe(new Date(NOW - 168 * 3_600_000).toLocaleDateString("en-GB", { day: "numeric", month: "short" })); // dates beyond
+  });
+
+  test("instance order: cloud first, then local, then others alphabetically — regardless of input order", () => {
+    expect(instanceOrder(["local", "cloud"])).toEqual(["cloud", "local"]);
+    expect(instanceOrder(["cloud", "local"])).toEqual(["cloud", "local"]);
+    expect(instanceOrder(["local", "cloud", "zed", "alpha"])).toEqual(["cloud", "local", "alpha", "zed"]);
+    expect(instanceOrder(["local"])).toEqual(["local"]);
+    expect(instanceOrder([])).toEqual([]);
   });
 
   test("durations: running counts from launch, otherwise the last turn's length; Vercel's compact format", () => {

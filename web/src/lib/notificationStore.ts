@@ -7,7 +7,7 @@ import { getDefaultStore } from "jotai";
 import { api } from "../api";
 import { subscribeNotifications } from "./events";
 import { browserNotifyAtom, notifyDndAtom, orchestratorOpenAtom, toastPrefsAtom } from "./atoms";
-import { KIND_META, TOAST_AUTO_HIDE_MS, notificationPath, shouldNotifyBrowser, shouldToast, type Notification, type ToastPrefs } from "../../../shared/notifications";
+import { KIND_META, TOAST_AUTO_HIDE_MS, clockPause, clockResume, clockStart, notificationPath, shouldNotifyBrowser, shouldToast, type HideClock, type Notification, type ToastPrefs } from "../../../shared/notifications";
 import { navigate } from "./route";
 
 type State = { list: Notification[]; toasts: Notification[] };
@@ -16,6 +16,10 @@ let watermark = 0; // newest createdAt known — the catch-up cursor after a dro
 let started = false;
 let stop: (() => void) | undefined;
 const timers = new Map<number, ReturnType<typeof setTimeout>>();
+// Each auto-hiding toast's clock; while the stack is paused (hovered, touched, the tab hidden) they
+// all hold what is left, as sonner's do.
+const clocks = new Map<number, HideClock>();
+let paused = false;
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((l) => l());
 const set = (patch: Partial<State>) => { state = { ...state, ...patch }; notify(); };
@@ -54,9 +58,37 @@ function merge(incoming: Notification[], pop: boolean): void {
 }
 
 function scheduleHide(id: number): void {
-  clearTimeout(timers.get(id));
-  timers.set(id, setTimeout(() => { timers.delete(id); dismissToast(id); }, toastTiming.autoHideMs));
+  clocks.set(id, clockStart(toastTiming.autoHideMs, Date.now(), paused));
+  arm(id);
 }
+
+/** (Re)arm a toast's timer for what its clock has left; a paused clock has no timer. */
+function arm(id: number): void {
+  clearTimeout(timers.get(id));
+  timers.delete(id);
+  const clock = clocks.get(id);
+  if (!clock || clock.since === undefined) return;
+  timers.set(id, setTimeout(() => { timers.delete(id); dismissToast(id); }, clock.remaining));
+}
+
+/** Hold every auto-hide clock (the stack is expanded, touched, or the tab is hidden). */
+export function pauseToasts(): void {
+  if (paused) return;
+  paused = true;
+  const now = Date.now();
+  for (const [id, c] of clocks) { clocks.set(id, clockPause(c, now)); arm(id); }
+}
+
+/** Let the clocks run down again from what each had left. */
+export function resumeToasts(): void {
+  if (!paused) return;
+  paused = false;
+  const now = Date.now();
+  for (const [id, c] of clocks) { clocks.set(id, clockResume(c, now)); arm(id); }
+}
+
+/** Tests: whether the clocks are held. */
+export const toastsPaused = (): boolean => paused;
 
 /** A browser notification for an urgent event while the tab is hidden; clicking it brings the tab
  *  back and opens the thing. Silently nothing without the permission. */
@@ -99,6 +131,8 @@ export function reset(): void {
   started = false;
   for (const t of timers.values()) clearTimeout(t);
   timers.clear();
+  clocks.clear();
+  paused = false;
   watermark = 0;
   state = { list: [], toasts: [] };
   notify();
@@ -108,6 +142,7 @@ export function reset(): void {
 export function dismissToast(id: number): void {
   clearTimeout(timers.get(id));
   timers.delete(id);
+  clocks.delete(id);
   if (state.toasts.some((t) => t.id === id)) set({ toasts: state.toasts.filter((t) => t.id !== id) });
 }
 
@@ -115,6 +150,7 @@ export function dismissToast(id: number): void {
 export function clearToasts(): void {
   for (const t of timers.values()) clearTimeout(t);
   timers.clear();
+  clocks.clear();
   if (state.toasts.length) set({ toasts: [] });
 }
 
@@ -129,7 +165,7 @@ export async function markRead(ids: number[] | "all"): Promise<void> {
 /** Dismiss from the centre (and off the stack), optimistically. */
 export async function dismiss(ids: number[] | "all"): Promise<void> {
   const hit = (n: Notification) => ids === "all" || ids.includes(n.id);
-  for (const t of state.toasts) if (hit(t)) { clearTimeout(timers.get(t.id)); timers.delete(t.id); }
+  for (const t of state.toasts) if (hit(t)) { clearTimeout(timers.get(t.id)); timers.delete(t.id); clocks.delete(t.id); }
   set({ list: state.list.filter((n) => !hit(n)), toasts: state.toasts.filter((t) => !hit(t)) });
   await api.notificationsDismiss(ids).catch(() => {});
 }

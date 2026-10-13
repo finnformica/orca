@@ -193,6 +193,7 @@ describe("the phone layout (390px, touch)", () => {
     expect(bar.className).toContain("safe-area-inset-bottom");
     expect($('[data-slot="topbar-mark"]')!.className).toContain("md:hidden");
     expect($('[data-slot="ask-orchestrator"]')!.className).toContain("max-md:hidden");
+    expect($('[data-slot="quick-ask"]')!.className).toContain("max-md:hidden"); // …and the pill folds into the bottom bar's Orchestrator
     await click([...bar.querySelectorAll("button")].find((b) => b.textContent === "Agents")!);
     expect(location.pathname).toBe("/agents");
   });
@@ -350,7 +351,7 @@ describe("home-screen shortcuts", () => {
 });
 
 describe("the desktop layout is untouched", () => {
-  test("columns and chips as before; the orchestrator is the movable corner window", async () => {
+  test("columns and chips as before; the orchestrator is the right-hand side panel", async () => {
     await mount("/agents", false);
     expect($('[data-slot="workstream-list-header"]')).not.toBeNull();
     expect($('[data-branch="feat-phone"]')!.dataset.layout).toBeUndefined();
@@ -359,7 +360,9 @@ describe("the desktop layout is untouched", () => {
     act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
     await act(async () => { await flush(); await flush(); });
     expect($('[data-slot="orchestrator-panel"]')!.hasAttribute("data-sheet")).toBe(false);
-    expect(document.querySelectorAll('[data-slot="orchestrator-resize"]').length).toBe(8);
+    expect($('[data-slot="orchestrator-panel"]')!.className).toContain("fixed inset-y-0 right-0");
+    expect(document.querySelectorAll('[data-slot="orchestrator-resize"]').length).toBe(1); // its left edge
+    expect($('[data-slot="quick-ask-pill"]')).not.toBeNull(); // the desktop has the quick-ask pill…
   });
 });
 
