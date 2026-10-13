@@ -21,7 +21,7 @@ import { parseConfigDocument, type OrcaConfig } from "../server/config";
 import type { AgentTurn } from "../shared/agent";
 import {
   ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, WORKER_EVENT_MARKER, boardText, continuation, isWorkerProblem, onlyCleanReports, sessionHint, wakeExitReason,
-  wakeStoppedLine, workerEvent,
+  wakeProgress, wakeStoppedLine, workerEvent,
 } from "../web/src/workstream";
 import { installFakeGh, makeScratchRepo, setPrListFixture } from "./helpers";
 import { native } from "./happydom";
@@ -560,6 +560,49 @@ exit 1`));
   const doc = (orchestratorWakeBudgetUsd: unknown) => ({ repos: [{ name: "app", repoPath: "/a", worktreeRoot: "/a/.wt", baseBranch: "main" }], orchestratorWakeBudgetUsd });
   expect(parseConfigDocument(doc(0)).errors).toContain("orchestratorWakeBudgetUsd must be a positive number of dollars");
   expect(parseConfigDocument(doc(8)).config?.orchestratorWakeBudgetUsd).toBe(8);
+});
+
+test("O13b: a wake killed mid-turn (143) hands what it had done and said to the next wake", async () => {
+  wire();
+  // It spawned (the tool's result recorded), merged with no result before the kill, started its
+  // reply, then took a SIGTERM — the shape of tonight's reaper kills.
+  await fakeClaude(firstLaunch(`cat <<'JSON'
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"orca board"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"r/a | no PR"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"orca spawn --repo r --title Cache --model claude-sonnet-5"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"Spawned r/orca/cache-1a2b \\"Cache\\"."}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t3","name":"Bash","input":{"command":"gh pr merge 7 --squash"}}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Spawned the cache workstream on Sonnet; merging #7 next."}]}}
+JSON
+kill -TERM $$`));
+  await orchestrator.message(cfg(), "ship the cache and merge 7");
+  const [dead, retry] = await settled(orchTurns, 2);
+  expect(dead!.response).toStartWith("Wake stopped: exited with code 143");
+  expect(retry!.instruction).toBe("ship the cache and merge 7");
+  const section = retry!.prompt.slice(retry!.prompt.indexOf("## What the cut-off wake did"));
+  expect(section).toContain("- orca spawn: `orca spawn --repo r --title Cache --model claude-sonnet-5` → Spawned r/orca/cache-1a2b");
+  expect(section).toContain("- gh pr merge: `gh pr merge 7 --squash` → no result recorded");
+  expect(section).not.toContain("orca board"); // reading is not acting
+  expect(section).toContain("What it had started to tell the user:\nSpawned the cache workstream on Sonnet; merging #7 next.");
+  expect(retry!.prompt.indexOf("## Previous wake was cut off")).toBeLessThan(retry!.prompt.indexOf("## What the cut-off wake did"));
+  // Consumed by that wake: the next one hears nothing of it.
+  expect((await orchBlob()).cutOffProgress).toBeUndefined();
+  await orchestrator.message(cfg(), "thanks");
+  expect((await settled(orchTurns, 3))[2]!.prompt).not.toContain("What the cut-off wake did");
+});
+
+test("O13c: wakeProgress is empty for a wake that only read, and marks a failed action", () => {
+  expect(wakeProgress([{ at: 1, kind: "tool", id: "a", name: "Bash", input: { command: "orca board && gh pr view 3" } }])).toBe("");
+  expect(wakeProgress([
+    { at: 1, kind: "tool", id: "a", name: "Bash", input: { command: "orca notes set \"plan\"" } },
+    { at: 2, kind: "result", id: "a", output: "Notes saved." },
+    { at: 3, kind: "tool", id: "b", name: "Bash", input: { command: "orca send --repo r --branch b hi" } },
+    { at: 4, kind: "result", id: "b", output: "unknown branch", isError: true },
+  ])).toBe([
+    "What it had already done (do NOT do these again; check the board for their effect):",
+    "- orca notes set: `orca notes set \"plan\"` → Notes saved.",
+    "- orca send: `orca send --repo r --branch b hi` → failed: unknown branch",
+  ].join("\n"));
 });
 
 test("O14: a message whose wake dies twice is not queued a third time", async () => {

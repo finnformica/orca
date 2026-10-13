@@ -25,7 +25,7 @@ import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
-  orchestratorPrompt, sessionHint, wakeExitReason, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  orchestratorPrompt, sessionHint, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
   type BoardRow, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
@@ -61,6 +61,7 @@ type Blob = {
   handling?: { runId: string; instance: string; messages: string[] };
   died?: string[]; // messages whose wake has died once and are being retried; a second death drops them
   cutOff?: string; // why the last wake died, for the next wake's prompt
+  cutOffProgress?: string; // what that wake had already done and said (wakeProgress), for the same prompt
 };
 /** The model it runs on: its pin, else Opus. Its judgement — what to delegate, how to brief, which
  *  model a task deserves — is what the workers' quality rests on, so it gets a strong model; Fable
@@ -223,10 +224,13 @@ async function died(runId: string, exit: WakeExit, costUsd?: number): Promise<vo
   const retry = messages.filter((m) => !before.has(m));
   for (const m of retry) await enqueue(m);
   const reason = wakeExitReason(exit);
-  const toolCalls = (await agent.runSteps(runId).catch(() => [])).filter((s) => s.kind === "tool" && s.name !== "result").length;
+  const steps = await agent.runSteps(runId).catch(() => []);
+  const toolCalls = steps.filter((s) => s.kind === "tool" && s.name !== "result").length;
   await agent.flushHistory(); // the exit handler's own finish write lands first, or it would overwrite the line
   await db.failTurn(runId, wakeStoppedLine({ reason, toolCalls, costUsd, retried: retry.length, dropped: messages.length - retry.length }));
-  await patch({ handling: null, died: retry, cutOff: retry.length ? reason : null });
+  // What it had done is read off the steps it recorded as it went — they outlive the process — so the
+  // next wake neither repeats a spawn/merge nor leaves the user without the reply it had started.
+  await patch({ handling: null, died: retry, cutOff: retry.length ? reason : null, cutOffProgress: wakeProgress(steps) || null });
 }
 
 /** Startup: a wake that was in flight when the previous bridge stopped has nobody to report its
@@ -288,7 +292,7 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
       transcript: await db.turns(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH),
     });
     const shell = cfg.orchestratorShell !== false; // the full terminal toolset unless opted out
-    const prompt = orchestratorPrompt({ fresh: !next.resume, notes: b.notes, board: boardText(await board(cfg)), messages, shell, cutOff: b.cutOff });
+    const prompt = orchestratorPrompt({ fresh: !next.resume, notes: b.notes, board: boardText(await board(cfg)), messages, shell, cutOff: b.cutOff, cutOffProgress: b.cutOffProgress });
     const receipt = await agent.launch(dir(), dir(), prompt, {
       ...next, provider: "claude", repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
       instruction: messages.join("\n\n"), action: "orchestrate", queue: false,
@@ -303,7 +307,7 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
         PATH: `${new URL("../bin", import.meta.url).pathname}:${process.env.PATH ?? ""}`,
       },
     });
-    await patch({ sessionId: receipt.sessionId, handling: { runId: receipt.runId, instance: db.instanceName(), messages }, cutOff: null });
+    await patch({ sessionId: receipt.sessionId, handling: { runId: receipt.runId, instance: db.instanceName(), messages }, cutOff: null, cutOffProgress: null });
   } catch (e) {
     // The messages were claimed off the queue; a launch that never happened must not eat them.
     for (const m of claimed) await enqueue(m.instruction, m.attachments).catch(() => {});

@@ -2,7 +2,7 @@
 // so both the store and the e2e tests import it directly.
 
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
-import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentTurn, type TurnCheck } from "../../shared/agent";
+import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type TurnCheck } from "../../shared/agent";
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
 export { attachCommand } from "../../shared/agent";
 
@@ -894,6 +894,33 @@ export function wakeStoppedLine(input: { reason: string; toolCalls: number; cost
     ...(input.dropped ? ["Not retried again: the wake handling this has now died twice. Send it again to retry."] : []),
   ].join("\n");
 }
+/** Commands that change something — what a wake that died must not repeat. `orca` verbs and the
+ *  `gh pr` writes the orchestrator runs with its shell. */
+const ACTING_COMMAND = /\b(orca\s+(?:spawn|send|address|archive|move|merge|preview|notes\s+set)|gh\s+pr\s+(?:merge|create|ready|close|edit|comment))\b/g;
+/** What a wake that was cut off had already done, condensed for the next wake's prompt: each acting
+ *  command it ran with the first line of what it printed, then the reply it had started (its text,
+ *  tail-clipped). Built from the steps the run recorded as it went, so it survives the process. Empty
+ *  when it had done nothing that matters. Pure. */
+export function wakeProgress(steps: AgentStep[] | undefined): string {
+  if (!steps?.length) return "";
+  const results = new Map(steps.filter((s) => s.kind === "result" && s.id).map((s) => [s.id!, s]));
+  const actions: string[] = [];
+  for (const s of steps) {
+    if (s.kind !== "tool" || s.name !== "Bash") continue;
+    const command = String(((s.input ?? {}) as { command?: unknown }).command ?? s.detail ?? "");
+    const verbs = [...new Set([...command.matchAll(ACTING_COMMAND)].map((m) => m[1]!.replace(/\s+/g, " ")))];
+    if (!verbs.length) continue;
+    const r = s.id ? results.get(s.id) : undefined;
+    const said = r?.output?.trim().split("\n").filter(Boolean).slice(0, 3).join(" / ");
+    const outcome = !r ? "no result recorded — it may or may not have happened" : r.isError ? `failed: ${clip(said ?? "", 200)}` : clip(said || "(no output)", 300);
+    actions.push(`- ${verbs.join(", ")}: \`${clip(command.replace(/\s+/g, " ").trim(), 240)}\` → ${outcome}`);
+  }
+  const text = steps.filter((s) => s.kind === "text" && s.text?.trim()).map((s) => s.text!.trim()).join("\n\n");
+  return [
+    ...(actions.length ? ["What it had already done (do NOT do these again; check the board for their effect):", ...actions] : []),
+    ...(text ? [`${actions.length ? "\n" : ""}What it had started to tell the user:`, text.length > 1500 ? `…${text.slice(-1500)}` : text] : []),
+  ].join("\n");
+}
 /** A resumed session re-reads its whole history on every wake, so cost per wake grows with it. Says
  *  so once a wake costs half its cap or the context is half full — a hint only, nothing is reset. Pure. */
 export function sessionHint(input: { contextPct?: number; lastWakeUsd?: number; budgetUsd?: number }): string | undefined {
@@ -1027,10 +1054,16 @@ const ORCHESTRATOR_ROLE = [
   "- Keep replies short and concrete: what you did, what is running, what needs the user.",
 ].join("\n");
 
+/** The dead wake's own record (wakeProgress), under the cut-off notice — kept apart from it so a
+ *  wake that died twice (its message dropped, no notice) still tells the next one what it did. */
+function cutOffProgressSection(progress: string | undefined): string[] {
+  return progress?.trim() ? ["", "## What the cut-off wake did", progress.trim(), "Finish the reply from here: say what was done, and do only what is left."] : [];
+}
+
 /** The orchestrator's prompt for one wake. The role goes in only when the session starts (or
  *  restarts after a context reset); the notes and a fresh board go in EVERY time, because they are
  *  what makes the session disposable — everything it needs to carry on is outside its context. */
-export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[]; shell?: boolean; cutOff?: string }): string {
+export function orchestratorPrompt(input: { fresh: boolean; notes?: string; board: string; messages: string[]; shell?: boolean; cutOff?: string; cutOffProgress?: string }): string {
   return [
     ...(input.fresh ? [ORCHESTRATOR_ROLE, ""] : []),
     // Every wake, not just the first: the setting can change under a session that is being resumed.
@@ -1051,6 +1084,7 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     "", "## Board", input.board,
     // The wake before this one died mid-turn: say so, or the user has to ask why it went quiet.
     ...(input.cutOff ? ["", "## Previous wake was cut off", `Your previous wake ${input.cutOff} before it finished its turn, so the user got no reply. What it was handling is under New again. It may already have acted: check the board before you spawn or send (never start the same work twice), then finish the reply.`] : []),
+    ...cutOffProgressSection(input.cutOffProgress),
     "", "## New", input.messages.join("\n\n"),
   ].join("\n");
 }
