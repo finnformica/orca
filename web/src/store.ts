@@ -18,7 +18,6 @@ import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent"
 import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
 import { attachCommand, handoffPrompt } from "../../shared/agent";
 import { poll } from "./lib/poll";
-import { toast } from "./lib/toast";
 
 const KEY = "orca.enrichment";
 const now = () => new Date().toISOString();
