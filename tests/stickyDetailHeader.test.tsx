@@ -34,6 +34,13 @@ async function mount(node: React.ReactNode = <LocalDetail repo="r" branch="stick
     root.render(node);
     await flush(); await flush(); await flush();
   });
+  // The diff loads async (api.localDiff/api.prDiff → setDiff): a fixed number of ticks raced that
+  // promise under a busier CI runner and left the accordion unrendered ("Loading diff…" still
+  // showing) when a test went looking for its trigger. Poll the actual condition instead of
+  // guessing a bigger constant.
+  for (let i = 0; i < 20 && container!.textContent?.includes("Loading diff…"); i++) {
+    await act(async () => { await flush(); });
+  }
 }
 
 afterEach(() => {

@@ -229,11 +229,14 @@ describe("the console's pages", () => {
     expect(chat.querySelector('input[aria-label="Find in chat"]')).toBeNull();
     const times = chat.querySelectorAll('[data-slot="turn-time"]');
     expect(times).toHaveLength(3);
-    // Sticky within each turn's own row, offset below the running/stop banner's own sticky bar so
-    // the two are never stuck in the same place at once; a background keeps the stuck line readable.
+    // Sticky within each turn's own row. Not running, so the offset matches the log's own left
+    // padding (px-4 md:px-6) rather than clearing the (absent) running/stop banner — the gap to the
+    // top border equals the gap to the left border; a background keeps the stuck line readable.
     for (const t of times) {
       expect(t.className).toContain("sticky");
-      expect(t.className).toContain("top-7");
+      expect(t.className).toContain("top-4");
+      expect(t.className).toContain("md:top-6");
+      expect(t.className).not.toContain("top-7");
       expect(t.className).toContain("bg-neutral-950");
     }
     expect(chat.querySelector('[data-slot="chat-turn"][data-failed]')!.className).toContain("bg-red-500/10"); // tinted like an error line
@@ -259,9 +262,16 @@ describe("the console's pages", () => {
   });
 
   test("agent page: a running agent shows in the header's status (the chat has no toolbar for it)", async () => {
+    seedLocal();
     apiFake.agentsData = [{ branch: "feat-login", worktreePath: "/wt/feat-login", agentStatus: "running" }];
     await open("/r/local/feat-login/chat");
     expect($("agent-header").querySelector('[data-slot="agent-header-status"]')!.textContent).toBe("Running");
+    // While running, the stop banner is sticky at the log's own top-0 — the timestamps fall back to
+    // clearing it (top-7) instead of matching the left inset.
+    for (const t of $("agent-chat").querySelectorAll('[data-slot="turn-time"]')) {
+      expect(t.className).toContain("top-7");
+      expect(t.className).not.toContain("top-4");
+    }
   });
 
   test("agent page: clicking the Chat tab focuses its composer without disturbing Overview's own load", async () => {
