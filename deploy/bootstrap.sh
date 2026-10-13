@@ -8,6 +8,12 @@ ts_name=$(tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//')
 export PATH="$HOME/.bun/bin:$HOME/.local/bin:$PATH"
 bun install --frozen-lockfile
 bun run build
+
+# Per-run memory ceiling (server/cgroup.ts): `systemd-run --user --scope` needs a user manager +
+# bus, which `orca` — a service account that never logs in interactively — has none of by default.
+# Lingering starts one at boot regardless, and persists across reboots. Without this, every agent
+# run still works; it just isn't memory-capped (cgroup.available() sees no bus and no-ops).
+sudo loginctl enable-linger orca
 [ -f .env ] || cat > .env <<ENV
 ORCA_DEV_ROOT=/opt
 ORCA_INSTANCE=cloud
