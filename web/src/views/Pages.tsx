@@ -195,9 +195,9 @@ function MachineRate({ instance, saved }: { instance: string; saved: number | un
     catch (e) {
       const error = e instanceof Error ? e.message : String(e);
       notifyLocal({
-        kind: "action_failed", repo: "", title: `Instance ${instance}`, label: "Save rate failed", body: error,
-        copy: `Action: Save hourly rate for ${instance}\nError:\n${error}`,
-        ask: `Saving the hourly rate for instance ${instance} failed: ${error}. Please investigate and fix.`,
+        kind: "action_failed", repo: "", title: `Machine cost · ${instance}`, label: "Save rate failed", body: error,
+        copy: `Action: Save rate for ${instance}\nError:\n${error}`,
+        ask: `Save rate for ${instance} failed: ${error}. Please investigate and fix.`,
       });
     }
     finally { setBusy(false); }
