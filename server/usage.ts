@@ -183,6 +183,11 @@ export async function readClaudeToken(configDir = DEFAULT_CLAUDE_DIR): Promise<s
 const lastGoodClaude = new Map<string, ClaudeUsage>();
 let lastGoodCodex: CodexUsage | null = null;
 
+// A box with no `codex` on PATH logged "Executable not found" on every usage poll — dozens of
+// lines an hour in journalctl, for something that will never change until the next restart. Said
+// once, not every poll.
+let loggedMissingCodex = false;
+
 async function claudeUsage(configDir = DEFAULT_CLAUDE_DIR): Promise<ClaudeUsage | null> {
   try {
     const token = await readClaudeToken(configDir);
@@ -201,8 +206,18 @@ async function claudeUsage(configDir = DEFAULT_CLAUDE_DIR): Promise<ClaudeUsage 
   return lastGoodClaude.get(configDir) ?? null;
 }
 
-/** Ask the installed Codex CLI for the same percentage limits shown by `/usage`. */
+/** Ask the installed Codex CLI for the same percentage limits shown by `/usage`. `codex: null` in
+ *  the payload covers both "not installed" and "installed but the read failed" — the meter has
+ *  nothing to show either way; this function only controls how noisy getting there is. */
 async function codexUsage(): Promise<CodexUsage | null> {
+  // Live PATH, not Bun's startup snapshot — the test PATH shim relies on it, same as hydraUsage.
+  if (!Bun.which("codex", { PATH: process.env.PATH ?? "" })) {
+    if (!loggedMissingCodex) {
+      loggedMissingCodex = true;
+      console.error("[usage] codex not found on PATH; not installed, so Codex usage will read null until the bridge restarts");
+    }
+    return null;
+  }
   let proc: ReturnType<typeof Bun.spawn> | null = null;
   try {
     const child = Bun.spawn(["codex", "app-server", "--listen", "stdio://"], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });

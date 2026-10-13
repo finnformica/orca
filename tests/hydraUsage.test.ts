@@ -104,6 +104,32 @@ test("routingInfo: the shim marker in `claude`'s header decides whether routing 
   expect(isHydraShim("ELF…binary…")).toBe(false);
 });
 
+test("a PATH with no codex logs the miss once, not on every poll, and reads null", async () => {
+  // No codex (and no hydra/claude either) on PATH at all.
+  const empty = await mkdtemp(join(tmpdir(), "orca-nocodex-"));
+  prevPath = process.env.PATH;
+  process.env.PATH = empty;
+  const original = console.error;
+  const lines: string[] = [];
+  console.error = (...args: unknown[]) => { lines.push(args.map(String).join(" ")); };
+  try {
+    const misses = () => lines.filter((l) => l.includes("[usage] codex not found")).length;
+
+    const first = await usage();
+    // `usage()` reads Claude's own usage independently of PATH (it goes through ~/.claude, not a
+    // binary) — whichever way THAT resolves on the machine running this test, Codex reads null.
+    expect(first?.codex ?? null).toBeNull();
+    const afterFirst = misses(); // 0 or 1: another test in this process may have already tripped it
+
+    await usage();
+    await usage();
+    expect(misses()).toBe(afterFirst); // two more polls add no further line — logged once, not per poll
+  } finally {
+    console.error = original;
+    await rm(empty, { recursive: true, force: true });
+  }
+});
+
 test("routingInfo without hydra or claude on PATH reports neither", async () => {
   const empty = await mkdtemp(join(tmpdir(), "orca-nopath-"));
   prevPath = process.env.PATH;
