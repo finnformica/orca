@@ -8,8 +8,8 @@ import { AlertTriangle, ChevronDown, ChevronUp, Server } from "lucide-react";
 import { usageExpandedAtom } from "@/lib/atoms";
 import { persistedKey, usePersisted } from "@/lib/persisted";
 import { useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
-import { HISTORY_RANGES, countMax, downsample, routingBroken, usageGroups, type UsageGroup } from "../workstream";
-import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard, type ChartOverlay } from "@/components/console";
+import { HISTORY_RANGES, downsample, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
  *  fleet + Codex) always show, and Vercel's chevron (or the header row) expands the per-login breakdown.
@@ -89,13 +89,6 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const cpu = downsample((history ?? []).map((p) => ({ at: p.at, v: p.cpuPct })), 300, from, to);
   const mem = downsample((history ?? []).map((p) => ({ at: p.at, v: p.memUsedGb })), 300, from, to);
   const memTotal = h?.memTotalGb ?? Math.max(1, ...(history ?? []).map((p) => p.memTotalGb));
-  // Running sessions on this instance, same window and downsampling as cpu/mem — overlaid on both
-  // graphs as a pink series on its own right-hand axis (a different scale: a small integer count).
-  // A bridge from before migration 13 sends no `runningAgents` at all: that is "unknown", not a flat
-  // 0, so no overlay is drawn rather than a line claiming nothing ran.
-  const sessions = downsample((history ?? []).filter((p) => p.runningAgents != null).map((p) => ({ at: p.at, v: p.runningAgents! })), 300, from, to);
-  const sessionsOverlay: ChartOverlay | undefined = !sessions.length ? undefined : { points: sessions, label: "Sessions", fmt: (v) => `${Math.round(v)}`, color: "var(--geist-pink)",
-    max: countMax(Math.max(0, ...sessions.map((p) => p.v))) };
   const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
   return (
     <VCard
@@ -123,8 +116,8 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
         : !history.length ? <Empty>No history recorded yet — the sampler writes once a minute.</Empty>
         : (
           <div className="grid gap-6 p-4 md:grid-cols-2">
-            <LineChart slot="chart-cpu" label="CPU" points={cpu} from={from} to={to} max={100} fmt={(v) => `${Math.round(v)}%`} overlay={sessionsOverlay} />
-            <LineChart slot="chart-mem" label="Memory used" points={mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" overlay={sessionsOverlay} />
+            <LineChart slot="chart-cpu" label="CPU" points={cpu} from={from} to={to} max={100} fmt={(v) => `${Math.round(v)}%`} />
+            <LineChart slot="chart-mem" label="Memory used" points={mem} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" />
           </div>
         )}
     </VCard>

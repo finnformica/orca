@@ -52,10 +52,10 @@ test("CPU and memory as line graphs from the last 24h, labelled with the newest 
   expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 24 }]);
   const cpu = container!.querySelector('[data-slot="chart-cpu"]')!;
   const mem = container!.querySelector('[data-slot="chart-mem"]')!;
-  // The main reading on the right; the sessions overlay's value beside the title (0 — none running here).
+  // The main reading on the right, no sessions overlay beside the title.
   expect(cpu.querySelector('[data-slot="chart-value"]')!.textContent).toBe("23%");
   expect(mem.querySelector('[data-slot="chart-value"]')!.textContent).toBe("4.2 GB");
-  expect(cpu.querySelector("figcaption")!.textContent).toBe("CPU0 sessions23%");
+  expect(cpu.querySelector("figcaption")!.textContent).toBe("CPU23%");
   expect(cpu.querySelector("polyline")!.getAttribute("points")!.split(" ")).toHaveLength(3);
   expect(mem.querySelector("polyline")).toBeTruthy();
   expect(cpu.querySelector("svg")!.getAttribute("aria-label")).toBe("CPU, now 23%");
@@ -101,7 +101,7 @@ test("no history yet says so instead of an empty chart", async () => {
   expect(container!.querySelector('[data-slot="chart-cpu"]')).toBeNull();
 });
 
-test("running sessions overlay on CPU and memory, as a pink series on its own right-hand axis, aligned to the same window", async () => {
+test("no running-sessions overlay on CPU or memory — the axes and the one line are all that render, whatever runningAgents says", async () => {
   const now = Date.now();
   apiFake.healthHistoryData = [0, 1, 2].map((i) => ({
     at: now - (2 - i) * 60_000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: [0, 2, 1][i],
@@ -110,25 +110,20 @@ test("running sessions overlay on CPU and memory, as a pink series on its own ri
   await ready();
   for (const slot of ["chart-cpu", "chart-mem"]) {
     const chart = container!.querySelector(`[data-slot="${slot}"]`)!;
-    const lines = chart.querySelectorAll("polyline");
-    expect(lines).toHaveLength(2); // the main series, then the sessions overlay
-    const overlay = lines[1]!;
-    expect(overlay.getAttribute("stroke")).toBe("var(--geist-pink)");
-    // Same 3 samples, same [from, to] window as the main series — not a separate, misaligned fetch.
-    expect(overlay.getAttribute("points")!.split(" ")).toHaveLength(lines[0]!.getAttribute("points")!.split(" ").length);
-    // Whole-number ticks above the peak of 2 (top, middle, 0) — never "1, 1, 0" or a 2.5 read as "3".
-    expect([...chart.querySelectorAll('[data-slot="chart-axis-right"] span')].map((e) => e.textContent)).toEqual(["4", "2", "0"]);
-    // The newest sample (i=2) had 1 running session.
-    expect(chart.querySelector('[data-slot="chart-overlay-value"]')!.textContent).toBe("1 sessions");
-    // Beside the title, not squeezed in after the CPU % / GB value.
-    expect(chart.querySelector('[data-slot="chart-value"] [data-slot="chart-overlay-value"]')).toBeNull();
-    expect(chart.querySelector("figcaption > span:first-child [data-slot='chart-overlay-value']")).not.toBeNull();
+    // Only the main series renders — no second, dashed/pink polyline for sessions.
+    expect(chart.querySelectorAll("polyline")).toHaveLength(1);
+    // No overlay readout, and no second (right-hand) axis — just the usual left gutter.
+    expect(chart.querySelector('[data-slot="chart-overlay-value"]')).toBeNull();
+    expect(chart.querySelector('[data-slot="chart-axis-right"]')).toBeNull();
+    // The axis and gridlines are untouched: three left-hand ticks, three horizontal gridlines.
+    expect(chart.querySelectorAll('.text-muted-foreground.flex.w-8 span')).toHaveLength(3);
+    expect(chart.querySelectorAll("svg line")).toHaveLength(3);
   }
-  // One poll of /api/health/history feeds both the vitals and the sessions overlay — no second fetch.
+  // One poll of /api/health/history still feeds the vitals — the column is read, just not drawn.
   expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 24 }]);
 });
 
-test("a bridge that sends no runningAgents (pre-migration 13) gets no sessions overlay, not a flat 0", async () => {
+test("a bridge that sends no runningAgents (pre-migration 13) still renders the one CPU line fine", async () => {
   const now = Date.now();
   apiFake.healthHistoryData = [0, 1].map((i) => ({ at: now - (1 - i) * 60_000, cpuPct: 30, load1: 0.1, memUsedGb: 2, memTotalGb: 15.3 }));
   await render(<InstanceCard instance="cloud" here={false} />);
