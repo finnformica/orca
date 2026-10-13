@@ -7,8 +7,9 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as db from "../server/db";
-import { historyHours, sampleMetrics } from "../server/health";
+import { costSince, health, historyHours, resetCostWindow, sampleMetrics } from "../server/health";
 import * as lease from "../server/lease";
+import * as ledger from "../server/ledger";
 import { sparklineSegments } from "../web/src/workstream";
 import { freshSchema, type TestDb } from "./pg";
 
@@ -48,7 +49,7 @@ test("samples read back oldest first, within the hours asked for, for the instan
 
   const day = await db.metricHistory("cloud", 24, now);
   expect(day.map((p) => p.cpuPct)).toEqual([20, 30]);
-  expect(day[0]).toEqual({ at: now - 2 * H, cpuPct: 20, load1: 0.8, memUsedGb: 3.1, memTotalGb: 15.3, diskUsedGb: 11, runningAgents: 2 });
+  expect(day[0]).toEqual({ at: now - 2 * H, cpuPct: 20, load1: 0.8, memUsedGb: 3.1, memTotalGb: 15.3, diskUsedGb: 11, runningAgents: 2, costUsd: 0 });
   expect(day.map((p) => p.runningAgents)).toEqual([2, 1]);
   expect((await db.metricHistory("cloud", 48, now)).map((p) => p.cpuPct)).toEqual([10, 20, 30]);
   expect((await db.metricHistory("cloud", 1.5, now)).map((p) => p.cpuPct)).toEqual([30]);
@@ -109,6 +110,48 @@ test("the sampler counts live leases as running agents, not dead or expired ones
   } finally {
     lease.release("/wt/a"); lease.release("/wt/b"); lease.release("/wt/c");
   }
+});
+
+test("the live reading counts live leases too, so the card's Agents · N is the same count the sampler writes", async () => {
+  expect((await health()).runningAgents).toBe(0);
+  lease.acquire({ key: "/wt/live", worktreePath: "/wt/live", branch: "live", provider: "claude", runId: "rl", pid: process.pid, startedAt: Date.now() });
+  try { expect((await health()).runningAgents).toBe(1); } finally { lease.release("/wt/live"); }
+});
+
+test("cost: each sample records what the ledger's runs that finished since the previous one cost — counted once, across a restart too", async () => {
+  ledger.clear();
+  resetCostWindow();
+  await sampleMetrics(); // first sample: nothing has run
+  ledger.record({ kind: "run", provider: "claude", status: "done", costUsd: 0.5 });
+  ledger.record({ kind: "run", provider: "codex", status: "done" }); // no cost reported: 0
+  ledger.record({ kind: "pr-description", provider: "claude", status: "done", costUsd: 9 }); // not a run
+  await Bun.sleep(2);
+  await sampleMetrics();
+  await Bun.sleep(2);
+  await sampleMetrics(); // nothing new: 0, not 0.5 again
+  // A restart: the window is re-seeded from this instance's newest row, so a run that finished
+  // while the bridge was down is counted once — and nothing earlier is counted twice.
+  ledger.record({ kind: "run", provider: "claude", status: "error", costUsd: 0.25 });
+  resetCostWindow();
+  await Bun.sleep(2);
+  await sampleMetrics();
+  const rows = await db.metricHistory("cloud", 1);
+  expect(rows.map((r) => r.costUsd)).toEqual([0, 0.5, 0, 0.25]);
+  ledger.clear();
+});
+
+test("cost: a row from before migration 17 reads back as $0", async () => {
+  const sql = await db.open();
+  await sql`
+    INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, running_agents)
+    VALUES (${db.currentUser()}, 'cloud', ${new Date(Date.now() - H)}, 15, 0.6, 3, 15, 1)`;
+  expect((await db.metricHistory("cloud", 24))[0]!.costUsd).toBe(0);
+});
+
+test("costSince: runs only, in (from, to], summed", () => {
+  const e = (at: number, costUsd?: number, kind: "run" | "pr-description" = "run") => ({ at, kind, provider: "claude" as const, status: "done" as const, costUsd });
+  expect(costSince([e(10, 1), e(20, 2), e(30, 4), e(25, 8, "pr-description"), e(22)], 10, 30)).toBe(6);
+  expect(costSince([], 0, 1)).toBe(0);
 });
 
 test("hours: 24 by default, never past the 30 days kept", () => {
