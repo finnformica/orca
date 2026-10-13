@@ -41,8 +41,10 @@ test("a card per machine appears once config names them, with each one's vitals 
   expect(detail(cloud, "instance-status")).toContain("Online");
   expect(detail(cloud, "instance-cpu")).toContain("12%");
   expect(detail(cloud, "instance-mem")).toContain("3.1 / 15.3 GB");
-  // The machine's rate, marked as Orca's on-demand estimate when IMDS supplied the type.
-  expect(detail(cloud, "instance-cost")).toBe("Rate$0.2331/hest.");
+  // This month's cost — the rate over the hours it was up — marked as an estimate when IMDS supplied
+  // the type; the rate × hours behind it is the tooltip.
+  expect(detail(cloud, "instance-cost")).toBe("Cost · this month$5.52est.");
+  expect(cloud.querySelector('[data-slot="instance-cost"] [title]')!.getAttribute("title")).toBe("$0.23/h est. (m7i.xlarge) × 23.7 h up this month (UTC)");
 });
 
 const lastValue = (chart: Element) => chart.querySelector('[data-slot="chart-value"]')!.textContent;
@@ -130,18 +132,18 @@ test("no history yet says so instead of an empty chart", async () => {
   expect(container!.querySelector('[data-slot="chart-cpu"]')).toBeNull();
 });
 
-test("CPU and memory stay one line each, as on main; Agents and Cost accrued are charts of the same design beside them", async () => {
+test("CPU and memory stay one line each, as on main; Agents and Disk used are charts of the same design beside them", async () => {
   const now = Date.now();
   apiFake.healthHistoryData = [0, 1, 2].map((i) => ({
-    at: now - (2 - i) * 60_000 - 1000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: [0, 2, 1][i],
+    at: now - (2 - i) * 60_000 - 1000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: [0, 2, 1][i], diskUsedGb: [30, 31, 32][i],
   }));
   apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 12, load1: 0.5, load5: 0.4, memUsedGb: 3.1, memTotalGb: 15.3, uptimeS: 9, at: now, runningAgents: 3,
-    rate: { hourlyUsd: 36, source: "config" } };
+    disk: { usedGb: 35.7, totalGb: 144.3 }, rate: { hourlyUsd: 36, source: "config" }, month: { usd: 12, upHours: 0.33, since: 0 } };
   await render(<InstanceCard instance="cloud" here={false} />);
   await ready();
   const chart = (slot: string) => container!.querySelector(`[data-slot="${slot}"]`)!;
-  for (const slot of ["chart-cpu", "chart-mem", "chart-agents", "chart-cost"]) {
-    // One line, the left axis and its three gridlines — no overlay, no right-hand axis.
+  for (const slot of ["chart-cpu", "chart-mem", "chart-agents", "chart-disk"]) {
+    // One line, the left axis and its three gridlines — no overlay, no right-hand axis, no marks.
     expect(chart(slot).querySelectorAll("polyline")).toHaveLength(1);
     expect(chart(slot).querySelectorAll(".text-muted-foreground.flex.w-8")).toHaveLength(1);
     expect(chart(slot).querySelectorAll(".text-muted-foreground.flex.w-8 span")).toHaveLength(3);
@@ -153,25 +155,47 @@ test("CPU and memory stay one line each, as on main; Agents and Cost accrued are
   expect(chart("chart-agents").querySelector("figcaption")!.textContent).toBe("Agents3"); // the live count
   expect([...chart("chart-agents").querySelectorAll(".text-muted-foreground.flex.w-8 span")].map((e) => e.textContent)).toEqual(["4", "2", "0"]); // whole ticks
   expect(chart("chart-agents").querySelector("polyline")!.getAttribute("stroke")).toBe("var(--geist-pink)");
-  // Cost accrued: the MACHINE's rate over the time it was up — $36/h over the 121s from the first
-  // sample to the live reading is $1.21 — with the rate in the caption.
-  expect(chart("chart-cost").querySelector("figcaption")!.textContent).toBe("Cost accrued · $36.00/h$1.21");
+  // Disk used: the recorded samples ending on the live reading, on an axis up to the disk's size.
+  expect(chart("chart-disk").querySelector("figcaption")!.textContent).toBe("Disk used35.7 GB");
+  expect(linePoints(chart("chart-disk"))).toHaveLength(4);
+  expect([...chart("chart-disk").querySelectorAll(".text-muted-foreground.flex.w-8 span")].map((e) => e.textContent)).toEqual(["144G", "72G", "0G"]);
+  // The constant-rate cost ramp is gone; the month's cost is the details cell.
+  expect(container!.querySelector('[data-slot="chart-cost"]')).toBeNull();
+  expect(detail(container!, "instance-cost")).toBe("Cost · this month$12.00");
   expect(apiFake.healthHistoryCalls).toEqual([{ instance: "cloud", hours: 24 }]); // one poll feeds all four
 });
 
-test("a machine with no rate (the laptop, or an older bridge) greys the cost chart rather than drawing $0", async () => {
+test("an agent run OOM-killed in its scope is a red mark on the Memory chart, counted in its caption", async () => {
   const now = Date.now();
-  apiFake.healthHistoryData = [0, 1].map((i) => ({ at: now - (1 - i) * 60_000 - 1000, cpuPct: 30, load1: 0.1, memUsedGb: 2, memTotalGb: 15.3 }));
+  apiFake.healthHistoryData = [0, 1, 2, 3].map((i) => ({
+    at: now - (3 - i) * 60_000 - 1000, cpuPct: 50, load1: 2, memUsedGb: 12, memTotalGb: 15.3, runningAgents: 4, ...(i === 1 ? { oomKills: 2 } : i === 3 ? { oomKills: 1 } : {}),
+  }));
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  const mem = container!.querySelector('[data-slot="chart-mem"]')!;
+  const marks = [...mem.querySelectorAll('[data-slot="chart-mark"]')];
+  expect(marks).toHaveLength(2);
+  expect(marks.map((m) => m.getAttribute("stroke"))).toEqual(["var(--geist-red)", "var(--geist-red)"]);
+  expect(marks.map((m) => m.querySelector("title")!.textContent)).toEqual(["2 agent runs out of memory", "1 agent run out of memory"]);
+  expect(mem.querySelector('[data-slot="chart-oom"]')!.textContent).toBe(" · 3 OOM kills");
+  // Only on the Memory chart.
+  expect(container!.querySelectorAll('[data-slot="chart-mark"]')).toHaveLength(2);
+});
+
+test("a machine with no rate (the laptop) shows no cost, and no history of OOM kills means no marks", async () => {
+  const now = Date.now();
+  apiFake.healthHistoryData = [0, 1].map((i) => ({ at: now - (1 - i) * 60_000 - 1000, cpuPct: 30, load1: 0.1, memUsedGb: 2, memTotalGb: 15.3, diskUsedGb: 16 }));
   apiFake.healthData = { instance: "local", hostname: "mac", cores: 8, cpuPct: 30, load1: 0.5, load5: 0.4, memUsedGb: 2, memTotalGb: 15.3, uptimeS: 9, at: now, runningAgents: 0,
     rate: { hourlyUsd: 0, source: "none" } };
   await render(<InstanceCard instance="local" here={false} />);
   await ready();
-  expect(container!.querySelector('[data-slot="chart-cost"]')).toBeNull();
-  expect(container!.querySelector('[data-slot="chart-cost-off"]')!.textContent).toContain("instanceHourlyUsd");
-  expect(detail(container!, "instance-cost")).toBe("Rate—");
+  expect(detail(container!, "instance-cost")).toBe("Cost · this month—");
+  expect(container!.querySelector('[data-slot="chart-mark"]')).toBeNull();
+  expect(container!.querySelector('[data-slot="chart-oom"]')).toBeNull();
+  expect(lastValue(container!.querySelector('[data-slot="chart-disk"]')!)).toBe("16.0 GB"); // no live disk reading: the recorded one
 });
 
-test("a bridge that sends no runningAgents or rate (pre-migration 13 / this change) still renders: zero agents, no cost line", async () => {
+test("a bridge that sends no runningAgents, rate, month or disk (an older build) still renders: zero agents, no cost, an empty disk chart", async () => {
   const now = Date.now();
   apiFake.healthHistoryData = [0, 1].map((i) => ({ at: now - (1 - i) * 60_000 - 1000, cpuPct: 30, load1: 0.1, memUsedGb: 2, memTotalGb: 15.3 }));
   apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 30, load1: 0.5, load5: 0.4, memUsedGb: 2, memTotalGb: 15.3, uptimeS: 9, at: now };
@@ -179,7 +203,8 @@ test("a bridge that sends no runningAgents or rate (pre-migration 13 / this chan
   await ready();
   expect(container!.querySelector('[data-slot="chart-cpu"]')!.querySelectorAll("polyline")).toHaveLength(1);
   expect(lastValue(container!.querySelector('[data-slot="chart-agents"]')!)).toBe("0");
-  expect(container!.querySelector('[data-slot="chart-cost-off"]')).not.toBeNull();
+  expect(lastValue(container!.querySelector('[data-slot="chart-disk"]')!)).toBe("—");
+  expect(detail(container!, "instance-cost")).toBe("Cost · this month—");
 });
 
 test("the Instances refresh button refetches health and history at once, spinning until they answer", async () => {

@@ -6,6 +6,7 @@ import * as os from "os";
 import * as db from "./db";
 import * as lease from "./lease";
 import { run } from "./run";
+import { UPTIME_GAP_MS } from "../web/src/workstream";
 
 export type Health = {
   instance: string; hostname: string; cores: number; cpuPct: number; load1: number; load5: number;
@@ -13,8 +14,11 @@ export type Health = {
   disk?: { usedGb: number; totalGb: number }; uptimeS: number;
   at: number;
   /** What this machine costs per hour — `/api/health` adds it (`instanceRate`), so the card's Cost
-   *  accrued chart can integrate it over the samples. Absent from `health()` itself. */
+   *  · this month cell can integrate it over the uptime. Absent from `health()` itself. */
   rate?: InstanceRate;
+  /** What this machine cost this calendar month (UTC) — the rate over the time its samples show it
+   *  up (`monthCost`). `/api/health` adds it alongside `rate`. */
+  month?: MonthCost;
   /** Live leases right now — the same count the sampler records, so the card's "Agents · N" and
    *  the agents line's newest point are one reading. */
   runningAgents: number;
@@ -120,18 +124,26 @@ export function historyHours(raw: string | null | undefined): number {
   return raw && Number.isFinite(n) && n > 0 ? Math.min(n, 24 * 30) : 24;
 }
 
+// Agent runs OOM-killed in their own scope (server/agent.ts) since the last sample. In memory: a
+// restart between samples loses at most a minute's count, which the chart can afford.
+let oomKills = 0;
+export function noteOomKill(): void { oomKills++; }
+
 /** Sample this machine and record it. Never throws: a metrics write must not touch anything else.
  *  Running agents come from the leases (durable, per-host) rather than agent.ts's in-memory `runs`
  *  map, so a sample taken right after a restart still counts what's genuinely live. No cost is
  *  recorded: the machine's cost is its hourly rate over the time these samples show it up. */
 export async function sampleMetrics(): Promise<void> {
+  const kills = oomKills;
+  oomKills = 0;
   try {
     const h = await health();
     await db.recordMetric({
       cpuPct: h.cpuPct, load1: h.load1, memUsedGb: h.memUsedGb, memTotalGb: h.memTotalGb, diskUsedGb: h.disk?.usedGb,
-      runningAgents: h.runningAgents,
+      runningAgents: h.runningAgents, oomKills: kills,
     }, h.at);
   } catch (e) {
+    oomKills += kills; // not recorded — carry them to the next sample
     console.error("orca: metrics sample failed", e instanceof Error ? e.message : e);
   }
 }
@@ -143,6 +155,17 @@ export function startMetricsSampler(ms = METRIC_SAMPLE_MS): ReturnType<typeof se
 }
 
 // ---- the machine's hourly rate ----
+
+export type MonthCost = { usd: number; upHours: number; since: number };
+
+/** This calendar month's (UTC) cost: the rate × the hours this instance's samples show it up, a
+ *  pause over `UPTIME_GAP_MS` counting as down (`db.uptimeMs`). */
+export async function monthCost(hourlyUsd: number, instance = db.instanceName(), now = Date.now()): Promise<MonthCost> {
+  const d = new Date(now);
+  const since = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
+  const upHours = (await db.uptimeMs(instance, since, UPTIME_GAP_MS)) / 3_600_000;
+  return { usd: Math.round(upHours * Math.max(0, hourlyUsd) * 100) / 100, upHours, since };
+}
 
 export type InstanceRate = {
   hourlyUsd: number;

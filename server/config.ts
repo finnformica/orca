@@ -134,7 +134,7 @@ export type OrcaConfig = {
    *  on the laptop acts on a session executing in the cloud without a job queue between them. */
   instances?: Record<string, string>;
   /** What each named instance costs per hour, in USD, e.g. `{ cloud: 0.2331, local: 0 }` — the
-   *  instance cards' Cost accrued chart is this rate over the time the instance was up. Absent for
+   *  instance cards' Cost · this month is this rate over the hours the instance was up. Absent for
    *  an instance: an EC2 on-demand estimate from IMDS, else 0 (`instanceRate`). */
   instanceHourlyUsd?: Record<string, number>;
   /** Repos Orca manages; the first is the default. */

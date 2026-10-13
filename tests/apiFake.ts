@@ -340,7 +340,7 @@ mock.module("@/api", () => ({
       if (apiFake.holdHealthHistory) await new Promise<void>((resolve) => { apiFake.releaseHealthHistory = () => { apiFake.holdHealthHistory = false; resolve(); }; });
       return apiFake.healthHistoryData;
     },
-    health: async (instance?: string) => apiFake.healthData ?? { instance: instance ?? "cloud", hostname: "orca-box", cores: 4, cpuPct: 12, load1: 0.5, load5: 0.4, memUsedGb: 3.1, memTotalGb: 15.3, disk: { usedGb: 11, totalGb: 145 }, uptimeS: 90000, rate: { hourlyUsd: 0.2331, source: "estimate", instanceType: "m7i.xlarge", region: "eu-west-2" }, at: Date.now() },
+    health: async (instance?: string) => apiFake.healthData ?? { instance: instance ?? "cloud", hostname: "orca-box", cores: 4, cpuPct: 12, load1: 0.5, load5: 0.4, memUsedGb: 3.1, memTotalGb: 15.3, disk: { usedGb: 11, totalGb: 145 }, uptimeS: 90000, rate: { hourlyUsd: 0.2331, source: "estimate", instanceType: "m7i.xlarge", region: "eu-west-2" }, month: { usd: 5.52, upHours: 23.68, since: 0 }, at: Date.now() },
     orchestrator: async () => apiFake.orchestratorState,
     orchestratorModel: async (model: string) => { apiFake.orchestratorState = { ...apiFake.orchestratorState, model }; return { ok: true as const }; },
     orchestratorMessage: async (text: string, attachments: string[] = []) => {

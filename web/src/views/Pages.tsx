@@ -1,7 +1,7 @@
 // The sidebar's other pages. Repos: one row per configured repo with its agents' numbers (a click
 // opens Agents scoped to it). Usage: the Usage card with every login expanded, and every machine's
 // card. Settings: appearance, the board's density, each machine's hourly cost (editable: the
-// instance cards' Cost accrued chart), and the configuration this bridge runs with (read-only — it
+// instance cards' Cost · this month), and the configuration this bridge runs with (read-only — it
 // is edited in orca.config.ts / the config table, not here). Notifications: do not
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
 import { useEffect, useState } from "react";
@@ -167,8 +167,8 @@ function NotificationSettings() {
   );
 }
 
-/** Each machine's USD/hour — `instanceHourlyUsd` in the app config, what its card's Cost accrued
- *  chart accrues. Empty means automatic: an EC2 on-demand estimate, else 0. Read from the store's
+/** Each machine's USD/hour — `instanceHourlyUsd` in the app config, what its card's Cost · this month
+ *  cell accrues. Empty means automatic: an EC2 on-demand estimate, else 0. Read from the store's
  *  config mirror (no fetch of its own), written through the bridge. */
 function MachineCostSettings() {
   const rates = useInstanceRates();
