@@ -75,9 +75,12 @@ test("F1: every desktop open path leaves the composer focused", async () => {
   await act(async () => { openOrchestrator(); await flush(); await flush(); });
   expect(document.activeElement).toBe(composer());
   await closePanel();
-  // The quick-ask box's Open chat.
+  // The quick-ask box's Open chat (offered with the "Sent" receipt).
   await click($('[data-slot="quick-ask-pill"]')!);
-  await click([...$('[data-slot="quick-ask-box"]')!.querySelectorAll("button")].find((b) => /open/i.test(b.getAttribute("aria-label") ?? b.textContent ?? ""))!);
+  const quick = $<HTMLTextAreaElement>('[data-slot="quick-ask-box"] textarea')!;
+  await typeAtCaret(quick, "hi");
+  await act(async () => { key("Enter", quick); await flush(); await flush(); });
+  await click([...$('[data-slot="quick-ask-sent"]')!.querySelectorAll("button")].find((b) => b.textContent === "Open chat")!);
   expect(document.activeElement).toBe(composer());
 });
 
