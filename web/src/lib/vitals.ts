@@ -88,6 +88,16 @@ export function applyProfiles(profiles: NonNullable<Usage["profiles"]>): void {
   if (current) usageSource.push({ ...current, profiles });
 }
 
+// Every health / history loop that is running right now, by its fetch — so the Instances header's
+// refresh button can fetch them all at once instead of waiting out each one's tick.
+const loaders = new Set<() => Promise<unknown>>();
+
+/** Refetch every instance's health and history currently shown, now. Resolves when all have answered
+ *  (a failure is the source's own business — it shows as down / no history, as on a tick). */
+export function refreshVitals(): Promise<void> {
+  return Promise.allSettled([...loaders].map((load) => load())).then(() => undefined);
+}
+
 export type HealthReading = { health: InstanceHealth | null; down: boolean };
 const healthSources = new Map<string, ReturnType<typeof sharedSource<HealthReading>>>();
 
@@ -103,11 +113,13 @@ export function useHealth(instance: string | undefined | null): HealthReading | 
     src = sharedSource<HealthReading>((set) => {
       let live = true;
       let last: InstanceHealth | null = null;
-      const stop = poll(() => api.health(instance).then(
+      const load = () => api.health(instance).then(
         (h) => { if (live) { last = h; set({ health: h, down: false }); } },
         () => { if (live) set({ health: last, down: true }); },
-      ), 15_000);
-      return () => { live = false; stop(); };
+      );
+      loaders.add(load);
+      const stop = poll(load, 15_000);
+      return () => { live = false; loaders.delete(load); stop(); };
     });
     healthSources.set(key, src);
   }
@@ -127,8 +139,10 @@ export function useHealthHistory(instance: string | null, hours = 24): MetricPoi
   if (!src) {
     src = sharedSource<MetricPoint[]>((set) => {
       let live = true;
-      const stop = poll(() => api.healthHistory(instance, hours).then((v) => { if (live) set(v); }, () => { if (live) set([]); }), 60_000);
-      return () => { live = false; stop(); };
+      const load = () => api.healthHistory(instance, hours).then((v) => { if (live) set(v); }, () => { if (live) set([]); });
+      loaders.add(load);
+      const stop = poll(load, 60_000);
+      return () => { live = false; loaders.delete(load); stop(); };
     });
     historySources.set(key, src);
   }
