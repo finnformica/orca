@@ -483,7 +483,7 @@ export const prDiff = (cwd: string, pr: number) => gh(cwd, "pr", "diff", String(
 
 export type MergedPr = { number: number; title: string; branch: string; url: string; mergedAt: string };
 
-type RawMergedPr = { number: number; title: string; headRefName: string; url: string; mergedAt: string };
+type RawMergedPr = { number: number; title: string; headRefName: string; url: string; mergedAt: string; headRefOid?: string };
 const MERGED_TTL_MS = 15_000;
 const mergedCache = new Map<string, { at: number; rows: RawMergedPr[]; inflight?: Promise<RawMergedPr[]> }>();
 
@@ -493,7 +493,7 @@ async function mergedRows(cwd: string): Promise<RawMergedPr[]> {
   if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit.rows;
   if (hit?.inflight) return hit.inflight;
   const inflight = gh(cwd, "pr", "list", "--state", "merged", "--author", "@me", "--limit", "50",
-    "--json", "number,title,headRefName,url,mergedAt")
+    "--json", "number,title,headRefName,url,mergedAt,headRefOid")
     .then((raw) => {
       const rows = JSON.parse(raw) as RawMergedPr[];
       mergedCache.set(cwd, { at: Date.now(), rows });
@@ -523,23 +523,46 @@ export async function listMerged(cwd: string, since?: number): Promise<MergedPr[
 }
 
 /** Branch names of the user's merged PRs (not date-filtered) — used to reap their leftover worktrees. */
-// Branches of the user's recently CLOSED (unmerged) PRs — so a PR you closed/deleted gets its
-// worktree reaped, not just merged ones. Cached like merged so the hot agents-poll pays one cheap
-// list at most every TTL. headRefName only (no body/CI), so it stays fast even on a big repo.
-const closedCache = new Map<string, { at: number; branches: Set<string>; inflight?: Promise<Set<string>> }>();
-export async function closedBranches(cwd: string): Promise<Set<string>> {
+// The user's recently CLOSED PRs — so a PR you closed/deleted gets its worktree reaped, not just
+// merged ones. Cached like merged so the hot agents-poll pays one cheap list at most every TTL. No
+// body/CI, so it stays fast even on a big repo. (gh's "closed" includes merged PRs: `mergedAt` tells.)
+type RawClosedPr = { headRefName: string; headRefOid?: string; closedAt?: string; mergedAt?: string | null };
+const closedCache = new Map<string, { at: number; rows: RawClosedPr[]; inflight?: Promise<RawClosedPr[]> }>();
+async function closedRows(cwd: string): Promise<RawClosedPr[]> {
   const hit = closedCache.get(cwd);
-  if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit.branches;
+  if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit.rows;
   if (hit?.inflight) return hit.inflight;
-  const inflight = gh(cwd, "pr", "list", "--state", "closed", "--author", "@me", "--limit", "50", "--json", "headRefName")
+  const inflight = gh(cwd, "pr", "list", "--state", "closed", "--author", "@me", "--limit", "50", "--json", "headRefName,headRefOid,closedAt,mergedAt")
     .then((raw) => {
-      const branches = new Set((JSON.parse(raw) as { headRefName: string }[]).map((j) => j.headRefName).filter(Boolean));
-      closedCache.set(cwd, { at: Date.now(), branches });
-      return branches;
+      const rows = (JSON.parse(raw) as RawClosedPr[]).filter((j) => j.headRefName);
+      closedCache.set(cwd, { at: Date.now(), rows });
+      return rows;
     })
     .catch((error) => { closedCache.delete(cwd); throw error; });
-  closedCache.set(cwd, { at: hit?.at ?? 0, branches: hit?.branches ?? new Set(), inflight });
+  closedCache.set(cwd, { at: hit?.at ?? 0, rows: hit?.rows ?? [], inflight });
   return inflight;
+}
+
+export async function closedBranches(cwd: string): Promise<Set<string>> {
+  return new Set((await closedRows(cwd)).map((j) => j.headRefName));
+}
+
+/** A branch whose PR is done with: how (merged wins over closed), when (ms, for the cleanup grace
+ *  period) and the PR's last head commit (what "pushed" means once GitHub deletes the branch). The
+ *  newest PR per branch wins — gh lists newest first. */
+export type DonePr = { reason: "merged" | "closed"; at?: number; head?: string };
+export async function donePrs(cwd: string): Promise<Map<string, DonePr>> {
+  const [merged, closed] = await Promise.all([mergedRows(cwd), closedRows(cwd).catch(() => [] as RawClosedPr[])]);
+  const out = new Map<string, DonePr>();
+  const at = (iso?: string | null) => (iso && Number.isFinite(Date.parse(iso)) ? Date.parse(iso) : undefined);
+  for (const j of merged) if (j.headRefName && j.mergedAt && !out.has(j.headRefName)) out.set(j.headRefName, { reason: "merged", at: at(j.mergedAt), head: j.headRefOid || undefined });
+  for (const j of closed) {
+    if (out.has(j.headRefName)) continue;
+    out.set(j.headRefName, j.mergedAt
+      ? { reason: "merged", at: at(j.mergedAt), head: j.headRefOid || undefined }
+      : { reason: "closed", at: at(j.closedAt), head: j.headRefOid || undefined });
+  }
+  return out;
 }
 
 export async function mergedBranches(cwd: string): Promise<Set<string>> {

@@ -899,6 +899,18 @@ export async function archive(repo: string, branch: string): Promise<void> {
   });
 }
 
+/** Branches in a repo whose workstream is archived and not live again (a reused name is live) —
+ *  the sweep's "archived, but its worktree is still on disk". */
+export async function archivedBranches(repo: string): Promise<Set<string>> {
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      SELECT DISTINCT w.branch FROM workstream w
+      WHERE w.user_id = ${currentUser()} AND w.repo = ${repo} AND w.archived_at IS NOT NULL AND w.branch IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM workstream l WHERE l.user_id = w.user_id AND l.repo = w.repo AND l.branch = w.branch AND l.archived_at IS NULL)`;
+    return new Set((rows as { branch: string }[]).map((r) => r.branch));
+  });
+}
+
 // ---- conversations, read across workstreams (the orchestrator's memory of past work) ----
 
 export type Conversation = { id: number; repo: string; branch: string; title?: string; archived: boolean; turns: number; lastAt?: number };

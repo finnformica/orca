@@ -25,7 +25,7 @@ import * as notify from "./notify";
 import { health, historyHours, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
-import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import { ORCHESTRATOR_REPO, followUpPrompt, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 
@@ -281,20 +281,9 @@ async function agentRows(repo: RepoConfig): Promise<unknown[]> {
   const instance = db.instanceName();
   if (!verbs.repoHere(repo)) return foreignInventory(repo.name); // not checked out here: only what others see
   let wts = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
-  // Reap worktrees whose PR has merged (incl. manual GitHub merges) so stale locals don't linger.
-  // Reap worktrees whose PR is done with — merged (branch deleted) or closed unmerged (branch kept,
-  // see git.reapWorktrees). Both lists are cached, so the hot poll pays at most one cheap gh list.
-  const [merged, closed] = await Promise.all([
-    gh.mergedBranches(repo.repoPath).catch(() => new Set<string>()), // empty for local-only repos
-    gh.closedBranches(repo.repoPath).catch(() => new Set<string>()),
-  ]);
-  const reaped = await git.reapWorktrees(repo.repoPath, repo.worktreeRoot, merged, closed, async (w) => {
-    agent.stop(w.worktreePath);
-    await agent.killByBranch(w.branch);
-    preview.stop(w.worktreePath, true); // reaped → drop its preview DB too
-  });
-  for (const r of reaped) await db.archive(repo.name, r.branch); // reaped from disk; its conversation is kept
-  const reapedBranches = new Set(reaped.map((r) => r.branch));
+  // Auto-archive: worktrees whose PR merged or closed (on GitHub too) are reaped after a grace
+  // period, unless that would lose work — then they're flagged and kept (verbs.cleanupRepo).
+  const reapedBranches = new Set((await verbs.cleanupRepo(repo)).filter((c) => c.action === "reaped").map((c) => c.branch));
   wts = wts.filter((w) => !reapedBranches.has(w.branch));
   const live = await agent.detectRunning(wts.map((w) => w.branch)); // recover status lost on restart
   const base = await git.resolveBase(repo.repoPath, repo.baseBranch); // origin/<base>, not stale local
@@ -373,6 +362,13 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (typeof body.text !== "string") return json({ error: "text required" }, 400);
     await orchestrator.deliverReport(cfg, body.text, typeof body.key === "string" ? body.key : undefined);
     return json({ ok: true });
+  }
+  if (p === "/api/cleanup/sweep") {
+    // The one-off sweep (`orca sweep`): a dry run unless `confirm`. Not repo-scoped — this instance
+    // sweeps its own disk and asks every other instance to sweep theirs (`local` stops the fan-out).
+    const confirm = req.method === "POST" && body.confirm === true;
+    const reports = body.local ? [await verbs.sweep(cfg, { confirm })] : await verbs.sweepAll(cfg, { confirm });
+    return json({ reports, text: sweepText(reports) });
   }
   if (req.method === "GET" && p === "/api/orchestrator") return json(await orchestrator.status(cfg));
   if (req.method === "POST" && p === "/api/orchestrator/model") {
@@ -501,6 +497,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     // this to the instance that holds it now; the target adopts over HTTP.
     try { return json(await verbs.moveWorkstream(cfg, repo, String(body.branch), String(body.to))); }
     catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 409); }
+  }
+  if (req.method === "POST" && p === "/api/workstreams/archive") {
+    // `orca archive` for a workstream living here, sent by the orchestrator's instance. Placement
+    // forwards it to the instance holding the worktree, which is the only one that can remove it.
+    await verbs.archiveWorkstream(repo, String(body.branch));
+    return json({ ok: true, instance: db.instanceName() });
   }
   if (req.method === "POST" && p === "/api/workstreams/spawn") {
     const ws = await verbs.createWorkstream(cfg, repo, { prompt: String(body.prompt ?? ""), title: body.title, model: body.model, fields: { orchestrated: true } });
