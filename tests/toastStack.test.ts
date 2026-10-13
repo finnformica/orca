@@ -3,11 +3,11 @@
 // numbers with CSS transitions: three visible; collapsed, a 14px lift and 5% shrink per card behind,
 // clipped to the front card; hovered, spread by real heights plus a 14px gap; slide in from below,
 // drop out on removal; a 45px swipe (or a flick) left/down dismisses; the auto-hide clock pauses
-// while you look and resumes with what was left. Also where it anchors (just above the bell, left)
-// and the action's wording (workstream-centric). The DOM side is tests/notificationCentre.test.tsx.
+// while you look and resumes with what was left. Also where it anchors (just above the bell, left).
+// The quick actions are tests/notificationActions.test.ts. The DOM side is tests/notificationCentre.test.tsx.
 import { describe, expect, test } from "bun:test";
 import {
-  clockPause, clockResume, clockStart, notificationAction, STACK_GAP, STACK_VISIBLE, stackAnchor, stackLayout, swipeAmount, swipeOut,
+  clockPause, clockResume, clockStart, STACK_GAP, STACK_VISIBLE, stackAnchor, stackLayout, swipeAmount, swipeOut,
   TOAST_WIDTH, toastMotion, toastStack, type Notification,
 } from "../shared/notifications";
 
@@ -85,13 +85,5 @@ describe("the toast stack", () => {
     expect(stackAnchor(bell, { left: 400 }, { width: 500, height: 900 }, false).left).toBe(500 - TOAST_WIDTH - 8);
     expect(stackAnchor(bell, { left: 0 }, viewport, true)).toEqual({ left: 16, right: 16, bottom: 64 + 16 });
     expect(stackAnchor(undefined, undefined, viewport, false, 70)).toEqual({ left: 16, right: 16, bottom: 86 }); // no bell on screen
-  });
-
-  test("the action is named for where it goes: the workstream, a GitHub PR, a preview, the orchestrator", () => {
-    expect(notificationAction({})).toBe("Open workstream");
-    expect(notificationAction({ link: { pr: 7 } })).toBe("Open workstream"); // the agent page of its PR, not GitHub
-    expect(notificationAction({ link: { url: "https://github.com/acme/app/pull/7" } })).toBe("View PR");
-    expect(notificationAction({ link: { url: "http://orca-box:4000" } })).toBe("Open preview");
-    expect(notificationAction({ link: { orchestrator: true } })).toBe("Open orchestrator");
   });
 });

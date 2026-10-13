@@ -274,15 +274,6 @@ export function stackAnchor(bell: { left: number; top: number; width: number } |
   return { left, bottom: Math.max(8, viewport.height - bell.top + 8) };
 }
 
-/** The primary action's label, named for where it goes: a workstream's page (the agent page — its
- *  PR page once it has one) is "Open workstream"; a GitHub PR link "View PR"; a preview's URL "Open
- *  preview"; the orchestrator's own wake "Open orchestrator". */
-export function notificationAction(n: Pick<Notification, "link">): string {
-  if (n.link?.orchestrator) return "Open orchestrator";
-  if (n.link?.url) return /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(n.link.url) ? "View PR" : "Open preview";
-  return "Open workstream";
-}
-
 /** The in-app route a notification opens: its PR page when it names one, else the workstream's page
  *  — resolved by the caller against the live rows (`rowPath`), falling back to the local page. */
 export function notificationPath(n: Pick<Notification, "repo" | "branch" | "link">, rowPath?: string | null): string | undefined {

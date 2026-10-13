@@ -4,8 +4,11 @@
 // stack: collapsed cards that spread on hover, slide-in / drop-out, swipe to dismiss, the count bar
 // with Clear all, auto-hide paused while you look) with CSS transitions instead of the dependency,
 // and is restyled flat: hairlines, 8px cards, the menu shadow only, black/white primary, blue
-// accent. The decisions (what pops, what persists, the stack's layout and motion) are pure in
-// shared/notifications.ts; the state is lib/notificationStore.ts.
+// accent. Every toast and centre row carries quick actions on hover (always, on a touch screen): its
+// kind's one or two (Address PR, Fix, Reply, Retry, …) and Read — chosen by the pure
+// `notificationActions` (workstream.ts), run by the store's existing verbs. The decisions (what pops,
+// what persists, the stack's layout and motion) are pure in shared/notifications.ts; the state is
+// lib/notificationStore.ts.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useAtom, useSetAtom } from "jotai";
 import {
@@ -15,13 +18,15 @@ import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
 import { notifyDndAtom, orchestratorOpenAtom } from "@/lib/atoms";
 import { clearToasts, dismiss, dismissToast, markRead, pauseToasts, resumeToasts, start, useNotifications } from "@/lib/notificationStore";
-import { useNarrow } from "@/lib/viewport";
+import { useCoarse, useNarrow } from "@/lib/viewport";
 import {
-  COUNT_BAR_HEIGHT, COUNT_BAR_SPACE, groupByDay, KIND_META, NOTIFICATION_KINDS, notificationAction, notificationPath, stackAnchor, stackLayout, swipeAmount, swipeOut,
+  COUNT_BAR_HEIGHT, COUNT_BAR_SPACE, groupByDay, KIND_META, NOTIFICATION_KINDS, notificationPath, stackAnchor, stackLayout, swipeAmount, swipeOut,
   TOAST_EXIT_MS, TOAST_WIDTH, toastMotion, toastStack, unreadCount, type Notification, type NotificationKind, type StackAnchor, type SwipeDir, type ToastPlace,
 } from "../../../shared/notifications";
-import { useWorkstreams } from "../store";
-import { ago } from "../workstream";
+import { addressPr, followUp, previewKeyOf, stopPreview, testLocally, useWorkstreams, type Row } from "../store";
+import { ago, notificationActions, RETRY_INSTRUCTION, type NotificationActionId, type NotificationActionSpec } from "../workstream";
+import { autofixInstruction } from "../../../shared/agent";
+import { ActionButton } from "@/components/ActionButton";
 import { detailPath } from "@/views/Agents";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -37,18 +42,95 @@ const KindIcon = ({ kind, className }: { kind: NotificationKind; className?: str
   return <Icon className={cn("size-4 shrink-0", TONE_TEXT[KIND_META[kind].tone], className)} aria-hidden="true" />;
 };
 
-/** Where a notification opens, resolved against the live rows (its PR page once it has a PR). */
-function useOpener() {
+/** Where a notification opens and what its quick actions do, resolved against the live rows (its
+ *  PR page once it has a PR). Every handler is the store's own verb; nothing is re-implemented. */
+function useNotificationActions() {
   const rows = useWorkstreams();
   const openOrchestrator = useSetAtom(orchestratorOpenAtom);
-  return (n: Notification) => {
+  const rowOf = (n: Notification): Row | undefined => rows.find((r) => r.repo === n.repo && r.branch === n.branch);
+  const pathOf = (n: Notification, tail = ""): string | undefined => {
+    const row = rowOf(n);
+    const path = notificationPath(n, row ? detailPath(row) : undefined);
+    return path && path + tail;
+  };
+  const go = (path: string | undefined) => { if (path) navigate(path); };
+  /** The notification's own page: the workstream (a preview's URL, the orchestrator's window). */
+  const open = (n: Notification) => {
     void markRead([n.id]);
     if (n.link?.orchestrator) return void openOrchestrator(true);
     if (n.link?.url) return void window.open(n.link.url, "_blank", "noopener");
-    const row = rows.find((r) => r.repo === n.repo && r.branch === n.branch);
-    const path = notificationPath(n, row ? detailPath(row) : undefined);
-    if (path) navigate(path);
+    go(pathOf(n));
   };
+  const specs = (n: Notification): NotificationActionSpec[] => {
+    const row = rowOf(n);
+    return notificationActions(n, {
+      row: Boolean(row), prUrl: Boolean(row?.prUrl), failedCheck: Boolean(row?.agentCheck && !row.agentCheck.ok),
+      previewKey: Boolean(row && previewKeyOf(row)),
+    });
+  };
+  /** An agent or preview verb: async, so it runs in an ActionButton (spinner → ✓/✗, the error toast). */
+  const verb = (id: NotificationActionId, n: Notification): (() => Promise<unknown>) | undefined => {
+    const row = rowOf(n);
+    if (!row) return undefined;
+    switch (id) {
+      case "address": return () => addressPr(row);
+      case "retry": return () => followUp(row, RETRY_INSTRUCTION);
+      case "fix": return row.agentCheck ? () => followUp(row, autofixInstruction(row.agentCheck!)) : undefined;
+      case "stopPreview": { const key = previewKeyOf(row); return key ? () => stopPreview(key) : undefined; }
+      case "retryPreview": return () => testLocally(row);
+      default: return undefined;
+    }
+  };
+  /** A link: where it goes. */
+  const link = (id: NotificationActionId, n: Notification): (() => void) | undefined => {
+    switch (id) {
+      case "open": return () => go(pathOf(n));
+      case "reply": return () => go(pathOf(n, "/chat?reply=1"));
+      case "openChat": case "viewOutput": return () => go(pathOf(n, "/chat"));
+      case "viewLog": return () => go(pathOf(n, "/preview"));
+      case "viewPr": { const url = rowOf(n)?.prUrl; return url ? () => void window.open(url, "_blank", "noopener") : undefined; }
+      case "openPreview": return n.link?.url ? () => void window.open(n.link!.url, "_blank", "noopener") : undefined;
+      case "openOrchestrator": return () => openOrchestrator(true);
+      default: return undefined;
+    }
+  };
+  return { open, specs, verb, link, rowOf };
+}
+
+/** A notification's quick-action row: its kind's actions (the first primary), then Read, and — in
+ *  the centre — a dismiss ×. Hidden until the card or row is hovered or focused, always shown on a
+ *  touch screen. Any action marks the notification read; `done` is what the surface does after
+ *  (a toast leaves the stack). A verb's failure goes to the action-error toast, as on the board. */
+function QuickActions({ n, shown, done, onDismiss, className }: {
+  n: Notification; shown: boolean; done: () => void; onDismiss?: () => void; className?: string;
+}) {
+  const actions = useNotificationActions();
+  const row = actions.rowOf(n);
+  const btn = "h-7 px-2 text-xs";
+  const variant = (a: NotificationActionSpec) => (a.primary ? "default" : a.id === "read" ? "ghost" : "outline") as "default" | "ghost" | "outline";
+  return (
+    <div data-slot="notification-actions" data-shown={shown}
+      className={cn("flex items-center gap-1 transition-opacity duration-150", !shown && "pointer-events-none opacity-0 group-focus-within:pointer-events-auto group-focus-within:opacity-100", className)}>
+      {actions.specs(n).map((a) => {
+        if (a.id === "read") {
+          return <Button key={a.id} size="sm" variant="ghost" className={btn} disabled={Boolean(n.readAt)} onClick={() => { void markRead([n.id]); done(); }}>{a.label}</Button>;
+        }
+        const run = actions.verb(a.id, n);
+        if (run) {
+          return (
+            <ActionButton key={a.id} variant={variant(a)} className={btn}
+              failure={{ action: a.label, title: n.title, repo: n.repo, branch: n.branch ?? "", prNumber: row?.prNumber }}
+              onRun={async () => { await run(); void markRead([n.id]); setTimeout(done, 800); }}>
+              {a.label}
+            </ActionButton>
+          );
+        }
+        const go = actions.link(a.id, n);
+        return go ? <Button key={a.id} size="sm" variant={variant(a)} className={btn} onClick={() => { void markRead([n.id]); done(); go(); }}>{a.label}</Button> : null;
+      })}
+      {onDismiss && <Button variant="ghost" size="icon" className="size-7" aria-label="Dismiss" onClick={onDismiss}><X className="size-3.5" /></Button>}
+    </div>
+  );
 }
 
 // ---- the toast stack ----
@@ -107,7 +189,7 @@ export function ToastHost() {
   const stack = useMemo(() => toastStack(toasts), [toasts]);
   const layout = useMemo(() => stackLayout(stack.ordered.map((n) => heights.get(n.id) ?? 0), expanded), [stack, heights, expanded]);
   const anchor = useStackAnchor(toasts.length + gone.length > 0);
-  const open = useOpener();
+  const { open } = useNotificationActions();
 
   // A card that leaves the store stays rendered where it was, for its exit — noticed during render
   // (not in an effect), so the same element carries on and keeps its swipe-out.
@@ -182,6 +264,8 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
   const [swiping, setSwiping] = useState(false);
   const [out, setOut] = useState<SwipeDir>();
   const drag = useRef<{ x: number; y: number; at: number; axis?: "x" | "y"; amount: number }>();
+  const [hover, setHover] = useState(false);
+  const coarse = useCoarse();
   useEffect(() => { setMounted(true); }, []);
   // The natural height (not the clipped one a collapsed card behind is given), kept current.
   useLayoutEffect(() => {
@@ -234,13 +318,14 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
       data-removed={removed} data-swiping={swiping} data-swipe-out={out} data-slow={(motion.slow && !out) || undefined}
       aria-hidden={!place.visible || undefined}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
-      className="bg-card text-foreground absolute bottom-0 left-0 flex w-full flex-col gap-2 rounded-lg border p-3 shadow-menu outline-none select-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      onMouseEnter={() => setHover(true)} onMouseMove={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      className="group bg-card text-foreground absolute bottom-0 left-0 flex w-full flex-col gap-2 rounded-lg border p-3 shadow-menu outline-none select-none focus-visible:ring-2 focus-visible:ring-ring/50"
       style={style}>
       <div className="flex items-start gap-2">
         <KindIcon kind={n.kind} className="mt-0.5" />
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-1.5 text-sm leading-5">
-            <span className="truncate font-medium">{n.title}</span>
+            <button type="button" data-slot="notification-title" className="truncate font-medium hover:underline" onClick={onOpen}>{n.title}</button>
             <span className={cn("shrink-0 text-xs", TONE_TEXT[meta.tone])}>{meta.label}</span>
           </div>
           {n.body && <div className="text-muted-foreground line-clamp-2 text-xs leading-5 break-words">{n.body}</div>}
@@ -248,8 +333,8 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
         <Button variant="ghost" size="icon" className="-mt-1 -mr-1 size-6" aria-label="Dismiss" onClick={() => dismissToast(n.id)}><X className="size-3.5" /></Button>
       </div>
       <div className="flex items-center justify-between gap-2">
-        <span data-slot="notification-time" className="text-muted-foreground text-xs">{ago(n.createdAt)}{n.instance ? ` · ${n.instance}` : ""}</span>
-        <Button size="sm" className="h-7 px-2.5 text-xs" onClick={onOpen}>{notificationAction(n)}</Button>
+        <span data-slot="notification-time" className="text-muted-foreground shrink-0 text-xs">{ago(n.createdAt)}{n.instance ? ` · ${n.instance}` : ""}</span>
+        {!removed && <QuickActions n={n} shown={hover || coarse} done={() => dismissToast(n.id)} />}
       </div>
     </div>
   );
@@ -289,7 +374,7 @@ export function NotificationPanel() {
   const { list } = useNotifications();
   const [dnd, setDnd] = useAtom(notifyDndAtom);
   const [kind, setKind] = useState<NotificationKind | "all">("all");
-  const open = useOpener();
+  const { open } = useNotificationActions();
   const counts = useMemo(() => {
     const c = new Map<NotificationKind, number>();
     for (const n of list) c.set(n.kind, (c.get(n.kind) ?? 0) + 1);
@@ -327,27 +412,38 @@ export function NotificationPanel() {
             <h4 className="text-muted-foreground bg-card sticky top-0 border-b px-3 py-1.5 text-xs font-medium">{g.label}</h4>
             <ul className="divide-y">
               {g.items.map((n) => (
-                <li key={n.id}>
-                  <button type="button" data-slot="notification-row" data-kind={n.kind} data-unread={n.readAt ? undefined : ""} onClick={() => open(n)}
-                    className={cn("hover:bg-accent/40 flex w-full items-start gap-2.5 px-3 py-2.5 text-left", n.readAt && "opacity-70")}>
-                    <KindIcon kind={n.kind} className="mt-0.5" />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-baseline gap-1.5 text-sm leading-5">
-                        <span className="truncate font-medium">{n.title}</span>
-                        <span className={cn("shrink-0 text-xs", TONE_TEXT[KIND_META[n.kind].tone])}>{KIND_META[n.kind].label}</span>
-                      </span>
-                      {n.body && <span className="text-muted-foreground block truncate text-xs leading-5">{n.body}</span>}
-                      <span className="text-muted-foreground block text-xs">{ago(n.createdAt)}{n.repo && n.repo !== "@orca" ? ` · ${n.repo}` : ""}{n.instance ? ` · ${n.instance}` : ""}</span>
-                    </span>
-                    {!n.readAt && <span data-slot="unread-dot" className="bg-geist-blue mt-2 size-1.5 shrink-0 rounded-full" aria-label="unread" />}
-                  </button>
-                </li>
+                <CentreRow key={n.id} n={n} onOpen={() => open(n)} />
               ))}
             </ul>
           </section>
         ))}
       </div>
     </div>
+  );
+}
+
+/** One row of the centre: a click opens it; hovering (or a touch screen) shows its quick actions
+ *  over the row's foot, beside the time — Read, its kind's verbs, and a dismiss ×. */
+function CentreRow({ n, onOpen }: { n: Notification; onOpen: () => void }) {
+  const [hover, setHover] = useState(false);
+  const coarse = useCoarse();
+  return (
+    <li className="group hover:bg-accent/40 relative" onMouseEnter={() => setHover(true)} onMouseMove={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+      <button type="button" data-slot="notification-row" data-kind={n.kind} data-unread={n.readAt ? undefined : ""} onClick={onOpen}
+        className={cn("flex w-full items-start gap-2.5 px-3 pt-2.5 pb-10 text-left", n.readAt && "opacity-70")}>
+        <KindIcon kind={n.kind} className="mt-0.5" />
+        <span className="min-w-0 flex-1">
+          <span className="flex items-baseline gap-1.5 text-sm leading-5">
+            <span className="truncate font-medium">{n.title}</span>
+            <span className={cn("shrink-0 text-xs", TONE_TEXT[KIND_META[n.kind].tone])}>{KIND_META[n.kind].label}</span>
+          </span>
+          {n.body && <span className="text-muted-foreground block truncate text-xs leading-5">{n.body}</span>}
+          <span className="text-muted-foreground block text-xs">{ago(n.createdAt)}{n.repo && n.repo !== "@orca" ? ` · ${n.repo}` : ""}{n.instance ? ` · ${n.instance}` : ""}</span>
+        </span>
+        {!n.readAt && <span data-slot="unread-dot" className="bg-geist-blue mt-2 size-1.5 shrink-0 rounded-full" aria-label="unread" />}
+      </button>
+      <QuickActions n={n} shown={hover || coarse} done={() => {}} onDismiss={() => void dismiss([n.id])} className="absolute right-2 bottom-1.5 left-9 justify-end" />
+    </li>
   );
 }
 

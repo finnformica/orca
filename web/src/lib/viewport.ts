@@ -25,6 +25,8 @@ function useMedia(query: string): boolean {
 /** The phone layout: sheets instead of floating windows, stacked rows, the bottom bar. */
 export const useNarrow = (): boolean => useMedia(NARROW_QUERY);
 export const isNarrow = (): boolean => matches(NARROW_QUERY);
+/** A touch screen as the primary pointer, live (hover-only controls show without hover). */
+export const useCoarse = (): boolean => useMedia(COARSE_QUERY);
 /** A touch screen as the primary pointer. */
 export const isCoarse = (): boolean => matches(COARSE_QUERY);
 

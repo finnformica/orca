@@ -61,6 +61,14 @@ function placeBell(bell = { left: 180, top: window.innerHeight - 48 }) {
   $("notifications-bell")!.getBoundingClientRect = rect({ ...bell, width: 32, height: 32 });
   $("sidebar-foot")!.getBoundingClientRect = rect({ left: 0, top: bell.top - 8, width: 240, height: 48 });
 }
+const button = (el: Element, text: string) => [...el.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === text);
+const actionsOf = (el: Element) => el.querySelector<HTMLElement>('[data-slot="notification-actions"]')!;
+/** A touch screen: `(pointer: coarse)` matches (and nothing else does). */
+function touchScreen(): () => void {
+  const was = window.matchMedia;
+  window.matchMedia = ((q: string) => ({ matches: q === "(pointer: coarse)", media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  return () => { window.matchMedia = was; };
+}
 const click = async (el: Element | null | undefined) => act(async () => { el!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
 
 describe("the notification centre", () => {
@@ -250,18 +258,22 @@ describe("the notification centre", () => {
     expect(panel.textContent).toContain("No notifications yet.");
   });
 
-  test("a toast's Open workstream takes you to the workstream's page (its PR's agent page, not GitHub) and marks it read; the centre's DND toggle", async () => {
+  test("a toast's title opens the workstream's page (its PR's agent page, not GitHub) and marks it read; Open workstream too; the centre's DND toggle", async () => {
     await open("/");
     const s = await live();
     await push(s, note({ id: 9, kind: "failed" }));
-    await click([...$("notification-toast")!.querySelectorAll("button")].find((b) => b.textContent === "Open workstream"));
+    await click($("notification-title"));
     expect(location.pathname).toBe("/r/local/feat-x");
     expect(apiFake.notificationCalls).toEqual([{ verb: "read", ids: [9] }]);
     expect(cards()).toHaveLength(0);
-    // A PR's CI failing is the workstream too — its agent page, worded as such, not "Open PR".
+    // A PR's CI failing is the workstream too — its agent page, not GitHub.
     await push(s, note({ id: 10, kind: "pr_ci_failed", link: { pr: 7 } }));
-    await click([...cards()[0]!.querySelectorAll("button")].find((b) => b.textContent === "Open workstream"));
+    await click(cards()[0]!.querySelector('[data-slot="notification-title"]'));
     expect(location.pathname).toBe("/r/prs/7");
+    navigate("/");
+    await push(s, note({ id: 11, kind: "finished" }));
+    await click(button(cards()[0]!, "Open workstream"));
+    expect(location.pathname).toBe("/r/local/feat-x");
     await click($("notifications-bell"));
     await click(document.body.querySelector('button[aria-label="Do not disturb"]'));
     expect(getDefaultStore().get(notifyDndAtom)).toBe(true);
@@ -279,5 +291,66 @@ describe("the notification centre", () => {
     expect(apiFake.notificationFetches.at(-1)).toBe(apiFake.notificationsData[0]!.createdAt as number);
     expect(cards()[0]!.textContent).toContain("While away");
     expect($("notifications-unread")!.textContent).toBe("2");
+  });
+
+  test("quick actions: hovering a CI-failed toast shows Address PR + View PR + Read; Address PR runs the store's one agent verb, marks it read and clears the toast", async () => {
+    apiFake.prsData = [{ number: 7, title: "Red CI", branch: "feat-x", url: "https://github.com/o/r/pull/7", state: "OPEN", isDraft: false, ciStatus: "failing", failingChecks: ["test"], reviewStatus: "none", mergeable: "MERGEABLE", autoMergeEnabled: false }];
+    await open("/");
+    const s = await live();
+    await push(s, note({ id: 30, kind: "pr_ci_failed", title: "Red CI", link: { pr: 7 } }));
+    const toast = cards()[0]!;
+    expect(actionsOf(toast).getAttribute("data-shown")).toBe("false"); // a mouse: hidden until hover
+    await mouse(toast, "mousemove");
+    expect(actionsOf(toast).getAttribute("data-shown")).toBe("true");
+    expect([...actionsOf(toast).querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Address PR", "View PR", "Read"]);
+    await click(button(toast, "Address PR"));
+    await act(async () => { await flush(); await flush(); await flush(); });
+    expect(apiFake.calls.some((c) => c.startsWith("agent:"))).toBe(true); // the same launch the board's Address PR makes
+    expect(apiFake.claudePrompts.at(-1)).toContain("#7");
+    expect(apiFake.notificationCalls).toContainEqual({ verb: "read", ids: [30] });
+    await act(async () => { await wait(900); });
+    expect(cards()).toHaveLength(0);
+    await mouse(toast, "mouseout", document.body);
+  });
+
+  test("quick actions on a touch screen show without hover; Read marks it read and takes the toast off the stack", async () => {
+    const restore = touchScreen();
+    try {
+      await open("/");
+      const s = await live();
+      await push(s, note({ id: 40, kind: "needs_input", title: "Question" }));
+      const toast = cards()[0]!;
+      expect(actionsOf(toast).getAttribute("data-shown")).toBe("true");
+      expect([...actionsOf(toast).querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Reply", "Open workstream", "Read"]);
+      await click(button(toast, "Read"));
+      expect(apiFake.notificationCalls).toEqual([{ verb: "read", ids: [40] }]);
+      expect(cards()).toHaveLength(0);
+      expect($("notifications-unread")).toBeNull();
+    } finally { restore(); }
+  });
+
+  test("Reply opens the agent page's Chat tab with its composer focused", async () => {
+    await open("/");
+    const s = await live();
+    await push(s, note({ id: 41, kind: "needs_input", title: "Question" }));
+    await click(button(cards()[0]!, "Reply"));
+    expect(location.pathname + location.search).toBe("/r/local/feat-x/chat?reply=1");
+  });
+
+  test("the centre's rows carry the same quick actions on hover: Read, a kind's verb, and a dismiss ×", async () => {
+    apiFake.notificationsData = [note({ id: 60, kind: "failed", title: "Broke" })];
+    await open("/");
+    await click($("notifications-bell"));
+    const row = $("notification-row")!.closest("li")!;
+    expect(actionsOf(row).getAttribute("data-shown")).toBe("false");
+    await mouse(row, "mousemove");
+    expect(actionsOf(row).getAttribute("data-shown")).toBe("true");
+    expect([...actionsOf(row).querySelectorAll("button")].map((b) => b.textContent || b.getAttribute("aria-label"))).toEqual(["Open chat", "Read", "Dismiss"]);
+    await click(button(row, "Read"));
+    expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "read", ids: [60] });
+    expect($("notification-row")!.hasAttribute("data-unread")).toBe(false);
+    await click(actionsOf($("notification-row")!.closest("li")!).querySelector('button[aria-label="Dismiss"]'));
+    expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "dismiss", ids: [60] });
+    expect($$("notification-row")).toHaveLength(0);
   });
 });

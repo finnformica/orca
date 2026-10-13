@@ -543,8 +543,17 @@ showing; past one they collapse behind it (14px lift, 5% smaller each) over a co
 all; hover spreads them by their real heights; slide in from below, drop out over 200ms; swipe left
 or down dismisses; auto-hide pauses while hovered, touched or the tab is hidden. A toast for a
 finished run or a ready preview hides itself after 6s, a problem or a question stays until dismissed
-— `KIND_META.persistent`. Its button names where it goes (`notificationAction`): "Open workstream"
-(the agent page, a PR's included), "View PR" only for a GitHub link, "Open preview"), and
+— `KIND_META.persistent`. A toast's title opens its workstream (the agent page, a PR's included).
+**Quick actions** on every toast and centre row, shown on hover / focus (always on a touch screen):
+the kind's one or two verbs, the first primary, then Read (a read toast leaves the stack) and, in
+the centre, a dismiss × — chosen by the pure `notificationActions` (`workstream.ts`), which drops
+one whose prerequisite is missing (no live row, PR URL, failed check). CI failing / conflicts →
+Address PR (`store.addressPr`) + View PR (GitHub); check failed → Fix (`autofixInstruction` as a
+follow-up) + View output; finished → Open workstream + Reply; needs input → Reply (the Chat tab,
+`?reply` focuses the composer) + Open workstream; failed / stopped → Retry (`RETRY_INSTRUCTION` on
+the same session) + Open chat; preview ready → Open preview + Stop; preview failed → Retry test +
+View log; the orchestrator's own wake → Reply in its window. Verbs run in `ActionButton`, so a
+failure is the action-error toast with Ask the orchestrator), and
 the bell at the sidebar's foot with the unread count, opening the centre (grouped by day, read /
 unread, a kind filter, Mark all read, Clear all = dismiss, do-not-disturb). Dismissing a toast keeps
 the row; clearing the centre keeps nothing. Settings: do not disturb, per-kind toasts, and browser
