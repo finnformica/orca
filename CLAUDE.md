@@ -535,9 +535,16 @@ The decisions are pure in `shared/notifications.ts` (what an event is, what pops
 cut, grouping by day); the browser mirror is `web/src/lib/notificationStore.ts` (loads once, holds
 the tab's stream, catches up by `since` on reconnect; toasts pop only for rows newer than the first
 load and younger than ten minutes); the surfaces are `components/Notifications.tsx`: the toast stack
-bottom-right above the orchestrator's launcher (newest on top; past one it collapses to the top three
-with a count bar, hover or click expands; Clear all; a toast for a finished run or a ready preview
-hides itself after 6s, a problem or a question stays until dismissed — `KIND_META.persistent`), and
+bottom-LEFT, growing up from just above the bell (`stackAnchor`, measured from the bell; full width
+above the bottom bar on a phone), so the orchestrator's window and the action-error Toaster keep the
+bottom-right. It copies branch-demo's inbox toasts — sonner's stack — in CSS, no dependency
+(`stackLayout` / `toastMotion` / `swipeOut` / the `HideClock`, all pure): newest in front, three
+showing; past one they collapse behind it (14px lift, 5% smaller each) over a count bar with Clear
+all; hover spreads them by their real heights; slide in from below, drop out over 200ms; swipe left
+or down dismisses; auto-hide pauses while hovered, touched or the tab is hidden. A toast for a
+finished run or a ready preview hides itself after 6s, a problem or a question stays until dismissed
+— `KIND_META.persistent`. Its button names where it goes (`notificationAction`): "Open workstream"
+(the agent page, a PR's included), "View PR" only for a GitHub link, "Open preview"), and
 the bell at the sidebar's foot with the unread count, opening the centre (grouped by day, read /
 unread, a kind filter, Mark all read, Clear all = dismiss, do-not-disturb). Dismissing a toast keeps
 the row; clearing the centre keeps nothing. Settings: do not disturb, per-kind toasts, and browser

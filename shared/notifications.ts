@@ -41,20 +41,18 @@ export type KindMeta = {
   /** Worth a browser notification when the tab is hidden. */
   urgent: boolean;
   tone: "ready" | "error" | "warning" | "queued" | "neutral";
-  /** The primary action's label. */
-  action: string;
 };
 
 export const KIND_META: Record<NotificationKind, KindMeta> = {
-  needs_input: { label: "Needs input", persistent: true, urgent: true, tone: "queued", action: "Open" },
-  finished: { label: "Finished", persistent: false, urgent: false, tone: "ready", action: "Open" },
-  failed: { label: "Failed", persistent: true, urgent: true, tone: "error", action: "Open" },
-  stopped: { label: "Stopped", persistent: true, urgent: false, tone: "warning", action: "Open" },
-  check_failed: { label: "Check failed", persistent: true, urgent: true, tone: "error", action: "Open" },
-  pr_ci_failed: { label: "CI failing", persistent: true, urgent: false, tone: "error", action: "Open PR" },
-  pr_conflicts: { label: "Conflicts", persistent: true, urgent: false, tone: "warning", action: "Open PR" },
-  preview_ready: { label: "Preview ready", persistent: false, urgent: false, tone: "ready", action: "Open preview" },
-  preview_failed: { label: "Preview failed", persistent: true, urgent: false, tone: "error", action: "Open" },
+  needs_input: { label: "Needs input", persistent: true, urgent: true, tone: "queued" },
+  finished: { label: "Finished", persistent: false, urgent: false, tone: "ready" },
+  failed: { label: "Failed", persistent: true, urgent: true, tone: "error" },
+  stopped: { label: "Stopped", persistent: true, urgent: false, tone: "warning" },
+  check_failed: { label: "Check failed", persistent: true, urgent: true, tone: "error" },
+  pr_ci_failed: { label: "CI failing", persistent: true, urgent: false, tone: "error" },
+  pr_conflicts: { label: "Conflicts", persistent: true, urgent: false, tone: "warning" },
+  preview_ready: { label: "Preview ready", persistent: false, urgent: false, tone: "ready" },
+  preview_failed: { label: "Preview failed", persistent: true, urgent: false, tone: "error" },
 };
 
 /** How long a non-persistent toast stays. */
@@ -183,16 +181,106 @@ export function shouldToast(n: Pick<Notification, "kind" | "createdAt" | "dismis
 export const shouldNotifyBrowser = (n: Pick<Notification, "kind">, opts: { enabled: boolean; hidden: boolean; dnd: boolean }): boolean =>
   opts.enabled && opts.hidden && !opts.dnd && KIND_META[n.kind].urgent;
 
-/** How many toasts show in the collapsed stack. */
-export const STACK_VISIBLE = 3;
+// ---- the toast stack: branch-demo's inbox toasts, which are sonner's bottom-left stack ----
+// Re-implemented with CSS transitions (no dependency), with sonner's numbers: three visible, a 14px
+// lift between collapsed cards each 5% smaller, spread on hover by the real heights plus the gap,
+// 400ms transform / opacity / height, 200ms before a removed card unmounts, a swipe of 45px (or a
+// flick) dismisses, and the auto-hide clock pauses while the stack is expanded, touched or hidden.
 
-/** The toast stack as rendered: newest first; collapsed, only the top few are visible (the rest are
- *  counted); expanded, all of them. Pure, so the stacking rules are testable without a DOM. */
-export function toastStack<T extends Pick<Notification, "id" | "createdAt">>(toasts: T[], expanded: boolean): { visible: T[]; hidden: number; collapsed: boolean } {
-  const sorted = [...toasts].sort((a, b) => b.createdAt - a.createdAt || b.id - a.id);
-  const collapsed = !expanded && sorted.length > 1;
-  const visible = collapsed ? sorted.slice(0, STACK_VISIBLE) : sorted;
-  return { visible, hidden: sorted.length - visible.length, collapsed };
+/** How many toasts show, collapsed or expanded (the bell's centre has the rest). */
+export const STACK_VISIBLE = 3;
+/** The gap between expanded cards, and the lift between collapsed ones. */
+export const STACK_GAP = 14;
+/** Each collapsed card behind the front one is this much smaller. */
+export const STACK_SCALE_STEP = 0.05;
+/** A removed card plays its exit for this long before it unmounts. */
+export const TOAST_EXIT_MS = 200;
+/** The stack's width (sonner's). */
+export const TOAST_WIDTH = 356;
+/** The count bar under the stack, and the space the stack leaves for it. */
+export const COUNT_BAR_HEIGHT = 27;
+export const COUNT_BAR_SPACE = COUNT_BAR_HEIGHT + 4;
+export const SWIPE_THRESHOLD = 45;
+export const SWIPE_VELOCITY = 0.11;
+
+/** The toast stack as rendered: newest first, the top few showing, the rest counted. Pure, so the
+ *  stacking rules are testable without a DOM. */
+export function toastStack<T extends Pick<Notification, "id" | "createdAt">>(toasts: T[]): { ordered: T[]; visible: T[]; hidden: number } {
+  const ordered = [...toasts].sort((a, b) => b.createdAt - a.createdAt || b.id - a.id);
+  const visible = ordered.slice(0, STACK_VISIBLE);
+  return { ordered, visible, hidden: ordered.length - visible.length };
+}
+
+/** Where one card sits: `heights` are the live cards' natural heights, newest first. Collapsed, the
+ *  front card is in place and each one behind is lifted 14px and shrunk 5%, clipped to the front
+ *  card's height; expanded, each sits above the ones before it, a gap apart. */
+export type ToastPlace = { index: number; front: boolean; visible: boolean; offset: number; height?: number; transform: string };
+export function stackLayout(heights: number[], expanded: boolean): ToastPlace[] {
+  let before = 0;
+  return heights.map((h, index) => {
+    const offset = before + index * STACK_GAP;
+    before += h;
+    const front = index === 0;
+    const base = { index, front, visible: index < STACK_VISIBLE, offset };
+    if (expanded) return { ...base, height: h, transform: `translateY(${-offset}px)` };
+    if (front) return { ...base, transform: "translateY(0px)" };
+    return { ...base, height: heights[0], transform: `translateY(${-index * STACK_GAP}px) scale(${+(1 - index * STACK_SCALE_STEP).toFixed(2)})` };
+  });
+}
+
+/** A card's motion state, as sonner's CSS draws it: it slides up from below the stack on mount, and
+ *  on removal the front card drops back down, an expanded one drops from where it was, and a
+ *  collapsed one behind sinks a little (500ms) as it fades. */
+export function toastMotion(place: ToastPlace, s: { mounted: boolean; removed: boolean; expanded: boolean }): { transform: string; opacity: number; slow?: boolean } {
+  if (s.removed) {
+    if (place.front) return { transform: "translateY(100%)", opacity: 0 };
+    if (s.expanded) return { transform: `translateY(calc(${-place.offset}px + 100%))`, opacity: 0 };
+    return { transform: "translateY(40%)", opacity: 0, slow: true };
+  }
+  if (!s.mounted) return { transform: "translateY(100%)", opacity: 0 };
+  return { transform: place.transform, opacity: place.visible ? 1 : 0 };
+}
+
+/** A drag on a card: the axis locks on the first pixel; toward the stack's own edges (left, down)
+ *  it follows the pointer, the other way it is dampened. Released past 45px, or flicked, it is gone
+ *  that way; otherwise it springs back (undefined). */
+export type SwipeDir = "left" | "right" | "up" | "down";
+export function swipeAmount(axis: "x" | "y", delta: number): number {
+  const free = axis === "x" ? delta < 0 : delta > 0;
+  if (free) return delta;
+  const damped = delta * (1 / (1.5 + Math.abs(delta) / 20));
+  return Math.abs(damped) < Math.abs(delta) ? damped : delta;
+}
+export function swipeOut(axis: "x" | "y", amount: number, ms: number): SwipeDir | undefined {
+  if (Math.abs(amount) < SWIPE_THRESHOLD && Math.abs(amount) / Math.max(ms, 1) <= SWIPE_VELOCITY) return undefined;
+  return axis === "x" ? (amount > 0 ? "right" : "left") : (amount > 0 ? "down" : "up");
+}
+
+/** The auto-hide clock: it runs down only while the stack is neither hovered, touched nor hidden;
+ *  a pause keeps what is left, a resume runs that remainder (not the whole delay again). */
+export type HideClock = { remaining: number; since?: number };
+export const clockStart = (ms: number, now: number, paused = false): HideClock => (paused ? { remaining: ms } : { remaining: ms, since: now });
+export const clockPause = (c: HideClock, now: number): HideClock => (c.since === undefined ? c : { remaining: Math.max(0, c.remaining - (now - c.since)) });
+export const clockResume = (c: HideClock, now: number): HideClock => (c.since === undefined ? { remaining: c.remaining, since: now } : c);
+
+/** Where the stack anchors: bottom-left, its foot just above the bell, its left edge on the sidebar
+ *  foot's padding (the stack grows upward from there). Narrow, or with no bell on screen (the
+ *  sidebar is off-canvas), it falls back to full width above the phone's bottom bar. */
+export type StackAnchor = { left: number; bottom: number; right?: number };
+export const MOBILE_STACK_OFFSET = 16;
+export function stackAnchor(bell: { left: number; top: number; width: number } | undefined, foot: { left: number } | undefined, viewport: { width: number; height: number }, narrow: boolean, bottomBar = 64): StackAnchor {
+  if (narrow || !bell || bell.width === 0) return { left: MOBILE_STACK_OFFSET, right: MOBILE_STACK_OFFSET, bottom: bottomBar + MOBILE_STACK_OFFSET };
+  const left = Math.max(8, Math.min((foot?.left ?? bell.left) + 8, viewport.width - TOAST_WIDTH - 8));
+  return { left, bottom: Math.max(8, viewport.height - bell.top + 8) };
+}
+
+/** The primary action's label, named for where it goes: a workstream's page (the agent page — its
+ *  PR page once it has one) is "Open workstream"; a GitHub PR link "View PR"; a preview's URL "Open
+ *  preview"; the orchestrator's own wake "Open orchestrator". */
+export function notificationAction(n: Pick<Notification, "link">): string {
+  if (n.link?.orchestrator) return "Open orchestrator";
+  if (n.link?.url) return /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+/.test(n.link.url) ? "View PR" : "Open preview";
+  return "Open workstream";
 }
 
 /** The in-app route a notification opens: its PR page when it names one, else the workstream's page

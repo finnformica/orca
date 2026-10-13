@@ -337,3 +337,47 @@
     background-image: linear-gradient(color-mix(in oklch, currentColor 12%, transparent), color-mix(in oklch, currentColor 12%, transparent));
   }
 }
+
+/* The notification toast stack (components/Notifications.tsx): sonner's motion, as branch-demo's
+   inbox toasts have it, in plain CSS. The component sets --y (where the card sits, from
+   stackLayout / toastMotion) and the swipe offsets; everything else is here. */
+[data-slot="notification-toast"] {
+  transform: var(--y) translateX(var(--swipe-x, 0px)) translateY(var(--swipe-y, 0px));
+  transition: transform 400ms, opacity 400ms, height 400ms, box-shadow 200ms;
+  touch-action: none;
+}
+[data-slot="notification-toast"] > * { transition: opacity 400ms; }
+/* Collapsed, the cards behind the front one are blank edges peeking out above it. */
+[data-slot="notification-toast"][data-expanded="false"][data-front="false"] > * { opacity: 0; }
+[data-slot="notification-toast"][data-visible="false"] { pointer-events: none; }
+/* Expanded, each card's hover zone covers the gap above it, so moving between cards never collapses. */
+[data-slot="notification-toast"][data-expanded="true"]::after {
+  content: ""; position: absolute; left: 0; bottom: 100%; width: 100%; height: 15px;
+}
+[data-slot="notification-toast"][data-slow] { transition: transform 500ms, opacity 200ms; }
+[data-slot="notification-toast"][data-swiping="true"] { transition: none; }
+[data-slot="notification-toast"][data-swipe-out] { animation-duration: 200ms; animation-timing-function: ease-out; animation-fill-mode: forwards; }
+[data-slot="notification-toast"][data-swipe-out="left"] { animation-name: notification-swipe-left; }
+[data-slot="notification-toast"][data-swipe-out="right"] { animation-name: notification-swipe-right; }
+[data-slot="notification-toast"][data-swipe-out="up"] { animation-name: notification-swipe-up; }
+[data-slot="notification-toast"][data-swipe-out="down"] { animation-name: notification-swipe-down; }
+@keyframes notification-swipe-left {
+  from { transform: var(--y) translateX(var(--swipe-x, 0px)); opacity: 1; }
+  to { transform: var(--y) translateX(calc(var(--swipe-x, 0px) - 100%)); opacity: 0; }
+}
+@keyframes notification-swipe-right {
+  from { transform: var(--y) translateX(var(--swipe-x, 0px)); opacity: 1; }
+  to { transform: var(--y) translateX(calc(var(--swipe-x, 0px) + 100%)); opacity: 0; }
+}
+@keyframes notification-swipe-up {
+  from { transform: var(--y) translateY(var(--swipe-y, 0px)); opacity: 1; }
+  to { transform: var(--y) translateY(calc(var(--swipe-y, 0px) - 100%)); opacity: 0; }
+}
+@keyframes notification-swipe-down {
+  from { transform: var(--y) translateY(var(--swipe-y, 0px)); opacity: 1; }
+  to { transform: var(--y) translateY(calc(var(--swipe-y, 0px) + 100%)); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="notification-toast"], [data-slot="notification-toast"] > * { transition: none; }
+  [data-slot="notification-toast"][data-swipe-out] { animation: none; }
+}

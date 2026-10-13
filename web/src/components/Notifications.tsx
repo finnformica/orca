@@ -1,10 +1,12 @@
-// The notification centre's two surfaces, in Geist: the toast stack in the bottom-right corner and
-// the bell at the sidebar's foot that opens the centre — a
-// popover listing every notification by day. Modelled on branch-demo's inbox toasts (a stack that
-// collapses with a count, Clear all, per-toast dismiss) but flat and restyled: hairlines, 8px cards,
-// the menu shadow only, black/white primary, blue accent. The decisions (what pops, what persists,
-// the stack's cut) are pure in shared/notifications.ts; the state is lib/notificationStore.ts.
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+// The notification centre's two surfaces, in Geist: the toast stack bottom-left, growing up from
+// just above the bell, and the bell at the sidebar's foot that opens the centre — a popover listing
+// every notification by day. The stack copies branch-demo's inbox toasts (sonner's bottom-left
+// stack: collapsed cards that spread on hover, slide-in / drop-out, swipe to dismiss, the count bar
+// with Clear all, auto-hide paused while you look) with CSS transitions instead of the dependency,
+// and is restyled flat: hairlines, 8px cards, the menu shadow only, black/white primary, blue
+// accent. The decisions (what pops, what persists, the stack's layout and motion) are pure in
+// shared/notifications.ts; the state is lib/notificationStore.ts.
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useAtom, useSetAtom } from "jotai";
 import {
   AlertTriangle, Bell, BellOff, Check, CheckCheck, CircleX, GitPullRequestArrow, MessageCircleQuestion, MonitorCheck, MonitorX, OctagonPause, ShieldX, X,
@@ -12,8 +14,12 @@ import {
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
 import { notifyDndAtom, orchestratorOpenAtom } from "@/lib/atoms";
-import { clearToasts, dismiss, dismissToast, markRead, start, useNotifications } from "@/lib/notificationStore";
-import { groupByDay, KIND_META, NOTIFICATION_KINDS, notificationPath, toastStack, unreadCount, type Notification, type NotificationKind } from "../../../shared/notifications";
+import { clearToasts, dismiss, dismissToast, markRead, pauseToasts, resumeToasts, start, useNotifications } from "@/lib/notificationStore";
+import { useNarrow } from "@/lib/viewport";
+import {
+  COUNT_BAR_HEIGHT, COUNT_BAR_SPACE, groupByDay, KIND_META, NOTIFICATION_KINDS, notificationAction, notificationPath, stackAnchor, stackLayout, swipeAmount, swipeOut,
+  TOAST_EXIT_MS, TOAST_WIDTH, toastMotion, toastStack, unreadCount, type Notification, type NotificationKind, type StackAnchor, type SwipeDir, type ToastPlace,
+} from "../../../shared/notifications";
 import { useWorkstreams } from "../store";
 import { ago } from "../workstream";
 import { detailPath } from "@/views/Agents";
@@ -47,44 +53,189 @@ function useOpener() {
 
 // ---- the toast stack ----
 
-/** Bottom-right, under the action-error Toaster (lib/toast, z-50: an error you just caused comes
- *  first and is dismissed in a click; the bell keeps this stack's count meanwhile) and the
- *  orchestrator's window, when open, paints over it — it is what you are looking
- *  at then, and the bell keeps the count). Newest on top; more than one collapses to the
- *  top few with a count bar (hover or click expands); Clear all; a toast for a finished run or a
- *  ready preview hides itself, a problem or a question stays until dismissed. */
+/** Where the stack sits, re-measured from the bell whenever the window or the sidebar's foot
+ *  changes size (collapsing the sidebar moves the bell). */
+function useStackAnchor(active: boolean): StackAnchor {
+  const narrow = useNarrow();
+  const measure = useCallback((): StackAnchor => {
+    const rect = (slot: string) => document.querySelector(`[data-slot="${slot}"]`)?.getBoundingClientRect();
+    return stackAnchor(rect("notifications-bell"), rect("sidebar-foot"), { width: window.innerWidth, height: window.innerHeight }, narrow, rect("bottom-bar")?.height || undefined);
+  }, [narrow]);
+  const [anchor, setAnchor] = useState<StackAnchor>(measure);
+  useLayoutEffect(() => {
+    if (!active) return;
+    const update = () => setAnchor((prev) => {
+      const next = measure();
+      return next.left === prev.left && next.bottom === prev.bottom && next.right === prev.right ? prev : next;
+    });
+    update();
+    window.addEventListener("resize", update);
+    const foot = document.querySelector('[data-slot="sidebar-foot"]');
+    const ro = foot && typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : undefined;
+    if (foot) ro?.observe(foot);
+    return () => { window.removeEventListener("resize", update); ro?.disconnect(); };
+  }, [active, measure]);
+  return anchor;
+}
+
+const useDocumentHidden = () => {
+  const [hidden, setHidden] = useState(() => typeof document !== "undefined" && document.hidden);
+  useEffect(() => {
+    const on = () => setHidden(document.hidden);
+    document.addEventListener("visibilitychange", on);
+    return () => document.removeEventListener("visibilitychange", on);
+  }, []);
+  return hidden;
+};
+
+type Gone = { n: Notification; place: ToastPlace };
+
+/** Bottom-left, its foot just above the bell (full width above the bottom bar on a phone), so the
+ *  orchestrator's window in the bottom-right corner and the action-error Toaster never share its
+ *  corner. Newest in front; three show, the rest wait (the bell has them all). Past one, the cards
+ *  collapse behind the front one over a count bar with Clear all; hovering spreads them, and while
+ *  the stack is hovered, touched or the tab hidden, nothing auto-hides. A finished run or a ready
+ *  preview hides itself; a problem or a question stays until dismissed (✕, or a swipe left/down). */
 export function ToastHost() {
   const { toasts } = useNotifications();
-  const [expanded, setExpanded] = useState(false);
   useEffect(() => { start(); }, []);
-  useEffect(() => { if (toasts.length <= 1) setExpanded(false); }, [toasts.length]);
-  const stack = useMemo(() => toastStack(toasts, expanded), [toasts, expanded]);
+  const [expanded, setExpanded] = useState(false);
+  const [interacting, setInteracting] = useState(false);
+  const hidden = useDocumentHidden();
+  const [heights, setHeights] = useState<Map<number, number>>(() => new Map());
+  const [gone, setGone] = useState<Gone[]>([]);
+  const stack = useMemo(() => toastStack(toasts), [toasts]);
+  const layout = useMemo(() => stackLayout(stack.ordered.map((n) => heights.get(n.id) ?? 0), expanded), [stack, heights, expanded]);
+  const anchor = useStackAnchor(toasts.length + gone.length > 0);
   const open = useOpener();
-  if (!toasts.length) return null;
+
+  // A card that leaves the store stays rendered where it was, for its exit — noticed during render
+  // (not in an effect), so the same element carries on and keeps its swipe-out.
+  const [seen, setSeen] = useState<{ ordered: Notification[]; layout: ToastPlace[] }>({ ordered: [], layout: [] });
+  if (seen.ordered !== stack.ordered || seen.layout !== layout) {
+    const live = new Set(stack.ordered.map((n) => n.id));
+    const leaving = seen.ordered.flatMap((n, i) => (live.has(n.id) || !seen.layout[i] ? [] : [{ n, place: seen.layout[i]! }]));
+    setSeen({ ordered: stack.ordered, layout });
+    if (leaving.length) setGone((g) => [...g.filter((x) => !leaving.some((l) => l.n.id === x.n.id)), ...leaving]);
+  }
+  const scheduled = useRef(new Set<number>());
+  useEffect(() => {
+    for (const { n } of gone) {
+      if (scheduled.current.has(n.id)) continue;
+      scheduled.current.add(n.id);
+      setTimeout(() => {
+        scheduled.current.delete(n.id);
+        setGone((g) => g.filter((x) => x.n.id !== n.id));
+        setHeights((h) => { const m = new Map(h); m.delete(n.id); return m; });
+      }, TOAST_EXIT_MS);
+    }
+  }, [gone]);
+  const leaving = gone.filter((g) => !stack.ordered.some((n) => n.id === g.n.id));
+
+  useEffect(() => { if (toasts.length <= 1) setExpanded(false); }, [toasts.length]);
+  const paused = expanded || interacting || hidden;
+  useEffect(() => { if (paused) pauseToasts(); else resumeToasts(); }, [paused]);
+  useEffect(() => () => resumeToasts(), []);
+
+  const onHeight = useCallback((id: number, h: number) => setHeights((m) => (m.get(id) === h ? m : new Map(m).set(id, h))), []);
+  if (!toasts.length && !leaving.length) return null;
+  const showCount = toasts.length > 1;
+  const width: CSSProperties = anchor.right !== undefined ? { right: anchor.right } : { width: TOAST_WIDTH };
   return (
-    <div data-slot="notification-host" data-expanded={expanded || undefined} role="region" aria-label="Notification centre"
-      className="fixed right-4 bottom-4 z-40 flex w-[22rem] max-w-[calc(100vw-2rem)] flex-col items-stretch gap-2"
-      onMouseEnter={() => setExpanded(true)} onMouseLeave={() => setExpanded(false)}>
-      {stack.visible.map((n, i) => (stack.collapsed && i > 0
-        ? <div key={n.id} data-slot="notification-peek" aria-hidden="true" className={cn("bg-card -mt-1 h-1.5 rounded-b-lg border border-t-0", i === 1 ? "mx-2" : "mx-4")} />
-        : <Toast key={n.id} n={n} onOpen={() => { dismissToast(n.id); open(n); }} />
-      ))}
-      {toasts.length > 1 && (
-        <div data-slot="notification-count" className="bg-card flex h-8 items-center justify-between rounded-lg border pl-3 pr-1 text-xs shadow-menu">
+    <>
+      <div data-slot="notification-host" data-expanded={expanded || undefined} role="region" aria-label="Notification centre"
+        className="fixed z-40" style={{ left: anchor.left, bottom: anchor.bottom + (showCount ? COUNT_BAR_SPACE : 0), ...width }}
+        onMouseEnter={() => setExpanded(true)} onMouseMove={() => setExpanded(true)}
+        onMouseLeave={() => { if (!interacting) setExpanded(false); }}
+        onPointerDown={() => setInteracting(true)} onPointerUp={() => setInteracting(false)}
+        onKeyDown={(e) => { if (e.key === "Escape") setExpanded(false); }}>
+        {[
+          ...stack.ordered.map((n, i) => (
+            <Toast key={n.id} n={n} place={layout[i]!} expanded={expanded} count={stack.ordered.length} onHeight={onHeight}
+              onOpen={() => { dismissToast(n.id); open(n); }} />
+          )),
+          ...leaving.map(({ n, place }) => (
+            <Toast key={n.id} n={n} place={place} expanded={expanded} count={stack.ordered.length} removed onHeight={onHeight} onOpen={() => open(n)} />
+          )),
+        ]}
+      </div>
+      {showCount && (
+        <div data-slot="notification-count" className="bg-card fixed z-40 flex items-center justify-between rounded-lg border pl-3 pr-1 text-xs shadow-menu"
+          style={{ left: anchor.left, bottom: anchor.bottom, height: COUNT_BAR_HEIGHT, ...width }}>
           <button type="button" className="text-muted-foreground hover:text-foreground" aria-expanded={expanded} onClick={() => setExpanded((e) => !e)}>
-            {toasts.length} notifications{stack.hidden ? ` · ${stack.hidden} more` : ""}
+            {toasts.length} notifications
           </button>
-          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={clearToasts}>Clear all</Button>
+          <Button variant="ghost" size="sm" className="h-5 px-2 text-xs" onClick={clearToasts}>Clear all</Button>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
-function Toast({ n, onOpen }: { n: Notification; onOpen: () => void }) {
+function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }: {
+  n: Notification; place: ToastPlace; expanded: boolean; count: number; removed?: boolean;
+  onHeight: (id: number, h: number) => void; onOpen: () => void;
+}) {
   const meta = KIND_META[n.kind];
+  const ref = useRef<HTMLDivElement>(null);
+  const [mounted, setMounted] = useState(false);
+  const [swiping, setSwiping] = useState(false);
+  const [out, setOut] = useState<SwipeDir>();
+  const drag = useRef<{ x: number; y: number; at: number; axis?: "x" | "y"; amount: number }>();
+  useEffect(() => { setMounted(true); }, []);
+  // The natural height (not the clipped one a collapsed card behind is given), kept current.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || removed) return;
+    const was = el.style.height;
+    el.style.height = "auto";
+    onHeight(n.id, el.getBoundingClientRect().height);
+    el.style.height = was;
+  }, [mounted, n.id, n.title, n.body, removed, onHeight]);
+
+  const setSwipe = (x: number, y: number) => {
+    ref.current?.style.setProperty("--swipe-x", `${x}px`);
+    ref.current?.style.setProperty("--swipe-y", `${y}px`);
+  };
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button === 2 || removed || (e.target as HTMLElement).closest("button")) return;
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    drag.current = { x: e.clientX, y: e.clientY, at: Date.now(), amount: 0 };
+    setSwiping(true);
+  };
+  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const d = drag.current;
+    if (!d || (window.getSelection()?.toString().length ?? 0) > 0) return;
+    const dx = e.clientX - d.x, dy = e.clientY - d.y;
+    if (!d.axis && (Math.abs(dx) > 1 || Math.abs(dy) > 1)) d.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+    if (!d.axis) return;
+    d.amount = swipeAmount(d.axis, d.axis === "x" ? dx : dy);
+    setSwipe(d.axis === "x" ? d.amount : 0, d.axis === "y" ? d.amount : 0);
+  };
+  const onPointerUp = () => {
+    const d = drag.current;
+    drag.current = undefined;
+    setSwiping(false);
+    if (!d?.axis) return;
+    const dir = swipeOut(d.axis, d.amount, Date.now() - d.at);
+    if (dir) { setOut(dir); dismissToast(n.id); } else setSwipe(0, 0);
+  };
+
+  const motion = toastMotion(place, { mounted, removed, expanded });
+  // A swiped-out card keeps its place; its keyframes carry it off.
+  const y = out ? place.transform : motion.transform;
+  const style = {
+    "--y": y, opacity: out ? 1 : motion.opacity, zIndex: count - place.index + (removed ? 1 : 0),
+    height: !removed && place.height !== undefined && place.height > 0 && (expanded || !place.front) ? place.height : undefined,
+  } as CSSProperties;
   return (
-    <div data-slot="notification-toast" data-kind={n.kind} role="status" className="bg-card text-foreground flex flex-col gap-2 rounded-lg border p-3 shadow-menu">
+    <div ref={ref} data-slot="notification-toast" data-kind={n.kind} role="status" tabIndex={0}
+      data-front={place.front} data-index={place.index} data-visible={place.visible} data-expanded={expanded} data-mounted={mounted}
+      data-removed={removed} data-swiping={swiping} data-swipe-out={out} data-slow={(motion.slow && !out) || undefined}
+      aria-hidden={!place.visible || undefined}
+      onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
+      className="bg-card text-foreground absolute bottom-0 left-0 flex w-full flex-col gap-2 rounded-lg border p-3 shadow-menu outline-none select-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      style={style}>
       <div className="flex items-start gap-2">
         <KindIcon kind={n.kind} className="mt-0.5" />
         <div className="min-w-0 flex-1">
@@ -92,13 +243,13 @@ function Toast({ n, onOpen }: { n: Notification; onOpen: () => void }) {
             <span className="truncate font-medium">{n.title}</span>
             <span className={cn("shrink-0 text-xs", TONE_TEXT[meta.tone])}>{meta.label}</span>
           </div>
-          {n.body && <div className="text-muted-foreground truncate text-xs leading-5">{n.body}</div>}
+          {n.body && <div className="text-muted-foreground line-clamp-2 text-xs leading-5 break-words">{n.body}</div>}
         </div>
         <Button variant="ghost" size="icon" className="-mt-1 -mr-1 size-6" aria-label="Dismiss" onClick={() => dismissToast(n.id)}><X className="size-3.5" /></Button>
       </div>
       <div className="flex items-center justify-between gap-2">
         <span data-slot="notification-time" className="text-muted-foreground text-xs">{ago(n.createdAt)}{n.instance ? ` · ${n.instance}` : ""}</span>
-        <Button size="sm" className="h-7 px-2.5 text-xs" onClick={onOpen}>{meta.action}</Button>
+        <Button size="sm" className="h-7 px-2.5 text-xs" onClick={onOpen}>{notificationAction(n)}</Button>
       </div>
     </div>
   );
