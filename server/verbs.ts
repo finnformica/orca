@@ -340,6 +340,9 @@ const cleaning = new Map<string, Promise<CleanupResult[]>>();
  *  its own worktrees (the agents poll and the publish tick), so a laptop's worktree is reaped by the
  *  laptop. One pass per repo at a time: the poll and the tick overlap. */
 export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: number } = {}): Promise<CleanupResult[]> {
+  // A branch preview's read-only bridge (db.previewBridge) answers the same agents poll: it must
+  // never remove this instance's worktrees.
+  if (db.previewBridge()) return Promise.resolve([]);
   const inflight = cleaning.get(repo.name);
   if (inflight) return inflight;
   const pass = (async () => {
@@ -382,7 +385,7 @@ export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: nu
  *  the same safety as auto-archive (no grace period — you asked), and a branch goes only when every
  *  commit on it exists elsewhere. */
 export async function sweep(cfg: OrcaConfig, opts: { confirm?: boolean; now?: number } = {}): Promise<SweepReport> {
-  const confirm = Boolean(opts.confirm);
+  const confirm = Boolean(opts.confirm) && !db.previewBridge(); // a preview bridge only ever dry-runs
   const report: SweepReport = { instance: db.instanceName(), confirmed: confirm, worktrees: [], previews: [], branches: [] };
   const removing = new Map<string, () => Promise<void>>(); // worktree path → its reap
   for (const repo of cfg.repos.filter(repoHere)) {
