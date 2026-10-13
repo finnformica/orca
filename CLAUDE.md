@@ -182,9 +182,12 @@ composer focused. It was a text box whose keystrokes carried into the composer; 
 below now covers "fire off a line"). **The quick-ask pill** (`components/QuickAsk.tsx`, the `A` key):
 a small "Ask · A" pill fixed at the bottom centre of the main column (its strip starts where
 the sidebar ends, collapsed or expanded) on every page (desktop; below md the phone's bottom
-bar has the orchestrator instead) opens a one-line box for ONE message to the orchestrator with no
-history — Enter sends, "Sent to the orchestrator · Open chat" dwells 4s then it closes, a failed
-send keeps the text. The pill, the top-bar button and the phone's bottom bar carry the orchestrator's
+bar has the orchestrator instead) MORPHS (one surface: width, height, radius; instant under reduced
+motion) into a box for messages to the orchestrator with no history — "Ask the orchestrator...", a
+textarea that grows to a cap, Enter sends / Shift+Enter breaks the line (the `send` keycap), no ✕ or
+footer. A send is optimistic: the box clears and stays open, a brief "Sent · Open chat" fades, and
+the POSTs are chained so quick sends arrive in order (a busy orchestrator queues them); a failed send
+gives the text back. The pill, the top-bar button and the phone's bottom bar carry the orchestrator's
 **activity dot** (`ActivityDot`: pulsing while a wake runs, lit once one finished while the panel was
 closed, cleared when it opens), fed by ONE subscriber (`useOrchestratorActivity` in the Shell: a
 status read on mount, then one per `turn` event on the tab's shared stream — no poll of its own).
@@ -193,7 +196,10 @@ status read on mount, then one per `turn` event on the tab's shared stream — n
 orchestrator, `A` quick ask, `F` Find, `⌘B` the sidebar, `?` the shortcuts sheet, Esc closes the
 overlay (the quick-ask box first, then the panel). Letters
 and ⌘B never fire in a field or inside a modal dialog (they'd eat a keystroke of the message); ⌘K and
-Esc fire everywhere. **O, not ⌘J**, for the orchestrator: ⌘J / Ctrl+J is the browser's Downloads
+Esc fire everywhere. **Every open path goes through `openOrchestrator`** (`lib/orchestratorOpen.ts`): the composer focuses
+in a layout effect in the commit that opens it, and keys typed before that are held by a short
+typeahead and forwarded in order (typing "Sometimes" straight after O once gave "ometimesS").
+**O, not ⌘J**, for the orchestrator: ⌘J / Ctrl+J is the browser's Downloads
 (Chrome on Windows/Linux, Firefox), and a bare letter can't clash with a browser or a composer; from a
 field, ⌘K → "Open orchestrator" is one key more. The table also feeds the tooltips, the palette's
 hints and the `?` sheet, so a key can't be documented in one place and bound in another. **Every
@@ -680,7 +686,12 @@ tracks `/proc/meminfo`'s `MemAvailable`).
 **Conversation loading with a remote database:** the chat is **paged**. `GET /api/turns?limit=50`
 returns `{ turns, older }` — the newest page (oldest first) and an opaque cursor
 (`<started_at>~<turn.id>`, exact across equal timestamps; `db.turnPage`) for the page before, which
-`?before=<cursor>` fetches (null once the first turn is in hand). Without `limit` the whole array
+`?before=<cursor>` fetches (null once the first turn is in hand). Paging bounds what is fetched; a **mounted
+window** (`CHAT_WINDOW`, two pages; `capWindow` / `revealAbove` / `revealBelow` in `workstream.ts`)
+bounds the DOM: scrolling toward an edge remounts loaded turns and unmounts the far side, one edge
+per commit so the scroll anchor stays exact. In the orchestrator's chat styling, turns older than the
+newest `RECENT_FULL` show their answer's first lines + Show more, and runs of automated wakes fold
+into one line (`groupWakes`). Without `limit` the whole array
 comes back as it always did, so an older client keeps working. `ChatPanel` opens on the newest page
 (`TURN_PAGE_SIZE`), fetches the next older page as you near the top (or on the "↑ earlier turns"
 click, for a page too short to scroll) and restores `scrollTop` by the height added above
