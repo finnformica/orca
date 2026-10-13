@@ -11,7 +11,16 @@ const prefersDark = () => window.matchMedia("(prefers-color-scheme: dark)");
 function apply(theme: Theme) {
   const dark = theme === "dark" || (theme === "system" && prefersDark().matches);
   document.documentElement.classList.toggle("dark", dark);
+  // The installed app's status bar / the mobile browser's chrome follow the theme Orca applied, not
+  // just the OS's (index.html's media-scoped defaults): one unscoped theme-color, the page background.
+  for (const meta of document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')) {
+    meta.content = themeColor(dark);
+    meta.removeAttribute("media");
+  }
 }
+
+/** The page background in each theme (styles.css `--background`, PR 134's tokens): what the browser chrome is tinted. */
+export const themeColor = (dark: boolean): string => (dark ? "#111111" : "#f9f9f8");
 
 const themeAtom = atom<Theme>(read());
 

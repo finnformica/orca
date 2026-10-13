@@ -5,29 +5,31 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  /* Vercel's Geist design language, as the app's tokens: every component reads these. Light pages
-     sit on #fafafa with white cards; dark on #000 with #0a0a0a cards; 1px hairlines, no shadows,
-     one accent (blue), status dots green / amber / red / blue. */
+  /* Vercel's Geist design language, softened Notion-style: less contrast on surfaces that hold
+     information, easier to read, same shapes. Halfway between Geist's original flat grays and a
+     first, too-soft pass (#128 review): light pages sit on a barely-warm #f9f9f8 with white
+     cards; dark on #111111 with #161616 cards; 1px hairlines (translucent, not flat gray),
+     no shadows, one accent (blue), status dots green / amber / red / blue. */
   --radius: 0.5rem; /* 8px cards; controls are radius-md (6px) */
-  --background: #fafafa;
-  --foreground: #171717;
+  --background: #f9f9f8;
+  --foreground: #222222;
   --card: #ffffff;
-  --card-foreground: #171717;
+  --card-foreground: #222222;
   --popover: #ffffff;
-  --popover-foreground: #171717;
+  --popover-foreground: #222222;
   --primary: #171717;
   --primary-foreground: #ffffff;
-  --secondary: #f2f2f2;
-  --secondary-foreground: #171717;
-  --muted: #f2f2f2;
+  --secondary: #f4f4f3;
+  --secondary-foreground: #222222;
+  --muted: #f4f4f3;
   --muted-foreground: #666666;
-  --accent: #ebebeb;
-  --accent-foreground: #171717;
+  --accent: #ececeb;
+  --accent-foreground: #222222;
   --destructive: #e5484d;
-  --border: #eaeaea;
-  --input: #eaeaea;
+  --border: rgba(0, 0, 0, 0.1);
+  --input: rgba(0, 0, 0, 0.1);
   --ring: #0070f3;
-  --sidebar: #fafafa;
+  --sidebar: #f9f9f8;
   --geist-blue: #0070f3;
   --geist-green: #45a557;
   --geist-teal: #50e3c2;
@@ -44,25 +46,25 @@
 }
 
 .dark {
-  --background: #000000;
-  --foreground: #ededed;
-  --card: #0a0a0a;
-  --card-foreground: #ededed;
-  --popover: #0a0a0a;
-  --popover-foreground: #ededed;
+  --background: #111111;
+  --foreground: #e8e8e8;
+  --card: #161616;
+  --card-foreground: #e8e8e8;
+  --popover: #1c1c1c;
+  --popover-foreground: #e8e8e8;
   --primary: #ededed;
   --primary-foreground: #0a0a0a;
-  --secondary: #1a1a1a;
-  --secondary-foreground: #ededed;
-  --muted: #1a1a1a;
-  --muted-foreground: #a1a1a1;
-  --accent: #1a1a1a;
-  --accent-foreground: #ededed;
+  --secondary: #222222;
+  --secondary-foreground: #e8e8e8;
+  --muted: #222222;
+  --muted-foreground: #9e9e9e;
+  --accent: #222222;
+  --accent-foreground: #e8e8e8;
   --destructive: #e5484d;
-  --border: #333333;
-  --input: #333333;
+  --border: rgba(255, 255, 255, 0.12);
+  --input: rgba(255, 255, 255, 0.12);
   --ring: #0070f3;
-  --sidebar: #000000;
+  --sidebar: #111111;
   --geist-warning-bg: #2a1d03;
   --geist-warning-fg: #ffb224;
   --geist-error-bg: #2a0e0f;
@@ -132,13 +134,13 @@
    dark palette is remapped here, in one scope, instead of restyling each line of Chat.tsx. */
 :root:not(.dark) .log-themed {
   --color-neutral-950: var(--card);
-  --color-neutral-900: #f2f2f2;
+  --color-neutral-900: var(--muted);
   --color-neutral-800: var(--border);
   --color-neutral-600: #8f8f8f;
   --color-neutral-500: #8f8f8f;
-  --color-neutral-400: #666666;
+  --color-neutral-400: var(--muted-foreground);
   --color-neutral-300: #4d4d4d;
-  --color-neutral-200: #171717;
+  --color-neutral-200: var(--foreground);
   --color-emerald-400: #297a3a;
   --color-red-400: #cb2a2f;
   --color-amber-300: #a35200;
@@ -148,8 +150,8 @@
   --color-sky-300: #0068d6;
   --color-sky-400: #0068d6;
   --tw-prose-invert-body: #4d4d4d;
-  --tw-prose-invert-headings: #171717;
-  --tw-prose-invert-bold: #171717;
+  --tw-prose-invert-headings: var(--foreground);
+  --tw-prose-invert-bold: var(--foreground);
   --tw-prose-invert-links: #0068d6;
   --tw-prose-invert-code: #0068d6;
   --tw-prose-invert-bullets: #8f8f8f;
@@ -159,8 +161,24 @@
   --tw-prose-invert-hr: var(--border);
   --tw-prose-invert-th-borders: var(--border);
   --tw-prose-invert-td-borders: var(--border);
-  --tw-prose-invert-pre-bg: #f2f2f2;
-  --tw-prose-invert-pre-code: #171717;
+  --tw-prose-invert-pre-bg: var(--muted);
+  --tw-prose-invert-pre-code: var(--foreground);
+}
+
+/* The terminal modal, the orchestrator window and an unthemed (dark-page) chat log are always
+   dark regardless of page theme, built on Tailwind's raw neutral-* palette. Softening the dark
+   surface tokens above without updating these left the log a different shade of black than the
+   cards around it — bind the stops it actually uses to the same tokens (so this can't drift out
+   of step again) and keep the text stops with no token of their own in the same family. */
+.dark {
+  --color-neutral-950: var(--background);
+  --color-neutral-900: var(--card);
+  --color-neutral-800: var(--border);
+  --color-neutral-600: #6a6a6a;
+  --color-neutral-500: #848484;
+  --color-neutral-400: var(--muted-foreground);
+  --color-neutral-300: #d2d2d2;
+  --color-neutral-200: var(--foreground);
 }
 
 @layer base {
@@ -179,5 +197,143 @@
     font-size: 13px;
     -webkit-font-smoothing: antialiased;
     font-feature-settings: "liga" 1, "calt" 1;
+  }
+}
+
+/* ---- The phone layout (below md, 768px). Nothing here applies at desktop widths. ---- */
+
+/* A full-screen sheet: the terminal, the orchestrator and Add New on a phone. Sized to the VISUAL
+   viewport (lib/viewport.ts trackVisualViewport → --vvh / --vv-top), falling back to 100dvh, so its
+   composer sits above the on-screen keyboard; padded clear of the notch and the home indicator. */
+@utility sheet {
+  position: fixed;
+  inset: auto 0 auto 0;
+  top: var(--vv-top, 0px);
+  margin: 0;
+  width: 100vw;
+  max-width: none;
+  height: var(--vvh, 100dvh);
+  max-height: none;
+  border-width: 0;
+  border-radius: 0;
+  box-shadow: none;
+  z-index: 50;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+@media (max-width: 767px) {
+  /* Nothing scrolls sideways: wide content wraps or scrolls inside its own box. */
+  html,
+  body {
+    overflow-x: clip;
+  }
+  /* iOS zooms into any field under 16px when it is focused. */
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+  /* Menus and selects open as bottom sheets: pinned to the foot of the screen, full width. Radix
+     positions them with an inline transform on this wrapper; the sheet overrides it. */
+  [data-radix-popper-content-wrapper]:has(> [role="menu"], > [role="listbox"]) {
+    position: fixed !important;
+    inset: auto 0 0 0 !important;
+    transform: none !important;
+    min-width: 0 !important;
+    width: 100% !important;
+  }
+  [data-radix-popper-content-wrapper] > [role="menu"],
+  [data-radix-popper-content-wrapper] > [role="listbox"] {
+    width: 100%;
+    max-width: none;
+    max-height: 70dvh !important;
+    overflow-y: auto;
+    border-radius: 12px 12px 0 0;
+    border-bottom-width: 0;
+    padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
+  }
+  /* Tab bars scroll sideways inside themselves rather than widening the page. */
+  [data-slot="tabs-list"] {
+    max-width: 100%;
+    overflow-x: auto;
+    justify-content: flex-start;
+    scrollbar-width: none;
+  }
+  [data-slot="tabs-list"] > * {
+    flex-shrink: 0;
+  }
+  /* Logs wrap: code blocks in replies and diffs break their lines instead of overflowing. */
+  .prose pre,
+  .prose code {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  /* Truncated text expands on tap (lib/viewport.ts expandTruncatedOnTap). */
+  [data-expanded="true"] {
+    white-space: normal !important;
+    overflow: visible !important;
+    text-overflow: clip !important;
+    overflow-wrap: anywhere;
+  }
+}
+
+/* Touch: every control is at least 44px to hit. */
+@media (max-width: 767px) and (pointer: coarse) {
+  [data-slot="button"],
+  [data-slot="select-trigger"],
+  [data-slot="quick-filter"],
+  [role="menuitem"],
+  [role="menuitemradio"],
+  [role="menuitemcheckbox"],
+  [role="option"],
+  [role="tab"] {
+    min-height: 44px;
+  }
+  [data-slot="button"]:has(> svg:only-child) {
+    min-width: 44px;
+  }
+}
+
+/* ---- The installed app (display-mode: standalone): it should feel like an app, not a page. ---- */
+@media (display-mode: standalone) {
+  /* No rubber-band bounce or pull-to-refresh fighting the app's own scroll areas (and its own pull
+     to refresh on the Agents list). */
+  html,
+  body {
+    overscroll-behavior: none;
+  }
+  /* No double-tap-to-zoom wait on every tap, and no grey flash where a finger lands. */
+  html {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+  /* The chrome — bars, the sidebar, buttons, tabs, menus — isn't text to select; content still is. */
+  header,
+  nav,
+  aside,
+  button,
+  [role="button"],
+  [role="tab"],
+  [role="menuitem"],
+  [role="menuitemradio"],
+  [data-slot="bottom-bar"] {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  :where(input, textarea, [contenteditable="true"]) {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+}
+
+/* Touch has no hover: a control shows it was pressed. A tint of its own text colour over whatever its
+   background is, so it reads on filled, outline and ghost buttons alike. */
+@media (hover: none) {
+  :where(button, a, [role="button"], [role="row"], [role="menuitem"], [role="menuitemradio"], [role="option"], [role="tab"], [data-slot="quick-filter"]):not(:disabled):active {
+    background-image: linear-gradient(color-mix(in oklch, currentColor 12%, transparent), color-mix(in oklch, currentColor 12%, transparent));
   }
 }

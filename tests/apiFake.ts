@@ -128,8 +128,10 @@ export const apiFake = {
 
 mock.module("@/api", () => ({
   api: {
-    // Two instances, so the cards' instance chip and "Move to" control render in tests.
-    config: async () => { if (apiFake.holdConfig) await new Promise<void>((r) => { apiFake.releaseConfig = r; }); return ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false }], staleHours: 24, agentProviders: ["claude", "codex", "cursor"], apiPort: 8787, instance: "laptop", instances: ["cloud"] }); },
+    // Two instances, so the cards' instance chip and "Move to" control render in tests. Previews
+    // on by default (RepoFeatures.previews) — a row with a repo absent from this list (e.g. "nopreview"
+    // in tests) reads as previews-disabled, since there's no config entry to say otherwise.
+    config: async () => { if (apiFake.holdConfig) await new Promise<void>((r) => { apiFake.releaseConfig = r; }); return ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false, features: { previews: true } }], staleHours: 24, agentProviders: ["claude", "codex", "cursor"], apiPort: 8787, instance: "laptop", instances: ["cloud"] }); },
     usage: async () => {
       if (apiFake.holdUsage) await new Promise<void>((resolve) => { apiFake.releaseUsage = () => { apiFake.holdUsage = false; resolve(); }; });
       return apiFake.usageData;

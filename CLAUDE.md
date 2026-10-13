@@ -142,8 +142,10 @@ is the chat panel over its recorded turns; a wake is `claude -p --resume` on its
 
 **The console is Vercel's, copied outright** (Finn's re-brief after the first, swimlane-ish
 overview: "copy the design theme of Vercel completely and reuse all of their design decisions").
-Theme: Geist Sans/Mono (a Google Fonts `<link>`, no dependency), `#fafafa`/`#fff` light and
-`#000`/`#0a0a0a` dark, the Geist grays, 1px hairlines, no card shadows, `#0070f3` as the one accent,
+Theme: Geist Sans/Mono (a Google Fonts `<link>`, no dependency), softened Notion-style, pulled back
+to a middle ground between Geist's flat grays and a first, too-soft pass after review (#134) —
+`#f9f9f8`/`#fff` light and `#111111`/`#161616` dark, translucent hairline borders rather than flat
+gray, the Geist grays elsewhere, 1px hairlines, no card shadows, `#0070f3` as the one accent,
 status dots and pills as `--geist-*` tokens — all CSS variables in `styles.css`, so every component
 inherits it. **Surface rules** (Finn found the first pass heavy-handed; `tests/console.test.tsx`
 asserts them on every page): 1px hairlines only, never 2px; rows use dividers, never a box inside a
@@ -225,7 +227,21 @@ disagree. Usage, health and health history are one shared poll each (`lib/vitals
 `sharedSource`; history only while a card shows it). Each PR row also carries a **review cluster**
 (approvers, `N unresolved`, a severity dot) and the PR page a **Review panel** — `reviewDigest`
 over `GET /api/prs/:n/review-signal`, fetched lazily per rendered PR (`store.useReviewDigest`).
-Mobile is backlog.
+**The phone** (below md, 768px — `lib/viewport.ts` `useNarrow` / Tailwind `max-md:`, so nothing changes
+at desktop widths): a bottom bar (Menu · Agents · New agent · Orchestrator) replaces the top bar's Ask
+box; Agents rows stack with every action in the one ⋯ and the chips + sort in a Filters bottom sheet;
+the orchestrator, the terminal and Add New are full-screen `sheet`s sized to the visual viewport
+(`--vvh`, so the composer clears the keyboard; no drag / resize / PiP); menus and selects open as bottom
+sheets; inputs are 16px, touch targets 44px, Enter on a touch screen is a newline. Swipe a sheet's
+header down to close it; pull the Agents list down to refresh (`lib/gestures.ts`). It installs as a PWA
+(`web/public/manifest.webmanifest`: round icons plus a full-bleed maskable one, New agent /
+Orchestrator shortcuts as `/?open=…`). `vite build` writes `version.json` and `sw.js` (from
+`web/sw.template.js`: this build's shell + hashed assets precached, `offline.html` with neither, and
+**never** `/api` or `version.json`); a new build's worker waits until the "new version · Refresh"
+banner tells it to skip waiting. A service worker needs a secure context, so over the plain-http
+tailnet it stays inert (and Android won't offer an install) until that has HTTPS. Standalone CSS: no
+overscroll, no tap delay or flash, chrome not selectable. A hidden tab polls nothing; the top bar says
+when the board is stale; an unreachable bridge shows the offline screen.
 
 The board (`web/src/views/Board.tsx`), lanes: **Local → Draft → In Review → Mergeable → Done·today**.
 A workstream is a branch; its lane (`store.laneFor`):

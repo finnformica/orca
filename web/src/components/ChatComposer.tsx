@@ -7,11 +7,13 @@ import { cn } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
 import { joinPrefill } from "@/lib/palette";
 import type { OrchestratorPrefill } from "@/lib/atoms";
+import { enterSends, isCoarse } from "@/lib/viewport";
 
 // The one chat input, shared by the new-draft box and the follow-up box. A single bordered
 // "chatbox" (à la Claude/ChatGPT) wrapping image thumbnails, the textarea, and a bottom toolbar
 // with the repo selector (via `leading`) on the left and an icon send button on the right.
 // Accepts files of any type by paste, drag-drop, or the paperclip picker; Enter sends; Shift/⌘/Ctrl+Enter breaks the line.
+// On a touch screen Enter breaks the line (a phone keyboard has no Shift+Enter) and the button sends.
 // Owns its own text + attachments; with a `persistKey` it survives page reloads (localStorage).
 /** Shell-style history step: ↑ walks toward older (from newest when not yet walking), ↓ toward newer
  *  and off the end back to an empty box (null). Pure, so it's unit-tested without a DOM. */
@@ -187,8 +189,9 @@ export function ChatComposer({
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setDismissedAt(trig!.start); return; }
     }
     // Enter sends, like a chat; Shift/⌘/Ctrl+Enter breaks the line. (It was ⌘+Enter to send.) A
-    // textarea inserts the newline for Shift on its own; ⌘/Ctrl need it put in by hand.
-    if (e.key === "Enter" && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !e.nativeEvent.isComposing) { e.preventDefault(); void submit(); return; }
+    // textarea inserts the newline for Shift on its own; ⌘/Ctrl need it put in by hand. On a touch
+    // screen Enter is left to the textarea (a newline) — see lib/viewport's enterSends.
+    if (e.key === "Enter" && enterSends({ shiftKey: e.shiftKey, metaKey: e.metaKey, ctrlKey: e.ctrlKey, altKey: e.altKey, isComposing: e.nativeEvent.isComposing }, isCoarse())) { e.preventDefault(); void submit(); return; }
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
       const el = e.currentTarget as HTMLTextAreaElement;
@@ -257,7 +260,7 @@ export function ChatComposer({
                 {alt.label}
               </Button>
             )}
-            <Button type="button" size="icon" className="size-8" disabled={!canSubmit} title="Send (Enter)" onClick={() => void submit()}>
+            <Button type="button" size="icon" className="size-8" disabled={!canSubmit} title="Send (Enter)" aria-label="Send" onClick={() => void submit()}>
               <ArrowUp className="size-4" />
             </Button>
           </div>
@@ -326,7 +329,7 @@ function Thumb({ file, onRemove }: { file: File; onRemove: () => void }) {
         type="button"
         onClick={onRemove}
         title="Remove"
-        className="bg-background/80 text-foreground hover:bg-background absolute top-0.5 right-0.5 rounded-full p-0.5 opacity-0 transition-opacity group-hover:opacity-100"
+        className="bg-background/80 text-foreground hover:bg-background absolute top-0.5 right-0.5 rounded-full p-0.5 opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"
       >
         <X className="size-3" />
       </button>

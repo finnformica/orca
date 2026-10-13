@@ -2,10 +2,11 @@ import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Check, ChevronDown, Copy, ExternalLink, FlaskConical, Loader2, Square, TriangleAlert } from "lucide-react";
 import { api, type PreviewSvc } from "../api";
-import { baseBranch, instanceChoices, previewKeyOf, previewStatus, startMaster, stopMaster, stopPreview, testLocally, thisInstance, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
-import { previewHref } from "../workstream";
+import { baseBranch, instanceChoices, previewKeyOf, previewsEnabled, previewStatus, startMaster, stopMaster, stopPreview, testLocally, thisInstance, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
+import { previewHref, previewLabel } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { StatusDot } from "@/components/console";
 import { poll } from "@/lib/poll";
 import { sharedSource } from "@/lib/vitals";
 
@@ -151,6 +152,50 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
   }
   // Running/starting: the state button + Stop read as one connected control.
   return <PreviewLiveControl svcs={svcs} busy={busy} onStop={() => void stop()} openLabel="Open preview" startingLabel="Starting…" compact={compact} />;
+}
+
+/** The Agents-list row's dedicated preview cell: a status dot + link once the preview is reachable,
+ *  an "Add preview" button when there isn't one yet, a spinner while it boots — the same fixed
+ *  size-7 slot throughout, so switching between states never shifts the Actions column. Disabled
+ *  (with a tooltip) when the repo hasn't opted into RepoFeatures.previews; the bridge still enforces
+ *  this, the check here only saves a round trip to a button that would just 404. Starts the preview
+ *  the same way the card's own "Test locally" control does (store.testLocally). */
+export function PreviewCell({ row }: { row: Row }) {
+  const enabled = previewsEnabled(row.repo);
+  const { busy, active, ready, failed, error, open, start } = usePreview(previewKeyOf(row), () => testLocally(row));
+  const state: "disabled" | "none" | "starting" | "ready" | "failed" =
+    !enabled ? "disabled" : failed ? "failed" : active && ready && open ? "ready" : busy || active ? "starting" : "none";
+
+  const slot = "relative inline-flex size-7 shrink-0 items-center justify-center";
+  if (state === "ready") {
+    return (
+      <span className={slot} data-slot="preview-cell" data-state={state}>
+        <a href={hrefOf(open!)} target="_blank" rel="noreferrer" aria-label="Open preview" title={`Open preview on :${open!.port}`}
+          className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 items-center justify-center rounded-md">
+          <ExternalLink className="size-3.5" />
+        </a>
+        <StatusDot tone="ready" title="Running" className="absolute -top-0.5 -right-0.5" />
+      </span>
+    );
+  }
+  const icon = state === "failed" ? <TriangleAlert className="text-destructive size-3.5" />
+    : state === "starting" ? <Loader2 className="size-3.5 animate-spin" />
+    : <FlaskConical className={state === "disabled" ? "text-muted-foreground size-3.5" : "size-3.5"} />;
+  const label = state === "failed" ? "Retry preview" : state === "starting" ? "Preview starting" : "Add preview";
+  const title = state === "disabled" ? `Previews aren't enabled for ${row.repo}`
+    : state === "failed" ? (error ? `Preview failed — ${error}` : "Preview failed — retry")
+    : state === "starting" ? "Starting preview…" : "Add preview";
+  return (
+    <span className={slot} data-slot="preview-cell" data-state={state}>
+      <Button size="icon" variant="ghost" className="size-7" disabled={state === "disabled" || state === "starting"}
+        onClick={() => void start()} title={title} aria-label={label}>
+        {icon}
+      </Button>
+      {(state === "starting" || state === "failed") && (
+        <StatusDot tone={state === "failed" ? "error" : "building"} title={state === "failed" ? "Failed" : "Starting…"} className="absolute -top-0.5 -right-0.5" />
+      )}
+    </span>
+  );
 }
 
 // The failed-preview log affordance, styled exactly like the card's ErrorLog trigger ("Preview
@@ -306,10 +351,10 @@ export function RunningPreviews() {
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-medium" title={titleOf(p.key)}>{titleOf(p.key)}</div>
             <div className="text-muted-foreground truncate text-xs">
-              {p.instance ? `${p.instance} · ` : ""}{p.svcs.map((s) => `${s.name} :${s.port}`).join(" · ")}
+              {p.instance ? `${p.instance} · ` : ""}{p.svcs.map((s) => `${s.name} ${previewLabel(hrefOf(s))}`).join(" · ")}
             </div>
           </div>
-          <div className="w-56"><PreviewLiveControl svcs={p.svcs} busy={false} onStop={() => void stopPreview(p.key, p.instance).catch(() => {}).then(() => reloadPreviews?.())} openLabel="Open" startingLabel="Starting…" /></div>
+          <div className="w-56 max-md:w-full"><PreviewLiveControl svcs={p.svcs} busy={false} onStop={() => void stopPreview(p.key, p.instance).catch(() => {}).then(() => reloadPreviews?.())} openLabel="Open" startingLabel="Starting…" /></div>
         </li>
       ))}
     </ul>
@@ -340,7 +385,7 @@ export function PreviewPanel({ row }: { row: Row }) {
         {active && <Button size="sm" variant="outline" disabled={busy} onClick={() => void stop()}>Stop preview</Button>}
         {active && !ready && <span className="text-muted-foreground text-sm">starting the frontend + backend… (~10s)</span>}
         {failed && <span className="text-destructive text-sm">a service failed to start — expand the log for details</span>}
-        {ready && open && <a className="text-muted-foreground inline-flex items-center gap-1 text-sm hover:underline" href={hrefOf(open)} target="_blank" rel="noreferrer">open :{open.port} <ExternalLink className="size-3.5" /></a>}
+        {ready && open && <a className="text-muted-foreground inline-flex items-center gap-1 text-sm hover:underline" href={hrefOf(open)} target="_blank" rel="noreferrer">open {previewLabel(hrefOf(open))} <ExternalLink className="size-3.5" /></a>}
       </div>
       {error && <ErrorLog error={error} />}
       {ready && open && <iframe title="preview" src={hrefOf(open)} className="h-[70vh] w-full rounded-md border" />}

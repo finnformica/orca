@@ -1,23 +1,28 @@
 // The console shell, Vercel's: a left sidebar (instance switcher, Find, the nav, you at the bottom)
 // that collapses to icons and goes off-canvas on a narrow screen, and a top bar with the repo
 // context switcher, a breadcrumb and, on the right, "Ask the orchestrator" (on every page). It also
-// hosts the ⌘K palette, the ? shortcuts sheet and the one keyboard-shortcut listener.
+// hosts the ⌘K palette, the ? shortcuts sheet and the one keyboard-shortcut listener. On a phone
+// (below md) the top bar carries the round mark, and a bottom bar within thumb reach holds the menu,
+// Agents, New agent and the orchestrator; every inset clears the notch and the home indicator.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtom } from "jotai";
 import {
   Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderGit2, FolderSync, Gauge, LayoutGrid, Loader2, Menu,
-  Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
+  Bot, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, repoFilterAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
 import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPalette";
-import { AskOrchestrator } from "@/components/Terminal";
+import { AskOrchestrator, useOrchestrator } from "@/components/Terminal";
+import { OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
 import { cn, PortalContainer } from "@/lib/utils";
 import { validChoice } from "@/lib/persisted";
+import { useSwipeToClose } from "@/lib/gestures";
+import { useNarrow } from "@/lib/viewport";
 import { api } from "../api";
-import { instanceChoices, thisInstance, undoDraft, useRepos, type OptimisticDraft } from "../store";
+import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
 import { summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
 import { Button } from "@/components/ui/button";
@@ -44,6 +49,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
 }) {
   const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
   const [open, setOpen] = useState(false); // off-canvas sidebar on a narrow screen
+  const offline = useConfigFailed();
   useShellFallbacks();
   const route = useRoute();
   useEffect(() => setOpen(false), [route]); // navigating closes the off-canvas sidebar
@@ -61,20 +67,25 @@ export function Shell({ crumbs, sidebarActions, children }: {
         data-slot="sidebar" data-collapsed={collapsed}
         className={cn(
           "bg-sidebar fixed inset-y-0 left-0 z-50 flex flex-col border-r transition-[width,transform] md:sticky md:top-0 md:h-screen md:translate-x-0",
+          "max-md:pt-[env(safe-area-inset-top)] max-md:pb-[env(safe-area-inset-bottom)] max-md:pl-[env(safe-area-inset-left)]",
           collapsed ? "md:w-14" : "md:w-60", "w-60", open ? "translate-x-0" : "-translate-x-full",
         )}
       >
         <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} onClose={() => setOpen(false)} actions={sidebarActions} />
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header data-slot="topbar" className="bg-background/80 sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 backdrop-blur md:px-6">
-          <button type="button" className="text-muted-foreground hover:text-foreground md:hidden" onClick={() => setOpen(true)} aria-label="Open menu"><Menu className="size-5" /></button>
+        <UpdateBanner />
+        <header data-slot="topbar" className="bg-background/80 sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 backdrop-blur md:px-6 max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pt-[env(safe-area-inset-top)]">
+          <button type="button" className="text-muted-foreground hover:text-foreground -ml-2 inline-flex size-11 shrink-0 items-center justify-center md:hidden" onClick={() => setOpen(true)} aria-label="Open menu"><Menu className="size-5" /></button>
+          <button type="button" data-slot="topbar-mark" onClick={() => navigate("/")} aria-label="Orca — go to overview" className="shrink-0 md:hidden"><RoundMark /></button>
           <RepoSwitcher />
           <nav aria-label="Breadcrumb" className="text-muted-foreground flex min-w-0 items-center gap-2 text-sm">{crumbs}</nav>
+          <span className="contents max-md:ml-auto max-md:flex"><StaleIndicator /></span>
           <AskOrchestrator />
         </header>
-        <main className="w-full flex-1 px-4 py-6 md:px-6">{children}</main>
+        <main className="w-full flex-1 px-4 py-6 md:px-6 max-md:min-w-0 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pb-[calc(5.5rem+env(safe-area-inset-bottom))]">{offline ? <OfflineScreen /> : children}</main>
       </div>
+      <BottomBar onMenu={() => setOpen(true)} />
       <Shortcuts />
       <CommandPalette />
       <ShortcutsHelp />
@@ -143,6 +154,34 @@ export function OrcaMark({ className }: { className?: string }) {
   );
 }
 
+/** The mark inside a circle — Vercel's round avatar logo; the favicon and home-screen icon match it. */
+export const RoundMark = ({ className }: { className?: string }) => (
+  <span className={cn("bg-foreground text-background inline-flex size-6 shrink-0 items-center justify-center rounded-full", className)}>
+    <OrcaMark className="size-4" />
+  </span>
+);
+
+/** The phone's bottom bar (below md only): what a thumb needs — the menu, Agents, New agent and the
+ *  orchestrator — at the foot of the screen, above the home indicator. */
+function BottomBar({ onMenu }: { onMenu: () => void }) {
+  const route = useRoute();
+  const [, setAddNew] = useAtom(addNewOpenAtom);
+  const { ask } = useOrchestrator();
+  const item = "text-muted-foreground flex min-h-11 min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-md text-[11px] font-medium";
+  const agents = NAV[1]!;
+  return (
+    <nav aria-label="Quick actions" data-slot="bottom-bar"
+      className="bg-background/95 fixed inset-x-0 bottom-0 z-30 flex items-stretch gap-1 border-t px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] backdrop-blur md:hidden">
+      <button type="button" className={item} onClick={onMenu}><Menu className="size-5" />Menu</button>
+      <button type="button" className={cn(item, agents.match(route) && "text-foreground")} aria-current={agents.match(route) ? "page" : undefined} onClick={() => navigate("/agents")}><Boxes className="size-5" />Agents</button>
+      <button type="button" className={cn(item, "text-foreground")} onClick={() => setAddNew(true)}>
+        <span className="bg-foreground text-background inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span>New agent
+      </button>
+      <button type="button" className={item} onClick={() => ask()}><Bot className="size-5" />Orchestrator</button>
+    </nav>
+  );
+}
+
 // The repo and instance scopes are restored from localStorage before the config lands; once it has,
 // a saved repo or instance that no longer exists goes back to "all" (never a page filtered to nothing).
 function useShellFallbacks() {
@@ -165,11 +204,7 @@ function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
   useRepos(); // config (and with it the instance list) lands after first paint
   const choices = instanceChoices();
   const label = scope === "all" ? (choices.length > 1 ? "All instances" : thisInstance() ?? "Orca") : scope;
-  const mark = (
-    <span className="bg-foreground text-background inline-flex size-6 shrink-0 items-center justify-center rounded-full">
-      <OrcaMark className="size-4" />
-    </span>
-  );
+  const mark = <RoundMark />;
   const body = (
     <>
       {mark}
@@ -262,6 +297,7 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
     return () => clearTimeout(t);
   }, [sent]);
   const onSent = (draft: OptimisticDraft) => { setOpen(false); setSent(draft); };
+  const swipe = useSwipeToClose(() => dialog, () => setOpen(false), useNarrow()); // a phone's full-screen sheet
   return (
     <>
       <Button size="sm" data-slot="add-new" title={`Add New (${shortcutLabel("new")})`} aria-label="Add New" onClick={() => setOpen(true)} className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
@@ -271,10 +307,10 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
         ref={setDialog} data-slot="add-new-dialog" aria-label="New agent"
         onClose={() => setOpen(false)} onCancel={() => setOpen(false)}
         onClick={(e) => { if (e.target === dialog) setOpen(false); }} // backdrop click
-        className="bg-card text-foreground m-auto mt-[12vh] w-[92vw] max-w-2xl rounded-lg border p-0 shadow-modal backdrop:bg-black/50"
+        className="bg-card text-foreground m-auto mt-[12vh] w-[92vw] max-w-2xl rounded-lg border p-0 shadow-modal backdrop:bg-black/50 max-md:sheet"
       >
         <PortalContainer.Provider value={dialog ?? undefined}>
-          <header className="flex h-12 items-center justify-between border-b px-4">
+          <header {...swipe} className="flex h-12 items-center justify-between border-b px-4 max-md:touch-none">
             <h2 className="text-sm font-medium">New agent</h2>
             <Button size="icon" variant="ghost" className="size-7" onClick={() => setOpen(false)} aria-label="Close"><X className="size-4" /></Button>
           </header>
@@ -285,7 +321,7 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
         </PortalContainer.Provider>
       </dialog>
       {sent && (
-        <div role="status" data-slot="sent-toast" className="bg-card fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg border px-3 py-2 text-sm shadow-menu">
+        <div role="status" data-slot="sent-toast" className="bg-card fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg border px-3 py-2 text-sm shadow-menu max-md:bottom-[calc(4.5rem+env(safe-area-inset-bottom))]">
           <span>Sent to <span className="font-medium">{sent.repo}</span></span>
           <button type="button" className="font-medium underline underline-offset-2 hover:no-underline" onClick={() => { void undoDraft(sent); setSent(null); }}>Undo</button>
           <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setSent(null)} aria-label="Dismiss"><X className="size-3.5" /></button>
