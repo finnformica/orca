@@ -18,6 +18,7 @@ import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent"
 import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
 import { attachCommand, handoffPrompt } from "../../shared/agent";
 import { poll } from "./lib/poll";
+import { toast } from "./lib/toast";
 
 const KEY = "orca.enrichment";
 const now = () => new Date().toISOString();
@@ -950,8 +951,13 @@ async function launchOnRow(row: Row, worktree: string, prompt: string, provider:
     model: modelFor(row),
     ...next,
   });
-  // Queued rather than launched: nothing started, so the session pointer must not move.
-  if ("status" in receipt && receipt.status === "queued") return receipt;
+  // Queued rather than launched: nothing started, so the session pointer must not move. A neutral
+  // info toast, never the error toast — this is the expected outcome of a double-click or an action
+  // landing mid-turn, not a failure.
+  if ("status" in receipt && receipt.status === "queued") {
+    toast({ kind: "info", title: "Queued", body: "Runs when the current turn finishes." });
+    return receipt;
+  }
   // Switch the active native-session pointer immediately. Its new id arrives on the next poll.
   patchEnrich(row.repo, row.branch, { agentProvider: provider, sessionId: receipt.sessionId });
   return receipt;
