@@ -1,16 +1,16 @@
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { createPortal } from "react-dom";
 import { Bot, PictureInPicture2, PanelBottomClose, X } from "lucide-react";
-import { syncEvents } from "@/lib/events";
+import { subscribeTurns, syncEvents } from "@/lib/events";
 import { ChatPanel } from "@/views/Chat";
 import { api } from "../api";
 import type { Row } from "../store";
-import { FRAME_MIN_H as MIN_H, FRAME_MIN_W as MIN_W, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, clampFrame, resizeFrame, type Frame } from "../workstream";
-import { PortalContainer } from "@/lib/utils";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth } from "../workstream";
+import { PortalContainer, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { poll } from "@/lib/poll";
-import { orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
+import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorWidthAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
 import { useNarrow } from "@/lib/viewport";
 import { useSwipeToClose } from "@/lib/gestures";
@@ -57,18 +57,22 @@ export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean
 }
 
 // The orchestrator: the one conversation you talk to, which starts and steers workstreams itself.
-// It pops out a chat window in the bottom-right corner, the way a website's chat widget does — NOT a
-// modal: the board behind it stays visible and usable, because the point of talking to it is to
-// watch the cards it moves. The window is the same ChatPanel a card's terminal uses (its turns are
-// recorded like any other conversation, under a reserved repo/branch) with the composer pointed at
-// its own route. Polled only while open: whether it is running drives Stop and the composer's
-// placeholder. What opens it is `orchestratorOpenAtom`: the top bar's "Ask the orchestrator" entry
-// (AskOrchestrator, on every page — it replaced the floating launcher), the O key and the palette.
+// It opens as a RIGHT-HAND SIDE PANEL that slides over the page — an overlay, so nothing reflows and
+// the board it is moving stays visible and usable (not a modal: no backdrop, clicks outside still
+// land). This is the shape Cursor, Copilot, Linear and Vercel's v0 give their assistant: a rail you
+// can keep open while you work, resizable from its inner edge, dismissed with Esc or its ✕. The chat
+// inside is the same ChatPanel a card's terminal uses (its turns are recorded like any other
+// conversation, under a reserved repo/branch), in its "chat" styling, with the composer pointed at
+// the orchestrator's own route. Polled only while open: whether it is running drives Stop and the
+// composer's placeholder. What opens it is `orchestratorOpenAtom`: the top bar's button, the O key,
+// the palette, the quick-ask box's "Open chat" and a failed action's "Ask the orchestrator".
+// (History: it was a draggable, resizable corner window first — one more thing to place and keep
+// out of the way — and before that a modal.)
 
 let askSeq = 0;
 /** A new ask session: the keystrokes of one ask replace each other in the composer (see ChatComposer). */
 export const newAskSession = (): number => ++askSeq;
-/** Open the orchestrator's window and focus its composer, with `text` after its draft. */
+/** Open the orchestrator's panel and focus its composer, with `text` after its draft. */
 export function useOrchestrator() {
   const [open, setOpen] = useAtom(orchestratorOpenAtom);
   const setPrefill = useSetAtom(orchestratorPrefillAtom);
@@ -76,31 +80,64 @@ export function useOrchestrator() {
   return { open, ask, close: () => setOpen(false) };
 }
 
-/** Vercel's top-right "Ask AI": a compact box in the top bar of every page. Clicking it opens the
- *  orchestrator focused; typing in it opens it with what you typed, carried on in its composer. */
-export function AskOrchestrator() {
-  const { ask } = useOrchestrator();
-  const [text, setText] = useState("");
-  const session = useRef(0);
-  const key = shortcutLabel("orchestrator");
+/** The orchestrator's activity for the launchers' indicator: running, and whether a wake finished
+ *  while the panel was closed. ONE subscriber (the Shell) keeps the atom current — a status read on
+ *  mount, then one per `turn` event on the tab's shared live stream (a run started or finished), so
+ *  it costs no poll of its own on every page. The panel opening clears `unread`. */
+export function useOrchestratorActivity(): { running: boolean; unread: boolean } {
+  const [activity, setActivity] = useAtom(orchestratorActivityAtom);
+  const open = useAtomValue(orchestratorOpenAtom);
+  const openRef = useRef(open);
+  openRef.current = open;
+  useEffect(() => {
+    let live = true;
+    const read = (finished: boolean) => api.orchestrator().then((s) => {
+      if (!live) return;
+      setActivity((a) => ({ running: s.running, unread: a.unread || (finished && !s.running && !openRef.current) }));
+    }).catch(() => {});
+    void read(false);
+    const unsubscribe = subscribeTurns(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { turn: () => void read(true), step: () => {}, resync: () => void read(false) });
+    return () => { live = false; unsubscribe(); };
+  }, []);
+  useEffect(() => { if (open) setActivity((a) => (a.unread ? { ...a, unread: false } : a)); }, [open]);
+  return activity;
+}
+
+/** The pulsing / lit dot the launchers carry: pulsing while a wake runs, solid once one finished
+ *  unseen, absent otherwise. */
+export function ActivityDot({ activity, className }: { activity: { running: boolean; unread: boolean }; className?: string }) {
+  if (!activity.running && !activity.unread) return null;
   return (
-    <label data-slot="ask-orchestrator" title={`Ask the orchestrator (${key}): it starts and steers workstreams for you`}
-      // Below md the bottom bar's Orchestrator button takes its place.
-      className="bg-card focus-within:ring-ring/40 hover:border-ring/60 ml-auto flex h-8 w-40 shrink-0 cursor-text items-center gap-2 rounded-md border px-2 focus-within:ring-2 sm:w-64 max-md:hidden">
-      <Bot className="text-muted-foreground size-3.5 shrink-0" />
-      <input value={text} aria-label="Ask the orchestrator" placeholder="Ask the orchestrator…"
-        onClick={() => { session.current = newAskSession(); ask(text, session.current); }}
-        onChange={(e) => { if (!text) session.current = newAskSession(); setText(e.target.value); ask(e.target.value, session.current); }}
-        onBlur={() => setText("")} // it is in the composer now
-        className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-sm outline-none" />
-      <kbd className="text-muted-foreground rounded border px-1 font-sans text-[10px]">{key}</kbd>
-    </label>
+    <span data-slot="orchestrator-activity" data-state={activity.running ? "running" : "unread"} aria-hidden="true"
+      className={cn("bg-geist-blue inline-block size-2 rounded-full", activity.running && "animate-pulse", className)} />
   );
 }
 
-export function OrchestratorWindow() {
+/** Vercel's top-right "Ask AI", as a BUTTON: it opens the side panel with the composer focused. (It was
+ *  a text box whose keystrokes carried into the composer; a box in the chrome that isn't where the
+ *  text ends up is one more thing to learn, and the quick-ask pill now covers "fire off a line".) */
+export function AskOrchestrator() {
+  const { ask } = useOrchestrator();
+  const activity = useAtomValue(orchestratorActivityAtom);
+  const key = shortcutLabel("orchestrator");
+  return (
+    <button type="button" data-slot="ask-orchestrator" onClick={() => ask()} aria-label="Ask the orchestrator"
+      title={`Ask the orchestrator (${key}): it starts and steers workstreams for you`}
+      // Below md the bottom bar's Orchestrator button takes its place.
+      className="bg-card hover:bg-accent/60 text-foreground ml-auto flex h-8 shrink-0 items-center gap-2 rounded-md border px-2.5 text-sm max-md:hidden">
+      <span className="relative inline-flex"><Bot className="text-muted-foreground size-3.5 shrink-0" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
+      <span className="text-muted-foreground">Ask the orchestrator</span>
+      <kbd className="text-muted-foreground rounded border px-1 font-sans text-[10px]">{key}</kbd>
+    </button>
+  );
+}
+
+/** How long the slide takes (ms); the panel is hidden from assistive tech once it has slid out. */
+const SLIDE_MS = 200;
+
+export function OrchestratorPanel() {
   const [open, setOpen] = useAtom(orchestratorOpenAtom);
-  // On a phone the window is a full-screen sheet: no dragging, resizing or picture-in-picture.
+  // On a phone the panel is a full-screen sheet: no resizing or picture-in-picture.
   const narrow = useNarrow();
   const sheetRef = useRef<HTMLDivElement>(null);
   const swipe = useSwipeToClose(() => sheetRef.current, () => setOpen(false), narrow);
@@ -108,9 +145,15 @@ export function OrchestratorWindow() {
   const setPrefill = useSetAtom(orchestratorPrefillAtom);
   const [state, setState] = useState<{ key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string } | null>(null);
   const load = () => api.orchestrator().then(setState).catch(() => {});
+  // Once opened, the chat stays MOUNTED while closed (slid out, hidden): reopening is instant, with
+  // the transcript, scroll position and draft exactly where you left them — the way an editor's
+  // assistant rail behaves — instead of refetching and re-rendering the conversation every time.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { if (open) setMounted(true); }, [open]);
   // Popped out: the chat lives in an always-on-top Document Picture-in-Picture window (Chrome/Edge
   // 116+), rendered there by a PORTAL — the same React tree, so its state, composer draft, SSE and
   // popovers carry over rather than being copied. Browsers without the API get no Pop out button.
+  // Kept from the window days because it costs one button: the portal is what makes it work.
   const [pip, setPip] = useState<Window | null>(null);
   // The poll runs on the PiP window's timers while popped out: that window is the visible one, and
   // a hidden tab's timers get throttled (to once a minute after a while).
@@ -122,6 +165,17 @@ export function OrchestratorWindow() {
   useEffect(() => { if (!open) { pip?.close(); setPrefill(null); } }, [open]);
   // An ask while popped out lands in the PiP window's composer; bring that window forward.
   useEffect(() => { if (prefill) pip?.focus(); }, [prefill?.seq]);
+  // Focus: the composer takes it on open (ChatComposer's prefill effect); on close it goes back to
+  // where it was — the button or key that opened the panel — so a keyboard user isn't dropped on <body>.
+  const opener = useRef<Element | null>(null);
+  // A LAYOUT effect: the composer takes focus in a passive effect of its own, which would run first
+  // (children's effects before the parent's) and leave "the opener" being the composer itself.
+  useLayoutEffect(() => {
+    if (open) { opener.current = document.activeElement; return; }
+    const el = opener.current as HTMLElement | null;
+    opener.current = null;
+    if (el && document.contains(el) && typeof el.focus === "function") el.focus();
+  }, [open]);
   useEffect(() => {
     if (!pip) return;
     // The page's theme is a class on <html> (lib/theme.ts): mirror <html>'s class and inline style
@@ -137,7 +191,7 @@ export function OrchestratorWindow() {
     return () => { observer.disconnect(); pip.close(); };
   }, [pip]);
   const popOut = async () => {
-    const w = await pipApi()!.requestWindow(loadPipSize(frame)).catch(() => null);
+    const w = await pipApi()!.requestWindow(loadPipSize(width)).catch(() => null);
     if (!w) return;
     copyStyles(document, w.document);
     // Closing it (its own ✕, Return to tab, or closing the chat) brings the chat back into the tab.
@@ -149,69 +203,56 @@ export function OrchestratorWindow() {
     repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
     worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
   };
-  // Where and how big the window is: dragged by its header, resized from any edge or corner,
-  // remembered per browser. Until it is moved it sits anchored bottom-right, so
-  // it stays put as the viewport changes. During a drag or resize the element's style is written
-  // DIRECTLY — a React state update per pointer move re-rendered the whole chat and lagged; state
-  // (and storage) is updated once, when the pointer lets go.
-  const [frame, setFrame] = useState<Frame>(() => loadFrame());
+  // Width: dragged from the panel's left edge, remembered per browser (lib/persisted), clamped to the
+  // viewport on load and on browser resize. During a drag the element's style is written DIRECTLY —
+  // a React state update per pointer move re-rendered the whole chat and lagged; state (and storage)
+  // is updated once, when the pointer lets go.
+  const [savedWidth, setSavedWidth] = useAtom(orchestratorWidthAtom);
+  const [vw, setVw] = useState(() => window.innerWidth);
+  useEffect(() => {
+    const fit = () => setVw(window.innerWidth);
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, []);
+  const width = clampPanelWidth(savedWidth, vw);
   const panelRef = useRef<HTMLDivElement>(null);
-  /** Pin the panel where it currently is (left/top instead of right/bottom), so edges can move. */
-  const pin = (el: HTMLDivElement): Required<Frame> => {
-    const r = el.getBoundingClientRect();
-    const f = { x: r.left, y: r.top, w: r.width || frame.w, h: r.height || frame.h };
-    el.style.left = `${f.x}px`; el.style.top = `${f.y}px`; el.style.right = "auto"; el.style.bottom = "auto"; el.style.position = "fixed";
-    return f;
-  };
-  const track = (e: ReactPointerEvent, onMove: (dx: number, dy: number, start: Required<Frame>) => Frame) => {
+  const onResizeStart = (e: ReactPointerEvent) => {
     if (e.button !== 0) return;
     const el = panelRef.current;
     if (!el) return;
-    const start = pin(el);
-    const x0 = e.clientX, y0 = e.clientY;
-    let last: Frame = start;
+    const x0 = e.clientX, w0 = width;
+    let last = w0;
     const move = (ev: PointerEvent) => {
-      // Every move is clamped: no part of the window can leave the viewport.
-      last = clampFrame(onMove(ev.clientX - x0, ev.clientY - y0, start), window.innerWidth, window.innerHeight);
-      el.style.left = `${last.x}px`; el.style.top = `${last.y}px`; el.style.width = `${last.w}px`; el.style.height = `${last.h}px`;
+      last = clampPanelWidth(w0 + (x0 - ev.clientX), window.innerWidth); // the edge is on the LEFT: dragging left widens
+      el.style.width = `${last}px`;
     };
     const up = () => {
       window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
-      setFrame(last);
+      document.body.style.cursor = "";
+      setSavedWidth(last);
     };
+    document.body.style.cursor = "ew-resize";
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
     e.preventDefault();
   };
-  const onDragStart = (e: ReactPointerEvent) => {
-    if ((e.target as HTMLElement).closest("button")) return;
-    track(e, (dx, dy, s) => ({ ...s, x: s.x + dx, y: s.y + dy }));
-  };
-  /** An edge or corner handle: `h` ∈ n/s/e/w and their corners. Left/top edges move the origin too. */
-  const onResizeStart = (h: string) => (e: ReactPointerEvent) => track(e, (dx, dy, s) => resizeFrame(s, h, dx, dy, window.innerWidth, window.innerHeight));
-  // A smaller browser window pulls a placed window back inside it; the clamped frame is saved, so a
-  // spot remembered from a bigger screen is fixed for good.
-  useEffect(() => {
-    const fit = () => setFrame((f) => clampFrame(f, window.innerWidth, window.innerHeight));
-    window.addEventListener("resize", fit);
-    return () => window.removeEventListener("resize", fit);
-  }, []);
-  useEffect(() => saveFrame(frame), [frame]);
-  const placed = frame.x !== undefined && frame.y !== undefined;
   const header = (
     <div
-      className={`flex items-center justify-between gap-2 border-b px-3 py-2 select-none ${pip || narrow ? "" : "cursor-move"} ${narrow && !pip ? "touch-none" : ""}`}
-      onPointerDown={pip ? undefined : narrow ? swipe.onPointerDown : onDragStart} data-slot="orchestrator-handle" title={pip || narrow ? undefined : "Drag to move"}
+      className={`flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3 select-none ${narrow && !pip ? "touch-none" : ""}`}
+      onPointerDown={!pip && narrow ? swipe.onPointerDown : undefined} data-slot="orchestrator-handle"
     >
-      {/* Paused = it has woken itself as many times as it may without hearing from you. */}
-      <div className="min-w-0">
-        <div className="truncate text-sm font-medium">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
-        {/* What the last wake cost; amber once the session is big enough that a fresh one would be much cheaper. */}
-        {state?.lastWakeUsd !== undefined && (
-          <div className={`truncate text-[10px] ${state.hint ? "text-amber-400" : "text-neutral-500"}`} title={state.hint} data-slot="orchestrator-spend">
-            last wake ${state.lastWakeUsd.toFixed(2)}{state.hint ? ` · ${state.hint}` : ""}
-          </div>
-        )}
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="bg-accent text-foreground inline-flex size-6 shrink-0 items-center justify-center rounded-full"><Bot className="size-3.5" /></span>
+        <div className="min-w-0">
+          {/* Paused = it has woken itself as many times as it may without hearing from you. */}
+          <div className="truncate text-sm font-medium" id="orchestrator-title">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
+          {/* What the last wake cost; amber once the session is big enough that a fresh one would be much cheaper. */}
+          {state?.lastWakeUsd !== undefined && (
+            <div className={`truncate text-[11px] ${state.hint ? "text-geist-amber" : "text-muted-foreground"}`} title={state.hint} data-slot="orchestrator-spend">
+              last wake ${state.lastWakeUsd.toFixed(2)}{state.hint ? ` · ${state.hint}` : ""}
+            </div>
+          )}
+        </div>
       </div>
       <div className="flex shrink-0 items-center">
         {pip ? (
@@ -223,17 +264,17 @@ export function OrchestratorWindow() {
             <PictureInPicture2 className="size-4" />
           </Button>
         )}
-        <Button size="icon" variant="ghost" className="size-7 max-md:size-11" title="Close" aria-label="Close orchestrator" onClick={() => setOpen(false)}>
+        <Button size="icon" variant="ghost" className="size-7 max-md:size-11" title={`Close (${shortcutLabel("escape")})`} aria-label="Close orchestrator" onClick={() => setOpen(false)}>
           <X className="size-4" />
         </Button>
       </div>
     </div>
   );
-  // No padding: the terminal log fills the window edge to edge.
+  // The conversation fills the panel edge to edge, in the chat styling that follows the page's theme.
   const chat = (
     <div className="min-h-0 flex-1">
       {state && <ChatPanel
-        row={row} flush prefill={prefill}
+        row={row} flush variant="chat" prefill={prefill}
         // The same toolbar a card's terminal has, fed the orchestrator's own values. Claude
         // only; changing the model keeps the session.
         controls={{
@@ -247,16 +288,11 @@ export function OrchestratorWindow() {
       />}
     </div>
   );
-  // Smaller than a card's terminal, scoped to this panel via descendant selectors so
-  // ChatPanel/ChatComposer stay untouched for everyone else. The agent's replies are
-  // markdown in a `prose-sm` block that sets ITS OWN font-size (0.875rem), so shrinking the
-  // log's `text-xs` alone left the replies large — the prose block is scaled too, and its
-  // children follow (typography sizes them in em).
-  // A phone's full-screen sheet keeps the normal sizes — the small corner window is why they shrink.
-  const panelClass = `dark bg-neutral-950 text-foreground flex flex-col overflow-hidden${narrow ? "" : " [&_.text-xs]:text-[10px] [&_.prose]:text-[10.5px] [&_.prose]:leading-snug [&_textarea]:text-[11px]"}`;
+  const panelClass = "bg-card text-foreground flex flex-col overflow-hidden";
+  const onKeyDown = (e: React.KeyboardEvent) => { if (e.key === "Escape" && !pip) { e.stopPropagation(); setOpen(false); } };
+  if (!mounted) return null;
   return (
-    // z-40: above the board, below menus and popovers (z-50), which must still open over it.
-    <div className="fixed right-4 bottom-4 z-40 flex flex-col items-end" onKeyDown={(e) => { if (e.key === "Escape" && !pip) setOpen(false); }}>
+    <div onKeyDown={onKeyDown}>
       {open && pip && createPortal(
         // Popovers and menus opened in here must portal into the PiP document, not the tab's.
         <PortalContainer.Provider value={pip.document.body}>
@@ -264,27 +300,24 @@ export function OrchestratorWindow() {
         </PortalContainer.Provider>,
         pip.document.body,
       )}
-      {open && !pip && narrow && (
-        <div ref={sheetRef} role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel" data-sheet="" className={`${panelClass} sheet`}>{header}{chat}</div>
+      {!pip && narrow && open && (
+        <div ref={sheetRef} role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel" data-sheet="" data-state="open" className={`${panelClass} sheet`}>{header}{chat}</div>
       )}
-      {open && !pip && !narrow && (
+      {!pip && !narrow && (
+        // z-40: above the page and its sticky top bar (z-30), below menus and popovers (z-50), which
+        // must still open over it. `aria-modal=false`: the page behind stays usable. Slid out, it is
+        // hidden (visibility, after the transform finishes) and inert to assistive tech.
         <div
           ref={panelRef}
-          role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel"
-          // `relative` (for the absolute handles) ONLY while unplaced: with both `relative` and
-          // `fixed` on the element, `relative` won the cascade and the saved left/top became an
-          // offset from the corner — the window sat off-screen, invisible. Placed = fixed, period.
-          className={`${panelClass} rounded-lg border shadow-xl ${placed ? "fixed" : "relative"}`}
-          style={{
-            // Unplaced, it sits in the bottom-right corner, below the top bar.
-            width: frame.w, height: frame.h, maxWidth: "calc(100vw - 2rem)", maxHeight: placed ? "100vh" : "calc(100vh - 5rem)", minWidth: MIN_W, minHeight: MIN_H,
-            ...(placed ? { left: frame.x, top: frame.y } : {}),
-          }}
+          role="dialog" aria-modal="false" aria-label="Orchestrator" aria-labelledby="orchestrator-title" aria-hidden={!open}
+          data-slot="orchestrator-panel" data-state={open ? "open" : "closed"}
+          className={cn(panelClass, "fixed inset-y-0 right-0 z-40 border-l shadow-modal transition-[transform,visibility] ease-out motion-reduce:transition-none",
+            open ? "translate-x-0" : "invisible translate-x-full")}
+          style={{ width, maxWidth: "100vw", minWidth: Math.min(PANEL_MIN_W, vw), transitionDuration: `${SLIDE_MS}ms` }}
         >
-          {/* Resize handles on every edge and corner (the browser's own `resize` is bottom-right only). */}
-          {RESIZE_HANDLES.map(([h, cls]) => (
-            <div key={h} data-slot="orchestrator-resize" data-handle={h} onPointerDown={onResizeStart(h)} className={`absolute z-10 ${cls}`} />
-          ))}
+          {/* The resize handle: the panel's left edge. Dragging left widens; the width is remembered. */}
+          <div data-slot="orchestrator-resize" role="separator" aria-orientation="vertical" aria-label="Resize panel" onPointerDown={onResizeStart}
+            className="hover:bg-geist-blue/40 absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize transition-colors" />
           {header}
           {chat}
         </div>
@@ -293,40 +326,16 @@ export function OrchestratorWindow() {
   );
 }
 
-// The window's frame, remembered per browser (UI state only, like the theme).
-// Edge strips and corner squares, with the cursor each shows. Order puts corners last so they win.
-const RESIZE_HANDLES: [string, string][] = [
-  ["n", "top-0 left-2 right-2 h-1.5 cursor-ns-resize"], ["s", "bottom-0 left-2 right-2 h-1.5 cursor-ns-resize"],
-  ["w", "left-0 top-2 bottom-2 w-1.5 cursor-ew-resize"], ["e", "right-0 top-2 bottom-2 w-1.5 cursor-ew-resize"],
-  ["nw", "top-0 left-0 size-3 cursor-nwse-resize"], ["se", "bottom-0 right-0 size-3 cursor-nwse-resize"],
-  ["ne", "top-0 right-0 size-3 cursor-nesw-resize"], ["sw", "bottom-0 left-0 size-3 cursor-nesw-resize"],
-];
-const FRAME_KEY = "orca.orchestrator.frame";
-const DEFAULT_FRAME: Frame = { w: Math.min(440, (typeof window === "undefined" ? 440 : window.innerWidth) - 32), h: Math.min(640, (typeof window === "undefined" ? 640 : window.innerHeight) - 96) };
-function loadFrame(): Frame {
-  try {
-    const raw = localStorage.getItem(FRAME_KEY);
-    const f = raw ? (JSON.parse(raw) as Partial<Frame>) : {};
-    const w = typeof f.w === "number" ? f.w : DEFAULT_FRAME.w, h = typeof f.h === "number" ? f.h : DEFAULT_FRAME.h;
-    // A remembered spot partly off the current screen (a smaller window) is pulled back inside it.
-    const placed = typeof f.x === "number" && typeof f.y === "number";
-    return clampFrame(placed ? { x: f.x, y: f.y, w, h } : { w, h }, window.innerWidth, window.innerHeight);
-  } catch { return DEFAULT_FRAME; }
-}
-function saveFrame(f: Frame): void {
-  try { localStorage.setItem(FRAME_KEY, JSON.stringify(f)); } catch { /* private window */ }
-}
-
 type DocumentPip = { requestWindow(size: { width: number; height: number }): Promise<Window> };
 const pipApi = () => (window as unknown as { documentPictureInPicture?: DocumentPip }).documentPictureInPicture;
-// The PiP window's size, remembered like the frame (the browser lets you resize it, not place it).
+// The PiP window's size, remembered like the width (the browser lets you resize it, not place it).
 const PIP_KEY = "orca.orchestrator.pip";
-function loadPipSize(f: Frame): { width: number; height: number } {
+function loadPipSize(width: number): { width: number; height: number } {
   try {
     const s = JSON.parse(localStorage.getItem(PIP_KEY) ?? "null") as { width?: unknown; height?: unknown } | null;
     if (typeof s?.width === "number" && typeof s.height === "number") return { width: s.width, height: s.height };
   } catch { /* fall through */ }
-  return { width: f.w, height: f.h };
+  return { width, height: Math.min(640, window.innerHeight - 96) };
 }
 function savePipSize(w: Window): void {
   try { localStorage.setItem(PIP_KEY, JSON.stringify({ width: w.innerWidth, height: w.innerHeight })); } catch { /* private window */ }

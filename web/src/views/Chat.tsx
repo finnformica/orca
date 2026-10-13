@@ -7,14 +7,14 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { AlertTriangle, ArrowDown, CircleX, Search } from "lucide-react";
+import { AlertTriangle, ArrowDown, Bot, CircleX, Search } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { TURN_PAGE_SIZE, WORKER_EVENT_MARKER, anchoredScrollTop, atBottom, chatSummary, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, turnMatches } from "../workstream";
+import { TURN_PAGE_SIZE, WORKER_EVENT_MARKER, anchoredScrollTop, atBottom, chatSummary, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, turnMatches } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -197,10 +197,84 @@ function WorkerReports({ instruction }: { instruction: string }) {
 /** One exchange: the instruction shown as a shell command (`❯ …`), the agent's output below it. */
 const stampOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "");
 
+/** Orca's verification of the commit — deterministic evidence, shown apart from the agent's own
+ *  Verification section. Output folds like a tool result. */
+const CheckVerdict = ({ check }: { check: NonNullable<AgentTurn["check"]> }) => (
+  <details className={`mt-1 ${check.ok ? "text-emerald-400" : "text-red-400"}`} data-slot="turn-check">
+    <summary className="cursor-pointer select-none">
+      {check.ok ? "✓" : "✗"} {check.command} {check.ok ? "passed" : `failed (exit ${check.exitCode})`}
+    </summary>
+    <pre className="mt-1 whitespace-pre-wrap break-words text-neutral-400">{check.output || "(no output)"}</pre>
+  </details>
+);
+
+/** The agent's side of a turn — live steps and the cursor while it runs; folded steps, the output and
+ *  Orca's check once it has answered. Shared by both stylings. */
+function Reply({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]> }) {
+  // A turn is written at launch, so an interrupted run (bridge restart, kill) stays visible as an
+  // unfinished exchange rather than vanishing.
+  if (!turn.finishedAt) {
+    return (
+      <div className="space-y-1 text-neutral-500">
+        {/* The run's steps as they land — this is the live view. A turn with none yet (a non-claude
+            provider, or the first seconds) still shows the cursor. */}
+        <Steps steps={turn.steps ?? []} live />
+        <span>▋ working…</span>
+      </div>
+    );
+  }
+  return (
+    <>
+      {/* The final message is the turn's response, rendered by Output — not twice. */}
+      <Steps steps={withoutFinalEcho(turn.steps ?? [], turn.response)} live={false} load={turn.steps ? undefined : loadSteps} />
+      <Output turn={turn} />
+      {turn.check && <CheckVerdict check={turn.check} />}
+    </>
+  );
+}
+
+const clockOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "");
+
+/** The "chat" styling (the orchestrator's panel): a modern assistant chat rather than a terminal log.
+ *  What you said is a tinted bubble on the right; the orchestrator answers on the left under its
+ *  name, in readable prose; its tool steps and worker reports stay folded; the time shows on hover
+ *  (and days are grouped by the divider ChatPanel draws). Colours are the theme's tokens, so it
+ *  follows light and dark like the rest of the console. */
+function ChatTurn({ turn, loadSteps }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]> }) {
+  const instruction = turn.instruction ?? promptInstruction(turn.prompt);
+  const reports = instruction.split("\n\n").every(isWorkerEvent);
+  const time = clockOf(turn.startedAt);
+  return (
+    <div className="mb-4" data-slot="chat-turn" data-failed={turn.failed || undefined} data-style="chat">
+      {reports ? (
+        // Worker reports that woke it: a compact, folded system line — not something you said.
+        <div className="mb-2 text-[11px]"><WorkerReports instruction={instruction} /></div>
+      ) : (
+        <div className="group mb-2 flex justify-end" data-slot="chat-user">
+          <div className="max-w-[85%]">
+            <div className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">{instruction}</div>
+            <div className="text-muted-foreground mt-0.5 text-right text-[10px] opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{time}</div>
+          </div>
+        </div>
+      )}
+      <div className="group flex gap-2" data-slot="chat-reply">
+        <span className="bg-accent text-foreground mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3.5" /></span>
+        <div className="min-w-0 flex-1">
+          <div className="text-muted-foreground mb-0.5 flex items-baseline gap-2 text-[11px]">
+            <span className="text-foreground font-medium">Orchestrator</span>
+            {turn.failed ? <span className="text-red-400">failed</span> : turn.stopped ? <span className="text-amber-400">stopped by you</span> : null}
+            <span className="opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{clockOf(turn.finishedAt) || time}</span>
+          </div>
+          <Reply turn={turn} loadSteps={loadSteps} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** `stamped`: the Agent page's log mode — a time gutter, and failed / warned turns tinted the way
  *  Vercel tints error and warning lines in Build Logs. */
 function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; stamped?: boolean }) {
-  const pending = !turn.finishedAt;
   const instruction = turn.instruction ?? promptInstruction(turn.prompt);
   const tint = !stamped ? "" : turn.failed ? "bg-red-500/10 -mx-3 px-3" : turn.stopped || (turn.check && !turn.check.ok) ? "bg-amber-500/10 -mx-3 px-3" : "";
   const body = (
@@ -217,32 +291,7 @@ function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () =>
         <div className="text-[10px] tracking-widest text-neutral-500 uppercase">
           {agentLabel(turn.provider)}{turn.failed ? " · failed" : turn.stopped ? " · stopped by you" : ""}
         </div>
-        {/* A turn is written at launch, so an interrupted run (bridge restart, kill) stays visible as
-            an unfinished exchange rather than vanishing. */}
-        {pending ? (
-          <div className="space-y-1 text-neutral-500">
-            {/* The run's steps as they land — this is the live view. A turn with none yet (a
-                non-claude provider, or the first seconds) still shows the cursor. */}
-            <Steps steps={turn.steps ?? []} live />
-            <span>▋ working…</span>
-          </div>
-        ) : (
-          <>
-            {/* The final message is the turn's response, rendered by Output — not twice. */}
-            <Steps steps={withoutFinalEcho(turn.steps ?? [], turn.response)} live={false} load={turn.steps ? undefined : loadSteps} />
-            <Output turn={turn} />
-            {/* Orca's verification of the commit — deterministic evidence, shown apart from the
-                agent's own Verification section. Output folds like a tool result. */}
-            {turn.check && (
-              <details className={`mt-1 ${turn.check.ok ? "text-emerald-400" : "text-red-400"}`} data-slot="turn-check">
-                <summary className="cursor-pointer select-none">
-                  {turn.check.ok ? "✓" : "✗"} {turn.check.command} {turn.check.ok ? "passed" : `failed (exit ${turn.check.exitCode})`}
-                </summary>
-                <pre className="mt-1 whitespace-pre-wrap break-words text-neutral-400">{turn.check.output || "(no output)"}</pre>
-              </details>
-            )}
-          </>
-        )}
+        <Reply turn={turn} loadSteps={loadSteps} />
       </div>
     </div>
   );
@@ -262,8 +311,11 @@ function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () =>
  *  differently coloured strip under it. The composer's toolbar always carries the model picker and
  *  the context ring (ChatControls); `controls` supplies their values when they don't come from the
  *  row's card. Everything else about the panel is the same. */
-export function ChatPanel({ row, send, flush, controls, logBar, prefill }: {
+export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant = "terminal" }: {
   row: Row; send?: (text: string, images: File[]) => Promise<void>; flush?: boolean; controls?: ChatControlsProps;
+  /** "terminal" (default): the dark monospace log. "chat": the orchestrator panel's assistant-chat
+   *  styling — bubbles, prose, day dividers, hover timestamps — in the page's theme (see ChatTurn). */
+  variant?: "terminal" | "chat";
   /** Text for the composer from outside it (the orchestrator's entry) — see ChatComposer. */
   prefill?: OrchestratorPrefill | null;
   /** The Agent page's Build-Logs framing: a bar with the turn count, error / warning counters and
@@ -459,8 +511,25 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill }: {
   };
   const counts = chatSummary(turns ?? []);
   const shownTurns = logBar && find.trim() ? (turns ?? []).filter((t) => turnMatches(t, find)) : turns;
+  const chatStyle = variant === "chat";
+  const renderTurn = (turn: AgentTurn, i: number, list: AgentTurn[]) => {
+    const loadSteps = () => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response));
+    if (!chatStyle) return <Turn key={turn.id} turn={turn} stamped={logBar} loadSteps={loadSteps} />;
+    const prev = i > 0 ? list[i - 1]!.startedAt : undefined;
+    const divider = turn.startedAt && (prev === undefined || !sameDay(prev, turn.startedAt));
+    return (
+      <div key={turn.id}>
+        {divider && (
+          <div className="text-muted-foreground my-3 flex items-center gap-3 text-[10px] tracking-widest uppercase" data-slot="chat-day">
+            <span className="h-px flex-1 bg-border" /><span>{dayLabel(turn.startedAt!)}</span><span className="h-px flex-1 bg-border" />
+          </div>
+        )}
+        <ChatTurn turn={turn} loadSteps={loadSteps} />
+      </div>
+    );
+  };
   return (
-    <div className={`flex h-full flex-col ${flush || logBar ? "" : "gap-3"} ${logBar ? "log-themed" : ""}`}>
+    <div className={`flex h-full flex-col ${flush || logBar ? "" : "gap-3"} ${logBar || chatStyle ? "log-themed" : ""}`} data-variant={variant}>
       {logBar && (
         <div data-slot="chat-logbar" className="flex flex-wrap items-center gap-3 border-b px-4 py-2 text-sm">
           <span className="text-muted-foreground tabular-nums" data-slot="chat-count" title={older ? "Older turns load as you scroll up" : undefined}>{counts.turns}{older ? "+" : ""} turn{counts.turns === 1 && !older ? "" : "s"}</span>
@@ -478,7 +547,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill }: {
       <div
         ref={scroller}
         onScroll={onScroll}
-        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-neutral-950 p-3 font-mono text-xs leading-relaxed text-neutral-200 ${flush || logBar ? "" : "rounded-md border border-neutral-800"}`}
+        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto bg-neutral-950 p-3 leading-relaxed text-neutral-200 ${chatStyle ? "font-sans text-[13px] [&_.prose]:text-[13px]" : "font-mono text-xs"} ${flush || logBar ? "" : "rounded-md border border-neutral-800"}`}
       >
         {running && (
           <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-end">
@@ -507,10 +576,15 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill }: {
         {turns === null ? <ChatSkeleton rows={4} />
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
           : shownTurns!.length === 0 ? <p className="text-neutral-500">No turn matches “{find}”.</p>
-          : shownTurns!.map((turn) => <Turn key={turn.id} turn={turn} stamped={logBar} loadSteps={() => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response))} />)}
+          : shownTurns!.map(renderTurn)}
         {/* Not drawn once the real thing has arrived over the stream — the same text twice, one of
             them "sending", is worse than the moment's gap it would cover. */}
-        {sending.filter((m) => !landed(m.text)).map((m) => (
+        {sending.filter((m) => !landed(m.text)).map((m) => chatStyle ? (
+          <div key={m.id} className="mb-4" data-slot="chat-sending">
+            <div className="mb-2 flex justify-end"><div className="bg-accent text-foreground max-w-[85%] rounded-lg px-3 py-2 whitespace-pre-wrap break-words opacity-70">{m.text}</div></div>
+            <div className="text-muted-foreground pl-8 text-[11px]">▋ sending…</div>
+          </div>
+        ) : (
           <div key={m.id} className="mb-3" data-slot="chat-sending">
             <div className="flex gap-2 text-emerald-400">
               <span className="shrink-0 select-none">❯</span>
@@ -538,9 +612,9 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill }: {
       </div>
       {/* `dark` scopes the theme tokens: the composer's text and border must read on the terminal
           background whatever the page's theme is. */}
-      <div className={flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : logBar ? "border-t p-3" : undefined}>
+      <div className={chatStyle ? "border-t p-2" : flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : logBar ? "border-t p-3" : undefined}>
       <ChatComposer
-        className={flush ? "border-neutral-800 bg-neutral-950 shadow-none" : undefined}
+        className={chatStyle ? "shadow-none" : flush ? "border-neutral-800 bg-neutral-950 shadow-none" : undefined}
         leading={<ChatControls {...ctl} compact={ctl.contextPct === undefined && compacting === null ? undefined
           : { onCompact, pending: compacting !== null, busy: running, error: compactError }} />}
         persistKey={`orca.chat.${row.repo}::${row.branch}`}

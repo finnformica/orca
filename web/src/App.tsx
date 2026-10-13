@@ -6,7 +6,7 @@ import { useOrchestrator } from "@/components/Terminal";
 import { launchOverlay } from "./workstream";
 import { expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
 import { Shell, Crumb, AddNew } from "@/components/Shell";
-import { OrchestratorWindow } from "@/components/Terminal";
+import { OrchestratorPanel } from "@/components/Terminal";
 import { Toaster } from "@/components/Toaster";
 import { useWorkstreams } from "./store";
 import { NewDraft } from "./views/Board";
@@ -39,7 +39,7 @@ export function App() {
       <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarAction collapsed={collapsed} />}>
         <Page route={route} />
       </Shell>
-      <OrchestratorWindow />
+      <OrchestratorPanel />
       <Toaster />
     </>
   );
