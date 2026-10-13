@@ -129,6 +129,23 @@ describe("the notification centre", () => {
     expect($("notification-row")!.hasAttribute("data-unread")).toBe(false);
   });
 
+  test("the toast and the centre row carry the repo as a muted label before the title; the orchestrator's own notifications have none", async () => {
+    await open("/");
+    const s = await live();
+    await push(s, note({ id: 80, repo: "branch-demo", title: "Fix login" }));
+    const toast = cards()[0]!;
+    expect(toast.querySelector('[data-slot="notification-repo"]')!.textContent).toBe("branch-demo");
+    await click($("notifications-bell"));
+    await click(button($("notification-centre")!, "All"));
+    const row = $$("notification-row").find((r) => r.textContent!.includes("Fix login"))!;
+    expect(row.querySelector('[data-slot="notification-repo"]')!.textContent).toBe("branch-demo");
+    await push(s, note({ id: 81, repo: "@orca", branch: "orchestrator", title: "Orchestrator", link: { orchestrator: true } }));
+    const orchestratorToast = $$("notification-toast").find((t) => t.textContent!.includes("Orchestrator"))!;
+    expect(orchestratorToast.querySelector('[data-slot="notification-repo"]')).toBeNull();
+    const orchestratorRow = $$("notification-row").find((r) => r.textContent!.includes("Orchestrator"))!;
+    expect(orchestratorRow.querySelector('[data-slot="notification-repo"]')).toBeNull();
+  });
+
   test("bottom-left, its foot just above the bell; the stack collapsed past one over a count bar, three showing; hover spreads it; Mark all as read", async () => {
     await open("/");
     placeBell();
@@ -263,16 +280,29 @@ describe("the notification centre", () => {
     await click($("notifications-bell"));
     const panel = $("notification-centre")!;
     const header = panel.querySelector("header")!;
-    // The header: title, Unread (its count) / All, Mark all as read — nothing else.
+    // The header: title, Unread (its count) / All, Mark all as read — nothing else — tall enough
+    // to give the segmented toggle room (h-14, not the original cramped h-11).
+    expect(header.className).toContain("h-14");
+    expect(header.className).not.toContain("h-11");
     expect(header.querySelector("h3")!.textContent).toBe("Notifications");
     const seg = header.querySelector<HTMLElement>('[role="group"]')!;
     expect([...seg.querySelectorAll("button")].map((b) => [b.textContent, b.getAttribute("aria-pressed")])).toEqual([["Unread2", "true"], ["All", "false"]]);
     expect([...header.querySelectorAll("button")].map((b) => b.textContent || b.getAttribute("aria-label"))).toEqual(["Unread2", "All", "Mark all as read"]);
+    // The unread count is a keycap-styled chip, the same shared Kbd component as a shortcut hint.
+    const unreadCount = header.querySelector('[data-slot="notification-unread-count"]')!;
+    expect(unreadCount.tagName).toBe("KBD");
+    expect(unreadCount.getAttribute("data-slot")).toBe("notification-unread-count"); // not just a <Kbd>'s own default
     expect(panel.querySelector('[data-slot="notification-filter"]')).toBeNull(); // the per-kind chips are gone
     expect(panel.textContent).not.toMatch(/Clear/);
     // Unread: the read row is out of view.
     expect($$("notification-row").map((r) => r.textContent!.includes("Yesterday's CI"))).toEqual([false, false]);
     expect($$("notification-group").map((g) => g.querySelector("h4")!.textContent)).toEqual(["Today", expect.stringMatching(/\w{3} \d+ \w{3}/)]);
+    // The sticky day header is opaque (bg-card) AND raised above the rows (z-10) — a row's own
+    // `position: relative` (for its absolute quick-actions strip) would otherwise paint over a
+    // merely-opaque sticky header once scrolled underneath it.
+    const dayHeader = $$("notification-group")[0]!.querySelector("h4")!;
+    expect(dayHeader.className).toContain("bg-card");
+    expect(dayHeader.className).toContain("z-10");
     // All: every row, read ones dimmed, grouped by day; the choice is remembered.
     await click(button(panel, "All"));
     expect($$("notification-group").map((g) => g.querySelector("h4")!.textContent)).toEqual(["Today", "Yesterday", expect.stringMatching(/\w{3} \d+ \w{3}/)]);
@@ -347,7 +377,7 @@ describe("the notification centre", () => {
     expect($("notifications-unread")!.textContent).toBe("2");
   });
 
-  test("quick actions: hovering a CI-failed toast shows Address PR + View PR; Address PR runs the store's one agent verb, marks it read and clears the toast", async () => {
+  test("quick actions: hovering a CI-failed toast shows Address PR + View PR; Address PR marks it read and clears the toast at once, the launch runs after", async () => {
     apiFake.prsData = [{ number: 7, title: "Red CI", branch: "feat-x", url: "https://github.com/o/r/pull/7", state: "OPEN", isDraft: false, ciStatus: "failing", failingChecks: ["test"], reviewStatus: "none", mergeable: "MERGEABLE", autoMergeEnabled: false }];
     await open("/");
     const s = await live();
@@ -364,14 +394,41 @@ describe("the notification centre", () => {
       expect(b.querySelector("svg.lucide")).not.toBeNull();
     }
     expect([...actionsOf(toast).querySelectorAll('[role="tooltip"]')].map((t) => t.textContent)).toEqual(["Address PR", "View PR", "Open"]);
+    // The launch is held: the click still marks it read and clears the toast immediately, before
+    // the launch (the "request") resolves — optimistic, not waited on.
+    apiFake.holdClaude = true;
     await click(button(toast, "Address PR"));
-    await act(async () => { await flush(); await flush(); await flush(); });
-    expect(apiFake.calls.some((c) => c.startsWith("agent:"))).toBe(true); // the same launch the board's Address PR makes
-    expect(apiFake.claudePrompts.at(-1)).toContain("#7");
-    await act(async () => { await wait(900); }); // the ✓ lingers, then the action marks it read
+    // Marked read and the toast gone at once — the launch is still blocked on releaseClaude below,
+    // so neither can have waited on it.
     expect(apiFake.notificationCalls).toContainEqual({ verb: "read", ids: [30] });
     expect(cards()).toHaveLength(0);
-    await mouse(toast, "mouseout", document.body);
+    expect(apiFake.calls.some((c) => c.startsWith("agent:"))).toBe(true); // fired in the background…
+    await act(async () => { apiFake.releaseClaude!(); await flush(); await flush(); await flush(); }); // …and only now resolves
+    expect(apiFake.claudePrompts.at(-1)).toContain("#7");
+  });
+
+  test("a quick action's failed launch shows the action-error toast with why, and puts the notification back as unread", async () => {
+    apiFake.prsData = [{ number: 7, title: "Red CI", branch: "feat-x", url: "https://github.com/o/r/pull/7", state: "OPEN", isDraft: false, ciStatus: "failing", failingChecks: ["test"], reviewStatus: "none", mergeable: "MERGEABLE", autoMergeEnabled: false }];
+    apiFake.claudeError = "worktree busy";
+    await open("/");
+    const s = await live();
+    await push(s, note({ id: 31, kind: "pr_ci_failed", title: "Red CI", link: { pr: 7 } }));
+    const toast = cards()[0]!;
+    await mouse(toast, "mousemove");
+    await click(button(toast, "Address PR"));
+    // Closed and marked read at once, same as success…
+    expect(cards()).toHaveLength(0);
+    expect(apiFake.notificationCalls).toContainEqual({ verb: "read", ids: [31] });
+    await act(async () => { await flush(); await flush(); await flush(); });
+    // …but the launch rejected: a small error toast names the action and why, and the notification
+    // is unread again (the centre, and the bell's count, both see it).
+    const errToast = $("toast")!;
+    expect(errToast.getAttribute("data-kind")).toBe("error");
+    expect(errToast.textContent).toContain("Address PR failed");
+    expect(errToast.textContent).toContain("worktree busy");
+    expect($("notifications-unread")!.textContent).toBe("1");
+    await click($("notifications-bell"));
+    expect($$("notification-row").some((r) => r.textContent!.includes("Red CI"))).toBe(true);
   });
 
   test("quick actions on a touch screen show without hover; there is no Read — the × marks it read and takes the toast off the stack", async () => {
@@ -433,6 +490,8 @@ describe("the notification centre", () => {
     const tip = actionsOf(toast).querySelector('[role="tooltip"]')!;
     expect(tip.textContent).toContain("Open");
     expect(tip.querySelector('kbd[data-slot="kbd"]')!.textContent).toBe("O");
+    // The orchestrator's own notification: Open carries its robot avatar, not the side-panel icon.
+    expect(button(toast, "Open")!.querySelector("svg")!.classList.contains("lucide-bot")).toBe(true);
     await click(button(toast, "Open"));
     expect($("orchestrator-panel")!.getAttribute("data-state")).toBe("open");
     expect(document.activeElement?.tagName).toBe("TEXTAREA"); // its composer, focused

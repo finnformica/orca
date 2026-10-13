@@ -29,7 +29,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Pill, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
-import { Board, ConditionBadges, CopyDone, LaneActions, useTerminalOpen } from "./Board";
+import { Board, ConditionBadges, CopyDone, LaneActions, useSummary, useTerminalOpen } from "./Board";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PrPreviewCell, PrPreviewInline } from "./PreviewControl";
 import { ReviewCluster } from "./Review";
@@ -112,7 +112,7 @@ function AgentsList() {
   const visible = sortRows(applyQuickFilter(scoped, quick, here), sort);
   const setQuick = (f: QuickFilter) => navigate(`/agents${quickFilterQuery(f)}`, true); // a filter change is not a history step
   const clear = () => { setQ(""); setQuick(NO_QUICK_FILTER); };
-  const cols = listColumns({ multiInstance: instanceChoices().length > 1 });
+  const cols = listColumns();
   const stacked = useNarrow(); // a phone: rows stack, no column header
   const sectionRef = useRef<HTMLElement>(null);
   const pull = usePullToRefresh(sectionRef, refresh, stacked); // a phone: pull down from the top to refresh
@@ -281,6 +281,17 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
 const rowGrid = (cols: ListColumn[]) => ({ gridTemplateColumns: listGridTemplate(cols) });
 const GRID = "grid items-center gap-x-3 px-4"; // gap / padding: workstream.LIST_GAP_PX / LIST_PAD_PX
 
+/** Lines added/removed, compact: green `+N`, red `-N` — a PR's own diffstat (gh, free) or, for a
+ *  branch with no PR yet, the worktree's `git diff` against base (useSummary). */
+function Diffstat({ additions, deletions }: { additions: number; deletions: number }) {
+  return (
+    <span data-slot="diffstat" className="shrink-0 tabular-nums">
+      <span className="text-emerald-700 dark:text-emerald-400">+{additions}</span>{" "}
+      <span className="text-destructive">−{deletions}</span>
+    </span>
+  );
+}
+
 function ListHeader({ cols }: { cols: ListColumn[] }) {
   return (
     <div role="row" data-slot="workstream-list-header" style={rowGrid(cols)} className={`${GRID} text-muted-foreground h-9 border-b text-xs`}>
@@ -327,12 +338,20 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
   const [terminalOpen, setTerminalOpen] = useTerminalOpen(row); // "New chat" pops its conversation open on arrival
   const tone = rowTone(row);
   const reasons = attentionReasons(row);
+  const multiInstance = instanceChoices().length > 1; // instance is a tooltip/menu detail, not its own column
   const instance = rowInstance(row, thisInstance());
   const to = detailPath(row);
   const model = modelBadge(row.agentMeta?.model, row.worktreePath || row.prNumber ? modelFor(row) : undefined);
   const instruction = latestInstruction(row);
   const error = row.agentStatus === "error" ? row.agentError : undefined;
   const hasMenu = !isDone;
+  // A PR's own diffstat (gh, free) when there is one; otherwise the worktree's `git diff` against
+  // base (useSummary — shared with the card, cached/polled there already).
+  const localSummary = useSummary(row.prNumber ? undefined : row);
+  const diffAdditions = row.prNumber ? row.prAdditions : localSummary?.additions;
+  const diffDeletions = row.prNumber ? row.prDeletions : localSummary?.deletions;
+  const hasDiff = Boolean((diffAdditions ?? 0) > 0 || (diffDeletions ?? 0) > 0);
+  const diffstat = hasDiff && <Diffstat additions={diffAdditions ?? 0} deletions={diffDeletions ?? 0} />;
   // Right-click (or the keyboard's menu key / Shift+F10 on a focused row) opens the ⋯ menu's items
   // where the pointer is; from the keyboard there is no pointer, so it opens at the row's left edge.
   const onContextMenu = (e: MouseEvent<HTMLDivElement>) => {
@@ -346,43 +365,47 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
     if (e.key === "Enter" && to) navigate(to);
   };
   const closeMenu = () => { setMenuAt(null); if (!document.activeElement || document.activeElement === document.body) ref.current?.focus({ preventScroll: true }); };
-  const cell = (key: ListColumn["key"]) => cols.some((c) => c.key === key);
   const menu = hasMenu && <WorkstreamActions row={row} compact menuOnly onBusy={setBusy} onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}
     onOpen={to ? () => navigate(to) : undefined} contextAt={menuAt} onContextClose={closeMenu} />;
   const prLink = row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" title={`Open PR #${row.prNumber} on GitHub`} className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>;
   if (stacked) return (
-    // A phone: the same row as a stack — title and ⋯, the latest instruction, the status line, then
-    // where it runs. Nothing hides behind a hover title: the instruction, the error and the branch
-    // are on screen. Every action (preview included, via the agent page) is in the one ⋯ menu.
+    // A phone: a taller, card-like row with no fixed-width columns — everything wraps instead of
+    // scrolling sideways. Line 1 is title + status; line 2 is branch/model/PR/preview/diffstat; the
+    // ⋯ menu sits in its own flex column at the right (never absolutely positioned over the text, so
+    // nothing can sit under it unreachable or clipped). State/condition badges, reasons and a run
+    // error follow as their own wrapping lines.
     <div
       ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-layout="stacked" data-branch={row.branch} aria-busy={busy}
       aria-label={row.title} aria-haspopup={hasMenu ? "menu" : undefined}
       onClick={openOnRowClick(row)} onContextMenu={onContextMenu} onKeyDown={onKeyDown}
-      className={`active:bg-accent/40 relative flex flex-col gap-1.5 border-b py-3 pr-2 pl-4 text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
+      className={`active:bg-accent/40 flex items-start gap-1 border-b py-3 pr-1 pl-4 text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
     >
-      <div role="cell" className="min-w-0 pr-10">
-        <div className="line-clamp-2 font-medium break-words">{row.title}</div>
-        {instruction && <div data-slot="row-instruction" className="text-muted-foreground mt-0.5 line-clamp-2 text-xs break-words">{instruction}</div>}
+      <div className="min-w-0 flex-1 space-y-1.5">
+        <div role="cell" className="flex min-w-0 items-center justify-between gap-2">
+          <span className="min-w-0 truncate font-medium">{row.title}</span>
+          <RunStatus row={row} tone={tone} reasons={reasons} />
+        </div>
+        <div role="cell" className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
+          <span className="shrink-0">{row.repo}</span>
+          <span aria-hidden="true">·</span><span className="min-w-0 font-mono break-all">{row.branch}</span>
+          {model && <><span aria-hidden="true">·</span><span data-slot="model-label">{model.label}</span></>}
+          {prLink}
+          {!isDone && <PrPreviewInline row={row} />}
+          {diffstat && <><span aria-hidden="true">·</span>{diffstat}</>}
+          {instance && multiInstance && <><span aria-hidden="true">·</span><span data-slot="instance-chip">{instance}</span></>}
+        </div>
+        {instruction && <div data-slot="row-instruction" role="cell" className="text-muted-foreground line-clamp-2 text-xs break-words">{instruction}</div>}
+        <div role="cell" className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+          <Pill tone={LANE_PILL[row.lane]} slot="state-pill">{isDone ? "Merged" : LANE_LABELS[row.lane]}</Pill>
+          {row.prNumber && !isDone && <ConditionBadges row={row} />}
+          {row.prNumber && !isDone && <ReviewCluster row={row} />}
+          {row.prNumber && !isDone && <PrPreviewCell row={row} />}
+          {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
+        </div>
+        {reasons.length > 0 && <div role="cell" data-slot="row-reasons" className="text-geist-warning-fg text-xs">{reasons.join(" · ")}</div>}
+        {error && <div role="cell" data-slot="row-error" className="text-geist-red line-clamp-3 text-xs break-words">{error}</div>}
       </div>
-      <div className="absolute top-1 right-1 flex items-center [&_[data-slot=button]]:size-11">{menu}</div>
-      <div role="cell" className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 pr-2">
-        <RunStatus row={row} tone={tone} reasons={reasons} />
-        <Pill tone={LANE_PILL[row.lane]} slot="state-pill">{isDone ? "Merged" : LANE_LABELS[row.lane]}</Pill>
-        {prLink}
-        {row.prNumber && !isDone && <ConditionBadges row={row} />}
-        {row.prNumber && !isDone && <ReviewCluster row={row} />}
-        {row.prNumber && !isDone && <PrPreviewCell row={row} />}
-        {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
-      </div>
-      {reasons.length > 0 && <div role="cell" data-slot="row-reasons" className="text-geist-warning-fg text-xs">{reasons.join(" · ")}</div>}
-      {error && <div role="cell" data-slot="row-error" className="text-geist-red line-clamp-3 text-xs break-words">{error}</div>}
-      <div role="cell" className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-1.5 pr-2 text-xs">
-        <span>{row.repo}</span>
-        {model && <><span aria-hidden="true">·</span><span data-slot="model-label">{model.label}</span></>}
-        {!isDone && <PrPreviewInline row={row} />}
-        {instance && cell("instance") && <><span aria-hidden="true">·</span><span data-slot="instance-chip">{instance}</span></>}
-        <span aria-hidden="true">·</span><span className="min-w-0 font-mono break-all">{row.branch}</span>
-      </div>
+      <div className="flex shrink-0 items-start [&_[data-slot=button]]:size-11">{menu}</div>
       {!isDone && <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />}
     </div>
   );
@@ -394,12 +417,13 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
       style={rowGrid(cols)}
       className={`${GRID} hover:bg-accent/40 focus-visible:bg-accent/40 h-14 border-b text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
     >
-      <div role="cell" className="min-w-0" title={[row.title, instruction && `Latest: ${instruction}`, `Branch: ${row.branch}`].filter(Boolean).join("\n")}>
+      <div role="cell" className="min-w-0" title={[row.title, instruction && `Latest: ${instruction}`, multiInstance && instance && `Instance: ${instance}`, `Branch: ${row.branch}`].filter(Boolean).join("\n")}>
         <div className="truncate font-medium">{row.title}</div>
         <div className="text-muted-foreground flex min-w-0 items-center gap-1 text-xs">
           <span className="shrink-0">{row.repo}</span>
           {model && <><span aria-hidden="true">·</span><span data-slot="model-label" className="shrink-0" title={model.title}>{model.label}</span></>}
           {!isDone && <PrPreviewInline row={row} />}
+          {diffstat && <><span aria-hidden="true">·</span>{diffstat}</>}
           {error && <><span aria-hidden="true">·</span><span data-slot="row-error" className="text-geist-red truncate" title={error}>{error}</span></>}
         </div>
       </div>
@@ -414,7 +438,6 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
         {row.prNumber && !isDone && <ReviewCluster row={row} />}
         {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
       </div>
-      {cell("instance") && <div role="cell" className="text-muted-foreground truncate text-xs" data-slot="instance-chip" title={instance}>{instance ?? "—"}</div>}
       <div role="cell" className="flex items-center justify-end gap-1">
         {!isDone && <PreviewCell row={row} />}
         {hasMenu && <WorkstreamActions row={row} compact menuOnly onBusy={setBusy} onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}

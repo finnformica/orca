@@ -595,7 +595,7 @@ test("M1 test-master: baseWorktree makes a detached checkout of the latest base,
 
 test("S2 source-of-truth: listPrs maps gh json to kanban rows", async () => {
   await setPrListFixture([
-    { number: 10, title: "Add A", headRefName: "feat-a", url: "u10", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", author: { login: "me" }, comments: [{ author: { login: "alex" }, body: "Please add a regression test" }], statusCheckRollup: [{ name: "unit", conclusion: "FAILURE" }] },
+    { number: 10, title: "Add A", headRefName: "feat-a", url: "u10", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "APPROVED", author: { login: "me" }, comments: [{ author: { login: "alex" }, body: "Please add a regression test" }], statusCheckRollup: [{ name: "unit", conclusion: "FAILURE" }], additions: 42, deletions: 8 },
     { number: 11, title: "Add B", headRefName: "feat-b", url: "u11", state: "OPEN", isDraft: true, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [] },
   ]);
   const prs = await listPrs(repo);
@@ -604,6 +604,9 @@ test("S2 source-of-truth: listPrs maps gh json to kanban rows", async () => {
   expect([prs[0]!.isDraft, prs[1]!.isDraft]).toEqual([false, true]); // draft flag flows through for the Draft lane
   expect(prs[0]!.failingChecks).toEqual(["unit"]);
   expect(prs[0]!.feedback).toEqual(["Please add a regression test"]);
+  // Diffstat rides the same list call (the Agents row's +/- costs nothing extra); missing → 0, not undefined.
+  expect([prs[0]!.additions, prs[0]!.deletions]).toEqual([42, 8]);
+  expect([prs[1]!.additions, prs[1]!.deletions]).toEqual([0, 0]);
 });
 
 test("S2b required-check gating: only merge-gating checks decide CI (advisory bots ignored)", async () => {

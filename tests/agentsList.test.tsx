@@ -16,23 +16,20 @@ import { LIST_CHROME_PX, formatElapsed, listColumns, listFits, listGridTemplate,
 beforeAll(() => store.configReady);
 
 describe("agents list layout (pure)", () => {
-  test("the column set is only what you act on; instance only with more than one instance", () => {
-    expect(listColumns({ multiInstance: true }).map((c) => c.key)).toEqual(["workstream", "status", "pr", "signals", "instance", "actions"]);
-    expect(listColumns({ multiInstance: false }).map((c) => c.key)).toEqual(["workstream", "status", "pr", "signals", "actions"]);
-    // Gone: the latest instruction, branch, model avatar and the separate PR # column.
-    const keys = listColumns({ multiInstance: true }).map((c) => c.key as string);
-    for (const gone of ["instruction", "branch", "model", "prNumber", "updated"]) expect(keys).not.toContain(gone);
+  test("the column set is only what you act on; no Instance column (it's a row menu/tooltip detail)", () => {
+    expect(listColumns().map((c) => c.key)).toEqual(["workstream", "status", "pr", "signals", "actions"]);
+    // Gone: the latest instruction, branch, model avatar, instance and the separate PR # column.
+    const keys = listColumns().map((c) => c.key as string);
+    for (const gone of ["instruction", "branch", "model", "prNumber", "updated", "instance"]) expect(keys).not.toContain(gone);
   });
 
   test("no horizontal scroll from 1280px up: the floors fit beside the sidebar; flexible tracks take the rest", () => {
-    for (const multiInstance of [true, false]) {
-      const cols = listColumns({ multiInstance });
-      for (const vw of [1280, 1440, 1920, 2560]) expect(listFits(cols, vw)).toBe(true);
-      expect(listMinWidth(cols)).toBeLessThanOrEqual(1280 - LIST_CHROME_PX);
-    }
-    const t = listGridTemplate(listColumns({ multiInstance: true }));
-    expect(t).toBe("minmax(10rem,2fr) 8.5rem 8.5rem minmax(6rem,1fr) 5rem 8rem");
-    expect(listColumns({ multiInstance: false }).at(-1)).toMatchObject({ key: "actions", label: "Actions" });
+    const cols = listColumns();
+    for (const vw of [1280, 1440, 1920, 2560]) expect(listFits(cols, vw)).toBe(true);
+    expect(listMinWidth(cols)).toBeLessThanOrEqual(1280 - LIST_CHROME_PX);
+    const t = listGridTemplate(cols);
+    expect(t).toBe("minmax(10rem,2fr) 8.5rem 8.5rem minmax(6rem,1fr) 8rem");
+    expect(cols.at(-1)).toMatchObject({ key: "actions", label: "Actions" });
     expect(t).not.toContain("auto"); // a content-sized track could push the row wider than the card
   });
 
@@ -102,7 +99,7 @@ const pr = (over: Record<string, unknown>) => ({
   ciStatus: "passing", reviewStatus: "review_required", mergeable: "MERGEABLE", autoMergeEnabled: false, ...over,
 });
 function seed() {
-  apiFake.prsData = [pr({ number: 8, branch: "feat-ci", title: "Red CI", ciStatus: "failing" })];
+  apiFake.prsData = [pr({ number: 8, branch: "feat-ci", title: "Red CI", ciStatus: "failing", additions: 120, deletions: 34 })];
   apiFake.agentsData = [
     { branch: "local-run", worktreePath: "/wt/local-run", agentStatus: "running", agentStartedAt: Date.now() - 65_000 },
     { branch: "local-idle", worktreePath: "/wt/local-idle", agentStatus: "done", agentMeta: { model: "Opus 5.5" } },
@@ -117,14 +114,14 @@ describe("agents list view", () => {
     seed();
     await mount();
     const head = container!.querySelector('[data-slot="workstream-list-header"]')!;
-    // The fake config has two instances, so Instance is shown.
-    expect([...head.querySelectorAll('[role="columnheader"]')].map((h) => h.textContent)).toEqual(["Workstream", "Status", "PR", "Checks & review", "Instance", "Actions"]);
+    // No Instance column — it's a row menu action ("Move to…") and a title tooltip now, not a track.
+    expect([...head.querySelectorAll('[role="columnheader"]')].map((h) => h.textContent)).toEqual(["Workstream", "Status", "PR", "Checks & review", "Actions"]);
     const list = container!.querySelector<HTMLElement>('[data-slot="workstream-list"]')!;
     expect(list.className).toContain("overflow-hidden");
     expect(list.className).not.toContain("overflow-x-auto");
     expect(list.querySelector('[class*="min-w-["]')).toBeNull(); // no fixed minimum forcing a scroll
-    expect(rowOf("feat-ci").style.gridTemplateColumns).toBe(listGridTemplate(listColumns({ multiInstance: true })));
-    expect(rowOf("feat-ci").querySelectorAll('[role="cell"]')).toHaveLength(6); // one per header, the last holding preview + ⋯
+    expect(rowOf("feat-ci").style.gridTemplateColumns).toBe(listGridTemplate(listColumns()));
+    expect(rowOf("feat-ci").querySelectorAll('[role="cell"]')).toHaveLength(5); // one per header, the last holding preview + ⋯
     expect(rowOf("feat-ci").querySelector(".lucide-folder-git2")).toBeNull();
     // The row menu's trigger is vertical dots, not horizontal — same menu, same right-click.
     expect(rowOf("feat-ci").querySelector('button[aria-label="Actions"] svg')!.classList.contains("lucide-ellipsis-vertical")).toBe(true);
@@ -150,6 +147,25 @@ describe("agents list view", () => {
     // Readable models: the run's reported model, else the pinned one — no initials avatar.
     expect(rowOf("local-idle").querySelector('[data-slot="model-label"]')!.textContent).toBe("Opus 5.5");
     expect(container!.querySelector('[data-slot="model-avatar"]')).toBeNull();
+    // A PR's own diffstat (free from the same gh list call) shows in the subline, coloured.
+    const diff = rowOf("feat-ci").querySelector<HTMLElement>('[data-slot="diffstat"]')!;
+    expect(diff.textContent).toBe("+120 −34");
+    expect(diff.querySelector(".text-emerald-700")!.textContent).toBe("+120");
+    expect(diff.querySelector(".text-destructive")!.textContent).toBe("−34");
+    // Instance is gone as a column but still reachable: the title tooltip on a worktree row (the
+    // fake config has two instances; feat-ci has no worktree of its own so no instance to show).
+    const workstreamCell = rowOf("local-idle").querySelector('[role="cell"]')!;
+    expect(workstreamCell.getAttribute("title")).toContain("Instance: laptop");
+  });
+
+  test("diffstat for a branch with no PR yet comes from the worktree's own git diff (useSummary)", async () => {
+    seed();
+    apiFake.summaryData = { files: [{ path: "a.ts", additions: 7, deletions: 1 }], commits: [{ hash: "abc", subject: "wip" }], additions: 7, deletions: 1 };
+    await mount();
+    const diff = rowOf("local-idle").querySelector<HTMLElement>('[data-slot="diffstat"]')!;
+    expect(diff.textContent).toBe("+7 −1");
+    // A PR row never calls the worktree summary for its diffstat — gh's own count wins.
+    expect(rowOf("feat-ci").querySelector('[data-slot="diffstat"]')!.textContent).toBe("+120 −34");
   });
 
   test("running: a spinner and an elapsed time on the shared ticker, which ticks live and stops with the last row", async () => {
