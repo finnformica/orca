@@ -187,7 +187,7 @@ motion) into a box for messages to the orchestrator with no history — "Ask the
 textarea three lines tall that grows to a cap (a JS fallback where `field-sizing` is unsupported), Enter sends / Shift+Enter breaks the line (the `send` keycap), no ✕ or
 footer. A send is optimistic: the box clears and stays open, a brief "Sent · Open chat" fades, and
 the POSTs are chained so quick sends arrive in order (a busy orchestrator queues them); a failed send
-gives the text back. The pill, the top-bar button and the phone's bottom bar carry the orchestrator's
+gives the text back. The top-bar button and the phone's bottom bar (never the pill) carry the orchestrator's
 **activity dot** (`ActivityDot`: pulsing while a wake runs, lit once one finished while the panel was
 closed, cleared when it opens), fed by ONE subscriber (`useOrchestratorActivity` in the Shell: a
 status read on mount, then one per `turn` event on the tab's shared stream — no poll of its own).

@@ -4,8 +4,8 @@
 // prefers-reduced-motion) — for messages to the orchestrator with no history: Enter sends, Shift+Enter
 // breaks the line, and the box opens three lines tall and grows with what you type up to a cap. The shape is Linear's / Raycast's
 // quick capture: fire a line without leaving what you're looking at, open the conversation only when
-// you want to read. The pill carries the orchestrator's activity dot (pulsing while a wake runs, lit
-// once one has replied unseen), so you know whether to go and look.
+// you want to read. It carries no activity dot: that lives only on the orchestrator's own entry points
+// (the top bar's button, the phone's bottom bar), the things that open the conversation.
 //
 // Sending is OPTIMISTIC: the box clears and stays open for the next task at once, a subtle "Sent"
 // confirms, and the message goes to the orchestrator in the background. A busy orchestrator is not an
@@ -14,10 +14,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { ArrowUp, Bot, Check } from "lucide-react";
-import { orchestratorActivityAtom, quickAskOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
+import { quickAskOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
 import { api } from "../api";
-import { ActivityDot, useOrchestrator } from "@/components/Terminal";
+import { useOrchestrator } from "@/components/Terminal";
 import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
@@ -38,7 +38,6 @@ export function queueOrchestratorMessage(text: string): Promise<{ status: "runni
 
 export function QuickAsk() {
   const [open, setOpen] = useAtom(quickAskOpenAtom);
-  const activity = useAtomValue(orchestratorActivityAtom);
   const collapsed = useAtomValue(sidebarCollapsedAtom);
   const { ask } = useOrchestrator();
   const [text, setRaw] = useState("");
@@ -105,7 +104,7 @@ export function QuickAsk() {
         {open ? (
           <div role="dialog" aria-label="Quick ask" data-slot="quick-ask-box" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } }}>
             <div className="flex items-end gap-2 px-3 py-2">
-              <span className="relative mb-1.5 inline-flex shrink-0"><Bot className="text-muted-foreground size-4" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
+              <Bot className="text-muted-foreground mb-1.5 size-4 shrink-0" />
               {/* Opens at three lines and grows with its content (field-sizing, else the effect above),
                   up to max-h, then scrolls. */}
               <textarea ref={box} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={onKeyDown} rows={3} aria-label="Message the orchestrator"
@@ -131,7 +130,7 @@ export function QuickAsk() {
           <button type="button" data-slot="quick-ask-pill" onClick={() => setOpen(true)} aria-label="Ask the orchestrator (quick)"
             title={`Quick ask (${key}): a message to the orchestrator`}
             className="flex size-full items-center justify-center gap-2 px-3 text-sm whitespace-nowrap">
-            <span className="relative inline-flex"><Bot className="text-muted-foreground size-3.5" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
+            <Bot className="text-muted-foreground size-3.5" />
             <span>Ask</span>
             <Shortcut id="quickAsk" />
           </button>

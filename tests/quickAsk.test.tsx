@@ -171,20 +171,22 @@ test("Q6: a busy orchestrator queues the message — no error, nothing blocked",
   expect(input().value).toBe("");
 });
 
-test("Q3: the indicator pulses while the orchestrator works and lights when it has replied unseen; opening the panel clears it", async () => {
+test("Q3: the indicator pulses on the orchestrator button (never the Ask pill) while it works and lights when it has replied unseen; opening the panel clears it", async () => {
   await mount("/");
-  const dot = () => $('[data-slot="quick-ask-pill"] [data-slot="orchestrator-activity"]');
+  const dot = () => $('[data-slot="ask-orchestrator"] [data-slot="orchestrator-activity"]');
+  const pillDot = () => $('[data-slot="quick-ask-pill"] [data-slot="orchestrator-activity"]');
   expect(dot()).toBeNull(); // idle, nothing new
   // A wake starts (a `turn` event on the orchestrator's branch; the status now says running).
   apiFake.orchestratorState = { ...apiFake.orchestratorState, running: true };
   await act(async () => { emit(opened().at(-1)!, "turn", { repo: "@orca", branch: "orchestrator", runId: "w-1" }); await flush(); await flush(); });
   expect(dot()!.dataset.state).toBe("running");
   expect(dot()!.className).toContain("animate-pulse");
+  expect(pillDot()).toBeNull(); // the Ask pill never carries it
   // It finishes while the panel is closed: a reply you haven't seen.
   apiFake.orchestratorState = { ...apiFake.orchestratorState, running: false };
   await act(async () => { emit(opened().at(-1)!, "turn", { repo: "@orca", branch: "orchestrator", runId: "w-1" }); await flush(); await flush(); });
   expect(dot()!.dataset.state).toBe("unread");
-  expect($('[data-slot="ask-orchestrator"] [data-slot="orchestrator-activity"]')).not.toBeNull(); // the top bar's button shows it too
+  expect(pillDot()).toBeNull();
   // Opening the panel is "seen".
   act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
   await act(async () => { await flush(); await flush(); });
