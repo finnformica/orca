@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Check, ChevronDown, Copy, ExternalLink, FlaskConical, Loader2, Square, TriangleAlert } from "lucide-react";
+import { Check, ChevronDown, Copy, ExternalLink, FlaskConical, Globe, Loader2, Square, TriangleAlert } from "lucide-react";
 import { api, type PreviewSvc } from "../api";
-import { baseBranch, instanceChoices, previewKeyOf, previewsEnabled, previewStatus, startMaster, stopMaster, stopPreview, testLocally, thisInstance, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
-import { previewHref, previewLabel } from "../workstream";
+import { addPreviewLabel, baseBranch, instanceChoices, previewConfigured, previewKeyOf, previewsEnabled, previewStatus, startMaster, stopMaster, stopPreview, testLocally, thisInstance, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
+import { previewHref, previewLabel, prPreviewState } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StatusDot } from "@/components/console";
@@ -199,6 +199,75 @@ export function PreviewCell({ row }: { row: Row }) {
         <StatusDot tone={state === "failed" ? "error" : "building"} title={state === "failed" ? "Failed" : "Starting…"} className="absolute -top-0.5 -right-0.5" />
       )}
     </span>
+  );
+}
+
+/** Shared click handler for the GitHub PR-preview control: posts the repo's preview label, then
+ *  flips to the pending state at once (`justAdded`) rather than waiting for the next PR poll. */
+function usePrPreviewAdd(row: Row) {
+  const [busy, setBusy] = useState(false);
+  const [justAdded, setJustAdded] = useState(false);
+  const state = prPreviewState(row, previewConfigured(row.repo), justAdded);
+  const add = async () => {
+    setBusy(true);
+    try { await addPreviewLabel(row); setJustAdded(true); }
+    catch (e) { actionFailed({ action: "Add preview", title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }, e); }
+    finally { setBusy(false); }
+  };
+  return { state, busy, add };
+}
+
+/** The Agents-list row's (and the phone stacked row's) GitHub PR-preview cell: the deploy preview
+ *  the pr-preview action posts once the repo's preview label lands on the PR — distinct from the
+ *  LOCAL preview cell above, so both can sit side by side. A link once the PR carries a `previewUrl`,
+ *  an "Add PR preview" button before the label is on, a spinner (same slot) while the label is on but
+ *  the deploy hasn't posted its URL yet. Hidden entirely when there's no PR or the repo never
+ *  configured a preview label / the previews feature (see store.previewConfigured). */
+export function PrPreviewCell({ row }: { row: Row }) {
+  const { state, busy, add } = usePrPreviewAdd(row);
+  if (state === "hidden") return null;
+
+  const slot = "relative inline-flex size-7 shrink-0 items-center justify-center";
+  if (state === "ready") {
+    return (
+      <span className={slot} data-slot="pr-preview-cell" data-state={state}>
+        <a href={row.previewUrl} target="_blank" rel="noreferrer" aria-label="PR preview" title="PR preview"
+          className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 items-center justify-center rounded-md">
+          <Globe className="size-3.5" />
+        </a>
+      </span>
+    );
+  }
+  const pending = state === "pending";
+  const label = pending ? "Deploying preview" : "Add PR preview";
+  return (
+    <span className={slot} data-slot="pr-preview-cell" data-state={state}>
+      <Button size="icon" variant="ghost" className="size-7" disabled={pending || busy} onClick={() => void add()} title={label} aria-label={label}>
+        {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Globe className="size-3.5" />}
+      </Button>
+    </span>
+  );
+}
+
+/** The agent page's header-action equivalent of PrPreviewCell: a labelled button rather than an
+ *  icon, next to the Actions menu. Same three states (hidden/add/pending/ready). */
+export function PrPreviewButton({ row }: { row: Row }) {
+  const { state, busy, add } = usePrPreviewAdd(row);
+  if (state === "hidden") return null;
+
+  if (state === "ready") {
+    return (
+      <Button size="sm" variant="outline" asChild>
+        <a href={row.previewUrl} target="_blank" rel="noreferrer"><Globe className="size-3.5" />Open PR preview</a>
+      </Button>
+    );
+  }
+  const pending = state === "pending";
+  return (
+    <Button size="sm" variant="outline" disabled={pending || busy} onClick={() => void add()}>
+      {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Globe className="size-3.5" />}
+      {pending ? "Deploying preview" : "Add PR preview"}
+    </Button>
   );
 }
 

@@ -31,7 +31,7 @@ import { Pill, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
 import { Board, ConditionBadges, CopyDone, LaneActions, useTerminalOpen } from "./Board";
 import { WorkstreamActions } from "./WorkstreamActions";
-import { PreviewCell } from "./PreviewControl";
+import { PreviewCell, PrPreviewCell } from "./PreviewControl";
 import { ReviewCluster } from "./Review";
 
 export function Agents() {
@@ -372,6 +372,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
         {prLink}
         {row.prNumber && !isDone && <ConditionBadges row={row} />}
         {row.prNumber && !isDone && <ReviewCluster row={row} />}
+        {row.prNumber && !isDone && <PrPreviewCell row={row} />}
         {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
       </div>
       {reasons.length > 0 && <div role="cell" data-slot="row-reasons" className="text-geist-warning-fg text-xs">{reasons.join(" · ")}</div>}
@@ -417,6 +418,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
       {cell("instance") && <div role="cell" className="text-muted-foreground truncate text-xs" data-slot="instance-chip" title={instance}>{instance ?? "—"}</div>}
       <div role="cell" className="flex items-center justify-end gap-1">
         {!isDone && <PreviewCell row={row} />}
+        {!isDone && <PrPreviewCell row={row} />}
         {hasMenu && <WorkstreamActions row={row} compact menuOnly onBusy={setBusy} onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}
           onOpen={to ? () => navigate(to) : undefined} contextAt={menuAt} onContextClose={closeMenu} />}
         {!isDone && <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />}

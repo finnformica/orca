@@ -57,6 +57,7 @@ async function res(r: Response) {
 
 export type RepoInfo = {
   name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; prLabels?: { name: string; default?: boolean }[];
+  previewLabel?: string;
   defaultModel?: string; runsOn?: string; features?: RepoFeatures;
 };
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;

@@ -1489,6 +1489,22 @@ const isLoopbackHost = (h: string): boolean => h === "localhost" || h === "127.0
  *  tailnet name rather than a bare port. */
 export const previewLabel = (href: string): string => { try { return new URL(href).host; } catch { return href; } };
 
+// ---- the GitHub PR preview (deploy-preview URL the pr-preview action posts), distinct from the
+// local preview above: one click away wherever a PR shows, instead of only on the PR detail page.
+export type PrPreviewState = "hidden" | "add" | "pending" | "ready";
+export type PrPreviewRow = { prNumber?: number; previewUrl?: string; hasPreviewLabel?: boolean };
+
+/** `configured`: the repo has a `previewLabel` or opted into RepoFeatures.previews — otherwise there
+ *  is nothing a click could do, so the control hides rather than offering a button that 404s.
+ *  `justAdded`: an optimistic flag the control sets right after a successful Add click, so it reads
+ *  as pending at once rather than waiting for the next PR poll to carry `hasPreviewLabel`. */
+export function prPreviewState(row: PrPreviewRow, configured: boolean, justAdded = false): PrPreviewState {
+  if (!row.prNumber || !configured) return "hidden";
+  if (row.previewUrl) return "ready";
+  if (row.hasPreviewLabel || justAdded) return "pending";
+  return "add";
+}
+
 // ---- freshness: the stale indicator and the new-build banner ----
 
 /** How long the board's data may go unrefreshed before the top bar says so: two idle poll periods. */
