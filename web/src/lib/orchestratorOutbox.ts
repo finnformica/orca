@@ -9,8 +9,9 @@
 // while closed) showed it only when the wake finished and its `turn` event made it re-read.
 import { useSyncExternalStore } from "react";
 import { api } from "../api";
+import { attachmentRefs, type AttachmentRef } from "../workstream";
 
-export type OutgoingMessage = { id: number; text: string };
+export type OutgoingMessage = { id: number; text: string; attachments?: AttachmentRef[] };
 
 let pending: OutgoingMessage[] = [];
 let seq = 0;
@@ -32,7 +33,17 @@ export function sendToOrchestrator(text: string, files: File[] = []): Promise<{ 
   const id = ++seq;
   pending = [...pending, { id, text }];
   changed();
-  const sent = chain.then(async () => api.orchestratorMessage(text, files.length ? await api.uploadAttachments(files) : []));
+  const sent = chain.then(async () => {
+    const refs = files.length ? await api.uploadAttachments(files) : [];
+    // The upload lands before the message does — show the real thumbnails/chips (served from
+    // /api/attachments/<id>, like a sent message's) on the "sending…" bubble as soon as they're known,
+    // rather than only once the bridge confirms the message as a running turn or a queued entry.
+    if (refs.length) {
+      pending = pending.map((m) => (m.id === id ? { ...m, attachments: attachmentRefs(refs.join("\n")) } : m));
+      changed();
+    }
+    return api.orchestratorMessage(text, refs);
+  });
   chain = sent.catch(() => {});
   const settle = () => { pending = pending.filter((m) => m.id !== id); changed(); };
   return sent.then(
