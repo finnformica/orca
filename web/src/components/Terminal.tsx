@@ -16,6 +16,7 @@ import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom
 import { shortcutLabel } from "@/lib/shortcuts";
 import { useNarrow } from "@/lib/viewport";
 import { openOrchestrator } from "@/lib/orchestratorOpen";
+import { sendToOrchestrator } from "@/lib/orchestratorOutbox";
 import { useSwipeToClose } from "@/lib/gestures";
 import { useRoute } from "@/lib/route";
 
@@ -335,12 +336,12 @@ export function OrchestratorPanel() {
       {/* Mounted at once, not after the status read: the composer must exist to take focus in the
           same commit that opens the panel, or the first keystrokes go nowhere. */}
       <ChatPanel
-        row={row} flush variant="chat" prefill={prefill}
+        row={row} flush variant="chat" prefill={prefill} outbox
         // The same toolbar a card's terminal has, fed the orchestrator's own values. Claude
         // only; changing the model keeps the session.
         controls={controls}
         send={async (text, images) => {
-          await api.orchestratorMessage(text, images.length ? await api.uploadAttachments(images) : []);
+          await sendToOrchestrator(text, images);
           await load();
         }}
       />
@@ -427,10 +428,10 @@ export function OrchestratorPage() {
       </div>
       <div className={cn("min-h-0 max-md:flex-1", ORCHESTRATOR_PAGE_HEIGHT)}>
         <ChatPanel
-          row={row} flush variant="chat" prefill={prefill}
+          row={row} flush variant="chat" prefill={prefill} outbox
           controls={controls}
           send={async (text, images) => {
-            await api.orchestratorMessage(text, images.length ? await api.uploadAttachments(images) : []);
+            await sendToOrchestrator(text, images);
             await load();
           }}
         />

@@ -12,6 +12,7 @@ import { App } from "@/App";
 import { orchestratorActivityAtom, orchestratorOpenAtom, quickAskOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
 import { MORPH_MS, SENT_FLASH_MS } from "@/components/QuickAsk";
+import { joinMessages, unlandedSends } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -322,4 +323,61 @@ test("Q8: the box carries every composer's toolbar — the orchestrator's model 
   expect(apiFake.orchestratorState.model).toContain("sonnet");
   expect(surface().dataset.state).toBe("open");
   expect($('[data-slot="quick-ask-box"] [aria-label="Model"]')!.textContent).toContain("Sonnet");
+});
+
+test("Q10: an Ask shows in the orchestrator's panel AT ONCE — as sending, then queued behind a busy wake — and once only", async () => {
+  // The bug: the panel (mounted once, kept mounted while closed) knew nothing of a quick-ask send,
+  // and a message queued behind a busy wake publishes no event — so it appeared only when the wake ended.
+  apiFake.orchestratorState = { ...apiFake.orchestratorState, running: true };
+  apiFake.turnsData.set("@orca::orchestrator", [{ id: "run-1", provider: "claude", instruction: "old", prompt: "p", response: "older reply", finishedAt: 2 }]);
+  await mount("/");
+  const s = getDefaultStore();
+  await act(async () => { s.set(orchestratorOpenAtom, true); await flush(); await flush(); });
+  await act(async () => { s.set(orchestratorOpenAtom, false); await flush(); });
+  await click($('[data-slot="quick-ask-pill"]')!);
+  apiFake.orchestratorMessageDelays = [80]; // the bridge takes its time answering
+  const text = "rebase the stack when you're free";
+  await type(input(), text);
+  await enter(input());
+  await act(async () => { s.set(orchestratorOpenAtom, true); await flush(); await flush(); });
+  const panel = () => $('[data-slot="orchestrator-panel"]')!;
+  const occurrences = () => panel().textContent!.split(text).length - 1;
+  // Before the bridge has answered: drawn as sending.
+  expect(panel().querySelector('[data-slot="chat-sending"]')!.textContent).toContain(text);
+  expect(occurrences()).toBe(1);
+  // The bridge queues it (the orchestrator is mid-wake) — no event is published for that.
+  apiFake.queuedData.set("orchestrator", [{ id: 7, repo: "@orca", branch: "orchestrator", instruction: text, attachments: [], createdAt: 3 }]);
+  await act(async () => { await new Promise((r) => setTimeout(r, 150)); });
+  expect(panel().querySelector('[data-slot="chat-sending"]')).toBeNull();
+  expect(panel().textContent).toContain("queued — sends when the current run finishes");
+  expect(occurrences()).toBe(1); // reconciled, not duplicated
+});
+
+test("Q11: the panel's own sends go through the same outbox — sending at once, then the running turn, never both", async () => {
+  apiFake.turnsData.set("@orca::orchestrator", []);
+  await mount("/");
+  await act(async () => { getDefaultStore().set(orchestratorOpenAtom, true); await flush(); await flush(); });
+  const panel = $('[data-slot="orchestrator-panel"]')!;
+  const box = panel.querySelector<HTMLTextAreaElement>("textarea")!;
+  apiFake.orchestratorMessageDelays = [60];
+  await type(box, "check the board");
+  await enter(box);
+  expect(panel.querySelector('[data-slot="chat-sending"]')!.textContent).toContain("check the board");
+  // The wake launched: its turn is recorded, running.
+  apiFake.turnsData.set("@orca::orchestrator", [{ id: "run-2", provider: "claude", instruction: "check the board", prompt: "p", response: "" }]);
+  await act(async () => { await new Promise((r) => setTimeout(r, 120)); });
+  expect(panel.querySelector('[data-slot="chat-sending"]')).toBeNull();
+  expect(panel.textContent!.split("check the board").length - 1).toBe(1);
+  expect(apiFake.orchestratorMessages.map((m) => m.text)).toEqual(["check the board"]);
+});
+
+test("Q12: unlandedSends — a send is drawn until a RUNNING turn carries it (any of a wake's messages) or it is queued", () => {
+  const a = { id: 1, text: "first" }, b = { id: 2, text: "second" }, c = { id: 3, text: "third" };
+  expect(unlandedSends([a, b, c], null, [])).toEqual([a, b, c]);
+  // A wake carrying several messages: each is matched, not only the first.
+  expect(unlandedSends([a, b, c], [{ instruction: joinMessages(["first", "second"]) }], [])).toEqual([c]);
+  // Queued, with attachments appended to the stored text.
+  expect(unlandedSends([a, c], [], [{ instruction: "third\n\nAttached: x.png" }])).toEqual([a]);
+  // A FINISHED turn with the same text is an earlier send of it: the new one still shows.
+  expect(unlandedSends([a], [{ instruction: "first", finishedAt: 5 }], [])).toEqual([a]);
 });

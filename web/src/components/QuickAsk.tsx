@@ -14,13 +14,14 @@
 // Sending is OPTIMISTIC: the box clears and stays open for the next task at once, a subtle "Sent"
 // confirms, and the message goes to the orchestrator in the background. A busy orchestrator is not an
 // error — the bridge queues the message behind its wake (the same queue busy agents use) — and quick
-// successive sends are chained so they reach it in the order they were typed.
+// successive sends are chained so they reach it in the order they were typed. It goes through the
+// shared outbox (lib/orchestratorOutbox), so the panel shows it at once, opened now or later.
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { Bot, Check } from "lucide-react";
 import { quickAskOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
-import { api } from "../api";
+import { sendToOrchestrator } from "@/lib/orchestratorOutbox";
 import { useOrchestrator, useOrchestratorState } from "@/components/Terminal";
 import { ChatComposer } from "@/components/ChatComposer";
 import { ChatControls } from "@/components/ChatControls";
@@ -33,16 +34,6 @@ export const QUICK_ASK_PLACEHOLDER = "Ask the orchestrator...";
 /** The pill ↔ box morph (ms) — the surface's `duration-200`. */
 export const MORPH_MS = 200;
 const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-// One chain for the whole tab: each POST starts only once the previous one has answered, so three
-// quick sends arrive as typed (in parallel, the second could reach the bridge first). A failure does
-// not break the chain for the messages behind it.
-let chain: Promise<unknown> = Promise.resolve();
-export function queueOrchestratorMessage(text: string, files: File[] = []): Promise<{ status: "running" | "queued" }> {
-  const sent = chain.then(async () => api.orchestratorMessage(text, files.length ? await api.uploadAttachments(files) : []));
-  chain = sent.catch(() => {});
-  return sent;
-}
 
 export function QuickAsk() {
   const [open, setOpen] = useAtom(quickAskOpenAtom);
@@ -100,7 +91,7 @@ export function QuickAsk() {
   const send = async (message: string, files: File[]) => {
     setFlash((n) => n + 1);
     input()?.focus();
-    try { await queueOrchestratorMessage(message, files); }
+    try { await sendToOrchestrator(message, files); }
     catch (e) { setFlash(0); throw e; }
   };
   return (
