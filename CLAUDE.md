@@ -953,12 +953,16 @@ mode never reads OAuth credentials, which would silently break every subscriptio
 **Auto-deploy:** `orca-autodeploy.timer` runs `deploy/autodeploy.sh` every minute so the box picks
 up `main` without a manual deploy. Each tick: fetch `origin/main`; if HEAD already matches, no-op.
 Otherwise, refuse while busy — the orchestrator is mid-wake (`GET /api/orchestrator` →
-`running:true`) or any agent run holds a live lease (`~/.orca/leases`) — and just log `deferred:
-busy` to try again next tick; a worker survives a bridge restart (`agent.adoptLeases`) but an
-orchestrator wake does not, which is the whole reason for the busy rule. Otherwise `git pull
---ff-only`, `bun run build`, and only on a successful build `systemctl restart orca`, then poll
-`/api/config` until it's back. A failed build never restarts the service — the old build keeps
-serving — and its log tail goes to `~/.orca/autodeploy.log` (one line per tick). Pause it with
+`running:true`), and just log `deferred: busy` to try again next tick; a live agent-run lease
+(`~/.orca/leases`) does NOT count as busy, because a worker survives a bridge restart
+(`agent.adoptLeases` re-adopts it), unlike an orchestrator wake, which is the whole reason for the
+busy rule. Otherwise `git pull --ff-only`, then `bun install --frozen-lockfile` if `package.json` or
+`bun.lock` changed between the old and new HEAD (a PR that adds a dependency, like #192's
+@radix-ui/react-hover-card, would otherwise build against stale `node_modules` and fail with a
+Rollup unresolved-import error while the box silently kept serving the old build), then `bun run
+build`, and only on a successful build `systemctl restart orca`, then poll `/api/config` until it's
+back. A failed install or build never restarts the service — the old build keeps serving — and its
+log tail goes to `~/.orca/autodeploy.log` (one line per tick). Pause it with
 `systemctl stop orca-autodeploy.timer`; `deploy/bootstrap.sh` installs and enables it, scoped by
 `deploy/orca-autodeploy.sudoers` to exactly `systemctl restart orca` for the `orca` user.
 **Orphan reaper:** a preview that dies with a bridge crash, a reaped worktree, or a worker's own
