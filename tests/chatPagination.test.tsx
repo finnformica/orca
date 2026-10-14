@@ -192,7 +192,7 @@ test("P6: the orchestrator's chat is one stream — worker traffic split out as 
   expect(reports.querySelector('[data-slot="worker-reports"]')!.textContent).toContain("r/feat-x — done");
   // Three messages one wake drained: three bubbles, in order — a paragraph inside one stays in it.
   const fourth = [...c.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].find((t) => t.textContent!.includes("reply 4 line 0"))!;
-  expect([...fourth.querySelectorAll('[data-slot="chat-user"]')].map((b) => b.textContent!.replace(/\d{1,2}:\d{2}.*$/, ""))).toEqual(["ask 4a", "ask 4b\n\nwith a paragraph", "ask 4c"]);
+  expect([...fourth.querySelectorAll('[data-slot="chat-user-text"]')].map((b) => b.textContent)).toEqual(["ask 4a", "ask 4b\n\nwith a paragraph", "ask 4c"]);
   // Queued: your message and the held report, both in the one stream.
   expect(c.textContent).toContain("and then this");
   expect(c.querySelector('[data-slot="worker-report-held"]')).not.toBeNull();
