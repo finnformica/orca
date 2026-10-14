@@ -44,15 +44,34 @@ async function advanceOrigin(origin: string): Promise<string> {
   return (await run(["git", "-C", scratch, "rev-parse", "HEAD"])).trim();
 }
 
+/** Like advanceOrigin, but the commit also touches package.json — the "a PR added a dependency"
+ *  case that must trigger `bun install` on the box before the build. */
+async function advanceOriginWithDeps(origin: string): Promise<string> {
+  const scratch = await mkdtemp(join(tmpdir(), "orca-push-"));
+  await run(["git", "clone", "-q", origin, scratch]);
+  await run(["git", "-C", scratch, "config", "user.email", "test@orca.dev"]);
+  await run(["git", "-C", scratch, "config", "user.name", "Orca Test"]);
+  await writeFile(join(scratch, "package.json"), JSON.stringify({ name: "scratch", dependencies: { x: "1.0.0" } }));
+  await run(["git", "-C", scratch, "add", "."]);
+  await run(["git", "-C", scratch, "commit", "-q", "-m", "add dependency"]);
+  await run(["git", "-C", scratch, "push", "-q", "origin", "main"]);
+  return (await run(["git", "-C", scratch, "rev-parse", "HEAD"])).trim();
+}
+
 const headOf = async (repo: string) => (await run(["git", "-C", repo, "rev-parse", "HEAD"])).trim();
 
 /** A PATH dir with sudo (passthrough), systemctl, bun and curl shims, driven entirely by args/env
  *  so each test controls behaviour without touching the real binaries of the same name. Each step
  *  appends a marker to `trace` so a test can assert ordering (pull happens for real, via git — its
  *  completion is inferred from ORCA_TEST_EXPECT_HEAD already matching inside the bun shim). */
-async function makeShimDir(opts: { trace: string; bunExit?: number; orchestratorRunning?: boolean }): Promise<string> {
+async function makeShimDir(opts: {
+  trace: string;
+  bunExit?: number;
+  installExit?: number;
+  orchestratorRunning?: boolean;
+}): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "orca-ad-shim-"));
-  const { trace, bunExit = 0, orchestratorRunning = false } = opts;
+  const { trace, bunExit = 0, installExit = 0, orchestratorRunning = false } = opts;
 
   // A passthrough that tolerates the one flag autodeploy.sh passes (-n): skip it, then exec the
   // real command so the systemctl/bun/curl shims below are what actually run.
@@ -75,37 +94,23 @@ async function makeShimDir(opts: { trace: string; bunExit?: number; orchestrator
     join(dir, "bun"),
     [
       "#!/bin/sh",
+      'if [ "$1 $2" = "install --frozen-lockfile" ]; then',
+      `  echo bun-install-ran >> "${trace}"`,
+      `  [ ${installExit} -eq 0 ] && echo bun-install-ok >> "${trace}"`,
+      `  exit ${installExit}`,
+      "fi",
       'if [ "$1 $2" = "run build" ]; then',
       `  if [ -n "\${ORCA_TEST_EXPECT_HEAD:-}" ]; then`,
       '    actual="$(git -C "$ORCA_TEST_REPO" rev-parse HEAD)"',
       `    [ "\${actual}" = "\${ORCA_TEST_EXPECT_HEAD}" ] && echo pull-before-build >> "${trace}"`,
       "  fi",
       `  echo bun-build-ran >> "${trace}"`,
+      `  [ ${bunExit} -eq 0 ] && echo bun-build-ok >> "${trace}"`,
       `  exit ${bunExit}`,
       "fi",
       "exit 1",
     ].join("\n") + "\n",
   );
-  if (bunExit === 0) {
-    // Only a successful build is allowed to unlock the restart — append its "ok" marker from a
-    // second line the script itself never calls, kept simple by writing it straight into the shim.
-    await writeFile(
-      join(dir, "bun"),
-      [
-        "#!/bin/sh",
-        'if [ "$1 $2" = "run build" ]; then',
-        `  if [ -n "\${ORCA_TEST_EXPECT_HEAD:-}" ]; then`,
-        '    actual="$(git -C "$ORCA_TEST_REPO" rev-parse HEAD)"',
-        `    [ "\${actual}" = "\${ORCA_TEST_EXPECT_HEAD}" ] && echo pull-before-build >> "${trace}"`,
-        "  fi",
-        `  echo bun-build-ran >> "${trace}"`,
-        `  echo bun-build-ok >> "${trace}"`,
-        "  exit 0",
-        "fi",
-        "exit 1",
-      ].join("\n") + "\n",
-    );
-  }
 
   const orchBody = orchestratorRunning ? '{"running":true}' : '{"running":false}';
   await writeFile(
@@ -163,18 +168,18 @@ test("up to date: no-op, no build, no restart", async () => {
   expect(await readFile(trace, "utf8")).toBe("");
 });
 
-test("behind + busy (a live agent lease): deferred, no pull, no build, no restart", async () => {
+test("behind + a live agent lease (not the orchestrator): proceeds — a worker lease is not busy", async () => {
+  // agent.adoptLeases re-adopts a worker's run after a restart, so only an orchestrator wake
+  // (checked separately below) should hold a deploy back.
   const { origin, box, state, trace } = await setup();
-  await advanceOrigin(origin);
+  const newHead = await advanceOrigin(origin);
   await mkdir(join(state, "leases"), { recursive: true });
   await writeFile(join(state, "leases", "x.json"), JSON.stringify({ pid: process.pid }));
   const shim = await makeShimDir({ trace });
-  const headBefore = await headOf(box);
 
-  const { log } = await runScript(baseEnv(box, state, shim));
-  expect(log).toContain("deferred: busy");
-  expect(await readFile(trace, "utf8")).toBe("");
-  expect(await headOf(box)).toBe(headBefore);
+  const { log } = await runScript({ ...baseEnv(box, state, shim), ORCA_TEST_REPO: box, ORCA_TEST_EXPECT_HEAD: newHead });
+  expect(log).toContain(`deployed ${newHead.slice(0, 12)}`);
+  expect(await headOf(box)).toBe(newHead);
 });
 
 test("behind + busy (orchestrator mid-wake): deferred", async () => {
@@ -213,5 +218,46 @@ test("build fails: no restart, old build keeps serving, failure logged", async (
   expect(log).toContain("build failed, not restarting");
   const traceContent = await readFile(trace, "utf8");
   expect(traceContent).toContain("bun-build-ran");
+  expect(traceContent).not.toContain("systemctl-restart");
+});
+
+test("package.json changed: bun install runs before build and restart", async () => {
+  const { origin, box, state, trace } = await setup();
+  const newHead = await advanceOriginWithDeps(origin);
+  const shim = await makeShimDir({ trace });
+
+  const { log } = await runScript({ ...baseEnv(box, state, shim), ORCA_TEST_REPO: box, ORCA_TEST_EXPECT_HEAD: newHead });
+
+  expect(log).toContain(`deployed ${newHead.slice(0, 12)}`);
+  expect((await readFile(trace, "utf8")).trim().split("\n")).toEqual([
+    "bun-install-ran",
+    "bun-install-ok",
+    "pull-before-build",
+    "bun-build-ran",
+    "bun-build-ok",
+    "build-before-restart",
+    "systemctl-restart",
+  ]);
+});
+
+test("no dependency change: bun install is skipped", async () => {
+  const { origin, box, state, trace } = await setup();
+  await advanceOrigin(origin);
+  const shim = await makeShimDir({ trace });
+
+  await runScript(baseEnv(box, state, shim));
+  expect(await readFile(trace, "utf8")).not.toContain("bun-install-ran");
+});
+
+test("bun install fails: no build, no restart, old build keeps serving, failure logged", async () => {
+  const { origin, box, state, trace } = await setup();
+  await advanceOriginWithDeps(origin);
+  const shim = await makeShimDir({ trace, installExit: 1 });
+
+  const { log } = await runScript(baseEnv(box, state, shim));
+  expect(log).toContain("bun install failed, not restarting");
+  const traceContent = await readFile(trace, "utf8");
+  expect(traceContent).toContain("bun-install-ran");
+  expect(traceContent).not.toContain("bun-build-ran");
   expect(traceContent).not.toContain("systemctl-restart");
 });

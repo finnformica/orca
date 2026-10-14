@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# Auto-deploy: pull main, build, restart — run every minute by orca-autodeploy.timer so the box
-# updates itself as soon as main changes (CLAUDE.md "Deploying" → "Auto-deploy"). Idempotent and
-# safe to run on a tick with nothing to do.
+# Auto-deploy: pull main, install deps if they changed, build, restart — run every minute by
+# orca-autodeploy.timer so the box updates itself as soon as main changes (CLAUDE.md "Deploying" →
+# "Auto-deploy"). Idempotent and safe to run on a tick with nothing to do.
 #
-# Busy means EITHER the bridge is mid-orchestrator-wake (GET /api/orchestrator → running:true) OR
-# any agent run holds a live lease on this host (~/.orca/leases, honouring ORCA_STATE_DIR — the
-# same dir server/lease.ts uses). A worker survives a bridge restart (agent.adoptLeases re-adopts
-# its lease), but an orchestrator wake does NOT: systemd killing the process mid-wake looks exactly
-# like the orchestrator abandoning its reply (CLAUDE.md "Stability"). So this script defers rather
-# than interrupting either kind of in-flight work, and just tries again on the next tick.
+# Busy means the bridge is mid-orchestrator-wake (GET /api/orchestrator → running:true). A live
+# agent-run lease (~/.orca/leases) is NOT busy: a worker survives a bridge restart
+# (agent.adoptLeases re-adopts its lease), but an orchestrator wake does NOT — systemd killing the
+# process mid-wake looks exactly like the orchestrator abandoning its reply (CLAUDE.md
+# "Stability"). So this script only defers for the wake, and just tries again on the next tick.
 #
-# A failed build never restarts the service — the old build keeps serving — and logs the tail.
+# package.json or bun.lock changing between the old and new HEAD means `bun install
+# --frozen-lockfile` runs before the build (a PR that adds a dependency, like #192's
+# @radix-ui/react-hover-card, otherwise builds against stale node_modules and fails with a Rollup
+# unresolved-import error while the box silently keeps serving the old build).
+#
+# A failed install or build never restarts the service — the old build keeps serving — and logs
+# the tail.
 set -euo pipefail
 
 REPO="${ORCA_REPO:-/opt/orca}"
@@ -39,21 +44,12 @@ orchestrator_running() {
   [[ "${body}" == *'"running":true'* ]]
 }
 
-agent_run_live() {
-  local dir="${STATE_DIR}/leases" f pid
-  [[ -d "${dir}" ]] || return 1
-  shopt -s nullglob
-  for f in "${dir}"/*.json; do
-    pid="$(grep -o '"pid":[0-9]*' "${f}" 2>/dev/null | head -1 | grep -o '[0-9]*')"
-    [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null && return 0
-  done
-  return 1
-}
-
-if orchestrator_running || agent_run_live; then
+if orchestrator_running; then
   log "deferred: busy"
   exit 0
 fi
+
+deps_changed="$(git diff --name-only "${head_local}" "${head_remote}" -- package.json bun.lock)"
 
 if ! git pull --ff-only -q; then
   log "error: git pull --ff-only failed (local changes in ${REPO}?)"
@@ -62,6 +58,13 @@ fi
 
 build_log="$(mktemp)"
 trap 'rm -f "${build_log}"' EXIT
+
+if [[ -n "${deps_changed}" ]]; then
+  if ! bun install --frozen-lockfile >"${build_log}" 2>&1; then
+    log "bun install failed, not restarting: $(tail -n 20 "${build_log}" | tr '\n' ' ')"
+    exit 1
+  fi
+fi
 
 if ! bun run build >"${build_log}" 2>&1; then
   log "build failed, not restarting: $(tail -n 20 "${build_log}" | tr '\n' ' ')"
