@@ -620,6 +620,18 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   Also: a lease records its `sessionId` and `launch` refuses a resume while another live run is on
   that session (`lease.sessionBusy`) — two runs on one session both end with the same reply, which
   was the "one message behind" bug.
+- **One primary bridge per instance** (`server/primary.ts`; incident 2026-10-14: four hand-started
+  bridges from reaped worktrees kept running stale code on the shared database, and one woke the
+  orchestrator with a deleted `bin/` on PATH). Background duties — orchestrator wakes/recovery, the
+  run-finished hook, merge queue, upkeep, cleanup + reaper, autofix, inventory/preview/metrics
+  publishing, lease adoption, preview reattach — run only in the bridge holding the instance's
+  `pg_try_advisory_lock` (its own one-connection client; secondaries retry every 5s, so a restart's
+  new process takes over). A secondary serves HTTP only and answers 503 to an orchestrator wake. A
+  bridge whose code is under `.worktrees/` never contends unless `ORCA_PRIMARY=1` (test bridges set
+  it); one whose source directory vanishes exits. The orchestrator's PATH is the main install's
+  `bin/` (`mainBin`, via `git --git-common-dir`) and its `ORCA_URL` loopback + this primary's port.
+  With the database unreachable at boot nobody holds the lock, so duties wait for it. `/api/config`'s
+  `bridge` reports `primary` / `reason`. Workers run Orca only via `scripts/preview-orca.sh`.
 - **Working on Orca itself: worktree + PR, never this checkout.** The bridge serves the main
   checkout and restarts when it changes, so edits and `git pull` there are restarts under live
   runs. Make changes in a worktree (`git worktree add .worktrees/<name>`, symlink `node_modules`,

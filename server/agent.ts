@@ -9,6 +9,7 @@ import { run } from "./run";
 import * as lease from "./lease";
 import * as ledger from "./ledger";
 import * as db from "./db";
+import * as primary from "./primary";
 import * as transcript from "./transcript";
 import * as outbox from "./outbox";
 import * as bus from "./bus";
@@ -721,7 +722,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
       // reads as finished has its verdict on the turn — a reader that polls "finished, then fetch"
       // otherwise sees the check missing when the pool is busy (the notification writes below).
       await recordTurn(options, () => outbox.setCheck(runId, check!, options));
-      if (!check.ok && options.check.autofix && options.repo && options.branch && !isAutofix(options.instruction)) {
+      if (!check.ok && options.check.autofix && primary.held() && options.repo && options.branch && !isAutofix(options.instruction)) {
         // Queued rather than launched: the same path a typed follow-up takes, so it inherits the
         // session, profile routing, and the run lease. dispatchQueued below sends it.
         await db.queueMessage({

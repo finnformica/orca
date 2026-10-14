@@ -139,7 +139,7 @@ test("D1 the bridge boots without the database and answers /api/config from the 
   const port = freePort();
   const proc = Bun.spawn(["bun", "--env-file=/dev/null", "server/index.ts"], {
     cwd: ROOT, stdout: "pipe", stderr: "pipe",
-    env: { PATH: process.env.PATH!, HOME: process.env.HOME!, ORCA_DATABASE_URL: dbUrl, ORCA_STATE_DIR: state, ORCA_API_PORT: String(port), ORCA_BIND: "127.0.0.1", ORCA_INSTANCE: "local" },
+    env: { PATH: process.env.PATH!, HOME: process.env.HOME!, ORCA_DATABASE_URL: dbUrl, ORCA_STATE_DIR: state, ORCA_API_PORT: String(port), ORCA_BIND: "127.0.0.1", ORCA_INSTANCE: "local", ORCA_PRIMARY: "1" },
   });
   try {
     let res: Response | undefined;
