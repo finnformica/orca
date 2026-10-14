@@ -7,7 +7,7 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { ArrowDown, Bot, ChevronRight, Cog, Paperclip } from "lucide-react";
+import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Paperclip, Quote as QuoteIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -15,10 +15,12 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
+import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tip";
 import { subscribeTurns } from "@/lib/events";
 import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
 import type { OrchestratorPrefill } from "@/lib/atoms";
@@ -176,6 +178,37 @@ export function Attachments({ files, className = "" }: { files: AttachmentRef[];
   );
 }
 
+/** Copy (the message's raw markdown, with a brief "Copied" confirmation) and Quote (insert it into
+ *  the composer as a blockquote) for one message. Hidden until the message is hovered, but stays
+ *  reachable: visible while a button inside has focus (keyboard), and always on a touch screen,
+ *  which has no hover to reveal it. `tone` matches the two message stylings below — the terminal
+ *  log's muted neutrals, or the chat bubble styling's theme tokens. */
+function MessageActions({ text, onQuote, tone = "terminal", className }: { text: string; onQuote: () => void; tone?: "terminal" | "chat"; className?: string }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = async () => {
+    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    catch { /* clipboard unavailable */ }
+  };
+  const btn = tone === "chat" ? "text-muted-foreground hover:text-foreground" : "text-neutral-500 hover:text-neutral-200";
+  return (
+    <div
+      data-slot="message-actions"
+      className={cn("flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100", className)}
+    >
+      <Tip label={copied ? "Copied" : "Copy"}>
+        <Button type="button" size="icon" variant="ghost" className={cn("size-6", btn)} aria-label="Copy message" onClick={() => void onCopy()}>
+          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+        </Button>
+      </Tip>
+      <Tip label="Quote">
+        <Button type="button" size="icon" variant="ghost" className={cn("size-6", btn)} aria-label="Quote message" onClick={onQuote}>
+          <QuoteIcon className="size-3.5" />
+        </Button>
+      </Tip>
+    </div>
+  );
+}
+
 /** An instruction typed while the agent was working. It hasn't been sent yet — shown so it's visibly
  *  waiting rather than silently in limbo, and cancellable while it still is. */
 function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () => void }) {
@@ -278,7 +311,7 @@ const clockOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString(undefined
  *  name, in readable prose; its tool steps and worker reports stay folded; the time shows on hover
  *  (and days are grouped by the divider ChatPanel draws). Colours are the theme's tokens, so it
  *  follows light and dark like the rest of the console. */
-function ChatTurn({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean }) {
+function ChatTurn({ turn, loadSteps, compact, onQuote }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean; onQuote: (text: string) => void }) {
   const parts = splitMessages(turn.instruction ?? promptInstruction(turn.prompt));
   // A wake that carried your messages AND worker reports: your words in bubbles — one per message you
   // sent, however many one wake drained — and the reports folded.
@@ -297,18 +330,24 @@ function ChatTurn({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: (
           <WorkerReports parts={reports} />
         </WorkerBlock>
       )}
-      {said.map((text, i) => (
-        <div key={i} className="group mb-2 flex justify-end" data-slot="chat-user">
-          <div className="max-w-[85%]">
-            {withoutAttachmentList(text) && <div className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">
-              {/* A long message is cut to its first lines, like an old reply. */}
-              <Clamp on={longMessage(withoutAttachmentList(text))} cut="max-h-[9rem]">{withoutAttachmentList(text)}</Clamp>
-            </div>}
-            <Attachments files={filesOf(text, i)} className="mt-1 justify-end" />
-            {i === said.length - 1 && <div className="text-muted-foreground mt-0.5 text-right text-[10px] opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{time}</div>}
+      {said.map((text, i) => {
+        const clean = withoutAttachmentList(text);
+        return (
+          <div key={i} className="group mb-2 flex justify-end" data-slot="chat-user">
+            <div className="max-w-[85%]">
+              {clean && <div data-slot="chat-user-text" className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">
+                {/* A long message is cut to its first lines, like an old reply. */}
+                <Clamp on={longMessage(clean)} cut="max-h-[9rem]">{clean}</Clamp>
+              </div>}
+              <Attachments files={filesOf(text, i)} className="mt-1 justify-end" />
+              <div className="mt-0.5 flex items-center justify-end gap-1.5">
+                {clean && <MessageActions text={clean} onQuote={() => onQuote(clean)} tone="chat" />}
+                {i === said.length - 1 && <div className="text-muted-foreground text-[10px] opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{time}</div>}
+              </div>
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
       <div className="group flex gap-2" data-slot="chat-reply">
         <span className="bg-accent text-foreground mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3.5" /></span>
         <div className="min-w-0 flex-1">
@@ -316,6 +355,7 @@ function ChatTurn({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: (
             <span className="text-foreground font-medium">Orchestrator</span>
             {turn.failed ? <span className="text-red-400">failed</span> : turn.stopped ? <span className="text-amber-400">stopped by you</span> : null}
             <span className="opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{clockOf(turn.finishedAt) || time}</span>
+            {turn.finishedAt && turn.response && <MessageActions text={turn.response} onQuote={() => onQuote(turn.response)} tone="chat" />}
           </div>
           <Reply turn={turn} loadSteps={loadSteps} compact={compact} />
         </div>
@@ -372,7 +412,7 @@ function AgentsMarker({ turns, render }: { turns: AgentTurn[]; render: (t: Agent
 
 /** `stamped`: the Agent page's log mode — a time gutter, and failed / warned turns tinted the way
  *  Vercel tints error and warning lines in Build Logs. */
-function Turn({ turn, loadSteps, stamped, running }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; stamped?: boolean; running?: boolean }) {
+function Turn({ turn, loadSteps, stamped, running, onQuote }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; stamped?: boolean; running?: boolean; onQuote: (text: string) => void }) {
   const instruction = turn.instruction ?? promptInstruction(turn.prompt);
   // The reference list is shown as chips (below), not as text.
   const parts = splitMessages(instruction).map(withoutAttachmentList);
@@ -383,16 +423,18 @@ function Turn({ turn, loadSteps, stamped, running }: { turn: AgentTurn; loadStep
         // What you typed, recorded with the turn — one ❯ line per message a wake carried. Turns from
         // before that was stored fall back to trimming the scaffolding off the prompt by its marker lines.
         <>{parts.map((text, i) => (
-          <div key={i} className="flex gap-2 text-emerald-400" data-slot="turn-instruction">
+          <div key={i} className="group flex items-start gap-2 text-emerald-400" data-slot="turn-instruction">
             <span className="shrink-0 select-none">❯</span>
-            <span className="min-w-0 whitespace-pre-wrap break-words">{text}</span>
+            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{text}</span>
+            <MessageActions text={text} onQuote={() => onQuote(text)} />
           </div>
         ))}</>
       )}
       <Attachments files={turn.attachments ?? []} className="mt-1 pl-4" />
-      <div className="mt-1 pl-4">
-        <div className="text-[10px] tracking-widest text-neutral-500 uppercase">
-          {agentLabel(turn.provider)}{turn.failed ? " · failed" : turn.stopped ? " · stopped by you" : ""}
+      <div className="group mt-1 pl-4" data-slot="turn-reply">
+        <div className="flex items-start gap-2 text-[10px] tracking-widest text-neutral-500 uppercase">
+          <span>{agentLabel(turn.provider)}{turn.failed ? " · failed" : turn.stopped ? " · stopped by you" : ""}</span>
+          {turn.finishedAt && turn.response && <MessageActions text={turn.response} onQuote={() => onQuote(turn.response)} />}
         </div>
         <Reply turn={turn} loadSteps={loadSteps} />
       </div>
@@ -447,6 +489,12 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   // composer puts the text back.
   const [sending, setSending] = useState<{ id: number; text: string }[]>([]);
   const sendSeq = useRef(0);
+  // A message's Quote button: append it to the composer as a blockquote, without losing whatever
+  // draft is already there. `insertSeq` makes every click its own event even quoting the same text
+  // twice in a row.
+  const [insert, setInsert] = useState<{ text: string; seq: number } | null>(null);
+  const insertSeq = useRef(0);
+  const onQuote = (text: string) => setInsert({ text: quoteMarkdown(text), seq: ++insertSeq.current });
   const submit = async (text: string, images: File[]) => {
     const id = ++sendSeq.current;
     follow.current = true; // you just spoke: jump to it, wherever you had scrolled
@@ -711,9 +759,9 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   const compactBefore = (turns?.length ?? 0) - RECENT_FULL;
   const chatStyle = variant === "chat";
   const stepsOf = (turn: AgentTurn) => () => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response));
-  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadSteps={stepsOf(turn)} compact={(position.get(turn.id) ?? 0) < compactBefore} />;
+  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadSteps={stepsOf(turn)} compact={(position.get(turn.id) ?? 0) < compactBefore} onQuote={onQuote} />;
   const renderTurns = (list: AgentTurn[]) => {
-    if (!chatStyle) return list.map((turn) => <Turn key={turn.id} turn={turn} stamped={logBar} running={running} loadSteps={stepsOf(turn)} />);
+    if (!chatStyle) return list.map((turn) => <Turn key={turn.id} turn={turn} stamped={logBar} running={running} loadSteps={stepsOf(turn)} onQuote={onQuote} />);
     const items = chatItems(list);
     let prev: number | undefined;
     return items.map((item) => {
@@ -822,6 +870,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
           : { onCompact, pending: compacting !== null, busy: running, error: compactError }} />}
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
         repo={row.repo}
+        insert={insert}
         placeholder={running ? "The agent is working — queue the next instruction…" : `Reply to ${modelLabel(modelFor(row))}…`}
         history={row.followUps}
         onSubmit={submit}
