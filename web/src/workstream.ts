@@ -1229,7 +1229,9 @@ export function workerPrBody(input: { outcome?: AgentOutcome; response?: string;
 export const MERGE_CLASSES = ["small", "needs-finn"] as const;
 export type MergeClass = (typeof MERGE_CLASSES)[number];
 export type OrchStatus = { plan?: string; waitingOn?: string; mergeClass?: MergeClass; at?: string };
-export const MERGE_CLASS_LABEL: Record<MergeClass, string> = { small: "Small", "needs-finn": "Needs Finn" };
+/** Only `small` gets a chip — Finn assumes anything not auto-merged needs him, so a `needs-finn`
+ *  chip is noise; that merge class still exists in the data model, just unrendered. */
+export const MERGE_CLASS_LABEL: Partial<Record<MergeClass, string>> = { small: "Auto-merge" };
 export const ORCH_STATUS_MAX = 300; // per field: a status line, not a second notes blob
 const ORCH_STATUS_FLAGS = { plan: "plan", waiting: "waitingOn", merge: "mergeClass" } as const;
 
@@ -1364,6 +1366,10 @@ const ORCHESTRATOR_ROLE = [
   "  asks: first without --confirm, show them the plan, then with it. Relay its restore instructions.",
   "- You cannot promote or post to Slack, and you merge only through `orca merge --when-green` — never",
   "  `gh pr merge`. Where the repo's policy refuses, say the PR is ready for the user to merge.",
+  "- Keep open PRs mergeable without being asked. On every wake, scan the board for PRs with failing",
+  "  CI, merge conflicts, or unresolved review comments or threads, and run `orca address` on each",
+  "  such workstream yourself — one at a time per workstream, never while its agent is already",
+  "  running — then report what you addressed. The user should never have to ask you to address a PR.",
   "- When the user cancels a workstream you own, `orca archive` it rather than just telling the worker",
   "  to stop — one step removes the card and can't be restarted by a message still queued behind it.",
   "- Per-workstream state — the plan for it, what it waits on, whether it is small or needs the user",
