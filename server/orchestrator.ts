@@ -15,6 +15,7 @@ import { mkdirSync } from "fs";
 import { join } from "path";
 import * as agent from "./agent";
 import * as db from "./db";
+import * as primary from "./primary";
 import * as attachments from "./attachments";
 import * as git from "./git";
 import * as gh from "./gh";
@@ -328,6 +329,11 @@ async function drain(cfg: OrcaConfig): Promise<void> {
 }
 
 async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
+  // Only the instance's primary bridge wakes it (server/primary.ts); a secondary leaves the queue alone.
+  if (!primary.held()) {
+    for (const text of fresh) await enqueue(text).catch(() => {});
+    throw new Error("not the primary bridge: the orchestrator is woken by the instance's primary");
+  }
   const claimed: db.QueuedMessage[] = [];
   for (let m = await db.claimQueuedMessage(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH); m; m = await db.claimQueuedMessage(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH)) claimed.push(m);
   const messages = [...claimed.map((m) => withAttachments(m.instruction, m.attachments)), ...fresh];
@@ -352,8 +358,10 @@ async function wake(cfg: OrcaConfig, fresh: string[]): Promise<void> {
       // it to `orca`, reading, the web and read-only subagents — nothing that can change this machine.
       ...(shell ? { permissionMode: "bypass" as const } : { permissionMode: "ask" as const, allowedTools: ["Bash(orca *)", "Read", "Grep", "Glob", "Agent", "WebSearch", "WebFetch"] }),
       env: {
-        ORCA_URL: `http://${(process.env.ORCA_BIND || "127.0.0.1").split(",")[0]!.trim()}:${API_PORT}`,
-        PATH: `${new URL("../bin", import.meta.url).pathname}:${process.env.PATH ?? ""}`,
+        // The main install's `orca` and this — the primary — bridge on loopback (always bound), never
+        // a worktree's bin/ that may be deleted under it (incident 2026-10-14).
+        ORCA_URL: `http://127.0.0.1:${API_PORT}`,
+        PATH: `${primary.mainBin()}:${process.env.PATH ?? ""}`,
       },
     });
     await patch({ sessionId: receipt.sessionId, handling: { runId: receipt.runId, instance: db.instanceName(), messages }, cutOff: null, cutOffProgress: null });

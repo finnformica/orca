@@ -28,7 +28,7 @@ let proc: Bun.Subprocess | undefined;
 let base: string;
 
 const ROOT = join(import.meta.dir, "..");
-const ENV_KEYS = ["ORCA_STATE_DIR", "ORCA_DATABASE_URL", "PATH", "ORCA_API_PORT", "ORCA_ALLOW_WORKTREE_MIGRATIONS", "NODE_ENV", "ORCA_BIND"];
+const ENV_KEYS = ["ORCA_STATE_DIR", "ORCA_DATABASE_URL", "PATH", "ORCA_API_PORT", "ORCA_ALLOW_WORKTREE_MIGRATIONS", "ORCA_PRIMARY", "NODE_ENV", "ORCA_BIND"];
 
 beforeEach(async () => {
   prev = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
@@ -63,6 +63,7 @@ printf '{"type":"result","subtype":"success","result":"## Outcome\\\\nDone.","is
   process.env.ORCA_BIND = "127.0.0.1";
   // This checkout is a linked worktree; allow its bridge to migrate the scratch schema above.
   process.env.ORCA_ALLOW_WORKTREE_MIGRATIONS = "1";
+  process.env.ORCA_PRIMARY = "1"; // and to run its duties (the run-finished hook that sends the queue)
   delete process.env.NODE_ENV;
   proc = Bun.spawn(["bun", "run", join(ROOT, "server", "index.ts")], { cwd: ROOT, env: process.env as Record<string, string>, stdout: "ignore", stderr: "inherit" });
   for (let i = 0; i < 400; i++) {
