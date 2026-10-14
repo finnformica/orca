@@ -1229,9 +1229,6 @@ export function workerPrBody(input: { outcome?: AgentOutcome; response?: string;
 export const MERGE_CLASSES = ["small", "needs-finn"] as const;
 export type MergeClass = (typeof MERGE_CLASSES)[number];
 export type OrchStatus = { plan?: string; waitingOn?: string; mergeClass?: MergeClass; at?: string };
-/** Only `small` gets a chip — Finn assumes anything not auto-merged needs him, so a `needs-finn`
- *  chip is noise; that merge class still exists in the data model, just unrendered. */
-export const MERGE_CLASS_LABEL: Partial<Record<MergeClass, string>> = { small: "Auto-merge" };
 export const ORCH_STATUS_MAX = 300; // per field: a status line, not a second notes blob
 const ORCH_STATUS_FLAGS = { plan: "plan", waiting: "waitingOn", merge: "mergeClass" } as const;
 
