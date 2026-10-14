@@ -14,14 +14,14 @@
 // what persists, the stack's layout and motion) are pure in shared/notifications.ts; the state is
 // lib/notificationStore.ts.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { useAtomValue } from "jotai";
+import { useAtom, useAtomValue } from "jotai";
 import {
   AlertTriangle, ArrowUpRight, Bell, BellOff, Bot, Check, CheckCheck, CircleAlert, CircleX, Copy, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, GitMerge, Hammer, MessageCircleQuestion,
   MessagesSquare, MonitorCheck, MonitorX, OctagonPause, Reply, RotateCcw, ScrollText, ShieldX, Square, Wrench, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
-import { notifyDndAtom } from "@/lib/atoms";
+import { notificationsOpenAtom, notifyDndAtom } from "@/lib/atoms";
 import { markRead, pauseToasts, resumeToasts, restoreUnread, start, useNotifications } from "@/lib/notificationStore";
 import { oneOf, persistedKey, usePersisted } from "@/lib/persisted";
 import { useCoarse, useNarrow } from "@/lib/viewport";
@@ -404,25 +404,31 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
 
 // ---- the bell and the centre ----
 
-/** The bell at the sidebar's foot, with the unread count; opens the centre. */
+/** The bell at the sidebar's foot, with the unread count; opens the centre. Controlled by
+ *  `notificationsOpenAtom` (not just the trigger click) so the N key and the palette's Notifications
+ *  action can open/toggle it too; its hint is the hover tooltip (it's icon-only either way, collapsed
+ *  or not — there's no row to carry an inline keycap next to it). */
 export function NotificationBell({ collapsed = false }: { collapsed?: boolean }) {
   const { list } = useNotifications();
   const dnd = useAtomValue(notifyDndAtom);
+  const [open, setOpen] = useAtom(notificationsOpenAtom);
   useEffect(() => { start(); }, []);
   const unread = unreadCount(list);
   return (
-    <Popover>
-      <PopoverTrigger asChild>
-        <button type="button" data-slot="notifications-bell" aria-label={`Notifications${unread ? ` (${unread} unread)` : ""}`} title="Notifications"
-          className={cn("text-muted-foreground hover:text-foreground hover:bg-accent relative inline-flex size-8 shrink-0 items-center justify-center rounded-md", collapsed && "md:mx-auto")}>
-          {dnd ? <BellOff className="size-4" /> : <Bell className="size-4" />}
-          {unread > 0 && (
-            <span data-slot="notifications-unread" className="bg-geist-blue absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold text-white tabular-nums">
-              {unread > 99 ? "99+" : unread}
-            </span>
-          )}
-        </button>
-      </PopoverTrigger>
+    <Popover open={open} onOpenChange={setOpen}>
+      <Tip label="Notifications" shortcut="notifications">
+        <PopoverTrigger asChild>
+          <button type="button" data-slot="notifications-bell" aria-label={`Notifications${unread ? ` (${unread} unread)` : ""}`}
+            className={cn("text-muted-foreground hover:text-foreground hover:bg-accent relative inline-flex size-8 shrink-0 items-center justify-center rounded-md", collapsed && "md:mx-auto")}>
+            {dnd ? <BellOff className="size-4" /> : <Bell className="size-4" />}
+            {unread > 0 && (
+              <span data-slot="notifications-unread" className="bg-geist-blue absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold text-white tabular-nums">
+                {unread > 99 ? "99+" : unread}
+              </span>
+            )}
+          </button>
+        </PopoverTrigger>
+      </Tip>
       <PopoverContent side="top" align="start" className="w-[24rem] max-w-[calc(100vw-2rem)] p-0">
         <NotificationPanel />
       </PopoverContent>
