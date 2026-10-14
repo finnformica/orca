@@ -224,8 +224,11 @@ describe("review cluster + Review panel", () => {
     expect(panel.textContent).toContain("⚠️ Warning: this throws when `items` is empty.");
     await blurChip(chip);
     // Lazy: only the PR row fetched it, once — a further poll doesn't refetch an unchanged PR.
+    // Filtered to this PR's key: bun runs every test file in one process, and focusChip/blurChip's
+    // real timers hold this test open long enough for another file's own reviewSignal fetch (a
+    // different repo#PR) to land in the same shared apiFake call log in the meantime.
     await act(async () => { await store.refresh(); await flush(); });
-    expect(apiFake.reviewSignalCalls).toEqual(["r#7"]);
+    expect(apiFake.reviewSignalCalls.filter((c) => c === "r#7")).toEqual(["r#7"]);
     expect(container!.querySelector('[data-branch="local-only"] [data-slot="review-cluster"]')).toBeNull();
   });
 

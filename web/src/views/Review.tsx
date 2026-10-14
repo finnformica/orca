@@ -1,4 +1,4 @@
-import { ExternalLink, MessageSquare, MessagesSquare } from "lucide-react";
+import { ExternalLink, MessageSquare } from "lucide-react";
 import { StatusDot, VCard } from "@/components/console";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { useReviewDigest, type Row } from "../store";
@@ -28,12 +28,12 @@ const SEVERITY_CLASS: Record<string, string> = {
   warning: "border-geist-warning-fg/40 text-geist-warning-fg",
 };
 
-/** The list row's compact cluster: approver chips, then a count-then-icon `MessagesSquare` chip
+/** The list row's compact cluster: approver chips, then a count-then-icon `MessageSquare` chip
  *  for unresolved threads — coloured by the AI reviewer's worst severity when it flagged
- *  anything, muted otherwise — and a separate plain `MessageSquare` count for human comments.
- *  Hovering (or focusing) the unresolved chip opens a `HoverCard` showing the same `ReviewPanel`
- *  as the agent page's Review card, rather than a plain title tooltip. Renders nothing until the
- *  digest has loaded. */
+ *  anything, muted otherwise — and a separate plain `MessageSquare` count for human comments (the
+ *  colour is what tells the two apart, not the icon). Hovering (or focusing) the unresolved chip
+ *  opens a `HoverCard` showing the same `ReviewPanel` as the agent page's Review card, rather than
+ *  a plain title tooltip. Renders nothing until the digest has loaded. */
 export function ReviewCluster({ row }: { row: Row }) {
   const d = useReviewDigest(row.repo, row.prNumber, reviewSig(row));
   if (!d) return null;
@@ -44,12 +44,12 @@ export function ReviewCluster({ row }: { row: Row }) {
       {d.approvers.length > 0 && <span className="flex -space-x-1">{d.approvers.slice(0, 3).map((a) => <ApproverChip key={a} login={a} />)}</span>}
       {d.approvers.length > 3 && <span className="text-muted-foreground text-[10px]">+{d.approvers.length - 3}</span>}
       {(count > 0 || d.worst) && (
-        <HoverCard openDelay={150} closeDelay={100}>
+        <HoverCard>
           <HoverCardTrigger asChild>
             <span data-slot="unresolved" data-severity={d.worst ?? undefined} tabIndex={0}
               aria-label={d.worst ? `AI reviewer flagged a ${d.worst}-severity comment` : `${count} unresolved review threads`}
-              className={`inline-flex items-center gap-0.5 rounded-full border px-1.5 text-[10px] leading-4 whitespace-nowrap outline-none ${d.worst ? SEVERITY_CLASS[d.worst] : "text-muted-foreground"}`}>
-              {count > 0 && count}<MessagesSquare className="size-2.5" />
+              className={`inline-flex h-4 items-center justify-center gap-1 rounded-full border px-1.5 text-[10px] leading-4 whitespace-nowrap outline-none ${d.worst ? SEVERITY_CLASS[d.worst] : "text-muted-foreground"}`}>
+              {count > 0 && count}<MessageSquare className="size-2.5 shrink-0" />
             </span>
           </HoverCardTrigger>
           <HoverCardContent align="start" className="w-[28rem] max-w-[calc(100vw-2rem)] p-0">
