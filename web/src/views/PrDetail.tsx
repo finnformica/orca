@@ -9,7 +9,7 @@ import { addPreviewLabel, useWorkstreams, type Row } from "../store";
 import { navigate, type PrTab } from "@/lib/route";
 import { useTheme } from "@/lib/theme";
 import { WorkstreamActions } from "./WorkstreamActions";
-import { PreviewPanel } from "./PreviewControl";
+import { PreviewCell, PreviewPanel } from "./PreviewControl";
 import { ActionButton } from "@/components/ActionButton";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
@@ -130,7 +130,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
             title={<><span className="text-muted-foreground mr-1.5 font-normal">#{pr.number}</span>{pr.title}</>}
             status={liveRow ? <RowStatus row={liveRow} /> : <Badge variant="outline" className="capitalize">{(pr.state ?? "").toLowerCase()}</Badge>}
             source={<HeaderSource branch={pr.head} prNumber={pr.number} prUrl={pr.url} />}
-            actions={liveRow && <WorkstreamActions row={liveRow} compact={narrow} />} />
+            actions={liveRow && <WorkstreamActions row={liveRow} compact={narrow} tipSide="bottom" leading={<PreviewCell row={liveRow} />} />} />
           <TabsList className={HEADER_TABS}>
             <TabsTrigger value="overview">Overview</TabsTrigger>
             {liveRow && <TabsTrigger value="chat">Chat</TabsTrigger>}

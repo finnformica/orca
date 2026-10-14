@@ -4,8 +4,11 @@ import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, mergeWhenGreen, moveWorkstream, previewConfigured, thisInstance,
   cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, slackChannel, staleHours, suggestTitle, toggleFollow, useCachedReviewDigest, useRepos, useReviewDigest, type Row,
 } from "../store";
-import { firstLine, prMenuActions, prPreviewState, quickActions, shouldBump, type QuickAction, type QuickActionId } from "../workstream";
+import { firstLine, prMenuActions, prPreviewState, quickActions, shouldBump, type QuickActionId } from "../workstream";
 import { reviewSig } from "./Review";
+import { ActionButton } from "@/components/ActionButton";
+import { Tip } from "@/components/ui/tip";
+import { cn } from "@/lib/utils";
 import { actionFailed } from "@/lib/notificationStore";
 import { ChatComposer } from "@/components/ChatComposer";
 import { clearDraft, hasDraft } from "@/lib/composerDraft";
@@ -26,20 +29,22 @@ import {
 // whether the composer auto-reopens after a reload (see FollowUpComposer).
 const followUpDraftKey = (row: Row) => `orca.followup.${row.repo}::${row.branch}`;
 
-// The icon a quick action wears in the compact (icon-only) toolbar.
+// The icon a quick action wears (every quick action is icon-only, its label the tooltip).
 const QUICK_ICONS: Record<QuickActionId, LucideIcon> = {
   createPr: GitPullRequestArrow, markReady: CheckCheck, addressPr: Wrench, slack: Send, mergeWhenGreen: Clock, merge: GitMerge,
 };
 
-// `compact` renders the toolbar as icon-only buttons (dense view); `leading` slots an extra control
-// (the dense Test-locally icon) into the front of that same row so the whole toolbar reads as one line.
-// `menuOnly` is the Agents list's trailing ⋯: no Follow up button, Follow up and Merge move INTO the
-// menu, so every verb is still one click away; the state-aware quick actions still show beside it. `onFollowUp` replaces the inline composer there (the agent's
+// `compact` renders the toolbar as icon-only buttons (dense view). The toolbar opens with the
+// state-aware quick actions (QuickActionButtons) and then `leading` — the Test / Preview control — so
+// the quick icons always sit immediately left of it; `quick={false}` leaves them to the caller (the
+// comfortable Board card puts them on its preview line). `menuOnly` is the Agents list's trailing ⋯:
+// no toolbar, Follow up and Merge move INTO the menu, so every verb is still one click away (the row
+// renders its quick icons itself, left of its preview cell). `onFollowUp` replaces the inline composer there (the agent's
 // page has the conversation); without it the menu's Follow up opens the composer as the button does.
 // `contextAt` (menuOnly) opens the SAME items as a right-click menu at that point — a second,
 // controlled root over the one items fragment, so the two menus can't drift; `onOpen` adds Open.
-export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false, leading, menuOnly = false, onFollowUp, onOpen, contextAt, onContextClose }: {
-  row: Row; hasWork?: boolean; onBusy?: (busy: boolean) => void; compact?: boolean; leading?: ReactNode; menuOnly?: boolean; onFollowUp?: () => void;
+export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false, leading, quick = true, tipSide, menuOnly = false, onFollowUp, onOpen, contextAt, onContextClose }: {
+  row: Row; hasWork?: boolean; onBusy?: (busy: boolean) => void; compact?: boolean; leading?: ReactNode; quick?: boolean; tipSide?: "top" | "bottom"; menuOnly?: boolean; onFollowUp?: () => void;
   onOpen?: () => void; contextAt?: { x: number; y: number } | null; onContextClose?: () => void;
 }) {
   // Reopen the follow-up box on reload if a draft was left in progress, so nothing typed is lost.
@@ -77,17 +82,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   // it's the promoted+clean Mergeable lane.
   const canMergeNow = isPr ? (!row.isDraft && row.mergeable === "MERGEABLE" && !ciFailing) : row.lane === "MERGEABLE";
   const unreviewed = isPr && row.reviewStatus !== "approved";
-  // The toolbar's state-aware verbs (workstream.quickActions), first = primary. The digest is the
-  // review cluster's cached fetch; an Agents row (menuOnly) only PEEKS at that cache — one fetch per
-  // row on load is what the lazy digest exists to avoid — and without it decides on the rest.
   const repoInfo = useRepos().find((r) => r.name === row.repo);
-  const fetched = useReviewDigest(row.repo, menuOnly ? undefined : row.prNumber, reviewSig(row));
-  const cached = useCachedReviewDigest(row.repo, menuOnly ? row.prNumber : undefined);
-  const digest = menuOnly ? cached : fetched;
-  const quick = quickActions(row, {
-    hasWork, unresolved: digest?.unresolved.count, slackChannel: Boolean(slackChannel(row.repo)),
-    mergePolicy: repoInfo?.mergePolicy, nowMs: Date.now(), staleHours: staleHours(),
-  });
 
   // Copy shortcuts adopt a missing worktree first. Copy CLI intentionally lives both here and in
   // the card's top-right copy menu: this submenu is discoverable while the icon is faster.
@@ -117,18 +112,6 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   const icon = compact ? "icon" : "sm";
   const iconClass = compact ? "size-7" : undefined;
   const mergeLabel = `Merge${unreviewed ? " (unreviewed)" : ""}`;
-  const defaultLabels = (repoInfo?.prLabels ?? []).filter((l) => l.default).map((l) => l.name);
-  // Each quick action is the existing store verb — the same one its ⋯ menu item runs.
-  const runQuick = (a: QuickAction) => {
-    switch (a.id) {
-      case "createPr": return run(a.label, () => (row.hasRemote ? promote(row, { draft: false, labels: defaultLabels }) : promote(row)))();
-      case "markReady": return run("Mark ready", () => markReady(row))();
-      case "addressPr": return run("Address PR", () => addressPr(row))();
-      case "slack": return run(a.slackKind === "bump" ? "Slack bump" : "Slack message", () => sendSlack(row, a.slackKind ?? "notify"))();
-      case "mergeWhenGreen": return run("Merge when green", () => mergeWhenGreen(row))();
-      case "merge": if (window.confirm(mergeConfirm)) run("Merge", () => merge(row))(); return;
-    }
-  };
   const items = (
     <>
       {menuOnly && (
@@ -242,36 +225,13 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
     // vertical centering on every row. `gap` only spaces boxes the layout actually generates.
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap items-center gap-1">
+        {!menuOnly && quick && <QuickActionButtons row={row} hasWork={hasWork} onBusy={onBusy} tipSide={tipSide} />}
         {!menuOnly && leading}
         {!menuOnly && <Button size={icon} className={iconClass} variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)} title="Follow up" aria-label="Follow up">
           {compact
             ? (submitting ? <Loader2 className="size-4 animate-spin" /> : <MessageSquarePlus className="size-3.5" />)
             : <>{submitting && <Loader2 className="size-4 animate-spin" />}Follow up</>}
         </Button>}
-        {quick.map((a, i) => {
-          const Icon = QUICK_ICONS[a.id];
-          const label = a.id === "merge" ? mergeLabel : a.label;
-          // A disabled button swallows hover, so its reason rides a wrapper's title.
-          if (menuOnly) return (
-            // An Agents row: the primary labelled (its label is `data-quick-label`, which the phone's
-            // stacked row hides to keep an icon-sized touch target), the rest icon-only and gone below
-            // md. The wrapper keeps every click — a disabled button's included — off the row's navigation.
-            <span key={a.id} title={a.disabled ?? label} data-quick-action={a.id} data-primary={i === 0 ? "" : undefined}
-              className={i === 0 ? "inline-flex" : "inline-flex max-md:hidden"} onClick={(e) => e.stopPropagation()}>
-              <Button size={i === 0 ? "sm" : "icon"} className={i === 0 ? "h-7 gap-1 px-2 text-xs has-[>svg]:px-2" : "size-7"} variant={i === 0 ? "default" : "outline"}
-                disabled={Boolean(a.disabled)} onClick={() => runQuick(a)} aria-label={label}>
-                <Icon className="size-3.5" />{i === 0 && <span data-quick-label>{label}</span>}
-              </Button>
-            </span>
-          );
-          return (
-            <span key={a.id} title={a.disabled ?? label} data-quick-action={a.id} data-primary={i === 0 ? "" : undefined}>
-              <Button size={icon} className={iconClass} variant={i === 0 ? "default" : "outline"} disabled={Boolean(a.disabled)} onClick={() => runQuick(a)} aria-label={label}>
-                {compact ? <Icon className="size-3.5" /> : label}
-              </Button>
-            </span>
-          );
-        })}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button size={icon} className={iconClass} variant="ghost" title={err ? firstLine(err) : "Actions"} aria-label="Actions" data-state-error={err ? "" : undefined}>
@@ -440,5 +400,57 @@ export function FollowUpComposer(
       }}
       onCancel={onClose}
     />
+  );
+}
+
+/** The workstream's state-aware quick actions (workstream.quickActions — the ONE mapping the header,
+ *  the Board card and the Agents rows share) as icon-only ghost buttons, each with its tooltip: the
+ *  notification quick actions' style (size-7, first in the foreground colour, the rest muted; spinner
+ *  → ✓/✗; a failure is an action-failed notification). Each runs the existing store verb its ⋯ menu
+ *  item runs. A disabled one says why in its tooltip. Below md only the first two show. `peek` reads
+ *  the review digest only if it is already cached (an Agents row: never one fetch per row); without
+ *  it, the actions are decided on what the row itself knows. Clicks never reach an enclosing row. */
+export function QuickActionButtons({ row, hasWork = true, onBusy, peek = false, tipSide = "top", className }: {
+  row: Row; hasWork?: boolean; onBusy?: (busy: boolean) => void; peek?: boolean; tipSide?: "top" | "bottom"; className?: string;
+}) {
+  const repoInfo = useRepos().find((r) => r.name === row.repo);
+  const fetched = useReviewDigest(row.repo, peek ? undefined : row.prNumber, reviewSig(row));
+  const cached = useCachedReviewDigest(row.repo, peek ? row.prNumber : undefined);
+  const digest = peek ? cached : fetched;
+  const actions = quickActions(row, {
+    hasWork, unresolved: digest?.unresolved.count, slackChannel: Boolean(slackChannel(row.repo)), mergePolicy: repoInfo?.mergePolicy,
+  });
+  if (!actions.length) return null;
+  const defaultLabels = (repoInfo?.prLabels ?? []).filter((l) => l.default).map((l) => l.name);
+  const verb = (id: QuickActionId, slackKind?: "notify" | "bump"): (() => Promise<unknown>) => {
+    switch (id) {
+      case "createPr": return () => (row.hasRemote ? promote(row, { draft: false, labels: defaultLabels }) : promote(row));
+      case "markReady": return () => markReady(row);
+      case "addressPr": return () => addressPr(row);
+      case "slack": return () => sendSlack(row, slackKind ?? "notify");
+      case "mergeWhenGreen": return () => mergeWhenGreen(row);
+      case "merge": return () => merge(row);
+    }
+  };
+  return (
+    <div data-slot="quick-actions" className={cn("flex items-center gap-1", className)} onClick={(e) => e.stopPropagation()}>
+      {actions.map((a, i) => {
+        const Icon = QUICK_ICONS[a.id];
+        const run = verb(a.id, a.slackKind);
+        return (
+          <Tip key={a.id} label={a.disabled ?? a.label} side={tipSide} className={i >= 2 ? "max-md:hidden" : undefined}>
+            <span data-quick-action={a.id} className="inline-flex">
+              <ActionButton size="icon" variant="ghost" label={a.label} disabled={Boolean(a.disabled)}
+                className={cn("size-7", i === 0 ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
+                confirm={a.id === "merge" ? `Merge ${row.branch} into ${baseBranch(row.repo)} locally? This can't be undone.` : undefined}
+                failure={{ action: a.label, title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }}
+                onRun={async () => { onBusy?.(true); try { await run(); } finally { onBusy?.(false); } }}>
+                <Icon className="size-3.5" />
+              </ActionButton>
+            </span>
+          </Tip>
+        );
+      })}
+    </div>
   );
 }

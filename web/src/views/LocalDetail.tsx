@@ -8,7 +8,7 @@ import { AGENT_TABS, AgentHeader, ChatCard, DetailsCard, HeaderSource, RowStatus
 import { useNarrow } from "@/lib/viewport";
 import { VCard } from "@/components/console";
 import { WorkstreamActions } from "./WorkstreamActions";
-import { PreviewPanel } from "./PreviewControl";
+import { PreviewCell, PreviewPanel } from "./PreviewControl";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { poll } from "@/lib/poll";
 
@@ -45,7 +45,7 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
       <Tabs value={sub} onValueChange={(v) => go(v as LocalTab)} className={AGENT_TABS}>
         <div ref={header.ref} className={STICKY_HEADER}>
           <AgentHeader repo={repo} title={row.title} status={<RowStatus row={row} />} source={<HeaderSource branch={row.branch} />}
-            actions={<WorkstreamActions row={row} hasWork={hasWork} compact={narrow} />} />
+            actions={<WorkstreamActions row={row} hasWork={hasWork} compact={narrow} tipSide="bottom" leading={<PreviewCell row={row} />} />} />
           <TabsList className={HEADER_TABS}>
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="chat">Chat</TabsTrigger>
