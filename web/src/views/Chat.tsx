@@ -14,8 +14,7 @@ import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
-import { modelLabel } from "../../../shared/models";
-import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, composerHistory } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, composerHistory } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -892,7 +891,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, outbox,
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
         repo={row.repo}
         insert={insert}
-        placeholder={running ? "The agent is working — queue the next instruction…" : `Reply to ${modelLabel(modelFor(row))}…`}
+        placeholder={chatPlaceholder(running, row.repo)}
         // ↑/↓: what you sent in THIS chat, from its transcript, queue and outbox — the orchestrator's
         // included (it sends through the outbox, so `row.followUps` never had its messages).
         history={history}
