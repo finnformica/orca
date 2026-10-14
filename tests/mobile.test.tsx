@@ -293,6 +293,19 @@ describe("the phone layout (390px, touch)", () => {
     expect(button.getAttribute("aria-current")).toBe("page");
   });
 
+  test("no autofocus on mobile: opening the orchestrator page or the New-draft dialog never pops the keyboard", async () => {
+    await mount("/", true);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await act(async () => { await flush(); await flush(); });
+    const page = $('[data-slot="orchestrator-page"]')!;
+    expect(document.activeElement).not.toBe(page.querySelector("textarea"));
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "New agent")!);
+    await act(async () => { await flush(); await flush(); });
+    const dialog = $<HTMLDialogElement>('dialog[data-slot="add-new-dialog"]')!;
+    expect(dialog.open).toBe(true);
+    expect(document.activeElement).not.toBe(dialog.querySelector("textarea"));
+  });
+
   test("the orchestrator page's own scroller holds the conversation; its back arrow returns to the previous page", async () => {
     await mount("/agents", true);
     await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
@@ -483,6 +496,13 @@ describe("the desktop layout is untouched", () => {
     expect($('[data-slot="orchestrator-panel"]')!.className).toContain("fixed inset-y-0 right-0");
     expect(document.querySelectorAll('[data-slot="orchestrator-resize"]').length).toBe(1); // its left edge
     expect($('[data-slot="quick-ask-pill"]')).not.toBeNull(); // the desktop has the quick-ask pill…
+  });
+
+  test("autofocus is unchanged: opening the orchestrator from the top bar still focuses its composer", async () => {
+    await mount("/", false);
+    await click($('[data-slot="ask-orchestrator"]')!);
+    await act(async () => { await flush(); await flush(); });
+    expect(document.activeElement).toBe($('[data-slot="orchestrator-panel"] textarea'));
   });
 });
 

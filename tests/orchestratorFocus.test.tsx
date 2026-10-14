@@ -84,10 +84,14 @@ test("F1: every desktop open path leaves the composer focused", async () => {
   expect(document.activeElement).toBe(composer());
 });
 
-test("F2: on a phone, opening routes to the page and focuses its composer", async () => {
+test("F2: on a phone, opening routes to the page but never auto-focuses its composer (no keyboard pop); a prefilled message still lands, and a direct tap still focuses", async () => {
   await mount("/", true);
-  await act(async () => { openOrchestrator(); await flush(); await flush(); });
+  await act(async () => { openOrchestrator("draft from a notification"); await flush(); await flush(); });
   expect(location.pathname).toBe("/orchestrator");
+  expect(document.activeElement).not.toBe(composer());
+  expect(composer()!.value).toBe("draft from a notification"); // the text still arrives, just unfocused
+  // A direct tap on the box is a real user gesture: it still focuses, on any device.
+  await act(async () => { composer()!.focus(); await flush(); });
   expect(document.activeElement).toBe(composer());
 });
 
