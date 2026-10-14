@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ChatComposer } from "@/components/ChatComposer";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { WorkstreamActions } from "./WorkstreamActions";
+import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
 import { OrchStatusNote, UpkeepNote } from "@/components/console";
 import { PreviewControl } from "./PreviewControl";
 import { TerminalDialog } from "@/components/Terminal";
@@ -568,12 +568,13 @@ export function WorkstreamCard({ row }: { row: Row }) {
           ) : (
             <>
               <div className="flex items-start gap-2">
+                <QuickActionButtons row={row} hasWork={hasWork} onBusy={setBusy} className="shrink-0" />
                 <div className="min-w-0 flex-1"><PreviewControl row={row} /></div>
                 <Button size="sm" variant="outline" className="shrink-0" onClick={() => setTerminalOpen(true)} title="Open terminal" aria-label="Open terminal">
                   <SquareTerminal className="size-3.5" />
                 </Button>
               </div>
-              <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} />
+              <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} quick={false} />
             </>
           )}
           <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />

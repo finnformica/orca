@@ -30,7 +30,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { OrchStatusNote, Pill, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
 import { Board, ConditionBadges, CopyDone, LaneActions, useSummary, useTerminalOpen } from "./Board";
-import { WorkstreamActions } from "./WorkstreamActions";
+import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PrPreviewCell, PrPreviewInline } from "./PreviewControl";
 import { ReviewCluster } from "./Review";
 
@@ -367,6 +367,8 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
   const closeMenu = () => { setMenuAt(null); if (!document.activeElement || document.activeElement === document.body) ref.current?.focus({ preventScroll: true }); };
   // Create PR needs commits of its own — the same worktree summary the diffstat reads.
   const hasWork = row.prNumber ? true : (localSummary?.commits.length ?? 0) > 0;
+  // The state-aware quick icons sit left of the preview cell; they only PEEK at the review cache.
+  const quick = hasMenu && <QuickActionButtons row={row} hasWork={hasWork} peek onBusy={setBusy} />;
   const menu = hasMenu && <WorkstreamActions row={row} hasWork={hasWork} compact menuOnly onBusy={setBusy} onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}
     onOpen={to ? () => navigate(to) : undefined} contextAt={menuAt} onContextClose={closeMenu} />;
   const prLink = row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" title={`Open PR #${row.prNumber} on GitHub`} className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>;
@@ -409,7 +411,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
         {reasons.length > 0 && <div role="cell" data-slot="row-reasons" className="text-geist-warning-fg text-xs">{reasons.join(" · ")}</div>}
         {error && <div role="cell" data-slot="row-error" className="text-geist-red line-clamp-3 text-xs break-words">{error}</div>}
       </div>
-      <div className="flex shrink-0 items-start [&_[data-quick-label]]:hidden [&_[data-slot=button]]:size-11">{menu}</div>
+      <div className="flex shrink-0 items-center gap-1 [&_button[aria-label=Actions]]:size-11">{quick}{menu}</div>
       {!isDone && <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />}
     </div>
   );
@@ -444,6 +446,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
         {!isDone && <OrchStatusNote status={row.orchStatus} chipOnly />}
       </div>
       <div role="cell" className="flex items-center justify-end gap-1">
+        {quick}
         {!isDone && <PreviewCell row={row} />}
         {menu}
         {!isDone && <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />}

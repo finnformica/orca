@@ -2591,12 +2591,12 @@ export function listColumns(): ListColumn[] {
     { key: "status", label: "Status", minRem: 8.5 },
     { key: "pr", label: "PR", minRem: 8.5 },
     { key: "signals", label: "Checks & review", minRem: 6, grow: 1 },
-    // Fixed, wide enough for the row's quick actions (a labelled primary up to "Merge when green" +
-    // one icon), the local preview link + its Stop and the ⋯ menu, so the column never shifts
-    // between states and nothing overflows into a sideways scroll. The PR-preview icon that used to
+    // Fixed, wide enough for the row's quick-action icons (two at most — quickActions never applies
+    // more to one state), the local preview link + its Stop and the ⋯ menu, all size-7 at gap-1, so
+    // the column never shifts between states and nothing overflows into a sideways scroll. The PR-preview icon that used to
     // sit here moved to a text link next to the model name (PrPreviewInline) — the ⋯ menu's PR
     // submenu still carries Open/Add PR preview.
-    { key: "actions", label: "Actions", minRem: 16 },
+    { key: "actions", label: "Actions", minRem: 10 },
   ];
 }
 /** The CSS grid-template-columns for a column set: fixed floors, `minmax(floor, Nfr)` for the flexible. */
@@ -3067,7 +3067,7 @@ export type QuickActionRow = {
   mergeable?: Mergeable; mergeClean?: "clean" | "conflict"; ciStatus?: CiStatus; reviewStatus?: ReviewStatus;
   agentStatus?: "idle" | "running" | "done" | "error";
   autoMergeEnabled?: boolean; mergeWhenGreen?: Pick<MergeMark, "small">;
-  slackNotifiedAt?: string; slackLastBumpedAt?: string;
+  slackNotifiedAt?: string;
 };
 export type QuickActionContext = {
   /** The branch has commits of its own (a local branch with nothing on it can't become a PR). */
@@ -3077,15 +3077,18 @@ export type QuickActionContext = {
   /** The repo has a Slack channel to post to. */
   slackChannel?: boolean;
   mergePolicy?: MergePolicy;
-  nowMs: number; staleHours: number;
 };
 
-/** The workstream's quick actions, FIRST = the primary one, chosen by its state:
- *  a local branch with commits → Create PR; a draft PR → Ready for review; conflicts, failing CI,
- *  unresolved threads or changes requested → Address review; open, clean, nothing outstanding but
- *  not approved → Send to Slack; approved and clean → Merge when green (disabled with the policy's
- *  reason when the repo's mergePolicy refuses it), plus Merge. Everything else stays in the ⋯ menu.
- *  Pure. */
+/** Every quick action that applies to the workstream's state, in this order (they combine — a draft
+ *  with conflicts shows Ready for review AND Address review; an approved clean PR shows Send to Slack
+ *  AND Merge when green):
+ *  - no PR: a local branch with commits → Create PR (a promoted, clean local branch → Merge);
+ *  - a draft PR → Ready for review;
+ *  - conflicts, failing CI, unresolved threads (when known) or changes requested → Address review;
+ *  - a ready (non-draft) PR with nothing outstanding → Send to Slack, Bump on Slack once posted;
+ *  - any open non-draft PR → Merge when green, disabled with the reason when it is already queued or
+ *    the repo's mergePolicy refuses it (never hidden).
+ *  Everything else stays in the ⋯ menu. Pure. */
 export function quickActions(row: QuickActionRow, ctx: QuickActionContext): QuickAction[] {
   if (row.lane === "DONE") return [];
   const running = row.agentStatus === "running" ? "An agent is already running on this branch" : undefined;
@@ -3095,23 +3098,18 @@ export function quickActions(row: QuickActionRow, ctx: QuickActionContext): Quic
     return [{ id: "createPr", label: row.hasRemote ? "Create PR" : "Promote", disabled: running }];
   }
   const conflicting = row.mergeable === "CONFLICTING" || row.mergeClean === "conflict";
-  const ciFailing = row.ciStatus === "failing";
-  const reviewOutstanding = row.reviewStatus === "changes_requested" || (ctx.unresolved ?? 0) > 0;
-  const blocked = conflicting || ciFailing || reviewOutstanding;
-  const address: QuickAction = { id: "addressPr", label: "Address review", disabled: running };
-  if (row.isDraft) return blocked ? [{ id: "markReady", label: "Ready for review" }, address] : [{ id: "markReady", label: "Ready for review" }];
-  if (blocked) return [address];
-  if (row.reviewStatus === "approved") {
-    const queued = row.autoMergeEnabled || row.mergeWhenGreen ? "Already queued — it merges once checks pass" : undefined;
-    const refused = mergeRefusal(ctx.mergePolicy, { small: row.mergeWhenGreen?.small });
-    const whenGreen: QuickAction = { id: "mergeWhenGreen", label: "Merge when green", disabled: queued ?? (refused && `Not queued: ${refused}`) };
-    // Merge now only once CI is settled green — a pending run is what Merge when green is for.
-    return row.ciStatus === "pending" ? [whenGreen] : [whenGreen, { id: "merge", label: "Merge" }];
+  const outstanding = conflicting || row.ciStatus === "failing" || row.reviewStatus === "changes_requested" || (ctx.unresolved ?? 0) > 0;
+  const out: QuickAction[] = [];
+  if (row.isDraft) out.push({ id: "markReady", label: "Ready for review" });
+  if (outstanding) out.push({ id: "addressPr", label: "Address review", disabled: running });
+  if (row.isDraft) return out;
+  if (!outstanding && ctx.slackChannel) {
+    out.push(row.slackNotifiedAt
+      ? { id: "slack", label: "Bump on Slack", slackKind: "bump" }
+      : { id: "slack", label: "Send to Slack", slackKind: "notify" });
   }
-  // Open, clean, nothing outstanding, not approved yet: ask for a review. Pending CI isn't "clean".
-  if (row.ciStatus === "pending" || !ctx.slackChannel) return [];
-  if (!row.slackNotifiedAt) return [{ id: "slack", label: "Send to Slack", slackKind: "notify" }];
-  return shouldBump(row.slackNotifiedAt, row.slackLastBumpedAt, ctx.nowMs, ctx.staleHours)
-    ? [{ id: "slack", label: "Bump on Slack", slackKind: "bump" }]
-    : [];
+  const queued = row.autoMergeEnabled || row.mergeWhenGreen ? "Already queued — it merges once checks pass" : undefined;
+  const refused = mergeRefusal(ctx.mergePolicy, { small: row.mergeWhenGreen?.small });
+  out.push({ id: "mergeWhenGreen", label: "Merge when green", disabled: queued ?? (refused && `Not queued: ${refused}`) });
+  return out;
 }
