@@ -19,8 +19,10 @@ function SelectTrigger({ className, children, size = "default", ...props }: Reac
         // but a trigger whose label is raw children (ModelPicker's {current}) has no such element to
         // grow, and the leftover width split evenly around it instead of sitting after the label.
         // ml-auto on the chevron pins it to the right directly, so every trigger left-aligns its
-        // content regardless of how that content is passed.
-        "border-input focus-visible:ring-ring/40 flex min-w-0 w-fit cursor-pointer items-center overflow-hidden rounded-md border bg-card whitespace-nowrap outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50 [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:flex-1 [&_[data-slot=select-value]]:truncate [&_svg]:ml-auto [&_svg]:shrink-0",
+        // content regardless of how that content is passed. text-left: the trigger is a <button>, which
+        // centres its text by default, so a flex-1 value (the Agents list's Sort) centred its label
+        // in the leftover width even with the chevron pinned right.
+        "border-input focus-visible:ring-ring/40 flex min-w-0 w-fit cursor-pointer items-center justify-start overflow-hidden rounded-md border bg-card text-left whitespace-nowrap outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50 [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:flex-1 [&_[data-slot=select-value]]:truncate [&_svg]:ml-auto [&_svg]:shrink-0",
         size === "sm" ? "h-7 gap-1 px-1.5 text-xs [&_svg]:size-3.5" : "h-8 gap-2 px-2 text-sm [&_svg]:size-4",
         className,
       )}

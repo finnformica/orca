@@ -133,4 +133,16 @@ describe("chatbox toolbar stays within its available width", () => {
     expect(trigger.className).toContain("[&_[data-slot=select-value]]:truncate");
     expect(trigger.className).toContain("overflow-hidden");
   });
+
+  test("a select's value is left-aligned, never centred in the trigger's leftover width (a <button> centres by default)", () => {
+    const c = mount(
+      <Select defaultValue="a">
+        <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+      </Select>,
+    );
+    const trigger = c.querySelector<HTMLElement>('[data-slot="select-trigger"]')!;
+    expect(trigger.className).toMatch(/\btext-left\b/);
+    expect(trigger.className).toMatch(/\bjustify-start\b/);
+    expect(trigger.className).not.toMatch(/\b(text-center|justify-center|mx-auto)\b/);
+  });
 });

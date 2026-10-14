@@ -450,18 +450,18 @@ export function NotificationPanel() {
   const groups = groupByDay(filterNotifications(list, filter));
   return (
     <div data-slot="notification-centre" className="flex max-h-[70vh] flex-col">
-      {/* No fixed/min height: the row's tallest child (the h-7 Segmented toggle, matching the size-7
-          Mark-as-read button — both already the compact size this design system offers) plus p-3 on
-          every side, equal horizontally and vertically, is the whole height. */}
-      <header className="flex shrink-0 items-center gap-2 border-b p-3">
-        <h3 className="text-sm font-medium">Notifications</h3>
+      {/* No fixed/min height, and no taller than the day strip under it needs to be: py-2 (≤ the px-3)
+          around h-6 controls — the toggle at its small size and a size-6 Mark-as-read — is the whole
+          height, ~40px, where p-3 around h-7 made a 52px band over a 30px one. */}
+      <header data-slot="notification-centre-header" className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
+        <h3 className="text-sm leading-5 font-medium">Notifications</h3>
         <span className="flex-1" />
-        <Segmented<NotificationFilter> label="Show" value={filter} onChange={setFilter} options={[
-          { value: "unread", label: <>Unread{unread > 0 && <Kbd data-slot="notification-unread-count" className="ml-1">{unread > 99 ? "99+" : unread}</Kbd>}</> },
+        <Segmented<NotificationFilter> size="sm" label="Show" value={filter} onChange={setFilter} options={[
+          { value: "unread", label: <>Unread{unread > 0 && <Kbd data-slot="notification-unread-count" className="ml-1 h-4 min-w-4 text-[10px]">{unread > 99 ? "99+" : unread}</Kbd>}</> },
           { value: "all", label: "All" },
         ]} />
         <button type="button" aria-label="Mark all as read" title="Mark all as read" onClick={() => void markRead("all")} disabled={!unread}
-          className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 items-center justify-center rounded-md disabled:pointer-events-none disabled:opacity-50">
+          className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-6 items-center justify-center rounded-md disabled:pointer-events-none disabled:opacity-50">
           <CheckCheck className="size-3.5" />
         </button>
       </header>

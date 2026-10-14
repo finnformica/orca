@@ -122,12 +122,12 @@ export const Detail = ({ label, children, slot }: { label: string; children: Rea
 );
 
 /** A filter / segmented chip — the "6h | 24h | 7d" range picker and the like. */
-export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: { value: T; label: ReactNode }[]; onChange: (v: T) => void; label: string }) {
+export function Segmented<T extends string>({ value, options, onChange, label, size = "default" }: { value: T; options: { value: T; label: ReactNode }[]; onChange: (v: T) => void; label: string; size?: "default" | "sm" }) {
   return (
-    <div role="group" aria-label={label} className="inline-flex h-7 items-center rounded-md border p-0.5">
+    <div role="group" aria-label={label} className={cn("inline-flex items-center rounded-md border p-0.5", size === "sm" ? "h-6" : "h-7")}>
       {options.map((o) => (
         <button key={o.value} type="button" aria-pressed={value === o.value} onClick={() => onChange(o.value)}
-          className={cn("h-full rounded-[5px] px-2 text-xs font-medium transition-colors", value === o.value ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground")}>
+          className={cn("inline-flex h-full items-center rounded-[5px] text-xs font-medium transition-colors", size === "sm" ? "px-1.5" : "px-2", value === o.value ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground")}>
           {o.label}
         </button>
       ))}

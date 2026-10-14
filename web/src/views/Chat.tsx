@@ -349,13 +349,15 @@ function ChatTurn({ turn, loadSteps, compact, onQuote }: { turn: AgentTurn; load
         );
       })}
       <div className="group flex gap-2" data-slot="chat-reply">
-        <span className="bg-accent text-foreground mt-0.5 inline-flex size-6 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3.5" /></span>
+        <span className="bg-accent text-foreground inline-flex size-6 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3.5" /></span>
         <div className="min-w-0 flex-1">
-          <div className="text-muted-foreground mb-0.5 flex items-baseline gap-2 text-[11px]">
+          {/* One line the avatar's height: the name, then Copy / Quote right beside it (not after the
+              hover-only time, whose reserved width left them floating off on their own), then the time. */}
+          <div data-slot="chat-reply-head" className="text-muted-foreground mb-0.5 flex h-6 items-center gap-2 text-[11px]">
             <span className="text-foreground font-medium">Orchestrator</span>
             {turn.failed ? <span className="text-red-400">failed</span> : turn.stopped ? <span className="text-amber-400">stopped by you</span> : null}
+            {turn.finishedAt && turn.response && <MessageActions text={turn.response} onQuote={() => onQuote(turn.response)} tone="chat" className="-mx-1" />}
             <span className="opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{clockOf(turn.finishedAt) || time}</span>
-            {turn.finishedAt && turn.response && <MessageActions text={turn.response} onQuote={() => onQuote(turn.response)} tone="chat" />}
           </div>
           <Reply turn={turn} loadSteps={loadSteps} compact={compact} />
         </div>
