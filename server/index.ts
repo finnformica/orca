@@ -9,7 +9,7 @@ import * as attachments from "./attachments";
 import * as preview from "./preview";
 import * as forward from "./forward";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
-import { refreshProfile, routingInfo, setProfileEnabled, usage, usageAcrossInstances } from "./usage";
+import { refreshProfile, routingInfo, setProfileEnabled, setProfileEnabledEverywhere, usage, usageAcrossInstances } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
 import * as outbox from "./outbox";
@@ -568,11 +568,14 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/usage/profile") {
     // Hydra state is PER HOST — not in DATABASE_ONLY, so an explicit ?instance= (or body.instance)
-    // forwards to that machine via the ordinary placement path above; omitted, it answers here.
+    // forwards to that machine via the ordinary placement path above and applies there only.
+    // Omitted (the card's switch), it is one decision for the account: applied on every host that
+    // has the login (setProfileEnabledEverywhere).
     const name = String(body.name ?? "");
     if (!name) return json({ error: "name required" }, 400);
+    const explicit = Boolean(body.instance ?? url.searchParams.get("instance"));
     try {
-      return json({ profiles: await setProfileEnabled(name, Boolean(body.enabled)) });
+      return json({ profiles: explicit ? await setProfileEnabled(name, Boolean(body.enabled)) : await setProfileEnabledEverywhere(name, Boolean(body.enabled), cfg.instances, db.instanceName(), cfg.orchestratorOn) });
     } catch (e) {
       return json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }

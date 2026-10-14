@@ -240,6 +240,33 @@ export async function setProfileEnabled(name: string, enabled: boolean): Promise
   return (await hydraUsage()) ?? before;
 }
 
+/** Flip a login's rotation on EVERY host that has it: here, then each other instance by its own
+ *  `/api/usage/profile` (with `instance` set, so the peer applies it to itself and never fans out
+ *  again). A host that doesn't know the login is skipped, any other failure surfaces; no host
+ *  knowing it is an error. Rotation is per host in hydra, but one account's rotation is one
+ *  decision to the user — "disabled on local" beside an enabled cloud was the confusing half-state.
+ *  Returns the merged fleet view, as the card reads it. */
+export async function setProfileEnabledEverywhere(name: string, enabled: boolean, instances: Record<string, string> | undefined, self: string, preferred?: string): Promise<ProfileUsage[]> {
+  const unknown = (msg: string) => /is not a hydra login on this host|hydra is not installed/.test(msg);
+  let applied = 0;
+  const errors: string[] = [];
+  try { await setProfileEnabled(name, enabled); applied++; } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!unknown(msg)) errors.push(`${self}: ${msg}`);
+  }
+  await Promise.all(Object.entries(instances ?? {}).filter(([n]) => n !== self).map(async ([instance, base]) => {
+    try {
+      const res = await fetch(new URL("/api/usage/profile", base), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name, enabled, instance }) });
+      if (res.ok) { applied++; return; }
+      const msg = String(((await res.json().catch(() => ({}))) as { error?: string }).error ?? res.statusText);
+      if (!unknown(msg)) errors.push(`${instance}: ${msg}`);
+    } catch { /* unreachable peer: its hydra keeps its state; the card's host hint will say so */ }
+  }));
+  if (errors.length) throw new Error(errors.join("; "));
+  if (!applied) throw new Error(`"${name}" is not a hydra login on any host`);
+  return (await usageAcrossInstances(instances, self, preferred))?.profiles ?? [];
+}
+
 /** Force a token refresh for one hydra login (`hydra refresh <name> --force`) — the fix for a
  *  "token stale" row the user would otherwise have to SSH in and run by hand. Same validation and
  *  shape as `setProfileEnabled`: refuses a name hydra doesn't currently report, 15s timeout, never
