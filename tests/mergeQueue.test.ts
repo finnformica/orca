@@ -4,8 +4,10 @@
 // the auto-PR a finished worker's branch gets (verbs.openWorkerPr). Real Postgres, real git, the
 // fake `gh` from helpers.ts.
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
-import { rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as agent from "../server/agent";
 import * as db from "../server/db";
 import * as git from "../server/git";
 import * as mergeQueue from "../server/mergeQueue";
@@ -181,6 +183,16 @@ test("M6: the policy is pure, and lives in the repo's config document", () => {
   expect(mergeVerdict({ whenGreen: "any" }, {}, gate)).toEqual({ action: "merge" });
   expect(mergeVerdict({ whenGreen: "any" }, {}, { ...gate, state: "MERGED" }).action).toBe("gone");
   expect(mergeVerdict({ whenGreen: "any", denyPaths: ["x/"] }, {}, { ...gate, changedFiles: 400 }).action).toBe("refuse"); // can't see every file
+  // A busy agent holds it at "wait" even though it's green — running takes precedence over a queued count.
+  expect(mergeVerdict({ whenGreen: "any" }, {}, gate, { running: true, queued: 0 })).toEqual({ action: "wait", why: "waiting for agent to finish" });
+  expect(mergeVerdict({ whenGreen: "any" }, {}, gate, { running: true, queued: 3 })).toEqual({ action: "wait", why: "waiting for agent to finish" });
+  expect(mergeVerdict({ whenGreen: "any" }, {}, gate, { running: false, queued: 1 })).toEqual({ action: "wait", why: "waiting for agent to finish (1 message queued)" });
+  expect(mergeVerdict({ whenGreen: "any" }, {}, gate, { running: false, queued: 2 })).toEqual({ action: "wait", why: "waiting for agent to finish (2 messages queued)" });
+  // Idle (no activity, or none given at all — the old call shape) merges exactly as before.
+  expect(mergeVerdict({ whenGreen: "any" }, {}, gate, { running: false, queued: 0 })).toEqual({ action: "merge" });
+  // gone/refuse are not the agent's business: they're decided before the busy check even while it runs.
+  expect(mergeVerdict({ whenGreen: "any" }, {}, { ...gate, state: "MERGED" }, { running: true, queued: 0 }).action).toBe("gone");
+  expect(mergeVerdict({ whenGreen: "any", denyPaths: ["x/"] }, {}, { ...gate, changedFiles: 400 }, { running: true, queued: 0 }).action).toBe("refuse");
   expect(workerPrBody({ response: "Did it.", commits: ["one"] })).toBe("## Summary\nDid it.\n\n## Commits\n- one\n\nOpened by Orca when the workstream's agent finished.");
 
   const doc = (mergePolicy: unknown) => ({ repos: [{ name: "app", repoPath: "/a", worktreeRoot: "/a/.wt", baseBranch: "main", mergePolicy }] });
@@ -189,4 +201,111 @@ test("M6: the policy is pure, and lives in the repo's config document", () => {
   expect(parseConfigDocument(doc({ autoPR: true })).errors).toEqual(["repos[0].mergePolicy.autoPR is not a known setting (whenGreen, denyPaths, autoPr)"]);
   const ok = { whenGreen: "small", denyPaths: ["server/db.ts", "server/cgroup.ts", "deploy/"], autoPr: true };
   expect(parseConfigDocument(doc(ok)).config?.repos[0]?.mergePolicy).toEqual(ok as MergePolicy);
+});
+
+/** A fake `claude` that blocks while `hold` exists, then reports success with no commit — enough to
+ *  make `agent.isRunning` true for real, without a verification gate getting involved. */
+async function holdingClaude(): Promise<{ shim: string; hold: string; restore: () => Promise<void> }> {
+  const shim = await mkdtemp(join(tmpdir(), "orca-mergequeue-claude-"));
+  const hold = join(shim, "hold");
+  await writeFile(join(shim, "claude"), `#!/bin/sh\nwhile [ -f "${hold}" ]; do sleep 0.02; done\nprintf '{"type":"result","subtype":"success","result":"Done.","is_error":false}'\n`);
+  await chmod(join(shim, "claude"), 0o755);
+  await writeFile(hold, "");
+  const prevPath = process.env.PATH;
+  const prevState = process.env.ORCA_STATE_DIR; // leases go to the state dir; keep them off ~/.orca
+  const state = await mkdtemp(join(tmpdir(), "orca-mergequeue-state-"));
+  process.env.PATH = `${shim}:${prevPath}`;
+  process.env.ORCA_STATE_DIR = state;
+  return {
+    shim, hold,
+    restore: async () => {
+      await agent.afterRunsSettled();
+      await agent.flushHistory(); // drain the fire-and-forget finish write before afterEach drops the pool
+      process.env.PATH = prevPath;
+      if (prevState === undefined) delete process.env.ORCA_STATE_DIR; else process.env.ORCA_STATE_DIR = prevState;
+      await rm(shim, { recursive: true, force: true });
+      await rm(state, { recursive: true, force: true });
+    },
+  };
+}
+
+test("M7: a running agent holds an already-green PR at wait — never merged mid-turn, and merged once idle", async () => {
+  const r = repo({ whenGreen: "any" });
+  const wt = join(r.worktreeRoot, "feat");
+  await run(["git", "-C", repoPath, "worktree", "add", "-b", "feat", wt]);
+  const claude = await holdingClaude();
+  try {
+    await pr({ ci: "SUCCESS" }); // already green
+    await agent.runAgent(wt, "keep going", { repo: "r", branch: "feat", provider: "claude", instruction: "keep going" });
+    expect(agent.isRunning(wt)).toBe(true);
+
+    // Marking it now: green, but the agent is mid-turn — queued and waiting, not merged.
+    const said = await orchestrator.tool(cfg(r), "merge", { repo: "r", pr: "7", "when-green": "" });
+    expect(said).toContain("waiting for agent to finish");
+    expect(await merges()).toEqual([]);
+    expect((await mark())?.pr).toBe(7);
+
+    // Another poll while still running changes nothing.
+    await mergeQueue.tick(cfg(r));
+    expect(await merges()).toEqual([]);
+
+    await rm(claude.hold, { force: true }); // let it finish
+    for (let i = 0; i < 400 && agent.isRunning(wt); i++) await new Promise((res) => setTimeout(res, 20));
+    expect(agent.isRunning(wt)).toBe(false);
+
+    // Idle and still green (the head never moved): merges.
+    await mergeQueue.tick(cfg(r));
+    expect(await merges()).toEqual(["pr merge 7 --squash"]);
+  } finally {
+    await claude.restore();
+  }
+});
+
+test("M8: a message queued for the agent holds it at wait too, even though nothing is currently running", async () => {
+  const r = repo({ whenGreen: "any" });
+  const wt = join(r.worktreeRoot, "feat");
+  await run(["git", "-C", repoPath, "worktree", "add", "-b", "feat", wt]);
+  await pr({ ci: "SUCCESS" }); // already green
+  await db.queueMessage({ repo: "r", branch: "feat", worktreePath: wt, instruction: "one more thing", attachments: [] });
+
+  const said = await orchestrator.tool(cfg(r), "merge", { repo: "r", pr: "7", "when-green": "" });
+  expect(said).toContain("waiting for agent to finish (1 message queued)");
+  expect(await merges()).toEqual([]);
+  expect((await mark())?.pr).toBe(7);
+
+  await db.claimQueuedMessage("r", "feat"); // delivered (dispatched), so the queue is empty again
+  await mergeQueue.tick(cfg(r));
+  expect(await merges()).toEqual(["pr merge 7 --squash"]);
+});
+
+test("M9: a head that moves while the agent is busy needs CI green again on the NEW head, not the old one", async () => {
+  const r = repo({ whenGreen: "any" });
+  const wt = join(r.worktreeRoot, "feat");
+  await run(["git", "-C", repoPath, "worktree", "add", "-b", "feat", wt]);
+  const claude = await holdingClaude();
+  try {
+    await pr({ ci: "SUCCESS", sha: "sha1" });
+    await agent.runAgent(wt, "push a fix", { repo: "r", branch: "feat", provider: "claude", instruction: "push a fix" });
+    await orchestrator.tool(cfg(r), "merge", { repo: "r", pr: "7", "when-green": "" });
+    expect(await merges()).toEqual([]);
+
+    // The agent pushes while still running: the head moves, CI hasn't reported on it yet.
+    await pr({ ci: "IN_PROGRESS", sha: "sha2" });
+    await mergeQueue.tick(cfg(r));
+    expect(await merges()).toEqual([]);
+
+    await rm(claude.hold, { force: true });
+    for (let i = 0; i < 400 && agent.isRunning(wt); i++) await new Promise((res) => setTimeout(res, 20));
+
+    // Idle now, but the new head (sha2) isn't green yet — the old sha1 green does not carry over.
+    await mergeQueue.tick(cfg(r));
+    expect(await merges()).toEqual([]);
+
+    // Fresh green on the moved head: merges.
+    await pr({ ci: "SUCCESS", sha: "sha2" });
+    await mergeQueue.tick(cfg(r));
+    expect(await merges()).toEqual(["pr merge 7 --squash"]);
+  } finally {
+    await claude.restore();
+  }
 });
