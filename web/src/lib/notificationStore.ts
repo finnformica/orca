@@ -6,8 +6,9 @@ import { useSyncExternalStore } from "react";
 import { getDefaultStore } from "jotai";
 import { api } from "../api";
 import { subscribeNotifications } from "./events";
-import { browserNotifyAtom, notifyDndAtom, toastPrefsAtom } from "./atoms";
+import { browserNotifyAtom, notifyDndAtom, orchestratorOpenAtom, toastPrefsAtom } from "./atoms";
 import { openOrchestrator } from "./orchestratorOpen";
+import { isMobile } from "./viewport";
 import { KIND_META, TOAST_AUTO_HIDE_MS, clockPause, clockResume, clockStart, notificationPath, shouldNotifyBrowser, shouldToast, type HideClock, type Notification, type ToastPrefs } from "../../../shared/notifications";
 import { navigate } from "./route";
 import { actionFailureAsk, actionFailureCopy, type ActionFailure } from "../workstream";
@@ -25,6 +26,12 @@ let paused = false;
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((l) => l());
 const set = (patch: Partial<State>) => { state = { ...state, ...patch }; notify(); };
+
+/** Whether a branch is an orchestrated workstream — store.ts owns enrichment and injects this at
+ *  startup; kept as a callback rather than an import of store.ts, which already imports this module
+ *  (for notifyLocal), to avoid a cycle. */
+let orchestratedLookup: (repo: string, branch?: string) => boolean = () => false;
+export function setOrchestratedLookup(fn: (repo: string, branch?: string) => boolean): void { orchestratedLookup = fn; }
 
 /** The auto-hide delay, overridable by tests so a "finished" toast needn't take six seconds to go. */
 export const toastTiming = { autoHideMs: TOAST_AUTO_HIDE_MS };
@@ -50,7 +57,9 @@ function merge(incoming: Notification[], pop: boolean, repop: number[] = []): vo
     const store = getDefaultStore();
     const dnd = store.get(notifyDndAtom);
     const prefs = store.get(toastPrefsAtom) as ToastPrefs;
-    const add = fresh.filter((n) => shouldToast(n, { dnd, prefs }));
+    const mobile = isMobile();
+    const orchestratorOpen = store.get(orchestratorOpenAtom);
+    const add = fresh.filter((n) => shouldToast(n, { dnd, prefs, mobile, orchestratorOpen, orchestrated: orchestratedLookup(n.repo, n.branch) }));
     toasts = [...toasts.filter((t) => !add.some((a) => a.id === t.id)), ...add];
     for (const n of add) if (!KIND_META[n.kind].persistent) scheduleHide(n.id);
     const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";

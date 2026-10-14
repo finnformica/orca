@@ -192,12 +192,35 @@ export function groupByDay<T extends Pick<Notification, "createdAt">>(list: T[],
 /** Per-kind "show a toast" preferences; a kind absent from the map is on. */
 export type ToastPrefs = Partial<Record<NotificationKind, boolean>>;
 
+/** Kinds whose content, for an ORCHESTRATED workstream, is already relayed into the orchestrator's
+ *  own conversation as a worker report (`agent.onRunFinished`'s workerEvent, or the merge queue's
+ *  report for "the orchestrator's PRs") — a second toast for it on a phone is pure noise over a
+ *  conversation that already said it. A preview's status and a local action failure are never
+ *  relayed, orchestrated or not, so they're left out. */
+export const ORCHESTRATOR_RELAYED_KINDS: NotificationKind[] =
+  NOTIFICATION_KINDS.filter((k) => k !== "preview_ready" && k !== "preview_failed" && k !== "action_failed");
+
+/** Whether a notification's content already shows in the orchestrator's own chat: its OWN wake
+ *  (`link.orchestrator` — literally a turn of that conversation) always does; a relayed kind on a
+ *  workstream the orchestrator is running does too. */
+export function echoesOrchestratorChat(n: Pick<Notification, "kind" | "link">, orchestrated: boolean): boolean {
+  if (n.link?.orchestrator) return true;
+  return orchestrated && ORCHESTRATOR_RELAYED_KINDS.includes(n.kind);
+}
+
 /** Whether a notification pops up: not while do-not-disturb is on, not a kind switched off, and not
- *  one older than the fresh window (a catch-up after an hour away is for the centre, not the corner). */
-export function shouldToast(n: Pick<Notification, "kind" | "createdAt" | "readAt">, opts: { dnd: boolean; prefs: ToastPrefs; now?: number }): boolean {
+ *  one older than the fresh window (a catch-up after an hour away is for the centre, not the corner).
+ *  On a phone (`mobile`), never while the orchestrator's chat is open, and never for a notification
+ *  whose content already shows there (`echoesOrchestratorChat`) — it stays in the centre instead.
+ *  Desktop is unaffected: `mobile` false (the default) skips both checks entirely. */
+export function shouldToast(n: Pick<Notification, "kind" | "createdAt" | "readAt" | "link">, opts: {
+  dnd: boolean; prefs: ToastPrefs; now?: number; mobile?: boolean; orchestratorOpen?: boolean; orchestrated?: boolean;
+}): boolean {
   if (opts.dnd || n.readAt) return false;
   if (opts.prefs[n.kind] === false) return false;
-  return (opts.now ?? Date.now()) - n.createdAt < TOAST_FRESH_MS;
+  if ((opts.now ?? Date.now()) - n.createdAt >= TOAST_FRESH_MS) return false;
+  if (opts.mobile && (opts.orchestratorOpen || echoesOrchestratorChat(n, Boolean(opts.orchestrated)))) return false;
+  return true;
 }
 
 /** A browser notification while the tab is hidden: the urgent kinds only. */

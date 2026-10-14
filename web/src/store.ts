@@ -19,7 +19,7 @@ import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent"
 import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
 import { attachCommand, handoffPrompt } from "../../shared/agent";
 import { poll } from "./lib/poll";
-import { notifyLocal } from "./lib/notificationStore";
+import { notifyLocal, setOrchestratedLookup } from "./lib/notificationStore";
 import { sendToOrchestrator } from "./lib/orchestratorOutbox";
 
 const KEY = "orca.enrichment";
@@ -143,6 +143,7 @@ const enrichOf = (repo: string, branch: string): Enrichment => enrichMap[ekey(re
 /** Read a branch's enrichment straight off the mirror — for views (and tests) that need it outside
  *  an assembled Row. Synchronous by design; the mirror is kept in step by the agents poll. */
 export const enrichmentFor = enrichOf;
+setOrchestratedLookup((repo, branch) => Boolean(branch && enrichOf(repo, branch).orchestrated));
 
 // Fields written locally whose POST hasn't come back yet. A poll that started before the write can
 // return data that predates it, so hydration re-applies these on top — otherwise the mirror silently
