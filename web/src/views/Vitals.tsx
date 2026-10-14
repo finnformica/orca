@@ -76,7 +76,7 @@ function UsageGroupRows({ group: g }: { group: UsageGroup }) {
           <span data-slot="usage-group-title" className="min-w-0 truncate text-xs font-medium" title={g.subtitle ? `${g.title} · ${g.subtitle}` : g.title}>{g.title}</span>
           {status && <Pill tone={status.tone} slot="usage-state" title={status.detail}>{status.label}</Pill>}
           {g.name && status?.label === "Stale" && <RefreshProfileButton name={g.name} instance={g.instance} />}
-          {g.name && (hover || coarse) && <LoginToggle name={g.name} enabled={g.state !== "disabled"} instance={g.instance} />}
+          {g.name && (hover || coarse) && <LoginToggle name={g.name} enabled={g.state !== "disabled"} />}
           {g.name && hints.map((h) => {
             const hStatus = loginStatus(h.state);
             return (
@@ -115,17 +115,16 @@ type SwitchState = "idle" | "loading" | "done" | "error";
  *  always, on a touch screen), so it reserves no space on a row that isn't. ActionButton's own
  *  semantics (spinner → ✓/✗) in switch form: flipping it calls `POST /api/usage/profile`, applies
  *  the refreshed profile list it hands back at once (so the row doesn't wait for the next poll
- *  tick), and a failure is a failed-action notification. Rotation is per HOST, not per account — the
- *  merged row names which host its reading came from (`instance`); default to this browser's own
- *  host when the payload isn't merged (a single-instance setup). */
-function LoginToggle({ name, enabled, instance }: { name: string; enabled: boolean; instance?: string }) {
+ *  tick), and a failure is a failed-action notification. Hydra's rotation is per host, but the switch
+ *  is one decision for the ACCOUNT: no `instance` is sent, and the bridge applies it on every host
+ *  that has the login — so the row never reads "Disabled on local" beside an enabled cloud. */
+function LoginToggle({ name, enabled }: { name: string; enabled: boolean }) {
   const [state, setState] = useState<SwitchState>("idle");
-  const target = instance ?? thisInstance();
   const toggle = async () => {
     if (state === "loading") return;
     setState("loading");
     try {
-      await api.setProfileEnabled(name, !enabled, target);
+      await api.setProfileEnabled(name, !enabled);
       await refreshUsageNow();
       setState("done");
     } catch (e) {
