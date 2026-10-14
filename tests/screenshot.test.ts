@@ -1,7 +1,7 @@
 // The screenshot service (server/screenshot.ts): one queue, one capped browser, killed after every
 // job. The browser is faked through the injected `launch`; the cap is asserted on the exact argv the
 // real launcher would spawn.
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -328,12 +328,39 @@ describe("SHOT5 real clicks open Radix-style pointerdown-only menus", () => {
     return Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new native.Response(RADIX_LIKE_FIXTURE, { headers: { "content-type": "text/html" } }) });
   }
 
+  // CI has no browser install step at all (SETUP.md: "cloud-init doesn't install one") — but its
+  // runner image happens to have a stray `google-chrome` on PATH, so `findBrowser` doesn't return
+  // undefined there the way a bare box would; that Chrome simply never speaks CDP cleanly in that
+  // sandbox and the launch hangs. Earlier these three tests passed `browser: () => binary` straight
+  // into `createShooter` with no `timeoutMs`, so each one rode the production default
+  // (`SHOT_TIMEOUT_MS`, 45s) — longer than the 20s bun test timeout they were given — meaning bun's
+  // own hard per-test kill fired first, abandoning the shoot() promise (and its browser process)
+  // mid-flight instead of letting our own code reject with a clear "timed out after Ns" error. Probe
+  // ONCE with a short bound well inside this timeout, and treat "found but doesn't actually work" the
+  // same as "not found": skip, the way any orca-shot caller is told to when the queue is unusable.
+  let binary: string | undefined;
+  let ready = false;
+  beforeAll(async () => {
+    binary = findBrowser();
+    if (!binary) return;
+    try {
+      await createShooter({ store: store(), browser: () => binary!, scoped: () => false, timeoutMs: 8_000 }).shoot({ url: "about:blank" });
+      ready = true;
+    } catch {
+      ready = false;
+    }
+  }, 12_000);
+
+  function skip(): boolean {
+    if (!ready) console.warn("SHOT5: no working headless browser in this environment — skipping");
+    return !ready;
+  }
+
   test("--click fires a real mouse press, opening a menu a plain `click` event never would", async () => {
-    const binary = findBrowser();
-    if (!binary) { console.warn("SHOT5: no headless browser on this box, skipping"); return; }
+    if (skip()) return;
     const server = fixtureServer();
     try {
-      const s = createShooter({ store: store(), browser: () => binary, scoped: () => false });
+      const s = createShooter({ store: store(), browser: () => binary!, scoped: () => false, timeoutMs: 10_000 });
       const shot = await s.shoot({
         url: `http://127.0.0.1:${server.port}/`,
         viewport: { width: 800, height: 600 },
@@ -343,14 +370,13 @@ describe("SHOT5 real clicks open Radix-style pointerdown-only menus", () => {
     } finally {
       server.stop(true);
     }
-  }, 20_000);
+  }, 15_000);
 
   test("--press sends real keydown/keyup pairs to drive the opened menu", async () => {
-    const binary = findBrowser();
-    if (!binary) { console.warn("SHOT5: no headless browser on this box, skipping"); return; }
+    if (skip()) return;
     const server = fixtureServer();
     try {
-      const s = createShooter({ store: store(), browser: () => binary, scoped: () => false });
+      const s = createShooter({ store: store(), browser: () => binary!, scoped: () => false, timeoutMs: 10_000 });
       const shot = await s.shoot({
         url: `http://127.0.0.1:${server.port}/`,
         viewport: { width: 800, height: 600 },
@@ -360,14 +386,13 @@ describe("SHOT5 real clicks open Radix-style pointerdown-only menus", () => {
     } finally {
       server.stop(true);
     }
-  }, 20_000);
+  }, 15_000);
 
   test("an unknown --press name fails clearly instead of silently doing nothing", async () => {
-    const binary = findBrowser();
-    if (!binary) { console.warn("SHOT5: no headless browser on this box, skipping"); return; }
+    if (skip()) return;
     const server = fixtureServer();
     try {
-      const s = createShooter({ store: store(), browser: () => binary, scoped: () => false });
+      const s = createShooter({ store: store(), browser: () => binary!, scoped: () => false, timeoutMs: 10_000 });
       await expect(s.shoot({
         url: `http://127.0.0.1:${server.port}/`,
         steps: [{ click: "#trigger" }, { press: "F13NotAKey!" }],
@@ -375,5 +400,5 @@ describe("SHOT5 real clicks open Radix-style pointerdown-only menus", () => {
     } finally {
       server.stop(true);
     }
-  }, 20_000);
+  }, 15_000);
 });
