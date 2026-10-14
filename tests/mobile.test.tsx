@@ -196,22 +196,26 @@ const $ = <T extends Element = HTMLElement>(sel: string) => document.querySelect
 const click = async (el: Element) => { await act(async () => { (el as HTMLElement).click(); await flush(); await flush(); }); };
 
 describe("the phone layout (390px, touch)", () => {
-  test("a bottom bar within thumb reach; the top bar trades its Ask box for the round mark", async () => {
+  test("a bottom bar within thumb reach; the top bar trades its Ask box for the round mark, with no hamburger", async () => {
     apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
     await mount("/", true);
     const bar = $('[data-slot="bottom-bar"]')!;
     const items = [...bar.querySelectorAll("button")];
-    expect(items.map((b) => b.textContent)).toEqual(["Menu", "Agents", "New agent", "Orchestrator", "Settings"]);
+    expect(items.map((b) => b.textContent)).toEqual(["Overview", "Agents", "New agent", "Orchestrator", "Settings"]);
     expect(bar.className).toContain("md:hidden"); // never on a desktop-width screen
     expect(bar.className).toContain("safe-area-inset-bottom");
     expect($('[data-slot="topbar-mark"]')!.className).toContain("md:hidden");
     expect($('[data-slot="ask-orchestrator"]')!.className).toContain("max-md:hidden");
     expect($('[data-slot="header-usage"]')!.className).toContain("max-md:hidden"); // doesn't fit the phone's top bar either
     expect($('[data-slot="quick-ask"]')!.className).toContain("max-md:hidden"); // …and the pill folds into the bottom bar's Orchestrator
-    // New agent is the centred, third of five items.
+    expect($('button[aria-label="Open menu"]')).toBeNull(); // no hamburger — Overview replaced it in the bar
+    expect($('[data-slot="sidebar"]')!.className).toContain("max-md:hidden"); // the off-canvas drawer is gone too
+    // Overview is current on "/"; New agent is the centred, third of five items.
+    expect(items[0]!.getAttribute("aria-current")).toBe("page");
     expect(items[2]!.textContent).toBe("New agent");
     await click(items.find((b) => b.textContent === "Agents")!);
     expect(location.pathname).toBe("/agents");
+    expect(items[0]!.getAttribute("aria-current")).toBeNull();
   });
 
   test("the bottom bar's Settings navigates to /settings and is marked current there", async () => {
@@ -222,6 +226,18 @@ describe("the phone layout (390px, touch)", () => {
     await click(settings);
     expect(location.pathname).toBe("/settings");
     expect(settings.getAttribute("aria-current")).toBe("page");
+  });
+
+  test("Settings on a phone carries what the old hamburger drawer exposed that isn't in the bottom bar: Find, the instance switcher, and links to Previews/Repos/Usage", async () => {
+    await mount("/settings", true);
+    const nav = $('[data-slot="settings-mobile-nav"]')!;
+    expect(nav.className).toContain("md:hidden");
+    expect(nav.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
+    expect(nav.querySelector('[role="group"][aria-label="Instance"]')).not.toBeNull();
+    const links = [...nav.querySelectorAll('nav[aria-label="More pages"] button')].map((b) => b.textContent);
+    expect(links).toEqual(["Previews", "Repos", "Usage"]);
+    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[1]!); // Repos
+    expect(location.pathname).toBe("/repos");
   });
 
   test("Agents: rows stack with the instruction, error and branch on screen; one ⋯ per row; filters in a sheet", async () => {

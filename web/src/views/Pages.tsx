@@ -10,14 +10,14 @@ import { FolderGit2, GitBranch } from "lucide-react";
 import { refreshVitals } from "@/lib/vitals";
 import { notifyLocal } from "@/lib/notificationStore";
 import { Button } from "@/components/ui/button";
-import { browserNotifyAtom, densityAtom, notifyDndAtom, repoFilterAtom, toastPrefsAtom } from "@/lib/atoms";
+import { browserNotifyAtom, densityAtom, instanceScopeAtom, notifyDndAtom, repoFilterAtom, toastPrefsAtom } from "@/lib/atoms";
 import { KIND_META, NOTIFICATION_KINDS } from "../../../shared/notifications";
 import { navigate } from "@/lib/route";
 import { useTheme, type Theme } from "@/lib/theme";
 import { instanceChoices, setInstanceRate, staleHours, thisInstance, useAgentProviders, useInstanceRates, useRepos, useWorkstreams } from "../store";
 import { ago, repoSummaries } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
-import { THEMES } from "@/components/Shell";
+import { FindBox, NAV, THEMES } from "@/components/Shell";
 import { InstanceCard, RefreshVitals, UsageCard } from "./Vitals";
 import { RunningPreviews, TestMaster } from "./PreviewControl";
 
@@ -94,6 +94,7 @@ export function Settings() {
   return (
     <div className="max-w-4xl space-y-6">
       <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+      <MobileNav />
       <VCard slot="settings-appearance" title="Appearance" bodyClass="divide-y">
         <Setting label="Theme" hint="Light, dark, or follow the system.">
           <Segmented label="Theme" value={theme} onChange={(v) => setTheme(v as Theme)} options={THEMES.map((t) => ({ value: t.value, label: t.label }))} />
@@ -125,6 +126,36 @@ export function Settings() {
         </ul>
       </VCard>
     </div>
+  );
+}
+
+/** Phone-only (there is no off-canvas drawer any more): everything the sidebar carried that isn't
+ *  one of the bottom bar's five destinations (Overview, Agents, New agent, Orchestrator, Settings
+ *  itself) — Find, the instance switcher, and links to Previews/Repos/Usage. Hidden on desktop,
+ *  where the sidebar already has all of this. */
+function MobileNav() {
+  const [scope, setScope] = useAtom(instanceScopeAtom);
+  const choices = instanceChoices();
+  const links = NAV.filter((n) => ["Previews", "Repos", "Usage"].includes(n.label));
+  return (
+    <VCard slot="settings-mobile-nav" title="Navigate" className="md:hidden" bodyClass="divide-y">
+      <Setting label="Find agents" hint="Filters the Agents list.">
+        <FindBox />
+      </Setting>
+      {choices.length > 1 && (
+        <Setting label="Instance" hint="Scope the Overview and Agents pages to one machine.">
+          <Segmented label="Instance" value={scope} onChange={setScope}
+            options={[{ value: "all", label: "All" }, ...choices.map((i) => ({ value: i, label: i }))]} />
+        </Setting>
+      )}
+      <nav aria-label="More pages">
+        {links.map(({ to, label, Icon }) => (
+          <button key={to} type="button" onClick={() => navigate(to)} className="hover:bg-accent/40 flex w-full items-center gap-3 px-4 py-3 text-left text-sm">
+            <Icon className="text-muted-foreground size-4" />{label}
+          </button>
+        ))}
+      </nav>
+    </VCard>
   );
 }
 

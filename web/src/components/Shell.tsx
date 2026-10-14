@@ -1,15 +1,17 @@
 // The console shell, Vercel's: a left sidebar (instance switcher, Find, the nav, you at the bottom)
-// that collapses to icons and goes off-canvas on a narrow screen, and a top bar with the repo
+// that collapses to icons on desktop, and a top bar with the repo
 // context switcher, a breadcrumb and, on the right, a compact Claude usage meter then "Ask the
 // orchestrator" (on every page). It also
 // hosts the ⌘K palette, the ? shortcuts sheet and the one keyboard-shortcut listener. On a phone
-// (below md) the top bar carries the round mark, and a bottom bar within thumb reach holds the menu,
-// Agents, New agent, the orchestrator and Settings (New agent centred); every inset clears the notch
-// and the home indicator.
+// (below md) the sidebar is hidden entirely — the top bar carries only the round mark, and a bottom
+// bar within thumb reach holds Overview, Agents, New agent, the orchestrator and Settings (New agent
+// centred); every inset clears the notch and the home indicator. What the sidebar alone carried
+// (Previews, Repos, Usage, Find, the instance switcher) is reachable from Settings on a phone — see
+// MobileNav in views/Pages.tsx.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtom, useSetAtom } from "jotai";
 import {
-  Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderGit2, FolderSync, Gauge, LayoutGrid, Loader2, Menu,
+  Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderGit2, FolderSync, Gauge, LayoutGrid, Loader2,
   Bot, Command, Keyboard, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
@@ -38,7 +40,7 @@ import {
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (r: Route) => boolean; badge?: (compact: boolean) => ReactNode }[] = [
+export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (r: Route) => boolean; badge?: (compact: boolean) => ReactNode }[] = [
   { to: "/", label: "Overview", Icon: LayoutGrid, match: (r) => r.name === "board" },
   // An agent's own page (PR or local detail) is "inside" Agents, as a deployment is inside Deployments.
   { to: "/agents", label: "Agents", Icon: Boxes, match: (r) => r.name === "agents" || r.name === "pr" || r.name === "local" },
@@ -55,32 +57,23 @@ export function Shell({ crumbs, sidebarActions, children }: {
   crumbs: ReactNode; sidebarActions?: (collapsed: boolean) => ReactNode; children: ReactNode;
 }) {
   const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
-  const [open, setOpen] = useState(false); // off-canvas sidebar on a narrow screen
   const [updateAvailable, setUpdateAvailable] = useState(false); // the banner, when shown, is topmost and clears the notch itself
   const offline = useConfigFailed();
   useShellFallbacks();
   const activity = useOrchestratorActivity(); // the ONE subscriber feeding every launcher's indicator
   const route = useRoute();
-  useEffect(() => setOpen(false), [route]); // navigating closes the off-canvas sidebar
-  useEffect(() => { // …and so does Esc
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
   return (
     <div className="flex min-h-screen w-full">
-      {/* Off-canvas backdrop (narrow screens). */}
-      {open && <div className="fixed inset-0 z-40 bg-black/50 md:hidden" onClick={() => setOpen(false)} aria-hidden="true" />}
+      {/* Desktop only: a phone's nav is the bottom bar + Settings (see MobileNav in views/Pages.tsx) —
+          there is no off-canvas drawer any more. */}
       <aside
         data-slot="sidebar" data-collapsed={collapsed}
         className={cn(
-          "bg-sidebar fixed inset-y-0 left-0 z-50 flex flex-col border-r transition-[width,transform] md:sticky md:top-0 md:h-screen md:translate-x-0",
-          "max-md:pt-[env(safe-area-inset-top)] max-md:pb-[env(safe-area-inset-bottom)] max-md:pl-[env(safe-area-inset-left)]",
-          collapsed ? "md:w-14" : "md:w-60", "w-60", open ? "translate-x-0" : "-translate-x-full",
+          "bg-sidebar max-md:hidden md:sticky md:top-0 md:flex md:h-screen md:flex-col md:border-r",
+          collapsed ? "md:w-14" : "md:w-60",
         )}
       >
-        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} onClose={() => setOpen(false)} actions={sidebarActions} />
+        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} actions={sidebarActions} />
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <UpdateBanner onStaleChange={setUpdateAvailable} />
@@ -93,7 +86,6 @@ export function Shell({ crumbs, sidebarActions, children }: {
             !updateAvailable && "max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:pt-[env(safe-area-inset-top)]",
           )}
         >
-          <button type="button" className="text-muted-foreground hover:text-foreground -ml-2 inline-flex size-11 shrink-0 items-center justify-center md:hidden" onClick={() => setOpen(true)} aria-label="Open menu"><Menu className="size-5" /></button>
           <button type="button" data-slot="topbar-mark" onClick={() => navigate("/")} aria-label="Orca — go to overview" className="shrink-0 md:hidden"><RoundMark /></button>
           <RepoSwitcher />
           <nav aria-label="Breadcrumb" className="text-muted-foreground flex min-w-0 items-center gap-2 text-sm">{crumbs}</nav>
@@ -103,7 +95,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
         </header>
         <main className="w-full flex-1 px-4 py-6 md:px-6 max-md:min-w-0 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pb-[calc(5.5rem+env(safe-area-inset-bottom))]">{offline ? <OfflineScreen /> : children}</main>
       </div>
-      <BottomBar onMenu={() => setOpen(true)} activity={activity} />
+      <BottomBar activity={activity} />
       {/* The quick-ask pill, bottom centre of every page but an agent's Chat tab (desktop; the phone's bottom bar has the orchestrator). */}
       {!chatTab(route) && <QuickAsk />}
       <Shortcuts />
@@ -126,8 +118,8 @@ export const Crumb = ({ children, to }: { children: ReactNode; to?: string }) =>
   </>
 );
 
-function Sidebar({ collapsed, onToggle, onClose, actions }: {
-  collapsed: boolean; onToggle: () => void; onClose: () => void; actions?: (collapsed: boolean) => ReactNode;
+function Sidebar({ collapsed, onToggle, actions }: {
+  collapsed: boolean; onToggle: () => void; actions?: (collapsed: boolean) => ReactNode;
 }) {
   const route = useRoute();
   const narrow = useNarrow();
@@ -135,7 +127,6 @@ function Sidebar({ collapsed, onToggle, onClose, actions }: {
     <>
       <div className="flex h-14 items-center gap-2 px-3">
         <InstanceSwitcher collapsed={collapsed} />
-        <button type="button" className="text-muted-foreground hover:text-foreground ml-auto md:hidden" onClick={onClose} aria-label="Close menu"><X className="size-4" /></button>
       </div>
       {!collapsed && <div className="px-3 pb-2"><FindBox /></div>}
       <nav aria-label="Main" className="flex flex-col gap-0.5 px-2 py-1">
@@ -198,20 +189,23 @@ export const RoundMark = ({ className }: { className?: string }) => (
   </span>
 );
 
-/** The phone's bottom bar (below md only): what a thumb needs — the menu, Agents, New agent, the
- *  orchestrator and Settings, New agent centred — at the foot of the screen, above the home indicator. */
-function BottomBar({ onMenu, activity }: { onMenu: () => void; activity: { running: boolean; unread: boolean } }) {
+/** The phone's bottom bar (below md only): what a thumb needs — Overview, Agents, New agent, the
+ *  orchestrator and Settings, New agent centred — at the foot of the screen, above the home indicator.
+ *  Everything else the old hamburger drawer exposed (Previews, Repos, Usage, Find, the instance
+ *  switcher) now lives in Settings — see MobileNav in views/Pages.tsx. */
+function BottomBar({ activity }: { activity: { running: boolean; unread: boolean } }) {
   const route = useRoute();
   const [, setAddNew] = useAtom(addNewOpenAtom);
   const { ask } = useOrchestrator();
   const item = "text-muted-foreground flex min-h-11 min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-md text-[11px] font-medium";
   const label = "truncate";
+  const overview = NAV[0]!;
   const agents = NAV[1]!;
   const settings = NAV[5]!;
   return (
     <nav aria-label="Quick actions" data-slot="bottom-bar"
       className="bg-background/95 fixed inset-x-0 bottom-0 z-30 flex items-stretch gap-1 border-t px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] backdrop-blur md:hidden">
-      <button type="button" className={item} onClick={onMenu}><Menu className="size-5" /><span className={label}>Menu</span></button>
+      <button type="button" className={cn(item, overview.match(route) && "text-foreground")} aria-current={overview.match(route) ? "page" : undefined} onClick={() => navigate(overview.to)}><overview.Icon className="size-5" /><span className={label}>{overview.label}</span></button>
       <button type="button" className={cn(item, agents.match(route) && "text-foreground")} aria-current={agents.match(route) ? "page" : undefined} onClick={() => navigate("/agents")}><Boxes className="size-5" /><span className={label}>Agents</span></button>
       <button type="button" className={cn(item, "text-foreground")} onClick={() => setAddNew(true)}>
         <span className="bg-foreground text-background inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span><span className={label}>New agent</span>
@@ -280,7 +274,7 @@ function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
 
 // Find: searches the agents list. Typing here filters /agents (going there if needed); "F" anywhere
 // outside a text field focuses it, as on Vercel (components/CommandPalette.tsx's Shortcuts).
-function FindBox() {
+export function FindBox() {
   const [q, setQ] = useAtom(agentQueryAtom);
   return (
     <label className="bg-card focus-within:ring-ring/40 flex h-8 items-center gap-2 rounded-md border px-2 focus-within:ring-2">
