@@ -423,11 +423,27 @@ async function api(req: Request, url: URL): Promise<Response> {
     return eventStream(req, others);
   }
   // Screenshots (server/screenshot.ts): the one capped browser on this box, behind one queue. Never
-  // forwarded — a worker shoots a preview on its own instance.
+  // forwarded — a worker shoots a preview on its own instance. The response is streamed as one JSON
+  // object per line — `{queued: N}` while N jobs are still ahead, then the result — so the CLI can
+  // print progress instead of sitting silent past its Bash caller's own patience; `req.signal` lets
+  // a CLI that gave up waiting pull its job back out of the queue before a browser ever launches it.
   if (req.method === "POST" && p === "/api/screenshot") {
     let shot: ShotRequest;
     try { shot = parseShotRequest(body); } catch (e) { return json({ error: (e as Error).message }, 400); }
-    return json(await shooter().shoot(shot));
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const write = (obj: unknown) => { try { controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`)); } catch { /* client gone */ } };
+        try {
+          write(await shooter().shoot(shot, { signal: req.signal, onQueue: (ahead) => write({ queued: ahead }) }));
+        } catch (e) {
+          write({ error: (e as Error).message });
+        } finally {
+          try { controller.close(); } catch { /* already closed */ }
+        }
+      },
+    });
+    return new Response(stream, { headers: { "content-type": "application/x-ndjson" } });
   }
   const shotId = p.match(/^\/api\/screenshots\/(shot-[\w-]+)$/)?.[1];
   if (req.method === "GET" && shotId) {
