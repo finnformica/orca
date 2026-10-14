@@ -601,6 +601,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const repos = await Promise.all(cfg.repos.map(async (r) => ({
       name: r.name, baseBranch: r.baseBranch, slackChannel: r.slackChannel, prLabels: r.prLabels,
       previewLabel: r.previewLabel,
+      mergePolicy: r.mergePolicy, // so the actions bar can show Merge when green disabled with the queue's own refusal
       hasRemote: await git.hasRemote(r.repoPath),
       defaultModel: modelFor(cfg, r), // what an unpinned card runs on (Claude), so the picker can show it
       // Opt-ins travel to the client so it can hide what the bridge would refuse — the bridge still
