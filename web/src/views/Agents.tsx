@@ -149,11 +149,12 @@ const isSavedFilters = (v: unknown): v is SavedFilters =>
 
 type Chip = { group: QuickGroup; value: string; label: string; dot?: DotTone };
 
-// A segmented group of chips — no visible caption, but the gap between groups (and this wrapper,
-// keyed by `label` for tests/CSS) keeps related pills reading as one family instead of a flat row.
+// The grouping is in the data only now (no visible caption or extra gap between families): this
+// wrapper stays in the DOM, keyed by `label`, so a chip's family is still inspectable, but
+// `contents` keeps it out of layout so every chip reads as one flat, evenly-gapped wrapping row.
 function ChipFamily({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div data-slot="quick-filter-group" data-group={label.toLowerCase()} className="flex items-center gap-1.5">
+    <div data-slot="quick-filter-group" data-group={label.toLowerCase()} className="contents">
       {children}
     </div>
   );
@@ -207,7 +208,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
     </button>
   );
   const chipGroup = (
-      <div role="group" aria-label="Quick filters" className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+      <div role="group" aria-label="Quick filters" className="flex flex-wrap items-center gap-1.5">
         <ChipFamily label="State">{stateChips.map(renderChip)}{notMergedChip}</ChipFamily>
         <ChipFamily label="Activity">{activityChips.map(renderChip)}</ChipFamily>
         {repoChips.length > 0 && <ChipFamily label="Repo">{repoChips.map(renderChip)}</ChipFamily>}
