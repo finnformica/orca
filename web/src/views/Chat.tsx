@@ -51,9 +51,16 @@ const ChatMarkdown = ({ children }: { children: string }) => (
   // wrap-anywhere: the agent's prose is full of unbreakable tokens (`branch/names-with-hashes`,
   // paths, run ids) that are wider than a narrow window, and one of them made the whole log scroll
   // sideways. Code BLOCKS are exempt — they keep their lines and scroll inside themselves.
+  // prose-strong: Tailwind typography's own --tw-prose-bold var resolves to --tw-prose-invert-bold,
+  // which the .prose class sets to a literal white (baked in from its gray theme) directly on this
+  // element — a declaration .log-themed's ancestor-level remap can never reach, since an element's
+  // own matching rule always beats an inherited custom property. That made bold text render
+  // white-on-white in light theme. Route it through Tailwind's own (correctly remapped) neutral-200
+  // token instead, like prose-headings/prose-code/prose-a already do.
   <div className="prose prose-invert prose-sm max-w-none wrap-anywhere text-neutral-300 prose-pre:wrap-normal
     prose-p:my-1 prose-headings:mt-2 prose-headings:mb-1 prose-headings:text-neutral-200
     prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1
+    prose-strong:text-neutral-200
     prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none
     prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400">
     <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
