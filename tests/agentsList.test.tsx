@@ -28,7 +28,7 @@ describe("agents list layout (pure)", () => {
     for (const vw of [1280, 1440, 1920, 2560]) expect(listFits(cols, vw)).toBe(true);
     expect(listMinWidth(cols)).toBeLessThanOrEqual(1280 - LIST_CHROME_PX);
     const t = listGridTemplate(cols);
-    expect(t).toBe("minmax(10rem,2fr) 8.5rem 8.5rem minmax(6rem,1fr) 8rem");
+    expect(t).toBe("minmax(10rem,2fr) 8.5rem 8.5rem minmax(6rem,1fr) 16rem");
     expect(cols.at(-1)).toMatchObject({ key: "actions", label: "Actions" });
     expect(t).not.toContain("auto"); // a content-sized track could push the row wider than the card
   });
@@ -194,6 +194,52 @@ describe("agents list view", () => {
     act(() => root?.unmount());
     root = undefined;
     expect(ticker.stats()).toEqual({ listeners: 0, running: false });
+  });
+
+  test("quick actions: the row's state-aware verbs sit beside the ⋯ (primary labelled, the rest icon-only and hidden on a phone); a click runs the verb, not the row", async () => {
+    apiFake.prsData = [
+      pr({ number: 8, branch: "feat-ci", title: "Red CI", ciStatus: "failing" }),
+      pr({ number: 9, branch: "feat-draft", title: "Draft", isDraft: true, ciStatus: "failing" }),
+      pr({ number: 10, branch: "feat-ok", title: "Approved", reviewStatus: "approved" }),
+    ];
+    apiFake.agentsData = [{ branch: "local-idle", worktreePath: "/wt/local-idle", agentStatus: "done" }];
+    apiFake.summaryData = { files: [{ path: "a.ts", additions: 1, deletions: 0 }], commits: [{ hash: "abc", subject: "wip" }], additions: 1, deletions: 0 };
+    await mount();
+    const quick = (branch: string) => [...rowOf(branch).querySelectorAll<HTMLElement>("[data-quick-action]")];
+    const ids = (branch: string) => quick(branch).map((q) => q.dataset.quickAction);
+    expect(ids("feat-ci")).toEqual(["addressPr"]);
+    expect(ids("feat-draft")).toEqual(["markReady", "addressPr"]);
+    expect(ids("feat-ok")).toEqual(["mergeWhenGreen", "merge"]);
+    expect(ids("local-idle")).toEqual(["createPr"]); // the worktree has commits of its own
+    // The primary is labelled; a secondary is an icon and gone below md (the phone keeps the primary).
+    const [primary, secondary] = quick("feat-draft");
+    expect(primary!.dataset.primary).toBe("");
+    expect(primary!.textContent).toBe("Ready for review");
+    expect(primary!.className).not.toContain("max-md:hidden");
+    expect(secondary!.textContent).toBe("");
+    expect(secondary!.querySelector("button")!.getAttribute("aria-label")).toBe("Address review");
+    expect(secondary!.className).toContain("max-md:hidden");
+    // Right-aligned in the Actions cell, next to the ⋯, gap-1 apart.
+    const cell = rowOf("feat-draft").querySelectorAll('[role="cell"]')[4]!;
+    expect(cell.contains(primary!)).toBe(true);
+    expect(primary!.parentElement!.className).toContain("gap-1");
+    expect(primary!.parentElement!.querySelector('button[aria-label="Actions"]')).not.toBeNull();
+    // The verb runs (the same store verb as the header's) and the row does not navigate.
+    await act(async () => { primary!.querySelector("button")!.click(); await flush(); await flush(); });
+    expect(apiFake.calls).toContain("markReady:9");
+    expect(location.pathname).toBe("/");
+  });
+
+  test("quick actions read the review digest only from the cache: no extra review fetch per row, and a cached unresolved thread makes Address review primary", async () => {
+    apiFake.prsData = [pr({ number: 7, branch: "feat-x", reviewStatus: "approved" })];
+    apiFake.agentsData = [];
+    apiFake.reviewEvidenceData = [{ id: "T1", path: "src/a.ts", line: 12, author: "alice", body: "Handle null", url: "https://review/T1", resolved: false }];
+    store._resetReviewSignals();
+    await mount();
+    await act(async () => { await flush(); await flush(); });
+    // ONE fetch for the row — the review cluster's own lazy one; the buttons only peek at its cache.
+    expect(apiFake.reviewSignalCalls).toEqual(["r#7"]);
+    expect([...rowOf("feat-x").querySelectorAll<HTMLElement>("[data-quick-action]")].map((q) => q.dataset.quickAction)).toEqual(["addressPr"]);
   });
 
   test("right-click opens the ⋯ menu's own actions at the pointer; Esc and an outside click close it", async () => {
