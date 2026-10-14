@@ -169,6 +169,21 @@ async function mount(node: React.ReactNode) {
   await act(async () => { await store.refresh(); await flush(); await flush(); });
 }
 
+// The unresolved chip's HoverCard opens on focus (same as hover, minus touch) after its openDelay
+// — focus is also how a keyboard user reaches it, so this doubles as the a11y check.
+async function focusChip(chip: HTMLElement) {
+  await act(async () => {
+    chip.focus();
+    await new Promise((r) => setTimeout(r, 200));
+  });
+}
+async function blurChip(chip: HTMLElement) {
+  await act(async () => {
+    chip.blur();
+    await new Promise((r) => setTimeout(r, 150));
+  });
+}
+
 describe("review cluster + Review panel", () => {
   beforeAll(() => store.configReady);
   afterEach(async () => {
@@ -193,14 +208,21 @@ describe("review cluster + Review panel", () => {
     expect(cluster).not.toBeNull();
     expect([...cluster.querySelectorAll('[data-slot="approver"]')].map((a) => a.getAttribute("title"))).toEqual(["Approved by alice", "Approved by carol"]);
     const chip = cluster.querySelector<HTMLElement>('[data-slot="unresolved"]')!;
-    expect(chip.textContent).toBe("5");
+    expect(chip.textContent).toBe("5"); // count then icon — no icon glyph in textContent
     expect(chip.dataset.severity).toBe("critical"); // the chip itself carries the severity now — no separate dot
     expect(cluster.querySelector('[data-slot="severe-dot"]')).toBeNull();
-    expect(chip.getAttribute("title")).toContain("1 nit");
-    expect(chip.getAttribute("title")).toContain("AI reviewer flagged:");
-    expect(chip.getAttribute("title")).toContain("SQL injection");
-    expect(chip.getAttribute("title")).toContain("claude: 🔴 Critical: SQL injection — `findUser` interpolates `name` into the query string. (summary comment)"); // top-level: noted as a summary comment
-    expect(chip.getAttribute("title")).toContain("claude[bot]: ⚠️ Warning: this throws when `items` is empty.\n"); // inline thread: no summary-comment note
+    expect(chip.getAttribute("title")).toBeNull(); // no plain tooltip — a hover card instead
+    expect(chip.getAttribute("aria-label")).toBe("AI reviewer flagged a critical-severity comment");
+    // Focusing the chip (keyboard-reachable, same as hover) opens a HoverCard with the SAME
+    // ReviewPanel the PR page shows — not a duplicated summary of its own.
+    await focusChip(chip);
+    const panel = document.querySelector<HTMLElement>('[data-slot="review-panel"]')!;
+    expect(panel).not.toBeNull();
+    expect(panel.textContent).toContain("Approved by alice, carol");
+    expect(panel.textContent).toContain("5 unresolved (1 nit)");
+    expect(panel.textContent).toContain("🔴 Critical: SQL injection — `findUser` interpolates `name` into the query string.");
+    expect(panel.textContent).toContain("⚠️ Warning: this throws when `items` is empty.");
+    await blurChip(chip);
     // Lazy: only the PR row fetched it, once — a further poll doesn't refetch an unchanged PR.
     await act(async () => { await store.refresh(); await flush(); });
     expect(apiFake.reviewSignalCalls).toEqual(["r#7"]);
@@ -216,8 +238,12 @@ describe("review cluster + Review panel", () => {
     const chip = row.querySelector<HTMLElement>('[data-slot="unresolved"]')!;
     expect(chip.dataset.severity).toBe("critical");
     expect(chip.textContent).toBe(""); // icon only — count is 0
-    expect(chip.getAttribute("title")).toContain("AI reviewer flagged:");
-    expect(chip.getAttribute("title")).not.toContain("unresolved review threads");
+    expect(chip.getAttribute("title")).toBeNull(); // no plain tooltip — a hover card instead
+    await focusChip(chip);
+    const panel = document.querySelector<HTMLElement>('[data-slot="review-panel"]')!;
+    expect(panel.textContent).toContain("Flagged by AI reviewers");
+    expect(panel.textContent).not.toContain("From people"); // no human comments in this fixture
+    await blurChip(chip);
   });
 
   test("the PR page's Review panel lists severe AI findings and people's comments with author and link", async () => {
