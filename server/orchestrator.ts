@@ -27,7 +27,7 @@ import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
-  joinMessages, ladderStep, nextFailStreak, orchStatusText, orchStatusUpdate, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
   type BoardRow, type FailStreak, type OrchStatus, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
@@ -374,13 +374,16 @@ export async function board(cfg: OrcaConfig): Promise<BoardRow[]> {
   const several = Object.keys(cfg.instances ?? {}).length > 0;
   for (const repo of cfg.repos) {
     const local = verbs.repoHere(repo);
-    const [worktrees, prs, enrichment, inventory] = await Promise.all([
+    const [worktrees, prs, merged, enrichment, inventory, queued] = await Promise.all([
       local ? git.listWorktrees(repo.repoPath, repo.worktreeRoot).catch(() => []) : Promise.resolve([]),
       local ? gh.listPrs(repo.repoPath).catch(() => []) : Promise.resolve([]), // a local-only repo has no PRs
+      local ? gh.listMerged(repo.repoPath).catch(() => []) : Promise.resolve([]),
       db.enrichment(repo.name),
       db.inventory(repo.name).catch(() => []),
+      db.queuedCounts(repo.name).catch(() => new Map<string, number>()),
     ]);
     const paths = new Map(worktrees.map((w) => [w.branch, w.worktreePath]));
+    const heads = new Map(worktrees.map((w) => [w.branch, w.head]));
     // Other instances' worktrees, as they last published them (newest sighting per branch).
     const elsewhere = new Map<string, { instance: string; data: db.Fields }>();
     for (const r of inventory) if (r.instance !== here && !paths.has(r.branch) && !elsewhere.has(r.branch)) elsewhere.set(r.branch, { instance: r.instance, data: r.data });
@@ -390,10 +393,19 @@ export async function board(cfg: OrcaConfig): Promise<BoardRow[]> {
       const pr = prs.find((p) => p.branch === branch);
       const run = worktreePath ? agent.status(worktreePath) : undefined;
       const e = enrichment[branch] ?? {};
+      const agentState = worktreePath ? (agent.isRunning(worktreePath) ? "running" : run?.status ?? "idle") : ((remote?.data.agentStatus as string | undefined) ?? "idle");
+      // The web board's derivation (mergedPrIsHistory): a merged PR stands only while nothing has
+      // happened on the branch since — a reused branch reads as its live state, not "merged".
+      const activity = {
+        agentStatus: agentState, queued: queued.get(branch) ?? 0, openPr: Boolean(pr),
+        agentStartedAt: run?.startedAt ?? (remote?.data.agentStartedAt as number | undefined),
+        head: heads.get(branch) ?? (remote?.data.head as string | undefined),
+      };
+      const done = merged.find((m) => m.branch === branch && !mergedPrIsHistory(m, activity));
       rows.push({
         repo: repo.name, branch, title: pr?.title ?? (e.title as string | undefined), worktreePath: worktreePath ?? (remote?.data.worktreePath as string | undefined),
-        agent: worktreePath ? (agent.isRunning(worktreePath) ? "running" : run?.status ?? "idle") : ((remote?.data.agentStatus as string | undefined) ?? "idle"),
-        pr: pr && { number: pr.number, isDraft: pr.isDraft, reviewStatus: pr.reviewStatus, ciStatus: pr.ciStatus, mergeable: pr.mergeable },
+        agent: agentState,
+        pr: pr ? { number: pr.number, isDraft: pr.isDraft, reviewStatus: pr.reviewStatus, ciStatus: pr.ciStatus, mergeable: pr.mergeable } : done && { number: done.number, merged: true },
         check: run?.check?.ok ?? ((remote?.data.agentCheck as { ok?: boolean } | undefined)?.ok), orchestrated: Boolean(e.orchestrated),
         last: run?.structured?.outcome ?? run?.error ?? ((remote?.data.agentOutcome as { outcome?: string } | undefined)?.outcome),
         instance: several ? (remote?.instance ?? (worktreePath ? here : undefined)) : undefined,

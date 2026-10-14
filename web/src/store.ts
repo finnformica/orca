@@ -9,7 +9,7 @@ import { useEffect, useSyncExternalStore } from "react";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import {
-  addressNeedsAgent, addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, followUpPrompt, instanceOrder, launchPrompt,
+  addressNeedsAgent, addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, mergedPrIsHistory, followUpPrompt, instanceOrder, launchPrompt,
   mergeSettled, newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, rowTitle, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { MergeMark } from "./workstream";
@@ -599,7 +599,13 @@ export function assembleRows(): Row[] {
   for (const rl of snapshot) {
     const prByBranch = new Map(rl.prs.map((p) => [p.branch, p]));
     const wtByBranch = worktreesByBranch(rl.agents);
-    const mergedBranches = new Set(rl.merged.map((m) => m.branch));
+    // A merged PR stands for its branch only while nothing has happened there since; a reused
+    // branch (new run, new commits, a newer open PR) shows its live row instead (mergedPrIsHistory).
+    const merged = rl.merged.filter((m) => {
+      const wt = wtByBranch.get(m.branch), openPr = prByBranch.has(m.branch);
+      return !mergedPrIsHistory(m, wt || openPr ? { ...wt, openPr } : undefined);
+    });
+    const mergedBranches = new Set(merged.map((m) => m.branch));
     for (const branch of new Set([...prByBranch.keys(), ...wtByBranch.keys()])) {
       if (optBranches.has(`${rl.repo}::${branch}`)) continue; // its optimistic card is still standing in
       if (hiding.has(ekey(rl.repo, branch))) continue; // being closed/discarded — don't flash it back
@@ -632,7 +638,7 @@ export function assembleRows(): Row[] {
       row.lane = laneFor(row, pr);
       rows.push(row);
     }
-    for (const m of rl.merged) {
+    for (const m of merged) {
       rows.push({
         repo: rl.repo, hasRemote: rl.hasRemote, branch: m.branch, title: rowTitle(enrichOf(rl.repo, m.branch).title, m.title, m.branch), prTitle: m.title, prompt: "",
         lane: "DONE", prNumber: m.number, prUrl: m.url, mergedAt: m.mergedAt,
