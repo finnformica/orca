@@ -162,6 +162,7 @@ test("a stale cached plan — the table altered by another session — is retrie
 test("the pool's own idle/lifetime closes and a stale plan count as a dropped connection; a real query error does not", () => {
   const as = (message: string, extra: Record<string, string>) => Object.assign(new Error(message), extra);
   expect(db.isDroppedConnection(as("Idle timeout reached after 30s", { code: "ERR_POSTGRES_IDLE_TIMEOUT" }))).toBe(true);
+  expect(db.isDroppedConnection(as("Connection timeout after 10s", { code: "ERR_POSTGRES_CONNECTION_TIMEOUT" }))).toBe(true);
   expect(db.isDroppedConnection(as("Lifetime reached", { code: "ERR_POSTGRES_LIFETIME_TIMEOUT" }))).toBe(true);
   expect(db.isDroppedConnection(as("cached plan must not change result type", { code: "ERR_POSTGRES_SERVER_ERROR", errno: "0A000" }))).toBe(true);
   expect(db.isDroppedConnection(as("duplicate key value violates unique constraint", { code: "ERR_POSTGRES_SERVER_ERROR", errno: "23505" }))).toBe(false);
