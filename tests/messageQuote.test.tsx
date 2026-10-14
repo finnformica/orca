@@ -157,6 +157,16 @@ test("the chat (bubble) styling carries the same Copy/Quote buttons on both side
   expect(container!.querySelector("textarea")!.value).toBe("> add the cache\n\n");
 
   const reply = container!.querySelector('[data-slot="chat-reply"]')!;
+  // Inline with the author's name: in the name line, right after "Orchestrator" (before the
+  // hover-only time, whose reserved width once left them floating off on their own), centred on it.
+  const head = reply.querySelector<HTMLElement>('[data-slot="chat-reply-head"]')!;
+  expect(head.className).toMatch(/\bitems-center\b/);
+  const actions = head.querySelector<HTMLElement>('[data-slot="message-actions"]')!;
+  expect(actions.previousElementSibling!.textContent).toBe("Orchestrator");
+  expect(actions.nextElementSibling!.getAttribute("data-slot")).toBe("turn-time");
+  // Still hover-revealed, and always shown on a touch screen.
+  expect(actions.className).toContain("group-hover:opacity-100");
+  expect(actions.className).toContain("[@media(hover:none)]:opacity-100");
   await click(reply.querySelector('button[aria-label="Copy message"]')!);
   expect(copied).toEqual(["done"]);
 });
