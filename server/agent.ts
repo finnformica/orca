@@ -10,6 +10,7 @@ import * as lease from "./lease";
 import * as ledger from "./ledger";
 import * as db from "./db";
 import * as transcript from "./transcript";
+import * as outbox from "./outbox";
 import * as bus from "./bus";
 import { resolvePrompt } from "./attachments";
 import * as cgroup from "./cgroup";
@@ -22,10 +23,13 @@ import { readlinkSync } from "fs";
  *
  *  Fire-and-forget on purpose: the database is async (Postgres) but `launch()` returns its receipt
  *  synchronously, and a history write must never be something the run waits on. The write is still
- *  ordered per run, because `startTurn` is awaited inside the same chain the exit handler joins. */
-function recordTurn(options: LaunchOptions, write: () => Promise<void>): Promise<void> {
+ *  ordered per run, because `startTurn` is awaited inside the same chain the exit handler joins.
+ *
+ *  Every write goes through the outbox (server/outbox.ts): with the database unreachable the turn is
+ *  journaled to the state dir and replayed when it is back, so a run never depends on Postgres. */
+function recordTurn(options: LaunchOptions, write: () => Promise<unknown>): Promise<void> {
   if (!options.repo || !options.branch) return Promise.resolve();
-  const pending = write().catch((e) => console.error("orca: chat history write failed", e));
+  const pending = write().then(() => {}).catch((e) => console.error("orca: chat history write failed", e));
   historyWrites.add(pending);
   void pending.finally(() => historyWrites.delete(pending));
   return pending;
@@ -622,7 +626,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   // instead of vanishing. Keyed by runId, so a fast follow-up can't clobber the previous turn.
   // Awaited, not fire-and-forget: "the turn exists before the run can produce output" is the whole
   // reason it is written at launch, and an async database must not quietly weaken it.
-  const started = recordTurn(options, () => db.startTurn({
+  const started = recordTurn(options, () => outbox.startTurn({
     repo: options.repo!, branch: options.branch!, runId, provider, instruction: options.instruction, prompt, sessionId, startedAt, source: options.source,
   }));
   await started;
@@ -686,7 +690,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
     const error = ok ? undefined : oomKilled ? `out of memory (${memoryMaxGb} GB ceiling)` : (err.trim() || result || `exit ${code}`).slice(0, 300);
     const stopReason: StopReason = wasStopped ? "interrupted" : budgetReached ? "budget_reached" : ok ? "end_turn" : "error";
     await started; // finish can never overtake start, however fast the run was
-    recordTurn(options, () => db.finishTurn(runId, {
+    recordTurn(options, () => outbox.finishTurn(runId, {
       // A run you stopped is not a failure: whatever it completed stands, and the session id below
       // keeps it resumable, so a follow-up redirects it rather than starting over.
       status: wasStopped ? "stopped" : ok ? "done" : "error",
@@ -716,7 +720,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
       // Awaited (the run is over; this only delays the status flip by one round trip), so a run that
       // reads as finished has its verdict on the turn — a reader that polls "finished, then fetch"
       // otherwise sees the check missing when the pool is busy (the notification writes below).
-      await recordTurn(options, () => db.setCheck(runId, check!));
+      await recordTurn(options, () => outbox.setCheck(runId, check!, options));
       if (!check.ok && options.check.autofix && options.repo && options.branch && !isAutofix(options.instruction)) {
         // Queued rather than launched: the same path a typed follow-up takes, so it inherits the
         // session, profile routing, and the run lease. dispatchQueued below sends it.
@@ -901,14 +905,15 @@ export function adoptLeases(
 
 async function finishAdopted(l: lease.Lease, recover: Parameters<typeof adoptLeases>[0]): Promise<void> {
   if (runs.get(l.key)?.runId !== l.runId) return; // a new run took the key meanwhile
-  const owner = await db.turnOwner(l.runId).catch(() => undefined);
+  // The journal knows the owner when the turn never reached the database (it was down at launch).
+  const owner = await db.turnOwner(l.runId).catch(() => undefined) ?? outbox.owner(l.runId);
   const found = await recover(l.runId, l.sessionId, l.worktreePath).catch(() => undefined);
   const finishedAt = Date.now();
   const ok = Boolean(found?.response);
   const result = found?.response ?? "The bridge restarted during this run, and its result could not be recovered from the provider's session.";
   const status: db.TurnStatus = ok ? "done" : "error";
   if (owner) {
-    const pending = db.finishTurn(l.runId, { status, response: result, structured: found?.structured, stopReason: ok ? "end_turn" : "error", sessionId: l.sessionId, finishedAt })
+    const pending = outbox.finishTurn(l.runId, { status, response: result, structured: found?.structured, stopReason: ok ? "end_turn" : "error", sessionId: l.sessionId, finishedAt })
       .catch((e) => console.error("orca: chat history write failed", e));
     historyWrites.add(pending);
     void pending.finally(() => historyWrites.delete(pending));

@@ -287,3 +287,17 @@ test("P4: a bridge from before paging answers with the whole array — the chat 
   expect(asTurnPage(null)).toEqual({ turns: [], older: null });
   expect(asTurnPage({ error: "nope" })).toEqual({ turns: [], older: null });
 });
+
+test("P5: with the bridge's database unreachable the chat shows its journaled turns under a sync banner", async () => {
+  apiFake.turnsData.set("r::long", [turn(0)]);
+  apiFake.turnPageDbUnavailable = true;
+  await mount();
+  expect(shown()).toEqual([0]); // the journaled (live) run is still shown
+  expect(container!.querySelector('[data-slot="chat-db-down"]')?.textContent).toContain("database unreachable — this conversation will sync when it is back");
+});
+
+test("P6: a page from the database carries no banner", async () => {
+  apiFake.turnsData.set("r::long", [turn(0)]);
+  await mount();
+  expect(container!.querySelector('[data-slot="chat-db-down"]')).toBeNull();
+});

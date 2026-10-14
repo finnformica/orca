@@ -33,7 +33,9 @@ export type LiveAgent = {
 
 import { asTurnPage } from "./workstream";
 
-export type TurnPage = { turns: AgentTurn[]; older: string | null };
+/** `dbUnavailable`: the bridge answered without the database — the turns are what it journaled
+ *  locally (server/outbox.ts), to be synced when the database is back. */
+export type TurnPage = { turns: AgentTurn[]; older: string | null; dbUnavailable?: boolean };
 
 export type QueuedMessage = {
   id: number; repo: string; branch: string; instruction: string; attachments: string[]; createdAt: number;

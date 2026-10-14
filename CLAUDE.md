@@ -70,6 +70,29 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   connection, not just `ERR_POSTGRES_CONNECTION_CLOSED` but a `pg_terminate_backend`-style FATAL too)
   **is reopened and the one query retried once** — every exported function routes through `withRetry`
   rather than hand-catching, so this lives in one place.
+  **An UNREACHABLE database is a state, not a crash (degraded local mode).** The day the box hung, the
+  laptop's bridge died at boot (`db.open()` ran migrations, the connect timed out, the process
+  exited) and nothing ran for the whole outage. Now `server/index.ts` serves at once and does not await
+  the database: `db.open()` is lazy with a bounded connect timeout (`ORCA_DB_CONNECT_TIMEOUT_S`, 5s);
+  a refused/timed-out connect records `unavailableSince`, every later query fails FAST with
+  `db.DbUnavailable`, and one background probe retries with exponential backoff (capped at
+  `ORCA_DB_RETRY_MAX_MS`, 30s). Migrations, the boot-time reconcile and orchestrator recovery run on the
+  first successful connect (`db.onAvailable`); a refused migration ledger still exits (`db.onFatal`).
+  A dropped connection (`ERR_POSTGRES_CONNECTION_CLOSED`) is still `withRetry`'s retry, not an outage.
+  While down: the config is the last good one (`server/config.ts`: memory, else
+  `~/.orca/config.cache.json` — tagged with a hash of the database URL, written only when it changed —
+  else the checked-in file); reads degrade to empty plus a marker (`x-orca-database` header on every
+  answer, `dbUnavailable: true` on an object body; a 503 where empty would mislead — writes, the
+  orchestrator); `/api/health` and `/api/config` report `database: 'unreachable since <iso>'`.
+  **Agents still run:** a turn's writes (start, steps, finish, check) and enrichment patches go through
+  `server/outbox.ts`, which journals them to `~/.orca/outbox/<runId>.json` /
+  `enrichment-<ts>-<n>.json` on `DbUnavailable` and replays them in order when the database is back,
+  through the SAME idempotent queries (run_id / (run_id, seq) conflicts) — no schema change. A run with
+  a journal keeps journaling until the replay drains it; each journal names its database (a hash), so
+  nothing replays into another one. `/api/turns` merges the journal (and `/api/turns/local` serves only
+  it); the chat shows "database unreachable — this conversation will sync when it is back". Placement
+  falls back to this disk's worktrees when the inventory has no row, so local work is never forwarded
+  to a box that is down.
   **Nothing is deleted — finished workstreams are ARCHIVED**, because the conversations most worth
   chaining from later are exactly the ones whose branches got merged and reaped. Granularity is
   prompt + final response + structured outcome (what you'd feed a model), NOT the provider's raw event
@@ -118,7 +141,8 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   any more (`server/transcript.ts` writes them to Postgres, so both instances can read them). The
   dir holds the *advisory*, per-host operational files: run **leases** (`server/lease.ts`: pid/runId/provider/
   branch/expiry, so a restarted bridge rejects overlapping agent runs and reclaims dead/expired
-  ones) and the bounded **run ledger** (`server/ledger.ts`: counts/sizes per run for
+  ones), the **outbox** and **config cache** of degraded mode (above — NOT advisory: the outbox is the
+  only copy of a turn until it is replayed, so a bad file is kept, never dropped) and the bounded **run ledger** (`server/ledger.ts`: counts/sizes per run for
   `/api/diagnostics` — never prompts, responses, logs, or secrets; it is NOT a transcript backup).
   The lease and ledger stay **advisory**: if a file is missing or unreadable, degrade (reclaim the
   lease, drop the record) — never refuse a legitimate run. The DB is not advisory — losing it loses
@@ -555,8 +579,9 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   the trade-offs (send to an existing workstream vs spawn; one branch per mergeable unit) and left
   to decide. An earlier, rule-shaped version ("do not spawn for something a workstream owns") made it
   spawn a second workstream rather than ask the first to adapt — the user wants it free to decide.
-- **Stability.** Two things once made runs look like they died. (1) The dev launcher runs the bridge
-  under `bun --watch`, so a change to THIS checkout restarts it under in-flight runs. The agent
+- **Stability.** Two things once made runs look like they died. (1) The dev launcher restarts the
+  bridge on a change to THIS checkout (it used `bun --watch`; now `scripts/supervise.ts` — see
+  Deploying), so a change restarts it under in-flight runs. The agent
   processes survive that; what died was the bridge's view of them — the stdout reader and the exit
   handler that records the result, runs the check, wakes the orchestrator and sends the queue — so
   finished runs sat "running" (zombie children kept their leases live until expiry) and a wake
@@ -742,6 +767,18 @@ The two instances are named **`local`** (the laptop, `ORCA_INSTANCE=local`, boun
 either, and the orchestrator (`orchestratorOn: cloud`) can `spawn --on local`.
 
 Two instances share the Postgres database; each names itself (`ORCA_INSTANCE`, default hostname).
+**The laptop does not depend on the box being up.** Its `ORCA_DATABASE_URL` names the box's Postgres,
+so a box outage is a database outage: the laptop's bridge runs in degraded local mode (Architecture)
+— it boots, serves the board from the cached config and its own worktrees, runs agents and journals
+their turns, and replays them when the box is back. What it cannot do meanwhile: show the box's
+workstreams, chat history from before the outage, the orchestrator (if it lives on the box), queued
+messages and notifications. **The dev launcher supervises the bridge** (`scripts/dev.ts` →
+`scripts/supervise.ts`): a plain `bun run server/index.ts` restarted when it exits (1s backoff,
+doubling to 15s, reset after a minute up) and restarted at once on an edit to `server/`, `shared/`,
+`web/src/workstream.ts`, `orca.config.ts` or `.env` (its own debounced `fs.watch`). It used
+`bun --watch`, which does NOT re-run a script that died of an uncaught error — it waits for an edit
+— so after the crash the board stayed down until someone restarted `bun run dev`. The box's systemd
+unit restarts on its own.
 A repo may be checked out on SEVERAL instances; **a workstream lives on the instance holding its
 worktree.** `verbs.placement` decides where a request goes: an explicit `instance` (the New-draft
 box's "run on" picker, the orchestrator's `spawn --on`) → the worktree's home, read from
