@@ -610,6 +610,15 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
     if (follow.current) scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
     else if (!anchor.current && !loadingOlderRef.current) setUnseen(true);
   }, [turns, sending]);
+  // The scroller shrinking (the phone's keyboard opening, the composer growing) must not leave the
+  // newest message under the composer: a reader at the tail stays at it.
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => { if (follow.current) el.scrollTo({ top: el.scrollHeight }); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const jumpToLatest = () => {
     follow.current = true;
     setAtTail(true);
