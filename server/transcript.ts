@@ -15,6 +15,7 @@
 // an unreadable transcript degrades to "no steps", never an error.
 import type { AgentStep } from "../shared/agent";
 import * as db from "./db";
+import * as outbox from "./outbox";
 
 // Per-step caps keep one runaway tool result (a `cat` of a lockfile, a 10k-line test log) from
 // dominating a conversation; the per-run cap bounds a pathological run overall. Sized from real runs:
@@ -54,13 +55,13 @@ const nextSeq = new Map<string, number>();
 export async function append(runId: string, steps: AgentStep[]): Promise<AgentStep[]> {
   if (!steps.length) return [];
   try {
-    let seq = nextSeq.get(runId) ?? await db.nextStepSeq(runId);
+    let seq = nextSeq.get(runId) ?? await outbox.nextStepSeq(runId);
     if (seq > MAX_STEPS) return [];
     const bounded = steps.map(boundStep);
-    await db.appendSteps(runId, seq, bounded as unknown as db.Fields[]);
+    await outbox.appendSteps(runId, seq, bounded as unknown as db.Fields[]); // journaled while the database is down
     seq += bounded.length;
     if (seq > MAX_STEPS) {
-      await db.appendSteps(runId, seq, [{ at: Date.now(), kind: "text", text: "…(transcript truncated: run exceeded the recorded-step limit)…" } as unknown as db.Fields]);
+      await outbox.appendSteps(runId, seq, [{ at: Date.now(), kind: "text", text: "…(transcript truncated: run exceeded the recorded-step limit)…" } as unknown as db.Fields]);
       seq++;
     }
     nextSeq.set(runId, seq);
@@ -80,13 +81,19 @@ export async function read(runId: string, tail?: number): Promise<AgentStep[]> {
 /** As `read`, but keeping each step's sequence number — a chat stream watching a run on ANOTHER
  *  instance polls with the last seq it saw and gets only what's new. */
 export async function numbered(runId: string, opts: { tail?: number; afterSeq?: number } = {}): Promise<{ seq: number; step: AgentStep }[]> {
+  let rows: { seq: number; step: db.Fields }[] = [];
   try {
-    const rows = await db.steps(runId, opts);
-    return rows.map((r) => ({ seq: r.seq, step: r.step as unknown as AgentStep }));
+    rows = await db.steps(runId, opts);
   } catch (e) {
-    console.error("orca: transcript read failed", e);
-    return [];
+    if (!(e instanceof db.DbUnavailable)) console.error("orca: transcript read failed", e);
   }
+  // Steps journaled while the database was down (server/outbox.ts), until the replay lands them.
+  const journaled = outbox.steps(runId, opts.afterSeq ?? 0).filter((j) => !rows.some((r) => r.seq === j.seq));
+  if (journaled.length) {
+    rows = [...rows, ...journaled].sort((a, b) => a.seq - b.seq);
+    if (opts.tail !== undefined) rows = rows.slice(-opts.tail);
+  }
+  return rows.map((r) => ({ seq: r.seq, step: r.step as unknown as AgentStep }));
 }
 
 /** Drop the in-memory sequence counter for a finished run (the rows stay — they ARE the history). */

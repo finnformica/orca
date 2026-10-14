@@ -466,6 +466,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   const [turns, setTurns] = useState<AgentTurn[] | null>(null);
   const [older, setOlder] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [dbDown, setDbDown] = useState(false); // answered from the bridge's local journal, not the database
   const scroller = useRef<HTMLDivElement>(null);
   const follow = useRef(true); // at the bottom → keep following; scrolled up → leave the reader be
   const [atTail, setAtTail] = useState(true); // `follow`, as state, for the jump-to-latest button
@@ -495,9 +496,11 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
     const ticket = ++latestAsked.current;
     // asTurnPage again at the render boundary: whatever answered (an older bridge sends an array),
     // nothing undefined reaches `turns`, which must be null (loading) or a list.
-    const page = await api.turnPage(row.repo, row.branch, { limit: TURN_PAGE_SIZE }).then(asTurnPage<AgentTurn>).catch(() => null);
-    if (!page || ticket < latestApplied.current) return;
+    const raw = await api.turnPage(row.repo, row.branch, { limit: TURN_PAGE_SIZE }).catch(() => null);
+    if (!raw || ticket < latestApplied.current) return;
     latestApplied.current = ticket;
+    setDbDown(Boolean((raw as { dbUnavailable?: boolean }).dbUnavailable));
+    const page = asTurnPage<AgentTurn>(raw);
     const had = turnsRef.current;
     if (!had || !had.length) { olderRef.current = page.older; setOlder(page.older); }
     // A page turn without steps (past the newest few the bridge ships them for) keeps the ones
@@ -749,6 +752,11 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
             >
               {stopping ? "stopping…" : "■ stop"}
             </button>
+          </div>
+        )}
+        {dbDown && (
+          <div role="status" data-slot="chat-db-down" className="mb-3 rounded-md bg-amber-950/60 px-2 py-1 text-[11px] text-amber-300">
+            database unreachable — this conversation will sync when it is back
           </div>
         )}
         {/* Earlier pages: fetched as you near the top, or on a click (a page shorter than the window

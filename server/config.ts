@@ -1,4 +1,5 @@
 import * as db from "./db";
+import { readJsonSync, statePath, writeJsonSync } from "./state";
 import { AGENT_PROVIDERS, type AgentProvider } from "../shared/agent";
 import { MERGE_WHEN_GREEN, type MergePolicy } from "../web/src/workstream";
 
@@ -408,9 +409,38 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
   });
 }
 
-/** The effective configuration: database rows, seeded once from the file if the database is empty. */
+// The last config the database gave, on disk: `<state dir>/config.cache.json`. A bridge that starts
+// while the database is unreachable (the shared Postgres lives on the cloud box) still knows its
+// repos, instances and preview services from it. Written only when the config changed, and tagged
+// with the database it came from (a hash), so a copy for another database is never served. Under
+// `bun test` only into a test's own ORCA_STATE_DIR — never over the real bridge's copy in ~/.orca.
+const cacheFile = () => statePath("config.cache.json");
+type ConfigCache = { db: string; config: OrcaConfig };
+const cacheAllowed = () => process.env.NODE_ENV !== "test" || Boolean(process.env.ORCA_STATE_DIR);
+function readCache(): OrcaConfig | undefined {
+  const c = readJsonSync<ConfigCache>(cacheFile());
+  return c?.db === db.databaseKey() && Array.isArray(c.config?.repos) ? c.config : undefined;
+}
+let cacheWritten = "";
+
+/** The effective configuration: database rows, seeded once from the file if the database is empty.
+ *  With the database unreachable: the last good config — in memory, else the state dir's copy, else
+ *  the checked-in file — so the bridge keeps serving and running agents through the outage. */
 export async function loadConfig(): Promise<OrcaConfig> {
   if (cached && Date.now() - cachedAt < CONFIG_TTL_MS) return cached;
+  try {
+    return await loadFromDb();
+  } catch (e) {
+    if (!(e instanceof db.DbUnavailable)) throw e;
+    const fallback = cached ?? readCache() ?? await fileConfig();
+    if (!fallback) throw e;
+    cached = fallback;
+    cachedAt = Date.now(); // re-try the database after the TTL, not on every request
+    return fallback;
+  }
+}
+
+async function loadFromDb(): Promise<OrcaConfig> {
   let rows = await db.repoConfigs();
   if (!rows.length) {
     const file = await fileConfig();
@@ -444,6 +474,10 @@ export async function loadConfig(): Promise<OrcaConfig> {
   };
   cached = config;
   cachedAt = Date.now();
+  const text = JSON.stringify(config);
+  if (text !== cacheWritten && cacheAllowed()) {
+    try { writeJsonSync(cacheFile(), { db: db.databaseKey(), config } satisfies ConfigCache); cacheWritten = text; } catch (e) { console.error("orca: config cache write failed", e); }
+  }
   return config;
 }
 
