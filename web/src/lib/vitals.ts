@@ -5,6 +5,7 @@ import { useSyncExternalStore } from "react";
 import { api, type InstanceHealth, type MetricPoint } from "@/api";
 import type { Usage } from "../../../server/usage";
 import { poll } from "./poll";
+import { onRefresh } from "./refresh";
 
 /** One value fed by a loop that runs while anyone subscribes. The value is dropped when the last
  *  subscriber leaves, so a later mount starts from a fresh read rather than a stale one. */
@@ -58,7 +59,7 @@ const usageSource = sharedSource<Usage>((set) => {
   let latest: Usage | null = null;
   const SLOW = 5 * 60_000, FAST = 15_000, MAX_FAST = 4;
   const schedule = (ms: number) => { if (!cancelled) timer = setTimeout(load, ms); };
-  const load = () => void api.usage().then((u) => {
+  const load = () => { clearTimeout(timer); return api.usage().then((u) => {
     if (cancelled) return;
     let complete = false;
     if (u) {
@@ -68,9 +69,10 @@ const usageSource = sharedSource<Usage>((set) => {
     }
     if (!usageLoaded) { usageLoaded = true; notifyUsageLoaded(); }
     schedule(complete || ++fastTries > MAX_FAST ? SLOW : FAST);
-  }).catch(() => { if (!usageLoaded) { usageLoaded = true; notifyUsageLoaded(); } schedule(FAST); });
-  load();
-  return () => { cancelled = true; clearTimeout(timer); usageLoaded = false; notifyUsageLoaded(); };
+  }).catch(() => { if (!usageLoaded) { usageLoaded = true; notifyUsageLoaded(); } schedule(FAST); }); };
+  void load();
+  const offRefresh = onRefresh(load);
+  return () => { cancelled = true; clearTimeout(timer); offRefresh(); usageLoaded = false; notifyUsageLoaded(); };
 });
 
 /** Provider usage (/api/usage), null until the first answer (or when no provider is signed in). */

@@ -6,6 +6,7 @@
 import { useEffect, useState } from "react";
 import { CloudOff, RefreshCw, Server, WifiOff } from "lucide-react";
 import { poll } from "@/lib/poll";
+import { refreshEverything, useRefreshing } from "@/lib/refresh";
 import { applyUpdate } from "@/lib/sw";
 import { useBridge, useLastSync } from "../store";
 import { ago, bridgeLabel, newerBuild, staleAge } from "../workstream";
@@ -24,16 +25,26 @@ export function BridgeLabel({ previewPage = PREVIEW_PAGE }: { previewPage?: bool
   );
 }
 
+/** "Updated 3 min ago" — and a button: a click is "Refresh everything" (lib/refresh.ts): stuck requests
+ *  aborted, every poll on the page re-run at once, the icon spinning until all have answered (a hard
+ *  reload if they never do). It stays shown while refreshing, even once the fresh answer clears the age. */
 export function StaleIndicator() {
   const last = useLastSync();
+  const refreshing = useRefreshing();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 15_000); return () => clearInterval(t); }, []);
   const age = staleAge(last, Math.max(now, last));
-  if (age === null) return null;
+  if (age === null && !refreshing) return null;
   return (
-    <span role="status" data-slot="stale-indicator" className="bg-geist-warning-bg text-geist-warning-fg inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-xs font-medium">
-      <CloudOff className="size-3.5" aria-hidden="true" />Updated {ago(last, now)}
-    </span>
+    <button type="button" data-slot="stale-indicator" aria-busy={refreshing} disabled={refreshing}
+      onClick={() => void refreshEverything().then(() => setNow(Date.now()))}
+      title={refreshing ? "Refreshing everything on this page…" : "Refresh everything on this page"}
+      className="bg-geist-warning-bg text-geist-warning-fg inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-xs font-medium hover:opacity-80 disabled:cursor-progress">
+      {refreshing
+        ? <RefreshCw className="size-3.5 animate-spin" aria-hidden="true" />
+        : <CloudOff className="size-3.5" aria-hidden="true" />}
+      <span role="status">{refreshing ? "Refreshing…" : `Updated ${ago(last, now)}`}</span>
+    </button>
   );
 }
 

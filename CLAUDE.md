@@ -341,7 +341,10 @@ Orchestrator shortcuts as `/?open=…`). `vite build` writes `version.json` and 
 banner tells it to skip waiting. A service worker needs a secure context, so over the plain-http
 tailnet it stays inert (and Android won't offer an install) until that has HTTPS. Standalone CSS: no
 overscroll, no tap delay or flash, chrome not selectable. A hidden tab polls nothing; the top bar says
-when the board is stale; an unreachable bridge shows the offline screen.
+when the board is stale ("Updated 3m ago" — a button: **Refresh everything**, `lib/refresh.ts`: every GET in
+`api.ts` is tracked and one in flight >3s is aborted, every `poll()` and `onRefresh` source — the board's
+streams, usage, notifications, an open chat, cached review signals — re-runs at once, the icon spins until
+all settle, and past 15s it hard-reloads); an unreachable bridge shows the offline screen.
 
 The board (`web/src/views/Board.tsx`), lanes: **Local → Draft → In Review → Mergeable → Done·today**.
 A workstream is a branch; its lane (`store.laneFor`):
@@ -816,7 +819,9 @@ A repo may be checked out on SEVERAL instances; **a workstream lives on the inst
 worktree.** `verbs.placement` decides where a request goes: an explicit `instance` (the New-draft
 box's "run on" picker, the orchestrator's `spawn --on`) → the worktree's home, read from
 `worktree_inventory` by branch or path → the repo's `runsOn` (its DEFAULT placement) → here.
-`forwardToOwner` forwards to that instance's URL from `instances`, except the `DATABASE_ONLY`
+`forwardToOwner` forwards to that instance's URL from `instances` (after `server/peer.ts`'s TCP-connect probe:
+an offline laptop black-holes its tailnet address, so an unprobed forward or `/api/usage` merge hung >60s and
+held a browser connection; the probe answers in ≤2s and caches down 30s / up 15s), except the `DATABASE_ONLY`
 routes, which any instance answers — `/api/agents` among them: every instance lists its own
 worktrees (when the repo is on disk here, `verbs.repoHere`) plus what the others published. The
 board tags each card with its instance once there is more than one (`instanceChoices`). The
