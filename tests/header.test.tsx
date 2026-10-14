@@ -6,7 +6,7 @@
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import "./apiFake";
+import { apiFake } from "./apiFake";
 import { getDefaultStore } from "jotai";
 import * as store from "@/store";
 import { App } from "@/App";
@@ -31,6 +31,7 @@ afterEach(async () => {
   act(() => root?.unmount());
   container?.remove();
   root = container = undefined;
+  apiFake.reset();
   localStorage.clear();
   // The atoms outlive localStorage within one run: a dense board left behind here once made later
   // files' cards hide their prompt.
@@ -58,9 +59,22 @@ describe("console shell", () => {
     expect(container!.querySelector('[data-slot^="instance-"]')).not.toBeNull();
     expect(gridEl()).toBeNull();
     expect(crumb()).toContain("Overview");
-    // The old header meter and health chip are gone: their numbers live in the cards now.
-    expect(container!.querySelector("[aria-label='Claude usage limits']")).toBeNull();
+    // The health chip is gone: its numbers live in the instance card now. The header's compact
+    // usage meter (views/Vitals.HeaderUsageMeter) is covered end-to-end in usageMeter.test.tsx —
+    // here it's simply absent because this test's fake api answers /api/usage with nothing signed in.
+    expect(container!.querySelector('[data-slot="header-usage"]')).toBeNull();
     expect(container!.querySelector('[data-slot="instance-health"]')).toBeNull();
+  });
+
+  test("the header usage meter sits immediately left of \"Ask the orchestrator\" in the top bar", async () => {
+    apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
+    await mount();
+    const bar = container!.querySelector<HTMLElement>('[data-slot="topbar"]')!;
+    const kids = [...bar.children];
+    const meter = kids.indexOf(bar.querySelector('[data-slot="header-usage"]')!);
+    const ask = kids.indexOf(bar.querySelector('[data-slot="ask-orchestrator"]')!);
+    expect(meter).toBeGreaterThan(-1);
+    expect(ask).toBe(meter + 1); // nothing else between them
   });
 
   test("the top bar is opaque: a solid background, no translucency or blur for scrolled content to show through", async () => {

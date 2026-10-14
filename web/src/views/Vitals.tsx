@@ -1,8 +1,9 @@
 // The two vitals cards, Vercel-style. Usage: Claude (per hydra login, plus the fleet) and Codex as
-// rows of ring + label + value / limit — this replaced the header's usage meter. Instance: one card
-// per machine, its current vitals as a details grid and CPU % / memory GB as line graphs over a
-// chosen range from /api/health/history. Both read the shared polls in lib/vitals, so the Overview
-// and the Usage page never poll twice.
+// rows of ring + label + value / limit. Instance: one card per machine, its current vitals as a
+// details grid and CPU % / memory GB as line graphs over a chosen range from /api/health/history.
+// Both read the shared polls in lib/vitals, so the Overview and the Usage page never poll twice.
+// The header's compact meter (HeaderUsageMeter, below) reads the SAME poll and opens a HoverCard
+// around this exact UsageCard — no second usage widget to keep in sync.
 import { useState } from "react";
 import { useAtom } from "jotai";
 import { AlertTriangle, Check, ChevronDown, ChevronUp, Loader2, RefreshCw, Server, X } from "lucide-react";
@@ -13,16 +14,17 @@ import { persistedKey, usePersisted } from "@/lib/persisted";
 import { useCoarse, useNarrow } from "@/lib/viewport";
 import { refreshUsageNow, refreshVitals, useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
 import { Button } from "@/components/ui/button";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
-import { HISTORY_RANGES, countMax, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { HISTORY_RANGES, countMax, headerUsage, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
  *  fleet + Codex) always show, and Vercel's chevron (or the header row) expands the per-login breakdown.
  *  The choice is one remembered toggle (`orca.ui.v1.usageExpanded`), shared by both pages. */
-export function UsageCard() {
+export function UsageCard({ className, bodyClass }: { className?: string; bodyClass?: string } = {}) {
   const usage = useUsage();
   const loaded = useUsageLoaded();
   const groups = usageGroups(usage);
@@ -33,7 +35,7 @@ export function UsageCard() {
   const shown = expanded ? groups : groups.filter((g) => !g.key.startsWith("login:"));
   return (
     <VCard slot="usage-card" title="Current windows" aside={<span className="text-muted-foreground text-xs">Claude &amp; Codex limits</span>}
-      onHeaderClick={canToggle ? toggle : undefined} expanded={canToggle ? expanded : undefined}>
+      onHeaderClick={canToggle ? toggle : undefined} expanded={canToggle ? expanded : undefined} className={className} bodyClass={bodyClass}>
       {routingBroken(usage) && (
         <div data-slot="routing-warning" title="Claude Code's updater rewrote ~/.local/bin/claude. Re-run hydra's install.sh --shim on the bridge's machine."
           className="bg-geist-warning-bg text-geist-warning-fg flex items-start gap-2 border-b px-4 py-2 text-xs">
@@ -55,6 +57,35 @@ export function UsageCard() {
         </div>
       )}
     </VCard>
+  );
+}
+
+/** The top bar's compact Claude 5-hour-window meter, immediately left of "Ask the orchestrator": a
+ *  ring + percent for whichever login `headerUsage` picks (the one the next run would use, or — with
+ *  nothing eligible — the highest utilization; the tooltip says which). Hovering or focusing it opens
+ *  a HoverCard around the SAME `UsageCard` the Overview page shows, borderless so it isn't double-
+ *  framed inside the popover — no second usage widget, just a second place to open the one that
+ *  exists. Renders nothing until the first poll answers, or with no Claude login signed in at all. */
+export function HeaderUsageMeter() {
+  const usage = useUsage();
+  const loaded = useUsageLoaded();
+  if (!loaded) return null;
+  const reading = headerUsage(usage);
+  if (!reading) return null;
+  const pct = Math.round(reading.pct);
+  return (
+    <HoverCard>
+      <HoverCardTrigger asChild>
+        <button type="button" data-slot="header-usage" tabIndex={0} aria-label={`Claude usage — ${reading.tooltip}`} title={reading.tooltip}
+          className="text-muted-foreground hover:text-foreground hover:bg-accent/60 ml-auto flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-xs max-md:hidden">
+          <Ring pct={pct} size={14} />
+          <span className="tabular-nums">{pct}%</span>
+        </button>
+      </HoverCardTrigger>
+      <HoverCardContent align="end" className="w-80 max-w-[calc(100vw-2rem)] p-0">
+        <UsageCard className="border-none shadow-none" />
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 

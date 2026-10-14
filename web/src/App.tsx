@@ -81,5 +81,5 @@ const SidebarAction = ({ collapsed }: { collapsed: boolean }) => (
 );
 
 // Pure helpers the usage tests import from here (they live in lib/vitals and workstream.ts).
-export { aggregateProfiles, mergeUsage } from "@/lib/vitals";
+export { aggregateProfiles, headerUsage, mergeUsage } from "@/lib/vitals";
 export { untilReset } from "./workstream";

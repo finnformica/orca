@@ -197,6 +197,7 @@ const click = async (el: Element) => { await act(async () => { (el as HTMLElemen
 
 describe("the phone layout (390px, touch)", () => {
   test("a bottom bar within thumb reach; the top bar trades its Ask box for the round mark", async () => {
+    apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
     await mount("/", true);
     const bar = $('[data-slot="bottom-bar"]')!;
     const items = [...bar.querySelectorAll("button")];
@@ -205,6 +206,7 @@ describe("the phone layout (390px, touch)", () => {
     expect(bar.className).toContain("safe-area-inset-bottom");
     expect($('[data-slot="topbar-mark"]')!.className).toContain("md:hidden");
     expect($('[data-slot="ask-orchestrator"]')!.className).toContain("max-md:hidden");
+    expect($('[data-slot="header-usage"]')!.className).toContain("max-md:hidden"); // doesn't fit the phone's top bar either
     expect($('[data-slot="quick-ask"]')!.className).toContain("max-md:hidden"); // …and the pill folds into the bottom bar's Orchestrator
     // New agent is the centred, third of five items.
     expect(items[2]!.textContent).toBe("New agent");

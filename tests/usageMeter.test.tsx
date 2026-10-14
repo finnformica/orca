@@ -492,3 +492,96 @@ test("hostHints: every OTHER host's non-ok state is a hint; the picked host's ow
   expect(hostHints({ instance: "cloud", state: "disabled", hosts: [{ instance: "local", state: "disabled" }, { instance: "cloud", state: "disabled" }] })).toEqual([]);
   expect(hostHints({ hosts: undefined })).toEqual([]);
 });
+
+// The header meter's pick: a single login shows its own window; several in rotation show whichever
+// has the most headroom (lowest utilization — the one hydra would actually route to next); nothing
+// eligible (every login exhausted/locked) falls back to the highest, since there's no "next run" to
+// point at. Pure, so this is checked without mounting anything.
+test("headerUsage: a single login (no hydra) is just its own 5-hour window", async () => {
+  const { headerUsage } = await import("../web/src/workstream");
+  expect(headerUsage(null)).toBeNull();
+  expect(headerUsage({ claude: null, codex: null })).toBeNull();
+  expect(headerUsage({ claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null }))
+    .toEqual({ pct: 38, tooltip: "5-hour window" });
+});
+
+test("headerUsage: several logins in rotation show the one with the most headroom, named in the tooltip", async () => {
+  const { headerUsage } = await import("../web/src/workstream");
+  const profile = (name: string, pct: number, state = "ok") =>
+    ({ name, state, usage: { fiveHour: { utilization: pct, resetsAt: null }, sevenDay: { utilization: 0, resetsAt: null }, extra: null } });
+  const u = { claude: null, codex: null, profiles: [profile("work", 80), profile("personal", 20), profile("side", 50)] };
+  const r = headerUsage(u)!;
+  expect(r.pct).toBe(20); // "personal" has the most headroom — hydra would route there next
+  expect(r.tooltip).toContain("personal");
+  expect(r.tooltip).toContain("next run");
+});
+
+test("headerUsage: nothing currently eligible (every login exhausted or locked) falls back to the highest utilization", async () => {
+  const { headerUsage } = await import("../web/src/workstream");
+  const profile = (name: string, pct: number, state: string) =>
+    ({ name, state, usage: { fiveHour: { utilization: pct, resetsAt: null }, sevenDay: { utilization: 0, resetsAt: null }, extra: null } });
+  const u = { claude: null, codex: null, profiles: [profile("work", 92, "exhausted"), profile("side", 60, "locked")] };
+  const r = headerUsage(u)!;
+  expect(r.pct).toBe(92); // worst, since nothing would actually run next
+  expect(r.tooltip).toContain("work");
+  expect(r.tooltip).toContain("highest utilization");
+  expect(r.tooltip).toContain("no login currently eligible");
+});
+
+test("headerUsage: disabled / signed-out-here logins never used — null with none left to show", async () => {
+  const { headerUsage } = await import("../web/src/workstream");
+  const u = { claude: null, codex: null, profiles: [{ name: "work", state: "disabled", usage: null }] };
+  expect(headerUsage(u)).toBeNull();
+});
+
+// The header meter itself (components/Shell.tsx → views/Vitals.HeaderUsageMeter): a ring + percent
+// beside "Ask the orchestrator", opening a HoverCard around the SAME UsageCard the Overview/Usage
+// pages render. Mounted on /agents (not / or /usage) so there's exactly one usage-card in the DOM —
+// the one the hover card opens — rather than two.
+const headerMeter = () => container!.querySelector<HTMLButtonElement>('[data-slot="header-usage"]');
+async function focusMeter() {
+  await act(async () => { headerMeter()!.focus(); await new Promise((r) => setTimeout(r, 200)); });
+}
+async function blurMeter() {
+  await act(async () => { headerMeter()!.blur(); await new Promise((r) => setTimeout(r, 150)); });
+}
+
+test("the header meter is absent with nothing signed in — no empty ring in the header", async () => {
+  apiFake.usageData = null;
+  await mount("/agents");
+  expect(headerMeter()).toBeNull();
+});
+
+test("the header meter shows the ring + percent for a single login", async () => {
+  apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
+  await mount("/agents");
+  const meter = headerMeter()!;
+  expect(meter).not.toBeNull();
+  expect(meter.textContent).toBe("38%");
+  expect(meter.querySelector("svg circle")).not.toBeNull(); // the ring
+  expect(meter.title).toBe("5-hour window");
+  expect(meter.className).toContain("max-md:hidden"); // hidden on phone widths
+});
+
+test("the header meter picks the login with most headroom across several, and says so in the tooltip", async () => {
+  const profile = (name: string, pct: number) =>
+    ({ name, state: "ok", usage: { fiveHour: { utilization: pct, resetsAt: null }, sevenDay: { utilization: 0, resetsAt: null }, extra: null } });
+  apiFake.usageData = { claude: null, codex: null, profiles: [profile("work", 80), profile("personal", 20)] };
+  await mount("/agents");
+  const meter = headerMeter()!;
+  expect(meter.textContent).toBe("20%");
+  expect(meter.title).toContain("personal");
+  expect(meter.title).toContain("next run");
+});
+
+test("hovering (or focusing) the header meter opens a HoverCard with the SAME UsageCard the Overview page shows — not a second widget", async () => {
+  apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
+  await mount("/agents");
+  expect(document.querySelector("[data-slot='usage-card']")).toBeNull(); // not open yet
+  await focusMeter();
+  const panel = document.querySelector<HTMLElement>("[data-slot='usage-card']")!;
+  expect(panel).not.toBeNull();
+  expect(panel.textContent).toContain("5-hour window");
+  expect(panel.textContent).toContain("38%");
+  await blurMeter();
+});
