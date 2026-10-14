@@ -343,8 +343,9 @@ export function slackPrompt(
 }
 
 /** Follow-up instruction for an agent already working a branch (resumes its session). */
-export function followUpPrompt(instruction: string): string {
-  return withOutcomeContract(`${instruction}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}\n${SCREENSHOTS}`);
+export function followUpPrompt(instruction: string, opts: { mergeWhenGreen?: boolean } = {}): string {
+  const mergeNote = opts.mergeWhenGreen ? "\n\n(This PR is marked merge-when-green: Orca's merge queue holds the mark and waits for this run — and anything queued behind it — to finish, then merges once CI is green on your latest push. Commit and push as usual; no separate merge step needed.)" : "";
+  return withOutcomeContract(`${instruction}${mergeNote}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}\n${SCREENSHOTS}`);
 }
 
 // Every session starts with no memory of the last one, so it starts by looking: the same three-line
@@ -364,9 +365,10 @@ const SESSION_START = "Before acting: run `git log --oneline -15` and `git statu
  *  judgement is deliberately left to the model rather than pattern-matched here: "also handle the
  *  empty case" is an instruction and "should we handle the empty case?" is not, and no keyword list
  *  survives contact with that. */
-export function chatPrompt(instruction: string): string {
+export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean } = {}): string {
   return [
     instruction,
+    ...(opts.mergeWhenGreen ? ["", "(This PR is marked merge-when-green: Orca's merge queue holds the mark and waits for this run — and anything queued behind it — to finish, then merges once CI is green on your latest push. Commit and push as usual; no separate merge step needed.)"] : []),
     "",
     "You are replying in a conversation, not executing a work order. Read the message for what it is:",
     "- A question, or a request for your opinion or a plan → answer it. Be concrete and specific, cite",
@@ -1186,12 +1188,21 @@ export function mergeRefusal(policy: MergePolicy | undefined, mark: Pick<MergeMa
   return undefined;
 }
 
+/** Whether a marked PR's workstream currently has agent activity the queue must wait out: its agent
+ *  is mid-turn, or a message is queued behind it (about to be delivered and change the branch).
+ *  Merging under either would strand that work on an already-merged branch. */
+export type AgentActivity = { running: boolean; queued: number };
+
 /** The merge queue's one decision for a marked PR. Never merges red; merges only when every check
- *  passed (no checks yet is not green — a fresh push has none) and GitHub says it merges clean. Pure. */
-export function mergeVerdict(policy: MergePolicy | undefined, mark: Pick<MergeMark, "small">, pr: MergeGateLike): MergeVerdict {
+ *  passed (no checks yet is not green — a fresh push has none) and GitHub says it merges clean. A
+ *  busy agent (running, or a message queued for it) holds it at "wait" even when already green —
+ *  the policy/gone checks still run, since those don't depend on the agent finishing. Pure. */
+export function mergeVerdict(policy: MergePolicy | undefined, mark: Pick<MergeMark, "small">, pr: MergeGateLike, activity?: AgentActivity): MergeVerdict {
   if (pr.state !== "OPEN") return { action: "gone", why: `the PR is ${pr.state.toLowerCase()}` };
   const refused = mergeRefusal(policy, mark, pr);
   if (refused) return { action: "refuse", why: refused };
+  if (activity?.running) return { action: "wait", why: "waiting for agent to finish" };
+  if (activity && activity.queued > 0) return { action: "wait", why: `waiting for agent to finish (${activity.queued} message${activity.queued === 1 ? "" : "s"} queued)` };
   if (pr.ciStatus === "failing") return { action: "red", why: `CI failing${pr.failingChecks?.length ? `: ${pr.failingChecks.join(", ")}` : ""}` };
   if (pr.mergeable === "CONFLICTING") return { action: "red", why: "merge conflicts with its base" };
   if (pr.ciStatus !== "passing") return { action: "wait", why: pr.ciStatus === "none" ? "no checks reported yet" : "checks still running" };

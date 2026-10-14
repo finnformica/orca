@@ -1,19 +1,24 @@
 // The merge queue: merge-when-green without anyone watching CI. A PR is MARKED (`orca merge
 // --when-green`, or the PR menu) — the mark lives on its branch's enrichment (`mergeWhenGreen`), so it
 // is in the shared database and survives a restart — and this polls `gh pr view` for every marked PR:
-// squash-merge once every check passed and GitHub says it merges clean, never on red.
+// squash-merge once every check passed and GitHub says it merges clean, never on red, and never while
+// its workstream's agent is running or has a message queued behind it (a follow-up mid-merge would
+// land on an already-merged branch) — it waits and re-checks on the next poll, re-verifying green on
+// wherever the head ends up once the agent is idle.
 //
 // The policy is the repo's config (`mergePolicy`, workstream.ts `mergeVerdict`): which PRs may be
 // marked at all, and paths never merged on their own. A refusal drops the mark; red CI or a conflict
 // keeps it (fixed and green, it merges) and is reported once per head commit — a notification, and a
 // problem report that wakes the orchestrator when the PR is its work. A merge is a notification and a
 // clean report (batched like a worker finishing).
+import * as agent from "./agent";
 import * as db from "./db";
 import * as gh from "./gh";
+import * as git from "./git";
 import * as notify from "./notify";
 import { runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import { repoHere } from "./verbs";
-import { mergeQueueReport, mergeRefusal, mergeVerdict, type MergeMark, type MergeVerdict } from "../web/src/workstream";
+import { mergeQueueReport, mergeRefusal, mergeVerdict, type AgentActivity, type MergeMark, type MergeVerdict } from "../web/src/workstream";
 
 /** How often marked PRs are looked at. A check run takes minutes; a minute's lag on a merge is fine. */
 export const MERGE_POLL_MS = 60_000;
@@ -89,11 +94,20 @@ export async function tick(cfg: OrcaConfig): Promise<void> {
   }
 }
 
+/** Whether the workstream's agent is running, or has a message queued behind it — either means its
+ *  branch is about to change, so the queue must not merge the head it sees right now. */
+async function agentActivity(repo: RepoConfig, branch: string): Promise<AgentActivity> {
+  const wt = (await git.listWorktrees(repo.repoPath, repo.worktreeRoot)).find((w) => w.branch === branch);
+  const running = Boolean(wt && agent.isRunning(wt.worktreePath));
+  const queued = (await db.queuedMessages(repo.name, branch)).length;
+  return { running, queued };
+}
+
 /** Look at one marked PR and act on the verdict. */
 async function look(cfg: OrcaConfig, repo: RepoConfig, branch: string, mark: MergeMark): Promise<MergeVerdict> {
   const pr = mark.pr!;
-  const gate = await gh.prMergeGate(repo.repoPath, pr);
-  const verdict = mergeVerdict(repo.mergePolicy, mark, gate);
+  const [gate, activity] = await Promise.all([gh.prMergeGate(repo.repoPath, pr), agentActivity(repo, branch)]);
+  const verdict = mergeVerdict(repo.mergePolicy, mark, gate, activity);
   const e = (await db.enrichment(repo.name))[branch] ?? {};
   const title = (typeof e.title === "string" && e.title) || gate.title;
   const theirs = mark.by === "orchestrator" || Boolean(e.orchestrated); // whose problem a red PR is
