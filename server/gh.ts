@@ -130,7 +130,13 @@ export async function reviewEvidence(cwd: string, pr: number): Promise<ReviewThr
  *  human, severe or actionable is the pure derivation's job, not the adapter's. The PR author's own
  *  comments are dropped as in conversationComments; their thread openers are kept but marked by
  *  `prAuthor`, so the derivation can exclude them. Bodies are bounded; the heuristics only read the top. */
-export type ReviewSignal = { prAuthor?: string; threads: ReviewThreadEvidence[]; comments: ConversationComment[] };
+export type ReviewSignal = {
+  prAuthor?: string; threads: ReviewThreadEvidence[]; comments: ConversationComment[];
+  /** When the PR's latest commit landed — a top-level comment/review posted before this can never
+   *  become stale-proof the way an inline thread can (there's no "resolved" bit), so the severity
+   *  dot only counts one posted AFTER it. Missing on an older fixture/caller: treated as "no cutoff". */
+  headCommitAt?: string;
+};
 
 const SIGNAL_BODY_LIMIT = 600;
 
@@ -140,12 +146,14 @@ export async function reviewSignal(cwd: string, pr: number): Promise<ReviewSigna
   if (!owner || !name) throw new Error("could not resolve GitHub repository");
   const who = "author{__typename,login}";
   const query = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){author{login},`
+    + `commits(last:1){nodes{commit{committedDate}}},`
     + `reviews(last:100){nodes{id,${who},state,body,submittedAt,url}},`
     + `comments(last:100){nodes{id,${who},body,createdAt,url}},`
     + `reviewThreads(first:100){nodes{id,isResolved,isOutdated,path,line,originalLine,comments(first:1){nodes{${who},body,url,createdAt}}}}}}}`;
   const raw = await gh(cwd, "api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${pr}`);
   const p = JSON.parse(raw)?.data?.repository?.pullRequest ?? {};
   const prAuthor: string | undefined = p.author?.login;
+  const headCommitAt: string | undefined = p.commits?.nodes?.[0]?.commit?.committedDate || undefined;
   const isBot = (a: any) => a?.__typename === "Bot" || botLogin(a?.login);
   const body = (b: unknown) => truncate(String(b ?? "").trim(), SIGNAL_BODY_LIMIT);
   const comments: ConversationComment[] = [];
@@ -167,7 +175,7 @@ export async function reviewSignal(cwd: string, pr: number): Promise<ReviewSigna
       url: first.url || undefined, resolved: Boolean(t.isResolved), outdated: Boolean(t.isOutdated), bot: isBot(first.author), createdAt: first.createdAt,
     });
   }
-  return { prAuthor, threads, comments };
+  return { prAuthor, threads, comments, headCommitAt };
 }
 
 function usefulLogExcerpt(raw: string): string | undefined {

@@ -1,7 +1,8 @@
-import { ExternalLink, MessageSquare } from "lucide-react";
+import { ExternalLink, MessageSquare, MessagesSquare } from "lucide-react";
 import { StatusDot, VCard } from "@/components/console";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { useReviewDigest, type Row } from "../store";
-import { ago, type ReviewDigest, type ReviewItem } from "../workstream";
+import { ago, type ReviewItem } from "../workstream";
 
 // The review SIGNAL on a PR, not just its state: who approved, how many review threads still ask
 // for a change, and whether an AI reviewer flagged something severe (list row), plus the human and
@@ -22,34 +23,44 @@ function ApproverChip({ login }: { login: string }) {
   );
 }
 
-const severeTitle = (d: ReviewDigest) =>
-  d.severe.map((i) => `${i.author ?? "bot"}: ${i.line}`).join("\n");
+const SEVERITY_CLASS: Record<string, string> = {
+  critical: "border-geist-red/40 text-geist-red",
+  warning: "border-geist-warning-fg/40 text-geist-warning-fg",
+};
 
-/** The list row's compact cluster: approver chips, `N unresolved`, and a red/amber dot when an AI
- *  reviewer left a severe comment. Renders nothing until the digest has loaded. */
+/** The list row's compact cluster: approver chips, then a count-then-icon `MessagesSquare` chip
+ *  for unresolved threads — coloured by the AI reviewer's worst severity when it flagged
+ *  anything, muted otherwise — and a separate plain `MessageSquare` count for human comments.
+ *  Hovering (or focusing) the unresolved chip opens a `HoverCard` showing the same `ReviewPanel`
+ *  as the agent page's Review card, rather than a plain title tooltip. Renders nothing until the
+ *  digest has loaded. */
 export function ReviewCluster({ row }: { row: Row }) {
   const d = useReviewDigest(row.repo, row.prNumber, reviewSig(row));
   if (!d) return null;
-  const { count, nits } = d.unresolved;
+  const { count } = d.unresolved;
   if (!d.approvers.length && !count && !d.worst && !d.human.length) return null;
   return (
     <span data-slot="review-cluster" className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap">
       {d.approvers.length > 0 && <span className="flex -space-x-1">{d.approvers.slice(0, 3).map((a) => <ApproverChip key={a} login={a} />)}</span>}
       {d.approvers.length > 3 && <span className="text-muted-foreground text-[10px]">+{d.approvers.length - 3}</span>}
-      {count > 0 && (
-        <span data-slot="unresolved" title={nits ? `${count} unresolved review threads (${nits} nit${nits === 1 ? "" : "s"})` : `${count} unresolved review threads`}
-          className="rounded-full border px-1.5 text-[10px] leading-4 whitespace-nowrap">
-          {count} unresolved
-        </span>
+      {(count > 0 || d.worst) && (
+        <HoverCard openDelay={150} closeDelay={100}>
+          <HoverCardTrigger asChild>
+            <span data-slot="unresolved" data-severity={d.worst ?? undefined} tabIndex={0}
+              aria-label={d.worst ? `AI reviewer flagged a ${d.worst}-severity comment` : `${count} unresolved review threads`}
+              className={`inline-flex items-center gap-0.5 rounded-full border px-1.5 text-[10px] leading-4 whitespace-nowrap outline-none ${d.worst ? SEVERITY_CLASS[d.worst] : "text-muted-foreground"}`}>
+              {count > 0 && count}<MessagesSquare className="size-2.5" />
+            </span>
+          </HoverCardTrigger>
+          <HoverCardContent align="start" className="w-[28rem] max-w-[calc(100vw-2rem)] p-0">
+            <ReviewPanel repo={row.repo} prNumber={row.prNumber!} sig={reviewSig(row)} className="border-none shadow-none" bodyClass="max-h-80 overflow-y-auto" />
+          </HoverCardContent>
+        </HoverCard>
       )}
       {d.human.length > 0 && (
         <span data-slot="human-comments" title={`${d.human.length} comment${d.human.length === 1 ? "" : "s"} from people`} className="text-muted-foreground inline-flex items-center gap-0.5 text-[10px]">
           <MessageSquare className="size-2.5" />{d.human.length}
         </span>
-      )}
-      {d.worst && (
-        <span data-slot="severe-dot" data-severity={d.worst} title={severeTitle(d)} aria-label={`${d.worst === "critical" ? "Severe" : "Warning"} AI review comment`}
-          className={`size-2 rounded-full ${d.worst === "critical" ? "bg-geist-red" : "bg-geist-amber"}`} />
       )}
     </span>
   );
@@ -75,12 +86,12 @@ function ItemLine({ item }: { item: ReviewItem }) {
 
 /** The PR page's Review panel: approvals and the open-thread count, then the comments from people
  *  and the severe AI findings — the ones worth reading — ahead of the rest of the conversation. */
-export function ReviewPanel({ repo, prNumber, sig }: { repo: string; prNumber: number; sig?: string }) {
+export function ReviewPanel({ repo, prNumber, sig, className, bodyClass }: { repo: string; prNumber: number; sig?: string; className?: string; bodyClass?: string }) {
   const d = useReviewDigest(repo, prNumber, sig);
   if (!d) return <p className="text-muted-foreground text-sm" data-slot="review-panel-loading">Loading review…</p>;
   const { count, nits } = d.unresolved;
   return (
-    <VCard slot="review-panel" title="Review" aside={
+    <VCard slot="review-panel" title="Review" className={className} bodyClass={bodyClass} aside={
       <span className="text-muted-foreground text-xs">
         {d.approvers.length ? <>Approved by <span className="text-foreground">{d.approvers.join(", ")}</span></> : "No approvals yet"}
         {` · ${count} unresolved${nits ? ` (${nits} nit${nits === 1 ? "" : "s"})` : ""}`}

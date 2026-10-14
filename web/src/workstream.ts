@@ -1815,10 +1815,15 @@ export function approvers(s: ReviewSignal): string[] {
 export const humanComments = (s: ReviewSignal): ReviewItem[] => reviewItems(s).filter((i) => !i.bot);
 
 /** Bot / AI comments that declare a severity near their top. A summary comment counts only when it
- *  carries an explicit emoji marker — its prose ("improves security…") is not a finding. */
+ *  carries an explicit emoji marker — its prose ("improves security…") is not a finding. A top-level
+ *  comment or review body (kind "comment" | "review") has no "resolved" bit on GitHub — once posted
+ *  it sits there forever — so it only counts when it was posted AFTER the PR's latest commit; an
+ *  older one was superseded by work the worker has since done. An unresolved inline thread (kind
+ *  "thread") always counts: GitHub lets it be resolved, and `reviewItems` already drops it once it is. */
 export function severeAiComments(s: ReviewSignal): ReviewItem[] {
   return reviewItems(s).flatMap((i) => {
     if (!i.bot || (isSummaryComment(i.body) && !EMOJI_MARKER_RE.test(i.body.slice(0, SEVERITY_WINDOW)))) return [];
+    if (i.kind !== "thread" && s.headCommitAt && i.createdAt && i.createdAt <= s.headCommitAt) return [];
     const severity = commentSeverity(i.body);
     // A badge-only line (Gemini's priority image) has no text of its own: keep the first line then.
     return severity ? [{ ...i, severity, line: (/!\[/.test(severityLine(i.body) ?? "") ? undefined : severityLine(i.body)) ?? i.line }] : [];
