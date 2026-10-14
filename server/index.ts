@@ -505,10 +505,14 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   // Every repo-scoped call names its repo (query for GET, body for POST); defaults to the first.
   // The orchestrator's conversation is recorded under a reserved repo name that is no git repo —
-  // only the database-backed chat routes (turns, stream, queued) are ever asked for it.
+  // only the database-backed chat routes (turns, stream, queued) are ever asked for it, PLUS any
+  // route (like /api/compact) that launches a run against its session: that one must land on
+  // cfg.orchestratorOn, same as the dedicated /api/orchestrator block above — so the synthetic repo
+  // carries `runsOn` as its home, the same fallback forwardToOwner already uses for a real repo's
+  // default placement.
   const repoName = url.searchParams.get("repo") ?? body.repo;
   const repo = repoName === ORCHESTRATOR_REPO
-    ? { name: ORCHESTRATOR_REPO, repoPath: orchestrator.dir(), worktreeRoot: orchestrator.dir(), baseBranch: "", previewServices: [] }
+    ? { name: ORCHESTRATOR_REPO, repoPath: orchestrator.dir(), worktreeRoot: orchestrator.dir(), baseBranch: "", previewServices: [], runsOn: cfg.orchestratorOn }
     : repoOf(cfg, repoName);
   // A repo this instance doesn't run is handled by the instance that does.
   const forwarded = await forwardToOwner(req, url, repo, cfg, body);
