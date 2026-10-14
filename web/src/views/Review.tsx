@@ -23,7 +23,7 @@ function ApproverChip({ login }: { login: string }) {
 }
 
 const severeTitle = (d: ReviewDigest) =>
-  d.severe.map((i) => `${i.author ?? "bot"}: ${i.line}`).join("\n");
+  `AI reviewer flagged:\n${d.severe.map((i) => `${i.author ?? "bot"}: ${i.line}${i.kind !== "thread" ? " (summary comment)" : ""}`).join("\n")}`;
 
 /** The list row's compact cluster: approver chips, `N unresolved`, and a red/amber dot when an AI
  *  reviewer left a severe comment. Renders nothing until the digest has loaded. */
@@ -48,7 +48,7 @@ export function ReviewCluster({ row }: { row: Row }) {
         </span>
       )}
       {d.worst && (
-        <span data-slot="severe-dot" data-severity={d.worst} title={severeTitle(d)} aria-label={`${d.worst === "critical" ? "Severe" : "Warning"} AI review comment`}
+        <span data-slot="severe-dot" data-severity={d.worst} title={severeTitle(d)} aria-label={`AI reviewer flagged a ${d.worst === "critical" ? "critical" : "warning"}-severity comment`}
           className={`size-2 rounded-full ${d.worst === "critical" ? "bg-geist-red" : "bg-geist-amber"}`} />
       )}
     </span>

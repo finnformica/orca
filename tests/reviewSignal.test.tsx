@@ -98,6 +98,18 @@ describe("review signal derivations (pure)", () => {
     ]);
   });
 
+  test("severe AI comments: a stale top-level comment/review (no \"resolved\" bit) stops counting once the head commit moves past it; an unresolved inline thread always counts", () => {
+    const headCommitAt = at(15);
+    const staleTopLevel: ConversationComment = { id: "C-old", kind: "comment", author: "claude", bot: true, body: CLAUDE_REVIEW, createdAt: at(5) };
+    const freshTopLevel: ConversationComment = { id: "C-new", kind: "review", author: "claude", bot: true, body: CLAUDE_REVIEW, createdAt: at(20) };
+    const inlineThread: ReviewThreadEvidence = { id: "T-inline", author: "claude[bot]", body: "⚠️ **Warning:** still broken", resolved: false, createdAt: at(1) };
+    const s: ReviewSignal = { prAuthor: "me", headCommitAt, threads: [inlineThread], comments: [staleTopLevel, freshTopLevel] };
+    expect(severeAiComments(s).map((i) => i.id)).toEqual(["C-new", "T-inline"]);
+    expect(reviewDigest(s).worst).toBe("critical"); // the fresh top-level comment alone still lights the dot
+    // no headCommitAt (an older fixture/caller): nothing is filtered, as before.
+    expect(severeAiComments({ ...s, headCommitAt: undefined }).map((i) => i.id)).toEqual(["C-new", "C-old", "T-inline"]);
+  });
+
   test("actionable unresolved: excludes resolved, the author's own, status updates and summaries; nits counted but flagged", () => {
     expect(actionableUnresolved(signal)).toEqual({ count: 5, nits: 1 }); // T1 T2 T6 T7 T8
     expect(actionableUnresolved({ prAuthor: "me", threads: [{ id: "S", author: "x[bot]", body: "## Summary\nAll good", resolved: false }], comments: [] }).count).toBe(0);
@@ -119,6 +131,7 @@ describe("gh.reviewSignal (PATH shim)", () => {
   test("one GraphQL call: reviews with state (bodiless approvals too), comments and every thread, the author's comments dropped", async () => {
     await setReviewEvidenceFixture({ data: { repository: { pullRequest: {
       author: { login: "me" },
+      commits: { nodes: [{ commit: { committedDate: at(9) } }] },
       reviews: { nodes: [
         { id: "R1", author: { __typename: "User", login: "alice" }, state: "APPROVED", body: "", submittedAt: at(1), url: "https://x/R1" },
         { id: "R2", author: { __typename: "User", login: "me" }, state: "COMMENTED", body: "self", submittedAt: at(2) },
@@ -135,6 +148,7 @@ describe("gh.reviewSignal (PATH shim)", () => {
     } } } });
     const s = await reviewSignal(repo, 42);
     expect(s.prAuthor).toBe("me");
+    expect(s.headCommitAt).toBe(at(9));
     expect(s.comments.map((c) => [c.id, c.state, c.bot])).toEqual([["R1", "APPROVED", false], ["C1", undefined, true]]);
     expect(s.threads[0]).toMatchObject({ id: "T1", author: "carol", resolved: false, outdated: true, line: 3, path: "a.ts", bot: false });
     expect(s.threads[1]).toMatchObject({ id: "T2", resolved: true, bot: true });
@@ -182,7 +196,10 @@ describe("review cluster + Review panel", () => {
     expect(cluster.querySelector('[data-slot="unresolved"]')!.getAttribute("title")).toContain("1 nit");
     const dot = cluster.querySelector<HTMLElement>('[data-slot="severe-dot"]')!;
     expect(dot.dataset.severity).toBe("critical");
+    expect(dot.getAttribute("title")).toContain("AI reviewer flagged:");
     expect(dot.getAttribute("title")).toContain("SQL injection");
+    expect(dot.getAttribute("title")).toContain("claude: 🔴 Critical: SQL injection — `findUser` interpolates `name` into the query string. (summary comment)"); // top-level: noted as a summary comment
+    expect(dot.getAttribute("title")).toContain("claude[bot]: ⚠️ Warning: this throws when `items` is empty.\n"); // inline thread: no summary-comment note
     // Lazy: only the PR row fetched it, once — a further poll doesn't refetch an unchanged PR.
     await act(async () => { await store.refresh(); await flush(); });
     expect(apiFake.reviewSignalCalls).toEqual(["r#7"]);
