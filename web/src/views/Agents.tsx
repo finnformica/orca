@@ -375,15 +375,17 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
   const prLink = row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" title={`Open PR #${row.prNumber} on GitHub`} className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>;
   if (stacked) return (
     // A phone: a taller, card-like row with no fixed-width columns — everything wraps instead of
-    // scrolling sideways. Line 1 is title + status; line 2 is branch/model/PR/preview/diffstat; the
-    // ⋯ menu sits in its own flex column at the right (never absolutely positioned over the text, so
-    // nothing can sit under it unreachable or clipped). State/condition badges, reasons and a run
-    // error follow as their own wrapping lines.
+    // scrolling sideways. Line 1 is title + status; line 2 is branch/model/PR/preview/diffstat. The
+    // quick actions and ⋯ menu used to sit in their own trailing column — fixed-width touch targets
+    // squeezing the title/branch text into a narrow strip that truncated badly. They now sit at the
+    // end of the state/condition-badges line instead (icon-only, no forced touch-target size), so the
+    // content column gets the row's full width. State/condition badges, reasons and a run error
+    // follow as their own wrapping lines.
     <div
       ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-layout="stacked" data-branch={row.branch} aria-busy={busy}
       aria-label={row.title} aria-haspopup={hasMenu ? "menu" : undefined}
       onClick={openOnRowClick(row)} onContextMenu={onContextMenu} onKeyDown={onKeyDown}
-      className={`active:bg-accent/40 flex items-start gap-1 border-b py-3 pr-1 pl-4 text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
+      className={`active:bg-accent/40 flex items-start gap-1 border-b py-3 px-4 text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
     >
       <div className="min-w-0 flex-1 space-y-1.5">
         <div role="cell" className="flex min-w-0 items-center justify-between gap-2">
@@ -408,11 +410,11 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
           {row.prNumber && !isDone && <ReviewCluster row={row} />}
           {row.prNumber && !isDone && <PrPreviewCell row={row} />}
           {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
+          {(quick || menu) && <div data-slot="row-actions" className="ml-auto flex shrink-0 items-center gap-1">{quick}{menu}</div>}
         </div>
         {reasons.length > 0 && <div role="cell" data-slot="row-reasons" className="text-geist-warning-fg text-xs">{reasons.join(" · ")}</div>}
         {error && <div role="cell" data-slot="row-error" className="text-geist-red line-clamp-3 text-xs break-words">{error}</div>}
       </div>
-      <div className="flex shrink-0 items-center gap-1 [&_button[aria-label=Actions]]:size-11">{quick}{menu}</div>
       {!isDone && <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />}
     </div>
   );
