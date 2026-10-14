@@ -489,11 +489,11 @@ export function WorkstreamCard({ row }: { row: Row }) {
       {/* Identity: the title anchors the card; prompt is supporting context. */}
       <div className="space-y-0.5">
         {titleTo ? (
-          <button type="button" onClick={() => navigate(titleTo)} className="text-foreground block w-full truncate text-left text-sm font-medium hover:underline">
+          <button type="button" onClick={() => navigate(titleTo)} title={row.prTitle && row.prTitle !== row.title ? `PR: ${row.prTitle}` : undefined} className="text-foreground block w-full truncate text-left text-sm font-medium hover:underline">
             {row.title}
           </button>
         ) : (
-          <div className="truncate text-sm font-medium">{row.title}</div>
+          <div title={row.prTitle && row.prTitle !== row.title ? `PR: ${row.prTitle}` : undefined} className="truncate text-sm font-medium">{row.title}</div>
         )}
         {!dense && row.prompt && <p className="text-muted-foreground line-clamp-2 text-xs">{row.prompt}</p>}
         <OrchStatusNote status={row.orchStatus} />

@@ -424,7 +424,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
       style={rowGrid(cols)}
       className={`${GRID} hover:bg-accent/40 focus-visible:bg-accent/40 h-14 border-b text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
     >
-      <div role="cell" className="min-w-0" title={[row.title, instruction && `Latest: ${instruction}`, multiInstance && instance && `Instance: ${instance}`, `Branch: ${row.branch}`].filter(Boolean).join("\n")}>
+      <div role="cell" className="min-w-0" title={[row.title, row.prTitle && row.prTitle !== row.title && `PR: ${row.prTitle}`, instruction && `Latest: ${instruction}`, multiInstance && instance && `Instance: ${instance}`, `Branch: ${row.branch}`].filter(Boolean).join("\n")}>
         <div className="truncate font-medium">{row.title}</div>
         <div className="text-muted-foreground flex min-w-0 items-center gap-1 text-xs">
           <span className="shrink-0">{row.repo}</span>
