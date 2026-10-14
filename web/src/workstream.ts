@@ -2589,11 +2589,12 @@ export function listColumns(): ListColumn[] {
     { key: "status", label: "Status", minRem: 8.5 },
     { key: "pr", label: "PR", minRem: 8.5 },
     { key: "signals", label: "Checks & review", minRem: 6, grow: 1 },
-    // Fixed at up to 3 size-7 slots (local preview link + its Stop, the ⋯ menu) so the column never
-    // shifts between states and nothing overflows into a sideways scroll. The PR-preview icon that
-    // used to sit here moved to a text link next to the model name (PrPreviewInline) — the ⋯ menu's
-    // PR submenu still carries Open/Add PR preview.
-    { key: "actions", label: "Actions", minRem: 8 },
+    // Fixed, wide enough for the row's quick actions (a labelled primary up to "Merge when green" +
+    // one icon), the local preview link + its Stop and the ⋯ menu, so the column never shifts
+    // between states and nothing overflows into a sideways scroll. The PR-preview icon that used to
+    // sit here moved to a text link next to the model name (PrPreviewInline) — the ⋯ menu's PR
+    // submenu still carries Open/Add PR preview.
+    { key: "actions", label: "Actions", minRem: 16 },
   ];
 }
 /** The CSS grid-template-columns for a column set: fixed floors, `minmax(floor, Nfr)` for the flexible. */
