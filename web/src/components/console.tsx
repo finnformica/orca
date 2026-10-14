@@ -3,7 +3,7 @@
 // of the console is assembled from these, so the look is decided in one place.
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { niceMax, orchStatusText, sparklineSegments, timeTicks, usageZone, type OrchStatus } from "../workstream";
+import { niceMax, orchStatusText, sparklineSegments, timeTicks, upkeepLabel, usageZone, type OrchStatus, type UpkeepRecord } from "../workstream";
 
 /** A card: hairline border, no shadow, a 48px header row with the title left and controls right. */
 export function VCard({ title, aside, children, className, slot, bodyClass, onHeaderClick, expanded }: {
@@ -97,6 +97,18 @@ export function OrchStatusNote({ status, chipOnly, className }: { status?: OrchS
   return (
     <div data-slot="orch-status" title={`Orchestrator — ${text}`} className={cn("text-muted-foreground flex min-w-0 items-center gap-1 text-xs", className)}>
       <span className="min-w-0 truncate">{line}</span>
+    </div>
+  );
+}
+
+/** Automatic PR upkeep on the card: "auto-addressing: conflicts" while its run goes, or that it gave
+ *  up (then the user's). Nothing otherwise. */
+export function UpkeepNote({ upkeep, running, className }: { upkeep?: UpkeepRecord; running: boolean; className?: string }) {
+  const text = upkeepLabel(upkeep, running);
+  if (!text) return null;
+  return (
+    <div data-slot="upkeep-status" title={text} className={cn(upkeep?.gaveUp ? "text-geist-warning-fg" : "text-muted-foreground", "flex min-w-0 items-center gap-1 text-xs", className)}>
+      <span className="min-w-0 truncate">{text}</span>
     </div>
   );
 }

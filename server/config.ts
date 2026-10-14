@@ -127,6 +127,10 @@ export type RepoConfig = {
    *  fails the check): `suggest` (the default) puts the next model up the ladder in the worker
    *  report; `apply` re-pins the workstream to it, so the retry runs there, and the report says so. */
   modelEscalation?: "suggest" | "apply";
+  /** Automatic PR upkeep (server/upkeep.ts): an orchestrated workstream's open PR that conflicts,
+   *  goes red on a required check, or gets actionable review threads is Address-PR'd by Orca on its
+   *  own. On unless set to false. */
+  autoUpkeep?: boolean;
 };
 
 export type OrcaConfig = {
@@ -163,6 +167,9 @@ export type OrcaConfig = {
    *  re-reads its whole history, so the cap can bite after a tool call or two; a wake that hits it
    *  says so in the chat and its message is retried. Workers are capped per repo (`agentMaxBudgetUsd`). */
   orchestratorWakeBudgetUsd?: number;
+  /** How many automatic PR-upkeep address runs (server/upkeep.ts) may go at once on one instance
+   *  (default 2) — each is a full agent run, and the box's memory is shared. */
+  autoUpkeepConcurrency?: number;
   /** Which instance the orchestrator lives on, when there are several sharing the database. Its
    *  routes are forwarded there and worker reports from other instances are posted there, so ONE
    *  process wakes it (two would resume one session at once). Unset: wherever it is spoken to. */
@@ -258,6 +265,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
         }
       }
     }
+    if (r.autoUpkeep !== undefined && typeof r.autoUpkeep !== "boolean") errors.push(`${where}.autoUpkeep must be true or false`);
     if (r.modelEscalation !== undefined && r.modelEscalation !== "suggest" && r.modelEscalation !== "apply") {
       errors.push(`${where}.modelEscalation must be "suggest" or "apply"`);
     }
@@ -324,6 +332,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
   if (d.orchestratorWakeBudgetUsd !== undefined && (typeof d.orchestratorWakeBudgetUsd !== "number" || !(d.orchestratorWakeBudgetUsd > 0))) {
     errors.push("orchestratorWakeBudgetUsd must be a positive number of dollars");
   }
+  if (d.autoUpkeepConcurrency !== undefined && !(Number.isInteger(d.autoUpkeepConcurrency) && (d.autoUpkeepConcurrency as number) >= 0)) {
+    errors.push("autoUpkeepConcurrency must be a whole number (0 turns automatic upkeep off)");
+  }
   if (d.agentCpuWeight !== undefined && (typeof d.agentCpuWeight !== "number" || !(d.agentCpuWeight > 0))) {
     errors.push("agentCpuWeight must be a positive number (systemd CPUWeight, 1-10000)");
   }
@@ -341,6 +352,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       instanceBillingSince: d.instanceBillingSince as Record<string, string> | undefined,
       orchestratorShell: d.orchestratorShell as boolean | undefined,
       orchestratorWakeBudgetUsd: d.orchestratorWakeBudgetUsd as number | undefined,
+      autoUpkeepConcurrency: d.autoUpkeepConcurrency as number | undefined,
       orchestratorOn: d.orchestratorOn as string | undefined,
       agentCpuWeight: d.agentCpuWeight as number | undefined,
     },
@@ -403,6 +415,7 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
       ...(file.agentModel === undefined ? {} : { agentModel: file.agentModel }),
       ...(file.orchestratorShell === undefined ? {} : { orchestratorShell: file.orchestratorShell }),
       ...(file.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: file.orchestratorWakeBudgetUsd }),
+      ...(file.autoUpkeepConcurrency === undefined ? {} : { autoUpkeepConcurrency: file.autoUpkeepConcurrency }),
       ...(file.orchestratorOn === undefined ? {} : { orchestratorOn: file.orchestratorOn }),
       ...(file.agentCpuWeight === undefined ? {} : { agentCpuWeight: file.agentCpuWeight }),
     },
@@ -469,6 +482,7 @@ async function loadFromDb(): Promise<OrcaConfig> {
     instanceBillingSince: app.instanceBillingSince as Record<string, string> | undefined,
     orchestratorShell: app.orchestratorShell !== false,
     orchestratorWakeBudgetUsd: app.orchestratorWakeBudgetUsd as number | undefined,
+    autoUpkeepConcurrency: app.autoUpkeepConcurrency as number | undefined,
     orchestratorOn: app.orchestratorOn as string | undefined,
     agentCpuWeight: app.agentCpuWeight as number | undefined,
   };
@@ -503,6 +517,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.instanceBillingSince === undefined ? {} : { instanceBillingSince: config.instanceBillingSince }),
       ...(config.orchestratorShell === undefined ? {} : { orchestratorShell: config.orchestratorShell }),
       ...(config.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: config.orchestratorWakeBudgetUsd }),
+      ...(config.autoUpkeepConcurrency === undefined ? {} : { autoUpkeepConcurrency: config.autoUpkeepConcurrency }),
       ...(config.orchestratorOn === undefined ? {} : { orchestratorOn: config.orchestratorOn }),
       ...(config.agentCpuWeight === undefined ? {} : { agentCpuWeight: config.agentCpuWeight }),
     },
