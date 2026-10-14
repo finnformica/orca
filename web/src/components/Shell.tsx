@@ -69,7 +69,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
       <aside
         data-slot="sidebar" data-collapsed={collapsed}
         className={cn(
-          "bg-sidebar max-md:hidden md:sticky md:top-0 md:flex md:h-screen md:flex-col md:border-r",
+          "bg-sidebar z-50 max-md:hidden md:sticky md:top-0 md:flex md:h-screen md:flex-col md:border-r",
           collapsed ? "md:w-14" : "md:w-60",
         )}
       >
