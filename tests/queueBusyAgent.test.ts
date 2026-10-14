@@ -143,3 +143,26 @@ test("POST /api/agents/run: a busy worktree queues too, instead of 409ing", asyn
   const turns = await settled("feat2", 2);
   expect(turns[1]?.instruction).toBe("Retry the failed run");
 });
+
+test("GET /api/queued returns a queued message's attachments whether they're in the structured field or embedded in its instruction text", async () => {
+  // A browser-originated follow-up stores refs in the structured field (server/index.ts's /api/agent).
+  await db.queueMessage({
+    repo: "r", branch: "feat3", worktreePath: repo, instruction: "look at this",
+    attachments: ["orca-attachment://11111111-1111-1111-1111-111111111111/bug.png"], provider: "claude",
+  });
+  // The orchestrator's `orca send --attach` (verbs.followUp) bakes the ref into the instruction text
+  // itself (withAttachments) instead — the structured field is empty, and used to mean the queued
+  // bubble showed no attachment at all.
+  await db.queueMessage({
+    repo: "r", branch: "feat3", worktreePath: repo,
+    instruction: "fix the bug\n\nAttached files (Read these for extra context):\n- orca-attachment://22222222-2222-2222-2222-222222222222/notes.txt",
+    attachments: [], provider: "claude",
+  });
+
+  const res = await fetch(`${base}/api/queued?repo=r&branch=feat3`);
+  expect(res.status).toBe(200);
+  const queued = await res.json();
+  expect(queued).toHaveLength(2);
+  expect(queued[0].attachments).toEqual(["orca-attachment://11111111-1111-1111-1111-111111111111/bug.png"]);
+  expect(queued[1].attachments).toEqual(["orca-attachment://22222222-2222-2222-2222-222222222222/notes.txt"]);
+});

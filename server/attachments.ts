@@ -23,6 +23,16 @@ const safeName = (name: string) => name.replace(/[^\w.-]+/g, "-").replace(/^[.-]
 
 export const attachmentRef = (id: string, filename: string) => `${ATTACHMENT_PREFIX}${id}/${safeName(filename)}`;
 
+/** Every `orca-attachment://<id>/<name>` reference in a text, as whole ref strings (first occurrence
+ *  of each). Used to recover a queued message's attachments when they were embedded in its
+ *  instruction text (`withAttachments`, e.g. the orchestrator's `orca send --attach`) rather than
+ *  carried in the structured field a browser-originated send fills in separately. */
+export function refsIn(text: string): string[] {
+  const seen = new Set<string>();
+  for (const m of text.matchAll(REF)) seen.add(m[0]);
+  return [...seen];
+}
+
 /** Store each file in the database; refuses the whole upload if any file is over the cap. */
 export async function store(files: File[]): Promise<string[]> {
   const big = files.find((f) => f.size > MAX_ATTACHMENT_BYTES);
