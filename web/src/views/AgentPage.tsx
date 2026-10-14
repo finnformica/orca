@@ -68,20 +68,26 @@ export function DetailsCard({ row, summary, actions, extra }: { row: Row; summar
   );
 }
 
-/** The page's ONE header row (Finn: the old repo line + 2xl title + links + a separate tab row ate
- *  the Chat tab's height): repo / title, the status, the branch or PR link, then the key actions at
- *  the right — the tabs sit directly under it, in the same sticky block. Everything else (created,
- *  model, instance, source, preview) lives on the Overview tab's Details card. */
-export function AgentHeader({ repo, title, status, source, actions }: { repo: string; title: ReactNode; status?: ReactNode; source?: ReactNode; actions?: ReactNode }) {
+/** The page's ONE header row on desktop (Finn: the old repo line + 2xl title + links + a separate
+ *  tab row ate the Chat tab's height): repo / title, the status, the branch or PR link, then the
+ *  key actions at the right — the tabs sit directly under it, in the same sticky block. Below md,
+ *  it splits into two rows instead — the title alone (squeezed beside the status dot and every
+ *  action icon, it wrapped one word per line on a phone), then status + actions — so the title gets
+ *  the full width to truncate in (`fullTitle` carries it to the `title` attribute, since `title` here
+ *  is a ReactNode that may mix in a PR-number link). Everything else (created, model, instance,
+ *  source, preview) lives on the Overview tab's Details card. */
+export function AgentHeader({ repo, title, fullTitle, status, source, actions }: { repo: string; title: ReactNode; fullTitle?: string; status?: ReactNode; source?: ReactNode; actions?: ReactNode }) {
   return (
-    <div data-slot="agent-header" className="flex min-h-9 min-w-0 items-center gap-x-3 gap-y-1">
-      <h1 className="flex min-w-0 items-center gap-1.5 text-base font-semibold tracking-tight">
+    <div data-slot="agent-header" className="flex min-w-0 flex-col gap-1 md:min-h-9 md:flex-row md:items-center md:gap-x-3 md:gap-y-0">
+      <h1 className="flex min-w-0 items-center gap-1.5 text-base font-semibold tracking-tight" title={fullTitle}>
         <span className="text-muted-foreground hidden shrink-0 font-normal sm:inline">{repo} /</span>
-        <span className="truncate">{title}</span>
+        <span className="min-w-0 truncate">{title}</span>
       </h1>
-      {status && <span data-slot="agent-header-status" className="flex shrink-0 items-center gap-1.5 text-xs">{status}</span>}
-      {source && <span data-slot="agent-header-source" className="text-muted-foreground hidden min-w-0 items-center gap-1 text-xs md:flex">{source}</span>}
-      {actions && <span className="ml-auto flex shrink-0 items-center gap-2">{actions}</span>}
+      <div className="flex min-w-0 items-center gap-x-3 md:contents">
+        {status && <span data-slot="agent-header-status" className="flex shrink-0 items-center gap-1.5 text-xs">{status}</span>}
+        {source && <span data-slot="agent-header-source" className="text-muted-foreground hidden min-w-0 items-center gap-1 text-xs md:flex">{source}</span>}
+        {actions && <span className="ml-auto flex shrink-0 items-center gap-2">{actions}</span>}
+      </div>
     </div>
   );
 }
