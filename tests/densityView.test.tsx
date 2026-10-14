@@ -57,12 +57,14 @@ describe("dense view", () => {
     expect(labelledBtn("Follow up")).toBe(true);
     expect(container!.textContent).toContain("Test on"); // "Test on <instance>" now that previews can be placed (the fake config has two instances)
     // Approved and clean: the state-aware quick actions (workstream.quickActions) — icon-only with a
-    // tooltip, on the preview line immediately LEFT of Test.
-    expect(byAria("Merge when green")).not.toBeNull();
-    expect(labelledBtn("Merge when green")).toBe(false);
+    // tooltip, on the preview line immediately LEFT of Test. The fake repo has no mergePolicy (defaults
+    // to "never"), so the queue is refused and the second button is Enable auto-merge, not a disabled clock.
+    expect(byAria("Merge")).not.toBeNull();
+    expect(byAria("Enable auto-merge")).not.toBeNull();
+    expect(labelledBtn("Enable auto-merge")).toBe(false);
     const quick = container!.querySelector<HTMLElement>('[data-slot="quick-actions"]')!;
     expect(quick.nextElementSibling!.textContent).toContain("Test on");
-    expect(byAria("Merge when green")!.closest('[data-slot="tip"]')!.querySelector('[role="tooltip"]')).not.toBeNull();
+    expect(byAria("Enable auto-merge")!.closest('[data-slot="tip"]')!.querySelector('[role="tooltip"]')).not.toBeNull();
     // Full-size badges — no dense size-down variant.
     expect(hasClass("[data-slot=badge]]:text-[10px]")).toBe(false);
   });
@@ -78,16 +80,18 @@ describe("dense view", () => {
     // Every verb is an icon button (found by aria-label), and none renders its text label.
     expect(byAria("Test locally")).not.toBeNull();
     expect(byAria("Follow up")).not.toBeNull();
-    expect(byAria("Merge when green")).not.toBeNull();
-    // Merge now isn't a quick action for a PR (Merge when green is); it stays in the ⋯ menu.
-    expect(container!.querySelector('button[aria-label="Merge"]')).toBeNull();
+    // Approved and clean, on a repo with no mergePolicy (defaults to "never"): Merge now AND Enable
+    // auto-merge, never Merge when green (it would only ever show disabled) and never Slack.
+    expect(container!.querySelector('button[aria-label="Merge"]')).not.toBeNull();
+    expect(byAria("Enable auto-merge")).not.toBeNull();
+    expect(byAria("Merge when green")).toBeNull();
     // The quick icons come first, immediately left of the Test control.
     const quick = container!.querySelector<HTMLElement>('[data-slot="quick-actions"]')!;
     expect(quick.nextElementSibling!.contains(byAria("Test locally"))).toBe(true);
     expect(byAria("Actions")).not.toBeNull();
     expect(labelledBtn("Follow up")).toBe(false);
     expect(container!.textContent).not.toContain("Test locally"); // label hidden, icon only
-    expect(labelledBtn("Merge when green")).toBe(false);
+    expect(labelledBtn("Enable auto-merge")).toBe(false);
     // Detail is gone; badges shrink.
     expect(container!.textContent).not.toContain("Make the board denser"); // prompt
     expect(container!.textContent).not.toContain("2 files"); // diffstat

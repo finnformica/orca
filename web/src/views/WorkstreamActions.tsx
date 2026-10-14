@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { CheckCheck, ChevronDown, Clock, GitMerge, GitPullRequestArrow, Loader2, MessageSquarePlus, MoreVertical, Send, Sparkles, Wrench, X, type LucideIcon } from "lucide-react";
+import { CheckCheck, ChevronDown, Clock, GitMerge, GitPullRequestArrow, Loader2, MessageSquarePlus, MoreVertical, Send, Sparkles, Wrench, X, Zap, type LucideIcon } from "lucide-react";
 import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, mergeWhenGreen, moveWorkstream, previewConfigured, thisInstance,
   cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, slackChannel, staleHours, suggestTitle, toggleFollow, useCachedReviewDigest, useRepos, useReviewDigest, type Row,
@@ -31,7 +31,7 @@ const followUpDraftKey = (row: Row) => `orca.followup.${row.repo}::${row.branch}
 
 // The icon a quick action wears (every quick action is icon-only, its label the tooltip).
 const QUICK_ICONS: Record<QuickActionId, LucideIcon> = {
-  createPr: GitPullRequestArrow, markReady: CheckCheck, addressPr: Wrench, slack: Send, mergeWhenGreen: Clock, merge: GitMerge,
+  createPr: GitPullRequestArrow, markReady: CheckCheck, addressPr: Wrench, slack: Send, mergeWhenGreen: Clock, merge: GitMerge, autoMerge: Zap,
 };
 
 // `compact` renders the toolbar as icon-only buttons (dense view). The toolbar opens with the
@@ -430,6 +430,7 @@ export function QuickActionButtons({ row, hasWork = true, onBusy, peek = false, 
       case "slack": return () => sendSlack(row, slackKind ?? "notify");
       case "mergeWhenGreen": return () => mergeWhenGreen(row);
       case "merge": return () => merge(row);
+      case "autoMerge": return () => autoMerge(row);
     }
   };
   return (
@@ -442,7 +443,9 @@ export function QuickActionButtons({ row, hasWork = true, onBusy, peek = false, 
             <span data-quick-action={a.id} className="inline-flex">
               <ActionButton size="icon" variant="ghost" label={a.label} disabled={Boolean(a.disabled)}
                 className={cn("size-7", i === 0 ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
-                confirm={a.id === "merge" ? `Merge ${row.branch} into ${baseBranch(row.repo)} locally? This can't be undone.` : undefined}
+                confirm={a.id === "merge" ? (row.prNumber
+                  ? `Merge PR #${row.prNumber} "${row.title}" into ${baseBranch(row.repo)}? This can't be undone.`
+                  : `Merge ${row.branch} into ${baseBranch(row.repo)} locally? This can't be undone.`) : undefined}
                 failure={{ action: a.label, title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }}
                 onRun={async () => { onBusy?.(true); try { await run(); } finally { onBusy?.(false); } }}>
                 <Icon className="size-3.5" />
