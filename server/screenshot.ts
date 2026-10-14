@@ -23,7 +23,7 @@ export const SHOT_CPU_WEIGHT = 50;
 export const SHOT_TIMEOUT_MS = 45_000;
 export const DEFAULT_VIEWPORT = { width: 1440, height: 900 };
 
-export type ShotStep = { click: string } | { scroll: number | string } | { wait: number } | { waitFor: string };
+export type ShotStep = { click: string } | { hover: string } | { scroll: number | string } | { wait: number } | { waitFor: string };
 export type ShotRequest = {
   url: string;
   viewport?: { width: number; height: number };
@@ -73,7 +73,7 @@ export function parseShotRequest(body: any): ShotRequest {
   }
   const steps: ShotStep[] = Array.isArray(body.steps) ? body.steps : [];
   for (const s of steps) {
-    if (!s || typeof s !== "object" || !("click" in s || "scroll" in s || "wait" in s || "waitFor" in s)) throw new Error(`unknown step: ${JSON.stringify(s)}`);
+    if (!s || typeof s !== "object" || !("click" in s || "hover" in s || "scroll" in s || "wait" in s || "waitFor" in s)) throw new Error(`unknown step: ${JSON.stringify(s)}`);
   }
   return {
     url: u.toString(), viewport: viewport ?? DEFAULT_VIEWPORT, dark: !!body.dark,
@@ -127,8 +127,13 @@ export interface BrowserSession {
  *  what it started and reject — the queue moves on only once the browser is gone. */
 export type Launch = (argv: string[], env: Record<string, string>, unit: string, signal: AbortSignal) => Promise<BrowserSession>;
 
+/** Options on one request: a signal that cancels it while it is still queued (never once it has
+ *  started — a browser already launched runs to completion or its own SHOT_TIMEOUT_MS), and a
+ *  callback fed how many jobs are strictly ahead of it each time the queue changes. */
+export type ShootOpts = { signal?: AbortSignal; onQueue?: (ahead: number) => void };
+
 export type Shooter = {
-  shoot(req: ShotRequest): Promise<Shot>;
+  shoot(req: ShotRequest, opts?: ShootOpts): Promise<Shot>;
   /** Jobs waiting plus the one running. */
   depth(): number;
 };
@@ -141,8 +146,43 @@ export function createShooter(deps: {
   const launch = deps.launch ?? cdpLaunch;
   const store = deps.store ?? diskStore();
   const timeoutMs = deps.timeoutMs ?? SHOT_TIMEOUT_MS;
-  let tail: Promise<unknown> = Promise.resolve();
-  let pending = 0;
+
+  // A real array rather than a promise chain, so a queued (not yet started) job can be pulled back
+  // out and its caller told why — a worker's Bash call that gave up waiting must not leave a browser
+  // launching behind it, and the next job must still run right on its heels.
+  type Job = { req: ShotRequest; resolve: (s: Shot) => void; reject: (e: Error) => void; onQueue?: (ahead: number) => void; started: boolean; lastReported?: number };
+  const queue: Job[] = [];
+  let draining = false;
+
+  // Called after every push and every shift. Only a job whose position actually changed is told —
+  // otherwise a third job joining the queue would re-notify every job already waiting ahead of it.
+  function reportQueue() {
+    queue.forEach((job, i) => {
+      if (job.started || job.lastReported === i) return;
+      job.lastReported = i;
+      job.onQueue?.(i);
+    });
+  }
+
+  async function drain() {
+    if (draining) return;
+    draining = true;
+    try {
+      while (queue.length) {
+        const job = queue[0]!;
+        job.started = true;
+        try {
+          job.resolve(await run(job.req));
+        } catch (e) {
+          job.reject(e as Error);
+        }
+        queue.shift();
+        reportQueue();
+      }
+    } finally {
+      draining = false;
+    }
+  }
 
   async function run(req: ShotRequest): Promise<Shot> {
     const binary = (deps.browser ?? findBrowser)();
@@ -181,13 +221,24 @@ export function createShooter(deps: {
   }
 
   return {
-    shoot(req) {
-      pending++;
-      const job = tail.then(() => run(req));
-      tail = job.catch(() => {}).finally(() => { pending--; });
-      return job;
+    shoot(req, opts = {}) {
+      return new Promise<Shot>((resolve, reject) => {
+        const job: Job = { req, resolve, reject, onQueue: opts.onQueue, started: false };
+        const cancel = () => {
+          if (job.started) return; // already running (or launching); let it finish on its own
+          const i = queue.indexOf(job);
+          if (i >= 0) queue.splice(i, 1);
+          reject(new Error("cancelled before it started"));
+          reportQueue();
+        };
+        if (opts.signal?.aborted) { cancel(); return; }
+        opts.signal?.addEventListener("abort", cancel, { once: true });
+        queue.push(job);
+        reportQueue();
+        void drain();
+      });
     },
-    depth: () => pending,
+    depth: () => queue.length,
   };
 }
 
@@ -288,6 +339,11 @@ async function capture(cdp: Cdp, req: ShotRequest): Promise<Uint8Array> {
     if ("click" in step) {
       await waitFor(step.click);
       await evaluate(`document.querySelector(${JSON.stringify(step.click)}).click()`);
+    } else if ("hover" in step) {
+      await waitFor(step.hover);
+      const { x, y } = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(step.hover)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+      await s("Input.dispatchMouseEvent", { type: "mouseMoved", x, y });
+      await Bun.sleep(300); // a hover card's own transition
     } else if ("scroll" in step) {
       await evaluate(typeof step.scroll === "number" ? `window.scrollTo(0, ${step.scroll})` : `document.querySelector(${JSON.stringify(step.scroll)})?.scrollIntoView()`);
     } else if ("wait" in step) {

@@ -85,6 +85,64 @@ describe("SHOT1 the queue", () => {
     const s = createShooter({ launch: fakeBrowser().launch, store: store(), browser: () => undefined, scoped: () => false });
     await expect(s.shoot(req)).rejects.toThrow(/no headless browser/);
   });
+
+  test("onQueue reports how many jobs are strictly ahead, as the queue drains", async () => {
+    const gates: Array<() => void> = [];
+    const { launch } = fakeBrowser(() => new Promise((r) => gates.push(() => r(PNG))));
+    const s = createShooter({ launch, store: store(), browser: () => "/fake/chrome", scoped: () => false });
+    const seenA: number[] = [], seenB: number[] = [], seenC: number[] = [];
+    const a = s.shoot(req, { onQueue: (n) => seenA.push(n) });
+    const b = s.shoot(req, { onQueue: (n) => seenB.push(n) });
+    const c = s.shoot(req, { onQueue: (n) => seenC.push(n) });
+    await Bun.sleep(10);
+    expect(seenA).toEqual([0]); // about to run
+    expect(seenB).toEqual([1]); // one (a) ahead
+    expect(seenC).toEqual([2]); // two (a, b) ahead
+    for (let i = 0; i < 3; i++) { while (gates.length <= i) await Bun.sleep(5); gates[i]!(); }
+    await Promise.all([a, b, c]);
+    // b and c each moved up one place once a finished running.
+    expect(seenB).toEqual([1, 0]);
+    expect(seenC).toEqual([2, 1, 0]);
+  });
+
+  test("aborting a still-queued job cancels it without ever launching its browser, and the next job runs", async () => {
+    const gates: Array<() => void> = [];
+    const { log, launch } = fakeBrowser(() => new Promise((r) => gates.push(() => r(PNG))));
+    const s = createShooter({ launch, store: store(), browser: () => "/fake/chrome", scoped: () => false });
+    const controller = new AbortController();
+    const running = s.shoot(req); // takes the browser first
+    const queued = s.shoot(req, { signal: controller.signal }); // waits behind it
+    await Bun.sleep(10);
+    expect(s.depth()).toBe(2);
+    controller.abort();
+    await expect(queued).rejects.toThrow(/cancelled/);
+    expect(s.depth()).toBe(1); // the cancelled job is gone, only the running one remains
+    expect(log.launches.length).toBe(1); // the cancelled job's browser was never launched
+    gates[0]!();
+    await running;
+  });
+
+  test("a signal already aborted before shoot() is called cancels at once", async () => {
+    const { log, launch } = fakeBrowser();
+    const s = createShooter({ launch, store: store(), browser: () => "/fake/chrome", scoped: () => false });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(s.shoot(req, { signal: controller.signal })).rejects.toThrow(/cancelled/);
+    expect(log.launches.length).toBe(0);
+    expect(s.depth()).toBe(0);
+  });
+
+  test("aborting after a job has started running does nothing — it finishes on its own", async () => {
+    const { log, launch } = fakeBrowser(async () => PNG);
+    const s = createShooter({ launch, store: store(), browser: () => "/fake/chrome", scoped: () => false });
+    const controller = new AbortController();
+    const job = s.shoot(req, { signal: controller.signal });
+    await Bun.sleep(5); // let it start
+    controller.abort();
+    const shot = await job;
+    expect(shot.bytes).toBe(PNG.byteLength);
+    expect(log.kills).toBe(1);
+  });
 });
 
 describe("SHOT2 the memory cap", () => {
@@ -114,9 +172,9 @@ describe("SHOT3 requests and storage", () => {
     expect(() => parseShotRequest({ url: "file:///etc/passwd" })).toThrow(/http/);
     expect(() => parseShotRequest({})).toThrow(/url required/);
     expect(() => parseShotRequest({ url: "http://x", viewport: "big" })).toThrow(/WIDTHxHEIGHT/);
-    expect(() => parseShotRequest({ url: "http://x", steps: [{ hover: "a" }] })).toThrow(/unknown step/);
-    const r = parseShotRequest({ url: "http://x:1/a", viewport: "390x844", dark: true, steps: [{ click: "#go" }], label: "after dark" });
-    expect(r).toMatchObject({ viewport: { width: 390, height: 844 }, dark: true, steps: [{ click: "#go" }], label: "after-dark" });
+    expect(() => parseShotRequest({ url: "http://x", steps: [{ drag: "a" }] })).toThrow(/unknown step/);
+    const r = parseShotRequest({ url: "http://x:1/a", viewport: "390x844", dark: true, steps: [{ click: "#go" }, { hover: "#menu" }], label: "after dark" });
+    expect(r).toMatchObject({ viewport: { width: 390, height: 844 }, dark: true, steps: [{ click: "#go" }, { hover: "#menu" }], label: "after-dark" });
   });
 
   test("the disk store serves by id and never a path outside its dir", async () => {
@@ -166,5 +224,77 @@ describe("SHOT4 workers", () => {
     } finally {
       server.stop(true);
     }
+  });
+
+  test("--hover is carried as a step, in order with --click", async () => {
+    let got: any;
+    const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(r) { got = await r.json(); return native.Response.json({ path: "/tmp/shot-h.png" }); } });
+    try {
+      const proc = Bun.spawn([join(WORKER_BIN, "orca-shot"), "http://localhost:5173/agents", "--click", "#row", "--hover", "#menu"], {
+        env: { ...process.env, ORCA_URL: `http://127.0.0.1:${server.port}` }, stdout: "pipe", stderr: "pipe",
+      });
+      expect(await proc.exited).toBe(0);
+      expect(got.steps).toEqual([{ click: "#row" }, { hover: "#menu" }]);
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("prints queue position to stderr as the bridge streams it, then the final path", async () => {
+    const server = Bun.serve({
+      port: 0, hostname: "127.0.0.1",
+      async fetch() {
+        const stream = new ReadableStream({
+          async start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"queued":2}\n'));
+            controller.enqueue(new TextEncoder().encode('{"queued":1}\n'));
+            controller.enqueue(new TextEncoder().encode('{"queued":0}\n'));
+            controller.enqueue(new TextEncoder().encode('{"path":"/tmp/shot-q.png"}\n'));
+            controller.close();
+          },
+        });
+        return new native.Response(stream, { headers: { "content-type": "application/x-ndjson" } });
+      },
+    });
+    try {
+      const proc = Bun.spawn([join(WORKER_BIN, "orca-shot"), "http://localhost:5173/agents"], {
+        env: { ...process.env, ORCA_URL: `http://127.0.0.1:${server.port}` }, stdout: "pipe", stderr: "pipe",
+      });
+      const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
+      expect(await proc.exited).toBe(0);
+      expect(out.trim()).toBe("shot: /tmp/shot-q.png");
+      expect(err).toContain("queued: 2 ahead");
+      expect(err).toContain("queued: 1 ahead");
+      expect(err).not.toContain("queued: 0 ahead"); // nothing ahead is not worth a line
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("--timeout aborts a call that outruns it with a clear, non-zero exit — never a silent hang", async () => {
+    const server = Bun.serve({
+      port: 0, hostname: "127.0.0.1",
+      async fetch() {
+        // Never resolves within the test's patience: simulates a job stuck behind a long queue.
+        return new native.Response(new ReadableStream({ start() { /* never enqueue, never close */ } }));
+      },
+    });
+    try {
+      const proc = Bun.spawn([join(WORKER_BIN, "orca-shot"), "http://localhost:5173/agents", "--timeout", "1"], {
+        env: { ...process.env, ORCA_URL: `http://127.0.0.1:${server.port}` }, stdout: "pipe", stderr: "pipe",
+      });
+      const err = await new Response(proc.stderr).text();
+      expect(await proc.exited).toBe(1);
+      expect(err).toContain("screenshot queue busy, try again later; do not block on screenshots");
+    } finally {
+      server.stop(true);
+    }
+  });
+
+  test("--timeout rejects a non-positive value instead of waiting forever", async () => {
+    const proc = Bun.spawn([join(WORKER_BIN, "orca-shot"), "http://localhost:5173/agents", "--timeout", "0"], { stdout: "pipe", stderr: "pipe" });
+    const err = await new Response(proc.stderr).text();
+    expect(await proc.exited).toBe(2);
+    expect(err).toContain("--timeout needs a positive number");
   });
 });

@@ -1,9 +1,17 @@
 #!/usr/bin/env bun
-// `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--scroll <y|sel>]
-//  [--wait <ms>] [--full-page] [--label before|after] [--out <file>]` — the ONLY way a worker takes a
-// screenshot. It asks the bridge's capped, one-at-a-time browser (server/screenshot.ts) and prints the
-// PNG's path as `shot: <path>`; never start a browser yourself. --click/--scroll/--wait run in the
-// order given, after the page (and --wait-for) is ready.
+// `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--hover <sel>]
+//  [--scroll <y|sel>] [--wait <ms>] [--full-page] [--label before|after] [--out <file>]
+//  [--timeout <seconds>]` — the ONLY way a worker takes a screenshot. It asks the bridge's capped,
+// one-at-a-time browser (server/screenshot.ts) and prints the PNG's path as `shot: <path>`; never
+// start a browser yourself. --click/--hover/--scroll/--wait run in the order given, after the page
+// (and --wait-for) is ready.
+//
+// The bridge streams one JSON line per queue update while this job waits its turn (several workers
+// can be shooting at once, and the bridge runs exactly one browser box-wide) — printed to stderr as
+// `queued: N ahead` so a long wait shows progress instead of looking hung. --timeout (default 100s)
+// bounds the whole call: past it, the fetch is aborted — which drops a still-queued job on the
+// bridge before any browser launches for it — and this exits non-zero with a clear message rather
+// than letting a Bash tool call sit until ITS OWN limit kills it with no output at all.
 import { copyFileSync } from "fs";
 import { API_PORT } from "../../server/ports";
 
@@ -11,6 +19,7 @@ const argv = process.argv.slice(2);
 const body: Record<string, unknown> = { steps: [] as unknown[] };
 const steps = body.steps as unknown[];
 let out: string | undefined;
+let timeoutS = 100;
 const value = (i: number, name: string) => {
   const v = argv[i + 1];
   if (v === undefined) { console.error(`orca-shot: ${name} needs a value`); process.exit(2); }
@@ -24,19 +33,81 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "--wait-for") body.waitFor = value(i++, a);
   else if (a === "--label") body.label = value(i++, a);
   else if (a === "--out") out = value(i++, a);
+  else if (a === "--timeout") timeoutS = Number(value(i++, a));
   else if (a === "--click") steps.push({ click: value(i++, a) });
+  else if (a === "--hover") steps.push({ hover: value(i++, a) });
   else if (a === "--scroll") { const v = value(i++, a); steps.push({ scroll: /^\d+$/.test(v) ? Number(v) : v }); }
   else if (a === "--wait") steps.push({ wait: Number(value(i++, a)) });
-  else if (a === "-h" || a === "--help") { console.log("usage: orca-shot <url> [--viewport WxH] [--dark] [--wait-for sel] [--click sel] [--scroll y|sel] [--wait ms] [--full-page] [--label name] [--out file]"); process.exit(0); }
+  else if (a === "-h" || a === "--help") { console.log("usage: orca-shot <url> [--viewport WxH] [--dark] [--wait-for sel] [--click sel] [--hover sel] [--scroll y|sel] [--wait ms] [--full-page] [--label name] [--out file] [--timeout seconds]"); process.exit(0); }
   else if (a.startsWith("--")) { console.error(`orca-shot: unknown flag ${a}`); process.exit(2); }
   else body.url = a;
 }
 if (!body.url) { console.error("orca-shot: a URL is required (e.g. orca-shot http://localhost:5173 --viewport 390x844)"); process.exit(2); }
+if (!Number.isFinite(timeoutS) || timeoutS <= 0) { console.error("orca-shot: --timeout needs a positive number of seconds"); process.exit(2); }
 
-const res = await fetch(`${process.env.ORCA_URL ?? `http://127.0.0.1:${API_PORT}`}/api/screenshot`, {
-  method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
-});
-const shot = (await res.json().catch(() => ({ error: `bridge answered ${res.status}` }))) as { path?: string; bytes?: number; error?: string };
-if (!res.ok || !shot.path) { console.error(`orca-shot: ${shot.error ?? `bridge answered ${res.status}`}`); process.exit(1); }
-if (out) copyFileSync(shot.path, out);
-console.log(`shot: ${shot.path}${body.label ? ` (${body.label})` : ""}`);
+const controller = new AbortController();
+const deadline = setTimeout(() => controller.abort(), timeoutS * 1000);
+
+const timedOut = () => { console.error("orca-shot: screenshot queue busy, try again later; do not block on screenshots"); process.exit(1); };
+
+let res: Response;
+try {
+  res = await fetch(`${process.env.ORCA_URL ?? `http://127.0.0.1:${API_PORT}`}/api/screenshot`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: controller.signal,
+  });
+} catch (e) {
+  clearTimeout(deadline);
+  if (controller.signal.aborted) timedOut();
+  console.error(`orca-shot: ${e instanceof Error ? e.message : String(e)}`);
+  process.exit(1);
+}
+
+if (!res.ok) {
+  clearTimeout(deadline);
+  const err = (await res.json().catch(() => ({ error: `bridge answered ${res.status}` }))) as { error?: string };
+  console.error(`orca-shot: ${err.error ?? `bridge answered ${res.status}`}`);
+  process.exit(1);
+}
+
+// The body is one JSON object per line: `{queued: N}` while waiting, then the result or an error.
+// A plain single-object body (no trailing newline) parses the same way, as the leftover after the
+// stream ends — so a server that doesn't stream still works.
+let final: { path?: string; bytes?: number; error?: string } | undefined;
+let lastAhead = -1;
+try {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value: chunk, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(chunk, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      if (!line.trim()) continue;
+      const msg = JSON.parse(line);
+      if (typeof msg.queued === "number") {
+        if (msg.queued > 0 && msg.queued !== lastAhead) console.error(`queued: ${msg.queued} ahead`);
+        lastAhead = msg.queued;
+      } else {
+        final = msg;
+      }
+    }
+  }
+  if (buf.trim()) final = JSON.parse(buf);
+} catch (e) {
+  clearTimeout(deadline);
+  if (controller.signal.aborted) timedOut();
+  console.error(`orca-shot: ${e instanceof Error ? e.message : String(e)}`);
+  process.exit(1);
+}
+clearTimeout(deadline);
+
+if (!final || final.error || !final.path) {
+  console.error(`orca-shot: ${final?.error ?? "bridge sent no result"}`);
+  process.exit(1);
+}
+if (out) copyFileSync(final.path, out);
+console.log(`shot: ${final.path}${body.label ? ` (${body.label})` : ""}`);
