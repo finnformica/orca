@@ -44,7 +44,7 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
     <div style={header.style}>
       <Tabs value={sub} onValueChange={(v) => go(v as LocalTab)} className={AGENT_TABS}>
         <div ref={header.ref} className={STICKY_HEADER}>
-          <AgentHeader repo={repo} title={row.title} status={<RowStatus row={row} />} source={<HeaderSource branch={row.branch} />}
+          <AgentHeader repo={repo} title={row.title} fullTitle={row.title} status={<RowStatus row={row} />} source={<HeaderSource branch={row.branch} />}
             actions={<WorkstreamActions row={row} hasWork={hasWork} compact={narrow} tipSide="bottom" leading={<PreviewCell row={row} />} />} />
           <TabsList className={HEADER_TABS}>
             <TabsTrigger value="overview">Overview</TabsTrigger>
