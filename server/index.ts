@@ -22,6 +22,7 @@ import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
+import * as primary from "./primary";
 import * as mergeQueue from "./mergeQueue";
 import * as upkeep from "./upkeep";
 import * as notify from "./notify";
@@ -100,7 +101,14 @@ void db.open().catch((e) => {
   else if (e instanceof db.DbUnavailable) console.error("orca: starting WITHOUT the database — agents run, history journals to the outbox");
   else console.error("orca: database open failed", e);
 });
-if (!PREVIEW_BRIDGE) await preview.reattach(); // re-adopt dev servers that outlived a crashed/hard-killed prior bridge
+// Background duties belong to ONE bridge per instance (server/primary.ts): whoever holds the instance's
+// advisory lock. Everything below that acts on this instance's runs, previews, PRs or inventory waits
+// for it (`onPrimary`) or checks it per tick (`primary.held()`); a secondary serves HTTP only. A
+// preview bridge or a bridge started from a worktree never takes part.
+primary.elect();
+// A bridge whose own code was deleted (its worktree reaped) is stale by definition: leave.
+primary.watchSource(() => shutdown("SIGTERM"));
+primary.onPrimary(() => preview.reattach()); // re-adopt dev servers that outlived a crashed/hard-killed prior bridge
 // Turns whose run died with a previous bridge would otherwise render "working…" forever. Leases are
 // the authority on what's genuinely still running (they deliberately survive shutdown). Before
 // writing one off, try to recover what it actually did from the provider's own session file — the
@@ -112,21 +120,27 @@ const reconcile = () => db.reconcileRunning(lease.liveRunIds(), async ({ runId, 
 // Once the database answers (now, or after an outage the bridge booted into): close what died. A
 // preview bridge acts on none of this instance's runs, so it skips both.
 let reconciled = false;
-db.onAvailable(async () => {
-  if (reconciled || PREVIEW_BRIDGE) return;
+async function bootReconcile(): Promise<void> {
+  if (reconciled || PREVIEW_BRIDGE || !primary.held()) return;
   reconciled = true;
   const { closed, recovered } = await reconcile();
   if (closed) console.log(`orca: closed ${closed} interrupted turn(s), recovered ${recovered} from the provider's session`);
   // A wake that was in flight when the previous bridge stopped: re-queue what it was handling.
   await loadConfig().then((cfg) => orchestrator.recover(cfg, reconcile)).catch((e) => console.error("orca: orchestrator recovery failed", e));
-});
+}
+db.onAvailable(bootReconcile);
+
 // Runs still going under a lease are adopted, not written off: when each exits, its turn is finished
 // from the session file and the orchestrator hears about it, as if the bridge had never restarted.
-const adopted = PREVIEW_BRIDGE ? 0 : agent.adoptLeases(async (runId, sessionId, worktreePath) => {
-  const found = await backfillRun(runId, sessionId, worktreePath);
-  return found?.response ? { response: found.response, structured: found.outcome } : undefined;
-}, orchestrator.dir());
-if (adopted) console.log(`orca: adopted ${adopted} run(s) still going from the previous bridge`);
+primary.onPrimary(async () => {
+  const adopted = agent.adoptLeases(async (runId, sessionId, worktreePath) => {
+    const found = await backfillRun(runId, sessionId, worktreePath);
+    return found?.response ? { response: found.response, structured: found.outcome } : undefined;
+  }, orchestrator.dir());
+  if (adopted) console.log(`orca: adopted ${adopted} run(s) still going from the previous bridge`);
+  // Became primary after the database was already up (a takeover): the boot-time reconcile is ours now.
+  await bootReconcile();
+});
 // A follow-up queued while a run was in flight launches when that run finishes. The launcher lives
 // here because it needs the repo's config (model, permission mode, timeout) — agent.ts stays
 // ignorant of configuration.
@@ -151,6 +165,7 @@ agent.onQueuedMessage(async (message) => {
 // notification centre hears the same event first (it swallows its own failures), so a toast never
 // waits on a wake.
 agent.onRunFinished(async (run) => {
+  if (!primary.held()) return; // a secondary reports nothing — the primary's hooks are the one voice
   await notify.onRunFinished(run);
   await orchestrator.onRunFinished(await loadConfig(), run);
 });
@@ -158,12 +173,14 @@ agent.onRunFinished(async (run) => {
 // or refused PR the orchestrator owns is reported to it like a worker's problem; a merge, like a finish.
 mergeQueue.onReport(async (text) => orchestrator.report(await loadConfig(), text));
 setInterval(() => {
+  if (!primary.held()) return;
   void loadConfig().then((cfg) => mergeQueue.tick(cfg)).catch((e) => console.error("orca: merge queue pass failed", e));
 }, mergeQueue.MERGE_POLL_MS).unref();
 // Automatic PR upkeep (server/upkeep.ts): an orchestrated workstream's open PR that conflicts, goes
 // red or gets review threads is Address-PR'd on its own, on the instance holding its worktree. Never
 // from a branch preview's bridge, which launches nothing.
 if (!PREVIEW_BRIDGE) setInterval(() => {
+  if (!primary.held()) return;
   void loadConfig().then((cfg) => upkeep.tick(cfg)).catch((e) => console.error("orca: upkeep pass failed", e));
 }, upkeep.UPKEEP_POLL_MS).unref();
 // Warm the review queue (gh.listReviewPrs) so its slow cold fetch is paid here, not by a caller. A
@@ -177,6 +194,7 @@ void loadConfig().then((cfg) => cfg.repos.filter(verbs.repoHere)
 // appeared only while someone's board happened to be forwarded to it.)
 const INVENTORY_PUBLISH_MS = 10_000;
 if (!PREVIEW_BRIDGE) setInterval(() => {
+  if (!primary.held()) return;
   void loadConfig().then((cfg) => Promise.all(cfg.repos.filter(verbs.repoHere).map((r) => agentRows(r).catch((e) => console.error(`orca: inventory publish failed for ${r.name}`, e))))).catch(() => {});
   void publishPreviews(); // the same for previews: the running-previews menu on any machine lists them
 }, INVENTORY_PUBLISH_MS).unref();
@@ -189,7 +207,7 @@ const publishPreviews = () => loadConfig().then((cfg) => verbs.previewRows(cfg, 
 
 // This machine's vitals into instance_metric once a minute, for the header chip's 24h graphs
 // (server/health.ts). Each instance samples itself; either answers the history from Postgres.
-if (!PREVIEW_BRIDGE) startMetricsSampler();
+primary.onPrimary(() => { startMetricsSampler(); });
 
 // Orphaned preview databases (a bridge crash / reaped worktree / worker test run that never dropped
 // its own) and stale test-harness Docker containers — on this instance's repos only. At startup
@@ -197,13 +215,14 @@ if (!PREVIEW_BRIDGE) startMetricsSampler();
 // thrown (see preview.reap).
 const REAP_INTERVAL_MS = 60 * 60 * 1000;
 function runReaper(): void {
+  if (!primary.held()) return;
   void loadConfig().then((cfg) => preview.reap(cfg.repos.filter(verbs.repoHere)))
     .catch((e) => console.error("orca: preview/container reap failed", e));
 }
-if (!PREVIEW_BRIDGE) {
+primary.onPrimary(() => {
   runReaper();
   setInterval(runReaper, REAP_INTERVAL_MS).unref();
-}
+});
 
 // How many of a conversation's newest turns are sent with their steps attached (older ones load on unfold).
 const STEPS_FOR_TURNS = 40;
@@ -240,7 +259,7 @@ function whenDatabaseDown(req: Request, url: URL, e: db.DbUnavailable): Response
 }
 
 const BRIDGE_BRANCH = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: import.meta.dir }).stdout.toString().trim() || undefined;
-const bridgeInfo = () => ({ preview: PREVIEW_BRIDGE, branch: BRIDGE_BRANCH, port: API_PORT });
+const bridgeInfo = () => ({ preview: PREVIEW_BRIDGE, branch: BRIDGE_BRANCH, port: API_PORT, ...primary.state() });
 
 /** A caller-supplied base ref, rejected unless it looks like a branch name (never a `-flag` that git
  *  would read as an option). */
@@ -356,7 +375,9 @@ async function agentRows(repo: RepoConfig): Promise<unknown[]> {
   let wts = await git.listWorktrees(repo.repoPath, repo.worktreeRoot);
   // Auto-archive: worktrees whose PR merged or closed (on GitHub too) are reaped after a grace
   // period, unless that would lose work — then they're flagged and kept (verbs.cleanupRepo).
-  const reapedBranches = new Set((await verbs.cleanupRepo(repo)).filter((c) => c.action === "reaped").map((c) => c.branch));
+  // Reaping and publishing are the primary's: a secondary (a stray bridge on stale code) only looks.
+  const duties = primary.held() && !PREVIEW_BRIDGE;
+  const reapedBranches = new Set((duties ? await verbs.cleanupRepo(repo) : []).filter((c) => c.action === "reaped").map((c) => c.branch));
   wts = wts.filter((w) => !reapedBranches.has(w.branch));
   const live = await agent.detectRunning(wts.map((w) => w.branch)); // recover status lost on restart
   const base = await git.resolveBase(repo.repoPath, repo.baseBranch); // origin/<base>, not stale local
@@ -381,7 +402,7 @@ async function agentRows(repo: RepoConfig): Promise<unknown[]> {
     };
   }));
   // Publish before responding, so the other instance's next poll sees this one's work.
-  await db.publishInventory(repo.name, mine.map((w) => ({ branch: w.branch, data: w as unknown as db.Fields })))
+  if (duties) await db.publishInventory(repo.name, mine.map((w) => ({ branch: w.branch, data: w as unknown as db.Fields })))
     .catch((e) => { if (!(e instanceof db.DbUnavailable)) console.error("orca: inventory publish failed", e); }); // advisory — never fail a poll
   return [...mine, ...(await foreignInventory(repo.name, instance))];
 }
@@ -472,6 +493,11 @@ async function api(req: Request, url: URL): Promise<Response> {
     } catch (e) {
       return json({ error: `${cfg.orchestratorOn} is unreachable: ${e instanceof Error ? e.message : String(e)}` }, 502);
     }
+  }
+  // A secondary bridge (server/primary.ts) never wakes the orchestrator: what would launch a wake is
+  // refused, so a stray bridge on stale code can't run one with its own PATH and port.
+  if (!primary.held() && req.method === "POST" && (p === "/api/orchestrator/event" || p === "/api/orchestrator/message" || (p === "/api/compact" && body.repo === ORCHESTRATOR_REPO))) {
+    return json({ error: `this is a secondary bridge (${primary.state().reason}); the orchestrator is driven by the instance's primary bridge` }, 503);
   }
   if (req.method === "POST" && p === "/api/orchestrator/event") {
     // A worker report from another instance (its run-finished hook), delivered to the orchestrator here.
@@ -1185,6 +1211,7 @@ async function shutdown(signal: "SIGINT" | "SIGTERM"): Promise<void> {
   if (draining) return; // a second Ctrl-C shouldn't interrupt the drain
   draining = true;
   if (signal === "SIGINT") preview.killAll();
+  void primary.release(); // the next bridge takes the duties now, not at its next retry
   try {
     await Promise.race([
       agent.flushHistory(),

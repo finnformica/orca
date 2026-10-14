@@ -11,6 +11,7 @@ import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
 import * as db from "./db";
+import * as primary from "./primary";
 import * as preview from "./preview";
 import * as forward from "./forward";
 import * as notify from "./notify";
@@ -113,7 +114,8 @@ export async function previewRows(cfg: OrcaConfig, opts: { loopback: boolean; no
   const mine = (await preview.list(preview.ownerHost(cfg.instances, self))).map((p) => ({ ...p, instance: self }));
   // Published without `localUrl`: that names THIS machine's loopback, meaningless to any other viewer.
   // `secureContext` rides along: the viewer can't map the owner's path back to a repo.
-  await db.publishPreviews(mine.map((p) => ({ key: p.key, data: { svcs: p.svcs.map(({ localUrl: _, ...s }) => s), secureContext: secureContextOf(cfg, p.key) } })))
+  // Publishing is the primary bridge's (server/primary.ts); a secondary only reads.
+  if (primary.held()) await db.publishPreviews(mine.map((p) => ({ key: p.key, data: { svcs: p.svcs.map(({ localUrl: _, ...s }) => s), secureContext: secureContextOf(cfg, p.key) } })))
     .catch((e) => console.error("orca: preview publish failed", e)); // advisory — never fail the list
   const cutoff = (opts.now ?? Date.now()) - PREVIEW_STALE_MS;
   const others = (await db.previewInventory().catch(() => []))

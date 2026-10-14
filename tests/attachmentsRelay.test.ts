@@ -29,7 +29,7 @@ const procs: Bun.Subprocess[] = [];
 const PNG = new Uint8Array(200).map((_, i) => (i * 7) % 256);
 
 async function bridge(name: string, state: string, port: number) {
-  const env = { ...process.env, ORCA_STATE_DIR: state, ORCA_DATABASE_URL: pg.url, PATH: `${shim}:${process.env.PATH}`, ORCA_API_PORT: String(port), ORCA_BIND: "127.0.0.1", ORCA_INSTANCE: name, ORCA_ALLOW_WORKTREE_MIGRATIONS: "1" } as Record<string, string>;
+  const env = { ...process.env, ORCA_STATE_DIR: state, ORCA_DATABASE_URL: pg.url, PATH: `${shim}:${process.env.PATH}`, ORCA_API_PORT: String(port), ORCA_BIND: "127.0.0.1", ORCA_INSTANCE: name, ORCA_ALLOW_WORKTREE_MIGRATIONS: "1", ORCA_PRIMARY: "1" } as Record<string, string>;
   delete env.NODE_ENV;
   for (const k of ["ORCA_PREVIEW_HOST", "ORCA_PREVIEW_BIND", "SLACK_TOKEN"]) delete env[k];
   procs.push(Bun.spawn(["bun", "run", join(ROOT, "server", "index.ts")], { cwd: ROOT, env, stdout: "ignore", stderr: "inherit" }));
