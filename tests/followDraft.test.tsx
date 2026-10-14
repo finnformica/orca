@@ -7,7 +7,6 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import type { Row } from "@/store";
-import { stepHistory } from "@/components/ChatComposer";
 
 const row: Row = {
   repo: "branch-demo", hasRemote: true, branch: "feat", title: "Feat", prompt: "orig task",
@@ -40,16 +39,4 @@ test("merge drops the branch from the live board but KEEPS its history", async (
   // ...but the bridge archives rather than deletes: a merged branch's conversation is exactly what a
   // future chat-chain would want to reference.
   expect(enrich()).toMatchObject({ prompt: "orig task" });
-});
-
-test("stepHistory walks oldest↕newest and falls off the newest end to an empty box", () => {
-  // 3 entries, indices 0..2 (2 = newest)
-  expect(stepHistory(null, "up", 3)).toBe(2); // first ↑ → newest
-  expect(stepHistory(2, "up", 3)).toBe(1);
-  expect(stepHistory(1, "up", 3)).toBe(0);
-  expect(stepHistory(0, "up", 3)).toBe(0); // clamps at oldest
-  expect(stepHistory(1, "down", 3)).toBe(2);
-  expect(stepHistory(2, "down", 3)).toBeNull(); // past newest → empty box
-  expect(stepHistory(null, "down", 3)).toBeNull();
-  expect(stepHistory(null, "up", 0)).toBeNull(); // no history → nothing
 });

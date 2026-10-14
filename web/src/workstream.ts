@@ -2,7 +2,7 @@
 // so both the store and the e2e tests import it directly.
 
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
-import { OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type TurnCheck, type TurnSource } from "../../shared/agent";
+import { AUTOFIX_MARKER, OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type TurnCheck, type TurnSource } from "../../shared/agent";
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
 export { attachCommand } from "../../shared/agent";
 
@@ -860,6 +860,16 @@ export function titleFromText(text: string): string {
 /** Session title, summarised from the feature prompt (server prefers the selected provider, falls back to
  *  this). Set once at creation and kept — it's what the branch name is derived from. */
 export const titleFromPrompt = titleFromText;
+
+/** Precedence for a workstream row's displayed title — the ONE place this is decided, so a card
+ *  never flips once its PR loads. The workstream's own title (set at spawn, or renamed) always
+ *  wins; a PR title stands in only when the branch has none of its own (e.g. a branch created
+ *  outside Orca); the branch name is the last resort. The PR's full title is never lost — callers
+ *  keep it reachable via the PR number/link, a tooltip, or the PR detail page, which already shows
+ *  it in full. */
+export function rowTitle(workstreamTitle: string | undefined, prTitle: string | undefined, branch: string): string {
+  return workstreamTitle || prTitle || branch;
+}
 
 // (The model-title parser lives in server/title.ts — it uses zod, kept out of the web bundle.)
 
@@ -2807,6 +2817,60 @@ export function unlandedSends<M extends { text: string }>(
     ...queued.map((m) => m.instruction),
   ];
   return sending.filter((m) => !recorded.some((r) => r.startsWith(m.text)));
+}
+
+/** The composer's ↑ history for one chat: every message YOU sent in it, newest first, each once
+ *  (its most recent send wins the position). Read off what the chat already holds — the loaded
+ *  turns' instructions (split per message, attachment list dropped), then the bridge's queue, then
+ *  the optimistic "sending…" outbox — so it is the server transcript, not this tab's session, and a
+ *  message sent from anywhere (quick-ask, the palette, a toast) is in it. Worker reports and Orca's
+ *  own autofix instruction are not yours, so they are left out. */
+export function composerHistory(
+  turns: { instruction?: string; prompt?: string }[] | null,
+  queued: { instruction: string }[] = [],
+  sending: { text: string }[] = [],
+): string[] {
+  const sent = [
+    ...(turns ?? []).flatMap((t) => splitMessages(t.instruction ?? promptInstruction(t.prompt ?? ""))),
+    ...queued.map((m) => m.instruction),
+    ...sending.map((m) => m.text),
+  ].map((m) => withoutAttachmentList(m).trim())
+    .filter((m) => m && !isWorkerEvent(m) && !m.startsWith(AUTOFIX_MARKER));
+  return [...new Set(sent.reverse())];
+}
+
+/** What an arrow key in the composer means for history, or null to leave it to the textarea. Like a
+ *  terminal: ↑ recalls only with the caret on the FIRST line (an empty box qualifies), ↓ only on the
+ *  LAST line — anywhere else they move the caret a line. Never with a selection, an open menu (the @
+ *  picker owns the arrows), mid-IME composition, or a modifier held. */
+export function historyKey(
+  key: { key: string; shiftKey?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; isComposing?: boolean },
+  box: { value: string; selectionStart: number; selectionEnd: number; menuOpen?: boolean },
+): "up" | "down" | null {
+  if (key.key !== "ArrowUp" && key.key !== "ArrowDown") return null;
+  if (key.shiftKey || key.altKey || key.ctrlKey || key.metaKey || key.isComposing || box.menuOpen) return null;
+  if (box.selectionStart !== box.selectionEnd) return null;
+  if (key.key === "ArrowUp") return box.value.slice(0, box.selectionStart).includes("\n") ? null : "up";
+  return box.value.slice(box.selectionEnd).includes("\n") ? null : "down";
+}
+
+/** Where a history walk stands: `idx` into the newest-first list (null = your own draft), and the
+ *  draft as it was when the walk began, so walking back down past the newest gives it back exactly. */
+export type HistoryWalk = { idx: number | null; draft: string };
+export const NO_WALK: HistoryWalk = { idx: null, draft: "" };
+/** One step of the walk: the new position and the text the box should hold, or null when there is
+ *  nowhere to go (↑ at the oldest, ↓ while not walking) — the key is then the textarea's. An edit to
+ *  a recalled message is sent as edited; stepping away from it drops the edit (as Claude Code does),
+ *  but never the draft. */
+export function historyStep(walk: HistoryWalk, dir: "up" | "down", history: string[], value: string): { walk: HistoryWalk; text: string } | null {
+  if (dir === "up") {
+    const idx = walk.idx === null ? 0 : walk.idx + 1;
+    if (idx >= history.length) return null;
+    return { walk: { idx, draft: walk.idx === null ? value : walk.draft }, text: history[idx]! };
+  }
+  if (walk.idx === null) return null;
+  if (walk.idx === 0) return { walk: NO_WALK, text: walk.draft };
+  return { walk: { ...walk, idx: walk.idx - 1 }, text: history[walk.idx - 1]! };
 }
 
 /** An older page arrives: it goes in front of what's loaded, minus anything already there (a turn

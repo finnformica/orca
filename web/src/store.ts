@@ -10,7 +10,7 @@ import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import {
   addressNeedsAgent, addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, mergedPrIsHistory, followUpPrompt, instanceOrder, launchPrompt,
-  mergeSettled, newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
+  mergeSettled, newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, rowTitle, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { MergeMark } from "./workstream";
 import type { BridgeInfo, ReviewDigest } from "./workstream";
@@ -412,7 +412,7 @@ function runFollowers() {
       if (!action) continue;
       const wt = wtByBranch.get(pr.branch);
       const row: Row = {
-        repo: rl.repo, hasRemote: rl.hasRemote, branch: pr.branch, title: pr.title, prompt: e.prompt ?? "",
+        repo: rl.repo, hasRemote: rl.hasRemote, branch: pr.branch, title: rowTitle(e.title, pr.title, pr.branch), prompt: e.prompt ?? "",
         lane: "IN_REVIEW", worktreePath: wt?.worktreePath, sessionId: e.sessionId ?? wt?.sessionId,
         agentProvider: e.agentProvider ?? wt?.agentProvider, preferredProvider: e.preferredProvider, preferredModel: e.preferredModel, transcript: e.transcript,
         prNumber: pr.number, prUrl: pr.url, following: true,
@@ -433,6 +433,9 @@ export type Row = {
   hasRemote: boolean;
   branch: string;
   title: string;
+  /** The PR's own title, kept alongside `title` only so a row can show it (e.g. a tooltip) when the
+   *  workstream title — which always wins as `title` — differs from or hides it. */
+  prTitle?: string;
   prompt: string;
   lane: Lane;
   worktreePath?: string;
@@ -613,7 +616,8 @@ export function assembleRows(): Row[] {
       const e = enrichOf(rl.repo, branch);
       const row: Row = {
         repo: rl.repo, hasRemote: rl.hasRemote, branch,
-        title: pr?.title ?? e.title ?? branch,
+        title: rowTitle(e.title, pr?.title, branch),
+        prTitle: pr?.title,
         prompt: e.prompt ?? "",
         worktreePath: wt?.worktreePath, agentStatus: wt?.agentStatus, agentError: wt?.agentError,
         agentResult: wt?.agentResult, agentOutcome: wt?.agentOutcome, agentMeta: wt?.agentMeta, agentCheck: wt?.agentCheck, queued: wt?.queued, agentStartedAt: wt?.agentStartedAt,
@@ -636,7 +640,7 @@ export function assembleRows(): Row[] {
     }
     for (const m of merged) {
       rows.push({
-        repo: rl.repo, hasRemote: rl.hasRemote, branch: m.branch, title: m.title, prompt: "",
+        repo: rl.repo, hasRemote: rl.hasRemote, branch: m.branch, title: rowTitle(enrichOf(rl.repo, m.branch).title, m.title, m.branch), prTitle: m.title, prompt: "",
         lane: "DONE", prNumber: m.number, prUrl: m.url, mergedAt: m.mergedAt,
       });
     }
