@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import {
-  SHOT_MEMORY_MAX_GB, browserCommand, createShooter, diskStore, parseShotRequest,
+  SHOT_MEMORY_MAX_GB, browserCommand, createShooter, diskStore, findBrowser, parseShotRequest,
   type BrowserSession, type Launch, type ShotRequest,
 } from "../server/screenshot";
 import { WORKER_BIN, agentEnv } from "../server/agent";
@@ -297,4 +297,83 @@ describe("SHOT4 workers", () => {
     expect(await proc.exited).toBe(2);
     expect(err).toContain("--timeout needs a positive number");
   });
+});
+
+// A Radix UI menu/trigger opens on `pointerdown`, not `click` — this fixture reproduces exactly
+// that: its menu has no `click` listener at all, so the old `el.click()` step (which fires only a
+// synthetic `click` event) never opened it. These drive a REAL headless browser through the actual
+// `cdpLaunch`/`capture` path (nothing faked) to prove --click now sends a genuine mouse press/release
+// and --press sends genuine key events, the way a user's hand would.
+const RADIX_LIKE_FIXTURE = `<!doctype html><html><body>
+<div style="height:1200px"></div>
+<button id="trigger">Open</button>
+<div id="menu" hidden>
+  <div id="item">Item</div>
+</div>
+<script>
+  // No click listener on purpose — only pointerdown, like Radix's DropdownMenu.
+  document.getElementById('trigger').addEventListener('pointerdown', () => {
+    document.getElementById('menu').hidden = false;
+  });
+  document.addEventListener('keydown', (e) => {
+    if (document.getElementById('menu').hidden) return;
+    if (e.key === 'ArrowDown') document.getElementById('item').dataset.active = '1';
+    if (e.key === 'Enter' && document.getElementById('item').dataset.active === '1') document.body.setAttribute('data-done', '1');
+  });
+</script>
+</body></html>`;
+
+describe("SHOT5 real clicks open Radix-style pointerdown-only menus", () => {
+  function fixtureServer() {
+    return Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new native.Response(RADIX_LIKE_FIXTURE, { headers: { "content-type": "text/html" } }) });
+  }
+
+  test("--click fires a real mouse press, opening a menu a plain `click` event never would", async () => {
+    const binary = findBrowser();
+    if (!binary) { console.warn("SHOT5: no headless browser on this box, skipping"); return; }
+    const server = fixtureServer();
+    try {
+      const s = createShooter({ store: store(), browser: () => binary, scoped: () => false });
+      const shot = await s.shoot({
+        url: `http://127.0.0.1:${server.port}/`,
+        viewport: { width: 800, height: 600 },
+        steps: [{ click: "#trigger" }, { waitFor: "#menu:not([hidden])" }],
+      });
+      expect(shot.bytes).toBeGreaterThan(0);
+    } finally {
+      server.stop(true);
+    }
+  }, 20_000);
+
+  test("--press sends real keydown/keyup pairs to drive the opened menu", async () => {
+    const binary = findBrowser();
+    if (!binary) { console.warn("SHOT5: no headless browser on this box, skipping"); return; }
+    const server = fixtureServer();
+    try {
+      const s = createShooter({ store: store(), browser: () => binary, scoped: () => false });
+      const shot = await s.shoot({
+        url: `http://127.0.0.1:${server.port}/`,
+        viewport: { width: 800, height: 600 },
+        steps: [{ click: "#trigger" }, { press: "ArrowDown" }, { press: "Enter" }, { waitFor: "[data-done]" }],
+      });
+      expect(shot.bytes).toBeGreaterThan(0);
+    } finally {
+      server.stop(true);
+    }
+  }, 20_000);
+
+  test("an unknown --press name fails clearly instead of silently doing nothing", async () => {
+    const binary = findBrowser();
+    if (!binary) { console.warn("SHOT5: no headless browser on this box, skipping"); return; }
+    const server = fixtureServer();
+    try {
+      const s = createShooter({ store: store(), browser: () => binary, scoped: () => false });
+      await expect(s.shoot({
+        url: `http://127.0.0.1:${server.port}/`,
+        steps: [{ click: "#trigger" }, { press: "F13NotAKey!" }],
+      })).rejects.toThrow(/unknown --press key/);
+    } finally {
+      server.stop(true);
+    }
+  }, 20_000);
 });
