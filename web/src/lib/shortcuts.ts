@@ -2,7 +2,7 @@
 // one listener (components/Shortcuts.tsx). The table also feeds the ? help sheet, the palette's
 // hints and the tooltips, so a key can't be documented in one place and bound to another.
 //
-// Letters (A, C, F, O, G chords, ?) and ⌘B never fire while you type in a field or inside a modal dialog —
+// Letters (A, C, F, N, O, G chords, ?) and ⌘B never fire while you type in a field or inside a modal dialog —
 // they would eat a keystroke of the message. ⌘K and Esc work everywhere.
 //
 // Why O for the orchestrator, not ⌘J: ⌘J / Ctrl+J is the browser's Downloads in Chrome on Windows
@@ -12,7 +12,7 @@
 //
 // G then a letter goes to a page (Linear's / GitHub's chords): G arms a short pending state in the
 // listener, and the next key is read ONLY as a page — G O is Overview, never the orchestrator.
-export type ShortcutId = "palette" | "sidebar" | "new" | "orchestrator" | "quickAsk" | "find" | "help" | "escape" | "send"
+export type ShortcutId = "palette" | "sidebar" | "new" | "orchestrator" | "quickAsk" | "find" | "notifications" | "help" | "escape" | "send"
   | "goOverview" | "goAgents" | "goPreviews" | "goRepos" | "goUsage" | "goSettings";
 /** What a keydown can be: a shortcut, or "go" — the G that arms a page chord. */
 export type ShortcutMatch = ShortcutId | "go";
@@ -37,6 +37,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "orchestrator", label: "Ask the orchestrator", key: "O" },
   { id: "quickAsk", label: "Quick ask (one message, no history)", key: "A" },
   { id: "find", label: "Find agents", key: "F" },
+  { id: "notifications", label: "Notifications", key: "N" },
   { id: "sidebar", label: "Collapse / expand the sidebar", mod: true, key: "B" },
   { id: "help", label: "Keyboard shortcuts", key: "?" },
   { id: "escape", label: "Close the open overlay", key: "Esc" },
@@ -95,5 +96,5 @@ export function matchShortcut(e: KeyLike, typing: boolean, mac = isMacPlatform()
   if (e.shiftKey) return null;
   if (pendingG) return SHORTCUTS.find((s) => s.chord === "G" && s.key.toLowerCase() === key)?.id ?? null;
   if (key === "g") return "go";
-  return key === "c" ? "new" : key === "o" ? "orchestrator" : key === "a" ? "quickAsk" : key === "f" ? "find" : null;
+  return key === "c" ? "new" : key === "o" ? "orchestrator" : key === "a" ? "quickAsk" : key === "f" ? "find" : key === "n" ? "notifications" : null;
 }
