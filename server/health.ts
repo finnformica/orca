@@ -6,7 +6,7 @@ import * as os from "os";
 import * as db from "./db";
 import * as lease from "./lease";
 import { run } from "./run";
-import { UPTIME_GAP_MS } from "../web/src/workstream";
+import { billedUptime, bootKey, journalBoots } from "../web/src/workstream";
 
 export type Health = {
   instance: string; hostname: string; cores: number; cpuPct: number; load1: number; load5: number;
@@ -16,8 +16,8 @@ export type Health = {
   /** What this machine costs per hour — `/api/health` adds it (`instanceRate`), so the card's Cost
    *  · this month cell can integrate it over the uptime. Absent from `health()` itself. */
   rate?: InstanceRate;
-  /** What this machine cost this calendar month (UTC) — the rate over the time its samples show it
-   *  up (`monthCost`). `/api/health` adds it alongside `rate`. */
+  /** What this machine cost this calendar month (UTC) — the rate over the time its boot ledger
+   *  shows it running (`monthCost`). `/api/health` adds it alongside `rate`. */
   month?: MonthCost;
   /** Live leases right now — the same count the sampler records, so the card's "Agents · N" and
    *  the agents line's newest point are one reading. */
@@ -132,8 +132,10 @@ export function noteOomKill(): void { oomKills++; }
 /** Sample this machine and record it. Never throws: a metrics write must not touch anything else.
  *  Running agents come from the leases (durable, per-host) rather than agent.ts's in-memory `runs`
  *  map, so a sample taken right after a restart still counts what's genuinely live. No cost is
- *  recorded: the machine's cost is its hourly rate over the time these samples show it up. */
+ *  recorded: the machine's cost is its hourly rate over its boot ledger, which each sample's
+ *  heartbeat (`heartbeat`) keeps current. */
 export async function sampleMetrics(): Promise<void> {
+  await heartbeat();
   const kills = oomKills;
   oomKills = 0;
   try {
@@ -148,23 +150,76 @@ export async function sampleMetrics(): Promise<void> {
   }
 }
 
-/** Each instance samples ITSELF once a minute (and once at startup, so a fresh box has a point). */
+/** Each instance samples ITSELF once a minute (and once at startup, so a fresh box has a point),
+ *  after backfilling its boot ledger from the journal. */
 export function startMetricsSampler(ms = METRIC_SAMPLE_MS): ReturnType<typeof setInterval> {
-  void sampleMetrics();
+  void importJournalBoots().finally(() => void sampleMetrics());
   return setInterval(() => void sampleMetrics(), ms).unref();
+}
+
+// ---- the uptime ledger (instance_boot) ----
+
+/** This kernel's boot: its id (`/proc/sys/kernel/random/boot_id`; off Linux, the boot minute — a
+ *  boot seen under two ids is merged by `billedUptime`, never double-counted) and when it booted. */
+export async function currentBoot(now = Date.now()): Promise<{ bootId: string; bootedAt: number }> {
+  const bootedAt = Math.round(now - os.uptime() * 1000);
+  const id = await Bun.file(process.env.ORCA_BOOT_ID_FILE ?? "/proc/sys/kernel/random/boot_id").text().catch(() => "");
+  return { bootId: id.trim() ? bootKey(id) : `t${Math.round(bootedAt / 60_000)}`, bootedAt };
+}
+
+/** Mark this boot seen now. Never throws, and runs apart from the metrics write: the ledger is what
+ *  the month's cost reads, so neither may take the other down. */
+export async function heartbeat(now = Date.now()): Promise<void> {
+  try {
+    const b = await currentBoot(now);
+    await db.recordBoots([{ ...b, lastSeen: now }]);
+  } catch (e) {
+    console.error("orca: uptime heartbeat failed", e instanceof Error ? e.message : e);
+  }
+}
+
+/** Backfill the ledger with every boot the journal remembers (`journalctl --list-boots`): the boots
+ *  before Orca ran, or before this ledger existed, each spanning its first to last journal entry — so
+ *  a boot Orca was down or hung through still counts whole. Silently nothing without journald (a Mac)
+ *  or permission to read it. */
+export async function importJournalBoots(): Promise<number> {
+  try {
+    const boots = journalBoots(await run(["journalctl", "--list-boots", "-o", "json", "--no-pager"]));
+    await db.recordBoots(boots);
+    return boots.length;
+  } catch {
+    return 0;
+  }
 }
 
 // ---- the machine's hourly rate ----
 
-export type MonthCost = { usd: number; upHours: number; since: number };
+export type MonthCost = {
+  usd: number; upHours: number; since: number;
+  /** Hours whose billing nobody here can tell (`billedUptime`), counted as stopped; `usdMax` is the
+   *  figure were they billed. */
+  unknownHours: number; usdMax: number;
+  /** Hours before the ledger assumed running because of the configured billing start. */
+  assumedHours: number;
+  ledgerFrom: number | null; billingSince?: number;
+};
 
-/** This calendar month's (UTC) cost: the rate × the hours this instance's samples show it up, a
- *  pause over `UPTIME_GAP_MS` counting as down (`db.uptimeMs`). */
-export async function monthCost(hourlyUsd: number, instance = db.instanceName(), now = Date.now()): Promise<MonthCost> {
+/** This calendar month's (UTC) cost: the rate × the hours the machine's kernel boot ledger shows it
+ *  running (`billedUptime`: boots, the reboots between them, and — from `billingSince`, the
+ *  configured launch — the time before the ledger), never Orca's own samples. */
+export async function monthCost(hourlyUsd: number, o: { billingSince?: number; instance?: string; now?: number; currentBootId?: string } = {}): Promise<MonthCost> {
+  const now = o.now ?? Date.now(), instance = o.instance ?? db.instanceName();
   const d = new Date(now);
   const since = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
-  const upHours = (await db.uptimeMs(instance, since, UPTIME_GAP_MS)) / 3_600_000;
-  return { usd: Math.round(upHours * Math.max(0, hourlyUsd) * 100) / 100, upHours, since };
+  const currentBootId = o.currentBootId ?? (instance === db.instanceName() ? (await currentBoot(now)).bootId : undefined);
+  const u = billedUptime(await db.boots(instance), { from: since, now, currentBootId, billingSince: o.billingSince });
+  const rate = Math.max(0, hourlyUsd), H = 3_600_000;
+  const usd = (ms: number) => Math.round((ms / H) * rate * 100) / 100;
+  return {
+    usd: usd(u.billedMs), upHours: u.billedMs / H, since,
+    unknownHours: u.unknownMs / H, usdMax: usd(u.billedMs + u.unknownMs), assumedHours: u.assumedMs / H,
+    ledgerFrom: u.ledgerFrom, ...(o.billingSince === undefined ? {} : { billingSince: o.billingSince }),
+  };
 }
 
 export type InstanceRate = {
