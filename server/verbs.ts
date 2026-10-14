@@ -176,7 +176,7 @@ export async function followUp(
     contextPct: agent.status(worktreePath).meta?.contextPct,
     transcript: await db.turns(repo.name, branch),
   });
-  const receipt = await agent.runAgent(worktreePath, input.prompt ?? chatPrompt(input.instruction), {
+  const receipt = await agent.runAgent(worktreePath, input.prompt ?? chatPrompt(input.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen) }), {
     ...launchOptions(cfg, repo, provider, e.preferredModel as string | undefined), ...next,
     branch, action: input.action ?? "followup", instruction: input.instruction, evidenceChars: input.evidenceChars,
   });

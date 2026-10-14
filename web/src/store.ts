@@ -963,7 +963,9 @@ export async function followUp(
   // instruction" is now true.
   // chatPrompt, not followUpPrompt: a message typed in the chat is a conversation. Board actions
   // (Fix CI, Resolve conflicts, Follow up) still issue a work order.
-  await launchOnRow(row, wt, withAttachments(chatPrompt(instruction), paths), options.provider ?? providerFor(row), { action: "followup", attachments: paths, instruction });
+  // If a run is in flight the bridge queues `instruction` as typed (see /api/agent) and rebuilds the
+  // prompt — with its own mergeWhenGreen note — at dispatch time, so this flag only matters here.
+  await launchOnRow(row, wt, withAttachments(chatPrompt(instruction, { mergeWhenGreen: Boolean(row.mergeWhenGreen) }), paths), options.provider ?? providerFor(row), { action: "followup", attachments: paths, instruction });
   await refresh();
 }
 

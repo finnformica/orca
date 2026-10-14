@@ -136,8 +136,10 @@ agent.onQueuedMessage(async (message) => {
   if (!providerAllowed(repo, provider)) return; // opted out since it was queued
   // The pin lives in enrichment, so a message queued before a model switch still runs on the model
   // the card shows when it is dispatched.
-  const pinned = (await db.enrichment(repo.name))[message.branch]?.preferredModel;
-  await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction), message.attachments), {
+  const fields = (await db.enrichment(repo.name))[message.branch];
+  const pinned = fields?.preferredModel;
+  const mergeWhenGreen = Boolean(fields?.mergeWhenGreen);
+  await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction, { mergeWhenGreen }), message.attachments), {
     ...launchOptions(cfg, repo, provider, typeof pinned === "string" ? pinned : undefined),
     branch: message.branch, action: "followup", instruction: message.instruction,
   });
