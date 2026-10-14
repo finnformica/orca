@@ -1,7 +1,7 @@
 import * as React from "react";
 import * as SelectPrimitive from "@radix-ui/react-select";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
-import { cn, PortalContainer } from "@/lib/utils";
+import { cn, POPPER_EDGE_PADDING, PortalContainer } from "@/lib/utils";
 
 const Select = SelectPrimitive.Root;
 
@@ -32,12 +32,13 @@ function SelectTrigger({ className, children, size = "default", ...props }: Reac
   );
 }
 
-function SelectContent({ className, children, ...props }: React.ComponentProps<typeof SelectPrimitive.Content>) {
+function SelectContent({ className, children, collisionPadding = POPPER_EDGE_PADDING, ...props }: React.ComponentProps<typeof SelectPrimitive.Content>) {
   return (
     <SelectPrimitive.Portal container={React.useContext(PortalContainer)}>
       <SelectPrimitive.Content
         data-slot="select-content"
         position="popper"
+        collisionPadding={collisionPadding}
         className={cn("bg-popover text-popover-foreground relative z-50 max-h-64 min-w-[8rem] overflow-y-auto rounded-lg border p-1 shadow-menu", className)}
         {...props}
       >
