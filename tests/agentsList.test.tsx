@@ -158,23 +158,14 @@ describe("agents list view", () => {
     expect(workstreamCell.getAttribute("title")).toContain("Instance: laptop");
   });
 
-  test("the orchestrator's `orca status` shows on its row: a chip only for `small`, plan and wait in its tooltip", async () => {
+  test("the orchestrator's `orca status` shows no chip on the Agents row, for either merge class — the purple Auto-merge PR pill already shows the queued state", async () => {
     seed();
     apiFake.enrichmentData.set("r::local-idle", { orchestrated: true, orchStatus: { plan: "Cache first", waitingOn: "Finn's call on TTL", mergeClass: "small", at: "2026-10-13T00:00:00Z" } });
     await mount();
-    const note = rowOf("local-idle").querySelector<HTMLElement>('[data-slot="row-signals"] [data-slot="orch-status"]')!;
-    expect(note.querySelector('[data-slot="merge-class"]')!.textContent).toBe("Auto-merge");
-    expect(note.title).toBe("Orchestrator — plan: Cache first; waiting on: Finn's call on TTL; merge: small");
-    expect(note.textContent).toBe("Auto-merge"); // a fixed-height row: the line rides the tooltip
-    expect(rowOf("local-run").querySelector('[data-slot="orch-status"]')).toBeNull(); // none set, nothing shown
-  });
-
-  test("`needs-finn` gets no chip — Finn assumes anything not auto-merged needs him", async () => {
-    seed();
-    apiFake.enrichmentData.set("r::local-idle", { orchestrated: true, orchStatus: { plan: "Cache first", waitingOn: "Finn's call on TTL", mergeClass: "needs-finn", at: "2026-10-13T00:00:00Z" } });
-    await mount();
-    // The chip-only cell renders nothing: no chip, and the plan/waiting line doesn't ride this cell.
+    // The chip-only cell renders nothing regardless of merge class: no chip, and the plan/waiting
+    // line doesn't ride this cell either.
     expect(rowOf("local-idle").querySelector('[data-slot="row-signals"] [data-slot="orch-status"]')).toBeNull();
+    expect(rowOf("local-run").querySelector('[data-slot="orch-status"]')).toBeNull(); // none set, nothing shown
   });
 
   test("diffstat for a branch with no PR yet comes from the worktree's own git diff (useSummary)", async () => {
