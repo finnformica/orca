@@ -11,7 +11,7 @@ import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import { getDefaultStore } from "jotai";
 import { orchestratorOpenAtom } from "@/lib/atoms";
-import { COARSE_QUERY, NARROW_QUERY, enterSends, expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
+import { COARSE_QUERY, NARROW_QUERY, enterSends, expandTruncatedOnTap, keyboardOpen, trackVisualViewport } from "@/lib/viewport";
 import { poll } from "@/lib/poll";
 import { PULL_REFRESH_PX, pullState, swipeDecision, STALE_AFTER_MS, launchOverlay, newerBuild, previewHref, previewLabel, staleAge } from "@/workstream";
 import { themeColor } from "@/lib/theme";
@@ -316,6 +316,8 @@ describe("the phone layout (390px, touch)", () => {
     expect(cls(page)).toContain("max-md:-mt-6");
     expect(cls(page)).toContain("max-md:-mb-[calc(5.5rem+env(safe-area-inset-bottom))]");
     expect(page.className).toContain("max(0.375rem,env(safe-area-inset-bottom))");
+    // With the keyboard up it is pinned to the visible area instead (styles.css, data-keyboard-fill).
+    expect(page.hasAttribute("data-keyboard-fill")).toBe(true);
     // Header, conversation and composer: the same 12px all round.
     const header = page.querySelector('[data-slot="orchestrator-page-header"]')!;
     expect(cls(header)).toEqual(expect.arrayContaining(["border-b", "max-md:p-3"]));
@@ -369,6 +371,31 @@ describe("the phone layout (390px, touch)", () => {
     expect(document.documentElement.style.getPropertyValue("--vvh")).toBe("300px");
     expect(document.documentElement.style.getPropertyValue("--vv-top")).toBe("40px");
     off();
+  });
+  test("the keyboard is a visible area well short of the layout viewport, never a toolbar or a pinch zoom", () => {
+    expect(keyboardOpen({ layoutHeight: 844, height: 844 })).toBe(false);
+    expect(keyboardOpen({ layoutHeight: 844, height: 790 })).toBe(false); // Safari's bars collapsing
+    expect(keyboardOpen({ layoutHeight: 844, height: 508 })).toBe(true); // iPhone keyboard (+ its bar)
+    expect(keyboardOpen({ layoutHeight: 844, height: 400, scale: 2 })).toBe(false); // zoomed in, no keyboard
+  });
+
+  test("the keyboard opening marks <html> (bottom bar aside, chat pinned above it) and closing clears it", () => {
+    const vv = Object.assign(new EventTarget(), { height: 844, offsetTop: 0, scale: 1 });
+    const fake = { visualViewport: vv, document, innerHeight: 844 } as unknown as Window;
+    const root = document.documentElement;
+    const off = trackVisualViewport(fake);
+    expect(root.dataset.keyboard).toBeUndefined();
+    Object.assign(vv, { height: 508, offsetTop: 120 });
+    vv.dispatchEvent(new Event("resize"));
+    expect(root.dataset.keyboard).toBe("open");
+    expect(root.style.getPropertyValue("--vvh")).toBe("508px");
+    expect(root.style.getPropertyValue("--vv-top")).toBe("120px");
+    Object.assign(vv, { height: 844, offsetTop: 0 });
+    vv.dispatchEvent(new Event("resize"));
+    expect(root.dataset.keyboard).toBeUndefined();
+    vv.height = 508; vv.dispatchEvent(new Event("resize"));
+    off();
+    expect(root.dataset.keyboard).toBeUndefined(); // never left behind
   });
 });
 

@@ -391,6 +391,7 @@ export function OrchestratorPanel() {
 // bar alone accounts for the home indicator and the composer gets no stray gap under it. Both in
 // `--vvh`/safe-area terms like the Agent page's Chat tab (`CHAT_FILL_HEIGHT` in views/AgentPage.tsx),
 // so the chat's OWN scroller (inside ChatPanel) is what scrolls, never the page.
+// With the phone's keyboard up it is pinned to the visible area instead (`data-keyboard-fill`, styles.css).
 const ORCHESTRATOR_PAGE_HEIGHT = "md:h-[calc(var(--vvh,100dvh)-9.5rem)]";
 const ORCHESTRATOR_PAGE_NARROW =
   "max-md:-mx-[max(1rem,env(safe-area-inset-left))] max-md:-mt-6 max-md:-mb-[calc(5.5rem+env(safe-area-inset-bottom))] " +
@@ -412,7 +413,7 @@ export function OrchestratorPage() {
     worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
   };
   return (
-    <div data-slot="orchestrator-page" className={cn("flex flex-col", ORCHESTRATOR_PAGE_NARROW)}>
+    <div data-slot="orchestrator-page" data-keyboard-fill className={cn("flex flex-col", ORCHESTRATOR_PAGE_NARROW)}>
       {/* Narrow: the same 12px on every side as the conversation's and the composer's padding. */}
       <div data-slot="orchestrator-page-header" className="flex h-12 shrink-0 items-center gap-2 border-b max-md:h-auto max-md:p-3">
         <Button size="icon" variant="ghost" className="-ml-2 size-9 shrink-0 max-md:-my-1.5" title="Back" aria-label="Back" onClick={() => history.back()}>

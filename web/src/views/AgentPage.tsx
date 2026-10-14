@@ -124,7 +124,7 @@ export const AGENT_TABS = "gap-0";
 
 export function ChatCard({ row }: { row: Row }) {
   return (
-    <div data-slot="agent-chat" className={`-mx-4 md:-mx-6 md:-mb-6 ${CHAT_FILL_HEIGHT}`}>
+    <div data-slot="agent-chat" data-keyboard-fill className={`-mx-4 md:-mx-6 md:-mb-6 ${CHAT_FILL_HEIGHT}`}>
       <ChatPanel row={row} logBar />
     </div>
   );
