@@ -55,9 +55,12 @@ test("R1 the reaper drops an orphan preview db, keeps a live worktree's, and lea
 
   const orphanDb = mine("orphan"); // no worktree ever existed for this path
   const liveDb = previewDbName(liveWorktree); // a real, currently-live worktree
-  const GRACE_MS = 1_000;
+  // The measured age is coarse: pg_stat_file's mtime is whole seconds and the age is floored, so a
+  // database a few ms old can read as 1000ms. The grace must sit well above that resolution — at
+  // 1s, a fresh database straddling a second boundary under CI load was reaped.
+  const GRACE_MS = 3_000;
   await createDb(orphanDb);
-  await Bun.sleep(GRACE_MS * 2); // age the orphan well past the grace period below
+  await Bun.sleep(GRACE_MS + 500); // age the orphan past the grace period below
   await createDb(liveDb);
   const report = await reap([repo], { dbGraceMs: GRACE_MS });
 
