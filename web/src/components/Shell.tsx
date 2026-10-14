@@ -3,7 +3,8 @@
 // context switcher, a breadcrumb and, on the right, "Ask the orchestrator" (on every page). It also
 // hosts the ⌘K palette, the ? shortcuts sheet and the one keyboard-shortcut listener. On a phone
 // (below md) the top bar carries the round mark, and a bottom bar within thumb reach holds the menu,
-// Agents, New agent and the orchestrator; every inset clears the notch and the home indicator.
+// Agents, New agent, the orchestrator and Settings (New agent centred); every inset clears the notch
+// and the home indicator.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtom, useSetAtom } from "jotai";
 import {
@@ -12,7 +13,7 @@ import {
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
-import { shortcutLabel } from "@/lib/shortcuts";
+import { pageShortcut, shortcutKeys, shortcutLabel } from "@/lib/shortcuts";
 import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPalette";
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
@@ -29,6 +30,7 @@ import { PreviewsBadge } from "@/views/PreviewControl";
 import { NotificationBell } from "@/components/Notifications";
 import { Button } from "@/components/ui/button";
 import { MenuShortcut, Shortcut } from "@/components/ui/kbd";
+import { Tip } from "@/components/ui/tip";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
@@ -52,6 +54,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
 }) {
   const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
   const [open, setOpen] = useState(false); // off-canvas sidebar on a narrow screen
+  const [updateAvailable, setUpdateAvailable] = useState(false); // the banner, when shown, is topmost and clears the notch itself
   const offline = useConfigFailed();
   useShellFallbacks();
   const activity = useOrchestratorActivity(); // the ONE subscriber feeding every launcher's indicator
@@ -78,9 +81,16 @@ export function Shell({ crumbs, sidebarActions, children }: {
         <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} onClose={() => setOpen(false)} actions={sidebarActions} />
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <UpdateBanner />
-        {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it. */}
-        <header data-slot="topbar" className="bg-background sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 md:px-6 max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pt-[env(safe-area-inset-top)]">
+        <UpdateBanner onStaleChange={setUpdateAvailable} />
+        {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it.
+            The notch inset goes to whichever is topmost: the banner when it's shown, else the header. */}
+        <header
+          data-slot="topbar"
+          className={cn(
+            "bg-background sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 md:px-6 max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))]",
+            !updateAvailable && "max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:pt-[env(safe-area-inset-top)]",
+          )}
+        >
           <button type="button" className="text-muted-foreground hover:text-foreground -ml-2 inline-flex size-11 shrink-0 items-center justify-center md:hidden" onClick={() => setOpen(true)} aria-label="Open menu"><Menu className="size-5" /></button>
           <button type="button" data-slot="topbar-mark" onClick={() => navigate("/")} aria-label="Orca — go to overview" className="shrink-0 md:hidden"><RoundMark /></button>
           <RepoSwitcher />
@@ -117,6 +127,7 @@ function Sidebar({ collapsed, onToggle, onClose, actions }: {
   collapsed: boolean; onToggle: () => void; onClose: () => void; actions?: (collapsed: boolean) => ReactNode;
 }) {
   const route = useRoute();
+  const narrow = useNarrow();
   return (
     <>
       <div className="flex h-14 items-center gap-2 px-3">
@@ -127,14 +138,23 @@ function Sidebar({ collapsed, onToggle, onClose, actions }: {
       <nav aria-label="Main" className="flex flex-col gap-0.5 px-2 py-1">
         {NAV.map(({ to, label, Icon, match, badge }) => {
           const active = match(route);
-          return (
-            <button key={to} type="button" onClick={() => navigate(to)} aria-current={active ? "page" : undefined} title={collapsed ? label : undefined}
-              className={cn("relative flex h-9 items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-accent text-foreground font-medium" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
+          const shortcut = pageShortcut(to);
+          const item = (
+            <button key={to} type="button" onClick={() => navigate(to)} aria-current={active ? "page" : undefined}
+              aria-keyshortcuts={shortcut ? shortcutKeys(shortcut).join(" ") : undefined}
+              className={cn("group/nav relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-accent text-foreground font-medium" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
               <Icon className="size-4 shrink-0" />
-              <span className={cn(collapsed && "md:hidden")}>{label}</span>
+              <span data-slot="nav-label" className={cn(collapsed && "md:hidden")}>{label}</span>
               {badge?.(collapsed)}
+              {/* G then a letter: subtle keycaps on hover / keyboard focus. Never on a phone or a touch
+                  screen (no keyboard to press them with); collapsed, the tooltip carries them. */}
+              {shortcut && !collapsed && (
+                <Shortcut id={shortcut} className={cn("opacity-0 transition-opacity group-hover/nav:opacity-100 group-focus-visible/nav:opacity-100 max-md:hidden [@media(pointer:coarse)]:hidden", !badge && "ml-auto")} />
+              )}
             </button>
           );
+          // Collapsed to icons: the label and its keycaps as the tooltip, to the icon's right.
+          return collapsed && !narrow ? <Tip key={to} label={label} shortcut={shortcut} side="right" className="flex">{item}</Tip> : item;
         })}
       </nav>
       {/* Add New is the last of the actions — pushed to the bottom, just above the divider and you.
@@ -173,27 +193,30 @@ export const RoundMark = ({ className }: { className?: string }) => (
   </span>
 );
 
-/** The phone's bottom bar (below md only): what a thumb needs — the menu, Agents, New agent and the
- *  orchestrator — at the foot of the screen, above the home indicator. */
+/** The phone's bottom bar (below md only): what a thumb needs — the menu, Agents, New agent, the
+ *  orchestrator and Settings, New agent centred — at the foot of the screen, above the home indicator. */
 function BottomBar({ onMenu, activity }: { onMenu: () => void; activity: { running: boolean; unread: boolean } }) {
   const route = useRoute();
   const [, setAddNew] = useAtom(addNewOpenAtom);
   const { ask } = useOrchestrator();
   const item = "text-muted-foreground flex min-h-11 min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-md text-[11px] font-medium";
+  const label = "truncate";
   const agents = NAV[1]!;
+  const settings = NAV[5]!;
   return (
     <nav aria-label="Quick actions" data-slot="bottom-bar"
       className="bg-background/95 fixed inset-x-0 bottom-0 z-30 flex items-stretch gap-1 border-t px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] backdrop-blur md:hidden">
-      <button type="button" className={item} onClick={onMenu}><Menu className="size-5" />Menu</button>
-      <button type="button" className={cn(item, agents.match(route) && "text-foreground")} aria-current={agents.match(route) ? "page" : undefined} onClick={() => navigate("/agents")}><Boxes className="size-5" />Agents</button>
+      <button type="button" className={item} onClick={onMenu}><Menu className="size-5" /><span className={label}>Menu</span></button>
+      <button type="button" className={cn(item, agents.match(route) && "text-foreground")} aria-current={agents.match(route) ? "page" : undefined} onClick={() => navigate("/agents")}><Boxes className="size-5" /><span className={label}>Agents</span></button>
       <button type="button" className={cn(item, "text-foreground")} onClick={() => setAddNew(true)}>
-        <span className="bg-foreground text-background inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span>New agent
+        <span className="bg-foreground text-background inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span><span className={label}>New agent</span>
       </button>
       {/* The orchestrator, carrying the activity dot the desktop's quick-ask pill shows (there is no pill below md).
           `ask()` routes here to /orchestrator on a narrow screen rather than opening the side panel. */}
       <button type="button" className={cn(item, "relative", route.name === "orchestrator" && "text-foreground")} aria-current={route.name === "orchestrator" ? "page" : undefined} onClick={() => ask()}>
-        <Bot className="size-5" /><ActivityDot activity={activity} className="absolute top-1.5 right-[calc(50%-0.9rem)]" />Orchestrator
+        <Bot className="size-5" /><ActivityDot activity={activity} className="absolute top-1.5 right-[calc(50%-0.9rem)]" /><span className={label}>Orchestrator</span>
       </button>
+      <button type="button" className={cn(item, settings.match(route) && "text-foreground")} aria-current={settings.match(route) ? "page" : undefined} onClick={() => navigate("/settings")}><Settings className="size-5" /><span className={label}>Settings</span></button>
     </nav>
   );
 }

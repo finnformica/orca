@@ -231,6 +231,9 @@ export async function createPr(
 
 export type PrSummary = PrStatus & {
   number: number; title: string; branch: string; base?: string; url: string; isDraft: boolean; autoMergeEnabled: boolean;
+  /** GitHub's own merge method for the auto-merge request (squash/merge/rebase), lowercased — the
+   *  status pill's tooltip names it so "it'll merge itself" also says how. Undefined when off. */
+  autoMergeMethod?: string;
   previewUrl?: string; hasPreviewLabel?: boolean; externalFeedback: number; failingChecks?: string[]; feedback?: string[];
   /** The PR's own diffstat — gh computes it in the same list call, so the Agents row's +/- is free. */
   additions: number; deletions: number;
@@ -268,7 +271,7 @@ const PR_META_FIELDS = "number,title,headRefName,headRefOid,baseRefName,url,stat
 type RawPr = {
   number: number; title: string; headRefName: string; headRefOid?: string; baseRefName?: string; url: string;
   state: string; isDraft: boolean; mergeable: string; reviewDecision: string;
-  autoMergeRequest?: { enabledAt?: string } | null;
+  autoMergeRequest?: { enabledAt?: string; mergeMethod?: string } | null;
   additions?: number; deletions?: number;
   statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string }>;
   author?: { login?: string };
@@ -303,6 +306,7 @@ const mapSummary = (j: RawPr, required: Set<string> = new Set(), previewLabelNam
     state: j.state,
     isDraft: Boolean(j.isDraft),
     autoMergeEnabled: Boolean(j.autoMergeRequest),
+    autoMergeMethod: j.autoMergeRequest?.mergeMethod?.toLowerCase() || undefined,
     ciStatus: rollupCi(gating),
     reviewStatus: mapReview(j.reviewDecision ?? ""),
     mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",
@@ -417,6 +421,7 @@ export type PrDetail = PrStatus & {
   checks: PrCheck[];
   previewUrl?: string;
   autoMergeEnabled: boolean;
+  autoMergeMethod?: string;
 };
 
 /** One check on the PR page: its outcome, the logs link, and when it ran (for its duration).
@@ -475,6 +480,7 @@ export async function prDetail(cwd: string, pr: number): Promise<PrDetail> {
     mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",
     previewUrl: extractPreviewUrl(j.comments ?? []),
     autoMergeEnabled: Boolean(j.autoMergeRequest), // gh: null when off, an object (mergeMethod/enabledAt/…) when on
+    autoMergeMethod: j.autoMergeRequest?.mergeMethod?.toLowerCase() || undefined,
   };
 }
 

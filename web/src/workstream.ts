@@ -1500,6 +1500,42 @@ export const LANE_LABELS: Record<OverviewLane, string> = {
   LOCAL: "Local", DRAFT: "Draft", IN_REVIEW: "In review", MERGEABLE: "Mergeable", DONE: "Done today",
 };
 
+export type PillTone = "default" | "blue" | "green" | "purple";
+/** The lane's own pill, with no auto-merge override — the DONE lane's "Merged" rather than its
+ *  swimlane title "Done today". */
+export const lanePill = (lane: OverviewLane): { label: string; tone: PillTone } => ({
+  label: lane === "DONE" ? "Merged" : LANE_LABELS[lane],
+  tone: lane === "MERGEABLE" ? "blue" : lane === "DONE" ? "green" : "default",
+});
+
+/** Everything the PR status pill needs: the lane it would otherwise show, whether CI is failing,
+ *  and both ways a PR can be set to merge itself — GitHub's own auto-merge, or Orca's
+ *  merge-when-green queue mark (#169). */
+export type PrPillLike = {
+  lane: OverviewLane;
+  ciStatus?: CiStatus;
+  autoMergeEnabled?: boolean;
+  autoMergeMethod?: string;
+  mergeWhenGreen?: Pick<MergeMark, "by">;
+};
+
+/** The PR status pill shown on an agents-list row, a board card and the agent page's Details card:
+ *  Merged (and a closed PR, which never reaches here — gh only lists open ones) and failing CI still
+ *  win, but armed auto-merge replaces an otherwise in-review/mergeable reading with one purple
+ *  "Auto-merge" state, so "it'll merge itself" is visible without opening the PR. Pure. */
+export function prPill(row: PrPillLike): { label: string; tone: PillTone; tooltip?: string } {
+  const base = lanePill(row.lane);
+  if (row.lane !== "IN_REVIEW" && row.lane !== "MERGEABLE") return base; // Local/Draft/Merged: unaffected
+  if (row.ciStatus === "failing") return base; // a known-red PR isn't about to merge itself
+  if (row.autoMergeEnabled) {
+    return { label: "Auto-merge", tone: "purple", tooltip: `GitHub auto-merge is enabled${row.autoMergeMethod ? ` (${row.autoMergeMethod})` : ""}` };
+  }
+  if (row.mergeWhenGreen) {
+    return { label: "Auto-merge", tone: "purple", tooltip: `Orca's merge queue will merge it when green${row.mergeWhenGreen.by ? ` (queued by ${row.mergeWhenGreen.by})` : ""}` };
+  }
+  return base;
+}
+
 /** The subset of a board row the overview reads. Structural, so the store's Row satisfies it. */
 export type OverviewRow = {
   repo: string; branch: string; title: string; prompt?: string; lane: OverviewLane;
@@ -2074,11 +2110,6 @@ export type InstanceSeries = {
   latest: { at: number; cpuPct: number; memUsedGb: number; runningAgents: number } | null;
 };
 
-/** The longest pause between two samples that still counts as the machine being UP — the same
- *  5 minutes `sparklineSegments` breaks a line at (the sampler writes once a minute). The month's
- *  cost (`db.uptimeMs`, server-side) counts only the time up by this rule. */
-export const UPTIME_GAP_MS = 5 * 60_000;
-
 /** Every instance chart's points, from the recorded history plus the live reading. The header stats
  *  and the charts once disagreed for two reasons: the header read the live poll (every 15s) while the
  *  chart's newest point was the history's (every 60s, up to a minute older), and `downsample` made
@@ -2103,12 +2134,103 @@ export function instanceSeries(history: VitalSample[], live: VitalSample | null 
   };
 }
 
-/** The instance card's Cost cell: this month's cost, and how it was reached (its tooltip). Pure. */
-export function monthCostLabel(month: { usd: number; upHours: number } | undefined, rate: { hourlyUsd: number; source: string; instanceType?: string } | undefined): { value: string; detail: string } | null {
+// ---- the machine's uptime ledger (what EC2 bills) ----
+// EC2 bills per second while the instance RUNS, whatever Orca is doing. So the month's cost counts
+// from the KERNEL's boots (`instance_boot`: one row per boot_id, its boot time and the last time it
+// was seen alive — backfilled from `journalctl --list-boots`, heartbeated by the metrics sampler),
+// never from Orca's own samples, which stop whenever the bridge is down, hung or redeploying and
+// are pruned after a month.
+
+/** One kernel boot of one machine: from `bootedAt` to the last moment it was seen up. */
+export type BootSpan = { bootId: string; bootedAt: number; lastSeen: number };
+
+/** A gap between two boots no longer than this is a REBOOT — EC2 keeps an instance running (and
+ *  billing) through one, and a reboot takes about a minute (the box's 2026-10-13 one: 36s). A longer
+ *  gap is presumably a STOP, which doesn't bill — but without AWS nobody here can tell a stop from a
+ *  kernel that hung silent for a while, so it is counted as down and reported as UNKNOWN (the
+ *  card's range). The edges are the journal's first/last entry of each boot, so the gap is the time
+ *  the kernel itself was gone, not the time Orca was. */
+export const REBOOT_GAP_MS = 10 * 60_000;
+
+export type BilledUptime = {
+  /** Billed ms in [from, now): every boot, plus the reboots between them, plus `assumedMs`. */
+  billedMs: number;
+  /** Of `billedMs`: time before the ledger's first boot, after the configured billing start —
+   *  assumed running because the config says the machine was billing then. */
+  assumedMs: number;
+  /** NOT billed but uncertain: gaps between boots over `REBOOT_GAP_MS` (a stop, or a long silent
+   *  hang), and — with no billing start configured — the month before the ledger's first boot. */
+  unknownMs: number;
+  /** The ledger's first boot, or null with no boots at all. */
+  ledgerFrom: number | null;
+};
+
+/** The billed time in [from, now) from a machine's boots. `currentBootId` (the machine answering)
+ *  is up right now, so its span runs to `now` however stale its heartbeat — an Orca that hung for an
+ *  hour loses nothing. `billingSince`: when the machine started billing (its launch), so nothing
+ *  before it counts and the time from it to the ledger's first boot is assumed running. Overlapping
+ *  spans (a boot seen under two ids) are merged, never counted twice. Pure. */
+export function billedUptime(boots: BootSpan[], o: { from: number; now: number; currentBootId?: string; billingSince?: number }): BilledUptime {
+  const { now } = o;
+  const from = Math.max(o.from, o.billingSince ?? -Infinity);
+  const clip = (a: number, b: number) => Math.max(0, Math.min(b, now) - Math.max(a, from));
+  const spans = boots
+    .map((b) => ({ a: b.bootedAt, b: b.bootId === o.currentBootId ? Math.max(now, b.lastSeen) : Math.max(b.bootedAt, b.lastSeen) }))
+    .sort((x, y) => x.a - y.a);
+  const merged: { a: number; b: number }[] = [];
+  for (const s of spans) {
+    const last = merged[merged.length - 1];
+    if (last && s.a <= last.b) last.b = Math.max(last.b, s.b); else merged.push({ ...s });
+  }
+  let billedMs = 0, unknownMs = 0, assumedMs = 0;
+  merged.forEach((s, i) => {
+    billedMs += clip(s.a, s.b);
+    const next = merged[i + 1];
+    if (!next) return;
+    const gap = clip(s.b, next.a);
+    if (next.a - s.b <= REBOOT_GAP_MS) billedMs += gap; else unknownMs += gap;
+  });
+  const first = merged[0]?.a ?? now;
+  if (o.billingSince !== undefined) assumedMs = clip(o.billingSince, first);
+  else unknownMs += clip(from, first);
+  return { billedMs: billedMs + assumedMs, assumedMs, unknownMs, ledgerFrom: merged[0]?.a ?? null };
+}
+
+/** `journalctl --list-boots -o json` → boots: each boot's first and last journal entry (µs since
+ *  the epoch) as its span, the id without hyphens (`/proc/sys/kernel/random/boot_id` has them —
+ *  `bootKey` makes both one key). Anything unparseable is skipped. Pure. */
+export function journalBoots(json: string): BootSpan[] {
+  let rows: unknown;
+  try { rows = JSON.parse(json); } catch { return []; }
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((r) => {
+    const { boot_id, first_entry, last_entry } = (r ?? {}) as Record<string, unknown>;
+    if (typeof boot_id !== "string" || typeof first_entry !== "number" || typeof last_entry !== "number") return [];
+    return [{ bootId: bootKey(boot_id), bootedAt: Math.round(first_entry / 1000), lastSeen: Math.round(last_entry / 1000) }];
+  });
+}
+
+/** One spelling of a boot id, whichever source read it. */
+export const bootKey = (id: string): string => id.trim().replace(/-/g, "").toLowerCase();
+
+export type MonthCostInfo = { usd: number; upHours: number; unknownHours?: number; assumedHours?: number; usdMax?: number; ledgerFrom?: number | null; billingSince?: number };
+
+const hrs = (h: number) => `${Math.round(h * 10) / 10} h`;
+const day = (t: number) => new Date(t).toISOString().slice(0, 10);
+
+/** The instance card's Cost cell: this month's cost, and how it was reached (its tooltip): the
+ *  rate, the billed hours from the boot ledger, what was assumed and what is unknown — `*` on the
+ *  value when some hours are unknown, the tooltip giving the figure if they were billed. Pure. */
+export function monthCostLabel(month: MonthCostInfo | undefined, rate: { hourlyUsd: number; source: string; instanceType?: string } | undefined): { value: string; detail: string } | null {
   if (!month || !rate || !(rate.hourlyUsd > 0)) return null;
   const r = rate.hourlyUsd;
   const est = rate.source === "estimate" ? ` est.${rate.instanceType ? ` (${rate.instanceType})` : ""}` : "";
-  return { value: `$${month.usd.toFixed(2)}`, detail: `$${r.toFixed(r >= 0.1 ? 2 : 3)}/h${est} × ${Math.round(month.upHours * 10) / 10} h up this month (UTC)` };
+  const lines = [`$${r.toFixed(r >= 0.1 ? 2 : 3)}/h${est} × ${hrs(month.upHours)} up this month (UTC), from the machine's boot ledger`];
+  if (month.ledgerFrom) lines.push(`Ledger from ${day(month.ledgerFrom)}${month.billingSince ? `; billing since ${day(month.billingSince)}` : ""}`);
+  if (month.assumedHours) lines.push(`${hrs(month.assumedHours)} before the ledger assumed running (billing start in config)`);
+  const unknown = month.unknownHours ?? 0;
+  if (unknown >= 0.05) lines.push(`${hrs(unknown)} unknown — counted as stopped; $${(month.usdMax ?? month.usd).toFixed(2)} if the machine was running`);
+  return { value: `$${month.usd.toFixed(2)}${unknown >= 0.05 ? "*" : ""}`, detail: lines.join("\n") };
 }
 
 /** The agents axis's top: a small whole count, even so its midpoint tick is whole too (0 · 2 · 4). */

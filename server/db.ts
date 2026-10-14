@@ -704,6 +704,25 @@ export const MIGRATIONS: MigrationStep[] = [
     // older rows read back as 0.
     sql: `ALTER TABLE instance_metric ADD COLUMN IF NOT EXISTS oom_kills INTEGER`,
   },
+  {
+    name: "20261013-machine-uptime",
+    idempotent: true,
+    // The machine's uptime ledger (server/health.ts): one row per KERNEL boot of each instance —
+    // keyed by /proc/sys/kernel/random/boot_id — with when it booted and when it was last seen up,
+    // so the instance card's Cost · this month counts what EC2 bills (the machine running), not the
+    // time Orca happened to sample. Never pruned: a row per boot is tiny, and losing one would
+    // silently lower the month's figure, which is what instance_metric's retention did.
+    sql: `
+      CREATE TABLE IF NOT EXISTS instance_boot (
+        user_id TEXT NOT NULL,
+        instance TEXT NOT NULL,
+        boot_id TEXT NOT NULL,
+        booted_at TIMESTAMPTZ NOT NULL,
+        last_seen TIMESTAMPTZ NOT NULL,
+        PRIMARY KEY (user_id, instance, boot_id)
+      );
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
@@ -1487,17 +1506,34 @@ export async function metricHistory(instance: string, hours: number, now = Date.
   });
 }
 
-/** How long an instance was UP since `from`, in ms: the time between its consecutive samples, where
- *  a pause longer than `gapMs` means it was down and adds nothing — `UPTIME_GAP_MS`'s rule
- *  (web/src/workstream.ts), done in SQL so a month of minute samples never leaves the database. */
-export async function uptimeMs(instance: string, from: number, gapMs: number): Promise<number> {
+/** Record kernel boots of THIS instance (the uptime ledger): a boot's span only ever widens — the
+ *  earliest boot time and the latest sighting win — so the journal's backfill and the sampler's
+ *  heartbeat can write the same boot in any order. */
+export async function recordBoots(boots: { bootId: string; bootedAt: number; lastSeen: number }[]): Promise<void> {
+  if (!boots.length) return;
   return withRetry(async (sql) => {
-    const [row] = await sql`
-      SELECT COALESCE(SUM(d) FILTER (WHERE d > 0 AND d <= ${gapMs}), 0) AS ms FROM (
-        SELECT EXTRACT(EPOCH FROM at - LAG(at) OVER (ORDER BY at)) * 1000 AS d FROM instance_metric
-        WHERE user_id = ${currentUser()} AND instance = ${instance} AND at >= ${new Date(from)}
-      ) s`;
-    return Number((row as { ms: number | string }).ms);
+    const instance = instanceName(), user = currentUser();
+    for (const b of boots) {
+      await sql`
+        INSERT INTO instance_boot (user_id, instance, boot_id, booted_at, last_seen)
+        VALUES (${user}, ${instance}, ${b.bootId}, ${new Date(b.bootedAt)}, ${new Date(Math.max(b.bootedAt, b.lastSeen))})
+        ON CONFLICT (user_id, instance, boot_id) DO UPDATE SET
+          booted_at = LEAST(instance_boot.booted_at, EXCLUDED.booted_at),
+          last_seen = GREATEST(instance_boot.last_seen, EXCLUDED.last_seen)`;
+    }
+  });
+}
+
+/** Every recorded boot of an instance, oldest first — all of them: the month's maths needs the boot
+ *  before the month too (is the 1st's midnight inside a boot, or before the ledger?). */
+export async function boots(instance: string): Promise<{ bootId: string; bootedAt: number; lastSeen: number }[]> {
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      SELECT boot_id, booted_at, last_seen FROM instance_boot
+      WHERE user_id = ${currentUser()} AND instance = ${instance} ORDER BY booted_at`;
+    return (rows as { boot_id: string; booted_at: Date; last_seen: Date }[]).map((r) => ({
+      bootId: r.boot_id, bootedAt: new Date(r.booted_at).getTime(), lastSeen: new Date(r.last_seen).getTime(),
+    }));
   });
 }
 

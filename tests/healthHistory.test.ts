@@ -3,11 +3,11 @@
 // write (which only ever touches the writer's own rows), the `hours` clamp, and that a failed write
 // is swallowed rather than surfacing anywhere else.
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as db from "../server/db";
-import { health, historyHours, monthCost, noteOomKill, sampleMetrics } from "../server/health";
+import { health, heartbeat, historyHours, importJournalBoots, monthCost, noteOomKill, sampleMetrics } from "../server/health";
 import * as lease from "../server/lease";
 import { countMax, instanceSeries, monthCostLabel, sparklineSegments } from "../web/src/workstream";
 import { freshSchema, type TestDb } from "./pg";
@@ -86,6 +86,7 @@ test("the sampler records this machine, and a failed write is logged, not thrown
   expect(rows).toHaveLength(1);
   expect(rows[0]!.memTotalGb).toBeGreaterThan(0);
   expect(rows[0]!.runningAgents).toBe(0); // nothing leased
+  expect(await db.boots("cloud")).toHaveLength(1); // and heartbeats this kernel's boot
 
   await db.close();
   process.env.ORCA_DATABASE_URL = "postgres://127.0.0.1:1/nowhere"; // nothing listens
@@ -93,7 +94,8 @@ test("the sampler records this machine, and a failed write is logged, not thrown
   const orig = console.error;
   console.error = (...a: unknown[]) => { errors.push(a); };
   try { await sampleMetrics(); } finally { console.error = orig; }
-  expect(errors).toHaveLength(1);
+  expect(errors).toHaveLength(2); // the heartbeat and the sample fail apart, each logged
+
   await db.close();
   process.env.ORCA_DATABASE_URL = pg.url;
 });
@@ -143,35 +145,61 @@ test("an agent run OOM-killed in its scope is recorded once, on the next sample 
   expect((await db.metricHistory("cloud", 1)).map((p) => p.oomKills ?? 0)).toEqual([2, 0, 1]);
 });
 
-test("monthCost: the rate over this month's uptime — a gap over 5 minutes is down, last month's samples don't count", async () => {
+test("monthCost: the rate over the kernel boot ledger — journal backfill + heartbeat, Orca's own samples irrelevant", async () => {
   const M = 60_000;
   const monthStart = Date.UTC(2026, 9, 1), now = Date.UTC(2026, 9, 13, 12);
-  // Last month's tail, right up to midnight: none of it is this month's.
-  for (let i = 10; i >= 1; i--) await db.recordMetric(sample(1), monthStart - i * M);
-  // Up 30 minutes (a sample a minute), down 2 hours, up 30 minutes; then a 5-minute pause (still up)
-  // and a 5-minutes-and-a-second one (down).
-  const up = async (from: number) => { for (let i = 0; i <= 30; i++) await db.recordMetric(sample(1), from + i * M); };
-  const day = monthStart + 3 * 24 * H;
-  await up(day);
-  await up(day + 30 * M + 2 * H);
-  const end = day + 60 * M + 2 * H;
-  await db.recordMetric(sample(1), end + 5 * M);
-  await db.recordMetric(sample(1), end + 10 * M + 1000);
-  process.env.ORCA_INSTANCE = "local";
-  await db.recordMetric(sample(1), day + 10 * M); // another machine's samples are its own
-  process.env.ORCA_INSTANCE = "cloud";
-
-  expect(await db.uptimeMs("cloud", monthStart, 5 * M)).toBe(65 * M);
-  const c = await monthCost(0.24, "cloud", now);
-  expect(c).toEqual({ usd: 0.26, upHours: 65 / 60, since: monthStart });
-  expect((await monthCost(0, "cloud", now)).usd).toBe(0);
-  expect((await monthCost(0.24, "nowhere", now)).usd).toBe(0);
+  // The journal remembers two boots: launched the 12th 09:00, rebooted (40s) the 13th 10:00.
+  const shim = mkdtempSync(join(tmpdir(), "orca-journal-"));
+  const us = (t: number) => t * 1000;
+  const b1 = Date.UTC(2026, 9, 12, 9), b1end = Date.UTC(2026, 9, 13, 10), b2 = b1end + 40_000;
+  writeFileSync(join(shim, "journalctl"), `#!/bin/sh\necho '${JSON.stringify([
+    { index: -1, boot_id: "aaaa", first_entry: us(b1), last_entry: us(b1end) },
+    { index: 0, boot_id: "bbbb", first_entry: us(b2), last_entry: us(b2 + 30 * M) },
+  ])}'\n`);
+  chmodSync(join(shim, "journalctl"), 0o755);
+  const realPath = process.env.PATH;
+  process.env.PATH = `${shim}:${realPath}`;
+  try { expect(await importJournalBoots()).toBe(2); } finally { process.env.PATH = realPath; }
+  // The live boot's heartbeat — its id spelled with hyphens, as /proc has it — only widens its span.
+  const idFile = join(shim, "boot_id");
+  writeFileSync(idFile, "bb-bb\n");
+  process.env.ORCA_BOOT_ID_FILE = idFile;
+  try {
+    await heartbeat(b2 + 45 * M);
+    expect((await db.boots("cloud")).map((b) => [b.bootId, b.lastSeen])).toEqual([["aaaa", b1end], ["bbbb", b2 + 45 * M]]);
+    // Orca's samples say nothing about the bill: a lone one changes nothing.
+    await db.recordMetric(sample(1), b2 + 5 * M);
+    // Orca hung after b2+45m, the machine kept running: the live boot counts to now.
+    const c = await monthCost(0.24, { now });
+    expect(c.upHours).toBeCloseTo((now - b1) / H, 6); // the 40s reboot billed too
+    expect(c.usd).toBe(Math.round(((now - b1) / H) * 0.24 * 100) / 100);
+    // No billing start: the 11 days before the ledger are unknown, not billed.
+    expect(c.unknownHours).toBeCloseTo((b1 - monthStart) / H, 6);
+    expect(c.usdMax).toBe(Math.round(((now - monthStart) / H) * 0.24 * 100) / 100);
+    // With the launch configured, nothing before it is billed or unknown.
+    const seeded = await monthCost(0.24, { now, billingSince: b1 });
+    expect([seeded.unknownHours, seeded.assumedHours, seeded.usd]).toEqual([0, 0, c.usd]);
+  } finally { delete process.env.ORCA_BOOT_ID_FILE; }
+  // Another instance's ledger is its own; an instance with none bills nothing it can show.
+  const other = await monthCost(0.24, { now, instance: "nowhere" });
+  expect([other.usd, other.ledgerFrom]).toEqual([0, null]);
+  expect((await monthCost(0, { now })).usd).toBe(0);
 });
 
-test("monthCostLabel: the month's total, and the rate × hours behind it, marked when the rate is an estimate", () => {
-  const month = { usd: 5.52, upHours: 23.68 };
-  expect(monthCostLabel(month, { hourlyUsd: 0.2331, source: "estimate", instanceType: "m7i.xlarge" })).toEqual({ value: "$5.52", detail: "$0.23/h est. (m7i.xlarge) × 23.7 h up this month (UTC)" });
-  expect(monthCostLabel(month, { hourlyUsd: 0.0472, source: "config" })!.detail).toBe("$0.047/h × 23.7 h up this month (UTC)");
+test("monthCostLabel: the month's total and how it was reached; * when hours are unknown", () => {
+  const month = { usd: 5.52, upHours: 23.68, unknownHours: 0, usdMax: 5.52, assumedHours: 0, ledgerFrom: Date.UTC(2026, 9, 12) };
+  expect(monthCostLabel(month, { hourlyUsd: 0.2331, source: "estimate", instanceType: "m7i.xlarge" })).toEqual({
+    value: "$5.52",
+    detail: "$0.23/h est. (m7i.xlarge) × 23.7 h up this month (UTC), from the machine's boot ledger\nLedger from 2026-10-12",
+  });
+  expect(monthCostLabel(month, { hourlyUsd: 0.0472, source: "config" })!.detail.split("\n")[0]).toBe("$0.047/h × 23.7 h up this month (UTC), from the machine's boot ledger");
+  const unsure = monthCostLabel({ ...month, unknownHours: 12.04, usdMax: 8.33, assumedHours: 3, billingSince: Date.UTC(2026, 9, 1) }, { hourlyUsd: 0.2331, source: "config" })!;
+  expect(unsure.value).toBe("$5.52*");
+  expect(unsure.detail.split("\n").slice(1)).toEqual([
+    "Ledger from 2026-10-12; billing since 2026-10-01",
+    "3 h before the ledger assumed running (billing start in config)",
+    "12 h unknown — counted as stopped; $8.33 if the machine was running",
+  ]);
   expect(monthCostLabel(month, { hourlyUsd: 0, source: "none" })).toBeNull(); // the laptop
   expect(monthCostLabel(undefined, { hourlyUsd: 0.24, source: "config" })).toBeNull(); // an older bridge
 });

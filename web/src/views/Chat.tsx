@@ -372,7 +372,7 @@ function AgentsMarker({ turns, render }: { turns: AgentTurn[]; render: (t: Agent
 
 /** `stamped`: the Agent page's log mode — a time gutter, and failed / warned turns tinted the way
  *  Vercel tints error and warning lines in Build Logs. */
-function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; stamped?: boolean }) {
+function Turn({ turn, loadSteps, stamped, running }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; stamped?: boolean; running?: boolean }) {
   const instruction = turn.instruction ?? promptInstruction(turn.prompt);
   // The reference list is shown as chips (below), not as text.
   const parts = splitMessages(instruction).map(withoutAttachmentList);
@@ -399,9 +399,19 @@ function Turn({ turn, loadSteps, stamped }: { turn: AgentTurn; loadSteps?: () =>
     </div>
   );
   if (!stamped) return body;
+  // Sticky within THIS turn's own row (its flex parent is the containing block a sticky element
+  // can't escape): pinned near the top of the visible area while the turn's own content scrolls
+  // past, then pushed out once the row ends and the next turn's timestamp takes over — the same
+  // idiom as a sticky first column in a tall table row. The offset matches the log's own left
+  // padding (`px-4 md:px-6` on the scroll container) so the gap to the top border equals the gap
+  // to the left border — except while the running/stop banner's own sticky bar (`top-0`) is
+  // shown, when `top-7` clears it instead so the two are never stuck in the same place at once.
+  const topClass = running ? "top-7" : "top-4 md:top-6";
   return (
     <div className="flex gap-3">
-      <span className="w-16 shrink-0 pt-px text-neutral-500 tabular-nums select-none" data-slot="turn-time">{stampOf(turn.startedAt)}</span>
+      {/* `self-start` + a background keep the stuck box to one line, never a tall strip that could
+       *  sit over the reply text beside it. */}
+      <span className={`sticky ${topClass} z-[1] w-16 shrink-0 self-start bg-neutral-950 pt-px text-neutral-500 tabular-nums select-none`} data-slot="turn-time">{stampOf(turn.startedAt)}</span>
       <div className="min-w-0 flex-1">{body}</div>
     </div>
   );
@@ -694,7 +704,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   const stepsOf = (turn: AgentTurn) => () => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response));
   const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadSteps={stepsOf(turn)} compact={(position.get(turn.id) ?? 0) < compactBefore} />;
   const renderTurns = (list: AgentTurn[]) => {
-    if (!chatStyle) return list.map((turn) => <Turn key={turn.id} turn={turn} stamped={logBar} loadSteps={stepsOf(turn)} />);
+    if (!chatStyle) return list.map((turn) => <Turn key={turn.id} turn={turn} stamped={logBar} running={running} loadSteps={stepsOf(turn)} />);
     const items = chatItems(list);
     let prev: number | undefined;
     return items.map((item) => {
@@ -796,7 +806,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
       </div>
       {/* `dark` scopes the theme tokens: the composer's text and border must read on the terminal
           background whatever the page's theme is. */}
-      <div className={chatStyle ? "border-t p-2" : flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : logBar ? "border-t p-4" : undefined}>
+      <div data-slot="chat-composer-dock" className={chatStyle ? "border-t p-2 max-md:p-3" : flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : logBar ? "border-t p-4" : undefined}>
       <ChatComposer
         className={chatStyle ? "shadow-none" : flush ? "border-neutral-800 bg-neutral-950 shadow-none" : undefined}
         leading={<ChatControls {...ctl} compact={ctl.contextPct === undefined && compacting === null ? undefined

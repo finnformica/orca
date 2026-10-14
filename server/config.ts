@@ -138,6 +138,11 @@ export type OrcaConfig = {
    *  instance cards' Cost · this month is this rate over the hours the instance was up. Absent for
    *  an instance: an EC2 on-demand estimate from IMDS, else 0 (`instanceRate`). */
   instanceHourlyUsd?: Record<string, number>;
+  /** When each named instance started billing (its launch), as an ISO date, e.g.
+   *  `{ cloud: "2026-10-12T09:19:00Z" }`. Its Cost · this month counts nothing before it and assumes
+   *  the machine ran from it until the first boot its uptime ledger knows; absent, that stretch is
+   *  shown as unknown hours (`billedUptime`). */
+  instanceBillingSince?: Record<string, string>;
   /** Repos Orca manages; the first is the default. */
   repos: RepoConfig[];
   /** Inclusive [min, max] port range for preview services (shared across repos). */
@@ -296,6 +301,11 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       && Object.values(d.instanceHourlyUsd as Record<string, unknown>).every((v) => typeof v === "number" && Number.isFinite(v) && v >= 0);
     if (!ok) errors.push("instanceHourlyUsd must map an instance name to its non-negative USD per hour");
   }
+  if (d.instanceBillingSince !== undefined) {
+    const ok = d.instanceBillingSince && typeof d.instanceBillingSince === "object" && !Array.isArray(d.instanceBillingSince)
+      && Object.values(d.instanceBillingSince as Record<string, unknown>).every((v) => typeof v === "string" && Number.isFinite(Date.parse(v)));
+    if (!ok) errors.push("instanceBillingSince must map an instance name to an ISO date (when it started billing)");
+  }
   if (d.staleHours !== undefined && (typeof d.staleHours !== "number" || d.staleHours < 0)) {
     errors.push("staleHours must be a non-negative number");
   }
@@ -328,6 +338,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       agentModel: d.agentModel as string | undefined,
       instances: d.instances as Record<string, string> | undefined,
       instanceHourlyUsd: d.instanceHourlyUsd as Record<string, number> | undefined,
+      instanceBillingSince: d.instanceBillingSince as Record<string, string> | undefined,
       orchestratorShell: d.orchestratorShell as boolean | undefined,
       orchestratorWakeBudgetUsd: d.orchestratorWakeBudgetUsd as number | undefined,
       orchestratorOn: d.orchestratorOn as string | undefined,
@@ -455,6 +466,7 @@ async function loadFromDb(): Promise<OrcaConfig> {
     agentModel: app.agentModel as string | undefined,
     instances: app.instances as Record<string, string> | undefined,
     instanceHourlyUsd: app.instanceHourlyUsd as Record<string, number> | undefined,
+    instanceBillingSince: app.instanceBillingSince as Record<string, string> | undefined,
     orchestratorShell: app.orchestratorShell !== false,
     orchestratorWakeBudgetUsd: app.orchestratorWakeBudgetUsd as number | undefined,
     orchestratorOn: app.orchestratorOn as string | undefined,
@@ -488,6 +500,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.agentModel === undefined ? {} : { agentModel: config.agentModel }),
       ...(config.instances === undefined ? {} : { instances: config.instances }),
       ...(config.instanceHourlyUsd === undefined ? {} : { instanceHourlyUsd: config.instanceHourlyUsd }),
+      ...(config.instanceBillingSince === undefined ? {} : { instanceBillingSince: config.instanceBillingSince }),
       ...(config.orchestratorShell === undefined ? {} : { orchestratorShell: config.orchestratorShell }),
       ...(config.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: config.orchestratorWakeBudgetUsd }),
       ...(config.orchestratorOn === undefined ? {} : { orchestratorOn: config.orchestratorOn }),

@@ -492,10 +492,13 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/health") {
     // This machine's vitals, for the header's instance chip. `?instance=` reaches another instance
     // through the ordinary placement forwarding (an explicit instance beats everything). The rate is
-    // this machine's (config → IMDS estimate → 0); `month` is that rate over this month's uptime,
-    // for the card's Cost cell (absent when the query fails — vitals must still answer).
-    const [h, rate] = await Promise.all([health(), loadConfig().then((c) => instanceRate(c.instanceHourlyUsd))]);
-    const month = rate.hourlyUsd > 0 ? await monthCost(rate.hourlyUsd).catch(() => undefined) : undefined;
+    // this machine's (config → IMDS estimate → 0); `month` is that rate over this month's uptime
+    // ledger, from its configured billing start, for the card's Cost cell (absent when the query
+    // fails — vitals must still answer).
+    const cfg = await loadConfig();
+    const [h, rate] = await Promise.all([health(), instanceRate(cfg.instanceHourlyUsd)]);
+    const since = Date.parse(cfg.instanceBillingSince?.[db.instanceName()] ?? "");
+    const month = rate.hourlyUsd > 0 ? await monthCost(rate.hourlyUsd, Number.isFinite(since) ? { billingSince: since } : {}).catch(() => undefined) : undefined;
     return json({ ...h, rate, month, database: db.databaseStatus(), outbox: outbox.summary() });
   }
   if (req.method === "GET" && p === "/api/notifications") {

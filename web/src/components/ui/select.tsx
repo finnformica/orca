@@ -14,7 +14,13 @@ function SelectTrigger({ className, children, size = "default", ...props }: Reac
     <SelectPrimitive.Trigger
       data-slot="select-trigger"
       className={cn(
-        "border-input focus-visible:ring-ring/40 flex min-w-0 w-fit cursor-pointer items-center justify-between overflow-hidden rounded-md border bg-card whitespace-nowrap outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50 [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:flex-1 [&_[data-slot=select-value]]:truncate [&_svg]:shrink-0",
+        // justify-between (not left-aligned by default) relied on the value growing to fill the
+        // leftover space itself — true for a <SelectValue>, tagged [data-slot=select-value] below,
+        // but a trigger whose label is raw children (ModelPicker's {current}) has no such element to
+        // grow, and the leftover width split evenly around it instead of sitting after the label.
+        // ml-auto on the chevron pins it to the right directly, so every trigger left-aligns its
+        // content regardless of how that content is passed.
+        "border-input focus-visible:ring-ring/40 flex min-w-0 w-fit cursor-pointer items-center overflow-hidden rounded-md border bg-card whitespace-nowrap outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50 [&_[data-slot=select-value]]:min-w-0 [&_[data-slot=select-value]]:flex-1 [&_[data-slot=select-value]]:truncate [&_svg]:ml-auto [&_svg]:shrink-0",
         size === "sm" ? "h-7 gap-1 px-1.5 text-xs [&_svg]:size-3.5" : "h-8 gap-2 px-2 text-sm [&_svg]:size-4",
         className,
       )}

@@ -21,7 +21,7 @@ import { usePullToRefresh } from "@/lib/gestures";
 import { BottomSheet } from "@/components/BottomSheet";
 import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
 import {
-  DEFAULT_LIST_FILTER, LANE_LABELS, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed,
+  DEFAULT_LIST_FILTER, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed, prPill,
   listColumns, listGridTemplate, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, toggleNotMerged, toggleQuick,
   type ListColumn, type ListSort, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
 } from "../workstream";
@@ -302,7 +302,6 @@ function ListHeader({ cols }: { cols: ListColumn[] }) {
 
 export const TONE_DOT: Record<RowTone, DotTone> = { running: "building", failed: "error", attention: "warning", ready: "ready", neutral: "neutral" };
 export const TONE_LABEL: Record<RowTone, string> = { running: "Running", failed: "Error", attention: "Needs you", ready: "Ready", neutral: "Idle" };
-const LANE_PILL: Record<OverviewLane, "default" | "blue" | "green"> = { LOCAL: "default", DRAFT: "default", IN_REVIEW: "default", MERGEABLE: "blue", DONE: "green" };
 
 /** The agent page a row opens: its PR page, or its local-session page. */
 export function detailPath(row: Pick<Row, "repo" | "branch" | "lane" | "prNumber">): string | null {
@@ -332,6 +331,7 @@ export function latestInstruction(row: Row): string {
 
 export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListColumn[]; stacked?: boolean }) {
   const isDone = row.lane === "DONE";
+  const pill = prPill(row);
   const [busy, setBusy] = useState(false);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -397,7 +397,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
         {instruction && <div data-slot="row-instruction" role="cell" className="text-muted-foreground line-clamp-2 text-xs break-words">{instruction}</div>}
         {!isDone && <OrchStatusNote status={row.orchStatus} />}
         <div role="cell" className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
-          <Pill tone={LANE_PILL[row.lane]} slot="state-pill">{isDone ? "Merged" : LANE_LABELS[row.lane]}</Pill>
+          <Pill tone={pill.tone} slot="state-pill" title={pill.tooltip}>{pill.label}</Pill>
           {row.prNumber && !isDone && <ConditionBadges row={row} />}
           {row.prNumber && !isDone && <ReviewCluster row={row} />}
           {row.prNumber && !isDone && <PrPreviewCell row={row} />}
@@ -430,7 +430,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
       </div>
       <div role="cell" className="min-w-0"><RunStatus row={row} tone={tone} reasons={reasons} /></div>
       <div role="cell" className="flex min-w-0 items-center gap-2">
-        <Pill tone={LANE_PILL[row.lane]} slot="state-pill">{isDone ? "Merged" : LANE_LABELS[row.lane]}</Pill>
+        <Pill tone={pill.tone} slot="state-pill" title={pill.tooltip}>{pill.label}</Pill>
         {row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" title={`Open PR #${row.prNumber} on GitHub`} className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>}
       </div>
       <div role="cell" data-slot="row-signals" title={reasons.length ? reasons.join(", ") : undefined}

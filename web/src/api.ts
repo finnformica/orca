@@ -50,7 +50,7 @@ export type InstanceHealth = {
    *  Absent from an older bridge. */
   rate?: { hourlyUsd: number; source: "config" | "estimate" | "none"; instanceType?: string; region?: string };
   /** This calendar month's (UTC) cost: the rate over the hours the samples show it up. Absent with no rate. */
-  month?: { usd: number; upHours: number; since: number };
+  month?: { usd: number; upHours: number; since: number; unknownHours?: number; usdMax?: number; assumedHours?: number; ledgerFrom?: number | null; billingSince?: number };
   /** Absent from an older bridge. */
   runningAgents?: number;
 };

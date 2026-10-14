@@ -119,14 +119,25 @@ describe("installable app (PWA files)", () => {
     expect(html).toContain('<link rel="manifest" href="/manifest.webmanifest" />');
     expect(html).toMatch(/<meta name="theme-color" media="\(prefers-color-scheme: light\)"/);
     expect(html).toMatch(/<meta name="theme-color" media="\(prefers-color-scheme: dark\)"/);
-    expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png" />');
+    expect(html).toContain('<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2" />');
     expect(html).toContain('name="apple-mobile-web-app-capable" content="yes"');
     expect(html).toContain("viewport-fit=cover");
   });
 
-  test("the logo is round, like Vercel's: favicon and home-screen icon draw the mark in a circle", async () => {
+  test("favicon is round, like Vercel's: a black circle with the white mark", async () => {
     expect(await read("public/favicon.svg").text()).toContain("<circle");
-    expect(await read("public/icon.svg").text()).toContain("<circle");
+  });
+
+  test("home-screen icon survives iOS tinted mode: full-bleed black tile, no white background or inner circle, mark in the safe zone", async () => {
+    // iOS derives a tinted/dark-mode variant from the image's luminance with no say from the app —
+    // a white tile or a black circle on white comes out as a near-invisible grey blob once tinted.
+    const svg = await read("public/icon.svg").text();
+    expect(svg).not.toContain("<circle");
+    expect(svg).not.toContain('fill="#fff" />'); // no white tile behind the mark
+    expect(svg).toContain('<rect width="24" height="24" fill="#000" />'); // full bleed, like icon-maskable.svg
+    const [, tx, ty, k] = svg.match(/translate\(([\d.]+) ([\d.]+)\) scale\(([\d.]+)\)/)!.map(Number);
+    // The mark's path spans x 2…22.5, y 3…15.5; every corner of that box must fall within r = 0.4 × 24.
+    for (const [x, y] of [[2, 3], [22.5, 3], [2, 15.5], [22.5, 15.5]]) expect(Math.hypot(tx! + k! * x! - 12, ty! + k! * y! - 12)).toBeLessThanOrEqual(9.6);
   });
 });
 
@@ -188,14 +199,27 @@ describe("the phone layout (390px, touch)", () => {
   test("a bottom bar within thumb reach; the top bar trades its Ask box for the round mark", async () => {
     await mount("/", true);
     const bar = $('[data-slot="bottom-bar"]')!;
-    expect([...bar.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Menu", "Agents", "New agent", "Orchestrator"]);
+    const items = [...bar.querySelectorAll("button")];
+    expect(items.map((b) => b.textContent)).toEqual(["Menu", "Agents", "New agent", "Orchestrator", "Settings"]);
     expect(bar.className).toContain("md:hidden"); // never on a desktop-width screen
     expect(bar.className).toContain("safe-area-inset-bottom");
     expect($('[data-slot="topbar-mark"]')!.className).toContain("md:hidden");
     expect($('[data-slot="ask-orchestrator"]')!.className).toContain("max-md:hidden");
     expect($('[data-slot="quick-ask"]')!.className).toContain("max-md:hidden"); // …and the pill folds into the bottom bar's Orchestrator
-    await click([...bar.querySelectorAll("button")].find((b) => b.textContent === "Agents")!);
+    // New agent is the centred, third of five items.
+    expect(items[2]!.textContent).toBe("New agent");
+    await click(items.find((b) => b.textContent === "Agents")!);
     expect(location.pathname).toBe("/agents");
+  });
+
+  test("the bottom bar's Settings navigates to /settings and is marked current there", async () => {
+    await mount("/", true);
+    const bar = $('[data-slot="bottom-bar"]')!;
+    const settings = [...bar.querySelectorAll("button")].find((b) => b.textContent === "Settings")!;
+    expect(settings.getAttribute("aria-current")).toBeNull();
+    await click(settings);
+    expect(location.pathname).toBe("/settings");
+    expect(settings.getAttribute("aria-current")).toBe("page");
   });
 
   test("Agents: rows stack with the instruction, error and branch on screen; one ⋯ per row; filters in a sheet", async () => {
@@ -277,6 +301,30 @@ describe("the phone layout (390px, touch)", () => {
     await click($('[aria-label="Back"]')!);
     await act(async () => { await flush(); await flush(); });
     expect(location.pathname).toBe("/agents");
+  });
+
+  test("the orchestrator page on a phone: edge-to-edge dividers, even 12px padding, a compact Send", async () => {
+    await mount("/", true);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await act(async () => { await flush(); await flush(); });
+    const page = $('[data-slot="orchestrator-page"]')!;
+    const cls = (el: Element) => el.className.split(/\s+/);
+    // Bleeds out of <main>'s padding, so the header's and composer's borders reach both edges, and
+    // ends at the bottom bar's top — main's bottom padding (which holds the safe area) is cancelled,
+    // not added to, and the bar's own max(…, safe-area) is the only inset left.
+    expect(cls(page)).toContain("max-md:-mx-[max(1rem,env(safe-area-inset-left))]");
+    expect(cls(page)).toContain("max-md:-mt-6");
+    expect(cls(page)).toContain("max-md:-mb-[calc(5.5rem+env(safe-area-inset-bottom))]");
+    expect(page.className).toContain("max(0.375rem,env(safe-area-inset-bottom))");
+    // Header, conversation and composer: the same 12px all round.
+    const header = page.querySelector('[data-slot="orchestrator-page-header"]')!;
+    expect(cls(header)).toEqual(expect.arrayContaining(["border-b", "max-md:p-3"]));
+    expect(cls(page.querySelector('[data-slot="chat-composer-dock"]')!)).toEqual(expect.arrayContaining(["border-t", "max-md:p-3"]));
+    expect(cls(page.querySelector(".overflow-y-auto")!)).toContain("p-3");
+    // Send: a 28px filled chip in a transparent, still-44px touch target; desktop keeps the size-8 square.
+    const send = page.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
+    expect(cls(send)).toEqual(expect.arrayContaining(["size-8", "max-md:bg-transparent", "pointer-coarse:max-md:min-w-11"]));
+    expect(cls(send.querySelector("span")!)).toEqual(expect.arrayContaining(["max-md:size-7", "max-md:bg-primary"]));
   });
 
   test("on a touch screen Enter in the composer is a newline, not a send", async () => {
@@ -410,7 +458,7 @@ describe("the desktop layout is untouched", () => {
 });
 
 describe("a newer build", () => {
-  test("the banner appears when version.json names another build, and only then", async () => {
+  test("the banner appears when version.json names another build, and only then; it clears the status bar itself and reports its state up", async () => {
     const realFetch = globalThis.fetch;
     let served = "build-1";
     globalThis.fetch = (async (url: string) => {
@@ -419,12 +467,18 @@ describe("a newer build", () => {
     }) as unknown as typeof fetch;
     container = document.createElement("div");
     document.body.appendChild(container);
-    await act(async () => { root = createRoot(container!); root.render(<UpdateBanner build="build-1" every={5} />); await flush(); });
+    const staleChanges: boolean[] = [];
+    await act(async () => { root = createRoot(container!); root.render(<UpdateBanner build="build-1" every={5} onStaleChange={(s) => staleChanges.push(s)} />); await flush(); });
     await act(async () => { await Bun.sleep(20); });
     expect(container.querySelector('[data-slot="update-banner"]')).toBeNull();
+    expect(staleChanges).toEqual([false]); // told up front it isn't shown, so a header can keep its own inset
     served = "build-2";
     await act(async () => { await Bun.sleep(30); });
-    expect(container.querySelector('[data-slot="update-banner"]')!.textContent).toContain("Refresh");
+    const banner = container.querySelector<HTMLElement>('[data-slot="update-banner"]')!;
+    expect(banner.textContent).toContain("Refresh");
+    // It is now the topmost element on a narrow layout, so it — not the header below it — clears the notch.
+    expect(banner.className).toContain("max-md:pt-[env(safe-area-inset-top)]");
+    expect(staleChanges).toEqual([false, true]);
     globalThis.fetch = realFetch;
   });
 });

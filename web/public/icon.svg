@@ -1,7 +1,8 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-  <!-- The home-screen icon: the favicon's black circle on a white tile (iOS rounds the tile itself),
-       with the mark inside the maskable safe zone. Rasterised to the PNGs beside it. -->
-  <rect width="24" height="24" fill="#fff" />
-  <circle cx="12" cy="12" r="9.6" fill="#000" />
-  <path fill="#fff" fill-rule="evenodd" transform="translate(5.4 7) scale(0.54)" d="M2 12.5C2 9.5 5.5 8 9 8L11 3L13.5 8C16.5 8 19 8.5 20.5 9L22.5 6L20.3 11L22.5 15.5C19 13 10 14 2 12.5ZM5.6 10a1 1 0 1 0 0 2a1 1 0 1 0 0 -2Z" />
+  <!-- The home-screen icon: a full-bleed black tile (iOS rounds it itself, and derives a tinted/dark
+       variant from luminance — a white tile or an inner circle reads as a near-invisible grey blob
+       once tinted), with the white orca mark inside the maskable safe zone. Same tile + mark as
+       icon-maskable.svg, so the two PNG sets look identical. Rasterised to the PNGs beside it. -->
+  <rect width="24" height="24" fill="#000" />
+  <path fill="#fff" fill-rule="evenodd" transform="translate(4.65 6.45) scale(0.6)" d="M2 12.5C2 9.5 5.5 8 9 8L11 3L13.5 8C16.5 8 19 8.5 20.5 9L22.5 6L20.3 11L22.5 15.5C19 13 10 14 2 12.5ZM5.6 10a1 1 0 1 0 0 2a1 1 0 1 0 0 -2Z" />
 </svg>
