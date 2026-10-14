@@ -249,6 +249,13 @@ export function createShooter(deps: {
 
 // ---- the real browser, over CDP ----
 
+/** How long `kill` waits for a plain SIGTERM before escalating to SIGKILL, and how long it then
+ *  waits for THAT before giving up — a browser that ignores SIGTERM (seen on some sandboxed CI
+ *  runners) must never hang this job's cleanup forever: every later job in the queue, and the
+ *  caller's own promise, is waiting on it to resolve. */
+const KILL_GRACE_MS = 3_000;
+const KILL_FINAL_MS = 2_000;
+
 /** Spawn the (scoped) browser, read its DevTools URL from stderr, and drive one page. */
 export const cdpLaunch: Launch = async (argv, env, unit, signal) => {
   const proc = Bun.spawn(argv, { env: { ...process.env, ...env }, stdout: "ignore", stderr: "pipe" });
@@ -258,7 +265,13 @@ export const cdpLaunch: Launch = async (argv, env, unit, signal) => {
       // The scope holds every renderer the browser forked; stopping it kills them all.
       Bun.spawnSync(["systemctl", "--user", "stop", `${unit}.scope`], { env: { ...process.env, ...env }, stderr: "ignore" });
     }
-    await proc.exited.catch(() => {});
+    const diedOnTerm = await Promise.race([
+      proc.exited.then(() => true),
+      Bun.sleep(KILL_GRACE_MS).then(() => false),
+    ]);
+    if (diedOnTerm) return;
+    killTree(proc.pid, "SIGKILL");
+    await Promise.race([proc.exited, Bun.sleep(KILL_FINAL_MS)]).catch(() => {});
   };
   const aborted = new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
   aborted.catch(() => {}); // an abort after the browser is up is the caller's kill, not an error here
