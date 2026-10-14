@@ -23,6 +23,7 @@ import { renderText, summarize } from "./diagnostics";
 import { postMessage as slackPost } from "./slack-api";
 import * as orchestrator from "./orchestrator";
 import * as mergeQueue from "./mergeQueue";
+import * as upkeep from "./upkeep";
 import * as notify from "./notify";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
@@ -159,6 +160,12 @@ mergeQueue.onReport(async (text) => orchestrator.report(await loadConfig(), text
 setInterval(() => {
   void loadConfig().then((cfg) => mergeQueue.tick(cfg)).catch((e) => console.error("orca: merge queue pass failed", e));
 }, mergeQueue.MERGE_POLL_MS).unref();
+// Automatic PR upkeep (server/upkeep.ts): an orchestrated workstream's open PR that conflicts, goes
+// red or gets review threads is Address-PR'd on its own, on the instance holding its worktree. Never
+// from a branch preview's bridge, which launches nothing.
+if (!PREVIEW_BRIDGE) setInterval(() => {
+  void loadConfig().then((cfg) => upkeep.tick(cfg)).catch((e) => console.error("orca: upkeep pass failed", e));
+}, upkeep.UPKEEP_POLL_MS).unref();
 // Warm the review queue (gh.listReviewPrs) so its slow cold fetch is paid here, not by a caller. A
 // local-only repo just fails quietly.
 void loadConfig().then((cfg) => cfg.repos.filter(verbs.repoHere)

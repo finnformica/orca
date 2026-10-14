@@ -1220,6 +1220,117 @@ export function mergeQueueReport(input: { repo: string; branch: string; title?: 
   return [`${head} — merge refused: ${v.why} (PR #${input.pr})`, "Merge queue: unmarked. Say it is ready for the user to merge."].join("\n");
 }
 
+// ---- automatic PR upkeep (server/upkeep.ts): Address PR without anyone pressing it ----
+
+/** What makes an open PR need an agent: conflicts with its base, a required check failed on its
+ *  head, or actionable review threads no agent has been handed yet. */
+export type UpkeepReason = "conflicts" | "ci" | "review";
+const UPKEEP_REASON_LABEL: Record<UpkeepReason, string> = { conflicts: "conflicts", ci: "CI", review: "review" };
+/** The last automatic attempt, on the branch's enrichment (`upkeep`) — shared and restart-proof. */
+export type UpkeepRecord = {
+  /** The head commit the attempts below were made on. */
+  sha: string;
+  /** Reasons already addressed on this head — one automatic address per (head, reason). */
+  tried: UpkeepReason[];
+  /** What the latest attempt addressed — the card's "auto-addressing: …". */
+  reasons: UpkeepReason[];
+  /** Automatic addresses launched on this head. */
+  attempts: number;
+  /** Consecutive automatic addresses (across heads) without the PR seen healthy in between. */
+  streak: number;
+  at: number;
+  /** Set once it gave up on this head (and the user was told). */
+  gaveUp?: string;
+};
+/** At most two automatic attempts on one head; a third would be a loop. */
+export const UPKEEP_MAX_ATTEMPTS_PER_HEAD = 2;
+/** Each address pushes a new head, so a PR that keeps going red on every fix could loop across heads:
+ *  this many automatic addresses in a row with no healthy look in between is the end of it too. */
+export const UPKEEP_MAX_STREAK = 4;
+/** Concurrent automatic address runs on one instance, unless the app config says otherwise. */
+export const UPKEEP_DEFAULT_CONCURRENCY = 2;
+
+export type UpkeepInput = {
+  pr: { state: string; isDraft?: boolean; mergeable: string; ciStatus: string; head?: string };
+  orchestrated: boolean;
+  /** The repo's `autoUpkeep: false`, or the branch's own `upkeepOff`. */
+  optedOut: boolean;
+  /** The orchestrator's `orca status --waiting` for it. */
+  waitingOn?: string;
+  activity: AgentActivity;
+  /** Actionable unresolved review threads not yet handed to an agent (undefined: not fetched). */
+  unresolved?: number;
+  last?: UpkeepRecord;
+  /** Automatic address runs going on this instance right now, and the cap. */
+  active: number; cap: number;
+};
+export type UpkeepDecision =
+  | { action: "address"; reasons: UpkeepReason[]; record: UpkeepRecord }
+  | { action: "give_up"; reasons: UpkeepReason[]; why: string; record: UpkeepRecord }
+  | { action: "healthy" } // nothing to do: the caller clears a stale record
+  | { action: "skip"; why: string };
+
+/** Waiting on the user (rather than on CI or a teammate): the orchestrator's status says so. */
+export const waitingOnUser = (waitingOn: string | undefined): boolean =>
+  Boolean(waitingOn && /\b(user|finn|you|human|me|input|answer|decision)\b/i.test(waitingOn));
+
+/** Which upkeep triggers a PR has right now. Pure. */
+export function upkeepReasons(pr: UpkeepInput["pr"], unresolved: number | undefined): UpkeepReason[] {
+  const out: UpkeepReason[] = [];
+  if (pr.mergeable === "CONFLICTING") out.push("conflicts");
+  if (pr.ciStatus === "failing") out.push("ci");
+  if ((unresolved ?? 0) > 0) out.push("review");
+  return out;
+}
+
+/** The upkeep loop's one decision for an open PR: address it, give up on it (tell the user), or
+ *  leave it — with the reason. The guards come first, so a busy, opted-out or waiting workstream is
+ *  never touched; then the dedup per (head, reason), the per-head and cross-head backoff, and last
+ *  the concurrency cap (giving up costs nothing, so the cap never delays that). Pure. */
+export function upkeepDecision(input: UpkeepInput, now: number): UpkeepDecision {
+  const { pr, last } = input;
+  if (pr.state !== "OPEN") return { action: "skip", why: `the PR is ${pr.state.toLowerCase()}` };
+  if (pr.isDraft) return { action: "skip", why: "draft PR" };
+  if (!input.orchestrated) return { action: "skip", why: "not an orchestrated workstream" };
+  if (input.optedOut) return { action: "skip", why: "opted out of auto-upkeep" };
+  if (waitingOnUser(input.waitingOn)) return { action: "skip", why: `waiting on the user (${input.waitingOn})` };
+  if (!pr.head) return { action: "skip", why: "head commit unknown" };
+  if (last?.gaveUp && last.sha === pr.head) return { action: "skip", why: `gave up on this head: ${last.gaveUp}` };
+  if (input.activity.running) return { action: "skip", why: "agent running" };
+  if (input.activity.queued > 0) return { action: "skip", why: "messages queued for the agent" };
+  const reasons = upkeepReasons(pr, input.unresolved);
+  if (!reasons.length) {
+    // Healthy only once settled: CI still running on a fresh push (or not yet reported, after a CI
+    // fix) is not, or a fix that goes red on every push would reset the streak and loop.
+    const ciSettled = pr.ciStatus === "passing" || (pr.ciStatus === "none" && !last?.tried.includes("ci"));
+    return ciSettled && pr.mergeable === "MERGEABLE" ? { action: "healthy" } : { action: "skip", why: "waiting for CI / mergeability to settle" };
+  }
+  const sameHead = last?.sha === pr.head;
+  const fresh = sameHead ? reasons.filter((r) => !last!.tried.includes(r)) : reasons;
+  const label = upkeepReasonText(reasons);
+  const giveUp = (why: string): UpkeepDecision => ({ action: "give_up", reasons, why, record: { tried: sameHead ? last!.tried : [], reasons: [], attempts: sameHead ? last!.attempts : 0, streak: last?.streak ?? 0, sha: pr.head!, at: now, gaveUp: why } });
+  if (sameHead && last!.attempts >= UPKEEP_MAX_ATTEMPTS_PER_HEAD) return giveUp(`${label} still there after ${last!.attempts} automatic addresses on this commit`);
+  if (sameHead && !fresh.length) return giveUp(`${label} still there after an automatic address on this commit`);
+  if ((last?.streak ?? 0) >= UPKEEP_MAX_STREAK) return giveUp(`${label} after ${last!.streak} automatic addresses in a row`);
+  if (input.active >= input.cap) return { action: "skip", why: `at the concurrency cap (${input.active}/${input.cap} automatic addresses running)` };
+  return {
+    action: "address", reasons: fresh,
+    record: { sha: pr.head, tried: sameHead ? [...last!.tried, ...fresh] : fresh, reasons: fresh, attempts: sameHead ? last!.attempts + 1 : 1, streak: (last?.streak ?? 0) + 1, at: now },
+  };
+}
+
+/** "conflicts, CI" — the reasons as the card and the notification say them. */
+export const upkeepReasonText = (reasons: UpkeepReason[]): string => reasons.map((r) => UPKEEP_REASON_LABEL[r]).join(", ");
+
+/** The card's line for the upkeep record: what it is auto-addressing while that run goes, or that it
+ *  gave up. Nothing once the run is over and it has not given up. Pure. */
+export function upkeepLabel(rec: UpkeepRecord | undefined, running: boolean): string | undefined {
+  if (!rec) return undefined;
+  if (rec.gaveUp) return `auto-upkeep gave up: ${rec.gaveUp}`;
+  if (running && rec.reasons?.length) return `auto-addressing: ${upkeepReasonText(rec.reasons)}`;
+  return undefined;
+}
+
 /** The body Orca opens a finished worker's PR with: its outcome, decisions and verification, then
  *  the commits — what a reviewer needs, from what the worker already reported. Pure. */
 export function workerPrBody(input: { outcome?: AgentOutcome; response?: string; commits: string[] }): string {
@@ -1840,15 +1951,23 @@ export function severeAiComments(s: ReviewSignal): ReviewItem[] {
 
 /** Unresolved inline threads that ask for a change: not opened by the PR's author, not a status
  *  update, not a bot's summary. Nits still count — `nits` says how many of them are. */
+const isActionableThread = (s: ReviewSignal, t: ReviewSignal["threads"][number]): boolean =>
+  !t.resolved && !(s.prAuthor && t.author === s.prAuthor) && !isStatusUpdate(t.body) && !isSummaryComment(t.body);
 export function actionableUnresolved(s: ReviewSignal): { count: number; nits: number } {
   let count = 0, nits = 0;
   for (const t of s.threads) {
-    if (t.resolved || (s.prAuthor && t.author === s.prAuthor) || isStatusUpdate(t.body) || isSummaryComment(t.body)) continue;
+    if (!isActionableThread(s, t)) continue;
     count++;
     if (isNit(t.body)) nits++;
   }
   return { count, nits };
 }
+
+/** Actionable unresolved threads no agent has been handed yet (Address PR records the ids it sent as
+ *  `handedReviewThreadIds`) — what auto-upkeep's review trigger counts, so a thread the agent answered
+ *  but nobody resolved doesn't re-fire on every push. Pure. */
+export const unhandedActionable = (s: ReviewSignal, handed: readonly string[] = []): number =>
+  s.threads.filter((t) => isActionableThread(s, t) && !handed.includes(t.id)).length;
 
 export type ReviewDigest = {
   approvers: string[]; human: ReviewItem[]; severe: ReviewItem[];
@@ -2547,6 +2666,8 @@ const NOTIFICATION_ACTION_RULES: Record<string, ActionRule[]> = {
   preview_failed: [{ id: "retryPreview", label: "Retry test", needs: "row" }, { id: "viewLog", label: "View log" }],
   merged: [{ id: "viewPr", label: "View PR", needs: "prUrl" }],
   merge_refused: [{ id: "viewPr", label: "View PR", needs: "prUrl" }],
+  auto_address: [{ id: "viewPr", label: "View PR", needs: "prUrl" }],
+  upkeep_gave_up: [{ id: "address", label: "Address PR", needs: "row" }, { id: "viewPr", label: "View PR", needs: "prUrl" }],
   // A failed action (a local notification): hand it to the orchestrator, or copy the message and
   // where it happened — each only when the notification carries its text.
   action_failed: [{ id: "ask", label: "Ask the orchestrator" }, { id: "copy", label: "Copy" }],

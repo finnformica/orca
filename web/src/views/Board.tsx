@@ -17,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ChatComposer } from "@/components/ChatComposer";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { WorkstreamActions } from "./WorkstreamActions";
-import { OrchStatusNote } from "@/components/console";
+import { OrchStatusNote, UpkeepNote } from "@/components/console";
 import { PreviewControl } from "./PreviewControl";
 import { TerminalDialog } from "@/components/Terminal";
 import { AUTO_MODEL, modelLabel, providerOfModel } from "../../../shared/models";
@@ -497,6 +497,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
         )}
         {!dense && row.prompt && <p className="text-muted-foreground line-clamp-2 text-xs">{row.prompt}</p>}
         <OrchStatusNote status={row.orchStatus} />
+        <UpkeepNote upkeep={row.upkeep} running={row.agentStatus === "running"} />
       </div>
 
       {/* State: agent status leads (standardised across lanes), then Run, then condition badges.

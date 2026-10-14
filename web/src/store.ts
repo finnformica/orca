@@ -14,7 +14,7 @@ import {
 } from "./workstream";
 import type { MergeMark } from "./workstream";
 import type { BridgeInfo, ReviewDigest } from "./workstream";
-import type { OrchStatus, PrRef } from "./workstream";
+import type { OrchStatus, PrRef, UpkeepRecord } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
 import { attachCommand, handoffPrompt } from "../../shared/agent";
@@ -127,6 +127,7 @@ export type Enrichment = {
   orchStatus?: OrchStatus; // the orchestrator's `orca status` record: plan, what it waits on, merge class
   previewInstance?: PreviewPlacement; // written by the bridge that started the preview, cleared on stop
   mergeWhenGreen?: MergeMark; // marked by `orca merge --when-green` / the PR menu (server/mergeQueue.ts)
+  upkeep?: UpkeepRecord; // automatic PR upkeep's last attempt (server/upkeep.ts)
 };
 /** Where a branch's preview runs: the instance, and its key there (a worktree path ON that instance —
  *  "Test on cloud" for a laptop worktree previews the box's own checkout of the branch). */
@@ -479,6 +480,8 @@ export type Row = {
   orchestrated?: boolean;
   /** The orchestrator's `orca status` record for it (plan, waiting on, merge class). */
   orchStatus?: OrchStatus;
+  /** Automatic PR upkeep's last attempt — the card's "auto-addressing: …" / "gave up" line. */
+  upkeep?: UpkeepRecord;
   /** Its running preview's placement, from the server — so a fresh page finds it without a click. */
   previewInstance?: PreviewPlacement;
   followUps?: string[];
@@ -611,7 +614,7 @@ export function assembleRows(): Row[] {
         prNumber: pr?.number, prBase: pr?.base, prAdditions: pr?.additions, prDeletions: pr?.deletions,
         prUrl: pr?.url, previewUrl: pr?.previewUrl, hasPreviewLabel: pr?.hasPreviewLabel, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled, autoMergeMethod: pr?.autoMergeMethod,
-        following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, orchStatus: e.orchStatus, previewInstance: e.previewInstance, mergeWhenGreen: e.mergeWhenGreen,
+        following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, orchStatus: e.orchStatus, upkeep: e.upkeep, previewInstance: e.previewInstance, mergeWhenGreen: e.mergeWhenGreen,
         failingChecks: pr?.failingChecks, feedback: pr?.feedback,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
         lane: "DRAFT",

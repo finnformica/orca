@@ -5,7 +5,7 @@ import { parseAgentOutcome, type AgentOutcome, type StopReason, type TurnCheck }
 
 export const NOTIFICATION_KINDS = [
   "needs_input", "finished", "failed", "stopped", "check_failed", "pr_ci_failed", "pr_conflicts", "preview_ready", "preview_failed", "action_failed",
-  "merged", "merge_refused",
+  "merged", "merge_refused", "auto_address", "upkeep_gave_up",
 ] as const;
 export type NotificationKind = typeof NOTIFICATION_KINDS[number];
 
@@ -64,6 +64,9 @@ export const KIND_META: Record<NotificationKind, KindMeta> = {
   preview_failed: { label: "Preview failed", persistent: true, urgent: false, tone: "error" },
   merged: { label: "Merged", persistent: false, urgent: false, tone: "ready" },
   merge_refused: { label: "Not merged", persistent: true, urgent: false, tone: "warning" },
+  // Automatic PR upkeep (server/upkeep.ts): it started an Address PR on its own, or gave up on one.
+  auto_address: { label: "Auto-addressing", persistent: false, urgent: false, tone: "queued" },
+  upkeep_gave_up: { label: "Auto-upkeep gave up", persistent: true, urgent: false, tone: "warning" },
   action_failed: { label: "Action failed", persistent: true, urgent: false, tone: "error" },
 };
 
