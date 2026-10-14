@@ -3,7 +3,7 @@
 // of the console is assembled from these, so the look is decided in one place.
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { MERGE_CLASS_LABEL, niceMax, orchStatusText, sparklineSegments, timeTicks, usageZone, type OrchStatus } from "../workstream";
+import { niceMax, orchStatusText, sparklineSegments, timeTicks, usageZone, type OrchStatus } from "../workstream";
 
 /** A card: hairline border, no shadow, a 48px header row with the title left and controls right. */
 export function VCard({ title, aside, children, className, slot, bodyClass, onHeaderClick, expanded }: {
@@ -83,25 +83,20 @@ export function Pill({ children, tone = "default", slot, title }: { children: Re
 }
 
 /** The orchestrator's `orca status` for a workstream: its plan and what it waits on as one muted
- *  line, with a chip only for `small` (relabelled "Auto-merge") — `needs-finn` gets no chip, since
- *  Finn assumes anything not auto-merged needs him. `chipOnly` is the Agents row's fixed-height
- *  cell, where the line rides the chip's tooltip instead (or the cell renders nothing, when there
- *  is no chip). Nothing when the orchestrator has set none. */
+ *  line. Renders no chip — the queued-to-merge state is the purple Auto-merge PR pill and the
+ *  GitHub badge already on the row, and a second, green one here just duplicated it. `chipOnly` is
+ *  the Agents row's fixed-height cell, which had nothing but the chip to show, so it now renders
+ *  nothing there; the plan/waiting line still shows on cards and the agent page. Nothing when the
+ *  orchestrator has set none. */
 export function OrchStatusNote({ status, chipOnly, className }: { status?: OrchStatus; chipOnly?: boolean; className?: string }) {
+  if (chipOnly) return null;
   const text = orchStatusText(status);
   if (!status || !text) return null;
   const line = [status.plan, status.waitingOn && `waiting on ${status.waitingOn}`].filter(Boolean).join(" · ");
-  const chipLabel = status.mergeClass && MERGE_CLASS_LABEL[status.mergeClass];
-  if (chipOnly && !chipLabel) return null;
-  if (!chipOnly && !line && !chipLabel) return null;
+  if (!line) return null;
   return (
     <div data-slot="orch-status" title={`Orchestrator — ${text}`} className={cn("text-muted-foreground flex min-w-0 items-center gap-1 text-xs", className)}>
-      {!chipOnly && line && <span className="min-w-0 truncate">{line}</span>}
-      {chipLabel && (
-        <span data-slot="merge-class" className="shrink-0 rounded px-1 text-[10px] leading-4 font-medium bg-geist-green/15 text-geist-green">
-          {chipLabel}
-        </span>
-      )}
+      <span className="min-w-0 truncate">{line}</span>
     </div>
   );
 }
