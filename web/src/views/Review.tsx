@@ -1,4 +1,4 @@
-import { ExternalLink, MessageSquare } from "lucide-react";
+import { ExternalLink, MessageSquare, MessagesSquare } from "lucide-react";
 import { StatusDot, VCard } from "@/components/console";
 import { useReviewDigest, type Row } from "../store";
 import { ago, type ReviewDigest, type ReviewItem } from "../workstream";
@@ -25,31 +25,45 @@ function ApproverChip({ login }: { login: string }) {
 const severeTitle = (d: ReviewDigest) =>
   `AI reviewer flagged:\n${d.severe.map((i) => `${i.author ?? "bot"}: ${i.line}${i.kind !== "thread" ? " (summary comment)" : ""}`).join("\n")}`;
 
-/** The list row's compact cluster: approver chips, `N unresolved`, and a red/amber dot when an AI
- *  reviewer left a severe comment. Renders nothing until the digest has loaded. */
+/** The unresolved chip's tooltip: the thread/nit count when there are any, the AI reviewer's
+ *  findings when it flagged something severe (either, both, or — given the caller's guard — one). */
+const unresolvedTitle = (d: ReviewDigest) => {
+  const { count, nits } = d.unresolved;
+  const parts: string[] = [];
+  if (count > 0) parts.push(nits ? `${count} unresolved review threads (${nits} nit${nits === 1 ? "" : "s"})` : `${count} unresolved review threads`);
+  if (d.worst) parts.push(severeTitle(d));
+  return parts.join("\n\n");
+};
+
+const SEVERITY_CLASS: Record<string, string> = {
+  critical: "border-geist-red/40 text-geist-red",
+  warning: "border-geist-warning-fg/40 text-geist-warning-fg",
+};
+
+/** The list row's compact cluster: approver chips, then a `MessagesSquare` chip for unresolved
+ *  threads — coloured by the AI reviewer's worst severity when it flagged anything, muted
+ *  otherwise — and a separate plain `MessageSquare` count for human comments. Renders nothing
+ *  until the digest has loaded. */
 export function ReviewCluster({ row }: { row: Row }) {
   const d = useReviewDigest(row.repo, row.prNumber, reviewSig(row));
   if (!d) return null;
-  const { count, nits } = d.unresolved;
+  const { count } = d.unresolved;
   if (!d.approvers.length && !count && !d.worst && !d.human.length) return null;
   return (
     <span data-slot="review-cluster" className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap">
       {d.approvers.length > 0 && <span className="flex -space-x-1">{d.approvers.slice(0, 3).map((a) => <ApproverChip key={a} login={a} />)}</span>}
       {d.approvers.length > 3 && <span className="text-muted-foreground text-[10px]">+{d.approvers.length - 3}</span>}
-      {count > 0 && (
-        <span data-slot="unresolved" title={nits ? `${count} unresolved review threads (${nits} nit${nits === 1 ? "" : "s"})` : `${count} unresolved review threads`}
-          className="rounded-full border px-1.5 text-[10px] leading-4 whitespace-nowrap">
-          {count} unresolved
+      {(count > 0 || d.worst) && (
+        <span data-slot="unresolved" data-severity={d.worst ?? undefined} title={unresolvedTitle(d)}
+          aria-label={d.worst ? `AI reviewer flagged a ${d.worst}-severity comment` : `${count} unresolved review threads`}
+          className={`inline-flex items-center gap-0.5 rounded-full border px-1.5 text-[10px] leading-4 whitespace-nowrap ${d.worst ? SEVERITY_CLASS[d.worst] : "text-muted-foreground"}`}>
+          <MessagesSquare className="size-2.5" />{count > 0 && count}
         </span>
       )}
       {d.human.length > 0 && (
         <span data-slot="human-comments" title={`${d.human.length} comment${d.human.length === 1 ? "" : "s"} from people`} className="text-muted-foreground inline-flex items-center gap-0.5 text-[10px]">
           <MessageSquare className="size-2.5" />{d.human.length}
         </span>
-      )}
-      {d.worst && (
-        <span data-slot="severe-dot" data-severity={d.worst} title={severeTitle(d)} aria-label={`AI reviewer flagged a ${d.worst === "critical" ? "critical" : "warning"}-severity comment`}
-          className={`size-2 rounded-full ${d.worst === "critical" ? "bg-geist-red" : "bg-geist-amber"}`} />
       )}
     </span>
   );
