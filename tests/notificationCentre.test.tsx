@@ -546,6 +546,23 @@ describe("the notification centre", () => {
     } finally { window.matchMedia = was; }
   });
 
+  test("on mobile, a toast that does pop is collapsed to a small two-line card — no body, no time, still tappable with its quick actions", async () => {
+    const was = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ matches: q === "(max-width: 767px)", media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+    try {
+      await open("/");
+      const s = await live();
+      await push(s, note({ id: 95, kind: "needs_input", title: "Login form", body: "Should the old rows be migrated too?" }));
+      const toast = cards()[0]!;
+      expect(toast.textContent).toContain("Login form");
+      expect(toast.textContent).not.toContain("Should the old rows be migrated too?"); // the body is a tap away, not on the card
+      expect(toast.querySelector('[data-slot="notification-time"]')).toBeNull();
+      expect(actionLabels(toast)).toContain("Open"); // still fully usable, just smaller
+      await click(toast.querySelector('[data-slot="notification-title"]')!);
+      expect(location.pathname + location.search).toBe("/r/local/feat-x/chat?reply=1");
+    } finally { window.matchMedia = was; }
+  });
+
   test("on mobile, no toast pops while the orchestrator's panel is open — even for an unrelated workstream", async () => {
     const was = window.matchMedia;
     window.matchMedia = ((q: string) => ({ matches: q === "(max-width: 767px)", media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
