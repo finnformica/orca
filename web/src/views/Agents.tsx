@@ -31,7 +31,7 @@ import { OrchStatusNote, Pill, UpkeepNote, StatusDot, type DotTone } from "@/com
 import { TerminalDialog } from "@/components/Terminal";
 import { Board, ConditionBadges, CopyDone, LaneActions, useSummary, useTerminalOpen } from "./Board";
 import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
-import { PreviewCell, PrPreviewCell, PrPreviewInline } from "./PreviewControl";
+import { PreviewCell, PrPreviewInline } from "./PreviewControl";
 import { ReviewCluster } from "./Review";
 
 export function Agents() {
@@ -408,7 +408,6 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
           <Pill tone={pill.tone} slot="state-pill" title={pill.tooltip}>{pill.label}</Pill>
           {row.prNumber && !isDone && <ConditionBadges row={row} />}
           {row.prNumber && !isDone && <ReviewCluster row={row} />}
-          {row.prNumber && !isDone && <PrPreviewCell row={row} />}
           {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
           {(quick || menu) && <div data-slot="row-actions" className="ml-auto flex shrink-0 items-center gap-1">{quick}{menu}</div>}
         </div>
