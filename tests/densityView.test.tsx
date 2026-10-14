@@ -50,13 +50,15 @@ const labelledBtn = (label: string) => [...container!.querySelectorAll("button")
 describe("dense view", () => {
   test("comfortable (default) shows the prompt, diffstat and full labelled actions", async () => {
     apiFake.summaryData = { files: [{}, {}], commits: [{}], additions: 12, deletions: 3 };
-    await mount({ ...base, lane: "MERGEABLE" });
+    await mount({ ...base, lane: "MERGEABLE", reviewStatus: "approved" });
     expect(container!.textContent).toContain("Make the board denser"); // prompt
     expect(container!.textContent).toContain("2 files"); // diffstat
     // Labelled toolbar (text buttons), not icon-only.
     expect(labelledBtn("Follow up")).toBe(true);
     expect(container!.textContent).toContain("Test on"); // "Test on <instance>" now that previews can be placed (the fake config has two instances)
-    expect(container!.textContent).toContain("Merge (unreviewed)");
+    // Approved and clean: the state-aware quick actions (workstream.quickActions), labelled.
+    expect(labelledBtn("Merge when green")).toBe(true);
+    expect(labelledBtn("Merge")).toBe(true);
     // Full-size badges — no dense size-down variant.
     expect(hasClass("[data-slot=badge]]:text-[10px]")).toBe(false);
   });
@@ -64,7 +66,7 @@ describe("dense view", () => {
   test("dense folds the toolbar into icon buttons: Test locally, Follow up, Merge, Actions", async () => {
     getDefaultStore().set(densityAtom, "dense");
     apiFake.summaryData = { files: [{}, {}], commits: [{}], additions: 12, deletions: 3 };
-    await mount({ ...base, lane: "MERGEABLE" });
+    await mount({ ...base, lane: "MERGEABLE", reviewStatus: "approved" });
     // At-a-glance status survives.
     expect(container!.textContent).toContain("Add dense view"); // title
     expect(container!.textContent).toContain("CI"); // condition badge
@@ -72,11 +74,12 @@ describe("dense view", () => {
     // Every verb is an icon button (found by aria-label), and none renders its text label.
     expect(byAria("Test locally")).not.toBeNull();
     expect(byAria("Follow up")).not.toBeNull();
-    expect(byAria("Merge")).not.toBeNull();
+    expect(byAria("Merge when green")).not.toBeNull();
+    expect(container!.querySelector('button[aria-label="Merge"]')).not.toBeNull();
     expect(byAria("Actions")).not.toBeNull();
     expect(labelledBtn("Follow up")).toBe(false);
     expect(container!.textContent).not.toContain("Test locally"); // label hidden, icon only
-    expect(container!.textContent).not.toContain("Merge (unreviewed)");
+    expect(container!.textContent).not.toContain("Merge when green");
     // Detail is gone; badges shrink.
     expect(container!.textContent).not.toContain("Make the board denser"); // prompt
     expect(container!.textContent).not.toContain("2 files"); // diffstat

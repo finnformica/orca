@@ -5,7 +5,7 @@ import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSumm
 import type { Usage } from "../../server/usage";
 import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
 import type { Notification } from "../../shared/notifications";
-import type { BridgeInfo, MechanicalMerge, SyncResult } from "./workstream";
+import type { BridgeInfo, MechanicalMerge, MergePolicy, SyncResult } from "./workstream";
 
 export type LiveAgent = {
   branch: string;
@@ -72,7 +72,7 @@ async function res(r: Response) {
 
 export type RepoInfo = {
   name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; prLabels?: { name: string; default?: boolean }[];
-  previewLabel?: string;
+  previewLabel?: string; mergePolicy?: MergePolicy;
   defaultModel?: string; runsOn?: string; features?: RepoFeatures;
 };
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
