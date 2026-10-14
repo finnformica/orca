@@ -16,7 +16,7 @@ import * as forward from "./forward";
 import * as notify from "./notify";
 import { existsSync } from "fs";
 import { featuresOf, modelFor, providerAllowed, type OrcaConfig, type RepoConfig } from "./config";
-import { addressNeedsAgent, addressPrPrompt, chatPrompt, cleanupDecision, continuation, launchPrompt, mergeSettled, slugifyBranch, titleFromPrompt, workerPrBody, type MechanicalMerge, type SweepReport } from "../web/src/workstream";
+import { addressNeedsAgent, addressPrPrompt, chatPrompt, cleanupDecision, continuation, launchPrompt, mergeSettled, mergedPrIsHistory, slugifyBranch, titleFromPrompt, workerPrBody, type MechanicalMerge, type SweepReport } from "../web/src/workstream";
 import { providerOfModel } from "../shared/models";
 import { isAgentProvider, type AgentOutcome, type AgentProvider } from "../shared/agent";
 
@@ -377,6 +377,15 @@ async function reapWorktree(repo: RepoConfig, w: { branch: string; worktreePath:
   await db.archive(repo.name, w.branch).catch((e) => { if (!(e instanceof db.DbUnavailable)) throw e; });
 }
 
+/** Is this done PR only HISTORY for the worktree — a branch reused since (`mergedPrIsHistory`, the
+ *  board's own rule)? Then the worktree is live work, not finished work, and is never reaped. */
+function doneIsHistory(pr: gh.DonePr, w: { worktreePath: string; head?: string }, live: { open: boolean; queued: number }): boolean {
+  return mergedPrIsHistory({ mergedAt: pr.at !== undefined ? new Date(pr.at).toISOString() : undefined, headSha: pr.head }, {
+    agentStatus: agent.isRunning(w.worktreePath) ? "running" : agent.status(w.worktreePath).status,
+    agentStartedAt: agent.status(w.worktreePath).startedAt, queued: live.queued, head: w.head, openPr: live.open,
+  });
+}
+
 export type CleanupResult = { branch: string; worktreePath: string; reason: git.ReapReason; action: "reaped" | "flagged" | "waiting"; why?: string };
 const cleaning = new Map<string, Promise<CleanupResult[]>>();
 
@@ -396,9 +405,16 @@ export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: nu
     if (!done.size) return [];
     const out: CleanupResult[] = [];
     let ench: Record<string, db.Fields> | undefined;
+    let live: { open: Set<string>; queued: Map<string, number> } | undefined; // read once, only when a worktree has a done PR
     for (const w of await git.listWorktrees(repo.repoPath, repo.worktreeRoot)) {
       const pr = done.get(w.branch);
       if (!pr) continue;
+      live ??= {
+        open: new Set((await gh.listPrs(repo.repoPath).catch(() => [])).map((p) => p.branch)),
+        queued: await db.queuedCounts(repo.name).catch(() => new Map<string, number>()),
+      };
+      // A branch reused since its PR finished (the orchestrator sent new work to it) is not done.
+      if (doneIsHistory(pr, w, { open: live.open.has(w.branch), queued: live.queued.get(w.branch) ?? 0 })) continue;
       const facts = { doneAt: pr.at, now: opts.now ?? Date.now(), graceMs: opts.graceMs, running: agent.isRunning(w.worktreePath) };
       let d = cleanupDecision({ ...facts, dirty: [], unpushed: 0 }); // timing first — the git probes only once due
       if (d.action === "reap") d = cleanupDecision({ ...facts, ...(await git.worktreeSafety(repo.repoPath, w, { base: repo.baseBranch, head: pr.head, ignore: orcaPaths(repo) })) });
@@ -435,10 +451,11 @@ export async function sweep(cfg: OrcaConfig, opts: { confirm?: boolean; now?: nu
   const report: SweepReport = { instance: db.instanceName(), confirmed: confirm, worktrees: [], previews: [], branches: [] };
   const removing = new Map<string, () => Promise<void>>(); // worktree path → its reap
   for (const repo of cfg.repos.filter(repoHere)) {
-    const [done, archived, ench] = await Promise.all([
+    const [done, archived, ench, queued] = await Promise.all([
       gh.donePrs(repo.repoPath).catch(() => new Map<string, gh.DonePr>()),
       db.archivedBranches(repo.name).catch(() => new Set<string>()),
       db.enrichment(repo.name).catch(() => ({}) as Record<string, db.Fields>),
+      db.queuedCounts(repo.name).catch(() => new Map<string, number>()),
     ]);
     let open: Set<string>;
     try { open = new Set((await gh.listPrs(repo.repoPath)).map((p) => p.branch)); }
@@ -454,6 +471,7 @@ export async function sweep(cfg: OrcaConfig, opts: { confirm?: boolean; now?: nu
       const pr = done.get(w.branch);
       const reason: git.ReapReason | undefined = pr?.reason ?? (archived.has(w.branch) ? "archived" : undefined);
       if (!reason || open.has(w.branch)) continue; // not finished, or a newer PR reuses the branch
+      if (pr && doneIsHistory(pr, w, { open: false, queued: queued.get(w.branch) ?? 0 })) continue; // reused since its PR finished
       const d = cleanupDecision({
         now: opts.now ?? Date.now(), graceMs: 0, running: agent.isRunning(w.worktreePath),
         ...(await git.worktreeSafety(repo.repoPath, w, { base: repo.baseBranch, head: pr?.head, ignore: orcaPaths(repo) })),

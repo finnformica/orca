@@ -118,6 +118,33 @@ test("C1b: a branch preview's read-only bridge never reaps a worktree", async ()
   expect((await verbs.cleanupRepo(repo, { now: NOW })).map((c) => c.branch)).toEqual(["merged-pb"]); // the real bridge acts on it
 });
 
+test("C1c: a branch reused after its PR merged (HEAD moved off the PR's head, or a message queued) is never reaped — by the tick or the sweep", async () => {
+  const moved = await workOn("reused-m"); // the merged PR's head…
+  await writeFile(join(moved.worktreePath, "again.txt"), "new work\n"); // …then new work on the reused branch
+  await run(["git", "-C", moved.worktreePath, "add", "."]); await run(["git", "-C", moved.worktreePath, "commit", "-q", "-m", "new work"]);
+  await run(["git", "-C", moved.worktreePath, "push", "-q", "origin", "reused-m"]);
+  const queued = await workOn("reused-q"); // HEAD still the PR's head, but a message is waiting for it
+  await db.queueMessage({ repo: "r", branch: "reused-q", worktreePath: queued.worktreePath, instruction: "start again", attachments: [] });
+  const stale = await workOn("stale-s"); // the control: nothing since the merge
+  await db.patchEnrichment("r", "stale-s", { title: "Stale" });
+  await setDonePrListFixture([
+    { number: 1, title: "Old", url: "u1", headRefName: "reused-m", headRefOid: moved.sha, mergedAt: iso(NOW - 3_600_000), closedAt: iso(NOW - 3_600_000) },
+    { number: 2, title: "Old", url: "u2", headRefName: "reused-q", headRefOid: queued.sha, mergedAt: iso(NOW - 3_600_000), closedAt: iso(NOW - 3_600_000) },
+    { number: 3, title: "Old", url: "u3", headRefName: "stale-s", headRefOid: stale.sha, mergedAt: iso(NOW - 3_600_000), closedAt: iso(NOW - 3_600_000) },
+  ]);
+  const cfg: OrcaConfig = { repos: [repo], portRange: [30000, 40000], staleHours: 24 };
+  const dry = await verbs.sweep(cfg, { now: NOW });
+  expect(dry.worktrees.map((w) => w.branch)).toEqual(["stale-s"]);
+  expect(dry.branches.map((b) => b.branch)).toEqual([]);
+
+  const out = await verbs.cleanupRepo(repo, { now: NOW });
+  expect(out.map((c) => `${c.branch}:${c.action}`)).toEqual(["stale-s:reaped"]);
+  expect(await worktrees()).toEqual(["reused-m", "reused-q"]);
+  expect(await branchExists("reused-m")).toBe(true);
+  expect(await branchExists("reused-q")).toBe(true);
+  expect([...(await db.archivedBranches("r"))]).toEqual(["stale-s"]);
+});
+
 test("C2: a merged worktree with uncommitted or unpushed work is flagged, not removed; a squash-merged one whose remote branch is gone is reaped", async () => {
   const dirty = await workOn("dirty-a");
   await writeFile(join(dirty.worktreePath, "notes.md"), "not committed\n");
@@ -130,7 +157,8 @@ test("C2: a merged worktree with uncommitted or unpushed work is flagged, not re
   const long = iso(NOW - 3_600_000);
   await setDonePrListFixture([
     { number: 3, title: "a", url: "u", headRefName: "dirty-a", headRefOid: dirty.sha, mergedAt: long },
-    { number: 4, title: "b", url: "u", headRefName: "unpushed-b", headRefOid: ahead.sha, mergedAt: long },
+    // No head known for this one: with it, a commit past the PR's head reads as a reused branch (C1c).
+    { number: 4, title: "b", url: "u", headRefName: "unpushed-b", mergedAt: long },
     { number: 5, title: "c", url: "u", headRefName: "squash-c", headRefOid: squashed.sha, mergedAt: long },
   ]);
 
@@ -150,9 +178,9 @@ test("C2: a merged worktree with uncommitted or unpushed work is flagged, not re
   await verbs.cleanupRepo(repo, { now: NOW + 1 });
   expect(((await db.enrichment("r"))["dirty-a"]!.cleanupBlocked as { at: string }).at).toBe(at);
 
-  // Committed and pushed: the next pass reaps it and the flag goes with the card.
-  await run(["git", "-C", dirty.worktreePath, "add", "."]); await run(["git", "-C", dirty.worktreePath, "commit", "-q", "-m", "notes"]);
-  await run(["git", "-C", dirty.worktreePath, "push", "-q", "origin", "dirty-a"]);
+  // The change discarded: the next pass reaps it and the flag goes with the card. (Committing it
+  // would move HEAD off the PR's head — a reused branch, kept: C1c.)
+  await rm(join(dirty.worktreePath, "notes.md"));
   expect((await verbs.cleanupRepo(repo, { now: NOW + 2 })).find((c) => c.branch === "dirty-a")!.action).toBe("reaped");
   expect(await worktrees()).toEqual(["unpushed-b"]);
 });
