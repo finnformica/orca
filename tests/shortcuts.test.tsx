@@ -12,7 +12,7 @@ import * as store from "@/store";
 import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import {
-  addNewOpenAtom, orchestratorOpenAtom, orchestratorPrefillAtom, paletteOpenAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom,
+  addNewOpenAtom, notificationsOpenAtom, orchestratorOpenAtom, orchestratorPrefillAtom, paletteOpenAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom,
 } from "@/lib/atoms";
 import { CHORD_TIMEOUT_MS, SHORTCUTS, isMacPlatform, isTypingTarget, matchShortcut, pageShortcut, shortcutKeys, shortcutLabel, type KeyLike, type ShortcutId } from "@/lib/shortcuts";
 import { Kbd, KbdGroup, Shortcut } from "@/components/ui/kbd";
@@ -33,8 +33,9 @@ describe("the shortcut matcher", () => {
     expect(matchShortcut({ key: "c" }, false)).toBe("new");
     expect(matchShortcut({ key: "o" }, false)).toBe("orchestrator");
     expect(matchShortcut({ key: "f" }, false)).toBe("find");
+    expect(matchShortcut({ key: "n" }, false)).toBe("notifications");
     expect(matchShortcut({ key: "?", shiftKey: true }, false)).toBe("help");
-    for (const key of ["c", "o", "f", "?"]) expect(matchShortcut({ key }, true)).toBeNull(); // never while typing
+    for (const key of ["c", "o", "f", "n", "?"]) expect(matchShortcut({ key }, true)).toBeNull(); // never while typing
     expect(matchShortcut({ key: "c", metaKey: true }, false, true)).toBeNull(); // ⌘C is copy
     expect(matchShortcut({ key: "C", shiftKey: true }, false)).toBeNull();
     expect(matchShortcut({ key: "x" }, false)).toBeNull();
@@ -51,7 +52,7 @@ describe("the shortcut matcher", () => {
     expect(after("u")).toBe("goUsage");
     expect(after("s")).toBe("goSettings");
     expect(after("O")).toBe("goOverview"); // caps lock
-    for (const k of ["c", "f", "x", "g"]) expect(after(k)).toBeNull(); // a stray key ends the chord, firing nothing
+    for (const k of ["c", "f", "n", "x", "g"]) expect(after(k)).toBeNull(); // a stray key ends the chord, firing nothing — N has no G chord either
     expect(after("a", {}, true)).toBeNull(); // a field took focus in between
     expect(after("a", { metaKey: true })).toBeNull();
     expect(after("A", { shiftKey: true })).toBeNull();
@@ -60,6 +61,7 @@ describe("the shortcut matcher", () => {
     // Without the G, the letters are what they always were.
     expect(matchShortcut({ key: "o" }, false, true, false)).toBe("orchestrator");
     expect(matchShortcut({ key: "a" }, false, true, false)).toBe("quickAsk");
+    expect(matchShortcut({ key: "n" }, false, true, false)).toBe("notifications");
     // Every page chord is in the table with its destination, and labels as two keycaps.
     expect(SHORTCUTS.filter((s) => s.chord).map((s) => [s.id, s.to])).toEqual([
       ["goOverview", "/"], ["goAgents", "/agents"], ["goPreviews", "/previews"], ["goRepos", "/repos"], ["goUsage", "/usage"], ["goSettings", "/settings"],
@@ -186,7 +188,7 @@ afterEach(async () => {
   apiFake.reset();
   localStorage.clear();
   const s = getDefaultStore();
-  for (const a of [addNewOpenAtom, orchestratorOpenAtom, paletteOpenAtom, shortcutsHelpOpenAtom]) s.set(a, false);
+  for (const a of [addNewOpenAtom, orchestratorOpenAtom, paletteOpenAtom, shortcutsHelpOpenAtom, notificationsOpenAtom]) s.set(a, false);
   s.set(orchestratorPrefillAtom, null);
   s.set(sidebarCollapsedAtom, false);
   navigate("/");
@@ -270,7 +272,9 @@ test("S1: C, O, ?, ⌘B and Esc work from the page — and never while typing in
 
   // The tooltips carry the keys too.
   expect(q('[data-slot="add-new"]')!.getAttribute("title")).toBe("Add New (C)");
-  expect(q('button[aria-label="Collapse sidebar"]')!.getAttribute("title")).toBe(`Collapse sidebar (${shortcutLabel("sidebar")})`);
+  const toggleTip = q('button[aria-label="Collapse sidebar"]')!.closest('[data-slot="tip"]')!;
+  expect(toggleTip.querySelector('[role="tooltip"]')!.textContent).toContain("Collapse sidebar");
+  expect(keycaps(toggleTip.querySelector('[data-shortcut="sidebar"]'))).toEqual(shortcutKeys("sidebar"));
   expect(q('[data-slot="ask-orchestrator"]')!.getAttribute("title")).toContain("(O)");
 });
 
@@ -371,13 +375,17 @@ test("S5: the top bar of every page has an Ask-the-orchestrator BUTTON that open
   expect(box.value).toBe("earlier draft");
 });
 
-test("S6: every control with a shortcut shows its keycap — the pill, the top bar, Find, Add New, the palette's rows and the profile menu", async () => {
+test("S6: every control with a shortcut shows its keycap — the pill, the top bar, Find, Add New, the bell, the palette's rows and the profile menu", async () => {
   await mount("/");
   const hint = (root: Element | null, id: ShortcutId) => keycaps(root?.querySelector(`[data-shortcut="${id}"]`));
   expect(hint(q('[data-slot="quick-ask-pill"]'), "quickAsk")).toEqual(["A"]);
   expect(hint(q('button[data-slot="ask-orchestrator"]'), "orchestrator")).toEqual(["O"]);
   expect(hint(find().closest("label"), "find")).toEqual(["F"]);
   expect(hint(q('button[data-slot="add-new"]'), "new")).toEqual(["C"]);
+  // The bell is icon-only either way — its hint lives in the hover tooltip.
+  const bellTip = q('button[data-slot="notifications-bell"]')!.closest('[data-slot="tip"]')!;
+  expect(bellTip.querySelector('[role="tooltip"]')!.textContent).toContain("Notifications");
+  expect(keycaps(bellTip.querySelector('[data-shortcut="notifications"]'))).toEqual(["N"]);
   // No ad hoc <kbd> left anywhere: every one is the shared Kbd.
   for (const k of document.querySelectorAll("kbd")) expect(k.getAttribute("data-slot")).toBe("kbd");
 
@@ -482,7 +490,7 @@ test("S9: G then a letter goes to the page — and never also fires that letter'
   } finally { Date.now = realNow; }
 });
 
-test("S10: every sidebar page shows its G chord — keycaps on hover expanded, in the tooltip collapsed — and the palette's pages carry them", async () => {
+test("S10: every sidebar page shows its G chord — always-visible keycaps expanded, in the tooltip collapsed — and the palette's pages carry them", async () => {
   await mount("/");
   const items = () => [...document.querySelectorAll<HTMLElement>('nav[aria-label="Main"] button')];
   const expected: [string, ShortcutId][] = [["Overview", "goOverview"], ["Agents", "goAgents"], ["Previews", "goPreviews"], ["Repos", "goRepos"], ["Usage", "goUsage"], ["Settings", "goSettings"]];
@@ -491,8 +499,9 @@ test("S10: every sidebar page shows its G chord — keycaps on hover expanded, i
     const id = expected[i]![1];
     const hint = b.querySelector(`[data-shortcut="${id}"]`)!;
     expect(keycaps(hint)).toEqual(shortcutKeys(id as ShortcutId));
-    // Subtle: shown on hover / focus only, and never on a phone or a touch screen.
-    for (const c of ["opacity-0", "group-hover/nav:opacity-100", "max-md:hidden", "[@media(pointer:coarse)]:hidden"]) expect(hint.className.split(/\s+/)).toContain(c);
+    // Always visible — the same muted keycap style as Find / Add New — and never on a phone or a touch screen.
+    for (const c of ["max-md:hidden", "[@media(pointer:coarse)]:hidden"]) expect(hint.className.split(/\s+/)).toContain(c);
+    expect(hint.className).not.toContain("opacity-0");
     expect(b.getAttribute("aria-keyshortcuts")).toBe(`G ${shortcutKeys(id as ShortcutId)[1]}`);
   }
   // Collapsed: the icons' tooltips carry the label and the keycaps.
@@ -511,4 +520,49 @@ test("S10: every sidebar page shows its G chord — keycaps on hover expanded, i
   for (const [to, id] of [["/", "goOverview"], ["/agents", "goAgents"], ["/previews", "goPreviews"], ["/repos", "goRepos"], ["/usage", "goUsage"], ["/settings", "goSettings"]]) {
     expect(keycaps(pal.querySelector(`[role="option"][data-id="page:${to}"] [data-shortcut="${id}"]`))).toEqual(shortcutKeys(id as ShortcutId));
   }
+});
+
+test("S11: N opens/toggles the notifications bell's popover; Esc closes it; never while typing or mid-chord; in the ? sheet and the palette", async () => {
+  await mount("/");
+  const popover = () => q('[data-slot="notification-centre"]');
+
+  // Typing in a field: N is text, not the shortcut.
+  find().focus();
+  await press(find(), "n");
+  expect(popover()).toBeNull();
+  find().blur();
+
+  // Opens, and a second press toggles it shut again.
+  await press(document.body, "n");
+  expect(popover()).not.toBeNull();
+  await press(document.body, "n");
+  expect(popover()).toBeNull();
+
+  // Esc closes it (Radix's own dismissable-layer handling, ahead of this listener).
+  await press(document.body, "n");
+  expect(popover()).not.toBeNull();
+  await press(document.body, "Escape");
+  expect(popover()).toBeNull();
+
+  // Never as the second key of a G chord — there is no G N chord.
+  await press(document.body, "g");
+  await press(document.body, "n");
+  expect(popover()).toBeNull();
+  expect(location.pathname).toBe("/");
+
+  // It's in the ? sheet…
+  await press(document.body, "?", { shiftKey: true });
+  const help = q('[data-slot="shortcuts-help"]')!;
+  expect(help.textContent).toContain("Notifications");
+  expect(keycaps(help.querySelector('li [data-shortcut="notifications"]'))).toEqual(["N"]);
+  await act(async () => { q<HTMLDialogElement>('[data-slot="shortcuts-help"]')!.close(); await flush(); });
+
+  // …and in the palette, which can open it too.
+  await press(document.body, "k", MOD);
+  const pal = q('[data-slot="command-palette"]')!;
+  const row = pal.querySelector('[role="option"][data-id="action:notifications"]')!;
+  expect(row).not.toBeNull();
+  expect(keycaps(row.querySelector('[data-shortcut="notifications"]'))).toEqual(["N"]);
+  await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(popover()).not.toBeNull();
 });

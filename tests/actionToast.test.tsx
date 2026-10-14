@@ -14,7 +14,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { App } from "@/App";
 import { navigate } from "@/lib/route";
-import { orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
+import { notificationsOpenAtom, orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
 import * as centre from "@/lib/notificationStore";
 import { actionFailureAsk, actionFailureCopy } from "@/workstream";
 import type { Notification } from "../shared/notifications";
@@ -43,6 +43,7 @@ afterEach(async () => {
   localStorage.clear();
   getDefaultStore().set(orchestratorOpenAtom, false);
   getDefaultStore().set(orchestratorPrefillAtom, null);
+  getDefaultStore().set(notificationsOpenAtom, false); // the bell's popover is controlled now; the store outlives this file too
   navigate("/");
   await act(async () => { await store.refresh(); });
 });

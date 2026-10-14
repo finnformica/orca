@@ -74,6 +74,13 @@ async function resolvePrDescription(
 // A branch preview's own bridge (db.previewBridge, scripts/preview-orca.sh) reads the shared database
 // for its preview and does NOTHING else: none of the startup work below, which acts on this
 // instance's runs, previews and metrics, and no write route (see `api`).
+// A rejected promise nobody awaited is fatal in Bun by default. A pooled connection's connect timeout
+// while the database is unreachable (ERR_POSTGRES_CONNECTION_TIMEOUT, raised on #onClose to no
+// query) killed the laptop bridge twice in 2026-10, each time a tailnet blip, and `bun --watch` does
+// not restart a crashed process. Log and carry on: withRetry reopens the pool on the next query.
+// ponytail: a safety net under every fire-and-forget, not a cure for whichever one leaked.
+process.on("unhandledRejection", (e) => console.error("orca: unhandled rejection", e instanceof Error ? e.message : e));
+process.on("uncaughtException", (e) => console.error("orca: uncaught exception", e instanceof Error ? e.stack ?? e.message : e));
 const PREVIEW_BRIDGE = db.previewBridge();
 if (!PREVIEW_BRIDGE && !(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
   console.log(`orca: reclaimed :${API_PORT} from a stale bridge`);

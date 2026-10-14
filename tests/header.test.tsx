@@ -133,7 +133,7 @@ describe("console shell", () => {
     await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
     const you = container!.querySelector<HTMLElement>('[data-slot="sidebar-you"]')!;
     expect(you.className).toContain("md:flex-col-reverse"); // the toggle renders above the avatar
-    expect(you.lastElementChild!.getAttribute("aria-label")).toBe("Expand sidebar");
+    expect(you.lastElementChild!.querySelector("button")!.getAttribute("aria-label")).toBe("Expand sidebar"); // the toggle, now wrapped in its tooltip
     expect(container!.querySelector('[data-slot="sidebar-actions"] [data-slot="add-new"]')!.getAttribute("aria-label")).toBe("Add New"); // an icon now
   });
 

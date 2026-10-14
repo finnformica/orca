@@ -7,7 +7,7 @@ import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboard
 import { useAtom, useSetAtom } from "jotai";
 import { Search } from "lucide-react";
 import {
-  addNewOpenAtom, instanceScopeAtom, paletteOpenAtom, paletteRecentAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom, quickAskOpenAtom } from "@/lib/atoms";
+  addNewOpenAtom, instanceScopeAtom, notificationsOpenAtom, paletteOpenAtom, paletteRecentAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom, quickAskOpenAtom } from "@/lib/atoms";
 import { moveSelection, pushRecent, rankPalette, type PaletteItem } from "@/lib/palette";
 import { CHORD_TIMEOUT_MS, SHORTCUTS, isTypingTarget, matchShortcut, pageShortcut, type ShortcutId } from "@/lib/shortcuts";
 import { navigate, useRoute, type Route } from "@/lib/route";
@@ -41,6 +41,7 @@ function useCommands(): Command[] {
   const setAddNew = useSetAtom(addNewOpenAtom);
   const setHelp = useSetAtom(shortcutsHelpOpenAtom);
   const setQuickAsk = useSetAtom(quickAskOpenAtom);
+  const setNotifications = useSetAtom(notificationsOpenAtom);
   const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
   const setRepo = useSetAtom(repoFilterAtom);
   const setScope = useSetAtom(instanceScopeAtom);
@@ -62,6 +63,7 @@ function useCommands(): Command[] {
   action("orchestrator", "Open orchestrator", () => ask(), "orchestrator", "ask chat");
   action("quickAsk", "Quick ask the orchestrator", () => setQuickAsk(true), "quickAsk", "message one line");
   action("find", "Find agents", () => focusFind(collapsed, setCollapsed), "find", "search filter");
+  action("notifications", "Notifications", () => setNotifications(true), "notifications", "bell inbox alerts");
   action("sidebar", collapsed ? "Expand sidebar" : "Collapse sidebar", () => setCollapsed(!collapsed), "sidebar", "toggle sidebar");
   action("help", "Keyboard shortcuts", () => setHelp(true), "help", "keys help");
   const here = routeRow(route, rows);
@@ -205,8 +207,9 @@ export function Shortcuts() {
   const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
   const { open: orchestrator, ask, close } = useOrchestrator();
   const [quickAsk, setQuickAsk] = useAtom(quickAskOpenAtom);
-  const state = useRef({ palette, collapsed, orchestrator, quickAsk });
-  state.current = { palette, collapsed, orchestrator, quickAsk };
+  const [notifications, setNotifications] = useAtom(notificationsOpenAtom);
+  const state = useRef({ palette, collapsed, orchestrator, quickAsk, notifications });
+  state.current = { palette, collapsed, orchestrator, quickAsk, notifications };
   const actions = useRef({ ask, close });
   actions.current = { ask, close };
   useEffect(() => {
@@ -235,6 +238,7 @@ export function Shortcuts() {
       else if (id === "new") setAddNew(true);
       else if (id === "orchestrator") actions.current.ask();
       else if (id === "quickAsk") setQuickAsk(true);
+      else if (id === "notifications") setNotifications(!s.notifications);
       else if (id === "help") setHelp(true);
       else if (id === "sidebar") setCollapsed(!s.collapsed);
       else if (id === "find") focusFind(s.collapsed, setCollapsed);

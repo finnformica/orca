@@ -233,6 +233,11 @@ export function isDroppedConnection(err: unknown): boolean {
   // that close to whichever query next touches it — the 10s inventory/preview publish saw
   // "Idle timeout reached after 30s" as a failure. Same remedy: a fresh connection.
   if (code === "ERR_POSTGRES_IDLE_TIMEOUT" || code === "ERR_POSTGRES_LIFETIME_TIMEOUT") return true;
+  // Connecting timed out (the database host dropped off the tailnet for a moment): the next attempt
+  // gets a fresh pool rather than one whose connections are all mid-timeout.
+  // (withRetry classes a connect timeout as an OUTAGE first — `isConnectFailure` — so the bridge goes
+  // degraded and probes in the background rather than paying the timeout again on a retry.)
+  if (code === "ERR_POSTGRES_CONNECTION_TIMEOUT") return true;
   // SQLSTATE 0A000 "cached plan must not change result type": this connection prepared a statement
   // BEFORE another session altered the table (the other instance ran a migration, or a hand ALTER),
   // so its cached plan is stale. Postgres re-plans only on a fresh prepare; reopening the pool is

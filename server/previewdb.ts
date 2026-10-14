@@ -38,7 +38,8 @@ export type PreviewDbCandidate = { name: string; ageMs: number };
  * approximate age — the modification time of its data directory, via `pg_stat_file` (the admin user
  * preview-db.sh requires is a superuser, so this is readable). Not a real "created at" — an idle
  * orphan's directory mtime IS its age, which is all the reaper needs (skip anything too young to be
- * an orphan rather than a preview mid-clone).
+ * an orphan rather than a preview mid-clone). Coarse: the mtime is whole seconds and the age is
+ * floored, so a brand-new database can read up to 1s old — fine against the 2h grace, not a 1s one.
  */
 export async function orphanCandidates(envPath: string): Promise<PreviewDbCandidate[]> {
   const pg = pgEnv(envPath);
