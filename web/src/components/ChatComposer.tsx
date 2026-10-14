@@ -4,7 +4,7 @@ import { ArrowUp, FileText, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
 import { usePrRefs } from "@/store";
-import { appendQuote, filterPrRefs, insertPrRef, prRefLabel, prTrigger, type PrRef } from "@/workstream";
+import { NO_WALK, appendQuote, filterPrRefs, historyKey, historyStep, insertPrRef, prRefLabel, prTrigger, type HistoryWalk, type PrRef } from "@/workstream";
 import { cn } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
 import { joinPrefill } from "@/lib/palette";
@@ -21,14 +21,6 @@ import { enterSends, isCoarse } from "@/lib/viewport";
 // `variant="quick"` is the same input dressed as the quick-ask box (components/QuickAsk): no border of
 // its own (the host's morphing surface is the box), an `icon` top left beside a three-line textarea,
 // and a labelled Send with its keycap; its @ picker is portaled out of the host's overflow-hidden.
-/** Shell-style history step: ↑ walks toward older (from newest when not yet walking), ↓ toward newer
- *  and off the end back to an empty box (null). Pure, so it's unit-tested without a DOM. */
-export function stepHistory(idx: number | null, dir: "up" | "down", len: number): number | null {
-  if (len === 0) return null;
-  if (dir === "up") return idx === null ? len - 1 : Math.max(0, idx - 1);
-  return idx === null || idx >= len - 1 ? null : idx + 1; // ↓ past newest → cleared box
-}
-
 export function ChatComposer({
   persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt, className, repo, prefill, insert,
   variant = "box", icon, inputLabel,
@@ -66,7 +58,8 @@ export function ChatComposer({
   // The parent closes the box immediately and owns the outcome — it keeps the persisted draft so a
   // failure can reopen with the same text, and clears it on success. Used by the follow-up box.
   optimistic?: boolean;
-  // Past submissions (oldest→newest) recallable with ↑/↓ from an empty box — resend a prior prompt.
+  // Messages you sent in this chat, NEWEST first (workstream `composerHistory`), recalled with ↑/↓
+  // like a terminal: ↑ on the first line, ↓ on the last; ↓ past the newest gives the draft back.
   history?: string[];
 }) {
   const [value, setText] = useState(() => (persistKey ? loadDraft(persistKey).text : ""));
@@ -74,7 +67,7 @@ export function ChatComposer({
   // React has rendered the clear, so the textarea's DOM value would still read as the sent text.
   const latest = useRef(value);
   const setValue = (v: string) => { latest.current = v; setText(v); };
-  const [histIdx, setHistIdx] = useState<number | null>(null); // position while walking `history`, else null
+  const walk = useRef<HistoryWalk>(NO_WALK); // where a ↑/↓ walk through `history` stands, and the draft it left
   const [images, setImages] = useState<File[]>([]);
   const [hydrated, setHydrated] = useState(!persistKey);
   const [error, setError] = useState<string | null>(null);
@@ -101,7 +94,6 @@ export function ChatComposer({
     setDismissedAt(trig.start); // a pick is done with that `@`, even if the text still parses as one
     setValue(next.text);
     setCaret(next.caret);
-    setHistIdx(null);
   };
   // Put the caret after an inserted ref once React has written the new value.
   useLayoutEffect(() => {
@@ -135,7 +127,7 @@ export function ChatComposer({
     if (next !== null && next !== latest.current) {
       pendingCaret.current = next.length; // the [value] layout effect focuses and puts the caret at the end
       setValue(next);
-      setHistIdx(null);
+      walk.current = NO_WALK; // text from outside the box is the new draft
     } else if (el && el.ownerDocument.activeElement !== el) {
       el.focus();
       el.setSelectionRange(el.value.length, el.value.length);
@@ -150,7 +142,7 @@ export function ChatComposer({
     const next = appendQuote(latest.current, insert.text);
     pendingCaret.current = next.length; // the [value] layout effect below focuses and places it
     setValue(next);
-    setHistIdx(null);
+    walk.current = NO_WALK; // text from outside the box is the new draft
   }, [insert?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Clicking anywhere in the chrome (border, padding, toolbar gap) focuses the textarea, so the
@@ -211,7 +203,7 @@ export function ChatComposer({
     const sent = { text: value.trim(), images };
     setValue("");
     setImages([]);
-    setHistIdx(null);
+    walk.current = NO_WALK;
     if (persistKey) clearDraft(persistKey);
     setError(null);
     try {
@@ -223,8 +215,6 @@ export function ChatComposer({
       if (empty) { setValue(sent.text); setImages(sent.images); }
     }
   };
-  // Recall a history entry (or clear to empty at idx null) into the box.
-  const recall = (idx: number | null) => { setHistIdx(idx); setValue(idx === null ? "" : (history?.[idx] ?? "")); };
   const onKey = (e: KeyboardEvent) => {
     if (picking && !e.nativeEvent.isComposing) {
       const n = matches.length;
@@ -244,12 +234,22 @@ export function ChatComposer({
       setValue(el.value);
       return;
     }
-    const len = history?.length ?? 0;
-    if (!len) return;
-    // ↑/↓ walk past follow-ups — but only from an empty box (or once already walking), so ↑ never
-    // clobbers a draft or hijacks normal caret movement inside multiline text.
-    if (e.key === "ArrowUp" && (value === "" || histIdx !== null)) { e.preventDefault(); recall(stepHistory(histIdx, "up", len)); }
-    else if (e.key === "ArrowDown" && histIdx !== null) { e.preventDefault(); recall(stepHistory(histIdx, "down", len)); }
+    // ↑/↓ walk the messages you sent here. A recalled message goes in whole with the caret at its END,
+    // so on a multi-line one a further ↑ first climbs its lines (the first-line rule) before reaching
+    // an older message — the same as a shell's multi-line history.
+    const el = e.currentTarget as HTMLTextAreaElement;
+    const dir = historyKey(
+      { key: e.key, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, isComposing: e.nativeEvent.isComposing || e.keyCode === 229 },
+      { value: el.value, selectionStart: el.selectionStart, selectionEnd: el.selectionEnd, menuOpen: picking },
+    );
+    const step = dir && historyStep(walk.current, dir, history ?? [], el.value);
+    if (!step) return;
+    e.preventDefault();
+    walk.current = step.walk;
+    pendingCaret.current = step.text.length;
+    if (step.text === el.value) el.setSelectionRange(step.text.length, step.text.length); // no re-render to place it
+    setValue(step.text);
+    setCaret(step.text.length);
   };
   // Cancel is an explicit dismissal, so drop the persisted draft too — otherwise it would
   // reopen on the next reload (open-state is derived from whether a draft exists).
@@ -274,7 +274,7 @@ export function ChatComposer({
       onChange={(e) => {
         const t = prTrigger(e.target.value, e.target.selectionStart);
         if (t?.start !== dismissedAt) setDismissedAt(null); // a new (or no) `@` re-arms the picker
-        setValue(e.target.value); setCaret(e.target.selectionStart); setActive(0); setHistIdx(null);
+        setValue(e.target.value); setCaret(e.target.selectionStart); setActive(0); // an edit keeps the ↑/↓ walk: ↓ still returns to the draft
       }}
       onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
       onBlur={() => { if (trig) setDismissedAt(trig.start); }}

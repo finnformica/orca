@@ -376,9 +376,9 @@ export function FollowUpComposer(
       optimistic
       persistKey={key}
       repo={row.repo}
-      // ↑/↓ from an empty box recall past follow-ups sent on this branch — resend the last one after
-      // an error without retyping. Kept in enrichment (row.followUps) until the branch ends.
-      history={row.followUps}
+      // ↑/↓ recall past follow-ups sent on this branch — resend the last one after an error without
+      // retyping. Kept in enrichment (row.followUps, oldest first) until the branch ends.
+      history={[...new Set([...(row.followUps ?? [])].reverse())]}
       placeholder="Continue this work…"
       leading={
         <div className="flex min-w-0 w-full items-center overflow-hidden">
