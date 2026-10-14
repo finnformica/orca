@@ -167,6 +167,26 @@ export async function setProfileEnabled(name: string, enabled: boolean): Promise
   return (await hydraUsage()) ?? before;
 }
 
+/** Force a token refresh for one hydra login (`hydra refresh <name> --force`) — the fix for a
+ *  "token stale" row the user would otherwise have to SSH in and run by hand. Same validation and
+ *  shape as `setProfileEnabled`: refuses a name hydra doesn't currently report, 15s timeout, never
+ *  throws past the route. Clears `lastGoodHydra` before the post-refresh read so a stale cached
+ *  reading can't mask the fresh one — the UI gets the new state (or `before` on a failed re-read),
+ *  never the pre-refresh snapshot. */
+export async function refreshProfile(name: string): Promise<ProfileUsage[]> {
+  const hydra = Bun.which("hydra", { PATH: process.env.PATH ?? "" });
+  if (!hydra) throw new Error("hydra is not installed on this host");
+  const before = await hydraUsage();
+  if (!before?.some((p) => p.name === name)) throw new Error(`"${name}" is not a hydra login on this host`);
+  const proc = Bun.spawn([hydra, "refresh", name, "--force"], { env: process.env, stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => proc.kill(), 15_000);
+  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  clearTimeout(timer);
+  if (code !== 0) throw new Error((err || out).trim() || `hydra refresh ${name} --force failed`);
+  lastGoodHydra = null;
+  return (await hydraUsage()) ?? before;
+}
+
 export const DEFAULT_CLAUDE_DIR = join(homedir(), ".claude");
 
 /** The macOS Keychain service the CLI stores a login's OAuth token under. Read out of the CLI

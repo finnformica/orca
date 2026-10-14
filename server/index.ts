@@ -9,7 +9,7 @@ import * as attachments from "./attachments";
 import * as preview from "./preview";
 import * as forward from "./forward";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
-import { routingInfo, setProfileEnabled, usage } from "./usage";
+import { refreshProfile, routingInfo, setProfileEnabled, usage } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
 import * as outbox from "./outbox";
@@ -563,6 +563,17 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!name) return json({ error: "name required" }, 400);
     try {
       return json({ profiles: await setProfileEnabled(name, Boolean(body.enabled)) });
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  }
+  if (req.method === "POST" && p === "/api/usage/refresh") {
+    // Same per-host placement as /api/usage/profile above — forced when an explicit ?instance=
+    // names another machine, answered here otherwise. Fixes a "token stale" row without SSH.
+    const name = String(body.name ?? "");
+    if (!name) return json({ error: "name required" }, 400);
+    try {
+      return json({ profiles: await refreshProfile(name) });
     } catch (e) {
       return json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }

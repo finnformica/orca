@@ -10,6 +10,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { aggregateProfiles, App, mergeUsage, untilReset } from "@/App";
 import { navigate } from "@/lib/route";
+import { NARROW_QUERY } from "@/lib/viewport";
 import { createStore, getDefaultStore } from "jotai";
 import { usageExpandedAtom } from "@/lib/atoms";
 import * as centre from "@/lib/notificationStore";
@@ -296,6 +297,20 @@ test("the usage toggle reads back on a reload: default collapsed, bad JSON falls
   expect(reload().get(usageExpandedAtom)).toBe(true);
 });
 
+test("on a narrow screen the reset timer shows as the bare countdown, not hidden, keeping the row on one line", async () => {
+  const realMatchMedia = window.matchMedia;
+  window.matchMedia = ((q: string) => ({ matches: q === NARROW_QUERY, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  try {
+    const at = (mins: number) => new Date(Date.now() + mins * 60_000).toISOString();
+    apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: at(125) }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
+    await mount();
+    const reset = group("claude")!.querySelector("[data-slot='usage-reset']")!;
+    expect(reset.textContent).toBe("2h 5m"); // no "resets " prefix on a narrow screen
+  } finally {
+    window.matchMedia = realMatchMedia;
+  }
+});
+
 test("a hydra login's row shows a switch on hover: flipping it disables/enables the rotation through POST /api/usage/profile", async () => {
   const login = (name: string, state: string) => ({ name, state, usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
   apiFake.usageData = { claude: null, codex: null, profiles: [login("work", "ok")] };
@@ -330,6 +345,35 @@ test("a hydra login's row shows a switch on hover: flipping it disables/enables 
 
   await mouse(header(), "mouseout");
   expect(row()).toBeNull(); // leaves the DOM again once the row isn't hovered
+});
+
+test("a Stale login's row carries a Refresh button that clears the stale state through POST /api/usage/refresh", async () => {
+  const login = (name: string, state: string) => ({ name, state, usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
+  apiFake.usageData = { claude: null, codex: null, profiles: [login("work", "token stale — refreshes on next launch")] };
+  await mount("/usage");
+  await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Stale");
+
+  const button = () => group("login:work")!.querySelector<HTMLElement>("[data-slot='login-refresh']");
+  expect(button()).not.toBeNull(); // shown without hovering — a Stale row needs no discovery step
+
+  await act(async () => { button()!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(apiFake.refreshProfileCalls).toEqual([{ name: "work", instance: "laptop" }]);
+  expect(group("login:work")!.querySelector("[data-slot='usage-state']")).toBeNull(); // "ok" has no pill
+  expect(button()).toBeNull(); // the fix made the row healthy, so its own button is gone too
+});
+
+test("a failed refresh is a failed-action notification toast", async () => {
+  apiFake.usageData = { claude: null, codex: null, profiles: [{ name: "work", state: "token stale — refreshes on next launch", usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } }] };
+  apiFake.refreshProfileError = "hydra: refresh failed";
+  await mount("/usage");
+  await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  const button = group("login:work")!.querySelector<HTMLElement>("[data-slot='login-refresh']")!;
+  await act(async () => { button.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Stale"); // unchanged — the server refused it
+  const toast = container!.querySelector('[data-slot="notification-toast"][data-kind="action_failed"]')!;
+  expect(toast.textContent).toContain("Refresh failed");
+  expect(toast.textContent).toContain("hydra: refresh failed");
 });
 
 test("a failed toggle is a failed-action notification toast and the switch reverts", async () => {

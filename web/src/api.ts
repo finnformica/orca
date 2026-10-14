@@ -86,6 +86,10 @@ export const api = {
   // in on (hydra state is per host) — the usage card's own, today.
   setProfileEnabled: (name: string, enabled: boolean, instance?: string): Promise<{ profiles: Usage["profiles"] }> =>
     post("/api/usage/profile", { name, enabled, instance }),
+  // Force a token refresh for a login reporting "token stale" (`hydra refresh <name> --force`) —
+  // the fix for the stale chip that would otherwise need SSH.
+  refreshProfile: (name: string, instance?: string): Promise<{ profiles: Usage["profiles"] }> =>
+    post("/api/usage/refresh", { name, instance }),
   // `instance` places the worktree on that instance (the bridge forwards there); the reply says where it landed.
   createWorktree: (repo: string, prompt: string, provider: AgentProvider, instance?: string): Promise<{ branch: string; worktreePath: string; title: string; instance?: string }> =>
     post("/api/workstreams", { repo, prompt, provider, instance }),

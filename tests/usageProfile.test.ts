@@ -3,11 +3,13 @@
 // doesn't currently report. Driven through the real module with a fake `hydra` on PATH (the same
 // PATH-shim pattern as tests/hydraUsage.test.ts), whose `status --json` reflects the last
 // enable/disable it was told to run, so the refreshed list in the response is genuinely refreshed.
+// `refreshProfile` (the Stale row's fix) is driven the same way: a fake `hydra refresh NAME --force`
+// clears the login's "token stale" state, same validation and shape as setProfileEnabled.
 import { afterEach, expect, test } from "bun:test";
 import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setProfileEnabled } from "../server/usage";
+import { refreshProfile, setProfileEnabled } from "../server/usage";
 
 let shim: string | undefined;
 let prevPath: string | undefined;
@@ -27,6 +29,7 @@ async function installFakeHydra(): Promise<void> {
   shim = await mkdtemp(join(tmpdir(), "orca-hydra-profile-"));
   await writeFile(join(shim, "status.ok"), PROFILE("ok"));
   await writeFile(join(shim, "status.disabled"), PROFILE("disabled"));
+  await writeFile(join(shim, "status.stale"), PROFILE("token stale — refreshes on next launch"));
   await writeFile(join(shim, "state"), "ok");
   await writeFile(join(shim, "calls.log"), "");
   await writeFile(join(shim, "hydra"), `#!/bin/sh
@@ -37,6 +40,7 @@ esac
 case "$1" in
   enable) echo "enable $2" >> "$DIR/calls.log"; echo ok > "$DIR/state" ;;
   disable) echo "disable $2" >> "$DIR/calls.log"; echo disabled > "$DIR/state" ;;
+  refresh) echo "refresh $2 $3" >> "$DIR/calls.log"; echo ok > "$DIR/state" ;;
 esac
 `);
   await chmod(join(shim, "hydra"), 0o755);
@@ -67,6 +71,31 @@ test("no hydra on PATH refuses up front", async () => {
   process.env.PATH = empty;
   try {
     await expect(setProfileEnabled("work", false)).rejects.toThrow(/hydra is not installed/);
+  } finally {
+    await rm(empty, { recursive: true, force: true });
+  }
+});
+
+test("refresh --force is invoked with the right name, and the returned list is no longer stale", async () => {
+  await installFakeHydra();
+  await writeFile(join(shim!, "state"), "stale");
+  const refreshed = await refreshProfile("work");
+  expect(await readFile(join(shim!, "calls.log"), "utf8")).toBe("refresh work --force\n");
+  expect(refreshed.find((p) => p.name === "work")?.state).toBe("ok");
+});
+
+test("refresh refuses a name hydra doesn't currently report, without ever shelling out", async () => {
+  await installFakeHydra();
+  await expect(refreshProfile("nope")).rejects.toThrow(/"nope" is not a hydra login/);
+  expect(await readFile(join(shim!, "calls.log"), "utf8")).toBe(""); // never invoked
+});
+
+test("refresh refuses up front with no hydra on PATH", async () => {
+  const empty = await mkdtemp(join(tmpdir(), "orca-nohydra-refresh-"));
+  prevPath = process.env.PATH;
+  process.env.PATH = empty;
+  try {
+    await expect(refreshProfile("work")).rejects.toThrow(/hydra is not installed/);
   } finally {
     await rm(empty, { recursive: true, force: true });
   }

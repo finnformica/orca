@@ -10,7 +10,7 @@ import { api } from "@/api";
 import { usageExpandedAtom } from "@/lib/atoms";
 import { notifyLocal } from "@/lib/notificationStore";
 import { persistedKey, usePersisted } from "@/lib/persisted";
-import { useCoarse } from "@/lib/viewport";
+import { useCoarse, useNarrow } from "@/lib/viewport";
 import { applyProfiles, refreshVitals, useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
@@ -61,6 +61,7 @@ export function UsageCard() {
 function UsageGroupRows({ group: g }: { group: UsageGroup }) {
   const [hover, setHover] = useState(false);
   const coarse = useCoarse();
+  const narrow = useNarrow();
   const status = g.state ? loginStatus(g.state) : null;
   return (
     <div data-slot="usage-group" data-group={g.key} className={`mb-1 last:mb-0 ${g.dim ? "opacity-50" : ""}`}>
@@ -71,6 +72,7 @@ function UsageGroupRows({ group: g }: { group: UsageGroup }) {
         <span className="flex min-w-0 items-center gap-1.5">
           <span data-slot="usage-group-title" className="min-w-0 truncate text-xs font-medium" title={g.subtitle ? `${g.title} · ${g.subtitle}` : g.title}>{g.title}</span>
           {status && <Pill tone={status.tone} slot="usage-state" title={status.detail}>{status.label}</Pill>}
+          {g.name && status?.label === "Stale" && <RefreshProfileButton name={g.name} />}
           {g.name && (hover || coarse) && <LoginToggle name={g.name} enabled={g.state !== "disabled"} />}
         </span>
         {g.subtitle && <span className="text-muted-foreground min-w-0 shrink-[2] truncate text-xs">{g.subtitle}</span>}
@@ -80,7 +82,13 @@ function UsageGroupRows({ group: g }: { group: UsageGroup }) {
           className="hover:bg-accent/60 flex h-9 items-center gap-2.5 rounded-md px-2 text-sm">
           <Ring pct={r.pct} />
           <span className="min-w-0 flex-1 truncate">{r.label}</span>
-          {(r.resetsIn || r.resetNote) && <span data-slot="usage-reset" className="text-muted-foreground hidden text-xs sm:inline">{r.resetsIn ? `resets ${r.resetsIn}` : r.resetNote}</span>}
+          {(r.resetsIn || r.resetNote) && (
+            // Narrow screens get the bare countdown ("4h 32m"), no "resets " prefix — keeps the row
+            // on one line without wrapping instead of hiding the reset entirely.
+            <span data-slot="usage-reset" className="text-muted-foreground shrink-0 truncate text-xs">
+              {narrow ? (r.resetsIn ?? r.resetNote) : r.resetsIn ? `resets ${r.resetsIn}` : r.resetNote}
+            </span>
+          )}
           <span className="text-muted-foreground shrink-0 tabular-nums"><span className="text-foreground">{r.value}</span> / {r.limit}</span>
         </div>
       ))}
@@ -128,6 +136,43 @@ function LoginToggle({ name, enabled }: { name: string; enabled: boolean }) {
         {state === "done" && <Check className="size-2.5" />}
         {state === "error" && <X className="size-2.5" />}
       </span>
+    </button>
+  );
+}
+
+/** A stale login's fix, right on the row — the only alternative was SSHing in to run `hydra
+ *  refresh <name> --force` by hand. Same ActionButton semantics (spinner → ✓/✗) as LoginToggle:
+ *  calls `POST /api/usage/refresh`, applies the refreshed profile list it hands back at once, and
+ *  a failure is a failed-action notification. Shown only while the row reads Stale. */
+function RefreshProfileButton({ name }: { name: string }) {
+  const [state, setState] = useState<SwitchState>("idle");
+  const refresh = async () => {
+    if (state === "loading") return;
+    setState("loading");
+    try {
+      const { profiles } = await api.refreshProfile(name, thisInstance());
+      if (profiles) applyProfiles(profiles);
+      setState("done");
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      notifyLocal({
+        kind: "action_failed", repo: "", title: `Login ${name}`, label: "Refresh failed", body: error,
+        copy: `Action: Refresh hydra login ${name}\nError:\n${error}`,
+        ask: `Refresh hydra login ${name} failed: ${error}. Please investigate and fix.`,
+      });
+      setState("error");
+    }
+    setTimeout(() => setState("idle"), 2000);
+  };
+  return (
+    <button type="button" data-slot="login-refresh" disabled={state === "loading"}
+      title={`Refresh ${name}'s token (hydra refresh --force)`}
+      onClick={(e) => { e.stopPropagation(); void refresh(); }}
+      className="text-muted-foreground hover:text-foreground flex size-4 shrink-0 items-center justify-center">
+      {state === "loading" ? <Loader2 className="size-3 animate-spin" />
+        : state === "done" ? <Check className="size-3" />
+        : state === "error" ? <X className="size-3" />
+        : <RefreshCw className="size-3" />}
     </button>
   );
 }
