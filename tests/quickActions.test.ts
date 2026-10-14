@@ -49,12 +49,25 @@ describe("quickActions", () => {
     expect(ids({ ...openPr, ciStatus: "pending" })).toEqual(["slack", "mergeWhenGreen"]); // running CI isn't outstanding
   });
 
-  test("an approved clean PR → Send to Slack and Merge when green", () => {
+  test("a mergeable approved PR, clean, on a repo whose mergePolicy allows the queue → Merge and Merge when green, never Slack", () => {
     const approved = { ...openPr, lane: "MERGEABLE" as const, reviewStatus: "approved" as const };
     expect(quickActions(approved, ctx)).toEqual([
-      { id: "slack", label: "Send to Slack", slackKind: "notify" },
+      { id: "merge", label: "Merge" },
       { id: "mergeWhenGreen", label: "Merge when green", disabled: undefined },
     ]);
+  });
+
+  test("a mergeable approved PR, clean, on a never-policy repo (branch-demo) → Merge and Enable auto-merge, never a disabled clock", () => {
+    const approved = { ...openPr, lane: "MERGEABLE" as const, reviewStatus: "approved" as const };
+    expect(ids(approved, { mergePolicy: { whenGreen: "never" } })).toEqual(["merge", "autoMerge"]);
+    expect(ids(approved, { mergePolicy: undefined })).toEqual(["merge", "autoMerge"]);
+    expect(quickActions(approved, { ...ctx, mergePolicy: { whenGreen: "never" } })).toEqual([
+      { id: "merge", label: "Merge" },
+      { id: "autoMerge", label: "Enable auto-merge", disabled: undefined },
+    ]);
+    // reviewStatus alone (not yet reflected in lane) is enough, and GitHub's own auto-merge already queued shows as such.
+    expect(ids({ ...openPr, reviewStatus: "approved" as const, autoMergeEnabled: true }, { mergePolicy: { whenGreen: "never" } })).toEqual(["merge", "autoMerge"]);
+    expect(quickActions({ ...approved, autoMergeEnabled: true }, { ...ctx, mergePolicy: { whenGreen: "never" } })[1]!.disabled).toMatch(/Already queued/);
   });
 
   test("Merge when green shows on every open non-draft PR, disabled with the reason when queued or refused", () => {

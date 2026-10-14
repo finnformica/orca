@@ -209,7 +209,7 @@ describe("agents list view", () => {
     const ids = (branch: string) => quick(branch).map((q) => q.dataset.quickAction);
     expect(ids("feat-ci")).toEqual(["addressPr", "mergeWhenGreen"]); // review data not loaded: CI alone decides
     expect(ids("feat-draft")).toEqual(["markReady", "addressPr"]);
-    expect(ids("feat-ok")).toEqual(["mergeWhenGreen"]); // the fake repo has no Slack channel (approved + Slack: quickActions.test)
+    expect(ids("feat-ok")).toEqual(["merge", "autoMerge"]); // approved + clean: Merge, and the fake repo's mergePolicy (unset, so "never") refuses the queue — Enable auto-merge, never Slack
     expect(ids("local-idle")).toEqual(["createPr"]); // the worktree has commits of its own
     // Icon-only: no text in the button, the label as its aria-label and in its tooltip.
     for (const q of quick("feat-draft")) {
