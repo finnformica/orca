@@ -190,6 +190,41 @@ picker.
   human" is enforced.
 - If the repo disallows GitHub auto-merge, Orca squash-merges directly once it's safe to.
 
+### Automatic PR upkeep
+
+Nobody has to press **Address PR** on an orchestrated workstream's PR. Once a minute
+(`server/upkeep.ts`, beside the merge queue), the instance holding the worktree looks at each
+**open, non-draft** PR of an **orchestrated** workstream. It runs the same Address PR as the button
+and `orca address` when the PR has any of these:
+
+- **conflicts** with its base;
+- a **required** check failed on the current head (the same required-checks filter as the board's
+  CI badge);
+- **actionable unresolved review threads** that no agent has been handed yet. A thread an earlier
+  Address PR sent stays unresolved on GitHub until someone resolves it, and doesn't trigger again.
+
+Guards:
+
+- **Never** while the workstream's agent is running or has messages queued.
+- **Never** while the orchestrator's `orca status --waiting` says it's waiting on you ("user",
+  "Finn", "you", "input", "decision", …). Waiting on CI or a teammate doesn't count.
+- **At most one** automatic address per PR per head commit and reason. A new reason on the same
+  head (a review thread after a CI fix) still gets its own address.
+- **Backoff:** two automatic addresses on one head, or one whose reason is still there with nothing
+  new to try, ends it. Four in a row across heads with no healthy look in between ends it too, which
+  catches a fix that goes red on every push. When it gives up you get an `upkeep_gave_up`
+  notification (with **Address PR**), and it leaves that head alone. A new push starts over.
+- **At most `autoUpkeepConcurrency`** (app config, default 2) automatic runs at once per instance,
+  because each one is a full agent run on the box's shared memory. `0` turns upkeep off.
+- **Opt out:** per repo with `"autoUpkeep": false` (on by default), or per branch with
+  `upkeepOff: true` on its enrichment.
+
+The last attempt is stored on the branch's enrichment (`upkeep`: head, reasons tried, attempts,
+streak, given-up reason). It's written **before** the launch, so a restart never fires one twice.
+Each start is an `auto_address` notification. The card and Agents row show
+`auto-addressing: conflicts, CI` while the run goes, or `auto-upkeep gave up: …`. The run is an
+ordinary orchestrated follow-up, so the orchestrator hears its report like any worker's.
+
 ## Status and notes
 
 - **`orca status`** keeps a short structured record per workstream, owned by the orchestrator:
@@ -260,7 +295,8 @@ estimate from instance metadata, multiplied by the hours the instance was up). O
 There's one notification centre (the bell at the sidebar's foot) and one toast stack (bottom-left).
 Both read the same `notification` table, so both instances show the same rows. Kinds include run
 finished / needs input / failed / stopped, check failed, preview ready / failed, PR CI failing, PR
-conflicts, merged, merge refused, and a failed button click (local to your browser).
+conflicts, merged, merge refused, auto-addressing / auto-upkeep gave up (automatic PR upkeep), and
+a failed button click (local to your browser).
 
 Each notification has quick actions: CI failing or conflicts → **Address PR**; check failed →
 **Fix**; finished → **Reply**; failed → **Retry**; preview ready → **Open preview**. **Open** comes

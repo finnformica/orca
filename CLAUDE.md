@@ -575,6 +575,24 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   card, body from the outcome + commits, ready not draft), and the worker report says `Orca opened
   PR #N` — so the orchestrator never opens one by hand, and a branch it marked earlier joins the
   queue.
+- **Automatic PR upkeep — Address PR with nobody pressing it** (`server/upkeep.ts`, decision pure in
+  `workstream.ts` `upkeepDecision`). The orchestrator used to `orca address` a PR only when something
+  happened to wake it, so PRs sat conflicting or red between wakes. Now a minute tick (beside the
+  merge queue's, never on a preview bridge) looks at every open, non-draft PR of an ORCHESTRATED
+  workstream whose worktree is on THIS instance (`verbs.addressPr` is local, and the cap is about this
+  box's memory) and runs `verbs.addressPr` — the button's and `orca address`'s path, not a second
+  implementation — on conflicts, a failed REQUIRED check (`listPrs`'s `ciStatus`) or actionable
+  unresolved threads not yet handed (`unhandedActionable` vs `handedReviewThreadIds`, so a thread the
+  agent answered but nobody resolved doesn't re-fire every push). Guards: not while the agent runs or
+  has queued messages; not when `orchStatus.waitingOn` names the user (`waitingOnUser`); one address
+  per (head, reason); two per head, or one whose reason stands with nothing new, then GIVE UP; four in
+  a row across heads without a settled healthy look (`UPKEEP_MAX_STREAK` — a pending CI is not
+  healthy, or a fix that's red on every push would loop); `autoUpkeepConcurrency` (app config,
+  default 2, 0 = off) runs at once. Opt out per repo `autoUpkeep: false` (default on) or per branch
+  `upkeepOff: true`. The record is enrichment `upkeep` (no table), written BEFORE the launch so a
+  restart can't re-fire; the card shows `upkeepLabel` (`auto-addressing: conflicts` / `auto-upkeep
+  gave up: …`). Notifications `auto_address` (start) and `upkeep_gave_up` (persistent, Address PR).
+  The merge queue's decisions are untouched.
 - **Its role text is judgement-first.** It is told it is a senior engineer running a team, given
   the trade-offs (send to an existing workstream vs spawn; one branch per mergeable unit) and left
   to decide. An earlier, rule-shaped version ("do not spawn for something a workstream owns") made it
@@ -717,7 +735,7 @@ reported only when it died or asked you something, and its Open opens the window
 not news), a watcher after `preview.start` (`preview_ready` with the URL you'd open, else
 `preview_failed`; a preview you stop mid-boot is forgotten), and the `/api/prs` answer
 (`pr_ci_failed`, `pr_conflicts`), and the merge queue (`merged`, `merge_refused`; its red CI reuses
-`pr_ci_failed`). **Needs input is a heuristic** (`asksForInput`): a reply whose last
+`pr_ci_failed`), and automatic PR upkeep (`auto_address`, `upkeep_gave_up`). **Needs input is a heuristic** (`asksForInput`): a reply whose last
 line is a question, or `requires_action` — nobody has a cleaner signal (CLAUDE: a question is still
 `end_turn`). Titles are the card's title, else the branch. Rows are pruned past 30 days by the writer.
 The decisions are pure in `shared/notifications.ts` (what an event is, what pops, how the stack is

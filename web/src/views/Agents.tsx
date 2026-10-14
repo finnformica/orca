@@ -27,7 +27,7 @@ import {
 } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { OrchStatusNote, Pill, StatusDot, type DotTone } from "@/components/console";
+import { OrchStatusNote, Pill, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
 import { Board, ConditionBadges, CopyDone, LaneActions, useSummary, useTerminalOpen } from "./Board";
 import { WorkstreamActions } from "./WorkstreamActions";
@@ -396,6 +396,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
         </div>
         {instruction && <div data-slot="row-instruction" role="cell" className="text-muted-foreground line-clamp-2 text-xs break-words">{instruction}</div>}
         {!isDone && <OrchStatusNote status={row.orchStatus} />}
+        {!isDone && <UpkeepNote upkeep={row.upkeep} running={row.agentStatus === "running"} />}
         <div role="cell" className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
           <Pill tone={pill.tone} slot="state-pill" title={pill.tooltip}>{pill.label}</Pill>
           {row.prNumber && !isDone && <ConditionBadges row={row} />}
