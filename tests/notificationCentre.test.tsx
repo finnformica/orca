@@ -513,17 +513,65 @@ describe("the notification centre", () => {
     expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "read", ids: [71] });
   });
 
-  test("on a narrow screen, Open on the orchestrator's own notification routes to its page instead of the panel", async () => {
+  test("on a narrow screen, the orchestrator's own notification pops no toast (its content is already the orchestrator's chat); its centre row still routes to the page instead of the panel", async () => {
     const was = window.matchMedia;
     window.matchMedia = ((q: string) => ({ matches: q === "(max-width: 767px)", media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
     try {
       await open("/");
       const s = await live();
       await push(s, note({ id: 72, kind: "failed", repo: "@orca", branch: "orchestrator", title: "Orchestrator", link: { orchestrator: true } }));
-      await click(button(cards()[0]!, "Open"));
+      expect(cards()).toHaveLength(0); // mobile: suppressed — the bell still has it
+      expect($("notifications-unread")!.textContent).toBe("1");
+      await click($("notifications-bell"));
+      const row = $$("notification-row").find((r) => r.textContent!.includes("Orchestrator"))!;
+      await click(row);
       expect(location.pathname).toBe("/orchestrator");
       expect($("orchestrator-panel")).toBeNull();
       expect(apiFake.notificationCalls.at(-1)).toEqual({ verb: "read", ids: [72] });
+    } finally { window.matchMedia = was; }
+  });
+
+  test("on mobile, a toast for an ordinary (non-orchestrated) workstream still pops; one for an orchestrated workstream's run is suppressed — the orchestrator's chat already carries its worker report", async () => {
+    const was = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ matches: q === "(max-width: 767px)", media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+    try {
+      apiFake.enrichmentData.set("r::feat-x", { orchestrated: true });
+      await open("/");
+      await store.refresh();
+      const s = await live();
+      await push(s, note({ id: 90, kind: "finished", repo: "r", branch: "feat-x", title: "Login form" }));
+      expect(cards()).toHaveLength(0); // relayed to the orchestrator's chat as a worker report
+      await push(s, note({ id: 91, kind: "finished", repo: "r", branch: "other-branch", title: "Unrelated" }));
+      expect(cards().map((c) => c.textContent).join()).toContain("Unrelated"); // not orchestrated: still pops
+    } finally { window.matchMedia = was; }
+  });
+
+  test("on mobile, a toast that does pop is collapsed to a small two-line card — no body, no time, still tappable with its quick actions", async () => {
+    const was = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ matches: q === "(max-width: 767px)", media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+    try {
+      await open("/");
+      const s = await live();
+      await push(s, note({ id: 95, kind: "needs_input", title: "Login form", body: "Should the old rows be migrated too?" }));
+      const toast = cards()[0]!;
+      expect(toast.textContent).toContain("Login form");
+      expect(toast.textContent).not.toContain("Should the old rows be migrated too?"); // the body is a tap away, not on the card
+      expect(toast.querySelector('[data-slot="notification-time"]')).toBeNull();
+      expect(actionLabels(toast)).toContain("Open"); // still fully usable, just smaller
+      await click(toast.querySelector('[data-slot="notification-title"]')!);
+      expect(location.pathname + location.search).toBe("/r/local/feat-x/chat?reply=1");
+    } finally { window.matchMedia = was; }
+  });
+
+  test("on mobile, no toast pops while the orchestrator's panel is open — even for an unrelated workstream", async () => {
+    const was = window.matchMedia;
+    window.matchMedia = ((q: string) => ({ matches: q === "(max-width: 767px)", media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+    try {
+      await open("/");
+      getDefaultStore().set(orchestratorOpenAtom, true);
+      const s = await live();
+      await push(s, note({ id: 92, kind: "finished", repo: "r", branch: "feat-x", title: "Login form" }));
+      expect(cards()).toHaveLength(0);
     } finally { window.matchMedia = was; }
   });
 });

@@ -24,7 +24,7 @@ import { navigate } from "@/lib/route";
 import { notificationsOpenAtom, notifyDndAtom } from "@/lib/atoms";
 import { markRead, pauseToasts, resumeToasts, restoreUnread, start, useNotifications } from "@/lib/notificationStore";
 import { oneOf, persistedKey, usePersisted } from "@/lib/persisted";
-import { useCoarse, useNarrow } from "@/lib/viewport";
+import { useCoarse, useIsMobile, useNarrow } from "@/lib/viewport";
 import {
   COUNT_BAR_HEIGHT, COUNT_BAR_SPACE, filterNotifications, groupByDay, KIND_META, NOTIFICATION_FILTERS, notificationPath, stackAnchor, stackLayout, swipeAmount, swipeOut,
   TOAST_EXIT_MS, TOAST_WIDTH, toastMotion, toastStack, unreadCount, type Notification, type NotificationFilter, type NotificationKind, type StackAnchor, type SwipeDir, type ToastPlace,
@@ -327,6 +327,7 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
   const drag = useRef<{ x: number; y: number; at: number; axis?: "x" | "y"; amount: number }>();
   const [hover, setHover] = useState(false);
   const coarse = useCoarse();
+  const mobile = useIsMobile();
   useEffect(() => { setMounted(true); }, []);
   // The natural height (not the clipped one a collapsed card behind is given), kept current.
   useLayoutEffect(() => {
@@ -336,7 +337,7 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
     el.style.height = "auto";
     onHeight(n.id, el.getBoundingClientRect().height);
     el.style.height = was;
-  }, [mounted, n.id, n.title, n.body, removed, onHeight]);
+  }, [mounted, n.id, n.title, n.body, removed, mobile, onHeight]);
 
   const setSwipe = (x: number, y: number) => {
     ref.current?.style.setProperty("--swipe-x", `${x}px`);
@@ -380,7 +381,10 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
       aria-hidden={!place.visible || undefined}
       onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}
       onMouseEnter={() => setHover(true)} onMouseMove={() => setHover(true)} onMouseLeave={() => setHover(false)}
-      className="group bg-card text-foreground absolute bottom-0 left-0 flex w-full flex-col gap-2 rounded-lg border p-3 shadow-menu outline-none select-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      className={cn(
+        "group bg-card text-foreground absolute bottom-0 left-0 flex w-full flex-col rounded-lg border shadow-menu outline-none select-none focus-visible:ring-2 focus-visible:ring-ring/50",
+        mobile ? "gap-1 p-2" : "gap-2 p-3",
+      )}
       style={style}>
       <div className="flex items-start gap-2">
         <KindIcon kind={n.kind} className="mt-0.5" />
@@ -390,12 +394,14 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
             <button type="button" data-slot="notification-title" className="truncate font-medium hover:underline" onClick={onOpen}>{n.title}</button>
             <span className={cn("shrink-0 text-xs", TONE_TEXT[meta.tone])}>{labelOf(n)}</span>
           </div>
-          {n.body && <div className="text-muted-foreground line-clamp-2 text-xs leading-5 break-words">{n.body}</div>}
+          {/* A phone keeps the toast to two lines — the body (and the time below) are a tap away on
+              its full page; a tall card is what would sit over the composer. */}
+          {n.body && !mobile && <div className="text-muted-foreground line-clamp-2 text-xs leading-5 break-words">{n.body}</div>}
         </div>
         <Button variant="ghost" size="icon" className="-mt-1 -mr-1 size-6" aria-label="Mark as read" title="Mark as read" onClick={() => void markRead([n.id])}><X className="size-3.5" /></Button>
       </div>
-      <div className="flex items-center justify-between gap-2">
-        <span data-slot="notification-time" className="text-muted-foreground shrink-0 text-xs">{ago(n.createdAt)}{n.instance ? ` · ${n.instance}` : ""}</span>
+      <div className={cn("flex items-center gap-2", mobile ? "justify-end" : "justify-between")}>
+        {!mobile && <span data-slot="notification-time" className="text-muted-foreground shrink-0 text-xs">{ago(n.createdAt)}{n.instance ? ` · ${n.instance}` : ""}</span>}
         {!removed && <QuickActions n={n} shown={hover || coarse} />}
       </div>
     </div>
