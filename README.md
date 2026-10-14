@@ -1,184 +1,84 @@
 # 🐳 Orca
 
-A local control plane for the seam between **managing coding agents** and **managing PRs**.
-One kanban board over one lifecycle:
+Orca automates the work between **managing coding agents** and **managing PRs**. You talk to one
+**orchestrator**: a Claude Code session that delegates each piece of work to a **headless worker**
+running in its own git worktree. Orca checks what the worker committed, opens the PR, and merges it
+through a policy-governed **merge queue** once CI is green. A web console (installable on your phone)
+shows every workstream, PR, preview and machine.
 
-- **Local / Draft** — create a git worktree per feature; choose Claude, Codex, or Cursor, let Orca launch it
-  headlessly with your prompt, see what changed, then promote to a PR.
-- **PRs** — open PRs with CI/review status and one-click actions: copy Slack notify/bump messages, resolve
-  conflicts, fix CI, follow up, and merge-when-green.
+- **[docs/WORKFLOW.md](docs/WORKFLOW.md)**: how Orca works and how you work with it.
+- **[docs/SETUP.md](docs/SETUP.md)**: deploying your own Orca from scratch (AWS, Tailscale, GitHub,
+  Claude, Postgres, systemd, config, previews, a laptop instance, troubleshooting).
+- [`CLAUDE.md`](CLAUDE.md): the design brief and its history. [`QA.md`](QA.md): the manual QA
+  runbook.
 
-Every agent action **runs your selected coding agent headlessly** (`claude -p`, `codex exec`, or `cursor-agent -p`,
-using the CLI's existing login — no API key). Actions that need to touch code — resolve conflicts, fix CI, follow up —
-run in the branch's worktree, **adopting one automatically if the PR doesn't have one locally**.
-"Copy CLI" is the escape hatch to continue the active provider's run interactively. A follow-up can
-resume the same provider natively or hand the portable conversation history to another provider;
-Orca infers which behavior is needed from the selected provider. See `CLAUDE.md` for the rationale.
+## How it works
 
-## Prerequisites
+| Concept | In one line |
+| --- | --- |
+| **Orchestrator** | One conversation (`O`, or **Ask the orchestrator**) that spawns and steers workers. It's woken when they finish, and it never polls. |
+| **Workstream** | One branch = one worktree = one conversation. Runs headless `claude -p` (or `codex exec` / `cursor-agent -p`) with the CLI's own login, so no API key is needed. |
+| **`orca` CLI** | The orchestrator's tool: `board`, `spawn`, `send`, `address`, `move`, `archive`, `sweep`, `preview`, `merge --when-green`, `status`, `notes`, `chats`, `read`. |
+| **Verification gate** | After a run that commits, Orca runs the repo's `checkCommand` itself: **Verified** or **Check failed**. |
+| **Auto PR + merge queue** | `mergePolicy.autoPr` opens a clean worker's PR. Marked PRs are squash-merged when every check passes and the PR is mergeable, under `whenGreen: never \| small \| any`, with `denyPaths` (e.g. migrations, deploy) always left for a human. |
+| **Model ladder** | Haiku for mechanical work, Sonnet for small clear tasks, **Opus by default**, Fable only after Opus fails. Two failures in a row on one model suggest (or apply) the next one up. |
+| **Status & notes** | `orca status` keeps a per-workstream plan / waiting-on / merge class. `orca notes` keeps the orchestrator's standing facts across sessions. |
+| **Previews** | Per-branch app instances on assigned ports, each with its own database cloned from a template. `--push-to-template` promotes one. |
+| **Instances** | A cloud box and a laptop share one Postgres. Each workstream lives where its worktree is, and requests are forwarded over Tailscale. |
+| **Notifications** | One centre plus toasts, shared by every instance, each with quick actions (Address PR, Fix, Reply, Retry, Open). |
+| **Phone** | Responsive below 768px and installable as a PWA (the service worker needs HTTPS). |
 
-- [Bun](https://bun.sh) (this repo is Bun-native; Node is not required)
-- `git` and the [`gh` CLI](https://cli.github.com), already authenticated (`gh auth status`)
-- At least one authenticated agent CLI: `claude`, `codex`, or `cursor-agent`
+Details for each are in [docs/WORKFLOW.md](docs/WORKFLOW.md).
 
-## Setup
+## Architecture in brief
+
+One Bun process (`server/index.ts`) serves the built React UI and a plain-JSON API, plus one SSE
+stream per browser tab. Postgres (`Bun.SQL`) holds the conversations, enrichment, config,
+notifications and metrics. Git, `gh` and live worktrees are the source of truth for everything else.
+**The API has no auth of its own**, so it listens on loopback plus the machine's Tailscale address,
+and never on `0.0.0.0`.
+
+## Quick start
+
+### On a cloud box (the recommended setup)
+
+The full walkthrough is in [docs/SETUP.md](docs/SETUP.md). In short:
+
+```sh
+# laptop: Tailscale key into SSM, then launch an m7i.xlarge (eu-west-2, 150 GB) with cloud-init
+aws ssm put-parameter --region eu-west-2 --name /orca/tailscale-authkey --type SecureString --value <tskey-auth-…>
+VANTA_OWNER=<you@example.com> deploy/provision.sh
+
+# box (aws ssm start-session …; sudo -iu orca): sign in, clone, bootstrap
+gh auth login && gh auth setup-git
+hydra add <name>                                   # one per Claude login
+git clone <your-orca-repo-url> /opt/orca
+git clone <repo-url> /opt/<repo-name>              # each repo Orca will manage
+/opt/orca/deploy/bootstrap.sh                      # build, .env, orca.service, auto-deploy timer
+echo "ORCA_PREVIEW_BIND=<tailnet-ip>" >> /opt/orca/.env && sudo systemctl restart orca
+
+# then: add your repos to the config document (curl GET/PUT /api/config/document — SETUP.md §6–8)
+```
+
+Open `http://<box-name>.<tailnet>.ts.net:8787` from any device on your tailnet.
+
+### Locally, for development
 
 ```sh
 bun install
-```
-
-Point Orca at the repos you want to manage in `orca.config.ts` (each entry has its own
-`repoPath`/`worktreeRoot`/`baseBranch`/`previewServices`). Repo paths are resolved against a
-**required** base dir given by `ORCA_DEV_ROOT`, so the config needs no editing on a new laptop.
-Set it in a `.env` file at the repo root — Bun auto-loads it, and it's gitignored so it stays
-per-machine (the bridge fails loudly at startup if it's unset):
-
-```sh
-cp .env.example .env
-# .env → ORCA_DEV_ROOT=$HOME/Documents/dev   (the dir that holds your repos)
-```
-
-Orca keeps its chat history in **Postgres** (`ORCA_DATABASE_URL`), so it can later be shared by more
-than one Orca instance — a cloud box and a laptop, each running its own worktrees against one
-database. Create it once, then point `.env` at it:
-
-```sh
+cp .env.example .env     # set ORCA_DEV_ROOT (the dir holding your repos) and ORCA_DATABASE_URL
 createdb orca
-# .env → ORCA_DATABASE_URL=postgres://localhost:5432/orca
-#        ORCA_TEST_DATABASE_URL=postgres://localhost:5432/postgres
+bun run dev              # bridge on :8787 (bun --watch), UI on http://localhost:8788
+bun run build && bun run server   # production: the bridge serves the built UI on :8787
+bun run check            # tsc --noEmit + bun test (needs ORCA_TEST_DATABASE_URL)
 ```
 
-`bun run check` needs `ORCA_TEST_DATABASE_URL` too: the tests run against a real Postgres (in a
-throwaway schema per file) rather than a stand-in, so they prove the engine that actually ships.
+On first start, an empty database is seeded from `orca.config.ts`. After that, the config lives in
+the database ([SETUP.md §6](docs/SETUP.md#6-the-config-document)).
 
-**Push a preview back to its source.** A preview starts from a clone of the repo's template database
-(`PREVIEW_TEMPLATE_DB` in its env file) and a copy of the main checkout's env file (the `.env` in
-`copyToWorktree`), so whatever you set up on one preview (integrations, say) is gone in the next. Once
-a preview is configured the way you want every preview to start:
+## Working on Orca itself
 
-```
-orca preview --repo branch-demo --branch <branch> --push-to-template            # plan + masked env diff, changes nothing
-orca preview --repo branch-demo --branch <branch> --push-to-template --confirm  # apply
-```
-
-- **Database:** the template is replaced by a whole copy of the preview's database (`pg_dump` into a
-  temporary database, then both renames in one transaction). The previous template is kept as
-  `<template>_bak_<timestamp>` and the output prints the `psql` command that renames it back. It refuses
-  while anything is connected to the template (stop the main checkout's backend first), and the
-  running preview database is only read. It needs a `pg_dump` at least as new as the server (`PG_DUMP`
-  overrides the lookup).
-- **Env:** integration-related variables (names matching Linear/GitHub/GitLab/Jira/Atlassian/Slack/…/
-  `_BASE_URL`) that the preview's env file has and the main checkout's lacks or holds differently are
-  written into the main checkout's file; other differing keys are listed by name, not copied. The
-  previous file is kept under `~/.orca/env-backups/`, and the output prints the `cp` that restores it.
-  Values are never printed in full.
-
-The orchestrator has the same command; it is told to dry-run first and to run it only when you ask.
-
-**Several Claude accounts** (to keep working when one hits its usage limit) are handled by
-[claude-hydra](https://github.com/finnformica/claude-hydra), not by Orca. Install it, register each
-login, and install its `claude` shim; from then on every `claude -p` Orca spawns is routed to the
-login with the most headroom, and a `--resume` works on any of them because hydra shares sessions
-between logins. The header meter reads `hydra status --json` and shows every login's 5-hour, weekly
-and Fable windows, and warns if the shim has gone missing (Claude Code's updater can rewrite
-`~/.local/bin/claude`; re-run `install.sh --shim`). Needs `jq` and `curl`.
-
-```sh
-git clone https://github.com/finnformica/claude-hydra ~/.local/share/claude-hydra
-~/.local/share/claude-hydra/install.sh --shim
-hydra add personal --existing      # the login already in ~/.claude
-hydra add work                     # sign a second account in
-hydra status
-```
-
-At least one agent CLI (`claude`, `codex`, `cursor-agent`) must be on the **bridge's** `$PATH`. If a CLI
-lives in `~/.local/bin` (e.g. `codex`), make sure that's on the PATH of the shell you launch
-`bun run dev` from, or you'll see `Executable not found in $PATH`.
-
-## Deploy (a cloud box, reached over Tailscale)
-
-The bridge is one Bun process plus Postgres; it needs a real disk for worktrees and long-lived
-child processes, so it runs on a plain Linux box (an ARM instance with 4 GB is plenty), not on
-anything serverless. The API has no auth of its own: bind it to loopback plus the tailnet address and reach it
-from the laptop over Tailscale. Nothing is ever exposed publicly.
-
-```sh
-# on the box, as user `orca`
-git clone <this repo> /opt/orca && cd /opt/orca
-bun install && bun run build
-cp .env.example .env            # set ORCA_DEV_ROOT, ORCA_DATABASE_URL, ORCA_INSTANCE=cloud,
-                                # ORCA_BIND=127.0.0.1,<tailscale ip>, ORCA_PREVIEW_HOST=<tailscale name>
-claude login                    # paste-the-code flow works over SSH; writes ~/.claude/.credentials.json
-# several Claude logins: install claude-hydra + its shim here too (see "Several Claude accounts";
-# apt install jq curl). The unit's PATH already lists ~/.local/bin, where hydra and the shim live.
-codex login --device-auth       # if you use Codex
-gh auth login                   # or export GH_TOKEN (fine-grained PAT — it is YOUR identity, so
-gh auth setup-git               # `gh pr list --author @me` still means you); setup-git lets worktrees push
-sudo cp deploy/orca.service /etc/systemd/system/ && sudo systemctl enable --now orca
-```
-
-**Per-worker memory ceiling.** Every agent run gets its own `systemd-run --user --scope` with a
-`MemoryMax` (`server/cgroup.ts`) — a repo's `agentMemoryMaxGb` (default 4GB; unset means the
-default, never uncapped) plus the app's `agentCpuWeight` (default 50). One worker's runaway build
-or headless browser is then killed by the kernel alone, not the box: this is what kept an m7i.xlarge
-from hanging for 12 minutes under 4-5 concurrent builds. `--user` scopes need a reachable user bus,
-which a service account that never logs in interactively (`orca`) doesn't have by default —
-`deploy/bootstrap.sh` runs `loginctl enable-linger orca` once so a user manager starts at boot
-regardless. Without that (or on macOS, or a box with no `systemd-run`), runs are simply unwrapped —
-`cgroup.available()` checks the bus socket itself, not just the binary, so this degrades silently
-rather than breaking a run. A run killed this way shows `out of memory (<N> GB ceiling)` as its
-result. `deploy/orca.service` separately reserves ~85% of the box's RAM (`MemoryMax`) for the
-bridge itself plus anything it runs directly (previews, git/gh calls — NOT agent runs, which are
-capped individually), and sets `OOMScoreAdjust=-500` so the bridge is the last thing a system-wide
-OOM kill would pick; Postgres and Tailscale stay outside that limit entirely, as their own systemd
-units.
-
-**Previews on a box.** Write every preview command so it works on either machine: listen on `{bind}`
-(`ORCA_PREVIEW_BIND` — loopback on a laptop, the tailnet address on the box), put `{host}`
-(`ORCA_PREVIEW_HOST`) in any URL the app hands the browser, and for a Vite app allow that host.
-Vite 5 checks the request's Host header against `server.allowedHosts` (localhost/bare IPs are
-always allowed; a tailnet name is not) and has no env var of its own for it — setting
-`__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS` in the preview command does nothing unless the app's own
-`vite.config.ts` reads it into `server.allowedHosts`, e.g. Orca's own (`web/vite.config.ts`):
-
-```sh
-cd web && export __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS={host} && bunx --bun vite --host {bind} --port {port}
-```
-
-A preview opens at its owner's tailnet URL on every device. A repo whose app only works in a secure
-context (plain-http tailnet names are not one — branch-demo needs `crypto.randomUUID`) sets
-`previewSecureContext: true`: then a laptop page served from localhost gets the box's preview
-forwarded to `http://localhost:<port>` instead. Orca itself does not need it. That forward only
-covers a viewer on localhost, though — a phone or another box opens the raw tailnet URL directly,
-so branch-demo's own `frontend/vite.config.ts` (which does not read `server.allowedHosts` today)
-would hit the same 403 there and needs the same treatment as `web/vite.config.ts` below.
-
-Then in the config (settings page or `orca.config.ts`) name the instance and assign repos to it:
-`instances: { cloud: "http://<tailscale ip>:8787" }` and `runsOn: "cloud"` on each repo the box
-should execute. The laptop keeps running its own bridge against the same database; the board on
-either shows both. Pin the Claude Code version on the box (`claude --version`) and check release
-notes before upgrading: `--bare` is due to become the default for `-p` and does not read OAuth
-logins. `.github/workflows/check.yml` runs the test gate on Linux so a macOS-only path breaks CI
-before it breaks the box.
-
-## Run
-
-```sh
-bun run dev      # http://localhost:8788 (UI) → proxies /api to the bridge on :8787
-                 # override the UI port with ORCA_UI_PORT
-bun run build    # production build; then `bun run server` serves the built UI + API
-bun run check    # typecheck + tests — run this before every commit
-```
-
-## How it maps to your workflow
-
-| You used to… | Now |
-| --- | --- |
-| spin up a worktree by hand | **New** → worktree created + your selected provider launched with your prompt |
-| eyeball `git diff` | change summary on the card; full diff on the detail page |
-| `gh pr create` | **Promote to PR** |
-| watch CI/comments | kanban card auto-polls status |
-| ask an agent to rebase | **Resolve conflicts** — runs the selected provider in the worktree (adopts one if needed) |
-| ask an agent to fix a red build | **Fix CI** — same, headless |
-| Slack the team, then bump | **Copy Slack message** → **Copy bump** (highlighted when stale) |
-| merge when green | **Merge** (enabled only when mergeable + green) |
+The deployed bridge serves `/opt/orca` and restarts when it changes, so **never edit that checkout**.
+Make changes in a worktree (`git worktree add .worktrees/<name>`, symlink `node_modules`, copy
+`.env`) and open a PR. Auto-deploy picks up `main` within a minute once nothing is running. Every
+behaviour change ships with a test, and `bun run check` is the gate (see [`CLAUDE.md`](CLAUDE.md)).
