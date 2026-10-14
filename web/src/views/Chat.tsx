@@ -6,7 +6,7 @@
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Paperclip, Quote as QuoteIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
@@ -15,7 +15,7 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, composerHistory } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -731,6 +731,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, outbox,
   useEffect(() => (outbox ? onOrchestratorDelivered(() => reload.current()) : undefined), [outbox]);
   // Not drawn once the bridge has recorded it — as the turn now running, or a queued entry.
   const unlanded = unlandedSends(outbox ? outgoing : sending, turns, queued);
+  const history = useMemo(() => composerHistory(turns, queued, outbox ? outgoing : sending), [turns, queued, outbox, outgoing, sending]);
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
@@ -885,7 +886,9 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, outbox,
         repo={row.repo}
         insert={insert}
         placeholder={running ? "The agent is working — queue the next instruction…" : `Reply to ${modelLabel(modelFor(row))}…`}
-        history={row.followUps}
+        // ↑/↓: what you sent in THIS chat, from its transcript, queue and outbox — the orchestrator's
+        // included (it sends through the outbox, so `row.followUps` never had its messages).
+        history={history}
         onSubmit={submit}
         prefill={prefill}
         // The Chat tab's own panel only ever mounts while that tab is active (Radix unmounts the

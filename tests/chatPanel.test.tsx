@@ -666,3 +666,21 @@ test("a sent message shows its attachments — a thumbnail for an image, a named
   expect(text()).not.toContain("Attached files");
   expect(container.querySelector<HTMLImageElement>('[data-slot="chat-user"] [data-slot="attachment-image"] img')?.getAttribute("src")).toBe(`/api/attachments/${img}`);
 });
+
+test("↑ in the composer recalls what you sent from the chat's transcript, not row.followUps", async () => {
+  // No followUps on the row (the orchestrator never has any; nor does a message sent from quick-ask
+  // or the palette) — the history is the conversation itself.
+  apiFake.turnsData.set("r::feat", [
+    { id: "run-1", provider: "claude", prompt: "", instruction: "older ask", response: "ok", finishedAt: 2 },
+    { id: "run-2", provider: "claude", prompt: "", instruction: "newer ask", response: "ok", finishedAt: 3 },
+  ]);
+  await mount(base);
+  const box = container!.querySelector("textarea")!;
+  const up = async (k = "ArrowUp") => act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })); await flush(); });
+  await up();
+  expect(box.value).toBe("newer ask");
+  await up();
+  expect(box.value).toBe("older ask");
+  await up("ArrowDown"); await up("ArrowDown");
+  expect(box.value).toBe("");
+});
