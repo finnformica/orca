@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { ChevronDown, GitMerge, Loader2, MessageSquarePlus, MoreVertical, Sparkles, X } from "lucide-react";
+import { CheckCheck, ChevronDown, Clock, GitMerge, GitPullRequestArrow, Loader2, MessageSquarePlus, MoreVertical, Send, Sparkles, Wrench, X, type LucideIcon } from "lucide-react";
 import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, mergeWhenGreen, moveWorkstream, previewConfigured, thisInstance,
-  cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, staleHours, suggestTitle, toggleFollow, useRepos, type Row,
+  cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, slackChannel, staleHours, suggestTitle, toggleFollow, useRepos, useReviewDigest, type Row,
 } from "../store";
-import { firstLine, prMenuActions, prPreviewState, shouldBump } from "../workstream";
+import { firstLine, prMenuActions, prPreviewState, quickActions, shouldBump, type QuickAction, type QuickActionId } from "../workstream";
+import { reviewSig } from "./Review";
 import { actionFailed } from "@/lib/notificationStore";
 import { ChatComposer } from "@/components/ChatComposer";
 import { clearDraft, hasDraft } from "@/lib/composerDraft";
@@ -24,6 +25,11 @@ import {
 // localStorage key for a row's in-progress follow-up draft; whether one exists also drives
 // whether the composer auto-reopens after a reload (see FollowUpComposer).
 const followUpDraftKey = (row: Row) => `orca.followup.${row.repo}::${row.branch}`;
+
+// The icon a quick action wears in the compact (icon-only) toolbar.
+const QUICK_ICONS: Record<QuickActionId, LucideIcon> = {
+  createPr: GitPullRequestArrow, markReady: CheckCheck, addressPr: Wrench, slack: Send, mergeWhenGreen: Clock, merge: GitMerge,
+};
 
 // `compact` renders the toolbar as icon-only buttons (dense view); `leading` slots an extra control
 // (the dense Test-locally icon) into the front of that same row so the whole toolbar reads as one line.
@@ -71,6 +77,14 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   // it's the promoted+clean Mergeable lane.
   const canMergeNow = isPr ? (!row.isDraft && row.mergeable === "MERGEABLE" && !ciFailing) : row.lane === "MERGEABLE";
   const unreviewed = isPr && row.reviewStatus !== "approved";
+  // The toolbar's state-aware verbs (workstream.quickActions), first = primary. The digest is the
+  // review cluster's cached fetch; the Agents list (menuOnly) has no toolbar, so it asks for none.
+  const repoInfo = useRepos().find((r) => r.name === row.repo);
+  const digest = useReviewDigest(row.repo, menuOnly ? undefined : row.prNumber, reviewSig(row));
+  const quick = menuOnly ? [] : quickActions(row, {
+    hasWork, unresolved: digest?.unresolved.count, slackChannel: Boolean(slackChannel(row.repo)),
+    mergePolicy: repoInfo?.mergePolicy, nowMs: Date.now(), staleHours: staleHours(),
+  });
 
   // Copy shortcuts adopt a missing worktree first. Copy CLI intentionally lives both here and in
   // the card's top-right copy menu: this submenu is discoverable while the icon is faster.
@@ -100,6 +114,18 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   const icon = compact ? "icon" : "sm";
   const iconClass = compact ? "size-7" : undefined;
   const mergeLabel = `Merge${unreviewed ? " (unreviewed)" : ""}`;
+  const defaultLabels = (repoInfo?.prLabels ?? []).filter((l) => l.default).map((l) => l.name);
+  // Each quick action is the existing store verb — the same one its ⋯ menu item runs.
+  const runQuick = (a: QuickAction) => {
+    switch (a.id) {
+      case "createPr": return run(a.label, () => (row.hasRemote ? promote(row, { draft: false, labels: defaultLabels }) : promote(row)))();
+      case "markReady": return run("Mark ready", () => markReady(row))();
+      case "addressPr": return run("Address PR", () => addressPr(row))();
+      case "slack": return run(a.slackKind === "bump" ? "Slack bump" : "Slack message", () => sendSlack(row, a.slackKind ?? "notify"))();
+      case "mergeWhenGreen": return run("Merge when green", () => mergeWhenGreen(row))();
+      case "merge": if (window.confirm(mergeConfirm)) run("Merge", () => merge(row))(); return;
+    }
+  };
   const items = (
     <>
       {menuOnly && (
@@ -211,19 +237,26 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
     // `display:none` sibling (the closed RenameDialog, or the TerminalDialog above this component),
     // which inflated this wrapper past the toolbar's own height and threw off the Actions cell's
     // vertical centering on every row. `gap` only spaces boxes the layout actually generates.
-    <div className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-1">
         {!menuOnly && leading}
         {!menuOnly && <Button size={icon} className={iconClass} variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)} title="Follow up" aria-label="Follow up">
           {compact
             ? (submitting ? <Loader2 className="size-4 animate-spin" /> : <MessageSquarePlus className="size-3.5" />)
             : <>{submitting && <Loader2 className="size-4 animate-spin" />}Follow up</>}
         </Button>}
-        {!menuOnly && row.lane === "MERGEABLE" && (
-          <Button size={icon} className={iconClass} variant="success" onClick={() => { if (window.confirm(mergeConfirm)) run("Merge", () => merge(row))(); }} title={mergeLabel} aria-label={mergeLabel}>
-            {compact ? <GitMerge className="size-3.5" /> : mergeLabel}
-          </Button>
-        )}
+        {quick.map((a, i) => {
+          const Icon = QUICK_ICONS[a.id];
+          const label = a.id === "merge" ? mergeLabel : a.label;
+          // A disabled button swallows hover, so its reason rides a wrapper's title.
+          return (
+            <span key={a.id} title={a.disabled ?? label} data-quick-action={a.id} data-primary={i === 0 ? "" : undefined}>
+              <Button size={icon} className={iconClass} variant={i === 0 ? "default" : "outline"} disabled={Boolean(a.disabled)} onClick={() => runQuick(a)} aria-label={label}>
+                {compact ? <Icon className="size-3.5" /> : label}
+              </Button>
+            </span>
+          );
+        })}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button size={icon} className={iconClass} variant="ghost" title={err ? firstLine(err) : "Actions"} aria-label="Actions" data-state-error={err ? "" : undefined}>

@@ -3011,3 +3011,69 @@ export function sweepText(reports: SweepReport[]): string {
   }
   return out.join("\n");
 }
+
+// ---- the actions bar's state-aware quick actions (WorkstreamActions) ----
+
+/** A toolbar verb the actions bar shows as a button. Each maps onto an existing store verb:
+ *  createPr → promote, markReady, addressPr, slack → sendSlack, mergeWhenGreen, merge. */
+export type QuickActionId = "createPr" | "markReady" | "addressPr" | "slack" | "mergeWhenGreen" | "merge";
+export type QuickAction = {
+  id: QuickActionId; label: string;
+  /** Set → the button shows, disabled, with this as its tooltip (why it can't run now). */
+  disabled?: string;
+  /** For `slack`: a first message, or a bump of one already sent. */
+  slackKind?: "notify" | "bump";
+};
+export type QuickActionRow = {
+  lane: OverviewLane; prNumber?: number; isDraft?: boolean; hasRemote?: boolean;
+  mergeable?: Mergeable; mergeClean?: "clean" | "conflict"; ciStatus?: CiStatus; reviewStatus?: ReviewStatus;
+  agentStatus?: "idle" | "running" | "done" | "error";
+  autoMergeEnabled?: boolean; mergeWhenGreen?: Pick<MergeMark, "small">;
+  slackNotifiedAt?: string; slackLastBumpedAt?: string;
+};
+export type QuickActionContext = {
+  /** The branch has commits of its own (a local branch with nothing on it can't become a PR). */
+  hasWork: boolean;
+  /** Actionable unresolved review threads (ReviewDigest.unresolved.count); undefined: not fetched. */
+  unresolved?: number;
+  /** The repo has a Slack channel to post to. */
+  slackChannel?: boolean;
+  mergePolicy?: MergePolicy;
+  nowMs: number; staleHours: number;
+};
+
+/** The workstream's quick actions, FIRST = the primary one, chosen by its state:
+ *  a local branch with commits → Create PR; a draft PR → Ready for review; conflicts, failing CI,
+ *  unresolved threads or changes requested → Address review; open, clean, nothing outstanding but
+ *  not approved → Send to Slack; approved and clean → Merge when green (disabled with the policy's
+ *  reason when the repo's mergePolicy refuses it), plus Merge. Everything else stays in the ⋯ menu.
+ *  Pure. */
+export function quickActions(row: QuickActionRow, ctx: QuickActionContext): QuickAction[] {
+  if (row.lane === "DONE") return [];
+  const running = row.agentStatus === "running" ? "An agent is already running on this branch" : undefined;
+  if (!row.prNumber) {
+    if (row.lane === "MERGEABLE") return [{ id: "merge", label: "Merge" }]; // a promoted, clean local branch
+    if (row.lane !== "LOCAL" || !ctx.hasWork) return [];
+    return [{ id: "createPr", label: row.hasRemote ? "Create PR" : "Promote", disabled: running }];
+  }
+  const conflicting = row.mergeable === "CONFLICTING" || row.mergeClean === "conflict";
+  const ciFailing = row.ciStatus === "failing";
+  const reviewOutstanding = row.reviewStatus === "changes_requested" || (ctx.unresolved ?? 0) > 0;
+  const blocked = conflicting || ciFailing || reviewOutstanding;
+  const address: QuickAction = { id: "addressPr", label: "Address review", disabled: running };
+  if (row.isDraft) return blocked ? [{ id: "markReady", label: "Ready for review" }, address] : [{ id: "markReady", label: "Ready for review" }];
+  if (blocked) return [address];
+  if (row.reviewStatus === "approved") {
+    const queued = row.autoMergeEnabled || row.mergeWhenGreen ? "Already queued — it merges once checks pass" : undefined;
+    const refused = mergeRefusal(ctx.mergePolicy, { small: row.mergeWhenGreen?.small });
+    const whenGreen: QuickAction = { id: "mergeWhenGreen", label: "Merge when green", disabled: queued ?? (refused && `Not queued: ${refused}`) };
+    // Merge now only once CI is settled green — a pending run is what Merge when green is for.
+    return row.ciStatus === "pending" ? [whenGreen] : [whenGreen, { id: "merge", label: "Merge" }];
+  }
+  // Open, clean, nothing outstanding, not approved yet: ask for a review. Pending CI isn't "clean".
+  if (row.ciStatus === "pending" || !ctx.slackChannel) return [];
+  if (!row.slackNotifiedAt) return [{ id: "slack", label: "Send to Slack", slackKind: "notify" }];
+  return shouldBump(row.slackNotifiedAt, row.slackLastBumpedAt, ctx.nowMs, ctx.staleHours)
+    ? [{ id: "slack", label: "Bump on Slack", slackKind: "bump" }]
+    : [];
+}
