@@ -271,6 +271,32 @@
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
+  /* The on-screen keyboard is up (lib/viewport.ts sets html[data-keyboard]). iOS doesn't shrink the
+     layout viewport for it — it pans the visual viewport over a page that still reaches under the
+     keyboard, so an in-flow chat's composer was pushed off screen and jumped on every keystroke.
+     Instead: the bottom bar (under the keyboard anyway) steps aside, the document stops scrolling,
+     and the chat holding the focus is pinned to exactly the visible area — header at its top, the
+     message list filling the middle, the composer sitting on the keyboard. Unlayered, so it wins
+     over the element's own Tailwind sizing; it all lets go the moment the keyboard closes. */
+  html[data-keyboard] [data-slot="bottom-bar"] {
+    display: none;
+  }
+  html[data-keyboard],
+  html[data-keyboard] body {
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+  html[data-keyboard] [data-keyboard-fill]:focus-within {
+    position: fixed;
+    top: var(--vv-top, 0px);
+    left: 0;
+    right: 0;
+    z-index: 40;
+    height: var(--vvh, 100dvh);
+    margin: 0;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+    background: var(--background);
+  }
   /* Truncated text expands on tap (lib/viewport.ts expandTruncatedOnTap). */
   [data-expanded="true"] {
     white-space: normal !important;

@@ -35,9 +35,22 @@ export const isCoarse = (): boolean => matches(COARSE_QUERY);
 export const enterSends = (e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean; isComposing?: boolean }, coarse: boolean): boolean =>
   !coarse && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !e.isComposing;
 
+/** How far the visible area must fall short of the layout viewport before it counts as the on-screen
+ *  keyboard rather than a toolbar collapsing (Safari's bars move by well under this). */
+export const KEYBOARD_MIN_PX = 120;
+
+/** Is the on-screen keyboard up? iOS never shrinks the layout viewport (or 100dvh) for it — only the
+ *  VISUAL viewport gets shorter — so a visible height well short of the layout height means a
+ *  keyboard. A pinch zoom also shrinks the visual viewport, so a zoomed page never counts. Pure. */
+export const keyboardOpen = (m: { layoutHeight: number; height: number; scale?: number }): boolean =>
+  (m.scale ?? 1) <= 1.01 && m.layoutHeight - m.height > KEYBOARD_MIN_PX;
+
 /** Keep `--vvh` / `--vv-top` on <html> at the VISUAL viewport's height and offset. iOS Safari doesn't
  *  shrink the layout viewport for the on-screen keyboard (100dvh still reaches under it), so a
- *  full-screen sheet sized `var(--vvh, 100dvh)` is what keeps its composer above the keyboard. */
+ *  full-screen sheet sized `var(--vvh, 100dvh)` is what keeps its composer above the keyboard.
+ *  While the keyboard is up <html> also carries `data-keyboard` (`keyboardOpen`): on a phone the
+ *  bottom bar steps aside, the document stops scrolling, and a chat marked `data-keyboard-fill` that
+ *  holds the focus is pinned to exactly the visible area (styles.css), composer on the keyboard. */
 export function trackVisualViewport(win: Window = window): () => void {
   const vv = win.visualViewport;
   if (!vv) return () => {};
@@ -45,11 +58,14 @@ export function trackVisualViewport(win: Window = window): () => void {
   const sync = () => {
     root.style.setProperty("--vvh", `${Math.round(vv.height)}px`);
     root.style.setProperty("--vv-top", `${Math.round(vv.offsetTop)}px`);
+    const layoutHeight = Math.max(win.innerHeight || 0, root.clientHeight || 0);
+    if (keyboardOpen({ layoutHeight, height: vv.height, scale: vv.scale })) root.dataset.keyboard = "open";
+    else delete root.dataset.keyboard;
   };
   sync();
   vv.addEventListener("resize", sync);
   vv.addEventListener("scroll", sync);
-  return () => { vv.removeEventListener("resize", sync); vv.removeEventListener("scroll", sync); };
+  return () => { vv.removeEventListener("resize", sync); vv.removeEventListener("scroll", sync); delete root.dataset.keyboard; };
 }
 
 // Text cut off with an ellipsis has no hover on a phone to reveal it: a tap on it (when it really is
