@@ -932,6 +932,14 @@ export function continuation(input: {
 export const ORCHESTRATOR_REPO = "@orca";
 export const ORCHESTRATOR_BRANCH = "orchestrator";
 
+/** The chat composer's placeholder — the one place it's built, so a workstream chat, the orchestrator
+ *  panel and the orchestrator page can't drift apart. Busy stays short enough for a 390px-wide
+ *  composer; idle never names the model, since the model chip already shows it. */
+export function chatPlaceholder(running: boolean, repo: string): string {
+  if (running) return "Queue a message…";
+  return repo === ORCHESTRATOR_REPO ? "Message the orchestrator…" : "Reply…";
+}
+
 /** What a worker is told. Anthropic's multi-agent research system found a delegated task needs an
  *  objective, an output format and boundaries — a vague brief is where duplicated and missing work
  *  comes from — so `spawn` refuses one without all three. */
