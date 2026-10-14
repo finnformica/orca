@@ -143,24 +143,36 @@ function LoginToggle({ name, enabled }: { name: string; enabled: boolean }) {
 /** A stale login's fix, right on the row — the only alternative was SSHing in to run `hydra
  *  refresh <name> --force` by hand. Same ActionButton semantics (spinner → ✓/✗) as LoginToggle:
  *  calls `POST /api/usage/refresh`, applies the refreshed profile list it hands back at once, and
- *  a failure is a failed-action notification. Shown only while the row reads Stale. */
+ *  a failure is a failed-action notification. Shown only while the row reads Stale. The CLI can
+ *  exit clean without actually clearing the stale state (its OWN refresh token has expired, not
+ *  just the access token) — that reads as success unless checked, so a re-read that is still
+ *  stale is treated as a failure too, with a message pointing at the fix a refresh can't do
+ *  (`hydra login`, which needs the browser, not a background command). */
 function RefreshProfileButton({ name }: { name: string }) {
   const [state, setState] = useState<SwitchState>("idle");
+  const fail = (error: string) => {
+    notifyLocal({
+      kind: "action_failed", repo: "", title: `Login ${name}`, label: "Refresh failed", body: error,
+      copy: `Action: Refresh hydra login ${name}\nError:\n${error}`,
+      ask: `Refresh hydra login ${name} failed: ${error}. Please investigate and fix.`,
+    });
+    setState("error");
+  };
   const refresh = async () => {
     if (state === "loading") return;
     setState("loading");
     try {
       const { profiles } = await api.refreshProfile(name, thisInstance());
       if (profiles) applyProfiles(profiles);
-      setState("done");
+      const stillStale = profiles?.find((p) => p.name === name)?.state?.startsWith("token stale");
+      if (stillStale) {
+        const instance = thisInstance();
+        fail(`Still stale after refresh — the refresh token itself may have expired. Run "hydra login ${name}"${instance ? ` on ${instance}` : ""}.`);
+      } else {
+        setState("done");
+      }
     } catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
-      notifyLocal({
-        kind: "action_failed", repo: "", title: `Login ${name}`, label: "Refresh failed", body: error,
-        copy: `Action: Refresh hydra login ${name}\nError:\n${error}`,
-        ask: `Refresh hydra login ${name} failed: ${error}. Please investigate and fix.`,
-      });
-      setState("error");
+      fail(e instanceof Error ? e.message : String(e));
     }
     setTimeout(() => setState("idle"), 2000);
   };

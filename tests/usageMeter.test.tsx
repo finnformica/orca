@@ -376,6 +376,21 @@ test("a failed refresh is a failed-action notification toast", async () => {
   expect(toast.textContent).toContain("hydra: refresh failed");
 });
 
+test("a refresh that exits clean but leaves the login stale (its own refresh token expired) is treated as a failure, not success", async () => {
+  apiFake.usageData = { claude: null, codex: null, profiles: [{ name: "work", state: "token stale — refreshes on next launch", usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } }] };
+  apiFake.refreshProfileStaysStale = true;
+  await mount("/usage");
+  await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  const button = group("login:work")!.querySelector<HTMLElement>("[data-slot='login-refresh']")!;
+  await act(async () => { button.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(apiFake.refreshProfileCalls).toEqual([{ name: "work", instance: "laptop" }]); // the call itself succeeded
+  expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Stale"); // still stale, not "fixed"
+  const toast = container!.querySelector('[data-slot="notification-toast"][data-kind="action_failed"]')!;
+  expect(toast.textContent).toContain("Refresh failed");
+  expect(toast.textContent).toContain("Still stale after refresh");
+  expect(toast.textContent).toContain('"hydra login work" on laptop'); // the suggested fix names the login and the machine
+});
+
 test("a failed toggle is a failed-action notification toast and the switch reverts", async () => {
   apiFake.usageData = { claude: null, codex: null, profiles: [{ name: "work", state: "ok", usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } }] };
   apiFake.setProfileEnabledError = "hydra: no such profile";
