@@ -81,11 +81,16 @@ export const useUsage = (): Usage | null => useSyncExternalStore(usageSource.sub
 export const useUsageLoaded = (): boolean =>
   useSyncExternalStore((cb) => { usageLoadedSubs.add(cb); return () => usageLoadedSubs.delete(cb); }, () => usageLoaded);
 
-/** Apply the profile list POST /api/usage/profile hands back, so the row the switch is on shows
- *  the new state at once rather than waiting for the next (up to 5-minute) poll tick. */
-export function applyProfiles(profiles: NonNullable<Usage["profiles"]>): void {
-  const current = usageSource.get();
-  if (current) usageSource.push({ ...current, profiles });
+/** Re-poll /api/usage right now (merged across every reachable instance) and push the result over
+ *  the shared source, so a mutation on one HOST's hydra (the rotation switch, Refresh) shows at once
+ *  rather than waiting for the next (up to 5-minute) poll tick. `POST /api/usage/profile` and
+ *  `/api/usage/refresh` hand back only the host they ran on's OWN unmerged profiles — pushing that
+ *  directly, as this used to, replaced the fleet-wide merged view with one host's slice and dropped
+ *  every other instance's reading (and the stale-host hints) until the next tick. Merged per
+ *  provider like a normal poll, so a transient null from one provider doesn't blank the other. */
+export async function refreshUsageNow(): Promise<void> {
+  const u = await api.usage();
+  if (u) usageSource.push(mergeUsage(usageSource.get(), u));
 }
 
 // Every health / history loop that is running right now, by its fetch — so the Instances header's

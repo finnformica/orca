@@ -19,8 +19,16 @@ export type CodexUsageWindow = UsageWindow & { label: string; durationMinutes: n
 export type CodexUsage = { windows: CodexUsageWindow[] };
 /** One Claude login as hydra reports it. `usage` is null with no reading yet (not signed in on this
  *  machine, or never fetched); `state` is hydra's verdict — "ok", "disabled", "exhausted", "locked",
- *  "token stale — refreshes on next launch", "no usage data yet", "not signed in on this machine". */
-export type ProfileUsage = { name: string; usage: ClaudeUsage | null; state?: string; email?: string };
+ *  "token stale — refreshes on next launch", "no usage data yet", "not signed in on this machine".
+ *  `fetchedAt` (ms, null if never fetched) is hydra's own `fetched_at` — the freshness signal
+ *  `mergeInstanceProfiles` picks the live reading by, since usage belongs to the Claude ACCOUNT, not
+ *  whichever host happened to answer. `instance`/`hosts` are set only on a MERGED profile (below):
+ *  which host's reading was picked, and every host that reported this account with ITS state, so the
+ *  card can show a stale host as a secondary hint and point Refresh at it specifically. */
+export type ProfileUsage = {
+  name: string; usage: ClaudeUsage | null; state?: string; email?: string; fetchedAt?: number | null;
+  instance?: string; hosts?: { instance: string; state?: string }[];
+};
 /** Whether Claude launches are actually being routed. `hydra`: installed on the bridge's PATH.
  *  `shim`: the `claude` the bridge resolves is hydra's shim — the thing that routes a headless
  *  `claude -p`. Claude Code's own updater rewrites `~/.local/bin/claude`, which silently removes the
@@ -94,8 +102,73 @@ export function shapeHydraStatus(raw: any): ProfileUsage[] {
       const usage: ClaudeUsage | null = session
         ? { fiveHour: session, sevenDay: win(p.weekly) ?? zero, extra: null, fable: win(p.fable) }
         : null;
-      return { name: p.name, usage, state: typeof p.state === "string" ? p.state : undefined, email: typeof p.email === "string" && p.email ? p.email : undefined };
+      const fetchedAt = Number.isFinite(Number(p.fetched_at)) && Number(p.fetched_at) > 0 ? Number(p.fetched_at) * 1000 : null;
+      return { name: p.name, usage, state: typeof p.state === "string" ? p.state : undefined, email: typeof p.email === "string" && p.email ? p.email : undefined, fetchedAt };
     });
+}
+
+/** One instance's hydra profiles, as gathered for the merge below. */
+export type InstanceProfiles = { instance: string; profiles: ProfileUsage[] };
+
+/** Merge every instance's hydra profiles into one row per Claude account (matched by email — a
+ *  profile with no email, "not signed in on this machine", has nothing to match on, so it stays
+ *  keyed to its own instance+name). The freshest OK reading (hydra's `fetchedAt`) wins: usage is the
+ *  account's, not the host's, so the meter must not keep showing a host it happens to be talking to
+ *  over a fresher reading from wherever the account actually ran. When no instance has an OK reading
+ *  for an account, falls back to `preferred` (the instance that runs agents, so a login's rotation
+ *  state there is what actually matters) if it reported anything, else the freshest reading of any
+ *  state, else whichever came first. Every host that reported the account is kept on `hosts` — the
+ *  card's secondary hint ("stale on local") and what Refresh/the rotation switch should target, since
+ *  that state is genuinely per-host even though the usage numbers are not. Pure. */
+export function mergeInstanceProfiles(byInstance: InstanceProfiles[], preferred?: string): ProfileUsage[] {
+  type Entry = { instance: string; profile: ProfileUsage };
+  const order: string[] = [];
+  const groups = new Map<string, Entry[]>();
+  for (const { instance, profiles } of byInstance) {
+    for (const profile of profiles) {
+      const key = profile.email || `${instance}:${profile.name}`;
+      if (!groups.has(key)) { groups.set(key, []); order.push(key); }
+      groups.get(key)!.push({ instance, profile });
+    }
+  }
+  const freshest = (list: Entry[]): Entry | undefined =>
+    list.reduce<Entry | undefined>((best, e) => (!best || (e.profile.fetchedAt ?? 0) > (best.profile.fetchedAt ?? 0) ? e : best), undefined);
+  return order.map((key) => {
+    const entries = groups.get(key)!;
+    const ok = entries.filter((e) => e.profile.state === "ok" && e.profile.usage);
+    const preferredEntry = preferred ? entries.find((e) => e.instance === preferred && e.profile.usage) : undefined;
+    const chosen = freshest(ok) ?? preferredEntry ?? freshest(entries) ?? entries[0]!;
+    const hosts = entries.map((e) => ({ instance: e.instance, state: e.profile.state }));
+    return { ...chosen.profile, instance: chosen.instance, hosts };
+  });
+}
+
+/** `GET /api/usage`'s cross-instance reading: this host's own `usage()` plus every OTHER configured
+ *  instance's (`GET /api/usage/local`, never merged itself — see server/index.ts), merged by account.
+ *  An unreachable or erroring peer is dropped, not awaited past its own failure — usage still shows
+ *  from whoever answered. Codex and routing stay this host's own: neither is meaningfully shared
+ *  across instances the way a Claude login's usage is. */
+export async function usageAcrossInstances(instances: Record<string, string> | undefined, self: string, preferred?: string): Promise<Usage | null> {
+  const peers = Object.entries(instances ?? {}).filter(([name]) => name !== self);
+  const [local, remote] = await Promise.all([
+    usage(),
+    Promise.all(peers.map(async ([instance, base]): Promise<InstanceProfiles | null> => {
+      try {
+        const res = await fetch(new URL("/api/usage/local", base));
+        if (!res.ok) return null;
+        const data = (await res.json()) as Usage | null;
+        return data?.profiles ? { instance, profiles: data.profiles } : null;
+      } catch {
+        return null;
+      }
+    })),
+  ]);
+  const byInstance: InstanceProfiles[] = [];
+  if (local?.profiles) byInstance.push({ instance: self, profiles: local.profiles });
+  for (const r of remote) if (r) byInstance.push(r);
+  if (!byInstance.length) return local;
+  const merged = mergeInstanceProfiles(byInstance, preferred);
+  return { claude: merged.find((p) => p.usage)?.usage ?? local?.claude ?? null, codex: local?.codex ?? null, profiles: merged, ...(local?.routing ? { routing: local.routing } : {}) };
 }
 
 /** hydra's shim announces itself with a marker in its header; the real binary has none. Pure. */
@@ -164,6 +237,26 @@ export async function setProfileEnabled(name: string, enabled: boolean): Promise
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   clearTimeout(timer);
   if (code !== 0) throw new Error((err || out).trim() || `hydra ${enabled ? "enable" : "disable"} ${name} failed`);
+  return (await hydraUsage()) ?? before;
+}
+
+/** Force a token refresh for one hydra login (`hydra refresh <name> --force`) — the fix for a
+ *  "token stale" row the user would otherwise have to SSH in and run by hand. Same validation and
+ *  shape as `setProfileEnabled`: refuses a name hydra doesn't currently report, 15s timeout, never
+ *  throws past the route. Clears `lastGoodHydra` before the post-refresh read so a stale cached
+ *  reading can't mask the fresh one — the UI gets the new state (or `before` on a failed re-read),
+ *  never the pre-refresh snapshot. */
+export async function refreshProfile(name: string): Promise<ProfileUsage[]> {
+  const hydra = Bun.which("hydra", { PATH: process.env.PATH ?? "" });
+  if (!hydra) throw new Error("hydra is not installed on this host");
+  const before = await hydraUsage();
+  if (!before?.some((p) => p.name === name)) throw new Error(`"${name}" is not a hydra login on this host`);
+  const proc = Bun.spawn([hydra, "refresh", name, "--force"], { env: process.env, stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => proc.kill(), 15_000);
+  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+  clearTimeout(timer);
+  if (code !== 0) throw new Error((err || out).trim() || `hydra refresh ${name} --force failed`);
+  lastGoodHydra = null;
   return (await hydraUsage()) ?? before;
 }
 

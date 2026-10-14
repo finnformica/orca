@@ -145,7 +145,10 @@ export const apiFake = {
   usageData: null as null | {
     claude: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: { usedMinor: number; limitMinor: number; currency: string; exponent: number; utilization: number } | null };
     codex: null | { windows: { label: string; durationMinutes: number | null; utilization: number; resetsAt: string | null }[] };
-    profiles?: { name: string; usage: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: null; fable?: { utilization: number; resetsAt: string | null } | null }; state?: string; email?: string }[];
+    profiles?: {
+      name: string; usage: null | { fiveHour: { utilization: number; resetsAt: string | null }; sevenDay: { utilization: number; resetsAt: string | null }; extra: null; fable?: { utilization: number; resetsAt: string | null } | null };
+      state?: string; email?: string; instance?: string; hosts?: { instance: string; state?: string }[];
+    }[];
     routing?: { hydra: boolean; shim: boolean; bin?: string };
   },
   // The Usage card's hover switch: POST /api/usage/profile. A set error rejects the call; otherwise
@@ -153,9 +156,17 @@ export const apiFake = {
   // real route.
   setProfileEnabledCalls: [] as { name: string; enabled: boolean; instance?: string }[],
   setProfileEnabledError: null as null | string,
+  // The Stale row's fix: POST /api/usage/refresh. Same shape as setProfileEnabled — a set error
+  // rejects the call; otherwise the matching profile's state clears to "ok" and the refreshed list
+  // is handed back.
+  refreshProfileCalls: [] as { name: string; instance?: string }[],
+  refreshProfileError: null as null | string,
+  // Simulates a refresh token that has itself expired: `hydra refresh --force` exits clean (no
+  // error thrown) but the profile's state is still "token stale" on the re-read.
+  refreshProfileStaysStale: false,
   instanceRates: {} as Record<string, number>,
   setInstanceRateCalls: [] as { instance: string; hourlyUsd: number | null }[],
-  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.settleResult = { outcome: "conflict", files: [] }; this.settleCalls = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.turnPageDbUnavailable = false; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.instanceRates = {}; this.setInstanceRateCalls = []; },
+  reset() { this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.settleResult = { outcome: "conflict", files: [] }; this.settleCalls = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.turnPageDbUnavailable = false; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.refreshProfileCalls = []; this.refreshProfileError = null; this.refreshProfileStaysStale = false; this.instanceRates = {}; this.setInstanceRateCalls = []; },
 };
 
 mock.module("@/api", () => ({
@@ -177,6 +188,14 @@ mock.module("@/api", () => ({
       apiFake.setProfileEnabledCalls.push({ name, enabled, instance });
       if (apiFake.setProfileEnabledError) throw new Error(apiFake.setProfileEnabledError);
       const profiles = apiFake.usageData?.profiles?.map((p) => p.name === name ? { ...p, state: enabled ? "ok" : "disabled" } : p);
+      if (profiles) apiFake.usageData = { ...apiFake.usageData!, profiles };
+      return { profiles };
+    },
+    refreshProfile: async (name: string, instance?: string) => {
+      apiFake.refreshProfileCalls.push({ name, instance });
+      if (apiFake.refreshProfileError) throw new Error(apiFake.refreshProfileError);
+      const nextState = apiFake.refreshProfileStaysStale ? "token stale — refreshes on next launch" : "ok";
+      const profiles = apiFake.usageData?.profiles?.map((p) => p.name === name ? { ...p, state: nextState } : p);
       if (profiles) apiFake.usageData = { ...apiFake.usageData!, profiles };
       return { profiles };
     },

@@ -10,13 +10,13 @@ import { api } from "@/api";
 import { usageExpandedAtom } from "@/lib/atoms";
 import { notifyLocal } from "@/lib/notificationStore";
 import { persistedKey, usePersisted } from "@/lib/persisted";
-import { useCoarse } from "@/lib/viewport";
-import { applyProfiles, refreshVitals, useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
+import { useCoarse, useNarrow } from "@/lib/viewport";
+import { refreshUsageNow, refreshVitals, useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
-import { HISTORY_RANGES, countMax, instanceSeries, loginStatus, monthCostLabel, niceMax, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { HISTORY_RANGES, countMax, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
@@ -61,17 +61,32 @@ export function UsageCard() {
 function UsageGroupRows({ group: g }: { group: UsageGroup }) {
   const [hover, setHover] = useState(false);
   const coarse = useCoarse();
+  const narrow = useNarrow();
   const status = g.state ? loginStatus(g.state) : null;
+  const hints = hostHints(g);
   return (
     <div data-slot="usage-group" data-group={g.key} className={`mb-1 last:mb-0 ${g.dim ? "opacity-50" : ""}`}>
       {/* One line however long the name or the reason: the status is one word right after the name
           (its reason in the tooltip), the name truncates rather than pushing the row out, and the
-          email gives way first. */}
+          email gives way first. Usage is per ACCOUNT (merged across instances), so the pill is
+          whichever host's reading was picked — a host-specific problem elsewhere shows as a small
+          secondary hint instead ("Stale on local"), each with its own Refresh targeting that host. */}
       <div data-slot="usage-group-header" className="flex max-w-full min-w-0 items-center justify-between gap-2 px-2 pt-1.5 pb-1" onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
         <span className="flex min-w-0 items-center gap-1.5">
           <span data-slot="usage-group-title" className="min-w-0 truncate text-xs font-medium" title={g.subtitle ? `${g.title} · ${g.subtitle}` : g.title}>{g.title}</span>
           {status && <Pill tone={status.tone} slot="usage-state" title={status.detail}>{status.label}</Pill>}
-          {g.name && (hover || coarse) && <LoginToggle name={g.name} enabled={g.state !== "disabled"} />}
+          {g.name && status?.label === "Stale" && <RefreshProfileButton name={g.name} instance={g.instance} />}
+          {g.name && (hover || coarse) && <LoginToggle name={g.name} enabled={g.state !== "disabled"} instance={g.instance} />}
+          {g.name && hints.map((h) => {
+            const hStatus = loginStatus(h.state);
+            return (
+              <span key={h.instance} data-slot="usage-host-hint" title={hStatus.detail}
+                className="text-muted-foreground flex min-w-0 items-center gap-1 text-xs">
+                {hStatus.label} on {h.instance}
+                {hStatus.label === "Stale" && <RefreshProfileButton name={g.name!} instance={h.instance} />}
+              </span>
+            );
+          })}
         </span>
         {g.subtitle && <span className="text-muted-foreground min-w-0 shrink-[2] truncate text-xs">{g.subtitle}</span>}
       </div>
@@ -80,7 +95,13 @@ function UsageGroupRows({ group: g }: { group: UsageGroup }) {
           className="hover:bg-accent/60 flex h-9 items-center gap-2.5 rounded-md px-2 text-sm">
           <Ring pct={r.pct} />
           <span className="min-w-0 flex-1 truncate">{r.label}</span>
-          {(r.resetsIn || r.resetNote) && <span data-slot="usage-reset" className="text-muted-foreground hidden text-xs sm:inline">{r.resetsIn ? `resets ${r.resetsIn}` : r.resetNote}</span>}
+          {(r.resetsIn || r.resetNote) && (
+            // Narrow screens get the bare countdown ("4h 32m"), no "resets " prefix — keeps the row
+            // on one line without wrapping instead of hiding the reset entirely.
+            <span data-slot="usage-reset" className="text-muted-foreground shrink-0 truncate text-xs">
+              {narrow ? (r.resetsIn ?? r.resetNote) : r.resetsIn ? `resets ${r.resetsIn}` : r.resetNote}
+            </span>
+          )}
           <span className="text-muted-foreground shrink-0 tabular-nums"><span className="text-foreground">{r.value}</span> / {r.limit}</span>
         </div>
       ))}
@@ -94,15 +115,18 @@ type SwitchState = "idle" | "loading" | "done" | "error";
  *  always, on a touch screen), so it reserves no space on a row that isn't. ActionButton's own
  *  semantics (spinner → ✓/✗) in switch form: flipping it calls `POST /api/usage/profile`, applies
  *  the refreshed profile list it hands back at once (so the row doesn't wait for the next poll
- *  tick), and a failure is a failed-action notification. */
-function LoginToggle({ name, enabled }: { name: string; enabled: boolean }) {
+ *  tick), and a failure is a failed-action notification. Rotation is per HOST, not per account — the
+ *  merged row names which host its reading came from (`instance`); default to this browser's own
+ *  host when the payload isn't merged (a single-instance setup). */
+function LoginToggle({ name, enabled, instance }: { name: string; enabled: boolean; instance?: string }) {
   const [state, setState] = useState<SwitchState>("idle");
+  const target = instance ?? thisInstance();
   const toggle = async () => {
     if (state === "loading") return;
     setState("loading");
     try {
-      const { profiles } = await api.setProfileEnabled(name, !enabled, thisInstance());
-      if (profiles) applyProfiles(profiles);
+      await api.setProfileEnabled(name, !enabled, target);
+      await refreshUsageNow();
       setState("done");
     } catch (e) {
       const verb = enabled ? "Disable" : "Enable", error = e instanceof Error ? e.message : String(e);
@@ -128,6 +152,56 @@ function LoginToggle({ name, enabled }: { name: string; enabled: boolean }) {
         {state === "done" && <Check className="size-2.5" />}
         {state === "error" && <X className="size-2.5" />}
       </span>
+    </button>
+  );
+}
+
+/** A stale login's fix, right on the row — the only alternative was SSHing in to run `hydra
+ *  refresh <name> --force` by hand. Same ActionButton semantics (spinner → ✓/✗) as LoginToggle:
+ *  calls `POST /api/usage/refresh` against the HOST whose login is stale (`instance` — the merged
+ *  row's own host, else this browser's), then re-polls the merged fleet view so it reflects the fix
+ *  at once rather than waiting out the slow poll. Shown only while the row (or a secondary host
+ *  hint) reads Stale. The CLI can exit clean without actually clearing the stale state (its OWN
+ *  refresh token has expired, not just the access token) — that reads as success unless checked, so
+ *  a re-read that is still stale is treated as a failure too, with a message pointing at the fix a
+ *  refresh can't do (`hydra login`, which needs the browser, not a background command). */
+function RefreshProfileButton({ name, instance }: { name: string; instance?: string }) {
+  const [state, setState] = useState<SwitchState>("idle");
+  const target = instance ?? thisInstance();
+  const fail = (error: string) => {
+    notifyLocal({
+      kind: "action_failed", repo: "", title: `Login ${name}`, label: "Refresh failed", body: error,
+      copy: `Action: Refresh hydra login ${name}\nError:\n${error}`,
+      ask: `Refresh hydra login ${name} failed: ${error}. Please investigate and fix.`,
+    });
+    setState("error");
+  };
+  const refresh = async () => {
+    if (state === "loading") return;
+    setState("loading");
+    try {
+      const { profiles } = await api.refreshProfile(name, target);
+      const stillStale = profiles?.find((p) => p.name === name)?.state?.startsWith("token stale");
+      await refreshUsageNow();
+      if (stillStale) {
+        fail(`Still stale after refresh — the refresh token itself may have expired. Run "hydra login ${name}"${target ? ` on ${target}` : ""}.`);
+      } else {
+        setState("done");
+      }
+    } catch (e) {
+      fail(e instanceof Error ? e.message : String(e));
+    }
+    setTimeout(() => setState("idle"), 2000);
+  };
+  return (
+    <button type="button" data-slot="login-refresh" disabled={state === "loading"}
+      title={`Refresh ${name}'s token on ${target ?? "this host"} (hydra refresh --force)`}
+      onClick={(e) => { e.stopPropagation(); void refresh(); }}
+      className="text-muted-foreground hover:text-foreground flex size-4 shrink-0 items-center justify-center">
+      {state === "loading" ? <Loader2 className="size-3 animate-spin" />
+        : state === "done" ? <Check className="size-3" />
+        : state === "error" ? <X className="size-3" />
+        : <RefreshCw className="size-3" />}
     </button>
   );
 }
