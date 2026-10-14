@@ -21,6 +21,7 @@ import { ChatComposer } from "@/components/ChatComposer";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { subscribeTurns } from "@/lib/events";
+import { onRefresh } from "@/lib/refresh";
 import { onOrchestratorDelivered, useOrchestratorOutbox } from "@/lib/orchestratorOutbox";
 import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
 import type { OrchestratorPrefill } from "@/lib/atoms";
@@ -655,7 +656,9 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, outbox,
         await load();
       })(),
     });
-    return () => { live = false; unsubscribe(); };
+    // "Refresh everything" re-reads the newest page and the queue, like a `turn` event.
+    const offRefresh = onRefresh(() => Promise.all([load(), loadQueued()]));
+    return () => { live = false; unsubscribe(); offRefresh(); };
   }, [row.repo, row.branch]);
 
   useEffect(() => {

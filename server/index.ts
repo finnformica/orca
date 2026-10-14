@@ -8,6 +8,7 @@ import * as agent from "./agent";
 import * as attachments from "./attachments";
 import * as preview from "./preview";
 import * as forward from "./forward";
+import { reachable } from "./peer";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
 import { refreshProfile, routingInfo, setProfileEnabled, setProfileEnabledEverywhere, usage, usageAcrossInstances } from "./usage";
 import * as ledger from "./ledger";
@@ -332,6 +333,8 @@ async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: Orc
     return json({ error: `this belongs on "${home}", which has no address configured (set instances.${home})` }, 502);
   }
   const target = new URL(url.pathname + url.search, base);
+  // An offline peer black-holes the connect; without this a forward hung for over a minute.
+  if (!(await reachable(base))) return json({ error: `${home} is unreachable (no connection to ${new URL(base).host})` }, 502);
   try {
     // Streamed through, not buffered: a large body (a diff) reaches the browser as it arrives.
     const upstream = await fetch(target, {
@@ -487,6 +490,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     // ONE instance hosts the orchestrator (orchestratorOn); everything about it goes there.
     const base = cfg.instances?.[cfg.orchestratorOn];
     if (!base) return json({ error: `the orchestrator lives on "${cfg.orchestratorOn}", which has no address configured (set instances.${cfg.orchestratorOn})` }, 502);
+    if (!(await reachable(base))) return json({ error: `${cfg.orchestratorOn} is unreachable (no connection to ${new URL(base).host})` }, 502);
     try {
       const upstream = await fetch(new URL(url.pathname + url.search, base), { method: req.method, headers: req.headers, body: req.method === "GET" ? undefined : JSON.stringify(body), signal: req.signal });
       return new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
