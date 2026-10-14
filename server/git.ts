@@ -107,14 +107,16 @@ export async function baseWorktree(repoPath: string, worktreeRoot: string, base:
 export async function listWorktrees(
   repoPath: string,
   worktreeRoot: string,
-): Promise<{ branch: string; worktreePath: string }[]> {
+): Promise<{ branch: string; worktreePath: string; head?: string }[]> {
   const out = await git(repoPath, "worktree", "list", "--porcelain");
   const root = real(worktreeRoot); // resolve symlinks (macOS /var → /private/var)
-  const result: { branch: string; worktreePath: string }[] = [];
+  const result: { branch: string; worktreePath: string; head?: string }[] = [];
   for (const block of out.split("\n\n")) {
     const worktreePath = block.match(/^worktree (.+)$/m)?.[1];
     const branch = block.match(/^branch refs\/heads\/(.+)$/m)?.[1];
-    if (worktreePath && branch && real(worktreePath).startsWith(root)) result.push({ branch, worktreePath });
+    // HEAD's sha rides along free: it tells a merged PR's leftover worktree from a reused branch.
+    const head = block.match(/^HEAD ([0-9a-f]+)$/m)?.[1];
+    if (worktreePath && branch && real(worktreePath).startsWith(root)) result.push({ branch, worktreePath, head });
   }
   return result;
 }

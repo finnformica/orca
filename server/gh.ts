@@ -495,7 +495,8 @@ export async function prDetail(cwd: string, pr: number): Promise<PrDetail> {
 /** Raw unified diff for a PR. */
 export const prDiff = (cwd: string, pr: number) => gh(cwd, "pr", "diff", String(pr));
 
-export type MergedPr = { number: number; title: string; branch: string; url: string; mergedAt: string };
+/** `headSha`: the PR's last head — a worktree past it is a reused branch, not this PR (`mergedPrIsHistory`). */
+export type MergedPr = { number: number; title: string; branch: string; url: string; mergedAt: string; headSha?: string };
 
 type RawMergedPr = { number: number; title: string; headRefName: string; url: string; mergedAt: string; headRefOid?: string };
 const MERGED_TTL_MS = 15_000;
@@ -533,7 +534,7 @@ export async function listMerged(cwd: string, since?: number): Promise<MergedPr[
   })();
   return arr
     .filter((j) => j.mergedAt && Date.parse(j.mergedAt) >= boundary)
-    .map((j) => ({ number: j.number, title: j.title, branch: j.headRefName, url: j.url, mergedAt: j.mergedAt }));
+    .map((j) => ({ number: j.number, title: j.title, branch: j.headRefName, url: j.url, mergedAt: j.mergedAt, headSha: j.headRefOid }));
 }
 
 /** Branch names of the user's merged PRs (not date-filtered) — used to reap their leftover worktrees. */

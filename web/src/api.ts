@@ -10,6 +10,8 @@ import type { BridgeInfo, MechanicalMerge, MergePolicy, SyncResult } from "./wor
 export type LiveAgent = {
   branch: string;
   worktreePath: string;
+  /** The worktree's HEAD sha. */
+  head?: string;
   agentStatus: "idle" | "running" | "done" | "error";
   agentError?: string;
   agentResult?: string;

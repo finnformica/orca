@@ -68,6 +68,24 @@ export function deriveKanbanState(s: PrStatusLike): WorkstreamState {
   return s.reviewStatus === "approved" ? "MERGEABLE" : "IN_REVIEW"; // conflict/CI/ready show as badges
 }
 
+/** What the branch's live side says about it, for `mergedPrIsHistory`. */
+export type BranchActivity = { agentStatus?: string; queued?: number; agentStartedAt?: number; head?: string; openPr?: boolean };
+
+/** Is a merged PR found by head branch only HISTORY for this workstream? GitHub matches PRs by
+ *  branch name, and the orchestrator reuses a branch after its PR merged (`orca send` to it: the
+ *  worker resets onto the base and starts again) — so the old merged PR must not make the row Done
+ *  (hidden under "Not merged") while new work runs. It is history once anything happened since the
+ *  merge: a newer open PR for the branch, the agent running or a message queued, a run started after
+ *  `mergedAt`, or the worktree's HEAD moved off the PR's last head. With nothing live behind the
+ *  branch (no worktree) the merge stands. ONE derivation for the board UI and `orca board`. Pure. */
+export function mergedPrIsHistory(m: { mergedAt?: string; headSha?: string }, w: BranchActivity | undefined): boolean {
+  if (!w) return false;
+  if (w.openPr || w.agentStatus === "running" || (w.queued ?? 0) > 0) return true;
+  const mergedMs = m.mergedAt ? Date.parse(m.mergedAt) : NaN;
+  if (w.agentStartedAt && Number.isFinite(mergedMs) && w.agentStartedAt > mergedMs) return true;
+  return Boolean(w.head && m.headSha && w.head !== m.headSha);
+}
+
 // The "PR" submenu: every action that only makes sense once a branch has an open PR, grouped in one
 // place so the top-level menu stays short. Order is stable so the submenu reads the same every time.
 export type PrMenuAction = "markReady" | "moveToDraft" | "autoMerge" | "addressPr" | "addPreview" | "copyLink";
@@ -1418,7 +1436,7 @@ export function orchStatusText(s: OrchStatus | undefined): string {
 /** One line of the board as the orchestrator reads it. */
 export type BoardRow = {
   repo: string; branch: string; title?: string; worktreePath?: string; agent: string;
-  pr?: { number: number; isDraft?: boolean; reviewStatus?: string; ciStatus?: string; mergeable?: string };
+  pr?: { number: number; isDraft?: boolean; reviewStatus?: string; ciStatus?: string; mergeable?: string; merged?: boolean };
   check?: boolean; orchestrated?: boolean; last?: string;
   /** The instance holding its worktree, when there is more than one instance. */
   instance?: string;
@@ -1429,7 +1447,7 @@ export function boardText(rows: BoardRow[]): string {
   if (!rows.length) return "(no workstreams)";
   return rows.map((r) => {
     const pr = r.pr
-      ? `PR #${r.pr.number}${r.pr.isDraft ? " draft" : ""}${r.pr.reviewStatus ? ` review:${r.pr.reviewStatus}` : ""}${r.pr.ciStatus ? ` ci:${r.pr.ciStatus}` : ""}${r.pr.mergeable === "CONFLICTING" ? " CONFLICTS" : ""}`
+      ? r.pr.merged ? `PR #${r.pr.number} merged` : `PR #${r.pr.number}${r.pr.isDraft ? " draft" : ""}${r.pr.reviewStatus ? ` review:${r.pr.reviewStatus}` : ""}${r.pr.ciStatus ? ` ci:${r.pr.ciStatus}` : ""}${r.pr.mergeable === "CONFLICTING" ? " CONFLICTS" : ""}`
       : "no PR";
     return [
       `${r.repo}/${r.branch}${r.title ? ` "${r.title}"` : ""}`,
