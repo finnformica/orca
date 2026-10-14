@@ -10,6 +10,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { aggregateProfiles, App, mergeUsage, untilReset } from "@/App";
 import { navigate } from "@/lib/route";
+import { NARROW_QUERY } from "@/lib/viewport";
 import { createStore, getDefaultStore } from "jotai";
 import { usageExpandedAtom } from "@/lib/atoms";
 import * as centre from "@/lib/notificationStore";
@@ -197,6 +198,29 @@ test("logins that can't be routed to are excluded from the fleet mean but still 
   expect(group("login:old")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Disabled");
 });
 
+test("a login merged across instances shows the freshest ok reading, with a stale OTHER host as a secondary hint whose Refresh targets that host", async () => {
+  apiFake.usageData = {
+    claude: null, codex: null,
+    profiles: [
+      {
+        name: "finnformica", email: "finnformica@gmail.com", state: "ok", instance: "cloud",
+        usage: { fiveHour: { utilization: 18, resetsAt: null }, sevenDay: { utilization: 18, resetsAt: null }, extra: null },
+        hosts: [{ instance: "local", state: "token stale — refreshes on next launch" }, { instance: "cloud", state: "ok" }],
+      },
+    ],
+  };
+  await mount("/usage");
+  const header = () => card().querySelector<HTMLElement>("[data-slot='card-header']")!;
+  await act(async () => { header().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  const row = group("login:finnformica")!;
+  expect(row.querySelector("[data-slot='usage-state']")).toBeNull(); // the picked (cloud) reading is ok — no pill
+  const hint = row.querySelector("[data-slot='usage-host-hint']")!;
+  expect(hint.textContent).toContain("Stale on local");
+  const refresh = hint.querySelector("[data-slot='login-refresh']")!;
+  await act(async () => { refresh.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(apiFake.refreshProfileCalls).toEqual([{ name: "finnformica", instance: "local" }]); // targets the STALE host, not wherever the browser is
+});
+
 test("aggregateProfiles: mean per window over the rotation, soonest reset, null when nothing is in rotation", () => {
   const w = (u: number, r: string | null = null) => ({ utilization: u, resetsAt: r });
   expect(aggregateProfiles([
@@ -296,6 +320,20 @@ test("the usage toggle reads back on a reload: default collapsed, bad JSON falls
   expect(reload().get(usageExpandedAtom)).toBe(true);
 });
 
+test("on a narrow screen the reset timer shows as the bare countdown, not hidden, keeping the row on one line", async () => {
+  const realMatchMedia = window.matchMedia;
+  window.matchMedia = ((q: string) => ({ matches: q === NARROW_QUERY, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  try {
+    const at = (mins: number) => new Date(Date.now() + mins * 60_000).toISOString();
+    apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: at(125) }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
+    await mount();
+    const reset = group("claude")!.querySelector("[data-slot='usage-reset']")!;
+    expect(reset.textContent).toBe("2h 5m"); // no "resets " prefix on a narrow screen
+  } finally {
+    window.matchMedia = realMatchMedia;
+  }
+});
+
 test("a hydra login's row shows a switch on hover: flipping it disables/enables the rotation through POST /api/usage/profile", async () => {
   const login = (name: string, state: string) => ({ name, state, usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
   apiFake.usageData = { claude: null, codex: null, profiles: [login("work", "ok")] };
@@ -330,6 +368,50 @@ test("a hydra login's row shows a switch on hover: flipping it disables/enables 
 
   await mouse(header(), "mouseout");
   expect(row()).toBeNull(); // leaves the DOM again once the row isn't hovered
+});
+
+test("a Stale login's row carries a Refresh button that clears the stale state through POST /api/usage/refresh", async () => {
+  const login = (name: string, state: string) => ({ name, state, usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
+  apiFake.usageData = { claude: null, codex: null, profiles: [login("work", "token stale — refreshes on next launch")] };
+  await mount("/usage");
+  await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Stale");
+
+  const button = () => group("login:work")!.querySelector<HTMLElement>("[data-slot='login-refresh']");
+  expect(button()).not.toBeNull(); // shown without hovering — a Stale row needs no discovery step
+
+  await act(async () => { button()!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(apiFake.refreshProfileCalls).toEqual([{ name: "work", instance: "laptop" }]);
+  expect(group("login:work")!.querySelector("[data-slot='usage-state']")).toBeNull(); // "ok" has no pill
+  expect(button()).toBeNull(); // the fix made the row healthy, so its own button is gone too
+});
+
+test("a failed refresh is a failed-action notification toast", async () => {
+  apiFake.usageData = { claude: null, codex: null, profiles: [{ name: "work", state: "token stale — refreshes on next launch", usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } }] };
+  apiFake.refreshProfileError = "hydra: refresh failed";
+  await mount("/usage");
+  await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  const button = group("login:work")!.querySelector<HTMLElement>("[data-slot='login-refresh']")!;
+  await act(async () => { button.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Stale"); // unchanged — the server refused it
+  const toast = container!.querySelector('[data-slot="notification-toast"][data-kind="action_failed"]')!;
+  expect(toast.textContent).toContain("Refresh failed");
+  expect(toast.textContent).toContain("hydra: refresh failed");
+});
+
+test("a refresh that exits clean but leaves the login stale (its own refresh token expired) is treated as a failure, not success", async () => {
+  apiFake.usageData = { claude: null, codex: null, profiles: [{ name: "work", state: "token stale — refreshes on next launch", usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } }] };
+  apiFake.refreshProfileStaysStale = true;
+  await mount("/usage");
+  await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  const button = group("login:work")!.querySelector<HTMLElement>("[data-slot='login-refresh']")!;
+  await act(async () => { button.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(apiFake.refreshProfileCalls).toEqual([{ name: "work", instance: "laptop" }]); // the call itself succeeded
+  expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Stale"); // still stale, not "fixed"
+  const toast = container!.querySelector('[data-slot="notification-toast"][data-kind="action_failed"]')!;
+  expect(toast.textContent).toContain("Refresh failed");
+  expect(toast.textContent).toContain("Still stale after refresh");
+  expect(toast.textContent).toContain('"hydra login work" on laptop'); // the suggested fix names the login and the machine
 });
 
 test("a failed toggle is a failed-action notification toast and the switch reverts", async () => {
@@ -395,4 +477,15 @@ test("loginStatus: every hydra state is one word, with the full reason kept for 
   expect(labels).toEqual(["Signed-out", "Disabled", "Locked", "Limited", "Stale", "New", "Expired", "Rate"]);
   for (const l of labels) expect(l).not.toContain(" ");
   expect(loginStatus("rate-limited by upstream").detail).toBe("Rate-limited by upstream");
+});
+
+test("hostHints: every OTHER host's non-ok state is a hint; the picked host's own state (and a single host) never duplicate as one", async () => {
+  const { hostHints } = await import("../web/src/workstream");
+  expect(hostHints({ instance: "cloud", state: "ok", hosts: [{ instance: "local", state: "token stale — refreshes on next launch" }, { instance: "cloud", state: "ok" }] }))
+    .toEqual([{ instance: "local", state: "token stale — refreshes on next launch" }]);
+  // No ok reading anywhere — the picked host's own problem is already the group's pill; don't repeat it.
+  expect(hostHints({ instance: "cloud", state: "exhausted", hosts: [{ instance: "local", state: "token stale — refreshes on next launch" }, { instance: "cloud", state: "exhausted" }] }))
+    .toEqual([{ instance: "local", state: "token stale — refreshes on next launch" }]);
+  expect(hostHints({ instance: "local", state: "ok", hosts: [{ instance: "local", state: "ok" }] })).toEqual([]); // one host, nothing secondary to say
+  expect(hostHints({ hosts: undefined })).toEqual([]);
 });
