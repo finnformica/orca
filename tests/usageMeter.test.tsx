@@ -198,6 +198,29 @@ test("logins that can't be routed to are excluded from the fleet mean but still 
   expect(group("login:old")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Disabled");
 });
 
+test("a login merged across instances shows the freshest ok reading, with a stale OTHER host as a secondary hint whose Refresh targets that host", async () => {
+  apiFake.usageData = {
+    claude: null, codex: null,
+    profiles: [
+      {
+        name: "finnformica", email: "finnformica@gmail.com", state: "ok", instance: "cloud",
+        usage: { fiveHour: { utilization: 18, resetsAt: null }, sevenDay: { utilization: 18, resetsAt: null }, extra: null },
+        hosts: [{ instance: "local", state: "token stale — refreshes on next launch" }, { instance: "cloud", state: "ok" }],
+      },
+    ],
+  };
+  await mount("/usage");
+  const header = () => card().querySelector<HTMLElement>("[data-slot='card-header']")!;
+  await act(async () => { header().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  const row = group("login:finnformica")!;
+  expect(row.querySelector("[data-slot='usage-state']")).toBeNull(); // the picked (cloud) reading is ok — no pill
+  const hint = row.querySelector("[data-slot='usage-host-hint']")!;
+  expect(hint.textContent).toContain("Stale on local");
+  const refresh = hint.querySelector("[data-slot='login-refresh']")!;
+  await act(async () => { refresh.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  expect(apiFake.refreshProfileCalls).toEqual([{ name: "finnformica", instance: "local" }]); // targets the STALE host, not wherever the browser is
+});
+
 test("aggregateProfiles: mean per window over the rotation, soonest reset, null when nothing is in rotation", () => {
   const w = (u: number, r: string | null = null) => ({ utilization: u, resetsAt: r });
   expect(aggregateProfiles([
@@ -454,4 +477,15 @@ test("loginStatus: every hydra state is one word, with the full reason kept for 
   expect(labels).toEqual(["Signed-out", "Disabled", "Locked", "Limited", "Stale", "New", "Expired", "Rate"]);
   for (const l of labels) expect(l).not.toContain(" ");
   expect(loginStatus("rate-limited by upstream").detail).toBe("Rate-limited by upstream");
+});
+
+test("hostHints: every OTHER host's non-ok state is a hint; the picked host's own state (and a single host) never duplicate as one", async () => {
+  const { hostHints } = await import("../web/src/workstream");
+  expect(hostHints({ instance: "cloud", state: "ok", hosts: [{ instance: "local", state: "token stale — refreshes on next launch" }, { instance: "cloud", state: "ok" }] }))
+    .toEqual([{ instance: "local", state: "token stale — refreshes on next launch" }]);
+  // No ok reading anywhere — the picked host's own problem is already the group's pill; don't repeat it.
+  expect(hostHints({ instance: "cloud", state: "exhausted", hosts: [{ instance: "local", state: "token stale — refreshes on next launch" }, { instance: "cloud", state: "exhausted" }] }))
+    .toEqual([{ instance: "local", state: "token stale — refreshes on next launch" }]);
+  expect(hostHints({ instance: "local", state: "ok", hosts: [{ instance: "local", state: "ok" }] })).toEqual([]); // one host, nothing secondary to say
+  expect(hostHints({ hosts: undefined })).toEqual([]);
 });

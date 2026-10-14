@@ -43,7 +43,7 @@ test("shapeHydraStatus: three windows per login, epoch-second resets → ISO, nu
   const [personal, work, spare] = shapeHydraStatus(STATUS);
   const iso = (s: number) => new Date(s * 1000).toISOString(); // hydra reports epoch SECONDS
   expect(personal).toEqual({
-    name: "formicsoftware", email: "me@x", state: "ok",
+    name: "formicsoftware", email: "me@x", state: "ok", fetchedAt: 1789378422000, // hydra's fetched_at, SECONDS → ms
     usage: {
       fiveHour: { utilization: 12, resetsAt: iso(1789389600) },
       sevenDay: { utilization: 12, resetsAt: iso(1789776000) },
@@ -57,6 +57,7 @@ test("shapeHydraStatus: three windows per login, epoch-second resets → ISO, nu
   expect(spare?.usage).toBeNull();                       // no session reading → no bars…
   expect(spare?.state).toBe("not signed in on this machine"); // …but the reason is kept
   expect(spare?.email).toBeUndefined();
+  expect(spare?.fetchedAt).toBeNull();                   // fetched_at: 0 → never fetched
   expect(shapeHydraStatus(null)).toEqual([]);
   expect(shapeHydraStatus({ profiles: [{ nope: 1 }] })).toEqual([]);
 });

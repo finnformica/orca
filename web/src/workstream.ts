@@ -2108,11 +2108,21 @@ export type UsageRow = {
 };
 /** A block of rows under one heading: the fleet, one hydra login, Codex. `state` is hydra's verdict
  *  when it isn't "ok"; `dim` when hydra can't route to that login. `name` is the hydra login name
- *  (set only for a `login:` group) — what the enable/disable toggle sends back to the server. */
-export type UsageGroup = { key: string; title: string; subtitle?: string; state?: string; dim?: boolean; name?: string; rows: UsageRow[] };
+ *  (set only for a `login:` group) — what the enable/disable toggle sends back to the server.
+ *  `instance` is which host's reading `state`/the rows came from (the bridge already picked the
+ *  freshest OK one — see mergeInstanceProfiles server-side); `hosts` is every host that reported
+ *  this login with ITS OWN state, so a login that is `ok` overall but stale on one machine can still
+ *  show that as a secondary hint and send Refresh at the right host. */
+export type UsageGroup = {
+  key: string; title: string; subtitle?: string; state?: string; dim?: boolean; name?: string; rows: UsageRow[];
+  instance?: string; hosts?: { instance: string; state?: string }[];
+};
 
 const CLAUDE_WINDOWS: [keyof Pick<ClaudeReading, "fiveHour" | "sevenDay" | "fable">, string][] = [["fiveHour", "5-hour window"], ["sevenDay", "Weekly"], ["fable", "Fable weekly"]];
-type LoginReading = { name: string; usage: ClaudeReading | null; state?: string; email?: string };
+type LoginReading = {
+  name: string; usage: ClaudeReading | null; state?: string; email?: string;
+  instance?: string; hosts?: { instance: string; state?: string }[];
+};
 
 /** Logins hydra can't route to right now: no reading, or deliberately out of the rotation. Exhausted
  *  and locked logins DO count — they hold a real reading and are exactly what pulls the fleet up. */
@@ -2137,6 +2147,16 @@ export function loginStatus(state: string): { label: string; detail: string; ton
   if (/expired/i.test(state)) return { label: "Expired", detail: state.charAt(0).toUpperCase() + state.slice(1), tone: "red" };
   const word = state.split(/[\s—-]+/)[0] ?? state;
   return { label: word.charAt(0).toUpperCase() + word.slice(1), detail: state.charAt(0).toUpperCase() + state.slice(1), tone: "default" };
+}
+
+/** A login's OTHER hosts — every one that reported it with a state different from the one already
+ *  shown as the group's own pill (merged across instances, the pill shows whichever host's reading
+ *  was picked). This is "finnformica: stale on local" when a cloud box's fresh reading hides a
+ *  stale token on the laptop that still blocks launching there. Pure. */
+export function hostHints(g: Pick<UsageGroup, "instance" | "state" | "hosts">): { instance: string; state: string }[] {
+  if (!g.hosts || g.hosts.length < 2) return [];
+  return g.hosts.filter((h): h is { instance: string; state: string } =>
+    Boolean(h.state) && h.state !== "ok" && !(h.instance === g.instance && h.state === g.state));
 }
 
 export const outOfRotation = (p: { usage: unknown; state?: string }): boolean => !p.usage || p.state === "disabled" || p.state === "not signed in on this machine";
@@ -2199,6 +2219,7 @@ export function usageGroups(u: UsageReading | null, now = Date.now()): UsageGrou
       groups.push({
         key: `login:${p.name}`, title: p.name, subtitle: p.email, state: p.state && p.state !== "ok" ? p.state : undefined, dim: outOfRotation(p), name: p.name,
         rows: p.usage ? claudeRows(`login:${p.name}`, p.usage, now) : [],
+        instance: p.instance, hosts: p.hosts,
       });
     }
   } else if (u.claude) groups.push({ key: "claude", title: "Claude", rows: claudeRows("claude", u.claude, now) });

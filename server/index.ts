@@ -9,7 +9,7 @@ import * as attachments from "./attachments";
 import * as preview from "./preview";
 import * as forward from "./forward";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
-import { refreshProfile, routingInfo, setProfileEnabled, usage } from "./usage";
+import { refreshProfile, routingInfo, setProfileEnabled, usage, usageAcrossInstances } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
 import * as outbox from "./outbox";
@@ -274,7 +274,10 @@ const notEnabled = (repo: RepoConfig, feature: string) =>
 // must run where the repo lives.
 const DATABASE_ONLY = new Set([
   "/api/turns", "/api/turns/local", "/api/enrichment", "/api/enrichment/import", "/api/config", "/api/config/document",
-  "/api/usage", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
+  // /api/usage merges every reachable instance's reading (usageAcrossInstances); /api/usage/local is
+  // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
+  // placement must not send it chasing a worktree that has nothing to do with hydra).
+  "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
   "/api/health/history", "/api/config/instance-rate",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
   // others published — a repo can live on several instances now, so no one instance owns the list.
@@ -550,11 +553,18 @@ async function api(req: Request, url: URL): Promise<Response> {
     // instance answers for either, even when the one asked about is down.
     return json(await db.metricHistory(url.searchParams.get("instance") || db.instanceName(), historyHours(url.searchParams.get("hours"))));
   }
+  if (req.method === "GET" && p === "/api/usage/local") {
+    // What usageAcrossInstances fetches from a PEER: this host's own reading, unmerged.
+    return json(await usage());
+  }
   if (req.method === "GET" && p === "/api/usage") {
     // Claude (OAuth usage endpoint) + Codex (local app-server) both expose read-only rate-limit
     // windows from the CLI's login. The Cursor CLI exposes no such endpoint — `about`/`status` report
     // only auth + subscription tier, no utilization — so there is deliberately no Cursor usage here.
-    return json(await usage());
+    // Usage belongs to the Claude ACCOUNT, not the machine answering — merged across every reachable
+    // instance (usageAcrossInstances), the freshest OK reading per login winning over whichever host
+    // the browser happens to be pointed at.
+    return json(await usageAcrossInstances(cfg.instances, db.instanceName(), cfg.orchestratorOn));
   }
   if (req.method === "POST" && p === "/api/usage/profile") {
     // Hydra state is PER HOST — not in DATABASE_ONLY, so an explicit ?instance= (or body.instance)
