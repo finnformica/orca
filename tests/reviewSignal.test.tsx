@@ -98,6 +98,18 @@ describe("review signal derivations (pure)", () => {
     ]);
   });
 
+  test("severe AI comments: a stale top-level comment/review (no \"resolved\" bit) stops counting once the head commit moves past it; an unresolved inline thread always counts", () => {
+    const headCommitAt = at(15);
+    const staleTopLevel: ConversationComment = { id: "C-old", kind: "comment", author: "claude", bot: true, body: CLAUDE_REVIEW, createdAt: at(5) };
+    const freshTopLevel: ConversationComment = { id: "C-new", kind: "review", author: "claude", bot: true, body: CLAUDE_REVIEW, createdAt: at(20) };
+    const inlineThread: ReviewThreadEvidence = { id: "T-inline", author: "claude[bot]", body: "⚠️ **Warning:** still broken", resolved: false, createdAt: at(1) };
+    const s: ReviewSignal = { prAuthor: "me", headCommitAt, threads: [inlineThread], comments: [staleTopLevel, freshTopLevel] };
+    expect(severeAiComments(s).map((i) => i.id)).toEqual(["C-new", "T-inline"]);
+    expect(reviewDigest(s).worst).toBe("critical"); // the fresh top-level comment alone still lights the dot
+    // no headCommitAt (an older fixture/caller): nothing is filtered, as before.
+    expect(severeAiComments({ ...s, headCommitAt: undefined }).map((i) => i.id)).toEqual(["C-new", "C-old", "T-inline"]);
+  });
+
   test("actionable unresolved: excludes resolved, the author's own, status updates and summaries; nits counted but flagged", () => {
     expect(actionableUnresolved(signal)).toEqual({ count: 5, nits: 1 }); // T1 T2 T6 T7 T8
     expect(actionableUnresolved({ prAuthor: "me", threads: [{ id: "S", author: "x[bot]", body: "## Summary\nAll good", resolved: false }], comments: [] }).count).toBe(0);
@@ -119,6 +131,7 @@ describe("gh.reviewSignal (PATH shim)", () => {
   test("one GraphQL call: reviews with state (bodiless approvals too), comments and every thread, the author's comments dropped", async () => {
     await setReviewEvidenceFixture({ data: { repository: { pullRequest: {
       author: { login: "me" },
+      commits: { nodes: [{ commit: { committedDate: at(9) } }] },
       reviews: { nodes: [
         { id: "R1", author: { __typename: "User", login: "alice" }, state: "APPROVED", body: "", submittedAt: at(1), url: "https://x/R1" },
         { id: "R2", author: { __typename: "User", login: "me" }, state: "COMMENTED", body: "self", submittedAt: at(2) },
@@ -135,6 +148,7 @@ describe("gh.reviewSignal (PATH shim)", () => {
     } } } });
     const s = await reviewSignal(repo, 42);
     expect(s.prAuthor).toBe("me");
+    expect(s.headCommitAt).toBe(at(9));
     expect(s.comments.map((c) => [c.id, c.state, c.bot])).toEqual([["R1", "APPROVED", false], ["C1", undefined, true]]);
     expect(s.threads[0]).toMatchObject({ id: "T1", author: "carol", resolved: false, outdated: true, line: 3, path: "a.ts", bot: false });
     expect(s.threads[1]).toMatchObject({ id: "T2", resolved: true, bot: true });
@@ -155,6 +169,21 @@ async function mount(node: React.ReactNode) {
   await act(async () => { await store.refresh(); await flush(); await flush(); });
 }
 
+// The unresolved chip's HoverCard opens on focus (same as hover, minus touch) after its openDelay
+// — focus is also how a keyboard user reaches it, so this doubles as the a11y check.
+async function focusChip(chip: HTMLElement) {
+  await act(async () => {
+    chip.focus();
+    await new Promise((r) => setTimeout(r, 200));
+  });
+}
+async function blurChip(chip: HTMLElement) {
+  await act(async () => {
+    chip.blur();
+    await new Promise((r) => setTimeout(r, 150));
+  });
+}
+
 describe("review cluster + Review panel", () => {
   beforeAll(() => store.configReady);
   afterEach(async () => {
@@ -168,7 +197,7 @@ describe("review cluster + Review panel", () => {
     navigate("/");
   });
 
-  test("a PR row shows approver chips, `N unresolved` and a red dot for a severe AI comment, fetched once per PR", async () => {
+  test("a PR row shows approver chips and a count chip coloured red for a severe AI comment, fetched once per PR", async () => {
     apiFake.prsData = [{ number: 7, title: "feat", branch: "feat-x", url: "https://x/7", state: "OPEN", isDraft: false, ciStatus: "passing", reviewStatus: "approved", mergeable: "MERGEABLE", autoMergeEnabled: false }];
     apiFake.agentsData = [{ branch: "local-only", worktreePath: "/wt/local-only", agentStatus: "done" }];
     apiFake.reviewEvidenceData = threads;
@@ -178,15 +207,43 @@ describe("review cluster + Review panel", () => {
     const cluster = row.querySelector<HTMLElement>('[data-slot="review-cluster"]')!;
     expect(cluster).not.toBeNull();
     expect([...cluster.querySelectorAll('[data-slot="approver"]')].map((a) => a.getAttribute("title"))).toEqual(["Approved by alice", "Approved by carol"]);
-    expect(cluster.querySelector('[data-slot="unresolved"]')!.textContent).toBe("5 unresolved");
-    expect(cluster.querySelector('[data-slot="unresolved"]')!.getAttribute("title")).toContain("1 nit");
-    const dot = cluster.querySelector<HTMLElement>('[data-slot="severe-dot"]')!;
-    expect(dot.dataset.severity).toBe("critical");
-    expect(dot.getAttribute("title")).toContain("SQL injection");
+    const chip = cluster.querySelector<HTMLElement>('[data-slot="unresolved"]')!;
+    expect(chip.textContent).toBe("5"); // count then icon — no icon glyph in textContent
+    expect(chip.dataset.severity).toBe("critical"); // the chip itself carries the severity now — no separate dot
+    expect(cluster.querySelector('[data-slot="severe-dot"]')).toBeNull();
+    expect(chip.getAttribute("title")).toBeNull(); // no plain tooltip — a hover card instead
+    expect(chip.getAttribute("aria-label")).toBe("AI reviewer flagged a critical-severity comment");
+    // Focusing the chip (keyboard-reachable, same as hover) opens a HoverCard with the SAME
+    // ReviewPanel the PR page shows — not a duplicated summary of its own.
+    await focusChip(chip);
+    const panel = document.querySelector<HTMLElement>('[data-slot="review-panel"]')!;
+    expect(panel).not.toBeNull();
+    expect(panel.textContent).toContain("Approved by alice, carol");
+    expect(panel.textContent).toContain("5 unresolved (1 nit)");
+    expect(panel.textContent).toContain("🔴 Critical: SQL injection — `findUser` interpolates `name` into the query string.");
+    expect(panel.textContent).toContain("⚠️ Warning: this throws when `items` is empty.");
+    await blurChip(chip);
     // Lazy: only the PR row fetched it, once — a further poll doesn't refetch an unchanged PR.
     await act(async () => { await store.refresh(); await flush(); });
     expect(apiFake.reviewSignalCalls).toEqual(["r#7"]);
     expect(container!.querySelector('[data-branch="local-only"] [data-slot="review-cluster"]')).toBeNull();
+  });
+
+  test("a severe AI comment with every thread resolved still shows the coloured chip, with just the icon (no count)", async () => {
+    apiFake.prsData = [{ number: 8, title: "fix", branch: "fix-y", url: "https://x/8", state: "OPEN", isDraft: false, ciStatus: "passing", reviewStatus: "review_required", mergeable: "MERGEABLE", autoMergeEnabled: false }];
+    apiFake.reviewEvidenceData = []; // nothing unresolved
+    apiFake.prCommentsData = [{ id: "C-new", kind: "comment", author: "claude", bot: true, body: CLAUDE_REVIEW, createdAt: at(1) }];
+    await mount(<Agents />);
+    const row = container!.querySelector<HTMLElement>('[data-branch="fix-y"]')!;
+    const chip = row.querySelector<HTMLElement>('[data-slot="unresolved"]')!;
+    expect(chip.dataset.severity).toBe("critical");
+    expect(chip.textContent).toBe(""); // icon only — count is 0
+    expect(chip.getAttribute("title")).toBeNull(); // no plain tooltip — a hover card instead
+    await focusChip(chip);
+    const panel = document.querySelector<HTMLElement>('[data-slot="review-panel"]')!;
+    expect(panel.textContent).toContain("Flagged by AI reviewers");
+    expect(panel.textContent).not.toContain("From people"); // no human comments in this fixture
+    await blurChip(chip);
   });
 
   test("the PR page's Review panel lists severe AI findings and people's comments with author and link", async () => {
