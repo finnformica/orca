@@ -128,6 +128,35 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   expect(panel()).toBeNull();
 });
 
+test("a message with an attachment shows it on the outbox's \"sending…\" bubble, served from the bridge like a sent message", async () => {
+  // The outbox (lib/orchestratorOutbox.ts) uploads before posting; the "sending…" bubble should pick
+  // up the resolved orca-attachment:// ref as soon as the upload answers, not only once the message
+  // lands as a turn or a queued entry.
+  const img = "77777777-7777-7777-7777-777777777777";
+  apiFake.uploadAttachmentsResult = [`orca-attachment://${img}/bug.png`];
+  apiFake.orchestratorMessageDelays = [100]; // hold the POST open so the "sending…" state is observable
+  await mount(<Entry />);
+  await click(launcher());
+  const p = panel()!;
+
+  const textarea = p.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "look at this");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const drop = new Event("drop", { bubbles: true, cancelable: true });
+  Object.defineProperty(drop, "dataTransfer", { value: { files: [new File(["x"], "bug.png", { type: "image/png" })] } });
+  await act(async () => { textarea.parentElement!.dispatchEvent(drop); });
+
+  await act(async () => { textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); await flush(); await flush(); });
+  const thumb = p.querySelector<HTMLImageElement>('[data-slot="chat-sending"] [data-slot="attachment-image"] img');
+  expect(thumb?.getAttribute("src")).toBe(`/api/attachments/${img}`);
+  expect(p.textContent).toContain("look at this");
+
+  await act(async () => { await new Promise((r) => setTimeout(r, 150)); }); // let the delayed POST settle
+  expect(apiFake.orchestratorMessages).toEqual([{ text: "look at this", attachments: [`orca-attachment://${img}/bug.png`] }]);
+});
+
 test("a paused orchestrator says so, and an orchestrated card is marked", async () => {
   apiFake.orchestratorState = { ...apiFake.orchestratorState, paused: true, contextPct: 85 };
   await mount(<><Entry /><WorkstreamCard row={{ repo: "r", hasRemote: false, branch: "feat", title: "Feat", prompt: "", lane: "LOCAL", worktreePath: "/wt/feat", orchestrated: true }} /></>);

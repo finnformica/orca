@@ -499,7 +499,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, outbox,
   // shows nothing until then reads as "it didn't go". So the message is drawn at once and replaced
   // by the real turn (or queued entry) when the bridge answers; on failure it is withdrawn and the
   // composer puts the text back.
-  const [sending, setSending] = useState<{ id: number; text: string }[]>([]);
+  const [sending, setSending] = useState<{ id: number; text: string; attachments?: AttachmentRef[] }[]>([]);
   const sendSeq = useRef(0);
   const outgoing = useOrchestratorOutbox(Boolean(outbox));
   // A message's Quote button: append it to the composer as a blockquote, without losing whatever
@@ -853,6 +853,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, outbox,
         {unlanded.map((m) => chatStyle ? (
           <div key={m.id} className="mb-4" data-slot="chat-sending">
             <div className="mb-2 flex justify-end"><div className="bg-accent text-foreground max-w-[85%] rounded-lg px-3 py-2 whitespace-pre-wrap break-words opacity-70">{m.text}</div></div>
+            <Attachments files={m.attachments ?? []} className="mb-2 justify-end" />
             <div className="text-muted-foreground pl-8 text-[11px]">▋ sending…</div>
           </div>
         ) : (
@@ -861,6 +862,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, outbox,
               <span className="shrink-0 select-none">❯</span>
               <span className="min-w-0 whitespace-pre-wrap break-words">{m.text}</span>
             </div>
+            <Attachments files={m.attachments ?? []} className="mt-1 pl-4" />
             <div className="mt-1 pl-4 text-neutral-500">▋ sending…</div>
           </div>
         ))}

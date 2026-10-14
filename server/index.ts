@@ -1106,7 +1106,15 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/queued") {
     const branch = url.searchParams.get("branch");
     if (!branch) return json({ error: "branch required" }, 400);
-    return json(await db.queuedMessages(repo.name, branch));
+    const queued = await db.queuedMessages(repo.name, branch);
+    // A message queued from the orchestrator's `orca send --attach` carries its attachment refs
+    // embedded in the instruction text (withAttachments), not the structured field a browser-originated
+    // send fills in separately — union both, like /api/turns does for a turn's prompt.
+    for (const m of queued) {
+      const embedded = attachments.refsIn(m.instruction);
+      if (embedded.length) m.attachments = [...new Set([...m.attachments, ...embedded])];
+    }
+    return json(queued);
   }
   if (req.method === "POST" && p === "/api/queued/cancel") {
     await db.cancelQueuedMessage(Number(body.id));
