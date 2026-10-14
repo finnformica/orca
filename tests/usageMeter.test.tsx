@@ -355,14 +355,15 @@ test("a hydra login's row shows a switch on hover: flipping it disables/enables 
   expect(header().querySelector("span.truncate")!.nextElementSibling).toBe(row());
 
   await click(row()!);
-  expect(apiFake.setProfileEnabledCalls).toEqual([{ name: "work", enabled: false, instance: "laptop" }]);
+  // No instance: the bridge applies it on every host that has the login (one decision per account).
+  expect(apiFake.setProfileEnabledCalls).toEqual([{ name: "work", enabled: false, instance: undefined }]);
   expect(row()!.getAttribute("aria-checked")).toBe("false"); // flipped from the refreshed profile list
   expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Disabled");
   expect(group("login:work")!.className).toContain("opacity-50"); // muted, same as any out-of-rotation login
   expect(row()!.getAttribute("title")).toBe("Put work back");
 
   await click(row()!); // and back
-  expect(apiFake.setProfileEnabledCalls[1]).toEqual({ name: "work", enabled: true, instance: "laptop" });
+  expect(apiFake.setProfileEnabledCalls[1]).toEqual({ name: "work", enabled: true, instance: undefined });
   expect(row()!.getAttribute("aria-checked")).toBe("true");
   expect(group("login:work")!.className).not.toContain("opacity-50");
 
@@ -487,5 +488,7 @@ test("hostHints: every OTHER host's non-ok state is a hint; the picked host's ow
   expect(hostHints({ instance: "cloud", state: "exhausted", hosts: [{ instance: "local", state: "token stale — refreshes on next launch" }, { instance: "cloud", state: "exhausted" }] }))
     .toEqual([{ instance: "local", state: "token stale — refreshes on next launch" }]);
   expect(hostHints({ instance: "local", state: "ok", hosts: [{ instance: "local", state: "ok" }] })).toEqual([]); // one host, nothing secondary to say
+  // Disabled on every host is one verdict — the pill says it; no "Disabled on local" beside it.
+  expect(hostHints({ instance: "cloud", state: "disabled", hosts: [{ instance: "local", state: "disabled" }, { instance: "cloud", state: "disabled" }] })).toEqual([]);
   expect(hostHints({ hosts: undefined })).toEqual([]);
 });

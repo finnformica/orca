@@ -2169,8 +2169,10 @@ export function loginStatus(state: string): { label: string; detail: string; ton
  *  stale token on the laptop that still blocks launching there. Pure. */
 export function hostHints(g: Pick<UsageGroup, "instance" | "state" | "hosts">): { instance: string; state: string }[] {
   if (!g.hosts || g.hosts.length < 2) return [];
+  // A host in the same state as the pill says nothing new — a login disabled everywhere is just
+  // "Disabled", not "Disabled" plus "Disabled on local".
   return g.hosts.filter((h): h is { instance: string; state: string } =>
-    Boolean(h.state) && h.state !== "ok" && !(h.instance === g.instance && h.state === g.state));
+    Boolean(h.state) && h.state !== "ok" && h.state !== g.state);
 }
 
 export const outOfRotation = (p: { usage: unknown; state?: string }): boolean => !p.usage || p.state === "disabled" || p.state === "not signed in on this machine";
