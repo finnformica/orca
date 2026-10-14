@@ -28,7 +28,7 @@ describe("agents list layout (pure)", () => {
     for (const vw of [1280, 1440, 1920, 2560]) expect(listFits(cols, vw)).toBe(true);
     expect(listMinWidth(cols)).toBeLessThanOrEqual(1280 - LIST_CHROME_PX);
     const t = listGridTemplate(cols);
-    expect(t).toBe("minmax(10rem,2fr) 8.5rem 8.5rem minmax(6rem,1fr) 16rem");
+    expect(t).toBe("minmax(10rem,2fr) 8.5rem 8.5rem minmax(6rem,1fr) 10rem");
     expect(cols.at(-1)).toMatchObject({ key: "actions", label: "Actions" });
     expect(t).not.toContain("auto"); // a content-sized track could push the row wider than the card
   });
@@ -196,10 +196,10 @@ describe("agents list view", () => {
     expect(ticker.stats()).toEqual({ listeners: 0, running: false });
   });
 
-  test("quick actions: the row's state-aware verbs sit beside the ⋯ (primary labelled, the rest icon-only and hidden on a phone); a click runs the verb, not the row", async () => {
+  test("quick actions: every verb that applies, icon-only with a tooltip, immediately left of the preview cell; a click runs the verb, not the row", async () => {
     apiFake.prsData = [
       pr({ number: 8, branch: "feat-ci", title: "Red CI", ciStatus: "failing" }),
-      pr({ number: 9, branch: "feat-draft", title: "Draft", isDraft: true, ciStatus: "failing" }),
+      pr({ number: 9, branch: "feat-draft", title: "Draft", isDraft: true, mergeable: "CONFLICTING" }),
       pr({ number: 10, branch: "feat-ok", title: "Approved", reviewStatus: "approved" }),
     ];
     apiFake.agentsData = [{ branch: "local-idle", worktreePath: "/wt/local-idle", agentStatus: "done" }];
@@ -207,25 +207,26 @@ describe("agents list view", () => {
     await mount();
     const quick = (branch: string) => [...rowOf(branch).querySelectorAll<HTMLElement>("[data-quick-action]")];
     const ids = (branch: string) => quick(branch).map((q) => q.dataset.quickAction);
-    expect(ids("feat-ci")).toEqual(["addressPr"]);
+    expect(ids("feat-ci")).toEqual(["addressPr", "mergeWhenGreen"]); // review data not loaded: CI alone decides
     expect(ids("feat-draft")).toEqual(["markReady", "addressPr"]);
-    expect(ids("feat-ok")).toEqual(["mergeWhenGreen", "merge"]);
+    expect(ids("feat-ok")).toEqual(["mergeWhenGreen"]); // the fake repo has no Slack channel (approved + Slack: quickActions.test)
     expect(ids("local-idle")).toEqual(["createPr"]); // the worktree has commits of its own
-    // The primary is labelled; a secondary is an icon and gone below md (the phone keeps the primary).
-    const [primary, secondary] = quick("feat-draft");
-    expect(primary!.dataset.primary).toBe("");
-    expect(primary!.textContent).toBe("Ready for review");
-    expect(primary!.className).not.toContain("max-md:hidden");
-    expect(secondary!.textContent).toBe("");
-    expect(secondary!.querySelector("button")!.getAttribute("aria-label")).toBe("Address review");
-    expect(secondary!.className).toContain("max-md:hidden");
-    // Right-aligned in the Actions cell, next to the ⋯, gap-1 apart.
-    const cell = rowOf("feat-draft").querySelectorAll('[role="cell"]')[4]!;
-    expect(cell.contains(primary!)).toBe(true);
-    expect(primary!.parentElement!.className).toContain("gap-1");
-    expect(primary!.parentElement!.querySelector('button[aria-label="Actions"]')).not.toBeNull();
+    // Icon-only: no text in the button, the label as its aria-label and in its tooltip.
+    for (const q of quick("feat-draft")) {
+      const btn = q.querySelector("button")!;
+      expect(btn.textContent).toBe("");
+      expect(btn.className).toContain("size-7");
+      expect(q.closest('[data-slot="tip"]')!.querySelector('[role="tooltip"]')!.textContent).toBe(btn.getAttribute("aria-label")!);
+      expect(q.closest('[data-slot="tip"]')!.className).not.toContain("max-md:hidden"); // the first two always show
+    }
+    expect(quick("feat-draft")[1]!.querySelector("button")!.getAttribute("aria-label")).toBe("Address review");
+    // In the Actions cell, gap-1, immediately left of the preview cell, then the ⋯.
+    const group = rowOf("feat-draft").querySelector<HTMLElement>('[data-slot="quick-actions"]')!;
+    expect(group.className).toContain("gap-1");
+    expect(group.nextElementSibling!.querySelector('[data-slot="preview-cell"]') ?? (group.nextElementSibling!.matches('[data-slot="preview-cell"]') ? group.nextElementSibling : null)).not.toBeNull();
+    expect(group.parentElement!.querySelector('button[aria-label="Actions"]')).not.toBeNull();
     // The verb runs (the same store verb as the header's) and the row does not navigate.
-    await act(async () => { primary!.querySelector("button")!.click(); await flush(); await flush(); });
+    await act(async () => { quick("feat-draft")[0]!.querySelector("button")!.click(); await flush(); await flush(); });
     expect(apiFake.calls).toContain("markReady:9");
     expect(location.pathname).toBe("/");
   });
@@ -239,7 +240,7 @@ describe("agents list view", () => {
     await act(async () => { await flush(); await flush(); });
     // ONE fetch for the row — the review cluster's own lazy one; the buttons only peek at its cache.
     expect(apiFake.reviewSignalCalls).toEqual(["r#7"]);
-    expect([...rowOf("feat-x").querySelectorAll<HTMLElement>("[data-quick-action]")].map((q) => q.dataset.quickAction)).toEqual(["addressPr"]);
+    expect([...rowOf("feat-x").querySelectorAll<HTMLElement>("[data-quick-action]")].map((q) => q.dataset.quickAction)).toEqual(["addressPr", "mergeWhenGreen"]);
   });
 
   test("right-click opens the ⋯ menu's own actions at the pointer; Esc and an outside click close it", async () => {
