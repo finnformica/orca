@@ -10,7 +10,7 @@ import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraf
 import { joinPrefill } from "@/lib/palette";
 import { endTypeahead } from "@/lib/orchestratorOpen";
 import type { OrchestratorPrefill } from "@/lib/atoms";
-import { enterSends, isCoarse } from "@/lib/viewport";
+import { enterSends, isCoarse, isMobile } from "@/lib/viewport";
 
 // The one chat input, shared by the new-draft box, the follow-up box and the quick-ask box. A single bordered
 // "chatbox" (à la Claude/ChatGPT) wrapping image thumbnails, the textarea, and a bottom toolbar
@@ -81,6 +81,10 @@ export function ChatComposer({
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [active, setActive] = useState(0);
   const pendingCaret = useRef<number | null>(null);
+  // Whether the queued caret set below should also focus the box — true for a pick or a Quote (the
+  // user's own click), false for a prefill on mobile (see below): opening the orchestrator with text
+  // already in hand must not pop the on-screen keyboard over the page.
+  const pendingFocus = useRef(true);
   const listId = useId();
   const trig = prTrigger(value, caret);
   const matches = trig && trig.start !== dismissedAt ? filterPrRefs(refs, trig.query) : [];
@@ -91,6 +95,7 @@ export function ChatComposer({
     if (!trig) return;
     const next = insertPrRef(value, trig.start, caret, prRefLabel(ref, refs, repoCount, repo));
     pendingCaret.current = next.caret;
+    pendingFocus.current = true; // the box already has focus (that's how the picker opened) — a no-op either way
     setDismissedAt(trig.start); // a pick is done with that `@`, even if the text still parses as one
     setValue(next.text);
     setCaret(next.caret);
@@ -98,7 +103,11 @@ export function ChatComposer({
   // Put the caret after an inserted ref once React has written the new value.
   useLayoutEffect(() => {
     const el = textRef.current;
-    if (el && pendingCaret.current !== null) { el.focus(); el.setSelectionRange(pendingCaret.current, pendingCaret.current); pendingCaret.current = null; }
+    if (el && pendingCaret.current !== null) {
+      if (pendingFocus.current) el.focus();
+      el.setSelectionRange(pendingCaret.current, pendingCaret.current);
+      pendingCaret.current = null;
+    }
   }, [value]);
   const quick = variant === "quick";
   const rootRef = useRef<HTMLDivElement>(null);
@@ -124,11 +133,17 @@ export function ChatComposer({
     const held = endTypeahead();
     if (held) next = (next ?? latest.current) + held;
     const el = textRef.current;
+    // A prefill is never a tap on the box itself — it is the orchestrator opening (the top-bar
+    // button, O, the palette, a notification's Open, a quick-ask hand-off), on page load or a
+    // reopen. On mobile that must not pop the on-screen keyboard over the page; the typed text (if
+    // any) still lands, just unfocused, so a later explicit tap picks up where it left off.
+    const autoFocusOk = !isMobile();
     if (next !== null && next !== latest.current) {
       pendingCaret.current = next.length; // the [value] layout effect focuses and puts the caret at the end
+      pendingFocus.current = autoFocusOk;
       setValue(next);
       walk.current = NO_WALK; // text from outside the box is the new draft
-    } else if (el && el.ownerDocument.activeElement !== el) {
+    } else if (autoFocusOk && el && el.ownerDocument.activeElement !== el) {
       el.focus();
       el.setSelectionRange(el.value.length, el.value.length);
     }
@@ -141,6 +156,7 @@ export function ChatComposer({
     if (!insert) return;
     const next = appendQuote(latest.current, insert.text);
     pendingCaret.current = next.length; // the [value] layout effect below focuses and places it
+    pendingFocus.current = true; // a Quote click is a direct tap, on any device
     setValue(next);
     walk.current = NO_WALK; // text from outside the box is the new draft
   }, [insert?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -258,7 +274,7 @@ export function ChatComposer({
   const textarea = (
     <textarea
       ref={textRef}
-      autoFocus={autoFocus}
+      autoFocus={autoFocus && !isMobile()}
       rows={quick ? 3 : 2}
       aria-label={inputLabel}
       className={quick
