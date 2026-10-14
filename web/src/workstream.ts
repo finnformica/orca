@@ -843,6 +843,16 @@ export function titleFromText(text: string): string {
  *  this). Set once at creation and kept — it's what the branch name is derived from. */
 export const titleFromPrompt = titleFromText;
 
+/** Precedence for a workstream row's displayed title — the ONE place this is decided, so a card
+ *  never flips once its PR loads. The workstream's own title (set at spawn, or renamed) always
+ *  wins; a PR title stands in only when the branch has none of its own (e.g. a branch created
+ *  outside Orca); the branch name is the last resort. The PR's full title is never lost — callers
+ *  keep it reachable via the PR number/link, a tooltip, or the PR detail page, which already shows
+ *  it in full. */
+export function rowTitle(workstreamTitle: string | undefined, prTitle: string | undefined, branch: string): string {
+  return workstreamTitle || prTitle || branch;
+}
+
 // (The model-title parser lives in server/title.ts — it uses zod, kept out of the web bundle.)
 
 /** Slugify a title into a git branch name, namespaced under `orca/`. */
