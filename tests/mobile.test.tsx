@@ -269,10 +269,42 @@ describe("the phone layout (390px, touch)", () => {
     expect(line2!.querySelector('[data-slot="state-pill"]')).toBeNull();
     // The state pill and PR condition badges are their own wrapping line, after line 2.
     expect(line3!.querySelector('[data-slot="state-pill"]')).not.toBeNull();
-    // The ⋯ menu is a flex sibling of the text column, not absolutely positioned over it.
+    // The ⋯ menu sits at the end of the badges line (next to the state pill/PR chips), not in a
+    // dedicated trailing column that would squeeze the title/branch text — and never absolutely
+    // positioned over it.
     expect(row.className).not.toContain("relative");
     const menuButton = row.querySelector<HTMLElement>('button[aria-label="Actions"]')!;
     expect(menuButton.closest('[class*="absolute"]')).toBeNull();
+    expect(line3!.contains(menuButton)).toBe(true);
+  });
+
+  test("Agents at 390px: quick actions + ⋯ sit on the badges line, not a squeezing trailing column", async () => {
+    apiFake.prsData = [{
+      number: 12, title: "feat wide", branch: "feat-wide", url: "https://x/12", state: "OPEN", isDraft: false,
+      ciStatus: "passing", reviewStatus: "review_required", mergeable: "MERGEABLE", autoMergeEnabled: false,
+      additions: 42, deletions: 9,
+    }];
+    await mount("/agents", true);
+    const row = $('[data-branch="feat-wide"]')!;
+    // There is exactly one trailing <div> directly under the row — the content column itself. No
+    // second, shrink-0 column holding the quick actions/⋯ menu beside it: that fixed-width column
+    // (with a forced 44px touch target on the Actions button) used to squeeze the title/branch text
+    // into a narrow strip that truncated badly.
+    const directDivs = [...row.children].filter((c) => c.tagName === "DIV");
+    expect(directDivs).toHaveLength(1);
+    expect(directDivs[0]!.className).toContain("flex-1");
+    const menuButton = row.querySelector<HTMLElement>('button[aria-label="Actions"]')!;
+    const quickButton = row.querySelector<HTMLElement>("[data-quick-action]")!;
+    expect(directDivs[0]!.contains(menuButton)).toBe(true);
+    expect(directDivs[0]!.contains(quickButton)).toBe(true);
+    // Both sit on the badges line, next to the state pill — not off in their own dedicated column.
+    const badgesLine = [...row.querySelectorAll('[role="cell"]')].find((c) => c.querySelector('[data-slot="state-pill"]'))!;
+    expect(badgesLine.contains(menuButton)).toBe(true);
+    expect(badgesLine.contains(quickButton)).toBe(true);
+    // Condensed: icon-only, no forced oversized touch target on the Actions button.
+    expect(menuButton.className).not.toContain("size-11");
+    expect(menuButton.querySelector("svg")).not.toBeNull();
+    expect(menuButton.textContent?.trim()).toBe("");
   });
 
   test("the orchestrator opens as a routed page, not the overlay panel: no drag, resize or pop out", async () => {
