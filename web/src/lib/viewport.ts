@@ -30,6 +30,14 @@ export const useCoarse = (): boolean => useMedia(COARSE_QUERY);
 /** A touch screen as the primary pointer. */
 export const isCoarse = (): boolean => matches(COARSE_QUERY);
 
+/** A phone (or a tablet with no real keyboard to lean on): a coarse pointer, or the mobile
+ *  breakpoint — the ONE test every automatic composer focus checks before calling `.focus()`, so an
+ *  opened panel/page, a send, a finished run or a quick-ask/palette hand-off never pops the on-screen
+ *  keyboard over the page on its own. A direct tap into the box, or the native click-to-focus
+ *  handler, never goes through this — those stay a real user gesture on every device. */
+export const useIsMobile = (): boolean => { const narrow = useNarrow(); const coarse = useCoarse(); return narrow || coarse; };
+export const isMobile = (): boolean => isNarrow() || isCoarse();
+
 /** Enter sends a message only with a keyboard that has a Shift to break the line instead. On a touch
  *  screen the on-screen keyboard's Return inserts a newline and the Send button sends. Pure. */
 export const enterSends = (e: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean; isComposing?: boolean }, coarse: boolean): boolean =>

@@ -24,7 +24,7 @@ import { useTheme, type Theme } from "@/lib/theme";
 import { cn, PortalContainer } from "@/lib/utils";
 import { validChoice } from "@/lib/persisted";
 import { useSwipeToClose } from "@/lib/gestures";
-import { useNarrow } from "@/lib/viewport";
+import { isMobile, useNarrow } from "@/lib/viewport";
 import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
 import { summarizeSync } from "../workstream";
@@ -331,8 +331,9 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
     if (!dialog) return;
     if (open && !dialog.open) {
       dialog.showModal();
-      // showModal focuses the first focusable control (the close button): start in the textarea.
-      dialog.querySelector("textarea")?.focus();
+      // showModal focuses the first focusable control (the close button): start in the textarea —
+      // except on mobile, where opening this dialog must not pop the on-screen keyboard on its own.
+      if (!isMobile()) dialog.querySelector("textarea")?.focus();
     } else if (!open && dialog.open) dialog.close();
   }, [open, dialog]);
   useEffect(() => {

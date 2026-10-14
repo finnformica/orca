@@ -27,6 +27,7 @@ import { ChatComposer } from "@/components/ChatComposer";
 import { ChatControls } from "@/components/ChatControls";
 import { Shortcut } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
+import { isMobile } from "@/lib/viewport";
 
 /** How long the "Sent" confirmation shows after a send (ms). The box itself stays open. */
 export const SENT_FLASH_MS = 2500;
@@ -62,8 +63,11 @@ export function QuickAsk() {
   const input = () => content.current?.querySelector("textarea");
   // Open: focus the box in the commit that opens it, before the next keystroke. Closed: the text is
   // kept (the composer's persisted draft) until it is sent — a half-typed line survives an Esc.
+  // Skipped on a coarse-pointer device wide enough that this pill isn't CSS-hidden (max-md:hidden
+  // only hides it below the mobile breakpoint): a tablet shouldn't have the keyboard popped over the
+  // page just because the pill opened.
   useLayoutEffect(() => {
-    if (open) input()?.focus();
+    if (open && !isMobile()) input()?.focus();
   }, [open]);
   useEffect(() => {
     if (!flash) return;
@@ -90,7 +94,7 @@ export function QuickAsk() {
   // is still empty, else quoted in its error line). Busy is queued by the bridge, not refused.
   const send = async (message: string, files: File[]) => {
     setFlash((n) => n + 1);
-    input()?.focus();
+    if (!isMobile()) input()?.focus();
     try { await sendToOrchestrator(message, files); }
     catch (e) { setFlash(0); throw e; }
   };
