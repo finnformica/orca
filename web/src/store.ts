@@ -20,6 +20,7 @@ import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models
 import { attachCommand, handoffPrompt } from "../../shared/agent";
 import { poll } from "./lib/poll";
 import { notifyLocal } from "./lib/notificationStore";
+import { sendToOrchestrator } from "./lib/orchestratorOutbox";
 
 const KEY = "orca.enrichment";
 const now = () => new Date().toISOString();
@@ -697,8 +698,8 @@ async function createViaOrchestrator(draft: OptimisticDraft, images: File[], opt
   let undoneAt: number | undefined;
   const cancelledUntil = () => (undoneAt ??= Date.now()) + 60_000;
   try {
-    const paths = images.length ? await api.uploadAttachments(images) : [];
-    await api.orchestratorMessage(newDraftMessage(draft.repo, draft.prompt, opts.instance !== defaultInstanceFor(draft.repo) ? opts.instance : undefined), paths);
+    // Through the outbox: the orchestrator's panel shows the [new draft] message at once, like any ask.
+    await sendToOrchestrator(newDraftMessage(draft.repo, draft.prompt, opts.instance !== defaultInstanceFor(draft.repo) ? opts.instance : undefined), images);
     const deadline = Date.now() + ORCHESTRATOR_SPAWN_WAIT_MS;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, spawnPoll.ms));
