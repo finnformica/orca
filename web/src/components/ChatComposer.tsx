@@ -10,7 +10,7 @@ import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraf
 import { joinPrefill } from "@/lib/palette";
 import { endTypeahead } from "@/lib/orchestratorOpen";
 import type { OrchestratorPrefill } from "@/lib/atoms";
-import { enterSends, isCoarse, isMobile } from "@/lib/viewport";
+import { enterSends, isCoarse, isMobile, keepComposerFocus } from "@/lib/viewport";
 
 // The one chat input, shared by the new-draft box, the follow-up box and the quick-ask box. A single bordered
 // "chatbox" (à la Claude/ChatGPT) wrapping image thumbnails, the textarea, and a bottom toolbar
@@ -208,6 +208,8 @@ export function ChatComposer({
   // must take the next message meanwhile — the log shows each one as "sending…" until the bridge
   // has it (running or queued), which is the receipt. (It used to go busy until the launch
   // returned, and Enter did nothing for those seconds.)
+  // A tap on Send keeps the focus (and the phone's keyboard) in the box — see lib/viewport's
+  // keepComposerFocus — so one tap sends once and the next message can be typed straight away.
   const canSubmit = Boolean(value.trim() || images.length);
   const submit = async (send: (text: string, images: File[]) => Promise<void> = onSubmit) => {
     if (!canSubmit) return;
@@ -365,12 +367,12 @@ export function ChatComposer({
               </Button>
             )}
             {alt && (
-              <Button type="button" size="sm" variant="outline" className="h-8" disabled={!canSubmit} title={alt.title} onClick={() => void submit(alt.onSubmit)}>
+              <Button type="button" size="sm" variant="outline" className="h-8" disabled={!canSubmit} title={alt.title} onMouseDown={keepComposerFocus} onClick={() => void submit(alt.onSubmit)}>
                 {alt.label}
               </Button>
             )}
             {quick ? (
-              <Button type="button" size="sm" variant="secondary" className="h-7 gap-1.5 pr-1.5 pl-2.5" disabled={!canSubmit} title="Send (Enter)" aria-label="Send" onClick={() => void submit()}>
+              <Button type="button" size="sm" variant="secondary" className="h-7 gap-1.5 pr-1.5 pl-2.5" disabled={!canSubmit} title="Send (Enter)" aria-label="Send" onMouseDown={keepComposerFocus} onClick={() => void submit()}>
                 Send
                 <Shortcut id="send" />
               </Button>
@@ -378,7 +380,7 @@ export function ChatComposer({
               // Narrow: the filled square read as far bigger than its ghost neighbours (attach, the
               // model picker, the context ring), which show only an icon. The fill shrinks to a 28px
               // chip inside a transparent button, so the touch target stays 44px.
-              <Button type="button" size="icon" className="size-8 max-md:border-transparent max-md:bg-transparent max-md:hover:bg-transparent pointer-coarse:max-md:min-w-11" disabled={!canSubmit} title="Send (Enter)" aria-label="Send" onClick={() => void submit()}>
+              <Button type="button" size="icon" className="size-8 max-md:border-transparent max-md:bg-transparent max-md:hover:bg-transparent pointer-coarse:max-md:min-w-11" disabled={!canSubmit} title="Send (Enter)" aria-label="Send" onMouseDown={keepComposerFocus} onClick={() => void submit()}>
                 <span className="max-md:bg-primary inline-flex items-center justify-center max-md:size-7 max-md:rounded-md"><ArrowUp className="size-4" /></span>
               </Button>
             )}

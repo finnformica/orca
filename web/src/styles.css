@@ -275,9 +275,11 @@
      layout viewport for it — it pans the visual viewport over a page that still reaches under the
      keyboard, so an in-flow chat's composer was pushed off screen and jumped on every keystroke.
      Instead: the bottom bar (under the keyboard anyway) steps aside, the document stops scrolling,
-     and the chat holding the focus is pinned to exactly the visible area — header at its top, the
-     message list filling the middle, the composer sitting on the keyboard. Unlayered, so it wins
-     over the element's own Tailwind sizing; it all lets go the moment the keyboard closes. */
+     and the chat the keyboard was opened for (`data-keyboard-owner`, set by trackVisualViewport) is
+     pinned to exactly the visible area — header at its top, the message list filling the middle, the
+     composer sitting on the keyboard. Unlayered, so it wins over the element's own Tailwind sizing;
+     it all lets go the moment the keyboard closes. NOT `:focus-within`: that let go on the blur,
+     while the keyboard was still up, so the chat jumped twice — once on blur, again on close. */
   html[data-keyboard] [data-slot="bottom-bar"] {
     display: none;
   }
@@ -286,7 +288,7 @@
     overflow: hidden;
     overscroll-behavior: none;
   }
-  html[data-keyboard] [data-keyboard-fill]:focus-within {
+  html[data-keyboard] [data-keyboard-fill][data-keyboard-owner] {
     position: fixed;
     top: var(--vv-top, 0px);
     left: 0;
