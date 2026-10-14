@@ -156,4 +156,4 @@ export function useHealthHistory(instance: string | null, hours = 24): MetricPoi
 
 // The fleet mean lives with the other pure usage derivations (workstream.ts), so the Usage card and
 // this module can't compute it two ways.
-export { aggregateProfiles, outOfRotation, type FleetUsage } from "../workstream";
+export { aggregateProfiles, headerUsage, outOfRotation, type FleetUsage, type HeaderUsage } from "../workstream";

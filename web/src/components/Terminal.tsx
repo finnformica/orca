@@ -132,8 +132,11 @@ export function AskOrchestrator() {
   return (
     <button type="button" data-slot="ask-orchestrator" onClick={() => ask()} aria-label="Ask the orchestrator"
       title={`Ask the orchestrator (${key}): it starts and steers workstreams for you`}
+      // The header's usage meter (Shell.tsx) sits right before this and carries the ml-auto that
+      // pushes the pair to the right — two auto margins here would split the free space BETWEEN
+      // them instead of putting it before the pair.
       // Below md the bottom bar's Orchestrator button takes its place.
-      className="bg-card hover:bg-accent/60 text-foreground ml-auto flex h-8 shrink-0 items-center gap-2 rounded-md border px-2.5 text-sm max-md:hidden">
+      className="bg-card hover:bg-accent/60 text-foreground flex h-8 shrink-0 items-center gap-2 rounded-md border px-2.5 text-sm max-md:hidden">
       <span className="relative inline-flex"><Bot className="text-muted-foreground size-3.5 shrink-0" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
       <span className="text-muted-foreground">Ask the orchestrator</span>
       <Shortcut id="orchestrator" />
