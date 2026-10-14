@@ -572,6 +572,20 @@ export function withoutAttachmentList(text: string): string {
   return text.replace(new RegExp(`\\n*${ATTACHED_FILES_HEADER.replace(/[()]/g, "\\$&")}(?:\\n- [^\\n]*)*`, "g"), "").trimEnd();
 }
 
+/** A message, formatted for the composer's Quote action: every line prefixed `> ` (a markdown
+ *  blockquote), followed by a blank line so typing continues as ordinary text below it. */
+export function quoteMarkdown(text: string): string {
+  return `${text.split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
+}
+
+/** Append a Quote block after whatever draft is already in the composer, keeping it intact: a
+ *  newline separates the two only when the draft doesn't already end in one, so quoting twice in a
+ *  row doesn't collapse the blank line between the two blockquotes into one combined quote. */
+export function appendQuote(draft: string, quote: string): string {
+  if (!draft) return quote;
+  return draft.endsWith("\n") ? draft + quote : `${draft}\n${quote}`;
+}
+
 function attachmentSection(messages: string[]): string[] {
   const files = attachmentRefs(messages.join("\n"));
   if (!files.length) return [];

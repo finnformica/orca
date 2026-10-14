@@ -4,7 +4,7 @@ import { ArrowUp, FileText, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
 import { usePrRefs } from "@/store";
-import { filterPrRefs, insertPrRef, prRefLabel, prTrigger, type PrRef } from "@/workstream";
+import { appendQuote, filterPrRefs, insertPrRef, prRefLabel, prTrigger, type PrRef } from "@/workstream";
 import { cn } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
 import { joinPrefill } from "@/lib/palette";
@@ -30,7 +30,7 @@ export function stepHistory(idx: number | null, dir: "up" | "down", len: number)
 }
 
 export function ChatComposer({
-  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt, className, repo, prefill,
+  persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt, className, repo, prefill, insert,
   variant = "box", icon, inputLabel,
 }: {
   variant?: "box" | "quick";
@@ -41,6 +41,10 @@ export function ChatComposer({
   // after the draft and the box takes focus. Every new `seq` is applied; one `session`'s asks replace
   // each other (keystrokes typed in the entry before this box mounted).
   prefill?: OrchestratorPrefill | null;
+  // A one-shot insertion from outside the box (a message's Quote button): appended after whatever
+  // draft is already there — never replacing it — then the box is focused with the caret at the
+  // end. Unlike `prefill`, there is no "session" to group repeats: every `seq` is its own append.
+  insert?: { text: string; seq: number } | null;
   // The repo this conversation is about (a workstream's, the new-draft box's selection). The @ PR
   // picker inserts a bare `#123` for that repo's PRs and `repo#123` for any other's.
   repo?: string;
@@ -137,6 +141,17 @@ export function ChatComposer({
       el.setSelectionRange(el.value.length, el.value.length);
     }
   }, [prefill?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A Quote click: append after whatever is already in the box (never losing it), then focus with
+  // the caret at the end — the same caret handling as `prefill`, above, but with none of its
+  // session bookkeeping (a quote is always a fresh, one-off append, never a continued typeahead).
+  useLayoutEffect(() => {
+    if (!insert) return;
+    const next = appendQuote(latest.current, insert.text);
+    pendingCaret.current = next.length; // the [value] layout effect below focuses and places it
+    setValue(next);
+    setHistIdx(null);
+  }, [insert?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Clicking anywhere in the chrome (border, padding, toolbar gap) focuses the textarea, so the
   // whole box behaves like one input. preventDefault keeps the existing caret/selection intact.
