@@ -64,5 +64,8 @@ export const paletteRecentAtom = persistedAtom<string[]>("palette.recent", [], i
 // toasts (the centre still fills); per-kind toasts off (a kind absent is on); browser notifications
 // for the urgent kinds while the tab is hidden (needs the permission, asked for when switched on).
 export const notifyDndAtom = atomWithStorage("orca.notifications.dnd", false);
+// The bell's popover (the N key, the palette's Notifications action): open or closed, so a key
+// press and a click drive the one Radix Popover state.
+export const notificationsOpenAtom = atom(false);
 export const toastPrefsAtom = atomWithStorage<Partial<Record<string, boolean>>>("orca.notifications.toasts", {});
 export const browserNotifyAtom = atomWithStorage("orca.notifications.browser", false);

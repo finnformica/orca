@@ -15,7 +15,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { App } from "@/App";
 import { navigate } from "@/lib/route";
-import { notifyDndAtom, orchestratorOpenAtom, toastPrefsAtom } from "@/lib/atoms";
+import { notificationsOpenAtom, notifyDndAtom, orchestratorOpenAtom, toastPrefsAtom } from "@/lib/atoms";
 import * as centre from "@/lib/notificationStore";
 import { COUNT_BAR_SPACE, TOAST_EXIT_MS, type Notification } from "../shared/notifications";
 
@@ -87,6 +87,7 @@ describe("the notification centre", () => {
     getDefaultStore().set(notifyDndAtom, false);
     getDefaultStore().set(toastPrefsAtom, {});
     getDefaultStore().set(orchestratorOpenAtom, false); // "Open orchestrator" opens it; the store outlives this file
+    getDefaultStore().set(notificationsOpenAtom, false); // the bell's popover is controlled now; the store outlives this file too
     localStorage.clear();
     navigate("/");
   });
@@ -343,6 +344,7 @@ describe("the notification centre", () => {
     act(() => root?.unmount());
     container?.remove();
     centre.reset();
+    getDefaultStore().set(notificationsOpenAtom, false); // the popover's open state outlives the unmount now — close it like a fresh load would be
     localStorage.setItem("orca.ui.v1.notificationFilter", '"all"');
     await open("/");
     await click($("notifications-bell"));

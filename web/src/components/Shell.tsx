@@ -142,14 +142,14 @@ function Sidebar({ collapsed, onToggle, onClose, actions }: {
           const item = (
             <button key={to} type="button" onClick={() => navigate(to)} aria-current={active ? "page" : undefined}
               aria-keyshortcuts={shortcut ? shortcutKeys(shortcut).join(" ") : undefined}
-              className={cn("group/nav relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-accent text-foreground font-medium" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
+              className={cn("relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-accent text-foreground font-medium" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
               <Icon className="size-4 shrink-0" />
               <span data-slot="nav-label" className={cn(collapsed && "md:hidden")}>{label}</span>
               {badge?.(collapsed)}
-              {/* G then a letter: subtle keycaps on hover / keyboard focus. Never on a phone or a touch
-                  screen (no keyboard to press them with); collapsed, the tooltip carries them. */}
+              {/* G then a letter: always-visible muted keycaps, like Find / Add New. Never on a phone
+                  or a touch screen (no keyboard to press them with); collapsed, the tooltip carries them. */}
               {shortcut && !collapsed && (
-                <Shortcut id={shortcut} className={cn("opacity-0 transition-opacity group-hover/nav:opacity-100 group-focus-visible/nav:opacity-100 max-md:hidden [@media(pointer:coarse)]:hidden", !badge && "ml-auto")} />
+                <Shortcut id={shortcut} className={cn("max-md:hidden [@media(pointer:coarse)]:hidden", !badge && "ml-auto")} />
               )}
             </button>
           );
@@ -167,10 +167,12 @@ function Sidebar({ collapsed, onToggle, onClose, actions }: {
         <div data-slot="sidebar-you" className={cn("flex items-center gap-1", collapsed && "md:flex-col-reverse")}>
           <ProfileMenu collapsed={collapsed} />
           <NotificationBell collapsed={collapsed} />
-          <button type="button" onClick={onToggle} className={cn("text-muted-foreground hover:text-foreground hover:bg-accent hidden size-8 shrink-0 items-center justify-center rounded-md md:inline-flex", !collapsed && "ml-auto")}
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"} title={`${collapsed ? "Expand sidebar" : "Collapse sidebar"} (${shortcutLabel("sidebar")})`}>
-            {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
-          </button>
+          <Tip label={collapsed ? "Expand sidebar" : "Collapse sidebar"} shortcut="sidebar" className={cn("hidden md:inline-flex", !collapsed && "ml-auto")}>
+            <button type="button" onClick={onToggle} className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-8 shrink-0 items-center justify-center rounded-md"
+              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
+              {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
+            </button>
+          </Tip>
         </div>
       </div>
     </>
