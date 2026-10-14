@@ -23,14 +23,15 @@ export const SHOT_CPU_WEIGHT = 50;
 export const SHOT_TIMEOUT_MS = 45_000;
 export const DEFAULT_VIEWPORT = { width: 1440, height: 900 };
 
-export type ShotStep = { click: string } | { hover: string } | { scroll: number | string } | { wait: number } | { waitFor: string };
+export type ShotStep = { click: string } | { hover: string } | { scroll: number | string } | { wait: number } | { waitFor: string } | { press: string };
 export type ShotRequest = {
   url: string;
   viewport?: { width: number; height: number };
   dark?: boolean;
   /** CSS selector to wait for after load, before the steps. */
   waitFor?: string;
-  /** Run in order after load: click a selector, scroll to a y offset or a selector, wait ms, wait for a selector. */
+  /** Run in order after load: click a selector (a real mouse click, see `clickSelector`), press a
+   *  named key, scroll to a y offset or a selector, wait ms, wait for a selector. */
   steps?: ShotStep[];
   fullPage?: boolean;
   /** Free text kept in the file name (`before`, `after`), so a report can say which is which. */
@@ -73,7 +74,7 @@ export function parseShotRequest(body: any): ShotRequest {
   }
   const steps: ShotStep[] = Array.isArray(body.steps) ? body.steps : [];
   for (const s of steps) {
-    if (!s || typeof s !== "object" || !("click" in s || "hover" in s || "scroll" in s || "wait" in s || "waitFor" in s)) throw new Error(`unknown step: ${JSON.stringify(s)}`);
+    if (!s || typeof s !== "object" || !("click" in s || "hover" in s || "scroll" in s || "wait" in s || "waitFor" in s || "press" in s)) throw new Error(`unknown step: ${JSON.stringify(s)}`);
   }
   return {
     url: u.toString(), viewport: viewport ?? DEFAULT_VIEWPORT, dark: !!body.dark,
@@ -114,6 +115,10 @@ export function browserCommand(binary: string, profileDir: string, opts: { scope
   return cgroup.scopedCommand([
     binary, "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run",
     "--hide-scrollbars", "--mute-audio", "--disable-extensions", "--remote-debugging-port=0",
+    // Chrome refuses a DevTools WebSocket upgrade whose Origin header isn't on an allow-list (a
+    // DNS-rebinding guard) — this process has no origin of its own to be on it, so allow any; the
+    // debugging port is ephemeral, loopback-only and torn down with the browser after one capture.
+    "--remote-allow-origins=*",
     `--user-data-dir=${profileDir}`, "about:blank",
   ], { available: opts.scoped, memoryMaxGb: opts.memoryMaxGb ?? SHOT_MEMORY_MAX_GB, cpuWeight: SHOT_CPU_WEIGHT, unit: opts.unit });
 }
@@ -244,6 +249,13 @@ export function createShooter(deps: {
 
 // ---- the real browser, over CDP ----
 
+/** How long `kill` waits for a plain SIGTERM before escalating to SIGKILL, and how long it then
+ *  waits for THAT before giving up — a browser that ignores SIGTERM (seen on some sandboxed CI
+ *  runners) must never hang this job's cleanup forever: every later job in the queue, and the
+ *  caller's own promise, is waiting on it to resolve. */
+const KILL_GRACE_MS = 3_000;
+const KILL_FINAL_MS = 2_000;
+
 /** Spawn the (scoped) browser, read its DevTools URL from stderr, and drive one page. */
 export const cdpLaunch: Launch = async (argv, env, unit, signal) => {
   const proc = Bun.spawn(argv, { env: { ...process.env, ...env }, stdout: "ignore", stderr: "pipe" });
@@ -253,7 +265,13 @@ export const cdpLaunch: Launch = async (argv, env, unit, signal) => {
       // The scope holds every renderer the browser forked; stopping it kills them all.
       Bun.spawnSync(["systemctl", "--user", "stop", `${unit}.scope`], { env: { ...process.env, ...env }, stderr: "ignore" });
     }
-    await proc.exited.catch(() => {});
+    const diedOnTerm = await Promise.race([
+      proc.exited.then(() => true),
+      Bun.sleep(KILL_GRACE_MS).then(() => false),
+    ]);
+    if (diedOnTerm) return;
+    killTree(proc.pid, "SIGKILL");
+    await Promise.race([proc.exited, Bun.sleep(KILL_FINAL_MS)]).catch(() => {});
   };
   const aborted = new Promise<never>((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
   aborted.catch(() => {}); // an abort after the browser is up is the caller's kill, not an error here
@@ -338,7 +356,9 @@ async function capture(cdp: Cdp, req: ShotRequest): Promise<Uint8Array> {
   for (const step of req.steps ?? []) {
     if ("click" in step) {
       await waitFor(step.click);
-      await evaluate(`document.querySelector(${JSON.stringify(step.click)}).click()`);
+      await clickSelector(s, evaluate, step.click);
+    } else if ("press" in step) {
+      await pressKey(s, step.press);
     } else if ("hover" in step) {
       await waitFor(step.hover);
       const { x, y } = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(step.hover)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
@@ -355,6 +375,74 @@ async function capture(cdp: Cdp, req: ShotRequest): Promise<Uint8Array> {
   await Bun.sleep(300); // a settle for fonts and the last transition
   const { data } = await s("Page.captureScreenshot", { format: "png", captureBeyondViewport: !!req.fullPage });
   return Uint8Array.from(Buffer.from(data, "base64"));
+}
+
+/** A real mouse click on a selector: move, press and release at its centre over CDP, which fires the
+ *  whole pointerdown/mousedown/pointerup/mouseup/click sequence a real user's click would — unlike
+ *  `el.click()`, which fires only `click` and never opens a Radix UI menu (it opens on pointerdown).
+ *  Falls back to dispatching that same sequence as JS events directly on the element when it has no
+ *  visible box to click (zero-size, or still off-screen after scrolling it into view). */
+async function clickSelector(s: (method: string, params?: object) => Promise<any>, evaluate: (expr: string) => Promise<any>, selector: string): Promise<void> {
+  const sel = JSON.stringify(selector);
+  const point = await evaluate(`(() => {
+    const el = document.querySelector(${sel});
+    if (!el) return null;
+    el.scrollIntoView({ block: "center", inline: "center" });
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) return null;
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  })()`);
+  if (point) {
+    await s("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y });
+    await s("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", buttons: 1, clickCount: 1 });
+    await s("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", buttons: 0, clickCount: 1 });
+    return;
+  }
+  await evaluate(`(() => {
+    const el = document.querySelector(${sel});
+    if (!el) return;
+    const opts = { bubbles: true, cancelable: true, view: window, button: 0, buttons: 1 };
+    el.dispatchEvent(new PointerEvent("pointerdown", { ...opts, pointerId: 1, isPrimary: true }));
+    el.dispatchEvent(new MouseEvent("mousedown", opts));
+    el.dispatchEvent(new PointerEvent("pointerup", { ...opts, buttons: 0, pointerId: 1, isPrimary: true }));
+    el.dispatchEvent(new MouseEvent("mouseup", { ...opts, buttons: 0 }));
+    el.click();
+  })()`);
+}
+
+/** Enough of each named key for a page's keydown handler to recognise it — codes/keyCodes copied
+ *  from the DOM `KeyboardEvent` spec. Any other single character falls back to its own letter/digit. */
+const NAMED_KEYS: Record<string, { key: string; code: string; keyCode: number; text?: string }> = {
+  Enter: { key: "Enter", code: "Enter", keyCode: 13, text: "\r" },
+  Escape: { key: "Escape", code: "Escape", keyCode: 27 },
+  Tab: { key: "Tab", code: "Tab", keyCode: 9 },
+  Space: { key: " ", code: "Space", keyCode: 32, text: " " },
+  ArrowDown: { key: "ArrowDown", code: "ArrowDown", keyCode: 40 },
+  ArrowUp: { key: "ArrowUp", code: "ArrowUp", keyCode: 38 },
+  ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37 },
+  ArrowRight: { key: "ArrowRight", code: "ArrowRight", keyCode: 39 },
+  Home: { key: "Home", code: "Home", keyCode: 36 },
+  End: { key: "End", code: "End", keyCode: 35 },
+  PageUp: { key: "PageUp", code: "PageUp", keyCode: 33 },
+  PageDown: { key: "PageDown", code: "PageDown", keyCode: 34 },
+  Backspace: { key: "Backspace", code: "Backspace", keyCode: 8 },
+  Delete: { key: "Delete", code: "Delete", keyCode: 46 },
+};
+
+function keyDescriptor(name: string): { key: string; code: string; keyCode: number; text?: string } {
+  const named = NAMED_KEYS[name];
+  if (named) return named;
+  if (name.length === 1) return { key: name, code: `Key${name.toUpperCase()}`, keyCode: name.toUpperCase().charCodeAt(0), text: name };
+  throw new Error(`unknown --press key: ${name}`);
+}
+
+/** Dispatch a named key (`ArrowDown`, `Enter`, …) as a real keydown/keyup pair over CDP, for a Radix
+ *  menu's own keyboard handling once --click has opened it. */
+async function pressKey(s: (method: string, params?: object) => Promise<any>, name: string): Promise<void> {
+  const d = keyDescriptor(name);
+  const base = { key: d.key, code: d.code, windowsVirtualKeyCode: d.keyCode, nativeVirtualKeyCode: d.keyCode };
+  await s("Input.dispatchKeyEvent", { type: "keyDown", ...base, ...(d.text ? { text: d.text } : {}) });
+  await s("Input.dispatchKeyEvent", { type: "keyUp", ...base });
 }
 
 let shared: Shooter | undefined;

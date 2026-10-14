@@ -140,10 +140,10 @@ function killWorktree(cwd: string): void {
  *  path or `node_modules` token — so neither proc.kill() (the sh only) nor killWorktree (argv match)
  *  reaps it, and it polls a dead port forever after a stop/restart. Walking the pid tree catches it.
  *  macOS Bun.spawn has no process-group option, hence the manual pgrep walk. */
-export function killTree(pid: number): void {
+export function killTree(pid: number, signal: NodeJS.Signals = "SIGTERM"): void {
   const kids = Bun.spawnSync(["pgrep", "-P", String(pid)]).stdout.toString().trim().split("\n").filter(Boolean);
-  for (const k of kids) killTree(Number(k));
-  try { process.kill(pid); } catch { /* already gone */ }
+  for (const k of kids) killTree(Number(k), signal);
+  try { process.kill(pid, signal); } catch { /* already gone */ }
 }
 
 export async function start(key: string, cwd: string, services: PreviewService[], portRange: [number, number]): Promise<void> {
