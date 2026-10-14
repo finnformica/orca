@@ -3053,8 +3053,8 @@ export function sweepText(reports: SweepReport[]): string {
 // ---- the actions bar's state-aware quick actions (WorkstreamActions) ----
 
 /** A toolbar verb the actions bar shows as a button. Each maps onto an existing store verb:
- *  createPr → promote, markReady, addressPr, slack → sendSlack, mergeWhenGreen, merge. */
-export type QuickActionId = "createPr" | "markReady" | "addressPr" | "slack" | "mergeWhenGreen" | "merge";
+ *  createPr → promote, markReady, addressPr, slack → sendSlack, mergeWhenGreen, merge, autoMerge. */
+export type QuickActionId = "createPr" | "markReady" | "addressPr" | "slack" | "mergeWhenGreen" | "merge" | "autoMerge";
 export type QuickAction = {
   id: QuickActionId; label: string;
   /** Set → the button shows, disabled, with this as its tooltip (why it can't run now). */
@@ -3080,14 +3080,19 @@ export type QuickActionContext = {
 };
 
 /** Every quick action that applies to the workstream's state, in this order (they combine — a draft
- *  with conflicts shows Ready for review AND Address review; an approved clean PR shows Send to Slack
- *  AND Merge when green):
+ *  with conflicts shows Ready for review AND Address review; an approved clean PR shows Merge AND
+ *  Merge when green / Enable auto-merge):
  *  - no PR: a local branch with commits → Create PR (a promoted, clean local branch → Merge);
  *  - a draft PR → Ready for review;
- *  - conflicts, failing CI, unresolved threads (when known) or changes requested → Address review;
- *  - a ready (non-draft) PR with nothing outstanding → Send to Slack, Bump on Slack once posted;
- *  - any open non-draft PR → Merge when green, disabled with the reason when it is already queued or
- *    the repo's mergePolicy refuses it (never hidden).
+ *  - conflicts, failing CI, unresolved threads (when known) or changes requested → Address review,
+ *    beside Merge when green (merging is not safe yet, but the mark still applies once it is);
+ *  - approved (or in the Mergeable lane) with nothing outstanding → Merge, and either Merge when
+ *    green (the repo's mergePolicy allows the queue) or Enable auto-merge (it doesn't — a disabled
+ *    "Merge when green" would tell the user nothing they can act on) — never Send to Slack, there is
+ *    nothing left to review;
+ *  - any other open (non-draft, unapproved) PR with nothing outstanding → Send to Slack (Bump once
+ *    posted), beside Merge when green, disabled with the reason when it is already queued or the
+ *    repo's mergePolicy refuses it (never hidden).
  *  Everything else stays in the ⋯ menu. Pure. */
 export function quickActions(row: QuickActionRow, ctx: QuickActionContext): QuickAction[] {
   if (row.lane === "DONE") return [];
@@ -3103,13 +3108,23 @@ export function quickActions(row: QuickActionRow, ctx: QuickActionContext): Quic
   if (row.isDraft) out.push({ id: "markReady", label: "Ready for review" });
   if (outstanding) out.push({ id: "addressPr", label: "Address review", disabled: running });
   if (row.isDraft) return out;
+
+  const refused = mergeRefusal(ctx.mergePolicy, { small: row.mergeWhenGreen?.small });
+  const queued = row.autoMergeEnabled || row.mergeWhenGreen ? "Already queued — it merges once checks pass" : undefined;
+  const mergeWhenGreenAction: QuickAction = { id: "mergeWhenGreen", label: "Merge when green", disabled: queued ?? (refused && `Not queued: ${refused}`) };
+
+  if (!outstanding && (row.reviewStatus === "approved" || row.lane === "MERGEABLE")) {
+    out.push({ id: "merge", label: "Merge" });
+    out.push(refused
+      ? { id: "autoMerge", label: "Enable auto-merge", disabled: row.autoMergeEnabled ? "Already queued — it merges once checks pass" : undefined }
+      : mergeWhenGreenAction);
+    return out;
+  }
   if (!outstanding && ctx.slackChannel) {
     out.push(row.slackNotifiedAt
       ? { id: "slack", label: "Bump on Slack", slackKind: "bump" }
       : { id: "slack", label: "Send to Slack", slackKind: "notify" });
   }
-  const queued = row.autoMergeEnabled || row.mergeWhenGreen ? "Already queued — it merges once checks pass" : undefined;
-  const refused = mergeRefusal(ctx.mergePolicy, { small: row.mergeWhenGreen?.small });
-  out.push({ id: "mergeWhenGreen", label: "Merge when green", disabled: queued ?? (refused && `Not queued: ${refused}`) });
+  out.push(mergeWhenGreenAction);
   return out;
 }
