@@ -237,7 +237,10 @@ carrying the `send` keycap. Only its look differs from the panel's composer. Col
 faded, inert, pinned at their width — and the pill fades in after (`MORPH_MS`); swapping them at once
 made the exit janky. A send is optimistic: the box clears and stays open, a brief "Sent · Open chat" fades, and
 the POSTs are chained so quick sends arrive in order (a busy orchestrator queues them); a failed send
-gives the text back. The top-bar button and the phone's bottom bar (never the pill) carry the orchestrator's
+gives the text back. Every orchestrator sender (quick-ask, the panel's and the phone page's composer, the New-draft
+box) goes through ONE outbox (`lib/orchestratorOutbox.ts`), which the panel draws as `sending…` at once
+and drops only after re-reading its newest page and queue — a message queued behind a busy wake
+publishes no event, so the panel (mounted while closed) once showed it only when the wake ended. The top-bar button and the phone's bottom bar (never the pill) carry the orchestrator's
 **activity dot** (`ActivityDot`: pulsing while a wake runs, lit once one finished while the panel was
 closed, cleared when it opens), fed by ONE subscriber (`useOrchestratorActivity` in the Shell: a
 status read on mount, then one per `turn` event on the tab's shared stream — no poll of its own).

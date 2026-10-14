@@ -2761,6 +2761,20 @@ export function mergeLatestPage<T extends Keyed>(loaded: T[], latest: T[]): T[] 
   return [...loaded.filter((t) => !fresh.has(t.id)), ...latest];
 }
 
+/** The optimistic "sending…" messages a chat still has to draw: those the bridge has not yet recorded
+ *  as an UNFINISHED turn's message (one of the messages a wake carried — `splitMessages`) or a queued
+ *  entry. Prefix match: attachments are appended to the stored text. A finished turn never matches,
+ *  so the same line sent twice still shows the second time. Drawing both would show the text twice. */
+export function unlandedSends<M extends { text: string }>(
+  sending: M[], turns: { finishedAt?: number; instruction?: string }[] | null, queued: { instruction: string }[],
+): M[] {
+  const recorded = [
+    ...(turns ?? []).filter((t) => !t.finishedAt && t.instruction).flatMap((t) => splitMessages(t.instruction!)),
+    ...queued.map((m) => m.instruction),
+  ];
+  return sending.filter((m) => !recorded.some((r) => r.startsWith(m.text)));
+}
+
 /** An older page arrives: it goes in front of what's loaded, minus anything already there (a turn
  *  that moved between the two fetches, or a page requested twice). */
 export function prependOlderPage<T extends Keyed>(older: T[], loaded: T[]): T[] {

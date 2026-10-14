@@ -15,13 +15,14 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { modelLabel } from "../../../shared/models";
-import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { subscribeTurns } from "@/lib/events";
+import { onOrchestratorDelivered, useOrchestratorOutbox } from "@/lib/orchestratorOutbox";
 import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
 import type { OrchestratorPrefill } from "@/lib/atoms";
 
@@ -472,8 +473,11 @@ const LOG_TEXT = "font-mono text-[11px] [&_.prose]:text-[12px]";
  *  differently coloured strip under it. The composer's toolbar always carries the model picker and
  *  the context ring (ChatControls); `controls` supplies their values when they don't come from the
  *  row's card. Everything else about the panel is the same. */
-export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant = "terminal" }: {
+export function ChatPanel({ row, send, flush, controls, logBar, prefill, outbox, variant = "terminal" }: {
   row: Row; send?: (text: string, images: File[]) => Promise<void>; flush?: boolean; controls?: ChatControlsProps;
+  /** The orchestrator's chat: its "sending…" messages are the shared outbox (lib/orchestratorOutbox) —
+   *  every entry point's, not only this composer's — and `send` is expected to go through it. */
+  outbox?: boolean;
   /** "terminal" (default): the dark monospace log. "chat": the orchestrator panel's assistant-chat
    *  styling — bubbles, prose, day dividers, hover timestamps — in the page's theme (see ChatTurn). */
   variant?: "terminal" | "chat";
@@ -491,6 +495,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   // composer puts the text back.
   const [sending, setSending] = useState<{ id: number; text: string }[]>([]);
   const sendSeq = useRef(0);
+  const outgoing = useOrchestratorOutbox(Boolean(outbox));
   // A message's Quote button: append it to the composer as a blockquote, without losing whatever
   // draft is already there. `insertSeq` makes every click its own event even quoting the same text
   // twice in a row.
@@ -500,11 +505,13 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   const submit = async (text: string, images: File[]) => {
     const id = ++sendSeq.current;
     follow.current = true; // you just spoke: jump to it, wherever you had scrolled
-    setSending((s) => [...s, { id, text }]);
+    if (!outbox) setSending((s) => [...s, { id, text }]); // the outbox draws it otherwise
     try {
       await deliver(text, images);
-      await loadLatest();
-      await loadQueued(); // it may have been held rather than launched
+      if (!outbox) { // the outbox's delivered hook (below) has already re-read both
+        await loadLatest();
+        await loadQueued(); // it may have been held rather than launched
+      }
     } finally {
       setSending((s) => s.filter((m) => m.id !== id));
     }
@@ -662,7 +669,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
   useEffect(() => {
     if (follow.current) scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
     else if (!anchor.current && !loadingOlderRef.current) setUnseen(true);
-  }, [turns, sending]);
+  }, [turns, sending, outgoing]);
   // The scroller shrinking (the phone's keyboard opening, the composer growing) must not leave the
   // newest message under the composer: a reader at the tail stays at it.
   useEffect(() => {
@@ -716,10 +723,14 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
       setStopping(false);
     }
   };
-  // Has the bridge already recorded this message — as the turn now running, or a queued entry?
-  // (startsWith: attachments are appended to the instruction after the text.)
-  const landed = (text: string) =>
-    Boolean(turns?.some((t) => !t.finishedAt && t.instruction?.startsWith(text))) || queued.some((m) => m.instruction.startsWith(text));
+  // A message sent from anywhere else (quick-ask, the New-draft box) reached the bridge: re-read the
+  // newest page and the queue BEFORE the outbox drops its "sending…" copy, so it never blinks out —
+  // a message queued behind a busy wake publishes no event of its own.
+  const reload = useRef(async () => {});
+  reload.current = async () => { await loadLatest(); await loadQueued(); };
+  useEffect(() => (outbox ? onOrchestratorDelivered(() => reload.current()) : undefined), [outbox]);
+  // Not drawn once the bridge has recorded it — as the turn now running, or a queued entry.
+  const unlanded = unlandedSends(outbox ? outgoing : sending, turns, queued);
   const onScroll = () => {
     const el = scroller.current;
     if (!el) return;
@@ -832,7 +843,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, variant
         )}
         {/* Not drawn once the real thing has arrived over the stream — the same text twice, one of
             them "sending", is worse than the moment's gap it would cover. */}
-        {sending.filter((m) => !landed(m.text)).map((m) => chatStyle ? (
+        {unlanded.map((m) => chatStyle ? (
           <div key={m.id} className="mb-4" data-slot="chat-sending">
             <div className="mb-2 flex justify-end"><div className="bg-accent text-foreground max-w-[85%] rounded-lg px-3 py-2 whitespace-pre-wrap break-words opacity-70">{m.text}</div></div>
             <div className="text-muted-foreground pl-8 text-[11px]">▋ sending…</div>
