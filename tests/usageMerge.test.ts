@@ -12,6 +12,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mergeInstanceProfiles, usageAcrossInstances, type InstanceProfiles, type ProfileUsage } from "../server/usage";
+import { setProbe } from "../server/peer";
 
 const win = (pct: number) => ({ utilization: pct, resetsAt: null });
 const profile = (overrides: Partial<ProfileUsage>): ProfileUsage => ({
@@ -103,6 +104,7 @@ let prevPath: string | undefined;
 const realFetch = globalThis.fetch;
 afterEach(async () => {
   globalThis.fetch = realFetch;
+  setProbe();
   if (prevPath !== undefined) process.env.PATH = prevPath;
   prevPath = undefined;
   if (shim) await rm(shim, { recursive: true, force: true });
@@ -123,6 +125,7 @@ async function installFakeHydra(state: string, fetchedAt: number): Promise<void>
 
 test("usageAcrossInstances: a fresher ok reading from the peer wins over this host's own stale one", async () => {
   await installFakeHydra("token stale — refreshes on next launch", 500);
+  setProbe(async () => true); // cloud.test is a stubbed fetch, not a host a TCP connect can reach
   globalThis.fetch = (async (url: string | URL | Request) => {
     expect(String(url)).toBe("http://cloud.test/api/usage/local");
     return { ok: true, json: async () => ({ claude: null, codex: null, profiles: [{ name: "finnformica", email: "finnformica@gmail.com", usage: { fiveHour: win(5), sevenDay: win(5), extra: null }, state: "ok", fetchedAt: 9000 }] }) } as unknown as Response;
@@ -138,11 +141,22 @@ test("usageAcrossInstances: a fresher ok reading from the peer wins over this ho
 
 test("usageAcrossInstances: an unreachable peer is skipped, not blocking — this host's own reading still comes back", async () => {
   await installFakeHydra("ok", 1000);
+  setProbe(async () => true);
   globalThis.fetch = (async () => { throw new Error("connection refused"); }) as unknown as typeof fetch;
 
   const u = await usageAcrossInstances({ cloud: "http://cloud.test" }, "local", "cloud");
   expect(u?.profiles).toHaveLength(1);
   expect(u!.profiles![0]).toMatchObject({ name: "finnformica", state: "ok", instance: "local" });
+});
+
+test("usageAcrossInstances: a peer whose connect never completes (a laptop off the tailnet) is not fetched at all", async () => {
+  await installFakeHydra("ok", 1000);
+  let fetched = 0;
+  setProbe(async () => false);
+  globalThis.fetch = (async () => { fetched++; return new Promise(() => {}); }) as unknown as typeof fetch; // would hang forever
+  const u = await usageAcrossInstances({ cloud: "http://cloud.test" }, "local", "cloud");
+  expect(fetched).toBe(0);
+  expect(u!.profiles![0]).toMatchObject({ name: "finnformica", instance: "local" });
 });
 
 test("usageAcrossInstances: with no `instances` configured at all, behaves exactly like the old single-host reading", async () => {

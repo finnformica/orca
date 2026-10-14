@@ -34,6 +34,7 @@ export type LiveAgent = {
 };
 
 import { asTurnPage } from "./workstream";
+import { trackedFetch as get } from "./lib/refresh";
 
 /** `dbUnavailable`: the bridge answered without the database — the turns are what it journaled
  *  locally (server/outbox.ts), to be synced when the database is back. */
@@ -80,10 +81,10 @@ export type RepoInfo = {
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
 export const api = {
-  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; bridge?: BridgeInfo }> => fetch("/api/config").then(res),
+  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; bridge?: BridgeInfo }> => get("/api/config").then(res),
   /** Settings' Machine cost: one instance's USD/hour; null clears it (back to the EC2 estimate / 0). */
   setInstanceRate: (instance: string, hourlyUsd: number | null): Promise<{ ok: true }> => post("/api/config/instance-rate", { instance, hourlyUsd }),
-  usage: (): Promise<Usage | null> => fetch("/api/usage").then(res),
+  usage: (): Promise<Usage | null> => get("/api/usage").then(res),
   // Take a hydra login out of its rotation or put it back; `instance` names the host it's signed
   // in on (hydra state is per host) — the usage card's own, today.
   setProfileEnabled: (name: string, enabled: boolean, instance?: string): Promise<{ profiles: Usage["profiles"] }> =>
@@ -96,7 +97,7 @@ export const api = {
   createWorktree: (repo: string, prompt: string, provider: AgentProvider, instance?: string): Promise<{ branch: string; worktreePath: string; title: string; instance?: string }> =>
     post("/api/workstreams", { repo, prompt, provider, instance }),
   summary: (repo: string, worktree: string, base?: string): Promise<ChangeSummary> =>
-    fetch(`/api/summary${q(repo, `&worktree=${encodeURIComponent(worktree)}${base ? `&base=${encodeURIComponent(base)}` : ""}`)}`).then(res),
+    get(`/api/summary${q(repo, `&worktree=${encodeURIComponent(worktree)}${base ? `&base=${encodeURIComponent(base)}` : ""}`)}`).then(res),
   promote: (repo: string, b: { worktreePath: string; branch: string; title: string; provider: AgentProvider; task?: string; sessionId?: string; outcome?: AgentOutcome; body?: string; draft?: boolean; labels?: string[] }): Promise<{ number: number; url: string }> =>
     post("/api/promote", { repo, ...b }),
   markReady: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/ready", { repo, pr }),
@@ -120,29 +121,29 @@ export const api = {
     post("/api/workstreams/move", { repo, branch, to }),
   handoff: (repo: string, branch: string, content: string): Promise<{ path: string }> => post("/api/handoff", { repo, branch, content }),
   // The durable enrichment + chat history (server/db.ts) — what localStorage used to hold.
-  enrichment: (repo: string): Promise<Record<string, Record<string, unknown>>> => fetch(`/api/enrichment${q(repo)}`).then(res),
+  enrichment: (repo: string): Promise<Record<string, Record<string, unknown>>> => get(`/api/enrichment${q(repo)}`).then(res),
   patchEnrichment: (repo: string, branch: string, fields: Record<string, unknown>): Promise<{ ok: true }> =>
     post("/api/enrichment", { repo, branch, fields }),
   importEnrichment: (entries: { repo: string; branch: string; fields: Record<string, unknown> }[]): Promise<{ imported: number }> =>
     post("/api/enrichment/import", { entries }),
   turns: (repo: string, branch: string): Promise<AgentTurn[]> =>
-    fetch(`/api/turns${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
+    get(`/api/turns${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
   /** One page of a conversation: the newest `limit` turns, or the `limit` before the `before` cursor
    *  a previous page returned (`older`, null at the conversation's first turn). The chat opens on the
    *  tail and walks back as you scroll up, instead of loading hundreds of turns to show the last few. */
   turnPage: (repo: string, branch: string, opts: { limit: number; before?: string }): Promise<TurnPage> =>
-    fetch(`/api/turns${q(repo, `&branch=${encodeURIComponent(branch)}&limit=${opts.limit}${opts.before ? `&before=${encodeURIComponent(opts.before)}` : ""}`)}`)
+    get(`/api/turns${q(repo, `&branch=${encodeURIComponent(branch)}&limit=${opts.limit}${opts.before ? `&before=${encodeURIComponent(opts.before)}` : ""}`)}`)
       .then(res).then((body) => asTurnPage<AgentTurn>(body)), // a pre-paging bridge answers with the whole array
   /** URL for the tab's ONE live feed (every chat's steps and turn events, multiplexed — see
    *  lib/events.ts). A URL, not a fetch, because EventSource opens it itself and reconnects on its own. */
   eventsUrl: (): string => "/api/events",
   /** Instructions typed while a run was in flight, waiting to be sent. */
   queued: (repo: string, branch: string): Promise<QueuedMessage[]> =>
-    fetch(`/api/queued${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
+    get(`/api/queued${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
   cancelQueued: (repo: string, id: number): Promise<{ ok: true }> => post("/api/queued/cancel", { repo, id }),
   /** Catch-up after a dropped stream: steps recorded since `since` for one run. */
   turnSteps: (repo: string, branch: string, runId: string, since: number): Promise<{ steps: AgentStep[]; seq: number; finished: boolean }> =>
-    fetch(`/api/turns/steps${q(repo, `&branch=${encodeURIComponent(branch)}&runId=${encodeURIComponent(runId)}&since=${since}`)}`).then(res),
+    get(`/api/turns/steps${q(repo, `&branch=${encodeURIComponent(branch)}&runId=${encodeURIComponent(runId)}&since=${since}`)}`).then(res),
   /** Interrupt the running agent for a worktree, keeping the worktree and session (see /api/agent/stop). */
   stopAgent: (key: string): Promise<{ ok: true; runId?: string }> => post("/api/agent/stop", { key }),
   /** `/compact` in a conversation's own Claude session (a card's, or the orchestrator's under its
@@ -150,33 +151,33 @@ export const api = {
   compact: (repo: string, branch: string): Promise<{ runId: string }> => post("/api/compact", { repo, branch }),
   // The orchestrator: one conversation that delegates to workstreams (server/orchestrator.ts). Its
   // turns are read through the ordinary chat routes under its reserved repo/branch.
-  orchestrator: (): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell?: boolean; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number }> => fetch("/api/orchestrator").then(res),
+  orchestrator: (): Promise<{ key: string; running: boolean; paused: boolean; notes: string; model: string; contextPct?: number; shell?: boolean; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number }> => get("/api/orchestrator").then(res),
   orchestratorModel: (model: string): Promise<{ ok: true }> => post("/api/orchestrator/model", { model }),
   orchestratorMessage: (text: string, attachments: string[] = []): Promise<{ status: "running" | "queued" }> =>
     post("/api/orchestrator/message", { text, attachments }),
   slack: (repo: string, text: string): Promise<{ ok: true }> => post("/api/slack", { repo, text }),
   // The notification centre (one table, any instance answers). `since` (ms) is the catch-up cursor
   // after the live stream was dropped; the live rows themselves arrive on /api/events.
-  notifications: (since?: number): Promise<Notification[]> => fetch(`/api/notifications${since ? `?since=${since}` : ""}`).then(res),
+  notifications: (since?: number): Promise<Notification[]> => get(`/api/notifications${since ? `?since=${since}` : ""}`).then(res),
   notificationsRead: (ids: number[] | "all"): Promise<{ ok: true; changed: number }> => post("/api/notifications/read", ids === "all" ? { all: true } : { ids }),
-  agents: (repo: string): Promise<LiveAgent[]> => fetch(`/api/agents${q(repo)}`).then(res),
-  prs: (repo: string): Promise<PrSummary[]> => fetch(`/api/prs${q(repo)}`).then(res),
+  agents: (repo: string): Promise<LiveAgent[]> => get(`/api/agents${q(repo)}`).then(res),
+  prs: (repo: string): Promise<PrSummary[]> => get(`/api/prs${q(repo)}`).then(res),
   // The client sends its own local midnight: "merged today" belongs to the person reading the board,
   // not to the timezone of whatever machine the bridge runs on.
   mergedPrs: (repo: string): Promise<MergedPr[]> => {
     const midnight = new Date();
     midnight.setHours(0, 0, 0, 0);
-    return fetch(`/api/prs/merged${q(repo, `&since=${midnight.getTime()}`)}`).then(res);
+    return get(`/api/prs/merged${q(repo, `&since=${midnight.getTime()}`)}`).then(res);
   },
-  prDetail: (repo: string, n: number): Promise<PrDetail> => fetch(`/api/prs/${n}${q(repo)}`).then(res),
-  prDiff: (repo: string, n: number): Promise<{ diff: string }> => fetch(`/api/prs/${n}/diff${q(repo)}`).then(res),
-  reviewEvidence: (repo: string, n: number): Promise<ReviewThreadEvidence[]> => fetch(`/api/prs/${n}/review-evidence${q(repo)}`).then(res),
-  reviewSignal: (repo: string, n: number): Promise<ReviewSignal> => fetch(`/api/prs/${n}/review-signal${q(repo)}`).then(res),
+  prDetail: (repo: string, n: number): Promise<PrDetail> => get(`/api/prs/${n}${q(repo)}`).then(res),
+  prDiff: (repo: string, n: number): Promise<{ diff: string }> => get(`/api/prs/${n}/diff${q(repo)}`).then(res),
+  reviewEvidence: (repo: string, n: number): Promise<ReviewThreadEvidence[]> => get(`/api/prs/${n}/review-evidence${q(repo)}`).then(res),
+  reviewSignal: (repo: string, n: number): Promise<ReviewSignal> => get(`/api/prs/${n}/review-signal${q(repo)}`).then(res),
   prComments: (repo: string, n: number, since?: string): Promise<ConversationComment[]> =>
-    fetch(`/api/prs/${n}/comments${q(repo)}${since ? `&since=${encodeURIComponent(since)}` : ""}`).then(res),
-  ciEvidence: (repo: string, n: number): Promise<CiFailureEvidence[]> => fetch(`/api/prs/${n}/ci-evidence${q(repo)}`).then(res),
+    get(`/api/prs/${n}/comments${q(repo)}${since ? `&since=${encodeURIComponent(since)}` : ""}`).then(res),
+  ciEvidence: (repo: string, n: number): Promise<CiFailureEvidence[]> => get(`/api/prs/${n}/ci-evidence${q(repo)}`).then(res),
   localDiff: (repo: string, worktree: string): Promise<{ diff: string }> =>
-    fetch(`/api/diff${q(repo, `&worktree=${encodeURIComponent(worktree)}`)}`).then(res),
+    get(`/api/diff${q(repo, `&worktree=${encodeURIComponent(worktree)}`)}`).then(res),
   merge: (repo: string, pr: number, worktreePath?: string): Promise<{ ok: true }> => post("/api/merge", { repo, pr, worktreePath }),
   closePr: (repo: string, pr: number, worktreePath?: string, branch?: string): Promise<{ ok: true }> =>
     post("/api/prs/close", { repo, pr, worktreePath, branch }),
@@ -186,13 +187,13 @@ export const api = {
   // branch is checked out on both (the session's instance and the preview's may differ).
   preview: (repo: string, key: string, worktree: string, instance?: string, branch?: string): Promise<PreviewSvc[]> => post("/api/preview", { repo, key, worktree, instance, branch }),
   previewMaster: (repo: string): Promise<{ worktreePath: string; svcs: PreviewSvc[] }> => post("/api/preview/master", { repo }),
-  previewStatus: (key: string, instance?: string): Promise<PreviewSvc[]> => fetch(`/api/preview?key=${encodeURIComponent(key)}${instance ? `&instance=${encodeURIComponent(instance)}` : ""}`).then(res),
-  previews: (): Promise<{ key: string; instance?: string; svcs: PreviewSvc[] }[]> => fetch("/api/previews").then(res),
+  previewStatus: (key: string, instance?: string): Promise<PreviewSvc[]> => get(`/api/preview?key=${encodeURIComponent(key)}${instance ? `&instance=${encodeURIComponent(instance)}` : ""}`).then(res),
+  previews: (): Promise<{ key: string; instance?: string; svcs: PreviewSvc[] }[]> => get("/api/previews").then(res),
   previewStop: (key: string, instance?: string): Promise<{ ok: true }> => post("/api/preview/stop", { key, instance }),
   // A machine's vitals (the header's instance chip); `instance` asks another instance for its own.
-  health: (instance?: string): Promise<InstanceHealth> => fetch(`/api/health${instance ? `?instance=${encodeURIComponent(instance)}` : ""}`).then(res),
+  health: (instance?: string): Promise<InstanceHealth> => get(`/api/health${instance ? `?instance=${encodeURIComponent(instance)}` : ""}`).then(res),
   // Its recorded vitals over the last `hours` (default 24), read from Postgres by whichever instance answers.
-  healthHistory: (instance: string, hours = 24): Promise<MetricPoint[]> => fetch(`/api/health/history?instance=${encodeURIComponent(instance)}&hours=${hours}`).then(res),
+  healthHistory: (instance: string, hours = 24): Promise<MetricPoint[]> => get(`/api/health/history?instance=${encodeURIComponent(instance)}&hours=${hours}`).then(res),
   syncWorktrees: (repo: string): Promise<SyncResult[]> => post("/api/worktrees/sync", { repo }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>
     post("/api/worktrees/remove", { repo, worktreePath, branch, deleteBranch }),

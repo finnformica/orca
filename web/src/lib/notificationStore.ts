@@ -6,6 +6,7 @@ import { useSyncExternalStore } from "react";
 import { getDefaultStore } from "jotai";
 import { api } from "../api";
 import { subscribeNotifications } from "./events";
+import { onRefresh } from "./refresh";
 import { browserNotifyAtom, notifyDndAtom, orchestratorOpenAtom, toastPrefsAtom } from "./atoms";
 import { openOrchestrator } from "./orchestratorOpen";
 import { isMobile } from "./viewport";
@@ -164,10 +165,12 @@ export function start(): void {
   if (started) return;
   started = true;
   void hydrate();
-  stop = subscribeNotifications({
+  const unsubscribe = subscribeNotifications({
     notification: (n) => merge([n], true),
     resync: () => void hydrate(watermark), // the stream was away: anything pushed meanwhile is fetched
   });
+  const offRefresh = onRefresh(() => hydrate()); // "Refresh everything": the whole centre, read again
+  stop = () => { unsubscribe(); offRefresh(); };
 }
 
 /** Tests: tear the mirror down so the next mount starts clean. */

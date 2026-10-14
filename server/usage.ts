@@ -3,6 +3,7 @@
 import { createHash } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
+import { markDown, reachable } from "./peer";
 
 // Overridable so a test can point at canned readings (`{token}` in the override stands in for the
 // login's token, so each profile gets its own) — the real endpoint otherwise.
@@ -148,13 +149,23 @@ export function mergeInstanceProfiles(byInstance: InstanceProfiles[], preferred?
  *  An unreachable or erroring peer is dropped, not awaited past its own failure — usage still shows
  *  from whoever answered. Codex and routing stay this host's own: neither is meaningfully shared
  *  across instances the way a Claude login's usage is. */
+/** How long the merge waits for a reachable peer's own reading before showing this host's alone. */
+export const PEER_USAGE_MS = 10_000;
+
 export async function usageAcrossInstances(instances: Record<string, string> | undefined, self: string, preferred?: string): Promise<Usage | null> {
   const peers = Object.entries(instances ?? {}).filter(([name]) => name !== self);
   const [local, remote] = await Promise.all([
     usage(),
     Promise.all(peers.map(async ([instance, base]): Promise<InstanceProfiles | null> => {
       try {
-        const res = await fetch(new URL("/api/usage/local", base));
+        // An offline peer black-holes the connect: probe first (2s once, then cached), and bound the
+        // answer — the peer runs hydra itself, which has its own 15s cap.
+        if (!(await reachable(base))) return null;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const res = await Promise.race([
+          fetch(new URL("/api/usage/local", base)),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("peer usage timed out")), PEER_USAGE_MS); }),
+        ]).catch((e) => { markDown(base); throw e; }).finally(() => clearTimeout(timer));
         if (!res.ok) return null;
         const data = (await res.json()) as Usage | null;
         return data?.profiles ? { instance, profiles: data.profiles } : null;

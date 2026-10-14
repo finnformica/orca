@@ -6,6 +6,7 @@
 // module keeps a synchronous in-memory mirror of it. localStorage holds only per-browser UI state
 // (theme, density, composer drafts) — see the migration below for the one-shot handover.
 import { useEffect, useSyncExternalStore } from "react";
+import { onRefresh } from "@/lib/refresh";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import {
@@ -342,6 +343,9 @@ async function refreshAll(streams: Promise<void>[]): Promise<void> {
 export function refresh(): Promise<void> {
   return refreshAll([pollAgents(), pollPrs(), pollMerged()]);
 }
+// "Refresh everything" (the top bar's Updated chip): the board's three streams, and every review
+// signal already loaded (the rows' review clusters, the PR page's Review panel) fetched again.
+onRefresh(() => Promise.all([refresh(), refreshReviewSignals()]));
 
 let pollTick = 0;
 let lastMergedAt = 0;
@@ -552,6 +556,17 @@ function useReviewSignalEntry(repo: string, prNumber: number | undefined, sig: s
       .finally(notify);
   }, [key, repo, prNumber, sig]);
   return entry;
+}
+
+function refreshReviewSignals(): Promise<unknown> {
+  return Promise.allSettled([...reviewSignals.entries()].filter(([, e]) => !e.inflight).map(([key, e]) => {
+    const at = key.lastIndexOf("#");
+    const repo = key.slice(0, at), n = Number(key.slice(at + 1));
+    return api.reviewSignal(repo, n)
+      .then((s) => reviewSignals.set(key, { digest: reviewDigest(s), threads: s.threads, sig: e.sig, at: Date.now() }))
+      .catch(() => {})
+      .finally(notify);
+  }));
 }
 
 export const useReviewDigest = (repo: string, prNumber: number | undefined, sig = ""): ReviewDigest | undefined =>
