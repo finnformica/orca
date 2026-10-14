@@ -493,10 +493,9 @@ test("hostHints: every OTHER host's non-ok state is a hint; the picked host's ow
   expect(hostHints({ hosts: undefined })).toEqual([]);
 });
 
-// The header meter's pick: a single login shows its own window; several in rotation show whichever
-// has the most headroom (lowest utilization — the one hydra would actually route to next); nothing
-// eligible (every login exhausted/locked) falls back to the highest, since there's no "next run" to
-// point at. Pure, so this is checked without mounting anything.
+// The header meter's number: EXACTLY UsageCard's headline Claude row (usageGroups' "fleet" group,
+// or "claude" with no hydra) — never a separately selected login, so the two can't read differently
+// side by side. Pure, so this is checked without mounting anything.
 test("headerUsage: a single login (no hydra) is just its own 5-hour window", async () => {
   const { headerUsage } = await import("../web/src/workstream");
   expect(headerUsage(null)).toBeNull();
@@ -505,27 +504,27 @@ test("headerUsage: a single login (no hydra) is just its own 5-hour window", asy
     .toEqual({ pct: 38, tooltip: "5-hour window" });
 });
 
-test("headerUsage: several logins in rotation show the one with the most headroom, named in the tooltip", async () => {
-  const { headerUsage } = await import("../web/src/workstream");
+test("headerUsage: several logins in rotation — the fleet MEAN, same as the card's headline row, not any one login", async () => {
+  const { headerUsage, usageGroups } = await import("../web/src/workstream");
   const profile = (name: string, pct: number, state = "ok") =>
     ({ name, state, usage: { fiveHour: { utilization: pct, resetsAt: null }, sevenDay: { utilization: 0, resetsAt: null }, extra: null } });
   const u = { claude: null, codex: null, profiles: [profile("work", 80), profile("personal", 20), profile("side", 50)] };
   const r = headerUsage(u)!;
-  expect(r.pct).toBe(20); // "personal" has the most headroom — hydra would route there next
-  expect(r.tooltip).toContain("personal");
-  expect(r.tooltip).toContain("next run");
+  expect(r.pct).toBe(50); // mean of 80/20/50, not the lowest (20) or highest (80) individually
+  expect(r.tooltip).toBe("5-hour window · 3 logins in rotation");
+  // The exact number usageGroups gives UsageCard's own "fleet" row — reused, not recomputed.
+  const fleetRow = usageGroups(u).find((g) => g.key === "fleet")!.rows.find((row) => row.key === "fleet:fiveHour")!;
+  expect(r.pct).toBe(fleetRow.pct);
 });
 
-test("headerUsage: nothing currently eligible (every login exhausted or locked) falls back to the highest utilization", async () => {
+test("headerUsage: exhausted/locked logins still count toward the mean — same as the card's headline row", async () => {
   const { headerUsage } = await import("../web/src/workstream");
   const profile = (name: string, pct: number, state: string) =>
     ({ name, state, usage: { fiveHour: { utilization: pct, resetsAt: null }, sevenDay: { utilization: 0, resetsAt: null }, extra: null } });
   const u = { claude: null, codex: null, profiles: [profile("work", 92, "exhausted"), profile("side", 60, "locked")] };
   const r = headerUsage(u)!;
-  expect(r.pct).toBe(92); // worst, since nothing would actually run next
-  expect(r.tooltip).toContain("work");
-  expect(r.tooltip).toContain("highest utilization");
-  expect(r.tooltip).toContain("no login currently eligible");
+  expect(r.pct).toBe(76); // mean of 92/60 — exhausted/locked logins still hold a real reading
+  expect(r.tooltip).toBe("5-hour window · 2 logins in rotation · 2 exhausted");
 });
 
 test("headerUsage: disabled / signed-out-here logins never used — null with none left to show", async () => {
@@ -563,15 +562,28 @@ test("the header meter shows the ring + percent for a single login", async () =>
   expect(meter.className).toContain("max-md:hidden"); // hidden on phone widths
 });
 
-test("the header meter picks the login with most headroom across several, and says so in the tooltip", async () => {
+test("the header meter is the fleet mean across several logins, not any one of them", async () => {
   const profile = (name: string, pct: number) =>
     ({ name, state: "ok", usage: { fiveHour: { utilization: pct, resetsAt: null }, sevenDay: { utilization: 0, resetsAt: null }, extra: null } });
   apiFake.usageData = { claude: null, codex: null, profiles: [profile("work", 80), profile("personal", 20)] };
   await mount("/agents");
   const meter = headerMeter()!;
-  expect(meter.textContent).toBe("20%");
-  expect(meter.title).toContain("personal");
-  expect(meter.title).toContain("next run");
+  expect(meter.textContent).toBe("50%"); // mean of 80/20 — not 80, not 20
+  expect(meter.title).toBe("5-hour window · 2 logins in rotation");
+});
+
+// The regression this guards: the header once computed its own per-login pick (33%) while the Usage
+// card's headline row, visible right under it on the Overview, read the fleet mean (54%) — two
+// different numbers for the same thing, side by side. Mounted on "/" where BOTH render at once.
+test("the header meter's percent matches the Usage card's own headline 5-hour row, exactly, when both are visible together", async () => {
+  const profile = (name: string, pct: number) =>
+    ({ name, state: "ok", usage: { fiveHour: { utilization: pct, resetsAt: null }, sevenDay: { utilization: 0, resetsAt: null }, extra: null } });
+  apiFake.usageData = { claude: null, codex: null, profiles: [profile("work", 80), profile("personal", 20), profile("side", 61)] };
+  await mount("/");
+  const meter = headerMeter()!;
+  const headline = rows("fleet")[0]!; // "5-hour window 54% / 100%"
+  expect(headline.startsWith("5-hour window")).toBe(true);
+  expect(`${meter.textContent} / 100%`).toBe(headline.replace("5-hour window ", ""));
 });
 
 test("hovering (or focusing) the header meter opens a HoverCard with the SAME UsageCard the Overview page shows — not a second widget", async () => {

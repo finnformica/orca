@@ -61,11 +61,12 @@ export function UsageCard({ className, bodyClass }: { className?: string; bodyCl
 }
 
 /** The top bar's compact Claude 5-hour-window meter, immediately left of "Ask the orchestrator": a
- *  ring + percent for whichever login `headerUsage` picks (the one the next run would use, or — with
- *  nothing eligible — the highest utilization; the tooltip says which). Hovering or focusing it opens
- *  a HoverCard around the SAME `UsageCard` the Overview page shows, borderless so it isn't double-
- *  framed inside the popover — no second usage widget, just a second place to open the one that
- *  exists. Renders nothing until the first poll answers, or with no Claude login signed in at all. */
+ *  ring + percent for EXACTLY the number UsageCard's own headline row shows (`headerUsage` reuses
+ *  `usageGroups`) — never a separately computed figure that could read differently beside the card.
+ *  Hovering or focusing it opens a HoverCard around the SAME `UsageCard` the Overview page shows,
+ *  borderless so it isn't double-framed inside the popover — per-login detail lives there, not in
+ *  this number or its tooltip. Renders nothing until the first poll answers, or with no Claude login
+ *  signed in / none in rotation. */
 export function HeaderUsageMeter() {
   const usage = useUsage();
   const loaded = useUsageLoaded();

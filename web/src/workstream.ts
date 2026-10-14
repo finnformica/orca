@@ -2251,37 +2251,20 @@ export function usageGroups(u: UsageReading | null, now = Date.now()): UsageGrou
 /** Hydra is installed but the bridge's `claude` isn't its shim: every run silently uses one login. */
 export const routingBroken = (u: UsageReading | null): boolean => Boolean(u?.routing?.hydra && !u.routing.shim);
 
-/** The header meter's one number: Claude's 5-hour window, and whose it is. With no hydra (or just
- *  one login) it's simply that login's window. With several in rotation: the one hydra would
- *  actually route to next has the LOWEST utilization among logins it would route to at all (not
- *  disabled, exhausted or locked) — hydra picks whichever has the most headroom. When nothing is
- *  currently eligible (every login exhausted/locked), there is no "next run" to show, so it falls
- *  back to the highest utilization instead — the one closest to blocking you. Null with nothing
- *  signed in, so the header hides the meter rather than drawing an empty ring. */
+/** The header meter's one number: EXACTLY the figure UsageCard's headline Claude row shows for the
+ *  5-hour window — the fleet mean across logins in rotation (or, with no hydra, the one login's own
+ *  window) — by reusing `usageGroups`, the same computation the card renders. A header that computed
+ *  its own per-login pick once showed 33% beside a card whose headline row read 54% for the same
+ *  account: two numbers for one thing. Per-login detail (which login, its own state) lives only in
+ *  the hover card's full UsageCard, never in the header's own number or tooltip. Null when the
+ *  headline row itself has nothing to show (no provider signed in, or nothing in rotation) — the
+ *  header hides rather than drawing an empty ring. */
 export type HeaderUsage = { pct: number; tooltip: string };
 export function headerUsage(u: UsageReading | null, now = Date.now()): HeaderUsage | null {
-  if (!u) return null;
-  const profiles = u.profiles ?? [];
-  if (profiles.length) {
-    const withUsage = profiles.filter((p) => p.usage);
-    if (!withUsage.length) return null;
-    const eligible = withUsage.filter((p) => !outOfRotation(p) && p.state !== "exhausted" && p.state !== "locked");
-    const pick = (list: typeof withUsage, dir: -1 | 1) =>
-      list.reduce((best, p) => {
-        const pct = liveWindow(p.usage!.fiveHour, now).utilization;
-        return !best || dir * pct > dir * best.pct ? { p, pct } : best;
-      }, null as { p: (typeof withUsage)[number]; pct: number } | null)!;
-    if (eligible.length) {
-      const { p, pct } = pick(eligible, -1); // lowest utilization = most headroom = next run
-      const tooltip = eligible.length > 1 || withUsage.length > 1
-        ? `${p.name} · next run (most headroom) · ${pct}% of its 5-hour window` : `${p.name} · ${pct}% of its 5-hour window`;
-      return { pct, tooltip };
-    }
-    const { p, pct } = pick(withUsage, 1); // nothing eligible: show the worst instead
-    return { pct, tooltip: `${p.name} · highest utilization — no login currently eligible to run · ${pct}% of its 5-hour window` };
-  }
-  if (!u.claude) return null;
-  return { pct: liveWindow(u.claude.fiveHour, now).utilization, tooltip: "5-hour window" };
+  const head = usageGroups(u, now).find((g) => g.key === "fleet" || g.key === "claude");
+  const row = head?.rows.find((r) => r.key.endsWith(":fiveHour"));
+  if (!head || !row) return null;
+  return { pct: row.pct, tooltip: head.subtitle ? `5-hour window · ${head.subtitle}` : "5-hour window" };
 }
 
 /** Usage zone by how much of an allowance is burned: fine, caution (≥75%), the red zone (≥90%). */
