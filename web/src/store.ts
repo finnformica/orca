@@ -551,6 +551,11 @@ function useReviewSignalEntry(repo: string, prNumber: number | undefined, sig: s
 
 export const useReviewDigest = (repo: string, prNumber: number | undefined, sig = ""): ReviewDigest | undefined =>
   useReviewSignalEntry(repo, prNumber, sig)?.digest;
+/** The digest if the cache already holds one — NEVER fetches. The Agents list's row buttons read it,
+ *  so a list of N PRs doesn't fire N review calls for them (the row's review cluster does its own,
+ *  lazily); undefined until something else has loaded it. */
+export const useCachedReviewDigest = (repo: string, prNumber: number | undefined): ReviewDigest | undefined =>
+  useSyncExternalStore(subscribe, () => (prNumber ? reviewSignals.get(`${repo}#${prNumber}`)?.digest : undefined));
 /** The PR's inline review threads (resolved / outdated included) from the SAME cached fetch as the
  *  digest — the PR page's conversation folds them like GitHub does. */
 export const useReviewThreads = (repo: string, prNumber: number | undefined, sig = ""): ReviewThreadEvidence[] | undefined =>

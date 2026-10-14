@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { CheckCheck, ChevronDown, Clock, GitMerge, GitPullRequestArrow, Loader2, MessageSquarePlus, MoreVertical, Send, Sparkles, Wrench, X, type LucideIcon } from "lucide-react";
 import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, mergeWhenGreen, moveWorkstream, previewConfigured, thisInstance,
-  cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, slackChannel, staleHours, suggestTitle, toggleFollow, useRepos, useReviewDigest, type Row,
+  cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, slackChannel, staleHours, suggestTitle, toggleFollow, useCachedReviewDigest, useRepos, useReviewDigest, type Row,
 } from "../store";
 import { firstLine, prMenuActions, prPreviewState, quickActions, shouldBump, type QuickAction, type QuickActionId } from "../workstream";
 import { reviewSig } from "./Review";
@@ -33,8 +33,8 @@ const QUICK_ICONS: Record<QuickActionId, LucideIcon> = {
 
 // `compact` renders the toolbar as icon-only buttons (dense view); `leading` slots an extra control
 // (the dense Test-locally icon) into the front of that same row so the whole toolbar reads as one line.
-// `menuOnly` is the Agents list's trailing ⋯: no toolbar, Follow up and Merge move INTO the menu, so
-// every verb is still one click away. `onFollowUp` replaces the inline composer there (the agent's
+// `menuOnly` is the Agents list's trailing ⋯: no Follow up button, Follow up and Merge move INTO the
+// menu, so every verb is still one click away; the state-aware quick actions still show beside it. `onFollowUp` replaces the inline composer there (the agent's
 // page has the conversation); without it the menu's Follow up opens the composer as the button does.
 // `contextAt` (menuOnly) opens the SAME items as a right-click menu at that point — a second,
 // controlled root over the one items fragment, so the two menus can't drift; `onOpen` adds Open.
@@ -78,10 +78,13 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   const canMergeNow = isPr ? (!row.isDraft && row.mergeable === "MERGEABLE" && !ciFailing) : row.lane === "MERGEABLE";
   const unreviewed = isPr && row.reviewStatus !== "approved";
   // The toolbar's state-aware verbs (workstream.quickActions), first = primary. The digest is the
-  // review cluster's cached fetch; the Agents list (menuOnly) has no toolbar, so it asks for none.
+  // review cluster's cached fetch; an Agents row (menuOnly) only PEEKS at that cache — one fetch per
+  // row on load is what the lazy digest exists to avoid — and without it decides on the rest.
   const repoInfo = useRepos().find((r) => r.name === row.repo);
-  const digest = useReviewDigest(row.repo, menuOnly ? undefined : row.prNumber, reviewSig(row));
-  const quick = menuOnly ? [] : quickActions(row, {
+  const fetched = useReviewDigest(row.repo, menuOnly ? undefined : row.prNumber, reviewSig(row));
+  const cached = useCachedReviewDigest(row.repo, menuOnly ? row.prNumber : undefined);
+  const digest = menuOnly ? cached : fetched;
+  const quick = quickActions(row, {
     hasWork, unresolved: digest?.unresolved.count, slackChannel: Boolean(slackChannel(row.repo)),
     mergePolicy: repoInfo?.mergePolicy, nowMs: Date.now(), staleHours: staleHours(),
   });
@@ -249,6 +252,18 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
           const Icon = QUICK_ICONS[a.id];
           const label = a.id === "merge" ? mergeLabel : a.label;
           // A disabled button swallows hover, so its reason rides a wrapper's title.
+          if (menuOnly) return (
+            // An Agents row: the primary labelled (its label is `data-quick-label`, which the phone's
+            // stacked row hides to keep an icon-sized touch target), the rest icon-only and gone below
+            // md. The wrapper keeps every click — a disabled button's included — off the row's navigation.
+            <span key={a.id} title={a.disabled ?? label} data-quick-action={a.id} data-primary={i === 0 ? "" : undefined}
+              className={i === 0 ? "inline-flex" : "inline-flex max-md:hidden"} onClick={(e) => e.stopPropagation()}>
+              <Button size={i === 0 ? "sm" : "icon"} className={i === 0 ? "h-7 gap-1 px-2 text-xs has-[>svg]:px-2" : "size-7"} variant={i === 0 ? "default" : "outline"}
+                disabled={Boolean(a.disabled)} onClick={() => runQuick(a)} aria-label={label}>
+                <Icon className="size-3.5" />{i === 0 && <span data-quick-label>{label}</span>}
+              </Button>
+            </span>
+          );
           return (
             <span key={a.id} title={a.disabled ?? label} data-quick-action={a.id} data-primary={i === 0 ? "" : undefined}>
               <Button size={icon} className={iconClass} variant={i === 0 ? "default" : "outline"} disabled={Boolean(a.disabled)} onClick={() => runQuick(a)} aria-label={label}>
