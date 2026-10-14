@@ -11,7 +11,7 @@ import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import { getDefaultStore } from "jotai";
 import { orchestratorOpenAtom } from "@/lib/atoms";
-import { COARSE_QUERY, NARROW_QUERY, enterSends, expandTruncatedOnTap, keyboardOpen, trackVisualViewport } from "@/lib/viewport";
+import { COARSE_QUERY, NARROW_QUERY, enterSends, expandTruncatedOnTap, keepComposerFocus, keyboardOpen, trackVisualViewport } from "@/lib/viewport";
 import { poll } from "@/lib/poll";
 import { PULL_REFRESH_PX, pullState, swipeDecision, STALE_AFTER_MS, launchOverlay, newerBuild, previewHref, previewLabel, staleAge } from "@/workstream";
 import { themeColor } from "@/lib/theme";
@@ -411,6 +411,93 @@ describe("the phone layout (390px, touch)", () => {
     vv.height = 508; vv.dispatchEvent(new Event("resize"));
     off();
     expect(root.dataset.keyboard).toBeUndefined(); // never left behind
+  });
+
+  test("the pinned chat follows the keyboard, not the focus: kept through a blur, let go (scroll restored) once it has closed", async () => {
+    const vv = Object.assign(new EventTarget(), { height: 844, offsetTop: 0, scale: 1 });
+    const scrolls: number[] = [];
+    const fake = { visualViewport: vv, document, innerHeight: 844, scrollX: 0, scrollY: 0, scrollTo: (_x: number, y: number) => { scrolls.push(y); fake.scrollY = y; } };
+    const fill = document.createElement("div");
+    fill.setAttribute("data-keyboard-fill", "");
+    const box = document.createElement("textarea");
+    const send = document.createElement("button");
+    fill.append(box, send);
+    const other = document.createElement("input");
+    document.body.append(fill, other);
+    const off = trackVisualViewport(fake as unknown as Window);
+    const resize = (height: number) => { vv.height = height; vv.dispatchEvent(new Event("resize")); };
+
+    box.focus(); // the tap: marked at once, so the pin lands with the keyboard's first resize
+    expect(fill.hasAttribute("data-keyboard-owner")).toBe(true);
+    fake.scrollY = 300; // iOS scrolls the page to reveal the field
+    resize(508);
+    expect(document.documentElement.dataset.keyboard).toBe("open");
+    send.focus(); // a button taking focus is not a new field
+    box.blur();
+    expect(fill.hasAttribute("data-keyboard-owner")).toBe(true); // still pinned while the keyboard is up
+    resize(844);
+    expect(fill.hasAttribute("data-keyboard-owner")).toBe(false); // one move, when it has closed
+    expect(scrolls).toEqual([0]); // and the page is back where it was
+
+    box.focus(); resize(508);
+    other.focus(); // a field outside any chat takes the keyboard: the chat lets go
+    expect(fill.hasAttribute("data-keyboard-owner")).toBe(false);
+    resize(844);
+
+    // The keyboard reopening over a field that kept its focus (no focusin) still pins its chat.
+    box.focus(); resize(508); resize(844);
+    expect(document.activeElement).toBe(box);
+    resize(508);
+    expect(fill.hasAttribute("data-keyboard-owner")).toBe(true);
+    off();
+    expect(fill.hasAttribute("data-keyboard-owner")).toBe(false);
+    fill.remove(); other.remove();
+  });
+
+  test("styles.css pins the keyboard's owner, never whatever holds the focus", async () => {
+    const css = await Bun.file(new URL("../web/src/styles.css", import.meta.url)).text();
+    expect(css).toContain("html[data-keyboard] [data-keyboard-fill][data-keyboard-owner] {");
+    expect(css).not.toContain("[data-keyboard-fill]:focus-within");
+  });
+
+  test("tapping Send with the composer focused sends once and keeps the focus (and the keyboard) in the box", async () => {
+    await mount("/", true);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await act(async () => { await flush(); await flush(); });
+    const page = $('[data-slot="orchestrator-page"]')!;
+    const box = page.querySelector("textarea")!;
+    box.focus();
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "ship it");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    const send = page.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true });
+    send.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true); // the blur that closed the keyboard mid-tap never happens
+    await click(send);
+    await act(async () => { await flush(); await flush(); });
+    expect(apiFake.orchestratorMessages).toHaveLength(1);
+    expect(document.activeElement).toBe(box);
+    expect(box.value).toBe("");
+  });
+
+  test("desktop: a click on Send moves the focus as it always did", () => {
+    const box = document.createElement("textarea");
+    const send = document.createElement("button");
+    document.body.append(box, send);
+    box.focus();
+    let prevented = 0;
+    const tap = { preventDefault: () => { prevented++; }, currentTarget: send };
+    keepComposerFocus(tap, false);
+    expect(prevented).toBe(0);
+    keepComposerFocus(tap, true);
+    expect(prevented).toBe(1);
+    send.focus(); // nothing to keep once a button holds the focus
+    keepComposerFocus(tap, true);
+    expect(prevented).toBe(1);
+    box.remove(); send.remove();
   });
 });
 
