@@ -64,7 +64,7 @@ export async function uploadPrAssets(cwd: string, ref: string, files: { name: st
 export async function deletePrAssets(cwd: string, pr: number): Promise<string[]> {
   const refs = ((await api(cwd, "GET", `repos/{owner}/{repo}/git/matching-refs/heads/pr-assets/${pr}`)) ?? []) as { ref: string }[];
   const mine = refs.map((r) => r.ref).filter((r) => new RegExp(`^refs/heads/pr-assets/${pr}(-|$)`).test(r));
-  for (const r of mine) await api(cwd, "DELETE", `repos/{owner}/{repo}/git/${r.replace(/^refs\//, "")}`);
+  for (const r of mine) await api(cwd, "DELETE", `repos/{owner}/{repo}/git/${r}`);
   return mine;
 }
 

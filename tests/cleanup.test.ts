@@ -17,7 +17,7 @@ import * as orchestrator from "../server/orchestrator";
 import { run } from "../server/run";
 import type { OrcaConfig, RepoConfig } from "../server/config";
 import { CLEANUP_GRACE_MS, cleanupDecision, sweepText } from "../web/src/workstream";
-import { installFakeGh, restorePath, setDonePrListFixture, setPrListFixture } from "./helpers";
+import { installFakeGh, recordGhArgs, restorePath, setDonePrListFixture, setPrListFixture, setRefsFixture } from "./helpers";
 import { freshSchema, type TestDb } from "./pg";
 
 let dir: string, origin: string, here: string;
@@ -34,6 +34,7 @@ beforeEach(async () => {
   prev = {
     ORCA_STATE_DIR: process.env.ORCA_STATE_DIR, ORCA_DATABASE_URL: process.env.ORCA_DATABASE_URL, ORCA_INSTANCE: process.env.ORCA_INSTANCE,
     ORCA_PRLIST_FIXTURE: process.env.ORCA_PRLIST_FIXTURE, ORCA_PRLIST_DONE_FIXTURE: process.env.ORCA_PRLIST_DONE_FIXTURE,
+    ORCA_GH_REFS_FIXTURE: process.env.ORCA_GH_REFS_FIXTURE, ORCA_GH_ARGS_LOG: process.env.ORCA_GH_ARGS_LOG,
   };
   dir = realpathSync(await mkdtemp(join(tmpdir(), "orca-cleanup-")));
   process.env.ORCA_STATE_DIR = join(dir, "state");
@@ -100,6 +101,17 @@ test("C1: a merged PR's worktree is reaped and its card archived after the grace
   expect(await branchExists("merged-x")).toBe(false); // merged: the branch goes too
   expect(await db.enrichment("r")).not.toHaveProperty("merged-x"); // archived…
   expect([...(await db.archivedBranches("r"))].sort()).toEqual(["merged-x"]); // …not deleted
+});
+
+test("C1d: reaping a merged PR's worktree deletes its hosted screenshots (pr-assets/<pr>-…), and no other PR's", async () => {
+  const merged = await workOn("shots-m");
+  await setDonePrListFixture([{ number: 7, title: "With shots", url: "u7", headRefName: "shots-m", headRefOid: merged.sha, mergedAt: iso(NOW - CLEANUP_GRACE_MS), closedAt: iso(NOW - CLEANUP_GRACE_MS) }]);
+  await setRefsFixture(["refs/heads/pr-assets/7-shots-m", "refs/heads/pr-assets/70-other"]); // a prefix match is not PR 7's
+  const args = await recordGhArgs();
+  expect((await verbs.cleanupRepo(repo, { now: NOW })).map((c) => `${c.branch}:${c.action}`)).toEqual(["shots-m:reaped"]);
+  const log = await args();
+  expect(log).toContain("api -X GET repos/{owner}/{repo}/git/matching-refs/heads/pr-assets/7");
+  expect(log.split("\n").filter((l) => l.startsWith("api -X DELETE"))).toEqual(["api -X DELETE repos/{owner}/{repo}/git/refs/heads/pr-assets/7-shots-m"]);
 });
 
 test("C1b: a branch preview's read-only bridge never reaps a worktree", async () => {
