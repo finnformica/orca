@@ -573,6 +573,10 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
 }
 
 export async function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): Promise<LaunchReceipt> {
+  // A branch preview's bridge launches NOTHING — the last line of defence under every route and loop
+  // guard: the 2026-10-15 stray (a preview bridge on a branch's stale code) launched the
+  // orchestrator's wakes with a deleted bin/ on PATH.
+  if (db.previewBridge()) throw new Error("this is a branch preview's bridge: it launches no agent runs");
   // Reject an overlap whether we remember the run in-process OR a durable lease from before a restart
   // says one is still live in this worktree.
   if (runs.get(key)?.status === "running" || lease.leased(key)) throw new Error("an agent is already running for this worktree");
@@ -874,6 +878,7 @@ export function adoptLeases(
   recover: (runId: string, sessionId?: string, worktreePath?: string) => Promise<{ response?: string; structured?: AgentOutcome } | undefined>,
   skip?: string,
 ): number {
+  if (!primary.held()) return 0; // only the instance's primary finishes another bridge's runs
   const adopted = lease.live().filter((l) => l.key !== skip && !runs.has(l.key));
   for (const l of adopted) {
     runs.set(l.key, { status: "running", provider: l.provider, runId: l.runId, sessionId: l.sessionId, startedAt: l.startedAt });

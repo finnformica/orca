@@ -13,6 +13,7 @@ import * as agent from "./agent";
 import * as db from "./db";
 import * as primary from "./primary";
 import * as preview from "./preview";
+import * as procs from "./proc";
 import * as forward from "./forward";
 import * as notify from "./notify";
 import { existsSync } from "fs";
@@ -216,6 +217,7 @@ export async function removeWorktree(repo: RepoConfig, worktreePath: string, bra
   agent.stop(worktreePath);
   await agent.killInWorktree(worktreePath);
   preview.stop(worktreePath);
+  await procs.stopBridgesIn(worktreePath); // a branch preview's bridge preview.stop doesn't track
   await git.removeWorktree(repo.repoPath, worktreePath).catch(() => {});
   if (deleteBranch && branch) await git.deleteBranch(repo.repoPath, branch);
   if (deleteBranch && branch) await db.archive(repo.name, branch);
@@ -372,6 +374,7 @@ async function reapWorktree(repo: RepoConfig, w: { branch: string; worktreePath:
   // never by argv: the orchestrator's prompt lists every branch, and an argv match SIGTERMed its wake.
   await agent.killInWorktree(w.worktreePath);
   preview.stop(w.worktreePath, true); // reaped → drop its preview DB too
+  await procs.stopBridgesIn(w.worktreePath); // a branch preview's bridge preview.stop doesn't track
   await db.clearPreviewPlacement(w.worktreePath).catch(() => {});
   await git.removeWorktree(repo.repoPath, w.worktreePath);
   if (reason === "merged") await git.deleteBranch(repo.repoPath, w.branch);
@@ -402,8 +405,8 @@ const cleaning = new Map<string, Promise<CleanupResult[]>>();
  *  laptop. One pass per repo at a time: the poll and the tick overlap. */
 export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: number } = {}): Promise<CleanupResult[]> {
   // A branch preview's read-only bridge (db.previewBridge) answers the same agents poll: it must
-  // never remove this instance's worktrees.
-  if (db.previewBridge()) return Promise.resolve([]);
+  // never remove this instance's worktrees; nor may a secondary (primary.held covers both).
+  if (!primary.held()) return Promise.resolve([]);
   const inflight = cleaning.get(repo.name);
   if (inflight) return inflight;
   const pass = (async () => {
@@ -502,7 +505,13 @@ export async function sweep(cfg: OrcaConfig, opts: { confirm?: boolean; now?: nu
     const why = removing.has(p.key) ? "its worktree is being removed" : !existsSync(p.key) ? "its worktree is gone" : undefined;
     if (why) report.previews.push({ key: p.key, why });
   }
+  // A bridge (or any bun process) still running from a deleted checkout: stale code on the shared
+  // database by definition (incident 2026-10-15).
+  const strays = await procs.strayProcesses();
+  report.processes = strays.map((p) => ({ pid: p.pid, command: p.command, cwd: p.cwd ?? "" }));
   if (!confirm) return report;
+  const stopped = new Set(procs.terminate(strays));
+  for (const p of report.processes) p.done = stopped.has(p.pid);
   for (const w of report.worktrees) {
     if (w.action !== "remove") continue;
     try { await removing.get(w.worktreePath)!(); w.done = true; }
