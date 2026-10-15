@@ -38,5 +38,18 @@ forward_to_main() {
 if ! grep -q ORCA_PREVIEW_BRIDGE server/db.ts 2>/dev/null; then
   forward_to_main "this branch predates preview bridges"
 fi
+# Preview mode alone is not enough: a branch from before the one-primary-per-instance guards (#215,
+# server/primary.ts `watchSource`) runs the merge queue and the orchestrator's wakes from a preview
+# bridge, and never notices its worktree being deleted (incident 2026-10-15: one did both for 19h).
+if ! grep -q watchSource server/primary.ts 2>/dev/null; then
+  forward_to_main "this branch predates the preview-bridge guards"
+fi
 ORCA_PREVIEW_BRIDGE=1 ORCA_API_PORT="$port" ORCA_BIND=127.0.0.1 ORCA_ALLOW_WORKTREE_MIGRATIONS= bun server/index.ts
-forward_to_main "the branch's bridge exited ($?)"
+code=$?
+# The bridge leaves when its worktree is gone (primary.checkoutGone): so does the preview — a forward
+# shim left on the port with a deleted cwd is just the next stray.
+if [ ! -f server/index.ts ] || [ ! -d "$PWD" ]; then
+  echo "[orca] the previewed worktree is gone — not forwarding"
+  exit 0
+fi
+forward_to_main "the branch's bridge exited ($code)"

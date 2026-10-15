@@ -182,6 +182,16 @@ setInterval(() => {
   if (!primary.held()) return;
   void loadConfig().then((cfg) => mergeQueue.tick(cfg)).catch(db.logUnlessDown("orca: merge queue pass failed"));
 }, mergeQueue.MERGE_POLL_MS).unref();
+// Only this bridge may run the orchestrator's wakes: a bridge on code too old for the election (a
+// stray preview bridge, incident 2026-10-15) that launched one is stopped with it, and the wake is
+// re-run here (orchestrator.evictForeignWake). Once a minute, on the primary.
+const FOREIGN_WAKE_POLL_MS = 60_000;
+primary.onPrimary(() => {
+  const check = () => void loadConfig().then((cfg) => orchestrator.evictForeignWake(cfg, reconcile))
+    .catch((e) => console.error("orca: foreign-wake check failed", e));
+  check();
+  setInterval(() => { if (primary.held()) check(); }, FOREIGN_WAKE_POLL_MS).unref();
+});
 // Automatic PR upkeep (server/upkeep.ts): an orchestrated workstream's open PR that conflicts, goes
 // red or gets review threads is Address-PR'd on its own, on the instance holding its worktree. Never
 // from a branch preview's bridge, which launches nothing.

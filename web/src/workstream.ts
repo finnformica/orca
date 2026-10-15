@@ -2298,6 +2298,16 @@ export function hostHints(g: Pick<UsageGroup, "instance" | "state" | "hosts">): 
 
 export const outOfRotation = (p: { usage: unknown; state?: string }): boolean => !p.usage || p.state === "disabled" || p.state === "not signed in on this machine";
 
+/** The login toggle's optimistic update: flip one profile's `state` before `POST
+ *  /api/usage/profile` round-trips, so the switch, the row's dim styling and the fleet mean move at
+ *  once. Disabling always lands on "disabled"; enabling clears to undefined ("ok") as a best guess —
+ *  the server's authoritative list (applied once it answers) corrects it if the login was actually
+ *  something else, e.g. still token-stale. Pure, and a no-op when the name isn't in the list (a
+ *  profile that disappeared from a fleet poll mid-click). */
+export function withProfileEnabled<P extends { name: string; state?: string }>(profiles: P[], name: string, enabled: boolean): P[] {
+  return profiles.map((p) => p.name === name ? { ...p, state: enabled ? undefined : "disabled" } : p);
+}
+
 export type FleetUsage = { count: number; exhausted: number; fiveHour: Window; sevenDay: Window; fable: Window | null };
 
 /** One reading for the whole fleet: the mean utilization per window across the logins in rotation,
@@ -3248,6 +3258,9 @@ export type SweepReport = {
   worktrees: { repo: string; branch: string; worktreePath: string; reason: string; action: "remove" | "keep"; why?: string; done?: boolean }[];
   previews: { key: string; why: string; done?: boolean }[];
   branches: { repo: string; branch: string; action: "remove" | "keep"; why: string; done?: boolean }[];
+  /** Bun / preview-wrapper processes whose cwd was deleted — a stray bridge on a reaped worktree's
+   *  code. Optional: an instance on older code doesn't report it. */
+  processes?: { pid: number; command: string; cwd: string; done?: boolean }[];
 };
 
 /** The sweep as text — what `orca sweep` prints, dry run or applied. */
@@ -3262,6 +3275,11 @@ export function sweepText(reports: SweepReport[]): string {
     const pvs = r.previews.map((p) => `  ${verb(p.done)}  ${p.key} — ${p.why}`);
     const brs = r.branches.map((b) => `  ${b.action === "remove" ? verb(b.done) : "keep"}  ${b.repo}/${b.branch} — ${b.why}`);
     out.push("Worktrees:", ...(wts.length ? wts : ["  (none)"]), "Previews:", ...(pvs.length ? pvs : ["  (none)"]), "Branches:", ...(brs.length ? brs : ["  (none)"]));
+    if (r.processes) {
+      const kill = (done?: boolean) => (confirmed ? (done ? "stopped" : "FAILED") : "would stop");
+      const ps = r.processes.map((p) => `  ${kill(p.done)}  pid ${p.pid} ${p.command.length > 100 ? `${p.command.slice(0, 100)}…` : p.command} — cwd deleted: ${p.cwd.replace(/ \(deleted\)$/, "")}`);
+      out.push("Stray processes:", ...(ps.length ? ps : ["  (none)"]));
+    }
   }
   return out.join("\n");
 }
@@ -3269,47 +3287,68 @@ export function sweepText(reports: SweepReport[]): string {
 // ---- the actions bar's state-aware quick actions (WorkstreamActions) ----
 
 /** A toolbar verb the actions bar shows as a button. Each maps onto an existing store verb:
- *  createPr → promote, markReady, addressPr, slack → sendSlack, mergeWhenGreen, merge, autoMerge. */
-export type QuickActionId = "createPr" | "markReady" | "addressPr" | "slack" | "mergeWhenGreen" | "merge" | "autoMerge";
+ *  createPr → promote, markReady, addressPr, slack → sendSlack, merge, autoMerge, disableAutoMerge.
+ *  (Merge when green is not one: Orca's queue merges what it can by itself — `orca merge` and the
+ *  server's merge queue are untouched.) */
+export type QuickActionId = "createPr" | "markReady" | "addressPr" | "slack" | "merge" | "autoMerge" | "disableAutoMerge";
 export type QuickAction = {
   id: QuickActionId; label: string;
   /** Set → the button shows, disabled, with this as its tooltip (why it can't run now). */
   disabled?: string;
   /** For `slack`: a first message, or a bump of one already sent. */
   slackKind?: "notify" | "bump";
+  /** The tooltip, when it says more than the label (a bump's "posted 3h ago", auto-merge being on). */
+  tip?: string;
+  /** Auto-merge is already on: the icon is drawn lit (filled). */
+  on?: boolean;
 };
 export type QuickActionRow = {
   lane: OverviewLane; prNumber?: number; isDraft?: boolean; hasRemote?: boolean;
   mergeable?: Mergeable; mergeClean?: "clean" | "conflict"; ciStatus?: CiStatus; reviewStatus?: ReviewStatus;
   agentStatus?: "idle" | "running" | "done" | "error";
-  autoMergeEnabled?: boolean; mergeWhenGreen?: Pick<MergeMark, "small">;
+  autoMergeEnabled?: boolean;
+  /** Orca's merge-queue mark (`orca merge --when-green`) — the row's pill reads "Auto-merge" for it too. */
+  mergeWhenGreen?: unknown;
   slackNotifiedAt?: string;
 };
 export type QuickActionContext = {
   /** The branch has commits of its own (a local branch with nothing on it can't become a PR). */
   hasWork: boolean;
-  /** Actionable unresolved review threads (ReviewDigest.unresolved.count); undefined: not fetched. */
-  unresolved?: number;
+  /** Review findings that are a real problem (`reviewProblems` over the digest); undefined: not
+   *  fetched, so only what the row itself knows decides. */
+  reviewProblems?: number;
   /** The repo has a Slack channel to post to. */
   slackChannel?: boolean;
-  mergePolicy?: MergePolicy;
+  now?: number;
 };
 
-/** Every quick action that applies to the workstream's state, in this order (they combine — a draft
- *  with conflicts shows Ready for review AND Address review; an approved clean PR shows Merge AND
- *  Merge when green / Enable auto-merge):
- *  - no PR: a local branch with commits → Create PR (a promoted, clean local branch → Merge);
- *  - a draft PR → Ready for review;
- *  - conflicts, failing CI, unresolved threads (when known) or changes requested → Address review,
- *    beside Merge when green (merging is not safe yet, but the mark still applies once it is);
- *  - approved (or in the Mergeable lane) with nothing outstanding → Merge, and either Merge when
- *    green (the repo's mergePolicy allows the queue) or Enable auto-merge (it doesn't — a disabled
- *    "Merge when green" would tell the user nothing they can act on) — never Send to Slack, there is
- *    nothing left to review;
- *  - any other open (non-draft, unapproved) PR with nothing outstanding → Send to Slack (Bump once
- *    posted), beside Merge when green, disabled with the reason when it is already queued or the
- *    repo's mergePolicy refuses it (never hidden).
- *  Everything else stays in the ⋯ menu. Pure. */
+/** Review findings worth an agent run: every severe (warning / critical) bot item, plus every
+ *  unresolved inline thread from a PERSON that isn't a nit, a status update or a summary — a
+ *  person's comment with no severity marker counts as a warning, so people are never ignored.
+ *  Nits and info-level bot threads are not problems. Pure. */
+export function reviewProblems(d: Pick<ReviewDigest, "severe" | "human">): number {
+  const human = d.human.filter((i) => i.kind === "thread" && !isNit(i.body) && !isStatusUpdate(i.body) && !isSummaryComment(i.body));
+  return d.severe.length + human.length;
+}
+
+/** The workstream's quick actions: at most two icons (the Agents list's column fits two), the first
+ *  matching rule wins. Open and the ⋯ menu always remain beside them, so every verb stays reachable.
+ *  1. No PR: a local branch with commits → Create PR (Promote with no remote); a promoted, clean
+ *     local branch (MERGEABLE) → Merge.
+ *  2. A draft PR → Ready for review, plus Address PR only for a real problem (rule 3).
+ *  3. A real problem — conflicts, failing CI, changes requested, or `reviewProblems` — → Address PR
+ *     alone (disabled with the reason while an agent runs); no Slack: don't ask for review of a
+ *     PR that needs work.
+ *  4/5. Open, not approved, nothing worse than nits / info-level bot threads → Send to Slack (Bump
+ *     on Slack once posted, its tooltip saying when) + auto-merge (rule 7). Still shown while an
+ *     agent runs (rule 8).
+ *  6. Approved (or the Mergeable lane) with nothing outstanding → Merge + auto-merge.
+ *  7. Auto-merge: Enable auto-merge (GitHub's), or — once GitHub has it on — Disable auto-merge
+ *     drawn lit, its tooltip saying it merges once checks and reviews pass. A PR on Orca's own merge
+ *     queue shows the same lit icon, disabled (a non-clickable indicator; `orca merge --cancel`
+ *     unqueues it) — offering to enable what already merges itself would be noise.
+ *  9. Merged → nothing.
+ *  Pure. */
 export function quickActions(row: QuickActionRow, ctx: QuickActionContext): QuickAction[] {
   if (row.lane === "DONE") return [];
   const running = row.agentStatus === "running" ? "An agent is already running on this branch" : undefined;
@@ -3319,28 +3358,24 @@ export function quickActions(row: QuickActionRow, ctx: QuickActionContext): Quic
     return [{ id: "createPr", label: row.hasRemote ? "Create PR" : "Promote", disabled: running }];
   }
   const conflicting = row.mergeable === "CONFLICTING" || row.mergeClean === "conflict";
-  const outstanding = conflicting || row.ciStatus === "failing" || row.reviewStatus === "changes_requested" || (ctx.unresolved ?? 0) > 0;
+  const problem = conflicting || row.ciStatus === "failing" || row.reviewStatus === "changes_requested" || (ctx.reviewProblems ?? 0) > 0;
+  const address: QuickAction = { id: "addressPr", label: "Address PR", disabled: running };
+  if (row.isDraft) return [{ id: "markReady", label: "Ready for review" }, ...(problem ? [address] : [])];
+  if (problem) return [address];
+
+  const autoMerge: QuickAction = row.autoMergeEnabled
+    ? { id: "disableAutoMerge", label: "Disable auto-merge", on: true, tip: "Auto-merge on — GitHub merges it once checks and reviews pass. Click to turn it off" }
+    : row.mergeWhenGreen
+      ? { id: "autoMerge", label: "Auto-merge on", on: true, disabled: "Auto-merge on — Orca's merge queue merges it once checks pass and it merges clean" }
+      : { id: "autoMerge", label: "Enable auto-merge", tip: "Enable auto-merge — GitHub merges it once checks and reviews pass" };
+  if (row.reviewStatus === "approved" || row.lane === "MERGEABLE") return [{ id: "merge", label: "Merge" }, autoMerge];
   const out: QuickAction[] = [];
-  if (row.isDraft) out.push({ id: "markReady", label: "Ready for review" });
-  if (outstanding) out.push({ id: "addressPr", label: "Address review", disabled: running });
-  if (row.isDraft) return out;
-
-  const refused = mergeRefusal(ctx.mergePolicy, { small: row.mergeWhenGreen?.small });
-  const queued = row.autoMergeEnabled || row.mergeWhenGreen ? "Already queued — it merges once checks pass" : undefined;
-  const mergeWhenGreenAction: QuickAction = { id: "mergeWhenGreen", label: "Merge when green", disabled: queued ?? (refused && `Not queued: ${refused}`) };
-
-  if (!outstanding && (row.reviewStatus === "approved" || row.lane === "MERGEABLE")) {
-    out.push({ id: "merge", label: "Merge" });
-    out.push(refused
-      ? { id: "autoMerge", label: "Enable auto-merge", disabled: row.autoMergeEnabled ? "Already queued — it merges once checks pass" : undefined }
-      : mergeWhenGreenAction);
-    return out;
-  }
-  if (!outstanding && ctx.slackChannel) {
+  if (ctx.slackChannel) {
+    const posted = row.slackNotifiedAt ? Date.parse(row.slackNotifiedAt) : NaN;
     out.push(row.slackNotifiedAt
-      ? { id: "slack", label: "Bump on Slack", slackKind: "bump" }
+      ? { id: "slack", label: "Bump on Slack", slackKind: "bump", tip: Number.isNaN(posted) ? undefined : `Bump on Slack — posted ${ago(posted, ctx.now)}` }
       : { id: "slack", label: "Send to Slack", slackKind: "notify" });
   }
-  out.push(mergeWhenGreenAction);
+  out.push(autoMerge);
   return out;
 }

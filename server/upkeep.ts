@@ -14,6 +14,7 @@
 // each is a full agent run, and the box's memory is shared.
 import * as agent from "./agent";
 import * as db from "./db";
+import * as primary from "./primary";
 import * as gh from "./gh";
 import * as git from "./git";
 import * as notify from "./notify";
@@ -41,6 +42,7 @@ let ticking = false;
 /** One pass over every open PR of an orchestrated workstream held here. Returns each PR's decision
  *  (for the tests and the log). */
 export async function tick(cfg: OrcaConfig, now = Date.now()): Promise<Array<{ repo: string; branch: string; decision: UpkeepDecision }>> {
+  if (!primary.held()) return []; // a secondary or a branch preview's bridge addresses nothing
   if (ticking) return []; // a slow gh pass must not overlap the next
   ticking = true;
   try {
