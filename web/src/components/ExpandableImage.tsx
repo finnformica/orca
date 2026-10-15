@@ -109,10 +109,13 @@ export function ExpandableImage({
         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setOpen(true); } }}
       >
         <img src={src} alt={alt} loading="lazy" className={imgClassName} />
-        <Tip label={copied ? "Copied" : "Copy image"}>
+        {/* Tip's own wrapper is itself `relative inline-flex` — the corner offset has to go on
+         *  THAT box, not the button inside it, or the button only escapes Tip's own (button-sized)
+         *  box and stays in normal flow next to the image instead of overlaying its corner. */}
+        <Tip label={copied ? "Copied" : "Copy image"} className={cn("absolute", cornerClassName)}>
           <Button
             type="button" size="icon" variant="ghost"
-            className={cn("absolute size-7 bg-background/80 text-foreground opacity-0 transition-opacity hover:bg-background group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100", cornerClassName)}
+            className="size-7 bg-background/80 text-foreground opacity-0 transition-opacity hover:bg-background group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100"
             aria-label="Copy image" onClick={(e) => void onCopy(e)}
           >
             {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
@@ -126,10 +129,15 @@ export function ExpandableImage({
         onClick={(e) => { if (e.target === dialogRef.current) setOpen(false); }} // click the backdrop → close
         aria-label={alt || "Expanded image"}
         data-slot="image-lightbox"
-        className="m-auto max-h-[92vh] max-w-[92vw] overflow-auto rounded-lg border-0 bg-transparent p-0 backdrop:bg-black/70 max-md:sheet"
+        // Constrained (max-h/max-w) sizing is desktop-only (md:) and full-bleed sizing is
+        // mobile-only (max-md:), rather than setting one unconditionally and trusting `sheet`'s
+        // `max-height: none` / `max-width: none` to cancel it out at the same breakpoint — two
+        // same-specificity declarations racing on source order is fragile; disjoint breakpoints
+        // aren't.
+        className="m-auto overflow-auto rounded-lg border-0 bg-transparent p-0 backdrop:bg-black/70 md:max-h-[92vh] md:max-w-[92vw] max-md:sheet"
       >
-        <div {...swipe} className="relative flex max-h-[92vh] max-w-[92vw] items-center justify-center max-md:h-full max-md:max-h-none max-md:w-full max-md:max-w-none">
-          {open && <img src={src} alt={alt} className="max-h-[92vh] max-w-[92vw] object-contain max-md:max-h-full max-md:max-w-full" />}
+        <div {...swipe} className="relative flex items-center justify-center md:max-h-[92vh] md:max-w-[92vw] max-md:h-full max-md:w-full">
+          {open && <img src={src} alt={alt} className="object-contain md:max-h-[92vh] md:max-w-[92vw] max-md:max-h-full max-md:max-w-full" />}
           <div className="absolute top-2 right-2 flex gap-1">
             <Tip label="Download">
               <Button asChild size="icon" variant="ghost" className="size-8 bg-background/80 text-foreground hover:bg-background">
