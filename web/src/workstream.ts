@@ -2192,7 +2192,7 @@ export function loginStatus(state: string): { label: string; detail: string; ton
   if (state === "disabled") return { label: "Disabled", detail: "Disabled — out of hydra's rotation until you enable it", tone: "default" };
   if (state === "locked") return { label: "Locked", detail: "Locked — hydra won't route to this login", tone: "red" };
   if (state === "exhausted") return { label: "Limited", detail: "Exhausted — a usage window is at hydra's threshold; skipped until it resets", tone: "red" };
-  if (state.startsWith("token stale")) return { label: "Stale", detail: "Token stale — refreshes on next launch; the usage shown may be old", tone: "amber" };
+  if (state.startsWith("token stale")) return { label: "Stale", detail: "Access token expired — Orca renews it (Refresh now, or its 30-minute check); the usage shown may be old", tone: "amber" };
   if (state === "no usage data yet") return { label: "New", detail: "No usage data yet — it fills in after the first run", tone: "default" };
   if (/expired/i.test(state)) return { label: "Expired", detail: state.charAt(0).toUpperCase() + state.slice(1), tone: "red" };
   const word = state.split(/[\s—-]+/)[0] ?? state;

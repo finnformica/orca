@@ -1,7 +1,8 @@
 // Subscription usage for Claude and Codex, fetched from each installed CLI's existing login.
 // Both paths are read-only: Claude uses its OAuth usage endpoint; Codex uses its local app server.
 import { createHash } from "crypto";
-import { homedir } from "os";
+import { homedir, tmpdir } from "os";
+import { mkdtemp, rm } from "fs/promises";
 import { join } from "path";
 import { markDown, reachable } from "./peer";
 
@@ -278,24 +279,128 @@ export async function setProfileEnabledEverywhere(name: string, enabled: boolean
   return (await usageAcrossInstances(instances, self, preferred))?.profiles ?? [];
 }
 
-/** Force a token refresh for one hydra login (`hydra refresh <name> --force`) — the fix for a
- *  "token stale" row the user would otherwise have to SSH in and run by hand. Same validation and
- *  shape as `setProfileEnabled`: refuses a name hydra doesn't currently report, 15s timeout, never
- *  throws past the route. Clears `lastGoodHydra` before the post-refresh read so a stale cached
- *  reading can't mask the fresh one — the UI gets the new state (or `before` on a failed re-read),
- *  never the pre-refresh snapshot. */
-export async function refreshProfile(name: string): Promise<ProfileUsage[]> {
+/** What `hydra refresh <name> --force` said about one login: its line is `<name>  <status>`, the
+ *  status `ok`, `stale` (the usage endpoint answered 401: the access token lapsed), `rate-limited`
+ *  (429), `offline`, `no-auth`, `http-<code>`… — always exit 0, so the line is the only verdict.
+ *  Null when the login has no line. Pure. */
+export function refreshVerdict(out: string, name: string): string | null {
+  for (const line of out.split("\n")) {
+    const [n, ...rest] = line.trim().split(/\s+/);
+    if (n === name && rest.length) return rest.join(" ");
+  }
+  return null;
+}
+
+export const isStaleState = (state: string | undefined): boolean => Boolean(state?.startsWith("token stale"));
+
+/** The message for a login the renew launch could not fix: its refresh token has gone too, which
+ *  only a browser sign-in on that host replaces. */
+export const loginNeededMessage = (name: string, host?: string): string =>
+  `Still stale after renewing — the refresh token itself has expired. Run "hydra login ${name}"${host ? ` on ${host}` : ""}.`;
+export const rateLimitedMessage = (name: string): string =>
+  `The usage endpoint is rate-limiting ${name} (429) — its token may be fine; try again in a few minutes.`;
+
+/** How long the renew launch may take before it is killed. */
+export const RENEW_TIMEOUT_MS = 60_000;
+
+/** Renew one login's OAuth access token. hydra only READS usage; it never renews a token — Claude
+ *  Code does, when it launches. So the renewal is one launch of the real binary under that login
+ *  (`hydra exec <name>`, which knows the default profile must run WITHOUT CLAUDE_CONFIG_DIR — and
+ *  falls through to a plain launch when one is set, so it is stripped here): a single print turn,
+ *  no tools, no MCP, no skills, no session file, on the cheapest model, from a fresh empty temp dir
+ *  (never a repo, so no CLAUDE.md is loaded), time-limited, output discarded — neither the reply
+ *  nor any credential is read or logged. True when the launch exited 0. */
+export async function renewToken(name: string): Promise<boolean> {
   const hydra = Bun.which("hydra", { PATH: process.env.PATH ?? "" });
-  if (!hydra) throw new Error("hydra is not installed on this host");
-  const before = await hydraUsage();
-  if (!before?.some((p) => p.name === name)) throw new Error(`"${name}" is not a hydra login on this host`);
+  if (!hydra) return false;
+  const cwd = await mkdtemp(join(tmpdir(), "orca-renew-"));
+  try {
+    const env: Record<string, string | undefined> = { ...process.env };
+    for (const key of ["CLAUDE_CONFIG_DIR", "SLACK_TOKEN", "ORCA_DATABASE_URL", "ORCA_TEST_DATABASE_URL"]) delete env[key];
+    const proc = Bun.spawn([hydra, "exec", name, "-p", "--model", "haiku", "--tools", "", "--strict-mcp-config",
+      "--disable-slash-commands", "--no-session-persistence", "ok"], { cwd, env, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    const timer = setTimeout(() => proc.kill(), RENEW_TIMEOUT_MS);
+    const code = await proc.exited;
+    clearTimeout(timer);
+    return code === 0;
+  } catch (error) {
+    console.error(`[usage] renewing ${name} failed:`, error instanceof Error ? error.message : error);
+    return false;
+  } finally {
+    await rm(cwd, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function hydraRefresh(hydra: string, name: string): Promise<string | null> {
   const proc = Bun.spawn([hydra, "refresh", name, "--force"], { env: process.env, stdout: "pipe", stderr: "pipe" });
   const timer = setTimeout(() => proc.kill(), 15_000);
   const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   clearTimeout(timer);
   if (code !== 0) throw new Error((err || out).trim() || `hydra refresh ${name} --force failed`);
-  lastGoodHydra = null;
-  return (await hydraUsage()) ?? before;
+  lastGoodHydra = null; // the re-read after this must be the fresh state, never a cached one
+  return refreshVerdict(out, name);
+}
+
+// One renewal per login at a time: the Refresh button and the background pass share it.
+const renewing = new Map<string, Promise<ProfileUsage[]>>();
+
+/** Fix a "token stale" login — the Refresh button's action (`POST /api/usage/refresh`), and the
+ *  background pass's. Re-queries usage (`hydra refresh <name> --force`); if that still finds the
+ *  token stale (401), renews it with one minimal launch (`renewToken`) and re-queries. Throws, so
+ *  the card says so, when the endpoint rate-limits (429 — a different problem from a stale token)
+ *  and when the login is still stale after renewing (its refresh token is gone: `hydra login`).
+ *  Refuses a name hydra doesn't currently report, without shelling out. `host` only names the
+ *  machine in the login message. */
+export async function refreshProfile(name: string, opts: { renew?: (name: string) => Promise<boolean>; host?: string } = {}): Promise<ProfileUsage[]> {
+  const hydra = Bun.which("hydra", { PATH: process.env.PATH ?? "" });
+  if (!hydra) throw new Error("hydra is not installed on this host");
+  const before = await hydraUsage();
+  if (!before?.some((p) => p.name === name)) throw new Error(`"${name}" is not a hydra login on this host`);
+  const inFlight = renewing.get(name);
+  if (inFlight) return inFlight;
+  const run = (async () => {
+    const stateOf = (list: ProfileUsage[] | null) => list?.find((p) => p.name === name)?.state;
+    let verdict = await hydraRefresh(hydra, name);
+    if (verdict === "rate-limited") throw new Error(rateLimitedMessage(name));
+    let after = (await hydraUsage()) ?? before;
+    if (verdict !== "stale" && !isStaleState(stateOf(after))) return after;
+    await (opts.renew ?? renewToken)(name);
+    verdict = await hydraRefresh(hydra, name);
+    if (verdict === "rate-limited") throw new Error(rateLimitedMessage(name));
+    after = (await hydraUsage()) ?? after;
+    if (verdict === "stale" || isStaleState(stateOf(after))) throw new Error(loginNeededMessage(name, opts.host));
+    return after;
+  })();
+  renewing.set(name, run);
+  try { return await run; } finally { renewing.delete(name); }
+}
+
+/** How often the primary bridge renews this host's stale logins (`renewStaleLogins`). */
+export const RENEW_POLL_MS = 30 * 60_000;
+
+/** The background half of the fix: every login on THIS host that hydra reads as "token stale" —
+ *  enabled ones only (hydra reports a disabled login as "disabled" before it would say stale, and
+ *  rotation never picks it) — is renewed like the Refresh button does, so hydra's rotation never
+ *  routes a launch to a login whose token lapsed overnight. Only where `held()` (the instance's
+ *  primary bridge — one renewer per host); each instance renews its own logins, since hydra and the
+ *  credentials are per host. One login at a time. Never throws; returns what it did, for the log
+ *  and the tests. */
+export async function renewStaleLogins(held: () => boolean, opts: { renew?: (name: string) => Promise<boolean> } = {}): Promise<{ name: string; ok: boolean; error?: string }[]> {
+  if (!held()) return [];
+  const profiles = await hydraUsage();
+  const stale = (profiles ?? []).filter((p) => isStaleState(p.state));
+  const results: { name: string; ok: boolean; error?: string }[] = [];
+  for (const p of stale) {
+    try {
+      await refreshProfile(p.name, opts);
+      results.push({ name: p.name, ok: true });
+    } catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      console.error(`[usage] background renew of ${p.name}: ${error}`);
+      results.push({ name: p.name, ok: false, error });
+    }
+  }
+  return results;
 }
 
 export const DEFAULT_CLAUDE_DIR = join(homedir(), ".claude");

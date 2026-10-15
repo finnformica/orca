@@ -411,7 +411,7 @@ test("a refresh that exits clean but leaves the login stale (its own refresh tok
   expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Stale"); // still stale, not "fixed"
   const toast = container!.querySelector('[data-slot="notification-toast"][data-kind="action_failed"]')!;
   expect(toast.textContent).toContain("Refresh failed");
-  expect(toast.textContent).toContain("Still stale after refresh");
+  expect(toast.textContent).toContain("Still stale after renewing");
   expect(toast.textContent).toContain('"hydra login work" on laptop'); // the suggested fix names the login and the machine
 });
 
@@ -463,7 +463,7 @@ test("a login's status is one word right after its name, the reason in a tooltip
   const title = left!.querySelector("[data-slot='usage-group-title']")!;
   const pill = left!.querySelector("[data-slot='usage-state']")!;
   expect(pill.textContent).toBe("Stale");
-  expect(pill.getAttribute("title")).toBe("Token stale — refreshes on next launch; the usage shown may be old");
+  expect(pill.getAttribute("title")).toBe("Access token expired — Orca renews it (Refresh now, or its 30-minute check); the usage shown may be old");
   expect(title.nextElementSibling).toBe(pill); // straight after the name
   expect(title.className).toContain("truncate");
   expect(title.className).toContain("min-w-0");
