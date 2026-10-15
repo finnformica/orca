@@ -68,6 +68,23 @@ const ChatMarkdown = ({ children }: { children: string }) => (
   </div>
 );
 
+/** Markdown for a single Facet item (Remaining / Decisions / Verification / Commits): same renderer
+ *  and prose palette as ChatMarkdown, but a paragraph renders inline rather than as its own <p> — the
+ *  facet's <ul> already supplies the item's spacing, so a block margin on top would double it up. A
+ *  nested sub-bullet or a stray `##` sub-heading the parser kept verbatim (see shared/agent.ts
+ *  sectionValue) still renders as its own block — a real nested list, or a heading — beneath the
+ *  item's text. */
+const FacetMarkdown = ({ children }: { children: string }) => (
+  <div className="prose prose-invert prose-sm max-w-none wrap-anywhere text-neutral-300
+    prose-headings:mt-1 prose-headings:mb-0.5 prose-headings:text-xs prose-headings:text-neutral-200
+    prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1
+    prose-strong:text-neutral-200
+    prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none
+    prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400">
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ p: ({ children: c }) => <>{c}</> }}>{children}</ReactMarkdown>
+  </div>
+);
+
 /** One recorded step of the agent's run. Text reads as the agent talking; thinking is dimmed and
  *  italic; a tool call is a collapsed `⏵ Running: bun test` that expands to its full input and
  *  output. Collapsed-by-default is what keeps a 200-step run readable — the CLI does the same. The
@@ -157,8 +174,8 @@ function Output({ turn }: { turn: AgentTurn }) {
 const Facet = ({ title, items, tone }: { title: string; items: string[]; tone: string }) => (
   <div>
     <div className={`text-[10px] tracking-widest uppercase ${tone}`}>{title}</div>
-    <ul className="space-y-0.5">
-      {items.map((v, i) => <li key={i} className="break-words">· {v}</li>)}
+    <ul className="list-disc space-y-0.5 pl-4 marker:text-neutral-600">
+      {items.map((v, i) => <li key={i} className="break-words pl-0.5"><FacetMarkdown>{v}</FacetMarkdown></li>)}
     </ul>
   </div>
 );

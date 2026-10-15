@@ -69,6 +69,60 @@ test("shows a structured outcome as labelled sections", async () => {
   expect(text()).toContain("abc123 ship");
 });
 
+test("facet items render markdown — bold, code and links, not raw asterisks and backticks", async () => {
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", prompt: "ship it", response: "## Outcome\nShipped.", finishedAt: 2,
+    structured: {
+      outcome: "Shipped.",
+      verification: [],
+      decisions: ["Used `LRU` because it's **simpler**, per [the doc](https://example.com/doc)"],
+      remaining: [],
+      commits: [],
+    },
+  }]);
+
+  await mount(base);
+
+  const code = container!.querySelector("code");
+  expect(code?.textContent).toBe("LRU");
+  const strong = container!.querySelector("strong");
+  expect(strong?.textContent).toBe("simpler");
+  const link = container!.querySelector("a[href='https://example.com/doc']");
+  expect(link?.textContent).toBe("the doc");
+  // No raw markdown syntax leaks through as literal text.
+  expect(text()).not.toContain("**simpler**");
+  expect(text()).not.toContain("`LRU`");
+});
+
+test("a nested sub-bullet in a facet item renders as a real nested list, and a stray sub-heading as a heading", async () => {
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", prompt: "address pr", response: "## Outcome\nAddressed it.", finishedAt: 2,
+    structured: {
+      outcome: "Addressed it.",
+      verification: [],
+      decisions: [],
+      remaining: [
+        "Used LRU for the cache\n  - considered LFU but rejected it",
+        "## Comment dispositions",
+        "Resolved: renamed the field",
+      ],
+      commits: [],
+    },
+  }]);
+
+  await mount(base);
+
+  // The sub-bullet is a nested <ul>, not a sibling top-level item with no indication it was nested.
+  const outerItems = container!.querySelectorAll("ul.list-disc > li");
+  const parentItem = Array.from(outerItems).find((li) => li.textContent?.includes("Used LRU"));
+  expect(parentItem?.querySelector("ul")?.textContent).toContain("considered LFU but rejected it");
+
+  // The stray "## Comment dispositions" line renders as a heading, not literal "##" text.
+  const heading = Array.from(container!.querySelectorAll("h1,h2,h3,h4,h5,h6")).find((h) => h.textContent === "Comment dispositions");
+  expect(heading).toBeTruthy();
+  expect(text()).not.toContain("## Comment dispositions");
+});
+
 test("an unfinished turn shows as in-progress instead of vanishing", async () => {
   // Turns are written at LAUNCH, so a run killed by a bridge restart stays visible as an interrupted
   // exchange — the case that used to lose the conversation entirely.
