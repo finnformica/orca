@@ -17,7 +17,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useAtom, useAtomValue } from "jotai";
 import {
   AlertTriangle, ArrowUpRight, Bell, BellOff, Bot, Check, CheckCheck, CircleAlert, CircleX, Copy, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, GitMerge, Hammer, MessageCircleQuestion,
-  MessagesSquare, MonitorCheck, MonitorX, OctagonPause, Reply, RotateCcw, ScrollText, ShieldX, Square, Wrench, X,
+  MessagesSquare, MonitorCheck, MonitorX, OctagonPause, Reply, RotateCcw, ScrollText, Send, ShieldX, Square, Undo2, Wrench, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
@@ -45,7 +45,7 @@ import type { ShortcutId } from "@/lib/shortcuts";
 const ICON: Record<NotificationKind, typeof Bell> = {
   needs_input: MessageCircleQuestion, finished: Check, failed: CircleX, stopped: OctagonPause, check_failed: ShieldX,
   pr_ci_failed: AlertTriangle, pr_conflicts: GitPullRequestArrow, preview_ready: MonitorCheck, preview_failed: MonitorX, action_failed: CircleAlert,
-  merged: GitMerge, merge_refused: GitPullRequest, auto_address: Wrench, upkeep_gave_up: CircleAlert,
+  merged: GitMerge, merge_refused: GitPullRequest, auto_address: Wrench, upkeep_gave_up: CircleAlert, draft_sent: Send,
 };
 const TONE_TEXT = { ready: "text-geist-green", error: "text-geist-red", warning: "text-geist-warning-fg", queued: "text-geist-blue", neutral: "text-muted-foreground" } as const;
 
@@ -68,7 +68,7 @@ const ACTION_ICON: Record<NotificationActionId, typeof Bell> = {
   // notificationActions) — its icon is the orchestrator's own avatar everywhere else, not the panel
   // it opens.
   openChat: MessagesSquare, openPreview: ExternalLink, stopPreview: Square, retryPreview: RotateCcw, viewLog: ScrollText, openOrchestrator: Bot,
-  ask: Bot, copy: Copy,
+  ask: Bot, copy: Copy, undo: Undo2,
 };
 
 /** Copy a failed action's text; where the clipboard is refused (no secure context over the plain-http
@@ -100,6 +100,7 @@ function useNotificationActions() {
   const openChatOf = (n: Notification) => go(pathOf(n, "/chat?reply=1"));
   const open = (n: Notification) => {
     void markRead([n.id]);
+    if (n.onOpen) return void n.onOpen();
     if (n.link?.orchestrator) return void openOrchestrator();
     openChatOf(n);
   };
@@ -126,7 +127,8 @@ function useNotificationActions() {
   /** A link: where it goes. */
   const link = (id: NotificationActionId, n: Notification): (() => void) | undefined => {
     switch (id) {
-      case "open": case "reply": return () => openChatOf(n);
+      case "open": return n.onOpen ? () => n.onOpen!() : () => openChatOf(n);
+      case "reply": return () => openChatOf(n);
       case "openChat": case "viewOutput": return () => go(pathOf(n, "/chat"));
       case "viewLog": return () => go(pathOf(n, "/preview"));
       case "viewPr": { const url = rowOf(n)?.prUrl; return url ? () => void window.open(url, "_blank", "noopener") : undefined; }
@@ -134,6 +136,7 @@ function useNotificationActions() {
       case "openOrchestrator": return () => openOrchestrator();
       case "ask": return n.ask ? () => openOrchestrator(n.ask) : undefined;
       case "copy": return n.copy ? () => void copyText(n.copy!) : undefined;
+      case "undo": return n.onUndo ? () => n.onUndo!() : undefined;
       default: return undefined;
     }
   };

@@ -5,7 +5,7 @@ import { parseAgentOutcome, type AgentOutcome, type StopReason, type TurnCheck }
 
 export const NOTIFICATION_KINDS = [
   "needs_input", "finished", "failed", "stopped", "check_failed", "pr_ci_failed", "pr_conflicts", "preview_ready", "preview_failed", "action_failed",
-  "merged", "merge_refused", "auto_address", "upkeep_gave_up",
+  "merged", "merge_refused", "auto_address", "upkeep_gave_up", "draft_sent",
 ] as const;
 export type NotificationKind = typeof NOTIFICATION_KINDS[number];
 
@@ -37,6 +37,11 @@ export type Notification = {
   label?: string;
   copy?: string;
   ask?: string;
+  /** `draft_sent` only (also local, also never stored): what Undo and the title/Open action do for a
+   *  just-sent new-draft toast — closures over the optimistic draft, since the branch it resolves to
+   *  isn't known yet. */
+  onUndo?: () => void;
+  onOpen?: () => void;
 };
 
 /** What the emitter writes: a `key` makes the insert idempotent (unique per user), so a run that is
@@ -68,6 +73,8 @@ export const KIND_META: Record<NotificationKind, KindMeta> = {
   auto_address: { label: "Auto-addressing", persistent: false, urgent: false, tone: "queued" },
   upkeep_gave_up: { label: "Auto-upkeep gave up", persistent: true, urgent: false, tone: "warning" },
   action_failed: { label: "Action failed", persistent: true, urgent: false, tone: "error" },
+  // The New-draft box's own toast (Shell.tsx AddNew): a draft was sent, with Undo while it's fresh.
+  draft_sent: { label: "Sent", persistent: false, urgent: false, tone: "ready" },
 };
 
 /** How long a non-persistent toast stays. */
@@ -195,10 +202,10 @@ export type ToastPrefs = Partial<Record<NotificationKind, boolean>>;
 /** Kinds whose content, for an ORCHESTRATED workstream, is already relayed into the orchestrator's
  *  own conversation as a worker report (`agent.onRunFinished`'s workerEvent, or the merge queue's
  *  report for "the orchestrator's PRs") — a second toast for it on a phone is pure noise over a
- *  conversation that already said it. A preview's status and a local action failure are never
- *  relayed, orchestrated or not, so they're left out. */
+ *  conversation that already said it. A preview's status, a local action failure and a just-sent
+ *  draft are never relayed, orchestrated or not, so they're left out. */
 export const ORCHESTRATOR_RELAYED_KINDS: NotificationKind[] =
-  NOTIFICATION_KINDS.filter((k) => k !== "preview_ready" && k !== "preview_failed" && k !== "action_failed");
+  NOTIFICATION_KINDS.filter((k) => k !== "preview_ready" && k !== "preview_failed" && k !== "action_failed" && k !== "draft_sent");
 
 /** Whether a notification's content already shows in the orchestrator's own chat: its OWN wake
  *  (`link.orchestrator` — literally a turn of that conversation) always does; a relayed kind on a
