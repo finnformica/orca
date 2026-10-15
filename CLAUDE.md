@@ -1047,6 +1047,19 @@ serves it. Workers get `bin/worker/` on PATH (`agentEnv` — not `bin/`, whose `
 orchestrator's) and `orca-shot <url> [--viewport 390x844] [--dark] …`, which prints `shot: <path>`;
 every worker prompt says it is the ONLY way to take a screenshot (`SCREENSHOTS`), and shot paths in a
 reply ride the worker report (`reportedShots` in `workerEvent`).
+**Screenshots in PRs and on the agent page** (`server/prShots.ts`): shots are not stored per turn —
+`workstreamShots` reads them off the branch's turns (reply + Verification). The newest
+`PR_SHOTS_MAX` (6) go into the PR body's `## Screenshots` section (`withScreenshotsSection`: replaced
+in place, the rest untouched; its `<!-- orca:screenshots ids -->` marker means an unchanged set is
+never re-uploaded), hosted as ONE orphan commit on `refs/heads/pr-assets/<pr>-<slug>` via the git
+data API (`gh api` blobs → tree → commit → ref) and linked `blob/<sha>/<file>?raw=true`. Only PNGs
+from the shot store are uploaded. Triggers: Promote, `openWorkerPr` (autoPr), any run reporting
+shots on a branch with an open PR (the run-finished hook), and **`orca pr-shots --repo r --branch b
+[--pr N]`** (`POST /api/prs/shots`, on the worktree's instance — the files are on its disk) for a PR
+opened with `gh pr create`. The reaper deletes a merged/closed PR's `pr-assets/<pr>[-…]` refs. The
+agent page's Overview has a Screenshots card (`GET /api/shots`, by turn, newest first) and a worker
+report in the chat draws its shot lines as thumbnails (`reportShots`); `/api/screenshots/<id>` asks
+the other instances when the file isn't on this one.
 **An Orca preview's `/api` is the branch's own bridge**, not main's :8787 (which made a branch's
 Cost chart read main's numbers): `scripts/preview-orca.sh` runs the branch's `server/index.ts` with
 `ORCA_PREVIEW_BRIDGE=1` (`db.previewBridge`) — shared database, never migrates, never publishes
