@@ -61,7 +61,9 @@ test("rate: with no config entry, an EC2 box's type and region from IMDSv2 price
   process.env.ORCA_IMDS_URL = imds.url;
   try {
     expect(await instanceRate(undefined, "cloud")).toEqual({ hourlyUsd: 0.2331, source: "estimate", instanceType: "m7i.xlarge", region: "eu-west-2" });
-    expect(imds.calls).toEqual(["PUT /latest/api/token", "GET /latest/meta-data/instance-type", "GET /latest/meta-data/placement/region"]);
+    // The token first; the two reads go in parallel, so they arrive in either order.
+    expect(imds.calls[0]).toBe("PUT /latest/api/token");
+    expect(imds.calls.slice(1).sort()).toEqual(["GET /latest/meta-data/instance-type", "GET /latest/meta-data/placement/region"]);
     await instanceRate({ local: 0 }, "cloud"); // another instance's entry is not this one's
     expect(imds.calls).toHaveLength(3); // IMDS is asked once per process
   } finally { imds.stop(); }

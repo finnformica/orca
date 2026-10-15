@@ -1195,7 +1195,8 @@ async function api(req: Request, url: URL): Promise<Response> {
     // all stay, so a follow-up resumes the same conversation and redirects it. This is the "it's
     // going the wrong way" button — NOT Discard, which reaps the branch.
     if (!body.key) return json({ error: "key required" }, 400);
-    const runId = agent.stop(body.key);
+    // Stop then sends the next queued message at once, as a finished run does.
+    const runId = body.key === orchestrator.dir() ? await orchestrator.stop(await loadConfig()) : await agent.interrupt(body.key);
     if (runId) void notify.stopped(runId); // the centre hears it from here: a stopped run never reaches the run-finished hook
     return json({ ok: true, runId });
   }
