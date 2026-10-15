@@ -707,6 +707,31 @@ test("O15: a timed-out wake and one that ends on the CLI's placeholder are retri
   expect(await orchQueue()).toEqual([]);
 });
 
+test("O15b: Stop on a wake with messages queued behind it starts the next wake at once, not on your next message", async () => {
+  wire();
+  type Claim = { runId: string; messages: string[] };
+  await writeFile(hold, "");
+  await orchestrator.message(cfg(), "first");
+  const stoppedRun = ((await orchBlob()).handling as Claim).runId;
+  expect(await orchestrator.message(cfg(), "second")).toEqual({ status: "queued" });
+  expect(await orchestrator.message(cfg(), "third")).toEqual({ status: "queued" });
+  expect(await orchestrator.stop(cfg())).toBe(stoppedRun);
+  // The next wake is running before Stop returns, carrying everything queued (one wake per batch).
+  expect(agent.isRunning(orchestrator.dir())).toBe(true);
+  expect(await orchQueue()).toEqual([]);
+  const next = (await orchBlob()).handling as Claim;
+  expect(next.runId).not.toBe(stoppedRun);
+  expect(next.messages).toEqual(["second", "third"]);
+  await rm(hold, { force: true });
+  const turns = await settled(orchTurns, 2);
+  expect(turns[0]).toMatchObject({ id: stoppedRun, stopped: true });
+  expect(splitMessages(turns[1]!.instruction!)).toEqual(["second", "third"]);
+  // The stopped wake's late exit starts nothing, and "first" is not re-queued: Stop is not a death.
+  expect(await orchQueue()).toEqual([]);
+  expect(await orchTurns()).toHaveLength(2);
+  expect((await orchBlob()).handling ?? null).toBeNull();
+});
+
 test("O16: a wake in flight when the bridge restarted is re-queued at startup — unless it finished on its own", async () => {
   wire();
   const inFlight = async (runId: string, instance = db.instanceName()) => {

@@ -93,7 +93,7 @@ export type RunState = {
   startedAt?: number;
   finishedAt?: number;
 };
-type Run = RunState & { proc?: Bun.Subprocess };
+type Run = RunState & { proc?: Bun.Subprocess; options?: LaunchOptions };
 export type LaunchReceipt = { status: "running"; provider: AgentProvider; runId: string; sessionId?: string };
 
 export type LaunchOptions = {
@@ -572,7 +572,23 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
   return ["claude", "-p", "--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...m, ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), ...(allowedTools?.length ? ["--allowedTools", allowedTools.join(",")] : []), "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--", prompt];
 }
 
+// Launches between their call and their return, by key: a Stop pressed while a run is still
+// starting (its prompt resolving, its turn being written) waits here, then stops the run it started.
+const starting = new Map<string, Promise<void>>();
+
 export async function launch(key: string, cwd: string, prompt: string, options: LaunchOptions = {}): Promise<LaunchReceipt> {
+  let done!: () => void;
+  const p = new Promise<void>((r) => { done = r; });
+  starting.set(key, p);
+  try {
+    return await launchRun(key, cwd, prompt, options);
+  } finally {
+    if (starting.get(key) === p) starting.delete(key);
+    done();
+  }
+}
+
+async function launchRun(key: string, cwd: string, prompt: string, options: LaunchOptions): Promise<LaunchReceipt> {
   // A branch preview's bridge launches NOTHING — the last line of defence under every route and loop
   // guard: the 2026-10-15 stray (a preview bridge on a branch's stale code) launched the
   // orchestrator's wakes with a deleted bin/ on PATH.
@@ -611,7 +627,7 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   );
   let timedOut = false;
   const timeout = options.timeoutMs ? setTimeout(() => { timedOut = true; proc.kill(); }, options.timeoutMs) : undefined;
-  runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt });
+  runs.set(key, { status: "running", provider, runId, prompt, sessionId, proc, startedAt, options });
   lease.acquire({ key, worktreePath: cwd, branch: options.branch, provider, runId, sessionId, pid: proc.pid, startedAt, timeoutMs: options.timeoutMs });
   // Record the turn NOW, not at exit: a run whose bridge dies then survives as an interrupted turn
   // instead of vanishing. Keyed by runId, so a fast follow-up can't clobber the previous turn.
@@ -937,6 +953,23 @@ export function stop(key: string): string | undefined {
   runs.delete(key);
   lease.release(key); // discard/stop frees the worktree even if the run was recovered from a lease
   return r?.runId;
+}
+
+/** Stop from the chat: stop the run, then send the next queued message at once, as a finished run
+ *  does. A stopped run's own exit never sends the queue (it reads as superseded), so without this
+ *  the queue waited for the next message you typed. A Stop pressed while the run is still starting
+ *  waits for it to exist, then stops it. `queue: false` is for a caller with its own queue (the
+ *  orchestrator). Discard uses `stop`, which sends nothing. */
+export async function interrupt(key: string, opts: { queue?: boolean } = {}): Promise<string | undefined> {
+  await starting.get(key);
+  const r = runs.get(key);
+  const runId = stop(key);
+  if (!runId || opts.queue === false || r?.options?.queue === false) return runId;
+  // A run adopted from a lease after a restart has no options; its turn names the branch.
+  const owner = r?.options?.repo && r.options.branch ? { repo: r.options.repo, branch: r.options.branch }
+    : await db.turnOwner(runId).catch(() => undefined);
+  if (owner) await dispatchQueued(owner.repo, owner.branch, r?.options ?? { provider: r?.provider });
+  return runId;
 }
 
 export { cwdInWorktree, isHeadlessAgentProcess, processCwd } from "./proc";

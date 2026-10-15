@@ -149,6 +149,19 @@ export function compact(cfg: OrcaConfig): Promise<{ runId: string }> {
   });
 }
 
+/** Stop its wake (the chat's Stop). A stopped wake never reaches the run-finished hook, so this does
+ *  its part here: drop the wake's claim (Stop is not a death, so nothing is re-queued) and send what
+ *  queued up meanwhile at once — the same drain a finished wake gets. */
+export async function stop(cfg: OrcaConfig): Promise<string | undefined> {
+  const runId = await agent.interrupt(dir(), { queue: false });
+  await serial(async () => {
+    if (runId && (await blob()).handling?.runId === runId) await patch({ handling: null, died: null });
+    // Only the primary drains (as the run-finished hook does), and a failed drain never fails Stop.
+    if (primary.held()) await drain(cfg).catch((e) => console.error("orca: orchestrator drain after stop failed", e));
+  });
+  return runId;
+}
+
 /** The run-finished hook (wired in index.ts). A worker the orchestrator is responsible for going
  *  idle wakes it with the outcome; its own run ending drains whatever arrived meanwhile. */
 export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Promise<void> {
