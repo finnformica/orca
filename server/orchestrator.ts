@@ -320,13 +320,24 @@ export async function recover(cfg: OrcaConfig, reconcile: () => Promise<unknown>
  *  bridge — the instance's primary — may be it: another live bridge there is stale by definition, so
  *  it and its wake (broken: wrong PATH/ORCA_URL) are SIGTERMed, and `recover` re-queues what the wake
  *  was handling for a proper one. A wake with NO bridge above it outlived its bridge (a restart) and
- *  is left to `recover` as before. Returns what it stopped. Primary only. */
+ *  is left to `recover` as before. A claimant is stopped only when the SAME one is seen on two checks
+ *  in a row: on a restart the previous primary drains for a few seconds after letting the lock go,
+ *  and its wake is legitimately parented to it until it exits (then it is adopted, no bridge above).
+ *  Returns what it stopped. Primary only. */
+let suspect: string | undefined;
 export async function evictForeignWake(cfg: OrcaConfig, reconcile: () => Promise<unknown>, table?: procs.ProcRow[]): Promise<{ bridge: number; run: number; runId: string } | undefined> {
   if (!primary.held()) return undefined;
   const l = lease.current(dir());
   if (!l || !lease.pidAlive(l.pid)) return undefined;
   const claimant = procs.bridgeAncestor(l.pid, table ?? await procs.processTable());
-  if (!claimant || claimant.pid === process.pid) return undefined;
+  if (!claimant || claimant.pid === process.pid) { suspect = undefined; return undefined; }
+  const seen = `${claimant.pid}:${l.pid}:${l.runId}`;
+  if (suspect !== seen) {
+    suspect = seen;
+    console.warn(`orca: the orchestrator's wake (pid ${l.pid}) was launched by another bridge (pid ${claimant.pid}) — stopping both if it still is at the next check`);
+    return undefined;
+  }
+  suspect = undefined;
   console.error(`orca: another bridge (pid ${claimant.pid}: ${claimant.command.slice(0, 120)}) launched the orchestrator's wake (pid ${l.pid}, run ${l.runId}) — only this instance's primary may; stopping both`);
   for (const pid of [claimant.pid, l.pid]) { try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ } }
   void recover(cfg, reconcile, { runId: l.runId }).catch((e) => console.error("orca: orchestrator recovery failed", e));

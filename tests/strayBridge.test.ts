@@ -181,7 +181,10 @@ test("SB6 the primary stops another bridge's orchestrator wake — and leaves it
     claim(child);
     const reparented = (await procs.processTable()).map((r) => (r.pid === child ? { ...r, ppid: 1 } : r));
     expect(await orchestrator.evictForeignWake(cfg, async () => {}, reparented)).toBeUndefined();
-    // Launched by another bridge: both stopped.
+    // Launched by another bridge: seen once is a suspect (a restarting primary drains for seconds
+    // after letting the lock go); the same claimant at the next check is stopped, with its wake.
+    expect(await orchestrator.evictForeignWake(cfg, async () => {})).toBeUndefined();
+    expect(lease.pidAlive(bridge.pid)).toBe(true);
     const evicted = await orchestrator.evictForeignWake(cfg, async () => {});
     expect(evicted).toEqual({ bridge: bridge.pid, run: child, runId: "r-stray" });
     expect(await dead(bridge.pid)).toBe(true);

@@ -657,8 +657,9 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   branch bridge older than #215. Removing/reaping a worktree stops Orca bridges whose cwd is in it
   (`proc.stopBridgesIn`); `orca sweep` lists bun processes on a deleted cwd and `--confirm` stops
   them. For bridges too old for any of that, the primary checks each minute that the orchestrator's
-  live wake descends from ITSELF (`orchestrator.evictForeignWake`); another bridge's is stopped with
-  its wake, which `recover` re-queues.
+  live wake descends from ITSELF (`orchestrator.evictForeignWake`); another bridge's, seen on two
+  checks in a row (a restarting primary drains for seconds), is stopped with its wake, which
+  `recover` re-queues.
 - **Working on Orca itself: worktree + PR, never this checkout.** The bridge serves the main
   checkout and restarts when it changes, so edits and `git pull` there are restarts under live
   runs. Make changes in a worktree (`git worktree add .worktrees/<name>`, symlink `node_modules`,
