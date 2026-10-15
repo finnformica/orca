@@ -7,9 +7,9 @@
 // worktree on a stale file. PID reuse is bounded by expiry: if the bridge dies without releasing and
 // the OS later recycles the pid, the lease self-heals at expiry rather than lingering forever.
 import { createHash } from "crypto";
-import { readdirSync, unlinkSync } from "fs";
+import { unlinkSync } from "fs";
 import { join } from "path";
-import { statePath, stateDir, writeJsonSync, readJsonSync } from "./state";
+import { statePath, stateDir, writeJsonSync, readJsonSync, readJsonDir } from "./state";
 import { isZombie } from "./proc";
 import type { AgentProvider } from "../shared/agent";
 
@@ -77,20 +77,12 @@ export function release(key: string, runId?: string): void {
  *  append to the same transcript and end with the same reply — the orchestrator's "one message
  *  behind" bug. Read from the lease files, so it holds across a bridge restart as well. */
 export function sessionBusy(sessionId: string): boolean {
-  let files: string[];
-  try { files = readdirSync(join(stateDir(), "leases")); } catch { return false; }
-  return files.some((file) => {
-    if (!file.endsWith(".json")) return false;
-    const lease = readJsonSync<Lease>(join(stateDir(), "leases", file));
-    return isLive(lease) && lease.sessionId === sessionId;
-  });
+  return live().some((lease) => lease.sessionId === sessionId);
 }
 
 /** Every live lease — what a restarted bridge adopts (see agent.adoptLeases). */
 export function live(): Lease[] {
-  let files: string[];
-  try { files = readdirSync(join(stateDir(), "leases")); } catch { return []; }
-  return files.filter((f) => f.endsWith(".json")).map((f) => readJsonSync<Lease>(join(stateDir(), "leases", f))).filter(isLive);
+  return readJsonDir<Lease>(join(stateDir(), "leases")).map((e) => e.value).filter(isLive);
 }
 
 /** The lease a key currently holds, live or not (a dead one is what tells adoption the run ended). */
@@ -99,29 +91,12 @@ export const current = (key: string): Lease | undefined => readJsonSync<Lease>(l
 /** Run ids that currently hold a live lease. Lets a restart tell a genuinely still-running turn from
  *  one whose process died with the previous bridge (see db.reconcileRunning). */
 export function liveRunIds(): Set<string> {
-  const found = new Set<string>();
-  let files: string[];
-  try { files = readdirSync(join(stateDir(), "leases")); } catch { return found; }
-  for (const file of files) {
-    if (!file.endsWith(".json")) continue;
-    const lease = readJsonSync<Lease>(join(stateDir(), "leases", file));
-    if (isLive(lease)) found.add(lease.runId);
-  }
-  return found;
+  return new Set(live().map((lease) => lease.runId));
 }
 
 /** Branches that currently hold a live lease — restart recovery that doesn't depend on the branch
  *  name appearing in the process's argv (a Claude follow-up's argv carries only the session id). */
 export function liveBranches(branches: string[]): Set<string> {
   const wanted = new Set(branches.filter(Boolean));
-  const found = new Set<string>();
-  let files: string[];
-  try { files = readdirSync(join(stateDir(), "leases")); } catch { return found; }
-  for (const file of files) {
-    if (!file.endsWith(".json")) continue;
-    const lease = readJsonSync<Lease>(join(stateDir(), "leases", file));
-    if (!isLive(lease)) continue;
-    if (lease.branch && wanted.has(lease.branch)) found.add(lease.branch);
-  }
-  return found;
+  return new Set(live().map((lease) => lease.branch).filter((b): b is string => Boolean(b && wanted.has(b))));
 }

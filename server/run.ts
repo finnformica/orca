@@ -29,7 +29,14 @@ export async function runCmd(cmd: string[], opts: RunOptions = {}): Promise<RunR
   if (code !== 0 && !opts.allowFail) {
     throw new Error(`${cmd.join(" ")} failed (exit ${code}): ${stderr.trim() || stdout.trim()}`);
   }
-  return { stdout, stderr, code };
+  return { stdout, stderr, code: timedOut ? code || 124 : code };
+}
+
+/** `promise`, or a rejection with `message` after `ms` — the timer never holds the process open. */
+export function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); timer.unref?.(); });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
 /** Run a command, capture stdout, throw on non-zero exit. */

@@ -6,6 +6,11 @@ import { mkdtemp, rm } from "fs/promises";
 import { join } from "path";
 import { markDown, reachable } from "./peer";
 import { scrubbedEnv } from "./env";
+import { runCmd, withTimeout } from "./run";
+
+/** A binary on the LIVE PATH, not Bun's startup snapshot — the test PATH shim (a fake `hydra`,
+ *  `codex`) relies on it, the same way run.ts passes the live env for the fake `gh`. */
+const which = (name: string): string | null => Bun.which(name, { PATH: process.env.PATH ?? "" });
 
 // Overridable so a test can point at canned readings (`{token}` in the override stands in for the
 // login's token, so each profile gets its own) — the real endpoint otherwise.
@@ -163,11 +168,8 @@ export async function usageAcrossInstances(instances: Record<string, string> | u
         // An offline peer black-holes the connect: probe first (2s once, then cached), and bound the
         // answer — the peer runs hydra itself, which has its own 15s cap.
         if (!(await reachable(base))) return null;
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const res = await Promise.race([
-          fetch(new URL("/api/usage/local", base)),
-          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("peer usage timed out")), PEER_USAGE_MS); }),
-        ]).catch((e) => { markDown(base); throw e; }).finally(() => clearTimeout(timer));
+        const res = await withTimeout(fetch(new URL("/api/usage/local", base)), PEER_USAGE_MS, "peer usage timed out")
+          .catch((e) => { markDown(base); throw e; });
         if (!res.ok) return null;
         const data = (await res.json()) as Usage | null;
         return data?.profiles ? { instance, profiles: data.profiles } : null;
@@ -190,9 +192,8 @@ export const isHydraShim = (head: string): boolean => head.includes("hydra-shim"
 /** Is Claude routing live on this host? Reads only the first 512 bytes of whatever `claude`
  *  resolves to (the real binary is large), and asks `hydra bin` for the target. Never throws. */
 export async function routingInfo(): Promise<Routing> {
-  const PATH = process.env.PATH ?? "";
-  const hydra = Bun.which("hydra", { PATH });
-  const claude = Bun.which("claude", { PATH });
+  const hydra = which("hydra");
+  const claude = which("claude");
   let shim = false;
   if (claude) {
     try { shim = isHydraShim(await Bun.file(claude).slice(0, 512).text()); } catch { shim = false; }
@@ -200,10 +201,7 @@ export async function routingInfo(): Promise<Routing> {
   let bin: string | undefined;
   if (hydra) {
     try {
-      const proc = Bun.spawn([hydra, "bin"], { env: process.env, stdout: "pipe", stderr: "ignore" });
-      const timer = setTimeout(() => proc.kill(), 5_000);
-      const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-      clearTimeout(timer);
+      const { stdout: out, code } = await runCmd([hydra, "bin"], { timeoutMs: 5_000, allowFail: true });
       if (code === 0 && out.trim()) bin = out.trim();
     } catch { /* advisory */ }
   }
@@ -219,13 +217,10 @@ let lastGoodHydra: ProfileUsage[] | null = null;
 export async function hydraUsage(): Promise<ProfileUsage[] | null> {
   // Live PATH, not Bun's startup snapshot — the test PATH shim (a fake `hydra`) relies on it, the same
   // way run.ts passes env for the fake `gh`.
-  const hydra = Bun.which("hydra", { PATH: process.env.PATH ?? "" });
+  const hydra = which("hydra");
   if (!hydra) return null;
   try {
-    const proc = Bun.spawn([hydra, "status", "--json"], { env: process.env, stdout: "pipe", stderr: "ignore" });
-    const timer = setTimeout(() => proc.kill(), 15_000);
-    const [out, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
-    clearTimeout(timer);
+    const { stdout: out, code } = await runCmd([hydra, "status", "--json"], { timeoutMs: 15_000, allowFail: true });
     if (code !== 0) return lastGoodHydra;
     const shaped = shapeHydraStatus(JSON.parse(out));
     if (shaped.length) lastGoodHydra = shaped;
@@ -241,14 +236,11 @@ export async function hydraUsage(): Promise<ProfileUsage[] | null> {
  *  a name hydra doesn't currently report (a stale row, a typo) rather than shelling out with it.
  *  Returns the refreshed profile list so the caller need not poll again to see the new state. */
 export async function setProfileEnabled(name: string, enabled: boolean): Promise<ProfileUsage[]> {
-  const hydra = Bun.which("hydra", { PATH: process.env.PATH ?? "" });
+  const hydra = which("hydra");
   if (!hydra) throw new Error("hydra is not installed on this host");
   const before = await hydraUsage();
   if (!before?.some((p) => p.name === name)) throw new Error(`"${name}" is not a hydra login on this host`);
-  const proc = Bun.spawn([hydra, enabled ? "enable" : "disable", name], { env: process.env, stdout: "pipe", stderr: "pipe" });
-  const timer = setTimeout(() => proc.kill(), 15_000);
-  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-  clearTimeout(timer);
+  const { stdout: out, stderr: err, code } = await runCmd([hydra, enabled ? "enable" : "disable", name], { timeoutMs: 15_000, allowFail: true });
   if (code !== 0) throw new Error((err || out).trim() || `hydra ${enabled ? "enable" : "disable"} ${name} failed`);
   return (await hydraUsage()) ?? before;
 }
@@ -312,7 +304,7 @@ export const RENEW_TIMEOUT_MS = 60_000;
  *  (never a repo, so no CLAUDE.md is loaded), time-limited, output discarded — neither the reply
  *  nor any credential is read or logged. True when the launch exited 0. */
 export async function renewToken(name: string): Promise<boolean> {
-  const hydra = Bun.which("hydra", { PATH: process.env.PATH ?? "" });
+  const hydra = which("hydra");
   if (!hydra) return false;
   const cwd = await mkdtemp(join(tmpdir(), "orca-renew-"));
   try {
@@ -332,10 +324,7 @@ export async function renewToken(name: string): Promise<boolean> {
 }
 
 async function hydraRefresh(hydra: string, name: string): Promise<string | null> {
-  const proc = Bun.spawn([hydra, "refresh", name, "--force"], { env: process.env, stdout: "pipe", stderr: "pipe" });
-  const timer = setTimeout(() => proc.kill(), 15_000);
-  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-  clearTimeout(timer);
+  const { stdout: out, stderr: err, code } = await runCmd([hydra, "refresh", name, "--force"], { timeoutMs: 15_000, allowFail: true });
   if (code !== 0) throw new Error((err || out).trim() || `hydra refresh ${name} --force failed`);
   lastGoodHydra = null; // the re-read after this must be the fresh state, never a cached one
   return refreshVerdict(out, name);
@@ -352,7 +341,7 @@ const renewing = new Map<string, Promise<ProfileUsage[]>>();
  *  Refuses a name hydra doesn't currently report, without shelling out. `host` only names the
  *  machine in the login message. */
 export async function refreshProfile(name: string, opts: { renew?: (name: string) => Promise<boolean>; host?: string } = {}): Promise<ProfileUsage[]> {
-  const hydra = Bun.which("hydra", { PATH: process.env.PATH ?? "" });
+  const hydra = which("hydra");
   if (!hydra) throw new Error("hydra is not installed on this host");
   const before = await hydraUsage();
   if (!before?.some((p) => p.name === name)) throw new Error(`"${name}" is not a hydra login on this host`);
@@ -424,9 +413,9 @@ export async function readClaudeToken(configDir = DEFAULT_CLAUDE_DIR): Promise<s
   const file = Bun.file(join(configDir, ".credentials.json"));
   if (await file.exists()) return parse(await file.text());
   if (process.platform === "darwin") {
-    const proc = Bun.spawn(["security", "find-generic-password", "-s", keychainService(configDir), "-w"], { stdout: "pipe", stderr: "ignore" });
-    const out = await new Response(proc.stdout).text();
-    if ((await proc.exited) === 0) return parse(out.trim());
+    // Bounded: a locked Keychain prompting for access must not hang the usage poll.
+    const { stdout: out, code } = await runCmd(["security", "find-generic-password", "-s", keychainService(configDir), "-w"], { timeoutMs: 5_000, allowFail: true });
+    if (code === 0) return parse(out.trim());
   }
   return null;
 }
@@ -447,10 +436,9 @@ async function claudeUsage(configDir = DEFAULT_CLAUDE_DIR): Promise<ClaudeUsage 
     if (!token) return lastGoodClaude.get(configDir) ?? null;
     // Bun.fetch, not the global: the test DOM shim swaps global fetch for one without file:// support.
     // No AbortSignal: under the test DOM shim the global AbortSignal isn't Bun's, and Bun rejects it.
-    const response = await Promise.race([
+    const response = await withTimeout(
       Bun.fetch(claudeUsageUrl(token), { headers: { authorization: `Bearer ${token}`, "anthropic-beta": "oauth-2025-04-20" } }),
-      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("usage fetch timed out")), 8000).unref?.()),
-    ]);
+      8000, "usage fetch timed out");
     if (!response.ok) return lastGoodClaude.get(configDir) ?? null;
     lastGoodClaude.set(configDir, shapeUsage(await response.json()));
   } catch (error) {
@@ -464,7 +452,8 @@ async function claudeUsage(configDir = DEFAULT_CLAUDE_DIR): Promise<ClaudeUsage 
  *  nothing to show either way; this function only controls how noisy getting there is. */
 async function codexUsage(): Promise<CodexUsage | null> {
   // Live PATH, not Bun's startup snapshot — the test PATH shim relies on it, same as hydraUsage.
-  if (!Bun.which("codex", { PATH: process.env.PATH ?? "" })) {
+  const codex = which("codex");
+  if (!codex) {
     if (!loggedMissingCodex) {
       loggedMissingCodex = true;
       console.error("[usage] codex not found on PATH; not installed, so Codex usage will read null until the bridge restarts");
@@ -473,7 +462,8 @@ async function codexUsage(): Promise<CodexUsage | null> {
   }
   let proc: ReturnType<typeof Bun.spawn> | null = null;
   try {
-    const child = Bun.spawn(["codex", "app-server", "--listen", "stdio://"], { stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+    // The resolved path and the live env: Bun.spawn's own PATH is the startup snapshot.
+    const child = Bun.spawn([codex, "app-server", "--listen", "stdio://"], { env: scrubbedEnv(), stdin: "pipe", stdout: "pipe", stderr: "ignore" });
     proc = child;
     const requests = [
       { id: 1, method: "initialize", params: { clientInfo: { name: "orca", title: "Orca", version: "0.1.0" }, capabilities: { experimentalApi: true } } },

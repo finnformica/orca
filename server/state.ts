@@ -6,7 +6,7 @@
 // worktree so it can't leak into a diff or PR body.
 import { homedir } from "os";
 import { join } from "path";
-import { mkdirSync, writeFileSync, readFileSync, renameSync, existsSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync, renameSync, existsSync, readdirSync } from "fs";
 
 /** Root for operational state. Overridable so tests (and parallel checkouts) get an isolated dir. */
 export function stateDir(): string {
@@ -22,11 +22,12 @@ export function statePath(...parts: string[]): string {
 
 /** Atomic write: a torn read during a poll would corrupt the JSON, so write a temp file and rename
  *  it into place (rename is atomic on the same filesystem). Synchronous so callers stay non-async. */
-export function writeJsonSync(path: string, value: unknown): void {
+export function writeAtomicSync(path: string, content: string): void {
   const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value));
+  writeFileSync(tmp, content);
   renameSync(tmp, path);
 }
+export const writeJsonSync = (path: string, value: unknown): void => writeAtomicSync(path, JSON.stringify(value));
 
 /** Persist a cross-provider handoff seed for a branch so the interactive CLI can start a NEW native
  *  session already primed with the portable transcript — the maxed/previous model is never resumed.
@@ -35,9 +36,7 @@ export function writeJsonSync(path: string, value: unknown): void {
 export function writeHandoffFile(repo: string, branch: string, content: string): string {
   const name = `${repo}--${branch}`.replace(/[^\w.-]+/g, "-");
   const path = statePath("handoff", `${name}.md`);
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, content);
-  renameSync(tmp, path);
+  writeAtomicSync(path, content);
   return path;
 }
 
@@ -49,4 +48,14 @@ export function readJsonSync<T>(path: string): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** Every `*.json` file in `dir` that `accept` takes (by name), parsed, in name order — a missing dir
+ *  is empty, and an unreadable or corrupt file is skipped (never throws). */
+export function readJsonDir<T>(dir: string, accept: (name: string) => boolean = () => true): { file: string; value: T }[] {
+  let names: string[];
+  try { names = readdirSync(dir); } catch { return []; }
+  return names.filter((n) => n.endsWith(".json") && accept(n)).sort()
+    .map((n) => ({ file: join(dir, n), value: readJsonSync<T>(join(dir, n)) }))
+    .filter((e): e is { file: string; value: T } => e.value !== undefined);
 }

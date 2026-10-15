@@ -22,7 +22,7 @@ import { existsSync, readdirSync, rmSync } from "fs";
 import { join } from "path";
 import type { AgentStep, AgentTurn, StopReason, TurnCheck } from "../shared/agent";
 import * as db from "./db";
-import { readJsonSync, statePath, stateDir, writeJsonSync } from "./state";
+import { readJsonDir, readJsonSync, statePath, stateDir, writeJsonSync } from "./state";
 
 type StartInput = Parameters<typeof db.startTurn>[0];
 type FinishInput = Parameters<typeof db.finishTurn>[1];
@@ -214,9 +214,8 @@ let patchCounter = 0;
 const lastEnrichment = new Map<string, Record<string, db.Fields>>();
 
 function queuedPatches(): (EnrichmentPatch & { file: string })[] {
-  if (!existsSync(dir())) return [];
-  return readdirSync(dir()).filter((n) => n.startsWith("enrichment-") && n.endsWith(".json")).sort()
-    .map((n) => ({ file: join(dir(), n), ...readJsonSync<EnrichmentPatch>(join(dir(), n))! }))
+  return readJsonDir<EnrichmentPatch>(dir(), (n) => n.startsWith("enrichment-"))
+    .map(({ file, value }) => ({ file, ...value }))
     .filter((p) => p.kind === "enrichment");
 }
 

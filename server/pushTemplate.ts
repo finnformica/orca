@@ -12,7 +12,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { previewDbName } from "./preview";
-import { parseEnv, pgEnv, psql } from "./previewdb";
+import { parseEnv, pgEnv, psql as psqlQuery } from "./previewdb";
 import { runCmd } from "./run";
 import { scrubbedEnv } from "./env";
 
@@ -97,7 +97,7 @@ export async function pushToTemplate(o: PushOpts): Promise<string> {
 
   // The connection comes from the env file, like preview-db.sh; on the environment, never on argv.
   const pg = pgEnv(previewText);
-  const sql = (q: string) => psql(pg, q);
+  const sql = (q: string) => psqlQuery(pg, q);
   const exists = async (name: string) => (await sql(`SELECT 1 FROM pg_database WHERE datname = '${name}'`)) === "1";
   if (!(await exists(db))) throw new Error(`the preview database ${db} does not exist; start the preview first`);
   if (!(await exists(template))) throw new Error(`the template database ${template} does not exist`);
