@@ -512,7 +512,7 @@ export function QuickActionButtons({ row, hasWork = true, onBusy, peek = false, 
                 failure={{ action: a.label, title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }}
                 onRun={async () => { onBusy?.(true); try { await run(); } finally { onBusy?.(false); } }}>
                 {/* Auto-merge already on: a filled bolt, so the state reads at a glance. */}
-                <Icon className={cn("size-3.5", a.id === "disableAutoMerge" && "fill-current text-purple-700 dark:text-purple-400")} />
+                <Icon className={cn("size-3.5", a.on && "fill-current text-purple-700 dark:text-purple-400")} />
               </ActionButton>
             </span>
           </Tip>

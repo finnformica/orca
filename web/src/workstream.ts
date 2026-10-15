@@ -3272,12 +3272,16 @@ export type QuickAction = {
   slackKind?: "notify" | "bump";
   /** The tooltip, when it says more than the label (a bump's "posted 3h ago", auto-merge being on). */
   tip?: string;
+  /** Auto-merge is already on: the icon is drawn lit (filled). */
+  on?: boolean;
 };
 export type QuickActionRow = {
   lane: OverviewLane; prNumber?: number; isDraft?: boolean; hasRemote?: boolean;
   mergeable?: Mergeable; mergeClean?: "clean" | "conflict"; ciStatus?: CiStatus; reviewStatus?: ReviewStatus;
   agentStatus?: "idle" | "running" | "done" | "error";
   autoMergeEnabled?: boolean;
+  /** Orca's merge-queue mark (`orca merge --when-green`) — the row's pill reads "Auto-merge" for it too. */
+  mergeWhenGreen?: unknown;
   slackNotifiedAt?: string;
 };
 export type QuickActionContext = {
@@ -3312,8 +3316,10 @@ export function reviewProblems(d: Pick<ReviewDigest, "severe" | "human">): numbe
  *     on Slack once posted, its tooltip saying when) + auto-merge (rule 7). Still shown while an
  *     agent runs (rule 8).
  *  6. Approved (or the Mergeable lane) with nothing outstanding → Merge + auto-merge.
- *  7. Auto-merge: Enable auto-merge, or — once GitHub has it on — Disable auto-merge, its tooltip
- *     saying it merges once checks and reviews pass.
+ *  7. Auto-merge: Enable auto-merge (GitHub's), or — once GitHub has it on — Disable auto-merge
+ *     drawn lit, its tooltip saying it merges once checks and reviews pass. A PR on Orca's own merge
+ *     queue shows the same lit icon, disabled (a non-clickable indicator; `orca merge --cancel`
+ *     unqueues it) — offering to enable what already merges itself would be noise.
  *  9. Merged → nothing.
  *  Pure. */
 export function quickActions(row: QuickActionRow, ctx: QuickActionContext): QuickAction[] {
@@ -3331,8 +3337,10 @@ export function quickActions(row: QuickActionRow, ctx: QuickActionContext): Quic
   if (problem) return [address];
 
   const autoMerge: QuickAction = row.autoMergeEnabled
-    ? { id: "disableAutoMerge", label: "Disable auto-merge", tip: "Auto-merge on — GitHub merges it once checks and reviews pass. Click to turn it off" }
-    : { id: "autoMerge", label: "Enable auto-merge", tip: "Enable auto-merge — GitHub merges it once checks and reviews pass" };
+    ? { id: "disableAutoMerge", label: "Disable auto-merge", on: true, tip: "Auto-merge on — GitHub merges it once checks and reviews pass. Click to turn it off" }
+    : row.mergeWhenGreen
+      ? { id: "autoMerge", label: "Auto-merge on", on: true, disabled: "Auto-merge on — Orca's merge queue merges it once checks pass and it merges clean" }
+      : { id: "autoMerge", label: "Enable auto-merge", tip: "Enable auto-merge — GitHub merges it once checks and reviews pass" };
   if (row.reviewStatus === "approved" || row.lane === "MERGEABLE") return [{ id: "merge", label: "Merge" }, autoMerge];
   const out: QuickAction[] = [];
   if (ctx.slackChannel) {

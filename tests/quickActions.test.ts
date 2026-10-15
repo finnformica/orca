@@ -81,6 +81,15 @@ describe("quickActions", () => {
     const on = quickActions({ ...approved, autoMergeEnabled: true }, ctx)[1]!;
     expect(on).toMatchObject({ id: "disableAutoMerge", label: "Disable auto-merge" });
     expect(on.tip).toMatch(/Auto-merge on.*checks and reviews pass/);
+    expect(on.on).toBe(true);
+  });
+
+  test("7. on Orca's own merge queue → a lit, non-clickable Auto-merge on indicator, never Enable", () => {
+    const queued = quickActions({ ...openPr, mergeWhenGreen: { by: "orchestrator" } }, ctx);
+    expect(queued.map((a) => a.id)).toEqual(["slack", "autoMerge"]);
+    expect(queued[1]).toMatchObject({ label: "Auto-merge on", on: true, disabled: expect.stringMatching(/merges it once checks pass/) });
+    expect(quickActions({ ...approved, mergeWhenGreen: {} }, ctx)[1]!.disabled).toMatch(/Auto-merge on/);
+    expect(ids({ ...openPr, mergeWhenGreen: {}, ciStatus: "failing" })).toEqual(["addressPr"]); // a problem still wins
   });
 
   test("8. an agent running: Slack and auto-merge stay available", () => {
