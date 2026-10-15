@@ -417,3 +417,30 @@ test("the PiP document's own narrow width never forces the phone's 16px zoom-gua
     window.dispatchEvent(new Event("resize"));
   }
 });
+
+test("the PiP window never reads its own narrow width as a phone for the composer's max-md: sizing", async () => {
+  // Same root cause as the font-size test above, but for the Tailwind utilities a CSS override
+  // can't cheaply restate (the Send button's mobile "chip" look pulls in several classes, and the
+  // composer dock's padding) — Chat.tsx and ChatComposer.tsx read PipContext (lib/utils.ts) instead
+  // of trusting `max-md:`, which would otherwise fire against the PiP document's own width rather
+  // than the main window's — the thing the docked side panel (reading the main window) never does.
+  const pip = fakePip();
+  try {
+    await mount(<Entry />);
+    await click(launcher());
+    const dockInTab = panel()!.querySelector<HTMLElement>('[data-slot="chat-composer-dock"]')!;
+    const sendInTab = panel()!.querySelector<HTMLElement>('button[aria-label="Send"]')!;
+    expect(dockInTab.className).toContain("max-md:p-3");
+    expect(sendInTab.className).toContain("max-md:bg-transparent");
+    expect(sendInTab.querySelector("span")!.className).toContain("max-md:bg-primary");
+
+    await click(panel()!.querySelector('[aria-label="Pop out"]')!);
+    const doc = pip.win(0).document;
+    const dockInPip = doc.querySelector<HTMLElement>('[data-slot="chat-composer-dock"]')!;
+    const sendInPip = doc.querySelector<HTMLElement>('button[aria-label="Send"]')!;
+    expect(dockInPip.className).not.toContain("max-md:");
+    expect(dockInPip.className).toContain("p-2"); // still the panel's own padding, just not swapped for the phone's
+    expect(sendInPip.className).not.toContain("max-md:");
+    expect(sendInPip.querySelector("span")!.className).not.toContain("max-md:");
+  } finally { void pip; }
+});
