@@ -5,7 +5,9 @@
 import { retryTitle } from "./title";
 import { autofixInstruction, handoffPrompt, isAutofix, parseAgentOutcome, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type StopReason, type TurnCheck, type TurnSource } from "../shared/agent";
 import { runCheck } from "./check";
-import { run } from "./run";
+import { run, runCmd } from "./run";
+import { agentEnv } from "./env";
+import * as procs from "./proc";
 import * as lease from "./lease";
 import * as ledger from "./ledger";
 import * as db from "./db";
@@ -17,7 +19,6 @@ import { resolvePrompt } from "./attachments";
 import * as cgroup from "./cgroup";
 import { noteOomKill } from "./health";
 import { tmpdir } from "os";
-import { readlinkSync } from "fs";
 
 /** Persist a turn, but never let the history write break the run that produced it. Repo-level runs
  *  (Slack, keyed `slack:…`) carry no branch and so belong to no workstream — they're skipped.
@@ -140,23 +141,8 @@ export type RunFinished = {
   continued: boolean;
 };
 
-// Orca's own secrets never reach the agent's process. A run needs the user's shell (PATH, HOME, the
-// CLI's login), not the bridge's Slack token or database URLs — and a prompt injection that reads
-// the environment must find nothing of Orca's there. Provider keys (ANTHROPIC_*, OPENAI_*) are
-// deliberately left alone: they are the CLI's, not ours.
-const ORCA_SECRETS = ["SLACK_TOKEN", "ORCA_DATABASE_URL", "ORCA_TEST_DATABASE_URL"];
-/** The environment a spawned agent gets: the bridge's, minus Orca's secrets. Which Claude LOGIN a
- *  run uses is not Orca's call: `claude` on PATH is hydra's shim, which picks the account with the
- *  most headroom per launch (see CLAUDE.md "Handover ladder"). */
-export function agentEnv(): Record<string, string | undefined> {
-  const env = { ...process.env };
-  for (const key of ORCA_SECRETS) delete env[key];
-  // `bin/worker` holds the tools every run may use — `orca-shot`, the one way to take a screenshot
-  // (server/screenshot.ts). Not `bin/`: `orca` there is the orchestrator's, not a worker's.
-  env.PATH = `${WORKER_BIN}:${env.PATH ?? ""}`;
-  return env;
-}
-export const WORKER_BIN = new URL("../bin/worker", import.meta.url).pathname;
+// Orca's own secrets never reach the agent's process (server/env.ts); re-exported for callers.
+export { agentEnv, WORKER_BIN } from "./env";
 
 /** How this run reuses prior context — derived from what the launch options carry, so the ledger's
  *  resume/reset/handoff breakdown matches the store's actual continuation decision. Pure. */
@@ -795,11 +781,8 @@ export function prDescriptionCommand(provider: AgentProvider, cwd: string, promp
 }
 
 async function commandOutput(provider: AgentProvider, args: string[], cwd: string, purpose: "title" | "description"): Promise<string> {
-  const proc = Bun.spawn(args, { cwd, env: process.env, stdout: "pipe", stderr: "pipe" });
-  const timeout = setTimeout(() => proc.kill(), 2 * 60_000);
-  const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
-  const code = await proc.exited;
-  clearTimeout(timeout);
+  // A resumed session can run shell: the agent's env, never Orca's secrets.
+  const { stdout: out, stderr: err, code } = await runCmd(args, { cwd, env: { PATH: agentEnv().PATH }, timeoutMs: 2 * 60_000, allowFail: true });
   if (code !== 0) throw new Error(err.trim() || `${provider} ${purpose} failed`);
   if (provider === "claude") return String(JSON.parse(out.trim()).result ?? "");
   if (provider === "codex") {
@@ -951,59 +934,32 @@ export function stop(key: string): string | undefined {
   return r?.runId;
 }
 
-/** Recognize the headless CLI forms Orca launches, including resumed Cursor conversations. */
-export function isHeadlessAgentProcess(line: string): boolean {
-  return line.includes("claude -p")
-    || line.includes("codex exec")
-    || (/(?:^|\s)(?:\S*\/)?cursor-agent(?:\s|$)/.test(line) && /(?:^|\s)(?:-p|--print)(?:\s|$)/.test(line));
-}
+export { cwdInWorktree, isHeadlessAgentProcess, processCwd } from "./proc";
 
-/** The working directory of a process, or undefined when it can't be read (gone, or no /proc and
- *  no lsof). Linux reads /proc; macOS asks lsof. */
-export function processCwd(pid: number): string | undefined {
-  try { return readlinkSync(`/proc/${pid}/cwd`); } catch { /* not linux, or gone */ }
-  try {
-    const out = Bun.spawnSync(["lsof", "-a", "-p", String(pid), "-d", "cwd", "-Fn"], { stdout: "pipe", stderr: "ignore" }).stdout.toString();
-    return out.split("\n").find((l) => l.startsWith("n"))?.slice(1) || undefined;
-  } catch { return undefined; }
-}
-
-/** Is `cwd` the worktree or somewhere under it? */
-export const cwdInWorktree = (cwd: string | undefined, worktreePath: string): boolean =>
-  Boolean(cwd) && (cwd === worktreePath || cwd!.startsWith(worktreePath.replace(/\/+$/, "") + "/"));
-
-/** Kill the headless agents running IN a worktree (via ps) — works even after a restart lost the
- *  handle. Matched by the process's cwd, never by its argv: a prompt is passed in argv, and the
+/** Kill the headless agents running IN a worktree — works even after a restart lost the handle.
+ *  Matched by the process's cwd, never by its argv: a prompt is passed in argv, and the
  *  orchestrator's carries the whole board, so "argv mentions the branch" matched the orchestrator's
  *  own wake whenever a PR it had just merged was reaped — a SIGTERM (exit 143) mid-reply. A process
  *  whose cwd can't be read is left alone. */
 export async function killInWorktree(worktreePath: string): Promise<void> {
-  try {
-    const proc = Bun.spawn(["ps", "-Ao", "pid=,command="], { env: process.env, stdout: "pipe", stderr: "ignore" });
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
-    for (const line of out.split("\n")) {
-      if (!isHeadlessAgentProcess(line)) continue;
-      const pid = Number(line.trim().split(/\s+/)[0]);
-      if (pid && pid !== process.pid && cwdInWorktree(processCwd(pid), worktreePath)) {
-        try { process.kill(pid); } catch { /* already gone */ }
-      }
-    }
-  } catch { /* ps unavailable */ }
+  for (const p of await procs.headlessAgents()) {
+    if (procs.cwdInWorktree(p.cwd, worktreePath)) { try { process.kill(p.pid); } catch { /* already gone */ } }
+  }
 }
 
-/** Branches that currently have a live headless agent process (recovers status lost on restart). */
-export async function detectRunning(branches: string[]): Promise<Set<string>> {
+/** Branches that currently have a live headless agent process (recovers status lost on restart).
+ *  Matched by cwd, never argv (the orchestrator's argv names every branch on the board): exactly,
+ *  when the caller passes each branch's worktree path; else a cwd ending in `/<branch>` (worktrees
+ *  live at `<worktreeRoot>/<branch>`). */
+export async function detectRunning(branches: string[], worktreeOf: Record<string, string> = {}): Promise<Set<string>> {
   const found = new Set<string>();
-  try {
-    const proc = Bun.spawn(["ps", "-Ao", "command"], { env: process.env, stdout: "pipe", stderr: "ignore" });
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
-    const lines = out.split("\n").filter(isHeadlessAgentProcess);
-    for (const b of branches) if (b && lines.some((l) => l.includes(b))) found.add(b);
-  } catch { /* ps unavailable */ }
-  // Union in leased branches: a Claude follow-up's argv carries only its session id, so the ps
-  // branch-substring scan above can miss it — the lease records the branch explicitly.
+  const agents = await procs.headlessAgents();
+  for (const b of branches) {
+    if (!b) continue;
+    const path = worktreeOf[b];
+    if (agents.some((a) => path ? procs.cwdInWorktree(a.cwd, path) : Boolean(a.cwd && (a.cwd.endsWith(`/${b}`) || a.cwd.includes(`/${b}/`))))) found.add(b);
+  }
+  // Union in leased branches: the lease records the branch explicitly.
   for (const b of lease.liveBranches(branches)) found.add(b);
   return found;
 }

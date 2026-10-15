@@ -11,7 +11,7 @@
 //   2. Port collisions. Picking a port from the in-memory map alone hands out ports those orphans
 //      (or anything else on the machine) still hold, so the new server crashes on bind. We probe
 //      the OS for a genuinely free port instead.
-import { closeSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import { closeSync, openSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -20,6 +20,9 @@ import type { PreviewService, RepoConfig } from "./config";
 import * as git from "./git";
 import * as previewdb from "./previewdb";
 import * as docker from "./docker";
+import { scrubbedEnv } from "./env";
+import { cwdInWorktree, listenerPids, processCwd } from "./proc";
+import { readJsonSync, statePath, writeJsonSync } from "./state";
 
 /** A stable, Postgres-identifier-safe database name for one preview (keyed by its worktree path), so
  *  the `{db}` placeholder in a preview command resolves to a per-worktree database on the shared
@@ -65,30 +68,24 @@ const previews = new Map<string, Svc[]>();
 // Registry sidecar: the port↔service map for each worktree, so a crashed/hard-killed bridge (whose
 // SIGINT/SIGTERM killAll never ran) can re-adopt its still-running dev servers on the next boot
 // instead of orphaning them + forcing a re-spin. Only ports still responding are re-adopted.
-const REG = join(tmpdir(), "orca-previews.json");
+// Per host, in the state dir (it was tmpdir(), shared by every instance on one host and written
+// non-atomically); the legacy file is still read once so an upgrade re-adopts what it listed.
+const reg = () => statePath("previews.json");
+const LEGACY_REG = join(tmpdir(), "orca-previews.json");
 function persist(): void {
   const data: Record<string, Array<{ name: string; port: number; open: boolean; logPath: string; startedAt: number; onStop?: string }>> = {};
   // onStop persists so a preview re-adopted after a bridge restart still drops its DB on teardown.
   for (const [key, svcs] of previews) data[key] = svcs.map(({ name, port, open, logPath, startedAt, onStop }) => ({ name, port, open, logPath, startedAt, onStop }));
-  try { writeFileSync(REG, JSON.stringify(data)); } catch { /* best effort */ }
-}
-
-/** cwd of the process listening on `port`, via lsof — used to verify a re-adopted server is really
- *  the one we think it is (not a different worktree's server that reused the port). */
-function listenerCwd(port: number): string | null {
-  try {
-    const pid = Bun.spawnSync(["lsof", "-ti", `tcp:${port}`, "-sTCP:LISTEN"]).stdout.toString().trim().split("\n").filter(Boolean)[0];
-    if (!pid) return null;
-    const line = Bun.spawnSync(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"]).stdout.toString().split("\n").find((l) => l.startsWith("n"));
-    return line ? line.slice(1) : null;
-  } catch { return null; }
+  try { writeJsonSync(reg(), data); } catch { /* best effort */ }
 }
 
 /** Re-adopt preview servers that outlived an ungraceful bridge exit; drop entries whose ports are
  *  dead. Call once on boot, before serving. */
 export async function reattach(): Promise<void> {
   let data: Record<string, Array<{ name: string; port: number; open: boolean; logPath: string; startedAt: number; onStop?: string }>>;
-  try { data = JSON.parse(readFileSync(REG, "utf8")); } catch { return; } // no registry yet / unreadable
+  const read = readJsonSync<typeof data>(reg()) ?? readJsonSync<typeof data>(LEGACY_REG);
+  if (!read) return; // no registry yet / unreadable
+  data = read;
   for (const [key, svcs] of Object.entries(data)) {
     const live: Svc[] = [];
     for (const s of svcs) {
@@ -97,8 +94,8 @@ export async function reattach(): Promise<void> {
       // reassigned across restarts, so a responding port may now be a DIFFERENT worktree's server —
       // adopting it would make this card serve someone else's code ("none of my changes"). If it's
       // foreign, leave it alone (its own key will re-adopt it) rather than adopt or kill it.
-      const cwd = listenerCwd(s.port);
-      if (cwd && cwd.startsWith(key)) live.push({ ...s, exited: false, everUp: true }); // re-adopted only because its port responded
+      const pid = listenerPids(s.port)[0];
+      if (pid && cwdInWorktree(processCwd(pid), key)) live.push({ ...s, exited: false, everUp: true }); // re-adopted only because its port responded
     }
     if (live.length) previews.set(key, live);
   }
@@ -120,12 +117,7 @@ export async function freePort(range: [number, number]): Promise<number> {
 /** Kill whatever is listening on a port — precise reaping of a tracked service's actual listener
  *  (the node/bun grandchild the sh wrapper's kill misses), regardless of process tree. */
 function killPort(port: number): void {
-  try {
-    // -sTCP:LISTEN is critical: without it lsof also returns clients *connected* to the port —
-    // including the bridge itself (its readiness fetch), so we'd kill our own server.
-    const out = Bun.spawnSync(["lsof", "-ti", `tcp:${port}`, "-sTCP:LISTEN"]).stdout.toString().trim();
-    for (const pid of out.split("\n").filter(Boolean)) { try { process.kill(Number(pid)); } catch { /* gone */ } }
-  } catch { /* lsof missing / nothing listening */ }
+  for (const pid of listenerPids(port)) { try { process.kill(pid); } catch { /* gone */ } }
 }
 
 /** Reap dev servers left running inside this worktree by a PRIOR run (their ports are unknown after
@@ -162,7 +154,7 @@ export async function start(key: string, cwd: string, services: PreviewService[]
       .replace(/\{bind\}/g, previewBind());
     const logPath = join(tmpdir(), `orca-preview-${key.replace(/[^\w]+/g, "_")}-${s.name}.log`);
     const logFd = openSync(logPath, "w"); // capture output so a failed service is diagnosable
-    const proc = Bun.spawn(["sh", "-lc", cmd], { cwd, env: process.env, stdout: logFd, stderr: logFd });
+    const proc = Bun.spawn(["sh", "-lc", cmd], { cwd, env: scrubbedEnv(), stdout: logFd, stderr: logFd });
     const onStop = s.onStop?.replace(/\{db\}/g, db); // resolved now; runs at teardown (stop with teardown=true)
     const svc: Svc = { name: s.name, port: ports[s.name]!, open: s.open ?? false, proc, logPath, logFd, exited: false, startedAt: Date.now(), onStop, everUp: false };
     void proc.exited.then(() => { svc.exited = true; });
@@ -251,7 +243,7 @@ export function stop(key: string, teardown = false): void {
       if (!s.onStop) continue;
       // Best-effort and synchronous: a drop-database is quick, and the worktree it needs (env + drop
       // script) is still on disk here — callers remove it only after stop() returns.
-      try { Bun.spawnSync(["sh", "-lc", s.onStop], { cwd: key, env: process.env, stdout: "ignore", stderr: "ignore" }); } catch { /* best effort */ }
+      try { Bun.spawnSync(["sh", "-lc", s.onStop], { cwd: key, env: scrubbedEnv(), stdout: "ignore", stderr: "ignore" }); } catch { /* best effort */ }
     }
   }
   for (const s of svcs) {
@@ -303,11 +295,13 @@ function envFileFor(repo: RepoConfig): { dir: string; path: string } | undefined
 /**
  * Drop orphan preview databases and remove stale test containers across every given repo (the ones
  * checked out on this instance — see verbs.repoHere). Pure selection (orphanPreviewDbs) decides what
- * counts as an orphan; this is the IO shell around it. Call at startup, then hourly.
+ * counts as an orphan; this is the IO shell around it. Call at startup, then hourly. `dryRun` reports
+ * what it WOULD drop/remove and touches nothing; `liveFrom` (default `repos`) are the repos whose
+ * worktrees count as live — scripts/preview-gc.ts narrows `repos` but keeps every repo's live.
  */
 export async function reap(
   repos: RepoConfig[],
-  opts: { dbGraceMs?: number; containerStaleMs?: number } = {},
+  opts: { dbGraceMs?: number; containerStaleMs?: number; dryRun?: boolean; liveFrom?: RepoConfig[] } = {},
 ): Promise<ReapReport> {
   const dbGraceMs = opts.dbGraceMs ?? DB_GRACE_MS;
   const containerStaleMs = opts.containerStaleMs ?? CONTAINER_STALE_MS;
@@ -318,7 +312,7 @@ export async function reap(
   // tracking (owned or re-adopted) — belt and suspenders for a key not yet reflected in `git worktree
   // list` (e.g. a worktree removal and this pass racing).
   const live = new Set<string>(previews.keys());
-  for (const repo of repos) {
+  for (const repo of opts.liveFrom ?? repos) {
     try {
       for (const w of await git.listWorktrees(repo.repoPath, repo.worktreeRoot)) live.add(w.worktreePath);
     } catch (e) { console.error(`orca: reap: couldn't list worktrees for ${repo.name}`, e); }
@@ -336,9 +330,9 @@ export async function reap(
       for (const c of candidates) {
         if (!orphans.has(c.name) || c.ageMs < dbGraceMs) continue;
         try {
-          await previewdb.dropPreviewDb(env.dir, c.name);
+          if (!opts.dryRun) await previewdb.dropPreviewDb(env.dir, c.name);
           droppedDbs.push(c.name);
-          console.log(`orca: reaped orphan preview db ${c.name}`);
+          if (!opts.dryRun) console.log(`orca: reaped orphan preview db ${c.name}`);
         } catch (e) { console.error(`orca: reap: failed to drop preview db ${c.name}`, e); }
       }
     } catch (e) { console.error(`orca: reap: failed to list preview dbs for ${repo.name}`, e); }
@@ -353,14 +347,15 @@ export async function reap(
       for (const c of await docker.listContainers(prefix)) {
         if (Date.now() - c.createdAt < containerStaleMs) continue;
         try {
-          await docker.removeContainer(c.name);
+          if (!opts.dryRun) await docker.removeContainer(c.name);
           removedContainers.push(c.name);
-          console.log(`orca: reaped stale test container ${c.name}`);
+          if (!opts.dryRun) console.log(`orca: reaped stale test container ${c.name}`);
         } catch (e) { console.error(`orca: reap: failed to remove container ${c.name}`, e); }
       }
     } catch (e) { console.error(`orca: reap: failed to list containers for prefix ${prefix}`, e); }
   }
 
-  lastReap = { at: Date.now(), droppedDbs, removedContainers };
-  return lastReap;
+  const report = { at: Date.now(), droppedDbs, removedContainers };
+  if (!opts.dryRun) lastReap = report;
+  return report;
 }

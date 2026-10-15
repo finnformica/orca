@@ -1,19 +1,32 @@
 // Thin adapter onto the Postgres that hosts per-preview databases — listing orphan candidates (for
 // server/preview.ts's reaper) and dropping one. Connects the same way scripts/preview-db.sh does:
-// DB_HOST/DB_PORT/DB_MASTER_USER/PGPASSWORD read from a repo's own `.env` (never a value on argv),
-// mirroring server/pushTemplate.ts's own psql adapter — so there are now two call sites instead of a
-// shared helper neither owns, which is still less than teaching preview-db.sh a `list` subcommand it
-// has to validate DB-free.
+// DB_HOST/DB_PORT/DB_MASTER_USER/PGPASSWORD read from a repo's own `.env` (never a value on argv).
+// It owns the env-file parser and the psql connection that server/pushTemplate.ts also uses.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseEnv } from "./pushTemplate";
-import { run } from "./run";
+import { run, runCmd } from "./run";
 
 const SCRIPT = join(import.meta.dir, "../scripts/preview-db.sh");
 
-function pgEnv(envPath: string): Record<string, string> {
-  const vars = parseEnv(readFileSync(envPath, "utf8"));
-  const get = (k: string) => vars.get(k)?.value;
+type EnvLine = { value: string; line: string };
+/** KEY=value lines (optionally `export`ed, quotes stripped for comparison); the raw line is kept so a
+ *  copied variable is written exactly as the file has it. Last assignment wins, as dotenv/bash. */
+export function parseEnv(text: string): Map<string, EnvLine> {
+  const out = new Map<string, EnvLine>();
+  for (const line of text.split("\n")) {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!m) continue;
+    const raw = m[2]!.trim();
+    out.set(m[1]!, { value: raw.match(/^(['"])(.*)\1$/)?.[2] ?? raw, line: line.replace(/^\s*export\s+/, "") });
+  }
+  return out;
+}
+
+/** The libpq env for the Postgres a repo's env file names (preview-db.sh's DB_HOST/DB_PORT/
+ *  DB_MASTER_USER/PGPASSWORD) — on the environment, never argv. An empty value takes the default. */
+export function pgEnv(envText: string): Record<string, string> {
+  const vars = parseEnv(envText);
+  const get = (k: string) => vars.get(k)?.value || undefined;
   const pg: Record<string, string> = {
     PGHOST: get("DB_HOST") ?? "localhost",
     PGPORT: get("DB_PORT") ?? "5432",
@@ -24,11 +37,9 @@ function pgEnv(envPath: string): Record<string, string> {
   return pg;
 }
 
-async function psql(pg: Record<string, string>, query: string): Promise<string> {
-  const proc = Bun.spawn(["psql", "-X", "-v", "ON_ERROR_STOP=1", "-tAc", query], { env: { ...process.env, ...pg }, stdout: "pipe", stderr: "pipe" });
-  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-  if (code !== 0) throw new Error(`psql failed (exit ${code}): ${err.trim() || out.trim()}`);
-  return out.trim();
+/** One psql query (tuples only, unaligned), trimmed. */
+export async function psql(pg: Record<string, string>, query: string): Promise<string> {
+  return (await runCmd(["psql", "-X", "-v", "ON_ERROR_STOP=1", "-tAc", query], { env: pg })).stdout.trim();
 }
 
 export type PreviewDbCandidate = { name: string; ageMs: number };
@@ -42,7 +53,7 @@ export type PreviewDbCandidate = { name: string; ageMs: number };
  * floored, so a brand-new database can read up to 1s old — fine against the 2h grace, not a 1s one.
  */
 export async function orphanCandidates(envPath: string): Promise<PreviewDbCandidate[]> {
-  const pg = pgEnv(envPath);
+  const pg = pgEnv(readFileSync(envPath, "utf8"));
   const query = "SELECT datname || '|' || floor(extract(epoch from now() - coalesce((pg_stat_file('base/' || oid, true)).modification, now()))) FROM pg_database WHERE datname ~ '^orca_'";
   const out = await psql(pg, query);
   if (!out) return [];

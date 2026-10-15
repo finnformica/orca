@@ -10,10 +10,10 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
+import { stateDir } from "../server/state";
 import * as db from "../server/db";
 
-const source = process.argv[2] || join(process.env.ORCA_STATE_DIR || join(homedir(), ".orca"), "orca.db");
+const source = process.argv[2] || join(stateDir(), "orca.db");
 if (!existsSync(source)) {
   console.log(`orca: nothing to import — no SQLite history at ${source}`);
   process.exit(0);

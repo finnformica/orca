@@ -19,6 +19,7 @@
 // run. `prlimit` was considered and rejected: it bounds one process's own address space, not a whole
 // process tree (a build's child processes, Chrome's many), so it would not have stopped the incident.
 import { existsSync } from "fs";
+import { runCmd } from "./run";
 
 export const DEFAULT_MEMORY_MAX_GB = 4;
 export const DEFAULT_CPU_WEIGHT = 50;
@@ -90,10 +91,8 @@ export function scopedCommand(argv: string[], opts: { available: boolean; memory
  *  never turn a real run's result into an error of its own. */
 export async function wasOomKilled(unit: string, env: Record<string, string | undefined>): Promise<boolean> {
   try {
-    const proc = Bun.spawn(["systemctl", "--user", "show", `${unit}.scope`, "-p", "Result", "--value"], { env, stdout: "pipe", stderr: "ignore" });
-    const out = await new Response(proc.stdout).text();
-    await proc.exited;
-    return out.trim() === "oom-kill";
+    const { stdout } = await runCmd(["systemctl", "--user", "show", `${unit}.scope`, "-p", "Result", "--value"], { env, allowFail: true });
+    return stdout.trim() === "oom-kill";
   } catch {
     return false;
   }

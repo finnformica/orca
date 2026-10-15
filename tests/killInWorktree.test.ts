@@ -44,4 +44,21 @@ describe("killInWorktree", () => {
     expect(agent.cwdInWorktree("/w/feat-2", "/w/feat")).toBe(false);
     expect(agent.cwdInWorktree(undefined, "/w/feat")).toBe(false);
   });
+
+  test("detectRunning finds a branch by its agent's cwd, never because the orchestrator's argv names it", async () => {
+    const root = mkdtempSync(join(tmpdir(), "orca-detect-"));
+    const wt = join(root, ".worktrees", "orca", "feat-live");
+    const orch = join(root, "orchestrator");
+    mkdirSync(wt, { recursive: true });
+    mkdirSync(orch);
+    fakeAgent(wt, "fix it");
+    fakeAgent(orch, "board: orca/feat-idle orca/feat-live");
+    await Bun.sleep(150);
+    // By branch alone (the cwd ends in /<branch>), and exactly by worktree path when given.
+    const byName = await agent.detectRunning(["orca/feat-live", "orca/feat-idle", "feat-live"]);
+    expect(byName.has("orca/feat-live")).toBe(true);
+    expect(byName.has("orca/feat-idle")).toBe(false);
+    const byPath = await agent.detectRunning(["orca/feat-live", "orca/feat-idle"], { "orca/feat-live": wt, "orca/feat-idle": join(root, "idle") });
+    expect([...byPath].filter((b) => b.startsWith("orca/feat"))).toEqual(["orca/feat-live"]);
+  });
 });

@@ -11,11 +11,11 @@
 //   bun run scripts/import-transcript-files.ts
 import { readdirSync, readFileSync } from "fs";
 import { join } from "path";
-import { homedir } from "os";
+import { stateDir } from "../server/state";
 import * as db from "../server/db";
 import type { AgentStep } from "../shared/agent";
 
-const dir = join(process.env.ORCA_STATE_DIR || join(homedir(), ".orca"), "transcripts");
+const dir = join(stateDir(), "transcripts");
 
 let files: string[];
 try {

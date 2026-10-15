@@ -3,7 +3,8 @@
 // check it can run, 'looks done' is the only signal" — so the check is Orca's, deterministic, not
 // the agent's self-report in the outcome's Verification section. The output tail is kept as the
 // evidence a fix follow-up is given.
-import { agentEnv } from "./agent";
+import { agentEnv } from "./env";
+import { runCmd } from "./run";
 import type { TurnCheck } from "../shared/agent";
 
 const OUTPUT_TAIL = 4_000; // chars of combined output kept on the turn — enough for a failing test's name and assertion
@@ -12,10 +13,9 @@ const TIMEOUT_MS = 10 * 60_000;
 /** Run `command` through `sh -lc` in `cwd`; never throws. */
 export async function runCheck(cwd: string, command: string): Promise<TurnCheck> {
   const startedAt = Date.now();
-  const proc = Bun.spawn(["sh", "-lc", command], { cwd, env: agentEnv(), stdout: "pipe", stderr: "pipe" });
-  const timer = setTimeout(() => proc.kill(), TIMEOUT_MS);
-  const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-  clearTimeout(timer);
+  // The agent's env (bin/worker on PATH, never Orca's secrets): the check runs the worktree's code.
+  const { stdout: out, stderr: err, code } = await runCmd(["sh", "-lc", command], { cwd, env: { PATH: agentEnv().PATH }, timeoutMs: TIMEOUT_MS, allowFail: true })
+    .catch((e) => ({ stdout: "", stderr: e instanceof Error ? e.message : String(e), code: 127 }));
   const combined = `${out}${err}`.trim();
   return {
     command,

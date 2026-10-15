@@ -12,25 +12,16 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { previewDbName } from "./preview";
+import { parseEnv, pgEnv, psql as psqlQuery } from "./previewdb";
+import { runCmd } from "./run";
+import { scrubbedEnv } from "./env";
+
+export { parseEnv };
 
 // ponytail: name heuristic for "integration-related"; differing keys it misses are listed by name as
 // skipped, so a miss is visible. Make it per-repo config if a repo's integrations don't match it.
 const INTEGRATION = /INTEGRATION|LINEAR|GITHUB|GITLAB|JIRA|ATLASSIAN|CONFLUENCE|SLACK|NOTION|ASANA|OAUTH|_BASE_URL$/i;
 const IDENT = /^[a-z][a-z0-9_]{0,62}$/;
-
-type EnvLine = { value: string; line: string };
-/** KEY=value lines (optionally `export`ed, quotes stripped for comparison); the raw line is kept so a
- *  copied variable is written exactly as the preview has it. Last assignment wins, as dotenv/bash. */
-export function parseEnv(text: string): Map<string, EnvLine> {
-  const out = new Map<string, EnvLine>();
-  for (const line of text.split("\n")) {
-    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-    if (!m) continue;
-    const raw = m[2]!.trim();
-    out.set(m[1]!, { value: raw.match(/^(['"])(.*)\1$/)?.[2] ?? raw, line: line.replace(/^\s*export\s+/, "") });
-  }
-  return out;
-}
 
 /** Never a whole value: two leading characters and the length. */
 export const mask = (v: string): string => (v.length <= 4 ? "*".repeat(v.length) : `${v.slice(0, 2)}…(${v.length} chars)`);
@@ -69,12 +60,8 @@ export function applyEnv(source: string, changes: EnvChange[], note: string): st
 
 const describe = (c: EnvChange) => (c.from === undefined ? `  + ${c.key}=${mask(c.to)}` : `  ~ ${c.key}: ${mask(c.from)} -> ${mask(c.to)}`);
 
-async function run(cmd: string[], env: Record<string, string>, stdin?: ReadableStream | "ignore"): Promise<string> {
-  const p = Bun.spawn(cmd, { env: { ...process.env, ...env }, stdin: stdin ?? "ignore", stdout: "pipe", stderr: "pipe" });
-  const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
-  if (code !== 0) throw new Error(`${cmd[0]} failed (exit ${code}): ${err.trim().slice(-1500)}`);
-  return out.trim();
-}
+const run = async (cmd: string[], env: Record<string, string>, stdin?: ReadableStream): Promise<string> =>
+  (await runCmd(cmd, { env, stdin })).stdout.trim();
 
 /** A pg_dump at least as new as the server (pg_dump refuses an older one): $PG_DUMP, PATH's, then the
  *  usual Homebrew/Debian per-version installs, since PATH's is often an older major. */
@@ -109,9 +96,8 @@ export async function pushToTemplate(o: PushOpts): Promise<string> {
   if (!IDENT.test(template) || template.startsWith("orca_") || template === db) throw new Error(`refusing to replace '${template}': not a plain template database name`);
 
   // The connection comes from the env file, like preview-db.sh; on the environment, never on argv.
-  const pg: Record<string, string> = { PGHOST: get("DB_HOST") ?? "localhost", PGPORT: get("DB_PORT") ?? "5432", PGUSER: get("DB_MASTER_USER") ?? "postgres", PGDATABASE: "postgres" };
-  if (get("PGPASSWORD")) pg.PGPASSWORD = get("PGPASSWORD")!;
-  const sql = (q: string) => run(["psql", "-X", "-v", "ON_ERROR_STOP=1", "-tAc", q], pg);
+  const pg = pgEnv(previewText);
+  const sql = (q: string) => psqlQuery(pg, q);
   const exists = async (name: string) => (await sql(`SELECT 1 FROM pg_database WHERE datname = '${name}'`)) === "1";
   if (!(await exists(db))) throw new Error(`the preview database ${db} does not exist; start the preview first`);
   if (!(await exists(template))) throw new Error(`the template database ${template} does not exist`);
@@ -136,7 +122,7 @@ export async function pushToTemplate(o: PushOpts): Promise<string> {
   const owner = await sql(`SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = '${template}'`);
   await sql(`CREATE DATABASE "${temp}" OWNER "${owner}" TEMPLATE template0`);
   try {
-    const dump = Bun.spawn([pgDump, "-d", db], { env: { ...process.env, ...pg }, stdout: "pipe", stderr: "pipe" });
+    const dump = Bun.spawn([pgDump, "-d", db], { env: scrubbedEnv(pg), stdout: "pipe", stderr: "pipe" });
     const restore = run(["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "-d", temp], pg, dump.stdout);
     const [dumpErr, dumpCode] = await Promise.all([new Response(dump.stderr).text(), dump.exited]);
     await restore;
