@@ -2937,16 +2937,25 @@ export function composerHistory(
 /** What an arrow key in the composer means for history, or null to leave it to the textarea. Like a
  *  terminal: ↑ recalls only with the caret on the FIRST line (an empty box qualifies), ↓ only on the
  *  LAST line — anywhere else they move the caret a line. Never with a selection, an open menu (the @
- *  picker owns the arrows), mid-IME composition, or a modifier held. */
+ *  picker owns the arrows), mid-IME composition, or a modifier held.
+ *  A logical line with no "\n" can still be several VISUAL rows once it soft-wraps — the caret can
+ *  sit on its second or third row while `value.slice(0, selectionStart)` still has no "\n" in it, so
+ *  that check alone isn't enough: `box.firstVisualRow` / `lastVisualRow` carry what the textarea's own
+ *  layout says (measured by the caller, which has the real DOM; undefined — no measurement, or a line
+ *  that can't wrap — leaves the "\n" check as the whole answer). */
 export function historyKey(
   key: { key: string; shiftKey?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; isComposing?: boolean },
-  box: { value: string; selectionStart: number; selectionEnd: number; menuOpen?: boolean },
+  box: { value: string; selectionStart: number; selectionEnd: number; menuOpen?: boolean; firstVisualRow?: boolean; lastVisualRow?: boolean },
 ): "up" | "down" | null {
   if (key.key !== "ArrowUp" && key.key !== "ArrowDown") return null;
   if (key.shiftKey || key.altKey || key.ctrlKey || key.metaKey || key.isComposing || box.menuOpen) return null;
   if (box.selectionStart !== box.selectionEnd) return null;
-  if (key.key === "ArrowUp") return box.value.slice(0, box.selectionStart).includes("\n") ? null : "up";
-  return box.value.slice(box.selectionEnd).includes("\n") ? null : "down";
+  if (key.key === "ArrowUp") {
+    if (box.value.slice(0, box.selectionStart).includes("\n")) return null;
+    return box.firstVisualRow === false ? null : "up";
+  }
+  if (box.value.slice(box.selectionEnd).includes("\n")) return null;
+  return box.lastVisualRow === false ? null : "down";
 }
 
 /** Where a history walk stands: `idx` into the newest-first list (null = your own draft), and the

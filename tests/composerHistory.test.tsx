@@ -49,6 +49,24 @@ describe("historyKey", () => {
     expect(historyKey({ key: "ArrowDown" }, at(text, 5))).toBeNull();
     expect(historyKey({ key: "ArrowDown" }, at(text, 0))).toBeNull();
   });
+  test("a soft-wrapped single line: no literal newline, but the real layout says the caret isn't on the first/last visual row", () => {
+    // No "\n" anywhere, so the old string-only check would always say "up"/"down" belong to history —
+    // the bug: a long single-line draft whose caret sits on its second or third WRAPPED row still got
+    // replaced by the previous sent message. firstVisualRow/lastVisualRow carry what the textarea's
+    // own layout says (computed by the caller, which has the real DOM); historyKey must defer to them.
+    const wrapped = "a very long line that visually wraps onto several rows in the box";
+    expect(historyKey({ key: "ArrowUp" }, { ...at(wrapped), firstVisualRow: false })).toBeNull();
+    expect(historyKey({ key: "ArrowUp" }, { ...at(wrapped), firstVisualRow: true })).toBe("up");
+    expect(historyKey({ key: "ArrowDown" }, { ...at(wrapped, 0), lastVisualRow: false })).toBeNull();
+    expect(historyKey({ key: "ArrowDown" }, { ...at(wrapped, 0), lastVisualRow: true })).toBe("down");
+    // No measurement available (undefined) falls back to the "\n"-only answer, unchanged.
+    expect(historyKey({ key: "ArrowUp" }, at(wrapped))).toBe("up");
+    expect(historyKey({ key: "ArrowDown" }, at(wrapped, 0))).toBe("down");
+    // A real "\n" before/after the caret already decides it — the visual flags are never consulted.
+    const text = "one\ntwo";
+    expect(historyKey({ key: "ArrowUp" }, { ...at(text, 5), firstVisualRow: true })).toBeNull();
+    expect(historyKey({ key: "ArrowDown" }, { ...at(text, 2), lastVisualRow: true })).toBeNull();
+  });
   test("never with a selection, an open menu, mid-IME, or a modifier", () => {
     expect(historyKey({ key: "ArrowUp" }, at("hello", 0, 3))).toBeNull();
     expect(historyKey({ key: "ArrowUp" }, { ...at(""), menuOpen: true })).toBeNull();
