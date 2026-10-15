@@ -230,6 +230,24 @@ describe("provider adapters", () => {
     expect(parseAgentOutcome("Implemented it without the requested headings")).toBeUndefined();
   });
 
+  test("keeps a nested sub-bullet attached to its parent item instead of flattening it to a sibling", () => {
+    const parsed = parseAgentOutcome("## Decisions\n- Used LRU for the cache\n  - considered LFU but rejected it\n- Kept the API stable");
+    expect(parsed?.decisions).toEqual([
+      "Used LRU for the cache\n  - considered LFU but rejected it",
+      "Kept the API stable",
+    ]);
+  });
+
+  test("keeps a stray sub-heading inside a section as its own markdown item, not stripped into bullet-less text", () => {
+    const parsed = parseAgentOutcome("## Remaining\n- Fix the flaky test\n## Comment dispositions\n- Resolved: renamed the field\n- Open: the perf question");
+    expect(parsed?.remaining).toEqual([
+      "Fix the flaky test",
+      "## Comment dispositions",
+      "Resolved: renamed the field",
+      "Open: the perf question",
+    ]);
+  });
+
   test("adds the final-response contract once without rewriting the instruction", () => {
     const instruction = "Change only src/a.ts exactly as requested.";
     const wrapped = withOutcomeContract(instruction);

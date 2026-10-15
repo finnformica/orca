@@ -82,8 +82,23 @@ export const TOAST_AUTO_HIDE_MS = 6_000;
 /** A toast older than this when it arrives (a catch-up after a long absence) is not popped. */
 export const TOAST_FRESH_MS = 10 * 60_000;
 
+/** Strip the Markdown an agent's report prose is written in down to plain text — a notification
+ *  card has no renderer, so `**bold**`, `` `code` ``, `[text](url)` and a stray heading/list marker
+ *  otherwise show their literal syntax. Order matters: bold before the italic markers it's built
+ *  from, so `**x**` doesn't leave a single `*x*` behind. Line-anchored patterns (`^`) run before
+ *  `oneLine` collapses the text to one line. */
+export const stripMarkdown = (text: string): string => text
+  .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+  .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, "")
+  .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+  .replace(/`([^`]+)`/g, "$1")
+  .replace(/\*\*([^*]+)\*\*/g, "$1")
+  .replace(/__([^_]+)__/g, "$1")
+  .replace(/\*([^*\n]+)\*/g, "$1")
+  .replace(/_([^_\n]+)_/g, "$1");
+
 const oneLine = (text: string, max = 140): string => {
-  const line = text.replace(/\s+/g, " ").trim();
+  const line = stripMarkdown(text).replace(/\s+/g, " ").trim();
   return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 };
 

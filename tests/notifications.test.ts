@@ -14,7 +14,7 @@ import * as bus from "../server/bus";
 import * as notify from "../server/notify";
 import * as preview from "../server/preview";
 import { eventStream, RELAYED } from "../server/events";
-import { asksForInput, checkNotification, filterNotifications, groupByDay, prNotifications, previewNotification, runNotification, shouldToast, toastStack, unreadCount, type Notification } from "../shared/notifications";
+import { asksForInput, checkNotification, filterNotifications, groupByDay, prNotifications, previewNotification, runNotification, shouldToast, stripMarkdown, toastStack, unreadCount, type Notification } from "../shared/notifications";
 import { makeScratchRepo } from "./helpers";
 import { freshSchema, type TestDb } from "./pg";
 import { native } from "./happydom";
@@ -39,6 +39,15 @@ describe("decisions (pure)", () => {
     expect(runNotification({ ...base, status: "done", response: "Done.", compact: true })).toBeUndefined();
     expect(runNotification({ ...base, status: "done", response: "Done.", continued: true })).toBeUndefined();
     expect(runNotification({ ...base, title: undefined, status: "done", response: "Done." })?.title).toBe("feat"); // the branch when untitled
+  });
+
+  test("a report's markdown is stripped to plain text before it reaches the one-line card", () => {
+    expect(stripMarkdown("**Title:** changed from `old` to **new**, see [the doc](https://x/y)")).toBe("Title: changed from old to new, see the doc");
+    expect(stripMarkdown("## Comment dispositions\n- resolved: renamed the field\n1. also this")).toBe("Comment dispositions\nresolved: renamed the field\nalso this");
+    const finished = runNotification({ ...base, status: "done", outcome: {
+      outcome: "**Item names:** now pass `entityName` through. See [the PR](https://x/y).", verification: [], decisions: [], remaining: [], commits: [],
+    } });
+    expect(finished).toMatchObject({ kind: "finished", body: "Item names: now pass entityName through. See the PR." });
   });
 
   test("the orchestrator's own wake: only a problem or a question is reported, and it opens the window", () => {

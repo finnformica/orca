@@ -128,10 +128,29 @@ export type AgentTurn = {
 };
 
 const OUTCOME_HEADINGS = ["outcome", "verification", "decisions", "remaining", "commits"] as const;
-const sectionValue = (raw: string): string[] => raw
-  .split("\n")
-  .map((line) => line.trim().replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "").trim())
-  .filter((line) => line && line.toLowerCase() !== "none");
+const BULLET_MARKER = /^(?:[-*+]\s+|\d+[.)]\s+)/;
+
+// One array entry per TOP-LEVEL bullet (indentation 0 in the raw section). A line indented under
+// one — a nested sub-bullet, or wrapped continuation prose — is appended to that item's text rather
+// than becoming its own flat sibling, so a markdown renderer sees a real nested list instead of
+// every depth flattened to one level. A line that isn't a bullet at all (most commonly a stray `##`
+// sub-heading a model emits inside a section) keeps its own markdown syntax verbatim as its own
+// item, rather than being stripped into bullet-less text with no way to tell it was a heading.
+const sectionValue = (raw: string): string[] => {
+  const items: string[] = [];
+  for (const rawLine of raw.split("\n")) {
+    if (!rawLine.trim()) continue;
+    const indented = /^\s/.test(rawLine);
+    const trimmed = rawLine.trim();
+    if (indented && items.length > 0) {
+      items[items.length - 1] += `\n  ${trimmed}`;
+      continue;
+    }
+    const text = trimmed.replace(BULLET_MARKER, "").trim();
+    if (text && text.toLowerCase() !== "none") items.push(text);
+  }
+  return items;
+};
 
 /** Tolerantly parse the compact Markdown contract without affecting run success. */
 export function parseAgentOutcome(raw: string): AgentOutcome | undefined {
