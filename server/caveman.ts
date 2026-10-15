@@ -153,11 +153,16 @@ export async function prepare(): Promise<CavemanWiring> {
     const noProxy = [process.env.NO_PROXY ?? process.env.no_proxy, "127.0.0.1", "localhost"].filter(Boolean).join(",");
     return {
       on: true,
-      // ENABLE_TOOL_SEARCH: Claude Code turns tool search off when ANTHROPIC_BASE_URL is set, and then
-      // sends every tool schema on every request — about 16k more input tokens than a direct run, so
-      // the trial cost more (docs/research/caveman-trial-samples-2026-10-15.md). The proxy forwards
-      // the deferred-tool request unchanged, so it stays on here.
-      env: { ANTHROPIC_BASE_URL: baseUrl(), ENABLE_TOOL_SEARCH: "true", NO_PROXY: noProxy, no_proxy: noProxy },
+      // Claude Code treats any ANTHROPIC_BASE_URL as a third-party gateway: it turns tool search off
+      // (every tool schema on every request, ~16k more input tokens) and drops the global prompt-cache
+      // scope (a cold run writes ~11k tokens a direct run reads). The proxy forwards both unchanged,
+      // so the run says the proxy is the Anthropic API. _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL is
+      // the CLI's own (internal) switch for that; ENABLE_TOOL_SEARCH keeps the larger half if a CLI
+      // update drops it. docs/research/caveman-trial-samples-2026-10-15.md has the measurements.
+      env: {
+        ANTHROPIC_BASE_URL: baseUrl(), _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "1", ENABLE_TOOL_SEARCH: "true",
+        NO_PROXY: noProxy, no_proxy: noProxy,
+      },
       args: ["--mcp-config", mcp, "--append-system-prompt", readFileSync(skillPath(), "utf8")],
     };
   } catch (e) {
