@@ -1,5 +1,8 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { CheckCheck, ChevronDown, Clock, GitMerge, GitPullRequestArrow, Loader2, MessageSquarePlus, MoreVertical, Send, Sparkles, Wrench, X, Zap, type LucideIcon } from "lucide-react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  ArrowRightLeft, ArrowUpRight, BellRing, Bot, Check, CheckCheck, ChevronDown, Clock, Copy, ExternalLink, FolderOpen, GitMerge, GitPullRequestArrow, GitPullRequestDraft, Globe,
+  Link, Loader2, MessageSquarePlus, MoreVertical, Pencil, Send, Sparkles, SquareTerminal, Tag, Trash2, Wrench, X, XCircle, Zap, type LucideIcon,
+} from "lucide-react";
 import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, mergeWhenGreen, moveWorkstream, previewConfigured, thisInstance,
   cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, slackChannel, staleHours, suggestTitle, toggleFollow, useCachedReviewDigest, useRepos, useReviewDigest, type Row,
@@ -14,6 +17,8 @@ import { ChatComposer } from "@/components/ChatComposer";
 import { clearDraft, hasDraft } from "@/lib/composerDraft";
 import { Button } from "@/components/ui/button";
 import { ModelPicker } from "@/components/ModelPicker";
+import { BottomSheet } from "@/components/BottomSheet";
+import { useNarrow } from "@/lib/viewport";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
@@ -33,6 +38,61 @@ const followUpDraftKey = (row: Row) => `orca.followup.${row.repo}::${row.branch}
 const QUICK_ICONS: Record<QuickActionId, LucideIcon> = {
   createPr: GitPullRequestArrow, markReady: CheckCheck, addressPr: Wrench, slack: Send, mergeWhenGreen: Clock, merge: GitMerge, autoMerge: Zap,
 };
+
+// The menu's parts. On a desktop they are the Radix menu's own items (the ⋯ dropdown and the
+// right-click menu); on a phone the SAME fragment renders as a bottom sheet's large touch rows, each
+// with its icon — one list, so the dropdown and the sheet can't drift. A submenu becomes a labelled
+// group in the sheet (a disabled one a disabled fieldset). `SheetMenu` carries the sheet's close.
+const SheetMenu = createContext<(() => void) | null>(null);
+type Select = (e: Event) => void;
+const SHEET_ROW = "active:bg-accent flex min-h-12 w-full items-center gap-3 rounded-md px-2 text-left text-[15px] outline-none select-none focus-visible:bg-accent disabled:opacity-50";
+
+function Item({ icon: Icon, onSelect, disabled, className, title, children }: { icon?: LucideIcon; onSelect?: Select; disabled?: boolean; className?: string; title?: string; children: ReactNode }) {
+  const close = useContext(SheetMenu);
+  if (!close) return <DropdownMenuItem onSelect={onSelect} disabled={disabled} className={className} title={title}>{children}</DropdownMenuItem>;
+  return (
+    <button type="button" role="menuitem" data-slot="sheet-item" disabled={disabled} title={title} className={cn(SHEET_ROW, className)}
+      onClick={() => { const e = new Event("select", { cancelable: true }); onSelect?.(e); if (!e.defaultPrevented) close(); }}>
+      {Icon && <Icon className="text-muted-foreground size-5 shrink-0" />}<span className="min-w-0 flex-1">{children}</span>
+    </button>
+  );
+}
+
+function CheckItem({ icon: Icon, checked, onCheckedChange, onSelect, title, children }: { icon?: LucideIcon; checked: boolean; onCheckedChange: (c: boolean) => void; onSelect?: Select; title?: string; children: ReactNode }) {
+  const close = useContext(SheetMenu);
+  if (!close) return <DropdownMenuCheckboxItem checked={checked} onCheckedChange={onCheckedChange} onSelect={onSelect} title={title}>{children}</DropdownMenuCheckboxItem>;
+  return (
+    <button type="button" role="menuitemcheckbox" aria-checked={checked} data-slot="sheet-item" title={title} className={SHEET_ROW}
+      onClick={() => { const e = new Event("select", { cancelable: true }); onCheckedChange(!checked); onSelect?.(e); if (!e.defaultPrevented) close(); }}>
+      {Icon && <Icon className="text-muted-foreground size-5 shrink-0" />}<span className="min-w-0 flex-1">{children}</span>
+      {checked && <Check className="size-5 shrink-0" />}
+    </button>
+  );
+}
+
+function Sub({ label, disabled, children }: { label: string; disabled?: boolean; children: ReactNode }) {
+  const close = useContext(SheetMenu);
+  if (!close) return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger disabled={disabled}>{label}</DropdownMenuSubTrigger>
+      <DropdownMenuSubContent>{children}</DropdownMenuSubContent>
+    </DropdownMenuSub>
+  );
+  return (
+    <fieldset role="group" aria-label={label} disabled={disabled} className="m-0 min-w-0 border-0 p-0">
+      <div aria-hidden="true" className="text-muted-foreground px-2 pt-2 pb-1 text-xs font-medium tracking-wide uppercase">{label}</div>
+      {children}
+    </fieldset>
+  );
+}
+
+function Label({ children }: { children: ReactNode }) {
+  return useContext(SheetMenu) ? null : <DropdownMenuLabel>{children}</DropdownMenuLabel>; // the sheet's group already says it
+}
+
+function Sep() {
+  return useContext(SheetMenu) ? <div role="separator" className="bg-border -mx-2 my-1 h-px" /> : <DropdownMenuSeparator />;
+}
 
 // `compact` renders the toolbar as icon-only buttons (dense view). The toolbar opens with the
 // state-aware quick actions (QuickActionButtons) and then `leading` — the Test / Preview control — so
@@ -112,109 +172,109 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   const icon = compact ? "icon" : "sm";
   const iconClass = compact ? "size-7" : undefined;
   const mergeLabel = `Merge${unreviewed ? " (unreviewed)" : ""}`;
+  const narrow = useNarrow();
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const trigger = (onClick?: () => void) => (
+    <Button size={icon} className={iconClass} variant="ghost" title={err ? firstLine(err) : "Actions"} aria-label="Actions" data-state-error={err ? "" : undefined}
+      {...(onClick && { onClick, "aria-haspopup": "menu" as const, "aria-expanded": sheetOpen })}>
+      {err && <X className="text-destructive size-3.5" />}
+      {compact ? (!err && <MoreVertical className="size-4" />) : <>Actions <ChevronDown className="size-3.5" /></>}
+    </Button>
+  );
   const items = (
     <>
       {menuOnly && (
         <>
-          {onOpen && <DropdownMenuItem onSelect={onOpen}>Open</DropdownMenuItem>}
-          {row.prUrl && <DropdownMenuItem onSelect={() => window.open(row.prUrl, "_blank", "noreferrer")}>Open PR #{row.prNumber}</DropdownMenuItem>}
-          <DropdownMenuItem onSelect={run("Copy branch", copyBranch)}>Copy branch</DropdownMenuItem>
-          <DropdownMenuSeparator />
-          <DropdownMenuItem disabled={submitting} onSelect={() => (onFollowUp ? onFollowUp() : setComposing(true))}>Follow up…</DropdownMenuItem>
-          {row.lane === "MERGEABLE" && <DropdownMenuItem onSelect={() => { if (window.confirm(mergeConfirm)) run("Merge", () => merge(row))(); }}>{mergeLabel}</DropdownMenuItem>}
-          <DropdownMenuSeparator />
+          {onOpen && <Item icon={ArrowUpRight} onSelect={onOpen}>Open</Item>}
+          {row.prUrl && <Item icon={ExternalLink} onSelect={() => window.open(row.prUrl, "_blank", "noreferrer")}>Open PR #{row.prNumber}</Item>}
+          <Item icon={Copy} onSelect={run("Copy branch", copyBranch)}>Copy branch</Item>
+          <Sep />
+          <Item icon={MessageSquarePlus} disabled={submitting} onSelect={() => (onFollowUp ? onFollowUp() : setComposing(true))}>Follow up…</Item>
+          {row.lane === "MERGEABLE" && <Item icon={GitMerge} onSelect={() => { if (window.confirm(mergeConfirm)) run("Merge", () => merge(row))(); }}>{mergeLabel}</Item>}
+          <Sep />
         </>
       )}
       {/* Follow: put the card on autopilot — Orca watches the PR and fires the agent to resolve
           conflicts / fix CI / address review comments as they appear. */}
       {isPr && (
         <>
-          <DropdownMenuCheckboxItem checked={Boolean(row.following)} onCheckedChange={() => toggleFollow(row)} onSelect={(e) => e.preventDefault()}
+          <CheckItem icon={Bot} checked={Boolean(row.following)} onCheckedChange={() => toggleFollow(row)} onSelect={(e) => e.preventDefault()}
             title="Autopilot: every ~8s Orca checks this PR and launches the agent to resolve conflicts, fix failing CI, and address new review comments as they land — no click needed.">
             Follow PR (auto-fix)
-          </DropdownMenuCheckboxItem>
-          <DropdownMenuSeparator />
+          </CheckItem>
+          <Sep />
         </>
       )}
       {/* Lifecycle: promote a local branch, or merge from a lane where Merge isn't already a header button */}
       {isLocalLane && (row.hasRemote
         ? <PromoteSubmenu row={row} disabled={!hasWork} run={run} />
-        : <DropdownMenuItem disabled={!hasWork} onSelect={run("Promote", () => promote(row))}>Promote</DropdownMenuItem>)}
+        : <Item icon={GitPullRequestArrow} disabled={!hasWork} onSelect={run("Promote", () => promote(row))}>Promote</Item>)}
       {canMergeNow && row.lane !== "MERGEABLE" && (
-        <DropdownMenuItem onSelect={() => { if (window.confirm(mergeConfirm)) run("Merge", () => merge(row))(); }}>
+        <Item icon={GitMerge} onSelect={() => { if (window.confirm(mergeConfirm)) run("Merge", () => merge(row))(); }}>
           Merge{unreviewed ? " (unreviewed)" : ""}
-        </DropdownMenuItem>
+        </Item>
       )}
       {/* Rename — fix a broken/auto title. AI suggests a name (editable); a PR renames on GitHub. */}
-      <DropdownMenuItem onSelect={() => setRenaming(true)}>Rename…</DropdownMenuItem>
+      <Item icon={Pencil} onSelect={() => setRenaming(true)}>Rename…</Item>
       {/* Move the worktree to another instance (verbs.moveWorkstream). Not while its agent runs. */}
       {row.worktreePath && instanceChoices().filter((i) => i !== (row.instance ?? thisInstance())).map((to) => (
-        <DropdownMenuItem key={to} disabled={row.agentStatus === "running"} onSelect={run(`Move to ${to}`, () => moveWorkstream(row, to))} title={row.agentStatus === "running" ? "Wait for the agent to finish first" : `Push the branch and re-open its worktree on ${to}; the next run starts a fresh session there`}>
+        <Item icon={ArrowRightLeft} key={to} disabled={row.agentStatus === "running"} onSelect={run(`Move to ${to}`, () => moveWorkstream(row, to))} title={row.agentStatus === "running" ? "Wait for the agent to finish first" : `Push the branch and re-open its worktree on ${to}; the next run starts a fresh session there`}>
           Move to {to}
-        </DropdownMenuItem>
+        </Item>
       ))}
 
       {/* PR — every action that needs an open PR, in one place (workstream.prMenuActions) */}
       {isPr && (
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>PR</DropdownMenuSubTrigger>
-          <DropdownMenuSubContent>
-            {prActions.includes("markReady") && <DropdownMenuItem onSelect={run("Mark ready", () => markReady(row))}>Mark ready for review</DropdownMenuItem>}
-            {prActions.includes("moveToDraft") && <DropdownMenuItem onSelect={run("Move to draft", () => convertToDraft(row))}>Move to draft</DropdownMenuItem>}
+        <Sub label="PR">
+            {prActions.includes("markReady") && <Item icon={CheckCheck} onSelect={run("Mark ready", () => markReady(row))}>Mark ready for review</Item>}
+            {prActions.includes("moveToDraft") && <Item icon={GitPullRequestDraft} onSelect={run("Move to draft", () => convertToDraft(row))}>Move to draft</Item>}
             {prActions.includes("autoMerge") && (row.autoMergeEnabled
-              ? <DropdownMenuItem onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</DropdownMenuItem>
-              : <DropdownMenuItem onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</DropdownMenuItem>)}
-            {prActions.includes("autoMerge") && <DropdownMenuItem onSelect={run("Merge when green", () => mergeWhenGreen(row))} title="Orca squash-merges it once checks pass and it merges clean, under this repo's merge policy">Merge when green</DropdownMenuItem>}
+              ? <Item icon={Zap} onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</Item>
+              : <Item icon={Zap} onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</Item>)}
+            {prActions.includes("autoMerge") && <Item icon={Clock} onSelect={run("Merge when green", () => mergeWhenGreen(row))} title="Orca squash-merges it once checks pass and it merges clean, under this repo's merge policy">Merge when green</Item>}
             {/* One agent verb: conflicts, CI and review in a single run (store.addressPr). */}
-            {prActions.includes("addressPr") && <DropdownMenuItem onSelect={run("Address PR", () => addressPr(row))} title="One run that resolves conflicts, fixes CI and addresses review threads/comments — whichever apply">Address PR</DropdownMenuItem>}
-            {prPreview === "ready" && <DropdownMenuItem onSelect={() => window.open(row.previewUrl, "_blank", "noreferrer")}>Open PR preview</DropdownMenuItem>}
-            {prPreview === "pending" && <DropdownMenuItem disabled>Deploying preview…</DropdownMenuItem>}
-            {prPreview === "add" && <DropdownMenuItem onSelect={run("Add preview", () => addPreviewLabel(row))}>Add PR preview</DropdownMenuItem>}
-            {prActions.includes("copyLink") && <><DropdownMenuSeparator /><DropdownMenuItem onSelect={run("Copy link", copyLink)}>Copy link</DropdownMenuItem></>}
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
+            {prActions.includes("addressPr") && <Item icon={Wrench} onSelect={run("Address PR", () => addressPr(row))} title="One run that resolves conflicts, fixes CI and addresses review threads/comments — whichever apply">Address PR</Item>}
+            {prPreview === "ready" && <Item icon={Globe} onSelect={() => window.open(row.previewUrl, "_blank", "noreferrer")}>Open PR preview</Item>}
+            {prPreview === "pending" && <Item icon={Globe} disabled>Deploying preview…</Item>}
+            {prPreview === "add" && <Item icon={Globe} onSelect={run("Add preview", () => addPreviewLabel(row))}>Add PR preview</Item>}
+            {prActions.includes("copyLink") && <><Sep /><Item icon={Link} onSelect={run("Copy link", copyLink)}>Copy link</Item></>}
+          </Sub>
       )}
 
-      <DropdownMenuSeparator />
+      <Sep />
 
       {/* Agent — provider-neutral work; resolve conflicts lives here only for a local branch (no PR) */}
-      <DropdownMenuSub>
-        <DropdownMenuSubTrigger>Agent</DropdownMenuSubTrigger>
-        <DropdownMenuSubContent>
-          {!isPr && conflicting && <DropdownMenuItem onSelect={run("Resolve conflicts", () => resolveConflicts(row))}>Resolve conflicts</DropdownMenuItem>}
+      <Sub label="Agent">
+          {!isPr && conflicting && <Item icon={Wrench} onSelect={run("Resolve conflicts", () => resolveConflicts(row))}>Resolve conflicts</Item>}
           {/* Local only — see the card's copy menu. */}
-          {!row.remote && <DropdownMenuItem onSelect={run("Copy CLI", copyCli)}>Copy CLI</DropdownMenuItem>}
-          <DropdownMenuItem onSelect={run("Copy worktree", copyWorktree)}>Copy worktree</DropdownMenuItem>
-        </DropdownMenuSubContent>
-      </DropdownMenuSub>
+          {!row.remote && <Item icon={SquareTerminal} onSelect={run("Copy CLI", copyCli)}>Copy CLI</Item>}
+          <Item icon={FolderOpen} onSelect={run("Copy worktree", copyWorktree)}>Copy worktree</Item>
+        </Sub>
 
       {/* Slack — only meaningful once there's a PR to link */}
       {isPr && (
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>Slack</DropdownMenuSubTrigger>
-          <DropdownMenuSubContent>
-            <DropdownMenuItem onSelect={run("Slack message", () => sendSlack(row, "notify"))}>Send message{notified ? " again" : ""}</DropdownMenuItem>
-            <DropdownMenuItem disabled={!notified} onSelect={run("Slack bump", () => sendSlack(row, "bump"))}>Send bump{bumpDue ? " (due)" : ""}</DropdownMenuItem>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
+        <Sub label="Slack">
+            <Item icon={Send} onSelect={run("Slack message", () => sendSlack(row, "notify"))}>Send message{notified ? " again" : ""}</Item>
+            <Item icon={BellRing} disabled={!notified} onSelect={run("Slack bump", () => sendSlack(row, "bump"))}>Send bump{bumpDue ? " (due)" : ""}</Item>
+          </Sub>
       )}
 
       {/* Close/Discard — Close PR abandons an open PR (+cleanup); Discard only for pre-PR locals */}
-      <DropdownMenuSeparator />
+      <Sep />
       {isPr ? (
-        <DropdownMenuItem
+        <Item icon={XCircle}
           className="text-destructive focus:text-destructive"
           onSelect={() => { if (window.confirm(`Close PR #${row.prNumber} "${row.title}" without merging? Removes the worktree and local branch.`)) run("Close PR", () => closePr(row))(); }}
         >
           Close PR
-        </DropdownMenuItem>
+        </Item>
       ) : (
-        <DropdownMenuItem
+        <Item icon={Trash2}
           className="text-destructive focus:text-destructive"
           onSelect={() => { if (window.confirm(`Discard "${row.title}" (${row.branch})? Removes the worktree and branch.`)) void discardDraft(row); }}
         >
           Discard
-        </DropdownMenuItem>
+        </Item>
       )}
     </>
   );
@@ -232,18 +292,25 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
             ? (submitting ? <Loader2 className="size-4 animate-spin" /> : <MessageSquarePlus className="size-3.5" />)
             : <>{submitting && <Loader2 className="size-4 animate-spin" />}Follow up</>}
         </Button>}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button size={icon} className={iconClass} variant="ghost" title={err ? firstLine(err) : "Actions"} aria-label="Actions" data-state-error={err ? "" : undefined}>
-              {err && <X className="text-destructive size-3.5" />}
-              {compact ? (!err && <MoreVertical className="size-4" />) : <>Actions <ChevronDown className="size-3.5" /></>}
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align={menuOnly ? "end" : "start"} className="min-w-[12rem]">
-            {items}
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {menuOnly && contextAt && (
+        {narrow ? (
+          // A phone: the ⋯ opens the items as a bottom sheet — on a tap only, never a long-press.
+          <>
+            {trigger(() => setSheetOpen(true))}
+            <BottomSheet open={sheetOpen} onClose={() => setSheetOpen(false)} title={row.title} slot="actions-sheet">
+              <SheetMenu.Provider value={() => setSheetOpen(false)}>
+                <div role="menu" aria-label={`Actions for ${row.title}`} className="-mx-2 -my-2 flex flex-col">{items}</div>
+              </SheetMenu.Provider>
+            </BottomSheet>
+          </>
+        ) : (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>{trigger()}</DropdownMenuTrigger>
+            <DropdownMenuContent align={menuOnly ? "end" : "start"} className="min-w-[12rem]">
+              {items}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+        {menuOnly && contextAt && !narrow && (
           // Right-click: the same items, anchored to a zero-size trigger at the pointer. Radix gives it
           // the menu's keyboard handling (arrows, Enter, Esc) and closes it on an outside click.
           <DropdownMenu key={`${contextAt.x},${contextAt.y}`} open onOpenChange={(o) => { if (!o) onContextClose?.(); }}>
@@ -345,21 +412,18 @@ function PromoteSubmenu({ row, disabled, run }: { row: Row; disabled?: boolean; 
     Object.fromEntries(prLabels.map((l) => [l.name, l.default ?? false])));
   const labels = prLabels.filter((l) => checked[l.name]).map((l) => l.name);
   return (
-    <DropdownMenuSub>
-      <DropdownMenuSubTrigger disabled={disabled}>Promote to PR</DropdownMenuSubTrigger>
-      <DropdownMenuSubContent>
-        <DropdownMenuLabel>Promote to PR</DropdownMenuLabel>
-        {prLabels.map((l) => (
-          <DropdownMenuCheckboxItem key={l.name} checked={checked[l.name] ?? false}
-            onCheckedChange={(c) => setChecked((s) => ({ ...s, [l.name]: Boolean(c) }))} onSelect={(e) => e.preventDefault()}>
-            {l.name}
-          </DropdownMenuCheckboxItem>
-        ))}
-        {prLabels.length > 0 && <DropdownMenuSeparator />}
-        <DropdownMenuItem onSelect={run("Create PR", () => promote(row, { draft: false, labels }))}>Create PR (ready)</DropdownMenuItem>
-        <DropdownMenuItem onSelect={run("Create draft PR", () => promote(row, { draft: true, labels }))}>Create draft PR</DropdownMenuItem>
-      </DropdownMenuSubContent>
-    </DropdownMenuSub>
+    <Sub label="Promote to PR" disabled={disabled}>
+      <Label>Promote to PR</Label>
+      {prLabels.map((l) => (
+        <CheckItem icon={Tag} key={l.name} checked={checked[l.name] ?? false}
+          onCheckedChange={(c) => setChecked((s) => ({ ...s, [l.name]: Boolean(c) }))} onSelect={(e) => e.preventDefault()}>
+          {l.name}
+        </CheckItem>
+      ))}
+      {prLabels.length > 0 && <Sep />}
+      <Item icon={GitPullRequestArrow} onSelect={run("Create PR", () => promote(row, { draft: false, labels }))}>Create PR (ready)</Item>
+      <Item icon={GitPullRequestDraft} onSelect={run("Create draft PR", () => promote(row, { draft: true, labels }))}>Create draft PR</Item>
+    </Sub>
   );
 }
 
