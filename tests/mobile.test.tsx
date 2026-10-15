@@ -335,6 +335,7 @@ describe("the phone layout (390px, touch)", () => {
     const page = $('[data-slot="orchestrator-page"]')!;
     expect(page).not.toBeNull();
     expect(page.querySelector("textarea")).not.toBeNull(); // the composer, in the page itself
+    expect(page.querySelector('[data-slot="chat-panel"]')).not.toBeNull(); // the one chat every surface renders
     expect(document.querySelectorAll('[data-slot="orchestrator-resize"]')).toHaveLength(0);
     expect(document.querySelector('[aria-label="Pop out"]')).toBeNull();
     // The bottom bar marks it the current destination, like Agents does.
