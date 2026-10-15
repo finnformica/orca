@@ -7,7 +7,7 @@
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Paperclip, Quote as QuoteIcon } from "lucide-react";
 import { cn, PipContext } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
@@ -54,6 +54,21 @@ const ChatSkeleton = ({ rows }: { rows: number }) => (
 const markdownImg = ({ src, alt }: { src?: string; alt?: string }) =>
   src ? <ExpandableImage src={src} alt={alt ?? ""} imgClassName="max-h-80 max-w-full rounded-md border object-contain" /> : null;
 
+/** A markdown table wrapped so it scrolls sideways inside itself (overflow-x-auto, max-w-full)
+ *  instead of squashing its columns or widening the page — a table of more than a couple of
+ *  columns is wider than the chat panel, let alone a popped-out window or a phone. Each cell gets
+ *  a minimum width so a column never gets squeezed unreadably thin; a short cell (a number, a
+ *  single word) still renders at its own natural width — min-width is a floor, not a fixed size —
+ *  while longer text wraps inside the column instead of stretching it further. */
+const markdownTable = ({ children }: { children?: ReactNode }) => (
+  <div className="max-w-full overflow-x-auto">
+    <table>{children}</table>
+  </div>
+);
+const markdownCell = (Tag: "th" | "td") => ({ children }: { children?: ReactNode }) =>
+  <Tag className="min-w-32">{children}</Tag>;
+const tableComponents = { table: markdownTable, th: markdownCell("th"), td: markdownCell("td") };
+
 /** Markdown inside the terminal-styled log: prose spacing and readable lists, but sized and coloured
  *  to sit in the chat's window rather than looking like a pasted document. */
 const ChatMarkdown = ({ children }: { children: string }) => (
@@ -72,7 +87,7 @@ const ChatMarkdown = ({ children }: { children: string }) => (
     prose-strong:text-neutral-200
     prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none
     prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400">
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: markdownImg }}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: markdownImg, ...tableComponents }}>{children}</ReactMarkdown>
   </div>
 );
 
@@ -89,7 +104,7 @@ const FacetMarkdown = ({ children }: { children: string }) => (
     prose-strong:text-neutral-200
     prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none
     prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400">
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ p: ({ children: c }) => <>{c}</>, img: markdownImg }}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ p: ({ children: c }) => <>{c}</>, img: markdownImg, ...tableComponents }}>{children}</ReactMarkdown>
   </div>
 );
 
