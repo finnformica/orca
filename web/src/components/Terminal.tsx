@@ -8,7 +8,7 @@ import type { ChatControlsProps, CompactControl } from "@/components/ChatControl
 import { api } from "../api";
 import { useWorkstreams, type Row } from "../store";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, orchestratorStatus } from "../workstream";
-import { PortalContainer, cn } from "@/lib/utils";
+import { PipContext, PortalContainer, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
 import { poll } from "@/lib/poll";
@@ -348,8 +348,11 @@ export function OrchestratorPanel() {
     <div onKeyDown={onKeyDown}>
       {open && pip && createPortal(
         // Popovers and menus opened in here must portal into the PiP document, not the tab's.
+        // PipContext tells the composer not to trust ITS narrow viewport for max-md: sizing.
         <PortalContainer.Provider value={pip.document.body}>
-          <div role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel" data-pip="" className={`${panelClass} h-screen w-screen`}>{header}{chat}</div>
+          <PipContext.Provider value={true}>
+            <div role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel" data-pip="" className={`${panelClass} h-screen w-screen`}>{header}{chat}</div>
+          </PipContext.Provider>
         </PortalContainer.Provider>,
         pip.document.body,
       )}

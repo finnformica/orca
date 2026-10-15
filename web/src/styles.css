@@ -335,6 +335,20 @@ dialog[data-bottom-sheet][data-closing]::backdrop {
   }
 }
 
+/* The orchestrator's popped-out Picture-in-Picture window (Terminal.tsx: `[data-pip]` on its root) is
+   its own document — the `@media (max-width: 767px)` rules above are evaluated against ITS viewport,
+   not the main window's, and the PiP window is commonly narrower than that even though
+   documentPictureInPicture is a Chrome/Edge desktop-only feature a phone never reaches. The iOS-zoom
+   guard above was firing there regardless, forcing its composer to the phone's 16px. This rule must
+   itself be `!important` (to outrank that one, not just out-specificity it: both are `!important`, so
+   without it this would still lose) and does not need its own media guard — outside a narrow window
+   it only restates the desktop size Tailwind's `text-sm` already gives these fields. */
+[data-pip] input,
+[data-pip] textarea,
+[data-pip] select {
+  font-size: var(--text-sm) !important;
+}
+
 /* Touch: every control is at least 44px to hit. */
 @media (max-width: 767px) and (pointer: coarse) {
   [data-slot="button"],
