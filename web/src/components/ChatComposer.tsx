@@ -6,12 +6,33 @@ import { ExpandableImage } from "@/components/ExpandableImage";
 import { Shortcut } from "@/components/ui/kbd";
 import { usePrRefs } from "@/store";
 import { NO_WALK, appendQuote, filterPrRefs, historyKey, historyStep, insertPrRef, prRefLabel, prTrigger, type HistoryWalk, type PrRef } from "@/workstream";
+import { lineVisualRow } from "@/lib/caretRow";
 import { cn, PipContext } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
 import { joinPrefill } from "@/lib/palette";
 import { endTypeahead } from "@/lib/orchestratorOpen";
 import type { OrchestratorPrefill } from "@/lib/atoms";
 import { enterSends, isCoarse, isMobile, keepComposerFocus } from "@/lib/viewport";
+
+// historyKey's firstVisualRow/lastVisualRow, measured against the box's real layout — only for
+// ArrowUp/ArrowDown, and only for the line historyKey's own "\n" check would otherwise defer to (a
+// line with a "\n" on the relevant side already decides the key without this, so it's skipped).
+function visualRowFlags(el: HTMLTextAreaElement, key: string): { firstVisualRow?: boolean; lastVisualRow?: boolean } {
+  const { value, selectionStart, selectionEnd } = el;
+  if (key === "ArrowUp" && !value.slice(0, selectionStart).includes("\n")) {
+    const lineEnd = value.indexOf("\n");
+    const line = lineEnd === -1 ? value : value.slice(0, lineEnd);
+    const info = lineVisualRow(el, line, selectionStart);
+    return info ? { firstVisualRow: info.row === 0 } : {};
+  }
+  if (key === "ArrowDown" && !value.slice(selectionEnd).includes("\n")) {
+    const lineStart = value.lastIndexOf("\n") + 1;
+    const line = value.slice(lineStart);
+    const info = lineVisualRow(el, line, selectionEnd - lineStart);
+    return info ? { lastVisualRow: info.row === info.rowCount - 1 } : {};
+  }
+  return {};
+}
 
 // The one chat input, shared by the new-draft box, the follow-up box and the quick-ask box. A single bordered
 // "chatbox" (à la Claude/ChatGPT) wrapping image thumbnails, the textarea, and a bottom toolbar
@@ -258,11 +279,16 @@ export function ChatComposer({
     }
     // ↑/↓ walk the messages you sent here. A recalled message goes in whole with the caret at its END,
     // so on a multi-line one a further ↑ first climbs its lines (the first-line rule) before reaching
-    // an older message — the same as a shell's multi-line history.
+    // an older message — the same as a shell's multi-line history. A logical line with no "\n" can
+    // still soft-wrap onto several visual rows (a long single-line draft) — the caret can sit on its
+    // second or third row with nothing before it but non-newline text, so historyKey's own "\n" check
+    // can't see that case alone; firstVisualRow/lastVisualRow carry what the textarea's real layout
+    // says, measured only for the line the caret is actually on (undefined elsewhere: no "\n" check
+    // failure to begin with, so it's moot).
     const el = e.currentTarget as HTMLTextAreaElement;
     const dir = historyKey(
       { key: e.key, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, isComposing: e.nativeEvent.isComposing || e.keyCode === 229 },
-      { value: el.value, selectionStart: el.selectionStart, selectionEnd: el.selectionEnd, menuOpen: picking },
+      { value: el.value, selectionStart: el.selectionStart, selectionEnd: el.selectionEnd, menuOpen: picking, ...visualRowFlags(el, e.key) },
     );
     const step = dir && historyStep(walk.current, dir, history ?? [], el.value);
     if (!step) return;

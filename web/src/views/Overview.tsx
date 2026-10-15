@@ -36,7 +36,7 @@ export function Overview() {
       <div className="min-w-0 space-y-6">
         <div>
           <SectionTitle aside={<RefreshVitals />}>{machines.length > 1 ? "Instances" : "Instance"}</SectionTitle>
-          <div className="space-y-4">
+          <div className="space-y-6">
             {machines.length ? machines.map((m) => <InstanceCard key={m} instance={m} here={m === here || !instances.length} />)
               : <VCard><Empty>Loading…</Empty></VCard>}
           </div>
