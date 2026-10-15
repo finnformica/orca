@@ -87,8 +87,8 @@ async function finished(n = 1): Promise<TrialRow[]> {
 
 const cfg = (): OrcaConfig => ({
   repos: [
-    { name: "orca", repoPath: "/x/orca", worktreeRoot: "/x/orca/.worktrees", baseBranch: "main", agentProxy: "caveman" },
-    { name: "branch-demo", repoPath: "/x/bd", worktreeRoot: "/x/bd/.worktrees", baseBranch: "master" },
+    { name: "orca", repoPath: "/x/orca", worktreeRoot: "/x/orca/.worktrees", baseBranch: "main", agentProxy: "caveman", previewServices: [] },
+    { name: "branch-demo", repoPath: "/x/bd", worktreeRoot: "/x/bd/.worktrees", baseBranch: "master", previewServices: [] },
   ],
   portRange: [30000, 40000], staleHours: 24,
 });

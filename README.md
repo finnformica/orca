@@ -99,7 +99,7 @@ Auto-deploy gets `main` in one minute. It waits while the orchestrator is in a w
 ## Caveman trial (until 2026-10-22)
 
 This is an A/B trial of [caveman](https://github.com/JuliusBrussee/caveman), binaries `bin-v4.0.1`.
-The `orca` repo has `agentProxy: "caveman"`. Its Claude workers use caveman. The `branch-demo` workers are the control.
+The trial is OFF. On the 2026-10-15 samples the proxy made each request read more input tokens (`docs/research/caveman-trial-samples-2026-10-15.md`). To turn it on, add `agentProxy: "caveman"` to the `orca` repo. Then its Claude workers use caveman, and the `branch-demo` workers are the control.
 
 - **Read less:** the run sends its API calls through `caveman-proxy` on `127.0.0.1:8797`, mode `compress`.
 - **Say less:** the run gets the pinned `caveman` skill as `--append-system-prompt`.
