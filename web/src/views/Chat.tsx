@@ -9,7 +9,7 @@
 // action uses.
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Paperclip, Quote as QuoteIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, PipContext } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
@@ -470,6 +470,9 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   /** Focus the composer on mount (the Agent page's Chat tab — see below). */
   autoFocus?: boolean;
 }) {
+  // See ChatComposer's own note: inside the orchestrator's PiP window, `max-md:` reads that window's
+  // own (often narrow) width, not the main one.
+  const pip = useContext(PipContext);
   const deliver = send ?? ((text: string, images: File[]) => followUp(row, text, images));
   // Messages on their way to the bridge. Sending one launches an agent — an upload, a worktree
   // lookup, the board snapshot the orchestrator is handed — which takes seconds, and a log that
@@ -852,7 +855,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
           </div>
         )}
       </div>
-      <div data-slot="chat-composer-dock" className={size === "page" ? "border-t p-4" : "border-t p-2 max-md:p-3"}>
+      <div data-slot="chat-composer-dock" className={size === "page" ? "border-t p-4" : cn("border-t p-2", !pip && "max-md:p-3")}>
       <ChatComposer
         className="shadow-none"
         leading={<ChatControls {...ctl} compact={ctl.contextPct === undefined && compacting === null ? undefined

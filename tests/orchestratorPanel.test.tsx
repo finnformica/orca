@@ -13,6 +13,7 @@ import { AskOrchestrator, OrchestratorPage, OrchestratorPanel } from "@/componen
 import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
 import { WorkstreamCard } from "@/views/Board";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, dayLabel } from "@/workstream";
+import { NARROW_QUERY } from "@/lib/viewport";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -263,6 +264,36 @@ test("Pop out is hidden without the Document Picture-in-Picture API", async () =
   expect(panel()!.querySelector('[aria-label="Pop out"]')).toBeNull();
 });
 
+test("Pop out shows at tablet width and up; it hides only below the app's own phone breakpoint (not lg)", async () => {
+  // The same breakpoint the sidebar/bottom-bar switch on (lib/viewport's NARROW_QUERY, max-width:
+  // 767px) — not Tailwind's `lg` (1024px), which would also hide it at a merely half-sized desktop
+  // window (e.g. ~900px, still well above a phone).
+  const pip = fakePip();
+  const realMatchMedia = window.matchMedia;
+  const emulateWidth = (narrow: boolean) => {
+    window.matchMedia = ((q: string) => ({ matches: narrow && q === NARROW_QUERY, media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  };
+  try {
+    emulateWidth(false); // a tablet-ish / half-desktop width, e.g. ~900px — not a phone
+    await mount(<Entry />);
+    await click(launcher());
+    expect(panel()!.querySelector('[aria-label="Pop out"]')).not.toBeNull();
+
+    // Resized down to a phone width while the panel is already open: Pop out disappears.
+    emulateWidth(true);
+    await act(async () => { window.dispatchEvent(new Event("resize")); await flush(); });
+    expect(panel()!.querySelector('[aria-label="Pop out"]')).toBeNull();
+
+    // Back above the phone breakpoint: it returns.
+    emulateWidth(false);
+    await act(async () => { window.dispatchEvent(new Event("resize")); await flush(); });
+    expect(panel()!.querySelector('[aria-label="Pop out"]')).not.toBeNull();
+  } finally {
+    window.matchMedia = realMatchMedia;
+    void pip;
+  }
+});
+
 /** A stand-in for documentPictureInPicture: each window is a second document, closed via pagehide. */
 function fakePip() {
   const requests: { width: number; height: number }[] = [];
@@ -340,4 +371,76 @@ test("Pop out (kept: one button) moves the live chat into a Picture-in-Picture w
     expect(closed).toBe(true);
     expect(panel()).toBeNull();
   } finally { style.remove(); }
+});
+
+/** The real styles.css, with the Tailwind-only at-rules it opens with stripped out (`@import`,
+ *  `@plugin`, `@custom-variant`, and `@theme inline` reduced to a plain `:root` block) so a plain CSS
+ *  engine — happy-dom's, here — can parse it directly. This is the actual shipped stylesheet, not a
+ *  hand-copied stand-in, so a later edit to the real rule is what this test exercises. */
+async function loadRealStylesheet(): Promise<HTMLStyleElement> {
+  let css = await Bun.file(new URL("../web/src/styles.css", import.meta.url)).text();
+  css = css
+    .replace(/^@import .*;$/gm, "")
+    .replace(/^@plugin .*;$/gm, "")
+    .replace(/^@custom-variant .*;$/gm, "")
+    .replace("@theme inline {", ":root {");
+  const style = document.createElement("style");
+  style.textContent = css;
+  document.head.append(style);
+  return style;
+}
+
+test("the PiP document's own narrow width never forces the phone's 16px zoom-guard font onto its composer", async () => {
+  // Real-browser mechanics being verified: `@media (max-width: 767px)` is evaluated against the
+  // DOCUMENT it renders in. The orchestrator's popped-out Picture-in-Picture window (Terminal.tsx's
+  // `copyStyles` copies this very stylesheet into it) is its own document, often narrower than 768px
+  // even though documentPictureInPicture is a Chrome/Edge desktop-only feature with no iOS keyboard
+  // to guard against. `[data-pip]` (set on the PiP root) must win its fields back to desktop sizing —
+  // a REAL phone, with no such ancestor, keeps the 16px guard.
+  const style = await loadRealStylesheet();
+  const prevWidth = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { value: 420, configurable: true });
+  window.dispatchEvent(new Event("resize"));
+  try {
+    const pipWrap = document.createElement("div");
+    pipWrap.setAttribute("data-pip", "");
+    const pipField = document.createElement("textarea");
+    pipWrap.append(pipField);
+    const phoneField = document.createElement("textarea");
+    document.body.append(pipWrap, phoneField);
+    expect(getComputedStyle(phoneField).fontSize).toBe("16px"); // a real phone: still guarded
+    expect(getComputedStyle(pipField).fontSize).toBe("13px"); // --text-sm (0.8125rem): desktop sizing
+    pipWrap.remove(); phoneField.remove();
+  } finally {
+    style.remove();
+    Object.defineProperty(window, "innerWidth", { value: prevWidth, configurable: true });
+    window.dispatchEvent(new Event("resize"));
+  }
+});
+
+test("the PiP window never reads its own narrow width as a phone for the composer's max-md: sizing", async () => {
+  // Same root cause as the font-size test above, but for the Tailwind utilities a CSS override
+  // can't cheaply restate (the Send button's mobile "chip" look pulls in several classes, and the
+  // composer dock's padding) — Chat.tsx and ChatComposer.tsx read PipContext (lib/utils.ts) instead
+  // of trusting `max-md:`, which would otherwise fire against the PiP document's own width rather
+  // than the main window's — the thing the docked side panel (reading the main window) never does.
+  const pip = fakePip();
+  try {
+    await mount(<Entry />);
+    await click(launcher());
+    const dockInTab = panel()!.querySelector<HTMLElement>('[data-slot="chat-composer-dock"]')!;
+    const sendInTab = panel()!.querySelector<HTMLElement>('button[aria-label="Send"]')!;
+    expect(dockInTab.className).toContain("max-md:p-3");
+    expect(sendInTab.className).toContain("max-md:bg-transparent");
+    expect(sendInTab.querySelector("span")!.className).toContain("max-md:bg-primary");
+
+    await click(panel()!.querySelector('[aria-label="Pop out"]')!);
+    const doc = pip.win(0).document;
+    const dockInPip = doc.querySelector<HTMLElement>('[data-slot="chat-composer-dock"]')!;
+    const sendInPip = doc.querySelector<HTMLElement>('button[aria-label="Send"]')!;
+    expect(dockInPip.className).not.toContain("max-md:");
+    expect(dockInPip.className).toContain("p-2"); // still the panel's own padding, just not swapped for the phone's
+    expect(sendInPip.className).not.toContain("max-md:");
+    expect(sendInPip.querySelector("span")!.className).not.toContain("max-md:");
+  } finally { void pip; }
 });

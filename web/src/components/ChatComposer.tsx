@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ArrowUp, FileText, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -6,7 +6,7 @@ import { ExpandableImage } from "@/components/ExpandableImage";
 import { Shortcut } from "@/components/ui/kbd";
 import { usePrRefs } from "@/store";
 import { NO_WALK, appendQuote, filterPrRefs, historyKey, historyStep, insertPrRef, prRefLabel, prTrigger, type HistoryWalk, type PrRef } from "@/workstream";
-import { cn } from "@/lib/utils";
+import { cn, PipContext } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
 import { joinPrefill } from "@/lib/palette";
 import { endTypeahead } from "@/lib/orchestratorOpen";
@@ -63,6 +63,9 @@ export function ChatComposer({
   // like a terminal: ↑ on the first line, ↓ on the last; ↓ past the newest gives the draft back.
   history?: string[];
 }) {
+  // Popped out into the orchestrator's Picture-in-Picture window: `max-md:` utilities below would
+  // read THAT window's own (often narrow) width rather than the main one, so this skips them there.
+  const pip = useContext(PipContext);
   const [value, setText] = useState(() => (persistKey ? loadDraft(persistKey).text : ""));
   // What the box holds as of the last edit, committed or not: a send that fails fast can land before
   // React has rendered the clear, so the textarea's DOM value would still read as the sent text.
@@ -380,9 +383,10 @@ export function ChatComposer({
             ) : (
               // Narrow: the filled square read as far bigger than its ghost neighbours (attach, the
               // model picker, the context ring), which show only an icon. The fill shrinks to a 28px
-              // chip inside a transparent button, so the touch target stays 44px.
-              <Button type="button" size="icon" className="size-8 max-md:border-transparent max-md:bg-transparent max-md:hover:bg-transparent pointer-coarse:max-md:min-w-11" disabled={!canSubmit} title="Send (Enter)" aria-label="Send" onMouseDown={keepComposerFocus} onClick={() => void submit()}>
-                <span className="max-md:bg-primary inline-flex items-center justify-center max-md:size-7 max-md:rounded-md"><ArrowUp className="size-4" /></span>
+              // chip inside a transparent button, so the touch target stays 44px. Never in the PiP
+              // window, which is desktop-only and has no touch target to grow for.
+              <Button type="button" size="icon" className={cn("size-8", !pip && "max-md:border-transparent max-md:bg-transparent max-md:hover:bg-transparent pointer-coarse:max-md:min-w-11")} disabled={!canSubmit} title="Send (Enter)" aria-label="Send" onMouseDown={keepComposerFocus} onClick={() => void submit()}>
+                <span className={cn("inline-flex items-center justify-center", !pip && "max-md:bg-primary max-md:size-7 max-md:rounded-md")}><ArrowUp className="size-4" /></span>
               </Button>
             )}
           </div>
