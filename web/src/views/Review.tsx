@@ -16,7 +16,7 @@ const initials = (login: string) => login.replace(/\[bot\]$/, "").split(/[-_.]/)
 
 function ApproverChip({ login }: { login: string }) {
   return (
-    <span data-slot="approver" title={`Approved by ${login}`} aria-label={`Approved by ${login}`}
+    <span data-slot="approver" aria-label={`Approved by ${login}`}
       className="bg-geist-green/15 text-geist-green ring-card inline-flex size-5 items-center justify-center rounded-full text-[9px] font-semibold ring-2">
       {initials(login)}
     </span>
@@ -58,7 +58,7 @@ export function ReviewCluster({ row }: { row: Row }) {
         </HoverCard>
       )}
       {d.human.length > 0 && (
-        <span data-slot="human-comments" title={`${d.human.length} comment${d.human.length === 1 ? "" : "s"} from people`} className="text-muted-foreground inline-flex items-center gap-0.5 text-[10px]">
+        <span data-slot="human-comments" className="text-muted-foreground inline-flex items-center gap-0.5 text-[10px]">
           <MessageSquare className="size-2.5" />{d.human.length}
         </span>
       )}
@@ -70,7 +70,7 @@ function ItemLine({ item }: { item: ReviewItem }) {
   const at = item.createdAt ? Date.parse(item.createdAt) : 0;
   return (
     <li data-slot="review-item" data-kind={item.kind} className="flex items-start gap-2 px-4 py-2.5 text-sm">
-      {item.severity && <StatusDot tone={item.severity === "critical" ? "error" : "warning"} className="mt-1.5 size-2" title={item.severity} />}
+      {item.severity && <StatusDot tone={item.severity === "critical" ? "error" : "warning"} className="mt-1.5 size-2" />}
       <div className="min-w-0 flex-1">
         <div className="text-muted-foreground flex items-center gap-1.5 text-xs">
           <span className="text-foreground font-medium">{item.author ?? "unknown"}</span>
@@ -78,7 +78,7 @@ function ItemLine({ item }: { item: ReviewItem }) {
           <span>{ago(at)}</span>
           {item.url && <a href={item.url} target="_blank" rel="noreferrer" className="hover:text-foreground" aria-label="Open on GitHub"><ExternalLink className="size-3" /></a>}
         </div>
-        <div className="truncate" title={item.body}>{item.line}</div>
+        <div className="truncate">{item.line}</div>
       </div>
     </li>
   );

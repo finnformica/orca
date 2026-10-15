@@ -228,9 +228,9 @@ describe("agents list", () => {
     expect(err.querySelector('[data-tone="failed"]')!.textContent).toBe("Error");
     expect(err.querySelector('[data-slot="status-dot"]')!.getAttribute("data-tone")).toBe("error");
     const run = container!.querySelector<HTMLElement>('[data-branch="local-run"]')!;
-    // The latest instruction and branch are no longer columns: they ride the title's tooltip.
-    expect(run.querySelector<HTMLElement>('[role="cell"]')!.title).toContain("Latest: Add a gauge to the tiles");
-    expect(run.querySelector<HTMLElement>('[role="cell"]')!.title).toContain("Branch: local-run");
+    // The latest instruction and branch are no longer columns, and native hover titles are gone too —
+    // neither is shown on the desktop row any more.
+    expect(run.querySelector<HTMLElement>('[role="cell"]')!.getAttribute("title")).toBeNull();
     expect(run.querySelector('[data-tone="running"]')!.textContent).toBe("Running");
     const ci = container!.querySelector<HTMLElement>('[data-branch="feat-ci"]')!;
     expect(ci.querySelector('[data-slot="state-pill"]')!.textContent).toBe("In review");

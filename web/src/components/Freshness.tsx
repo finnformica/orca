@@ -10,6 +10,7 @@ import { refreshEverything, useRefreshing } from "@/lib/refresh";
 import { applyUpdate } from "@/lib/sw";
 import { useBridge, useLastSync } from "../store";
 import { ago, bridgeLabel, newerBuild, staleAge } from "../workstream";
+import { Tip } from "@/components/ui/tip";
 
 const RUNNING_BUILD = typeof __ORCA_BUILD__ === "undefined" ? undefined : __ORCA_BUILD__;
 const PREVIEW_PAGE = typeof __ORCA_PREVIEW__ === "undefined" ? false : __ORCA_PREVIEW__;
@@ -19,9 +20,11 @@ export function BridgeLabel({ previewPage = PREVIEW_PAGE }: { previewPage?: bool
   const label = bridgeLabel(useBridge(), previewPage);
   if (!label) return null;
   return (
-    <span role="status" data-slot="bridge-label" title={label.title} className={`${label.warn ? "bg-geist-warning-bg text-geist-warning-fg" : "bg-muted text-muted-foreground"} inline-flex h-6 shrink-0 items-center gap-1 truncate rounded-full px-2 text-xs font-medium`}>
-      <Server className="size-3.5" aria-hidden="true" />{label.text}
-    </span>
+    <Tip label={label.title}>
+      <span role="status" data-slot="bridge-label" className={`${label.warn ? "bg-geist-warning-bg text-geist-warning-fg" : "bg-muted text-muted-foreground"} inline-flex h-6 shrink-0 items-center gap-1 truncate rounded-full px-2 text-xs font-medium`}>
+        <Server className="size-3.5" aria-hidden="true" />{label.text}
+      </span>
+    </Tip>
   );
 }
 
@@ -38,7 +41,6 @@ export function StaleIndicator() {
   return (
     <button type="button" data-slot="stale-indicator" aria-busy={refreshing} disabled={refreshing}
       onClick={() => void refreshEverything().then(() => setNow(Date.now()))}
-      title={refreshing ? "Refreshing everything on this page…" : "Refresh everything on this page"}
       className="bg-geist-warning-bg text-geist-warning-fg inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-xs font-medium hover:opacity-80 disabled:cursor-progress">
       {refreshing
         ? <RefreshCw className="size-3.5 animate-spin" aria-hidden="true" />

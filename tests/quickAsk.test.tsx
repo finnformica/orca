@@ -244,7 +244,7 @@ test("Q9: the box is the shared composer — @ opens the PR picker (# does not);
     await flush();
   });
   expect(input().getAttribute("role")).toBe("combobox"); // ChatComposer's textarea, not a fork
-  expect($('[data-slot="quick-ask-box"] button[title="Attach files"]')).not.toBeNull(); // attachments too
+  expect($('[data-slot="quick-ask-box"] [data-slot="composer-attach"]')).not.toBeNull(); // attachments too
   await typeAt("look at #");
   expect(listbox()).toBeNull();
   await typeAt("look at @fix");
@@ -300,7 +300,7 @@ test("Q8: the box carries every composer's toolbar — the orchestrator's model 
   expect(picker.textContent).toBe("Claude · Opus 5.5"); // the orchestrator's own setting, not a card's
   const ring = toolbar.querySelector<HTMLButtonElement>('[data-slot="chat-composer-leading"] button[data-slot="context-ring"]')!;
   expect(ring.getAttribute("aria-label")).toBe("Context 42% full");
-  expect(toolbar.querySelector('button[title="Attach files"]')).not.toBeNull();
+  expect(toolbar.querySelector('[data-slot="composer-attach"]')).not.toBeNull();
   expect(toolbar.querySelector('button[aria-label="Send"]')!.textContent).toContain("Send");
   // The ring's Compact compacts the orchestrator's session, as in the panel.
   await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });

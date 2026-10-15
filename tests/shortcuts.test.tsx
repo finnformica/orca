@@ -272,11 +272,15 @@ test("S1: C, O, ?, ⌘B and Esc work from the page — and never while typing in
   expect(help.querySelector('[data-group="General"] [data-shortcut="goAgents"]')).toBeNull();
 
   // The tooltips carry the keys too.
-  expect(q('[data-slot="add-new"]')!.getAttribute("title")).toBe("Add New (C)");
+  const addNewTip = openTip(q('[data-slot="add-new"]')!);
+  expect(addNewTip.textContent).toContain("Add New");
+  expect(keycaps(addNewTip.querySelector('[data-shortcut="new"]'))).toEqual(shortcutKeys("new"));
   const toggleTip = openTip(q('button[aria-label="Collapse sidebar"]')!);
   expect(toggleTip.textContent).toContain("Collapse sidebar");
   expect(keycaps(toggleTip.querySelector('[data-shortcut="sidebar"]'))).toEqual(shortcutKeys("sidebar"));
-  expect(q('[data-slot="ask-orchestrator"]')!.getAttribute("title")).toContain("(O)");
+  // Ask the orchestrator has no native title or Tip — its own visible label and keycap are enough.
+  expect(q('[data-slot="ask-orchestrator"]')!.getAttribute("title")).toBeNull();
+  expect(q('[data-slot="ask-orchestrator"]')!.closest('[data-slot="tip"]')).toBeNull();
 });
 
 test("S2: ⌘K opens the palette even from a text field, and toggles it shut", async () => {

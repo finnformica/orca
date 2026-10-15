@@ -145,7 +145,8 @@ describe("agents list view", () => {
     expect(inline.dataset.state).toBe("add");
     expect(inline.textContent).toContain("Add preview");
     // (its own leading "·" separator sits between the two)
-    expect(inline.previousElementSibling?.previousElementSibling).toBe(rowOf("feat-ci").querySelector('[data-slot="model-label"]'));
+    const modelLabel = rowOf("feat-ci").querySelector('[data-slot="model-label"]')!;
+    expect(inline.previousElementSibling?.previousElementSibling).toBe(modelLabel.closest('[data-slot="tip"]') ?? modelLabel);
     // Readable models: the run's reported model, else the pinned one — no initials avatar.
     expect(rowOf("local-idle").querySelector('[data-slot="model-label"]')!.textContent).toBe("Opus 5.5");
     expect(container!.querySelector('[data-slot="model-avatar"]')).toBeNull();
@@ -154,10 +155,10 @@ describe("agents list view", () => {
     expect(diff.textContent).toBe("+120 −34");
     expect(diff.querySelector(".text-emerald-700")!.textContent).toBe("+120");
     expect(diff.querySelector(".text-destructive")!.textContent).toBe("−34");
-    // Instance is gone as a column but still reachable: the title tooltip on a worktree row (the
-    // fake config has two instances; feat-ci has no worktree of its own so no instance to show).
+    // Instance is gone as a column and, with native hover titles removed, no longer shown on the
+    // desktop row at all (only the phone's stacked subline carries an instance chip).
     const workstreamCell = rowOf("local-idle").querySelector('[role="cell"]')!;
-    expect(workstreamCell.getAttribute("title")).toContain("Instance: laptop");
+    expect(workstreamCell.getAttribute("title")).toBeNull();
   });
 
   test("the orchestrator's `orca status` shows no chip on the Agents row, for either merge class — the purple Auto-merge PR pill already shows the queued state", async () => {

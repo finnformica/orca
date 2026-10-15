@@ -58,7 +58,7 @@ const KindIcon = ({ kind, className }: { kind: NotificationKind; className?: str
  *  own notifications (it has no repo behind it); truncated with ellipsis if the name runs long. */
 const RepoLabel = ({ repo }: { repo: string }) =>
   repo && repo !== ORCHESTRATOR_REPO ? (
-    <span data-slot="notification-repo" className="text-muted-foreground max-w-20 shrink-0 truncate text-xs" title={repo}>{repo}</span>
+    <span data-slot="notification-repo" className="text-muted-foreground max-w-20 shrink-0 truncate text-xs">{repo}</span>
   ) : null;
 
 /** Each quick action's icon (the label is its tooltip and aria-label); a shortcut where one exists. */
@@ -401,7 +401,7 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
               its full page; a tall card is what would sit over the composer. */}
           {n.body && !mobile && <div className="text-muted-foreground line-clamp-2 text-xs leading-5 break-words">{n.body}</div>}
         </div>
-        <Button variant="ghost" size="icon" className="-mt-1 -mr-1 size-6" aria-label="Mark as read" title="Mark as read" onClick={() => void markRead([n.id])}><X className="size-3.5" /></Button>
+        <Tip label="Mark as read"><Button variant="ghost" size="icon" className="-mt-1 -mr-1 size-6" aria-label="Mark as read" onClick={() => void markRead([n.id])}><X className="size-3.5" /></Button></Tip>
       </div>
       <div className={cn("flex items-center gap-2", mobile ? "justify-end" : "justify-between")}>
         {!mobile && <span data-slot="notification-time" className="text-muted-foreground shrink-0 text-xs">{ago(n.createdAt)}{n.instance ? ` · ${n.instance}` : ""}</span>}
@@ -481,10 +481,12 @@ export function NotificationPanel() {
           { value: "unread", label: <>Unread{unread > 0 && <Kbd data-slot="notification-unread-count" className="ml-1 h-4 min-w-4 text-[10px]">{unread > 99 ? "99+" : unread}</Kbd>}</> },
           { value: "all", label: "All" },
         ]} />
-        <button type="button" aria-label="Mark all as read" title="Mark all as read" onClick={() => void markRead("all")} disabled={!unread}
-          className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-6 items-center justify-center rounded-md disabled:pointer-events-none disabled:opacity-50">
-          <CheckCheck className="size-3.5" />
-        </button>
+        <Tip label="Mark all as read">
+          <button type="button" aria-label="Mark all as read" onClick={() => void markRead("all")} disabled={!unread}
+            className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-6 items-center justify-center rounded-md disabled:pointer-events-none disabled:opacity-50">
+            <CheckCheck className="size-3.5" />
+          </button>
+        </Tip>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {groups.length === 0 ? (

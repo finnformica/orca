@@ -6,6 +6,7 @@ import { api } from "../api";
 import { VCard } from "@/components/console";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { ago, shotUrl, type ShotRef, type TurnShots } from "../workstream";
+import { Tip } from "@/components/ui/tip";
 
 const clock = (ms?: number) => (ms ? new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 
@@ -23,7 +24,7 @@ export function ShotThumbs({ shots, className }: { shots: ShotRef[]; className?:
             className="block" imgClassName="h-24 w-40 rounded-md border object-cover object-top" />
           <figcaption className="text-muted-foreground mt-1 flex gap-1.5 truncate text-xs">
             {s.label && <span className="text-foreground font-medium">{s.label}</span>}
-            <span title={s.at ? new Date(s.at).toLocaleString() : undefined}>{clock(s.at)}</span>
+            {s.at ? <Tip label={new Date(s.at).toLocaleString()}><span>{clock(s.at)}</span></Tip> : <span>{clock(s.at)}</span>}
           </figcaption>
         </figure>
       ))}
@@ -48,7 +49,7 @@ export function ScreenshotsCard({ repo, branch, version }: { repo: string; branc
       <div className="divide-y">
         {groups.map((g) => (
           <div key={g.runId} data-slot="shot-turn" className="space-y-2 p-4">
-            <div className="text-muted-foreground text-xs">Run {g.at ? <span title={new Date(g.at).toLocaleString()}>{ago(g.at)}</span> : null}</div>
+            <div className="text-muted-foreground text-xs">Run {g.at ? <Tip label={new Date(g.at).toLocaleString()}><span>{ago(g.at)}</span></Tip> : null}</div>
             <ShotThumbs shots={g.shots} />
           </div>
         ))}

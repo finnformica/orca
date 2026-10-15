@@ -205,7 +205,7 @@ export function Attachments({ files, className = "" }: { files: AttachmentRef[];
             gallery={images.length > 1 ? { images, index: imgIndex } : undefined}
             imgClassName="max-h-32 max-w-48 rounded-md border object-cover" />
         ) : (
-          <a key={f.id} href={href} target="_blank" rel="noreferrer" title={f.name} data-slot="attachment-file"
+          <a key={f.id} href={href} target="_blank" rel="noreferrer" data-slot="attachment-file"
             className="bg-muted text-foreground hover:bg-accent inline-flex max-w-56 items-center gap-1 rounded-md border px-2 py-1 text-[11px]">
             <Paperclip className="size-3 shrink-0" /><span className="truncate">{f.name}</span>
           </a>
@@ -797,15 +797,16 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
       >
         {running && (
           <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-end">
-            <button
-              type="button"
-              onClick={onStop}
-              disabled={stopping}
-              className="rounded border border-amber-800 bg-neutral-950/90 px-2 py-0.5 text-[11px] text-amber-400 hover:border-amber-600 hover:text-amber-300 disabled:opacity-50"
-              title="Interrupt this run. The worktree, its commits, and the session are kept — reply below to redirect it."
-            >
-              {stopping ? "stopping…" : "■ stop"}
-            </button>
+            <Tip label="Interrupt this run. The worktree, its commits, and the session are kept — reply below to redirect it.">
+              <button
+                type="button"
+                onClick={onStop}
+                disabled={stopping}
+                className="rounded border border-amber-800 bg-neutral-950/90 px-2 py-0.5 text-[11px] text-amber-400 hover:border-amber-600 hover:text-amber-300 disabled:opacity-50"
+              >
+                {stopping ? "stopping…" : "■ stop"}
+              </button>
+            </Tip>
           </div>
         )}
         {dbDown && (

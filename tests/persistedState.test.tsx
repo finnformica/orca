@@ -11,6 +11,7 @@ import { Agents } from "@/views/Agents";
 import { agentQueryAtom, boardViewAtom, densityAtom, repoFilterAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
 import { oneOf, persistedKey, readPersisted, writePersisted } from "@/lib/persisted";
+import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -150,7 +151,7 @@ describe("the Agents page remembers its filters", () => {
     await open("/agents");
     const trigger = container!.querySelector<HTMLElement>('[aria-label="Sort"]')!;
     expect(trigger.textContent).toContain("Title");
-    expect(trigger.title).toBe("Sort: Title"); // full label readable on hover even when the value truncates
+    expect(openTip(trigger).textContent).toBe("Sort: Title"); // full label readable on hover even when the value truncates
     // the value fills the remaining width and truncates instead of centering between the label and chevron
     expect(trigger.className).toContain("[&_[data-slot=select-value]]:flex-1");
     expect(trigger.className).toContain("[&_[data-slot=select-value]]:truncate");

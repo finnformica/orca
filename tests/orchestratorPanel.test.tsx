@@ -13,6 +13,7 @@ import { AskOrchestrator, OrchestratorPage, OrchestratorPanel } from "@/componen
 import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
 import { WorkstreamCard } from "@/views/Board";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, dayLabel } from "@/workstream";
+import { openTip } from "./tip";
 import { NARROW_QUERY } from "@/lib/viewport";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -189,7 +190,7 @@ test("the header's live line — panel and page alike: working time, queued, wor
   for (const line of lines) {
     expect(line.textContent).toMatch(/^Working · 1m 1[23]s · 2 queued · 2 workers running$/);
     expect(line.textContent).not.toContain("$"); // the cost is the tooltip, not the text
-    expect(line.title).toBe("Last wake cost $3.20\nLarge session: each wake re-reads all of it, so a fresh session would be much cheaper.");
+    expect(openTip(line).textContent).toBe("Last wake cost $3.20\nLarge session: each wake re-reads all of it, so a fresh session would be much cheaper.");
     expect(line.querySelector('[data-slot="orchestrator-status-warn"]')).not.toBeNull(); // the amber dot, nothing more
   }
   expect(lines[0]!.outerHTML.replace(/1m 1[23]s/, "T")).toBe(lines[1]!.outerHTML.replace(/1m 1[23]s/, "T")); // both places match
@@ -199,7 +200,7 @@ test("the header's live line — panel and page alike: working time, queued, wor
   await act(async () => { await store.refresh(); await new Promise((r) => setTimeout(r, 2100)); await flush(); });
   for (const line of container!.querySelectorAll<HTMLElement>('[data-slot="orchestrator-status"]')) {
     expect(line.textContent).toBe("Idle");
-    expect(line.title).toBe("");
+    expect(line.closest('[data-slot="tip"]')).toBeNull(); // nothing to say — no Tip at all
     expect(line.querySelector('[data-slot="orchestrator-status-warn"]')).toBeNull();
   }
 });

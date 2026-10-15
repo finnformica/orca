@@ -12,6 +12,7 @@ import * as store from "@/store";
 import { WorkstreamActions } from "@/views/WorkstreamActions";
 import { ToastHost } from "@/components/Notifications";
 import * as centre from "@/lib/notificationStore";
+import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -81,7 +82,7 @@ describe("optimistic follow-up submit", () => {
     await type(textarea()!, "please retry");
     expect(JSON.parse(localStorage.getItem(draftKey)!).text).toBe("please retry"); // persisted
 
-    await click(container!.querySelector('button[title^="Send"]')!);
+    await click(container!.querySelector('button[aria-label="Send"]')!);
     expect(textarea()).toBeNull(); // closed instantly, no spinner waiting on the launch
     expect(apiFake.claudePrompts.some((p) => p.includes("please retry"))).toBe(true); // launch fired
     expect(localStorage.getItem(draftKey)).toBeNull(); // succeeded → draft dropped
@@ -93,7 +94,7 @@ describe("optimistic follow-up submit", () => {
     await click(btn("Follow up")!);
     await flush();
     await type(textarea()!, "please retry");
-    await click(container!.querySelector('button[title^="Send"]')!);
+    await click(container!.querySelector('button[aria-label="Send"]')!);
 
     // Box closed, launch still running: the Follow up button shows a spinner and is disabled.
     expect(textarea()).toBeNull();
@@ -113,7 +114,7 @@ describe("optimistic follow-up submit", () => {
     await click(btn("Follow up")!);
     await flush();
     await type(textarea()!, "fix the flake");
-    await click(container!.querySelector('button[title^="Send"]')!);
+    await click(container!.querySelector('button[aria-label="Send"]')!);
     await flush();
 
     // Failed launch: the box is back, pre-filled with what was typed, and a toast says why — the
@@ -125,7 +126,7 @@ describe("optimistic follow-up submit", () => {
     expect(t.textContent).toContain("Follow up failed");
     expect(t.textContent).toContain("worktree busy");
     expect(container!.querySelector('[data-slot="actions"]')!.textContent).not.toContain("worktree busy");
-    expect(container!.querySelector<HTMLElement>('button[aria-label="Actions"]')!.title).toBe("worktree busy");
+    expect(openTip(container!.querySelector<HTMLElement>('button[aria-label="Actions"]')!).textContent).toBe("worktree busy");
     expect(JSON.parse(localStorage.getItem(draftKey)!).text).toBe("fix the flake"); // draft kept
   });
 });
