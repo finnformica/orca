@@ -9,14 +9,17 @@ import { ago, shotUrl, type ShotRef, type TurnShots } from "../workstream";
 
 const clock = (ms?: number) => (ms ? new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");
 
-/** A wrapping row of shot thumbnails, each captioned with its label and time. */
+/** A wrapping row of shot thumbnails, each captioned with its label and time. Siblings in the row
+ *  are one lightbox gallery — Left/Right in the opened lightbox moves between them. */
 export function ShotThumbs({ shots, className }: { shots: ShotRef[]; className?: string }) {
   if (!shots.length) return null;
+  const images = shots.map((s) => ({ src: shotUrl(s.id), alt: s.label ?? "screenshot" }));
   return (
     <div data-slot="shot-thumbs" className={`flex flex-wrap gap-3 ${className ?? ""}`}>
-      {shots.map((s) => (
+      {shots.map((s, i) => (
         <figure key={s.id} data-slot="shot" className="m-0 w-40">
           <ExpandableImage src={shotUrl(s.id)} alt={s.label ?? "screenshot"} downloadName={`${s.id}.png`}
+            gallery={shots.length > 1 ? { images, index: i } : undefined}
             className="block" imgClassName="h-24 w-40 rounded-md border object-cover object-top" />
           <figcaption className="text-muted-foreground mt-1 flex gap-1.5 truncate text-xs">
             {s.label && <span className="text-foreground font-medium">{s.label}</span>}

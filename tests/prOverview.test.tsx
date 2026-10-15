@@ -93,13 +93,15 @@ const $ = (slot: string) => container!.querySelector<HTMLElement>(`[data-slot="$
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); }); };
 
 describe("the PR page's Overview", () => {
-  test("no Checks tab: the checks card sits between Review and Description, failing first, 24 passing folded into one line", async () => {
+  test("no Checks tab: the checks card sits before Review and Description, failing first, 24 passing folded into one line", async () => {
     apiFake.prDetailData = { checks: CHECKS, body: "The description" };
     await mount();
     expect([...container!.querySelectorAll('[role="tab"]')].map((t) => t.textContent)).toEqual(["Overview", "Files changed (1)", "Preview"]);
     const cards = [...container!.querySelectorAll("section[data-slot]")].map((s) => s.getAttribute("data-slot"));
-    expect(cards.indexOf("pr-checks")).toBe(cards.indexOf("review-panel") + 1);
-    expect(cards.indexOf("pr-description")).toBe(cards.indexOf("pr-checks") + 1);
+    // Paired with Screenshots in a two-column grid (no screenshots here, so it's the grid's sole
+    // child and spans both columns), ahead of Review and Description.
+    expect(cards.indexOf("review-panel")).toBe(cards.indexOf("pr-checks") + 1);
+    expect(cards.indexOf("pr-description")).toBe(cards.indexOf("review-panel") + 1);
 
     const card = $("pr-checks");
     expect($("checks-summary").textContent).toBe("2 failing · 1 running · 24 passing · 1 skipped");
@@ -115,6 +117,26 @@ describe("the PR page's Overview", () => {
     await click(fold);
     expect(rows()).toHaveLength(3 + 25);
     expect(rows().at(-1)).toBe("skipped:deploy"); // skipped last, behind the same expander
+  });
+
+  test("Screenshots and Checks sit in a two-column grid; Checks alone spans both columns with no screenshots", async () => {
+    apiFake.prDetailData = { checks: CHECKS };
+    await mount(); // PR head defaults to "sticky-1"; no turns recorded for it, so no Screenshots card
+    const checks = $("pr-checks");
+    const grid = checks.parentElement!;
+    expect(grid.className).toContain("lg:grid-cols-2");
+    expect([...grid.children]).toEqual([checks]); // the grid's only child, so it spans the row (:only-child)
+    expect(container!.querySelector('[data-slot="screenshots"]')).toBeNull();
+  });
+
+  test("with screenshots, the Screenshots card and Checks sit side by side in that grid", async () => {
+    apiFake.prDetailData = { checks: CHECKS };
+    apiFake.turnsData.set("r::sticky-1", [{ id: "run-1", provider: "claude", instruction: "x", prompt: "", response: "shot: /home/orca/.orca/attachments/shots/shot-1.png", startedAt: 1, finishedAt: 2 }]);
+    await mount();
+    const checks = $("pr-checks");
+    const shots = $("screenshots");
+    expect(checks.parentElement).toBe(shots.parentElement); // the same grid, as siblings
+    expect([...checks.parentElement!.children]).toEqual([shots, checks]);
   });
 
   test("an old /checks link lands on Overview", async () => {
