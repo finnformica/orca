@@ -337,6 +337,42 @@ describe("the notification centre", () => {
     expect(panel.textContent).toContain("You're all caught up.");
   });
 
+  const pressKey = async (key: string) => act(async () => { document.body.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })); await flush(); await flush(); });
+
+  test("opened via the N shortcut: initial focus is Mark all as read, not the Unread/All toggle; Esc closes it", async () => {
+    apiFake.notificationsData = [note({ id: 200, kind: "failed", title: "Broke" })];
+    await open("/");
+    await pressKey("n");
+    const panel = $("notification-centre")!;
+    expect(panel).not.toBeNull();
+    expect(document.activeElement).toBe(panel.querySelector('[aria-label="Mark all as read"]'));
+    await pressKey("Escape");
+    expect($("notification-centre")).toBeNull();
+  });
+
+  test("opened by clicking the bell, for consistency: the same initial focus; Esc still closes it and returns focus to the bell", async () => {
+    apiFake.notificationsData = [note({ id: 201, kind: "failed", title: "Broke" })];
+    await open("/");
+    await click($("notifications-bell"));
+    const panel = $("notification-centre")!;
+    expect(panel).not.toBeNull();
+    expect(document.activeElement).toBe(panel.querySelector('[aria-label="Mark all as read"]'));
+    await pressKey("Escape");
+    expect($("notification-centre")).toBeNull();
+    expect(document.activeElement).toBe($("notifications-bell"));
+  });
+
+  test("nothing unread: Mark all as read is disabled, so initial focus falls back to the Unread/All toggle", async () => {
+    apiFake.notificationsData = [note({ id: 202, kind: "failed", title: "Broke", readAt: Date.now() })];
+    await open("/");
+    await pressKey("n");
+    const panel = $("notification-centre")!;
+    expect(panel).not.toBeNull();
+    const markAllReadBtn = panel.querySelector<HTMLButtonElement>('[aria-label="Mark all as read"]')!;
+    expect(markAllReadBtn.disabled).toBe(true);
+    expect(document.activeElement).toBe(button(panel, "Unread")!);
+  });
+
   test("the centre opens on Unread by default, and on the filter you last chose", async () => {
     apiFake.notificationsData = [note({ id: 70, readAt: Date.now(), title: "Seen" })];
     await open("/");
