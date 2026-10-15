@@ -54,7 +54,7 @@ beforeEach(async () => {
   // A fake claude: records "<base url>|<argv>"; with ORCA_FAKE_FAIL set it fails the way the CLI does
   // when its API connection breaks, but only through the proxy.
   await writeFile(join(shim, "claude"), `#!/bin/sh
-printf '%s|%s' "$ANTHROPIC_BASE_URL" "$*" > "$ORCA_FAKE_LOG/$(date +%s%N)-$$"
+printf '%s|%s|%s' "$ANTHROPIC_BASE_URL" "$ENABLE_TOOL_SEARCH" "$*" > "$ORCA_FAKE_LOG/$(date +%s%N)-$$"
 if [ -n "$ORCA_FAKE_FAIL" ] && [ -n "$ANTHROPIC_BASE_URL" ]; then echo "API Error: Connection error." >&2; exit 1; fi
 printf '%s\\n' '${RESULT}'
 `);
@@ -112,7 +112,8 @@ test("CV2: switch on — the run gets the proxy URL, the skill and caveman-mcp; 
   await agent.runAgent(wt, "add a cache", { ...launchOptions(cfg(), cfg().repos[0]!, "claude"), action: "launch" });
   const [row] = await finished();
   const [call] = await launches();
-  expect(call!.startsWith(`http://127.0.0.1:${PORT}|`)).toBe(true);
+  // Tool search stays on through the proxy (Claude Code turns it off for a custom base URL).
+  expect(call!.startsWith(`http://127.0.0.1:${PORT}|true|`)).toBe(true);
   expect(call).toContain(`--mcp-config ${join(root, "orca", "mcp.json")}`);
   expect(call).toContain("--append-system-prompt Respond terse like smart caveman.");
   expect(row).toMatchObject({ repo: "orca", provider: "claude", caveman: true, status: "done", inputTokens: 120, cacheReadTokens: 3000, cacheCreationTokens: 500, outputTokens: 40, costUsd: 0.25 });
@@ -135,7 +136,7 @@ test("CV3: the control repo runs direct and is recorded as caveman off, with no 
   await agent.runAgent(wt, "add a cache", { ...launchOptions(cfg(), cfg().repos[1]!, "claude") });
   const [row] = await finished();
   const [call] = await launches();
-  expect(call!.startsWith("|")).toBe(true);
+  expect(call!.startsWith("||")).toBe(true);
   expect(call).not.toContain("--append-system-prompt");
   expect(row).toMatchObject({ repo: "branch-demo", caveman: false, status: "done" });
   expect(row!.fallback).toBeUndefined();

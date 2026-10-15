@@ -153,7 +153,11 @@ export async function prepare(): Promise<CavemanWiring> {
     const noProxy = [process.env.NO_PROXY ?? process.env.no_proxy, "127.0.0.1", "localhost"].filter(Boolean).join(",");
     return {
       on: true,
-      env: { ANTHROPIC_BASE_URL: baseUrl(), NO_PROXY: noProxy, no_proxy: noProxy },
+      // ENABLE_TOOL_SEARCH: Claude Code turns tool search off when ANTHROPIC_BASE_URL is set, and then
+      // sends every tool schema on every request — about 16k more input tokens than a direct run, so
+      // the trial cost more (docs/research/caveman-trial-samples-2026-10-15.md). The proxy forwards
+      // the deferred-tool request unchanged, so it stays on here.
+      env: { ANTHROPIC_BASE_URL: baseUrl(), ENABLE_TOOL_SEARCH: "true", NO_PROXY: noProxy, no_proxy: noProxy },
       args: ["--mcp-config", mcp, "--append-system-prompt", readFileSync(skillPath(), "utf8")],
     };
   } catch (e) {
