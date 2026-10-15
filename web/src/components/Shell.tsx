@@ -32,6 +32,7 @@ import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, ty
 import { summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
 import { NotificationBell } from "@/components/Notifications";
+import { notifyLocal } from "@/lib/notificationStore";
 import { Button } from "@/components/ui/button";
 import { MenuShortcut, Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
@@ -314,13 +315,13 @@ function RepoSwitcher() {
  *  model, attachments, the # picker, New chat). Native <dialog> like Rename / New chat, so Esc and
  *  the backdrop close it, and it is the portal container for the composer's selects (a modal dialog
  *  makes the rest of the page inert — a select rendered into <body> would be unclickable). Sending
- *  closes it and leaves "Sent to … · Undo" at the foot of the screen for 6s. `C` (and the palette's
+ *  closes it and raises a "Sent" side notification (the one toast surface — Notifications.tsx) with
+ *  Undo and Open, instead of a bottom-centre toast of its own. `C` (and the palette's
  *  New agent) opens it from anywhere outside a text field — `addNewOpenAtom`. The typed draft
  *  persists either way (the composer's persistKey). */
 export function AddNew({ children, collapsed = false }: { children: (onSent: (draft: OptimisticDraft) => void) => ReactNode; collapsed?: boolean }) {
   const [open, setOpen] = useAtom(addNewOpenAtom);
   const [dialog, setDialog] = useState<HTMLDialogElement | null>(null);
-  const [sent, setSent] = useState<OptimisticDraft | null>(null);
   useEffect(() => {
     if (!dialog) return;
     if (open && !dialog.open) {
@@ -330,12 +331,15 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
       if (!isMobile()) dialog.querySelector("textarea")?.focus();
     } else if (!open && dialog.open) dialog.close();
   }, [open, dialog]);
-  useEffect(() => {
-    if (!sent) return;
-    const t = setTimeout(() => setSent(null), 6000);
-    return () => clearTimeout(t);
-  }, [sent]);
-  const onSent = (draft: OptimisticDraft) => { setOpen(false); setSent(draft); };
+  const onSent = (draft: OptimisticDraft) => {
+    setOpen(false);
+    notifyLocal({
+      kind: "draft_sent", repo: draft.repo, title: draft.title,
+      body: `Sent to ${draft.repo}`,
+      onUndo: () => { void undoDraft(draft); },
+      onOpen: () => { if (draft.created) navigate(`/${draft.repo}/local/${encodeURIComponent(draft.created.branch)}`); },
+    });
+  };
   const swipe = useSwipeToClose(() => dialog, () => setOpen(false), useNarrow()); // a phone's full-screen sheet
   return (
     <>
@@ -360,13 +364,6 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
           </div>
         </PortalContainer.Provider>
       </dialog>
-      {sent && (
-        <div role="status" data-slot="sent-toast" className="bg-card fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg border px-3 py-2 text-sm shadow-menu max-md:bottom-[calc(4.5rem+env(safe-area-inset-bottom))]">
-          <span>Sent to <span className="font-medium">{sent.repo}</span></span>
-          <button type="button" className="font-medium underline underline-offset-2 hover:no-underline" onClick={() => { void undoDraft(sent); setSent(null); }}>Undo</button>
-          <button type="button" className="text-muted-foreground hover:text-foreground" onClick={() => setSent(null)} aria-label="Dismiss"><X className="size-3.5" /></button>
-        </div>
-      )}
     </>
   );
 }

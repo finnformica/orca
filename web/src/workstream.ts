@@ -2736,7 +2736,7 @@ export function pullState(dy: number): { phase: "idle" | "pull" | "release"; off
  *  (store.addressPr, followUp, testLocally, stopPreview, navigation) — none of the logic is here. */
 export type NotificationActionId =
   | "address" | "viewPr" | "fix" | "viewOutput" | "open" | "reply" | "retry" | "openChat"
-  | "openPreview" | "stopPreview" | "retryPreview" | "viewLog" | "openOrchestrator" | "ask" | "copy";
+  | "openPreview" | "stopPreview" | "retryPreview" | "viewLog" | "openOrchestrator" | "ask" | "copy" | "undo";
 export type NotificationActionSpec = { id: NotificationActionId; label: string; primary?: boolean };
 
 /** What the live row behind a notification makes possible: an agent verb needs the row, View PR its
@@ -2761,6 +2761,8 @@ const NOTIFICATION_ACTION_RULES: Record<string, ActionRule[]> = {
   // A failed action (a local notification): hand it to the orchestrator, or copy the message and
   // where it happened — each only when the notification carries its text.
   action_failed: [{ id: "ask", label: "Ask the orchestrator" }, { id: "copy", label: "Copy" }],
+  // A just-sent draft (also local): Undo while it's still fresh.
+  draft_sent: [{ id: "undo", label: "Undo" }],
 };
 
 /** A notification's quick actions: up to two for its kind, then ALWAYS Open, last — so every toast
@@ -2770,13 +2772,13 @@ const NOTIFICATION_ACTION_RULES: Record<string, ActionRule[]> = {
  *  left out rather than shown broken; an unknown kind gets only Open. There is no Read: taking any
  *  action marks it read, and the card's own × (not listed here) is "read, and out of view". */
 export function notificationActions(
-  n: { kind: string; link?: { url?: string; orchestrator?: boolean }; ask?: string; copy?: string },
+  n: { kind: string; link?: { url?: string; orchestrator?: boolean }; ask?: string; copy?: string; onUndo?: () => void },
   ctx: NotificationActionContext = {},
 ): NotificationActionSpec[] {
   const open: ActionRule = n.link?.orchestrator ? { id: "openOrchestrator", label: "Open" } : { id: "open", label: "Open" };
   const has = { ...ctx } as Record<string, boolean | undefined>;
   const rules = n.link?.orchestrator ? [] : (NOTIFICATION_ACTION_RULES[n.kind] ?? [])
-    .filter((r) => (r.id === "openPreview" ? Boolean(n.link?.url) : r.id === "ask" || r.id === "copy" ? Boolean(n[r.id]) : !r.needs || has[r.needs]))
+    .filter((r) => (r.id === "openPreview" ? Boolean(n.link?.url) : r.id === "ask" || r.id === "copy" ? Boolean(n[r.id]) : r.id === "undo" ? Boolean(n.onUndo) : !r.needs || has[r.needs]))
     .slice(0, 2);
   return [...rules, open].map((r, i) => ({ id: r.id, label: r.label, ...(i === 0 ? { primary: true } : {}) }));
 }
