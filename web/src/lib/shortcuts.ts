@@ -80,6 +80,18 @@ export function isTypingTarget(target: EventTarget | null): boolean {
   return !!el?.closest("input, textarea, select, [contenteditable=''], [contenteditable=true], dialog");
 }
 
+/** The text field an Esc nothing else wanted should blur: an input you type into, a textarea or an
+ *  editable region — not a checkbox or a select — and never one inside a native <dialog>, whose Esc
+ *  closes the dialog (and returns focus) itself. Null when Esc has no field to leave. */
+export function escapeBlurTarget(target: EventTarget | null): HTMLElement | null {
+  const el = target && typeof (target as Element).closest === "function" ? (target as HTMLElement) : null;
+  if (!el || el.closest("dialog")) return null;
+  const tag = el.tagName;
+  const text = tag === "TEXTAREA" || el.isContentEditable || el.getAttribute?.("contenteditable") === "true" || el.getAttribute?.("contenteditable") === ""
+    || (tag === "INPUT" && !/^(checkbox|radio|button|submit|reset|file|range|color|image|hidden)$/i.test((el as HTMLInputElement).type));
+  return text ? el : null;
+}
+
 /** Which shortcut a keydown is, or null. `typing` = the target is a text field (isTypingTarget).
  *  `pendingG` = a G was pressed within CHORD_TIMEOUT_MS: a bare letter is then a page chord or
  *  nothing — never also the single-letter shortcut (G O is Overview, not the orchestrator). */

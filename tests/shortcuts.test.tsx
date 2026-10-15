@@ -12,9 +12,9 @@ import * as store from "@/store";
 import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import {
-  addNewOpenAtom, notificationsOpenAtom, orchestratorOpenAtom, orchestratorPrefillAtom, paletteOpenAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom,
+  addNewOpenAtom, notificationsOpenAtom, orchestratorOpenAtom, orchestratorPrefillAtom, paletteOpenAtom, quickAskOpenAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom,
 } from "@/lib/atoms";
-import { CHORD_TIMEOUT_MS, SHORTCUTS, isMacPlatform, isTypingTarget, matchShortcut, pageShortcut, shortcutKeys, shortcutLabel, type KeyLike, type ShortcutId } from "@/lib/shortcuts";
+import { CHORD_TIMEOUT_MS, SHORTCUTS, escapeBlurTarget, isMacPlatform, isTypingTarget, matchShortcut, pageShortcut, shortcutKeys, shortcutLabel, type KeyLike, type ShortcutId } from "@/lib/shortcuts";
 import { Kbd, KbdGroup, Shortcut } from "@/components/ui/kbd";
 import { fuzzyScore, joinPrefill, moveSelection, pushRecent, rankPalette, type PaletteItem } from "@/lib/palette";
 
@@ -188,7 +188,7 @@ afterEach(async () => {
   apiFake.reset();
   localStorage.clear();
   const s = getDefaultStore();
-  for (const a of [addNewOpenAtom, orchestratorOpenAtom, paletteOpenAtom, shortcutsHelpOpenAtom, notificationsOpenAtom]) s.set(a, false);
+  for (const a of [addNewOpenAtom, orchestratorOpenAtom, paletteOpenAtom, shortcutsHelpOpenAtom, notificationsOpenAtom, quickAskOpenAtom]) s.set(a, false);
   s.set(orchestratorPrefillAtom, null);
   s.set(sidebarCollapsedAtom, false);
   navigate("/");
@@ -565,4 +565,44 @@ test("S11: N opens/toggles the notifications bell's popover; Esc closes it; neve
   expect(keycaps(row.querySelector('[data-shortcut="notifications"]'))).toEqual(["N"]);
   await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   expect(popover()).not.toBeNull();
+});
+
+describe("Esc leaves a text field when nothing else wants it", () => {
+  test("escapeBlurTarget: text inputs, textareas and editable regions — never a checkbox, nor a field in a native dialog", () => {
+    const el = (html: string) => { const d = document.createElement("div"); d.innerHTML = html; document.body.append(d); return d; };
+    const box = el('<input type="text"><input><input type="search"><textarea></textarea><div contenteditable="true"></div><input type="checkbox"><select></select><button></button>');
+    const [text, plain, search, area, editable, check, select, button] = [...box.children] as HTMLElement[];
+    for (const f of [text, plain, search, area, editable]) expect(escapeBlurTarget(f!)).toBe(f!);
+    for (const f of [check, select, button]) expect(escapeBlurTarget(f!)).toBeNull();
+    expect(escapeBlurTarget(null)).toBeNull();
+    expect(escapeBlurTarget(document.body)).toBeNull();
+    const dlg = el("<dialog><textarea></textarea></dialog>");
+    expect(escapeBlurTarget(dlg.querySelector("textarea"))).toBeNull(); // the dialog's own Esc closes it
+    box.remove(); dlg.remove();
+  });
+
+  test("S12: Esc blurs the agent chat's composer (letters work again) — never a field inside a dialog", async () => {
+    apiFake.agentsData = [{ branch: "local-run", worktreePath: "/wt/local-run", agentStatus: "done" }];
+    await mount("/r/local/local-run/chat");
+    const composer = q<HTMLTextAreaElement>('[data-slot="agent-chat"] textarea')!;
+    expect(document.activeElement).toBe(composer); // the Chat tab focuses it
+    // Nothing else wants Esc: the composer lets go (the draft stays) and C is a shortcut again.
+    // (The @ picker taking the first Esc is prPicker.test's.)
+    await typeInto(composer, "half a thought");
+    await press(composer, "Escape");
+    expect(document.activeElement).not.toBe(composer);
+    expect(composer.value).toBe("half a thought");
+    await press(document.body, "c");
+    expect(dialogOpen("add-new-dialog")).toBe(true);
+    // Inside a native dialog Esc is the dialog's (it closes it and returns focus) — not blurred here.
+    const inDialog = q<HTMLTextAreaElement>('[data-slot="add-new-dialog"] textarea')!;
+    inDialog.focus();
+    await press(inDialog, "Escape");
+    expect(document.activeElement).toBe(inDialog);
+    await act(async () => { q<HTMLDialogElement>('[data-slot="add-new-dialog"]')!.close(); await flush(); });
+    // The same one listener for every field: Find too.
+    find().focus();
+    await press(find(), "Escape");
+    expect(document.activeElement).not.toBe(find());
+  });
 });

@@ -61,6 +61,12 @@ describe("card terminal (conversation modal)", () => {
     // The durable conversation renders inside — the whole point of the rework.
     expect(dialog.textContent).toContain("add the cache");
     expect(dialog.textContent).toContain("Added it.");
+    // In the ONE chat every surface uses (views/Chat.tsx ChatPanel) — the Agent page's and the
+    // orchestrator's look: your words in a bubble, the reply under the agent's name, no ❯ log lines.
+    expect(dialog.querySelector<HTMLElement>('[data-slot="chat-panel"]')!.dataset.size).toBe("panel");
+    expect(dialog.querySelector('[data-slot="chat-user-text"]')!.textContent).toBe("add the cache");
+    expect(dialog.querySelector('[data-slot="chat-reply-head"]')!.textContent).toContain("Claude");
+    expect(dialog.textContent).not.toContain("❯");
     // And a composer to send the next message (the reused follow-up component).
     expect(dialog.querySelector("textarea")).toBeTruthy();
   });

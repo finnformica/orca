@@ -1,8 +1,9 @@
-// The conversation with a branch's agent, rendered as a terminal-style log: the durable turns from
-// the bridge's store (GET /api/turns) shown in a dark monospace window, with the follow-up composer
-// below to send the next message. It is NOT a live shell — it renders the turns Orca already records,
-// styled like a terminal. Opened from the card's terminal button (see TerminalDialog); the old
-// detail-page Chat tab is gone.
+// The conversation with a branch's agent — or the orchestrator's — as ONE chat: the durable turns
+// from the bridge's store (GET /api/turns), your messages as bubbles on the right, the agent's
+// replies under its name on the left, with the follow-up composer below. Every surface renders it:
+// the Agent page's Chat tab, a card's terminal modal, and the orchestrator's panel and page — only
+// their sizing and the composer's wiring differ (ChatPanel's props). It is NOT a live shell — it
+// renders the turns Orca already records.
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
@@ -46,7 +47,7 @@ const ChatSkeleton = ({ rows }: { rows: number }) => (
 );
 
 /** Markdown inside the terminal-styled log: prose spacing and readable lists, but sized and coloured
- *  to sit in the dark window rather than looking like a pasted document. */
+ *  to sit in the chat's window rather than looking like a pasted document. */
 const ChatMarkdown = ({ children }: { children: string }) => (
   // wrap-anywhere: the agent's prose is full of unbreakable tokens (`branch/names-with-hashes`,
   // paths, run ids) that are wider than a narrow window, and one of them made the whole log scroll
@@ -189,15 +190,14 @@ export function Attachments({ files, className = "" }: { files: AttachmentRef[];
 /** Copy (the message's raw markdown, with a brief "Copied" confirmation) and Quote (insert it into
  *  the composer as a blockquote) for one message. Hidden until the message is hovered, but stays
  *  reachable: visible while a button inside has focus (keyboard), and always on a touch screen,
- *  which has no hover to reveal it. `tone` matches the two message stylings below — the terminal
- *  log's muted neutrals, or the chat bubble styling's theme tokens. */
-function MessageActions({ text, onQuote, tone = "terminal", className }: { text: string; onQuote: () => void; tone?: "terminal" | "chat"; className?: string }) {
+ *  which has no hover to reveal it. */
+function MessageActions({ text, onQuote, className }: { text: string; onQuote: () => void; className?: string }) {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
     try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }
     catch { /* clipboard unavailable */ }
   };
-  const btn = tone === "chat" ? "text-muted-foreground hover:text-foreground" : "text-neutral-500 hover:text-neutral-200";
+  const btn = "text-muted-foreground hover:text-foreground";
   return (
     <div
       data-slot="message-actions"
@@ -230,15 +230,14 @@ function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () =>
     );
   }
   return (
-    <div className="mb-3 opacity-60">
-      <div className="flex gap-2 text-emerald-400">
-        <span className="shrink-0 select-none">❯</span>
-        <span className="min-w-0 whitespace-pre-wrap break-words">{withoutAttachmentList(message.instruction)}</span>
-      </div>
-      <Attachments files={attachmentRefs((message.attachments ?? []).join("\n"))} className="mt-1 pl-4" />
-      <div className="mt-1 flex items-center gap-2 pl-4 text-[10px] tracking-widest text-neutral-500 uppercase">
-        <span>queued — sends when the current run finishes</span>
-        <button type="button" onClick={onCancel} className="tracking-normal text-neutral-400 normal-case hover:text-red-400">cancel</button>
+    <div className="mb-4 flex justify-end opacity-60" data-slot="chat-queued">
+      <div className="max-w-[85%]">
+        <div className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">{withoutAttachmentList(message.instruction)}</div>
+        <Attachments files={attachmentRefs((message.attachments ?? []).join("\n"))} className="mt-1 justify-end" />
+        <div className="text-muted-foreground mt-1 flex items-center justify-end gap-2 text-[10px] tracking-widest uppercase">
+          <span>queued — sends when the current run finishes</span>
+          <button type="button" onClick={onCancel} className="tracking-normal normal-case hover:text-red-400">cancel</button>
+        </div>
       </div>
     </div>
   );
@@ -259,9 +258,6 @@ function WorkerReports({ parts }: { parts: string[] }) {
     </div>
   );
 }
-
-/** One exchange: the instruction shown as a shell command (`❯ …`), the agent's output below it. */
-const stampOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "");
 
 /** Orca's verification of the commit — deterministic evidence, shown apart from the agent's own
  *  Verification section. Output folds like a tool result. */
@@ -314,12 +310,12 @@ function Reply({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () =
 
 const clockOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "");
 
-/** The "chat" styling (the orchestrator's panel): a modern assistant chat rather than a terminal log.
- *  What you said is a tinted bubble on the right; the orchestrator answers on the left under its
- *  name, in readable prose; its tool steps and worker reports stay folded; the time shows on hover
+/** One exchange, as a modern assistant chat rather than a terminal log. What you said is a tinted
+ *  bubble on the right; the agent (`author`: the orchestrator, else the turn's provider) answers on
+ *  the left under its name, in readable prose; its tool steps and worker reports stay folded; the time shows on hover
  *  (and days are grouped by the divider ChatPanel draws). Colours are the theme's tokens, so it
  *  follows light and dark like the rest of the console. */
-function ChatTurn({ turn, loadSteps, compact, onQuote }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean; onQuote: (text: string) => void }) {
+function ChatTurn({ turn, loadSteps, compact, onQuote, author }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean; onQuote: (text: string) => void; author?: string }) {
   const parts = splitMessages(turn.instruction ?? promptInstruction(turn.prompt));
   // A wake that carried your messages AND worker reports: your words in bubbles — one per message you
   // sent, however many one wake drained — and the reports folded.
@@ -330,7 +326,7 @@ function ChatTurn({ turn, loadSteps, compact, onQuote }: { turn: AgentTurn; load
   const filesOf = (text: string, i: number) => inline ? attachmentRefs(text) : i === said.length - 1 ? turn.attachments ?? [] : [];
   const time = clockOf(turn.startedAt);
   return (
-    <div className="mb-4" data-slot="chat-turn" data-failed={turn.failed || undefined} data-style="chat">
+    <div className="mb-4" data-slot="chat-turn" data-failed={turn.failed || undefined}>
       {/* Worker reports that woke it, split out of what you said: a collapsed block of their own. */}
       {reports.length > 0 && (
         <WorkerBlock slot="turn-reports" className="mb-2"
@@ -349,7 +345,7 @@ function ChatTurn({ turn, loadSteps, compact, onQuote }: { turn: AgentTurn; load
               </div>}
               <Attachments files={filesOf(text, i)} className="mt-1 justify-end" />
               <div className="mt-0.5 flex items-center justify-end gap-1.5">
-                {clean && <MessageActions text={clean} onQuote={() => onQuote(clean)} tone="chat" />}
+                {clean && <MessageActions text={clean} onQuote={() => onQuote(clean)} />}
                 {i === said.length - 1 && <div className="text-muted-foreground text-[10px] opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{time}</div>}
               </div>
             </div>
@@ -362,9 +358,9 @@ function ChatTurn({ turn, loadSteps, compact, onQuote }: { turn: AgentTurn; load
           {/* One line the avatar's height: the name, then Copy / Quote right beside it (not after the
               hover-only time, whose reserved width left them floating off on their own), then the time. */}
           <div data-slot="chat-reply-head" className="text-muted-foreground mb-0.5 flex h-6 items-center gap-2 text-[11px]">
-            <span className="text-foreground font-medium">Orchestrator</span>
+            <span className="text-foreground font-medium">{author ?? agentLabel(turn.provider)}</span>
             {turn.failed ? <span className="text-red-400">failed</span> : turn.stopped ? <span className="text-amber-400">stopped by you</span> : null}
-            {turn.finishedAt && turn.response && <MessageActions text={turn.response} onQuote={() => onQuote(turn.response)} tone="chat" className="-mx-1" />}
+            {turn.finishedAt && turn.response && <MessageActions text={turn.response} onQuote={() => onQuote(turn.response)} className="-mx-1" />}
             <span className="opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{clockOf(turn.finishedAt) || time}</span>
           </div>
           <Reply turn={turn} loadSteps={loadSteps} compact={compact} />
@@ -420,79 +416,25 @@ function AgentsMarker({ turns, render }: { turns: AgentTurn[]; render: (t: Agent
   );
 }
 
-/** `stamped`: the Agent page's log mode — a time gutter, and failed / warned turns tinted the way
- *  Vercel tints error and warning lines in Build Logs. */
-function Turn({ turn, loadSteps, stamped, running, onQuote }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; stamped?: boolean; running?: boolean; onQuote: (text: string) => void }) {
-  const instruction = turn.instruction ?? promptInstruction(turn.prompt);
-  // The reference list is shown as chips (below), not as text.
-  const parts = splitMessages(instruction).map(withoutAttachmentList);
-  const tint = !stamped ? "" : turn.failed ? "bg-red-500/10 -mx-3 px-3" : turn.stopped || (turn.check && !turn.check.ok) ? "bg-amber-500/10 -mx-3 px-3" : "";
-  const body = (
-    <div className={`mb-3 ${tint}`} data-slot="chat-turn" data-failed={turn.failed || undefined}>
-      {parts.every(isWorkerEvent) ? <WorkerReports parts={parts} /> : (
-        // What you typed, recorded with the turn — one ❯ line per message a wake carried. Turns from
-        // before that was stored fall back to trimming the scaffolding off the prompt by its marker lines.
-        <>{parts.map((text, i) => (
-          <div key={i} className="group flex items-start gap-2 text-emerald-400" data-slot="turn-instruction">
-            <span className="shrink-0 select-none">❯</span>
-            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">{text}</span>
-            <MessageActions text={text} onQuote={() => onQuote(text)} />
-          </div>
-        ))}</>
-      )}
-      <Attachments files={turn.attachments ?? []} className="mt-1 pl-4" />
-      <div className="group mt-1 pl-4" data-slot="turn-reply">
-        <div className="flex items-start gap-2 text-[10px] tracking-widest text-neutral-500 uppercase">
-          <span>{agentLabel(turn.provider)}{turn.failed ? " · failed" : turn.stopped ? " · stopped by you" : ""}</span>
-          {turn.finishedAt && turn.response && <MessageActions text={turn.response} onQuote={() => onQuote(turn.response)} />}
-        </div>
-        <Reply turn={turn} loadSteps={loadSteps} />
-      </div>
-    </div>
-  );
-  if (!stamped) return body;
-  // Sticky within THIS turn's own row (its flex parent is the containing block a sticky element
-  // can't escape): pinned near the top of the visible area while the turn's own content scrolls
-  // past, then pushed out once the row ends and the next turn's timestamp takes over — the same
-  // idiom as a sticky first column in a tall table row. The offset matches the log's own left
-  // padding (`px-4 md:px-6` on the scroll container) so the gap to the top border equals the gap
-  // to the left border — except while the running/stop banner's own sticky bar (`top-0`) is
-  // shown, when `top-7` clears it instead so the two are never stuck in the same place at once.
-  const topClass = running ? "top-7" : "top-4 md:top-6";
-  return (
-    <div className="flex gap-3">
-      {/* `self-start` + a background keep the stuck box to one line, never a tall strip that could
-       *  sit over the reply text beside it. */}
-      <span className={`sticky ${topClass} z-[1] w-16 shrink-0 self-start bg-neutral-950 pt-px text-neutral-500 tabular-nums select-none`} data-slot="turn-time">{stampOf(turn.startedAt)}</span>
-      <div className="min-w-0 flex-1">{body}</div>
-    </div>
-  );
-}
-
-/** The Agent page's Chat tab reads smaller than the modal's terminal: your messages at 11px mono and
- *  the agent's replies (prose, which is 14px at prose-sm) at 12px. */
-const LOG_TEXT = "font-mono text-[11px] [&_.prose]:text-[12px]";
-
 /** `send` replaces the follow-up launch for a conversation that isn't a branch's agent — the
- *  orchestrator's, which goes to its own route. `flush` is for a host that IS the window (the
- *  orchestrator's popout): the log runs edge to edge with no frame of its own, and the composer sits
- *  on the SAME terminal background, so the window reads as one surface rather than a log with a
- *  differently coloured strip under it. The composer's toolbar always carries the model picker and
- *  the context ring (ChatControls); `controls` supplies their values when they don't come from the
- *  row's card. Everything else about the panel is the same. */
-export function ChatPanel({ row, send, flush, controls, logBar, prefill, outbox, variant = "terminal" }: {
-  row: Row; send?: (text: string, images: File[]) => Promise<void>; flush?: boolean; controls?: ChatControlsProps;
+ *  orchestrator's, which goes to its own route. The composer's toolbar always carries the model
+ *  picker and the context ring (ChatControls); `controls` supplies their values when they don't come
+ *  from the row's card. Everything else — the turns, steps, attachments, worker reports, queued and
+ *  sending messages, scrolling, the composer — is the same on every surface. */
+export function ChatPanel({ row, send, controls, prefill, outbox, author, size = "panel", autoFocus }: {
+  row: Row; send?: (text: string, images: File[]) => Promise<void>; controls?: ChatControlsProps;
   /** The orchestrator's chat: its "sending…" messages are the shared outbox (lib/orchestratorOutbox) —
    *  every entry point's, not only this composer's — and `send` is expected to go through it. */
   outbox?: boolean;
-  /** "terminal" (default): the dark monospace log. "chat": the orchestrator panel's assistant-chat
-   *  styling — bubbles, prose, day dividers, hover timestamps — in the page's theme (see ChatTurn). */
-  variant?: "terminal" | "chat";
   /** Text for the composer from outside it (the orchestrator's entry) — see ChatComposer. */
   prefill?: OrchestratorPrefill | null;
-  /** The Agent page's Chat tab: a slim toolbar (working indicator, error / warning counters, Find
-   *  in chat) instead of a card header, and timestamped, tinted turns. */
-  logBar?: boolean;
+  /** The name replies are shown under; by default each turn's provider ("Claude"). */
+  author?: string;
+  /** "page": the Agent page's Chat tab, a wide column — roomier padding. "panel": everything else
+   *  (the modal, the orchestrator's panel and page), where width is scarce. */
+  size?: "panel" | "page";
+  /** Focus the composer on mount (the Agent page's Chat tab — see below). */
+  autoFocus?: boolean;
 }) {
   const deliver = send ?? ((text: string, images: File[]) => followUp(row, text, images));
   // Messages on their way to the bridge. Sending one launches an agent — an upload, a worktree
@@ -780,11 +722,9 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, outbox,
   // first lines; runs of automated wakes fold into one line.
   const position = new Map((turns ?? []).map((t, i) => [t.id, i]));
   const compactBefore = (turns?.length ?? 0) - RECENT_FULL;
-  const chatStyle = variant === "chat";
   const stepsOf = (turn: AgentTurn) => () => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response));
-  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadSteps={stepsOf(turn)} compact={(position.get(turn.id) ?? 0) < compactBefore} onQuote={onQuote} />;
+  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadSteps={stepsOf(turn)} compact={(position.get(turn.id) ?? 0) < compactBefore} onQuote={onQuote} author={author} />;
   const renderTurns = (list: AgentTurn[]) => {
-    if (!chatStyle) return list.map((turn) => <Turn key={turn.id} turn={turn} stamped={logBar} running={running} loadSteps={stepsOf(turn)} onQuote={onQuote} />);
     const items = chatItems(list);
     let prev: number | undefined;
     return items.map((item) => {
@@ -804,13 +744,14 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, outbox,
     });
   };
   return (
-    <div className={`flex h-full flex-col ${flush || logBar ? "" : "gap-3"} ${logBar || chatStyle ? "log-themed" : ""}`} data-variant={variant}>
+    // log-themed: the page's theme (styles.css remaps the dark palette in light mode).
+    <div className="log-themed flex h-full flex-col" data-slot="chat-panel" data-size={size}>
       <div
         ref={scroller}
         onScroll={onScroll}
         // overscroll-contain: hitting the chat's top or bottom must not hand the gesture to the page —
         // it did, and the page then kept scrolling when you turned back to scroll the chat up.
-        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain bg-neutral-950 leading-relaxed ${logBar ? "px-4 py-3 md:px-6" : "p-3"} text-neutral-200 ${chatStyle ? "font-sans text-[13px] [&_.prose]:text-[13px]" : logBar ? LOG_TEXT : "font-mono text-xs"} ${flush || logBar ? "" : "rounded-md border border-neutral-800"}`}
+        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain bg-neutral-950 leading-relaxed ${size === "page" ? "px-4 py-3 md:px-6" : "p-3"} font-sans text-[13px] text-neutral-200 [&_.prose]:text-[13px]`}
       >
         {running && (
           <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-end">
@@ -853,20 +794,11 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, outbox,
         )}
         {/* Not drawn once the real thing has arrived over the stream — the same text twice, one of
             them "sending", is worse than the moment's gap it would cover. */}
-        {unlanded.map((m) => chatStyle ? (
+        {unlanded.map((m) => (
           <div key={m.id} className="mb-4" data-slot="chat-sending">
             <div className="mb-2 flex justify-end"><div className="bg-accent text-foreground max-w-[85%] rounded-lg px-3 py-2 whitespace-pre-wrap break-words opacity-70">{m.text}</div></div>
             <Attachments files={m.attachments ?? []} className="mb-2 justify-end" />
             <div className="text-muted-foreground pl-8 text-[11px]">▋ sending…</div>
-          </div>
-        ) : (
-          <div key={m.id} className="mb-3" data-slot="chat-sending">
-            <div className="flex gap-2 text-emerald-400">
-              <span className="shrink-0 select-none">❯</span>
-              <span className="min-w-0 whitespace-pre-wrap break-words">{m.text}</span>
-            </div>
-            <Attachments files={m.attachments ?? []} className="mt-1 pl-4" />
-            <div className="mt-1 pl-4 text-neutral-500">▋ sending…</div>
           </div>
         ))}
         {queued.map((m) => (
@@ -886,11 +818,9 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, outbox,
           </div>
         )}
       </div>
-      {/* `dark` scopes the theme tokens: the composer's text and border must read on the terminal
-          background whatever the page's theme is. */}
-      <div data-slot="chat-composer-dock" className={chatStyle ? "border-t p-2 max-md:p-3" : flush ? "dark text-foreground bg-neutral-950 p-2 pt-0" : logBar ? "border-t p-4" : undefined}>
+      <div data-slot="chat-composer-dock" className={size === "page" ? "border-t p-4" : "border-t p-2 max-md:p-3"}>
       <ChatComposer
-        className={chatStyle ? "shadow-none" : flush ? "border-neutral-800 bg-neutral-950 shadow-none" : undefined}
+        className="shadow-none"
         leading={<ChatControls {...ctl} compact={ctl.contextPct === undefined && compacting === null ? undefined
           : { onCompact, pending: compacting !== null, busy: running, error: compactError }} />}
         persistKey={`orca.chat.${row.repo}::${row.branch}`}
@@ -905,7 +835,7 @@ export function ChatPanel({ row, send, flush, controls, logBar, prefill, outbox,
         // The Chat tab's own panel only ever mounts while that tab is active (Radix unmounts the
         // others), so focusing on mount covers opening it by click, by route, or via a
         // notification's `?reply` — one condition, not three.
-        autoFocus={logBar}
+        autoFocus={autoFocus}
         // Interrupt + message as ONE gesture, the way Managed Agents pairs user.interrupt with the
         // next user.message: the run is stopped and the text goes straight after it. If the process
         // hasn't exited by the time the message arrives it is queued and dispatched on exit, so the

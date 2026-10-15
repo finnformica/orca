@@ -209,7 +209,9 @@ card's border; 8px cards (`rounded-lg`), 6px controls (`rounded-md`); 13px body 
 with no border; buttons are Geist's three — primary (inverted; Merge too), secondary (hairline),
 tertiary (ghost: every icon-only row / toolbar button). The agent page's conversation runs
 full-bleed in its card and follows the page's theme (`.log-themed` remaps the terminal palette in
-light mode); the modal and the orchestrator keep the dark terminal. Shell (`components/Shell.tsx`): a collapsible left sidebar (instance switcher
+light mode). Every conversation — the agent page's Chat tab, a card's modal, the orchestrator's panel
+and page — is ONE `ChatPanel` in ONE styling (bubbles; replies under the agent's name, `author`
+"Orchestrator" for it); only `size` (page | panel) and the composer's wiring differ. Shell (`components/Shell.tsx`): a collapsible left sidebar (instance switcher
 all/local/cloud scoping the pages, Find — the `F` key — which filters Agents, the nav Overview /
 Agents / Previews / Repos / Usage / Settings, then **Add New** as the last action, above the divider — a modal `<dialog>` holding the New-draft box
 (`C` opens it; it is the portal container for the composer's selects, since a modal leaves the rest
@@ -247,7 +249,8 @@ status read on mount, then one per `turn` event on the tab's shared stream — n
 **Keyboard** (`lib/shortcuts.ts`: ONE table + a pure matcher; ONE listener, `Shortcuts` in
 `components/CommandPalette.tsx`): `⌘K` / Ctrl+K the command palette, `C` New agent, `O` the
 orchestrator, `A` quick ask, `F` Find, `⌘B` the sidebar, `?` the shortcuts sheet, Esc closes the
-overlay (the quick-ask box first, then the panel). Letters
+overlay (the quick-ask box first, then the panel) — with none open it blurs the focused text field
+(`escapeBlurTarget`), after anything that took Esc first (the `@` picker, a menu, a native dialog). Letters
 and ⌘B never fire in a field or inside a modal dialog (they'd eat a keystroke of the message); ⌘K and
 Esc fire everywhere. **Every open path goes through `openOrchestrator`** (`lib/orchestratorOpen.ts`): the composer focuses
 in a layout effect in the commit that opens it, and keys typed before that are held by a short
@@ -461,8 +464,8 @@ them. Routing: `/` = board, `/{repo}/prs/:n[/chat|/files|/preview]` = PR detail 
 
 **Terminal (the conversation)** — `web/src/components/Terminal.tsx`'s `TerminalDialog` is a modal
 opened from the card's terminal button, rendering `ChatPanel` (`web/src/views/Chat.tsx`): the branch's
-whole conversation from `GET /api/turns` as a **terminal-style log** (dark monospace, each instruction
-shown as `❯ …` with the agent's output below), plus the follow-up `ChatComposer` to send the next
+whole conversation from `GET /api/turns` in the orchestrator's chat styling (your messages as bubbles,
+the agent's reply under its provider's name), plus the follow-up `ChatComposer` to send the next
 message. Every `ChatComposer` has the **`@` PR picker** (`prTrigger`: `@` at the start or after a
 space/bracket lists the board's polled PRs; a pick inserts `#123`, or `repo#123`). It opened on `#`
 until Finn asked for `@`; `#` now opens nothing. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
