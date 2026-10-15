@@ -116,7 +116,7 @@ export async function previewRows(cfg: OrcaConfig, opts: { loopback: boolean; no
   // `secureContext` rides along: the viewer can't map the owner's path back to a repo.
   // Publishing is the primary bridge's (server/primary.ts); a secondary only reads.
   if (primary.held()) await db.publishPreviews(mine.map((p) => ({ key: p.key, data: { svcs: p.svcs.map(({ localUrl: _, ...s }) => s), secureContext: secureContextOf(cfg, p.key) } })))
-    .catch((e) => console.error("orca: preview publish failed", e)); // advisory — never fail the list
+    .catch(db.logUnlessDown("orca: preview publish failed")); // advisory — never fail the list
   const cutoff = (opts.now ?? Date.now()) - PREVIEW_STALE_MS;
   const others = (await db.previewInventory().catch(() => []))
     .filter((r) => r.instance !== self && r.seenAt >= cutoff)
