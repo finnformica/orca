@@ -41,6 +41,7 @@ export const launchOptions = (cfg: OrcaConfig, repo: RepoConfig, provider: Agent
   maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
   timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
   memoryMaxGb: repo.agentMemoryMaxGb, cpuWeight: cfg.agentCpuWeight,
+  agentProxy: repo.agentProxy,
 });
 
 /** A new branch + worktree for a titled piece of work, with the repo's local config copied in. The
