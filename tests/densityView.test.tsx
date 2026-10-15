@@ -66,7 +66,7 @@ describe("dense view", () => {
     expect(labelledBtn("Enable auto-merge")).toBe(false);
     const quick = container!.querySelector<HTMLElement>('[data-slot="quick-actions"]')!;
     expect(quick.nextElementSibling!.textContent).toContain("Test on");
-    expect(openTip(byAria("Enable auto-merge")!).textContent).toBe("Enable auto-merge — GitHub merges it once checks and reviews pass");
+    expect(openTip(byAria("Enable auto-merge")!).textContent).toBe("Enable auto-merge — GitHub merges it once checks and reviews pass"); // #246: the tooltip says what GitHub auto-merge does
     // Full-size badges — no dense size-down variant.
     expect(hasClass("[data-slot=badge]]:text-[10px]")).toBe(false);
   });
