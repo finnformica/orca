@@ -152,3 +152,77 @@ test("the corner button copies the image and shows a brief Copied tick", async (
   const dialog = container!.querySelector<HTMLDialogElement>('[data-slot="image-lightbox"]')!;
   expect(dialog.open).toBe(false);
 });
+
+// --- gallery navigation: Left/Right move within a set, stopping at the ends --------------------
+
+const press = async (el: Element, key: string) => act(async () => { el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true })); await flush(); });
+
+const GALLERY = [
+  { src: "/api/screenshots/1", alt: "first" },
+  { src: "/api/screenshots/2", alt: "second" },
+  { src: "/api/screenshots/3", alt: "third" },
+];
+
+test("Right/Left move between the gallery's images, stopping at the ends, and show the index", async () => {
+  mount(<ExpandableImage src={GALLERY[1]!.src} alt={GALLERY[1]!.alt} gallery={{ images: GALLERY, index: 1 }} />);
+  const dialog = container!.querySelector<HTMLDialogElement>('[data-slot="image-lightbox"]')!;
+
+  await click(container!.querySelector('[data-slot="expandable-image"]')!);
+  expect(dialog.open).toBe(true);
+  expect(dialog.querySelector("img")!.getAttribute("src")).toBe(GALLERY[1]!.src);
+  expect(dialog.querySelector('[data-slot="lightbox-index"]')!.textContent).toBe("2 / 3");
+
+  await press(dialog, "ArrowRight");
+  expect(dialog.querySelector("img")!.getAttribute("src")).toBe(GALLERY[2]!.src);
+  expect(dialog.querySelector('[data-slot="lightbox-index"]')!.textContent).toBe("3 / 3");
+
+  // At the last image: Right again does nothing (stop, not wrap).
+  await press(dialog, "ArrowRight");
+  expect(dialog.querySelector("img")!.getAttribute("src")).toBe(GALLERY[2]!.src);
+
+  await press(dialog, "ArrowLeft");
+  await press(dialog, "ArrowLeft");
+  expect(dialog.querySelector("img")!.getAttribute("src")).toBe(GALLERY[0]!.src);
+  expect(dialog.querySelector('[data-slot="lightbox-index"]')!.textContent).toBe("1 / 3");
+
+  // At the first image: Left again does nothing.
+  await press(dialog, "ArrowLeft");
+  expect(dialog.querySelector("img")!.getAttribute("src")).toBe(GALLERY[0]!.src);
+});
+
+test("Esc still closes a gallery lightbox", async () => {
+  mount(<ExpandableImage src={GALLERY[0]!.src} alt={GALLERY[0]!.alt} gallery={{ images: GALLERY, index: 0 }} />);
+  const dialog = container!.querySelector<HTMLDialogElement>('[data-slot="image-lightbox"]')!;
+
+  await click(container!.querySelector('[data-slot="expandable-image"]')!);
+  await press(dialog, "ArrowRight"); // navigate first, so Esc is exercised mid-gallery
+  expect(dialog.querySelector("img")!.getAttribute("src")).toBe(GALLERY[1]!.src);
+
+  await act(async () => { dialog.dispatchEvent(new Event("cancel")); await flush(); });
+  expect(dialog.open).toBe(false);
+});
+
+test("a single image shows no chevrons or index, even with a one-item gallery", async () => {
+  mount(<ExpandableImage src={GALLERY[0]!.src} alt={GALLERY[0]!.alt} gallery={{ images: [GALLERY[0]!], index: 0 }} />);
+  const dialog = container!.querySelector<HTMLDialogElement>('[data-slot="image-lightbox"]')!;
+
+  await click(container!.querySelector('[data-slot="expandable-image"]')!);
+  expect(dialog.querySelector('[data-slot="lightbox-index"]')).toBeNull();
+  expect(dialog.querySelector('button[aria-label="Previous screenshot"]')).toBeNull();
+  expect(dialog.querySelector('button[aria-label="Next screenshot"]')).toBeNull();
+});
+
+test("reopening the same thumbnail resets the gallery to the image that was clicked", async () => {
+  mount(<ExpandableImage src={GALLERY[0]!.src} alt={GALLERY[0]!.alt} gallery={{ images: GALLERY, index: 0 }} />);
+  const dialog = container!.querySelector<HTMLDialogElement>('[data-slot="image-lightbox"]')!;
+
+  await click(container!.querySelector('[data-slot="expandable-image"]')!);
+  await press(dialog, "ArrowRight");
+  expect(dialog.querySelector("img")!.getAttribute("src")).toBe(GALLERY[1]!.src);
+
+  await click(dialog.querySelector('button[aria-label="Close"]')!);
+  expect(dialog.open).toBe(false);
+
+  await click(container!.querySelector('[data-slot="expandable-image"]')!);
+  expect(dialog.querySelector("img")!.getAttribute("src")).toBe(GALLERY[0]!.src);
+});

@@ -49,7 +49,13 @@ test("S1: the Screenshots card — every reported shot, grouped by turn, newest 
   expect(first.querySelector("figcaption")!.textContent).toStartWith("after");
   // The shared ExpandableImage: a click opens its lightbox.
   await act(async () => { first.querySelector<HTMLElement>('[data-slot="expandable-image"]')!.click(); await flush(); });
-  expect(document.querySelector("dialog[open]")).not.toBeNull();
+  const dialog = document.querySelector<HTMLDialogElement>("dialog[open]")!;
+  expect(dialog).not.toBeNull();
+  // The turn's two shots are one gallery: the index shows, and Right moves to the other shot.
+  expect(dialog.querySelector('[data-slot="lightbox-index"]')!.textContent).toBe("1 / 2");
+  await act(async () => { dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })); await flush(); });
+  expect(dialog.querySelector("img")!.getAttribute("src")).toBe(`/api/screenshots/${A}`);
+  expect(dialog.querySelector('[data-slot="lightbox-index"]')!.textContent).toBe("2 / 2");
 });
 
 test("S2: no shots reported → no card at all", async () => {
