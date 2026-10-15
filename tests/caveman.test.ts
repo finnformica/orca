@@ -166,12 +166,16 @@ test("CV6: a caveman run that fails on the API connection queues ONE direct retr
   try {
     await install("healthy");
     process.env.ORCA_FAKE_FAIL = "1";
+    // The exit handler queues the retry and dispatchQueued sends it at once. Record what it sends: a
+    // launcher another test file left set (bun runs every file in one process) would take it first.
+    const queued: db.QueuedMessage[] = [];
+    agent.onQueuedMessage(async (m) => { queued.push(m); });
     await agent.runAgent(wt, "add a cache", { ...launchOptions(cfg(), cfg().repos[0]!, "claude"), branch: "b1", instruction: "add a cache" });
     const [row] = await finished();
     expect(row).toMatchObject({ caveman: true, status: "error" });
-    let queued: db.QueuedMessage[] = [];
-    for (let i = 0; i < 200 && !queued.length; i++) { queued = await db.queuedMessages("orca", "b1"); await new Promise((r) => setTimeout(r, 25)); }
+    for (let i = 0; i < 200 && !queued.length; i++) await new Promise((r) => setTimeout(r, 25));
     expect(queued).toHaveLength(1);
+    expect(queued[0]!.branch).toBe("b1");
     expect(queued[0]!.instruction.startsWith(CAVEMAN_RETRY_MARKER)).toBe(true);
     expect(queued[0]!.instruction).toContain("API Error: Connection error.");
     // The retry runs direct: the proxy is out of use, and the direct run succeeds.
