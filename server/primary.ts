@@ -14,9 +14,10 @@
 //  3. `watchSource`: a bridge whose own source directory disappears exits.
 // The lock rides its OWN one-connection client, not db.ts's pool: the pool recycles connections
 // (idleTimeout/maxLifetime) and a session lock dies with its connection.
-import { existsSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync, statSync } from "fs";
+import { dirname, join, resolve } from "path";
 import { instanceName, previewBridge } from "./db";
+import { processCwd } from "./proc";
 
 /** How often a secondary retries the lock, and a primary re-asserts it (a dropped connection loses it). */
 export const PRIMARY_RETRY_MS = Number(process.env.ORCA_PRIMARY_RETRY_MS) || 5_000;
@@ -25,6 +26,7 @@ export const PRIMARY_HEARTBEAT_MS = 30_000;
 export const SOURCE_WATCH_MS = Number(process.env.ORCA_SOURCE_WATCH_MS) || 20_000;
 
 const SOURCE_DIR = import.meta.dir;
+const START_CWD = process.cwd();
 
 /** Why a bridge whose code is at `dir` may not run background duties at all, or undefined. A bridge
  *  inside a `.worktrees/` checkout is a worker's (or a stray), never the instance's own. */
@@ -43,8 +45,10 @@ const listeners: (() => unknown)[] = [];
 let fired = false;
 
 /** Whether THIS process may run background duties. True in a process that never ran the election
- *  (a test calling the orchestrator in-process, a script): the guard is the bridge's, not the code's. */
-export const held = (): boolean => !elected || primary;
+ *  (a test calling the orchestrator in-process, a script): the guard is the bridge's, not the code's.
+ *  Never in a branch preview's bridge, elected or not — every duty's own guard reads this, so a code
+ *  path that forgets `elect()` (or runs before it) still can't wake, merge, reap or launch from one. */
+export const held = (): boolean => !previewBridge() && (!elected || primary);
 
 /** For /api/health and /api/diagnostics. */
 export const state = (): { primary: boolean; reason: string } => ({ primary: elected ? primary : true, reason: elected ? reason : "no election" });
@@ -110,14 +114,33 @@ export async function release(): Promise<void> {
   await c?.end().catch(() => {});
 }
 
-/** Call `onGone` once if `dir` (this bridge's own source) stops existing — a worktree reaped under a
- *  bridge somebody started by hand. Checks a file in it, so an emptied directory counts too. */
-export function watchSource(onGone: () => unknown, dir: string = SOURCE_DIR, ms = SOURCE_WATCH_MS): ReturnType<typeof setInterval> {
-  const probe = join(dir, "index.ts");
+/** Why the checkout this bridge runs from is gone, or undefined while it stands. Any one is enough:
+ *  its own source (`<dir>/index.ts`) is missing or emptied; it is a linked worktree whose git
+ *  registration (`.git` → `gitdir: …`) was removed — `git worktree remove`/`prune` on it; or its
+ *  working directory was deleted (Linux shows a deleted cwd as `<path> (deleted)`). Incident
+ *  2026-10-15: a preview bridge whose worktree was deleted ran for 19h and woke the orchestrator. */
+export function checkoutGone(dir: string = SOURCE_DIR, cwd: string = START_CWD, cwdNow: () => string | undefined = () => processCwd(process.pid)): string | undefined {
+  if (!existsSync(join(dir, "index.ts"))) return `its source (${dir}) is gone`;
+  const dotGit = join(dir, "..", ".git");
+  try {
+    if (statSync(dotGit).isFile()) {
+      const gitdir = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, "utf8"))?.[1]?.trim();
+      if (gitdir && !existsSync(resolve(dirname(dotGit), gitdir))) return `its worktree (${resolve(dir, "..")}) was removed from git`;
+    }
+  } catch { /* no .git (a tarball deploy): nothing to check */ }
+  if (!existsSync(cwd)) return `its working directory (${cwd}) is gone`;
+  if (cwdNow()?.endsWith(" (deleted)")) return `its working directory (${cwd}) was deleted`;
+  return undefined;
+}
+
+/** Call `onGone` once when the checkout this bridge runs from is gone (`checkoutGone`) — a worktree
+ *  reaped under a bridge somebody started, or a branch preview's bridge outliving its worktree. */
+export function watchSource(onGone: () => unknown, dir: string = SOURCE_DIR, ms = SOURCE_WATCH_MS, cwd: string = START_CWD): ReturnType<typeof setInterval> {
   const t = setInterval(() => {
-    if (existsSync(probe)) return;
+    const why = checkoutGone(dir, cwd);
+    if (!why) return;
     clearInterval(t);
-    console.error(`orca: this bridge's source (${dir}) is gone — exiting`);
+    console.error(`orca: this bridge's checkout is gone (${why}) — exiting`);
     void onGone();
   }, ms);
   t.unref();
