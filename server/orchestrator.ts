@@ -16,6 +16,8 @@ import { join } from "path";
 import * as agent from "./agent";
 import * as db from "./db";
 import * as primary from "./primary";
+import * as lease from "./lease";
+import * as procs from "./proc";
 import * as attachments from "./attachments";
 import * as git from "./git";
 import * as gh from "./gh";
@@ -286,12 +288,14 @@ async function died(runId: string, exit: WakeExit, costUsd?: number): Promise<vo
  *  exit. If it died with the bridge (a service manager kills the whole process group) its messages
  *  are re-queued like any other death; if it outlived the bridge and finished, the queue it left is
  *  drained. `reconcile` is index.ts's turn reconciliation, re-run once the wake is really gone. */
-export async function recover(cfg: OrcaConfig, reconcile: () => Promise<unknown>): Promise<void> {
+export async function recover(cfg: OrcaConfig, reconcile: () => Promise<unknown>, opts: { runId?: string } = {}): Promise<void> {
   const { handling } = await blob();
-  if (!handling || handling.instance !== db.instanceName()) return; // none, or another instance's wake
+  // None, or another instance's wake — unless it is the run `evictForeignWake` just killed, whose
+  // stray bridge may have stamped it with a different instance name.
+  if (!handling || (opts.runId ? handling.runId !== opts.runId : handling.instance !== db.instanceName())) return;
   if (agent.isRunning(dir())) {
     // Still going under its lease, and its `orca` calls reach this bridge — let it finish, look again.
-    setTimeout(() => void recover(cfg, reconcile).catch((e) => console.error("orca: orchestrator recovery failed", e)), RECOVER_POLL_MS).unref();
+    setTimeout(() => void recover(cfg, reconcile, opts).catch((e) => console.error("orca: orchestrator recovery failed", e)), RECOVER_POLL_MS).unref();
     return;
   }
   await reconcile();
@@ -307,6 +311,26 @@ export async function recover(cfg: OrcaConfig, reconcile: () => Promise<unknown>
     else await died(handling.runId, { kind: "restart" });
     await drain(cfg);
   });
+}
+
+/** The main side of the one-waker rule, for bridges on code too OLD to have it (incident 2026-10-15:
+ *  a branch preview's bridge from before #215 ran 19h after its worktree was deleted, launching the
+ *  orchestrator's wakes with a dead bin/ on PATH, so no `orca` command). The orchestrator's lease is
+ *  per host, so whoever launched the current wake is its process's nearest bridge ancestor. Only this
+ *  bridge — the instance's primary — may be it: another live bridge there is stale by definition, so
+ *  it and its wake (broken: wrong PATH/ORCA_URL) are SIGTERMed, and `recover` re-queues what the wake
+ *  was handling for a proper one. A wake with NO bridge above it outlived its bridge (a restart) and
+ *  is left to `recover` as before. Returns what it stopped. Primary only. */
+export async function evictForeignWake(cfg: OrcaConfig, reconcile: () => Promise<unknown>, table?: procs.ProcRow[]): Promise<{ bridge: number; run: number; runId: string } | undefined> {
+  if (!primary.held()) return undefined;
+  const l = lease.current(dir());
+  if (!l || !lease.pidAlive(l.pid)) return undefined;
+  const claimant = procs.bridgeAncestor(l.pid, table ?? await procs.processTable());
+  if (!claimant || claimant.pid === process.pid) return undefined;
+  console.error(`orca: another bridge (pid ${claimant.pid}: ${claimant.command.slice(0, 120)}) launched the orchestrator's wake (pid ${l.pid}, run ${l.runId}) — only this instance's primary may; stopping both`);
+  for (const pid of [claimant.pid, l.pid]) { try { process.kill(pid, "SIGTERM"); } catch { /* already gone */ } }
+  void recover(cfg, reconcile, { runId: l.runId }).catch((e) => console.error("orca: orchestrator recovery failed", e));
+  return { bridge: claimant.pid, run: l.pid, runId: l.runId };
 }
 
 /** After its own run: everything that queued up meanwhile becomes ONE wake, not one each. */

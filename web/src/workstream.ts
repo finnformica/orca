@@ -3239,6 +3239,9 @@ export type SweepReport = {
   worktrees: { repo: string; branch: string; worktreePath: string; reason: string; action: "remove" | "keep"; why?: string; done?: boolean }[];
   previews: { key: string; why: string; done?: boolean }[];
   branches: { repo: string; branch: string; action: "remove" | "keep"; why: string; done?: boolean }[];
+  /** Bun / preview-wrapper processes whose cwd was deleted — a stray bridge on a reaped worktree's
+   *  code. Optional: an instance on older code doesn't report it. */
+  processes?: { pid: number; command: string; cwd: string; done?: boolean }[];
 };
 
 /** The sweep as text — what `orca sweep` prints, dry run or applied. */
@@ -3253,6 +3256,11 @@ export function sweepText(reports: SweepReport[]): string {
     const pvs = r.previews.map((p) => `  ${verb(p.done)}  ${p.key} — ${p.why}`);
     const brs = r.branches.map((b) => `  ${b.action === "remove" ? verb(b.done) : "keep"}  ${b.repo}/${b.branch} — ${b.why}`);
     out.push("Worktrees:", ...(wts.length ? wts : ["  (none)"]), "Previews:", ...(pvs.length ? pvs : ["  (none)"]), "Branches:", ...(brs.length ? brs : ["  (none)"]));
+    if (r.processes) {
+      const kill = (done?: boolean) => (confirmed ? (done ? "stopped" : "FAILED") : "would stop");
+      const ps = r.processes.map((p) => `  ${kill(p.done)}  pid ${p.pid} ${p.command.length > 100 ? `${p.command.slice(0, 100)}…` : p.command} — cwd deleted: ${p.cwd.replace(/ \(deleted\)$/, "")}`);
+      out.push("Stray processes:", ...(ps.length ? ps : ["  (none)"]));
+    }
   }
   return out.join("\n");
 }
