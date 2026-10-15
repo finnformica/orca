@@ -5,7 +5,7 @@ import type { ChangeSummary } from "../../../server/git";
 import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, cliCommand, closePr, convertToDraft, createWorkstream, disableAutoMerge, discardDraft, markReady, merge, promote,
   defaultInstanceFor, instanceChoices, modelFor, rerunAgent, thisInstance, resolveConflicts, sendSlack, setCardModel,
-  staleHours, summary as fetchSummary, testLocally, toggleFollow, undoDraft, useAgentProviders, useRepos, useWorkstreams,
+  staleHours, summary as fetchSummary, testLocally, toggleFollow, undoDraft, useAgentProviders, useRepos, useWorkstreams, useWorkstreamsLoaded,
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
 import { BULK_GROUPS, BULK_IRREVERSIBLE, BULK_LABELS, bulkActions, bulkCopyText, draftInstance, type BulkAction } from "../workstream";
@@ -17,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ChatComposer } from "@/components/ChatComposer";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
-import { OrchStatusNote, UpkeepNote } from "@/components/console";
+import { OrchStatusNote, Skeleton, UpkeepNote } from "@/components/console";
 import { PreviewControl } from "./PreviewControl";
 import { TerminalDialog } from "@/components/Terminal";
 import { AUTO_MODEL, modelLabel, providerOfModel } from "../../../shared/models";
@@ -32,8 +32,12 @@ const LANES: { lane: Lane; title: string }[] = [
   { lane: "DONE", title: "Done · today" },
 ];
 
+// How many placeholder cards to show per lane while the first agents+PRs refresh is in flight.
+const SKELETON_CARDS = 2;
+
 export function Board() {
   const all = useWorkstreams();
+  const loaded = useWorkstreamsLoaded();
   const filter = useAtomValue(repoFilterAtom);
   const rows = filter === "all" ? all : all.filter((r) => r.repo === filter);
   const cardsFor = (lane: Lane) => {
@@ -49,7 +53,7 @@ export function Board() {
         return (
           <div key={lane} className="bg-muted/30 flex flex-col overflow-hidden rounded-lg border">
             <h3 className="text-muted-foreground flex shrink-0 items-center gap-2 border-b px-3 py-2 text-xs font-semibold tracking-wide uppercase">
-              {title} <span className="opacity-60">{cards.length}</span>
+              {title} {loaded ? <span className="opacity-60">{cards.length}</span> : <Skeleton className="h-3 w-3" />}
               {lane === "DONE" && cards.length > 0 && <CopyDone cards={cards} />}
               <LaneActions lane={lane} cards={cards} />
             </h3>
@@ -69,11 +73,31 @@ export function Board() {
                   </div>
                 </div>
               )}
-              {cards.map((r) => <WorkstreamCard key={r.repo + r.branch} row={r} />)}
+              {!loaded
+                ? Array.from({ length: SKELETON_CARDS }, (_, i) => <WorkstreamCardSkeleton key={i} />)
+                : cards.map((r) => <WorkstreamCard key={r.repo + r.branch} row={r} />)}
             </div>
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** A `WorkstreamCard`-shaped placeholder, so the board doesn't reflow once the real cards land. */
+function WorkstreamCardSkeleton() {
+  return (
+    <div data-slot="workstream-card-skeleton" className="bg-card flex flex-col gap-2 rounded-lg border p-3">
+      <div className="flex items-center justify-between gap-2">
+        <Skeleton className="h-3 w-16" />
+        <Skeleton className="h-3 w-10" />
+      </div>
+      <Skeleton className="h-4 w-3/4" />
+      <Skeleton className="h-3 w-full" />
+      <div className="flex items-center gap-1.5 border-t pt-2.5">
+        <Skeleton className="h-7 w-7 rounded-md" />
+        <Skeleton className="h-7 flex-1 rounded-md" />
+      </div>
     </div>
   );
 }

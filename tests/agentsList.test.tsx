@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { Agents } from "@/views/Agents";
+import { Board } from "@/views/Board";
 import { navigate } from "@/lib/route";
 import { createTicker, ticker } from "@/lib/ticker";
 import { LIST_CHROME_PX, formatElapsed, listColumns, listFits, listGridTemplate, listMinWidth, modelBadge } from "@/workstream";
@@ -291,5 +292,65 @@ describe("agents list view", () => {
     expect(ctxMenu()).toBeNull();
     await key(row, "Enter");
     expect(location.pathname).toBe("/r/local/local-idle");
+  });
+});
+
+// ---- loading skeleton (list + board) ----
+// Before the first agents+PRs refresh settles, useWorkstreams() reads [] — indistinguishable from a
+// genuinely empty board — so both views must read useWorkstreamsLoaded() to tell "still loading" from
+// "loaded, nothing here" and show row/card skeletons (not the empty state) meanwhile. Counts and chip
+// badges must hold a placeholder rather than flash 0.
+describe("agents loading skeleton", () => {
+  test("list view: row skeletons while loading, never the empty state; count and chip badges hold a placeholder, not 0", async () => {
+    store._resetWorkstreamsLoaded(); // a module singleton an earlier test's mount() already flipped
+    seed();
+    apiFake.holdPrs = true;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    await act(async () => { root = createRoot(container!); root.render(<Agents />); await flush(); });
+    void store.refresh(); // fired, not awaited — held on pollPrs until releasePrs()
+    await flush();
+    const list = container!.querySelector('[data-slot="workstream-list"]')!;
+    expect(list.querySelectorAll('[data-slot="workstream-row-skeleton"]').length).toBeGreaterThan(0);
+    expect(list.textContent).not.toContain("No agents match");
+    // The header still names the columns — only the body is a placeholder.
+    expect(list.querySelector('[data-slot="workstream-list-header"]')).not.toBeNull();
+    const count = container!.querySelector('[data-slot="agents-count"]')!;
+    expect(count.textContent).toBe(""); // a skeleton pill, not "0 of 0"
+    expect(count.querySelector('[data-slot="skeleton"]')).not.toBeNull();
+    const openChip = container!.querySelector('[data-chip="pr:open"]')!;
+    expect(openChip.querySelector('[data-slot="quick-count"]')!.textContent).toBe("");
+    expect(openChip.querySelector('[data-slot="quick-count"] [data-slot="skeleton"]')).not.toBeNull();
+    await act(async () => { apiFake.releasePrs!(); await flush(); await flush(); });
+    expect(list.querySelectorAll('[data-slot="workstream-row-skeleton"]').length).toBe(0);
+    expect(container!.querySelector('[data-slot="agents-count"]')!.textContent).toBe("3 of 3"); // seed()'s two agents + one PR
+  });
+
+  test("loaded and genuinely empty shows the empty state, never skeletons", async () => {
+    apiFake.prsData = [];
+    apiFake.agentsData = [];
+    await mount();
+    expect(container!.querySelector('[data-slot="workstream-row-skeleton"]')).toBeNull();
+    expect(container!.textContent).toContain("No agents match");
+    expect(container!.querySelector('[data-slot="agents-count"]')!.textContent).toBe("0 of 0");
+  });
+
+  test("board view: lane counts hold a placeholder (not 0) and cards are skeletons while loading", async () => {
+    store._resetWorkstreamsLoaded();
+    seed();
+    apiFake.holdPrs = true;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    await act(async () => { root = createRoot(container!); root.render(<Board />); await flush(); });
+    void store.refresh();
+    await flush();
+    const laneHeader = (title: string) => [...container!.querySelectorAll("h3")].find((h) => h.textContent?.startsWith(title))!;
+    const local = laneHeader("Local");
+    expect(local.querySelector('[data-slot="skeleton"]')).not.toBeNull(); // the count placeholder
+    expect(local.textContent?.trim()).toBe("Local"); // no "0" appended yet
+    expect(container!.querySelectorAll('[data-slot="workstream-card-skeleton"]').length).toBeGreaterThan(0);
+    await act(async () => { apiFake.releasePrs!(); await flush(); await flush(); });
+    expect(container!.querySelectorAll('[data-slot="workstream-card-skeleton"]').length).toBe(0);
+    expect(laneHeader("Local").textContent?.trim()).toBe("Local 2"); // seed()'s two local agents, no PR
   });
 });

@@ -19,7 +19,7 @@ import { oneOf, persistedKey, readPersisted, usePersisted, writePersisted } from
 import { useNarrow } from "@/lib/viewport";
 import { usePullToRefresh } from "@/lib/gestures";
 import { BottomSheet } from "@/components/BottomSheet";
-import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useWorkstreams, type Row } from "../store";
+import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
 import {
   DEFAULT_LIST_FILTER, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed, prPill,
   listColumns, listGridTemplate, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, toggleNotMerged, toggleQuick,
@@ -27,7 +27,7 @@ import {
 } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { OrchStatusNote, Pill, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
+import { OrchStatusNote, Pill, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
 import { Board, ConditionBadges, CopyDone, LaneActions, useSummary, useTerminalOpen } from "./Board";
 import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
@@ -79,8 +79,13 @@ function ViewToggle({ view, setView }: { view: BoardView; setView: (v: BoardView
   );
 }
 
+// How many placeholder rows to show while the first agents+PRs refresh is in flight — enough to fill
+// a typical viewport without guessing the real count (which we don't have yet).
+const SKELETON_ROWS = 6;
+
 function AgentsList() {
   const all = useWorkstreams();
+  const loaded = useWorkstreamsLoaded();
   const repo = useAtomValue(repoFilterAtom); // the top bar's scope
   const instance = useAtomValue(instanceScopeAtom); // the sidebar's scope
   const [q, setQ] = useAtom(agentQueryAtom);
@@ -127,10 +132,12 @@ function AgentsList() {
         </div>
       )}
       <FilterRow scoped={scoped} quick={quick} setQuick={setQuick} clear={clear} visible={visible} total={all.length} q={q} setQ={setQ} sort={sort} setSort={setSort}
-        showRepos={repo === "all"} />
+        showRepos={repo === "all"} loaded={loaded} />
       <div data-slot="workstream-list" role="table" aria-label="Workstreams" className="bg-card overflow-hidden rounded-lg border">
-        {visible.length > 0 && !stacked && <ListHeader cols={cols} />}
-        {visible.length === 0 ? (
+        {(!loaded || visible.length > 0) && !stacked && <ListHeader cols={cols} />}
+        {!loaded ? (
+          Array.from({ length: SKELETON_ROWS }, (_, i) => <AgentRowSkeleton key={i} cols={cols} stacked={stacked} />)
+        ) : visible.length === 0 ? (
           <div className="text-muted-foreground flex flex-col items-center gap-3 px-4 py-14 text-sm">
             No agents match.
             <Button size="sm" variant="outline" onClick={clear}>Clear filters</Button>
@@ -138,6 +145,34 @@ function AgentsList() {
         ) : visible.map((r) => <AgentRow key={r.repo + r.branch} row={r} cols={cols} stacked={stacked} />)}
       </div>
     </section>
+  );
+}
+
+/** A row-shaped placeholder, matching `AgentRow`'s grid (desktop) or stacked (phone) layout, so the
+ *  list doesn't reflow once the real rows land. */
+function AgentRowSkeleton({ cols, stacked }: { cols: ListColumn[]; stacked: boolean }) {
+  if (stacked) {
+    return (
+      <div data-slot="workstream-row-skeleton" className="flex items-start gap-1 border-b py-3 px-4 last:border-b-0">
+        <div className="min-w-0 flex-1 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <Skeleton className="h-4 w-40" />
+            <Skeleton className="h-4 w-16" />
+          </div>
+          <Skeleton className="h-3 w-56" />
+          <Skeleton className="h-3 w-full max-w-xs" />
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div data-slot="workstream-row-skeleton" role="row" style={rowGrid(cols)} className={`${GRID} h-14 border-b last:border-b-0`}>
+      {cols.map((c) => (
+        <div key={c.key} role="cell" className="min-w-0">
+          <Skeleton className={`h-3.5 ${c.key === "actions" ? "ml-auto w-8" : c.key === "workstream" ? "w-40" : "w-16"}`} />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -163,10 +198,10 @@ function ChipFamily({ label, children }: { label: string; children: ReactNode })
 // Vercel's filter row: one-click chips, each with its count, toggleable and combinable (AND across
 // groups, OR within one); the URL query holds them, so a filtered view is a link. Search and sort sit
 // at the end.
-function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, sort, setSort, showRepos }: {
+function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, sort, setSort, showRepos, loaded }: {
   scoped: Row[]; quick: QuickFilter; setQuick: (f: QuickFilter) => void; clear: () => void; visible: Row[]; total: number;
   q: string; setQ: (v: string) => void; sort: ListSort; setSort: (s: ListSort) => void;
-  showRepos: boolean;
+  showRepos: boolean; loaded: boolean;
 }) {
   const repos = useRepos();
   const here = thisInstance();
@@ -195,7 +230,9 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
         className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors ${on ? "border-foreground bg-foreground text-background" : "text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
         {c.dot && <StatusDot tone={c.dot} className="size-2" />}
         {c.label}
-        <span data-slot="quick-count" className={`tabular-nums ${on ? "opacity-70" : "opacity-60"}`}>{quickCount(scoped, quick, c.group, c.value, here)}</span>
+        <span data-slot="quick-count" className={`tabular-nums ${on ? "opacity-70" : "opacity-60"}`}>
+          {loaded ? quickCount(scoped, quick, c.group, c.value, here) : <Skeleton className="h-3 w-3" />}
+        </span>
       </button>
     );
   };
@@ -204,7 +241,9 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
       onClick={() => setQuick(toggleNotMerged(quick))}
       className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors ${quick.notMerged ? "border-foreground bg-foreground text-background" : "text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
       Not merged
-      <span data-slot="quick-count" className={`tabular-nums ${quick.notMerged ? "opacity-70" : "opacity-60"}`}>{notMergedCount(scoped, quick, here)}</span>
+      <span data-slot="quick-count" className={`tabular-nums ${quick.notMerged ? "opacity-70" : "opacity-60"}`}>
+        {loaded ? notMergedCount(scoped, quick, here) : <Skeleton className="h-3 w-3" />}
+      </span>
     </button>
   );
   const chipGroup = (
@@ -252,7 +291,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
           </Button>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-muted-foreground text-xs tabular-nums" data-slot="agents-count">{visible.length} of {total}</span>
+          <span className="text-muted-foreground text-xs tabular-nums" data-slot="agents-count">{loaded ? `${visible.length} of ${total}` : <Skeleton className="h-3 w-16" />}</span>
           <span className="ml-auto flex items-center gap-2">{laneActions}</span>
         </div>
         <BottomSheet open={sheet} onClose={() => setSheet(false)} title="Filters" slot="filter-sheet">
@@ -268,7 +307,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
       <div className="flex flex-wrap items-center gap-2">
         {searchBox}
         <div className="ml-auto flex items-center gap-2">
-          <span className="text-muted-foreground text-xs tabular-nums" data-slot="agents-count">{visible.length} of {total}</span>
+          <span className="text-muted-foreground text-xs tabular-nums" data-slot="agents-count">{loaded ? `${visible.length} of ${total}` : <Skeleton className="h-3 w-16" />}</span>
           {laneActions}
           {sortSelect}
         </div>
