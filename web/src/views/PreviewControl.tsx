@@ -7,6 +7,7 @@ import { previewHref, previewLabel, prPreviewState } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { StatusDot } from "@/components/console";
+import { Tip } from "@/components/ui/tip";
 import { poll } from "@/lib/poll";
 import { sharedSource } from "@/lib/vitals";
 import { actionFailed } from "@/lib/notificationStore";
@@ -97,7 +98,7 @@ function ErrorLog({ error }: { error: string }) {
     <details className="text-xs">
       <summary className="text-muted-foreground hover:text-foreground cursor-pointer select-none">Preview failed — show log</summary>
       <div className="relative mt-1">
-        <button onClick={copy} title="Copy log" className="text-muted-foreground hover:text-foreground bg-muted/80 absolute top-1 right-1 rounded p-1 backdrop-blur">
+        <button onClick={copy} className="text-muted-foreground hover:text-foreground bg-muted/80 absolute top-1 right-1 rounded p-1 backdrop-blur">
           {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
         </button>
         <pre className="bg-muted max-h-48 overflow-auto rounded-md p-2 pr-8 whitespace-pre-wrap">{error}</pre>
@@ -120,9 +121,11 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
   const split = choices.length > 1 ? "rounded-r-none" : "";
   const placeMenu = choices.length > 1 && (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button size="icon" variant={compact ? "ghost" : "outline"} className={`rounded-l-none border-l-0 ${compact ? "size-7" : "h-8 w-8"}`} title="Choose where the preview runs" aria-label="Test on…"><ChevronDown className="size-3.5" /></Button>
-      </DropdownMenuTrigger>
+      <Tip label="Choose where the preview runs">
+        <DropdownMenuTrigger asChild>
+          <Button size="icon" variant={compact ? "ghost" : "outline"} className={`rounded-l-none border-l-0 ${compact ? "size-7" : "h-8 w-8"}`} aria-label="Test on…"><ChevronDown className="size-3.5" /></Button>
+        </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent align="end">
         {choices.map((i) => <DropdownMenuItem key={i} onSelect={() => void start(() => startOn(i))}>Test on {i}{i === thisInstance() ? " (here)" : ""}</DropdownMenuItem>)}
       </DropdownMenuContent>
@@ -136,7 +139,7 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
     if (compact) {
       return (
         <span className="inline-flex">
-          <Button size="icon" variant="ghost" className={`size-7 ${split}`} onClick={() => void start()} title={error ? "Preview failed — retry" : `Test on ${where ?? row.instance ?? thisInstance() ?? "local"}`} aria-label="Test locally">
+          <Button size="icon" variant="ghost" className={`size-7 ${split}`} onClick={() => void start()} aria-label="Test locally">
             {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
           </Button>
           {placeMenu}
@@ -146,7 +149,7 @@ export function PreviewControl({ row, compact = false }: { row: Row; compact?: b
     return (
       <div className="w-full space-y-1">
         <div className="flex w-full">
-          <Button size="sm" variant="outline" className={`flex-1 justify-center ${split}`} onClick={() => void start()} title={error ? "Preview failed — expand the log below" : `Spin up a preview of this branch on ${where ?? row.instance ?? thisInstance() ?? "this machine"}`}>
+          <Button size="sm" variant="outline" className={`flex-1 justify-center ${split}`} onClick={() => void start()}>
             {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
             {error ? "Retry test" : choices.length > 1 ? `Test on ${where ?? row.instance ?? thisInstance()}` : "Test locally"}
           </Button>
@@ -177,7 +180,7 @@ export function PreviewCell({ row }: { row: Row }) {
 
   const slot = "relative inline-flex size-7 shrink-0 items-center justify-center";
   const stopBtn = (state === "ready" || state === "starting") && (
-    <Button size="icon" variant="ghost" className="size-7 shrink-0" disabled={busy} onClick={() => void stop()} title="Stop preview" aria-label="Stop preview">
+    <Button size="icon" variant="ghost" className="size-7 shrink-0" disabled={busy} onClick={() => void stop()} aria-label="Stop preview">
       <Square className="size-3.5 fill-current" />
     </Button>
   );
@@ -185,11 +188,11 @@ export function PreviewCell({ row }: { row: Row }) {
     return (
       <span className="inline-flex shrink-0 items-center gap-1">
         <span className={slot} data-slot="preview-cell" data-state={state}>
-          <a href={hrefOf(open!)} target="_blank" rel="noreferrer" aria-label="Open preview" title={`Open preview on :${open!.port}`}
+          <a href={hrefOf(open!)} target="_blank" rel="noreferrer" aria-label="Open preview"
             className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 items-center justify-center rounded-md">
             <ExternalLink className="size-3.5" />
           </a>
-          <StatusDot tone="ready" title="Running" className="absolute -top-0.5 -right-0.5" />
+          <StatusDot tone="ready" className="absolute -top-0.5 -right-0.5" />
         </span>
         {stopBtn}
       </span>
@@ -205,12 +208,14 @@ export function PreviewCell({ row }: { row: Row }) {
   return (
     <span className="inline-flex shrink-0 items-center gap-1">
       <span className={slot} data-slot="preview-cell" data-state={state}>
-        <Button size="icon" variant="ghost" className="size-7" disabled={state === "disabled" || state === "starting"}
-          onClick={() => void start()} title={title} aria-label={label}>
-          {icon}
-        </Button>
+        <Tip label={title}>
+          <Button size="icon" variant="ghost" className="size-7" disabled={state === "disabled" || state === "starting"}
+            onClick={() => void start()} aria-label={label}>
+            {icon}
+          </Button>
+        </Tip>
         {(state === "starting" || state === "failed") && (
-          <StatusDot tone={state === "failed" ? "error" : "building"} title={state === "failed" ? "Failed" : "Starting…"} className="absolute -top-0.5 -right-0.5" />
+          <StatusDot tone={state === "failed" ? "error" : "building"} className="absolute -top-0.5 -right-0.5" />
         )}
       </span>
       {stopBtn}
@@ -247,7 +252,7 @@ export function PrPreviewCell({ row }: { row: Row }) {
   if (state === "ready") {
     return (
       <span className={slot} data-slot="pr-preview-cell" data-state={state}>
-        <a href={row.previewUrl} target="_blank" rel="noreferrer" aria-label="PR preview" title="PR preview"
+        <a href={row.previewUrl} target="_blank" rel="noreferrer" aria-label="PR preview"
           className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-7 items-center justify-center rounded-md">
           <Globe className="size-3.5" />
         </a>
@@ -258,7 +263,7 @@ export function PrPreviewCell({ row }: { row: Row }) {
   const label = pending ? "Deploying preview" : "Add PR preview";
   return (
     <span className={slot} data-slot="pr-preview-cell" data-state={state}>
-      <Button size="icon" variant="ghost" className="size-7" disabled={pending || busy} onClick={() => void add()} title={label} aria-label={label}>
+      <Button size="icon" variant="ghost" className="size-7" disabled={pending || busy} onClick={() => void add()} aria-label={label}>
         {pending ? <Loader2 className="size-3.5 animate-spin" /> : <Globe className="size-3.5" />}
       </Button>
     </span>
@@ -301,14 +306,14 @@ export function PrPreviewInline({ row }: { row: Row }) {
       <span aria-hidden="true">·</span>
       {state === "ready" ? (
         <a href={row.previewUrl} target="_blank" rel="noreferrer" data-slot="pr-preview-inline" data-state={state}
-          title="PR preview" className="min-w-0 truncate underline hover:text-foreground">
+          className="min-w-0 truncate underline hover:text-foreground">
           {previewLabel(row.previewUrl!)}
         </a>
       ) : state === "pending" ? (
         <span data-slot="pr-preview-inline" data-state={state} className="shrink-0">Deploying preview…</span>
       ) : (
         <button type="button" data-slot="pr-preview-inline" data-state={state} disabled={busy} onClick={() => void add()}
-          title="Add PR preview" className="inline-flex shrink-0 items-center gap-0.5 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50">
+          className="inline-flex shrink-0 items-center gap-0.5 hover:text-foreground hover:underline disabled:pointer-events-none disabled:opacity-50">
           <Plus className="size-3" />Add preview
         </button>
       )}
@@ -332,7 +337,7 @@ function LogPopover({ error }: { error: string }) {
       </PopoverTrigger>
       <PopoverContent align="end" className="w-96 text-xs">
         <div className="relative">
-          <button onClick={() => void copy()} title="Copy log" className="text-muted-foreground hover:text-foreground bg-muted/80 absolute top-1 right-1 rounded p-1 backdrop-blur">
+          <button onClick={() => void copy()} className="text-muted-foreground hover:text-foreground bg-muted/80 absolute top-1 right-1 rounded p-1 backdrop-blur">
             {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
           </button>
           <pre className="bg-muted max-h-48 overflow-auto rounded-md p-2 pr-8 whitespace-pre-wrap">{error}</pre>
@@ -371,15 +376,21 @@ function PreviewLiveControl({ svcs, busy, onStop, openLabel, startingLabel, comp
   return (
     <div className={`inline-flex ${compact ? "" : "w-full"}`}>
       {ready && open ? (
-        <Button size={size} variant={compact ? "ghost" : "outline"} className={stateClass} onClick={() => window.open(hrefOf(open), "_blank", "noreferrer")} title={`Open preview on :${open.port}`} aria-label={openLabel}>
+        <Button size={size} variant={compact ? "ghost" : "outline"} className={stateClass} onClick={() => window.open(hrefOf(open), "_blank", "noreferrer")} aria-label={openLabel}>
           <ExternalLink className="size-3.5" /> {!compact && openLabel}
         </Button>
+      ) : compact ? (
+        <Tip label={`${startingLabel} ${elapsed > 0 ? `${elapsed}s` : ""}`.trim()}>
+          <Button size={size} variant="ghost" className={stateClass} disabled aria-label={startingLabel}>
+            <Loader2 className="size-3.5 animate-spin" />
+          </Button>
+        </Tip>
       ) : (
-        <Button size={size} variant={compact ? "ghost" : "outline"} className={stateClass} disabled title={compact ? `${startingLabel} ${elapsed > 0 ? `${elapsed}s` : ""}`.trim() : undefined} aria-label={startingLabel}>
-          <Loader2 className="size-3.5 animate-spin" /> {!compact && <>{startingLabel} {elapsed > 0 ? `${elapsed}s` : ""}</>}
+        <Button size={size} variant="outline" className={stateClass} disabled aria-label={startingLabel}>
+          <Loader2 className="size-3.5 animate-spin" /> {startingLabel} {elapsed > 0 ? `${elapsed}s` : ""}
         </Button>
       )}
-      <Button size={size} variant={compact ? "ghost" : "outline"} className={`rounded-l-none border-l-0 ${compact ? "size-7" : ""}`} disabled={busy} onClick={onStop} title="Stop preview" aria-label="Stop preview"><Square className="size-3.5 fill-current" /></Button>
+      <Button size={size} variant={compact ? "ghost" : "outline"} className={`rounded-l-none border-l-0 ${compact ? "size-7" : ""}`} disabled={busy} onClick={onStop} aria-label="Stop preview"><Square className="size-3.5 fill-current" /></Button>
     </div>
   );
 }
@@ -399,7 +410,7 @@ export function TestMasterRow({ repo }: { repo: string }) {
       <div className="text-muted-foreground text-xs font-medium">{repo}</div>
       {!active ? (
         <div className="w-full space-y-1">
-          <Button size="sm" variant="outline" className="w-full justify-center" onClick={start} title={error ? "Preview failed — open the log" : `Spin up a preview of the latest ${base}`}>
+          <Button size="sm" variant="outline" className="w-full justify-center" onClick={start}>
             {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
             {error ? `Retry ${base}` : `Test ${base}`}
           </Button>
@@ -467,7 +478,7 @@ export function RunningPreviews() {
       {running.map((p) => (
         <li key={p.key} data-slot="running-preview" className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3">
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium" title={titleOf(p.key)}>{titleOf(p.key)}</div>
+            <div className="truncate text-sm font-medium">{titleOf(p.key)}</div>
             <div className="text-muted-foreground truncate text-xs">
               {p.instance ? `${p.instance} · ` : ""}{p.svcs.map((s) => `${s.name} ${previewLabel(hrefOf(s))}`).join(" · ")}
             </div>
@@ -506,7 +517,7 @@ export function PreviewPanel({ row }: { row: Row }) {
         {ready && open && <a className="text-muted-foreground inline-flex items-center gap-1 text-sm hover:underline" href={hrefOf(open)} target="_blank" rel="noreferrer">open {previewLabel(hrefOf(open))} <ExternalLink className="size-3.5" /></a>}
       </div>
       {error && <ErrorLog error={error} />}
-      {ready && open && <iframe title="preview" src={hrefOf(open)} className="h-[70vh] w-full rounded-md border" />}
+      {ready && open && <iframe src={hrefOf(open)} className="h-[70vh] w-full rounded-md border" />}
     </div>
   );
 }

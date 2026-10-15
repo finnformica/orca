@@ -26,6 +26,7 @@ import {
   type ListColumn, type ListSort, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
 } from "../workstream";
 import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { OrchStatusNote, Pill, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
@@ -60,7 +61,7 @@ function DensityToggle() {
   const dense = density === "dense";
   const label = dense ? "Switch to comfortable view" : "Switch to dense view";
   return (
-    <Button size="icon" variant="outline" className="size-8" aria-pressed={dense} onClick={() => setDensity(dense ? "comfortable" : "dense")} title={label} aria-label={label}>
+    <Button size="icon" variant="outline" className="size-8" aria-pressed={dense} onClick={() => setDensity(dense ? "comfortable" : "dense")} aria-label={label}>
       {dense ? <Rows2 className="size-4" /> : <Rows3 className="size-4" />}
     </Button>
   );
@@ -70,7 +71,7 @@ function ViewToggle({ view, setView }: { view: BoardView; setView: (v: BoardView
   return (
     <div role="group" aria-label="View" className="inline-flex h-8 items-center rounded-md border p-0.5">
       {VIEWS.map(({ value, label, Icon }) => (
-        <button key={value} type="button" aria-pressed={view === value} onClick={() => setView(value)} title={`${label} view`}
+        <button key={value} type="button" aria-pressed={view === value} onClick={() => setView(value)}
           className={`inline-flex h-full items-center gap-1.5 rounded-[5px] px-2 text-xs font-medium transition-colors ${view === value ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
           <Icon className="size-3.5" /> {label}
         </button>
@@ -252,7 +253,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
         <ChipFamily label="Activity">{activityChips.map(renderChip)}</ChipFamily>
         {repoChips.length > 0 && <ChipFamily label="Repo">{repoChips.map(renderChip)}</ChipFamily>}
         {(quickActive(quick) || q) && (
-          <button type="button" data-slot="clear-filters" onClick={clear} title="Clear the chips and the search (here and in what's remembered)" className="text-muted-foreground hover:text-foreground inline-flex h-7 items-center gap-1 px-1.5 text-[13px]">
+          <button type="button" data-slot="clear-filters" onClick={clear} className="text-muted-foreground hover:text-foreground inline-flex h-7 items-center gap-1 px-1.5 text-[13px]">
             <X className="size-3.5" /> Clear
           </button>
         )}
@@ -260,7 +261,9 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
   );
   const sortSelect = (
           <Select value={sort} onValueChange={(v) => setSort(v as ListSort)}>
-            <SelectTrigger className="h-8 w-40" aria-label="Sort" title={`Sort: ${SORT_LABELS[sort]}`}><span className="text-muted-foreground text-xs">Sort</span><SelectValue /></SelectTrigger>
+            <Tip label={`Sort: ${SORT_LABELS[sort]}`}>
+              <SelectTrigger className="h-8 w-40" aria-label="Sort"><span className="text-muted-foreground text-xs">Sort</span><SelectValue /></SelectTrigger>
+            </Tip>
             <SelectContent>{(Object.keys(SORT_LABELS) as ListSort[]).map((k) => <SelectItem key={k} value={k}>{SORT_LABELS[k]}</SelectItem>)}</SelectContent>
           </Select>
   );
@@ -415,7 +418,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
   const quick = hasMenu && <QuickActionButtons row={row} hasWork={hasWork} peek onBusy={setBusy} />;
   const menu = hasMenu && <WorkstreamActions row={row} hasWork={hasWork} compact menuOnly onBusy={setBusy} onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}
     onOpen={to ? () => navigate(to) : undefined} contextAt={menuAt} onContextClose={closeMenu} />;
-  const prLink = row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" title={`Open PR #${row.prNumber} on GitHub`} className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>;
+  const prLink = row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>;
   if (stacked) return (
     // A phone: a taller, card-like row with no fixed-width columns — everything wraps instead of
     // scrolling sideways. Line 1 is title + status; line 2 is branch/model/PR/preview/diffstat. The
@@ -451,7 +454,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
         {!isDone && <OrchStatusNote status={row.orchStatus} />}
         {!isDone && <UpkeepNote upkeep={row.upkeep} running={row.agentStatus === "running"} />}
         <div role="cell" className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
-          <Pill tone={pill.tone} slot="state-pill" title={pill.tooltip}>{pill.label}</Pill>
+          {pill.tooltip ? <Tip label={pill.tooltip}><Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill></Tip> : <Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill>}
           {row.prNumber && !isDone && <ConditionBadges row={row} />}
           {row.prNumber && !isDone && <ReviewCluster row={row} />}
           {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
@@ -472,22 +475,22 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
       style={rowGrid(cols)}
       className={`${GRID} hover:bg-accent/40 focus-visible:bg-accent/40 h-14 border-b text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
     >
-      <div role="cell" className="min-w-0" title={[row.title, row.prTitle && row.prTitle !== row.title && `PR: ${row.prTitle}`, instruction && `Latest: ${instruction}`, multiInstance && instance && `Instance: ${instance}`, `Branch: ${row.branch}`].filter(Boolean).join("\n")}>
+      <div role="cell" className="min-w-0">
         <div className="truncate font-medium">{row.title}</div>
         <div className="text-muted-foreground flex min-w-0 items-center gap-1 text-xs">
           <span className="shrink-0">{row.repo}</span>
-          {model && <><span aria-hidden="true">·</span><span data-slot="model-label" className="shrink-0" title={model.title}>{model.label}</span></>}
+          {model && <><span aria-hidden="true">·</span><Tip label={model.title}><span data-slot="model-label" className="shrink-0">{model.label}</span></Tip></>}
           {!isDone && <PrPreviewInline row={row} />}
           {diffstat && <><span aria-hidden="true">·</span>{diffstat}</>}
-          {error && <><span aria-hidden="true">·</span><span data-slot="row-error" className="text-geist-red truncate" title={error}>{error}</span></>}
+          {error && <><span aria-hidden="true">·</span><span data-slot="row-error" className="text-geist-red truncate">{error}</span></>}
         </div>
       </div>
       <div role="cell" className="min-w-0"><RunStatus row={row} tone={tone} reasons={reasons} /></div>
       <div role="cell" className="flex min-w-0 items-center gap-2">
-        <Pill tone={pill.tone} slot="state-pill" title={pill.tooltip}>{pill.label}</Pill>
-        {row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" title={`Open PR #${row.prNumber} on GitHub`} className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>}
+        {pill.tooltip ? <Tip label={pill.tooltip}><Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill></Tip> : <Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill>}
+        {row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>}
       </div>
-      <div role="cell" data-slot="row-signals" title={reasons.length ? reasons.join(", ") : undefined}
+      <div role="cell" data-slot="row-signals"
         className="flex min-w-0 items-center gap-1 overflow-hidden [&>*]:shrink-0 [&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5">
         {row.prNumber && !isDone && <ConditionBadges row={row} />}
         {row.prNumber && !isDone && <ReviewCluster row={row} />}
@@ -511,11 +514,15 @@ export function RunStatus({ row, tone, reasons }: { row: Row; tone: RowTone; rea
   const now = useNow(running);
   const duration = running ? undefined : rowDuration(row);
   return (
-    <div data-slot="run-status" className="flex min-w-0 items-center gap-2 whitespace-nowrap" title={reasons.length ? reasons.join(", ") : undefined}>
+    <div data-slot="run-status" className="flex min-w-0 items-center gap-2 whitespace-nowrap">
       {tone === "running" ? <Loader2 data-slot="run-spinner" aria-hidden="true" className="text-geist-amber size-3 shrink-0 animate-spin" /> : <StatusDot tone={TONE_DOT[tone]} />}
       <span data-tone={tone} className="truncate font-medium">{TONE_LABEL[tone]}</span>
-      {running && now !== undefined && <span data-slot="elapsed" className="text-muted-foreground tabular-nums" title={`Running since ${new Date(row.agentStartedAt!).toLocaleTimeString()}`}>{formatElapsed(now - row.agentStartedAt!)}</span>}
-      {duration !== undefined && <span className="text-muted-foreground tabular-nums" title="How long the last run took">{formatDuration(duration)}</span>}
+      {running && now !== undefined && (
+        <Tip label={`Running since ${new Date(row.agentStartedAt!).toLocaleTimeString()}`}>
+          <span data-slot="elapsed" className="text-muted-foreground tabular-nums">{formatElapsed(now - row.agentStartedAt!)}</span>
+        </Tip>
+      )}
+      {duration !== undefined && <span className="text-muted-foreground tabular-nums">{formatDuration(duration)}</span>}
     </div>
   );
 }

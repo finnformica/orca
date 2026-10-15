@@ -20,7 +20,6 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { Bot, Check } from "lucide-react";
 import { quickAskOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
-import { shortcutLabel } from "@/lib/shortcuts";
 import { sendToOrchestrator } from "@/lib/orchestratorOutbox";
 import { useOrchestrator, useOrchestratorState } from "@/components/Terminal";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -59,7 +58,6 @@ export function QuickAsk() {
     const t = setTimeout(() => setMounted(false), MORPH_MS);
     return () => clearTimeout(t);
   }, [leaving]);
-  const key = shortcutLabel("quickAsk");
   const input = () => content.current?.querySelector("textarea");
   // Open: focus the box in the commit that opens it, before the next keystroke. Closed: the text is
   // kept (the composer's persisted draft) until it is sent — a half-typed line survives an Esc.
@@ -142,7 +140,6 @@ export function QuickAsk() {
           </div>
         ) : (
           <button type="button" data-slot="quick-ask-pill" onClick={() => setOpen(true)} aria-label="Ask the orchestrator (quick)"
-            title={`Quick ask (${key}): a message to the orchestrator`}
             className="animate-in fade-in-0 flex size-full items-center justify-center gap-2 px-3 text-sm whitespace-nowrap duration-150 motion-reduce:animate-none">
             <Bot className="text-muted-foreground size-3.5" />
             <span>Ask</span>

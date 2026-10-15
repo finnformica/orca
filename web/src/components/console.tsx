@@ -62,12 +62,12 @@ const DOT_CLASS: Record<DotTone, string> = {
   neutral: "bg-geist-gray",
 };
 /** Vercel's status dot: Ready teal, Error red, Building amber (pulsing), Queued blue, idle gray. */
-export const StatusDot = ({ tone, className, title }: { tone: DotTone; className?: string; title?: string }) => (
-  <span data-slot="status-dot" data-tone={tone} title={title} className={cn("inline-block size-2.5 shrink-0 rounded-full", DOT_CLASS[tone], className)} />
+export const StatusDot = ({ tone, className }: { tone: DotTone; className?: string }) => (
+  <span data-slot="status-dot" data-tone={tone} className={cn("inline-block size-2.5 shrink-0 rounded-full", DOT_CLASS[tone], className)} />
 );
 
 /** An environment-style pill (Production / Preview): rounded, hairline, an optional leading icon. */
-export function Pill({ children, tone = "default", slot, title }: { children: ReactNode; tone?: "default" | "blue" | "green" | "amber" | "red" | "purple"; slot?: string; title?: string }) {
+export function Pill({ children, tone = "default", slot }: { children: ReactNode; tone?: "default" | "blue" | "green" | "amber" | "red" | "purple"; slot?: string }) {
   const tones = {
     default: "text-foreground border",
     blue: "border-transparent bg-geist-blue/15 text-geist-blue",
@@ -79,7 +79,7 @@ export function Pill({ children, tone = "default", slot, title }: { children: Re
     purple: "border-transparent bg-purple-500/15 text-purple-700 dark:text-purple-400",
   };
   return (
-    <span data-slot={slot ?? "pill"} title={title} className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2.5 text-xs font-medium whitespace-nowrap [&>svg]:size-3", tones[tone])}>
+    <span data-slot={slot ?? "pill"} className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2.5 text-xs font-medium whitespace-nowrap [&>svg]:size-3", tones[tone])}>
       {children}
     </span>
   );
@@ -98,7 +98,7 @@ export function OrchStatusNote({ status, chipOnly, className }: { status?: OrchS
   const line = [status.plan, status.waitingOn && `waiting on ${status.waitingOn}`].filter(Boolean).join(" · ");
   if (!line) return null;
   return (
-    <div data-slot="orch-status" title={`Orchestrator — ${text}`} className={cn("text-muted-foreground flex min-w-0 items-center gap-1 text-xs", className)}>
+    <div data-slot="orch-status" className={cn("text-muted-foreground flex min-w-0 items-center gap-1 text-xs", className)}>
       <span className="min-w-0 truncate">{line}</span>
     </div>
   );
@@ -110,7 +110,7 @@ export function UpkeepNote({ upkeep, running, className }: { upkeep?: UpkeepReco
   const text = upkeepLabel(upkeep, running);
   if (!text) return null;
   return (
-    <div data-slot="upkeep-status" title={text} className={cn(upkeep?.gaveUp ? "text-geist-warning-fg" : "text-muted-foreground", "flex min-w-0 items-center gap-1 text-xs", className)}>
+    <div data-slot="upkeep-status" className={cn(upkeep?.gaveUp ? "text-geist-warning-fg" : "text-muted-foreground", "flex min-w-0 items-center gap-1 text-xs", className)}>
       <span className="min-w-0 truncate">{text}</span>
     </div>
   );

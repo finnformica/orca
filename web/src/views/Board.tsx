@@ -22,6 +22,7 @@ import { PreviewControl } from "./PreviewControl";
 import { TerminalDialog } from "@/components/Terminal";
 import { AUTO_MODEL, modelLabel, providerOfModel } from "../../../shared/models";
 import { ModelPicker } from "@/components/ModelPicker";
+import { Tip } from "@/components/ui/tip";
 import { poll } from "@/lib/poll";
 
 const LANES: { lane: Lane; title: string }[] = [
@@ -113,9 +114,11 @@ export function CopyDone({ cards }: { cards: Row[] }) {
     setTimeout(() => setCopied(false), 1500);
   };
   return (
-    <button type="button" onClick={copy} title="Copy completed work (respects the repo filter)" className="hover:text-foreground ml-auto inline-flex items-center gap-1 normal-case">
-      {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-    </button>
+    <Tip label="Copy completed work (respects the repo filter)">
+      <button type="button" onClick={copy} className="hover:text-foreground ml-auto inline-flex items-center gap-1 normal-case">
+        {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+      </button>
+    </Tip>
   );
 }
 
@@ -183,16 +186,17 @@ export function LaneActions({ lane, cards }: { lane: Lane; cards: Row[] }) {
 
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          title={err ?? "Bulk actions for this lane"}
-          aria-label="Bulk actions"
-          className={`ml-auto ${err ? "text-destructive" : "hover:text-foreground"}`}
-        >
-          {busy ? <Loader2 className="size-3.5 animate-spin" /> : <MoreHorizontal className="size-3.5" />}
-        </button>
-      </DropdownMenuTrigger>
+      <Tip label={err ?? "Bulk actions for this lane"}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label="Bulk actions"
+            className={`ml-auto ${err ? "text-destructive" : "hover:text-foreground"}`}
+          >
+            {busy ? <Loader2 className="size-3.5 animate-spin" /> : <MoreHorizontal className="size-3.5" />}
+          </button>
+        </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent align="end">
         {/* Grouped verbs (PR / Agent / Slack) collapse into one submenu, rendered where the first of
             the group falls in the lane's order; everything else is a flat item. */}
@@ -243,18 +247,22 @@ export function CopyMenu({ row }: { row: Row }) {
   };
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button type="button" title="Copy…" className="text-muted-foreground hover:text-foreground">
-          {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
-        </button>
-      </DropdownMenuTrigger>
+      <Tip label="Copy…">
+        <DropdownMenuTrigger asChild>
+          <button type="button" className="text-muted-foreground hover:text-foreground">
+            {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+          </button>
+        </DropdownMenuTrigger>
+      </Tip>
       <DropdownMenuContent align="end">
-        {row.prUrl && <DropdownMenuItem onSelect={() => copy(row.prUrl!, "PR link")} title="Copy PR link">Copy PR link</DropdownMenuItem>}
-        <DropdownMenuItem onSelect={() => copy(row.branch, "worktree name")} title="Copy worktree name">Copy worktree name</DropdownMenuItem>
+        {row.prUrl && <DropdownMenuItem onSelect={() => copy(row.prUrl!, "PR link")}>Copy PR link</DropdownMenuItem>}
+        <DropdownMenuItem onSelect={() => copy(row.branch, "worktree name")}>Copy worktree name</DropdownMenuItem>
         {/* Local worktrees only: the command cds into a path that exists on the machine that RUNS
             the repo, so offering it for a session on another instance would hand you a dead path. */}
         {!row.remote && (
-          <DropdownMenuItem onSelect={() => void copyCli()} title="Copy CLI: resume this agent's session in a terminal">Copy CLI</DropdownMenuItem>
+          <Tip label="Resume this agent's session in a terminal" side="right">
+            <DropdownMenuItem onSelect={() => void copyCli()}>Copy CLI</DropdownMenuItem>
+          </Tip>
         )}
       </DropdownMenuContent>
     </DropdownMenu>
@@ -301,11 +309,11 @@ export function AgentBadge({ row, hasWork }: { row: Row; hasWork: boolean }) {
   // Orca's own check over the run's commit beats the agent's word: "Verified" only when it passed.
   if (s === "done" && row.agentCheck) {
     return row.agentCheck.ok
-      ? <Badge variant="success" title={`${row.agentCheck.command} passed`}>Verified <Check /></Badge>
-      : <Badge variant="destructive" title={`${row.agentCheck.command} exited ${row.agentCheck.exitCode}`}>Check failed <X /></Badge>;
+      ? <Badge variant="success">Verified <Check /></Badge>
+      : <Badge variant="destructive">Check failed <X /></Badge>;
   }
   if (s === "done") return <Badge variant="success">Done <Check /></Badge>;
-  if (s === "error") return <Badge variant="destructive" title={row.agentError}>Error <X /></Badge>;
+  if (s === "error") return <Badge variant="destructive">Error <X /></Badge>;
   // idle = no live/tracked run. If it committed work it's completed; if not, it's stopped.
   return hasWork ? <Badge variant="success">Completed <Check /></Badge> : <Badge variant="destructive">Stopped <CircleStop /></Badge>;
 }
@@ -386,9 +394,11 @@ export function NewDraft({ onSent, autoFocus = false }: { onSent?: (draft: Optim
       }
       action={
         <>
-          <Button type="button" size="icon" variant="ghost" className="text-muted-foreground size-8" onClick={() => setChatOpen(true)} title="New chat (a conversation, not a task)" aria-label="New chat">
-            <SquareTerminal className="size-4" />
-          </Button>
+          <Tip label="New chat (a conversation, not a task)">
+            <Button type="button" size="icon" variant="ghost" className="text-muted-foreground size-8" onClick={() => setChatOpen(true)} aria-label="New chat">
+              <SquareTerminal className="size-4" />
+            </Button>
+          </Tip>
           <NewChatDialog
             open={chatOpen}
             onClose={() => setChatOpen(false)}
@@ -492,13 +502,15 @@ export function WorkstreamCard({ row }: { row: Row }) {
         <div className="flex min-w-0 items-center gap-1.5">
           <Eyebrow repo={row.repo} />
           {row.orchestrated && (
-            <span title="Started or continued by the orchestrator, which hears when its agent finishes" aria-label="Orchestrated">
-              <Bot className="text-muted-foreground size-3" />
-            </span>
+            <Tip label="Started or continued by the orchestrator, which hears when its agent finishes">
+              <span aria-label="Orchestrated">
+                <Bot className="text-muted-foreground size-3" />
+              </span>
+            </Tip>
           )}
           {/* Where the worktree lives, once there is more than one place it could. */}
           {instanceChoices().length > 1 && row.worktreePath && (
-            <span data-slot="instance-chip" title={row.remote ? `Runs on ${row.instance}` : "Runs here"} className="text-muted-foreground rounded border px-1 text-[9px] leading-4 tracking-wider uppercase">
+            <span data-slot="instance-chip" className="text-muted-foreground rounded border px-1 text-[9px] leading-4 tracking-wider uppercase">
               {row.instance ?? thisInstance()}
             </span>
           )}
@@ -513,11 +525,11 @@ export function WorkstreamCard({ row }: { row: Row }) {
       {/* Identity: the title anchors the card; prompt is supporting context. */}
       <div className="space-y-0.5">
         {titleTo ? (
-          <button type="button" onClick={() => navigate(titleTo)} title={row.prTitle && row.prTitle !== row.title ? `PR: ${row.prTitle}` : undefined} className="text-foreground block w-full truncate text-left text-sm font-medium hover:underline">
+          <button type="button" onClick={() => navigate(titleTo)} className="text-foreground block w-full truncate text-left text-sm font-medium hover:underline">
             {row.title}
           </button>
         ) : (
-          <div title={row.prTitle && row.prTitle !== row.title ? `PR: ${row.prTitle}` : undefined} className="truncate text-sm font-medium">{row.title}</div>
+          <div className="truncate text-sm font-medium">{row.title}</div>
         )}
         {!dense && row.prompt && <p className="text-muted-foreground line-clamp-2 text-xs">{row.prompt}</p>}
         <OrchStatusNote status={row.orchStatus} />
@@ -529,13 +541,15 @@ export function WorkstreamCard({ row }: { row: Row }) {
       {!isDone && (
         <div className={`flex flex-wrap items-center gap-1 ${dense ? "[&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5" : ""}`}>
           {isOpenPr && row.following && (
-            <Badge variant="outline" className="border-transparent bg-sky-500/10 text-sky-700 dark:text-sky-400" title="Orca is watching this PR and auto-runs the agent to resolve conflicts, fix CI, or address review comments.">
-              Following <Eye />
-            </Badge>
+            <Tip label="Orca is watching this PR and auto-runs the agent to resolve conflicts, fix CI, or address review comments.">
+              <Badge variant="outline" className="border-transparent bg-sky-500/10 text-sky-700 dark:text-sky-400">
+                Following <Eye />
+              </Badge>
+            </Tip>
           )}
           {(isLocal || (row.agentStatus && row.agentStatus !== "idle")) && <AgentBadge row={row} hasWork={hasWork} />}
           {isLocal && row.worktreePath && row.agentStatus !== "running" && (
-            <button type="button" onClick={() => void runBusy(() => rerunAgent(row))} title="Run agent" className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-5 items-center justify-center rounded">
+            <button type="button" onClick={() => void runBusy(() => rerunAgent(row))} className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-5 items-center justify-center rounded">
               <Play className="size-3" />
             </button>
           )}
@@ -546,9 +560,9 @@ export function WorkstreamCard({ row }: { row: Row }) {
 
       {/* The run's error text, on the card itself — the Error badge alone only surfaced it on hover,
           so a failed run (e.g. a CLI arg error) looked like a bare red badge with no way to see why.
-          Clamped like the prompt above; the full message is on hover. */}
+          Clamped like the prompt above. */}
       {!isDone && row.agentStatus === "error" && row.agentError && (
-        <p className="text-destructive line-clamp-2 text-xs break-words whitespace-pre-wrap" title={row.agentError}>
+        <p className="text-destructive line-clamp-2 text-xs break-words whitespace-pre-wrap">
           {row.agentError}
         </p>
       )}
@@ -583,7 +597,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
               leading={
                 <>
                   <PreviewControl row={row} compact />
-                  <Button size="icon" variant="ghost" className="size-7" onClick={() => setTerminalOpen(true)} title="Open terminal" aria-label="Open terminal">
+                  <Button size="icon" variant="ghost" className="size-7" onClick={() => setTerminalOpen(true)} aria-label="Open terminal">
                     <SquareTerminal className="size-3.5" />
                   </Button>
                 </>
@@ -594,7 +608,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
               <div className="flex items-start gap-2">
                 <QuickActionButtons row={row} hasWork={hasWork} onBusy={setBusy} className="shrink-0" />
                 <div className="min-w-0 flex-1"><PreviewControl row={row} /></div>
-                <Button size="sm" variant="outline" className="shrink-0" onClick={() => setTerminalOpen(true)} title="Open terminal" aria-label="Open terminal">
+                <Button size="sm" variant="outline" className="shrink-0" onClick={() => setTerminalOpen(true)} aria-label="Open terminal">
                   <SquareTerminal className="size-3.5" />
                 </Button>
               </div>

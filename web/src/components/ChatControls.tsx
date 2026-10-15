@@ -3,6 +3,7 @@ import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModelPicker } from "@/components/ModelPicker";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Tip } from "@/components/ui/tip";
 import type { AgentProvider } from "../../../shared/agent";
 import { CONTEXT_RESET_PCT } from "../workstream";
 
@@ -75,16 +76,18 @@ function ContextRing({ pct, compact }: { pct?: number; compact?: CompactControl 
         </div>
         {compact && (
           // Disabled mid-turn rather than queued: a queued message is a prompt for the model, and
-          // `/compact` only works as the whole prompt of its own run. The span carries the tooltip,
-          // since a disabled button gets no pointer events.
-          <span className="mt-2 block" title={compact.busy && !compact.pending ? "The agent is mid-turn — compact once it finishes." : "Summarise this session to free context, as /compact does."}>
-            <Button
-              type="button" size="sm" variant="outline" className="h-7 w-full" data-slot="context-compact"
-              disabled={compact.pending || compact.busy} onClick={() => void compact.onCompact()}
-            >
-              {compact.pending ? <><Loader2 className="size-3.5 animate-spin" />Compacting…</> : "Compact"}
-            </Button>
-          </span>
+          // `/compact` only works as the whole prompt of its own run. Tip's wrapper carries the
+          // tooltip, since a disabled button gets no pointer events.
+          <div className="mt-2 block">
+            <Tip label={compact.busy && !compact.pending ? "The agent is mid-turn — compact once it finishes." : "Summarise this session to free context, as /compact does."} className="w-full">
+              <Button
+                type="button" size="sm" variant="outline" className="h-7 w-full" data-slot="context-compact"
+                disabled={compact.pending || compact.busy} onClick={() => void compact.onCompact()}
+              >
+                {compact.pending ? <><Loader2 className="size-3.5 animate-spin" />Compacting…</> : "Compact"}
+              </Button>
+            </Tip>
+          </div>
         )}
         {compact?.error && <div className="mt-1 text-destructive" role="alert" data-slot="context-compact-error">{compact.error}</div>}
       </PopoverContent>

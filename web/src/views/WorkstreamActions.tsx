@@ -47,22 +47,22 @@ const SheetMenu = createContext<(() => void) | null>(null);
 type Select = (e: Event) => void;
 const SHEET_ROW = "active:bg-accent flex min-h-12 w-full items-center gap-3 rounded-md px-2 text-left text-[15px] outline-none select-none focus-visible:bg-accent disabled:opacity-50";
 
-function Item({ icon: Icon, onSelect, disabled, className, title, children }: { icon?: LucideIcon; onSelect?: Select; disabled?: boolean; className?: string; title?: string; children: ReactNode }) {
+function Item({ icon: Icon, onSelect, disabled, className, children }: { icon?: LucideIcon; onSelect?: Select; disabled?: boolean; className?: string; children: ReactNode }) {
   const close = useContext(SheetMenu);
-  if (!close) return <DropdownMenuItem onSelect={onSelect} disabled={disabled} className={className} title={title}>{children}</DropdownMenuItem>;
+  if (!close) return <DropdownMenuItem onSelect={onSelect} disabled={disabled} className={className}>{children}</DropdownMenuItem>;
   return (
-    <button type="button" role="menuitem" data-slot="sheet-item" disabled={disabled} title={title} className={cn(SHEET_ROW, className)}
+    <button type="button" role="menuitem" data-slot="sheet-item" disabled={disabled} className={cn(SHEET_ROW, className)}
       onClick={() => { const e = new Event("select", { cancelable: true }); onSelect?.(e); if (!e.defaultPrevented) close(); }}>
       {Icon && <Icon className="text-muted-foreground size-5 shrink-0" />}<span className="min-w-0 flex-1">{children}</span>
     </button>
   );
 }
 
-function CheckItem({ icon: Icon, checked, onCheckedChange, onSelect, title, children }: { icon?: LucideIcon; checked: boolean; onCheckedChange: (c: boolean) => void; onSelect?: Select; title?: string; children: ReactNode }) {
+function CheckItem({ icon: Icon, checked, onCheckedChange, onSelect, children }: { icon?: LucideIcon; checked: boolean; onCheckedChange: (c: boolean) => void; onSelect?: Select; children: ReactNode }) {
   const close = useContext(SheetMenu);
-  if (!close) return <DropdownMenuCheckboxItem checked={checked} onCheckedChange={onCheckedChange} onSelect={onSelect} title={title}>{children}</DropdownMenuCheckboxItem>;
+  if (!close) return <DropdownMenuCheckboxItem checked={checked} onCheckedChange={onCheckedChange} onSelect={onSelect}>{children}</DropdownMenuCheckboxItem>;
   return (
-    <button type="button" role="menuitemcheckbox" aria-checked={checked} data-slot="sheet-item" title={title} className={SHEET_ROW}
+    <button type="button" role="menuitemcheckbox" aria-checked={checked} data-slot="sheet-item" className={SHEET_ROW}
       onClick={() => { const e = new Event("select", { cancelable: true }); onCheckedChange(!checked); onSelect?.(e); if (!e.defaultPrevented) close(); }}>
       {Icon && <Icon className="text-muted-foreground size-5 shrink-0" />}<span className="min-w-0 flex-1">{children}</span>
       {checked && <Check className="size-5 shrink-0" />}
@@ -175,7 +175,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   const narrow = useNarrow();
   const [sheetOpen, setSheetOpen] = useState(false);
   const trigger = (onClick?: () => void) => (
-    <Button size={icon} className={iconClass} variant="ghost" title={err ? firstLine(err) : "Actions"} aria-label="Actions" data-state-error={err ? "" : undefined}
+    <Button size={icon} className={iconClass} variant="ghost" aria-label="Actions" data-state-error={err ? "" : undefined}
       {...(onClick && { onClick, "aria-haspopup": "menu" as const, "aria-expanded": sheetOpen })}>
       {err && <X className="text-destructive size-3.5" />}
       {compact ? (!err && <MoreVertical className="size-4" />) : <>Actions <ChevronDown className="size-3.5" /></>}
@@ -198,8 +198,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
           conflicts / fix CI / address review comments as they appear. */}
       {isPr && (
         <>
-          <CheckItem icon={Bot} checked={Boolean(row.following)} onCheckedChange={() => toggleFollow(row)} onSelect={(e) => e.preventDefault()}
-            title="Autopilot: every ~8s Orca checks this PR and launches the agent to resolve conflicts, fix failing CI, and address new review comments as they land — no click needed.">
+          <CheckItem icon={Bot} checked={Boolean(row.following)} onCheckedChange={() => toggleFollow(row)} onSelect={(e) => e.preventDefault()}>
             Follow PR (auto-fix)
           </CheckItem>
           <Sep />
@@ -217,11 +216,10 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
       {/* Rename — fix a broken/auto title. AI suggests a name (editable); a PR renames on GitHub. */}
       <Item icon={Pencil} onSelect={() => setRenaming(true)}>Rename…</Item>
       {/* Move the worktree to another instance (verbs.moveWorkstream). Not while its agent runs. */}
-      {row.worktreePath && instanceChoices().filter((i) => i !== (row.instance ?? thisInstance())).map((to) => (
-        <Item icon={ArrowRightLeft} key={to} disabled={row.agentStatus === "running"} onSelect={run(`Move to ${to}`, () => moveWorkstream(row, to))} title={row.agentStatus === "running" ? "Wait for the agent to finish first" : `Push the branch and re-open its worktree on ${to}; the next run starts a fresh session there`}>
-          Move to {to}
-        </Item>
-      ))}
+      {row.worktreePath && instanceChoices().filter((i) => i !== (row.instance ?? thisInstance())).map((to) => {
+        const moveItem = <Item icon={ArrowRightLeft} key={to} disabled={row.agentStatus === "running"} onSelect={run(`Move to ${to}`, () => moveWorkstream(row, to))}>Move to {to}</Item>;
+        return row.agentStatus === "running" ? <Tip key={to} label="Wait for the agent to finish first">{moveItem}</Tip> : moveItem;
+      })}
 
       {/* PR — every action that needs an open PR, in one place (workstream.prMenuActions) */}
       {isPr && (
@@ -231,9 +229,9 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
             {prActions.includes("autoMerge") && (row.autoMergeEnabled
               ? <Item icon={Zap} onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</Item>
               : <Item icon={Zap} onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</Item>)}
-            {prActions.includes("autoMerge") && <Item icon={Clock} onSelect={run("Merge when green", () => mergeWhenGreen(row))} title="Orca squash-merges it once checks pass and it merges clean, under this repo's merge policy">Merge when green</Item>}
+            {prActions.includes("autoMerge") && <Item icon={Clock} onSelect={run("Merge when green", () => mergeWhenGreen(row))}>Merge when green</Item>}
             {/* One agent verb: conflicts, CI and review in a single run (store.addressPr). */}
-            {prActions.includes("addressPr") && <Item icon={Wrench} onSelect={run("Address PR", () => addressPr(row))} title="One run that resolves conflicts, fixes CI and addresses review threads/comments — whichever apply">Address PR</Item>}
+            {prActions.includes("addressPr") && <Item icon={Wrench} onSelect={run("Address PR", () => addressPr(row))}>Address PR</Item>}
             {prPreview === "ready" && <Item icon={Globe} onSelect={() => window.open(row.previewUrl, "_blank", "noreferrer")}>Open PR preview</Item>}
             {prPreview === "pending" && <Item icon={Globe} disabled>Deploying preview…</Item>}
             {prPreview === "add" && <Item icon={Globe} onSelect={run("Add preview", () => addPreviewLabel(row))}>Add PR preview</Item>}
@@ -287,7 +285,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
       <div className="flex flex-wrap items-center gap-1">
         {!menuOnly && quick && <QuickActionButtons row={row} hasWork={hasWork} onBusy={onBusy} tipSide={tipSide} />}
         {!menuOnly && leading}
-        {!menuOnly && <Button size={icon} className={iconClass} variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)} title="Follow up" aria-label="Follow up">
+        {!menuOnly && <Button size={icon} className={iconClass} variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)} aria-label="Follow up">
           {compact
             ? (submitting ? <Loader2 className="size-4 animate-spin" /> : <MessageSquarePlus className="size-3.5" />)
             : <>{submitting && <Loader2 className="size-4 animate-spin" />}Follow up</>}
@@ -295,7 +293,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
         {narrow ? (
           // A phone: the ⋯ opens the items as a bottom sheet — on a tap only, never a long-press.
           <>
-            {trigger(() => setSheetOpen(true))}
+            {err ? <Tip label={firstLine(err)}>{trigger(() => setSheetOpen(true))}</Tip> : trigger(() => setSheetOpen(true))}
             <BottomSheet open={sheetOpen} onClose={() => setSheetOpen(false)} title={row.title} slot="actions-sheet">
               <SheetMenu.Provider value={() => setSheetOpen(false)}>
                 <div role="menu" aria-label={`Actions for ${row.title}`} className="-mx-2 -my-2 flex flex-col">{items}</div>
@@ -304,7 +302,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
           </>
         ) : (
           <DropdownMenu>
-            <DropdownMenuTrigger asChild>{trigger()}</DropdownMenuTrigger>
+            {err ? <Tip label={firstLine(err)}><DropdownMenuTrigger asChild>{trigger()}</DropdownMenuTrigger></Tip> : <DropdownMenuTrigger asChild>{trigger()}</DropdownMenuTrigger>}
             <DropdownMenuContent align={menuOnly ? "end" : "start"} className="min-w-[12rem]">
               {items}
             </DropdownMenuContent>
@@ -389,7 +387,7 @@ function RenameDialog({ row, open, onClose }: { row: Row; open: boolean; onClose
         {row.prNumber ? <p className="text-muted-foreground text-xs">Updates the GitHub PR title.</p> : null}
         {err && <p className="text-destructive text-xs break-words">{err}</p>}
         <div className="flex items-center justify-between gap-2">
-          <Button type="button" size="sm" variant="soft" disabled={Boolean(busy)} onClick={suggest} title="Let the agent name it">
+          <Button type="button" size="sm" variant="soft" disabled={Boolean(busy)} onClick={suggest}>
             {busy === "suggest" ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-3.5" />} Suggest
           </Button>
           <div className="flex gap-2">

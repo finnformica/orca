@@ -4,6 +4,7 @@ import { ArrowUp, FileText, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { Shortcut } from "@/components/ui/kbd";
+import { Tip } from "@/components/ui/tip";
 import { usePrRefs } from "@/store";
 import { NO_WALK, appendQuote, filterPrRefs, historyKey, historyStep, insertPrRef, prRefLabel, prTrigger, type HistoryWalk, type PrRef } from "@/workstream";
 import { cn, PipContext } from "@/lib/utils";
@@ -366,17 +367,20 @@ export function ChatComposer({
           <div data-slot="chat-composer-actions" className="ml-auto flex shrink-0 items-center gap-1">
             {onCancel && <Button type="button" size="sm" variant="ghost" onClick={cancel}>Cancel</Button>}
             {action ?? (
-              <Button type="button" size="icon" variant="ghost" className="text-muted-foreground size-8" title="Attach files" onClick={() => fileRef.current?.click()}>
+              <Button type="button" size="icon" variant="ghost" className="text-muted-foreground size-8" onClick={() => fileRef.current?.click()}>
                 <Paperclip className="size-4" />
               </Button>
             )}
-            {alt && (
-              <Button type="button" size="sm" variant="outline" className="h-8" disabled={!canSubmit} title={alt.title} onMouseDown={keepComposerFocus} onClick={() => void submit(alt.onSubmit)}>
-                {alt.label}
-              </Button>
-            )}
+            {alt && (() => {
+              const button = (
+                <Button type="button" size="sm" variant="outline" className="h-8" disabled={!canSubmit} onMouseDown={keepComposerFocus} onClick={() => void submit(alt.onSubmit)}>
+                  {alt.label}
+                </Button>
+              );
+              return alt.title ? <Tip label={alt.title}>{button}</Tip> : button;
+            })()}
             {quick ? (
-              <Button type="button" size="sm" variant="secondary" className="h-7 gap-1.5 pr-1.5 pl-2.5" disabled={!canSubmit} title="Send (Enter)" aria-label="Send" onMouseDown={keepComposerFocus} onClick={() => void submit()}>
+              <Button type="button" size="sm" variant="secondary" className="h-7 gap-1.5 pr-1.5 pl-2.5" disabled={!canSubmit} aria-label="Send" onMouseDown={keepComposerFocus} onClick={() => void submit()}>
                 Send
                 <Shortcut id="send" />
               </Button>
@@ -385,7 +389,7 @@ export function ChatComposer({
               // model picker, the context ring), which show only an icon. The fill shrinks to a 28px
               // chip inside a transparent button, so the touch target stays 44px. Never in the PiP
               // window, which is desktop-only and has no touch target to grow for.
-              <Button type="button" size="icon" className={cn("size-8", !pip && "max-md:border-transparent max-md:bg-transparent max-md:hover:bg-transparent pointer-coarse:max-md:min-w-11")} disabled={!canSubmit} title="Send (Enter)" aria-label="Send" onMouseDown={keepComposerFocus} onClick={() => void submit()}>
+              <Button type="button" size="icon" className={cn("size-8", !pip && "max-md:border-transparent max-md:bg-transparent max-md:hover:bg-transparent pointer-coarse:max-md:min-w-11")} disabled={!canSubmit} aria-label="Send" onMouseDown={keepComposerFocus} onClick={() => void submit()}>
                 <span className={cn("inline-flex items-center justify-center", !pip && "max-md:bg-primary max-md:size-7 max-md:rounded-md")}><ArrowUp className="size-4" /></span>
               </Button>
             )}
@@ -411,7 +415,7 @@ function Thumb({ file, onRemove }: { file: File; onRemove: () => void }) {
     return () => URL.revokeObjectURL(u);
   }, [file, isImage]);
   return (
-    <div className="group relative size-14 overflow-hidden rounded-md border" title={file.name}>
+    <div className="group relative size-14 overflow-hidden rounded-md border">
       {isImage
         // url is a local blob: — not minted yet on the very first render, so skip the lightbox
         // until the effect above fills it in.
@@ -426,7 +430,6 @@ function Thumb({ file, onRemove }: { file: File; onRemove: () => void }) {
       <button
         type="button"
         onClick={onRemove}
-        title="Remove"
         className="bg-background/80 text-foreground hover:bg-background absolute top-0.5 right-0.5 rounded-full p-0.5 opacity-0 transition-opacity group-hover:opacity-100 [@media(hover:none)]:opacity-100"
       >
         <X className="size-3" />
