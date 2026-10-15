@@ -28,10 +28,13 @@ export function VCard({ title, aside, children, className, slot, bodyClass, onHe
   );
 }
 
-/** A section heading above a card, the way Vercel titles "Usage" / "Projects". */
+/** A section heading above a card, the way Vercel titles "Usage" / "Projects". A fixed `h-7` row —
+ *  matching the icon buttons (`RefreshVitals`) and `Segmented` controls a heading's `aside` carries —
+ *  so every heading is the same height whether or not it has one: an aside-only heading was a few
+ *  pixels taller than a bare one, enough to push that column's card below its neighbour's. */
 export const SectionTitle = ({ children, aside }: { children: ReactNode; aside?: ReactNode }) => (
-  <div className="mb-3 flex items-center justify-between gap-3">
-    <h2 className="text-sm font-medium">{children}</h2>
+  <div data-slot="section-title" className="mb-3 flex h-7 items-center justify-between gap-3">
+    <h2 className="truncate text-sm font-medium">{children}</h2>
     {aside}
   </div>
 );

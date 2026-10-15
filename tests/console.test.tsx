@@ -289,6 +289,19 @@ describe("the console's pages", () => {
     expect(container!.querySelector('[data-slot="agent-chat"]')).toBeNull();
   });
 
+  // Finn: the Instances heading sat lower than Usage's, because its RefreshVitals aside (a 28px
+  // button) made that one SectionTitle row taller than its plain-text siblings, pushing its card
+  // down relative to the column next to it. Every heading row is now a fixed height, aside or not.
+  test("Overview: every section heading is the same height, so cards in the same row share a top edge", async () => {
+    seedLocal();
+    await open("/");
+    const grid = $("overview-grid");
+    expect(grid.className.split(/\s+/)).toEqual(expect.arrayContaining(["grid", "grid-cols-1", "gap-6"])); // one spacing token, explicit columns
+    const headings = [...grid.querySelectorAll<HTMLElement>('[data-slot="section-title"]')];
+    expect(headings.map((h) => h.querySelector("h2")!.textContent)).toEqual(["Usage", "Agents", "Instances", "Recent activity"]);
+    for (const h of headings) expect(h.className.split(/\s+/)).toEqual(expect.arrayContaining(["h-7", "mb-3", "items-center"]));
+  });
+
   test("Repos: one row per repo with its numbers; a click opens Agents scoped to it", async () => {
     seedLocal();
     await open("/repos");
