@@ -413,6 +413,18 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
 
 // ---- the bell and the centre ----
 
+/** Initial focus on open: the Mark all as read button, so a reader can clear the centre the moment
+ *  it opens, not land on the Unread/All tabs first. Falls back to Radix's own default (first tabbable,
+ *  i.e. the tabs) when the button is absent (not rendered yet) or disabled (nothing unread). */
+function focusMarkAllRead(e: Event) {
+  const container = e.currentTarget as HTMLElement;
+  const btn = container.querySelector<HTMLButtonElement>('[aria-label="Mark all as read"]');
+  if (btn && !btn.disabled) {
+    e.preventDefault();
+    btn.focus();
+  }
+}
+
 /** The bell at the sidebar's foot, with the unread count; opens the centre. Controlled by
  *  `notificationsOpenAtom` (not just the trigger click) so the N key and the palette's Notifications
  *  action can open/toggle it too; its hint is the hover tooltip (it's icon-only either way, collapsed
@@ -438,7 +450,7 @@ export function NotificationBell({ collapsed = false }: { collapsed?: boolean })
           </button>
         </PopoverTrigger>
       </Tip>
-      <PopoverContent side="top" align="start" className="w-[24rem] max-w-[calc(100vw-2rem)] p-0">
+      <PopoverContent side="top" align="start" className="w-[24rem] max-w-[calc(100vw-2rem)] p-0" onOpenAutoFocus={focusMarkAllRead}>
         <NotificationPanel />
       </PopoverContent>
     </Popover>
