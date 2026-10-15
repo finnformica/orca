@@ -74,7 +74,11 @@ test("S3: a worker report's screenshot paths render as thumbnails, not raw paths
   // …then the turn's own collapsed report block.
   await act(async () => { container!.querySelector<HTMLElement>('[data-slot="turn-reports"] button')!.click(); await flush(); });
   const reports = container!.querySelector<HTMLElement>('[data-slot="worker-reports"]')!;
-  expect(reports.querySelector("pre")!.textContent).toBe("Outcome: banner updated\nFull turn: orca read --run run-9");
+  // The body is markdown, not a raw <pre> block — a report's own prose (and any table in it) renders
+  // the same as the agent's own reply, not as unrendered text.
+  expect(reports.querySelector("pre")).toBeNull();
+  expect(reports.querySelector(".prose")!.textContent).toContain("Outcome: banner updated");
+  expect(reports.querySelector(".prose")!.textContent).toContain("Full turn: orca read --run run-9");
   expect(reports.textContent).not.toContain("/attachments/shots/");
   expect([...reports.querySelectorAll('[data-slot="shot"] img')].map((i) => [i.getAttribute("src"), i.getAttribute("alt")]))
     .toEqual([[`/api/screenshots/${A}`, "before"], [`/api/screenshots/${B}`, "after"]]);
