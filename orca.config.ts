@@ -121,6 +121,10 @@ const config: OrcaConfig = {
       repoPath: `${DEV}/orca`,
       worktreeRoot: `${DEV}/orca/.worktrees`,
       baseBranch: "main",
+      // The caveman A/B trial (server/caveman.ts), judged 2026-10-22: Orca's Claude workers go through
+      // the caveman proxy; branch-demo is the control. Remove this line to turn it off.
+      // docs/research/caveman-trial-samples-2026-10-15.md has the sample runs it was checked on.
+      agentProxy: "caveman",
       // No slackChannel: Orca's own PRs aren't announced to the team channel. (This file only seeds
       // an unconfigured database now — leaving a channel here would seed Slack back on for this repo
       // if the DB were ever rebuilt, since the backfill enables Slack wherever a channel is set.)

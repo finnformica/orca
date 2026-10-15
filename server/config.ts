@@ -1,6 +1,7 @@
 import * as db from "./db";
 import { readJsonSync, statePath, writeJsonSync } from "./state";
 import { AGENT_PROVIDERS, type AgentProvider } from "../shared/agent";
+import type { AgentProxy } from "../shared/cavemanTrial";
 import { MERGE_WHEN_GREEN, type MergePolicy } from "../web/src/workstream";
 
 /** Preview service: `{port}` = this service's assigned port; `{svc:name}` = another's. */
@@ -131,6 +132,10 @@ export type RepoConfig = {
    *  goes red on a required check, or gets actionable review threads is Address-PR'd by Orca on its
    *  own. On unless set to false. */
   autoUpkeep?: boolean;
+  /** `caveman`: this repo's Claude worker runs go through the local caveman proxy (server/caveman.ts)
+   *  — the A/B trial judged 2026-10-22; repos without it are the control. Remove the line to turn it
+   *  off. The orchestrator never goes through it. A proxy that fails makes the run go direct. */
+  agentProxy?: AgentProxy;
 };
 
 export type OrcaConfig = {
@@ -266,6 +271,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       }
     }
     if (r.autoUpkeep !== undefined && typeof r.autoUpkeep !== "boolean") errors.push(`${where}.autoUpkeep must be true or false`);
+    if (r.agentProxy !== undefined && r.agentProxy !== "caveman") errors.push(`${where}.agentProxy must be "caveman" (or absent)`);
     if (r.modelEscalation !== undefined && r.modelEscalation !== "suggest" && r.modelEscalation !== "apply") {
       errors.push(`${where}.modelEscalation must be "suggest" or "apply"`);
     }

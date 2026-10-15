@@ -29,6 +29,8 @@ export type LedgerEntry = {
   evidenceChars?: number; // size of CI/review evidence handed to the agent
   prDescriptionAvoided?: boolean; // pr-description: a fresh full-context model call was avoided
   errorKind?: string; // coarse category (budget | timeout | oom | nonzero-exit | agent-error | …), never the raw message
+  repo?: string; // run only: the repo the run worked in
+  caveman?: boolean; // run only, caveman trial repos: did it go through the proxy (false = fallback)
 };
 
 const MAX_ENTRIES = 500;
