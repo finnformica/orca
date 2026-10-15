@@ -381,7 +381,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
   const [terminalOpen, setTerminalOpen] = useTerminalOpen(row); // "New chat" pops its conversation open on arrival
   const tone = rowTone(row);
   const reasons = attentionReasons(row);
-  const multiInstance = instanceChoices().length > 1; // instance is a tooltip/menu detail, not its own column
+  const multiInstance = instanceChoices().length > 1; // instance is a phone-only subline detail, not its own column
   const instance = rowInstance(row, thisInstance());
   const to = detailPath(row);
   const model = modelBadge(row.agentMeta?.model, row.worktreePath || row.prNumber ? modelFor(row) : undefined);
@@ -418,7 +418,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
   const quick = hasMenu && <QuickActionButtons row={row} hasWork={hasWork} peek onBusy={setBusy} />;
   const menu = hasMenu && <WorkstreamActions row={row} hasWork={hasWork} compact menuOnly onBusy={setBusy} onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}
     onOpen={to ? () => navigate(to) : undefined} contextAt={menuAt} onContextClose={closeMenu} />;
-  const prLink = row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>;
+  const prLink = row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" data-slot="pr-link" className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>;
   if (stacked) return (
     // A phone: a taller, card-like row with no fixed-width columns — everything wraps instead of
     // scrolling sideways. Line 1 is title + status; line 2 is branch/model/PR/preview/diffstat. The
@@ -488,7 +488,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
       <div role="cell" className="min-w-0"><RunStatus row={row} tone={tone} reasons={reasons} /></div>
       <div role="cell" className="flex min-w-0 items-center gap-2">
         {pill.tooltip ? <Tip label={pill.tooltip}><Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill></Tip> : <Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill>}
-        {row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>}
+        {row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" data-slot="pr-link" className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>}
       </div>
       <div role="cell" data-slot="row-signals"
         className="flex min-w-0 items-center gap-1 overflow-hidden [&>*]:shrink-0 [&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5">

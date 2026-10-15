@@ -279,7 +279,7 @@ describe("the phone layout (390px, touch)", () => {
     expect(line1!.querySelector('[data-slot="run-status"]')).not.toBeNull();
     // Line 2: branch, model, PR, preview info, diffstat — none of that spills into line 1 or line 3.
     expect(line2!.textContent).toContain("feat-wide");
-    expect(line2!.querySelector('a[title="Open PR #12 on GitHub"]')).not.toBeNull();
+    expect(line2!.querySelector('a[data-slot="pr-link"]')).not.toBeNull();
     expect(line2!.querySelector('[data-slot="pr-preview-inline"]')).not.toBeNull();
     expect(line2!.querySelector('[data-slot="diffstat"]')!.textContent).toBe("+42 −9");
     expect(line1!.querySelector('[data-slot="diffstat"]')).toBeNull();

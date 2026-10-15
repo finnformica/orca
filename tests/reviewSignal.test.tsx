@@ -206,7 +206,7 @@ describe("review cluster + Review panel", () => {
     const row = container!.querySelector<HTMLElement>('[data-branch="feat-x"]')!;
     const cluster = row.querySelector<HTMLElement>('[data-slot="review-cluster"]')!;
     expect(cluster).not.toBeNull();
-    expect([...cluster.querySelectorAll('[data-slot="approver"]')].map((a) => a.getAttribute("title"))).toEqual(["Approved by alice", "Approved by carol"]);
+    expect([...cluster.querySelectorAll('[data-slot="approver"]')].map((a) => a.getAttribute("aria-label"))).toEqual(["Approved by alice", "Approved by carol"]);
     const chip = cluster.querySelector<HTMLElement>('[data-slot="unresolved"]')!;
     expect(chip.textContent).toBe("5"); // count then icon — no icon glyph in textContent
     expect(chip.dataset.severity).toBe("critical"); // the chip itself carries the severity now — no separate dot

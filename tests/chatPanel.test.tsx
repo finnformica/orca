@@ -11,6 +11,7 @@ import type { Row } from "@/store";
 import { groupSteps, type AgentStep } from "../shared/agent";
 import { toolDetail, toolLabel } from "@/steps";
 import { chatPrompt, followUpPrompt, promptInstruction, withAttachments } from "@/workstream";
+import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -156,9 +157,9 @@ test("while a run is in flight, 'stop & send' interrupts it and sends the messag
   apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "long job", response: "" }]);
   await mount({ ...base, agentStatus: "running" });
 
-  const alt = container!.querySelector<HTMLButtonElement>('button[title^="Interrupt the run and send this instead"]')!;
+  const alt = [...container!.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent?.includes("stop & send"))!;
   expect(alt).toBeTruthy();
-  expect(alt.textContent).toContain("stop & send");
+  expect(openTip(alt).textContent).toBe("Interrupt the run and send this instead. The worktree, its commits, and the session are kept.");
   const box = container!.querySelector("textarea")!;
   await act(async () => {
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, "no, do it the other way");
@@ -174,7 +175,7 @@ test("while a run is in flight, 'stop & send' interrupts it and sends the messag
 
 test("with nothing running there is no 'stop & send'", async () => {
   await mount(base);
-  expect(container!.querySelector('button[title^="Interrupt the run and send this instead"]')).toBeNull();
+  expect([...container!.querySelectorAll("button")].some((b) => b.textContent?.includes("stop & send"))).toBe(false);
 });
 
 test("the composer sends a follow-up through the normal launch path", async () => {
@@ -187,7 +188,7 @@ test("the composer sends a follow-up through the normal launch path", async () =
     box.dispatchEvent(new Event("input", { bubbles: true }));
     await flush();
   });
-  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (Enter)"]')!;
+  const send = container!.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
   await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
 
   // Same headless one-shot every board action uses — the chat view adds no second runtime.
@@ -219,7 +220,7 @@ test("the composer clears as soon as you send, while the launch is still in flig
     box.dispatchEvent(new Event("input", { bubbles: true }));
     await flush();
   });
-  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (Enter)"]')!;
+  const send = container!.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
   await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
 
   expect(box.value).toBe(""); // cleared although the launch hasn't resolved
@@ -252,7 +253,7 @@ test("a send that fails while you're already typing the next message keeps both 
     box.dispatchEvent(new Event("input", { bubbles: true }));
     await flush();
   });
-  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (Enter)"]')!;
+  const send = container!.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
   await type("first");
   await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   await type("second, in progress");
@@ -274,7 +275,7 @@ test("a failed send puts the text back in the box", async () => {
     box.dispatchEvent(new Event("input", { bubbles: true }));
     await flush();
   });
-  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (Enter)"]')!;
+  const send = container!.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
   await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
 
   expect(box.value).toBe("retry me");
@@ -477,7 +478,7 @@ test("a slow attachment save can't resurrect the message you already sent", asyn
   await act(async () => { container!.querySelector("textarea")!.parentElement!.dispatchEvent(drop); });
 
   // Send WITHOUT waiting for the attachment's save to settle — the race.
-  const send = container!.querySelector<HTMLButtonElement>('button[title="Send (Enter)"]')!;
+  const send = container!.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
   await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
   await act(async () => { await flush(); await flush(); await flush(); });
 
@@ -554,7 +555,7 @@ test("a session mid-turn can't be compacted: the button is disabled and says why
   await mount({ ...base, sessionId: "claude-abc", agentStatus: "running", agentMeta: { contextPct: 40 } });
   await ringCard();
   expect(compactButton()!.disabled).toBe(true);
-  expect(compactButton()!.parentElement!.title).toBe("The agent is mid-turn — compact once it finishes.");
+  expect(openTip(compactButton()!).textContent).toBe("The agent is mid-turn — compact once it finishes.");
 });
 
 test("a refused compact (the bridge saw the session busy) shows its error in the card", async () => {

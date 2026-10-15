@@ -9,6 +9,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { WorkstreamCard } from "@/views/Board";
 import type { Row } from "@/store";
+import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -19,9 +20,11 @@ const click = async (el: Element) => { await act(async () => { el.dispatchEvent(
 // The top-right copy affordance is a Radix dropdown — open it with a real PointerEvent (Radix opens
 // menus on pointerdown, not click) so its items (portalled to document.body) render.
 const openCopyMenu = async () => {
-  const trigger = container!.querySelector<HTMLElement>('button[title="Copy…"]')!;
+  const trigger = container!.querySelector<HTMLElement>('[data-slot="copy-menu-trigger"]')!;
   await act(async () => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })); await flush(); await flush(); });
 };
+// Menu items carry no native title any more — find them by their own (visible) label text.
+const menuItem = (label: string) => [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((el) => el.textContent === label) ?? null;
 
 let copied = "";
 Object.defineProperty(globalThis.navigator, "clipboard", {
@@ -57,7 +60,7 @@ describe("swimlane card details", () => {
     await mount({ ...base, agentProvider: "claude", agentMeta: { model: "Opus 4.8", contextPct: 12 } });
     const picker = container!.querySelector<HTMLElement>('[aria-label="Model for this card"]');
     expect(picker?.textContent).toBe("Claude · Fable 5.1"); // nothing pinned, no repo default → Fable
-    expect(picker?.title).toContain("last run: Opus 4.8");     // what actually answered lives in the tooltip
+    expect(openTip(picker!).textContent).toContain("last run: Opus 4.8");     // what actually answered lives in the tooltip
     expect(container!.textContent).not.toContain("Opus 4.8");
     expect(container!.textContent).not.toContain("ctx");
   });
@@ -67,7 +70,8 @@ describe("swimlane card details", () => {
     await mount({ ...base, agentProvider: "codex", preferredModel: "gpt-5.5", agentMeta: { model: "Codex", inputTokens: 1234, outputTokens: 56, cacheReadTokens: 900 } });
     const picker = container!.querySelector<HTMLElement>('[aria-label="Model for this card"]');
     expect(picker?.textContent).toBe("Codex · GPT-5.5");
-    expect([...container!.querySelectorAll("[title]")].some((n) => n.getAttribute("title")?.includes("in / "))).toBe(false);
+    const tipTrigger = picker?.closest('[data-slot="tip"]');
+    expect(tipTrigger ? openTip(picker!).textContent?.includes("in / ") : false).toBe(false);
   });
 
   test("a non-local (In Review) card shows a coloured diffstat, but not the (redundant) branch name", async () => {
@@ -100,7 +104,7 @@ describe("swimlane card details", () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
     await mount(base);
     await openCopyMenu();
-    const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy PR link"]')!;
+    const item = menuItem("Copy PR link")!;
     expect(item).not.toBeNull();
     await click(item);
     expect(copied).toBe("https://x/7");
@@ -110,7 +114,7 @@ describe("swimlane card details", () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
     await mount(base);
     await openCopyMenu();
-    const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy worktree name"]')!;
+    const item = menuItem("Copy worktree name")!;
     expect(item).not.toBeNull();
     await click(item);
     expect(copied).toBe("enrich-cards-1");
@@ -120,7 +124,7 @@ describe("swimlane card details", () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
     await mount(base); // adopted PR: worktree but no agent has run here, so no conversation to continue
     await openCopyMenu();
-    const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy CLI: resume this agent\'s session in a terminal"]')!;
+    const item = menuItem("Copy CLI")!;
     expect(item).not.toBeNull();
     await click(item);
     expect(copied).toBe(`cd "/wt/enrich-cards-1" && claude --permission-mode auto`); // fresh, NOT --continue
@@ -130,7 +134,7 @@ describe("swimlane card details", () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
     await mount({ ...base, sessionId: "abc-123" });
     await openCopyMenu();
-    const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy CLI: resume this agent\'s session in a terminal"]')!;
+    const item = menuItem("Copy CLI")!;
     await click(item);
     expect(copied).toBe(`cd "/wt/enrich-cards-1" && claude --resume abc-123 --permission-mode auto`);
   });
@@ -139,7 +143,7 @@ describe("swimlane card details", () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
     await mount({ ...base, agentProvider: "codex", sessionId: "codex-123" });
     await openCopyMenu();
-    const item = document.body.querySelector<HTMLElement>('[role="menuitem"][title="Copy CLI: resume this agent\'s session in a terminal"]')!;
+    const item = menuItem("Copy CLI")!;
     await click(item);
     expect(copied).toBe(`cd "/wt/enrich-cards-1" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox codex-123`);
   });
@@ -148,8 +152,8 @@ describe("swimlane card details", () => {
     apiFake.summaryData = { files: [{}], commits: [{}], additions: 1, deletions: 0 };
     await mount({ ...base, lane: "LOCAL", prNumber: undefined, prUrl: undefined });
     await openCopyMenu();
-    expect(document.body.querySelector('[role="menuitem"][title="Copy PR link"]')).toBeNull();
-    expect(document.body.querySelector('[role="menuitem"][title="Copy worktree name"]')).not.toBeNull();
+    expect(menuItem("Copy PR link")).toBeNull();
+    expect(menuItem("Copy worktree name")).not.toBeNull();
   });
 
   test("a Done card shows no diffstat", async () => {
@@ -178,9 +182,9 @@ describe("swimlane card details", () => {
     // instance it would hand you a directory that doesn't exist here.
     await mount({ ...base, sessionId: "claude-1" });
     await openCopyMenu();
-    expect(document.body.querySelector('[role="menuitem"][title^="Copy CLI"]')).not.toBeNull();
+    expect(menuItem("Copy CLI")).not.toBeNull();
 
     await mount({ ...base, sessionId: "claude-1", remote: true, instance: "cloud" });
     await openCopyMenu();
-    expect(document.body.querySelector('[role="menuitem"][title^="Copy CLI"]')).toBeNull();
+    expect(menuItem("Copy CLI")).toBeNull();
   });

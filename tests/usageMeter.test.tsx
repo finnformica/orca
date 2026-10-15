@@ -13,6 +13,7 @@ import { navigate } from "@/lib/route";
 import { NARROW_QUERY } from "@/lib/viewport";
 import { createStore, getDefaultStore } from "jotai";
 import { usageExpandedAtom } from "@/lib/atoms";
+import { openTip } from "./tip";
 import * as centre from "@/lib/notificationStore";
 import { shapeCodexUsage, shapeUsage } from "../server/usage";
 
@@ -192,7 +193,7 @@ test("logins that can't be routed to are excluded from the fleet mean but still 
   expect(rows("fleet")[0]).toBe("5-hour window 95% / 100%");                          // …so the mean IS its reading
   expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Limited");
   expect(group("login:spare")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Signed-out");
-  expect(group("login:spare")!.querySelector("[data-slot='usage-state']")!.getAttribute("title")).toContain("Not signed in on this machine");
+  expect(openTip(group("login:spare")!.querySelector("[data-slot='usage-state']")!).textContent).toContain("Not signed in on this machine");
   expect(rows("login:spare")).toEqual([]);
   expect(group("login:spare")!.className).toContain("opacity-50");
   expect(group("login:old")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Disabled");
@@ -238,7 +239,7 @@ test("warns when hydra is installed but the bridge's `claude` isn't its shim (ru
   const warn = container!.querySelector("[data-slot='routing-warning']");
   expect(warn?.textContent).toContain("routing off");
   expect(card().contains(warn)).toBe(true);
-  expect(warn?.getAttribute("title")).toContain("install.sh --shim");
+  expect(openTip(warn!.querySelector(".lucide-triangle-alert")!).textContent).toContain("install.sh --shim");
 });
 
 test("no warning when the shim is active, or when hydra isn't installed at all", async () => {
@@ -350,9 +351,9 @@ test("a hydra login's row shows a switch on hover: flipping it disables/enables 
   await mouse(header(), "mouseover");
   expect(row()).not.toBeNull();
   expect(row()!.getAttribute("aria-checked")).toBe("true");
-  expect(row()!.getAttribute("title")).toBe("Take work out of hydra's rotation");
+  expect(openTip(row()!).textContent).toBe("Take work out of hydra's rotation");
   // Sits right next to the login's name, not out among the state pill/subtitle.
-  expect(header().querySelector("span.truncate")!.nextElementSibling).toBe(row());
+  expect(header().querySelector("span.truncate")!.nextElementSibling).toBe(row()!.closest('[data-slot="tip"]'));
 
   await click(row()!);
   // No instance: the bridge applies it on every host that has the login (one decision per account).
@@ -360,7 +361,7 @@ test("a hydra login's row shows a switch on hover: flipping it disables/enables 
   expect(row()!.getAttribute("aria-checked")).toBe("false"); // flipped from the refreshed profile list
   expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Disabled");
   expect(group("login:work")!.className).toContain("opacity-50"); // muted, same as any out-of-rotation login
-  expect(row()!.getAttribute("title")).toBe("Put work back");
+  expect(openTip(row()!).textContent).toBe("Put work back");
 
   await click(row()!); // and back
   expect(apiFake.setProfileEnabledCalls[1]).toEqual({ name: "work", enabled: true, instance: undefined });
@@ -527,8 +528,8 @@ test("a login's status is one word right after its name, the reason in a tooltip
   const title = left!.querySelector("[data-slot='usage-group-title']")!;
   const pill = left!.querySelector("[data-slot='usage-state']")!;
   expect(pill.textContent).toBe("Stale");
-  expect(pill.getAttribute("title")).toBe("Access token expired — Orca renews it (Refresh now, or its 30-minute check); the usage shown may be old");
-  expect(title.nextElementSibling).toBe(pill); // straight after the name
+  expect(openTip(pill).textContent).toBe("Access token expired — Orca renews it (Refresh now, or its 30-minute check); the usage shown may be old");
+  expect(title.nextElementSibling).toBe(pill.closest('[data-slot="tip"]')); // straight after the name
   expect(title.className).toContain("truncate");
   expect(title.className).toContain("min-w-0");
   expect(header.className).toContain("max-w-full");
@@ -622,7 +623,8 @@ test("the header meter shows the ring + percent for a single login", async () =>
   expect(meter).not.toBeNull();
   expect(meter.textContent).toBe("38%");
   expect(meter.querySelector("svg circle")).not.toBeNull(); // the ring
-  expect(meter.title).toBe("5-hour window");
+  expect(meter.getAttribute("title")).toBeNull(); // no native hover box — the HoverCard already shows the detail
+  expect(meter.getAttribute("aria-label")).toBe("Claude usage — 5-hour window");
   expect(meter.className).toContain("max-md:hidden"); // hidden on phone widths
 });
 
@@ -633,7 +635,7 @@ test("the header meter is the fleet mean across several logins, not any one of t
   await mount("/agents");
   const meter = headerMeter()!;
   expect(meter.textContent).toBe("50%"); // mean of 80/20 — not 80, not 20
-  expect(meter.title).toBe("5-hour window · 2 logins in rotation");
+  expect(meter.getAttribute("aria-label")).toBe("Claude usage — 5-hour window · 2 logins in rotation");
 });
 
 // The regression this guards: the header once computed its own per-login pick (33%) while the Usage

@@ -56,7 +56,7 @@ test("any file type can be attached, previewed and submitted", async () => {
   expect(chips).toEqual(["spec.docx", "feed.xml"]);
   expect(c.querySelector("img")).toBeNull();
 
-  const send = c.querySelector<HTMLButtonElement>('button[title^="Send"]')!;
+  const send = c.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
   expect(send.disabled).toBe(false); // files alone are enough to send
   await act(async () => { send.click(); });
   expect(sent[0]?.map((f) => f.name)).toEqual(["spec.docx", "feed.xml"]);

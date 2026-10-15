@@ -45,7 +45,8 @@ test("a card per machine appears once config names them, with each one's vitals 
   // This month's cost — the rate over the hours it was up — marked as an estimate when IMDS supplied
   // the type; the rate × hours behind it is the tooltip.
   expect(detail(cloud, "instance-cost")).toBe("Cost · this month$5.52est.");
-  expect(cloud.querySelector('[data-slot="instance-cost"] [title]')!.getAttribute("title")).toBe("$0.23/h est. (m7i.xlarge) × 23.7 h up this month (UTC), from the machine's boot ledger");
+  const costValue = cloud.querySelector<HTMLElement>('[data-slot="instance-cost"] .tabular-nums')!;
+  expect(openTip(costValue).textContent).toBe("$0.23/h est. (m7i.xlarge) × 23.7 h up this month (UTC), from the machine's boot ledger");
 });
 
 const lastValue = (chart: Element) => chart.querySelector('[data-slot="chart-value"]')!.textContent;

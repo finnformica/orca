@@ -249,7 +249,7 @@ export function CopyMenu({ row }: { row: Row }) {
     <DropdownMenu>
       <Tip label="Copy…">
         <DropdownMenuTrigger asChild>
-          <button type="button" className="text-muted-foreground hover:text-foreground">
+          <button type="button" data-slot="copy-menu-trigger" className="text-muted-foreground hover:text-foreground">
             {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
           </button>
         </DropdownMenuTrigger>

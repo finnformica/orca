@@ -393,7 +393,7 @@ export function ChatComposer({
           <div data-slot="chat-composer-actions" className="ml-auto flex shrink-0 items-center gap-1">
             {onCancel && <Button type="button" size="sm" variant="ghost" onClick={cancel}>Cancel</Button>}
             {action ?? (
-              <Button type="button" size="icon" variant="ghost" className="text-muted-foreground size-8" onClick={() => fileRef.current?.click()}>
+              <Button type="button" size="icon" variant="ghost" data-slot="composer-attach" className="text-muted-foreground size-8" onClick={() => fileRef.current?.click()}>
                 <Paperclip className="size-4" />
               </Button>
             )}
