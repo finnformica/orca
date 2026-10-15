@@ -187,15 +187,13 @@ function LoginToggle({ name, enabled }: { name: string; enabled: boolean }) {
   );
 }
 
-/** A stale login's fix, right on the row — the only alternative was SSHing in to run `hydra
- *  refresh <name> --force` by hand. Same ActionButton semantics (spinner → ✓/✗) as LoginToggle:
- *  calls `POST /api/usage/refresh` against the HOST whose login is stale (`instance` — the merged
- *  row's own host, else this browser's), then re-polls the merged fleet view so it reflects the fix
- *  at once rather than waiting out the slow poll. Shown only while the row (or a secondary host
- *  hint) reads Stale. The CLI can exit clean without actually clearing the stale state (its OWN
- *  refresh token has expired, not just the access token) — that reads as success unless checked, so
- *  a re-read that is still stale is treated as a failure too, with a message pointing at the fix a
- *  refresh can't do (`hydra login`, which needs the browser, not a background command). */
+/** A stale login's fix, right on the row. Calls `POST /api/usage/refresh` against the HOST whose
+ *  login is stale (`instance` — the merged row's own host, else this browser's), which re-reads
+ *  usage and, when the access token has lapsed, renews it with one minimal Claude launch under that
+ *  login (hydra itself never renews a token). The server answers an error when the endpoint
+ *  rate-limits (429) or the login is still stale after renewing (its refresh token is gone — `hydra
+ *  login`, which needs a browser); a re-read that is still stale is treated as that failure too.
+ *  Then re-polls the merged fleet view so the row reflects the fix at once. */
 function RefreshProfileButton({ name, instance }: { name: string; instance?: string }) {
   const [state, setState] = useState<SwitchState>("idle");
   const target = instance ?? thisInstance();
@@ -215,7 +213,7 @@ function RefreshProfileButton({ name, instance }: { name: string; instance?: str
       const stillStale = profiles?.find((p) => p.name === name)?.state?.startsWith("token stale");
       await refreshUsageNow();
       if (stillStale) {
-        fail(`Still stale after refresh — the refresh token itself may have expired. Run "hydra login ${name}"${target ? ` on ${target}` : ""}.`);
+        fail(`Still stale after renewing — the refresh token itself has expired. Run "hydra login ${name}"${target ? ` on ${target}` : ""}.`);
       } else {
         setState("done");
       }
@@ -226,7 +224,7 @@ function RefreshProfileButton({ name, instance }: { name: string; instance?: str
   };
   return (
     <button type="button" data-slot="login-refresh" disabled={state === "loading"}
-      title={`Refresh ${name}'s token on ${target ?? "this host"} (hydra refresh --force)`}
+      title={`Renew ${name}'s expired token on ${target ?? "this host"}`} aria-label={`Renew ${name}'s token`}
       onClick={(e) => { e.stopPropagation(); void refresh(); }}
       className="text-muted-foreground hover:text-foreground flex size-4 shrink-0 items-center justify-center">
       {state === "loading" ? <Loader2 className="size-3 animate-spin" />
