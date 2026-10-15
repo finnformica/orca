@@ -8,6 +8,7 @@ import { afterEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
+import { openTip } from "./tip";
 
 apiFake.holdConfig = true; // before the store's import, so config is still in flight at mount
 const store = await import("@/store");
@@ -215,10 +216,8 @@ test("the Instances refresh button refetches health and history at once, spinnin
   apiFake.holdHealthHistory = true;
   const button = container!.querySelector<HTMLButtonElement>('[data-slot="instances-refresh"]')!;
   // It sits just under the sticky top bar (z-30): its tooltip opens BELOW the button, never up under the bar.
-  const tip = button.closest('[data-slot="tip"]')!.querySelector('[data-slot="tip-content"]')!;
+  const tip = openTip(button).closest('[data-slot="tip-content"]')!;
   expect(tip.getAttribute("data-side")).toBe("bottom");
-  expect(tip.className).toContain("top-full");
-  expect(tip.className).not.toContain("bottom-full");
   await act(async () => { button.click(); await flush(); });
   expect(apiFake.healthHistoryCalls).toHaveLength(2);
   expect(button.getAttribute("aria-busy")).toBe("true");

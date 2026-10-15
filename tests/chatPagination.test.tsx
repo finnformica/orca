@@ -36,7 +36,9 @@ beforeEach(() => { localStorage.clear(); apiFake.reset(); });
 afterEach(async () => { await act(async () => { root?.unmount(); }); container?.remove(); apiFake.reset(); });
 
 const log = () => container!.querySelector<HTMLElement>(".overflow-y-auto")!;
-const shown = () => [...container!.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].map((t) => t.textContent!.match(/ask (\d+)/)![1]).map(Number);
+// Read off the instruction's own bubble: the turn's whole text runs it straight into the timestamp
+// ("ask 012:00 AM"), since a closed tooltip mounts nothing in between.
+const shown = () => [...container!.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].map((t) => t.querySelector('[data-slot="chat-user-text"]')!.textContent!.match(/^ask (\d+)$/)![1]).map(Number);
 /** happy-dom lays nothing out: give the scroller a height that grows with its turns (20px each) and a
  *  settable scrollTop, so anchoring can be checked arithmetically. */
 function layout(el: HTMLElement, clientHeight = 400) {

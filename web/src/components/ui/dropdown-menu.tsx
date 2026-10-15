@@ -30,7 +30,7 @@ function DropdownMenuSubContent({ className, sideOffset = 4, collisionPadding = 
       <DropdownMenuPrimitive.SubContent
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}
-        className={cn("bg-popover text-popover-foreground z-50 min-w-[10rem] overflow-hidden rounded-lg border p-1 shadow-menu", className)}
+        className={cn("bg-popover text-popover-foreground z-50 min-w-[10rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-lg border p-1 shadow-menu data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2", className)}
         {...props}
       />
     </DropdownMenuPrimitive.Portal>
@@ -43,7 +43,7 @@ function DropdownMenuContent({ className, sideOffset = 4, collisionPadding = POP
       <DropdownMenuPrimitive.Content
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}
-        className={cn("bg-popover text-popover-foreground z-50 min-w-[10rem] overflow-hidden rounded-lg border p-1 shadow-menu", className)}
+        className={cn("bg-popover text-popover-foreground z-50 min-w-[10rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-lg border p-1 shadow-menu data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2", className)}
         {...props}
       />
     </DropdownMenuPrimitive.Portal>
