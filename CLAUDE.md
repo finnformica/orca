@@ -408,7 +408,13 @@ context between turns.
    hydra. If the shim is missing (Claude Code's updater rewrites `~/.local/bin/claude`), every run
    silently lands on the default login — `/api/usage` reports `routing.shim` and the meter warns.
    The Usage card's per-login row has a hover switch (`POST /api/usage/profile`, per host) to take a
-   login out of hydra's rotation — still signed in, just skipped by this ladder — or put it back.
+   login out of hydra's rotation — still signed in, just skipped by this ladder — or put it back. A login
+   whose access token lapsed reads "token stale" (hydra only reads usage; Claude Code renews tokens
+   when it launches), so Refresh on a Stale row and a 30-minute pass on each primary bridge
+   (`usage.renewStaleLogins`, enabled logins only) renew it with ONE minimal launch under that login
+   (`renewToken`: `hydra exec <name> -p` on haiku, no tools, empty temp cwd, output discarded); still
+   stale after that means the refresh token is gone — `hydra login` — and a 429 is reported as
+   rate-limited, not stale.
 3. **Portable transcript** (lossy, bounded). Used for a provider switch, a Claude session at ≥80%
    context, a Codex/Cursor session past 12 turns or three straight failures, a session the provider
    can't find, or a login switch whose session file is missing. `handoffPrompt` (`shared/agent.ts`)

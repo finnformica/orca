@@ -10,7 +10,7 @@ import * as preview from "./preview";
 import * as forward from "./forward";
 import { reachable } from "./peer";
 import { portFree, reclaimBridgePort, waitForPortFree } from "./net";
-import { refreshProfile, routingInfo, setProfileEnabled, setProfileEnabledEverywhere, usage, usageAcrossInstances } from "./usage";
+import { RENEW_POLL_MS, refreshProfile, renewStaleLogins, routingInfo, setProfileEnabled, setProfileEnabledEverywhere, usage, usageAcrossInstances } from "./usage";
 import * as ledger from "./ledger";
 import * as db from "./db";
 import * as outbox from "./outbox";
@@ -209,6 +209,15 @@ const publishPreviews = () => loadConfig().then((cfg) => verbs.previewRows(cfg, 
 // This machine's vitals into instance_metric once a minute, for the header chip's 24h graphs
 // (server/health.ts). Each instance samples itself; either answers the history from Postgres.
 primary.onPrimary(() => { startMetricsSampler(); });
+
+// Stale hydra logins (an access token that lapsed — hydra never renews one, a Claude launch does):
+// renewed on THIS host by one minimal launch each, so the rotation never routes to one. Every 30
+// minutes on the primary; each instance renews its own logins (server/usage.ts renewStaleLogins).
+if (!PREVIEW_BRIDGE) primary.onPrimary(() => {
+  const renew = () => void renewStaleLogins(primary.held).catch((e) => console.error("orca: stale-login renew failed", e));
+  renew();
+  setInterval(renew, RENEW_POLL_MS).unref();
+});
 
 // Orphaned preview databases (a bridge crash / reaped worktree / worker test run that never dropped
 // its own) and stale test-harness Docker containers — on this instance's repos only. At startup
@@ -616,11 +625,12 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/usage/refresh") {
     // Same per-host placement as /api/usage/profile above — forced when an explicit ?instance=
-    // names another machine, answered here otherwise. Fixes a "token stale" row without SSH.
+    // names another machine, answered here otherwise. Fixes a "token stale" row without SSH: re-reads
+    // usage and, if the token lapsed, renews it with one minimal launch (server/usage.ts).
     const name = String(body.name ?? "");
     if (!name) return json({ error: "name required" }, 400);
     try {
-      return json({ profiles: await refreshProfile(name) });
+      return json({ profiles: await refreshProfile(name, { host: db.instanceName() }) });
     } catch (e) {
       return json({ error: e instanceof Error ? e.message : String(e) }, 400);
     }
