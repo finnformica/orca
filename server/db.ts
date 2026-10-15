@@ -85,6 +85,13 @@ export class DbUnavailable extends Error {
   constructor(readonly since: number) { super(`database unreachable since ${new Date(since).toISOString()}`); }
 }
 
+/** A catch handler for a periodic tick: silent while the database is known to be down (the outage
+ *  is announced once in `markDown` and once when it returns — logging it again on every 10s publish
+ *  filled the console with the same stack), the error with `label` otherwise. */
+export const logUnlessDown = (label: string) => (e: unknown): void => {
+  if (!(e instanceof DbUnavailable)) console.error(label, e);
+};
+
 let downSince: number | null = null;
 let downUrl: string | null = null;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;

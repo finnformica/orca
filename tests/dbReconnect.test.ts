@@ -167,3 +167,16 @@ test("the pool's own idle/lifetime closes and a stale plan count as a dropped co
   expect(db.isDroppedConnection(as("cached plan must not change result type", { code: "ERR_POSTGRES_SERVER_ERROR", errno: "0A000" }))).toBe(true);
   expect(db.isDroppedConnection(as("duplicate key value violates unique constraint", { code: "ERR_POSTGRES_SERVER_ERROR", errno: "23505" }))).toBe(false);
 });
+
+test("a periodic tick that hits the known outage logs nothing — the outage was announced once already", () => {
+  const seen: unknown[][] = [];
+  const orig = console.error;
+  console.error = (...a: unknown[]) => { seen.push(a); };
+  try {
+    db.logUnlessDown("orca: preview publish failed")(new db.DbUnavailable(Date.now()));
+    expect(seen).toEqual([]);
+    db.logUnlessDown("orca: preview publish failed")(new Error("boom"));
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.[0]).toBe("orca: preview publish failed");
+  } finally { console.error = orig; }
+});
