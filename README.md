@@ -1,48 +1,56 @@
 # 🐳 Orca
 
 Orca automates the work between **managing coding agents** and **managing PRs**. You talk to one
-**orchestrator**: a Claude Code session that delegates each piece of work to a **headless worker**
-running in its own git worktree. Orca checks what the worker committed, opens the PR, and merges it
-through a policy-governed **merge queue** once CI is green. A web console (installable on your phone)
-shows every workstream, PR, preview and machine.
+**orchestrator**. The orchestrator is a Claude Code session. It gives each piece of work to a
+**headless worker** in its own git worktree. Orca checks what the worker committed and opens the PR.
+When CI is green, Orca merges the PR through a **merge queue** that a policy controls. A web console
+shows every workstream, PR, preview and machine. You can install the console on your phone.
 
-- **[docs/WORKFLOW.md](docs/WORKFLOW.md)**: how Orca works and how you work with it.
-- **[docs/SETUP.md](docs/SETUP.md)**: deploying your own Orca from scratch (AWS, Tailscale, GitHub,
-  Claude, Postgres, systemd, config, previews, a laptop instance, troubleshooting).
+- **[docs/WORKFLOW.md](docs/WORKFLOW.md)**: how Orca works, and how you work with it.
+- **[docs/SETUP.md](docs/SETUP.md)**: how to deploy your own Orca from the start (AWS, Tailscale,
+  GitHub, Claude, Postgres, systemd, config, previews, a laptop instance, troubleshooting).
 - [`CLAUDE.md`](CLAUDE.md): the design brief and its history. [`QA.md`](QA.md): the manual QA
   runbook.
+
+## Writing standard
+
+Orca's agents write all human-facing prose in **ASD-STE100 Simplified Technical English (STE)**.
+This includes replies, reports, PR descriptions and commit messages. This README and the documents
+in `docs/` also use STE. The rules are in one file, `shared/writingStyle.ts`. Every prompt that Orca
+sends to a model includes them. STE applies to prose only. It does not apply to code, commands,
+paths or quoted text.
 
 ## How it works
 
 | Concept | In one line |
 | --- | --- |
-| **Orchestrator** | One conversation (`O`, or **Ask the orchestrator**) that spawns and steers workers. It's woken when they finish, and it never polls. |
-| **Workstream** | One branch = one worktree = one conversation. Runs headless `claude -p` (or `codex exec` / `cursor-agent -p`) with the CLI's own login, so no API key is needed. |
+| **Orchestrator** | One conversation (`O`, or **Ask the orchestrator**). It starts and controls workers. Orca wakes it when they finish. It does not poll. |
+| **Workstream** | One branch = one worktree = one conversation. It runs headless `claude -p` (or `codex exec` / `cursor-agent -p`) with the CLI's own login. You do not need an API key. |
 | **`orca` CLI** | The orchestrator's tool: `board`, `spawn`, `send`, `address`, `move`, `archive`, `sweep`, `preview`, `merge --when-green`, `status`, `notes`, `chats`, `read`. |
-| **Verification gate** | After a run that commits, Orca runs the repo's `checkCommand` itself: **Verified** or **Check failed**. |
-| **Auto PR + merge queue** | `mergePolicy.autoPr` opens a clean worker's PR. Marked PRs are squash-merged when every check passes and the PR is mergeable, under `whenGreen: never \| small \| any`, with `denyPaths` (e.g. migrations, deploy) always left for a human. |
-| **Model ladder** | Haiku for mechanical work, Sonnet for small clear tasks, **Opus by default**, Fable only after Opus fails. Two failures in a row on one model suggest (or apply) the next one up. |
-| **Status & notes** | `orca status` keeps a per-workstream plan / waiting-on / merge class. `orca notes` keeps the orchestrator's standing facts across sessions. |
-| **Previews** | Per-branch app instances on assigned ports, each with its own database cloned from a template. `--push-to-template` promotes one. |
-| **Instances** | A cloud box and a laptop share one Postgres. Each workstream lives where its worktree is, and requests are forwarded over Tailscale. |
-| **Notifications** | One centre plus toasts, shared by every instance, each with quick actions (Address PR, Fix, Reply, Retry, Open). |
-| **Phone** | Responsive below 768px and installable as a PWA (the service worker needs HTTPS). |
+| **Verification gate** | After a run that commits, Orca runs the repo's `checkCommand` itself. The result is **Verified** or **Check failed**. |
+| **Auto PR + merge queue** | `mergePolicy.autoPr` opens the PR of a clean worker. Orca squash-merges a marked PR when all checks pass and the PR is mergeable. `whenGreen: never \| small \| any` sets the policy. A PR that touches `denyPaths` (for example migrations or deploy) always stays for a human. |
+| **Model ladder** | Haiku for mechanical work. Sonnet for small, clear tasks. **Opus by default.** Fable only after Opus fails. After two failures in a row on one model, Orca suggests (or applies) the next model up. |
+| **Status & notes** | `orca status` keeps the plan, the wait and the merge class of each workstream. `orca notes` keeps the orchestrator's standing facts between sessions. |
+| **Previews** | An app instance for each branch, on assigned ports. Each preview has its own database, cloned from a template. `--push-to-template` makes one preview the template. |
+| **Instances** | A cloud box and a laptop share one Postgres database. Each workstream lives where its worktree is. Orca forwards requests over Tailscale. |
+| **Notifications** | One centre plus toasts. All instances share them. Each has quick actions (Address PR, Fix, Reply, Retry, Open). |
+| **Phone** | The layout changes below 768px. You can install it as a PWA (the service worker needs HTTPS). |
 
-Details for each are in [docs/WORKFLOW.md](docs/WORKFLOW.md).
+[docs/WORKFLOW.md](docs/WORKFLOW.md) gives the details of each concept.
 
 ## Architecture in brief
 
-One Bun process (`server/index.ts`) serves the built React UI and a plain-JSON API, plus one SSE
-stream per browser tab. Postgres (`Bun.SQL`) holds the conversations, enrichment, config,
-notifications and metrics. Git, `gh` and live worktrees are the source of truth for everything else.
-**The API has no auth of its own**, so it listens on loopback plus the machine's Tailscale address,
-and never on `0.0.0.0`.
+One Bun process (`server/index.ts`) serves the built React UI and a plain-JSON API. It also serves
+one SSE stream for each browser tab. Postgres (`Bun.SQL`) holds the conversations, enrichment,
+config, notifications and metrics. Git, `gh` and the live worktrees are the source of truth for all
+other data. **The API has no authentication of its own.** Thus it listens on loopback and on the
+machine's Tailscale address. It never listens on `0.0.0.0`.
 
 ## Quick start
 
 ### On a cloud box (the recommended setup)
 
-The full walkthrough is in [docs/SETUP.md](docs/SETUP.md). In short:
+[docs/SETUP.md](docs/SETUP.md) gives all the steps. In short:
 
 ```sh
 # laptop: Tailscale key into SSM, then launch an m7i.xlarge (eu-west-2, 150 GB) with cloud-init
@@ -60,7 +68,7 @@ echo "ORCA_PREVIEW_BIND=<tailnet-ip>" >> /opt/orca/.env && sudo systemctl restar
 # then: add your repos to the config document (curl GET/PUT /api/config/document — SETUP.md §6–8)
 ```
 
-Open `http://<box-name>.<tailnet>.ts.net:8787` from any device on your tailnet.
+Open `http://<box-name>.<tailnet>.ts.net:8787` from a device on your tailnet.
 
 ### Locally, for development
 
@@ -73,12 +81,17 @@ bun run build && bun run server   # production: the bridge serves the built UI o
 bun run check            # tsc --noEmit + bun test (needs ORCA_TEST_DATABASE_URL)
 ```
 
-On first start, an empty database is seeded from `orca.config.ts`. After that, the config lives in
+At the first start, Orca fills an empty database from `orca.config.ts`. After that, the config is in
 the database ([SETUP.md §6](docs/SETUP.md#6-the-config-document)).
 
 ## Working on Orca itself
 
-The deployed bridge serves `/opt/orca` and restarts when it changes, so **never edit that checkout**.
-Make changes in a worktree (`git worktree add .worktrees/<name>`, symlink `node_modules`, copy
-`.env`) and open a PR. Auto-deploy picks up `main` within a minute once nothing is running. Every
-behaviour change ships with a test, and `bun run check` is the gate (see [`CLAUDE.md`](CLAUDE.md)).
+The deployed bridge serves `/opt/orca`. It restarts when that checkout changes. Thus, **do not edit
+that checkout**. Do these steps:
+
+1. Make a worktree (`git worktree add .worktrees/<name>`).
+2. Symlink `node_modules` and copy `.env` into it.
+3. Make your changes there and open a PR.
+
+Auto-deploy gets `main` in one minute. It waits while the orchestrator is in a wake. Each behaviour change must have a test.
+`bun run check` is the gate (see [`CLAUDE.md`](CLAUDE.md)).
