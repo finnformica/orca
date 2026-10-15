@@ -91,8 +91,13 @@ export function Shell({ crumbs, sidebarActions, children }: {
           <RepoSwitcher />
           <nav aria-label="Breadcrumb" className="text-muted-foreground flex min-w-0 items-center gap-2 text-sm">{crumbs}</nav>
           <span className="contents max-md:ml-auto max-md:flex"><BridgeLabel /><StaleIndicator /></span>
-          <HeaderUsageMeter />
-          <AskOrchestrator />
+          {/* A reserved slot, not a margin on whichever of these happens to render first: the usage
+              meter is absent while loading or with nothing signed in, and ml-auto on it alone left
+              "Ask the orchestrator" stuck against the breadcrumbs until the meter appeared. */}
+          <div className="ml-auto flex shrink-0 items-center gap-3 max-md:hidden">
+            <HeaderUsageMeter />
+            <AskOrchestrator />
+          </div>
         </header>
         <main className="w-full flex-1 px-4 py-6 md:px-6 max-md:min-w-0 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pb-[calc(5.5rem+env(safe-area-inset-bottom))]">{offline ? <OfflineScreen /> : children}</main>
       </div>
