@@ -193,12 +193,17 @@ const Facet = ({ title, items, tone }: { title: string; items: string[]; tone: s
  *  any instance, whichever one took the upload. */
 export function Attachments({ files, className = "" }: { files: AttachmentRef[]; className?: string }) {
   if (!files.length) return null;
+  // Just the images, in order: the other images this message carried are this one's lightbox gallery.
+  const images = files.filter((f) => isImageName(f.name)).map((f) => ({ src: `/api/attachments/${f.id}`, alt: f.name }));
   return (
     <div className={`flex flex-wrap gap-1.5 ${className}`} data-slot="message-attachments">
       {files.map((f) => {
         const href = `/api/attachments/${f.id}`;
+        const imgIndex = images.findIndex((im) => im.src === href);
         return isImageName(f.name) ? (
-          <ExpandableImage key={f.id} src={href} alt={f.name} downloadName={f.name} imgClassName="max-h-32 max-w-48 rounded-md border object-cover" />
+          <ExpandableImage key={f.id} src={href} alt={f.name} downloadName={f.name}
+            gallery={images.length > 1 ? { images, index: imgIndex } : undefined}
+            imgClassName="max-h-32 max-w-48 rounded-md border object-cover" />
         ) : (
           <a key={f.id} href={href} target="_blank" rel="noreferrer" title={f.name} data-slot="attachment-file"
             className="bg-muted text-foreground hover:bg-accent inline-flex max-w-56 items-center gap-1 rounded-md border px-2 py-1 text-[11px]">
