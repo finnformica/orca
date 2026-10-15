@@ -20,6 +20,7 @@ import * as attachments from "./attachments";
 import * as git from "./git";
 import * as gh from "./gh";
 import * as verbs from "./verbs";
+import * as prShots from "./prShots";
 import * as preview from "./preview";
 import * as mergeQueue from "./mergeQueue";
 import { pushToTemplate } from "./pushTemplate";
@@ -522,6 +523,17 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await db.patchEnrichment(repo.name, branch, { orchestrated: true });
       if (status === "resolved") return `#${pr}'s only conflict was in its changelog: Orca merged the base, kept both sides' entries and pushed. Nothing else needed an agent, so none was started.`;
       return `${status === "queued" ? "Queued" : "Started"} Address PR for #${pr}. End your turn; you are woken when it finishes.`;
+    }
+    case "pr-shots": {
+      const repo = repoNamed(cfg, args.repo);
+      const branch = required(args, "branch");
+      const body = { repo: repo.name, branch, ...(args.pr ? { pr: Number(args.pr) } : {}) };
+      const home = await verbs.placement(repo, { branch });
+      const r = (home !== db.instanceName()
+        ? await viaInstance(cfg, home, "/api/prs/shots", body)
+        : await prShots.attachPrShots(repo, branch, { pr: body.pr })) as prShots.PrShotsResult;
+      if (!r.shots) return `No screenshots on ${repo.name}/${branch} to show (${r.why ?? "none reported"}).`;
+      return r.updated ? `PR #${r.pr}'s Screenshots section now shows the ${r.shots} newest (hosted on ${r.ref}).` : `PR #${r.pr}'s Screenshots section is ${r.why ?? "unchanged"}.`;
     }
     case "move": {
       const repo = repoNamed(cfg, args.repo);

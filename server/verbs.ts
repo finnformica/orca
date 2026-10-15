@@ -16,6 +16,7 @@ import * as preview from "./preview";
 import * as forward from "./forward";
 import * as notify from "./notify";
 import { existsSync } from "fs";
+import * as prShots from "./prShots";
 import { featuresOf, modelFor, providerAllowed, type OrcaConfig, type RepoConfig } from "./config";
 import { addressNeedsAgent, addressPrPrompt, chatPrompt, cleanupDecision, continuation, launchPrompt, mergeSettled, mergedPrIsHistory, slugifyBranch, titleFromPrompt, workerPrBody, type MechanicalMerge, type SweepReport } from "../web/src/workstream";
 import { providerOfModel } from "../shared/models";
@@ -327,6 +328,7 @@ export async function openWorkerPr(repo: RepoConfig, branch: string, worktreePat
     title, base: repo.baseBranch, head: branch,
     body: workerPrBody({ ...result, commits: commits.map((c) => c.subject).reverse() }), // changeSummary is newest-first
   });
+  await prShots.attachPrShots(repo, branch, { pr: pr.number }).catch((e) => console.warn(`orca: PR #${pr.number} screenshots: ${(e as Error).message}`));
   return pr;
 }
 
@@ -364,7 +366,7 @@ const orcaPaths = (repo: RepoConfig): string[] => [...(repo.copyToWorktree ?? []
 /** Reap one finished worktree: its preview stopped (and its placement forgotten), the worktree
  *  removed, a MERGED branch deleted (a closed PR's branch is kept), the workstream archived — its
  *  conversation stays. Only ever called once `cleanupDecision` said nothing would be lost. */
-async function reapWorktree(repo: RepoConfig, w: { branch: string; worktreePath: string }, reason: git.ReapReason, blocked: boolean): Promise<void> {
+async function reapWorktree(repo: RepoConfig, w: { branch: string; worktreePath: string }, reason: git.ReapReason, blocked: boolean, pr?: number): Promise<void> {
   agent.stop(w.worktreePath);
   // A headless process left in the worktree (one this bridge no longer tracks), matched by its cwd —
   // never by argv: the orchestrator's prompt lists every branch, and an argv match SIGTERMed its wake.
@@ -373,6 +375,8 @@ async function reapWorktree(repo: RepoConfig, w: { branch: string; worktreePath:
   await db.clearPreviewPlacement(w.worktreePath).catch(() => {});
   await git.removeWorktree(repo.repoPath, w.worktreePath);
   if (reason === "merged") await git.deleteBranch(repo.repoPath, w.branch);
+  // The PR's hosted screenshots (server/prShots.ts) are only for reviewing it.
+  if (pr) await prShots.deletePrAssets(repo.repoPath, pr).catch((e) => console.warn(`orca: PR #${pr}'s pr-assets refs not deleted: ${(e as Error).message.split("\n")[0]}`));
   if (blocked) await db.patchEnrichment(repo.name, w.branch, { cleanupBlocked: null }).catch(() => {});
   // The worktree is gone either way; with the database down (degraded mode) the archive is skipped
   // rather than reported as a failed removal.
@@ -424,7 +428,7 @@ export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: nu
       const blocked = ench[w.branch]?.cleanupBlocked as { why?: string } | undefined;
       if (d.action === "reap") {
         try {
-          await reapWorktree(repo, w, pr.reason, Boolean(blocked));
+          await reapWorktree(repo, w, pr.reason, Boolean(blocked), pr.number);
           out.push({ ...w, reason: pr.reason, action: "reaped" });
           continue;
         } catch (e) {
@@ -480,7 +484,7 @@ export async function sweep(cfg: OrcaConfig, opts: { confirm?: boolean; now?: nu
       });
       report.worktrees.push({ repo: repo.name, branch: w.branch, worktreePath: w.worktreePath, reason, action: d.action === "reap" ? "remove" : "keep", why: d.action === "reap" ? undefined : d.why });
       if (d.action !== "reap") continue;
-      removing.set(w.worktreePath, () => reapWorktree(repo, w, reason, Boolean(ench[w.branch]?.cleanupBlocked)));
+      removing.set(w.worktreePath, () => reapWorktree(repo, w, reason, Boolean(ench[w.branch]?.cleanupBlocked), pr?.number));
       if (reason === "merged") goingBranches.add(w.branch); // the reap deletes it
     }
     const known = new Set([...done.keys(), ...archived, ...Object.keys(ench)]);
