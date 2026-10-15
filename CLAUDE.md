@@ -1078,6 +1078,27 @@ inventory/previews/metrics, none of the startup side effects, every non-GET refu
 proxies to it (`ORCA_API_PORT={svc:bridge}`). A branch that predates the mode, or whose migrations
 the database lacks, forwards to main instead; the top bar's `BridgeLabel` names whichever answered.
 
+## Writing (STE, always)
+
+Write all human-facing prose in **ASD-STE100 Simplified Technical English (STE)**. This includes
+replies, reports, outcome sections, PR titles and descriptions, commit messages, review replies,
+notes and the docs (`README.md`, `docs/`). Finn asked for this ALWAYS.
+
+- Use simple words with one meaning each. Technical names and verbs are allowed (PR, commit, merge, CI).
+- Use one name for each thing. Do not change the name later.
+- Write at most 20 words in a procedure sentence and at most 25 words in a description sentence.
+- Write one instruction in each sentence. Write instructions as commands.
+- Use the active voice and simple tenses. Do not use -ing words as nouns or adjectives. Do not hedge
+  with "would" or "could".
+- Keep paragraphs short. Use lists for sequences.
+- Do not apply STE to code, identifiers, file paths, commands, hashes, quoted error text or quoted
+  user words.
+
+The rules live in ONE place, `shared/writingStyle.ts` (`WRITING_STYLE`). Every prompt Orca sends
+includes it: worker prompts through `withOutcomeContract` and `chatPrompt`, the PR description
+prompt, and every orchestrator wake. Change the rules there, never in a copy.
+`tests/writingStyle.test.ts` checks that each prompt builder includes it once.
+
 ## Conventions (follow these)
 
 - **Adapter boundary:** all shell/network I/O lives in `server/{git,gh,slack}.ts` behind

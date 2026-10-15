@@ -60,7 +60,7 @@ describe("conversation comments are surfaced for the agent to disposition", () =
     expect(p).toContain("Comment 2 — alice");
     expect(p).toContain("yours to judge");                    // the decision is the agent's…
     expect(p).toContain("## Comment dispositions");           // …but it must be stated per comment
-    expect(p).toContain("Nothing may be dropped silently");
+    expect(p).toContain("Do not skip a comment.");
     expect(p).toContain("gh pr comment 7 --body");            // and the agent executes the reply itself
     expect(p).toContain("supersedes the older");              // consolidation is allowed
   });

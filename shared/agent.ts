@@ -1,3 +1,5 @@
+import { WRITING_STYLE } from "./writingStyle";
+
 export const AGENT_PROVIDERS = ["claude", "codex", "cursor"] as const;
 export type AgentProvider = typeof AGENT_PROVIDERS[number];
 
@@ -179,23 +181,23 @@ export function parseAgentOutcome(raw: string): AgentOutcome | undefined {
 }
 
 export const OUTCOME_CONTRACT = [
-  "Finish your final response with these concise sections:",
+  "End your final response with these sections. Keep each section short.",
   "## Outcome",
-  "A concise description of what changed or what was discovered.",
+  "Describe what changed or what you found.",
   "## Verification",
-  "- Commands/checks run and their results.",
+  "- List each command or check that you ran, and its result.",
   "## Decisions",
-  "- Important implementation decisions or tradeoffs.",
+  "- List each important decision or tradeoff, and the reason for it.",
   "## Remaining",
-  "- Anything incomplete, blocked, or requiring attention. Use “None” when complete.",
+  "- List each item that is not complete, is blocked or needs attention. Write “None” when the work is complete.",
   "## Commits",
-  "- Commit hashes and subjects, if applicable. Use “None” when no commit was made.",
+  "- List each commit hash and subject. Write “None” when you made no commit.",
 ].join("\n");
 
 /** Add the readable outcome contract once while preserving the caller's instruction verbatim. */
 export function withOutcomeContract(instruction: string): string {
   if (/^\s*##\s+Outcome\s*$/im.test(instruction) && /^\s*##\s+Commits\s*$/im.test(instruction)) return instruction;
-  return `${instruction}\n\nAvoid unrelated cleanup.\n\n${OUTCOME_CONTRACT}`;
+  return `${instruction}\n\nAvoid unrelated cleanup.\n\n${WRITING_STYLE}\n\n${OUTCOME_CONTRACT}`;
 }
 
 export const agentLabel = (provider: AgentProvider): string => provider === "codex" ? "Codex" : provider === "cursor" ? "Cursor" : "Claude";

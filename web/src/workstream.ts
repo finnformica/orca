@@ -4,6 +4,7 @@
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import { AUTOFIX_MARKER, OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type TurnCheck, type TurnSource } from "../../shared/agent";
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
+import { WRITING_STYLE } from "../../shared/writingStyle";
 export { attachCommand } from "../../shared/agent";
 
 // Kanban lanes are driven by the REVIEW lifecycle only. Conflict / CI / mergeability
@@ -404,6 +405,8 @@ export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean
     NO_PR,
     SCREENSHOTS,
     "",
+    WRITING_STYLE,
+    "",
     "If (and only if) you changed something, finish with the usual sections:",
     OUTCOME_CONTRACT,
   ].join("\n");
@@ -422,7 +425,8 @@ const SCAFFOLDING = [
   "Investigate and report only.",
   "Attached files (Read these for extra context):",
   "Avoid unrelated cleanup.",
-  "Finish your final response with these concise sections:",
+  "Finish your final response with these concise sections:", // the contract's first line before STE
+  "End your final response with these sections.",
   NO_PR,
 ];
 export function promptInstruction(prompt: string): string {
@@ -550,6 +554,8 @@ export function prDescriptionPrompt(input: { template?: string | null; diff: str
     "- Base implementation claims on the final diff. Use only checks actually reported as run.",
     "- Never invent an issue, Slack thread, PRD, user request, test result, or link. If context was not",
     "  supplied, omit the claim or say that no link/context was supplied where the section requires it.",
+    "",
+    WRITING_STYLE,
     input.task?.trim() ? `\nOriginal task:\n${input.task.trim()}` : "",
     evidence ? `\nImplementation outcome:\n${evidence}` : "",
     commits.length ? `\nCommits (oldest first):\n${commits.map((c) => `- ${c}`).join("\n")}` : "",
@@ -675,7 +681,7 @@ const followedReview = (pr: number | undefined): string =>
 // disposition, so an item can be declined but never silently dropped.
 const commentDispositions = (pr: number | undefined, n: number): string => [
   `Below are the ${n} conversation comment${n === 1 ? "" : "s"} posted since Orca last handed you this PR (not inline threads; everyone but you). They are yours to judge: for each one decide whether it needs a code change, a reply, or nothing. If it does, act on it and reply on the PR (\`gh pr comment ${pr} --body "…"\`); related ones — e.g. successive automated reports where a newer one supersedes the older — can share one consolidated reply.`,
-  "Whatever you decide, finish with a `## Comment dispositions` section: one line per comment number — `replied`, `changed` (cite the commit), or `no action` — with a few words of why. Nothing may be dropped silently.",
+  "End with a `## Comment dispositions` section. Write one line for each comment number: `replied`, `changed` (give the commit) or `no action`, and a short reason. Do not skip a comment.",
 ].join(" ");
 
 function reviewLines(ws: Pick<Workstream, "prNumber" | "branch">, feedback: string[] = [], threads: ReviewThreadEvidence[] = [], followed = false, comments: ConversationComment[] = []): string[] {
@@ -1630,7 +1636,8 @@ const ORCHESTRATOR_ROLE = [
   "  to merge — goes in `orca status` on that workstream, which the board carries back every wake.",
   "  Your notes are your memory across context resets for everything else: the user's preferences,",
   "  standing facts and decisions that span workstreams, in roughly 1500 words or fewer.",
-  "- Keep replies short and concrete: what you did, what is running, what needs the user.",
+  "- Keep replies short and concrete: what you did, what is running, what needs the user. Write them,",
+  "  your briefs and your notes in STE, as the `## Writing` section of every message says.",
 ].join("\n");
 
 /** The dead wake's own record (wakeProgress), under the cut-off notice — kept apart from it so a
@@ -1661,6 +1668,8 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     "Move a workstream along the ladder with send --model when a run fails, stalls, or turns out smaller than it looked; say which model you chose and why.",
     `Orca counts a worker's failures on one model: after ${LADDER_FAILURES} in a row its report carries a \`Model ladder:\` line — the next model up to retry on, or that Orca has already moved it there.`,
     `A message opening with \`${NEW_DRAFT_MARKER}\` is the user's New-draft box: spawn exactly ONE workstream for it, in the repo it names, with a brief you write from it and a model you choose. Reply with one line: branch and model.`,
+    // Every wake as well: a resumed session sees the role once, and the user wants STE ALWAYS.
+    "", WRITING_STYLE,
     "", "## Your notes", input.notes?.trim() || "(empty)",
     "", "## Board", input.board,
     // The wake before this one died mid-turn: say so, or the user has to ask why it went quiet.
