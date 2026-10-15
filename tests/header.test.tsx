@@ -66,15 +66,32 @@ describe("console shell", () => {
     expect(container!.querySelector('[data-slot="instance-health"]')).toBeNull();
   });
 
-  test("the header usage meter sits immediately left of \"Ask the orchestrator\" in the top bar", async () => {
+  test("the header usage meter sits immediately left of \"Ask the orchestrator\" in the top bar, both right-aligned", async () => {
     apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
     await mount();
     const bar = container!.querySelector<HTMLElement>('[data-slot="topbar"]')!;
-    const kids = [...bar.children];
-    const meter = kids.indexOf(bar.querySelector('[data-slot="header-usage"]')!);
-    const ask = kids.indexOf(bar.querySelector('[data-slot="ask-orchestrator"]')!);
-    expect(meter).toBeGreaterThan(-1);
-    expect(ask).toBe(meter + 1); // nothing else between them
+    const meter = bar.querySelector('[data-slot="header-usage"]')!;
+    const ask = bar.querySelector('[data-slot="ask-orchestrator"]')!;
+    expect(meter.nextElementSibling).toBe(ask); // nothing else between them
+    const group = ask.parentElement!;
+    expect(group.className).toContain("ml-auto"); // the pair, not either one alone, owns the right alignment
+    expect(group.parentElement).toBe(bar); // the right-aligned slot is a direct child of the top bar
+    expect([...bar.children].at(-1)).toBe(group); // the rightmost thing in the bar
+  });
+
+  // The bug this guards: while the app is still loading, HeaderUsageMeter renders nothing (no poll
+  // answer yet), and "Ask the orchestrator" used to collapse against the breadcrumbs because it had
+  // no stable right-aligning element before it.
+  test("\"Ask the orchestrator\" stays right-aligned even while the usage meter has not loaded yet", async () => {
+    apiFake.holdUsage = true; // the usage poll never answers — HeaderUsageMeter renders null throughout
+    await mount();
+    const bar = container!.querySelector<HTMLElement>('[data-slot="topbar"]')!;
+    expect(bar.querySelector('[data-slot="header-usage"]')).toBeNull(); // still loading
+    const ask = bar.querySelector('[data-slot="ask-orchestrator"]')!;
+    const group = ask.parentElement!;
+    expect(group.className).toContain("ml-auto");
+    expect(group.parentElement).toBe(bar);
+    expect([...bar.children].at(-1)).toBe(group); // still the rightmost thing, loaded or not
   });
 
   test("the top bar is opaque: a solid background, no translucency or blur for scrolled content to show through", async () => {
