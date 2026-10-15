@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
-import { pageShortcut, shortcutKeys, shortcutLabel } from "@/lib/shortcuts";
+import { pageShortcut, shortcutKeys } from "@/lib/shortcuts";
 import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPalette";
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
@@ -343,10 +343,12 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
   const swipe = useSwipeToClose(() => dialog, () => setOpen(false), useNarrow()); // a phone's full-screen sheet
   return (
     <>
-      <Button variant="secondary" size="sm" data-slot="add-new" title={`Add New (${shortcutLabel("new")})`} aria-label="Add New" onClick={() => setOpen(true)} className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
-        <Plus className="size-4" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
-        <Shortcut id="new" className={cn("ml-auto max-md:hidden", collapsed && "md:hidden")} />
-      </Button>
+      <Tip label="Add New" shortcut="new" side="right" className={cn("w-full", collapsed && "md:w-auto")}>
+        <Button variant="secondary" size="sm" data-slot="add-new" aria-label="Add New" onClick={() => setOpen(true)} className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
+          <Plus className="size-4" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
+          <Shortcut id="new" className={cn("ml-auto max-md:hidden", collapsed && "md:hidden")} />
+        </Button>
+      </Tip>
       <dialog
         ref={setDialog} data-slot="add-new-dialog" aria-label="New agent"
         onClose={() => setOpen(false)} onCancel={() => setOpen(false)}
@@ -394,7 +396,6 @@ function SyncWorktreesItem() {
     <DropdownMenuItem
       onSelect={(e) => { e.preventDefault(); void run(); }}
       disabled={state === "loading"}
-      title="Fetch each repo and fast-forward every worktree to its upstream (never forces, skips dirty/diverged)"
     >
       <Icon className={`size-3.5${state === "loading" ? " animate-spin" : ""}`} /> Sync worktrees
       {summary && <span className="text-muted-foreground ml-auto pl-3 text-xs">{summary}</span>}
@@ -417,7 +418,7 @@ export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" data-slot="profile" className={cn("hover:bg-accent/60 flex h-8 min-w-0 items-center gap-2 rounded-md px-1.5 text-sm", collapsed ? "md:size-8 md:justify-center md:p-0" : "flex-1")} title="Profile" aria-label="Profile menu">
+        <button type="button" data-slot="profile" className={cn("hover:bg-accent/60 flex h-8 min-w-0 items-center gap-2 rounded-md px-1.5 text-sm", collapsed ? "md:size-8 md:justify-center md:p-0" : "flex-1")} aria-label="Profile menu">
           <CircleUser className="text-muted-foreground size-5 shrink-0" />
           {/* One line: who, then which machine — "You · local". */}
           <span className={cn("flex min-w-0 items-center gap-1.5 whitespace-nowrap", collapsed && "md:hidden")}>
@@ -427,7 +428,7 @@ export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top">
-        <DropdownMenuItem onSelect={() => window.location.reload()} title="Reload the app (pick up rebuilt code + refetch)">
+        <DropdownMenuItem onSelect={() => window.location.reload()}>
           <RefreshCw className="size-3.5" /> Refresh
         </DropdownMenuItem>
         <SyncWorktreesItem />

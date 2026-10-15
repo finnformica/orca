@@ -27,7 +27,7 @@ function CheckLine({ c }: { c: CheckRow }) {
   return (
     <li data-slot="check" data-status={c.skipped ? "skipped" : c.status} className="flex h-9 items-center gap-2.5 px-4 text-sm">
       <CheckIcon c={c} />
-      <span className={`min-w-0 flex-1 truncate ${c.skipped ? "text-muted-foreground" : ""}`} title={c.name}>{c.name}</span>
+      <span className={`min-w-0 flex-1 truncate ${c.skipped ? "text-muted-foreground" : ""}`}>{c.name}</span>
       {ms !== undefined && <span className="text-muted-foreground shrink-0 text-xs tabular-nums">{formatDuration(ms)}</span>}
       {c.url
         ? <a href={c.url} target="_blank" rel="noreferrer" aria-label={`Logs for ${c.name}`} className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-1 text-xs">Logs <ExternalLink className="size-3" /></a>

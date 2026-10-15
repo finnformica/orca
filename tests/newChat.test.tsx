@@ -40,7 +40,7 @@ describe("new chat", () => {
     const button = [...container!.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label") === "New chat")!;
     expect(button).toBeTruthy();
     // It takes the attach button's slot beside send, so the repo/provider dropdowns aren't squeezed.
-    expect(container!.querySelector('button[title="Attach files"]')).toBeNull();
+    expect(container!.querySelector('[data-slot="composer-attach"]')).toBeNull();
 
     await click(button);
     // Instant: a composer is up and NOTHING has been created yet.
@@ -55,7 +55,7 @@ describe("new chat", () => {
       box.dispatchEvent(new Event("input", { bubbles: true }));
       await flush();
     });
-    await click(dialog.querySelector('button[title="Send (Enter)"]')!);
+    await click(dialog.querySelector('button[aria-label="Send"]')!);
 
     // Submitted: the dialog closes, the optimistic card is on the board while the worktree is cut.
     expect(dialog.open).toBe(false);

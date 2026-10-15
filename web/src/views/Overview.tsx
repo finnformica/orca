@@ -145,9 +145,9 @@ function RecentActivity({ rows }: { rows: Row[] }) {
               <li key={`${it.repo}:${it.branch}:${i}`}>
                 <button type="button" disabled={!to} onClick={() => to && navigate(`${to}/chat`)}
                   className="hover:bg-accent/40 flex w-full items-center gap-3 px-4 py-3 text-left text-sm disabled:cursor-default">
-                  <StatusDot tone={ACTIVITY_DOT[it.status]} title={it.status} />
+                  <StatusDot tone={ACTIVITY_DOT[it.status]} />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate" title={it.text}>{it.text || "(no instruction)"}</span>
+                    <span className="block truncate">{it.text || "(no instruction)"}</span>
                     <span className="text-muted-foreground block truncate text-xs">{it.title} · {it.repo}{it.prNumber ? ` · #${it.prNumber}` : ""}</span>
                   </span>
                   <span className="text-muted-foreground shrink-0 text-xs tabular-nums">{ago(it.at)}</span>

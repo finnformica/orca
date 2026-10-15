@@ -10,6 +10,7 @@ import { baseBranch, instanceChoices, modelFor, thisInstance, type Row } from ".
 import { agentFailure, ago, formatDuration, prPill, rowDuration, rowInstance, rowTone } from "../workstream";
 import { modelLabel } from "../../../shared/models";
 import { Detail, Pill, StatusDot, VCard } from "@/components/console";
+import { Tip } from "@/components/ui/tip";
 import { ChatPanel } from "./Chat";
 import { TONE_DOT, TONE_LABEL } from "./Agents";
 import { Markdown } from "./PrDetail";
@@ -44,7 +45,7 @@ export function DetailsCard({ row, summary, actions, extra }: { row: Row; summar
             <Detail label="Created" slot="detail-created">{created ? ago(created) : "—"}</Detail>
             <Detail label="Status" slot="detail-status"><StatusDot tone={TONE_DOT[tone]} />{TONE_LABEL[tone]}{row.agentCheck && <span className="text-muted-foreground">· {row.agentCheck.ok ? "check passed" : "check failed"}</span>}</Detail>
             <Detail label="Duration">{duration !== undefined ? formatDuration(duration) : "—"}</Detail>
-            <Detail label="State"><Pill tone={pill.tone} title={pill.tooltip}>{pill.label}</Pill></Detail>
+            <Detail label="State">{pill.tooltip ? <Tip label={pill.tooltip}><Pill tone={pill.tone}>{pill.label}</Pill></Tip> : <Pill tone={pill.tone}>{pill.label}</Pill>}</Detail>
             <Detail label="Model" slot="detail-model">{model}</Detail>
             {instanceChoices().length > 1 && <Detail label="Instance">{instance ?? "—"}</Detail>}
             <Detail label="Pull request">{row.prNumber
@@ -72,14 +73,12 @@ export function DetailsCard({ row, summary, actions, extra }: { row: Row; summar
  *  tab row ate the Chat tab's height): repo / title, the status, the branch or PR link, then the
  *  key actions at the right — the tabs sit directly under it, in the same sticky block. Below md,
  *  it splits into two rows instead — the title alone (squeezed beside the status dot and every
- *  action icon, it wrapped one word per line on a phone), then status + actions — so the title gets
- *  the full width to truncate in (`fullTitle` carries it to the `title` attribute, since `title` here
- *  is a ReactNode that may mix in a PR-number link). Everything else (created, model, instance,
- *  source, preview) lives on the Overview tab's Details card. */
-export function AgentHeader({ repo, title, fullTitle, status, source, actions }: { repo: string; title: ReactNode; fullTitle?: string; status?: ReactNode; source?: ReactNode; actions?: ReactNode }) {
+ *  action icon, it wrapped one word per line on a phone), then status + actions. Everything else
+ *  (created, model, instance, source, preview) lives on the Overview tab's Details card. */
+export function AgentHeader({ repo, title, status, source, actions }: { repo: string; title: ReactNode; status?: ReactNode; source?: ReactNode; actions?: ReactNode }) {
   return (
     <div data-slot="agent-header" className="flex min-w-0 flex-col gap-1 md:min-h-9 md:flex-row md:items-center md:gap-x-3 md:gap-y-0">
-      <h1 className="flex min-w-0 items-center gap-1.5 text-base font-semibold tracking-tight" title={fullTitle}>
+      <h1 className="flex min-w-0 items-center gap-1.5 text-base font-semibold tracking-tight">
         <span className="text-muted-foreground hidden shrink-0 font-normal sm:inline">{repo} /</span>
         <span className="min-w-0 truncate">{title}</span>
       </h1>

@@ -71,7 +71,7 @@ describe("chatbox behaves like one text field", () => {
   test("clicking a control (send button) does NOT steal focus into the textarea", () => {
     const c = mount(composer());
     const textarea = c.querySelector("textarea")!;
-    const sendBtn = c.querySelector('button[title^="Send"]')!;
+    const sendBtn = c.querySelector('button[aria-label="Send"]')!;
     mouseDown(sendBtn);
     expect(document.activeElement).not.toBe(textarea);
   });
@@ -116,8 +116,8 @@ describe("chatbox toolbar stays within its available width", () => {
 
   test("attach remains immediately beside send, including when cancel is present", () => {
     const c = mount(<ChatComposer onSubmit={async () => {}} onCancel={() => {}} />);
-    const attach = c.querySelector<HTMLButtonElement>('button[title="Attach files"]')!;
-    const send = c.querySelector<HTMLButtonElement>('button[title^="Send"]')!;
+    const attach = c.querySelector<HTMLButtonElement>('[data-slot="composer-attach"]')!;
+    const send = c.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
     expect(attach.parentElement).toBe(send.parentElement);
     expect(attach.nextElementSibling).toBe(send);
   });

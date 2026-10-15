@@ -129,7 +129,6 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
         <div ref={header.ref} className={STICKY_HEADER}>
           <AgentHeader repo={repo}
             title={<><a href={pr.url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground mr-1.5 font-normal hover:underline">#{pr.number}</a>{row.title}</>}
-            fullTitle={`#${pr.number} ${row.title}`}
             status={liveRow ? <RowStatus row={liveRow} /> : <Badge variant="outline" className="capitalize">{(pr.state ?? "").toLowerCase()}</Badge>}
             source={<HeaderSource branch={pr.head} prNumber={pr.number} prUrl={pr.url} />}
             actions={liveRow && <WorkstreamActions row={liveRow} compact={narrow} tipSide="bottom" leading={<PreviewCell row={liveRow} />} />} />

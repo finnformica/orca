@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Check, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tip";
 import { actionFailed } from "@/lib/notificationStore";
 import { firstLine, type ActionFailure } from "../workstream";
 
@@ -51,12 +52,13 @@ export function ActionButton({
     setTimeout(() => setState("idle"), 2000);
   };
 
-  return (
-    <Button size={size} className={className} variant={state === "error" ? "destructive" : variant} disabled={disabled || state === "loading"} aria-label={label} title={state === "error" ? error : undefined} onClick={() => void run()}>
+  const button = (
+    <Button size={size} className={className} variant={state === "error" ? "destructive" : variant} disabled={disabled || state === "loading"} aria-label={label} onClick={() => void run()}>
       {state === "loading" && <Loader2 className="animate-spin" />}
       {state === "done" && <Check />}
       {state === "error" && <X />}
       {(size !== "icon" || state === "idle") && children}
     </Button>
   );
+  return state === "error" ? <Tip label={error}>{button}</Tip> : button;
 }

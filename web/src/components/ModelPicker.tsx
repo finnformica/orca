@@ -1,4 +1,5 @@
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
+import { Tip } from "@/components/ui/tip";
 import { agentLabel, type AgentProvider } from "../../../shared/agent";
 import { AUTO_LABEL, AUTO_MODEL, modelChoices, modelLabel } from "../../../shared/models";
 import { useAgentProviders } from "../store";
@@ -16,19 +17,21 @@ export function ModelPicker({ value, onChange, label, ran, quiet, className = ""
   const choices = modelChoices(only ? [only] : providers);
   const current = modelLabel(value);
   const title = ran && !current.endsWith(ran) ? `Next run: ${current} · last run: ${ran}` : undefined;
+  const trigger = (
+    <SelectTrigger
+      size="sm"
+      aria-label={label}
+      onClick={(e) => e.stopPropagation()}
+      className={quiet
+        ? `text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground -ml-1 -mr-2 h-auto w-fit gap-0.5 border-transparent bg-transparent pl-2 py-0 shadow-none focus-visible:ring-0 [&>svg]:size-3 [&>svg]:opacity-0 [&>svg]:transition-opacity hover:[&>svg]:opacity-70 data-[state=open]:[&>svg]:opacity-70 ${className}`
+        : `text-muted-foreground hover:bg-accent hover:text-foreground min-w-0 border-0 shadow-none transition-colors focus-visible:ring-0 ${className}`}
+    >
+      {current}
+    </SelectTrigger>
+  );
   return (
     <Select value={value} onValueChange={onChange}>
-      <SelectTrigger
-        size="sm"
-        aria-label={label}
-        title={title}
-        onClick={(e) => e.stopPropagation()}
-        className={quiet
-          ? `text-muted-foreground hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground -ml-1 -mr-2 h-auto w-fit gap-0.5 border-transparent bg-transparent pl-2 py-0 shadow-none focus-visible:ring-0 [&>svg]:size-3 [&>svg]:opacity-0 [&>svg]:transition-opacity hover:[&>svg]:opacity-70 data-[state=open]:[&>svg]:opacity-70 ${className}`
-          : `text-muted-foreground hover:bg-accent hover:text-foreground min-w-0 border-0 shadow-none transition-colors focus-visible:ring-0 ${className}`}
-      >
-        {current}
-      </SelectTrigger>
+      {title ? <Tip label={title}>{trigger}</Tip> : trigger}
       <SelectContent onClick={(e) => e.stopPropagation()}>
         {auto && <SelectItem value={AUTO_MODEL}>{AUTO_LABEL}</SelectItem>}
         {choices.map((m) => <SelectItem key={m.id} value={m.id}>{agentLabel(m.provider as AgentProvider)} · {m.label}</SelectItem>)}

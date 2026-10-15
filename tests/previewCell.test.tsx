@@ -11,6 +11,7 @@ import * as store from "@/store";
 import { PreviewCell } from "@/views/PreviewControl";
 import { ToastHost } from "@/components/Notifications";
 import * as centre from "@/lib/notificationStore";
+import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -51,7 +52,7 @@ test("disabled: previews not enabled for the repo — a disabled button with a t
   expect(c.dataset.state).toBe("disabled");
   const btn = c.querySelector("button")!;
   expect(btn.disabled).toBe(true);
-  expect(btn.title).toBe("Previews aren't enabled for nopreview");
+  expect(openTip(btn).textContent).toBe("Previews aren't enabled for nopreview");
   expect(btn.querySelector(".lucide-flask-conical")).not.toBeNull();
   await click(btn); // disabled: clicking does nothing
   expect(apiFake.previewCalls).toEqual([]);
@@ -133,7 +134,7 @@ test("failed: a crashed service reaps to a retry icon with an error-tone dot, sa
   expect(c.dataset.state).toBe("failed");
   const btn = c.querySelector("button")!;
   expect(btn.disabled).toBe(false); // clicking retries
-  expect(btn.title).toBe("Preview failed — boom");
+  expect(openTip(btn).textContent).toBe("Preview failed — boom");
   expect(btn.querySelector(".lucide-triangle-alert")).not.toBeNull();
   const dot = c.querySelector<HTMLElement>('[data-slot="status-dot"]')!;
   expect(dot.dataset.tone).toBe("error");

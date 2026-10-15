@@ -37,9 +37,11 @@ export function UsageCard({ className, bodyClass }: { className?: string; bodyCl
     <VCard slot="usage-card" title="Current windows" aside={<span className="text-muted-foreground text-xs">Claude &amp; Codex limits</span>}
       onHeaderClick={canToggle ? toggle : undefined} expanded={canToggle ? expanded : undefined} className={className} bodyClass={bodyClass}>
       {routingBroken(usage) && (
-        <div data-slot="routing-warning" title="Claude Code's updater rewrote ~/.local/bin/claude. Re-run hydra's install.sh --shim on the bridge's machine."
+        <div data-slot="routing-warning"
           className="bg-geist-warning-bg text-geist-warning-fg flex items-start gap-2 border-b px-4 py-2 text-xs">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          <Tip label="Claude Code's updater rewrote ~/.local/bin/claude. Re-run hydra's install.sh --shim on the bridge's machine." side="bottom">
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          </Tip>
           <span>Claude routing off: hydra is installed but the bridge's <code>claude</code> isn't its shim, so every run lands on the default login.</span>
         </div>
       )}
@@ -77,7 +79,7 @@ export function HeaderUsageMeter() {
   return (
     <HoverCard>
       <HoverCardTrigger asChild>
-        <button type="button" data-slot="header-usage" tabIndex={0} aria-label={`Claude usage — ${reading.tooltip}`} title={reading.tooltip}
+        <button type="button" data-slot="header-usage" tabIndex={0} aria-label={`Claude usage — ${reading.tooltip}`}
           className="text-muted-foreground hover:text-foreground hover:bg-accent/60 ml-auto flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-xs max-md:hidden">
           <Ring pct={pct} size={14} />
           <span className="tabular-nums">{pct}%</span>
@@ -105,25 +107,27 @@ function UsageGroupRows({ group: g }: { group: UsageGroup }) {
           secondary hint instead ("Stale on local"), each with its own Refresh targeting that host. */}
       <div data-slot="usage-group-header" className="flex max-w-full min-w-0 items-center justify-between gap-2 px-2 pt-1.5 pb-1" onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
         <span className="flex min-w-0 items-center gap-1.5">
-          <span data-slot="usage-group-title" className="min-w-0 truncate text-xs font-medium" title={g.subtitle ? `${g.title} · ${g.subtitle}` : g.title}>{g.title}</span>
-          {status && <Pill tone={status.tone} slot="usage-state" title={status.detail}>{status.label}</Pill>}
+          <span data-slot="usage-group-title" className="min-w-0 truncate text-xs font-medium">{g.title}</span>
+          {status && <Tip label={status.detail}><Pill tone={status.tone} slot="usage-state">{status.label}</Pill></Tip>}
           {g.name && status?.label === "Stale" && <RefreshProfileButton name={g.name} instance={g.instance} />}
           {g.name && (hover || coarse) && <LoginToggle name={g.name} enabled={g.state !== "disabled"} />}
           {g.name && hints.map((h) => {
             const hStatus = loginStatus(h.state);
             return (
-              <span key={h.instance} data-slot="usage-host-hint" title={hStatus.detail}
-                className="text-muted-foreground flex min-w-0 items-center gap-1 text-xs">
-                {hStatus.label} on {h.instance}
-                {hStatus.label === "Stale" && <RefreshProfileButton name={g.name!} instance={h.instance} />}
-              </span>
+              <Tip key={h.instance} label={hStatus.detail}>
+                <span data-slot="usage-host-hint"
+                  className="text-muted-foreground flex min-w-0 items-center gap-1 text-xs">
+                  {hStatus.label} on {h.instance}
+                  {hStatus.label === "Stale" && <RefreshProfileButton name={g.name!} instance={h.instance} />}
+                </span>
+              </Tip>
             );
           })}
         </span>
         {g.subtitle && <span className="text-muted-foreground min-w-0 shrink-[2] truncate text-xs">{g.subtitle}</span>}
       </div>
       {g.rows.map((r) => (
-        <div key={r.key} data-slot="usage-row" title={r.resetsIn ? `resets in ${r.resetsIn}` : undefined}
+        <div key={r.key} data-slot="usage-row"
           className="hover:bg-accent/60 flex h-9 items-center gap-2.5 rounded-md px-2 text-sm">
           <Ring pct={r.pct} />
           <span className="min-w-0 flex-1 truncate">{r.label}</span>
@@ -175,17 +179,18 @@ function LoginToggle({ name, enabled }: { name: string; enabled: boolean }) {
     );
   };
   return (
-    <button type="button" role="switch" aria-checked={enabled} data-slot="login-toggle"
-      title={enabled ? `Take ${name} out of hydra's rotation` : `Put ${name} back`}
-      onClick={(e) => { e.stopPropagation(); toggle(); }}
-      className={cn(
-        "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors",
-        error ? "bg-destructive" : enabled ? "bg-geist-blue" : "bg-input",
-      )}>
-      <span className={cn("flex size-3 items-center justify-center rounded-full bg-white transition-transform", enabled ? "translate-x-3.5" : "translate-x-0.5")}>
-        {error && <X className="size-2.5" />}
-      </span>
-    </button>
+    <Tip label={enabled ? `Take ${name} out of hydra's rotation` : `Put ${name} back`}>
+      <button type="button" role="switch" aria-checked={enabled} data-slot="login-toggle"
+        onClick={(e) => { e.stopPropagation(); toggle(); }}
+        className={cn(
+          "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors",
+          error ? "bg-destructive" : enabled ? "bg-geist-blue" : "bg-input",
+        )}>
+        <span className={cn("flex size-3 items-center justify-center rounded-full bg-white transition-transform", enabled ? "translate-x-3.5" : "translate-x-0.5")}>
+          {error && <X className="size-2.5" />}
+        </span>
+      </button>
+    </Tip>
   );
 }
 
@@ -225,15 +230,17 @@ function RefreshProfileButton({ name, instance }: { name: string; instance?: str
     setTimeout(() => setState("idle"), 2000);
   };
   return (
-    <button type="button" data-slot="login-refresh" disabled={state === "loading"}
-      title={`Renew ${name}'s expired token on ${target ?? "this host"}`} aria-label={`Renew ${name}'s token`}
-      onClick={(e) => { e.stopPropagation(); void refresh(); }}
-      className="text-muted-foreground hover:text-foreground flex size-4 shrink-0 items-center justify-center">
-      {state === "loading" ? <Loader2 className="size-3 animate-spin" />
-        : state === "done" ? <Check className="size-3" />
-        : state === "error" ? <X className="size-3" />
-        : <RefreshCw className="size-3" />}
-    </button>
+    <Tip label={`Renew ${name}'s expired token on ${target ?? "this host"}`}>
+      <button type="button" data-slot="login-refresh" disabled={state === "loading"}
+        aria-label={`Renew ${name}'s token`}
+        onClick={(e) => { e.stopPropagation(); void refresh(); }}
+        className="text-muted-foreground hover:text-foreground flex size-4 shrink-0 items-center justify-center">
+        {state === "loading" ? <Loader2 className="size-3 animate-spin" />
+          : state === "done" ? <Check className="size-3" />
+          : state === "error" ? <X className="size-3" />
+          : <RefreshCw className="size-3" />}
+      </button>
+    </Tip>
   );
 }
 
@@ -294,11 +301,15 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
         </Detail>
         <Detail label="CPU" slot="instance-cpu">{now ? <><span className="tabular-nums">{pct(now.cpuPct)}</span>{h && <span className="text-muted-foreground text-xs">of {h.cores} cores</span>}</> : "—"}</Detail>
         <Detail label="Memory" slot="instance-mem">
-          {now ? <span className="tabular-nums" title={h?.memPressure ? `pressure — ${h.memPressurePct}% used` : undefined}>{now.memUsedGb.toFixed(1)} / {memTotal} GB</span> : "—"}
+          {now ? (h?.memPressure ? (
+            <Tip label={`pressure — ${h.memPressurePct}% used`}><span className="tabular-nums">{now.memUsedGb.toFixed(1)} / {memTotal} GB</span></Tip>
+          ) : <span className="tabular-nums">{now.memUsedGb.toFixed(1)} / {memTotal} GB</span>) : "—"}
         </Detail>
         <Detail label="Disk">{h?.disk ? <span className="tabular-nums">{h.disk.usedGb} / {h.disk.totalGb} GB</span> : "—"}</Detail>
         <Detail label="Uptime">{h ? fmtUptime(h.uptimeS) : "—"}</Detail>
-        <Detail label="Cost · this month" slot="instance-cost">{cost ? <span className="tabular-nums" title={cost.detail}>{cost.value}{h?.rate?.source === "estimate" && <span className="text-muted-foreground ml-1 text-xs">est.</span>}</span> : "—"}</Detail>
+        <Detail label="Cost · this month" slot="instance-cost">{cost ? (
+          <Tip label={cost.detail}><span className="tabular-nums">{cost.value}{h?.rate?.source === "estimate" && <span className="text-muted-foreground ml-1 text-xs">est.</span>}</span></Tip>
+        ) : "—"}</Detail>
       </div>
       {history === null ? (
           <div className="grid gap-6 p-4 md:grid-cols-2">

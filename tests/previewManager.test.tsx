@@ -76,7 +76,7 @@ test("PM3 Stop tears the preview down and drops it from the list (and the badge)
   await mount();
   expect(badge().querySelector("[aria-label='1 running previews']")).toBeTruthy();
   apiFake.previewsData = []; // what the bridge answers once it's down
-  await click(list().querySelector("button[title='Stop preview']")!);
+  await click(list().querySelector("button[aria-label='Stop preview']")!);
   expect(apiFake.calls).toContain("previewStop:/wt/solo"); // reaped via the same stop endpoint
   expect(list().textContent).toBe("No previews running.");
   expect(badge().querySelector("[aria-label='1 running previews']")).toBeFalsy();

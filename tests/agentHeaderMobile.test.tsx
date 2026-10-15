@@ -45,7 +45,7 @@ describe("agent header: title row splits from status/actions below md, tab pill 
     const h1 = head.querySelector("h1")!;
     expect(h1.textContent).toContain("Magic text design values"); // the workstream title, not the PR's
     expect(h1.textContent).not.toContain("render design-value mentions");
-    expect(h1.getAttribute("title")).toBe("#90 Magic text design values"); // full text reachable via tooltip
+    expect(h1.getAttribute("title")).toBeNull(); // no native hover box — a long title just truncates
 
     const link = h1.querySelector("a")!;
     expect(link.textContent).toBe("#90");

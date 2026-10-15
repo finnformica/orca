@@ -11,9 +11,9 @@ import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, o
 import { PipContext, PortalContainer, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
+import { Tip } from "@/components/ui/tip";
 import { poll } from "@/lib/poll";
 import { type OrchestratorPrefill, orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorWidthAtom } from "@/lib/atoms";
-import { shortcutLabel } from "@/lib/shortcuts";
 import { useNarrow } from "@/lib/viewport";
 import { openOrchestrator } from "@/lib/orchestratorOpen";
 import { sendToOrchestrator } from "@/lib/orchestratorOutbox";
@@ -51,7 +51,7 @@ export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean
       <div className="flex h-full flex-col">
         <div {...swipe} className="flex items-center justify-between gap-2 border-b px-3 py-2 max-md:touch-none">
           <div className="truncate text-sm font-medium">Terminal · {row.title}</div>
-          <Button size="icon" variant="ghost" className="size-7 shrink-0 max-md:size-11" title="Close" aria-label="Close terminal" onClick={onClose}>
+          <Button size="icon" variant="ghost" className="size-7 shrink-0 max-md:size-11" aria-label="Close terminal" onClick={onClose}>
             <X className="size-4" />
           </Button>
         </div>
@@ -128,10 +128,8 @@ export function ActivityDot({ activity, className }: { activity: { running: bool
 export function AskOrchestrator() {
   const { ask } = useOrchestrator();
   const activity = useAtomValue(orchestratorActivityAtom);
-  const key = shortcutLabel("orchestrator");
   return (
     <button type="button" data-slot="ask-orchestrator" onClick={() => ask()} aria-label="Ask the orchestrator"
-      title={`Ask the orchestrator (${key}): it starts and steers workstreams for you`}
       // The header's usage meter (Shell.tsx) sits right before this and carries the ml-auto that
       // pushes the pair to the right — two auto margins here would split the free space BETWEEN
       // them instead of putting it before the pair.
@@ -166,12 +164,13 @@ function OrchestratorStatusLine({ state }: { state: { running: boolean; startedA
   }, [state?.running]);
   if (!state) return null;
   const line = orchestratorStatus({ ...state, workers, now });
-  return (
-    <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-[11px]" title={line.tooltip} data-slot="orchestrator-status">
+  const body = (
+    <div className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-[11px]" data-slot="orchestrator-status">
       {line.warn && <span data-slot="orchestrator-status-warn" aria-label="Large session" className="bg-geist-amber size-1.5 shrink-0 rounded-full" />}
       <span className="truncate">{line.text}</span>
     </div>
   );
+  return line.tooltip ? <Tip label={line.tooltip} className="w-full min-w-0">{body}</Tip> : body;
 }
 
 /** The orchestrator's status, polled every 2s while `active` (on `win`'s timers), and the composer
@@ -319,17 +318,21 @@ export function OrchestratorPanel() {
       </div>
       <div className="flex shrink-0 items-center">
         {pip ? (
-          <Button size="icon" variant="ghost" className="size-7" title="Return to tab" aria-label="Return to tab" onClick={() => pip.close()}>
+          <Button size="icon" variant="ghost" className="size-7" aria-label="Return to tab" onClick={() => pip.close()}>
             <PanelBottomClose className="size-4" />
           </Button>
         ) : pipApi() && !narrow && (
-          <Button size="icon" variant="ghost" className="size-7" title="Pop out: keep it on top of every window" aria-label="Pop out" onClick={() => void popOut()}>
-            <PictureInPicture2 className="size-4" />
-          </Button>
+          <Tip label="Pop out: keep it on top of every window">
+            <Button size="icon" variant="ghost" className="size-7" aria-label="Pop out" onClick={() => void popOut()}>
+              <PictureInPicture2 className="size-4" />
+            </Button>
+          </Tip>
         )}
-        <Button size="icon" variant="ghost" className="size-7 max-md:size-11" title={`Close (${shortcutLabel("escape")})`} aria-label="Close orchestrator" onClick={() => setOpen(false)}>
-          <X className="size-4" />
-        </Button>
+        <Tip label="Close" shortcut="escape">
+          <Button size="icon" variant="ghost" className="size-7 max-md:size-11" aria-label="Close orchestrator" onClick={() => setOpen(false)}>
+            <X className="size-4" />
+          </Button>
+        </Tip>
       </div>
     </div>
   );
@@ -414,7 +417,7 @@ export function OrchestratorPage() {
     <div data-slot="orchestrator-page" data-keyboard-fill className={cn("flex flex-col", ORCHESTRATOR_PAGE_NARROW)}>
       {/* Narrow: the same 12px on every side as the conversation's and the composer's padding. */}
       <div data-slot="orchestrator-page-header" className="flex h-12 shrink-0 items-center gap-2 border-b max-md:h-auto max-md:p-3">
-        <Button size="icon" variant="ghost" className="-ml-2 size-9 shrink-0 max-md:-my-1.5" title="Back" aria-label="Back" onClick={() => history.back()}>
+        <Button size="icon" variant="ghost" className="-ml-2 size-9 shrink-0 max-md:-my-1.5" aria-label="Back" onClick={() => history.back()}>
           <ArrowLeft className="size-4" />
         </Button>
         <div className="min-w-0">

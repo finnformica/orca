@@ -16,6 +16,7 @@ import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import { notificationsOpenAtom, orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
 import * as centre from "@/lib/notificationStore";
+import { openTip } from "./tip";
 import { actionFailureAsk, actionFailureCopy } from "@/workstream";
 import type { Notification } from "../shared/notifications";
 
@@ -105,7 +106,7 @@ test("T2 a failed Merge on the Agents list: a card in the notification stack and
     expect(fresh.textContent).not.toContain("not mergeable");
     const trigger = fresh.querySelector<HTMLElement>('button[aria-label="Actions"]')!;
     expect(trigger.querySelector(".lucide-x")).not.toBeNull();
-    expect(trigger.title).toBe("GraphQL: Pull request is not mergeable: the base branch policy prohibits the merge (mergePullRequest)");
+    expect(openTip(trigger).textContent).toBe("GraphQL: Pull request is not mergeable: the base branch policy prohibits the merge (mergePullRequest)");
 
     // Its quick actions, the notification toasts' own: Ask the orchestrator (primary), Copy, Open.
     await hover(t);
