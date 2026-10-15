@@ -224,6 +224,33 @@
   padding-right: env(safe-area-inset-right);
 }
 
+/* A bottom sheet (components/BottomSheet.tsx) slides up on the sheet spring while its backdrop fades
+   in; closing, BottomSheet slides it down itself (from wherever a swipe left it) and data-closing
+   fades the backdrop out. */
+dialog[data-bottom-sheet][open] {
+  animation: sheet-in 300ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+dialog[data-bottom-sheet][open]::backdrop {
+  animation: sheet-backdrop-in 300ms ease-out;
+  transition: opacity 220ms ease-in;
+}
+dialog[data-bottom-sheet][data-closing]::backdrop {
+  opacity: 0;
+}
+@keyframes sheet-in {
+  from { transform: translateY(100%); }
+}
+@keyframes sheet-backdrop-in {
+  from { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  dialog[data-bottom-sheet][open],
+  dialog[data-bottom-sheet][open]::backdrop {
+    animation: none;
+    transition: none;
+  }
+}
+
 @media (max-width: 767px) {
   /* Nothing scrolls sideways: wide content wraps or scrolls inside its own box. */
   html,

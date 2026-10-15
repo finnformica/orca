@@ -332,8 +332,13 @@ box; Agents rows stack with every action in the one ⋯ and the chips + sort in 
 the orchestrator, the terminal and Add New are full-screen `sheet`s sized to the visual viewport
 (`--vvh`, so the composer clears the keyboard; no resize / PiP; the quick-ask pill is hidden — the
 bottom bar's Orchestrator carries its dot); menus and selects open as bottom
-sheets; inputs are 16px, touch targets 44px, Enter on a touch screen is a newline. Swipe a sheet's
-header down to close it; pull the Agents list down to refresh (`lib/gestures.ts`). It installs as a PWA
+sheets — a workstream's ⋯ (Agents row, agent page header) opens a real `BottomSheet` of large icon rows,
+the SAME items fragment as the desktop dropdown (`WorkstreamActions`' `Item`/`Sub` switch on a
+context), and only on a tap: a long-press / contextmenu never opens it (it popped while scrolling),
+nor a touch's contextmenu on desktop rows; inputs are 16px, touch targets 44px, Enter on a touch screen
+is a newline. A `BottomSheet` slides up on the sheet spring and down before it closes (reduced motion:
+instant), with a haptic tick. Swipe a sheet's header down to close it (a `BottomSheet`'s body too, from
+the top of its scroll); pull the Agents list down to refresh (`lib/gestures.ts`). It installs as a PWA
 (`web/public/manifest.webmanifest`: round icons plus a full-bleed maskable one, New agent /
 Orchestrator shortcuts as `/?open=…`). `vite build` writes `version.json` and `sw.js` (from
 `web/sw.template.js`: this build's shell + hashed assets precached, `offline.html` with neither, and

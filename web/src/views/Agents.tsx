@@ -394,8 +394,12 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
   const diffstat = hasDiff && <Diffstat additions={diffAdditions ?? 0} deletions={diffDeletions ?? 0} />;
   // Right-click (or the keyboard's menu key / Shift+F10 on a focused row) opens the ⋯ menu's items
   // where the pointer is; from the keyboard there is no pointer, so it opens at the row's left edge.
+  // Never from a finger: a long-press fires contextmenu too, and popped the menu while you were only
+  // scrolling or holding — on touch the menu opens from the ⋯ alone (see the stacked row below).
+  const lastPointer = useRef("");
   const onContextMenu = (e: MouseEvent<HTMLDivElement>) => {
     if (!hasMenu || (e.target as HTMLElement).closest("a, input, textarea")) return; // links keep the browser's menu
+    if (lastPointer.current === "touch") { e.preventDefault(); return; }
     e.preventDefault();
     const r = e.currentTarget.getBoundingClientRect();
     setMenuAt(e.clientX || e.clientY ? { x: e.clientX, y: e.clientY } : { x: r.left + 16, y: r.bottom });
@@ -422,9 +426,12 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
     // follow as their own wrapping lines.
     <div
       ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-layout="stacked" data-branch={row.branch} aria-busy={busy}
-      aria-label={row.title} aria-haspopup={hasMenu ? "menu" : undefined}
-      onClick={openOnRowClick(row)} onContextMenu={onContextMenu} onKeyDown={onKeyDown}
-      className={`active:bg-accent/40 flex items-start gap-1 border-b py-3 px-4 text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
+      aria-label={row.title}
+      onClick={openOnRowClick(row)} onKeyDown={onKeyDown}
+      // A phone: no menu from a long-press or contextmenu at all, only the browser's own on a link.
+      // No selection or iOS callout either, which looked like a menu popping; links keep their callout.
+      onContextMenu={(e) => { if (!(e.target as HTMLElement).closest("a, input, textarea")) e.preventDefault(); }}
+      className={`active:bg-accent/40 flex items-start select-none [-webkit-touch-callout:none] [&_a]:[-webkit-touch-callout:default] gap-1 border-b py-3 px-4 text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
     >
       <div className="min-w-0 flex-1 space-y-1.5">
         <div role="cell" className="flex min-w-0 items-center justify-between gap-2">
@@ -461,6 +468,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
       ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-branch={row.branch} aria-busy={busy}
       aria-label={row.title} aria-haspopup={hasMenu ? "menu" : undefined}
       onClick={openOnRowClick(row)} onContextMenu={onContextMenu} onKeyDown={onKeyDown}
+      onPointerDown={(e) => { lastPointer.current = e.pointerType; }}
       style={rowGrid(cols)}
       className={`${GRID} hover:bg-accent/40 focus-visible:bg-accent/40 h-14 border-b text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
     >
