@@ -1,13 +1,13 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  ArrowRightLeft, ArrowUpRight, BellRing, Bot, Check, CheckCheck, ChevronDown, Clock, Copy, ExternalLink, FolderOpen, GitMerge, GitPullRequestArrow, GitPullRequestDraft, Globe,
+  ArrowRightLeft, ArrowUpRight, BellRing, Bot, Check, CheckCheck, ChevronDown, Copy, ExternalLink, FolderOpen, GitMerge, GitPullRequestArrow, GitPullRequestDraft, Globe,
   Link, Loader2, MessageSquarePlus, MoreVertical, Pencil, Send, Sparkles, SquareTerminal, Tag, Trash2, Wrench, X, XCircle, Zap, type LucideIcon,
 } from "lucide-react";
 import {
-  addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, mergeWhenGreen, moveWorkstream, previewConfigured, thisInstance,
+  addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, moveWorkstream, previewConfigured, thisInstance,
   cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, slackChannel, staleHours, suggestTitle, toggleFollow, useCachedReviewDigest, useRepos, useReviewDigest, type Row,
 } from "../store";
-import { firstLine, prMenuActions, prPreviewState, quickActions, shouldBump, type QuickActionId } from "../workstream";
+import { firstLine, prMenuActions, prPreviewState, quickActions, reviewProblems, shouldBump, type QuickActionId } from "../workstream";
 import { reviewSig } from "./Review";
 import { ActionButton } from "@/components/ActionButton";
 import { Tip } from "@/components/ui/tip";
@@ -36,7 +36,7 @@ const followUpDraftKey = (row: Row) => `orca.followup.${row.repo}::${row.branch}
 
 // The icon a quick action wears (every quick action is icon-only, its label the tooltip).
 const QUICK_ICONS: Record<QuickActionId, LucideIcon> = {
-  createPr: GitPullRequestArrow, markReady: CheckCheck, addressPr: Wrench, slack: Send, mergeWhenGreen: Clock, merge: GitMerge, autoMerge: Zap,
+  createPr: GitPullRequestArrow, markReady: CheckCheck, addressPr: Wrench, slack: Send, merge: GitMerge, autoMerge: Zap, disableAutoMerge: Zap,
 };
 
 // The menu's parts. On a desktop they are the Radix menu's own items (the ⋯ dropdown and the
@@ -229,7 +229,6 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
             {prActions.includes("autoMerge") && (row.autoMergeEnabled
               ? <Item icon={Zap} onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</Item>
               : <Item icon={Zap} onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</Item>)}
-            {prActions.includes("autoMerge") && <Item icon={Clock} onSelect={run("Merge when green", () => mergeWhenGreen(row))}>Merge when green</Item>}
             {/* One agent verb: conflicts, CI and review in a single run (store.addressPr). */}
             {prActions.includes("addressPr") && <Item icon={Wrench} onSelect={run("Address PR", () => addressPr(row))}>Address PR</Item>}
             {prPreview === "ready" && <Item icon={Globe} onSelect={() => window.open(row.previewUrl, "_blank", "noreferrer")}>Open PR preview</Item>}
@@ -480,7 +479,7 @@ export function QuickActionButtons({ row, hasWork = true, onBusy, peek = false, 
   const cached = useCachedReviewDigest(row.repo, peek ? row.prNumber : undefined);
   const digest = peek ? cached : fetched;
   const actions = quickActions(row, {
-    hasWork, unresolved: digest?.unresolved.count, slackChannel: Boolean(slackChannel(row.repo)), mergePolicy: repoInfo?.mergePolicy,
+    hasWork, reviewProblems: digest && reviewProblems(digest), slackChannel: Boolean(slackChannel(row.repo)),
   });
   if (!actions.length) return null;
   const defaultLabels = (repoInfo?.prLabels ?? []).filter((l) => l.default).map((l) => l.name);
@@ -490,9 +489,9 @@ export function QuickActionButtons({ row, hasWork = true, onBusy, peek = false, 
       case "markReady": return () => markReady(row);
       case "addressPr": return () => addressPr(row);
       case "slack": return () => sendSlack(row, slackKind ?? "notify");
-      case "mergeWhenGreen": return () => mergeWhenGreen(row);
       case "merge": return () => merge(row);
       case "autoMerge": return () => autoMerge(row);
+      case "disableAutoMerge": return () => disableAutoMerge(row);
     }
   };
   return (
@@ -501,7 +500,7 @@ export function QuickActionButtons({ row, hasWork = true, onBusy, peek = false, 
         const Icon = QUICK_ICONS[a.id];
         const run = verb(a.id, a.slackKind);
         return (
-          <Tip key={a.id} label={a.disabled ?? a.label} side={tipSide} className={i >= 2 ? "max-md:hidden" : undefined}>
+          <Tip key={a.id} label={a.disabled ?? a.tip ?? a.label} side={tipSide} className={i >= 2 ? "max-md:hidden" : undefined}>
             <span data-quick-action={a.id} className="inline-flex">
               <ActionButton size="icon" variant="ghost" label={a.label} disabled={Boolean(a.disabled)}
                 className={cn("size-7", i === 0 ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
@@ -510,7 +509,8 @@ export function QuickActionButtons({ row, hasWork = true, onBusy, peek = false, 
                   : `Merge ${row.branch} into ${baseBranch(row.repo)} locally? This can't be undone.`) : undefined}
                 failure={{ action: a.label, title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }}
                 onRun={async () => { onBusy?.(true); try { await run(); } finally { onBusy?.(false); } }}>
-                <Icon className="size-3.5" />
+                {/* Auto-merge already on: a filled bolt, so the state reads at a glance. */}
+                <Icon className={cn("size-3.5", a.on && "fill-current text-purple-700 dark:text-purple-400")} />
               </ActionButton>
             </span>
           </Tip>

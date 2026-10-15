@@ -7,6 +7,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ExpandableImage, copyImage } from "@/components/ExpandableImage";
+import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -142,8 +143,9 @@ test("the corner button copies the image and shows a brief Copied tick", async (
 
   await click(copyBtn);
   expect(written).toHaveLength(1);
-  // The inline tick: the tooltip content swaps to "Copied" and stays a Check icon briefly.
-  const tip = copyBtn.parentElement!.querySelector('[data-slot="tip-content"]')!;
+  // The inline tick: the tooltip content swaps to "Copied" and stays a Check icon briefly. (The
+  // click closes the tooltip, as a shadcn one does; focusing the button again shows the new label.)
+  const tip = openTip(copyBtn);
   expect(tip.textContent).toBe("Copied");
 
   // Clicking the copy button must not also open the lightbox underneath it.

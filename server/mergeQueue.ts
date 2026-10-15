@@ -13,6 +13,7 @@
 // clean report (batched like a worker finishing).
 import * as agent from "./agent";
 import * as db from "./db";
+import * as primary from "./primary";
 import * as gh from "./gh";
 import * as git from "./git";
 import * as notify from "./notify";
@@ -70,6 +71,7 @@ export async function cancel(repo: RepoConfig, branch: string): Promise<void> {
 let ticking = false;
 /** One pass over every marked PR this instance drives (the minute timer in index.ts). */
 export async function tick(cfg: OrcaConfig): Promise<void> {
+  if (!primary.held()) return; // a secondary or a branch preview's bridge merges nothing (its caller checks too)
   if (ticking) return; // a slow gh pass must not overlap the next
   ticking = true;
   try {

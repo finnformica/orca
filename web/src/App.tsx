@@ -15,6 +15,7 @@ import { Agents } from "./views/Agents";
 import { PreviewsPage, Repos, Settings, UsagePage } from "./views/Pages";
 import { PrDetail } from "./views/PrDetail";
 import { LocalDetail } from "./views/LocalDetail";
+import { TooltipProvider } from "./components/ui/tooltip";
 
 // The console: Vercel's shell (sidebar + top bar) around one page per route. The orchestrator's
 // window floats outside it, on every route; the top bar's "Ask the orchestrator" opens it. Action
@@ -35,13 +36,13 @@ export function App() {
     if (open === "new") setAddNew(true); else ask();
   }, []);
   return (
-    <>
+    <TooltipProvider>
       <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarAction collapsed={collapsed} />}>
         <Page route={route} />
       </Shell>
       <ToastHost />
       <OrchestratorPanel />
-    </>
+    </TooltipProvider>
   );
 }
 

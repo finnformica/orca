@@ -4,6 +4,7 @@
 import { useSyncExternalStore } from "react";
 import { api, type InstanceHealth, type MetricPoint } from "@/api";
 import type { Usage } from "../../../server/usage";
+import { withProfileEnabled } from "../workstream";
 import { poll } from "./poll";
 import { onRefresh } from "./refresh";
 
@@ -93,6 +94,35 @@ export const useUsageLoaded = (): boolean =>
 export async function refreshUsageNow(): Promise<void> {
   const u = await api.usage();
   if (u) usageSource.push(mergeUsage(usageSource.get(), u));
+}
+
+// The login toggle's own in-flight tracker, one slot per login name: a second click on the SAME
+// login before the first's request returns must win, so the first's (now stale) response is
+// ignored outright rather than applying over, or rolling back past, whatever the second click did.
+const profileToggles = new Map<string, symbol>();
+
+/** Flip a login's enabled state in the shared usage mirror immediately (before the request is even
+ *  sent) and hand back a token: pass it to `applyProfileToggle` / `revertProfileToggle` when the
+ *  request settles, and either is a no-op if a later click on this login superseded it. */
+export function optimisticProfileToggle(name: string, enabled: boolean): { token: symbol; prev: Usage | null } {
+  const token = Symbol(name);
+  profileToggles.set(name, token);
+  const prev = usageSource.get();
+  if (prev?.profiles) usageSource.push({ ...prev, profiles: withProfileEnabled(prev.profiles, name, enabled) });
+  return { token, prev };
+}
+
+/** Apply the authoritative profile list the server returned for a still-current click. */
+export function applyProfileToggle(name: string, token: symbol, profiles: Usage["profiles"]): void {
+  if (profileToggles.get(name) !== token) return; // superseded by a later click
+  const prev = usageSource.get();
+  if (prev) usageSource.push({ ...prev, profiles });
+}
+
+/** Roll back to the snapshot taken right before a still-current click, because its request failed. */
+export function revertProfileToggle(name: string, token: symbol, prev: Usage | null): void {
+  if (profileToggles.get(name) !== token) return; // superseded by a later click — don't undo it
+  if (prev) usageSource.push(prev);
 }
 
 // Every health / history loop that is running right now, by its fetch — so the Instances header's

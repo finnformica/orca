@@ -649,6 +649,17 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   `bin/` (`mainBin`, via `git --git-common-dir`) and its `ORCA_URL` loopback + this primary's port.
   With the database unreachable at boot nobody holds the lock, so duties wait for it. `/api/config`'s
   `bridge` reports `primary` / `reason`. Workers run Orca only via `scripts/preview-orca.sh`.
+  **Stray preview bridges** (incident 2026-10-15: a preview bridge on pre-#215 code ran 19h after its
+  worktree was deleted, running the merge queue and launching the orchestrator's wakes): `held()` is
+  false in a preview bridge even unelected, `agent.launch` refuses there, and each duty checks
+  `held()` itself. A bridge exits when its checkout goes (`primary.checkoutGone`: source, git
+  registration or cwd) and `preview-orca.sh` then exits rather than forwarding; it won't start a
+  branch bridge older than #215. Removing/reaping a worktree stops Orca bridges whose cwd is in it
+  (`proc.stopBridgesIn`); `orca sweep` lists bun processes on a deleted cwd and `--confirm` stops
+  them. For bridges too old for any of that, the primary checks each minute that the orchestrator's
+  live wake descends from ITSELF (`orchestrator.evictForeignWake`); another bridge's, seen on two
+  checks in a row (a restarting primary drains for seconds), is stopped with its wake, which
+  `recover` re-queues.
 - **Working on Orca itself: worktree + PR, never this checkout.** The bridge serves the main
   checkout and restarts when it changes, so edits and `git pull` there are restarts under live
   runs. Make changes in a worktree (`git worktree add .worktrees/<name>`, symlink `node_modules`,
