@@ -1,8 +1,11 @@
 # How Orca works: the way of working
 
-This is the day-to-day model: what you do, what Orca does, and what each piece is called. To set
-up your own Orca, see [SETUP.md](SETUP.md). For the design rationale and history, see
-[`CLAUDE.md`](../CLAUDE.md).
+> This document uses ASD-STE100 Simplified Technical English (STE). Orca's agents write all
+> human-facing prose in STE. The rules are in `shared/writingStyle.ts`.
+
+This document gives the daily model. It tells you what you do, what Orca does, and the name of each
+part. To set up your own Orca, read [SETUP.md](SETUP.md). For the design reasons and the history,
+read [`CLAUDE.md`](../CLAUDE.md).
 
 - [The model in one paragraph](#the-model-in-one-paragraph)
 - [Workstreams](#workstreams)
@@ -19,14 +22,20 @@ up your own Orca, see [SETUP.md](SETUP.md). For the design rationale and history
 
 ## The model in one paragraph
 
-You talk to **one** conversation, **the orchestrator**: a Claude Code session that acts like a
-senior engineer running a team. It does not write code in your repos itself. It **delegates**:
-each piece of work becomes a **workstream** (one branch, one git worktree, one conversation), and a
-**headless worker** (`claude -p`, or `codex exec` / `cursor-agent -p` where a repo allows them) runs
-in that worktree. When a worker finishes, Orca checks the result, opens the PR when the repo allows
-it, and reports back to the orchestrator, which decides what happens next. Merges go through a
-**merge queue** that squash-merges only green, clean PRs, and only those the repo's merge policy
-allows. You watch it all on the board and step in when something needs you.
+You talk to **one** conversation, **the orchestrator**. The orchestrator is a Claude Code session.
+It acts as a senior engineer who manages a team. It does not write code in your repos. It
+**delegates**. Each unit of work becomes a **workstream**: one branch, one git worktree and one
+conversation. A **headless worker** runs in that worktree. The worker is `claude -p`, or
+`codex exec` / `cursor-agent -p` if the repo permits them. When a worker finishes, Orca does these
+steps:
+
+1. Orca checks the result.
+2. Orca opens the PR, if the repo permits it.
+3. Orca sends a report to the orchestrator. The orchestrator decides the next step.
+
+All merges go through a **merge queue**. The merge queue squash-merges a PR only if the PR is green
+and clean, and only if the repo's merge policy permits it. You monitor all of this on the board. You
+act when a workstream needs you.
 
 ```
 you ──► orchestrator ──spawn/send/address──► worker (headless, in its own worktree)
@@ -40,139 +49,159 @@ you ──► orchestrator ──spawn/send/address──► worker (headless, i
 
 ## Workstreams
 
-A **workstream is a branch**. It has:
+A **workstream is a branch**. A workstream has these parts:
 
-- a **git worktree** under the repo's `worktreeRoot` (for example `/opt/<repo>/.worktrees/...`),
-  created on demand; any action on a PR with no worktree checks one out automatically;
-- a **conversation**: every instruction and the agent's final response, stored in Postgres (the
-  `turn` table). Nothing is deleted: finished workstreams are **archived**, not removed, so their
-  history stays searchable;
-- **enrichment** on top of what git and GitHub already know: title, provider and session pointer,
-  model, whether the orchestrator owns it (`orchestrated`), its status record, merge mark, and so on.
+- A **git worktree** under the repo's `worktreeRoot` (for example `/opt/<repo>/.worktrees/...`).
+  Orca creates the worktree when it is necessary. If you do an action on a PR that has no worktree,
+  Orca checks one out automatically.
+- A **conversation**. The conversation contains each instruction and the agent's final response.
+  Orca keeps it in Postgres (the `turn` table). Orca deletes nothing. Orca **archives** a finished
+  workstream and does not remove it, so you can search its history.
+- **Enrichment**. Enrichment adds data that git and GitHub do not have: the title, the provider and
+  session pointer, the model, the orchestrator ownership (`orchestrated`), the status record, the
+  merge mark, and other data.
 
-Workstreams show up on the **Agents** page (a list, or a board with the lanes
-Local → Draft → In Review → Mergeable → Done·today). The lanes are derived from live git/`gh` state,
-not stored.
+The **Agents** page shows the workstreams. It shows a list, or a board with these lanes:
+Local → Draft → In Review → Mergeable → Done·today. Orca calculates the lanes from the live git and
+`gh` state. Orca does not store the lanes.
 
 **How a follow-up keeps context** (the "handover ladder"):
 
-1. same provider: native `--resume` of the provider's own session (lossless). Changing the Claude
-   model keeps this rung;
-2. another Claude login: also lossless, handled by
-   [claude-hydra](https://github.com/finnformica/claude-hydra), whose `claude` shim routes every
-   launch to the login with the most headroom and shares sessions between logins;
-3. a provider switch, a session at 80% or more of its context, too many turns or failures, or a
-   session file that's missing (for example after a move to another machine): a **portable
-   transcript** of about the newest 12k tokens (instructions, activity, structured outcomes) seeds a
-   new session. The worktree's files and git history count as the source of truth over this
-   transcript.
+1. Same provider: Orca uses a native `--resume` of the provider's own session. This rung loses no
+   data. A change of the Claude model keeps this rung.
+2. A different Claude login: this rung also loses no data.
+   [claude-hydra](https://github.com/finnformica/claude-hydra) does this work. Its `claude` shim
+   sends each launch to the login with the most headroom. It shares sessions between logins.
+3. Orca uses this rung for a provider switch, for a session at 80% or more of its context, for too
+   many turns or failures, or for a missing session file (for example, after a move to a different
+   machine). A **portable transcript** starts a new session. The transcript contains approximately
+   the newest 12k tokens: instructions, activity and structured outcomes. The worktree's files and
+   git history are the source of truth. They have priority over this transcript.
 
-**The verification gate.** After any run that **committed**, Orca runs the repo's `checkCommand`
-in the worktree and records the result on the turn: the card says **Verified** or **Check failed**.
-This is Orca's own check, separate from what the agent says it verified. With
-`features.followAutomation` on, one failure queues one fix-up run. A failed fix-up stops there, so
-the gate can never loop.
+**The verification gate.** After a run that makes a **commit**, Orca runs the repo's `checkCommand`
+in the worktree. Orca records the result on the turn. The card shows **Verified** or
+**Check failed**. This check is Orca's own check. It is different from the verification that the
+agent reports. With `features.followAutomation` on, one failure adds one fix-up run to the queue. If
+the fix-up run fails, Orca stops there. Thus the gate cannot loop.
 
-**Cleanup.** About 10 minutes after a PR is merged or closed, each instance reaps its own worktree
-for it: it stops the preview, deletes the branch if the PR merged, and archives the card. A worktree
-is never reaped while an agent runs in it, or when the worktree has uncommitted changes or unpushed
-commits. In those cases the card is flagged instead.
+**Cleanup.** Approximately 10 minutes after a PR merges or closes, each instance reaps its own
+worktree for that PR. The instance stops the preview. It deletes the branch if the PR merged. It
+archives the card. Orca does not reap a worktree in these conditions:
+
+- An agent runs in the worktree.
+- The worktree has changes that are not committed.
+- The worktree has commits that are not pushed.
+
+In these conditions, Orca puts a flag on the card.
 
 ## The orchestrator
 
-Open it from **Ask the orchestrator** in the top bar, the `O` key, the command palette (`⌘K`), or
-the quick-ask pill at the bottom of every page (the `A` key). It's a side panel that stays mounted,
-so your draft and scroll position survive closing it.
+You can open the orchestrator from these locations:
 
-- **It's not a separate runtime.** Each "wake" is the same headless `claude -p --resume` every board
-  action uses, recorded as turns under a reserved pointer (`@orca` / `orchestrator`). Its working
-  directory is `~/.orca/orchestrator`. A `CLAUDE.md` you put there is read as standing orders, and a
-  `.mcp.json` there gives it MCP servers.
-- **Access.** By default it has Claude Code's full toolset (`bypassPermissions`): shell, files, web,
-  subagents. Set `orchestratorShell: false` in the config to limit it to the `orca` command, reading,
-  the web and read-only subagents. In both modes it **can't** promote PRs or post to Slack through
-  Orca, and it merges **only** through the merge queue.
-- **Management by exception.** A worker's **problem** (failed, stopped, or its commit failed the
-  check) wakes it straight away. A **clean finish** is held and delivered in one batch, either when
-  its last running worker finishes or when you next speak, whichever comes first. It never polls
+- **Ask the orchestrator** in the top bar.
+- The `O` key.
+- The command palette (`⌘K`).
+- The quick-ask pill at the bottom of each page (the `A` key).
+
+The orchestrator is a side panel. The panel stays mounted when you close it, so Orca keeps your draft
+and your scroll position.
+
+- **It is not a separate runtime.** Each "wake" is the same headless `claude -p --resume` that each
+  board action uses. Orca records each wake as turns under a reserved pointer (`@orca` /
+  `orchestrator`). The working directory is `~/.orca/orchestrator`. If you put a `CLAUDE.md` there,
+  the orchestrator reads it as standing orders. A `.mcp.json` there gives it MCP servers.
+- **Access.** By default, the orchestrator has the full Claude Code toolset (`bypassPermissions`):
+  shell, files, web and subagents. To limit it, set `orchestratorShell: false` in the config. Then it
+  can use only the `orca` command, file reads, the web and read-only subagents. In the two modes, it
+  **cannot** promote PRs or post to Slack through Orca. It merges **only** through the merge queue.
+- **Management by exception.** A worker **problem** wakes the orchestrator immediately. A problem is
+  a failed run, a stopped run, or a commit that failed the check. Orca holds a **clean finish** and
+  sends it in one batch. Orca sends the batch when the last worker that runs finishes, or when you
+  send a message. The first of these two events starts the batch. The orchestrator does not poll
   while it waits.
-- **One wake per batch.** Everything that arrived while it worked goes into one resumed run, with
-  `## From the user` first and then `## Worker reports`, so it never mistakes a report for something
-  you asked.
-- **Loop guards.** After 12 self-wakes in a row with no message from you, it pauses until you reply.
-  Each wake is capped by `orchestratorWakeBudgetUsd` (`--max-budget-usd`) when that's set.
-- **A wake that dies says why** (budget, timeout, non-zero exit) and its messages are retried once,
-  along with a summary of what the cut-off wake had already done.
-- **New drafts.** The **Add New** box (the `C` key) defaults to the model "Auto": the prompt goes to
-  the orchestrator as a `[new draft]` message, and it answers with exactly **one** spawn. If you pick
-  a specific model there, Orca skips the orchestrator and launches directly.
-- **Compact.** The context ring under its composer has a **Compact** button that runs `/compact` on
-  its own session.
+- **One wake per batch.** All the messages that arrive during a run go into one resumed run.
+  `## From the user` comes first, then `## Worker reports`. Thus the orchestrator does not mistake a
+  report for an instruction from you.
+- **Loop guards.** After 12 self-wakes in sequence with no message from you, the orchestrator pauses.
+  It continues when you reply. If `orchestratorWakeBudgetUsd` is set, it is the limit for each wake
+  (`--max-budget-usd`).
+- **A wake that dies says why** (budget, timeout, non-zero exit). Orca tries its messages one more
+  time. It adds a summary of the actions that the cut-off wake completed.
+- **New drafts.** The **Add New** box (the `C` key) has the default model "Auto". The prompt goes to
+  the orchestrator as a `[new draft]` message. The orchestrator replies with exactly **one** spawn.
+  If you select a specific model there, Orca does not use the orchestrator. Orca launches the run
+  directly.
+- **Compact.** The context ring below the composer has a **Compact** button. This button runs
+  `/compact` on the orchestrator's own session.
 
 ## The `orca` command
 
-`bin/orca` is the orchestrator's only Orca tool: `orca <verb> [--flag value]… [words…]`, which posts
-to the bridge's `/api/orchestrator/tool`. You can run it yourself on the box too (it talks to
-`http://127.0.0.1:8787`; set `ORCA_URL` to talk to another instance). A repeated flag
-(`--attach a --attach b`) collects into a list.
+`bin/orca` is the orchestrator's only Orca tool: `orca <verb> [--flag value]… [words…]`. It posts to
+the bridge's `/api/orchestrator/tool`. You can also run it yourself on the box. It talks to
+`http://127.0.0.1:8787`. To talk to a different instance, set `ORCA_URL`. If you repeat a flag
+(`--attach a --attach b`), Orca collects the values into a list.
 
 | Verb | What it does |
 | --- | --- |
-| `board` | Every workstream on every instance: branch, agent state, PR, CI, review, check, last outcome, status. |
-| `spawn --repo r --model m --objective … --output … --boundaries … [--context …] [--title …] [--attach id\|path]… [--on instance]` | Create a workstream and launch a worker. `--model`, `--objective`, `--output` and `--boundaries` are **required**. `--on` places it on another instance (default: the repo's `runsOn`, else here). |
-| `send --repo r --branch b [--model m] [--attach …] "message"` | Follow up on a workstream. Queued if a run is in flight. `--model` re-pins it (moves it along the ladder). |
-| `address --repo r --branch b` | Address a PR in one run: merge conflicts, then failing CI, then review comments, whichever apply. A conflict that's only in changelog files is resolved by Orca itself with no agent. |
-| `move --repo r --branch b --to instance` | Push the branch, remove the worktree here, adopt it there. The next run starts from the portable transcript. |
-| `archive --repo r --branch b` | Archive a workstream this orchestrator owns (the worktree is removed, the history kept). |
-| `sweep [--confirm]` | Report (or, with `--confirm`, remove) finished worktrees, orphaned previews and Orca branches with nothing behind them, on every instance. |
-| `preview --repo r --branch b` | Start the branch's preview. `--status` shows its state and log tails. `--push-to-template [--confirm]` makes it the repo's template (see [Previews](#previews)). |
-| `merge --repo r (--pr N \| --branch b) --when-green [--small]` / `--cancel` | Mark (or unmark) for the merge queue. It never merges directly. |
-| `status --repo r --branch b [--plan …] [--waiting …] [--merge small\|needs-finn] [--clear]` | The workstream's short structured status (see [Status and notes](#status-and-notes)). With no flags it reads the status. |
-| `chats ["terms"]` | List conversations, or full-text search every past instruction and response, archived ones included. |
-| `read --chat <id>` / `read --run <runId>` | Read one conversation, or one run with its activity and check output. |
-| `notes` / `notes set "…"` | Read or replace the orchestrator's own notes, which go into every wake prompt. |
+| `board` | Shows each workstream on each instance: branch, agent state, PR, CI, review, check, last outcome and status. |
+| `spawn --repo r --model m --objective … --output … --boundaries … [--context …] [--title …] [--attach id\|path]… [--on instance]` | Creates a workstream and launches a worker. `--model`, `--objective`, `--output` and `--boundaries` are **required**. `--on` puts the workstream on a different instance. The default is the repo's `runsOn`, else this instance. |
+| `send --repo r --branch b [--model m] [--attach …] "message"` | Sends a follow-up to a workstream. If a run is in progress, Orca adds the message to the queue. `--model` re-pins the workstream (it moves it on the ladder). |
+| `address --repo r --branch b` | Addresses a PR in one run. The run does these items in this sequence, if they apply: merge conflicts, failing CI, review comments. If a conflict is only in changelog files, Orca resolves it itself with no agent. |
+| `move --repo r --branch b --to instance` | Pushes the branch, removes the worktree on this instance and adopts it on the target instance. The next run starts from the portable transcript. |
+| `archive --repo r --branch b` | Archives a workstream that this orchestrator owns. Orca removes the worktree and keeps the history. |
+| `sweep [--confirm]` | Reports finished worktrees, orphaned previews and Orca branches with nothing behind them, on each instance. With `--confirm`, it removes them. |
+| `preview --repo r --branch b` | Starts the branch's preview. `--status` shows its state and the ends of its logs. `--push-to-template [--confirm]` makes it the repo's template (see [Previews](#previews)). |
+| `merge --repo r (--pr N \| --branch b) --when-green [--small]` / `--cancel` | Marks the PR for the merge queue, or removes the mark. It does not merge directly. |
+| `status --repo r --branch b [--plan …] [--waiting …] [--merge small\|needs-finn] [--clear]` | Sets the workstream's short structured status (see [Status and notes](#status-and-notes)). With no flags, it shows the status. |
+| `chats ["terms"]` | Lists conversations. With terms, it does a full-text search of all past instructions and responses, archived ones too. |
+| `read --chat <id>` / `read --run <runId>` | Shows one conversation, or one run with its activity and check output. |
+| `notes` / `notes set "…"` | Shows or replaces the orchestrator's own notes. The notes go into each wake prompt. |
 
 ## Briefs and the model ladder
 
-A worker knows only its brief, so `spawn` refuses one without an **objective**, an **expected
-output** and **boundaries**. **Context** is optional.
+A worker knows only its brief. Thus `spawn` refuses a brief that does not have an **objective**, an
+**expected output** and **boundaries**. **Context** is optional.
 
-The orchestrator picks each worker's model from `MODEL_LADDER` (`web/src/workstream.ts`):
+The orchestrator selects the model for each worker from `MODEL_LADDER` (`web/src/workstream.ts`):
 
 | Model | Use for |
 | --- | --- |
-| `claude-haiku-4-5-20251001` | mechanical edits, renames, one-file fixes with a clear spec |
-| `claude-sonnet-5` | small, well-specified tasks in a known area |
+| `claude-haiku-4-5-20251001` | mechanical edits, renames, fixes in one file with a clear specification |
+| `claude-sonnet-5` | small tasks with a clear specification in a known area |
 | `claude-opus-5-5` | **the default**: features, bug fixes, refactors, debugging |
-| `claude-fable-5-1` | only work that has already defeated Opus, or genuinely novel design work |
+| `claude-fable-5-1` | only work that Opus did not complete, or design work that is truly new |
 
-**Moving up the ladder.** When an orchestrated worker fails **twice in a row** on one model (the
-run errors, or its commit fails the check; a stop counts as neither), its report gets a
-`Model ladder:` line. With the repo's `modelEscalation: "suggest"` (the default), that line suggests
-the next model up. With `"apply"`, Orca has already re-pinned the workstream to it. The streak is
-stored on the workstream, so a restart doesn't reset it. At the top of the ladder, the line says to
-stop and ask you. The orchestrator itself runs on Opus 5.5 unless you change it in its panel's model
-picker.
+**Moving up the ladder.** An orchestrated worker can fail **two times in sequence** on one model. A
+failure is a run error, or a commit that fails the check. A stop is not a failure. Then the worker's
+report gets a `Model ladder:` line. With the repo's `modelEscalation: "suggest"` (the default), that
+line recommends the next model up. With `"apply"`, Orca already re-pinned the workstream to that
+model. Orca stores the failure count on the workstream, so a restart does not reset it. At the top
+of the ladder, the line tells the orchestrator to stop and ask you. The orchestrator itself runs on
+Opus 5.5. To change this, use the model picker in its panel.
 
 ## From finished run to merged PR
 
-1. **Auto PR.** With the repo's `mergePolicy.autoPr: true`, a clean finish by an orchestrated worker
-   opens the worker's own PR: ready (not draft), with the title from the card and a body built from
-   the outcome and commits. A clean finish means the run is done, the check didn't fail, there are
-   commits ahead of base, and there's no PR yet. The report then says `Orca opened PR #N`. Without
-   `autoPr`, you promote the branch from the card (**Promote**: create the PR ready or as a draft,
-   optionally with the preview label).
-2. **Mark for merge.** `orca merge --when-green` (from the orchestrator), the PR menu's
-   **Merge when green**, or `POST /api/prs/merge-when-green`. A branch with no PR yet can be marked
-   too, and joins the queue once its PR exists. The mark is stored in the database, so it survives
-   restarts.
-3. **The merge queue** (`server/mergeQueue.ts`) runs each minute on the instance the repo runs on.
-   A marked PR is squash-merged only when **every check passed** (no checks yet doesn't count as
-   green) **and** GitHub reports it `MERGEABLE`. Red CI or a conflict keeps the mark and is reported
-   once per head commit. For the orchestrator's own PRs, that report wakes it, and it can then
-   `orca address` the PR.
+1. **Auto PR.** Set the repo's `mergePolicy.autoPr: true`. Then a clean finish by an orchestrated
+   worker opens the PR for that worker. The PR is ready, not draft. The title comes from the card.
+   The body comes from the outcome and the commits. A clean finish has these conditions: the run is
+   done, the check did not fail, there are commits ahead of base, and there is no PR. The report then
+   shows `Orca opened PR #N`. Without `autoPr`, promote the branch from the card. **Promote** creates
+   the PR as ready or as a draft. It can also add the preview label.
+2. **Mark for merge.** Use `orca merge --when-green` (from the orchestrator), **Merge when green** in
+   the PR menu, or `POST /api/prs/merge-when-green`. You can also mark a branch that has no PR. The
+   branch goes into the queue when its PR exists. Orca stores the mark in the database, so the mark
+   stays after a restart.
+3. **The merge queue** (`server/mergeQueue.ts`) runs each minute on the instance of the repo. Orca
+   squash-merges a marked PR only when these two conditions are true:
+   - **Each check passed.** A PR with no checks is not green.
+   - GitHub reports the PR as `MERGEABLE`.
 
-**Merge policy** is per-repo config, not instructions in the orchestrator's prompt:
+   Red CI or a conflict does not remove the mark. Orca reports it one time for each head commit. For
+   the orchestrator's own PRs, that report wakes the orchestrator. The orchestrator can then use
+   `orca address` on the PR.
+
+**Merge policy** is a configuration for each repo. It is not an instruction in the orchestrator's
+prompt:
 
 ```jsonc
 "mergePolicy": {
@@ -182,155 +211,190 @@ picker.
 }
 ```
 
-- `never`: nothing is merged automatically. `small`: only PRs marked `--small`. `any`: every marked
-  PR.
-- A PR touching a `denyPaths` glob is **refused** when it's marked, and checked **again at merge
-  time**, because a later push can add such a file. A refused PR is unmarked and you're notified
-  (`merge_refused`). This is how "small UI PRs merge themselves, but migrations and infra wait for a
-  human" is enforced.
-- If the repo disallows GitHub auto-merge, Orca squash-merges directly once it's safe to.
+- `never`: Orca merges nothing automatically. `small`: Orca merges only PRs marked `--small`. `any`:
+  Orca merges each marked PR.
+- Orca **refuses** a PR that changes a file in a `denyPaths` glob when you mark it. Orca checks the PR
+  **again at merge time**, because a later push can add such a file. Orca removes the mark from a
+  refused PR and sends you a notification (`merge_refused`). With this rule, "small UI PRs merge
+  themselves, but migrations and infra wait for a human".
+- If the repo does not permit GitHub auto-merge, Orca squash-merges directly when it is safe.
 
 ### Automatic PR upkeep
 
-Nobody has to press **Address PR** on an orchestrated workstream's PR. Once a minute
-(`server/upkeep.ts`, beside the merge queue), the instance holding the worktree looks at each
+You do not have to push **Address PR** on the PR of an orchestrated workstream. One time each minute
+(`server/upkeep.ts`, next to the merge queue), the instance that holds the worktree examines each
 **open, non-draft** PR of an **orchestrated** workstream. It runs the same Address PR as the button
-and `orca address` when the PR has any of these:
+and `orca address` if the PR has one or more of these conditions:
 
-- **conflicts** with its base;
-- a **required** check failed on the current head (the same required-checks filter as the board's
-  CI badge);
-- **actionable unresolved review threads** that no agent has been handed yet. A thread an earlier
-  Address PR sent stays unresolved on GitHub until someone resolves it, and doesn't trigger again.
+- **Conflicts** with its base.
+- A **required** check failed on the current head. Orca uses the same filter for required checks as
+  the board's CI badge.
+- **Actionable unresolved review threads** that Orca did not give to an agent before. A thread from
+  an earlier Address PR stays unresolved on GitHub until a person resolves it. That thread does not
+  start a new address.
 
 Guards:
 
-- **Never** while the workstream's agent is running or has messages queued.
-- **Never** while the orchestrator's `orca status --waiting` says it's waiting on you ("user",
-  "Finn", "you", "input", "decision", …). Waiting on CI or a teammate doesn't count.
-- **At most one** automatic address per PR per head commit and reason. A new reason on the same
-  head (a review thread after a CI fix) still gets its own address.
-- **Backoff:** two automatic addresses on one head, or one whose reason is still there with nothing
-  new to try, ends it. Four in a row across heads with no healthy look in between ends it too, which
-  catches a fix that goes red on every push. When it gives up you get an `upkeep_gave_up`
-  notification (with **Address PR**), and it leaves that head alone. A new push starts over.
-- **At most `autoUpkeepConcurrency`** (app config, default 2) automatic runs at once per instance,
-  because each one is a full agent run on the box's shared memory. `0` turns upkeep off.
-- **Opt out:** per repo with `"autoUpkeep": false` (on by default), or per branch with
+- **Never** while the workstream's agent runs or has messages in the queue.
+- **Never** while the orchestrator's `orca status --waiting` says that it waits for you ("user",
+  "Finn", "you", "input", "decision", …). A wait for CI or for a teammate does not count.
+- **Maximum one** automatic address for each PR, head commit and reason. A new reason on the same
+  head (a review thread after a CI fix) gets its own address.
+- **Backoff:** Orca stops in these conditions:
+  - Two automatic addresses on one head.
+  - One address whose reason stays, with nothing new to try.
+  - Four addresses in sequence across heads, with no healthy result between them. This catches a fix
+    that goes red on each push.
+
+  When Orca stops, you get an `upkeep_gave_up` notification (with **Address PR**). Orca then does
+  not touch that head again. A new push starts the count again.
+- **Maximum `autoUpkeepConcurrency`** (app config, default 2) automatic runs at the same time on each
+  instance. Each run is a full agent run that uses the shared memory of the box. `0` stops upkeep.
+- **Opt out:** for a repo, set `"autoUpkeep": false` (the default is on). For a branch, set
   `upkeepOff: true` on its enrichment.
 
-The last attempt is stored on the branch's enrichment (`upkeep`: head, reasons tried, attempts,
-streak, given-up reason). It's written **before** the launch, so a restart never fires one twice.
-Each start is an `auto_address` notification. The card and Agents row show
-`auto-addressing: conflicts, CI` while the run goes, or `auto-upkeep gave up: …`. The run is an
-ordinary orchestrated follow-up, so the orchestrator hears its report like any worker's.
+Orca stores the last attempt on the branch's enrichment (`upkeep`: head, reasons tried, attempts,
+streak, given-up reason). Orca writes it **before** the launch, so a restart does not start one
+address two times. Each start is an `auto_address` notification. The card and the Agents row show
+`auto-addressing: conflicts, CI` during the run, or `auto-upkeep gave up: …`. The run is a usual
+orchestrated follow-up, so the orchestrator gets its report as for all workers.
 
 ## Status and notes
 
-- **`orca status`** keeps a short structured record per workstream, owned by the orchestrator:
-  `plan`, `waiting on` and a merge class (`small` or `needs-finn`), up to 300 characters per field.
-  It appears on the orchestrator's board every wake and on your card and Agents row. The merge class
-  is just a label for you: the queue only reads `--small` and the repo's `mergePolicy`.
-- **`orca notes`** holds your preferences and standing facts. They go into every wake prompt, so the
-  orchestrator's session is disposable: if a session is reset, nothing it was told to keep is lost.
-  If it seems to have forgotten something, check its notes first.
+- **`orca status`** keeps a short structured record for each workstream. The orchestrator owns the
+  record. The fields are `plan`, `waiting on` and a merge class (`small` or `needs-finn`). Each field
+  has a maximum of 300 characters. The record shows on the orchestrator's board at each wake, and on
+  your card and Agents row. The merge class is only a label for you. The queue reads only `--small`
+  and the repo's `mergePolicy`.
+- **`orca notes`** keeps your preferences and standing facts. They go into each wake prompt. Thus
+  the orchestrator's session is disposable. If Orca resets a session, the orchestrator loses nothing
+  that you told it to keep. If the orchestrator does not remember something, examine its notes first.
 
 ## Previews
 
-A **preview** runs a branch's app (one or more services, each command from the repo's
-`previewServices`) on ports picked from `portRange`, so you can click through it before merging.
+A **preview** runs the app of a branch on ports from `portRange`. The app has one or more services.
+Each service runs a command from the repo's `previewServices`. You can use the preview to test the
+branch before the merge.
 
-- Start one from the card or agent page (**Preview** tab), the **Previews** page, or
-  `orca preview --repo r --branch b`. The **Previews** page also has **Test master** per repo,
-  which previews the base branch.
-- A command can use `{port}` (its own port), `{svc:name}` (another service's port), `{bind}`
-  (`ORCA_PREVIEW_BIND`), `{host}` (`ORCA_PREVIEW_HOST`) and `{db}` (a per-worktree database name for
-  an `onStop` drop).
-- **Template database.** Repos like branch-demo give each preview its **own** Postgres database,
-  cloned from `PREVIEW_TEMPLATE_DB` (`scripts/preview-db.sh create {db}`) and then migrated to the
-  branch's schema. `onStop` drops it.
-- **Push to template.** When you've set a preview up the way every preview should start (for
-  example its integrations):
+- To start a preview, use one of these: the card or the agent page (**Preview** tab), the
+  **Previews** page, or `orca preview --repo r --branch b`. The **Previews** page also has
+  **Test master** for each repo. **Test master** starts a preview of the base branch.
+- A command can contain these placeholders:
+  - `{port}`: the port of the service.
+  - `{svc:name}`: the port of a different service.
+  - `{bind}`: `ORCA_PREVIEW_BIND`.
+  - `{host}`: `ORCA_PREVIEW_HOST`.
+  - `{db}`: a database name for each worktree, for an `onStop` drop.
+- **Template database.** Some repos, for example branch-demo, give each preview its **own** Postgres
+  database. Orca clones that database from `PREVIEW_TEMPLATE_DB` (`scripts/preview-db.sh create {db}`).
+  Then Orca migrates it to the branch's schema. `onStop` drops it.
+- **Push to template.** Use this when a preview has the setup that each preview must start with (for
+  example, its integrations):
 
   ```sh
   orca preview --repo <repo> --branch <branch> --push-to-template            # dry run: plan + masked env diff
   orca preview --repo <repo> --branch <branch> --push-to-template --confirm  # apply
   ```
 
-  This replaces the template database with a whole copy of the preview's database. The old template
-  is kept as `<template>_bak_<timestamp>`, and the command prints the `psql` to restore it. It refuses
-  while anything is connected to the template, so stop the main checkout's backend first. It needs a
-  `pg_dump` at least as new as the server (`PG_DUMP` overrides which one is used). It also writes
-  integration-related env vars (Linear, GitHub, Slack, `_BASE_URL`, …) back into the main checkout's
-  copied `.env`, keeping a backup under `~/.orca/env-backups/`. Values are always masked in its
-  output. The orchestrator is told to dry-run first and to apply only when you ask.
-- **Orca's own previews** run the branch's own bridge read-only (`scripts/preview-orca.sh`,
-  `ORCA_PREVIEW_BRIDGE=1`), so a branch's UI shows that branch's server. The top bar names which
-  bridge answered.
-- **Reaping.** An hourly pass drops orphaned `orca_*` preview databases older than 2 hours, and the
-  repo's `testContainerPrefix` Docker containers older than 3 hours.
+  This command replaces the template database with a full copy of the preview's database. Orca keeps
+  the old template as `<template>_bak_<timestamp>`. The command prints the `psql` command to restore
+  it. The command refuses to run while a client is connected to the template. Thus, stop the main
+  checkout's backend first. The command needs a `pg_dump` that is the same version as the server or
+  newer. `PG_DUMP` sets which `pg_dump` Orca uses. The command also writes env vars for integrations
+  (Linear, GitHub, Slack, `_BASE_URL`, …) back into the main checkout's copied `.env`. It keeps a
+  backup under `~/.orca/env-backups/`. Its output always masks the values. The orchestrator has the
+  instruction to do a dry run first, and to apply only when you tell it to.
+- **Orca's own previews** run the branch's own bridge in read-only mode (`scripts/preview-orca.sh`,
+  `ORCA_PREVIEW_BRIDGE=1`). Thus the UI of a branch shows the server of that branch. The top bar
+  shows the name of the bridge that answered.
+- **Reaping.** One time each hour, Orca drops orphaned `orca_*` preview databases that are older than
+  2 hours. It also removes the repo's `testContainerPrefix` Docker containers that are older than 3
+  hours.
 
 ## Instances: the cloud box and the laptop
 
-Orca can run as several **instances** sharing one Postgres database. A typical setup has two:
+Orca can run as many **instances** that share one Postgres database. A usual setup has two
+instances:
 
 - **`cloud`**: an EC2 box that runs the bridge, the web UI and the orchestrator (`orchestratorOn:
-  "cloud"`), with repos checked out under `/opt` and worktrees under each repo's `.worktrees`;
-- **`local`**: your laptop, running its own bridge against the same database over Tailscale.
+  "cloud"`). The repos are under `/opt`. The worktrees are under the `.worktrees` of each repo.
+- **`local`**: your laptop. It runs its own bridge against the same database over Tailscale.
 
-A **workstream lives on the instance holding its worktree.** New work goes to: an explicit choice
-(the Add New box's "run on" picker, or `spawn --on`), else the repo's `runsOn`, else the instance you
-asked. Requests for a workstream on another instance are forwarded to it over the tailnet, and the
-board on either machine shows both. **Move** (on the card menu, or `orca move --to`) pushes the
-branch and re-homes the workstream. History needs no moving because it's in the shared database.
+A **workstream lives on the instance holding its worktree.** Orca puts new work on the first of
+these that applies:
 
-The Overview shows one card per machine: CPU and memory (with OOM kills marked), running agents,
-disk, and **Cost · this month** (the hourly rate from `instanceHourlyUsd`, else an EC2 on-demand
-estimate from instance metadata, multiplied by the hours the instance was up). Open PR #180
-("Robust instance cost") would move the month figure to a boot ledger seeded by
-`instanceBillingSince`; it isn't on `main` yet.
+1. An explicit choice (the "run on" picker in the Add New box, or `spawn --on`).
+2. The repo's `runsOn`.
+3. The instance that got the request.
+
+Orca forwards a request for a workstream on a different instance to that instance over the tailnet.
+The board on each machine shows the workstreams of the two instances. **Move** (in the card menu, or
+`orca move --to`) pushes the branch and gives the workstream a new home instance. The history stays
+where it is, because it is in the shared database.
+
+The Overview shows one card for each machine. The card shows CPU and memory (with marks for OOM
+kills), the agents that run, disk, and **Cost · this month**. The cost is the hourly rate multiplied
+by the hours that the instance was up. The hourly rate comes from `instanceHourlyUsd`. If that is not
+set, Orca uses an EC2 on-demand estimate from the instance metadata. Open PR #180
+("Robust instance cost") moves the month value to a boot ledger that starts from
+`instanceBillingSince`. That PR is not on `main` at this time.
 
 ## Notifications
 
-There's one notification centre (the bell at the sidebar's foot) and one toast stack (bottom-left).
-Both read the same `notification` table, so both instances show the same rows. Kinds include run
-finished / needs input / failed / stopped, check failed, preview ready / failed, PR CI failing, PR
-conflicts, merged, merge refused, auto-addressing / auto-upkeep gave up (automatic PR upkeep), and
-a failed button click (local to your browser).
+Orca has one notification centre (the bell at the bottom of the sidebar) and one toast stack (bottom
+left). The two read the same `notification` table, so the two instances show the same rows. The
+kinds include:
 
-Each notification has quick actions: CI failing or conflicts → **Address PR**; check failed →
-**Fix**; finished → **Reply**; failed → **Retry**; preview ready → **Open preview**. **Open** comes
-last on every one. A notification is unread or read; nothing is deleted except by the 30-day prune.
-Do-not-disturb, per-kind toasts and browser notifications are in **Settings**.
+- Run finished, needs input, failed or stopped.
+- Check failed.
+- Preview ready or failed.
+- PR CI failing, and PR conflicts.
+- Merged, and merge refused.
+- Auto-addressing, and auto-upkeep gave up (automatic PR upkeep).
+- A failed button click. This kind is local to your browser.
+
+Each notification has quick actions:
+
+- CI failing or conflicts → **Address PR**.
+- Check failed → **Fix**.
+- Finished → **Reply**.
+- Failed → **Retry**.
+- Preview ready → **Open preview**.
+
+**Open** is the last action on each notification. A notification is unread or read. Orca deletes a
+notification only when it is more than 30 days old. You set do-not-disturb, toasts for each kind and
+browser notifications in **Settings**.
 
 ## The UI, the keyboard and the phone
 
-- **Pages:** Overview, Agents, Previews, Repos, Usage (every Claude login via hydra, plus Codex),
-  and Settings (theme, density, notifications, machine cost, and the config, read-only).
+- **Pages:** Overview, Agents, Previews, Repos, Usage (each Claude login through hydra, and Codex),
+  and Settings (theme, density, notifications, machine cost, and the config in read-only mode).
 - **Agent page:** Overview (details, failure box, PR review, checks, description, GitHub
   conversation) | Chat (the conversation and a composer) | Files | Preview.
 - **Keys:** `⌘K` palette, `C` new agent, `O` orchestrator, `A` quick ask, `F` find, `⌘B` sidebar,
-  `G` then `O/A/P/R/U/S` to jump to a page, `?` for the full sheet. In any composer, type `@` to pick
-  a PR.
-- **Phone / PWA.** Below 768px there's a bottom bar with Agents, New agent and Orchestrator, and
-  menus open as bottom sheets. Orca installs as a PWA (the manifest has New agent and Orchestrator
-  shortcuts). Its **service worker only registers in a secure context**, so over a plain-`http`
-  tailnet URL it stays inert and Android won't offer to install it. HTTPS (for example Tailscale
-  HTTPS certificates) is needed for that. When a new build is deployed, a "new version · Refresh"
-  banner appears. iOS caches home-screen icons, so after an icon change, remove and re-add the
-  shortcut.
+  `G` then `O/A/P/R/U/S` to go to a page, `?` for the full sheet. To select a PR in a composer, type
+  `@`.
+- **Phone / PWA.** Below 768px, a bottom bar shows Agents, New agent and Orchestrator. Menus open as
+  bottom sheets. You can install Orca as a PWA. The manifest has New agent and Orchestrator
+  shortcuts. The **service worker registers only in a secure context**. Thus, on a plain-`http`
+  tailnet URL, it does not operate, and Android does not offer to install it. To install it, you
+  must have HTTPS (for example, Tailscale HTTPS certificates). When Orca deploys a new build, a
+  "new version · Refresh" banner shows. iOS caches home-screen icons. Thus, after an icon change,
+  remove the shortcut and add it again.
 
 ## Rules of thumb for workers
 
-These are learned from running Orca on one 16 GB box. Put the ones you want enforced in the
-orchestrator's notes or a repo's `CLAUDE.md`.
+These rules come from the operation of Orca on one 16 GB box. To make Orca apply a rule, put it in
+the orchestrator's notes or in a repo's `CLAUDE.md`.
 
-- **Commit and push early.** A run is killed after `agentTimeoutMinutes` (45 in the seed config),
-  and a SIGTERM shows up as exit 143. Work that isn't pushed by then is at risk.
-- **Never wait on background jobs.** The run ends when the agent stops.
-- **No headless browsers in workers.** Use `orca-shot <url> [--viewport 390x844] [--dark] …`, which
-  queues on the bridge's one memory-capped browser and prints `shot: <path>`.
-- **Run only the affected test files**, never the whole suite or two suites at once. Every run has a
-  per-worker memory ceiling (`agentMemoryMaxGb`, 4 GB by default), and a whole-project type-check or
-  test run can hit it. The run then ends as `out of memory (<N> GB ceiling)`. Raise the repo's
-  ceiling (8 GB for a large TypeScript repo) rather than dropping it.
+- **Commit and push early.** Orca stops a run after `agentTimeoutMinutes` (45 in the seed config). A
+  SIGTERM shows as exit 143. Work that is not pushed at that time can be lost.
+- **Do not wait for background jobs.** The run ends when the agent stops.
+- **Do not use headless browsers in workers.** Use `orca-shot <url> [--viewport 390x844] [--dark] …`.
+  It goes into the queue for the bridge's one browser, which has a memory limit. It prints
+  `shot: <path>`.
+- **Run only the test files that the change affects.** Do not run the full suite, or two suites at
+  the same time. Each run has a memory limit for each worker (`agentMemoryMaxGb`, 4 GB by default). A
+  type-check or test run of the full project can go above it. The run then ends as
+  `out of memory (<N> GB ceiling)`. Increase the repo's limit (8 GB for a large TypeScript repo). Do
+  not remove the limit.
