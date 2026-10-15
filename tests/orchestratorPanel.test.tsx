@@ -149,7 +149,7 @@ test("a message with an attachment shows it on the outbox's \"sending…\" bubbl
   await act(async () => { textarea.parentElement!.dispatchEvent(drop); });
 
   await act(async () => { textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); await flush(); await flush(); });
-  const thumb = p.querySelector<HTMLImageElement>('[data-slot="chat-sending"] [data-slot="attachment-image"] img');
+  const thumb = p.querySelector<HTMLImageElement>('[data-slot="chat-sending"] [data-slot="expandable-image"] img');
   expect(thumb?.getAttribute("src")).toBe(`/api/attachments/${img}`);
   expect(p.textContent).toContain("look at this");
 
