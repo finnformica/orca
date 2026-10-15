@@ -30,9 +30,10 @@ import * as notify from "./notify";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
-import { ORCHESTRATOR_REPO, attachmentRefs, followUpPrompt, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import { ORCHESTRATOR_REPO, attachmentRefs, workstreamShots, followUpPrompt, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
+import * as prShots from "./prShots";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
@@ -168,7 +169,11 @@ agent.onQueuedMessage(async (message) => {
 agent.onRunFinished(async (run) => {
   if (!primary.held()) return; // a secondary reports nothing — the primary's hooks are the one voice
   await notify.onRunFinished(run);
-  await orchestrator.onRunFinished(await loadConfig(), run);
+  const cfg = await loadConfig();
+  await orchestrator.onRunFinished(cfg, run);
+  // New screenshots on a branch whose PR is already open refresh its Screenshots section.
+  void prShots.afterRun(cfg.repos.find((r) => r.name === run.options.repo), run.options.branch,
+    [run.result ?? "", ...(run.structured?.verification ?? [])].join("\n"));
 });
 // The merge queue (server/mergeQueue.ts): every marked PR this instance drives, once a minute. A red
 // or refused PR the orchestrator owns is reported to it like a worker's problem; a merge, like a finish.
@@ -308,6 +313,8 @@ const DATABASE_ONLY = new Set([
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
   "/api/health/history", "/api/config/instance-rate",
+  // A workstream's reported screenshots, read off its turns (the files are served per shot).
+  "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
   // others published — a repo can live on several instances now, so no one instance owns the list.
   "/api/agents",
@@ -493,7 +500,17 @@ async function api(req: Request, url: URL): Promise<Response> {
   const shotId = p.match(/^\/api\/screenshots\/(shot-[\w-]+)$/)?.[1];
   if (req.method === "GET" && shotId) {
     const file = diskStore().path(shotId);
-    return file ? new Response(Bun.file(file), { headers: { "content-type": "image/png" } }) : json({ error: "not found" }, 404);
+    if (file) return new Response(Bun.file(file), { headers: { "content-type": "image/png" } });
+    // A shot is a file on the instance that took it; a page served by another one asks its peers
+    // (`?local` so a peer never asks back).
+    if (!url.searchParams.has("local")) {
+      for (const [name, base] of Object.entries(cfg.instances ?? {})) {
+        if (name === db.instanceName() || !(await reachable(base))) continue;
+        const r = await fetch(new URL(`/api/screenshots/${shotId}?local`, base)).catch(() => undefined);
+        if (r?.ok) return new Response(r.body, { headers: { "content-type": "image/png" } });
+      }
+    }
+    return json({ error: "not found" }, 404);
   }
   if (p.startsWith("/api/orchestrator") && cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName()) {
     // ONE instance hosts the orchestrator (orchestratorOn); everything about it goes there.
@@ -725,6 +742,14 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!body.branch) return json({ error: "branch required" }, 400);
     return json(await verbs.settleConflict(repo, String(body.branch)));
   }
+  if (req.method === "GET" && p === "/api/shots") {
+    return json(workstreamShots(await db.turns(repo.name, url.searchParams.get("branch") ?? "")));
+  }
+  // `orca pr-shots`: the workstream's newest reported screenshots into its open PR's description.
+  // Run where the worktree lives — the shots are files on that instance's disk.
+  if (req.method === "POST" && p === "/api/prs/shots") {
+    return json(await prShots.attachPrShots(repo, String(body.branch), { pr: body.pr ? Number(body.pr) : undefined }));
+  }
   if (req.method === "POST" && p === "/api/workstreams/address") {
     const r = await verbs.addressPr(cfg, repo, String(body.branch));
     await db.patchEnrichment(repo.name, String(body.branch), { orchestrated: true });
@@ -774,6 +799,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       title: body.title, body: prBody, base: repo.baseBranch, head: body.branch, draft: body.draft,
     });
     if (body.labels?.length) await gh.addLabel(repo.repoPath, pr.number, body.labels.join(",")).catch(() => {});
+    void prShots.attachPrShots(repo, body.branch, { pr: pr.number }).catch((e) => console.warn(`orca: PR #${pr.number} screenshots: ${(e as Error).message}`));
     return json(pr);
   }
   if (req.method === "GET" && p === "/api/prs") {

@@ -11,6 +11,7 @@ import { useTheme } from "@/lib/theme";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PreviewPanel } from "./PreviewControl";
 import { ActionButton } from "@/components/ActionButton";
+import { ScreenshotsCard } from "@/components/Screenshots";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -154,6 +155,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
               </div>
             </VCard>
           )}
+          <ScreenshotsCard repo={repo} branch={pr.head} version={liveRow?.agentStatus} />
           <ReviewPanel repo={repo} prNumber={number} sig={sig} />
           <ChecksCard checks={pr.checks} />
           <VCard slot="pr-description" title="Description">

@@ -5,7 +5,7 @@ import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSumm
 import type { Usage } from "../../server/usage";
 import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
 import type { Notification } from "../../shared/notifications";
-import type { BridgeInfo, MechanicalMerge, MergePolicy, SyncResult } from "./workstream";
+import type { BridgeInfo, MechanicalMerge, MergePolicy, SyncResult, TurnShots } from "./workstream";
 
 export type LiveAgent = {
   branch: string;
@@ -128,6 +128,9 @@ export const api = {
     post("/api/enrichment/import", { entries }),
   turns: (repo: string, branch: string): Promise<AgentTurn[]> =>
     get(`/api/turns${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
+  /** Every screenshot the branch's turns reported, newest turn first (`workstreamShots`). */
+  shots: (repo: string, branch: string): Promise<TurnShots[]> =>
+    get(`/api/shots${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
   /** One page of a conversation: the newest `limit` turns, or the `limit` before the `before` cursor
    *  a previous page returned (`older`, null at the conversation's first turn). The chat opens on the
    *  tail and walks back as you scroll up, instead of loading hundreds of turns to show the last few. */

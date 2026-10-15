@@ -541,13 +541,13 @@ export async function listMerged(cwd: string, since?: number): Promise<MergedPr[
 // The user's recently CLOSED PRs — so a PR you closed/deleted gets its worktree reaped, not just
 // merged ones. Cached like merged so the hot agents-poll pays one cheap list at most every TTL. No
 // body/CI, so it stays fast even on a big repo. (gh's "closed" includes merged PRs: `mergedAt` tells.)
-type RawClosedPr = { headRefName: string; headRefOid?: string; closedAt?: string; mergedAt?: string | null };
+type RawClosedPr = { number?: number; headRefName: string; headRefOid?: string; closedAt?: string; mergedAt?: string | null };
 const closedCache = new Map<string, { at: number; rows: RawClosedPr[]; inflight?: Promise<RawClosedPr[]> }>();
 async function closedRows(cwd: string): Promise<RawClosedPr[]> {
   const hit = closedCache.get(cwd);
   if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit.rows;
   if (hit?.inflight) return hit.inflight;
-  const inflight = gh(cwd, "pr", "list", "--state", "closed", "--author", "@me", "--limit", "50", "--json", "headRefName,headRefOid,closedAt,mergedAt")
+  const inflight = gh(cwd, "pr", "list", "--state", "closed", "--author", "@me", "--limit", "50", "--json", "number,headRefName,headRefOid,closedAt,mergedAt")
     .then((raw) => {
       const rows = (JSON.parse(raw) as RawClosedPr[]).filter((j) => j.headRefName);
       closedCache.set(cwd, { at: Date.now(), rows });
@@ -565,17 +565,17 @@ export async function closedBranches(cwd: string): Promise<Set<string>> {
 /** A branch whose PR is done with: how (merged wins over closed), when (ms, for the cleanup grace
  *  period) and the PR's last head commit (what "pushed" means once GitHub deletes the branch). The
  *  newest PR per branch wins — gh lists newest first. */
-export type DonePr = { reason: "merged" | "closed"; at?: number; head?: string };
+export type DonePr = { reason: "merged" | "closed"; at?: number; head?: string; number?: number };
 export async function donePrs(cwd: string): Promise<Map<string, DonePr>> {
   const [merged, closed] = await Promise.all([mergedRows(cwd), closedRows(cwd).catch(() => [] as RawClosedPr[])]);
   const out = new Map<string, DonePr>();
   const at = (iso?: string | null) => (iso && Number.isFinite(Date.parse(iso)) ? Date.parse(iso) : undefined);
-  for (const j of merged) if (j.headRefName && j.mergedAt && !out.has(j.headRefName)) out.set(j.headRefName, { reason: "merged", at: at(j.mergedAt), head: j.headRefOid || undefined });
+  for (const j of merged) if (j.headRefName && j.mergedAt && !out.has(j.headRefName)) out.set(j.headRefName, { reason: "merged", at: at(j.mergedAt), head: j.headRefOid || undefined, number: j.number });
   for (const j of closed) {
     if (out.has(j.headRefName)) continue;
     out.set(j.headRefName, j.mergedAt
-      ? { reason: "merged", at: at(j.mergedAt), head: j.headRefOid || undefined }
-      : { reason: "closed", at: at(j.closedAt), head: j.headRefOid || undefined });
+      ? { reason: "merged", at: at(j.mergedAt), head: j.headRefOid || undefined, number: j.number }
+      : { reason: "closed", at: at(j.closedAt), head: j.headRefOid || undefined, number: j.number });
   }
   return out;
 }

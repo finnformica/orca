@@ -24,6 +24,8 @@ export async function makeScratchRepo(): Promise<string> {
 const GH_SHIM = `#!/bin/sh
 [ -n "$ORCA_GH_ARGS_LOG" ] && echo "$*" >> "$ORCA_GH_ARGS_LOG"
 case "$*" in *merge-async*) if [ -n "$ORCA_GH_MERGE_ASYNC" ]; then echo "$ORCA_GH_MERGE_ASYNC"; else echo '{"status":"merged"}'; fi; exit 0 ;; esac
+# pr-assets cleanup (server/prShots.ts): the matching refs from ORCA_GH_REFS_FIXTURE, a DELETE succeeds.
+case "$*" in *git/matching-refs/*) cat "$ORCA_GH_REFS_FIXTURE" 2>/dev/null || echo '[]'; exit 0 ;; "api -X DELETE "*) exit 0 ;; esac
 case "$1 $2" in
   "pr create") echo "https://github.com/acme/app/pull/\${ORCA_PR_NUMBER:-123}" ;;
   "pr view") cat "$ORCA_GH_FIXTURE" ;;
@@ -102,6 +104,11 @@ async function fixtureEnv(prefix: string, value: string): Promise<string> {
 export async function setReviewEvidenceFixture(obj: unknown): Promise<void> {
   process.env.ORCA_GH_REPO_FIXTURE = await fixtureEnv("repo", JSON.stringify({ nameWithOwner: "acme/app" }));
   process.env.ORCA_GH_GRAPHQL_FIXTURE = await fixtureEnv("graphql", JSON.stringify(obj));
+}
+
+/** Point the fake `gh api …/git/matching-refs/…` at these ref names. */
+export async function setRefsFixture(refs: string[]): Promise<void> {
+  process.env.ORCA_GH_REFS_FIXTURE = await fixtureEnv("refs", JSON.stringify(refs.map((ref) => ({ ref }))));
 }
 
 export async function setRunLogFixture(log: string): Promise<void> {
