@@ -1,6 +1,7 @@
 // Bridge-port helpers. Split out from index.ts/preview.ts so the port-reclaim logic is testable
 // without booting the server.
 import { createServer } from "node:net";
+import { listenerPids, processCommand } from "./proc";
 
 /** True if nothing is currently bound to `port`, checked against the OS (so an orphaned server from
  *  a prior run counts as taken — an in-memory map can't know about it after a restart). */
@@ -26,11 +27,10 @@ export function portFree(port: number): Promise<boolean> {
  */
 export function reclaimBridgePort(port: number): boolean {
   try {
-    const pid = Bun.spawnSync(["lsof", "-ti", `tcp:${port}`, "-sTCP:LISTEN"]).stdout.toString().trim().split("\n").filter(Boolean)[0];
+    const pid = listenerPids(port)[0];
     if (!pid) return false;
-    const cmd = Bun.spawnSync(["ps", "-o", "command=", "-p", pid]).stdout.toString();
-    if (!/server\/index\.ts/.test(cmd)) return false; // not an Orca bridge — leave it alone
-    process.kill(Number(pid));
+    if (!/server\/index\.ts/.test(processCommand(pid))) return false; // not an Orca bridge — leave it alone
+    process.kill(pid);
     return true;
   } catch {
     return false; // lsof/ps missing, or the pid already gone

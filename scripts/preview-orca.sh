@@ -13,9 +13,19 @@
 # start a FULL second bridge, so it is never launched), or one whose migrations the shared database
 # lacks — <port> forwards to the main bridge instead. Either way the page's BridgeLabel names the
 # bridge that actually answered (from /api/config).
+#
+# The bridge spawns preview services WITHOUT Orca's secrets (server/env.ts), so the database URL is
+# read here from THIS script's install's `.env` — the main checkout beside it, never the previewed
+# (agent-editable) worktree. Unset there too, the bridge's own default applies.
 set -u
 port="$1"
 main="${ORCA_MAIN_API_PORT:-8787}"
+if [ -z "${ORCA_DATABASE_URL:-}" ]; then
+  install_env="$(cd "$(dirname "$0")/.." && pwd)/.env"
+  url="$(sed -n 's/^[[:space:]]*\(export[[:space:]]\{1,\}\)\{0,1\}ORCA_DATABASE_URL=//p' "$install_env" 2>/dev/null | tail -1)"
+  url="${url%\"}"; url="${url#\"}"; url="${url%\'}"; url="${url#\'}"
+  [ -n "$url" ] && export ORCA_DATABASE_URL="$url"
+fi
 
 forward_to_main() {
   echo "[orca] $1 — this preview's /api is the MAIN bridge (:$main), and the page says so"
