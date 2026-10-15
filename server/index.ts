@@ -175,14 +175,14 @@ agent.onRunFinished(async (run) => {
 mergeQueue.onReport(async (text) => orchestrator.report(await loadConfig(), text));
 setInterval(() => {
   if (!primary.held()) return;
-  void loadConfig().then((cfg) => mergeQueue.tick(cfg)).catch((e) => console.error("orca: merge queue pass failed", e));
+  void loadConfig().then((cfg) => mergeQueue.tick(cfg)).catch(db.logUnlessDown("orca: merge queue pass failed"));
 }, mergeQueue.MERGE_POLL_MS).unref();
 // Automatic PR upkeep (server/upkeep.ts): an orchestrated workstream's open PR that conflicts, goes
 // red or gets review threads is Address-PR'd on its own, on the instance holding its worktree. Never
 // from a branch preview's bridge, which launches nothing.
 if (!PREVIEW_BRIDGE) setInterval(() => {
   if (!primary.held()) return;
-  void loadConfig().then((cfg) => upkeep.tick(cfg)).catch((e) => console.error("orca: upkeep pass failed", e));
+  void loadConfig().then((cfg) => upkeep.tick(cfg)).catch(db.logUnlessDown("orca: upkeep pass failed"));
 }, upkeep.UPKEEP_POLL_MS).unref();
 // Warm the review queue (gh.listReviewPrs) so its slow cold fetch is paid here, not by a caller. A
 // local-only repo just fails quietly.
@@ -196,7 +196,7 @@ void loadConfig().then((cfg) => cfg.repos.filter(verbs.repoHere)
 const INVENTORY_PUBLISH_MS = 10_000;
 if (!PREVIEW_BRIDGE) setInterval(() => {
   if (!primary.held()) return;
-  void loadConfig().then((cfg) => Promise.all(cfg.repos.filter(verbs.repoHere).map((r) => agentRows(r).catch((e) => console.error(`orca: inventory publish failed for ${r.name}`, e))))).catch(() => {});
+  void loadConfig().then((cfg) => Promise.all(cfg.repos.filter(verbs.repoHere).map((r) => agentRows(r).catch(db.logUnlessDown(`orca: inventory publish failed for ${r.name}`))))).catch(() => {});
   void publishPreviews(); // the same for previews: the running-previews menu on any machine lists them
 }, INVENTORY_PUBLISH_MS).unref();
 
@@ -204,7 +204,7 @@ if (!PREVIEW_BRIDGE) setInterval(() => {
  *  after a start or stop so another machine's menu needn't wait for the tick. */
 // No viewer on a publish, so no loopback forwards for the others' previews.
 const publishPreviews = () => loadConfig().then((cfg) => verbs.previewRows(cfg, { loopback: false }))
-  .catch((e) => { console.error("orca: preview publish failed", e); return []; });
+  .catch((e) => { db.logUnlessDown("orca: preview publish failed")(e); return []; });
 
 // This machine's vitals into instance_metric once a minute, for the header chip's 24h graphs
 // (server/health.ts). Each instance samples itself; either answers the history from Postgres.
@@ -415,7 +415,7 @@ async function agentRows(repo: RepoConfig): Promise<unknown[]> {
   }));
   // Publish before responding, so the other instance's next poll sees this one's work.
   if (duties) await db.publishInventory(repo.name, mine.map((w) => ({ branch: w.branch, data: w as unknown as db.Fields })))
-    .catch((e) => { if (!(e instanceof db.DbUnavailable)) console.error("orca: inventory publish failed", e); }); // advisory — never fail a poll
+    .catch(db.logUnlessDown("orca: inventory publish failed")); // advisory — never fail a poll
   return [...mine, ...(await foreignInventory(repo.name, instance))];
 }
 

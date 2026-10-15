@@ -86,7 +86,7 @@ export async function tick(cfg: OrcaConfig): Promise<void> {
           mark = { ...mark, pr };
           await db.patchEnrichment(repo.name, branch, { [MARK]: mark });
         }
-        await look(cfg, repo, branch, mark).catch((err) => console.error(`orca: merge queue ${repo.name}#${mark.pr} failed`, err));
+        await look(cfg, repo, branch, mark).catch(db.logUnlessDown(`orca: merge queue ${repo.name}#${mark.pr} failed`));
       }
     }
   } finally {
