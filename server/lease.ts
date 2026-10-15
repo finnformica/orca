@@ -10,6 +10,7 @@ import { createHash } from "crypto";
 import { readdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { statePath, stateDir, writeJsonSync, readJsonSync } from "./state";
+import { isZombie } from "./proc";
 import type { AgentProvider } from "../shared/agent";
 
 export type Lease = {
@@ -36,10 +37,7 @@ const leaseFile = (key: string) =>
  *  card saying "running" about a run that had finished. `ps` tells a zombie (state Z) from a live one. */
 export function pidAlive(pid: number): boolean {
   try { process.kill(pid, 0); } catch { return false; }
-  try {
-    const out = Bun.spawnSync(["ps", "-o", "stat=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" });
-    return !out.stdout.toString().trim().startsWith("Z");
-  } catch { return true; } // no ps: the probe is all we have
+  return !isZombie(pid); // no ps: the probe is all we have
 }
 
 function isLive(lease: Lease | undefined): lease is Lease {

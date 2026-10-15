@@ -21,6 +21,7 @@ import * as git from "./git";
 import * as previewdb from "./previewdb";
 import * as docker from "./docker";
 import { scrubbedEnv } from "./env";
+import { cwdInWorktree, listenerPids, processCwd } from "./proc";
 import { readJsonSync, statePath, writeJsonSync } from "./state";
 
 /** A stable, Postgres-identifier-safe database name for one preview (keyed by its worktree path), so
@@ -78,17 +79,6 @@ function persist(): void {
   try { writeJsonSync(reg(), data); } catch { /* best effort */ }
 }
 
-/** cwd of the process listening on `port`, via lsof — used to verify a re-adopted server is really
- *  the one we think it is (not a different worktree's server that reused the port). */
-function listenerCwd(port: number): string | null {
-  try {
-    const pid = Bun.spawnSync(["lsof", "-ti", `tcp:${port}`, "-sTCP:LISTEN"]).stdout.toString().trim().split("\n").filter(Boolean)[0];
-    if (!pid) return null;
-    const line = Bun.spawnSync(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"]).stdout.toString().split("\n").find((l) => l.startsWith("n"));
-    return line ? line.slice(1) : null;
-  } catch { return null; }
-}
-
 /** Re-adopt preview servers that outlived an ungraceful bridge exit; drop entries whose ports are
  *  dead. Call once on boot, before serving. */
 export async function reattach(): Promise<void> {
@@ -104,8 +94,8 @@ export async function reattach(): Promise<void> {
       // reassigned across restarts, so a responding port may now be a DIFFERENT worktree's server —
       // adopting it would make this card serve someone else's code ("none of my changes"). If it's
       // foreign, leave it alone (its own key will re-adopt it) rather than adopt or kill it.
-      const cwd = listenerCwd(s.port);
-      if (cwd && cwd.startsWith(key)) live.push({ ...s, exited: false, everUp: true }); // re-adopted only because its port responded
+      const pid = listenerPids(s.port)[0];
+      if (pid && cwdInWorktree(processCwd(pid), key)) live.push({ ...s, exited: false, everUp: true }); // re-adopted only because its port responded
     }
     if (live.length) previews.set(key, live);
   }
@@ -127,12 +117,7 @@ export async function freePort(range: [number, number]): Promise<number> {
 /** Kill whatever is listening on a port — precise reaping of a tracked service's actual listener
  *  (the node/bun grandchild the sh wrapper's kill misses), regardless of process tree. */
 function killPort(port: number): void {
-  try {
-    // -sTCP:LISTEN is critical: without it lsof also returns clients *connected* to the port —
-    // including the bridge itself (its readiness fetch), so we'd kill our own server.
-    const out = Bun.spawnSync(["lsof", "-ti", `tcp:${port}`, "-sTCP:LISTEN"]).stdout.toString().trim();
-    for (const pid of out.split("\n").filter(Boolean)) { try { process.kill(Number(pid)); } catch { /* gone */ } }
-  } catch { /* lsof missing / nothing listening */ }
+  for (const pid of listenerPids(port)) { try { process.kill(pid); } catch { /* gone */ } }
 }
 
 /** Reap dev servers left running inside this worktree by a PRIOR run (their ports are unknown after
@@ -310,11 +295,13 @@ function envFileFor(repo: RepoConfig): { dir: string; path: string } | undefined
 /**
  * Drop orphan preview databases and remove stale test containers across every given repo (the ones
  * checked out on this instance — see verbs.repoHere). Pure selection (orphanPreviewDbs) decides what
- * counts as an orphan; this is the IO shell around it. Call at startup, then hourly.
+ * counts as an orphan; this is the IO shell around it. Call at startup, then hourly. `dryRun` reports
+ * what it WOULD drop/remove and touches nothing; `liveFrom` (default `repos`) are the repos whose
+ * worktrees count as live — scripts/preview-gc.ts narrows `repos` but keeps every repo's live.
  */
 export async function reap(
   repos: RepoConfig[],
-  opts: { dbGraceMs?: number; containerStaleMs?: number } = {},
+  opts: { dbGraceMs?: number; containerStaleMs?: number; dryRun?: boolean; liveFrom?: RepoConfig[] } = {},
 ): Promise<ReapReport> {
   const dbGraceMs = opts.dbGraceMs ?? DB_GRACE_MS;
   const containerStaleMs = opts.containerStaleMs ?? CONTAINER_STALE_MS;
@@ -325,7 +312,7 @@ export async function reap(
   // tracking (owned or re-adopted) — belt and suspenders for a key not yet reflected in `git worktree
   // list` (e.g. a worktree removal and this pass racing).
   const live = new Set<string>(previews.keys());
-  for (const repo of repos) {
+  for (const repo of opts.liveFrom ?? repos) {
     try {
       for (const w of await git.listWorktrees(repo.repoPath, repo.worktreeRoot)) live.add(w.worktreePath);
     } catch (e) { console.error(`orca: reap: couldn't list worktrees for ${repo.name}`, e); }
@@ -343,9 +330,9 @@ export async function reap(
       for (const c of candidates) {
         if (!orphans.has(c.name) || c.ageMs < dbGraceMs) continue;
         try {
-          await previewdb.dropPreviewDb(env.dir, c.name);
+          if (!opts.dryRun) await previewdb.dropPreviewDb(env.dir, c.name);
           droppedDbs.push(c.name);
-          console.log(`orca: reaped orphan preview db ${c.name}`);
+          if (!opts.dryRun) console.log(`orca: reaped orphan preview db ${c.name}`);
         } catch (e) { console.error(`orca: reap: failed to drop preview db ${c.name}`, e); }
       }
     } catch (e) { console.error(`orca: reap: failed to list preview dbs for ${repo.name}`, e); }
@@ -360,14 +347,15 @@ export async function reap(
       for (const c of await docker.listContainers(prefix)) {
         if (Date.now() - c.createdAt < containerStaleMs) continue;
         try {
-          await docker.removeContainer(c.name);
+          if (!opts.dryRun) await docker.removeContainer(c.name);
           removedContainers.push(c.name);
-          console.log(`orca: reaped stale test container ${c.name}`);
+          if (!opts.dryRun) console.log(`orca: reaped stale test container ${c.name}`);
         } catch (e) { console.error(`orca: reap: failed to remove container ${c.name}`, e); }
       }
     } catch (e) { console.error(`orca: reap: failed to list containers for prefix ${prefix}`, e); }
   }
 
-  lastReap = { at: Date.now(), droppedDbs, removedContainers };
-  return lastReap;
+  const report = { at: Date.now(), droppedDbs, removedContainers };
+  if (!opts.dryRun) lastReap = report;
+  return report;
 }

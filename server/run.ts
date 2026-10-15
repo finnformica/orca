@@ -6,7 +6,7 @@ export type RunOptions = {
   env?: Env;
   /** Kill the process after this long; it then fails as a timeout. */
   timeoutMs?: number;
-  stdin?: Blob | "ignore";
+  stdin?: Blob | ReadableStream | "ignore";
   /** Return a nonzero exit instead of throwing. */
   allowFail?: boolean;
 };
