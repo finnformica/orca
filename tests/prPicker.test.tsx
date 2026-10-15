@@ -7,6 +7,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatComposer } from "@/components/ChatComposer";
+import { Shortcuts } from "@/components/CommandPalette";
 import { filterPrRefs, insertPrRef, prRefLabel, prTrigger, type PrRef } from "@/workstream";
 
 describe("prTrigger", () => {
@@ -89,7 +90,7 @@ afterEach(async () => {
   sent = [];
 });
 
-async function mountComposer() {
+async function mountComposer(shortcuts = false) {
   apiFake.prsData = [
     { branch: "auth", number: 6101, title: "Fix auth flow", url: "u", isDraft: false, reviewStatus: "approved" },
     { branch: "bill", number: 6150, title: "Billing page", url: "u", isDraft: true },
@@ -99,7 +100,7 @@ async function mountComposer() {
   document.body.appendChild(container);
   await act(async () => {
     root = createRoot(container!);
-    root.render(<ChatComposer repo="r" onSubmit={async (t) => { sent.push(t); }} />);
+    root.render(<>{shortcuts && <Shortcuts />}<ChatComposer repo="r" onSubmit={async (t) => { sent.push(t); }} /></>);
     await flush();
   });
   return container.querySelector("textarea")!;
@@ -168,6 +169,18 @@ describe("ChatComposer @ picker", () => {
     await key(box, "Escape");
     await key(box, "Enter");
     expect(sent).toEqual(["ship @6"]);
+  });
+
+  test("Esc closes the picker first and keeps you typing; the next Esc leaves the field (the one Shortcuts listener)", async () => {
+    const box = await mountComposer(true);
+    box.focus();
+    await type(box, "ship @61");
+    await key(box, "Escape");
+    expect(container!.querySelector('[role="listbox"]')).toBeNull();
+    expect(document.activeElement).toBe(box); // the picker consumed it
+    await key(box, "Escape");
+    expect(document.activeElement).not.toBe(box); // nothing else did: blurred, the draft kept
+    expect(box.value).toBe("ship @61");
   });
 
   test("an @ inside a word or URL opens nothing, and # opens nothing at all", async () => {

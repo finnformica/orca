@@ -12,7 +12,7 @@ import { PortalContainer, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
 import { poll } from "@/lib/poll";
-import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorWidthAtom } from "@/lib/atoms";
+import { type OrchestratorPrefill, orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorWidthAtom } from "@/lib/atoms";
 import { shortcutLabel } from "@/lib/shortcuts";
 import { useNarrow } from "@/lib/viewport";
 import { openOrchestrator } from "@/lib/orchestratorOpen";
@@ -21,7 +21,7 @@ import { useSwipeToClose } from "@/lib/gestures";
 import { useRoute } from "@/lib/route";
 
 // The card's terminal: a modal you open in place (no navigating to the detail page) showing the
-// branch's conversation as a terminal-style log — the durable turns Orca records — with the follow-up
+// branch's conversation — the same ChatPanel as the Agent page and the orchestrator — with the follow-up
 // composer to send the next message. It is NOT a live shell; it renders GET /api/turns, so nothing
 // tmux is involved. The native <dialog> gives the backdrop, ESC-close and focus trap for free, and
 // ChatPanel mounts ONLY while open so its poll/composer aren't running behind a closed dialog.
@@ -55,7 +55,7 @@ export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean
             <X className="size-4" />
           </Button>
         </div>
-        <div className="min-h-0 flex-1 p-3 max-md:p-0">{open && <ChatPanel row={row} />}</div>
+        <div className="min-h-0 flex-1">{open && <ChatPanel row={row} />}</div>
       </div>
     </dialog>
   );
@@ -338,16 +338,7 @@ export function OrchestratorPanel() {
     <div className="min-h-0 flex-1">
       {/* Mounted at once, not after the status read: the composer must exist to take focus in the
           same commit that opens the panel, or the first keystrokes go nowhere. */}
-      <ChatPanel
-        row={row} flush variant="chat" prefill={prefill} outbox
-        // The same toolbar a card's terminal has, fed the orchestrator's own values. Claude
-        // only; changing the model keeps the session.
-        controls={controls}
-        send={async (text, images) => {
-          await sendToOrchestrator(text, images);
-          await load();
-        }}
-      />
+      <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} />
     </div>
   );
   const panelClass = "bg-card text-foreground flex flex-col overflow-hidden";
@@ -430,16 +421,24 @@ export function OrchestratorPage() {
         </div>
       </div>
       <div className={cn("min-h-0 max-md:flex-1", ORCHESTRATOR_PAGE_HEIGHT)}>
-        <ChatPanel
-          row={row} flush variant="chat" prefill={prefill} outbox
-          controls={controls}
-          send={async (text, images) => {
-            await sendToOrchestrator(text, images);
-            await load();
-          }}
-        />
+        <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} />
       </div>
     </div>
+  );
+}
+
+/** The orchestrator's conversation — the panel's and the page's — is the one ChatPanel every chat
+ *  uses, with its replies under "Orchestrator", its messages through the shared outbox, and the
+ *  composer's toolbar (Claude models only; changing the model keeps the session) fed its own values. */
+function OrchestratorChat({ row, prefill, controls, load }: { row: Row; prefill: OrchestratorPrefill | null; controls: ChatControlsProps; load: () => Promise<unknown> }) {
+  return (
+    <ChatPanel
+      row={row} author="Orchestrator" prefill={prefill} outbox controls={controls}
+      send={async (text, images) => {
+        await sendToOrchestrator(text, images);
+        await load();
+      }}
+    />
   );
 }
 

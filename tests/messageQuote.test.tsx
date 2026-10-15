@@ -94,10 +94,10 @@ const base: Row = {
   worktreePath: "/wt/feat", agentProvider: "claude",
 };
 
-async function mountPanel(row: Row, variant?: "terminal" | "chat") {
+async function mountPanel(row: Row, author?: string) {
   container = document.createElement("div");
   document.body.appendChild(container);
-  await act(async () => { root = createRoot(container!); root!.render(<ChatPanel row={row} variant={variant} />); await flush(); await flush(); });
+  await act(async () => { root = createRoot(container!); root!.render(<ChatPanel row={row} author={author} />); await flush(); await flush(); });
 }
 
 let copied: string[] = [];
@@ -111,7 +111,7 @@ test("Copy puts the agent's raw response on the clipboard; Quote inserts it as a
   apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "add the cache", response: "## Outcome\nAdded it.", finishedAt: 2 }]);
   await mountPanel(base);
 
-  const reply = container!.querySelector('[data-slot="turn-reply"]')!;
+  const reply = container!.querySelector('[data-slot="chat-reply"]')!;
   await click(reply.querySelector('button[aria-label="Copy message"]')!);
   expect(copied).toEqual(["## Outcome\nAdded it."]); // the raw markdown, not the rendered sections
 
@@ -126,7 +126,7 @@ test("Copy and Quote also work on the user's own message", async () => {
   apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "add the cache", response: "done", finishedAt: 2 }]);
   await mountPanel(base);
 
-  const instruction = container!.querySelector('[data-slot="turn-instruction"]')!;
+  const instruction = container!.querySelector('[data-slot="chat-user"]')!;
   await click(instruction.querySelector('button[aria-label="Copy message"]')!);
   expect(copied).toEqual(["add the cache"]);
 
@@ -142,15 +142,15 @@ test("quoting a second message appends after the first, keeping the draft", asyn
 
   const box = container!.querySelector("textarea")!;
   act(() => type(box, "re: "));
-  const instruction = container!.querySelector('[data-slot="turn-instruction"]')!;
+  const instruction = container!.querySelector('[data-slot="chat-user"]')!;
   await click(instruction.querySelector('button[aria-label="Quote message"]')!);
   expect(box.value).toBe("re: \n> add the cache\n\n");
 });
 
-test("the chat (bubble) styling carries the same Copy/Quote buttons on both sides", async () => {
+test("the orchestrator's chat (author \"Orchestrator\") carries the same Copy/Quote buttons on both sides", async () => {
   copied = [];
   apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "add the cache", response: "done", finishedAt: 2 }]);
-  await mountPanel(base, "chat");
+  await mountPanel(base, "Orchestrator");
 
   const userBubble = container!.querySelector('[data-slot="chat-user"]')!;
   await click(userBubble.querySelector('button[aria-label="Quote message"]')!);

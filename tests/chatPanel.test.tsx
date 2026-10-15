@@ -538,7 +538,7 @@ test("a sent message shows in the log at once, and gives way to the real turn wh
   await mount(base);
   await sendText("add a retry");
 
-  expect(sendingText()).toEqual(["❯add a retry▋ sending…"]);
+  expect(sendingText()).toEqual(["add a retry▋ sending…"]); // a bubble, like the message it becomes
   expect(container!.querySelector("textarea")!.value).toBe(""); // the box is already clear
 
   apiFake.turnsData.set("r::feat", [{ id: "run-9", provider: "claude", instruction: "add a retry", prompt: "p", response: "" }]);
@@ -580,19 +580,23 @@ test("the log never scrolls sideways: prose wraps unbreakable tokens, code block
   expect(prose.className).toContain("prose-pre:wrap-normal");
 });
 
-test("the orchestrator's worker reports render as muted system lines, not as something you typed", async () => {
+test("the orchestrator's worker reports fold into one ⚙ block, not shown as something you typed", async () => {
   apiFake.turnsData.set("r::feat", [
     { id: "run-1", provider: "claude", instruction: '[worker finished] r/a "A" — done\nOutcome: Added it.\nFull turn: orca read --run x\n\n[worker finished] r/b "B" — error\nResponse: boom', prompt: "p", response: "A is done; B failed, I've resent it.", finishedAt: 2 },
     { id: "run-2", provider: "claude", instruction: "what now?", prompt: "p", response: "Waiting on C.", finishedAt: 4 },
   ]);
   await mount(base);
+  const marker = container!.querySelector('[data-slot="agents-marker"]')!;
+  expect(marker.querySelector('[data-slot="worker-block-label"]')!.textContent).toMatch(/^2 worker reports · 1 reply/);
+  await act(async () => { marker.querySelector("button")!.click(); await flush(); });
+  await act(async () => { marker.querySelector<HTMLElement>('[data-slot="turn-reports"] button')!.click(); await flush(); });
   const reports = container!.querySelector('[data-slot="worker-reports"]')!;
   expect([...reports.querySelectorAll("summary")].map((s) => s.textContent)).toEqual(['⚙ r/a "A" — done', '⚙ r/b "B" — error']);
   expect(reports.textContent).toContain("Outcome: Added it."); // the full report is behind the toggle
   expect(text()).toContain("A is done; B failed, I've resent it.");
-  // A message you typed is still a prompt line.
-  expect([...container!.querySelectorAll("span")].some((s) => s.textContent === "❯")).toBe(true);
-  expect(text()).toContain("❯what now?");
+  // A message you typed is still your bubble, outside the block.
+  expect([...container!.querySelectorAll('[data-slot="chat-user-text"]')].map((u) => u.textContent)).toEqual(["what now?"]);
+  expect(marker.contains(container!.querySelector('[data-slot="chat-user"]'))).toBe(false);
 });
 
 test("a worker report waiting in the queue is a muted system line too, not a queued prompt", async () => {
@@ -603,7 +607,7 @@ test("a worker report waiting in the queue is a muted system line too, not a que
   await mount(base);
   const held = container!.querySelector('[data-slot="worker-report-held"]')!;
   expect(held.textContent).toBe('⚙ r/a "A" — doneheld for the batch');
-  expect(text()).toContain("❯and then deploy it"); // a message of yours still shows as queued
+  expect(container!.querySelector('[data-slot="chat-queued"]')!.textContent).toContain("and then deploy it"); // a message of yours still shows as queued
   expect(text()).toContain("queued — sends when the current run finishes");
 });
 
@@ -660,7 +664,7 @@ test("a sent message shows its attachments — a thumbnail for an image, a named
   }]);
   container = document.createElement("div");
   document.body.appendChild(container);
-  await act(async () => { root = createRoot(container!); root.render(<ChatPanel row={base} variant="chat" />); await flush(); await flush(); });
+  await act(async () => { root = createRoot(container!); root.render(<ChatPanel row={base} />); await flush(); await flush(); });
   expect(container.querySelector('[data-slot="chat-user"]')?.textContent).toContain("look at this");
   expect(text()).not.toContain("orca-attachment://");
   expect(text()).not.toContain("Attached files");

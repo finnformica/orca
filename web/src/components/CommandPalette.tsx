@@ -9,7 +9,7 @@ import { Search } from "lucide-react";
 import {
   addNewOpenAtom, instanceScopeAtom, notificationsOpenAtom, paletteOpenAtom, paletteRecentAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom, quickAskOpenAtom } from "@/lib/atoms";
 import { moveSelection, pushRecent, rankPalette, type PaletteItem } from "@/lib/palette";
-import { CHORD_TIMEOUT_MS, SHORTCUTS, isTypingTarget, matchShortcut, pageShortcut, type ShortcutId } from "@/lib/shortcuts";
+import { CHORD_TIMEOUT_MS, SHORTCUTS, escapeBlurTarget, isTypingTarget, matchShortcut, pageShortcut, type ShortcutId } from "@/lib/shortcuts";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import { Kbd, MenuShortcut, Shortcut } from "@/components/ui/kbd";
@@ -199,7 +199,8 @@ export function ShortcutsHelp() {
 }
 
 /** The one keydown listener. Native dialogs close themselves on Esc; this closes the orchestrator's
- *  window (not a dialog — a popout) when Esc isn't meant for a dialog or an open menu. */
+ *  window (not a dialog — a popout) when Esc isn't meant for a dialog or an open menu, and otherwise
+ *  blurs the focused text field (`escapeBlurTarget`). */
 export function Shortcuts() {
   const [palette, setPalette] = useAtom(paletteOpenAtom);
   const setAddNew = useSetAtom(addNewOpenAtom);
@@ -226,9 +227,13 @@ export function Shortcuts() {
       if (id === "escape") {
         const t = e.target instanceof Element ? e.target : null;
         if (t?.closest("dialog") || document.querySelector('[role="menu"], [role="listbox"]:not([data-slot])')) return;
-        // The quick-ask box first (it sits over the panel), then the panel.
+        // The quick-ask box first (it sits over the panel), then the panel — and with no overlay to
+        // close, Esc leaves the text field you're in (a chat composer, Find…), so the single-letter
+        // shortcuts work again without reaching for the mouse. Anything that wanted Esc first — a
+        // composer's @ picker, a Radix menu, a native dialog — consumed it above.
         if (s.quickAsk) setQuickAsk(false);
         else if (s.orchestrator) actions.current.close();
+        else escapeBlurTarget(e.target)?.blur();
         return;
       }
       e.preventDefault();

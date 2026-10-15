@@ -77,9 +77,9 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   expect(apiFake.turnPageCalls).toEqual([{ branch: ORCHESTRATOR_BRANCH, limit: 50 }]);
   // The chat styling: your message is a bubble on the right, the reply under the orchestrator's name,
   // a day divider where the day changes, times on hover (not in the flow), in the page's theme.
-  const chat = p.querySelector<HTMLElement>('[data-variant="chat"]')!;
+  const chat = p.querySelector<HTMLElement>('[data-slot="chat-panel"]')!;
   expect(chat.className).toContain("log-themed"); // follows light/dark like the rest of the console
-  expect(p.querySelectorAll('[data-slot="chat-turn"][data-style="chat"]')).toHaveLength(2);
+  expect(p.querySelectorAll('[data-slot="chat-turn"]')).toHaveLength(2);
   const user = p.querySelector<HTMLElement>('[data-slot="chat-user"]')!;
   expect(user.className).toContain("justify-end");
   expect(user.firstElementChild!.firstElementChild!.className).toContain("bg-accent");

@@ -150,7 +150,7 @@ test("P7: the chat's scroller keeps the gesture — reaching its end never scrol
   apiFake.turnsData.set("r::long", [turn(0)]);
   await mount();
   expect(log().className).toContain("overscroll-contain");
-  await act(async () => { root!.render(<ChatPanel row={row} variant="chat" />); await flush(); });
+  await act(async () => { root!.render(<ChatPanel row={row} />); await flush(); });
   expect(log().className).toContain("overscroll-contain");
 });
 
@@ -167,7 +167,7 @@ test("P6: the orchestrator's chat is one stream — worker traffic split out as 
     { id: 1, instruction: `${WORKER_EVENT_MARKER} r/held — done\nOutcome: ok`, attachments: [] },
     { id: 2, instruction: "and then this", attachments: [] },
   ]);
-  await mount(<ChatPanel row={row} variant="chat" />);
+  await mount(<ChatPanel row={row} />);
   const c = container!;
   // No channel toggle: your turns, and each run of agent turns between them as ONE collapsed block,
   // its turns unmounted until opened — wakes 1–3, 5 and 8, the newest included.
