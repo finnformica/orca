@@ -16,6 +16,7 @@ import { poll } from "@/lib/poll";
 import { PULL_REFRESH_PX, pullState, swipeDecision, STALE_AFTER_MS, launchOverlay, newerBuild, previewHref, previewLabel, staleAge } from "@/workstream";
 import { themeColor } from "@/lib/theme";
 import { UpdateBanner } from "@/components/Freshness";
+import { SHEET_CLOSE_MS } from "@/components/BottomSheet";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -581,6 +582,97 @@ describe("gestures", () => {
     expect(sheet.open).toBe(true); // 40px, slowly enough: springs back
     expect(sheet.style.transform).toBe("");
     await act(async () => { pointer("pointerdown", 100, handle); pointer("pointermove", 200); expect(sheet.style.transform).toBe("translateY(100px)"); pointer("pointermove", 400); pointer("pointerup", 400); await flush(); });
+    // It slides on down from where the finger let go, the backdrop fading, and only then closes.
+    expect(sheet.hasAttribute("data-closing")).toBe(true);
+    expect(sheet.style.transform).toBe("translateY(100%)");
+    await act(async () => { await sleep(SHEET_CLOSE_MS + 30); });
+    expect(sheet.open).toBe(false);
+    expect(sheet.style.transform).toBe("");
+  });
+
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const touchOn = (target: Element, type: string, y?: number) => {
+    const e = new Event(type, { bubbles: true, cancelable: true });
+    Object.defineProperty(e, "touches", { value: y === undefined ? [] : [{ clientY: y }] });
+    Object.defineProperty(e, "timeStamp", { value: (clock += 400) });
+    target.dispatchEvent(e);
+    return e;
+  };
+
+  test("a stacked row never opens the menu from a long-press / contextmenu, and shows no selection or callout", async () => {
+    await mount("/agents", true);
+    const row = $('[data-branch="feat-phone"]')!;
+    expect(row.className).toContain("select-none");
+    expect(row.className).toContain("[-webkit-touch-callout:none]");
+    expect(row.className).toContain("[&_a]:[-webkit-touch-callout:default]"); // links keep theirs
+    expect(row.hasAttribute("aria-haspopup")).toBe(false); // only the ⋯ opens a menu
+    let e!: MouseEvent;
+    await act(async () => { e = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 120, clientY: 40 }); row.querySelector('[data-slot="row-instruction"], span')!.dispatchEvent(e); await flush(); await flush(); });
+    expect(e.defaultPrevented).toBe(true); // nor the browser's own menu
+    expect($('[role="menu"]')).toBeNull();
+    expect($('[data-slot="row-context-menu"]')).toBeNull();
+    expect($<HTMLDialogElement>('dialog[data-slot="actions-sheet"]')!.open).toBe(false);
+  });
+
+  test("the ⋯ opens the row's actions as a bottom sheet of large icon rows (with a haptic tick); an item runs and slides it shut", async () => {
+    const buzz: number[] = [];
+    Object.defineProperty(navigator, "vibrate", { configurable: true, value: (ms: number) => { buzz.push(ms); return true; } });
+    const copied: string[] = [];
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (t: string) => { copied.push(t); } } });
+    try {
+      await mount("/agents", true);
+      const row = $('[data-branch="feat-phone"]')!;
+      const dots = row.querySelector<HTMLElement>('button[aria-label="Actions"]')!;
+      expect(dots.getAttribute("aria-haspopup")).toBe("menu");
+      await click(dots);
+      const sheet = $<HTMLDialogElement>('dialog[data-slot="actions-sheet"]')!;
+      expect(sheet.open).toBe(true);
+      expect(sheet.hasAttribute("data-bottom-sheet")).toBe(true);
+      expect(dots.getAttribute("aria-expanded")).toBe("true");
+      expect(buzz).toEqual([10]);
+      expect(document.querySelector('[data-radix-popper-content-wrapper]')).toBeNull(); // no dropdown
+      const rows = [...sheet.querySelectorAll<HTMLElement>('[data-slot="sheet-item"]')];
+      const labels = rows.map((r) => r.textContent?.trim());
+      // The ⋯ menu's own items (submenus open in place as labelled groups), unchanged.
+      for (const l of ["Open", "Copy branch", "Follow up…", "Rename…", "Copy worktree", "Discard"]) expect(labels).toContain(l);
+      expect([...sheet.querySelectorAll('[role="group"]')].map((g) => g.getAttribute("aria-label"))).toContain("Agent");
+      for (const r of rows) {
+        expect(r.className).toContain("min-h-12"); // a 48px touch row
+        expect(r.querySelector("svg")).not.toBeNull(); // with its icon
+      }
+      await click(rows.find((r) => r.textContent?.trim() === "Copy branch")!);
+      expect(copied).toEqual(["feat-phone"]);
+      expect(location.pathname).toBe("/agents"); // a tap in the sheet is not a tap on the row
+      expect(sheet.hasAttribute("data-closing")).toBe(true);
+      await act(async () => { await sleep(SHEET_CLOSE_MS + 30); });
+      expect(sheet.open).toBe(false);
+    } finally {
+      delete (navigator as unknown as Record<string, unknown>).vibrate;
+    }
+  });
+
+  test("a bottom sheet swipes shut from its body too — following the finger, springing back on a short drag, never while its content is scrolled", async () => {
+    await mount("/agents", true);
+    await click($('[data-branch="feat-phone"] button[aria-label="Actions"]')!);
+    const sheet = $<HTMLDialogElement>('dialog[data-slot="actions-sheet"]')!;
+    const body = sheet.querySelector<HTMLElement>('[data-slot="sheet-body"]')!;
+    const item = body.querySelector('[data-slot="sheet-item"]')!; // the whole body is buttons: a swipe from one still counts
+    // Short and slow: follows, then springs back.
+    await act(async () => { touchOn(item, "touchstart", 100); touchOn(item, "touchmove", 140); await flush(); });
+    expect(sheet.style.transform).toBe("translateY(32px)"); // past the 8px tap wobble
+    await act(async () => { touchOn(item, "touchend"); await flush(); });
+    expect(sheet.style.transform).toBe("");
+    expect(sheet.open).toBe(true);
+    // Scrolled down: the drag is the content's scroll, not the sheet's.
+    Object.defineProperty(body, "scrollTop", { configurable: true, value: 50 });
+    await act(async () => { touchOn(item, "touchstart", 100); const m = touchOn(item, "touchmove", 400); expect(m.defaultPrevented).toBe(false); touchOn(item, "touchend"); await flush(); });
+    expect(sheet.style.transform).toBe("");
+    expect(sheet.open).toBe(true);
+    Object.defineProperty(body, "scrollTop", { configurable: true, value: 0 });
+    // At the top, a long drag down closes it: the move is claimed (no scroll, no click) and it slides out.
+    await act(async () => { touchOn(item, "touchstart", 100); const m = touchOn(item, "touchmove", 400); expect(m.defaultPrevented).toBe(true); touchOn(item, "touchend"); await flush(); });
+    expect(sheet.hasAttribute("data-closing")).toBe(true);
+    await act(async () => { await sleep(SHEET_CLOSE_MS + 30); });
     expect(sheet.open).toBe(false);
   });
 

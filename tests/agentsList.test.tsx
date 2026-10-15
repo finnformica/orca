@@ -274,6 +274,18 @@ describe("agents list view", () => {
     expect(ctxMenu()).toBeNull();
   });
 
+  test("a finger's long-press never opens the right-click menu (a tablet's desktop rows); the mouse's right-click still does", async () => {
+    seed();
+    await mount();
+    const row = rowOf("local-idle");
+    await act(async () => { row.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" })); });
+    await contextmenu(row);
+    expect(ctxMenu()).toBeNull();
+    await act(async () => { row.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse", button: 2 })); });
+    await contextmenu(row);
+    expect(ctxMenu()).not.toBeNull();
+  });
+
   test("keyboard: rows are focusable, the menu key opens the same menu, an item runs its action, Enter opens the row", async () => {
     seed();
     const copied: string[] = [];
