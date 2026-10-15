@@ -99,13 +99,15 @@ Auto-deploy gets `main` in one minute. It waits while the orchestrator is in a w
 ## Caveman trial (until 2026-10-22)
 
 This is an A/B trial of [caveman](https://github.com/JuliusBrussee/caveman), binaries `bin-v4.0.1`.
-The trial is OFF. On the 2026-10-15 samples the proxy made each request read more input tokens (`docs/research/caveman-trial-samples-2026-10-15.md`). To turn it on, add `agentProxy: "caveman"` to the `orca` repo. Then its Claude workers use caveman, and the `branch-demo` workers are the control.
+The `orca` repo has `agentProxy: "caveman"`. Its Claude workers use caveman. The `branch-demo` workers are the control.
+The sample runs are in `docs/research/caveman-trial-samples-2026-10-15.md`.
 
 - **Read less:** the run sends its API calls through `caveman-proxy` on `127.0.0.1:8797`, mode `compress`.
 - **Say less:** the run gets the pinned `caveman` skill as `--append-system-prompt`.
 - **Recovery:** the run gets `caveman-mcp` as a per-run `--mcp-config`.
 - **Off:** Auto, browse, cloud, login and telemetry. Orca changes no user-level Claude settings. The orchestrator always runs direct.
 - **Logins:** the proxy forwards the run's own credential. Hydra picks the login as before.
+- **Prompt cache:** the run sets `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` and `ENABLE_TOOL_SEARCH=true`. Without them, Claude Code treats the proxy as a third-party gateway. It then sends every tool schema and loses the global cache scope. This adds about 16k input tokens to each request.
 - **Fallback:** when the proxy does not start, the run goes direct and Orca logs it. When a run fails on the API connection, Orca stops the proxy use for 10 minutes and queues one direct retry.
 
 Install (once per host, already done on the box):
