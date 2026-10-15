@@ -1155,6 +1155,88 @@ export function reportedShots(text: string): string[] {
   return [...seen.values()].slice(0, 8);
 }
 
+/** One `orca-shot` PNG a reply names: its id (`/api/screenshots/<id>` serves it), the path the
+ *  worker printed, the `--label` kept in its file name and when it was taken (also in the name). */
+export type ShotRef = { id: string; path: string; label?: string; at?: number };
+const SHOT_ID = /^shot-(\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d-\d{3}Z)-[0-9a-f]{8}(?:-(.+))?$/i;
+/** Every shot path in `text`, in order, each once. Pure. */
+export function shotRefs(text: string): ShotRef[] {
+  const out = new Map<string, ShotRef>();
+  for (const m of text.matchAll(/\/\S*\/shots\/(shot-[\w-]+)\.png/g)) {
+    const id = m[1]!;
+    if (out.has(id)) continue;
+    const parts = id.match(SHOT_ID);
+    const iso = parts?.[1]?.replace(/T(\d\d)-(\d\d)-(\d\d)-(\d{3})Z$/, "T$1:$2:$3.$4Z");
+    const at = iso ? Date.parse(iso) : NaN;
+    out.set(id, { id, path: m[0], ...(parts?.[2] ? { label: parts[2] } : {}), ...(Number.isFinite(at) ? { at } : {}) });
+  }
+  return [...out.values()];
+}
+export const shotUrl = (id: string) => `/api/screenshots/${id}`;
+
+/** The shots one turn reported. */
+export type TurnShots = { runId: string; at?: number; shots: ShotRef[] };
+/** Every screenshot a workstream's turns reported — its reply and its Verification section —
+ *  grouped by turn, newest turn first and newest shot first within one; a shot named again by a
+ *  later turn counts there only. Pure: the agent page's Screenshots and the PR's both read this. */
+export function workstreamShots(turns: Pick<AgentTurn, "id" | "response" | "structured" | "startedAt" | "finishedAt">[]): TurnShots[] {
+  const seen = new Set<string>();
+  const out: TurnShots[] = [];
+  for (const t of [...turns].reverse()) {
+    const shots = shotRefs([t.response ?? "", ...(t.structured?.verification ?? [])].join("\n"))
+      .filter((s) => !seen.has(s.id) && seen.add(s.id))
+      .sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+    if (shots.length) out.push({ runId: t.id, at: t.finishedAt ?? t.startedAt, shots });
+  }
+  return out;
+}
+
+/** A worker report's body with its `Screenshots (Read to view):` list taken out, and the shots it
+ *  named — so the chat draws them as thumbnails rather than paths. Pure. */
+export function reportShots(body: string): { text: string; shots: ShotRef[] } {
+  const lines = body.split("\n");
+  const start = lines.findIndex((l) => /^Screenshots \(Read to view\):\s*$/.test(l));
+  if (start < 0) return { text: body, shots: [] };
+  let end = start + 1;
+  while (end < lines.length && /^- /.test(lines[end]!)) end++;
+  return { text: [...lines.slice(0, start), ...lines.slice(end)].join("\n"), shots: shotRefs(lines.slice(start + 1, end).join("\n")) };
+}
+
+// ---- screenshots in a PR's description (server/prShots.ts) ----
+
+/** How many of a workstream's newest shots its PR shows. */
+export const PR_SHOTS_MAX = 6;
+const SHOTS_HEADING = /^## Screenshots[ \t]*\r?$/m;
+const SHOTS_MARKER = /<!-- orca:screenshots ([\w,-]*) -->/;
+/** The ref the images are pushed to, in the PR's own repo: `pr-assets/<pr>-<slug of the branch>`. */
+export function prAssetsRef(pr: number, branch: string): string {
+  const slug = (branch.split("/").at(-1) ?? branch).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+  return `pr-assets/${pr}${slug ? `-${slug}` : ""}`;
+}
+/** The `## Screenshots` section for these hosted images (newest first). The marker names the shot
+ *  ids, so a later update can tell nothing changed. Empty when there are none. Pure. */
+export function screenshotsSection(images: { id: string; url: string; alt: string }[]): string {
+  if (!images.length) return "";
+  return ["## Screenshots", "", `<!-- orca:screenshots ${images.map((i) => i.id).join(",")} -->`,
+    ...images.map((i) => `![${i.alt.replace(/[[\]]/g, "")}](${i.url})`)].join("\n");
+}
+/** The shot ids a body's Screenshots section was made from (its marker), or [] without one. */
+export function prShotIds(body: string): string[] {
+  const at = body.search(SHOTS_HEADING);
+  return at < 0 ? [] : (body.slice(at).match(SHOTS_MARKER)?.[1] ?? "").split(",").filter(Boolean);
+}
+/** `body` with its `## Screenshots` section — from that heading to the next `## ` heading or the
+ *  end — replaced by `section`, appended when there was none, removed when `section` is empty.
+ *  Everything else is left exactly as it was, so applying it twice is applying it once. Pure. */
+export function withScreenshotsSection(body: string, section: string): string {
+  const at = body.search(SHOTS_HEADING);
+  if (at < 0) return section ? `${body.replace(/\s+$/, "")}${body.trim() ? "\n\n" : ""}${section}\n` : body;
+  const rest = body.slice(at).slice(1).search(/^## /m);
+  const before = body.slice(0, at), after = rest < 0 ? "" : body.slice(at + 1 + rest);
+  if (!section) return after ? `${before}${after}` : `${before.replace(/\s+$/, "")}\n`;
+  return `${before}${section}\n${after ? `\n${after}` : ""}`;
+}
+
 /** A finished worker run, as the orchestrator hears about it: the condensed outcome (the 1–2k token
  *  summary a sub-agent hands back), Orca's own check verdict, and the run id as a reference to the
  *  full turn — never the transcript itself. */
@@ -1473,6 +1555,9 @@ const ORCA_COMMANDS = [
   "  orca send --repo <repo> --branch <branch> [--model <id>] [--attach <id|path>]… \"<message>\"     continue an existing workstream (--model moves it to another model)",
   "      --attach (repeatable) hands the worker a file on whatever instance it runs on: an id from ## Attachments, or a file path on this machine",
   "  orca address --repo <repo> --branch <branch>              have its agent fix conflicts, CI and review on its PR",
+  "  orca pr-shots --repo <repo> --branch <branch> [--pr <n>]  put the workstream's newest reported screenshots in",
+  "                                  its open PR's description (## Screenshots, replaced on rerun). Orca does it",
+  "                                  for PRs it opens and on later runs; call it after you open one with gh pr create",
   "  orca move --repo <repo> --branch <branch> --to <instance>  move its worktree to another instance (not while it runs)",
   "  orca archive --repo <repo> --branch <branch>              cancel a workstream you spawned or sent to: stop its agent,",
   "                                  drop anything queued for it, archive the card. Refuses one you don't own.",

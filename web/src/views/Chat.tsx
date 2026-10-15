@@ -15,11 +15,12 @@ import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
-import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, composerHistory } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, composerHistory } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { ExpandableImage } from "@/components/ExpandableImage";
+import { ShotThumbs } from "@/components/Screenshots";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { subscribeTurns } from "@/lib/events";
@@ -274,10 +275,21 @@ function WorkerReports({ parts }: { parts: string[] }) {
       {parts.map((part, i) => (
         <details key={i}>
           <summary className="cursor-pointer select-none">⚙ {part.split("\n")[0]!.slice(WORKER_EVENT_MARKER.length).trim()}</summary>
-          <pre className="mt-1 ml-4 whitespace-pre-wrap break-words text-neutral-600">{part.split("\n").slice(1).join("\n")}</pre>
+          <ReportBody body={part.split("\n").slice(1).join("\n")} />
         </details>
       ))}
     </div>
+  );
+}
+
+/** A report's text, its `Screenshots (Read to view):` paths drawn as thumbnails instead. */
+function ReportBody({ body }: { body: string }) {
+  const { text, shots } = reportShots(body);
+  return (
+    <>
+      <pre className="mt-1 ml-4 whitespace-pre-wrap break-words text-neutral-600">{text}</pre>
+      <ShotThumbs shots={shots} className="mt-2 ml-4" />
+    </>
   );
 }
 

@@ -7,6 +7,7 @@ import { DiffView, HEADER_TABS, STICKY_HEADER, useStickyHeader } from "./PrDetai
 import { AGENT_TABS, AgentHeader, ChatCard, DetailsCard, HeaderSource, RowStatus } from "./AgentPage";
 import { useNarrow } from "@/lib/viewport";
 import { VCard } from "@/components/console";
+import { ScreenshotsCard } from "@/components/Screenshots";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PreviewPanel } from "./PreviewControl";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -56,6 +57,7 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
 
         <TabsContent value="overview" className="space-y-6 pt-4">
           <DetailsCard row={row} summary={summary} />
+          <ScreenshotsCard repo={row.repo} branch={row.branch} version={row.agentStatus} />
           <div className="grid gap-6 lg:grid-cols-2">
             <VCard title={`Files changed (${summary?.files.length ?? 0})`}>
               {summary && summary.files.length > 0 ? (

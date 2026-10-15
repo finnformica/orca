@@ -5,9 +5,9 @@
 // exported `apiFake` handle. Files that never call the browser api are unaffected; server tests
 // don't import this module at all.
 import { mock } from "bun:test";
-import type { AgentOutcome, AgentProvider } from "../shared/agent";
+import type { AgentOutcome, AgentProvider, AgentTurn } from "../shared/agent";
 import type { CiFailureEvidence, ConversationComment, ReviewThreadEvidence } from "../server/gh";
-import type { MechanicalMerge } from "../web/src/workstream";
+import { workstreamShots, type MechanicalMerge } from "../web/src/workstream";
 
 // Chains onto any launch already held, so one releaseClaude() frees them all.
 async function holdLaunch() {
@@ -325,6 +325,8 @@ mock.module("@/api", () => ({
       return { imported };
     },
     turns: async (repo: string, branch: string) => apiFake.turnsData.get(`${repo}::${branch}`) ?? [],
+    // The bridge's /api/shots: workstreamShots over the same turns.
+    shots: async (repo: string, branch: string) => workstreamShots((apiFake.turnsData.get(`${repo}::${branch}`) ?? []) as AgentTurn[]),
     // Pages over turnsData in its stored order (oldest first); the cursor is the index of a page's
     // oldest turn, so a test can seed hundreds of turns and watch the chat walk back through them.
     turnPage: async (repo: string, branch: string, opts: { limit: number; before?: string }) => {
