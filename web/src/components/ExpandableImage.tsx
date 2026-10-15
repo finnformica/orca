@@ -8,7 +8,7 @@
 // button would.
 import { useEffect, useRef, useState } from "react";
 import { Check, Copy, Download, X } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { cn, PortalContainer } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { useSwipeToClose } from "@/lib/gestures";
@@ -139,13 +139,16 @@ export function ExpandableImage({
         <div {...swipe} className="relative flex items-center justify-center md:max-h-[92vh] md:max-w-[92vw] max-md:h-full max-md:w-full">
           {open && <img src={src} alt={alt} className="object-contain md:max-h-[92vh] md:max-w-[92vw] max-md:max-h-full max-md:max-w-full" />}
           <div className="absolute top-2 right-2 flex gap-1">
-            <Tip label="Download">
-              <Button asChild size="icon" variant="ghost" className="size-8 bg-background/80 text-foreground hover:bg-background">
-                <a href={src} download={downloadName || alt || ""} aria-label="Download image" onClick={(e) => e.stopPropagation()}>
-                  <Download className="size-4" />
-                </a>
-              </Button>
-            </Tip>
+            {/* Its tip portals INTO the modal dialog: the top layer covers anything outside it. */}
+            <PortalContainer.Provider value={dialogRef.current ?? undefined}>
+              <Tip label="Download">
+                <Button asChild size="icon" variant="ghost" className="size-8 bg-background/80 text-foreground hover:bg-background">
+                  <a href={src} download={downloadName || alt || ""} aria-label="Download image" onClick={(e) => e.stopPropagation()}>
+                    <Download className="size-4" />
+                  </a>
+                </Button>
+              </Tip>
+            </PortalContainer.Provider>
             <Button type="button" size="icon" variant="ghost" className="size-8 bg-background/80 text-foreground hover:bg-background" aria-label="Close" onClick={() => setOpen(false)}>
               <X className="size-4" />
             </Button>

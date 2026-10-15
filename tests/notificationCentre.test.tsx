@@ -18,6 +18,7 @@ import { navigate } from "@/lib/route";
 import { notificationsOpenAtom, notifyDndAtom, orchestratorOpenAtom, toastPrefsAtom } from "@/lib/atoms";
 import * as centre from "@/lib/notificationStore";
 import { COUNT_BAR_SPACE, TOAST_EXIT_MS, type Notification } from "../shared/notifications";
+import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -440,7 +441,7 @@ describe("the notification centre", () => {
       expect(b.className).toContain("size-7");
       expect(b.querySelector("svg.lucide")).not.toBeNull();
     }
-    expect([...actionsOf(toast).querySelectorAll('[role="tooltip"]')].map((t) => t.textContent)).toEqual(["Address PR", "View PR", "Open"]);
+    expect([...actionsOf(toast).querySelectorAll("button")].map((b) => openTip(b).textContent)).toEqual(["Address PR", "View PR", "Open"]);
     // The launch is held: the click still marks it read and clears the toast immediately, before
     // the launch (the "request") resolves — optimistic, not waited on.
     apiFake.holdClaude = true;
@@ -537,7 +538,7 @@ describe("the notification centre", () => {
     await push(s, note({ id: 71, kind: "failed", repo: "@orca", branch: "orchestrator", title: "Orchestrator", link: { orchestrator: true } }));
     const toast = cards()[0]!;
     expect(actionLabels(toast)).toEqual(["Open"]);
-    const tip = actionsOf(toast).querySelector('[role="tooltip"]')!;
+    const tip = openTip(button(toast, "Open")!);
     expect(tip.textContent).toContain("Open");
     expect(tip.querySelector('kbd[data-slot="kbd"]')!.textContent).toBe("O");
     // The orchestrator's own notification: Open carries its robot avatar, not the side-panel icon.

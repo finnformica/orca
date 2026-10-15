@@ -20,7 +20,7 @@ function HoverCardContent({ className, align = "center", sideOffset = 8, collisi
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}
         className={cn(
-          "bg-popover text-popover-foreground z-50 rounded-lg border p-0 shadow-menu outline-none",
+          "bg-popover text-popover-foreground z-50 origin-(--radix-hover-card-content-transform-origin) rounded-lg border p-0 shadow-menu outline-none",
           // A slight entry/exit, not a production: fade + a 95%→100% zoom, nudged in from
           // whichever side it opened on (tw-animate-css's data-state-driven animate-in/out).
           "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 duration-150",

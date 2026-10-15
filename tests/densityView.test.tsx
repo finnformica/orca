@@ -12,6 +12,7 @@ import * as store from "@/store";
 import { WorkstreamCard } from "@/views/Board";
 import { densityAtom } from "@/lib/atoms";
 import type { Row } from "@/store";
+import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -64,7 +65,7 @@ describe("dense view", () => {
     expect(labelledBtn("Enable auto-merge")).toBe(false);
     const quick = container!.querySelector<HTMLElement>('[data-slot="quick-actions"]')!;
     expect(quick.nextElementSibling!.textContent).toContain("Test on");
-    expect(byAria("Enable auto-merge")!.closest('[data-slot="tip"]')!.querySelector('[role="tooltip"]')).not.toBeNull();
+    expect(openTip(byAria("Enable auto-merge")!).textContent).toBe("Enable auto-merge");
     // Full-size badges — no dense size-down variant.
     expect(hasClass("[data-slot=badge]]:text-[10px]")).toBe(false);
   });
