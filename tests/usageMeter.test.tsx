@@ -371,6 +371,70 @@ test("a hydra login's row shows a switch on hover: flipping it disables/enables 
   expect(row()).toBeNull(); // leaves the DOM again once the row isn't hovered
 });
 
+test("withProfileEnabled: flips the named profile's state, pure and a no-op on an unknown name", async () => {
+  const { withProfileEnabled } = await import("../web/src/workstream");
+  const profiles: { name: string; state?: string }[] = [{ name: "work", state: "token stale — refreshes on next launch" }, { name: "home", state: "ok" }];
+  expect(withProfileEnabled(profiles, "work", false)).toEqual([{ name: "work", state: "disabled" }, { name: "home", state: "ok" }]);
+  expect(withProfileEnabled(profiles, "work", true)).toEqual([{ name: "work", state: undefined }, { name: "home", state: "ok" }]);
+  expect(withProfileEnabled(profiles, "nope", false)).toEqual(profiles); // not found — untouched
+  expect(profiles).toEqual([{ name: "work", state: "token stale — refreshes on next launch" }, { name: "home", state: "ok" }]); // never mutated
+});
+
+test("the switch flips optimistically, before POST /api/usage/profile has answered — no spinner, nothing disabled", async () => {
+  const login = (name: string, state: string) => ({ name, state, usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
+  apiFake.usageData = { claude: null, codex: null, profiles: [login("work", "ok")] };
+  apiFake.holdSetProfileEnabled = true;
+  await mount("/usage");
+  await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  const header = group("login:work")!.querySelector<HTMLElement>("[data-slot='usage-group-header']")!;
+  await act(async () => { header.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: null })); await flush(); });
+  const row = () => group("login:work")!.querySelector<HTMLElement>("[data-slot='login-toggle']")!;
+  await act(async () => { row().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+
+  // The request is still held — nothing has come back from the server — yet the switch, the state
+  // pill and the row's dim styling already read disabled, and the switch is still clickable (no
+  // `disabled` attribute, no spinner in the thumb).
+  expect(apiFake.setProfileEnabledReleasers).toHaveLength(1);
+  expect(row().hasAttribute("disabled")).toBe(false);
+  expect(row().querySelector("svg.animate-spin")).toBeNull();
+  expect(row().getAttribute("aria-checked")).toBe("false");
+  expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Disabled");
+  expect(group("login:work")!.className).toContain("opacity-50");
+
+  await act(async () => { apiFake.setProfileEnabledReleasers[0]!(); await flush(); }); // the server catches up
+  expect(row().getAttribute("aria-checked")).toBe("false"); // unchanged — it already agreed
+});
+
+test("rapid repeat clicks end in the last chosen state — a slower, now-stale response never clobbers a newer click", async () => {
+  const login = (name: string, state: string) => ({ name, state, usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
+  apiFake.usageData = { claude: null, codex: null, profiles: [login("work", "ok")] };
+  apiFake.holdSetProfileEnabled = true;
+  await mount("/usage");
+  await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+  const header = group("login:work")!.querySelector<HTMLElement>("[data-slot='usage-group-header']")!;
+  await act(async () => { header.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: null })); await flush(); });
+  const row = () => group("login:work")!.querySelector<HTMLElement>("[data-slot='login-toggle']")!;
+
+  await act(async () => { row().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); }); // disable…
+  expect(row().getAttribute("aria-checked")).toBe("false");
+  await act(async () => { row().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); }); // …re-enable, before the first request answered
+  expect(row().getAttribute("aria-checked")).toBe("true"); // the last click, shown at once
+  expect(apiFake.setProfileEnabledCalls).toEqual([
+    { name: "work", enabled: false, instance: undefined },
+    { name: "work", enabled: true, instance: undefined },
+  ]);
+  expect(apiFake.setProfileEnabledReleasers).toHaveLength(2);
+
+  // The SECOND (enable) request's answer lands first, then the first (disable) request's answer
+  // — a genuine race — lands last. The stale disable response must not revert the row.
+  const [disableReleaser, enableReleaser] = apiFake.setProfileEnabledReleasers;
+  await act(async () => { enableReleaser!(); await flush(); });
+  expect(row().getAttribute("aria-checked")).toBe("true");
+  await act(async () => { disableReleaser!(); await flush(); });
+  expect(row().getAttribute("aria-checked")).toBe("true"); // still enabled — the stale response was ignored
+  expect(group("login:work")!.className).not.toContain("opacity-50");
+});
+
 test("a Stale login's row carries a Refresh button that clears the stale state through POST /api/usage/refresh", async () => {
   const login = (name: string, state: string) => ({ name, state, usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
   apiFake.usageData = { claude: null, codex: null, profiles: [login("work", "token stale — refreshes on next launch")] };

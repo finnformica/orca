@@ -12,7 +12,7 @@ import { usageExpandedAtom } from "@/lib/atoms";
 import { notifyLocal } from "@/lib/notificationStore";
 import { persistedKey, usePersisted } from "@/lib/persisted";
 import { useCoarse, useNarrow } from "@/lib/viewport";
-import { refreshUsageNow, refreshVitals, useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
+import { applyProfileToggle, optimisticProfileToggle, refreshUsageNow, refreshVitals, revertProfileToggle, useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
 import { Button } from "@/components/ui/button";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Tip } from "@/components/ui/tip";
@@ -144,44 +144,46 @@ function UsageGroupRows({ group: g }: { group: UsageGroup }) {
 type SwitchState = "idle" | "loading" | "done" | "error";
 
 /** A hydra login's rotation switch, next to its name — the caller mounts it only on hover (or
- *  always, on a touch screen), so it reserves no space on a row that isn't. ActionButton's own
- *  semantics (spinner → ✓/✗) in switch form: flipping it calls `POST /api/usage/profile`, applies
- *  the refreshed profile list it hands back at once (so the row doesn't wait for the next poll
- *  tick), and a failure is a failed-action notification. Hydra's rotation is per host, but the switch
- *  is one decision for the ACCOUNT: no `instance` is sent, and the bridge applies it on every host
- *  that has the login — so the row never reads "Disabled on local" beside an enabled cloud. */
+ *  always, on a touch screen), so it reserves no space on a row that isn't. OPTIMISTIC: a click
+ *  flips the switch, the row's dim styling and the fleet mean in the shared usage mirror at once
+ *  (`optimisticProfileToggle`) — no spinner, nothing disabled, so a rapid second click lands and
+ *  wins (`applyProfileToggle` / `revertProfileToggle` are no-ops once a later click's token has
+ *  superseded this one). `POST /api/usage/profile` runs in the background: its refreshed profile
+ *  list is applied when it lands, and a failure rolls the switch back to its pre-click value and
+ *  raises the existing failed-action notification. Hydra's rotation is per host, but the switch is
+ *  one decision for the ACCOUNT: no `instance` is sent, and the bridge applies it on every host that
+ *  has the login — so the row never reads "Disabled on local" beside an enabled cloud. */
 function LoginToggle({ name, enabled }: { name: string; enabled: boolean }) {
-  const [state, setState] = useState<SwitchState>("idle");
-  const toggle = async () => {
-    if (state === "loading") return;
-    setState("loading");
-    try {
-      await api.setProfileEnabled(name, !enabled);
-      await refreshUsageNow();
-      setState("done");
-    } catch (e) {
-      const verb = enabled ? "Disable" : "Enable", error = e instanceof Error ? e.message : String(e);
-      notifyLocal({
-        kind: "action_failed", repo: "", title: `Login ${name}`, label: `${verb} failed`, body: error,
-        copy: `Action: ${verb} hydra login ${name}\nError:\n${error}`,
-        ask: `${verb} hydra login ${name} failed: ${error}. Please investigate and fix.`,
-      });
-      setState("error");
-    }
-    setTimeout(() => setState("idle"), 2000);
+  const [error, setError] = useState(false);
+  const toggle = () => {
+    const next = !enabled;
+    const { token, prev } = optimisticProfileToggle(name, next);
+    setError(false);
+    api.setProfileEnabled(name, next).then(
+      ({ profiles }) => applyProfileToggle(name, token, profiles),
+      (e) => {
+        revertProfileToggle(name, token, prev);
+        const verb = next ? "Enable" : "Disable", error = e instanceof Error ? e.message : String(e);
+        notifyLocal({
+          kind: "action_failed", repo: "", title: `Login ${name}`, label: `${verb} failed`, body: error,
+          copy: `Action: ${verb} hydra login ${name}\nError:\n${error}`,
+          ask: `${verb} hydra login ${name} failed: ${error}. Please investigate and fix.`,
+        });
+        setError(true);
+        setTimeout(() => setError(false), 2000);
+      },
+    );
   };
   return (
-    <button type="button" role="switch" aria-checked={enabled} data-slot="login-toggle" disabled={state === "loading"}
+    <button type="button" role="switch" aria-checked={enabled} data-slot="login-toggle"
       title={enabled ? `Take ${name} out of hydra's rotation` : `Put ${name} back`}
-      onClick={(e) => { e.stopPropagation(); void toggle(); }}
+      onClick={(e) => { e.stopPropagation(); toggle(); }}
       className={cn(
         "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors",
-        state === "error" ? "bg-destructive" : enabled ? "bg-geist-blue" : "bg-input",
+        error ? "bg-destructive" : enabled ? "bg-geist-blue" : "bg-input",
       )}>
       <span className={cn("flex size-3 items-center justify-center rounded-full bg-white transition-transform", enabled ? "translate-x-3.5" : "translate-x-0.5")}>
-        {state === "loading" && <Loader2 className="size-2.5 animate-spin" />}
-        {state === "done" && <Check className="size-2.5" />}
-        {state === "error" && <X className="size-2.5" />}
+        {error && <X className="size-2.5" />}
       </span>
     </button>
   );
