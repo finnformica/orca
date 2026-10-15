@@ -208,9 +208,9 @@ describe("agents list view", () => {
     await mount();
     const quick = (branch: string) => [...rowOf(branch).querySelectorAll<HTMLElement>("[data-quick-action]")];
     const ids = (branch: string) => quick(branch).map((q) => q.dataset.quickAction);
-    expect(ids("feat-ci")).toEqual(["addressPr", "mergeWhenGreen"]); // review data not loaded: CI alone decides
+    expect(ids("feat-ci")).toEqual(["addressPr"]); // review data not loaded: CI alone decides; a real problem shows Address PR alone
     expect(ids("feat-draft")).toEqual(["markReady", "addressPr"]);
-    expect(ids("feat-ok")).toEqual(["merge", "autoMerge"]); // approved + clean: Merge, and the fake repo's mergePolicy (unset, so "never") refuses the queue — Enable auto-merge, never Slack
+    expect(ids("feat-ok")).toEqual(["merge", "autoMerge"]); // approved + clean: Merge and Enable auto-merge (GitHub's), never Slack
     expect(ids("local-idle")).toEqual(["createPr"]); // the worktree has commits of its own
     // Icon-only: no text in the button, the label as its aria-label and in its tooltip.
     for (const q of quick("feat-draft")) {
@@ -220,7 +220,7 @@ describe("agents list view", () => {
       expect(q.closest('[data-slot="tip"]')!.querySelector('[role="tooltip"]')!.textContent).toBe(btn.getAttribute("aria-label")!);
       expect(q.closest('[data-slot="tip"]')!.className).not.toContain("max-md:hidden"); // the first two always show
     }
-    expect(quick("feat-draft")[1]!.querySelector("button")!.getAttribute("aria-label")).toBe("Address review");
+    expect(quick("feat-draft")[1]!.querySelector("button")!.getAttribute("aria-label")).toBe("Address PR");
     // In the Actions cell, gap-1, immediately left of the preview cell, then the ⋯.
     const group = rowOf("feat-draft").querySelector<HTMLElement>('[data-slot="quick-actions"]')!;
     expect(group.className).toContain("gap-1");
@@ -232,7 +232,7 @@ describe("agents list view", () => {
     expect(location.pathname).toBe("/");
   });
 
-  test("quick actions read the review digest only from the cache: no extra review fetch per row, and a cached unresolved thread makes Address review primary", async () => {
+  test("quick actions read the review digest only from the cache: no extra review fetch per row, and a cached unresolved thread makes Address PR the one quick action", async () => {
     apiFake.prsData = [pr({ number: 7, branch: "feat-x", reviewStatus: "approved" })];
     apiFake.agentsData = [];
     apiFake.reviewEvidenceData = [{ id: "T1", path: "src/a.ts", line: 12, author: "alice", body: "Handle null", url: "https://review/T1", resolved: false }];
@@ -241,7 +241,7 @@ describe("agents list view", () => {
     await act(async () => { await flush(); await flush(); });
     // ONE fetch for the row — the review cluster's own lazy one; the buttons only peek at its cache.
     expect(apiFake.reviewSignalCalls).toEqual(["r#7"]);
-    expect([...rowOf("feat-x").querySelectorAll<HTMLElement>("[data-quick-action]")].map((q) => q.dataset.quickAction)).toEqual(["addressPr", "mergeWhenGreen"]);
+    expect([...rowOf("feat-x").querySelectorAll<HTMLElement>("[data-quick-action]")].map((q) => q.dataset.quickAction)).toEqual(["addressPr"]); // a person's unresolved thread with no marker counts as a warning
   });
 
   test("right-click opens the ⋯ menu's own actions at the pointer; Esc and an outside click close it", async () => {

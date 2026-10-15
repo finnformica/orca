@@ -3,7 +3,7 @@
 // and preview+actions footer are dropped; "comfortable" shows them all. Done cards ignore density
 // (already compact). Driven against the fake api (tests/apiFake.ts), rendered into a real DOM. See
 // Board.WorkstreamCard + lib/atoms.densityAtom.
-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { getDefaultStore } from "jotai";
@@ -16,6 +16,8 @@ import type { Row } from "@/store";
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 beforeAll(() => store.configReady);
+// Another file's cached r#7 review digest must not decide this card's quick actions.
+beforeEach(() => store._resetReviewSignals());
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 // Raw (unescaped) class strings, so we can assert the dense size-down variants are wired on.
@@ -57,8 +59,7 @@ describe("dense view", () => {
     expect(labelledBtn("Follow up")).toBe(true);
     expect(container!.textContent).toContain("Test on"); // "Test on <instance>" now that previews can be placed (the fake config has two instances)
     // Approved and clean: the state-aware quick actions (workstream.quickActions) — icon-only with a
-    // tooltip, on the preview line immediately LEFT of Test. The fake repo has no mergePolicy (defaults
-    // to "never"), so the queue is refused and the second button is Enable auto-merge, not a disabled clock.
+    // tooltip, on the preview line immediately LEFT of Test: Merge and Enable auto-merge (GitHub's).
     expect(byAria("Merge")).not.toBeNull();
     expect(byAria("Enable auto-merge")).not.toBeNull();
     expect(labelledBtn("Enable auto-merge")).toBe(false);
@@ -80,8 +81,8 @@ describe("dense view", () => {
     // Every verb is an icon button (found by aria-label), and none renders its text label.
     expect(byAria("Test locally")).not.toBeNull();
     expect(byAria("Follow up")).not.toBeNull();
-    // Approved and clean, on a repo with no mergePolicy (defaults to "never"): Merge now AND Enable
-    // auto-merge, never Merge when green (it would only ever show disabled) and never Slack.
+    // Approved and clean: Merge now AND Enable auto-merge, never Merge when green (not a quick action
+    // any more — Orca's queue merges what it can by itself) and never Slack.
     expect(container!.querySelector('button[aria-label="Merge"]')).not.toBeNull();
     expect(byAria("Enable auto-merge")).not.toBeNull();
     expect(byAria("Merge when green")).toBeNull();

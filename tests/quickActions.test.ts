@@ -1,14 +1,17 @@
 // The actions bar's state-aware quick actions (workstream.quickActions): one pure mapping from a
-// workstream's state to EVERY toolbar verb that applies — they combine. Every state the bar distinguishes.
+// workstream's state to at most two toolbar verbs, first matching rule wins. One test per rule.
 import { describe, expect, test } from "bun:test";
-import { quickActions, type QuickActionContext, type QuickActionRow } from "@/workstream";
+import { quickActions, reviewProblems, type QuickActionContext, type QuickActionRow, type ReviewItem } from "@/workstream";
 
-const ctx: QuickActionContext = { hasWork: true, slackChannel: true, mergePolicy: { whenGreen: "any" } };
+const NOW = Date.parse("2026-10-15T12:00:00Z");
+const ctx: QuickActionContext = { hasWork: true, slackChannel: true, now: NOW };
 const openPr: QuickActionRow = { lane: "IN_REVIEW", prNumber: 7, hasRemote: true, mergeable: "MERGEABLE", ciStatus: "passing", reviewStatus: "review_required" };
+const approved: QuickActionRow = { ...openPr, lane: "MERGEABLE", reviewStatus: "approved" };
 const ids = (row: QuickActionRow, c: Partial<QuickActionContext> = {}) => quickActions(row, { ...ctx, ...c }).map((a) => a.id);
+const item = (over: Partial<ReviewItem>): ReviewItem => ({ id: "x", kind: "thread", body: "Handle null here", bot: false, line: "", ...over });
 
 describe("quickActions", () => {
-  test("a local branch with commits → Create PR (Promote without a remote); nothing without commits", () => {
+  test("1. no PR: a local branch with commits → Create PR (Promote without a remote); nothing without commits", () => {
     const local: QuickActionRow = { lane: "LOCAL", hasRemote: true };
     expect(quickActions(local, ctx)).toEqual([{ id: "createPr", label: "Create PR", disabled: undefined }]);
     expect(quickActions({ ...local, hasRemote: false }, ctx)[0]!.label).toBe("Promote");
@@ -16,70 +19,86 @@ describe("quickActions", () => {
     expect(quickActions({ ...local, agentStatus: "running" }, ctx)[0]!.disabled).toMatch(/running/);
   });
 
-  test("a promoted, clean local branch → Merge", () => {
+  test("1. a promoted, clean local branch → Merge", () => {
     expect(ids({ lane: "MERGEABLE", hasRemote: false })).toEqual(["merge"]);
   });
 
-  test("a draft PR → Ready for review; Address review beside it when something is outstanding; nothing else", () => {
+  test("2. a draft PR → Ready for review; Address PR beside it only for a real problem", () => {
     const draft = { ...openPr, lane: "DRAFT" as const, isDraft: true };
     expect(ids(draft)).toEqual(["markReady"]);
     expect(quickActions(draft, ctx)[0]!.label).toBe("Ready for review");
     expect(ids({ ...draft, mergeable: "CONFLICTING" })).toEqual(["markReady", "addressPr"]);
     expect(ids({ ...draft, ciStatus: "failing" })).toEqual(["markReady", "addressPr"]);
+    expect(ids(draft, { reviewProblems: 1 })).toEqual(["markReady", "addressPr"]);
+    expect(ids(draft, { reviewProblems: 0 })).toEqual(["markReady"]); // nits only: no Address PR
   });
 
-  test("conflicts, failing CI, unresolved threads or changes requested → Address review, beside Merge when green", () => {
+  test("3. a real problem → Address PR alone (no Slack, no auto-merge); disabled with the reason while an agent runs", () => {
     for (const row of [{ ...openPr, mergeable: "CONFLICTING" as const }, { ...openPr, mergeClean: "conflict" as const }, { ...openPr, ciStatus: "failing" as const }, { ...openPr, reviewStatus: "changes_requested" as const }]) {
-      expect(ids(row)).toEqual(["addressPr", "mergeWhenGreen"]);
+      expect(ids(row)).toEqual(["addressPr"]);
     }
-    expect(ids(openPr, { unresolved: 2 })).toEqual(["addressPr", "mergeWhenGreen"]);
-    // Review data not loaded (an Agents row): what IS known still decides.
-    expect(ids({ ...openPr, ciStatus: "failing" }, { unresolved: undefined })).toEqual(["addressPr", "mergeWhenGreen"]);
-    expect(ids(openPr, { unresolved: undefined })).toEqual(["slack", "mergeWhenGreen"]);
-    expect(ids({ ...openPr, lane: "MERGEABLE", reviewStatus: "approved", ciStatus: "failing" })).toEqual(["addressPr", "mergeWhenGreen"]);
+    expect(ids(openPr, { reviewProblems: 2 })).toEqual(["addressPr"]);
+    expect(ids(approved, { reviewProblems: 1 })).toEqual(["addressPr"]); // approved, but a severe finding is open
+    expect(ids({ ...approved, ciStatus: "failing" })).toEqual(["addressPr"]);
+    expect(ids({ ...openPr, ciStatus: "failing", autoMergeEnabled: true })).toEqual(["addressPr"]);
+    expect(quickActions({ ...openPr, ciStatus: "failing" }, ctx)[0]).toEqual({ id: "addressPr", label: "Address PR", disabled: undefined });
     expect(quickActions({ ...openPr, ciStatus: "failing", agentStatus: "running" }, ctx)[0]!.disabled).toMatch(/running/);
-    expect(quickActions({ ...openPr, ciStatus: "failing" }, ctx)[0]!.label).toBe("Address review");
+    // Review data not loaded (an Agents row before its digest is cached): what IS known still decides.
+    expect(ids({ ...openPr, ciStatus: "failing" }, { reviewProblems: undefined })).toEqual(["addressPr"]);
+    expect(ids(openPr, { reviewProblems: undefined })).toEqual(["slack", "autoMerge"]);
   });
 
-  test("a ready PR with nothing outstanding → Send to Slack, then Bump on Slack as soon as it's posted", () => {
-    expect(quickActions(openPr, ctx)[0]).toEqual({ id: "slack", label: "Send to Slack", slackKind: "notify" });
-    const sent = { ...openPr, slackNotifiedAt: "2026-10-14T10:00:00Z" };
-    expect(quickActions(sent, ctx)[0]).toEqual({ id: "slack", label: "Bump on Slack", slackKind: "bump" }); // not hidden until stale
-    expect(ids(openPr, { slackChannel: false })).toEqual(["mergeWhenGreen"]); // no channel: nowhere to post
-    expect(ids({ ...openPr, ciStatus: "pending" })).toEqual(["slack", "mergeWhenGreen"]); // running CI isn't outstanding
+  test("3. what counts as a real review problem: severe bot items and a person's unresolved non-nit thread", () => {
+    expect(reviewProblems({ severe: [], human: [] })).toBe(0);
+    expect(reviewProblems({ severe: [item({ bot: true, severity: "warning" }), item({ bot: true, severity: "critical" })], human: [] })).toBe(2);
+    expect(reviewProblems({ severe: [], human: [item({})] })).toBe(1); // no marker → treated as a warning: people are never ignored
+    expect(reviewProblems({ severe: [], human: [item({ body: "nit: rename this" })] })).toBe(0);
+    expect(reviewProblems({ severe: [], human: [item({ body: "FYI this landed upstream" })] })).toBe(0);
+    expect(reviewProblems({ severe: [], human: [item({ kind: "comment", body: "Looks good overall" })] })).toBe(0); // a top-level comment has no resolved bit
   });
 
-  test("a mergeable approved PR, clean, on a repo whose mergePolicy allows the queue → Merge and Merge when green, never Slack", () => {
-    const approved = { ...openPr, lane: "MERGEABLE" as const, reviewStatus: "approved" as const };
-    expect(quickActions(approved, ctx)).toEqual([
-      { id: "merge", label: "Merge" },
-      { id: "mergeWhenGreen", label: "Merge when green", disabled: undefined },
+  test("4/5. open, not approved, only nits or nothing unresolved → Send to Slack + Enable auto-merge; no Address PR", () => {
+    expect(quickActions(openPr, { ...ctx, reviewProblems: 0 })).toEqual([
+      { id: "slack", label: "Send to Slack", slackKind: "notify" },
+      { id: "autoMerge", label: "Enable auto-merge", tip: expect.stringMatching(/checks and reviews pass/) },
     ]);
+    expect(ids({ ...openPr, ciStatus: "pending" })).toEqual(["slack", "autoMerge"]); // running CI isn't a problem
+    expect(ids(openPr, { slackChannel: false })).toEqual(["autoMerge"]); // no channel: nowhere to post
   });
 
-  test("a mergeable approved PR, clean, on a never-policy repo (branch-demo) → Merge and Enable auto-merge, never a disabled clock", () => {
-    const approved = { ...openPr, lane: "MERGEABLE" as const, reviewStatus: "approved" as const };
-    expect(ids(approved, { mergePolicy: { whenGreen: "never" } })).toEqual(["merge", "autoMerge"]);
-    expect(ids(approved, { mergePolicy: undefined })).toEqual(["merge", "autoMerge"]);
-    expect(quickActions(approved, { ...ctx, mergePolicy: { whenGreen: "never" } })).toEqual([
-      { id: "merge", label: "Merge" },
-      { id: "autoMerge", label: "Enable auto-merge", disabled: undefined },
-    ]);
-    // reviewStatus alone (not yet reflected in lane) is enough, and GitHub's own auto-merge already queued shows as such.
-    expect(ids({ ...openPr, reviewStatus: "approved" as const, autoMergeEnabled: true }, { mergePolicy: { whenGreen: "never" } })).toEqual(["merge", "autoMerge"]);
-    expect(quickActions({ ...approved, autoMergeEnabled: true }, { ...ctx, mergePolicy: { whenGreen: "never" } })[1]!.disabled).toMatch(/Already queued/);
+  test("4/5. once posted → Bump on Slack, its tooltip saying when", () => {
+    const sent = { ...openPr, slackNotifiedAt: "2026-10-15T09:00:00Z" };
+    expect(quickActions(sent, ctx)[0]).toEqual({ id: "slack", label: "Bump on Slack", slackKind: "bump", tip: "Bump on Slack — posted 3h ago" });
   });
 
-  test("Merge when green shows on every open non-draft PR, disabled with the reason when queued or refused", () => {
-    const mwg = (row: QuickActionRow, c: Partial<QuickActionContext> = {}) => quickActions(row, { ...ctx, ...c }).find((a) => a.id === "mergeWhenGreen");
-    expect(mwg(openPr, { mergePolicy: undefined })!.disabled).toBe("Not queued: this repo's mergePolicy.whenGreen is \"never\": merging is the user's");
-    expect(mwg(openPr, { mergePolicy: { whenGreen: "small" } })!.disabled).toMatch(/marked small/);
-    expect(mwg({ ...openPr, mergeWhenGreen: { small: true } }, { mergePolicy: { whenGreen: "small" } })!.disabled).toMatch(/Already queued/);
-    expect(mwg({ ...openPr, autoMergeEnabled: true })!.disabled).toMatch(/Already queued/);
-    expect(mwg({ ...openPr, lane: "DRAFT", isDraft: true })).toBeUndefined();
+  test("6. approved with nothing outstanding (nits allowed) → Merge + Enable auto-merge, never Slack", () => {
+    expect(ids(approved, { reviewProblems: 0 })).toEqual(["merge", "autoMerge"]);
+    expect(ids({ ...openPr, reviewStatus: "approved" })).toEqual(["merge", "autoMerge"]); // reviewStatus alone, before the lane follows
   });
 
-  test("a merged workstream has none", () => {
+  test("7. auto-merge already on → Disable auto-merge in its place, saying it merges once checks and reviews pass", () => {
+    expect(ids({ ...openPr, autoMergeEnabled: true })).toEqual(["slack", "disableAutoMerge"]);
+    const on = quickActions({ ...approved, autoMergeEnabled: true }, ctx)[1]!;
+    expect(on).toMatchObject({ id: "disableAutoMerge", label: "Disable auto-merge" });
+    expect(on.tip).toMatch(/Auto-merge on.*checks and reviews pass/);
+  });
+
+  test("8. an agent running: Slack and auto-merge stay available", () => {
+    const busy = { ...openPr, agentStatus: "running" as const };
+    expect(quickActions(busy, ctx).every((a) => !a.disabled)).toBe(true);
+    expect(ids(busy)).toEqual(["slack", "autoMerge"]);
+  });
+
+  test("9. a merged workstream has none", () => {
     expect(ids({ ...openPr, lane: "DONE" })).toEqual([]);
+  });
+
+  test("never more than two icons, and Merge when green is never one", () => {
+    const rows: QuickActionRow[] = [openPr, approved, { ...openPr, lane: "DRAFT", isDraft: true, ciStatus: "failing" }, { ...openPr, autoMergeEnabled: true, slackNotifiedAt: "x" }];
+    for (const row of rows) for (const reviewProblems of [undefined, 0, 3]) {
+      const out = ids(row, { reviewProblems });
+      expect(out.length).toBeLessThanOrEqual(2);
+      expect(out as string[]).not.toContain("mergeWhenGreen");
+    }
   });
 });
