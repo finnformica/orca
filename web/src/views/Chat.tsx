@@ -70,8 +70,10 @@ const markdownCell = (Tag: "th" | "td") => ({ children }: { children?: ReactNode
 const tableComponents = { table: markdownTable, th: markdownCell("th"), td: markdownCell("td") };
 
 /** Markdown inside the terminal-styled log: prose spacing and readable lists, but sized and coloured
- *  to sit in the chat's window rather than looking like a pasted document. */
-const ChatMarkdown = ({ children }: { children: string }) => (
+ *  to sit in the chat's window rather than looking like a pasted document. `tone` overrides the body
+ *  text colour (a worker report's folded body reads dimmer than a turn's own reply) without forking
+ *  the renderer, its table handling, or its prose setup. */
+const ChatMarkdown = ({ children, tone = "text-neutral-300" }: { children: string; tone?: string }) => (
   // wrap-anywhere: the agent's prose is full of unbreakable tokens (`branch/names-with-hashes`,
   // paths, run ids) that are wider than a narrow window, and one of them made the whole log scroll
   // sideways. Code BLOCKS are exempt — they keep their lines and scroll inside themselves.
@@ -81,12 +83,12 @@ const ChatMarkdown = ({ children }: { children: string }) => (
   // own matching rule always beats an inherited custom property. That made bold text render
   // white-on-white in light theme. Route it through Tailwind's own (correctly remapped) neutral-200
   // token instead, like prose-headings/prose-code/prose-a already do.
-  <div className="prose prose-invert prose-sm max-w-none wrap-anywhere text-neutral-300 prose-pre:wrap-normal
-    prose-p:my-1 prose-headings:mt-2 prose-headings:mb-1 prose-headings:text-neutral-200
-    prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1
-    prose-strong:text-neutral-200
-    prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none
-    prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400">
+  <div className={cn("prose prose-invert prose-sm max-w-none wrap-anywhere prose-pre:wrap-normal",
+    "prose-p:my-1 prose-headings:mt-2 prose-headings:mb-1 prose-headings:text-neutral-200",
+    "prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1",
+    "prose-strong:text-neutral-200",
+    "prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none",
+    "prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400", tone)}>
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: markdownImg, ...tableComponents }}>{children}</ReactMarkdown>
   </div>
 );
@@ -302,12 +304,14 @@ function WorkerReports({ parts }: { parts: string[] }) {
   );
 }
 
-/** A report's text, its `Screenshots (Read to view):` paths drawn as thumbnails instead. */
+/** A report's text, its `Screenshots (Read to view):` paths drawn as thumbnails instead. Rendered as
+ *  markdown, not raw text — a worker's report is model output in the same prose/table/list markdown
+ *  as its own reply, and a raw `<pre>` once showed a report's table as unrendered `| a | b |` text. */
 function ReportBody({ body }: { body: string }) {
   const { text, shots } = reportShots(body);
   return (
     <>
-      <pre className="mt-1 ml-4 whitespace-pre-wrap break-words text-neutral-600">{text}</pre>
+      <div className="mt-1 ml-4"><ChatMarkdown tone="text-neutral-600">{text}</ChatMarkdown></div>
       <ShotThumbs shots={shots} className="mt-2 ml-4" />
     </>
   );

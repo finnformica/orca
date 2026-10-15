@@ -10,6 +10,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
+import { WORKER_EVENT_MARKER } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -63,4 +64,28 @@ test("a markdown table renders inside a horizontally scrollable wrapper with a m
   const td = tableEl!.querySelector("td")!;
   expect(th.className).toContain("min-w-32");
   expect(td.className).toContain("min-w-32");
+});
+
+test("a table in a worker report's folded body renders too, not as raw pipe text", async () => {
+  // A worker report's body is model prose rendered through a separate path (ReportBody, folded under
+  // the orchestrator's "N worker reports" marker) — it once used a plain <pre>, so a table in a
+  // report rendered as unrendered `| a | b |` text instead of a scrollable <table>.
+  const report = [
+    `${WORKER_EVENT_MARKER} app/feat "Fix" — done`,
+    table,
+  ].join("\n");
+  const row: Row = { repo: "r", hasRemote: false, branch: "orch", title: "Orch", prompt: "", lane: "LOCAL", worktreePath: "/wt/orch", agentProvider: "claude" };
+  apiFake.turnsData.set("r::orch", [{ id: "run-1", provider: "claude", instruction: report, prompt: "", response: "noted", finishedAt: 1, source: "agents" }]);
+
+  await mount(row);
+
+  await act(async () => { container!.querySelector<HTMLElement>('[data-slot="agents-marker"] button')!.click(); await flush(); });
+  await act(async () => { container!.querySelector<HTMLElement>('[data-slot="turn-reports"] button')!.click(); await flush(); });
+
+  const reports = container!.querySelector<HTMLElement>('[data-slot="worker-reports"]')!;
+  expect(reports.querySelector("pre")).toBeNull();
+  const tableEl = reports.querySelector("table")!;
+  expect(tableEl).toBeTruthy();
+  expect(tableEl.parentElement!.className).toContain("overflow-x-auto");
+  expect(tableEl.querySelector("td")!.className).toContain("min-w-32");
 });
