@@ -2298,6 +2298,16 @@ export function hostHints(g: Pick<UsageGroup, "instance" | "state" | "hosts">): 
 
 export const outOfRotation = (p: { usage: unknown; state?: string }): boolean => !p.usage || p.state === "disabled" || p.state === "not signed in on this machine";
 
+/** The login toggle's optimistic update: flip one profile's `state` before `POST
+ *  /api/usage/profile` round-trips, so the switch, the row's dim styling and the fleet mean move at
+ *  once. Disabling always lands on "disabled"; enabling clears to undefined ("ok") as a best guess —
+ *  the server's authoritative list (applied once it answers) corrects it if the login was actually
+ *  something else, e.g. still token-stale. Pure, and a no-op when the name isn't in the list (a
+ *  profile that disappeared from a fleet poll mid-click). */
+export function withProfileEnabled<P extends { name: string; state?: string }>(profiles: P[], name: string, enabled: boolean): P[] {
+  return profiles.map((p) => p.name === name ? { ...p, state: enabled ? undefined : "disabled" } : p);
+}
+
 export type FleetUsage = { count: number; exhausted: number; fiveHour: Window; sevenDay: Window; fable: Window | null };
 
 /** One reading for the whole fleet: the mean utilization per window across the logins in rotation,
