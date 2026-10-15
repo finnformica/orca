@@ -6,6 +6,7 @@ import { retryTitle } from "./title";
 import { autofixInstruction, handoffPrompt, isAutofix, parseAgentOutcome, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type StopReason, type TurnCheck, type TurnSource } from "../shared/agent";
 import { runCheck } from "./check";
 import { run } from "./run";
+import { agentEnv } from "./env";
 import * as lease from "./lease";
 import * as ledger from "./ledger";
 import * as db from "./db";
@@ -140,23 +141,8 @@ export type RunFinished = {
   continued: boolean;
 };
 
-// Orca's own secrets never reach the agent's process. A run needs the user's shell (PATH, HOME, the
-// CLI's login), not the bridge's Slack token or database URLs — and a prompt injection that reads
-// the environment must find nothing of Orca's there. Provider keys (ANTHROPIC_*, OPENAI_*) are
-// deliberately left alone: they are the CLI's, not ours.
-const ORCA_SECRETS = ["SLACK_TOKEN", "ORCA_DATABASE_URL", "ORCA_TEST_DATABASE_URL"];
-/** The environment a spawned agent gets: the bridge's, minus Orca's secrets. Which Claude LOGIN a
- *  run uses is not Orca's call: `claude` on PATH is hydra's shim, which picks the account with the
- *  most headroom per launch (see CLAUDE.md "Handover ladder"). */
-export function agentEnv(): Record<string, string | undefined> {
-  const env = { ...process.env };
-  for (const key of ORCA_SECRETS) delete env[key];
-  // `bin/worker` holds the tools every run may use — `orca-shot`, the one way to take a screenshot
-  // (server/screenshot.ts). Not `bin/`: `orca` there is the orchestrator's, not a worker's.
-  env.PATH = `${WORKER_BIN}:${env.PATH ?? ""}`;
-  return env;
-}
-export const WORKER_BIN = new URL("../bin/worker", import.meta.url).pathname;
+// Orca's own secrets never reach the agent's process (server/env.ts); re-exported for callers.
+export { agentEnv, WORKER_BIN } from "./env";
 
 /** How this run reuses prior context — derived from what the launch options carry, so the ledger's
  *  resume/reset/handoff breakdown matches the store's actual continuation decision. Pure. */
@@ -795,7 +781,7 @@ export function prDescriptionCommand(provider: AgentProvider, cwd: string, promp
 }
 
 async function commandOutput(provider: AgentProvider, args: string[], cwd: string, purpose: "title" | "description"): Promise<string> {
-  const proc = Bun.spawn(args, { cwd, env: process.env, stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(args, { cwd, env: agentEnv(), stdout: "pipe", stderr: "pipe" }); // a resumed session can run shell
   const timeout = setTimeout(() => proc.kill(), 2 * 60_000);
   const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
   const code = await proc.exited;

@@ -3,7 +3,7 @@
 // check it can run, 'looks done' is the only signal" — so the check is Orca's, deterministic, not
 // the agent's self-report in the outcome's Verification section. The output tail is kept as the
 // evidence a fix follow-up is given.
-import { agentEnv } from "./agent";
+import { agentEnv } from "./env";
 import type { TurnCheck } from "../shared/agent";
 
 const OUTPUT_TAIL = 4_000; // chars of combined output kept on the turn — enough for a failing test's name and assertion

@@ -5,6 +5,7 @@ import { homedir, tmpdir } from "os";
 import { mkdtemp, rm } from "fs/promises";
 import { join } from "path";
 import { markDown, reachable } from "./peer";
+import { scrubbedEnv } from "./env";
 
 // Overridable so a test can point at canned readings (`{token}` in the override stands in for the
 // login's token, so each profile gets its own) — the real endpoint otherwise.
@@ -315,8 +316,7 @@ export async function renewToken(name: string): Promise<boolean> {
   if (!hydra) return false;
   const cwd = await mkdtemp(join(tmpdir(), "orca-renew-"));
   try {
-    const env: Record<string, string | undefined> = { ...process.env };
-    for (const key of ["CLAUDE_CONFIG_DIR", "SLACK_TOKEN", "ORCA_DATABASE_URL", "ORCA_TEST_DATABASE_URL"]) delete env[key];
+    const env = scrubbedEnv({ CLAUDE_CONFIG_DIR: undefined });
     const proc = Bun.spawn([hydra, "exec", name, "-p", "--model", "haiku", "--tools", "", "--strict-mcp-config",
       "--disable-slash-commands", "--no-session-persistence", "ok"], { cwd, env, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
     const timer = setTimeout(() => proc.kill(), RENEW_TIMEOUT_MS);

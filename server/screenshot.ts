@@ -17,6 +17,7 @@ import { join } from "path";
 import * as cgroup from "./cgroup";
 import { stateDir } from "./state";
 import { killTree } from "./preview";
+import { scrubbedEnv } from "./env";
 
 export const SHOT_MEMORY_MAX_GB = 1.5;
 export const SHOT_CPU_WEIGHT = 50;
@@ -258,12 +259,12 @@ const KILL_FINAL_MS = 2_000;
 
 /** Spawn the (scoped) browser, read its DevTools URL from stderr, and drive one page. */
 export const cdpLaunch: Launch = async (argv, env, unit, signal) => {
-  const proc = Bun.spawn(argv, { env: { ...process.env, ...env }, stdout: "ignore", stderr: "pipe" });
+  const proc = Bun.spawn(argv, { env: scrubbedEnv(env), stdout: "ignore", stderr: "pipe" });
   const kill = async () => {
     killTree(proc.pid);
     if (argv[0] === "systemd-run") {
       // The scope holds every renderer the browser forked; stopping it kills them all.
-      Bun.spawnSync(["systemctl", "--user", "stop", `${unit}.scope`], { env: { ...process.env, ...env }, stderr: "ignore" });
+      Bun.spawnSync(["systemctl", "--user", "stop", `${unit}.scope`], { env: scrubbedEnv(env), stderr: "ignore" });
     }
     const diedOnTerm = await Promise.race([
       proc.exited.then(() => true),
