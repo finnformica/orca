@@ -41,7 +41,7 @@ function SelectContent({ className, children, collisionPadding = POPPER_EDGE_PAD
         data-slot="select-content"
         position="popper"
         collisionPadding={collisionPadding}
-        className={cn("bg-popover text-popover-foreground relative z-50 max-h-64 min-w-[8rem] overflow-y-auto rounded-lg border p-1 shadow-menu", className)}
+        className={cn("bg-popover text-popover-foreground relative z-50 max-h-64 min-w-[8rem] origin-(--radix-select-content-transform-origin) overflow-y-auto rounded-lg border p-1 shadow-menu data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2", className)}
         {...props}
       >
         <SelectPrimitive.Viewport className="p-0">{children}</SelectPrimitive.Viewport>

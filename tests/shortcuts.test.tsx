@@ -17,6 +17,7 @@ import {
 import { CHORD_TIMEOUT_MS, SHORTCUTS, escapeBlurTarget, isMacPlatform, isTypingTarget, matchShortcut, pageShortcut, shortcutKeys, shortcutLabel, type KeyLike, type ShortcutId } from "@/lib/shortcuts";
 import { Kbd, KbdGroup, Shortcut } from "@/components/ui/kbd";
 import { fuzzyScore, joinPrefill, moveSelection, pushRecent, rankPalette, type PaletteItem } from "@/lib/palette";
+import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -272,8 +273,8 @@ test("S1: C, O, ?, ⌘B and Esc work from the page — and never while typing in
 
   // The tooltips carry the keys too.
   expect(q('[data-slot="add-new"]')!.getAttribute("title")).toBe("Add New (C)");
-  const toggleTip = q('button[aria-label="Collapse sidebar"]')!.closest('[data-slot="tip"]')!;
-  expect(toggleTip.querySelector('[role="tooltip"]')!.textContent).toContain("Collapse sidebar");
+  const toggleTip = openTip(q('button[aria-label="Collapse sidebar"]')!);
+  expect(toggleTip.textContent).toContain("Collapse sidebar");
   expect(keycaps(toggleTip.querySelector('[data-shortcut="sidebar"]'))).toEqual(shortcutKeys("sidebar"));
   expect(q('[data-slot="ask-orchestrator"]')!.getAttribute("title")).toContain("(O)");
 });
@@ -383,8 +384,8 @@ test("S6: every control with a shortcut shows its keycap — the pill, the top b
   expect(hint(find().closest("label"), "find")).toEqual(["F"]);
   expect(hint(q('button[data-slot="add-new"]'), "new")).toEqual(["C"]);
   // The bell is icon-only either way — its hint lives in the hover tooltip.
-  const bellTip = q('button[data-slot="notifications-bell"]')!.closest('[data-slot="tip"]')!;
-  expect(bellTip.querySelector('[role="tooltip"]')!.textContent).toContain("Notifications");
+  const bellTip = openTip(q('button[data-slot="notifications-bell"]')!);
+  expect(bellTip.textContent).toContain("Notifications");
   expect(keycaps(bellTip.querySelector('[data-shortcut="notifications"]'))).toEqual(["N"]);
   // No ad hoc <kbd> left anywhere: every one is the shared Kbd.
   for (const k of document.querySelectorAll("kbd")) expect(k.getAttribute("data-slot")).toBe("kbd");
@@ -508,8 +509,8 @@ test("S10: every sidebar page shows its G chord — always-visible keycaps expan
   await press(document.body, "b", MOD);
   for (const [i, b] of items().entries()) {
     const [label, id] = expected[i]!;
-    const tip = b.closest('[data-slot="tip"]')!.querySelector('[role="tooltip"]')!;
-    expect(tip.getAttribute("data-side")).toBe("right");
+    const tip = openTip(b);
+    expect(tip.closest('[data-slot="tip-content"]')!.getAttribute("data-side")).toBe("right");
     expect(tip.textContent).toContain(label);
     expect(keycaps(tip.querySelector(`[data-shortcut="${id}"]`))).toEqual(["G", label.charAt(0)]);
   }

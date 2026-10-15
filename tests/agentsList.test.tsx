@@ -12,6 +12,7 @@ import { Board } from "@/views/Board";
 import { navigate } from "@/lib/route";
 import { createTicker, ticker } from "@/lib/ticker";
 import { LIST_CHROME_PX, formatElapsed, listColumns, listFits, listGridTemplate, listMinWidth, modelBadge } from "@/workstream";
+import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -217,7 +218,7 @@ describe("agents list view", () => {
       const btn = q.querySelector("button")!;
       expect(btn.textContent).toBe("");
       expect(btn.className).toContain("size-7");
-      expect(q.closest('[data-slot="tip"]')!.querySelector('[role="tooltip"]')!.textContent).toBe(btn.getAttribute("aria-label")!);
+      expect(openTip(btn).textContent).toBe(btn.getAttribute("aria-label")!);
       expect(q.closest('[data-slot="tip"]')!.className).not.toContain("max-md:hidden"); // the first two always show
     }
     expect(quick("feat-draft")[1]!.querySelector("button")!.getAttribute("aria-label")).toBe("Address review");
