@@ -701,9 +701,8 @@ test("a sent message shows its attachments — a thumbnail for an image, a named
     attachments: [{ id: img, name: "Screen-Shot.png" }, { id: doc, name: "notes.txt" }],
   }]);
   await mount(base);
-  const thumb = container!.querySelector<HTMLImageElement>('[data-slot="attachment-image"] img');
+  const thumb = container!.querySelector<HTMLImageElement>('[data-slot="expandable-image"] img');
   expect(thumb?.getAttribute("src")).toBe(`/api/attachments/${img}`);
-  expect(thumb?.closest("a")?.getAttribute("href")).toBe(`/api/attachments/${img}`);
   const chip = container!.querySelector<HTMLAnchorElement>('[data-slot="attachment-file"]');
   expect(chip?.textContent).toBe("notes.txt");
   expect(chip?.getAttribute("href")).toBe(`/api/attachments/${doc}`);
@@ -722,7 +721,7 @@ test("a sent message shows its attachments — a thumbnail for an image, a named
   expect(container.querySelector('[data-slot="chat-user"]')?.textContent).toContain("look at this");
   expect(text()).not.toContain("orca-attachment://");
   expect(text()).not.toContain("Attached files");
-  expect(container.querySelector<HTMLImageElement>('[data-slot="chat-user"] [data-slot="attachment-image"] img')?.getAttribute("src")).toBe(`/api/attachments/${img}`);
+  expect(container.querySelector<HTMLImageElement>('[data-slot="chat-user"] [data-slot="expandable-image"] img')?.getAttribute("src")).toBe(`/api/attachments/${img}`);
 });
 
 test("↑ in the composer recalls what you sent from the chat's transcript, not row.followUps", async () => {

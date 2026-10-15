@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEven
 import { createPortal } from "react-dom";
 import { ArrowUp, FileText, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ExpandableImage } from "@/components/ExpandableImage";
 import { Shortcut } from "@/components/ui/kbd";
 import { usePrRefs } from "@/store";
 import { NO_WALK, appendQuote, filterPrRefs, historyKey, historyStep, insertPrRef, prRefLabel, prTrigger, type HistoryWalk, type PrRef } from "@/workstream";
@@ -408,7 +409,9 @@ function Thumb({ file, onRemove }: { file: File; onRemove: () => void }) {
   return (
     <div className="group relative size-14 overflow-hidden rounded-md border" title={file.name}>
       {isImage
-        ? <img src={url} alt={file.name} className="size-full object-cover" />
+        // url is a local blob: — not minted yet on the very first render, so skip the lightbox
+        // until the effect above fills it in.
+        ? (url && <ExpandableImage src={url} alt={file.name} downloadName={file.name} className="size-full" imgClassName="size-full object-cover" cornerClassName="bottom-1 right-1" />)
         // Non-image (xml, docx, …): no preview to render, so show the icon + extension.
         : (
           <div data-slot="chat-composer-file" className="text-muted-foreground flex size-full flex-col items-center justify-center gap-0.5 p-1">
