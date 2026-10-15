@@ -19,6 +19,7 @@ import { RECENT_FULL, TAIL_WINDOW, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMa
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
+import { ExpandableImage } from "@/components/ExpandableImage";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { subscribeTurns } from "@/lib/events";
@@ -46,6 +47,12 @@ const ChatSkeleton = ({ rows }: { rows: number }) => (
   </div>
 );
 
+/** A markdown image (a worker's `![…](/api/screenshots/<id>)` link, or any other image URL a reply
+ *  embeds) through the same lightbox + copy button as every other image, instead of react-markdown's
+ *  bare `<img>` — capped to a readable size inline, full size on click. */
+const markdownImg = ({ src, alt }: { src?: string; alt?: string }) =>
+  src ? <ExpandableImage src={src} alt={alt ?? ""} imgClassName="max-h-80 max-w-full rounded-md border object-contain" /> : null;
+
 /** Markdown inside the terminal-styled log: prose spacing and readable lists, but sized and coloured
  *  to sit in the chat's window rather than looking like a pasted document. */
 const ChatMarkdown = ({ children }: { children: string }) => (
@@ -64,7 +71,7 @@ const ChatMarkdown = ({ children }: { children: string }) => (
     prose-strong:text-neutral-200
     prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none
     prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400">
-    <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: markdownImg }}>{children}</ReactMarkdown>
   </div>
 );
 
@@ -81,7 +88,7 @@ const FacetMarkdown = ({ children }: { children: string }) => (
     prose-strong:text-neutral-200
     prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none
     prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400">
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ p: ({ children: c }) => <>{c}</> }}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ p: ({ children: c }) => <>{c}</>, img: markdownImg }}>{children}</ReactMarkdown>
   </div>
 );
 
@@ -190,9 +197,7 @@ export function Attachments({ files, className = "" }: { files: AttachmentRef[];
       {files.map((f) => {
         const href = `/api/attachments/${f.id}`;
         return isImageName(f.name) ? (
-          <a key={f.id} href={href} target="_blank" rel="noreferrer" title={f.name} data-slot="attachment-image">
-            <img src={href} alt={f.name} loading="lazy" className="max-h-32 max-w-48 rounded-md border object-cover" />
-          </a>
+          <ExpandableImage key={f.id} src={href} alt={f.name} downloadName={f.name} imgClassName="max-h-32 max-w-48 rounded-md border object-cover" />
         ) : (
           <a key={f.id} href={href} target="_blank" rel="noreferrer" title={f.name} data-slot="attachment-file"
             className="bg-muted text-foreground hover:bg-accent inline-flex max-w-56 items-center gap-1 rounded-md border px-2 py-1 text-[11px]">
