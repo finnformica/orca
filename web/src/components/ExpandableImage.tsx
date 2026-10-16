@@ -6,12 +6,12 @@
 // TerminalDialog): showModal()/close() for free Esc + backdrop + focus trap, toggled from React
 // state rather than conditionally rendered, so Esc/backdrop-click fire the same onClose path a
 // button would.
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronLeft, ChevronRight, Copy, Download, X } from "lucide-react";
 import { cn, PortalContainer } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
-import { useSwipeToClose } from "@/lib/gestures";
+import { useSwipeToDismiss } from "@/lib/gestures";
 import { useNarrow } from "@/lib/viewport";
 
 /** `navigator.clipboard.write` wants an explicit-mime `ClipboardItem`, and most browsers only
@@ -83,11 +83,15 @@ export function ExpandableImage({
    *  Omitted (the default): a single image, exactly today's behaviour. */
   gallery?: { images: { src: string; alt: string }[]; index: number };
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null);
+  const dialogRef = useRef<HTMLDialogElement | null>(null);
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const narrow = useNarrow();
-  const swipe = useSwipeToClose(() => dialogRef.current, () => setOpen(false), narrow);
+  // A phone: swipe the image down to close it — from anywhere on it, once the lightbox (its own
+  // scroller) is scrolled to the top, so a tall image still scrolls first.
+  const [dialogEl, setDialogEl] = useState<HTMLDialogElement | null>(null);
+  const setDialog = useCallback((el: HTMLDialogElement | null) => { dialogRef.current = el; setDialogEl(el); }, []);
+  useSwipeToDismiss("bottom", () => dialogRef.current, () => setOpen(false), { enabled: narrow, body: dialogEl });
   const images = gallery?.images ?? [{ src, alt }];
   const total = images.length;
   const [activeIndex, setActiveIndex] = useState(gallery?.index ?? 0);
@@ -147,7 +151,7 @@ export function ExpandableImage({
         </Tip>
       </div>
       <dialog
-        ref={dialogRef}
+        ref={setDialog}
         onClose={() => setOpen(false)}
         onCancel={() => setOpen(false)}
         onClick={(e) => { if (e.target === dialogRef.current) setOpen(false); }} // click the backdrop → close
@@ -162,7 +166,7 @@ export function ExpandableImage({
         // aren't.
         className="m-auto overflow-auto rounded-lg border-0 bg-transparent p-0 backdrop:bg-black/70 md:max-h-[92vh] md:max-w-[92vw] max-md:sheet"
       >
-        <div {...swipe} className="group relative flex items-center justify-center md:max-h-[92vh] md:max-w-[92vw] max-md:h-full max-md:w-full">
+        <div className="group relative flex items-center justify-center md:max-h-[92vh] md:max-w-[92vw] max-md:h-full max-md:w-full">
           {open && <img src={cur.src} alt={cur.alt} className="object-contain md:max-h-[92vh] md:max-w-[92vw] max-md:max-h-full max-md:max-w-full" />}
           {total > 1 && (
             <>

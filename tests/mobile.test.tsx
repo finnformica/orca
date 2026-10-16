@@ -13,7 +13,7 @@ import { getDefaultStore } from "jotai";
 import { orchestratorOpenAtom } from "@/lib/atoms";
 import { COARSE_QUERY, NARROW_QUERY, enterSends, expandTruncatedOnTap, keepComposerFocus, keyboardOpen, trackVisualViewport } from "@/lib/viewport";
 import { poll } from "@/lib/poll";
-import { PULL_REFRESH_PX, pullState, swipeDecision, STALE_AFTER_MS, launchOverlay, newerBuild, previewHref, previewLabel, staleAge } from "@/workstream";
+import { PULL_REFRESH_PX, pullState, swipeArm, swipeDecision, swipeOffset, STALE_AFTER_MS, launchOverlay, newerBuild, previewHref, previewLabel, staleAge } from "@/workstream";
 import { themeColor } from "@/lib/theme";
 import { UpdateBanner } from "@/components/Freshness";
 import { SHEET_CLOSE_MS } from "@/components/BottomSheet";
@@ -164,15 +164,14 @@ describe("polling", () => {
 // ---- the App on a phone and on a desktop ----
 
 const realMatchMedia = window.matchMedia;
-function emulate(phone: boolean) {
-  const on = phone ? [NARROW_QUERY, COARSE_QUERY] : [];
+function emulate(phone: boolean, on = phone ? [NARROW_QUERY, COARSE_QUERY] : []) {
   window.matchMedia = ((q: string) => ({ matches: on.includes(q), media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
 }
 const flush = () => new Promise((r) => setTimeout(r, 0));
 let root: Root | undefined;
 let container: HTMLElement | undefined;
-async function mount(path: string, phone: boolean) {
-  emulate(phone);
+async function mount(path: string, phone: boolean, queries?: string[]) {
+  emulate(phone, queries);
   apiFake.agentsData = [
     { branch: "feat-phone", worktreePath: "/wt/feat-phone", agentStatus: "error", agentError: "rate limited", agentStartedAt: Date.now() - 60_000, agentFinishedAt: Date.now() - 30_000 },
   ];
@@ -560,6 +559,27 @@ describe("gestures", () => {
     expect(swipeDecision({ dy: 50, ms: 900, height: 200 })).toBe("close"); // a short sheet's quarter
   });
 
+  test("each drawer swipes toward the edge it comes from: bottom down, left left, right right", () => {
+    expect(swipeOffset("bottom", 30, 90)).toBe(90);
+    expect(swipeOffset("bottom", 0, -40)).toBe(0); // up: no further than its resting place
+    expect(swipeOffset("left", -70, 10)).toBe(70);
+    expect(swipeOffset("left", 70, 0)).toBe(0);
+    expect(swipeOffset("right", 70, 10)).toBe(70);
+    expect(swipeOffset("right", -70, 0)).toBe(0);
+  });
+
+  test("a body swipe arms only along the dismiss axis, toward the edge, with the content at its start", () => {
+    expect(swipeArm({ edge: "bottom", dx: 2, dy: 5, atStart: true })).toBe("wait"); // a tap's wobble
+    expect(swipeArm({ edge: "bottom", dx: 3, dy: 20, atStart: true })).toBe("drag");
+    expect(swipeArm({ edge: "bottom", dx: 3, dy: 20, atStart: false })).toBe("scroll"); // scrolled down: the list scrolls
+    expect(swipeArm({ edge: "bottom", dx: 3, dy: -20, atStart: true })).toBe("scroll"); // up is a scroll
+    expect(swipeArm({ edge: "bottom", dx: 30, dy: 20, atStart: true })).toBe("scroll"); // mostly sideways
+    expect(swipeArm({ edge: "left", dx: -30, dy: 5, atStart: true })).toBe("drag");
+    expect(swipeArm({ edge: "left", dx: 30, dy: 5, atStart: true })).toBe("scroll");
+    expect(swipeArm({ edge: "right", dx: 30, dy: 5, atStart: true })).toBe("drag");
+    expect(swipeArm({ edge: "right", dx: 10, dy: 30, atStart: true })).toBe("scroll"); // mostly vertical: the chat scrolls
+  });
+
   test("pull states: idle, pull, then release past the threshold; the indicator is damped and capped", () => {
     expect(pullState(5)).toEqual({ phase: "idle", offset: 0 });
     expect(pullState(60)).toEqual({ phase: "pull", offset: 30 });
@@ -592,9 +612,9 @@ describe("gestures", () => {
   });
 
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-  const touchOn = (target: Element, type: string, y?: number) => {
+  const touchOn = (target: Element, type: string, y?: number, x = 0) => {
     const e = new Event(type, { bubbles: true, cancelable: true });
-    Object.defineProperty(e, "touches", { value: y === undefined ? [] : [{ clientY: y }] });
+    Object.defineProperty(e, "touches", { value: y === undefined ? [] : [{ clientX: x, clientY: y }] });
     Object.defineProperty(e, "timeStamp", { value: (clock += 400) });
     target.dispatchEvent(e);
     return e;
@@ -677,6 +697,58 @@ describe("gestures", () => {
     expect(sheet.open).toBe(false);
   });
 
+  test("a sideways move on a bottom sheet's body is not a dismiss", async () => {
+    await mount("/agents", true);
+    await click($('[data-branch="feat-phone"] button[aria-label="Actions"]')!);
+    const sheet = $<HTMLDialogElement>('dialog[data-slot="actions-sheet"]')!;
+    const item = sheet.querySelector('[data-slot="sheet-body"] [data-slot="sheet-item"]')!;
+    await act(async () => {
+      touchOn(item, "touchstart", 100, 100);
+      const m = touchOn(item, "touchmove", 130, 200); // 30 down, 100 across
+      expect(m.defaultPrevented).toBe(false);
+      touchOn(item, "touchmove", 400, 200);
+      touchOn(item, "touchend"); await flush();
+    });
+    expect(sheet.style.transform).toBe("");
+    expect(sheet.open).toBe(true);
+    expect(sheet.hasAttribute("data-closing")).toBe(false);
+  });
+
+  test("Add New on a phone swipes down from its body as well as its header", async () => {
+    await mount("/agents", true);
+    await click($('[data-slot="bottom-bar"] button:nth-child(3)')!);
+    const dialog = $<HTMLDialogElement>('dialog[data-slot="add-new-dialog"]')!;
+    expect(dialog.open).toBe(true);
+    expect(dialog.querySelector("header")!.getAttribute("data-swipe-handle")).toBe("bottom");
+    const hint = dialog.querySelector("p")!;
+    await act(async () => { touchOn(hint, "touchstart", 100); const m = touchOn(hint, "touchmove", 400); expect(m.defaultPrevented).toBe(true); touchOn(hint, "touchend"); await flush(); });
+    expect(dialog.open).toBe(false);
+  });
+
+  test("the orchestrator's right-hand panel swipes right to close on a touch screen; a mouse gets no swipe", async () => {
+    await mount("/agents", false, [COARSE_QUERY]); // a wide touch screen: the side panel, not the page
+    act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
+    await act(async () => { await flush(); });
+    const panel = $('[data-slot="orchestrator-panel"]')!;
+    const handle = panel.querySelector<HTMLElement>('[data-slot="orchestrator-handle"]')!;
+    expect(handle.getAttribute("data-swipe-handle")).toBe("right");
+    const px = (type: string, x: number, target: EventTarget = window) => {
+      const e = new PointerEvent(type, { bubbles: true, button: 0, clientX: x, clientY: 50 });
+      Object.defineProperty(e, "timeStamp", { value: (clock += 400) });
+      target.dispatchEvent(e);
+    };
+    // A short drag follows the finger, then springs back.
+    await act(async () => { px("pointerdown", 100, handle); px("pointermove", 140); expect(panel.style.transform).toBe("translateX(40px)"); px("pointerup", 140); await flush(); });
+    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(true);
+    // Left is not toward its edge: it stays put.
+    await act(async () => { px("pointerdown", 300, handle); px("pointermove", 100); expect(panel.style.transform).toBe(""); px("pointerup", 100); await flush(); });
+    // A long drag right closes it; its own slide takes over from there.
+    await act(async () => { px("pointerdown", 100, handle); px("pointermove", 400); px("pointerup", 400); await flush(); });
+    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false);
+    expect(panel.style.transform).toBe("");
+    expect(panel.getAttribute("data-state")).toBe("closed");
+  });
+
   test("pull to refresh on the Agents list: the indicator follows the finger, and letting go past it refreshes", async () => {
     await mount("/agents", true);
     const list = $('section[aria-label="Agents"]')!;
@@ -723,6 +795,7 @@ describe("the desktop layout is untouched", () => {
     expect($('[data-slot="orchestrator-panel"]')!.hasAttribute("data-sheet")).toBe(false);
     expect($('[data-slot="orchestrator-panel"]')!.className).toContain("fixed inset-y-0 right-0");
     expect(document.querySelectorAll('[data-slot="orchestrator-resize"]').length).toBe(1); // its left edge
+    expect($('[data-slot="orchestrator-handle"]')!.hasAttribute("data-swipe-handle")).toBe(false); // a mouse: no swipe
     expect($('[data-slot="quick-ask-pill"]')).not.toBeNull(); // the desktop has the quick-ask pill…
   });
 
