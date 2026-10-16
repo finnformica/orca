@@ -15,7 +15,7 @@ import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
-import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, composerHistory } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory } from "../workstream";
 import { toolDetail, toolLabel } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -657,7 +657,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
             }
           } catch { /* the page below carries the turn's steps anyway */ }
         }
-        await load();
+        await Promise.all([load(), loadQueued()]); // a message sent while we were away left the queue
       })(),
     });
     // "Refresh everything" re-reads the newest page and the queue, like a `turn` event.
@@ -700,7 +700,12 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
   };
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
-  const loadQueued = () => api.queued(row.repo, row.branch).then(setQueued).catch(() => {});
+  // Only the NEWEST read applies: a slow read from before a dispatch must not restore the entry.
+  const queuedSeq = useRef(0);
+  const loadQueued = () => {
+    const seq = ++queuedSeq.current;
+    return api.queued(row.repo, row.branch).then((q) => { if (seq === queuedSeq.current) setQueued(q); }).catch(() => {});
+  };
   // The context ring's Compact button. `compacting` is the compact run's id ("" while the request is
   // in flight): pending until that turn arrives finished over the stream, then the ring is re-read.
   const [compacting, setCompacting] = useState<string | null>(null);
@@ -743,6 +748,8 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   reload.current = async () => { await loadLatest(); await loadQueued(); };
   useEffect(() => (outbox ? onOrchestratorDelivered(() => reload.current()) : undefined), [outbox]);
   // Not drawn once the bridge has recorded it — as the turn now running, or a queued entry.
+  // A queued entry the loaded turns already show as delivered is not drawn, whatever the last read said.
+  const pendingQueued = useMemo(() => undeliveredQueued(queued, turns), [queued, turns]);
   const unlanded = unlandedSends(outbox ? outgoing : sending, turns, queued);
   const history = useMemo(() => composerHistory(turns, queued, outbox ? outgoing : sending), [turns, queued, outbox, outgoing, sending]);
   const onScroll = () => {
@@ -864,7 +871,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
             <div className="text-muted-foreground pl-8 text-[11px]">▋ sending…</div>
           </div>
         ))}
-        {queued.map((m) => (
+        {pendingQueued.map((m) => (
           <Queued
             key={m.id}
             message={m}
