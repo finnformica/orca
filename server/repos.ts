@@ -3,9 +3,10 @@
 // ORCA_DEV_ROOT with the account that can see it, append a RepoConfig (worktrees in `.worktrees`,
 // no previews — those are a hand edit), save. Nothing a human would do differently by hand.
 import { existsSync } from "fs";
-import { join } from "path";
+import { access, constants } from "fs/promises";
+import { dirname, join } from "path";
 import * as db from "./db";
-import { githubIdentity, githubToken } from "./env";
+import { githubIdentity, githubToken, type Env } from "./env";
 import { runCmd } from "./run";
 import { saveConfigDocument, type OrcaConfig, type RepoConfig } from "./config";
 
@@ -51,15 +52,35 @@ const envFor = (user?: string) => { const tok = user && githubToken(user); retur
 
 export type RemoteRepo = { nameWithOwner: string; defaultBranch: string; isPrivate: boolean; pushedAt: string; description: string; account: string };
 
-/** Every repo each signed-in account can see, newest push first (bounded per account). */
+type RawRepo = { nameWithOwner: string; description: string | null; isPrivate: boolean; defaultBranchRef: { name: string } | null; pushedAt: string };
+const REPO_FIELDS = "nameWithOwner,description,isPrivate,defaultBranchRef,pushedAt";
+
+/** `account`'s own repos, or (with `org`) the repos of an org it belongs to. */
+async function reposFor(env: Env, account: string, org?: string): Promise<RemoteRepo[]> {
+  const { stdout } = await runCmd(["gh", "repo", "list", ...(org ? [org] : []), "--limit", "100", "--json", REPO_FIELDS], { env });
+  return (JSON.parse(stdout) as RawRepo[]).map((r) => ({
+    nameWithOwner: r.nameWithOwner, description: r.description ?? "", isPrivate: r.isPrivate,
+    defaultBranch: r.defaultBranchRef?.name ?? "main", pushedAt: r.pushedAt, account,
+  }));
+}
+
+/** The logins of the orgs `account` belongs to. Best-effort: a failure (no scope, rate limit) leaves
+ *  a repo list missing that account's org repos rather than failing the whole command. */
+async function orgsFor(env: Env): Promise<string[]> {
+  const res = await runCmd(["gh", "api", "user/orgs"], { env, allowFail: true });
+  if (res.code !== 0) return [];
+  try { return (JSON.parse(res.stdout) as Array<{ login: string }>).map((o) => o.login); } catch { return []; }
+}
+
+/** Every repo each signed-in account can see — its own repos plus every org it belongs to — newest
+ *  push first (bounded per account/org). */
 export async function list(cfg: OrcaConfig, only?: string): Promise<RemoteRepo[]> {
   const users = only ? [only] : await accounts();
   const out: RemoteRepo[] = [];
   for (const user of users) {
-    const { stdout } = await runCmd(["gh", "repo", "list", "--limit", "100", "--json", "nameWithOwner,description,isPrivate,defaultBranchRef,pushedAt"], { env: envFor(user) });
-    for (const r of JSON.parse(stdout) as Array<{ nameWithOwner: string; description: string | null; isPrivate: boolean; defaultBranchRef: { name: string } | null; pushedAt: string }>) {
-      out.push({ nameWithOwner: r.nameWithOwner, description: r.description ?? "", isPrivate: r.isPrivate, defaultBranch: r.defaultBranchRef?.name ?? "main", pushedAt: r.pushedAt, account: user });
-    }
+    const env = envFor(user);
+    out.push(...await reposFor(env, user));
+    for (const org of await orgsFor(env)) out.push(...await reposFor(env, user, org));
   }
   return out.sort((a, b) => b.pushedAt.localeCompare(a.pushedAt));
 }
@@ -83,6 +104,29 @@ export async function accountsHere(cfg: OrcaConfig): Promise<AccountRow[]> {
   });
 }
 
+type RepoView = { nameWithOwner: string; defaultBranchRef: { name: string } | null };
+
+/** The signed-in login that can see `nameWithOwner` — the owner's own login tried first (an org or
+ *  another user may be seen by only one of several signed-in accounts), then every other login in
+ *  order. Throws once none of them can. */
+async function accountForRepo(nameWithOwner: string, owner: string, logins: string[]): Promise<{ login?: string; view: RepoView }> {
+  const ordered = [...logins.filter((l) => l.toLowerCase() === owner.toLowerCase()), ...logins.filter((l) => l.toLowerCase() !== owner.toLowerCase())];
+  for (const login of ordered.length ? ordered : [undefined]) {
+    const res = await runCmd(["gh", "repo", "view", nameWithOwner, "--json", "nameWithOwner,defaultBranchRef"], { env: envFor(login), allowFail: true });
+    if (res.code === 0) return { login, view: JSON.parse(res.stdout) as RepoView };
+  }
+  throw new Error(`No signed-in gh account can see ${nameWithOwner}. Run "gh auth login" for an account with access to it, then retry.`);
+}
+
+/** Check that `repoPath` could be created before cloning into it. ORCA_DEV_ROOT on a box can be
+ *  root-owned (e.g. `/opt`), and `gh repo clone` then fails deep inside git with a confusing
+ *  "Permission denied" instead of naming the real problem. */
+async function assertCloneTarget(repoPath: string): Promise<void> {
+  const parent = dirname(repoPath);
+  try { await access(parent, constants.W_OK); }
+  catch { throw new Error(`Cannot clone to ${repoPath}: ${parent} is not writable by this process. Create ${parent} (or ${repoPath}) owned by the user Orca runs as, then retry.`); }
+}
+
 /** Clone `owner/name` here and add it to the config. Returns the new RepoConfig. */
 export async function add(cfg: OrcaConfig, nameWithOwner: string, opts: { name?: string } = {}): Promise<RepoConfig> {
   const m = /^([\w.-]+)\/([\w.-]+)$/.exec(nameWithOwner);
@@ -93,16 +137,15 @@ export async function add(cfg: OrcaConfig, nameWithOwner: string, opts: { name?:
   const name = (opts.name ?? repoName!).toLowerCase();
   if (!/^[a-z0-9][a-z0-9-]*$/.test(name)) throw new Error(`"${name}" is not a slug; pass --name`);
   if (cfg.repos.some((r) => r.name === name)) throw new Error(`Orca already has a repo named "${name}"`);
-  // The account whose login IS the owner can see it; otherwise whoever is active.
   const logins = await accounts();
-  const user = logins.find((l) => l.toLowerCase() === owner!.toLowerCase()) ?? (logins.length > 1 ? undefined : logins[0]);
+  const { login: user, view } = await accountForRepo(nameWithOwner, owner!, logins);
   const env = envFor(user);
-  const view = JSON.parse((await runCmd(["gh", "repo", "view", nameWithOwner, "--json", "nameWithOwner,defaultBranchRef"], { env })).stdout) as { nameWithOwner: string; defaultBranchRef: { name: string } | null };
   const repoPath = join(root, repoName!);
   if (existsSync(repoPath)) {
     const url = (await runCmd(["git", "-C", repoPath, "remote", "get-url", "origin"], { env, allowFail: true })).stdout.trim();
     if (!url.toLowerCase().includes(nameWithOwner.toLowerCase())) throw new Error(`${repoPath} exists and is not a clone of ${nameWithOwner}`);
   } else {
+    await assertCloneTarget(repoPath);
     await runCmd(["gh", "repo", "clone", nameWithOwner, repoPath], { env, timeoutMs: 10 * 60_000 });
   }
   const repo: RepoConfig = {
