@@ -73,7 +73,7 @@ async function res(r: Response) {
   return data;
 }
 
-export type GithubAccount = { login: string; active: boolean; name?: string; email?: string; configured: { name?: string; email?: string }; repos: string[] };
+export type GithubAccount = { login: string; active: boolean; name?: string; email?: string; configured: { name?: string; email?: string }; repos: string[]; avatarUrl?: string };
 
 export type RepoInfo = {
   name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; prLabels?: { name: string; default?: boolean }[];
