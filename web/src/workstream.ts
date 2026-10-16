@@ -1907,8 +1907,9 @@ export function rowTone(row: OverviewRow): RowTone {
 export type RowStatus = { tone: RowTone; reasons: string[]; action?: "address" };
 
 /** Pure. `unresolved` is the review digest's actionable thread count when the cache has it — it
- *  is shown as a reason but never moves the tone, so every label stays as `rowTone` gives it. */
-export function rowStatus(row: OverviewRow, opts: { now?: number; unresolved?: number } = {}): RowStatus {
+ *  is shown as a reason but never moves the tone, so every label stays as `rowTone` gives it.
+ *  `model` is the card's model label, used while the run has not reported its own. */
+export function rowStatus(row: OverviewRow, opts: { now?: number; unresolved?: number; model?: string } = {}): RowStatus {
   const now = opts.now ?? Date.now();
   const tone = statusTone(row);
   const reasons: string[] = [];
@@ -1917,8 +1918,11 @@ export function rowStatus(row: OverviewRow, opts: { now?: number; unresolved?: n
   const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
   const unresolved = row.lane === "DONE" ? 0 : opts.unresolved ?? 0;
   if (tone === "running") {
-    const model = row.agentMeta?.model ? ` on ${row.agentMeta.model}` : "";
-    reasons.push(row.agentStartedAt ? `The agent runs${model} for ${formatDuration(now - row.agentStartedAt)}.` : `The agent runs${model}.`);
+    // The run's own model and start when the bridge has them, else the card's pin and the open turn.
+    const name = row.agentMeta?.model ?? opts.model;
+    const model = name ? ` on ${name}` : "";
+    const since = row.agentStartedAt ?? (last && !last.finishedAt ? last.startedAt : undefined);
+    reasons.push(since ? `The agent runs${model} for ${formatDuration(now - since)}.` : `The agent runs${model}.`);
     if ((row.queued ?? 0) > 0) reasons.push(`${plural(row.queued!, "message")} queued, sent when this run ends.`);
   } else {
     for (const why of attentionReasons(row)) {

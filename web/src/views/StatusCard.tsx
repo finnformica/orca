@@ -4,8 +4,8 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/h
 import { ActionButton } from "@/components/ActionButton";
 import { StatusDot } from "@/components/console";
 import { cn } from "@/lib/utils";
-import { addressPr, useCachedReviewDigest, type Row } from "../store";
-import { rowStatus } from "../workstream";
+import { addressPr, modelFor, useCachedReviewDigest, type Row } from "../store";
+import { modelBadge, rowStatus } from "../workstream";
 import { TONE_DOT, TONE_LABEL } from "./Agents";
 
 /** The agent status chip's hover card (Agents list, board card, agent page): WHY the status is what
@@ -14,7 +14,8 @@ import { TONE_DOT, TONE_LABEL } from "./Agents";
  *  count is the review digest's cached value only, so a list of N rows fires no extra fetch. */
 export function StatusHoverCard({ row, children, className = "gap-2" }: { row: Row; children: ReactNode; className?: string }) {
   const digest = useCachedReviewDigest(row.repo, row.prNumber);
-  const s = rowStatus(row, { unresolved: digest?.unresolved.count });
+  const model = modelBadge(row.agentMeta?.model, row.worktreePath || row.prNumber ? modelFor(row) : undefined)?.label;
+  const s = rowStatus(row, { unresolved: digest?.unresolved.count, model });
   return (
     <HoverCard>
       <HoverCardTrigger asChild>

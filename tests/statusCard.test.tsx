@@ -24,6 +24,9 @@ describe("rowStatus (pure)", () => {
     expect(s.tone).toBe(rowTone(r));
     expect(s.reasons).toEqual(["The agent runs on Opus 5.5 for 12m.", "2 messages queued, sent when this run ends."]);
     expect(s.action).toBeUndefined(); // an agent is on it
+    // No live start or model from the bridge yet: the open turn's start and the card's pinned model.
+    const pinned = rowStatus(row({ agentStatus: "running", transcript: [{ provider: "claude", prompt: "", startedAt: NOW - 3 * MIN }] }), { now: NOW, model: "Sonnet 5" });
+    expect(pinned.reasons).toEqual(["The agent runs on Sonnet 5 for 3m."]);
   });
 
   test("Needs you: conflicts, review threads and a question, with Address PR", () => {
