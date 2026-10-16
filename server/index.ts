@@ -749,6 +749,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     await verbs.archiveWorkstream(repo, String(body.branch));
     return json({ ok: true, instance: db.instanceName() });
   }
+  if (req.method === "POST" && p === "/api/workstreams/stop") {
+    // `orca stop` for a workstream living here. Placement forwards it to the instance holding the
+    // worktree, which is the only one that can find and stop the running process.
+    const r = await verbs.stopWorkstream(repo, String(body.branch), { dropQueue: Boolean(body.dropQueue) });
+    return json({ ...r, instance: db.instanceName() });
+  }
   if (req.method === "POST" && p === "/api/workstreams/spawn") {
     const ws = await verbs.createWorkstream(cfg, repo, { prompt: String(body.prompt ?? ""), title: body.title, model: body.model, fields: { orchestrated: true } });
     return json({ ...ws, instance: db.instanceName() });
