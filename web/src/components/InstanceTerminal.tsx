@@ -75,7 +75,7 @@ function Session({ instance, keysRow, swipe, onClose }: { instance: string; keys
       if (disposed || !host.current) return;
       const dark = document.documentElement.classList.contains("dark");
       const t = new Terminal({
-        fontFamily: "var(--font-mono), 'Geist Mono', ui-monospace, monospace",
+        fontFamily: "'Geist Mono', ui-monospace, SFMono-Regular, Menlo, monospace", // a canvas font: no var()
         fontSize: window.matchMedia("(max-width: 767px)").matches ? 12 : 13,
         cursorBlink: true, scrollback: 5000, theme: dark ? THEMES.dark : THEMES.light,
       });
