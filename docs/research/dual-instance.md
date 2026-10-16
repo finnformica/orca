@@ -58,17 +58,20 @@ the default plan.
 
 ### Tailnets
 
-The target state is one personal tailnet for all devices and both boxes. An ACL lets the user's
-devices reach both boxes. The ACL blocks box-to-box traffic.
+The decision is one personal tailnet for all devices and both boxes. The phone, the laptop, the
+work box and the personal box all join this tailnet. An ACL lets the user's devices reach both
+boxes. The same ACL blocks traffic from one box to the other box.
 
 Today the tailnet belongs to the work account. Admins of that account can see every device on it.
+Moving the work box to the personal tailnet removes this.
 
-Until the move to one personal tailnet, put the personal box on a new personal tailnet. Share the
-work box into that tailnet with Tailscale node sharing. A shared node is quarantined: it accepts
-connections, but it cannot open connections into the tailnet that receives it.
+**Rejected alternative:** keep the personal box on its own tailnet, and share the work box into it
+with Tailscale node sharing. A shared node is quarantined: it accepts connections, but it cannot
+open connections into the tailnet that receives it. A phone is on one tailnet at a time, so a split
+setup like this could not reach both boxes from one device.
 
-A phone is on one tailnet at a time. Without sharing, the merged view and the switcher cannot reach
-both boxes.
+The work box gets a new Tailscale IP address when it moves to the new tailnet. Update the Orca
+instance URLs in config to the new address.
 
 ### Logins on a new box
 

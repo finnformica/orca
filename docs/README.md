@@ -9,6 +9,7 @@ One line per doc, so you can find the right file fast.
 
 ## Research (`docs/research/`)
 
+- [research/plan.md](research/plan.md) — the dual-instance plan: decisions and next steps.
 - [research/orca-scaling-2026-10-14.md](research/orca-scaling-2026-10-14.md) — industry scaling research, checked against Orca's own data.
 - [research/duplication-audit-2026-10-15.md](research/duplication-audit-2026-10-15.md) — a duplication audit of `server/`, `web/src/` and `tests/`.
 - [research/caveman-trial-samples-2026-10-15.md](research/caveman-trial-samples-2026-10-15.md) — sample runs from the caveman A/B trial.
