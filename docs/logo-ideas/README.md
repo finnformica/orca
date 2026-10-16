@@ -1,10 +1,10 @@
 # Orca logo ideas
 
-These files are proposals only. The live favicon and icons in `web/public/` do not change.
+Finn chose idea 3, **Soft**. The live favicon, icons and `OrcaMark` now use it. The other ideas stay here for reference.
 
-Open `index.html` to compare each idea with the current mark. The page shows each idea at 16, 32, 64, 180 and 512 px, on light and dark backgrounds, in a browser tab and on a phone home screen.
+A comparison page showed each idea next to the old mark at 16, 32, 64, 180 and 512 px. It also showed a browser tab and a phone home screen. The page is removed so that it does not ship. Find it in the git history of `web/public/logo-ideas/index.html`.
 
-Each SVG has the same form as `favicon.svg`: a black circle, then the white mark. The page makes the full-bleed tile (`icon.svg`, the maskable icon and the PNGs) from the same mark at 0.857 scale. That is the scale `icon.svg` uses today.
+Each SVG has the same form as `favicon.svg`: a black circle, then the white mark. The full-bleed tile (`icon.svg`, the maskable icon and the PNGs) is the same mark at 0.857 scale.
 
 ## Ideas
 
@@ -17,7 +17,9 @@ Each SVG has the same form as `favicon.svg`: a black circle, then the white mark
 
 ## To adopt an idea
 
-1. Copy the path into `OrcaMark` in `web/src/components/Shell.tsx`.
+These are the steps that Soft followed.
+
+1. Copy the path into `OrcaMark` in `web/src/components/Shell.tsx`. Scale the favicon transform 1.5× about the centre, because `RoundMark` shows the mark at 16 px in a 24 px circle.
 2. Copy the SVG to `web/public/favicon.svg`.
 3. Make `icon.svg` and `icon-maskable.svg` from the same mark at 0.857 scale.
 4. Make the PNGs again from those SVGs.
