@@ -10,7 +10,7 @@ import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
 import { groupSteps, type AgentStep } from "../shared/agent";
 import { toolDetail, toolLabel } from "@/steps";
-import { chatPrompt, followUpPrompt, promptInstruction, withAttachments } from "@/workstream";
+import { chatPrompt, followUpPrompt, joinMessages, promptInstruction, undeliveredQueued, withAttachments } from "@/workstream";
 import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -664,6 +664,40 @@ test("a worker report waiting in the queue is a muted system line too, not a que
   expect(held.textContent).toBe('⚙ r/a "A" — doneheld for the batch');
   expect(container!.querySelector('[data-slot="chat-queued"]')!.textContent).toContain("and then deploy it"); // a message of yours still shows as queued
   expect(text()).toContain("queued — sends when the current run finishes");
+});
+
+test("a delivered queued message leaves the queue at once: on a stream reconnect, and despite a stale queue read", async () => {
+  // Queued behind a running turn: drawn as queued.
+  apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", instruction: "first", prompt: "p", response: "done 1", startedAt: 1, finishedAt: 5 }]);
+  apiFake.queuedData.set("feat", [{ id: 7, repo: "r", branch: "feat", instruction: "and then deploy it", attachments: [], createdAt: 3 }]);
+  await mount(base);
+  expect(container!.querySelector('[data-slot="chat-queued"]')!.textContent).toContain("and then deploy it");
+  // The stream dropped (a phone tab in the background) while the bridge sent the message and the agent
+  // answered. The reconnect's `ready` must re-read the queue, not only the turns.
+  apiFake.queuedData.set("feat", []);
+  apiFake.turnsData.set("r::feat", [
+    { id: "run-1", provider: "claude", instruction: "first", prompt: "p", response: "done 1", startedAt: 1, finishedAt: 5 },
+    { id: "run-2", provider: "claude", instruction: "and then deploy it", prompt: "p", response: "Deployed.", startedAt: 6, finishedAt: 9 },
+  ]);
+  const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
+  await act(async () => { stream.dispatchEvent(new Event("ready")); await flush(); await flush(); });
+  expect(text()).toContain("Deployed.");
+  expect(container!.querySelector('[data-slot="chat-queued"]')).toBeNull();
+
+  // A queue read that still lists the entry (out of order, or from before the dispatch) does not
+  // bring it back: the turns show it delivered.
+  apiFake.queuedData.set("feat", [{ id: 7, repo: "r", branch: "feat", instruction: "and then deploy it", attachments: [], createdAt: 3 }]);
+  await act(async () => { stream.dispatchEvent(Object.assign(new Event("turn"), { data: JSON.stringify({ repo: "r", branch: "feat", runId: "run-2" }) })); await flush(); await flush(); });
+  expect(container!.querySelector('[data-slot="chat-queued"]')).toBeNull();
+});
+
+test("undeliveredQueued: a turn delivers a queued entry only if it started after it and carries its text", () => {
+  const q = [{ instruction: "deploy", createdAt: 10 }, { instruction: "and test", createdAt: 10 }];
+  // The same text sent BEFORE the entry was queued does not deliver it.
+  expect(undeliveredQueued(q, [{ instruction: "deploy", startedAt: 5 }])).toEqual(q);
+  // An orchestrator wake carries several messages; each one it carries is delivered.
+  expect(undeliveredQueued(q, [{ instruction: joinMessages(["deploy", "other"]), startedAt: 11 }])).toEqual([q[1]!]);
+  expect(undeliveredQueued(q, null)).toEqual(q);
 });
 
 test("Enter sends; Shift+Enter and ⌘+Enter break the line instead", async () => {
