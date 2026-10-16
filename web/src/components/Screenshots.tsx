@@ -5,7 +5,10 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { VCard } from "@/components/console";
 import { ExpandableImage } from "@/components/ExpandableImage";
-import { ago, shotUrl, type ShotRef, type TurnShots } from "../workstream";
+import { ago, shotUrl as shotPath, type ShotRef, type TurnShots } from "../workstream";
+import { apiUrl } from "@/lib/server";
+
+const shotUrl = (id: string) => apiUrl(shotPath(id));
 import { Tip } from "@/components/ui/tip";
 
 const clock = (ms?: number) => (ms ? new Date(ms).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "");

@@ -16,6 +16,8 @@ import { Kbd, MenuShortcut, Shortcut } from "@/components/ui/kbd";
 import { instanceChoices, testLocally, useRepos, useWorkstreams, type Row } from "../store";
 import { detailPath } from "@/views/Agents";
 import { useOrchestrator } from "@/components/Terminal";
+import { addServerOpenAtom, useServerList } from "@/components/ServerMenu";
+import { currentServer, switchServer, useSwitcherOn } from "@/lib/server";
 
 type Command = PaletteItem & { run: () => void; shortcut?: ShortcutId };
 
@@ -46,6 +48,9 @@ function useCommands(): Command[] {
   const setRepo = useSetAtom(repoFilterAtom);
   const setScope = useSetAtom(instanceScopeAtom);
   const { ask } = useOrchestrator();
+  const serversOn = useSwitcherOn();
+  const servers = useServerList();
+  const setAddServer = useSetAtom(addServerOpenAtom);
   const out: Command[] = [];
   for (const row of rows) {
     const to = detailPath(row);
@@ -80,6 +85,15 @@ function useCommands(): Command[] {
   if (instances.length > 1) {
     action("instance:all", "Switch instance: All instances", () => setScope("all"));
     for (const i of instances) action(`instance:${i}`, `Switch instance: ${i}`, () => setScope(i));
+  }
+  // The server switcher (Settings): every other server, and Add server by URL.
+  if (serversOn) {
+    const here = currentServer(servers);
+    for (const s of servers) {
+      if (s.url === here.url) continue;
+      action(`server:${s.url}`, `Switch server: ${s.name}`, () => switchServer(s.self ? null : s), undefined, `server ${s.url}`);
+    }
+    action("server:add", "Add server by URL", () => setAddServer(true), undefined, "server switch");
   }
   return out;
 }
