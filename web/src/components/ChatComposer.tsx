@@ -1,12 +1,12 @@
 import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUp, FileText, Paperclip, X } from "lucide-react";
+import { ArrowUp, FileText, GitBranch, Paperclip, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
-import { usePrRefs } from "@/store";
-import { NO_WALK, appendQuote, filterPrRefs, historyKey, historyStep, insertPrRef, prRefLabel, prTrigger, type HistoryWalk, type PrRef } from "@/workstream";
+import { usePrRefs, useWorkstreamRefs } from "@/store";
+import { NO_WALK, appendQuote, filterMentions, historyKey, historyStep, insertPrRef, mentionLabel, prTrigger, type HistoryWalk, type MentionRef } from "@/workstream";
 import { lineVisualRow } from "@/lib/caretRow";
 import { cn, PipContext } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
@@ -100,9 +100,12 @@ export function ChatComposer({
   const fileRef = useRef<HTMLInputElement>(null);
   const textRef = useRef<HTMLTextAreaElement>(null);
 
-  // @ PR picker: the `@query` at the caret lists the board's cached PRs (open first). Escape
-  // dismisses it for THAT `@` (until a new one is typed); a pick replaces the query with the ref.
+  // @ picker: the `@query` at the caret lists the board's cached PRs (open first) and its live
+  // workstreams. Escape dismisses it for THAT `@` (until a new one is typed); a pick replaces the
+  // query with the ref.
   const { refs, repoCount } = usePrRefs();
+  const wsRefs = useWorkstreamRefs();
+  const multiInstance = new Set(wsRefs.map((w) => w.instance).filter(Boolean)).size > 1;
   const [caret, setCaret] = useState(0);
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [active, setActive] = useState(0);
@@ -113,13 +116,13 @@ export function ChatComposer({
   const pendingFocus = useRef(true);
   const listId = useId();
   const trig = prTrigger(value, caret);
-  const matches = trig && trig.start !== dismissedAt ? filterPrRefs(refs, trig.query) : [];
+  const matches = trig && trig.start !== dismissedAt ? filterMentions(refs, wsRefs, trig.query) : [];
   const picking = matches.length > 0;
   const activeIdx = Math.min(active, Math.max(0, matches.length - 1));
   const optionId = (i: number) => `${listId}-pr-${i}`;
-  const pick = (ref: PrRef) => {
+  const pick = (m: MentionRef) => {
     if (!trig) return;
-    const next = insertPrRef(value, trig.start, caret, prRefLabel(ref, refs, repoCount, repo));
+    const next = insertPrRef(value, trig.start, caret, mentionLabel(m, refs, repoCount, repo));
     pendingCaret.current = next.caret;
     pendingFocus.current = true; // the box already has focus (that's how the picker opened) — a no-op either way
     setDismissedAt(trig.start); // a pick is done with that `@`, even if the text still parses as one
@@ -346,22 +349,36 @@ export function ChatComposer({
       )}
       style={quick && rect ? { left: rect.left, bottom: (textRef.current?.ownerDocument.defaultView?.innerHeight ?? 0) - rect.top + 4, width: rect.width } : undefined}
     >
-    <ul id={listId} role="listbox" aria-label="Pull requests" className="max-h-64 overflow-y-auto">
-      {matches.map((r, i) => (
+    <ul id={listId} role="listbox" aria-label="Pull requests and workstreams" className="max-h-64 overflow-y-auto">
+      {matches.map((m, i) => (
         <li
-          key={`${r.repo}#${r.number}`}
+          key={m.kind === "pr" ? `${m.ref.repo}#${m.ref.number}` : `${m.ref.repo}/${m.ref.branch}`}
           id={optionId(i)}
           role="option"
           aria-selected={i === activeIdx}
           className={cn("flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm", i === activeIdx && "bg-accent text-accent-foreground")}
           onMouseDown={(e) => e.preventDefault()} // keep the textarea's focus + caret
           onMouseEnter={() => setActive(i)}
-          onClick={() => pick(r)}
+          onClick={() => pick(m)}
         >
-          <span className="text-muted-foreground shrink-0 font-mono text-xs">#{r.number}</span>
-          <span className="min-w-0 flex-1 truncate">{r.title}</span>
-          {repoCount > 1 && <span className="text-muted-foreground shrink-0 text-xs">{r.repo}</span>}
-          {r.state !== "open" && <span className="text-muted-foreground shrink-0 rounded border px-1 text-[10px]">{r.state}</span>}
+          {m.kind === "pr" ? (
+            <>
+              <span className="text-muted-foreground shrink-0 font-mono text-xs">#{m.ref.number}</span>
+              <span className="min-w-0 flex-1 truncate">{m.ref.title}</span>
+              {repoCount > 1 && <span className="text-muted-foreground shrink-0 text-xs">{m.ref.repo}</span>}
+              {m.ref.state !== "open" && <span className="text-muted-foreground shrink-0 rounded border px-1 text-[10px]">{m.ref.state}</span>}
+            </>
+          ) : (
+            <>
+              <GitBranch className="text-muted-foreground size-3.5 shrink-0" aria-hidden />
+              <span className="min-w-0 flex-1 truncate">
+                {m.ref.title || m.ref.branch}
+                {m.ref.title && m.ref.title !== m.ref.branch && <span className="text-muted-foreground ml-1.5 font-mono text-xs">{m.ref.branch}</span>}
+              </span>
+              {repoCount > 1 && <span className="text-muted-foreground shrink-0 text-xs">{m.ref.repo}</span>}
+              {multiInstance && m.ref.instance && <span className="text-muted-foreground shrink-0 rounded border px-1 text-[10px]">{m.ref.instance}</span>}
+            </>
+          )}
         </li>
       ))}
     </ul>
