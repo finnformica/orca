@@ -20,7 +20,7 @@ import type { PreviewService, RepoConfig } from "./config";
 import * as git from "./git";
 import * as previewdb from "./previewdb";
 import * as docker from "./docker";
-import { scrubbedEnv } from "./env";
+import { githubEnv, scrubbedEnv } from "./env";
 import { cwdInWorktree, listenerPids, processCwd } from "./proc";
 import { readJsonSync, statePath, writeJsonSync } from "./state";
 
@@ -154,7 +154,7 @@ export async function start(key: string, cwd: string, services: PreviewService[]
       .replace(/\{bind\}/g, previewBind());
     const logPath = join(tmpdir(), `orca-preview-${key.replace(/[^\w]+/g, "_")}-${s.name}.log`);
     const logFd = openSync(logPath, "w"); // capture output so a failed service is diagnosable
-    const proc = Bun.spawn(["sh", "-lc", cmd], { cwd, env: scrubbedEnv(), stdout: logFd, stderr: logFd });
+    const proc = Bun.spawn(["sh", "-lc", cmd], { cwd, env: scrubbedEnv(githubEnv(cwd)), stdout: logFd, stderr: logFd });
     const onStop = s.onStop?.replace(/\{db\}/g, db); // resolved now; runs at teardown (stop with teardown=true)
     const svc: Svc = { name: s.name, port: ports[s.name]!, open: s.open ?? false, proc, logPath, logFd, exited: false, startedAt: Date.now(), onStop, everUp: false };
     void proc.exited.then(() => { svc.exited = true; });

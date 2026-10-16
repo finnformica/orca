@@ -130,6 +130,7 @@ export type Enrichment = {
   previewInstance?: PreviewPlacement; // written by the bridge that started the preview, cleared on stop
   mergeWhenGreen?: MergeMark; // marked by `orca merge --when-green` / the PR menu (server/mergeQueue.ts)
   upkeep?: UpkeepRecord; // automatic PR upkeep's last attempt (server/upkeep.ts)
+  cleanupBlocked?: { why?: string; at?: string }; // the reaper left the worktree: it holds work (server/verbs.ts cleanupRepo)
 };
 /** Where a branch's preview runs: the instance, and its key there (a worktree path ON that instance —
  *  "Test on cloud" for a laptop worktree previews the box's own checkout of the branch). */
@@ -495,6 +496,10 @@ export type Row = {
   previewInstance?: PreviewPlacement;
   followUps?: string[];
   failingChecks?: string[];
+  /** The PR's head commit — the status card names the commit CI failed on. */
+  prHead?: string;
+  /** Cleanup did not reap the merged/closed worktree, and why (enrichment, server-written). */
+  cleanupBlocked?: { why?: string; at?: string };
   feedback?: string[];
   mergedAt?: string;
   slackNotifiedAt?: string;
@@ -708,7 +713,7 @@ export function assembleRows(): Row[] {
         prUrl: pr?.url, previewUrl: pr?.previewUrl, hasPreviewLabel: pr?.hasPreviewLabel, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled, autoMergeMethod: pr?.autoMergeMethod,
         following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, orchStatus: e.orchStatus, upkeep: e.upkeep, previewInstance: e.previewInstance, mergeWhenGreen: e.mergeWhenGreen,
-        failingChecks: pr?.failingChecks, feedback: pr?.feedback,
+        failingChecks: pr?.failingChecks, prHead: pr?.head, cleanupBlocked: e.cleanupBlocked ?? undefined, feedback: pr?.feedback,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
         lane: "DRAFT",
       };

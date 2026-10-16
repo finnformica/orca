@@ -1,4 +1,5 @@
 import * as db from "./db";
+import { setGithubAccounts } from "./env";
 import { readJsonSync, statePath, writeJsonSync } from "./state";
 import { AGENT_PROVIDERS, type AgentProvider } from "../shared/agent";
 import type { AgentProxy } from "../shared/cavemanTrial";
@@ -107,6 +108,12 @@ export type RepoConfig = {
    *  reading, i.e. today's single-machine behaviour. An instance ignores repos assigned elsewhere,
    *  which is how a laptop and a cloud box divide the work without a queue between them. */
   runsOn?: string;
+  /** Which signed-in `gh` account this repo belongs to (its login), when the host has more than one
+   *  (`gh auth login` twice — a work account and a personal one). Every `gh` and `git` Orca runs for
+   *  this repo, and every agent in its worktrees, gets that account's token as `GH_TOKEN`
+   *  (`server/env.ts` githubEnv), so `@me`, PRs and pushes land on the right account with no
+   *  `gh auth switch`. Unset: whichever account is active on the host, as before. */
+  githubUser?: string;
   /**
    * Heavy dirs to provision from the main repo into each worktree — a fresh checkout has no
    * `node_modules`, and a real per-worktree install is slow/huge. Repo-relative paths.
@@ -183,6 +190,12 @@ export type OrcaConfig = {
    *  default is 100 but Orca's own default is 50 — a worker should yield to the bridge serving the
    *  board, not compete with it. Unset means the default. */
   agentCpuWeight?: number;
+  /** Commit identity per `gh` account (RepoConfig.githubUser), e.g. `{ finnformica: { name: "Finn",
+   *  email: "finn@example.com" } }` — set as GIT_AUTHOR_* / GIT_COMMITTER_* for every process under
+   *  that account's repos, so no clone needs its own `git config`. Absent, or a field absent: the
+   *  account's GitHub profile (`gh api user`) — its name, and its public email else the
+   *  `<id>+<login>@users.noreply.github.com` address. */
+  githubAccounts?: Record<string, { name?: string; email?: string }>;
 };
 
 /** The model a repo's Claude runs use: its own pin, else the global default, else the CLI's. Pure. */
@@ -244,6 +257,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
     }
     if (r.runsOn !== undefined && (typeof r.runsOn !== "string" || !r.runsOn.trim())) {
       errors.push(`${where}.runsOn must be an instance name`);
+    }
+    if (r.githubUser !== undefined && (typeof r.githubUser !== "string" || !/^[\w.-]+$/.test(r.githubUser))) {
+      errors.push(`${where}.githubUser must be a GitHub login`);
     }
     if (r.agentPermissionMode !== undefined && !["bypass", "ask"].includes(r.agentPermissionMode as string)) {
       errors.push(`${where}.agentPermissionMode must be "bypass" or "ask"`);
@@ -341,6 +357,11 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
   if (d.autoUpkeepConcurrency !== undefined && !(Number.isInteger(d.autoUpkeepConcurrency) && (d.autoUpkeepConcurrency as number) >= 0)) {
     errors.push("autoUpkeepConcurrency must be a whole number (0 turns automatic upkeep off)");
   }
+  if (d.githubAccounts !== undefined) {
+    const ok = d.githubAccounts && typeof d.githubAccounts === "object" && !Array.isArray(d.githubAccounts)
+      && Object.values(d.githubAccounts as Record<string, unknown>).every((v) => v && typeof v === "object" && ["name", "email"].every((k) => (v as Record<string, unknown>)[k] === undefined || typeof (v as Record<string, unknown>)[k] === "string"));
+    if (!ok) errors.push("githubAccounts must map a GitHub login to { name?, email? }");
+  }
   if (d.agentCpuWeight !== undefined && (typeof d.agentCpuWeight !== "number" || !(d.agentCpuWeight > 0))) {
     errors.push("agentCpuWeight must be a positive number (systemd CPUWeight, 1-10000)");
   }
@@ -361,6 +382,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       autoUpkeepConcurrency: d.autoUpkeepConcurrency as number | undefined,
       orchestratorOn: d.orchestratorOn as string | undefined,
       agentCpuWeight: d.agentCpuWeight as number | undefined,
+      githubAccounts: d.githubAccounts as OrcaConfig["githubAccounts"],
     },
   };
 }
@@ -424,6 +446,7 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
       ...(file.autoUpkeepConcurrency === undefined ? {} : { autoUpkeepConcurrency: file.autoUpkeepConcurrency }),
       ...(file.orchestratorOn === undefined ? {} : { orchestratorOn: file.orchestratorOn }),
       ...(file.agentCpuWeight === undefined ? {} : { agentCpuWeight: file.agentCpuWeight }),
+      ...(file.githubAccounts === undefined ? {} : { githubAccounts: file.githubAccounts }),
     },
   });
 }
@@ -455,6 +478,7 @@ export async function loadConfig(): Promise<OrcaConfig> {
     if (!fallback) throw e;
     cached = fallback;
     cachedAt = Date.now(); // re-try the database after the TTL, not on every request
+    setGithubAccounts(fallback.repos, fallback.githubAccounts);
     return fallback;
   }
 }
@@ -491,9 +515,11 @@ async function loadFromDb(): Promise<OrcaConfig> {
     autoUpkeepConcurrency: app.autoUpkeepConcurrency as number | undefined,
     orchestratorOn: app.orchestratorOn as string | undefined,
     agentCpuWeight: app.agentCpuWeight as number | undefined,
+    githubAccounts: app.githubAccounts as OrcaConfig["githubAccounts"],
   };
   cached = config;
   cachedAt = Date.now();
+  setGithubAccounts(config.repos, config.githubAccounts);
   const text = JSON.stringify(config);
   if (text !== cacheWritten && cacheAllowed()) {
     try { writeJsonSync(cacheFile(), { db: db.databaseKey(), config } satisfies ConfigCache); cacheWritten = text; } catch (e) { console.error("orca: config cache write failed", e); }
@@ -526,6 +552,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.autoUpkeepConcurrency === undefined ? {} : { autoUpkeepConcurrency: config.autoUpkeepConcurrency }),
       ...(config.orchestratorOn === undefined ? {} : { orchestratorOn: config.orchestratorOn }),
       ...(config.agentCpuWeight === undefined ? {} : { agentCpuWeight: config.agentCpuWeight }),
+      ...(config.githubAccounts === undefined ? {} : { githubAccounts: config.githubAccounts }),
     },
   });
   invalidateConfig();

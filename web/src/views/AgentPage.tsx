@@ -13,6 +13,7 @@ import { Detail, Pill, StatusDot, VCard } from "@/components/console";
 import { Tip } from "@/components/ui/tip";
 import { ChatPanel } from "./Chat";
 import { TONE_DOT, TONE_LABEL } from "./Agents";
+import { StatusHoverCard } from "./StatusCard";
 import { Markdown } from "./PrDetail";
 import { PreviewCell, PrPreviewButton } from "./PreviewControl";
 
@@ -43,7 +44,7 @@ export function DetailsCard({ row, summary, actions, extra }: { row: Row; summar
         <div className="min-w-0 space-y-5">
           <div className="grid grid-cols-2 gap-x-6 gap-y-4 md:grid-cols-4">
             <Detail label="Created" slot="detail-created">{created ? ago(created) : "—"}</Detail>
-            <Detail label="Status" slot="detail-status"><StatusDot tone={TONE_DOT[tone]} />{TONE_LABEL[tone]}{row.agentCheck && <span className="text-muted-foreground">· {row.agentCheck.ok ? "check passed" : "check failed"}</span>}</Detail>
+            <Detail label="Status" slot="detail-status"><StatusHoverCard row={row} className="gap-1.5"><StatusDot tone={TONE_DOT[tone]} />{TONE_LABEL[tone]}</StatusHoverCard>{row.agentCheck && <span className="text-muted-foreground">· {row.agentCheck.ok ? "check passed" : "check failed"}</span>}</Detail>
             <Detail label="Duration">{duration !== undefined ? formatDuration(duration) : "—"}</Detail>
             <Detail label="State">{pill.tooltip ? <Tip label={pill.tooltip}><Pill tone={pill.tone}>{pill.label}</Pill></Tip> : <Pill tone={pill.tone}>{pill.label}</Pill>}</Detail>
             <Detail label="Model" slot="detail-model">{model}</Detail>
@@ -94,7 +95,7 @@ export function AgentHeader({ repo, title, status, source, actions }: { repo: st
 /** The header's status: the row's tone dot and label (Running / Error / Needs you / Ready / Idle). */
 export function RowStatus({ row }: { row: Row }) {
   const tone = rowTone(row);
-  return <><StatusDot tone={TONE_DOT[tone]} />{TONE_LABEL[tone]}</>;
+  return <StatusHoverCard row={row} className="gap-1.5"><StatusDot tone={TONE_DOT[tone]} />{TONE_LABEL[tone]}</StatusHoverCard>;
 }
 
 /** The header's source: the branch, mono, or a PR's link to GitHub. */

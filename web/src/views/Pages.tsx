@@ -6,7 +6,8 @@
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
 import { useEffect, useState } from "react";
 import { useAtom, useSetAtom } from "jotai";
-import { FolderGit2, GitBranch } from "lucide-react";
+import { FolderGit2, GitBranch, UserCircle2 } from "lucide-react";
+import { api, type GithubAccount } from "../api";
 import { refreshVitals } from "@/lib/vitals";
 import { notifyLocal } from "@/lib/notificationStore";
 import { Button } from "@/components/ui/button";
@@ -136,7 +137,7 @@ export function Settings() {
 function MobileNav() {
   const [scope, setScope] = useAtom(instanceScopeAtom);
   const choices = instanceChoices();
-  const links = NAV.filter((n) => ["Previews", "Repos", "Usage"].includes(n.label));
+  const links = NAV.filter((n) => ["Previews", "Repos", "GitHub", "Usage"].includes(n.label));
   return (
     <VCard slot="settings-mobile-nav" title="Navigate" className="md:hidden" bodyClass="divide-y">
       <Setting label="Find agents" hint="Filters the Agents list.">
@@ -253,6 +254,64 @@ const Setting = ({ label, hint, children }: { label: string; hint: string; child
     {children}
   </div>
 );
+
+/** GitHub: the `gh` accounts signed in on THIS machine (a work one and a personal one), which repos
+ *  use each, and the name + email their commits carry — the GitHub profile's unless set here; a save
+ *  goes to the shared config (`githubAccounts`), so no clone needs its own `git config`. Signing in
+ *  another account is `gh auth login` in a terminal — a device-code flow Orca does not wrap. */
+export function GitHubPage() {
+  const [accounts, setAccounts] = useState<GithubAccount[] | null>(null);
+  useEffect(() => { void api.githubAccounts().then((r) => setAccounts(r.accounts)).catch(() => setAccounts([])); }, []);
+  return (
+    <div className="space-y-5">
+      <h1 className="text-2xl font-semibold tracking-tight">GitHub</h1>
+      <VCard slot="github-accounts" bodyClass="divide-y">
+        {accounts === null ? <Empty>Loading…</Empty>
+          : accounts.length === 0 ? <Empty>No gh account is signed in on this machine.</Empty>
+          : accounts.map((a) => <AccountRowView key={a.login} account={a} onSaved={setAccounts} />)}
+        <div className="text-muted-foreground px-4 py-3 text-xs">
+          Add an account on this machine: <code className="font-mono">gh auth login</code>. Pin a repo to one with <code className="font-mono">githubUser</code> in its config, or ask the orchestrator to add the repo — it picks the account that owns it.
+        </div>
+      </VCard>
+    </div>
+  );
+}
+
+function AccountRowView({ account: a, onSaved }: { account: GithubAccount; onSaved: (rows: GithubAccount[]) => void }) {
+  const [name, setName] = useState(a.configured.name ?? "");
+  const [email, setEmail] = useState(a.configured.email ?? "");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setName(a.configured.name ?? ""); setEmail(a.configured.email ?? ""); }, [a.configured.name, a.configured.email]);
+  const dirty = name !== (a.configured.name ?? "") || email !== (a.configured.email ?? "");
+  const save = async () => {
+    setBusy(true);
+    try { onSaved((await api.setGithubAccount(a.login, { name, email })).accounts); }
+    catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      notifyLocal({ kind: "action_failed", repo: "", title: `GitHub · ${a.login}`, label: "Save identity failed", body: error, copy: `Action: Save identity for ${a.login}\nError:\n${error}`, ask: `Save identity for ${a.login} failed: ${error}. Please investigate and fix.` });
+    } finally { setBusy(false); }
+  };
+  return (
+    <div data-slot="github-account" className="grid grid-cols-[minmax(12rem,1fr)_auto] items-center gap-4 px-4 py-3 text-sm">
+      <div className="flex min-w-0 items-center gap-2.5">
+        <span className="bg-muted inline-flex size-8 shrink-0 items-center justify-center rounded-md border"><UserCircle2 className="size-4" /></span>
+        <span className="min-w-0">
+          <span className="flex items-center gap-2 font-medium">{a.login}{a.active && <Pill>active</Pill>}</span>
+          <span className="text-muted-foreground block truncate text-xs">
+            commits as {a.name ?? "—"} &lt;{a.email ?? "—"}&gt; · {a.repos.length ? a.repos.join(", ") : "no repos"}
+          </span>
+        </span>
+      </div>
+      <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); if (dirty) void save(); }}>
+        <input aria-label={`${a.login} name`} placeholder={a.name ?? "name"} value={name} onChange={(e) => setName(e.target.value)}
+          className="border-input bg-background h-8 w-36 rounded-md border px-2 text-sm" />
+        <input aria-label={`${a.login} email`} placeholder={a.email ?? "email"} value={email} onChange={(e) => setEmail(e.target.value)} type="email"
+          className="border-input bg-background h-8 w-56 rounded-md border px-2 text-sm" />
+        <Button type="submit" variant="secondary" size="sm" disabled={!dirty || busy}>Save</Button>
+      </form>
+    </div>
+  );
+}
 
 /** Previews: every live preview across instances (Open / Stop), and Test master — a preview of each
  *  repo's base branch. The sidebar's Previews item carries the badges (running count, base preview). */

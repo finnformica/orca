@@ -26,6 +26,7 @@ import * as prShots from "./prShots";
 import * as preview from "./preview";
 import * as mergeQueue from "./mergeQueue";
 import { pushToTemplate } from "./pushTemplate";
+import * as repos from "./repos";
 import { stateDir } from "./state";
 import { API_PORT } from "./ports";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
@@ -685,6 +686,24 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       if (next === undefined) return orchStatusText(prev) || `(no status for ${repo.name}/${branch})`;
       await db.patchEnrichment(repo.name, branch, { orchStatus: next });
       return next ? `Status of ${repo.name}/${branch}: ${orchStatusText(next)}` : `Cleared the status of ${repo.name}/${branch}.`;
+    }
+    case "repo": {
+      const [sub, target] = words;
+      if (sub === "list") {
+        const user = typeof args.user === "string" && args.user ? args.user : undefined;
+        const have = await Promise.all(cfg.repos.map((r) => git.remoteNameWithOwner(r.repoPath).catch(() => "")));
+        return repos.listText(cfg, await repos.list(cfg, user), have.filter(Boolean));
+      }
+      if (sub === "add") {
+        if (!target) throw new Error("orca repo add <owner/name> [--on <instance>] [--name <slug>]");
+        const on = typeof args.on === "string" && args.on ? args.on : db.instanceName();
+        const name = typeof args.name === "string" && args.name ? args.name : undefined;
+        const repo = on !== db.instanceName()
+          ? (await viaInstance(cfg, on, "/api/repos/add", { nameWithOwner: target, name })) as unknown as RepoConfig
+          : await repos.add(cfg, target, { name });
+        return `Added ${target} to Orca as "${repo.name}" on ${on}: ${repo.repoPath}, base ${repo.baseBranch}${repo.githubUser ? `, gh account ${repo.githubUser}` : ""}. No previews or check command yet — the user sets those in Settings. It is on the board now; spawn on it with --repo ${repo.name}.`;
+      }
+      throw new Error("orca repo list [--user <login>] | orca repo add <owner/name> [--on <instance>] [--name <slug>]");
     }
     case "notes": {
       if (words[0] !== "set") return (await blob()).notes || "(empty)";

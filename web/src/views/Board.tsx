@@ -20,6 +20,7 @@ import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
 import { CiChip } from "./PrPanels";
 import { OrchStatusNote, Skeleton, UpkeepNote } from "@/components/console";
 import { PreviewControl } from "./PreviewControl";
+import { StatusHoverCard } from "./StatusCard";
 import { TerminalDialog } from "@/components/Terminal";
 import { AUTO_MODEL, modelLabel, providerOfModel } from "../../../shared/models";
 import { ModelPicker } from "@/components/ModelPicker";
@@ -546,7 +547,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
               </Badge>
             </Tip>
           )}
-          {(isLocal || (row.agentStatus && row.agentStatus !== "idle")) && <AgentBadge row={row} hasWork={hasWork} />}
+          {(isLocal || (row.agentStatus && row.agentStatus !== "idle")) && <StatusHoverCard row={row}><AgentBadge row={row} hasWork={hasWork} /></StatusHoverCard>}
           {isLocal && row.worktreePath && row.agentStatus !== "running" && (
             <button type="button" onClick={() => void runBusy(() => rerunAgent(row))} className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-5 items-center justify-center rounded">
               <Play className="size-3" />

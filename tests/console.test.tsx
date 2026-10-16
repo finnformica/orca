@@ -339,6 +339,34 @@ describe("the console's pages", () => {
     expect(apiFake.setInstanceRateCalls).toEqual([{ instance: "cloud", hourlyUsd: 0.2331 }, { instance: "cloud", hourlyUsd: null }]);
     expect(input("cloud").value).toBe("");
   });
+
+  test("GitHub: one row per signed-in gh account — login, active, the identity it commits as, its repos — and a saved identity", async () => {
+    apiFake.githubAccounts = [
+      { login: "finnformica", active: true, name: "Finn F", email: "finn@work.example", configured: {}, repos: ["r"] },
+      { login: "finn-personal", active: false, name: "Finn P", email: "4242+finn-personal@users.noreply.github.com", configured: {}, repos: [] },
+    ];
+    await open("/github");
+    const rows = [...$("github-accounts").querySelectorAll<HTMLElement>('[data-slot="github-account"]')];
+    expect(rows.length).toBe(2);
+    expect(rows[0]!.textContent).toContain("finnformica");
+    expect(rows[0]!.textContent).toContain("active");
+    expect(rows[0]!.textContent).toContain("commits as Finn F <finn@work.example>");
+    expect(rows[0]!.textContent).toContain("· r");
+    expect(rows[1]!.textContent).toContain("finn-personal");
+    expect(rows[1]!.textContent).not.toContain("active");
+    expect(rows[1]!.textContent).toContain("commits as Finn P <4242+finn-personal@users.noreply.github.com>");
+    expect(rows[1]!.textContent).toContain("no repos");
+    expect($("github-accounts").textContent).toContain("gh auth login");
+    const email = rows[1]!.querySelector<HTMLInputElement>('input[aria-label="finn-personal email"]')!;
+    const save = [...rows[1]!.querySelectorAll("button")].find((b) => b.textContent === "Save")!;
+    expect(save.disabled).toBe(true); // nothing changed yet
+    await type(email, "finn@home.example");
+    expect(save.disabled).toBe(false);
+    await act(async () => { email.form!.requestSubmit(); await flush(); });
+    expect(apiFake.setGithubAccountCalls).toEqual([{ login: "finn-personal", name: "", email: "finn@home.example" }]);
+    const after = $("github-accounts").querySelectorAll<HTMLElement>('[data-slot="github-account"]')[1]!;
+    expect(after.textContent).toContain("commits as Finn P <finn@home.example>");
+  });
 });
 
 // The surface rules from Finn's audit, asserted on the rendered pages so they can't drift back:
@@ -362,7 +390,7 @@ describe("surfaces: Vercel's hairlines, radii and shadows", () => {
     .map((el) => el.getAttribute("class")!);
   const offending = (re: RegExp) => classes().filter((c) => re.test(c));
 
-  for (const path of ["/", "/agents", "/previews", "/usage", "/repos", "/settings", "/r/local/feat-login"]) {
+  for (const path of ["/", "/agents", "/previews", "/usage", "/repos", "/github", "/settings", "/r/local/feat-login"]) {
     test(`${path}: 1px borders, no stray shadows, 8px cards`, async () => {
       apiFake.agentsData = [{ branch: "feat-login", worktreePath: "/wt/feat-login", agentStatus: "done" }];
       apiFake.turnsData.set("r::feat-login", [{ id: "t1", provider: "claude", prompt: "p", instruction: "go", response: "done", startedAt: NOW, finishedAt: NOW + 1 }]);
