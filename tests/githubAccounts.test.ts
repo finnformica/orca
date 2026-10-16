@@ -7,6 +7,7 @@ import { join } from "path";
 import { githubEnv, setGithubAccounts } from "../server/env";
 import { runCmd } from "../server/run";
 import { parseConfigDocument } from "../server/config";
+import { accountRows, withAccount } from "../server/repos";
 import { repoLabel } from "../web/src/workstream";
 import { installFakeGh, restorePath } from "./helpers";
 
@@ -50,4 +51,29 @@ test("githubUser is validated as a login; the switcher prefixes owners only when
   expect(repoLabel(two, "orca")).toBe("finnformicaflow/orca");
   expect(repoLabel(two, "claude-hydra")).toBe("finnformica/claude-hydra");
   expect(repoLabel([...two, { name: "local-only" }], "local-only")).toBe("local-only");
+});
+
+test("the GitHub page's rows: the active login gets the repos with no githubUser, a pinned repo goes to its login", () => {
+  const base = { repoPath: "/x", worktreeRoot: "/x/.worktrees", baseBranch: "main", previewServices: [] };
+  const cfg = parseConfigDocument({
+    repos: [{ name: "orca", ...base }, { name: "hydra", ...base, githubUser: "finn-personal" }, { name: "app", ...base, githubUser: "finnformica" }],
+    githubAccounts: { "finn-personal": { email: "finn@home.example" } },
+  }).config!;
+  const rows = accountRows(cfg, ["finnformica", "finn-personal", "spare"], (login) => ({ name: `N ${login}` }));
+  expect(rows).toEqual([
+    { login: "finnformica", active: true, name: "N finnformica", configured: {}, repos: ["orca", "app"] },
+    { login: "finn-personal", active: false, name: "N finn-personal", configured: { email: "finn@home.example" }, repos: ["hydra"] },
+    { login: "spare", active: false, name: "N spare", configured: {}, repos: [] },
+  ]);
+});
+
+test("a saved identity: fields set trimmed, \"\" clears one, an omitted one is kept, an empty entry is dropped", () => {
+  const start = { work: { name: "Finn W" } };
+  expect(withAccount(start, "me", { name: "  Finn  ", email: " f@x.y " })).toEqual({ work: { name: "Finn W" }, me: { name: "Finn", email: "f@x.y" } });
+  const two = withAccount(start, "work", { email: "w@x.y" });
+  expect(two).toEqual({ work: { name: "Finn W", email: "w@x.y" } }); // name not sent: kept
+  expect(withAccount(two, "work", { name: "", email: "w@x.y" })).toEqual({ work: { email: "w@x.y" } });
+  expect(withAccount(start, "work", { name: " ", email: "" })).toBeUndefined(); // nothing left at all
+  expect(withAccount({ ...start, me: { email: "m" } }, "me", { email: "" })).toEqual(start);
+  expect(() => withAccount(start, "not a login", { name: "x" })).toThrow("login required");
 });

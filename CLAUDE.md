@@ -198,6 +198,16 @@ one), append a RepoConfig (default branch, `.worktrees`, `runsOn` that instance,
 the owner is a non-active account, no previews), save. Previews and `checkCommand` remain a hand
 edit in Settings.
 
+**The GitHub page** (`/github`, `GitHubPage` in `views/Pages.tsx`, nav item between Repos and Usage,
+`G H`) shows one row per `gh` account signed in on THIS host (`GET /api/github/accounts`,
+`repos.accountsHere` — per host, like `/api/usage`): the login, an `active` pill, the identity its
+commits carry (`commits as Name <email>`) and the repos that use it (`repos.accountRows`: a repo
+with no `githubUser` uses the active login). Name and email are editable per row; Save writes
+`githubAccounts[login]` to the shared config (`POST`, `repos.setAccount` over the pure
+`repos.withAccount`: trimmed, `""` clears a field, an empty entry is dropped), so an empty field
+falls back to the GitHub profile. The only setup is `gh auth login` in a terminal — a device-code
+flow Orca does not wrap.
+
 `orca.config.ts` holds `repos: RepoConfig[]` (each with repoPath/worktreeRoot/baseBranch/
 previewServices/slackChannel) + global portRange/staleHours. Every repo-scoped API call names
 its repo (`?repo=` on GET, `repo` in POST body; server resolves via `repoOf`). The board shows

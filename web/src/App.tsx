@@ -63,7 +63,7 @@ function Page({ route }: { route: Route }) {
   }
 }
 
-const TITLES = { board: "Overview", agents: "Agents", previews: "Previews", repos: "Repos", usage: "Usage", settings: "Settings", orchestrator: "Orchestrator" } as const;
+const TITLES = { board: "Overview", agents: "Agents", previews: "Previews", repos: "Repos", github: "GitHub", usage: "Usage", settings: "Settings", orchestrator: "Orchestrator" } as const;
 
 function Crumbs({ route }: { route: Route }) {
   const rows = useWorkstreams();

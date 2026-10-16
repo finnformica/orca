@@ -209,7 +209,7 @@ function BottomBar({ activity }: { activity: { running: boolean; unread: boolean
   const label = "truncate";
   const overview = NAV[0]!;
   const agents = NAV[1]!;
-  const settings = NAV[5]!;
+  const settings = NAV.find((n) => n.to === "/settings")!;
   return (
     <nav aria-label="Quick actions" data-slot="bottom-bar"
       className="bg-background/95 fixed inset-x-0 bottom-0 z-30 flex items-stretch gap-1 border-t px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] backdrop-blur md:hidden">

@@ -31,14 +31,20 @@ export function accountRows(cfg: OrcaConfig, logins: string[], identity: (login:
   }));
 }
 
+/** The `githubAccounts` map with one login's name / email set (trimmed) or, with "", cleared; a login
+ *  left with no field is dropped, and an empty map is undefined. Pure — `setAccount` saves it. */
+export function withAccount(all: OrcaConfig["githubAccounts"], login: string, fields: { name?: string; email?: string }): OrcaConfig["githubAccounts"] {
+  if (!/^[\w.-]+$/.test(login)) throw new Error("login required");
+  const next = { ...all?.[login] };
+  for (const k of ["name", "email"] as const) if (fields[k] !== undefined) { if (fields[k]!.trim()) next[k] = fields[k]!.trim(); else delete next[k]; }
+  const out = { ...all, [login]: next };
+  if (!Object.keys(next).length) delete out[login];
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** Set (or with "" clear) the configured name / email of one login — the rest of the document untouched. */
 export async function setAccount(cfg: OrcaConfig, login: string, fields: { name?: string; email?: string }): Promise<void> {
-  if (!/^[\w.-]+$/.test(login)) throw new Error("login required");
-  const next = { ...cfg.githubAccounts?.[login] };
-  for (const k of ["name", "email"] as const) if (fields[k] !== undefined) { if (fields[k]!.trim()) next[k] = fields[k]!.trim(); else delete next[k]; }
-  const all = { ...cfg.githubAccounts, [login]: next };
-  if (!Object.keys(next).length) delete all[login];
-  await saveConfigDocument({ ...cfg, githubAccounts: Object.keys(all).length ? all : undefined });
+  await saveConfigDocument({ ...cfg, githubAccounts: withAccount(cfg.githubAccounts, login, fields) });
 }
 
 const envFor = (user?: string) => { const tok = user && githubToken(user); return tok ? { GH_TOKEN: tok } : {}; };
