@@ -388,11 +388,15 @@ async function reapWorktree(repo: RepoConfig, w: { branch: string; worktreePath:
 }
 
 /** Is this done PR only HISTORY for the worktree — a branch reused since (`mergedPrIsHistory`, the
- *  board's own rule)? Then the worktree is live work, not finished work, and is never reaped. */
-function doneIsHistory(pr: gh.DonePr, w: { worktreePath: string; head?: string }, live: { open: boolean; queued: number }): boolean {
+ *  board's own rule)? Then the worktree is live work, not finished work, and is never reaped. A
+ *  worktree whose HEAD differs from the PR's last head may simply be BEHIND it (its last push
+ *  landed from somewhere else and this worktree never fetched it) — `git.isAncestor` is the only
+ *  way to tell that from a genuinely reused branch, and git is available here. */
+async function doneIsHistory(repoPath: string, pr: gh.DonePr, w: { branch: string; worktreePath: string; head?: string }, live: { open: boolean; queued: number }): Promise<boolean> {
+  const headBehindPr = w.head && pr.head && w.head !== pr.head ? await git.isAncestor(repoPath, w.head, pr.head, w.branch) : undefined;
   return mergedPrIsHistory({ mergedAt: pr.at !== undefined ? new Date(pr.at).toISOString() : undefined, headSha: pr.head }, {
     agentStatus: agent.isRunning(w.worktreePath) ? "running" : agent.status(w.worktreePath).status,
-    agentStartedAt: agent.status(w.worktreePath).startedAt, queued: live.queued, head: w.head, openPr: live.open,
+    agentStartedAt: agent.status(w.worktreePath).startedAt, queued: live.queued, head: w.head, headBehindPr, openPr: live.open,
   });
 }
 
@@ -424,7 +428,7 @@ export function cleanupRepo(repo: RepoConfig, opts: { now?: number; graceMs?: nu
         queued: await db.queuedCounts(repo.name).catch(() => new Map<string, number>()),
       };
       // A branch reused since its PR finished (the orchestrator sent new work to it) is not done.
-      if (doneIsHistory(pr, w, { open: live.open.has(w.branch), queued: live.queued.get(w.branch) ?? 0 })) continue;
+      if (await doneIsHistory(repo.repoPath, pr, w, { open: live.open.has(w.branch), queued: live.queued.get(w.branch) ?? 0 })) continue;
       const facts = { doneAt: pr.at, now: opts.now ?? Date.now(), graceMs: opts.graceMs, running: agent.isRunning(w.worktreePath) };
       let d = cleanupDecision({ ...facts, dirty: [], unpushed: 0 }); // timing first — the git probes only once due
       if (d.action === "reap") d = cleanupDecision({ ...facts, ...(await git.worktreeSafety(repo.repoPath, w, { base: repo.baseBranch, head: pr.head, ignore: orcaPaths(repo) })) });
@@ -481,7 +485,7 @@ export async function sweep(cfg: OrcaConfig, opts: { confirm?: boolean; now?: nu
       const pr = done.get(w.branch);
       const reason: git.ReapReason | undefined = pr?.reason ?? (archived.has(w.branch) ? "archived" : undefined);
       if (!reason || open.has(w.branch)) continue; // not finished, or a newer PR reuses the branch
-      if (pr && doneIsHistory(pr, w, { open: false, queued: queued.get(w.branch) ?? 0 })) continue; // reused since its PR finished
+      if (pr && await doneIsHistory(repo.repoPath, pr, w, { open: false, queued: queued.get(w.branch) ?? 0 })) continue; // reused since its PR finished
       const d = cleanupDecision({
         now: opts.now ?? Date.now(), graceMs: 0, running: agent.isRunning(w.worktreePath),
         ...(await git.worktreeSafety(repo.repoPath, w, { base: repo.baseBranch, head: pr?.head, ignore: orcaPaths(repo) })),

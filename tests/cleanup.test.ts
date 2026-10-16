@@ -157,6 +157,54 @@ test("C1c: a branch reused after its PR merged (HEAD moved off the PR's head, or
   expect([...(await db.archivedBranches("r"))]).toEqual(["stale-s"]);
 });
 
+test("C1f: a worktree whose HEAD is BEHIND the merged PR's last head (a later commit pushed from elsewhere, never fetched here) is reaped, not kept as reused", async () => {
+  const behind = await workOn("formula-behind"); // the worktree's HEAD — what it knows of the branch
+  // Simulate the PR's last push landing on another machine: a separate clone (sharing no .git with
+  // `here` or its worktrees) commits on top and pushes, so the new commit object never reaches here.
+  const elsewhere = join(dir, "elsewhere");
+  await run(["git", "clone", "-q", origin, elsewhere]);
+  await run(["git", "-C", elsewhere, "checkout", "-q", "formula-behind"]);
+  await run(["git", "-C", elsewhere, "config", "user.email", "t@orca.dev"]); await run(["git", "-C", elsewhere, "config", "user.name", "T"]);
+  await writeFile(join(elsewhere, "late.txt"), "pushed from elsewhere\n");
+  await run(["git", "-C", elsewhere, "add", "."]); await run(["git", "-C", elsewhere, "commit", "-q", "-m", "late push"]);
+  await run(["git", "-C", elsewhere, "push", "-q", "origin", "formula-behind"]);
+  const prHead = (await run(["git", "-C", elsewhere, "rev-parse", "HEAD"])).trim();
+  expect(prHead).not.toBe(behind.sha); // the worktree's HEAD is not the PR's last head…
+  await expect(run(["git", "-C", here, "cat-file", "-e", prHead])).rejects.toThrow(); // …and never fetched it
+
+  await setDonePrListFixture([
+    { number: 42, title: "Formula AI staging", url: "u42", headRefName: "formula-behind", headRefOid: prHead, mergedAt: iso(NOW - CLEANUP_GRACE_MS), closedAt: iso(NOW - CLEANUP_GRACE_MS) },
+  ]);
+  // The tick is first, so its own fetch-then-retry (git.isAncestor) is what proves the object —
+  // nothing earlier in the test has fetched the PR's head into `here`.
+  const out = await verbs.cleanupRepo(repo, { now: NOW });
+  expect(out.map((c) => `${c.branch}:${c.action}`)).toEqual(["formula-behind:reaped"]);
+  expect(await worktrees()).toEqual([]);
+  expect(await branchExists("formula-behind")).toBe(false);
+});
+
+test("C1g: `orca sweep`'s dry run also reads a behind worktree as done, not reused (own fetch-then-retry)", async () => {
+  const behind = await workOn("formula-behind2");
+  const elsewhere = join(dir, "elsewhere2");
+  await run(["git", "clone", "-q", origin, elsewhere]);
+  await run(["git", "-C", elsewhere, "checkout", "-q", "formula-behind2"]);
+  await run(["git", "-C", elsewhere, "config", "user.email", "t@orca.dev"]); await run(["git", "-C", elsewhere, "config", "user.name", "T"]);
+  await writeFile(join(elsewhere, "late.txt"), "pushed from elsewhere\n");
+  await run(["git", "-C", elsewhere, "add", "."]); await run(["git", "-C", elsewhere, "commit", "-q", "-m", "late push"]);
+  await run(["git", "-C", elsewhere, "push", "-q", "origin", "formula-behind2"]);
+  const prHead = (await run(["git", "-C", elsewhere, "rev-parse", "HEAD"])).trim();
+  expect(prHead).not.toBe(behind.sha);
+  await expect(run(["git", "-C", here, "cat-file", "-e", prHead])).rejects.toThrow(); // never fetched here
+
+  await setDonePrListFixture([
+    { number: 43, title: "Formula AI staging 2", url: "u43", headRefName: "formula-behind2", headRefOid: prHead, mergedAt: iso(NOW - CLEANUP_GRACE_MS), closedAt: iso(NOW - CLEANUP_GRACE_MS) },
+  ]);
+  const cfg: OrcaConfig = { repos: [repo], portRange: [30000, 40000], staleHours: 24 };
+  const dry = await verbs.sweep(cfg, { now: NOW });
+  expect(dry.worktrees.map((w) => `${w.branch}:${w.action}`)).toEqual(["formula-behind2:remove"]);
+  expect(existsSync(behind.worktreePath)).toBe(true); // a dry run touched nothing
+});
+
 test("C2: a merged worktree with uncommitted or unpushed work is flagged, not removed; a squash-merged one whose remote branch is gone is reaped", async () => {
   const dirty = await workOn("dirty-a");
   await writeFile(join(dirty.worktreePath, "notes.md"), "not committed\n");

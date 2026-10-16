@@ -20,8 +20,20 @@ test("a reused branch: any sign of work since the merge makes the merged PR hist
   expect(mergedPrIsHistory(merged, { agentStatus: "running", agentStartedAt: beforeMerge, head: "aaa111" })).toBe(true);
   expect(mergedPrIsHistory(merged, { agentStatus: "idle", queued: 1, head: "aaa111" })).toBe(true);
   expect(mergedPrIsHistory(merged, { agentStatus: "done", agentStartedAt: afterMerge, head: "aaa111" })).toBe(true); // a run after the merge
-  expect(mergedPrIsHistory(merged, { agentStatus: "done", agentStartedAt: beforeMerge, head: "bbb222" })).toBe(true); // HEAD moved off the PR's head
+  // HEAD moved off the PR's head with new commits of its own (headBehindPr: false) — reuse.
+  expect(mergedPrIsHistory(merged, { agentStatus: "done", agentStartedAt: beforeMerge, head: "bbb222", headBehindPr: false })).toBe(true);
   expect(mergedPrIsHistory(merged, { openPr: true })).toBe(true); // a newer open PR for the branch
+});
+
+test("a worktree behind the merged PR's head (a push landed from elsewhere and it never fetched) is not reuse", () => {
+  // Equal heads: not reuse regardless of any ancestry fact.
+  expect(mergedPrIsHistory(merged, { agentStatus: "idle", head: "aaa111" })).toBe(false);
+  // Different head, proven an ancestor of (behind) the PR's last head: not reuse.
+  expect(mergedPrIsHistory(merged, { agentStatus: "idle", head: "earlier000", headBehindPr: true })).toBe(false);
+  // Different head, proven NOT an ancestor (it has commits the PR's head doesn't): reuse.
+  expect(mergedPrIsHistory(merged, { agentStatus: "idle", head: "ahead999", headBehindPr: false })).toBe(true);
+  // Different head, ancestry never checked (a pure-web caller with no git): defaults to reuse.
+  expect(mergedPrIsHistory(merged, { agentStatus: "idle", head: "unknown777" })).toBe(true);
 });
 
 // What the store assembles for each case (store.assembleRows: a standing merged PR is a DONE row; a
