@@ -20,7 +20,13 @@ export async function accounts(): Promise<string[]> {
   return active ? [active, ...all.filter((a) => a !== active)] : all;
 }
 
-export type AccountRow = { login: string; active: boolean; name?: string; email?: string; configured: { name?: string; email?: string }; repos: string[] };
+export type AccountRow = { login: string; active: boolean; name?: string; email?: string; configured: { name?: string; email?: string }; repos: string[]; avatarUrl: string };
+
+/** The account's GitHub profile image. `LOGIN.png` needs no token and no `gh api` call — GitHub
+ *  serves it for any login, signed in or not. */
+export function avatarUrl(login: string): string {
+  return `https://github.com/${login}.png?size=80`;
+}
 
 /** The GitHub page's rows for THIS host: each signed-in `gh` login, whether it is the active one, its
  *  effective commit identity and the config's part of it, and the repos that use it (a repo with no
@@ -29,6 +35,7 @@ export function accountRows(cfg: OrcaConfig, logins: string[], identity: (login:
   return logins.map((login, i) => ({
     login, active: i === 0, ...identity(login), configured: cfg.githubAccounts?.[login] ?? {},
     repos: cfg.repos.filter((r) => (r.githubUser ?? logins[0]) === login).map((r) => r.name),
+    avatarUrl: avatarUrl(login),
   }));
 }
 

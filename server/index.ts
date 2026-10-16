@@ -37,6 +37,7 @@ import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
 import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
+import { listServers, serverGate } from "./servers";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -495,6 +496,19 @@ async function api(req: Request, url: URL): Promise<Response> {
     const others = url.searchParams.get("local") ? [] : Object.entries(cfg.instances ?? {}).filter(([n]) => n !== self).map(([, base]) => base);
     return eventStream(req, others);
   }
+  // The server switcher (server/servers.ts): the Orca servers a browser may switch to. Answered here,
+  // never forwarded — each server names itself and its own discovery.
+  if (req.method === "GET" && p === "/api/servers") return json(await listServers(cfg.serverSwitcher));
+  // Settings' Server switcher toggle: sets `serverSwitcher.enabled` and keeps the rest of the document.
+  if (req.method === "POST" && p === "/api/config/server-switcher") {
+    if (typeof body.enabled !== "boolean") return json({ error: "enabled must be true or false" }, 400);
+    const doc = await configDocument();
+    const prev = doc.serverSwitcher && typeof doc.serverSwitcher === "object" ? doc.serverSwitcher as Record<string, unknown> : {};
+    const { config, errors } = parseConfigDocument({ ...doc, serverSwitcher: { ...prev, enabled: body.enabled } });
+    if (!config) return json({ errors }, 400);
+    await saveConfigDocument(config);
+    return json({ ok: true, enabled: body.enabled });
+  }
   // Screenshots (server/screenshot.ts): the one capped browser on this box, behind one queue. Never
   // forwarded — a worker shoots a preview on its own instance. The response is streamed as one JSON
   // object per line — `{queued: N}` while N jobs are still ahead, then the result — so the CLI can
@@ -771,6 +785,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     // forwards it to the instance holding the worktree, which is the only one that can remove it.
     await verbs.archiveWorkstream(repo, String(body.branch));
     return json({ ok: true, instance: db.instanceName() });
+  }
+  if (req.method === "POST" && p === "/api/workstreams/stop") {
+    // `orca stop` for a workstream living here. Placement forwards it to the instance holding the
+    // worktree, which is the only one that can find and stop the running process.
+    const r = await verbs.stopWorkstream(repo, String(body.branch), { dropQueue: Boolean(body.dropQueue) });
+    return json({ ...r, instance: db.instanceName() });
   }
   if (req.method === "POST" && p === "/api/workstreams/spawn") {
     const ws = await verbs.createWorkstream(cfg, repo, { prompt: String(body.prompt ?? ""), title: body.title, model: body.model, fields: { orchestrated: true } });
@@ -1288,18 +1308,33 @@ for (const hostname of BIND) Bun.serve<terminal.TerminalData>({
   websocket: terminal.websocket,
   async fetch(req, server) {
     const url = new URL(req.url);
-    try {
-      if (!url.pathname.startsWith("/api/")) return await serveStatic(url);
-      if (url.pathname === terminal.PATH) return await terminal.upgrade(req, server, { config: loadConfig, here: db.instanceName() });
-      remoteAddr.set(req, server.requestIP(req)?.address);
-      const res = await api(req, url);
-      // Every API answer says when it was given without the database, so any caller can tell.
-      if (db.unavailableSince() !== null) { try { res.headers.set("x-orca-database", db.databaseStatus()); } catch { /* immutable */ } }
-      return res;
-    } catch (e) {
-      if (e instanceof db.DbUnavailable) return whenDatabaseDown(req, url, e);
-      return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    if (!url.pathname.startsWith("/api/")) {
+      try { return await serveStatic(url); } catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 500); }
     }
+    // The terminal runs its own gate (owner + same Origin) and is never a cross-server call.
+    if (url.pathname === terminal.PATH) {
+      try { return await terminal.upgrade(req, server, { config: loadConfig, here: db.instanceName() }); }
+      catch (e) { return json({ error: e instanceof Error ? e.message : String(e) }, 500); }
+    }
+    remoteAddr.set(req, server.requestIP(req)?.address);
+    const handle = async (): Promise<Response> => {
+      try {
+        const res = await api(req, url);
+        // Every API answer says when it was given without the database, so any caller can tell.
+        if (db.unavailableSince() !== null) { try { res.headers.set("x-orca-database", db.databaseStatus()); } catch { /* immutable */ } }
+        return res;
+      } catch (e) {
+        if (e instanceof db.DbUnavailable) return whenDatabaseDown(req, url, e);
+        return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+      }
+    };
+    // A cross-origin call from another listed Orca server's page gets CORS and a Tailscale whois
+    // check (errors included, so its page can read them); anything else — same-origin, no Origin,
+    // the switcher off — passes through unchanged.
+    if (!req.headers.get("origin")) return handle();
+    const switcher = await loadConfig().then((c) => c.serverSwitcher).catch(() => undefined);
+    return serverGate(req, server.requestIP(req)?.address, switcher, handle)
+      .catch((e) => json({ error: e instanceof Error ? e.message : String(e) }, 500));
   },
 });
 

@@ -7,7 +7,7 @@ import { join } from "path";
 import { githubEnv, setGithubAccounts } from "../server/env";
 import { runCmd } from "../server/run";
 import { parseConfigDocument } from "../server/config";
-import { accountRows, withAccount } from "../server/repos";
+import { accountRows, avatarUrl, withAccount } from "../server/repos";
 import { repoLabel } from "../web/src/workstream";
 import { installFakeGh, restorePath } from "./helpers";
 
@@ -61,10 +61,15 @@ test("the GitHub page's rows: the active login gets the repos with no githubUser
   }).config!;
   const rows = accountRows(cfg, ["finnformica", "finn-personal", "spare"], (login) => ({ name: `N ${login}` }));
   expect(rows).toEqual([
-    { login: "finnformica", active: true, name: "N finnformica", configured: {}, repos: ["orca", "app"] },
-    { login: "finn-personal", active: false, name: "N finn-personal", configured: { email: "finn@home.example" }, repos: ["hydra"] },
-    { login: "spare", active: false, name: "N spare", configured: {}, repos: [] },
+    { login: "finnformica", active: true, name: "N finnformica", configured: {}, repos: ["orca", "app"], avatarUrl: "https://github.com/finnformica.png?size=80" },
+    { login: "finn-personal", active: false, name: "N finn-personal", configured: { email: "finn@home.example" }, repos: ["hydra"], avatarUrl: "https://github.com/finn-personal.png?size=80" },
+    { login: "spare", active: false, name: "N spare", configured: {}, repos: [], avatarUrl: "https://github.com/spare.png?size=80" },
   ]);
+});
+
+test("avatarUrl needs no token: the login's GitHub profile image at a fixed size, for any login", () => {
+  expect(avatarUrl("finnformica")).toBe("https://github.com/finnformica.png?size=80");
+  expect(avatarUrl("a-b_c.d")).toBe("https://github.com/a-b_c.d.png?size=80");
 });
 
 test("a saved identity: fields set trimmed, \"\" clears one, an omitted one is kept, an empty entry is dropped", () => {

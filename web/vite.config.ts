@@ -42,8 +42,34 @@ const buildVersion = (): Plugin => ({
   writeBundle(options, bundle) { writeFileSync(join(options.dir!, "sw.js"), serviceWorkerSource(BUILD_ID, Object.keys(bundle))); },
 });
 
+// Dev only, until the server's GET /api/servers lands (the server-switch-api workstream): the bridge
+// is asked first, and only when it has no such route does this answer a mock list — this server as
+// "Work", and an offline "SMF" — so the server menu has rows to show. Once the bridge answers, its
+// list wins and this does nothing.
+export const MOCK_SERVERS = (origin: string) => ({
+  self: { name: "Work", url: origin },
+  servers: [
+    { name: "Work", url: origin, online: true, self: true },
+    { name: "SMF", url: "http://smf-box.invalid:8787", online: false, self: false },
+  ],
+});
+const mockServers = (): Plugin => ({
+  name: "orca-mock-servers",
+  apply: "serve",
+  configureServer(server) {
+    server.middlewares.use("/api/servers", async (req, res, next) => {
+      try {
+        const r = await fetch(`http://localhost:${API_PORT}/api/servers`);
+        if (r.ok && r.headers.get("content-type")?.includes("json")) return next();
+      } catch { /* bridge down: the mock below */ }
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(MOCK_SERVERS(`http://${req.headers.host ?? "localhost"}`)));
+    });
+  },
+});
+
 export default defineConfig(({ command }) => ({
-  plugins: [react(), tailwindcss(), buildVersion()],
+  plugins: [react(), tailwindcss(), buildVersion(), mockServers()],
   define: {
     __ORCA_BUILD__: JSON.stringify(command === "build" ? BUILD_ID : "dev"),
     // A branch preview (scripts/preview-orca.sh) sets ORCA_PREVIEW_UI=1 so the page labels its bridge.

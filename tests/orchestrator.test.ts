@@ -938,6 +938,56 @@ test("O23b: the ladder decision is pure — threshold, the top, and models off t
     .toContain('modelEscalation must be "suggest" or "apply"');
 });
 
+test("O24: stop interrupts a running worker, keeping its worktree, commits and session", async () => {
+  await orchestrator.tool(cfg(), "spawn", brief);
+  const branch = Object.keys(await db.enrichment("r"))[0]!;
+  await settled(() => db.turns("r", branch), 1);
+  const worktreePath = (await git.listWorktrees(repo, worktrees)).find((w) => w.branch === branch)!.worktreePath;
+
+  await writeFile(hold, ""); // the next run blocks until released
+  expect(await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["keep", "going"] })).toContain(`Sent to r/${branch}`);
+  expect(agent.isRunning(worktreePath)).toBe(true);
+
+  const out = await orchestrator.tool(cfg(), "stop", { repo: "r", branch });
+  expect(out).toMatch(new RegExp(`^Stopped r/${branch} \\(run \\S+\\)\\.`));
+
+  expect(agent.isRunning(worktreePath)).toBe(false);
+  expect(await db.enrichment("r")).toHaveProperty(branch); // unlike archive, the card stays
+  expect(existsSync(worktreePath)).toBe(true); // and so does the worktree
+  await rm(hold, { force: true });
+});
+
+test("O25: stop --drop-queue clears anything queued instead of sending it at once", async () => {
+  await orchestrator.tool(cfg(), "spawn", brief);
+  const branch = Object.keys(await db.enrichment("r"))[0]!;
+  await settled(() => db.turns("r", branch), 1);
+
+  await writeFile(hold, "");
+  await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["keep", "going"] });
+  await orchestrator.tool(cfg(), "send", { repo: "r", branch, _: ["and", "then", "this"] });
+  expect((await db.queuedMessages("r", branch)).map((m) => m.instruction)).toEqual(["and then this"]);
+
+  const out = await orchestrator.tool(cfg(), "stop", { repo: "r", branch, "drop-queue": "" });
+  expect(out).toContain("dropped");
+  expect(await db.queuedMessages("r", branch)).toEqual([]);
+  await rm(hold, { force: true });
+});
+
+test("O26: stop reports nothing running on an idle workstream", async () => {
+  await orchestrator.tool(cfg(), "spawn", brief);
+  const branch = Object.keys(await db.enrichment("r"))[0]!;
+  await settled(() => db.turns("r", branch), 1);
+
+  expect(await orchestrator.tool(cfg(), "stop", { repo: "r", branch })).toBe(`Nothing running on r/${branch}.`);
+});
+
+test("O27: stop refuses a branch this orchestrator isn't responsible for", async () => {
+  const { branch } = await verbs.newWorktree(cfg().repos[0]!, "manual"); // as if the user made it by hand
+  await db.patchEnrichment("r", branch, { title: "Manual" }); // no orchestrated flag
+  await expect(orchestrator.tool(cfg(), "stop", { repo: "r", branch })).rejects.toThrow("is not an orchestrated workstream");
+  await expect(orchestrator.tool(cfg(), "stop", { repo: "r" })).rejects.toThrow("--branch is required");
+});
+
 test("O30: orca repo list / add — the orchestrator sets up a repo the board doesn't have, on the account that owns it", async () => {
   const devRoot = realpathSync(await mkdtemp(join(tmpdir(), "orca-devroot-")));
   const saved = { ORCA_DEV_ROOT: process.env.ORCA_DEV_ROOT, ORCA_GH_ACCOUNTS: process.env.ORCA_GH_ACCOUNTS, ORCA_GH_CLONE_SRC: process.env.ORCA_GH_CLONE_SRC, ORCA_GH_REPOLIST_FIXTURE: process.env.ORCA_GH_REPOLIST_FIXTURE, ORCA_GH_REPO_FIXTURE: process.env.ORCA_GH_REPO_FIXTURE };
