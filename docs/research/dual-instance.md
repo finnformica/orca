@@ -47,3 +47,39 @@ if the switcher trial goes well.
 The rename of `orca-box` is postponed. Bookmarks and the phone home-screen app use its MagicDNS
 name. Orca's own config uses Tailscale IPs, so the rename is safe for Orca itself whenever it
 happens.
+
+## Access and logins
+
+### Tailscale discovery is optional
+
+Discovery through the Tailscale API is optional. Without the OAuth client and the `tag:orca` tag,
+use the servers list in config, or Add server by URL in the app. With two boxes, the manual list is
+the default plan.
+
+### Tailnets
+
+The target state is one personal tailnet for all devices and both boxes. An ACL lets the user's
+devices reach both boxes. The ACL blocks box-to-box traffic.
+
+Today the tailnet belongs to the work account. Admins of that account can see every device on it.
+
+Until the move to one personal tailnet, put the personal box on a new personal tailnet. Share the
+work box into that tailnet with Tailscale node sharing. A shared node is quarantined: it accepts
+connections, but it cannot open connections into the tailnet that receives it.
+
+A phone is on one tailnet at a time. Without sharing, the merged view and the switcher cannot reach
+both boxes.
+
+### Logins on a new box
+
+Run `gh auth login` once for each GitHub account. It uses the device flow.
+
+For Claude, run `hydra login` once for each Claude account. Do this over SSH, or over the Instances
+web terminal (PR 265).
+
+`claude setup-token` gives a long-lived token for one account, set as `CLAUDE_CODE_OAUTH_TOKEN`.
+Hydra does not read env tokens today. Such a token may not give the usage data hydra's rotation
+needs.
+
+Use `setup-token` only on a box with one Claude account and no hydra. Or wait until hydra supports
+it.
