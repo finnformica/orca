@@ -113,6 +113,21 @@ describe("the CI chip, wherever it renders", () => {
     expect(apiFake.calls.filter((c) => c === "prDetail:8")).toEqual(["prDetail:8"]);
   });
 
+  test("while the lazy fetch is in flight, the hover card says Loading — never 'No checks.' (that reads as a real, checks-free PR)", async () => {
+    apiFake.prsData = [pr({})];
+    apiFake.prDetailData = { checks: CHECKS };
+    apiFake.holdPrDetail = true;
+    await mount(<Agents />);
+    const chip = container!.querySelector<HTMLElement>('[data-branch="feat-ci"] [data-slot="ci-chip"]')!;
+    await focusChip(chip);
+    expect(document.querySelector('[data-slot="ci-panel-loading"]')!.textContent).toBe("Loading checks…");
+    expect(document.querySelector('[data-slot="ci-panel"]')).toBeNull();
+    await act(async () => { apiFake.releasePrDetail?.(); await flush(); await flush(); });
+    const panel = document.querySelector<HTMLElement>('[data-slot="ci-panel"]')!;
+    expect(rowsOf(panel)).toEqual(["failing:build", "failing:lint", "pending:e2e", "passing:typecheck", "passing:unit"]);
+    await blurChip(chip);
+  });
+
   test("a chip with no CI signal yet (ciStatus: none) renders nothing", async () => {
     apiFake.prsData = [pr({ ciStatus: "none" })];
     await mount(<Agents />);

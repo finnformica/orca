@@ -603,7 +603,9 @@ export const _resetReviewSignals = () => reviewSignals.clear();
 // rows are never hovered); `ensureChecks` is called only when a chip's hover card opens, and the
 // result is cached per PR so a second hover, or another chip for the same PR, costs no request.
 const CHECKS_TTL = 5 * 60_000;
-type ChecksEntry = { checks: CheckRow[]; at: number; inflight?: boolean };
+// `checks` is undefined until a fetch has actually landed — never defaulted to [], which a PR with
+// genuinely zero checks also reads as, so "loading" and "loaded, no checks" can't be told apart.
+type ChecksEntry = { checks?: CheckRow[]; at: number; inflight?: boolean };
 const checksCache = new Map<string, ChecksEntry>();
 
 /** Fetch (or refresh) a PR's checks into the cache. A call already in flight, or a fresh enough
@@ -612,11 +614,11 @@ export function ensureChecks(repo: string, prNumber: number): void {
   const key = `${repo}#${prNumber}`;
   const e = checksCache.get(key);
   if (e && (e.inflight || Date.now() - e.at < CHECKS_TTL)) return;
-  checksCache.set(key, { checks: e?.checks ?? [], at: Date.now(), inflight: true });
+  checksCache.set(key, { checks: e?.checks, at: Date.now(), inflight: true });
   notify();
   api.prDetail(repo, prNumber)
     .then((d) => checksCache.set(key, { checks: d.checks, at: Date.now() }))
-    .catch(() => checksCache.set(key, { checks: e?.checks ?? [], at: Date.now() })) // keep the last good one
+    .catch(() => checksCache.set(key, { checks: e?.checks, at: Date.now() })) // keep the last good one
     .finally(notify);
 }
 
