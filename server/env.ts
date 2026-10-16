@@ -26,11 +26,31 @@ export function scrubbedEnv(extra: Env = {}, opts: { keep?: readonly string[] } 
 // an account gets that account's token in every process Orca runs under its paths — nothing switches.
 let accounts: Array<{ path: string; user: string }> = [];
 const tokens = new Map<string, string>();
+type Identity = { name?: string; email?: string };
+let identities: Record<string, Identity> = {};
+const profiles = new Map<string, Identity>();
 
 /** Remember which repo paths (repo + worktree root) belong to which `gh` account. Called by
  *  config.ts whenever a config becomes current. */
-export function setGithubAccounts(repos: ReadonlyArray<{ repoPath: string; worktreeRoot: string; githubUser?: string }>): void {
+export function setGithubAccounts(repos: ReadonlyArray<{ repoPath: string; worktreeRoot: string; githubUser?: string }>, ids: Record<string, Identity> = {}): void {
   accounts = repos.flatMap((r) => (r.githubUser ? [{ path: r.repoPath, user: r.githubUser }, { path: r.worktreeRoot, user: r.githubUser }] : []));
+  identities = ids;
+}
+
+/** The commit identity for `user`: the config's, each missing field from the GitHub profile (once per
+ *  process; public email, else GitHub's noreply address — so a commit is attributed and verified). */
+export function githubIdentity(user: string, token: string): Identity {
+  if (!profiles.has(user)) {
+    const p = Bun.spawnSync(["gh", "api", "user"], { env: scrubbedEnv({ GH_TOKEN: token }), stdout: "pipe", stderr: "pipe" });
+    let id: Identity = {};
+    try {
+      const u = JSON.parse(p.stdout.toString()) as { id?: number; login?: string; name?: string | null; email?: string | null };
+      id = { name: u.name || u.login || user, email: u.email || (u.id ? `${u.id}+${u.login ?? user}@users.noreply.github.com` : undefined) };
+    } catch { /* profile unreadable: the config's fields, else git's own */ }
+    profiles.set(user, id);
+  }
+  const profile = profiles.get(user)!;
+  return { name: identities[user]?.name ?? profile.name, email: identities[user]?.email ?? profile.email };
 }
 
 /** The `gh` account `cwd` belongs to, or undefined (the host's active account). */
@@ -52,11 +72,17 @@ export function githubToken(user: string): string | undefined {
   return tokens.get(user) || undefined;
 }
 
-/** `{ GH_TOKEN }` for a process running at `cwd`, or nothing. */
+/** The env for a process running at `cwd`: `GH_TOKEN` and the account's commit identity, or nothing. */
 export function githubEnv(cwd: string | undefined): Env {
   const user = githubUserFor(cwd);
   const tok = user && githubToken(user);
-  return tok ? { GH_TOKEN: tok } : {};
+  if (!user || !tok) return {};
+  const { name, email } = githubIdentity(user, tok);
+  return {
+    GH_TOKEN: tok,
+    ...(name ? { GIT_AUTHOR_NAME: name, GIT_COMMITTER_NAME: name } : {}),
+    ...(email ? { GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_EMAIL: email } : {}),
+  };
 }
 
 /** `bin/worker` holds the tools every run may use — `orca-shot`, the one way to take a screenshot

@@ -37,6 +37,7 @@ case "$1 $2" in
   "auth status") first=1; for a in $ORCA_GH_ACCOUNTS; do echo "  ✓ Logged in to github.com account $a (keyring)"; [ $first = 1 ] && echo "  - Active account: true" || echo "  - Active account: false"; first=0; done ;;
   "auth token") shift 2; while [ $# -gt 0 ]; do [ "$1" = "--user" ] && { echo "tok-$2"; exit 0; }; shift; done; echo "tok-active" ;;
   "repo list") cat "$ORCA_GH_REPOLIST_FIXTURE" ;;
+  "api user") printf '{"id":4242,"login":"%s","name":"Finn P","email":null}' "\${GH_TOKEN#tok-}" ;;
   "repo clone") git clone -q "$ORCA_GH_CLONE_SRC" "$4" ;;
   "api graphql") cat "$ORCA_GH_GRAPHQL_FIXTURE" ;;
   *rules/branches*) cat "$ORCA_GH_RULES_FIXTURE" 2>/dev/null || echo '[]' ;;

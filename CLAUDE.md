@@ -185,7 +185,10 @@ account's token as `GH_TOKEN` in every process Orca runs under its paths — `gh
 previews (`server/env.ts` `githubEnv`, laid in by `runCmd`, `agent.launch` and `preview.start`;
 the map is refreshed whenever a config becomes current). `GH_TOKEN` overrides the active account
 for `gh` and for git's `gh auth git-credential` helper, so `@me`, PR creation, merges and pushes
-land on the right account. Commit identity stays git's (`git config user.email` in that clone).
+land on the right account. Commit identity rides along as `GIT_AUTHOR_*` / `GIT_COMMITTER_*`: the app config's
+`githubAccounts[login]` `{ name, email }`, each missing field from the account's GitHub profile
+(`gh api user`: its name; its public email, else GitHub's noreply address) — no per-clone
+`git config`.
 Unset, nothing changes. The repo switcher shows `owner/name` once the repos span more than one
 GitHub owner (`repoLabel`; `owner` on `/api/config` from origin). **The orchestrator can set a
 repo up itself** (`orca repo list` — every repo each signed-in account can see; `orca repo add
