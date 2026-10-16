@@ -1,4 +1,4 @@
-import { scrubbedEnv, type Env } from "./env";
+import { githubEnv, scrubbedEnv, type Env } from "./env";
 
 export type RunOptions = {
   cwd?: string;
@@ -17,7 +17,8 @@ export type RunResult = { stdout: string; stderr: string; code: number };
  *  a test's PATH shim for `gh` — minus Orca's secrets: git hooks in an agent-edited worktree run
  *  under this, and must not find the Slack token or database URL. */
 export async function runCmd(cmd: string[], opts: RunOptions = {}): Promise<RunResult> {
-  const proc = Bun.spawn(cmd, { cwd: opts.cwd, env: scrubbedEnv(opts.env), stdin: opts.stdin ?? "ignore", stdout: "pipe", stderr: "pipe" });
+  const at = opts.cwd ?? (cmd[0] === "git" && cmd[1] === "-C" ? cmd[2] : undefined); // git.ts runs `git -C <repo>` with no cwd
+  const proc = Bun.spawn(cmd, { cwd: opts.cwd, env: scrubbedEnv({ ...githubEnv(at), ...opts.env }), stdin: opts.stdin ?? "ignore", stdout: "pipe", stderr: "pipe" });
   let timedOut = false;
   const timer = opts.timeoutMs ? setTimeout(() => { timedOut = true; proc.kill(); }, opts.timeoutMs) : undefined;
   const [stdout, stderr, code] = await Promise.all([

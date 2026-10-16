@@ -937,3 +937,44 @@ test("O23b: the ladder decision is pure — threshold, the top, and models off t
   expect(parseConfigDocument({ repos: [{ name: "r", repoPath: "/r", worktreeRoot: "/w", baseBranch: "main", modelEscalation: "always" }] }).errors.join("\n"))
     .toContain('modelEscalation must be "suggest" or "apply"');
 });
+
+test("O30: orca repo list / add — the orchestrator sets up a repo the board doesn't have, on the account that owns it", async () => {
+  const devRoot = realpathSync(await mkdtemp(join(tmpdir(), "orca-devroot-")));
+  const saved = { ORCA_DEV_ROOT: process.env.ORCA_DEV_ROOT, ORCA_GH_ACCOUNTS: process.env.ORCA_GH_ACCOUNTS, ORCA_GH_CLONE_SRC: process.env.ORCA_GH_CLONE_SRC, ORCA_GH_REPOLIST_FIXTURE: process.env.ORCA_GH_REPOLIST_FIXTURE, ORCA_GH_REPO_FIXTURE: process.env.ORCA_GH_REPO_FIXTURE };
+  try {
+    process.env.ORCA_DEV_ROOT = devRoot;
+    process.env.ORCA_GH_ACCOUNTS = "work-login finnformica"; // work active, personal second
+    process.env.ORCA_GH_CLONE_SRC = repo; // the scratch repo stands in for GitHub
+    const fx = join(state, "repolist.json");
+    await writeFile(fx, JSON.stringify([
+      { nameWithOwner: "finnformica/claude-hydra", description: "login rotation", isPrivate: false, defaultBranchRef: { name: "main" }, pushedAt: "2026-10-15T00:00:00Z" },
+      { nameWithOwner: "acme/app", description: null, isPrivate: true, defaultBranchRef: { name: "master" }, pushedAt: "2026-10-10T00:00:00Z" },
+    ]));
+    process.env.ORCA_GH_REPOLIST_FIXTURE = fx;
+    const view = join(state, "repoview.json");
+    await writeFile(view, JSON.stringify({ nameWithOwner: "finnformica/claude-hydra", defaultBranchRef: { name: "main" } }));
+    process.env.ORCA_GH_REPO_FIXTURE = view;
+
+    const listed = await orchestrator.tool(cfg(), "repo", { _: ["list"] });
+    expect(listed).toContain("finnformica/claude-hydra  main  (work-login)"); // every account is asked; the shim answers the same list for each
+    expect(listed).toContain("acme/app  master  private");
+    expect(listed).toContain("orca repo add <owner/name>");
+
+    await expect(orchestrator.tool(cfg(), "repo", { _: ["add"] })).rejects.toThrow("orca repo add <owner/name>");
+    await expect(orchestrator.tool(cfg(), "repo", { _: ["add", "r"] })).rejects.toThrow("is not owner/name");
+    const added = await orchestrator.tool(cfg(), "repo", { _: ["add", "finnformica/claude-hydra"] });
+    expect(added).toContain('Added finnformica/claude-hydra to Orca as "claude-hydra"');
+    expect(added).toContain("gh account finnformica"); // the owner is a signed-in account that is NOT the active one → pinned
+    expect(existsSync(join(devRoot, "claude-hydra", ".git"))).toBe(true);
+    const rows = await db.repoConfigs();
+    const row = rows.find((r) => r.name === "claude-hydra")!;
+    expect(row.config).toMatchObject({ repoPath: "${ORCA_DEV_ROOT}/claude-hydra", worktreeRoot: "${ORCA_DEV_ROOT}/claude-hydra/.worktrees", baseBranch: "main", githubUser: "finnformica", previewServices: [] });
+    // Again, with the config that now has it: the duplicate name is refused before anything is cloned.
+    const withIt: OrcaConfig = { ...cfg(), repos: [...cfg().repos, { name: "claude-hydra", repoPath: join(devRoot, "claude-hydra"), worktreeRoot: join(devRoot, "claude-hydra", ".worktrees"), baseBranch: "main", previewServices: [] }] };
+    await expect(orchestrator.tool(withIt, "repo", { _: ["add", "finnformica/claude-hydra"] })).rejects.toThrow('already has a repo named "claude-hydra"');
+    // A directory already at the target that is some other clone is never adopted.
+    await expect(orchestrator.tool(cfg(), "repo", { _: ["add", "someone-else/claude-hydra"], name: "hydra2" }).catch((e) => { throw e; })).rejects.toThrow("is not a clone of someone-else/claude-hydra");
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
