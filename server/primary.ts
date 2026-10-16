@@ -16,7 +16,7 @@
 // (idleTimeout/maxLifetime) and a session lock dies with its connection.
 import { existsSync, readFileSync, statSync } from "fs";
 import { dirname, join, resolve } from "path";
-import { instanceName, previewBridge } from "./db";
+import { DbUnavailable, instanceName, logUnlessDown, onAvailable, previewBridge, unavailableSince } from "./db";
 import { processCwd } from "./proc";
 
 /** How often a secondary retries the lock, and a primary re-asserts it (a dropped connection loses it). */
@@ -48,25 +48,55 @@ let fired = false;
  *  (a test calling the orchestrator in-process, a script): the guard is the bridge's, not the code's.
  *  Never in a branch preview's bridge, elected or not — every duty's own guard reads this, so a code
  *  path that forgets `elect()` (or runs before it) still can't wake, merge, reap or launch from one. */
-export const held = (): boolean => !previewBridge() && (!elected || primary);
+export const held = (): boolean => !previewBridge() && (!elected || (primary && unavailableSince() === null));
+
+/** The one reason a bridge gives while the database is down. Fixed text, never the driver's error
+ *  message: a timeout and a refused connect alternated, and each change of text logged a new line. */
+export const DB_DOWN_REASON = "database unreachable";
 
 /** For /api/health and /api/diagnostics. */
 export const state = (): { primary: boolean; reason: string } => ({ primary: elected ? primary : true, reason: elected ? reason : "no election" });
 
 /** Run `fn` once, the first time this process becomes primary (or now, if it already is). */
 export function onPrimary(fn: () => unknown): void {
-  if (fired) { void Promise.resolve().then(fn).catch((e) => console.error("orca: primary duty failed", e)); return; }
+  if (fired) { void Promise.resolve().then(fn).catch(logUnlessDown("orca: primary duty failed")); return; }
   listeners.push(fn);
 }
 
+const promoted = new Set<() => unknown>();
+
 function become(next: boolean, why: string): void {
+  const rising = next && !primary;
   if (next !== primary || why !== reason) console.log(next ? `orca: primary for instance ${instanceName()} — running background duties` : `orca: secondary bridge (${why}) — serving HTTP only, no background duties`);
   primary = next;
   reason = why;
   if (next && !fired) {
     fired = true;
-    for (const fn of listeners.splice(0)) void Promise.resolve().then(fn).catch((e) => console.error("orca: primary duty failed", e));
+    for (const fn of listeners.splice(0)) void Promise.resolve().then(fn).catch(logUnlessDown("orca: primary duty failed"));
   }
+  if (rising) for (const fn of promoted) void Promise.resolve().then(fn);
+}
+
+/** Run `fn` ONCE, the first time this process is primary with the database up — now, at a takeover,
+ *  or when the database comes back after an outage. A run that meets `DbUnavailable` (the database
+ *  went away again) is not counted and runs again at the next of those; any other error is logged and
+ *  counted, as before. (The boot-time reconcile set its flag first and so never ran after an outage.) */
+export function whenUp(fn: () => Promise<unknown>, label: string): () => Promise<void> {
+  let done = false;
+  let running: Promise<void> | null = null;
+  const tryRun = (): Promise<void> => {
+    if (done || !held() || unavailableSince() !== null) return Promise.resolve();
+    running ??= (async () => {
+      try { await fn(); done = true; }
+      catch (e) { if (!(e instanceof DbUnavailable)) { done = true; console.error(label, e); } }
+      finally { running = null; }
+    })();
+    return running;
+  };
+  onAvailable(tryRun);
+  promoted.add(tryRun); // every secondary → primary change, not only the first (`onPrimary`)
+  void Promise.resolve().then(tryRun);
+  return tryRun;
 }
 
 /** The lock key: per instance, and per schema so parallel test schemas on one server never contend. */
@@ -80,18 +110,36 @@ async function tryLock(): Promise<boolean> {
   return Boolean(row?.got);
 }
 
-async function attempt(): Promise<void> {
-  try {
-    const got = await tryLock();
-    become(got, got ? "holds the instance lock" : `another bridge holds instance ${instanceName()}'s lock`);
-  } catch (e) {
-    // The connection is gone (database down, dropped): the lock went with it. A fresh client next time.
-    void client?.end().catch(() => {});
-    client = null;
-    become(false, `database unreachable: ${e instanceof Error ? e.message : String(e)}`);
-  }
-  timer = setTimeout(() => void attempt(), primary ? PRIMARY_HEARTBEAT_MS : PRIMARY_RETRY_MS);
-  timer.unref();
+function dropClient(): void {
+  void client?.end().catch(() => {});
+  client = null;
+}
+
+let attempting: Promise<void> | null = null;
+/** One election step. While db.ts knows the database is down this does not try the lock at all: the
+ *  lock's own client once reconnected before db.ts's probe did, so a bridge became primary and ran its
+ *  duties into a pool that still failed fast — then lost the lock again (the flapping). db.ts is the one
+ *  judge of "reachable"; its `onAvailable` re-runs this at once (see `elect`). */
+function attempt(): Promise<void> {
+  attempting ??= (async () => {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (unavailableSince() !== null) {
+      dropClient(); // the lock (if held) went with the connection
+      become(false, DB_DOWN_REASON);
+      return; // no timer: db.ts's probe calls back when it is reachable
+    }
+    try {
+      const got = await tryLock();
+      become(got, got ? "holds the instance lock" : `another bridge holds instance ${instanceName()}'s lock`);
+    } catch {
+      // The connection is gone (database down, dropped): the lock went with it. A fresh client next time.
+      dropClient();
+      become(false, DB_DOWN_REASON);
+    }
+    timer = setTimeout(() => void attempt(), primary ? PRIMARY_HEARTBEAT_MS : PRIMARY_RETRY_MS);
+    timer.unref();
+  })().finally(() => { attempting = null; });
+  return attempting;
 }
 
 /** Start the election (server/index.ts, once). A preview bridge or a worktree's bridge never takes
@@ -101,6 +149,9 @@ export function elect(): void {
   elected = true;
   const refused = previewBridge() ? "a branch preview's bridge" : worktreeRefusal();
   if (refused) { become(false, refused); return; }
+  // Registered before index.ts's own listeners, so the lock is decided before a `whenUp` duty asks `held()`.
+  // An attempt still in flight may have started while it was down: let it end, then decide afresh.
+  onAvailable(async () => { await attempting; await attempt(); });
   void attempt();
 }
 

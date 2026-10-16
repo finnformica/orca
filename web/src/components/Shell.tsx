@@ -22,7 +22,7 @@ import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPa
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
 import { HeaderUsageMeter } from "@/views/Vitals";
-import { BridgeLabel, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
+import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
 import { cn, PortalContainer } from "@/lib/utils";
 import { validChoice } from "@/lib/persisted";
@@ -101,6 +101,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
             <AskOrchestrator />
           </div>
         </header>
+        <DatabaseBanner />
         <main className="w-full flex-1 px-4 py-6 md:px-6 max-md:min-w-0 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pb-[calc(5.5rem+env(safe-area-inset-bottom))]">{offline ? <OfflineScreen /> : children}</main>
       </div>
       <BottomBar activity={activity} />
