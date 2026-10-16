@@ -135,6 +135,7 @@ export function noteOomKill(): void { oomKills++; }
  *  recorded: the machine's cost is its hourly rate over its boot ledger, which each sample's
  *  heartbeat (`heartbeat`) keeps current. */
 export async function sampleMetrics(): Promise<void> {
+  if (db.unavailableSince() !== null) return; // skipped while down (kills carry over); db.ts announces the outage once
   await heartbeat();
   const kills = oomKills;
   oomKills = 0;
@@ -146,7 +147,7 @@ export async function sampleMetrics(): Promise<void> {
     }, h.at);
   } catch (e) {
     oomKills += kills; // not recorded — carry them to the next sample
-    console.error("orca: metrics sample failed", e instanceof Error ? e.message : e);
+    if (!(e instanceof db.DbUnavailable)) console.error("orca: metrics sample failed", e instanceof Error ? e.message : e);
   }
 }
 
@@ -154,6 +155,7 @@ export async function sampleMetrics(): Promise<void> {
  *  after backfilling its boot ledger from the journal. */
 export function startMetricsSampler(ms = METRIC_SAMPLE_MS): ReturnType<typeof setInterval> {
   void importJournalBoots().finally(() => void sampleMetrics());
+  db.onAvailable(() => void sampleMetrics()); // a sample the outage skipped, taken at once on its return
   return setInterval(() => void sampleMetrics(), ms).unref();
 }
 
@@ -170,11 +172,12 @@ export async function currentBoot(now = Date.now()): Promise<{ bootId: string; b
 /** Mark this boot seen now. Never throws, and runs apart from the metrics write: the ledger is what
  *  the month's cost reads, so neither may take the other down. */
 export async function heartbeat(now = Date.now()): Promise<void> {
+  if (db.unavailableSince() !== null) return;
   try {
     const b = await currentBoot(now);
     await db.recordBoots([{ ...b, lastSeen: now }]);
   } catch (e) {
-    console.error("orca: uptime heartbeat failed", e instanceof Error ? e.message : e);
+    if (!(e instanceof db.DbUnavailable)) console.error("orca: uptime heartbeat failed", e instanceof Error ? e.message : e);
   }
 }
 

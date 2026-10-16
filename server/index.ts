@@ -102,8 +102,8 @@ const refuse = (e: Error) => { console.error(e.message); process.exit(1); };
 db.onFatal(refuse);
 void db.open().catch((e) => {
   if (e instanceof db.MigrationRefused) refuse(e);
-  else if (e instanceof db.DbUnavailable) console.error("orca: starting WITHOUT the database — agents run, history journals to the outbox");
-  else console.error("orca: database open failed", e);
+  // DbUnavailable: db.ts has said so in its one "database unreachable … running degraded" line.
+  else if (!(e instanceof db.DbUnavailable)) console.error("orca: database open failed", e);
 });
 // Background duties belong to ONE bridge per instance (server/primary.ts): whoever holds the instance's
 // advisory lock. Everything below that acts on this instance's runs, previews, PRs or inventory waits
@@ -121,18 +121,16 @@ const reconcile = () => db.reconcileRunning(lease.liveRunIds(), async ({ runId, 
   const found = await backfillRun(runId, sessionId);
   return found?.response ? { response: found.response, structured: found.outcome } : undefined;
 });
-// Once the database answers (now, or after an outage the bridge booted into): close what died. A
-// preview bridge acts on none of this instance's runs, so it skips both.
-let reconciled = false;
-async function bootReconcile(): Promise<void> {
-  if (reconciled || PREVIEW_BRIDGE || !primary.held()) return;
-  reconciled = true;
+// Once this bridge is primary AND the database answers (now, at a takeover, or after an outage the
+// bridge booted into): close what died. ONCE — a run cut short by the database going away again runs
+// again when it is back (primary.whenUp). A preview bridge acts on none of this instance's runs.
+const bootReconcile = primary.whenUp(async () => {
+  if (PREVIEW_BRIDGE) return;
   const { closed, recovered } = await reconcile();
   if (closed) console.log(`orca: closed ${closed} interrupted turn(s), recovered ${recovered} from the provider's session`);
   // A wake that was in flight when the previous bridge stopped: re-queue what it was handling.
-  await loadConfig().then((cfg) => orchestrator.recover(cfg, reconcile)).catch((e) => console.error("orca: orchestrator recovery failed", e));
-}
-db.onAvailable(bootReconcile);
+  await orchestrator.recover(await loadConfig(), reconcile);
+}, "orca: boot reconcile failed");
 
 // Runs still going under a lease are adopted, not written off: when each exits, its turn is finished
 // from the session file and the orchestrator hears about it, as if the bridge had never restarted.
@@ -190,7 +188,7 @@ setInterval(() => {
 const FOREIGN_WAKE_POLL_MS = 60_000;
 primary.onPrimary(() => {
   const check = () => void loadConfig().then((cfg) => orchestrator.evictForeignWake(cfg, reconcile))
-    .catch((e) => console.error("orca: foreign-wake check failed", e));
+    .catch(db.logUnlessDown("orca: foreign-wake check failed"));
   check();
   setInterval(() => { if (primary.held()) check(); }, FOREIGN_WAKE_POLL_MS).unref();
 });
@@ -244,7 +242,7 @@ const REAP_INTERVAL_MS = 60 * 60 * 1000;
 function runReaper(): void {
   if (!primary.held()) return;
   void loadConfig().then((cfg) => preview.reap(cfg.repos.filter(verbs.repoHere)))
-    .catch((e) => console.error("orca: preview/container reap failed", e));
+    .catch(db.logUnlessDown("orca: preview/container reap failed"));
 }
 primary.onPrimary(() => {
   runReaper();

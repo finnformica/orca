@@ -4,12 +4,12 @@
 // than the one this tab runs (a deploy happened) — one tap hands over to the new build's service
 // worker (lib/sw.ts applyUpdate) and reloads.
 import { useEffect, useState } from "react";
-import { CloudOff, RefreshCw, Server, WifiOff } from "lucide-react";
+import { CloudOff, DatabaseZap, RefreshCw, Server, WifiOff } from "lucide-react";
 import { poll } from "@/lib/poll";
-import { refreshEverything, useRefreshing } from "@/lib/refresh";
+import { refreshEverything, useDatabaseDown, useRefreshing } from "@/lib/refresh";
 import { applyUpdate } from "@/lib/sw";
 import { useBridge, useLastSync } from "../store";
-import { ago, bridgeLabel, newerBuild, staleAge } from "../workstream";
+import { ago, bridgeLabel, databaseBannerText, newerBuild, staleAge } from "../workstream";
 import { Tip } from "@/components/ui/tip";
 
 const RUNNING_BUILD = typeof __ORCA_BUILD__ === "undefined" ? undefined : __ORCA_BUILD__;
@@ -68,6 +68,21 @@ export function UpdateBanner({ build = RUNNING_BUILD, every = 60_000, onStaleCha
       <button type="button" onClick={() => void applyUpdate()} className="inline-flex min-h-8 items-center gap-1 rounded-md bg-white/15 px-2.5 font-medium hover:bg-white/25">
         <RefreshCw className="size-3.5" aria-hidden="true" />Refresh
       </button>
+    </div>
+  );
+}
+
+/** ONE bar while the bridge's database is unreachable (it keeps serving the cached config, this
+ *  machine's worktrees and journaled turns, and retries by itself). Driven by the `x-orca-database`
+ *  header on every answer (lib/refresh.ts), so it goes away on its own with the first answer after
+ *  the database is back. Never a toast: a failing poll each tick would stack one per tick. */
+export function DatabaseBanner({ now }: { now?: number }) {
+  const since = useDatabaseDown();
+  if (since === null) return null;
+  return (
+    <div role="status" data-slot="database-banner" className="bg-geist-warning-bg text-geist-warning-fg flex items-center justify-center gap-2 border-b px-4 py-2 text-sm">
+      <DatabaseZap className="size-4 shrink-0" aria-hidden="true" />
+      <span>{databaseBannerText(since, now ?? Date.now())}</span>
     </div>
   );
 }

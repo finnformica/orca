@@ -6,6 +6,7 @@
 // every source at once and resolves when all have settled. A refresh still pending after DEADLINE_MS
 // means the page itself is wedged: it falls back to a hard reload.
 import { useSyncExternalStore } from "react";
+import { databaseDownSince } from "../workstream";
 import { apiFetch } from "./server";
 
 export const STUCK_MS = 3_000;
@@ -19,8 +20,25 @@ const inflight = new Set<InFlight>();
 export function trackedFetch(input: string, init?: RequestInit): Promise<Response> {
   const entry: InFlight = { ctl: new AbortController(), at: Date.now() };
   inflight.add(entry);
-  return apiFetch(input, { ...init, signal: entry.ctl.signal }).finally(() => inflight.delete(entry));
+  return apiFetch(input, { ...init, signal: entry.ctl.signal })
+    .then((r) => { noteDatabase(r.headers?.get("x-orca-database")); return r; })
+    .finally(() => inflight.delete(entry));
 }
+
+// The bridge's database state, as the last answered GET said it: every answer carries
+// `x-orca-database: unreachable since <iso>` while it is down, and no header once it is back. ONE
+// value for the whole page, so the top bar shows one banner — never a toast per failed poll.
+let dbDownSince: number | null = null;
+const dbSubs = new Set<() => void>();
+function noteDatabase(header: string | null | undefined): void {
+  const next = databaseDownSince(header);
+  if (next === dbDownSince) return;
+  dbDownSince = next;
+  dbSubs.forEach((s) => s());
+}
+/** When the bridge's database went away, or null while it is reachable. */
+export const useDatabaseDown = (): number | null =>
+  useSyncExternalStore((cb) => { dbSubs.add(cb); return () => { dbSubs.delete(cb); }; }, () => dbDownSince);
 
 /** Abort every tracked GET older than `ms`; returns how many. */
 export function abortStuck(ms = STUCK_MS, now = Date.now()): number {
@@ -65,4 +83,4 @@ export function refreshEverything(opts: { stuckMs?: number; deadlineMs?: number;
 }
 
 /** Tests. */
-export function _resetRefresh(): void { inflight.clear(); current = null; refreshing = false; }
+export function _resetRefresh(): void { inflight.clear(); current = null; refreshing = false; dbDownSince = null; }
