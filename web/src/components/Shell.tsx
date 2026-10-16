@@ -188,11 +188,13 @@ function Sidebar({ collapsed, onToggle, actions }: {
   );
 }
 
-// The mark: a geometric orca silhouette (single-fill, currentColor, eye punched out via evenodd).
+// The mark: a geometric orca silhouette (single-fill, currentColor, eye punched out via evenodd). The
+// "Soft" mark: a same-colour round stroke rounds every join. The transform is favicon.svg's, scaled
+// 1.5× about the centre, so inside RoundMark (16px in 24px) it sits exactly as it does in the favicon.
 export function OrcaMark({ className }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" fill="currentColor" fillRule="evenodd" className={className} aria-hidden="true">
-      <path d="M2 12.5C2 9.5 5.5 8 9 8L11 3L13.5 8C16.5 8 19 8.5 20.5 9L22.5 6L20.3 11L22.5 15.5C19 13 10 14 2 12.5ZM5.6 10a1 1 0 1 0 0 2a1 1 0 1 0 0 -2Z" />
+    <svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth={0.9} strokeLinejoin="round" fillRule="evenodd" className={className} aria-hidden="true">
+      <path transform="translate(-0.78 0.375) scale(1.05)" d="M2.6 12.1C2.6 9.7 5.5 8 9 8L11.4 3L13.8 8C16.6 8 18.7 8.6 20.3 9.5L22.6 6.3L21 11L22.6 15.7L20.3 12.5C17.5 13.6 10.5 14.2 4.4 13.5C3.3 13.37 2.6 12.9 2.6 12.1ZM5.9 9.25a1.5 1.5 0 1 0 0 3a1.5 1.5 0 1 0 0 -3Z" />
     </svg>
   );
 }
