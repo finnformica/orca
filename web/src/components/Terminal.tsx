@@ -133,9 +133,11 @@ export function AskOrchestrator() {
       // Shell.tsx wraps this with the header's usage meter in one ml-auto slot, so this button stays
       // right-aligned whether or not the meter renders (it's absent while loading or signed out).
       // Below md the bottom bar's Orchestrator button takes its place.
-      className="bg-card hover:bg-accent/60 text-foreground flex h-8 shrink-0 items-center gap-2 rounded-md border px-2.5 text-sm max-md:hidden">
-      <span className="relative inline-flex"><Bot className="text-muted-foreground size-3.5 shrink-0" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
-      <span className="text-muted-foreground">Ask the orchestrator</span>
+      // A fixed width (Geist renders it at 194px): its LEFT edge moved 10.8px when the web font
+      // replaced the wider fallback font after first paint. The label truncates if a fallback is wider.
+      className="bg-card hover:bg-accent/60 text-foreground flex h-8 w-[12.25rem] shrink-0 items-center gap-2 rounded-md border px-2.5 text-sm max-md:hidden">
+      <span className="relative inline-flex shrink-0"><Bot className="text-muted-foreground size-3.5 shrink-0" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
+      <span data-slot="ask-orchestrator-label" className="text-muted-foreground min-w-0 flex-1 truncate text-left">Ask the orchestrator</span>
       <Shortcut id="orchestrator" />
     </button>
   );
