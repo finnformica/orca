@@ -3,10 +3,13 @@
 // pure derivations in workstream.ts — `checkGroups` and `prConversation` — so the folding rules are
 // tested without a DOM.
 import { useState } from "react";
-import { Bot, ChevronDown, ChevronRight, CircleCheck, CircleSlash, CircleX, ExternalLink, Loader2 } from "lucide-react";
+import { Bot, Check, ChevronDown, ChevronRight, CircleCheck, CircleSlash, CircleX, Clock, ExternalLink, Loader2, X } from "lucide-react";
 import { Pill, VCard } from "@/components/console";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { useReviewThreads } from "../store";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
+import { ensureChecks, useCachedChecks, useReviewThreads } from "../store";
+import type { CiStatus } from "../../../server/gh";
 import {
   ago, checkDuration, checkGroups, checkSummary, conversationSummary, foldedChecksLabel, formatDuration, prConversation,
   type CheckRow, type ConversationEntry, type PrComment, type PrReview,
@@ -22,7 +25,7 @@ function CheckIcon({ c }: { c: CheckRow }) {
   return <CircleCheck aria-label="passing" className="text-geist-green size-4 shrink-0" />;
 }
 
-function CheckLine({ c }: { c: CheckRow }) {
+export function CheckLine({ c }: { c: CheckRow }) {
   const ms = checkDuration(c);
   return (
     <li data-slot="check" data-status={c.skipped ? "skipped" : c.status} className="flex h-9 items-center gap-2.5 px-4 text-sm">
@@ -61,6 +64,58 @@ export function ChecksCard({ checks }: { checks: CheckRow[] }) {
         </ul>
       )}
     </VCard>
+  );
+}
+
+/** The CI chip's hover card: failing checks first, then running / pending, then passing, each a
+ *  full row (name, state, duration, a link to its run); skipped checks collapse into one count —
+ *  never listed, never expanded (unlike `ChecksCard`'s page-level fold). */
+export function CiPanel({ checks, className, bodyClass }: { checks: CheckRow[]; className?: string; bodyClass?: string }) {
+  const g = checkGroups(checks);
+  const shown = [...g.failing, ...g.running, ...g.passing];
+  return (
+    <VCard slot="ci-panel" title="Checks" className={className} bodyClass={bodyClass} aside={<span className="text-muted-foreground text-xs">{checkSummary(g)}</span>}>
+      {checks.length === 0 ? <p className="text-muted-foreground px-4 py-3 text-sm">No checks.</p> : (
+        <ul className="divide-y">
+          {shown.map((c, i) => <CheckLine key={i} c={c} />)}
+          {g.skipped.length > 0 && (
+            <li data-slot="checks-skipped" className="text-muted-foreground flex h-9 items-center gap-2.5 px-4 text-sm">
+              <CircleSlash className="size-4 shrink-0" /><span>{g.skipped.length} skipped</span>
+            </li>
+          )}
+        </ul>
+      )}
+    </VCard>
+  );
+}
+
+const CI_LABEL: Record<"passing" | "failing" | "pending", string> = { passing: "CI passing", failing: "CI failing", pending: "CI checks pending" };
+
+/** The CI status chip — a tick, clock or cross — wherever it renders (the Agents list, the Board's
+ *  cards, the agent detail page): hovering or focusing it opens a `HoverCard` listing the PR's
+ *  checks (`CiPanel`), the same generic hover card the review cluster uses. `checks`, when the
+ *  caller already has them (the PR page's own `prDetail` fetch), skips the network call entirely;
+ *  otherwise the hover card's own open is what triggers the lazy, cached fetch (`store.ensureChecks`)
+ *  — a row nobody hovers never fetches its checks. Renders nothing when there's no CI signal yet. */
+export function CiChip({ repo, prNumber, ciStatus, checks }: { repo: string; prNumber?: number; ciStatus?: CiStatus; checks?: CheckRow[] }) {
+  const cached = useCachedChecks(repo, prNumber);
+  if (ciStatus !== "passing" && ciStatus !== "failing" && ciStatus !== "pending") return null;
+  const list = checks ?? cached;
+  return (
+    <HoverCard onOpenChange={(open) => { if (open && !checks && prNumber) ensureChecks(repo, prNumber); }}>
+      <HoverCardTrigger asChild>
+        <span data-slot="ci-chip" data-status={ciStatus} tabIndex={0} aria-label={CI_LABEL[ciStatus]}>
+          {ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
+          {ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
+          {ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
+        </span>
+      </HoverCardTrigger>
+      <HoverCardContent align="start" className="w-96 max-w-[calc(100vw-2rem)] p-0">
+        {list
+          ? <CiPanel checks={list} className="border-none shadow-none" bodyClass="max-h-80 overflow-y-auto" />
+          : <p className="text-muted-foreground px-4 py-3 text-sm" data-slot="ci-panel-loading">Loading checks…</p>}
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 
