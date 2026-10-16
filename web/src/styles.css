@@ -190,6 +190,19 @@
   svg.lucide {
     stroke-width: 1.5;
   }
+  /* Reserve the scrollbar's gutter from first paint. Without it the page is short until the first
+     poll lands, then a classic (non-overlay) scrollbar appears and the whole top bar's right side,
+     "Ask the orchestrator" included, jumps ~15px left. Overlay scrollbars (phones, most Macs) take
+     no gutter, so nothing changes there. */
+  html {
+    scrollbar-gutter: stable;
+  }
+  /* Radix's scroll lock (react-remove-scroll-bar) adds margin-right = innerWidth - clientWidth to the
+     body while a menu or dialog is open. With the gutter reserved that is the gutter itself, and the
+     page jumped left on every open. The gutter already holds the space, so no margin is needed. */
+  html body[data-scroll-locked] {
+    margin-right: 0 !important;
+  }
   body {
     background-color: var(--background);
     color: var(--foreground);
