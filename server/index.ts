@@ -562,6 +562,13 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (typeof body.text !== "string" || !body.text.trim()) return json({ error: "text required" }, 400);
     return json(await orchestrator.message(cfg, body.text, body.attachments ?? []));
   }
+  // The GitHub page: this host's signed-in `gh` accounts (per host, like /api/usage) and the commit
+  // identity each carries; a save writes the shared config.
+  if (req.method === "GET" && p === "/api/github/accounts") return json({ accounts: await repos.accountsHere(cfg) });
+  if (req.method === "POST" && p === "/api/github/accounts") {
+    await repos.setAccount(cfg, String(body.login ?? ""), { name: body.name as string | undefined, email: body.email as string | undefined });
+    return json({ accounts: await repos.accountsHere(await loadConfig()) });
+  }
   if (req.method === "POST" && p === "/api/repos/add") {
     // `orca repo add --on <this instance>`: clone here, append to the shared config.
     return json(await repos.add(cfg, String(body.nameWithOwner ?? ""), { name: typeof body.name === "string" ? body.name : undefined }));

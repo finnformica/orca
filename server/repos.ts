@@ -5,7 +5,7 @@
 import { existsSync } from "fs";
 import { join } from "path";
 import * as db from "./db";
-import { githubToken } from "./env";
+import { githubIdentity, githubToken } from "./env";
 import { runCmd } from "./run";
 import { saveConfigDocument, type OrcaConfig, type RepoConfig } from "./config";
 
@@ -17,6 +17,28 @@ export async function accounts(): Promise<string[]> {
   const all = [...text.matchAll(/Logged in to \S+ account (\S+)/g)].map((m) => m[1]!);
   const active = text.match(/account (\S+) \([^)]*\)\s*\n\s*- Active account: true/)?.[1];
   return active ? [active, ...all.filter((a) => a !== active)] : all;
+}
+
+export type AccountRow = { login: string; active: boolean; name?: string; email?: string; configured: { name?: string; email?: string }; repos: string[] };
+
+/** The GitHub page's rows for THIS host: each signed-in `gh` login, whether it is the active one, its
+ *  effective commit identity and the config's part of it, and the repos that use it (a repo with no
+ *  `githubUser` uses the active login). */
+export function accountRows(cfg: OrcaConfig, logins: string[], identity: (login: string) => { name?: string; email?: string }): AccountRow[] {
+  return logins.map((login, i) => ({
+    login, active: i === 0, ...identity(login), configured: cfg.githubAccounts?.[login] ?? {},
+    repos: cfg.repos.filter((r) => (r.githubUser ?? logins[0]) === login).map((r) => r.name),
+  }));
+}
+
+/** Set (or with "" clear) the configured name / email of one login — the rest of the document untouched. */
+export async function setAccount(cfg: OrcaConfig, login: string, fields: { name?: string; email?: string }): Promise<void> {
+  if (!/^[\w.-]+$/.test(login)) throw new Error("login required");
+  const next = { ...cfg.githubAccounts?.[login] };
+  for (const k of ["name", "email"] as const) if (fields[k] !== undefined) { if (fields[k]!.trim()) next[k] = fields[k]!.trim(); else delete next[k]; }
+  const all = { ...cfg.githubAccounts, [login]: next };
+  if (!Object.keys(next).length) delete all[login];
+  await saveConfigDocument({ ...cfg, githubAccounts: Object.keys(all).length ? all : undefined });
 }
 
 const envFor = (user?: string) => { const tok = user && githubToken(user); return tok ? { GH_TOKEN: tok } : {}; };
@@ -42,6 +64,17 @@ export function listText(cfg: OrcaConfig, repos: RemoteRepo[], have: string[]): 
   const known = new Set(have.map((s) => s.toLowerCase()));
   return repos.map((r) => `${known.has(r.nameWithOwner.toLowerCase()) ? "✓" : " "} ${r.nameWithOwner}  ${r.defaultBranch}${r.isPrivate ? "  private" : ""}  (${r.account})${r.description ? `  — ${r.description}` : ""}`).join("\n")
     + "\n✓ = already in Orca. Add one: orca repo add <owner/name> [--on <instance>]";
+}
+
+/** This host's accounts with their identities, for `/api/github/accounts`. The identity needs the
+ *  token; a login whose token can't be read shows the config's fields alone. */
+export async function accountsHere(cfg: OrcaConfig): Promise<AccountRow[]> {
+  return accountRows(cfg, await accounts(), (login) => {
+    const tok = githubToken(login);
+    const id = tok ? githubIdentity(login, tok) : {};
+    const c = cfg.githubAccounts?.[login];
+    return { name: c?.name ?? id.name, email: c?.email ?? id.email };
+  });
 }
 
 /** Clone `owner/name` here and add it to the config. Returns the new RepoConfig. */

@@ -12,7 +12,7 @@ import { useWorkstreams } from "./store";
 import { NewDraft } from "./views/Board";
 import { Overview } from "./views/Overview";
 import { Agents } from "./views/Agents";
-import { PreviewsPage, Repos, Settings, UsagePage } from "./views/Pages";
+import { GitHubPage, PreviewsPage, Repos, Settings, UsagePage } from "./views/Pages";
 import { PrDetail } from "./views/PrDetail";
 import { LocalDetail } from "./views/LocalDetail";
 import { TooltipProvider } from "./components/ui/tooltip";
@@ -53,6 +53,7 @@ function Page({ route }: { route: Route }) {
     case "agents": return <Agents />;
     case "previews": return <PreviewsPage />;
     case "repos": return <Repos />;
+    case "github": return <GitHubPage />;
     case "usage": return <UsagePage />;
     case "settings": return <Settings />;
     // The orchestrator's routed page (narrow screens; see useOrchestrator). It works if visited
