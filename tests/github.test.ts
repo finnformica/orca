@@ -3,10 +3,11 @@
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import {
   forRepo, GitHubAuthError, GitHubError, GitHubGraphQLError, GitHubNotFoundError, GitHubRateLimitError,
-  graphql, parseSlug, rateLimitedFor, request, resetCaches, resetTokens, setFetch, tokenFor,
+  graphql, parseSlug, rateLimitedFor, repoSlug, request, resetCaches, resetTokens, setFetch, tokenFor,
 } from "../server/github";
 import { setGithubAccounts } from "../server/env";
-import { installFakeGh, restorePath } from "./helpers";
+import { installFakeGh, makeScratchRepo, restorePath } from "./helpers";
+import { run } from "../server/run";
 import { native } from "./happydom";
 
 type Seen = { url: string; method: string; headers: Record<string, string>; body?: any };
@@ -155,4 +156,14 @@ test("parseSlug reads owner/name from every GitHub remote form, nothing else", (
   expect(parseSlug("ssh://git@github.com/acme/app.git")).toBe("acme/app");
   expect(parseSlug("/tmp/origin.git")).toBeUndefined();
   expect(parseSlug("")).toBeUndefined();
+});
+
+test("repoSlug: the remote `gh repo set-default` marked, else origin, as gh resolved {owner}/{repo}", async () => {
+  const repo = await makeScratchRepo();
+  await run(["git", "-C", repo, "remote", "add", "origin", "git@github.com:me/app-fork.git"]);
+  expect(await repoSlug(repo)).toBe("me/app-fork");
+  resetCaches();
+  await run(["git", "-C", repo, "remote", "add", "upstream", "https://github.com/acme/app.git"]);
+  await run(["git", "-C", repo, "config", "remote.upstream.gh-resolved", "base"]);
+  expect(await repoSlug(repo)).toBe("acme/app");
 });

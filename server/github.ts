@@ -73,12 +73,15 @@ const tokenKey = (token: string) => createHash("sha256").update(token).digest("h
 // ---- repo resolution ----
 
 const slugCache = new Map<string, string>();
-/** `owner/name` of the GitHub repo at `cwd`, from its `origin` remote (what `{owner}/{repo}` meant
- *  to `gh`). `ORCA_GITHUB_REPO` is the fallback for a checkout with no remote (the tests). */
+/** `owner/name` of the GitHub repo at `cwd` — what `{owner}/{repo}` meant to `gh`: the remote
+ *  `gh repo set-default` marked (`remote.<name>.gh-resolved = base`), else `origin`.
+ *  `ORCA_GITHUB_REPO` is the fallback for a checkout with no GitHub remote (the tests). */
 export async function repoSlug(cwd: string): Promise<string> {
   const hit = slugCache.get(cwd);
   if (hit) return hit;
-  const res = await runCmd(["git", "-C", cwd, "remote", "get-url", "origin"], { allowFail: true });
+  const marked = await runCmd(["git", "-C", cwd, "config", "--get-regexp", "^remote\\..*\\.gh-resolved$"], { allowFail: true });
+  const base = marked.code === 0 ? /^remote\.(.+)\.gh-resolved base$/m.exec(marked.stdout)?.[1] : undefined;
+  const res = await runCmd(["git", "-C", cwd, "remote", "get-url", base ?? "origin"], { allowFail: true });
   const slug = parseSlug(res.code === 0 ? res.stdout.trim() : "") ?? process.env.ORCA_GITHUB_REPO;
   if (!slug) throw new GitHubError(`could not resolve GitHub repository for ${cwd}: no GitHub origin remote`, 0, "");
   slugCache.set(cwd, slug);
