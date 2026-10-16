@@ -205,12 +205,12 @@ test("W3 promote-to-pr: gh pr create returns number + url", async () => {
   expect(pr.url).toEndWith("/42");
 });
 
-test("W3c promote labels: configured PR labels are applied comma-joined in one gh call", async () => {
+test("W3c promote labels: configured PR labels are applied in one GitHub call", async () => {
   const read = await recordGhArgs();
   await addLabel(repo, 42, ["preview", "urgent"].join(",")); // what /api/promote does with body.labels
   process.env.ORCA_GH_ARGS_LOG = ""; // stop recording so later tests aren't polluted
   const log = await read();
-  expect(log).toContain("pr edit 42 --add-label preview,urgent");
+  expect(log).toContain('POST /repos/acme/app/issues/42/labels {"labels":["preview","urgent"]}');
 });
 
 test("W3b promote body: no blank PRs — commit summary by default, the repo's PR template if present", async () => {
@@ -521,13 +521,13 @@ test("W9b stacked PR: `gh pr merge` refuses a PR that is part of a stack, so mer
     await mergePr(repo, 5112);
     process.env.ORCA_GH_ARGS_LOG = "";
     let log = await read();
-    expect(log).toContain("pr merge 5112 --squash");                                                                       // tried the normal way first
-    expect(log).toContain("api -X PUT repos/{owner}/{repo}/pulls/5112/merge-async -f merge_method=squash -f merge_action=direct_merge");
+    expect(log).toMatch(/^graphql mergePullRequest \{"id":"PR_5112"\} .*mergeMethod:SQUASH/m); // tried the normal way first
+    expect(log).toContain('PUT /repos/acme/app/pulls/5112/merge-async {"merge_method":"squash","merge_action":"direct_merge"}');
     read = await recordGhArgs();
     await enableAutoMerge(repo, 5112);
     process.env.ORCA_GH_ARGS_LOG = "";
     log = await read();
-    expect(log).toContain("merge_action=default"); // "auto" → let GitHub queue it when the base needs it
+    expect(log).toContain('"merge_action":"default"'); // "auto" → let GitHub queue it when the base needs it
 
     // A pending merge is polled by its uuid; a failed one is an error here, not a silent "merged" card.
     process.env.ORCA_GH_MERGE_ASYNC = '{"status":"failed","details":{"message":"base branch was modified"}}';
@@ -552,8 +552,8 @@ test("W9c auto-merge not allowed: a repo without auto-merge enabled gets a direc
     await enableAutoMerge(repo, 77);
     process.env.ORCA_GH_ARGS_LOG = "";
     const log = await read();
-    expect(log).toContain("pr merge 77 --auto --squash"); // tried auto-merge first
-    expect(log).toMatch(/^pr merge 77 --squash$/m);       // then merged directly, without --auto
+    expect(log).toMatch(/^graphql enablePullRequestAutoMerge \{"id":"PR_77"\} .*mergeMethod:SQUASH/m); // tried auto-merge first
+    expect(log).toMatch(/^graphql mergePullRequest \{"id":"PR_77"\} .*mergeMethod:SQUASH/m);           // then merged directly
 
     // CI still running → no direct merge; the original error plus what to do about it.
     await fixture({ mergeable: "MERGEABLE", statusCheckRollup: [{ state: "PENDING" }] });
@@ -653,8 +653,8 @@ test("S4 auto-merge is a toggle: enable and disable issue the matching gh comman
   await enableAutoMerge(repo, 42);
   await disableAutoMerge(repo, 42);
   const args = await readArgs();
-  expect(args).toContain("pr merge 42 --auto --squash"); // enable
-  expect(args).toContain("pr merge 42 --disable-auto");   // disable — the previously-missing half
+  expect(args).toMatch(/^graphql enablePullRequestAutoMerge \{"id":"PR_42"\} .*mergeMethod:SQUASH/m); // enable
+  expect(args).toMatch(/^graphql disablePullRequestAutoMerge \{"id":"PR_42"\} /m);                   // disable — the previously-missing half
 });
 
 test("R1 review-queue: listReviewPrs maps coworker meta (author + updated), newest first, no per-PR computed fields", async () => {
@@ -667,9 +667,10 @@ test("R1 review-queue: listReviewPrs maps coworker meta (author + updated), newe
   expect(prs.map((p) => p.number)).toEqual([21, 20]); // newest-updated first
   // Fields GitHub computes PER PR are not asked for: over ~250 coworker PRs they made the cold fetch
   // take seconds more, and the queue shows none of them (the PR page fetches its own).
-  const json = (await readArgs()).split("--json ")[1]!.split(/\s/)[0]!.split(",");
-  expect(json).toContain("reviewDecision");
-  for (const slow of ["mergeable", "autoMergeRequest", "statusCheckRollup", "comments"]) expect(json).not.toContain(slow);
+  const search = (await readArgs()).split("\n").find((l) => l.startsWith("graphql search"))!;
+  const fields = search.slice(search.indexOf("...on PullRequest{"));
+  expect(fields).toContain("reviewDecision");
+  for (const slow of ["mergeable", "autoMergeRequest", "statusCheckRollup", "comments"]) expect(fields).not.toContain(slow);
   expect(prs[0]).toMatchObject({ author: "sam", authorName: "sam", reviewStatus: "approved" });
   expect(prs[0]!.previewUrl).toBeUndefined(); // meta list skips comments — the preview URL is a detail-only field
   expect(prs[0]!.ciStatus).toBe("none"); // and skips CI (statusCheckRollup) — that's a detail-only, slow fetch

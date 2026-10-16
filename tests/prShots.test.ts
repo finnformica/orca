@@ -1,56 +1,62 @@
 // Screenshots in a PR's description (server/prShots.ts): the workstream's reported `orca-shot` PNGs
 // are pushed as one orphan commit on pr-assets/<pr>-<slug> through GitHub's git data API and linked
 // under the body's `## Screenshots`, which is replaced in place (the rest of the body untouched) and
-// left alone when it already shows the same shots. `gh` is a recording PATH shim: every call's args
-// and its --input payload are logged, so the exact call sequence is asserted with no network.
-import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+// left alone when it already shows the same shots. GitHub is a recording fake fetch
+// (server/github.ts `setFetch`): every call's method, path and JSON payload are kept, so the exact
+// call sequence is asserted with no network.
+import { afterEach, beforeEach, expect, test } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { syncPrShots, uploadPrAssets } from "../server/prShots";
+import { resetCaches, setFetch } from "../server/github";
 import { prAssetsRef, prShotIds, reportShots, screenshotsSection, shotRefs, withScreenshotsSection, workstreamShots } from "../web/src/workstream";
+import { native } from "./happydom";
 
-const SHIM = `#!/bin/sh
-echo "$*" >> "$PRSHOTS_LOG"
-prev=""; for a in "$@"; do [ "$prev" = "--input" ] && { printf 'INPUT ' >> "$PRSHOTS_LOG"; cat "$a" >> "$PRSHOTS_LOG"; echo >> "$PRSHOTS_LOG"; }
-  [ "$prev" = "--body-file" ] && cp "$a" "$PRSHOTS_DIR/edited.md"; prev="$a"; done
-case "$*" in
-  "pr view"*) cat "$PRSHOTS_DIR/body.json" ;;
-  "repo view"*) echo acme/app ;;
-  *git/blobs*) n=$(cat "$PRSHOTS_DIR/n" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$PRSHOTS_DIR/n"; echo "{\\"sha\\":\\"blob$n\\"}" ;;
-  *git/trees*) echo '{"sha":"tree1"}' ;;
-  *git/commits*) echo '{"sha":"c0ffee"}' ;;
-  "api -X PATCH"*) [ -n "$PRSHOTS_NO_REF" ] && { echo "Reference does not exist (HTTP 422)" >&2; exit 1; }; echo '{}' ;;
-  "api -X POST repos/{owner}/{repo}/git/refs"*) echo '{}' ;;
-  "pr edit"*) exit 0 ;;
-  *) echo "shim: unhandled $*" >&2; exit 1 ;;
-esac
-`;
-
-let dir: string, realPath: string | undefined;
-const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
-const A = "shot-2026-10-15T10-00-00-000Z-aaaaaaaa-before";
-const B = "shot-2026-10-15T11-00-00-000Z-bbbbbbbb-after";
-const log = async () => (await readFile(join(dir, "log"), "utf8").catch(() => "")).trim().split("\n").filter(Boolean);
-const calls = async () => (await log()).filter((l) => !l.startsWith("INPUT "));
+let dir: string;
+let calls_: Array<{ call: string; input?: any }> = [];
+let prBody = "";
+let noRef = false;
+let blobs = 0;
+const reply = (body: unknown, status = 200) => new native.Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const fakeFetch = async (url: string, init?: RequestInit) => {
+  const path = new URL(url).pathname;
+  const method = init?.method ?? "GET";
+  const input = init?.body ? JSON.parse(String(init.body)) : undefined;
+  calls_.push({ call: `${method} ${path}`, input });
+  if (method === "GET" && /\/pulls\/\d+$/.test(path)) return reply({ body: prBody });
+  if (method === "PATCH" && /\/pulls\/\d+$/.test(path)) { prBody = input.body; return reply({}); }
+  if (/git\/blobs$/.test(path)) return reply({ sha: `blob${++blobs}` }, 201);
+  if (/git\/trees$/.test(path)) return reply({ sha: "tree1" }, 201);
+  if (/git\/commits$/.test(path)) return reply({ sha: "c0ffee" }, 201);
+  if (method === "PATCH" && /git\/refs\//.test(path)) return noRef ? reply({ message: "Reference does not exist" }, 422) : reply({});
+  if (method === "POST" && /git\/refs$/.test(path)) return reply({}, 201);
+  return reply({ message: `unhandled ${method} ${path}` }, 404);
+};
+const calls = async () => calls_.map((c) => c.call);
 async function shot(id: string, label?: string) {
   const file = join(dir, `${id}.png`);
   await writeFile(file, PNG_BYTES);
   return { id, path: `/home/x/.orca/attachments/shots/${id}.png`, file, ...(label ? { label } : {}) };
 }
+const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+const A = "shot-2026-10-15T10-00-00-000Z-aaaaaaaa-before";
+const B = "shot-2026-10-15T11-00-00-000Z-bbbbbbbb-after";
 
-beforeAll(() => { realPath = process.env.PATH; });
-afterAll(() => { process.env.PATH = realPath; });
+let prevToken: string | undefined, prevRepo: string | undefined, prevApi: string | undefined;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "orca-prshots-"));
-  await writeFile(join(dir, "gh"), SHIM); await chmod(join(dir, "gh"), 0o755);
-  process.env.PATH = `${dir}:${realPath}`;
-  process.env.PRSHOTS_LOG = join(dir, "log"); process.env.PRSHOTS_DIR = dir;
-  await writeFile(join(dir, "body.json"), JSON.stringify({ body: "## Summary\nDoes a thing.\n\n## Test plan\n- run it\n" }));
+  calls_ = []; noRef = false; blobs = 0;
+  prBody = "## Summary\nDoes a thing.\n\n## Test plan\n- run it\n";
+  prevToken = process.env.GH_TOKEN; prevRepo = process.env.ORCA_GITHUB_REPO; prevApi = process.env.ORCA_GITHUB_API_URL;
+  process.env.GH_TOKEN = "tok-test"; process.env.ORCA_GITHUB_REPO = "acme/app"; process.env.ORCA_GITHUB_API_URL = "https://api.github.test";
+  resetCaches();
+  setFetch(fakeFetch as never);
 });
 afterEach(async () => {
-  delete process.env.PRSHOTS_LOG; delete process.env.PRSHOTS_DIR; delete process.env.PRSHOTS_NO_REF;
-  process.env.PATH = realPath;
+  setFetch(undefined);
+  resetCaches();
+  for (const [k, v] of [["GH_TOKEN", prevToken], ["ORCA_GITHUB_REPO", prevRepo], ["ORCA_GITHUB_API_URL", prevApi]] as const) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -89,21 +95,20 @@ test("shotRefs / workstreamShots / reportShots: label and time from the file nam
 });
 
 test("syncPrShots: blobs → tree → orphan commit → ref (created when missing) → the body's Screenshots section", async () => {
-  process.env.PRSHOTS_NO_REF = "1";
+  noRef = true;
   const r = await syncPrShots("/tmp", 42, "orca/update-banner", [await shot(B, "after"), await shot(A, "before")]);
   expect(r).toEqual({ pr: 42, shots: 2, updated: true, ref: "pr-assets/42-update-banner" });
   expect(await calls()).toEqual([
-    "pr view 42 --json body",
-    "repo view --json nameWithOwner -q .nameWithOwner",
-    expect.stringMatching(/^api -X POST repos\/\{owner\}\/\{repo\}\/git\/blobs --input /),
-    expect.stringMatching(/^api -X POST repos\/\{owner\}\/\{repo\}\/git\/blobs --input /),
-    expect.stringMatching(/^api -X POST repos\/\{owner\}\/\{repo\}\/git\/trees --input /),
-    expect.stringMatching(/^api -X POST repos\/\{owner\}\/\{repo\}\/git\/commits --input /),
-    expect.stringMatching(/^api -X PATCH repos\/\{owner\}\/\{repo\}\/git\/refs\/heads\/pr-assets\/42-update-banner --input /),
-    expect.stringMatching(/^api -X POST repos\/\{owner\}\/\{repo\}\/git\/refs --input /),
-    expect.stringMatching(/^pr edit 42 --body-file /),
+    "GET /repos/acme/app/pulls/42",
+    "POST /repos/acme/app/git/blobs",
+    "POST /repos/acme/app/git/blobs",
+    "POST /repos/acme/app/git/trees",
+    "POST /repos/acme/app/git/commits",
+    "PATCH /repos/acme/app/git/refs/heads/pr-assets/42-update-banner",
+    "POST /repos/acme/app/git/refs",
+    "PATCH /repos/acme/app/pulls/42",
   ]);
-  const inputs = (await log()).filter((l) => l.startsWith("INPUT ")).map((l) => JSON.parse(l.slice(6)));
+  const inputs = calls_.filter((c) => c.input).map((c) => c.input);
   expect(inputs[0]).toEqual({ content: Buffer.from(PNG_BYTES).toString("base64"), encoding: "base64" });
   expect(inputs[2]).toEqual({ tree: [
     { path: `${B}.png`, mode: "100644", type: "blob", sha: "blob1" },
@@ -111,15 +116,14 @@ test("syncPrShots: blobs → tree → orphan commit → ref (created when missin
   ] });
   expect(inputs[3]).toEqual({ message: "PR screenshots (Orca)", tree: "tree1", parents: [] }); // orphan
   expect(inputs[5]).toEqual({ ref: "refs/heads/pr-assets/42-update-banner", sha: "c0ffee" });
-  const edited = await readFile(join(dir, "edited.md"), "utf8");
+  const edited = prBody;
   expect(edited).toBe(`## Summary\nDoes a thing.\n\n## Test plan\n- run it\n\n## Screenshots\n\n<!-- orca:screenshots ${B},${A} -->\n`
     + `![after](https://github.com/acme/app/blob/c0ffee/${B}.png?raw=true)\n![before](https://github.com/acme/app/blob/c0ffee/${A}.png?raw=true)\n`);
 
   // The PR now shows them: a rerun reads the body and does nothing else.
-  await writeFile(join(dir, "body.json"), JSON.stringify({ body: edited }));
-  await writeFile(join(dir, "log"), "");
+  calls_ = [];
   expect(await syncPrShots("/tmp", 42, "orca/update-banner", [await shot(B, "after"), await shot(A, "before")])).toMatchObject({ updated: false, why: "already up to date" });
-  expect(await calls()).toEqual(["pr view 42 --json body"]);
+  expect(await calls()).toEqual(["GET /repos/acme/app/pulls/42"]);
 });
 
 test("syncPrShots: at most six, newest first; an existing ref is moved, not created; no shots touches nothing", async () => {
@@ -127,8 +131,8 @@ test("syncPrShots: at most six, newest first; an existing ref is moved, not crea
   expect(await syncPrShots("/tmp", 7, "b", many)).toMatchObject({ shots: 6, updated: true, ref: "pr-assets/7-b" });
   const c = await calls();
   expect(c.filter((l) => l.includes("git/blobs"))).toHaveLength(6);
-  expect(c.some((l) => l.startsWith("api -X POST repos/{owner}/{repo}/git/refs"))).toBe(false);
-  await writeFile(join(dir, "log"), "");
+  expect(c.includes("POST /repos/acme/app/git/refs")).toBe(false);
+  calls_ = [];
   expect(await syncPrShots("/tmp", 7, "b", [])).toMatchObject({ shots: 0, updated: false });
   expect(await calls()).toEqual([]);
 });

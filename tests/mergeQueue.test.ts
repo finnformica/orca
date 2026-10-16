@@ -53,7 +53,12 @@ const pr = (over: Partial<{ ci: string; mergeable: string; files: string[]; stat
   statusCheckRollup: over.ci ? [{ name: "check", conclusion: over.ci }] : [],
   files: (over.files ?? ["src/cache.ts"]).map((path) => ({ path })), changedFiles: (over.files ?? ["src/cache.ts"]).length,
 });
-const merges = async () => (await ghArgs()).split("\n").filter((l) => l.startsWith("pr merge"));
+/** The PR mutations sent, as `<mutation> <PR number>` (the fake GitHub's node id is PR_<number>). */
+const mutations = async (names: RegExp) => (await ghArgs()).split("\n").flatMap((l) => {
+  const m = /^graphql (\w+) \{"id":"PR_(\d+)"\}/.exec(l);
+  return m && names.test(m[1]!) ? [`${m[1]} ${m[2]}`] : [];
+});
+const merges = () => mutations(/^mergePullRequest$/);
 const mark = async () => (await db.enrichment("r")).feat?.mergeWhenGreen as { pr?: number; reportedSha?: string } | undefined;
 const kinds = async () => (await db.notifications()).map((n) => n.kind);
 
@@ -72,7 +77,7 @@ test("M1: a marked PR merges only once it is green and clean, then is unmarked, 
 
   await pr({ ci: "SUCCESS" });
   await mergeQueue.tick(cfg(r));
-  expect(await merges()).toEqual(["pr merge 7 --squash"]);
+  expect(await merges()).toEqual(["mergePullRequest 7"]);
   expect(await mark()).toBeUndefined();
   expect(await kinds()).toEqual(["merged"]);
   expect(reports).toHaveLength(1);
@@ -103,7 +108,7 @@ test("M2: red CI is never merged — notified and reported once per push, and it
   // Fixed and green: it merges, with nobody watching.
   await pr({ ci: "SUCCESS", sha: "sha3", isDraft: true });
   await mergeQueue.tick(cfg(r));
-  expect((await ghArgs()).split("\n").filter((l) => /^pr (ready|merge)/.test(l))).toEqual(["pr ready 7", "pr merge 7 --squash"]);
+  expect(await mutations(/^(markPullRequestReadyForReview|mergePullRequest)$/)).toEqual(["markPullRequestReadyForReview 7", "mergePullRequest 7"]);
 });
 
 test("M3: the repo's policy — denylisted paths are refused and unmarked; never / small are refused up front", async () => {
@@ -140,7 +145,7 @@ test("M4: a branch marked before its PR exists is merged once the PR is open and
   await setPrListFixture([{ number: 7, title: "Add cache", headRefName: "feat", baseRefName: "main", url: "u", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [], comments: [], author: { login: "me" }, reviews: [], labels: [] }]);
   await pr({ ci: "SUCCESS" });
   await mergeQueue.tick(cfg(r));
-  expect(await merges()).toEqual(["pr merge 7 --squash"]);
+  expect(await merges()).toEqual(["mergePullRequest 7"]);
 });
 
 test("M5: auto-PR opens a finished worker's branch as a ready PR, titled from the card, bodied from its outcome", async () => {
@@ -158,11 +163,12 @@ test("M5: auto-PR opens a finished worker's branch as a ready PR, titled from th
   await run(["git", "-C", wt, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "Add the cache"]);
   const opened = await verbs.openWorkerPr(r, "feat", wt, { outcome: { outcome: "Added a response cache.", remaining: [], decisions: ["LRU"], verification: ["bun test"], commits: [] } });
   expect(opened?.number).toBe(123);
-  const create = (await ghArgs()).slice((await ghArgs()).indexOf("pr create")); // the body spans lines
-  expect(create).toStartWith("pr create --base main --head feat --title Add cache --body ## Outcome\nAdded a response cache.\n");
-  expect(create).toContain("## Decisions\n- LRU\n");
-  expect(create).toContain("## Commits\n- Add the cache\n");
-  expect(create).not.toContain("--draft");
+  const line = (await ghArgs()).split("\n").find((l) => l.startsWith("POST /repos/acme/app/pulls "))!;
+  const create = JSON.parse(line.slice("POST /repos/acme/app/pulls ".length)) as { base: string; head: string; title: string; body: string; draft: boolean };
+  expect(create).toMatchObject({ base: "main", head: "feat", title: "Add cache", draft: false }); // ready, not a draft
+  expect(create.body).toStartWith("## Outcome\nAdded a response cache.\n");
+  expect(create.body).toContain("## Decisions\n- LRU\n");
+  expect(create.body).toContain("## Commits\n- Add the cache\n");
   expect((await git.listWorktrees(repoPath, r.worktreeRoot)).some((w) => w.branch === "feat")).toBe(true);
   // A branch that already has a PR is left alone.
   await setPrListFixture([{ number: 123, title: "Add cache", headRefName: "feat", baseRefName: "main", url: "u", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [], comments: [], author: { login: "me" }, reviews: [], labels: [] }]);
@@ -255,7 +261,7 @@ test("M7: a running agent holds an already-green PR at wait — never merged mid
 
     // Idle and still green (the head never moved): merges.
     await mergeQueue.tick(cfg(r));
-    expect(await merges()).toEqual(["pr merge 7 --squash"]);
+    expect(await merges()).toEqual(["mergePullRequest 7"]);
   } finally {
     await claude.restore();
   }
@@ -275,7 +281,7 @@ test("M8: a message queued for the agent holds it at wait too, even though nothi
 
   await db.claimQueuedMessage("r", "feat"); // delivered (dispatched), so the queue is empty again
   await mergeQueue.tick(cfg(r));
-  expect(await merges()).toEqual(["pr merge 7 --squash"]);
+  expect(await merges()).toEqual(["mergePullRequest 7"]);
 });
 
 test("M9: a head that moves while the agent is busy needs CI green again on the NEW head, not the old one", async () => {
@@ -304,7 +310,7 @@ test("M9: a head that moves while the agent is busy needs CI green again on the 
     // Fresh green on the moved head: merges.
     await pr({ ci: "SUCCESS", sha: "sha2" });
     await mergeQueue.tick(cfg(r));
-    expect(await merges()).toEqual(["pr merge 7 --squash"]);
+    expect(await merges()).toEqual(["mergePullRequest 7"]);
   } finally {
     await claude.restore();
   }

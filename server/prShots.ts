@@ -7,33 +7,18 @@
 // the rest left untouched; its marker names the shot ids, so an unchanged set is never re-uploaded.
 // Only PNGs from the shot store (`diskStore`, ids validated there) are ever uploaded. The ref goes
 // when the PR is merged or closed (verbs.reapWorktree).
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
-import { tmpdir } from "os";
-import { join } from "path";
-import { run } from "./run";
-import { countGhCall } from "./metrics";
+import { readFileSync } from "fs";
 import * as db from "./db";
 import * as gh from "./gh";
 import * as git from "./git";
+import { forRepo } from "./github";
 import { diskStore } from "./screenshot";
 import type { RepoConfig } from "./config";
 import { PR_SHOTS_MAX, prAssetsRef, prShotIds, screenshotsSection, shotRefs, withScreenshotsSection, workstreamShots, type ShotRef } from "../web/src/workstream";
 
-const ghRun = (cwd: string, ...args: string[]) => { countGhCall(); return run(["gh", ...args], cwd); };
-
-/** One `gh api` call with a JSON payload (written to a temp file — a blob's base64 is too big for argv). */
+/** One REST call on the repo at `cwd`; `{repo}` in `path` is `repos/<owner>/<name>`. */
 async function api(cwd: string, method: string, path: string, payload?: unknown): Promise<any> {
-  if (payload === undefined) {
-    const out = await ghRun(cwd, "api", "-X", method, path);
-    return out.trim() ? JSON.parse(out) : undefined;
-  }
-  const dir = mkdtempSync(join(tmpdir(), "orca-prshots-"));
-  try {
-    const file = join(dir, "body.json");
-    writeFileSync(file, JSON.stringify(payload));
-    const out = await ghRun(cwd, "api", "-X", method, path, "--input", file);
-    return out.trim() ? JSON.parse(out) : undefined;
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  return (await forRepo(cwd)).rest(path, { method, body: payload });
 }
 
 const PNG = [0x89, 0x50, 0x4e, 0x47];
@@ -42,29 +27,29 @@ const isPng = (b: Uint8Array) => PNG.every((x, i) => b[i] === x);
 /** Push `files` (PNGs) as one parentless commit on `refs/heads/<ref>`, created or force-moved.
  *  Returns the commit sha and the repo's `owner/name`, for the links. */
 export async function uploadPrAssets(cwd: string, ref: string, files: { name: string; path: string }[]): Promise<{ commit: string; repo: string }> {
-  const repo = (await ghRun(cwd, "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner")).trim();
+  const repo = (await forRepo(cwd)).slug;
   const tree = [];
   for (const f of files) {
     const bytes = readFileSync(f.path);
     if (!isPng(bytes)) throw new Error(`${f.name} is not a PNG; only screenshots are uploaded`);
-    const blob = await api(cwd, "POST", "repos/{owner}/{repo}/git/blobs", { content: bytes.toString("base64"), encoding: "base64" });
+    const blob = await api(cwd, "POST", "{repo}/git/blobs", { content: bytes.toString("base64"), encoding: "base64" });
     tree.push({ path: f.name, mode: "100644", type: "blob", sha: blob.sha as string });
   }
-  const t = await api(cwd, "POST", "repos/{owner}/{repo}/git/trees", { tree });
-  const c = await api(cwd, "POST", "repos/{owner}/{repo}/git/commits", { message: "PR screenshots (Orca)", tree: t.sha, parents: [] });
+  const t = await api(cwd, "POST", "{repo}/git/trees", { tree });
+  const c = await api(cwd, "POST", "{repo}/git/commits", { message: "PR screenshots (Orca)", tree: t.sha, parents: [] });
   try {
-    await api(cwd, "PATCH", `repos/{owner}/{repo}/git/refs/heads/${ref}`, { sha: c.sha, force: true });
+    await api(cwd, "PATCH", `{repo}/git/refs/heads/${ref}`, { sha: c.sha, force: true });
   } catch {
-    await api(cwd, "POST", "repos/{owner}/{repo}/git/refs", { ref: `refs/heads/${ref}`, sha: c.sha });
+    await api(cwd, "POST", "{repo}/git/refs", { ref: `refs/heads/${ref}`, sha: c.sha });
   }
   return { commit: c.sha as string, repo };
 }
 
 /** Delete every `pr-assets/<pr>[-…]` ref of a PR. Returns the refs removed. */
 export async function deletePrAssets(cwd: string, pr: number): Promise<string[]> {
-  const refs = ((await api(cwd, "GET", `repos/{owner}/{repo}/git/matching-refs/heads/pr-assets/${pr}`)) ?? []) as { ref: string }[];
+  const refs = ((await api(cwd, "GET", `{repo}/git/matching-refs/heads/pr-assets/${pr}`)) ?? []) as { ref: string }[];
   const mine = refs.map((r) => r.ref).filter((r) => new RegExp(`^refs/heads/pr-assets/${pr}(-|$)`).test(r));
-  for (const r of mine) await api(cwd, "DELETE", `repos/{owner}/{repo}/git/${r}`);
+  for (const r of mine) await api(cwd, "DELETE", `{repo}/git/${r}`);
   return mine;
 }
 
@@ -75,19 +60,14 @@ export type PrShotsResult = { pr: number; shots: number; updated: boolean; ref?:
 export async function syncPrShots(cwd: string, pr: number, branch: string, shots: (ShotRef & { file: string })[]): Promise<PrShotsResult> {
   const picked = shots.slice(0, PR_SHOTS_MAX);
   if (!picked.length) return { pr, shots: 0, updated: false, why: "no screenshots reported on this branch" };
-  const body = (JSON.parse(await ghRun(cwd, "pr", "view", String(pr), "--json", "body")) as { body?: string }).body ?? "";
+  const body = ((await api(cwd, "GET", `{repo}/pulls/${pr}`)) as { body?: string | null }).body ?? "";
   if (prShotIds(body).join(",") === picked.map((s) => s.id).join(",")) return { pr, shots: picked.length, updated: false, why: "already up to date" };
   const ref = prAssetsRef(pr, branch);
   const { commit, repo } = await uploadPrAssets(cwd, ref, picked.map((s) => ({ name: `${s.id}.png`, path: s.file })));
   const section = screenshotsSection(picked.map((s) => ({
     id: s.id, alt: s.label ?? "screenshot", url: `https://github.com/${repo}/blob/${commit}/${s.id}.png?raw=true`,
   })));
-  const dir = mkdtempSync(join(tmpdir(), "orca-prbody-"));
-  try {
-    const file = join(dir, "body.md");
-    writeFileSync(file, withScreenshotsSection(body, section));
-    await ghRun(cwd, "pr", "edit", String(pr), "--body-file", file);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
+  await api(cwd, "PATCH", `{repo}/pulls/${pr}`, { body: withScreenshotsSection(body, section) });
   return { pr, shots: picked.length, updated: true, ref };
 }
 
