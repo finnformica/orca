@@ -3076,6 +3076,21 @@ export function unlandedSends<M extends { text: string }>(
   return sending.filter((m) => !recorded.some((r) => r.startsWith(m.text)));
 }
 
+/** The queued entries a chat still has to draw: those no turn has delivered yet. A turn delivers an
+ *  entry when it started at or after the entry was queued and carries its text as one of its
+ *  messages (`splitMessages`, attachment list dropped). The queue is a separate read from the turns,
+ *  so a slow or missed read (a stream reconnect, an answer that landed out of order) once left a
+ *  delivered message drawn twice — in the chat and as queued — until a refresh. A turn from before
+ *  the entry never matches, so the same line queued again still shows. */
+export function undeliveredQueued<Q extends { instruction: string; createdAt: number }>(
+  queued: Q[], turns: { startedAt?: number; instruction?: string }[] | null,
+): Q[] {
+  const norm = (s: string) => withoutAttachmentList(s).trim();
+  const after = (turns ?? []).filter((t) => t.instruction);
+  return queued.filter((q) => !after.some((t) =>
+    (t.startedAt ?? 0) >= q.createdAt && splitMessages(t.instruction!).some((m) => norm(m) === norm(q.instruction))));
+}
+
 /** The composer's ↑ history for one chat: every message YOU sent in it, newest first, each once
  *  (its most recent send wins the position). Read off what the chat already holds — the loaded
  *  turns' instructions (split per message, attachment list dropped), then the bridge's queue, then
