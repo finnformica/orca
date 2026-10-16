@@ -6,7 +6,7 @@
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
 import { useEffect, useState } from "react";
 import { useAtom, useSetAtom } from "jotai";
-import { FolderGit2, GitBranch, UserCircle2 } from "lucide-react";
+import { FolderGit2, GitBranch } from "lucide-react";
 import { api, type GithubAccount } from "../api";
 import { refreshVitals } from "@/lib/vitals";
 import { notifyLocal } from "@/lib/notificationStore";
@@ -277,6 +277,19 @@ export function GitHubPage() {
   );
 }
 
+/** The account's GitHub profile image, round, left of the login — on a failed load (a dead login,
+ *  no network) it falls back to the first letter of the login, same size and position. */
+function AccountAvatar({ login, avatarUrl }: { login: string; avatarUrl?: string }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <span className="bg-muted relative inline-flex size-8 shrink-0 items-center justify-center overflow-hidden rounded-full border text-xs font-medium">
+      {avatarUrl && !failed
+        ? <img src={avatarUrl} alt="" className="size-full object-cover" onError={() => setFailed(true)} />
+        : login.charAt(0).toUpperCase()}
+    </span>
+  );
+}
+
 function AccountRowView({ account: a, onSaved }: { account: GithubAccount; onSaved: (rows: GithubAccount[]) => void }) {
   const [name, setName] = useState(a.configured.name ?? "");
   const [email, setEmail] = useState(a.configured.email ?? "");
@@ -295,7 +308,7 @@ function AccountRowView({ account: a, onSaved }: { account: GithubAccount; onSav
   return (
     <div data-slot="github-account" className="flex flex-col gap-3 px-4 py-3 text-sm md:grid md:grid-cols-[minmax(12rem,1fr)_auto] md:items-center md:gap-4">
       <div className="flex min-w-0 items-start gap-2.5 md:items-center">
-        <span className="bg-muted inline-flex size-8 shrink-0 items-center justify-center rounded-md border"><UserCircle2 className="size-4" /></span>
+        <AccountAvatar login={a.login} avatarUrl={a.avatarUrl} />
         <span className="min-w-0">
           <span className="flex items-center gap-2 font-medium">{a.login}{a.active && <Pill>active</Pill>}</span>
           <span className="text-muted-foreground block break-words text-xs md:truncate">
