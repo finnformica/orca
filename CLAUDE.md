@@ -169,7 +169,9 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   a restored repo/instance the config no longer has reads as "all" (`validChoice`); reuse it for new
   UI state); a one-shot `migrateLocalEnrichment`
   hands any pre-DB blob (transcripts included) to the bridge on first load.
-- **GitHub = the `gh` CLI; Slack = a direct `chat.postMessage`** from your identity using a user token
+- **GitHub = the REST and GraphQL API over `fetch` (`server/github.ts`: a token per repo account from `gh auth
+  token`, ETag reuse, rate-limit backoff, typed errors; only the auth flows, the identity lookup and `repo
+  clone` still run `gh`); Slack = a direct `chat.postMessage`** from your identity using a user token
   (`SLACK_TOKEN`) — the ONE Slack path for every provider: deterministic, verbatim, instant, no model,
   no MCP (via `server/slack-api.ts`'s `postMessage`, reused by `/api/slack`). No OAuth app. A failed
   post surfaces as an error (never silently degraded), and the client copies the exact message to the
@@ -1132,9 +1134,10 @@ prompt, and every orchestrator wake. Change the rules there, never in a copy.
 ## Conventions (follow these)
 
 - **Adapter boundary:** all shell/network I/O lives in `server/{git,gh,slack}.ts` behind
-  thin functions that take explicit args (no global config reads). Tests swap the `gh`
-  binary via a PATH shim and run `git` against a scratch repo — so keep adapters shelling
-  out to real binaries, not reimplementing them.
+  thin functions that take explicit args (no global config reads). Tests point GitHub
+  calls at a fake GitHub server (`tests/helpers.ts` `installFakeGh`), swap the `gh` binary
+  via a PATH shim for what still runs it, and run `git` against a scratch repo — so keep the
+  git adapter shelling out to the real binary, not reimplementing it.
 - **Pure logic in `workstream.ts`**, so it's testable without booting anything.
 - **Browser polls use `poll()` (`web/src/lib/poll.ts`), never `setInterval(fetch…)`** — the bridge is
   HTTP/1.1, six connections per host across all tabs; clock-driven polls queued hundreds deep behind a

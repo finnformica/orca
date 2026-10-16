@@ -110,8 +110,8 @@ test("C1d: reaping a merged PR's worktree deletes its hosted screenshots (pr-ass
   const args = await recordGhArgs();
   expect((await verbs.cleanupRepo(repo, { now: NOW })).map((c) => `${c.branch}:${c.action}`)).toEqual(["shots-m:reaped"]);
   const log = await args();
-  expect(log).toContain("api -X GET repos/{owner}/{repo}/git/matching-refs/heads/pr-assets/7");
-  expect(log.split("\n").filter((l) => l.startsWith("api -X DELETE"))).toEqual(["api -X DELETE repos/{owner}/{repo}/git/refs/heads/pr-assets/7-shots-m"]);
+  expect(log).toContain("GET /repos/acme/app/git/matching-refs/heads/pr-assets/7");
+  expect(log.split("\n").filter((l) => l.startsWith("DELETE"))).toEqual(["DELETE /repos/acme/app/git/refs/heads/pr-assets/7-shots-m"]);
 });
 
 test("C1b: a branch preview's read-only bridge never reaps a worktree", async () => {
