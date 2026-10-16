@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- Idea 3, Soft: the Trued shape with round joins (a same-colour round stroke), so no tip is sharper than the eye. -->
+  <circle cx="12" cy="12" r="12" fill="#000" />
+  <path fill="#fff" stroke="#fff" stroke-width="0.9" stroke-linejoin="round" fill-rule="evenodd" transform="translate(3.48 4.25) scale(0.70)" d="M2.6 12.1C2.6 9.7 5.5 8 9 8L11.4 3L13.8 8C16.6 8 18.7 8.6 20.3 9.5L22.6 6.3L21 11L22.6 15.7L20.3 12.5C17.5 13.6 10.5 14.2 4.4 13.5C3.3 13.37 2.6 12.9 2.6 12.1ZM5.9 9.25a1.5 1.5 0 1 0 0 3a1.5 1.5 0 1 0 0 -3Z" />
+</svg>
