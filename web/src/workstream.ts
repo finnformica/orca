@@ -5,6 +5,7 @@ import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, Revie
 import { AUTOFIX_MARKER, OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type TurnCheck, type TurnSource } from "../../shared/agent";
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
 import { WRITING_STYLE } from "../../shared/writingStyle";
+import { asksForInput } from "../../shared/notifications";
 export { attachCommand } from "../../shared/agent";
 
 // Kanban lanes are driven by the REVIEW lifecycle only. Conflict / CI / mergeability
@@ -1876,12 +1877,16 @@ export type OverviewRow = {
   repo: string; branch: string; title: string; prompt?: string; lane: OverviewLane;
   prNumber?: number; worktreePath?: string; instance?: string;
   agentStatus?: "idle" | "running" | "done" | "error";
-  agentCheck?: { ok: boolean };
   agentStartedAt?: number;
   mergeable?: Mergeable; mergeClean?: "clean" | "conflict";
   ciStatus?: CiStatus; reviewStatus?: ReviewStatus;
   orchestrated?: boolean; mergedAt?: string; queued?: number;
-  transcript?: Pick<AgentTurn, "instruction" | "prompt" | "startedAt" | "finishedAt" | "failed" | "stopped" | "provider">[];
+  transcript?: (Pick<AgentTurn, "instruction" | "prompt" | "startedAt" | "finishedAt" | "failed" | "stopped" | "provider"> & Partial<Pick<AgentTurn, "response" | "structured" | "stopReason">>)[];
+  // Read only by the status hover card (rowStatus), never by the tone itself.
+  agentError?: string; agentMeta?: { model?: string };
+  agentCheck?: { ok: boolean; command?: string; exitCode?: number };
+  prHead?: string; failingChecks?: string[];
+  cleanupBlocked?: { why?: string; at?: string };
 };
 
 export type Attention = "check failed" | "agent error" | "run stopped" | "CI failing" | "conflicts" | "changes requested" | "message held";
@@ -1907,6 +1912,73 @@ export function attentionReasons(row: OverviewRow): Attention[] {
  *  (conflicts, changes requested), green ready to merge or merged, neutral otherwise. */
 export type RowTone = "running" | "failed" | "attention" | "ready" | "neutral";
 export function rowTone(row: OverviewRow): RowTone {
+  return rowStatus(row).tone;
+}
+
+/** The status chip's hover card: the tone (so the label it explains is `rowTone`'s, by
+ *  construction), each real input behind it as one line, and at most one obvious next step. */
+export type RowStatus = { tone: RowTone; reasons: string[]; action?: "address" };
+
+/** Pure. `unresolved` is the review digest's actionable thread count when the cache has it — it
+ *  is shown as a reason but never moves the tone, so every label stays as `rowTone` gives it.
+ *  `model` is the card's model label, used while the run has not reported its own. */
+export function rowStatus(row: OverviewRow, opts: { now?: number; unresolved?: number; model?: string } = {}): RowStatus {
+  const now = opts.now ?? Date.now();
+  const tone = statusTone(row);
+  const reasons: string[] = [];
+  const last = row.transcript?.[row.transcript.length - 1];
+  const sha = row.prHead ? ` on commit ${row.prHead.slice(0, 7)}` : "";
+  const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+  const unresolved = row.lane === "DONE" ? 0 : opts.unresolved ?? 0;
+  if (tone === "running") {
+    // The run's own model and start when the bridge has them, else the card's pin and the open turn.
+    const name = row.agentMeta?.model ?? opts.model;
+    const model = name ? ` on ${name}` : "";
+    const since = row.agentStartedAt ?? (last && !last.finishedAt ? last.startedAt : undefined);
+    reasons.push(since ? `The agent runs${model} for ${formatDuration(now - since)}.` : `The agent runs${model}.`);
+    if ((row.queued ?? 0) > 0) reasons.push(`${plural(row.queued!, "message")} queued, sent when this run ends.`);
+  } else {
+    for (const why of attentionReasons(row)) {
+      if (why === "check failed") reasons.push(`Orca's check failed on the last commit${row.agentCheck?.command ? `: \`${row.agentCheck.command}\` exited ${row.agentCheck.exitCode}` : ""}.`);
+      if (why === "agent error") reasons.push(`The last run failed${row.agentError ? `: ${firstLine(row.agentError, 120)}` : ""}.`);
+      if (why === "CI failing") reasons.push(`CI failed${sha}${row.failingChecks?.length ? `: ${row.failingChecks.slice(0, 3).join(", ")}${row.failingChecks.length > 3 ? ` +${row.failingChecks.length - 3}` : ""}` : ""}.`);
+      if (why === "conflicts") reasons.push(row.prNumber ? "The PR has merge conflicts with its base." : "The branch conflicts with its base.");
+      if (why === "changes requested") reasons.push("A reviewer requested changes.");
+      if (why === "run stopped") reasons.push("You stopped the last run.");
+      if (why === "message held") reasons.push(`${plural(row.queued!, "queued message")} wait, and no run is active to send them.`);
+    }
+    if (last && !last.failed && !last.stopped && asksForInput({ stopReason: last.stopReason, response: last.response, outcome: last.structured })) {
+      const text = last.structured ? [last.structured.outcome, ...last.structured.remaining].join("\n") : last.response ?? "";
+      reasons.push(`The agent asked a question: ${firstLine(text.split("\n").filter((l) => l.trim()).at(-1) ?? "", 120)}`);
+    }
+    if (tone === "ready" && row.lane === "DONE") reasons.push(`The PR merged${row.mergedAt ? ` ${ago(Date.parse(row.mergedAt), now)}` : ""}.`);
+    if (tone === "ready" && row.lane === "MERGEABLE") {
+      reasons.push(row.prNumber ? "The PR is approved." : "The branch is promoted.");
+      if (row.ciStatus === "passing") reasons.push(`CI passes${sha}.`);
+      if (row.ciStatus === "pending") reasons.push(`CI still runs${sha}.`);
+      if (row.mergeable === "MERGEABLE" || row.mergeClean === "clean") reasons.push(row.prNumber ? "The PR merges clean." : "The branch merges clean.");
+    }
+    if (tone === "neutral") {
+      const at = lastActivity(row);
+      reasons.push(at ? `Idle since ${ago(at, now)}.` : "No agent ran on it yet.");
+      if (last && last.finishedAt) {
+        const result = last.structured?.outcome || last.response || "";
+        reasons.push(`Last run ${last.failed ? "failed" : "done"}${result ? `: ${firstLine(result, 120)}` : "."}`);
+      }
+      if (row.lane === "DRAFT") reasons.push("The PR is a draft.");
+      if (row.lane === "IN_REVIEW") reasons.push("The PR waits for an approval.");
+      if (row.ciStatus === "pending") reasons.push(`CI still runs${sha}.`);
+      if (row.ciStatus === "passing" && row.lane !== "DONE") reasons.push(`CI passes${sha}.`);
+    }
+  }
+  if (unresolved > 0) reasons.push(`${plural(unresolved, "unresolved review thread")}.`);
+  if (row.cleanupBlocked) reasons.push(`Cleanup blocked${row.cleanupBlocked.why ? `: ${row.cleanupBlocked.why}` : ""}.`);
+  const addressable = row.prNumber !== undefined && row.lane !== "DONE" && row.agentStatus !== "running"
+    && (row.ciStatus === "failing" || row.mergeable === "CONFLICTING" || row.mergeClean === "conflict" || row.reviewStatus === "changes_requested" || unresolved > 0);
+  return { tone, reasons, ...(addressable ? { action: "address" as const } : {}) };
+}
+
+function statusTone(row: OverviewRow): RowTone {
   if (row.agentStatus === "running") return "running";
   const why = attentionReasons(row);
   if (why.some((w) => w === "check failed" || w === "agent error" || w === "CI failing")) return "failed";
