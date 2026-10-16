@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Highlight, themes } from "prism-react-renderer";
-import { ArrowLeft, Check, Clock, ExternalLink, GitMerge, X } from "lucide-react";
+import { ArrowLeft, ExternalLink, GitMerge } from "lucide-react";
 import { api } from "../api";
 import type { PrDetail as PrDetailData } from "../../../server/gh";
 import { addPreviewLabel, useWorkstreams, type Row } from "../store";
@@ -19,7 +19,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ReviewPanel, reviewSig } from "./Review";
 import { AGENT_TABS, AgentHeader, ChatCard, DetailsCard, HeaderSource, RowStatus } from "./AgentPage";
 import { useNarrow } from "@/lib/viewport";
-import { ChecksCard, ConversationCard } from "./PrPanels";
+import { ChecksCard, CiChip, ConversationCard } from "./PrPanels";
 import { Detail, VCard } from "@/components/console";
 import { useSummary } from "./Board";
 
@@ -113,9 +113,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
       {pr.reviewStatus === "changes_requested" && <Badge variant="destructive">Changes requested</Badge>}
       {pr.reviewStatus === "approved" && <Badge variant="success">Approved</Badge>}
       {pr.mergeable === "CONFLICTING" && <Badge variant="destructive">Conflicts</Badge>}
-      {pr.ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
-      {pr.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
-      {pr.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
+      <CiChip repo={repo} prNumber={pr.number} ciStatus={pr.ciStatus} checks={pr.checks} />
       {pr.autoMergeEnabled && <Badge variant="outline" className="border-transparent bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
     </div>
   );

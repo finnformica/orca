@@ -15,7 +15,7 @@ import {
 } from "./workstream";
 import type { MergeMark } from "./workstream";
 import type { BridgeInfo, ReviewDigest } from "./workstream";
-import type { OrchStatus, PrRef, UpkeepRecord, WorkstreamRef } from "./workstream";
+import type { CheckRow, OrchStatus, PrRef, UpkeepRecord, WorkstreamRef } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
 import { attachCommand, handoffPrompt } from "../../shared/agent";
@@ -359,7 +359,7 @@ export function refresh(): Promise<void> {
 }
 // "Refresh everything" (the top bar's Updated chip): the board's three streams, and every review
 // signal already loaded (the rows' review clusters, the PR page's Review panel) fetched again.
-onRefresh(() => Promise.all([refresh(), refreshReviewSignals()]));
+onRefresh(() => Promise.all([refresh(), refreshReviewSignals(), refreshChecks()]));
 
 let pollTick = 0;
 let lastMergedAt = 0;
@@ -614,6 +614,50 @@ export const useCachedReviewDigest = (repo: string, prNumber: number | undefined
 export const useReviewThreads = (repo: string, prNumber: number | undefined, sig = ""): ReviewThreadEvidence[] | undefined =>
   useReviewSignalEntry(repo, prNumber, sig)?.threads;
 export const _resetReviewSignals = () => reviewSignals.clear();
+
+// ---- CI checks (lazy, on hover) ----
+// The CI chip's hover card lists a PR's checks — the same gh.prDetail data the PR detail Checks
+// card already loads. Unlike the review signal above, a row's chip does NOT fetch on mount (most
+// rows are never hovered); `ensureChecks` is called only when a chip's hover card opens, and the
+// result is cached per PR so a second hover, or another chip for the same PR, costs no request.
+const CHECKS_TTL = 5 * 60_000;
+// `checks` is undefined until a fetch has actually landed — never defaulted to [], which a PR with
+// genuinely zero checks also reads as, so "loading" and "loaded, no checks" can't be told apart.
+type ChecksEntry = { checks?: CheckRow[]; at: number; inflight?: boolean };
+const checksCache = new Map<string, ChecksEntry>();
+
+/** Fetch (or refresh) a PR's checks into the cache. A call already in flight, or a fresh enough
+ *  entry, is left alone — safe to call on every hover-open. */
+export function ensureChecks(repo: string, prNumber: number): void {
+  const key = `${repo}#${prNumber}`;
+  const e = checksCache.get(key);
+  if (e && (e.inflight || Date.now() - e.at < CHECKS_TTL)) return;
+  checksCache.set(key, { checks: e?.checks, at: Date.now(), inflight: true });
+  notify();
+  api.prDetail(repo, prNumber)
+    .then((d) => checksCache.set(key, { checks: d.checks, at: Date.now() }))
+    .catch(() => checksCache.set(key, { checks: e?.checks, at: Date.now() })) // keep the last good one
+    .finally(notify);
+}
+
+/** The cached checks for a PR — never fetches on its own; undefined until `ensureChecks` has
+ *  loaded one (or it was never asked for). */
+export const useCachedChecks = (repo: string, prNumber: number | undefined): CheckRow[] | undefined =>
+  useSyncExternalStore(subscribe, () => (prNumber ? checksCache.get(`${repo}#${prNumber}`)?.checks : undefined));
+
+/** "Refresh everything" also re-fetches every PR's checks already in the cache — never the ones
+ *  nobody hovered. */
+function refreshChecks(): Promise<unknown> {
+  return Promise.allSettled([...checksCache.entries()].filter(([, e]) => !e.inflight).map(([key]) => {
+    const at = key.lastIndexOf("#");
+    const repo = key.slice(0, at), n = Number(key.slice(at + 1));
+    return api.prDetail(repo, n)
+      .then((d) => checksCache.set(key, { checks: d.checks, at: Date.now() }))
+      .catch(() => {})
+      .finally(notify);
+  }));
+}
+export const _resetChecksCache = () => checksCache.clear();
 
 export function useWorkstreams(): Row[] {
   useSyncExternalStore(subscribe, () => version); // re-render on any store change (live, enrichment, optimistic)
