@@ -34,6 +34,7 @@ import { Board, ConditionBadges, CopyDone, LaneActions, useSummary, useTerminalO
 import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PrPreviewInline } from "./PreviewControl";
 import { ReviewCluster } from "./Review";
+import { StatusHoverCard } from "./StatusCard";
 
 export function Agents() {
   const [view, setView] = useAtom(boardViewAtom);
@@ -515,8 +516,10 @@ export function RunStatus({ row, tone, reasons }: { row: Row; tone: RowTone; rea
   const duration = running ? undefined : rowDuration(row);
   return (
     <div data-slot="run-status" className="flex min-w-0 items-center gap-2 whitespace-nowrap">
-      {tone === "running" ? <Loader2 data-slot="run-spinner" aria-hidden="true" className="text-geist-amber size-3 shrink-0 animate-spin" /> : <StatusDot tone={TONE_DOT[tone]} />}
-      <span data-tone={tone} className="truncate font-medium">{TONE_LABEL[tone]}</span>
+      <StatusHoverCard row={row}>
+        {tone === "running" ? <Loader2 data-slot="run-spinner" aria-hidden="true" className="text-geist-amber size-3 shrink-0 animate-spin" /> : <StatusDot tone={TONE_DOT[tone]} />}
+        <span data-tone={tone} className="truncate font-medium">{TONE_LABEL[tone]}</span>
+      </StatusHoverCard>
       {running && now !== undefined && (
         <Tip label={`Running since ${new Date(row.agentStartedAt!).toLocaleTimeString()}`}>
           <span data-slot="elapsed" className="text-muted-foreground tabular-nums">{formatElapsed(now - row.agentStartedAt!)}</span>
