@@ -98,10 +98,10 @@ describe("the PR page's Overview", () => {
     await mount();
     expect([...container!.querySelectorAll('[role="tab"]')].map((t) => t.textContent)).toEqual(["Overview", "Files changed (1)", "Preview"]);
     const cards = [...container!.querySelectorAll("section[data-slot]")].map((s) => s.getAttribute("data-slot"));
-    // Paired with Screenshots in a two-column grid (no screenshots here, so it's the grid's sole
-    // child and spans both columns), ahead of Review and Description.
-    expect(cards.indexOf("review-panel")).toBe(cards.indexOf("pr-checks") + 1);
-    expect(cards.indexOf("pr-description")).toBe(cards.indexOf("review-panel") + 1);
+    // Review comes first, then Checks — paired with Screenshots in a two-column grid (no
+    // screenshots here, so it's the grid's sole child and spans both columns) — then Description.
+    expect(cards.indexOf("pr-checks")).toBe(cards.indexOf("review-panel") + 1);
+    expect(cards.indexOf("pr-description")).toBe(cards.indexOf("pr-checks") + 1);
 
     const card = $("pr-checks");
     expect($("checks-summary").textContent).toBe("2 failing · 1 running · 24 passing · 1 skipped");
