@@ -159,6 +159,10 @@ export type OrcaConfig = {
    *  the machine ran from it until the first boot its uptime ledger knows; absent, that stretch is
    *  shown as unknown hours (`billedUptime`). */
   instanceBillingSince?: Record<string, string>;
+  /** Which instances serve the web terminal (server/terminal.ts), e.g. `{ cloud: true }`. Off unless
+   *  exactly `true`. ONLY Settings sets it (`/api/config/terminal`): a pasted config document keeps
+   *  the stored value and the checked-in file never seeds it. */
+  terminal?: Record<string, boolean>;
   /** Repos Orca manages; the first is the default. */
   repos: RepoConfig[];
   /** Inclusive [min, max] port range for preview services (shared across repos). */
@@ -510,6 +514,7 @@ async function loadFromDb(): Promise<OrcaConfig> {
     instances: app.instances as Record<string, string> | undefined,
     instanceHourlyUsd: app.instanceHourlyUsd as Record<string, number> | undefined,
     instanceBillingSince: app.instanceBillingSince as Record<string, string> | undefined,
+    terminal: app.terminal as Record<string, boolean> | undefined,
     orchestratorShell: app.orchestratorShell !== false,
     orchestratorWakeBudgetUsd: app.orchestratorWakeBudgetUsd as number | undefined,
     autoUpkeepConcurrency: app.autoUpkeepConcurrency as number | undefined,
@@ -547,6 +552,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.instances === undefined ? {} : { instances: config.instances }),
       ...(config.instanceHourlyUsd === undefined ? {} : { instanceHourlyUsd: config.instanceHourlyUsd }),
       ...(config.instanceBillingSince === undefined ? {} : { instanceBillingSince: config.instanceBillingSince }),
+      ...(config.terminal === undefined ? {} : { terminal: config.terminal }),
       ...(config.orchestratorShell === undefined ? {} : { orchestratorShell: config.orchestratorShell }),
       ...(config.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: config.orchestratorWakeBudgetUsd }),
       ...(config.autoUpkeepConcurrency === undefined ? {} : { autoUpkeepConcurrency: config.autoUpkeepConcurrency }),
@@ -556,6 +562,19 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
     },
   });
   invalidateConfig();
+}
+
+/** Turn one instance's web terminal on or off — Settings' Terminal row, the ONLY writer of
+ *  `terminal`. Re-saves the stored document with just that entry changed (no db.ts helper: it goes
+ *  through the same parse + save as a pasted document, so nothing else in it can change). */
+export async function setInstanceTerminal(instance: string, on: boolean): Promise<void> {
+  invalidateConfig();
+  const current = await loadConfig();
+  const { config, errors } = parseConfigDocument(await configDocument());
+  if (!config) throw new Error(`the stored config does not parse: ${errors.join("; ")}`);
+  const next = { ...(current.terminal ?? {}) };
+  if (on) next[instance] = true; else delete next[instance];
+  await saveConfigDocument({ ...config, ...(Object.keys(next).length ? { terminal: next } : {}) });
 }
 
 /** The document as stored (paths still templated) — what the settings UI shows you to edit. */

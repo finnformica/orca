@@ -1,5 +1,5 @@
 import {
-  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, modelFor, parseConfigDocument,
+  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
@@ -35,6 +35,7 @@ import { ORCHESTRATOR_REPO, attachmentRefs, workstreamShots, followUpPrompt, mer
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
+import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
@@ -323,7 +324,7 @@ const DATABASE_ONLY = new Set([
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history", "/api/config/instance-rate",
+  "/api/health/history", "/api/config/instance-rate", "/api/config/terminal",
   // A workstream's reported screenshots, read off its turns (the files are served per shot).
   "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -435,6 +436,15 @@ async function agentRows(repo: RepoConfig): Promise<unknown[]> {
   if (duties) await db.publishInventory(repo.name, mine.map((w) => ({ branch: w.branch, data: w as unknown as db.Fields })))
     .catch(db.logUnlessDown("orca: inventory publish failed")); // advisory — never fail a poll
   return [...mine, ...(await foreignInventory(repo.name, instance))];
+}
+
+// The remote address of each request, for the routes that must know who asks (the terminal's).
+const remoteAddr = new WeakMap<Request, string | undefined>();
+/** The web terminal's owner gate for a plain request: same-origin and the owner (server/terminal.ts). */
+async function terminalOwner(req: Request): Promise<Response | undefined> {
+  if (!terminal.originAllowed(req.headers.get("origin"), req.headers.get("host"))) return json({ error: "cross-origin request refused" }, 403);
+  const id = await terminal.identify(terminal.callerAddress(remoteAddr.get(req), req.headers));
+  return id.ok ? undefined : json({ error: `refused: ${id.reason}` }, 403);
 }
 
 async function api(req: Request, url: URL): Promise<Response> {
@@ -691,7 +701,8 @@ async function api(req: Request, url: URL): Promise<Response> {
     // removed. Invalid input is REJECTED with every problem listed — never half-applied.
     const { config, errors } = parseConfigDocument(body.config ?? body);
     if (!config) return json({ errors }, 400);
-    await saveConfigDocument(config);
+    // The web terminal's flag is NOT part of a pasted document: only Settings' own route sets it.
+    await saveConfigDocument({ ...config, ...(cfg.terminal ? { terminal: cfg.terminal } : {}) });
     return json({ ok: true, repos: config.repos.map((r) => r.name) });
   }
   if (req.method === "POST" && p === "/api/config/instance-rate") {
@@ -701,6 +712,17 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!instance || (usd !== null && !(Number.isFinite(usd) && usd >= 0))) return json({ error: "instance and a non-negative hourlyUsd (or null) are required" }, 400);
     await db.setInstanceHourlyUsd(instance, usd);
     invalidateConfig();
+    return json({ ok: true });
+  }
+  if (req.method === "POST" && p === "/api/config/terminal") {
+    // Settings' Terminal row: one instance's web terminal on or off. It hands out a shell, so it is
+    // gated like the terminal itself — the owner only, never a cross-origin page.
+    const gate = await terminalOwner(req);
+    if (gate) return gate;
+    const instance = typeof body.instance === "string" ? body.instance.trim() : "";
+    if (!instance || typeof body.on !== "boolean") return json({ error: "instance and on (true or false) are required" }, 400);
+    await setInstanceTerminal(instance, body.on);
+    console.log(`orca: terminal ${body.on ? "enabled" : "disabled"} instance=${instance} at=${new Date().toISOString()}`);
     return json({ ok: true });
   }
   if (req.method === "GET" && p === "/api/config") {
@@ -727,6 +749,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       staleHours: cfg.staleHours, agentProviders, apiPort: API_PORT,
       instance: db.instanceName(), instances: Object.keys(cfg.instances ?? {}),
       instanceHourlyUsd: cfg.instanceHourlyUsd ?? {},
+      terminal: cfg.terminal ?? {},
       // `ok`, or `unreachable since <iso>`: the bridge serves (and runs agents) without the database,
       // from the last good config, journaling history until it is back.
       database: db.databaseStatus(),
@@ -1255,16 +1278,20 @@ async function serveStatic(url: URL): Promise<Response> {
 // instance must reach binds loopback (its own UI, the Vite proxy) AND its tailnet address. Never
 // 0.0.0.0, or the same process is also served to whatever café wifi the machine is on.
 const BIND = (process.env.ORCA_BIND || "127.0.0.1").split(",").map((h) => h.trim()).filter(Boolean);
-for (const hostname of BIND) Bun.serve({
+for (const hostname of BIND) Bun.serve<terminal.TerminalData>({
   port: API_PORT,
   hostname,
   // gh calls (esp. list with per-PR detail) can run past Bun's 10s default; give them room so a
   // slow response completes instead of timing out to a confusing empty/errored page.
   idleTimeout: 60,
-  async fetch(req) {
+  // The web terminal's socket (server/terminal.ts) — the only WebSocket the bridge serves.
+  websocket: terminal.websocket,
+  async fetch(req, server) {
     const url = new URL(req.url);
     try {
       if (!url.pathname.startsWith("/api/")) return await serveStatic(url);
+      if (url.pathname === terminal.PATH) return await terminal.upgrade(req, server, { config: loadConfig, here: db.instanceName() });
+      remoteAddr.set(req, server.requestIP(req)?.address);
       const res = await api(req, url);
       // Every API answer says when it was given without the database, so any caller can tell.
       if (db.unavailableSince() !== null) { try { res.headers.set("x-orca-database", db.databaseStatus()); } catch { /* immutable */ } }
