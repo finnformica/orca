@@ -13,6 +13,7 @@ import { useAtom, useSetAtom } from "jotai";
 import {
   Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderGit2, FolderSync, Gauge, LayoutGrid, Loader2,
   Bot, Command, Keyboard, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
+  Users,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
@@ -29,7 +30,7 @@ import { useSwipeToClose } from "@/lib/gestures";
 import { isMobile, useNarrow } from "@/lib/viewport";
 import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
-import { summarizeSync } from "../workstream";
+import { repoLabel, summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
 import { NotificationBell } from "@/components/Notifications";
 import { notifyLocal } from "@/lib/notificationStore";
@@ -48,6 +49,7 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
   // The previews (and Test master) page; its badges are what the two header buttons used to carry.
   { to: "/previews", label: "Previews", Icon: MonitorPlay, match: (r) => r.name === "previews", badge: (compact) => <PreviewsBadge compact={compact} /> },
   { to: "/repos", label: "Repos", Icon: FolderGit2, match: (r) => r.name === "repos" },
+  { to: "/github", label: "GitHub", Icon: Users, match: (r) => r.name === "github" },
   { to: "/usage", label: "Usage", Icon: Gauge, match: (r) => r.name === "usage" },
   { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
 ];
@@ -207,7 +209,7 @@ function BottomBar({ activity }: { activity: { running: boolean; unread: boolean
   const label = "truncate";
   const overview = NAV[0]!;
   const agents = NAV[1]!;
-  const settings = NAV[5]!;
+  const settings = NAV.find((n) => n.to === "/settings")!;
   return (
     <nav aria-label="Quick actions" data-slot="bottom-bar"
       className="bg-background/95 fixed inset-x-0 bottom-0 z-30 flex items-stretch gap-1 border-t px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] backdrop-blur md:hidden">
@@ -303,13 +305,13 @@ function RepoSwitcher() {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button type="button" data-slot="repo-switcher" className="hover:bg-accent/60 flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium">
-          {repo === "all" ? "All repos" : repo} <ChevronsUpDown className="text-muted-foreground size-3.5" />
+          {repo === "all" ? "All repos" : repoLabel(repos, repo)} <ChevronsUpDown className="text-muted-foreground size-3.5" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-[12rem]">
         <DropdownMenuRadioGroup value={repo} onValueChange={setRepo}>
           <DropdownMenuRadioItem value="all">All repos</DropdownMenuRadioItem>
-          {repos.map((r) => <DropdownMenuRadioItem key={r.name} value={r.name}>{r.name}</DropdownMenuRadioItem>)}
+          {repos.map((r) => <DropdownMenuRadioItem key={r.name} value={r.name}>{repoLabel(repos, r.name)}</DropdownMenuRadioItem>)}
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>

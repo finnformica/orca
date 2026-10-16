@@ -20,6 +20,71 @@ export function scrubbedEnv(extra: Env = {}, opts: { keep?: readonly string[] } 
   return env as Record<string, string>;
 }
 
+// ---- GitHub accounts (RepoConfig.githubUser) ----
+// `gh` keeps several signed-in accounts per host but ONE active; `GH_TOKEN` in a process's env
+// overrides that choice for `gh` AND for git's `gh auth git-credential` helper. So a repo pinned to
+// an account gets that account's token in every process Orca runs under its paths — nothing switches.
+let accounts: Array<{ path: string; user: string }> = [];
+const tokens = new Map<string, string>();
+type Identity = { name?: string; email?: string };
+let identities: Record<string, Identity> = {};
+const profiles = new Map<string, Identity>();
+
+/** Remember which repo paths (repo + worktree root) belong to which `gh` account. Called by
+ *  config.ts whenever a config becomes current. */
+export function setGithubAccounts(repos: ReadonlyArray<{ repoPath: string; worktreeRoot: string; githubUser?: string }>, ids: Record<string, Identity> = {}): void {
+  accounts = repos.flatMap((r) => (r.githubUser ? [{ path: r.repoPath, user: r.githubUser }, { path: r.worktreeRoot, user: r.githubUser }] : []));
+  identities = ids;
+}
+
+/** The commit identity for `user`: the config's, each missing field from the GitHub profile (once per
+ *  process; public email, else GitHub's noreply address — so a commit is attributed and verified). */
+export function githubIdentity(user: string, token: string): Identity {
+  if (!profiles.has(user)) {
+    const p = Bun.spawnSync(["gh", "api", "user"], { env: scrubbedEnv({ GH_TOKEN: token }), stdout: "pipe", stderr: "pipe" });
+    let id: Identity = {};
+    try {
+      const u = JSON.parse(p.stdout.toString()) as { id?: number; login?: string; name?: string | null; email?: string | null };
+      id = { name: u.name || u.login || user, email: u.email || (u.id ? `${u.id}+${u.login ?? user}@users.noreply.github.com` : undefined) };
+    } catch { /* profile unreadable: the config's fields, else git's own */ }
+    profiles.set(user, id);
+  }
+  const profile = profiles.get(user)!;
+  return { name: identities[user]?.name ?? profile.name, email: identities[user]?.email ?? profile.email };
+}
+
+/** The `gh` account `cwd` belongs to, or undefined (the host's active account). */
+export function githubUserFor(cwd: string | undefined): string | undefined {
+  if (!cwd) return undefined;
+  return accounts.find((a) => cwd === a.path || cwd.startsWith(`${a.path}/`))?.user;
+}
+
+/** That account's token, from `gh auth token --user`, once per process (an oauth token does not
+ *  expire; a re-login replaces it on the next bridge start). Empty when the host has no such login
+ *  — the process then falls back to the active account, which fails visibly if it lacks access. */
+export function githubToken(user: string): string | undefined {
+  if (!tokens.has(user)) {
+    const p = Bun.spawnSync(["gh", "auth", "token", "--user", user], { env: scrubbedEnv(), stdout: "pipe", stderr: "pipe" });
+    const tok = p.exitCode === 0 ? p.stdout.toString().trim() : "";
+    if (!tok) console.error(`orca: no gh login for "${user}" on this host (gh auth login) — using the active account`);
+    tokens.set(user, tok);
+  }
+  return tokens.get(user) || undefined;
+}
+
+/** The env for a process running at `cwd`: `GH_TOKEN` and the account's commit identity, or nothing. */
+export function githubEnv(cwd: string | undefined): Env {
+  const user = githubUserFor(cwd);
+  const tok = user && githubToken(user);
+  if (!user || !tok) return {};
+  const { name, email } = githubIdentity(user, tok);
+  return {
+    GH_TOKEN: tok,
+    ...(name ? { GIT_AUTHOR_NAME: name, GIT_COMMITTER_NAME: name } : {}),
+    ...(email ? { GIT_AUTHOR_EMAIL: email, GIT_COMMITTER_EMAIL: email } : {}),
+  };
+}
+
 /** `bin/worker` holds the tools every run may use — `orca-shot`, the one way to take a screenshot
  *  (server/screenshot.ts). Not `bin/`: `orca` there is the orchestrator's, not a worker's. */
 export const WORKER_BIN = new URL("../bin/worker", import.meta.url).pathname;

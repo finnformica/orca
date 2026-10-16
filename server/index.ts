@@ -29,6 +29,7 @@ import * as upkeep from "./upkeep";
 import * as notify from "./notify";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
+import * as repos from "./repos";
 import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
 import { ORCHESTRATOR_REPO, attachmentRefs, workstreamShots, followUpPrompt, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
@@ -561,6 +562,17 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (typeof body.text !== "string" || !body.text.trim()) return json({ error: "text required" }, 400);
     return json(await orchestrator.message(cfg, body.text, body.attachments ?? []));
   }
+  // The GitHub page: this host's signed-in `gh` accounts (per host, like /api/usage) and the commit
+  // identity each carries; a save writes the shared config.
+  if (req.method === "GET" && p === "/api/github/accounts") return json({ accounts: await repos.accountsHere(cfg) });
+  if (req.method === "POST" && p === "/api/github/accounts") {
+    await repos.setAccount(cfg, String(body.login ?? ""), { name: body.name as string | undefined, email: body.email as string | undefined });
+    return json({ accounts: await repos.accountsHere(await loadConfig()) });
+  }
+  if (req.method === "POST" && p === "/api/repos/add") {
+    // `orca repo add --on <this instance>`: clone here, append to the shared config.
+    return json(await repos.add(cfg, String(body.nameWithOwner ?? ""), { name: typeof body.name === "string" ? body.name : undefined }));
+  }
   if (req.method === "POST" && p === "/api/orchestrator/tool") {
     // What `bin/orca` calls. A refusal is a 400 with a message written for the model to act on.
     try {
@@ -698,6 +710,7 @@ async function api(req: Request, url: URL): Promise<Response> {
       previewLabel: r.previewLabel,
       mergePolicy: r.mergePolicy, // so the actions bar can show Merge when green disabled with the queue's own refusal
       hasRemote: await git.hasRemote(r.repoPath),
+      owner: (await git.remoteNameWithOwner(r.repoPath).catch(() => "")).split("/")[0] || undefined, // the switcher prefixes it when repos span accounts
       defaultModel: modelFor(cfg, r), // what an unpinned card runs on (Claude), so the picker can show it
       // Opt-ins travel to the client so it can hide what the bridge would refuse — the bridge still
       // enforces, because a tab open since before a change would otherwise offer the old actions.

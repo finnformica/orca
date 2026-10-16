@@ -73,10 +73,14 @@ async function res(r: Response) {
   return data;
 }
 
+export type GithubAccount = { login: string; active: boolean; name?: string; email?: string; configured: { name?: string; email?: string }; repos: string[] };
+
 export type RepoInfo = {
   name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; prLabels?: { name: string; default?: boolean }[];
   previewLabel?: string; mergePolicy?: MergePolicy;
   defaultModel?: string; runsOn?: string; features?: RepoFeatures;
+  /** GitHub owner from origin, when it has one. */
+  owner?: string;
 };
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
@@ -85,6 +89,9 @@ export const api = {
   /** Settings' Machine cost: one instance's USD/hour; null clears it (back to the EC2 estimate / 0). */
   setInstanceRate: (instance: string, hourlyUsd: number | null): Promise<{ ok: true }> => post("/api/config/instance-rate", { instance, hourlyUsd }),
   usage: (): Promise<Usage | null> => get("/api/usage").then(res),
+  /** The GitHub page: this host's signed-in gh accounts, the identity each commits as, the repos on each. */
+  githubAccounts: (): Promise<{ accounts: GithubAccount[] }> => get("/api/github/accounts").then(res),
+  setGithubAccount: (login: string, fields: { name?: string; email?: string }): Promise<{ accounts: GithubAccount[] }> => post("/api/github/accounts", { login, ...fields }),
   // Take a hydra login out of its rotation or put it back; `instance` names the host it's signed
   // in on (hydra state is per host) — the usage card's own, today.
   setProfileEnabled: (name: string, enabled: boolean, instance?: string): Promise<{ profiles: Usage["profiles"] }> =>
