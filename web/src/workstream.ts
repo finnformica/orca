@@ -1765,14 +1765,17 @@ export type WorkstreamRef = { repo: string; branch: string; title: string; insta
 /** One option in the `@` picker. */
 export type MentionRef = { kind: "pr"; ref: PrRef } | { kind: "workstream"; ref: WorkstreamRef };
 
-/** Each word of the query must prefix the repo name, the whole branch, a word of the branch or a word
- *  of the title. Board order is kept. */
+/** Each word of the query must start at a word boundary of the repo name, the branch or the title,
+ *  so `at-ref` finds `orca/at-reference-…`. Board order is kept. */
 export function filterWorkstreamRefs(refs: WorkstreamRef[], query: string, limit = 8): WorkstreamRef[] {
   const words = query.toLowerCase().replace(/^[#@]/, "").split(/\s+/).filter(Boolean);
+  const atBoundary = (hay: string, w: string) => {
+    for (let i = hay.indexOf(w); i >= 0; i = hay.indexOf(w, i + 1)) if (i === 0 || !/[a-z0-9]/.test(hay[i - 1]!)) return true;
+    return false;
+  };
   const hit = (r: WorkstreamRef) => {
-    const branch = r.branch.toLowerCase();
-    const parts = [...branch.split(/[^a-z0-9]+/), ...r.title.toLowerCase().split(/[^a-z0-9]+/)];
-    return words.every((w) => branch.startsWith(w) || r.repo.toLowerCase().startsWith(w) || parts.some((t) => t.startsWith(w)));
+    const hays = [r.repo, r.branch, r.title].map((h) => h.toLowerCase());
+    return words.every((w) => hays.some((h) => atBoundary(h, w)));
   };
   return refs.filter(hit).slice(0, limit);
 }

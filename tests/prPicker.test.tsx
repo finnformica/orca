@@ -77,10 +77,12 @@ const wsRefs: WorkstreamRef[] = [
 ];
 
 describe("workstream refs", () => {
-  test("filterWorkstreamRefs: each word prefixes the repo, the branch, a branch word or a title word", () => {
+  test("filterWorkstreamRefs: each word starts at a word boundary of the repo, the branch or the title", () => {
     expect(filterWorkstreamRefs(wsRefs, "").map((r) => r.branch)).toEqual(["orca/local-search-1a2b", "auth-flow", "rate-limits"]);
     expect(filterWorkstreamRefs(wsRefs, "orca/loc").map((r) => r.branch)).toEqual(["orca/local-search-1a2b"]); // whole branch
     expect(filterWorkstreamRefs(wsRefs, "search").map((r) => r.branch)).toEqual(["orca/local-search-1a2b"]); // branch word
+    expect(filterWorkstreamRefs(wsRefs, "local-se").map((r) => r.branch)).toEqual(["orca/local-search-1a2b"]); // across branch words
+    expect(filterWorkstreamRefs(wsRefs, "earch")).toEqual([]); // not mid-word
     expect(filterWorkstreamRefs(wsRefs, "rate lim").map((r) => r.branch)).toEqual(["rate-limits"]); // title words
     expect(filterWorkstreamRefs(wsRefs, "api").map((r) => r.branch)).toEqual(["rate-limits"]); // repo
     expect(filterWorkstreamRefs(wsRefs, "nothing")).toEqual([]);
