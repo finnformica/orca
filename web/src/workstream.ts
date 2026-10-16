@@ -3526,3 +3526,45 @@ export function quickActions(row: QuickActionRow, ctx: QuickActionContext): Quic
   out.push(autoMerge);
   return out;
 }
+
+// ---- the instance web terminal (components/InstanceTerminal.tsx, server/terminal.ts) ----
+
+/** The phone's extra-keys row, left to right: what each key sends to the shell. `ctrl` and `paste`
+ *  are not bytes — Ctrl applies to the next key, Paste reads the clipboard. */
+export const TERMINAL_KEYS: { id: string; label: string; send?: string }[] = [
+  { id: "esc", label: "Esc", send: "\x1b" },
+  { id: "tab", label: "Tab", send: "\t" },
+  { id: "ctrl", label: "Ctrl" },
+  { id: "left", label: "←", send: "\x1b[D" },
+  { id: "up", label: "↑", send: "\x1b[A" },
+  { id: "down", label: "↓", send: "\x1b[B" },
+  { id: "right", label: "→", send: "\x1b[C" },
+  { id: "paste", label: "Paste" },
+];
+
+/** Ctrl + a typed key, as the terminal byte: `c` → ETX (0x03), `[` → ESC. Anything without a control
+ *  form (a digit, a word pasted in) is sent as typed. */
+export function ctrlChord(data: string): string {
+  if (data.length !== 1) return data;
+  const c = data.toUpperCase().charCodeAt(0);
+  if (c >= 64 && c <= 95) return String.fromCharCode(c - 64); // @ A-Z [ \ ] ^ _
+  if (data === "?") return "\x7f";
+  if (data === " ") return "\x00";
+  return data;
+}
+
+/** The terminal socket for an instance, on the bridge's own port (`apiPort`: in the built app the
+ *  page's port; in dev the bridge's, as Vite's Bun proxy can't forward an upgrade). */
+export function terminalSocketUrl(loc: { protocol: string; hostname: string }, port: string, instance: string, cols: number, rows: number): string {
+  const host = loc.hostname.includes(":") ? `[${loc.hostname}]` : loc.hostname;
+  const q = new URLSearchParams({ instance, cols: String(cols), rows: String(rows) });
+  return `${loc.protocol === "https:" ? "wss" : "ws"}://${host}${port ? `:${port}` : ""}/api/terminal?${q}`;
+}
+
+/** What the panel says when the socket closes — the server's own reason when it gave one (off,
+ *  full, idle, shell exited); a refusal before the upgrade (not the owner) arrives with none. */
+export function terminalClosedText(code: number, reason: string): string {
+  if (reason) return reason;
+  if (code === 1000) return "Session ended.";
+  return "Could not connect — the terminal may be off, or this device is not allowed.";
+}

@@ -7,6 +7,7 @@ import type { Server } from "bun";
 import * as db from "../server/db";
 import { configDocument, invalidateConfig, loadConfig, parseConfigDocument, saveConfigDocument, setInstanceTerminal, type OrcaConfig } from "../server/config";
 import * as terminal from "../server/terminal";
+import { TERMINAL_KEYS, ctrlChord, terminalClosedText, terminalSocketUrl } from "../web/src/workstream";
 import { freshSchema, type TestDb } from "./pg";
 import { native } from "./happydom";
 
@@ -205,4 +206,19 @@ test("Settings sets the flag; a pasted config document can not", async () => {
     if (prevDbUrl === undefined) delete process.env.ORCA_DATABASE_URL; else process.env.ORCA_DATABASE_URL = prevDbUrl;
     invalidateConfig();
   }
+});
+
+test("the phone's extra keys and Ctrl send the bytes a terminal expects", () => {
+  expect(TERMINAL_KEYS.map((k) => k.label)).toEqual(["Esc", "Tab", "Ctrl", "←", "↑", "↓", "→", "Paste"]);
+  expect(TERMINAL_KEYS.find((k) => k.id === "esc")!.send).toBe("\x1b");
+  expect(TERMINAL_KEYS.find((k) => k.id === "up")!.send).toBe("\x1b[A");
+  expect(ctrlChord("c")).toBe("\x03");
+  expect(ctrlChord("D")).toBe("\x04");
+  expect(ctrlChord("[")).toBe("\x1b");
+  expect(ctrlChord("5")).toBe("5");
+  expect(ctrlChord("ls")).toBe("ls");
+  expect(terminalSocketUrl({ protocol: "http:", hostname: "orca-box" }, "8787", "local", 52, 30)).toBe("ws://orca-box:8787/api/terminal?instance=local&cols=52&rows=30");
+  expect(terminalSocketUrl({ protocol: "https:", hostname: "::1" }, "", "cloud", 80, 24)).toBe("wss://[::1]/api/terminal?instance=cloud&cols=80&rows=24");
+  expect(terminalClosedText(4403, "the terminal is off for cloud — turn it on in Settings")).toContain("Settings");
+  expect(terminalClosedText(1006, "")).toContain("not allowed");
 });

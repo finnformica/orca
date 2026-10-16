@@ -15,7 +15,7 @@ import { browserNotifyAtom, densityAtom, instanceScopeAtom, notifyDndAtom, repoF
 import { KIND_META, NOTIFICATION_KINDS } from "../../../shared/notifications";
 import { navigate } from "@/lib/route";
 import { useTheme, type Theme } from "@/lib/theme";
-import { instanceChoices, setInstanceRate, staleHours, thisInstance, useAgentProviders, useInstanceRates, useRepos, useWorkstreams } from "../store";
+import { instanceChoices, setInstanceRate, setInstanceTerminal, staleHours, thisInstance, useAgentProviders, useInstanceRates, useInstanceTerminals, useRepos, useWorkstreams } from "../store";
 import { ago, repoSummaries } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
 import { FindBox, NAV, THEMES } from "@/components/Shell";
@@ -106,6 +106,7 @@ export function Settings() {
       </VCard>
       <NotificationSettings />
       <MachineCostSettings />
+      <TerminalSettings />
       <VCard slot="settings-config" title="Configuration" aside={<span className="text-muted-foreground text-xs">read-only · orca.config.ts</span>}>
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-b p-4 sm:grid-cols-4">
           <Detail label="This instance"><StatusDot tone="ready" />{here ?? "—"}</Detail>
@@ -210,6 +211,41 @@ function MachineCostSettings() {
   return (
     <VCard slot="settings-machine-cost" title="Machine cost" bodyClass="divide-y">
       {machines.map((m) => <MachineRate key={m} instance={m} saved={rates[m]} />)}
+    </VCard>
+  );
+}
+
+/** The web terminal per machine — `terminal` in the app config, OFF unless turned on here. This card
+ *  is the only way to set it (the bridge keeps it out of a pasted config document). */
+function TerminalSettings() {
+  const on = useInstanceTerminals();
+  const here = thisInstance();
+  const machines = instanceChoices().length ? instanceChoices() : here ? [here] : [];
+  const [busy, setBusy] = useState<string | null>(null);
+  if (!machines.length) return null;
+  const set = async (instance: string, value: boolean) => {
+    setBusy(instance);
+    try { await setInstanceTerminal(instance, value); }
+    catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      notifyLocal({
+        kind: "action_failed", repo: "", title: `Terminal · ${instance}`, label: "Terminal setting failed", body: error,
+        copy: `Action: Turn the terminal ${value ? "on" : "off"} for ${instance}\nError:\n${error}`,
+        ask: `Turning the terminal ${value ? "on" : "off"} for ${instance} failed: ${error}. Please investigate and fix.`,
+      });
+    }
+    finally { setBusy(null); }
+  };
+  return (
+    <VCard slot="settings-terminal" title="Terminal" bodyClass="divide-y">
+      {machines.map((m) => (
+        <Setting key={m} label={m} hint="A shell as the Orca user, from the machine's card. Owner only, 2 sessions, 30 minutes idle.">
+          <span className={busy === m ? "pointer-events-none opacity-50" : undefined}>
+            <Segmented label={`${m} terminal`} value={on[m] ? "on" : "off"} onChange={(v) => void set(m, v === "on")}
+              options={[{ value: "off", label: "Off" }, { value: "on", label: "On" }]} />
+          </span>
+        </Setting>
+      ))}
     </VCard>
   );
 }
