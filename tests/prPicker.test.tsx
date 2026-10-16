@@ -8,7 +8,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatComposer } from "@/components/ChatComposer";
 import { Shortcuts } from "@/components/CommandPalette";
-import { filterPrRefs, insertPrRef, prRefLabel, prTrigger, type PrRef } from "@/workstream";
+import { filterMentions, filterPrRefs, filterWorkstreamRefs, insertPrRef, mentionLabel, prRefLabel, prTrigger, workstreamRefLabel, type PrRef, type WorkstreamRef } from "@/workstream";
 
 describe("prTrigger", () => {
   test("fires on an @ at the start, after whitespace or a bracket, up to the caret", () => {
@@ -67,6 +67,41 @@ describe("prRefLabel + insertPrRef", () => {
     expect(insertPrRef("see @61", 4, 7, "#6101")).toEqual({ text: "see #6101 ", caret: 10 });
     expect(insertPrRef("see @61 now", 4, 7, "#6101")).toEqual({ text: "see #6101 now", caret: 9 });
     expect(insertPrRef("@", 0, 1, "web#6101")).toEqual({ text: "web#6101 ", caret: 9 });
+  });
+});
+
+const wsRefs: WorkstreamRef[] = [
+  { repo: "web", branch: "orca/local-search-1a2b", title: "Local search", instance: "local" },
+  { repo: "web", branch: "auth-flow", title: "Fix auth flow", prNumber: 6101 }, // has a PR: listed as #6101
+  { repo: "api", branch: "rate-limits", title: "Rate limits", instance: "cloud" },
+];
+
+describe("workstream refs", () => {
+  test("filterWorkstreamRefs: each word prefixes the repo, the branch, a branch word or a title word", () => {
+    expect(filterWorkstreamRefs(wsRefs, "").map((r) => r.branch)).toEqual(["orca/local-search-1a2b", "auth-flow", "rate-limits"]);
+    expect(filterWorkstreamRefs(wsRefs, "orca/loc").map((r) => r.branch)).toEqual(["orca/local-search-1a2b"]); // whole branch
+    expect(filterWorkstreamRefs(wsRefs, "search").map((r) => r.branch)).toEqual(["orca/local-search-1a2b"]); // branch word
+    expect(filterWorkstreamRefs(wsRefs, "rate lim").map((r) => r.branch)).toEqual(["rate-limits"]); // title words
+    expect(filterWorkstreamRefs(wsRefs, "api").map((r) => r.branch)).toEqual(["rate-limits"]); // repo
+    expect(filterWorkstreamRefs(wsRefs, "nothing")).toEqual([]);
+  });
+  test("workstreamRefLabel: the branch in backticks, `repo/branch` for the orchestrator or another repo of several", () => {
+    const ws = wsRefs[0]!;
+    expect(workstreamRefLabel(ws, 1, "web")).toBe("`orca/local-search-1a2b`");
+    expect(workstreamRefLabel(ws, 2, "web")).toBe("`orca/local-search-1a2b`"); // its own repo's chat
+    expect(workstreamRefLabel(ws, 2, "api")).toBe("`web/orca/local-search-1a2b`");
+    expect(workstreamRefLabel(ws, 1)).toBe("`web/orca/local-search-1a2b`"); // the orchestrator: the board's name
+    expect(mentionLabel({ kind: "workstream", ref: ws }, refs, 1)).toBe("`web/orca/local-search-1a2b`");
+    expect(mentionLabel({ kind: "pr", ref: refs[1]! }, refs, 1)).toBe("#6101");
+    expect(insertPrRef("see @loc", 4, 8, "`web/orca/local-search-1a2b`")).toEqual({ text: "see `web/orca/local-search-1a2b` ", caret: 33 });
+  });
+  test("filterMentions: open PRs, then workstreams with no listed PR, then merged; a workstream with a PR shows once", () => {
+    const label = (m: ReturnType<typeof filterMentions>[number]) => (m.kind === "pr" ? `#${m.ref.number}` : m.ref.branch);
+    expect(filterMentions(refs, wsRefs, "").map(label)).toEqual(["#6150", "#6101", "#42", "orca/local-search-1a2b", "rate-limits", "#6095", "#6090"]);
+    expect(filterMentions(refs, wsRefs, "auth").map(label)).toEqual(["#6101", "#42"]); // auth-flow is #6101
+    // Its PR not in the list (e.g. not polled yet): the workstream itself shows.
+    expect(filterMentions([], wsRefs, "auth").map(label)).toEqual(["auth-flow"]);
+    expect(filterMentions(refs, wsRefs, "", 4)).toHaveLength(4);
   });
 });
 
@@ -181,6 +216,17 @@ describe("ChatComposer @ picker", () => {
     await key(box, "Escape");
     expect(document.activeElement).not.toBe(box); // nothing else did: blurred, the draft kept
     expect(box.value).toBe("ship @61");
+  });
+
+  test("a worktree with no PR is listed as a workstream; a pick inserts its branch", async () => {
+    apiFake.agentsData = [{ branch: "orca/local-search", worktreePath: "/wt/local-search", agentStatus: "idle" }];
+    const box = await mountComposer();
+    await type(box, "see @local");
+    expect(options().map((o) => o.textContent)).toEqual(["orca/local-search"]);
+    await key(box, "Enter");
+    expect(box.value).toBe("see `orca/local-search` ");
+    await type(box, "@fix"); // auth's PR row: once, as its PR
+    expect(options().map((o) => o.textContent)).toEqual(["#6101Fix auth flowapproved"]);
   });
 
   test("an @ inside a word or URL opens nothing, and # opens nothing at all", async () => {

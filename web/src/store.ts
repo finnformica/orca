@@ -15,7 +15,7 @@ import {
 } from "./workstream";
 import type { MergeMark } from "./workstream";
 import type { BridgeInfo, ReviewDigest } from "./workstream";
-import type { OrchStatus, PrRef, UpkeepRecord } from "./workstream";
+import type { OrchStatus, PrRef, UpkeepRecord, WorkstreamRef } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
 import { attachCommand, handoffPrompt } from "../../shared/agent";
@@ -530,6 +530,21 @@ export function usePrRefs(): { refs: PrRef[]; repoCount: number } {
     prRefsCache = { refs, repoCount: live.length };
   }
   return prRefsCache;
+}
+
+/** Every live workstream on the board (all repos, all instances, with or without a PR) for the same
+ *  picker. Optimistic cards are left out: their branch is a placeholder id. */
+let wsRefsAt = -1;
+let wsRefsCache: WorkstreamRef[] = [];
+export function useWorkstreamRefs(): WorkstreamRef[] {
+  const v = useSyncExternalStore(subscribe, () => version);
+  if (v !== wsRefsAt) {
+    wsRefsAt = v;
+    const placeholders = new Set(optimistic.map((o) => o.id));
+    wsRefsCache = assembleRows().filter((r) => !placeholders.has(r.branch))
+      .map((r): WorkstreamRef => ({ repo: r.repo, branch: r.branch, title: r.title, instance: r.instance, prNumber: r.prNumber }));
+  }
+  return wsRefsCache;
 }
 
 // ---- review signal (lazy, per visible PR) ----

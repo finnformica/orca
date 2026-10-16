@@ -1758,6 +1758,49 @@ export function insertPrRef(text: string, start: number, caret: number, label: s
   return { text: text.slice(0, start) + ins + rest, caret: start + ins.length };
 }
 
+// The same picker also lists every live workstream (with or without a PR, on any instance), so a
+// local branch with no PR yet can be named too. A workstream with a PR is listed once, as its PR.
+
+export type WorkstreamRef = { repo: string; branch: string; title: string; instance?: string; prNumber?: number };
+/** One option in the `@` picker. */
+export type MentionRef = { kind: "pr"; ref: PrRef } | { kind: "workstream"; ref: WorkstreamRef };
+
+/** Each word of the query must prefix the repo name, the whole branch, a word of the branch or a word
+ *  of the title. Board order is kept. */
+export function filterWorkstreamRefs(refs: WorkstreamRef[], query: string, limit = 8): WorkstreamRef[] {
+  const words = query.toLowerCase().replace(/^[#@]/, "").split(/\s+/).filter(Boolean);
+  const hit = (r: WorkstreamRef) => {
+    const branch = r.branch.toLowerCase();
+    const parts = [...branch.split(/[^a-z0-9]+/), ...r.title.toLowerCase().split(/[^a-z0-9]+/)];
+    return words.every((w) => branch.startsWith(w) || r.repo.toLowerCase().startsWith(w) || parts.some((t) => t.startsWith(w)));
+  };
+  return refs.filter(hit).slice(0, limit);
+}
+
+/** The picker's options: open PRs, then workstreams with no PR among `prs`, then merged PRs. */
+export function filterMentions(prs: PrRef[], workstreams: WorkstreamRef[], query: string, limit = 8): MentionRef[] {
+  const prKeys = new Set(prs.map((p) => `${p.repo}#${p.number}`));
+  const own = workstreams.filter((w) => w.prNumber === undefined || !prKeys.has(`${w.repo}#${w.prNumber}`));
+  const prHits = filterPrRefs(prs, query, limit);
+  return [
+    ...prHits.filter((p) => p.state !== "merged").map((ref): MentionRef => ({ kind: "pr", ref })),
+    ...filterWorkstreamRefs(own, query, limit).map((ref): MentionRef => ({ kind: "workstream", ref })),
+    ...prHits.filter((p) => p.state === "merged").map((ref): MentionRef => ({ kind: "pr", ref })),
+  ].slice(0, limit);
+}
+
+/** The text a workstream pick inserts: `` `branch` ``, qualified as `` `repo/branch` `` — the name the
+ *  orchestrator's board gives it — when the composer has no repo of its own (the orchestrator) or
+ *  is in another repo of several. There is no server-side expansion: the agent reads this text. */
+export function workstreamRefLabel(ref: WorkstreamRef, repoCount: number, contextRepo?: string): string {
+  return contextRepo === undefined || (repoCount > 1 && contextRepo !== ref.repo) ? `\`${ref.repo}/${ref.branch}\`` : `\`${ref.branch}\``;
+}
+
+/** The text a pick of either kind inserts. */
+export function mentionLabel(m: MentionRef, prs: PrRef[], repoCount: number, contextRepo?: string): string {
+  return m.kind === "pr" ? prRefLabel(m.ref, prs, repoCount, contextRepo) : workstreamRefLabel(m.ref, repoCount, contextRepo);
+}
+
 // ---- The overview (the board's default List view) ----
 // Every number on the stat tiles, the list's filter + sort, and the activity feed are derived here
 // from the same assembled rows the swimlanes render — no endpoint of their own, so the two views can
