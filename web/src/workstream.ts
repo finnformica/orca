@@ -2340,6 +2340,24 @@ export function staleAge(lastSyncAt: number, now: number, after = STALE_AFTER_MS
   return age > after ? age : null;
 }
 
+/** When the bridge's database went away, read off the `x-orca-database` header every API answer
+ *  carries while it is down (`unreachable since <iso>`); null for no header or an unreadable one. Pure. */
+export function databaseDownSince(header: string | null | undefined): number | null {
+  const m = /^unreachable since (\S+)$/.exec(header ?? "");
+  const at = m ? Date.parse(m[1]!) : NaN;
+  return Number.isFinite(at) ? at : null;
+}
+
+/** The one banner's text while the database is down: the time (with the day, past today), and what
+ *  the page is doing about it. Pure. */
+export function databaseBannerText(since: number, now: number): string {
+  const d = new Date(since);
+  const hhmm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const sameDay = new Date(now).toDateString() === d.toDateString();
+  const when = sameDay ? hhmm : `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })} ${hhmm}`;
+  return `Database unreachable since ${when} · showing cached data · retrying`;
+}
+
 /** A newer build has been deployed: the served `version.json` names a different build than the one
  *  running. A dev server (no build id) or an unreadable answer never prompts. Pure. */
 export const newerBuild = (running: string | undefined, served: unknown): boolean =>

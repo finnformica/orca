@@ -195,7 +195,7 @@ export async function open(): Promise<Bun.SQL> {
   if (downSince !== null || !announced) {
     // Reachable — for the first time, or again. Clear the state first, so a listener's own queries
     // (the replay) go straight through; the listeners run beside this query, never in front of it.
-    if (downSince !== null) console.log(`orca: database reachable again (down since ${new Date(downSince).toISOString()})`);
+    if (downSince !== null) console.log(`orca: database reachable again (down since ${new Date(downSince).toISOString()}, for ${downFor(Date.now() - downSince)})`);
     downSince = null; downUrl = null; retryDelay = 0; announced = true;
     announcing = announceAvailable();
   }
@@ -203,6 +203,14 @@ export async function open(): Promise<Bun.SQL> {
 }
 let announced = false;
 let announcing: Promise<void> = Promise.resolve();
+
+/** How long an outage lasted, for the recovery line: `45s`, `3m 12s`, `2h 5m`. */
+export function downFor(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
 
 /** A short identity for the database this process is pointed at — no credentials, so it can be
  *  written next to journaled history (server/outbox.ts replays only into the database it was for). */
