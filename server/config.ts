@@ -1,4 +1,5 @@
 import * as db from "./db";
+import { setGithubAccounts } from "./env";
 import { readJsonSync, statePath, writeJsonSync } from "./state";
 import { AGENT_PROVIDERS, type AgentProvider } from "../shared/agent";
 import type { AgentProxy } from "../shared/cavemanTrial";
@@ -107,6 +108,12 @@ export type RepoConfig = {
    *  reading, i.e. today's single-machine behaviour. An instance ignores repos assigned elsewhere,
    *  which is how a laptop and a cloud box divide the work without a queue between them. */
   runsOn?: string;
+  /** Which signed-in `gh` account this repo belongs to (its login), when the host has more than one
+   *  (`gh auth login` twice — a work account and a personal one). Every `gh` and `git` Orca runs for
+   *  this repo, and every agent in its worktrees, gets that account's token as `GH_TOKEN`
+   *  (`server/env.ts` githubEnv), so `@me`, PRs and pushes land on the right account with no
+   *  `gh auth switch`. Unset: whichever account is active on the host, as before. */
+  githubUser?: string;
   /**
    * Heavy dirs to provision from the main repo into each worktree — a fresh checkout has no
    * `node_modules`, and a real per-worktree install is slow/huge. Repo-relative paths.
@@ -244,6 +251,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
     }
     if (r.runsOn !== undefined && (typeof r.runsOn !== "string" || !r.runsOn.trim())) {
       errors.push(`${where}.runsOn must be an instance name`);
+    }
+    if (r.githubUser !== undefined && (typeof r.githubUser !== "string" || !/^[\w.-]+$/.test(r.githubUser))) {
+      errors.push(`${where}.githubUser must be a GitHub login`);
     }
     if (r.agentPermissionMode !== undefined && !["bypass", "ask"].includes(r.agentPermissionMode as string)) {
       errors.push(`${where}.agentPermissionMode must be "bypass" or "ask"`);
@@ -455,6 +465,7 @@ export async function loadConfig(): Promise<OrcaConfig> {
     if (!fallback) throw e;
     cached = fallback;
     cachedAt = Date.now(); // re-try the database after the TTL, not on every request
+    setGithubAccounts(fallback.repos);
     return fallback;
   }
 }
@@ -494,6 +505,7 @@ async function loadFromDb(): Promise<OrcaConfig> {
   };
   cached = config;
   cachedAt = Date.now();
+  setGithubAccounts(config.repos);
   const text = JSON.stringify(config);
   if (text !== cacheWritten && cacheAllowed()) {
     try { writeJsonSync(cacheFile(), { db: db.databaseKey(), config } satisfies ConfigCache); cacheWritten = text; } catch (e) { console.error("orca: config cache write failed", e); }

@@ -33,6 +33,11 @@ case "$1 $2" in
     cat "$ORCA_PRLIST_FIXTURE" ;;
   "pr diff") printf 'diff --git a/x.ts b/x.ts\\n@@ -1 +1 @@\\n+added line\\n-removed line\\n' ;;
   "repo view") cat "$ORCA_GH_REPO_FIXTURE" ;;
+  # Accounts (server/repos.ts, server/env.ts): ORCA_GH_ACCOUNTS lists logins, the first active; a token is tok-<login>.
+  "auth status") first=1; for a in $ORCA_GH_ACCOUNTS; do echo "  ✓ Logged in to github.com account $a (keyring)"; [ $first = 1 ] && echo "  - Active account: true" || echo "  - Active account: false"; first=0; done ;;
+  "auth token") shift 2; while [ $# -gt 0 ]; do [ "$1" = "--user" ] && { echo "tok-$2"; exit 0; }; shift; done; echo "tok-active" ;;
+  "repo list") cat "$ORCA_GH_REPOLIST_FIXTURE" ;;
+  "repo clone") git clone -q "$ORCA_GH_CLONE_SRC" "$4" ;;
   "api graphql") cat "$ORCA_GH_GRAPHQL_FIXTURE" ;;
   *rules/branches*) cat "$ORCA_GH_RULES_FIXTURE" 2>/dev/null || echo '[]' ;;
   "run view") cat "$ORCA_GH_RUN_LOG_FIXTURE" ;;

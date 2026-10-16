@@ -178,6 +178,23 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
 
 ## Multi-repo (aggregated)
 
+**Two GitHub accounts on one board** (a work account and a personal one for weekend repos): no
+second instance, no switcher. `gh` holds several signed-in accounts per host (`gh auth login`
+twice) with one active; a repo pinned to the other by `githubUser` in its RepoConfig gets that
+account's token as `GH_TOKEN` in every process Orca runs under its paths — `gh`, `git -C`, agents,
+previews (`server/env.ts` `githubEnv`, laid in by `runCmd`, `agent.launch` and `preview.start`;
+the map is refreshed whenever a config becomes current). `GH_TOKEN` overrides the active account
+for `gh` and for git's `gh auth git-credential` helper, so `@me`, PR creation, merges and pushes
+land on the right account. Commit identity stays git's (`git config user.email` in that clone).
+Unset, nothing changes. The repo switcher shows `owner/name` once the repos span more than one
+GitHub owner (`repoLabel`; `owner` on `/api/config` from origin). **The orchestrator can set a
+repo up itself** (`orca repo list` — every repo each signed-in account can see; `orca repo add
+<owner/name> [--on <instance>]`, `server/repos.ts`, the `/api/repos/add` route on the target
+instance): clone under `ORCA_DEV_ROOT` with the account whose login is the owner (else the active
+one), append a RepoConfig (default branch, `.worktrees`, `runsOn` that instance, `githubUser` when
+the owner is a non-active account, no previews), save. Previews and `checkCommand` remain a hand
+edit in Settings.
+
 `orca.config.ts` holds `repos: RepoConfig[]` (each with repoPath/worktreeRoot/baseBranch/
 previewServices/slackChannel) + global portRange/staleHours. Every repo-scoped API call names
 its repo (`?repo=` on GET, `repo` in POST body; server resolves via `repoOf`). The board shows

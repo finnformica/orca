@@ -6,7 +6,7 @@ import { retryTitle } from "./title";
 import { autofixInstruction, handoffPrompt, isAutofix, parseAgentOutcome, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type StopReason, type TurnCheck, type TurnSource } from "../shared/agent";
 import { runCheck } from "./check";
 import { run, runCmd } from "./run";
-import { agentEnv } from "./env";
+import { agentEnv, githubEnv } from "./env";
 import * as procs from "./proc";
 import * as lease from "./lease";
 import * as ledger from "./ledger";
@@ -633,7 +633,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd, options.allowedTools, wiring?.on ? wiring.args : []),
       { available: scoped, memoryMaxGb, cpuWeight, unit: scopeUnit },
     ),
-    { cwd, env: { ...agentEnv(), ...scopedEnv, ...options.env, ...(wiring?.on ? wiring.env : {}) }, stdout: "pipe", stderr: "pipe" },
+    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...scopedEnv, ...options.env, ...(wiring?.on ? wiring.env : {}) }, stdout: "pipe", stderr: "pipe" },
   );
   let timedOut = false;
   const timeout = options.timeoutMs ? setTimeout(() => { timedOut = true; proc.kill(); }, options.timeoutMs) : undefined;

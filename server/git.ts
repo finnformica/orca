@@ -311,6 +311,22 @@ export const pushBranch = (worktreePath: string, branch: string) =>
   git(worktreePath, "push", "-u", "origin", branch);
 
 /** Does the repo have any git remote? (Determines PR vs local-only lifecycle.) */
+/** `owner/name` from origin's URL (https or ssh), cached per repo — a remote rarely changes. */
+const remoteNames = new Map<string, Promise<string>>();
+export function remoteNameWithOwner(repoPath: string): Promise<string> {
+  let p = remoteNames.get(repoPath);
+  if (!p) {
+    p = git(repoPath, "remote", "get-url", "origin").then((url) => {
+      const m = /[:/]([^/:]+\/[^/]+?)(?:\.git)?\/?\s*$/.exec(url.trim());
+      if (!m) throw new Error(`no owner/name in ${url.trim()}`);
+      return m[1]!;
+    });
+    p.catch(() => remoteNames.delete(repoPath));
+    remoteNames.set(repoPath, p);
+  }
+  return p;
+}
+
 export async function hasRemote(repoPath: string): Promise<boolean> {
   try { return (await git(repoPath, "remote")).trim().length > 0; } catch { return false; }
 }

@@ -77,6 +77,8 @@ export type RepoInfo = {
   name: string; baseBranch: string; slackChannel?: string; hasRemote: boolean; prLabels?: { name: string; default?: boolean }[];
   previewLabel?: string; mergePolicy?: MergePolicy;
   defaultModel?: string; runsOn?: string; features?: RepoFeatures;
+  /** GitHub owner from origin, when it has one. */
+  owner?: string;
 };
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 

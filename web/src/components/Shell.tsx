@@ -29,7 +29,7 @@ import { useSwipeToClose } from "@/lib/gestures";
 import { isMobile, useNarrow } from "@/lib/viewport";
 import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
-import { summarizeSync } from "../workstream";
+import { repoLabel, summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
 import { NotificationBell } from "@/components/Notifications";
 import { notifyLocal } from "@/lib/notificationStore";
@@ -303,13 +303,13 @@ function RepoSwitcher() {
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button type="button" data-slot="repo-switcher" className="hover:bg-accent/60 flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium">
-          {repo === "all" ? "All repos" : repo} <ChevronsUpDown className="text-muted-foreground size-3.5" />
+          {repo === "all" ? "All repos" : repoLabel(repos, repo)} <ChevronsUpDown className="text-muted-foreground size-3.5" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-[12rem]">
         <DropdownMenuRadioGroup value={repo} onValueChange={setRepo}>
           <DropdownMenuRadioItem value="all">All repos</DropdownMenuRadioItem>
-          {repos.map((r) => <DropdownMenuRadioItem key={r.name} value={r.name}>{r.name}</DropdownMenuRadioItem>)}
+          {repos.map((r) => <DropdownMenuRadioItem key={r.name} value={r.name}>{repoLabel(repos, r.name)}</DropdownMenuRadioItem>)}
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>

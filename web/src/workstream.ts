@@ -1560,6 +1560,14 @@ export function boardText(rows: BoardRow[]): string {
 // The `orca` command reference. In EVERY wake (not just the role text a session sees once): a
 // session resumed for days otherwise never learns a verb added since it started — it planned a
 // send → archive → re-spawn when `orca move` would have done.
+/** How the repo switcher names a repo: `owner/name` once the repos span more than one GitHub owner
+ *  (a work account and a personal one on the same board), else just the name. Pure. */
+export function repoLabel(repos: ReadonlyArray<{ name: string; owner?: string }>, name: string): string {
+  const owners = new Set(repos.map((r) => r.owner).filter(Boolean));
+  const repo = repos.find((r) => r.name === name);
+  return owners.size > 1 && repo?.owner ? `${repo.owner}/${name}` : name;
+}
+
 const ORCA_COMMANDS = [
   "  orca board                      every workstream: PR state, agent status, Orca's check verdict",
   "  orca spawn --repo <repo> --title \"<2-5 words>\" --model <id> [--on <instance>] --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"] [--attach <id|path>]…",
@@ -1595,6 +1603,11 @@ const ORCA_COMMANDS = [
   "                                  cards: your plan for it, what it waits on, its merge class (small: fine to",
   "                                  merge on green; needs-finn: the user merges). An empty flag clears that",
   "                                  field; no flags prints it",
+  "  orca repo list [--user <login>]  every GitHub repo each signed-in gh account can see, newest first; ✓ = already in Orca",
+  "  orca repo add <owner/name> [--on <instance>] [--name <slug>]   set a repo up in Orca: clone it on that instance",
+  "                                  (the one whose account owns it, else the default), add it to the config with its",
+  "                                  default branch and no previews. Do this when the user names work on a repo the",
+  "                                  board doesn't have, then spawn on it",
   "  orca notes                      print your notes",
   "  orca notes set \"<the whole new text>\"",
 ].join("\n");
