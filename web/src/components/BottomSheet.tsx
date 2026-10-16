@@ -8,7 +8,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { PortalContainer } from "@/lib/utils";
-import { SHEET_EASE, useSwipeBodyToClose, useSwipeToClose } from "@/lib/gestures";
+import { SHEET_EASE, useSwipeToDismiss } from "@/lib/gestures";
 import { Button } from "@/components/ui/button";
 
 /** How long the slide down takes before the dialog closes. */
@@ -47,8 +47,7 @@ export function BottomSheet({ open, onClose, title, slot, children }: { open: bo
     const t = setTimeout(finish, SHEET_CLOSE_MS);
     return () => clearTimeout(t);
   }, [open, dialog]);
-  const swipe = useSwipeToClose(() => dialog, onClose, true, { hold: true });
-  useSwipeBodyToClose(body, () => dialog, onClose, { hold: true });
+  const swipe = useSwipeToDismiss("bottom", () => dialog, onClose, { hold: true, body });
   return (
     <dialog
       ref={setDialog} data-slot={slot} data-bottom-sheet="" aria-label={title}

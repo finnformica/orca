@@ -26,7 +26,7 @@ import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanne
 import { useTheme, type Theme } from "@/lib/theme";
 import { cn, PortalContainer } from "@/lib/utils";
 import { validChoice } from "@/lib/persisted";
-import { useSwipeToClose } from "@/lib/gestures";
+import { useSwipeToDismiss } from "@/lib/gestures";
 import { isMobile, useNarrow } from "@/lib/viewport";
 import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
@@ -356,7 +356,8 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
       onOpen: () => { if (draft.created) navigate(`/${draft.repo}/local/${encodeURIComponent(draft.created.branch)}`); },
     });
   };
-  const swipe = useSwipeToClose(() => dialog, () => setOpen(false), useNarrow()); // a phone's full-screen sheet
+  // A phone's full-screen sheet: swipe its header down, or its body once that is scrolled to the top.
+  const swipe = useSwipeToDismiss("bottom", () => dialog, () => setOpen(false), { enabled: useNarrow(), body: dialog });
   return (
     <>
       <Tip label="Add New" shortcut="new" side="right" className={cn("w-full", collapsed && "md:w-auto")}>

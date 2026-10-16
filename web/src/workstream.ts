@@ -2987,6 +2987,26 @@ export function swipeDecision(g: { dy: number; ms: number; height: number }): "c
   return g.dy >= 40 && g.dy / Math.max(1, g.ms) > 0.6 ? "close" : "snap";
 }
 
+/** The edge a drawer comes from; it is dismissed by a swipe back toward that edge — a bottom sheet
+ *  down, a left drawer left, a right drawer right. */
+export type SwipeEdge = "bottom" | "left" | "right";
+/** How far a finger moved by (dx, dy) has carried the drawer toward its edge (never negative). */
+export function swipeOffset(edge: SwipeEdge, dx: number, dy: number): number {
+  return Math.max(0, edge === "bottom" ? dy : edge === "left" ? -dx : dx);
+}
+/** Movement under this many px is a tap's wobble: no verdict yet. */
+export const SWIPE_SLOP_PX = 8;
+/** Whether a touch on a drawer's scrolling body becomes its dismiss drag: "wait" inside the slop,
+ *  "drag" when the move is mostly along the dismiss axis toward the edge AND the content is at its
+ *  start (`atStart`: scrolled to the top for a bottom sheet), else "scroll" — the content's own pan. */
+export function swipeArm(g: { edge: SwipeEdge; dx: number; dy: number; atStart: boolean }): "wait" | "drag" | "scroll" {
+  const along = g.edge === "bottom" ? g.dy : g.edge === "left" ? -g.dx : g.dx;
+  const across = g.edge === "bottom" ? g.dx : g.dy;
+  if (Math.max(Math.abs(along), Math.abs(across)) < SWIPE_SLOP_PX) return "wait";
+  if (along <= 0 || Math.abs(across) >= Math.abs(along) || !g.atStart) return "scroll";
+  return "drag";
+}
+
 /** Pull to refresh: how far the finger has pulled (from the top of the page) → what the indicator
  *  shows and how tall it is (damped, capped). Past PULL_REFRESH_PX, letting go refreshes. */
 export const PULL_REFRESH_PX = 70;
