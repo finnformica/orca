@@ -111,7 +111,7 @@ const tailscaleSelf: SelfUser = async () => {
 type PtyData = {
   kind: "pty"; who: string; instance: string; cols: number; rows: number; idleMs: number; enabled: () => Promise<boolean>;
   /** Messages that arrived while `open` still checked the flag — replayed once the shell exists. */
-  early: (string | Buffer)[];
+  early: (string | Buffer<ArrayBuffer>)[];
 };
 type RelayData = { kind: "relay"; who: string; instance: string; target: string };
 export type TerminalData = PtyData | RelayData;

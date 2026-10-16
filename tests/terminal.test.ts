@@ -150,7 +150,7 @@ test("another instance's terminal relays through this bridge, and its own gate d
   // The target instance ("laptop"): its own server, its own flag.
   const laptop = Bun.serve<terminal.TerminalData>({
     port: 0, hostname: "127.0.0.1", websocket: terminal.websocket,
-    fetch: (req, srv) => terminal.upgrade(req, srv, { config: async () => ({ terminal: { laptop: laptopOn } }) as OrcaConfig, here: "laptop" }),
+    fetch: (req, srv) => terminal.upgrade(req, srv, { config: async () => ({ terminal: { laptop: laptopOn } }) as unknown as OrcaConfig, here: "laptop" }),
   });
   let laptopOn = true;
   try {
