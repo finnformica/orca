@@ -451,14 +451,20 @@ export async function board(cfg: OrcaConfig): Promise<BoardRow[]> {
       const run = worktreePath ? agent.status(worktreePath) : undefined;
       const e = enrichment[branch] ?? {};
       const agentState = worktreePath ? (agent.isRunning(worktreePath) ? "running" : run?.status ?? "idle") : ((remote?.data.agentStatus as string | undefined) ?? "idle");
+      const head = heads.get(branch) ?? (remote?.data.head as string | undefined);
+      const mergedPr = merged.find((m) => m.branch === branch);
       // The web board's derivation (mergedPrIsHistory): a merged PR stands only while nothing has
-      // happened on the branch since — a reused branch reads as its live state, not "merged".
+      // happened on the branch since — a reused branch reads as its live state, not "merged". A
+      // worktree that is merely BEHIND the PR's last head (never fetched a push from elsewhere) is
+      // not reuse; `git.isAncestor` is only possible when the worktree is on this instance.
+      const headBehindPr = local && worktreePath && head && mergedPr?.headSha && head !== mergedPr.headSha
+        ? await git.isAncestor(repo.repoPath, head, mergedPr.headSha, branch) : undefined;
       const activity = {
         agentStatus: agentState, queued: queued.get(branch) ?? 0, openPr: Boolean(pr),
         agentStartedAt: run?.startedAt ?? (remote?.data.agentStartedAt as number | undefined),
-        head: heads.get(branch) ?? (remote?.data.head as string | undefined),
+        head, headBehindPr,
       };
-      const done = merged.find((m) => m.branch === branch && !mergedPrIsHistory(m, activity));
+      const done = mergedPr && !mergedPrIsHistory(mergedPr, activity) ? mergedPr : undefined;
       rows.push({
         repo: repo.name, branch, title: pr?.title ?? (e.title as string | undefined), worktreePath: worktreePath ?? (remote?.data.worktreePath as string | undefined),
         agent: agentState,

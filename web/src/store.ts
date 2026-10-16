@@ -617,9 +617,11 @@ export function assembleRows(): Row[] {
     const wtByBranch = worktreesByBranch(rl.agents);
     // A merged PR stands for its branch only while nothing has happened there since; a reused
     // branch (new run, new commits, a newer open PR) shows its live row instead (mergedPrIsHistory).
+    // `m.headBehindPr` rides along from `/api/prs/merged` (the server ran the git check this
+    // browser can't) so a worktree merely behind the PR's last push isn't mistaken for reuse.
     const merged = rl.merged.filter((m) => {
       const wt = wtByBranch.get(m.branch), openPr = prByBranch.has(m.branch);
-      return !mergedPrIsHistory(m, wt || openPr ? { ...wt, openPr } : undefined);
+      return !mergedPrIsHistory(m, wt || openPr ? { ...wt, openPr, headBehindPr: m.headBehindPr } : undefined);
     });
     const mergedBranches = new Set(merged.map((m) => m.branch));
     for (const branch of new Set([...prByBranch.keys(), ...wtByBranch.keys()])) {
