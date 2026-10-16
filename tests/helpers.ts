@@ -32,11 +32,17 @@ case "$1 $2" in
   "pr list") case "$*" in *"--state merged"*|*"--state closed"*) [ -n "$ORCA_PRLIST_DONE_FIXTURE" ] && { cat "$ORCA_PRLIST_DONE_FIXTURE"; exit 0; } ;; esac
     cat "$ORCA_PRLIST_FIXTURE" ;;
   "pr diff") printf 'diff --git a/x.ts b/x.ts\\n@@ -1 +1 @@\\n+added line\\n-removed line\\n' ;;
-  "repo view") cat "$ORCA_GH_REPO_FIXTURE" ;;
+  # ORCA_GH_VIEW_DENY lists logins (space-separated) whose GH_TOKEN makes repo view fail, the way
+  # GitHub refuses a repo the token's account can't see (server/repos.ts tries the next login).
+  "repo view") for d in $ORCA_GH_VIEW_DENY; do [ "$GH_TOKEN" = "tok-$d" ] && { echo "GraphQL: Could not resolve to a Repository with the name '$3'." >&2; exit 1; }; done
+    cat "$ORCA_GH_REPO_FIXTURE" ;;
   # Accounts (server/repos.ts, server/env.ts): ORCA_GH_ACCOUNTS lists logins, the first active; a token is tok-<login>.
   "auth status") first=1; for a in $ORCA_GH_ACCOUNTS; do echo "  ✓ Logged in to github.com account $a (keyring)"; [ $first = 1 ] && echo "  - Active account: true" || echo "  - Active account: false"; first=0; done ;;
   "auth token") shift 2; while [ $# -gt 0 ]; do [ "$1" = "--user" ] && { echo "tok-$2"; exit 0; }; shift; done; echo "tok-active" ;;
-  "repo list") cat "$ORCA_GH_REPOLIST_FIXTURE" ;;
+  # repo list with no owner lists the account's own repos; repo list <org> (ORCA_GH_ORGREPOLIST_FIXTURE)
+  # lists an org's — server/repos.ts also asks for each org via api user/orgs (ORCA_GH_ORGS_FIXTURE).
+  "repo list") if [ "$3" = "--limit" ]; then cat "$ORCA_GH_REPOLIST_FIXTURE"; else cat "\${ORCA_GH_ORGREPOLIST_FIXTURE:-$ORCA_GH_REPOLIST_FIXTURE}"; fi ;;
+  "api user/orgs") [ -n "$ORCA_GH_ORGS_FIXTURE" ] && cat "$ORCA_GH_ORGS_FIXTURE" || echo '[]' ;;
   "api user") printf '{"id":4242,"login":"%s","name":"Finn P","email":null}' "\${GH_TOKEN#tok-}" ;;
   "repo clone") git clone -q "$ORCA_GH_CLONE_SRC" "$4" ;;
   "api graphql") cat "$ORCA_GH_GRAPHQL_FIXTURE" ;;
