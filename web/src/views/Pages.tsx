@@ -291,23 +291,25 @@ function AccountRowView({ account: a, onSaved }: { account: GithubAccount; onSav
       notifyLocal({ kind: "action_failed", repo: "", title: `GitHub · ${a.login}`, label: "Save identity failed", body: error, copy: `Action: Save identity for ${a.login}\nError:\n${error}`, ask: `Save identity for ${a.login} failed: ${error}. Please investigate and fix.` });
     } finally { setBusy(false); }
   };
+  const reposText = a.repos.length ? a.repos.join(", ") : "no repos";
   return (
-    <div data-slot="github-account" className="grid grid-cols-[minmax(12rem,1fr)_auto] items-center gap-4 px-4 py-3 text-sm">
-      <div className="flex min-w-0 items-center gap-2.5">
+    <div data-slot="github-account" className="flex flex-col gap-3 px-4 py-3 text-sm md:grid md:grid-cols-[minmax(12rem,1fr)_auto] md:items-center md:gap-4">
+      <div className="flex min-w-0 items-start gap-2.5 md:items-center">
         <span className="bg-muted inline-flex size-8 shrink-0 items-center justify-center rounded-md border"><UserCircle2 className="size-4" /></span>
         <span className="min-w-0">
           <span className="flex items-center gap-2 font-medium">{a.login}{a.active && <Pill>active</Pill>}</span>
-          <span className="text-muted-foreground block truncate text-xs">
-            commits as {a.name ?? "—"} &lt;{a.email ?? "—"}&gt; · {a.repos.length ? a.repos.join(", ") : "no repos"}
+          <span className="text-muted-foreground block break-words text-xs md:truncate">
+            commits as {a.name ?? "—"} &lt;{a.email ?? "—"}&gt;<span className="hidden md:inline"> · {reposText}</span>
           </span>
+          <span className="text-muted-foreground mt-0.5 block text-xs md:hidden">{reposText}</span>
         </span>
       </div>
-      <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); if (dirty) void save(); }}>
+      <form className="flex flex-col gap-2 md:flex-row md:items-center" onSubmit={(e) => { e.preventDefault(); if (dirty) void save(); }}>
         <input aria-label={`${a.login} name`} placeholder={a.name ?? "name"} value={name} onChange={(e) => setName(e.target.value)}
-          className="border-input bg-background h-8 w-36 rounded-md border px-2 text-sm" />
+          className="border-input bg-background h-10 w-full rounded-md border px-2 text-sm md:h-8 md:w-36" />
         <input aria-label={`${a.login} email`} placeholder={a.email ?? "email"} value={email} onChange={(e) => setEmail(e.target.value)} type="email"
-          className="border-input bg-background h-8 w-56 rounded-md border px-2 text-sm" />
-        <Button type="submit" variant="secondary" size="sm" disabled={!dirty || busy}>Save</Button>
+          className="border-input bg-background h-10 w-full rounded-md border px-2 text-sm md:h-8 md:w-56" />
+        <Button type="submit" variant="secondary" size="sm" disabled={!dirty || busy} className="h-10 w-full md:h-8 md:w-auto">Save</Button>
       </form>
     </div>
   );
