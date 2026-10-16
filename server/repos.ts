@@ -8,6 +8,7 @@ import { dirname, join } from "path";
 import * as db from "./db";
 import { githubIdentity, githubToken, type Env } from "./env";
 import { runCmd } from "./run";
+import { graphql, request, tokenForUser } from "./github";
 import { saveConfigDocument, type OrcaConfig, type RepoConfig } from "./config";
 
 /** The `gh` logins signed in on this host, active one first. Parsed from `gh auth status` — it has no
@@ -60,12 +61,17 @@ const envFor = (user?: string) => { const tok = user && githubToken(user); retur
 export type RemoteRepo = { nameWithOwner: string; defaultBranch: string; isPrivate: boolean; pushedAt: string; description: string; account: string };
 
 type RawRepo = { nameWithOwner: string; description: string | null; isPrivate: boolean; defaultBranchRef: { name: string } | null; pushedAt: string };
-const REPO_FIELDS = "nameWithOwner,description,isPrivate,defaultBranchRef,pushedAt";
+const REPO_FIELDS = "nameWithOwner,description,isPrivate,defaultBranchRef{name},pushedAt";
+const REPOS = `repositories(first:100,ownerAffiliations:OWNER,orderBy:{field:PUSHED_AT,direction:DESC}){nodes{${REPO_FIELDS}}}`;
 
-/** `account`'s own repos, or (with `org`) the repos of an org it belongs to. */
-async function reposFor(env: Env, account: string, org?: string): Promise<RemoteRepo[]> {
-  const { stdout } = await runCmd(["gh", "repo", "list", ...(org ? [org] : []), "--limit", "100", "--json", REPO_FIELDS], { env });
-  return (JSON.parse(stdout) as RawRepo[]).map((r) => ({
+/** `account`'s own repos, or (with `org`) the repos of an org it belongs to — what `gh repo list
+ *  [org] --limit 100` listed, newest push first. */
+async function reposFor(token: string, account: string, org?: string): Promise<RemoteRepo[]> {
+  const d = org
+    ? await graphql(`query($login:String!){repositoryOwner(login:$login){${REPOS}}}`, { login: org }, token)
+    : await graphql(`query{viewer{${REPOS}}}`, {}, token);
+  const nodes = ((org ? d?.repositoryOwner : d?.viewer)?.repositories?.nodes ?? []) as RawRepo[];
+  return nodes.map((r) => ({
     nameWithOwner: r.nameWithOwner, description: r.description ?? "", isPrivate: r.isPrivate,
     defaultBranch: r.defaultBranchRef?.name ?? "main", pushedAt: r.pushedAt, account,
   }));
@@ -73,10 +79,8 @@ async function reposFor(env: Env, account: string, org?: string): Promise<Remote
 
 /** The logins of the orgs `account` belongs to. Best-effort: a failure (no scope, rate limit) leaves
  *  a repo list missing that account's org repos rather than failing the whole command. */
-async function orgsFor(env: Env): Promise<string[]> {
-  const res = await runCmd(["gh", "api", "user/orgs"], { env, allowFail: true });
-  if (res.code !== 0) return [];
-  try { return (JSON.parse(res.stdout) as Array<{ login: string }>).map((o) => o.login); } catch { return []; }
+async function orgsFor(token: string): Promise<string[]> {
+  try { return ((await request<Array<{ login: string }>>("user/orgs", { token })) ?? []).map((o) => o.login); } catch { return []; }
 }
 
 /** Every repo each signed-in account can see — its own repos plus every org it belongs to — newest
@@ -85,9 +89,9 @@ export async function list(cfg: OrcaConfig, only?: string): Promise<RemoteRepo[]
   const users = only ? [only] : await accounts();
   const out: RemoteRepo[] = [];
   for (const user of users) {
-    const env = envFor(user);
-    out.push(...await reposFor(env, user));
-    for (const org of await orgsFor(env)) out.push(...await reposFor(env, user, org));
+    const token = await tokenForUser(user);
+    out.push(...await reposFor(token, user));
+    for (const org of await orgsFor(token)) out.push(...await reposFor(token, user, org));
   }
   return out.sort((a, b) => b.pushedAt.localeCompare(a.pushedAt));
 }
@@ -119,8 +123,11 @@ type RepoView = { nameWithOwner: string; defaultBranchRef: { name: string } | nu
 async function accountForRepo(nameWithOwner: string, owner: string, logins: string[]): Promise<{ login?: string; view: RepoView }> {
   const ordered = [...logins.filter((l) => l.toLowerCase() === owner.toLowerCase()), ...logins.filter((l) => l.toLowerCase() !== owner.toLowerCase())];
   for (const login of ordered.length ? ordered : [undefined]) {
-    const res = await runCmd(["gh", "repo", "view", nameWithOwner, "--json", "nameWithOwner,defaultBranchRef"], { env: envFor(login), allowFail: true });
-    if (res.code === 0) return { login, view: JSON.parse(res.stdout) as RepoView };
+    const [o, n] = nameWithOwner.split("/");
+    try {
+      const view = (await graphql(`query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner,defaultBranchRef{name}}}`, { owner: o, name: n }, await tokenForUser(login)))?.repository as RepoView | undefined;
+      if (view) return { login, view };
+    } catch { /* this login cannot see it: try the next */ }
   }
   throw new Error(`No signed-in gh account can see ${nameWithOwner}. Run "gh auth login" for an account with access to it, then retry.`);
 }

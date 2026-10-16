@@ -1,5 +1,4 @@
-import { run } from "./run";
-import { countGhCall } from "./metrics";
+import { forRepo, GitHubNotFoundError } from "./github";
 import { mergeSafe } from "../web/src/workstream";
 
 export type CiStatus = "none" | "pending" | "passing" | "failing";
@@ -36,7 +35,76 @@ export type PrStatus = {
   mergeable: Mergeable;
 };
 
-const gh = (cwd: string, ...args: string[]) => { countGhCall(); return run(["gh", ...args], cwd); };
+// ---- GraphQL: the fields gh's `--json` asked for, and a normaliser back to gh's shape ----
+// gh flattened GraphQL connections into arrays and the head commit's check rollup into
+// `statusCheckRollup`. `flatPr` does the same, so every mapper below reads the shape it always did.
+const ACTOR = "author{__typename,login,...on User{name}}";
+const ROLLUP = "commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{__typename,"
+  + "...on CheckRun{name,status,conclusion,detailsUrl,startedAt,completedAt},...on StatusContext{context,state,targetUrl,createdAt}}}}}}}";
+const COMMENTS = "comments(first:100){nodes{id,author{login},body,createdAt,url}}";
+const REVIEWS = "reviews(first:100){nodes{id,author{login},body,submittedAt,url,state}}";
+const LABELS = "labels(first:100){nodes{name}}";
+const FILES = "files(first:100){nodes{path,additions,deletions}}";
+const AUTO_MERGE = "autoMergeRequest{enabledAt,mergeMethod}";
+
+const actor = (a: any) => a && { login: a.login, ...(a.name ? { name: a.name } : {}), ...(a.__typename === "Bot" ? { is_bot: true } : {}) };
+const rollupItem = (c: any) => c?.__typename === "StatusContext"
+  ? { __typename: c.__typename, context: c.context, state: c.state, targetUrl: c.targetUrl ?? undefined, startedAt: c.createdAt ?? undefined }
+  : { __typename: c?.__typename, name: c?.name, status: c?.status, conclusion: c?.conclusion ?? "", detailsUrl: c?.detailsUrl ?? undefined, startedAt: c?.startedAt ?? undefined, completedAt: c?.completedAt ?? undefined };
+/** One GraphQL PullRequest node in gh's `--json` shape. */
+export function flatPr(p: any): any {
+  if (!p) return p;
+  const out: any = { ...p };
+  for (const k of ["comments", "reviews", "labels", "files"]) if (p[k] && Array.isArray(p[k].nodes)) out[k] = p[k].nodes;
+  for (const k of ["comments", "reviews"]) if (Array.isArray(out[k])) out[k] = out[k].map((x: any) => ({ ...x, author: actor(x.author) }));
+  if ("commits" in p) {
+    out.statusCheckRollup = (p.commits?.nodes?.[0]?.commit?.statusCheckRollup?.contexts?.nodes ?? []).map(rollupItem);
+    delete out.commits;
+  }
+  if (p.author) out.author = actor(p.author);
+  return out;
+}
+
+/** `gh pr view <n> --json <fields>`: one PR of the repo at `cwd`, flattened. */
+async function viewPr(cwd: string, pr: number, fields: string): Promise<any> {
+  const c = await forRepo(cwd);
+  const d = await c.gql(`query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){${fields}}}}`, { owner: c.owner, name: c.name, number: pr });
+  const node = d?.repository?.pullRequest;
+  if (!node) throw new GitHubNotFoundError(`no pull request #${pr} in ${c.slug}`, 404, "graphql");
+  return flatPr(node);
+}
+
+/** `gh pr list --search …`: PRs of the repo at `cwd` matching `filter` (GitHub search syntax, e.g.
+ *  `is:open author:@me`), newest first, at most `limit`, flattened. */
+async function searchPrs(cwd: string, filter: string, limit: number, fields: string): Promise<any[]> {
+  const c = await forRepo(cwd);
+  const q = `repo:${c.slug} is:pr ${filter} sort:created-desc`;
+  const out: any[] = [];
+  let after: string | null = null;
+  while (out.length < limit) {
+    const first = Math.min(100, limit - out.length);
+    const d: any = await c.gql(`query($q:String!,$first:Int!,$after:String){search(query:$q,type:ISSUE,first:$first,after:$after){pageInfo{hasNextPage,endCursor},nodes{...on PullRequest{${fields}}}}}`, { q, first, after });
+    const page = d?.search;
+    out.push(...(page?.nodes ?? []).filter((n: any) => n && typeof n.number === "number").map(flatPr));
+    if (!page?.pageInfo?.hasNextPage || !page.pageInfo.endCursor) break;
+    after = page.pageInfo.endCursor;
+  }
+  return out;
+}
+
+/** The GraphQL node id of PR `pr` — what a mutation takes. */
+async function prNodeId(cwd: string, pr: number): Promise<string> {
+  const id = (await viewPr(cwd, pr, "id")).id;
+  if (typeof id !== "string") throw new GitHubNotFoundError(`no pull request #${pr}`, 404, "graphql");
+  return id;
+}
+
+/** One PR mutation (`gh pr ready / merge`), by name, with the PR's node id. */
+async function mutatePr(cwd: string, pr: number, mutation: string, extra = ""): Promise<any> {
+  const c = await forRepo(cwd);
+  const id = await prNodeId(cwd, pr);
+  return c.gql(`mutation($id:ID!){${mutation}(input:{pullRequestId:$id${extra}}){clientMutationId}}`, { id });
+}
 
 const REVIEW_BODY_LIMIT = 1_200;
 const REVIEW_TOTAL_LIMIT = 8_000;
@@ -62,8 +130,7 @@ const COMMENTS_MAX = 30;
  *  Deliberately no other filtering (bots included): what needs a response is the agent's call.
  *  Newest-last, bounded to the last COMMENTS_MAX and the same total size as thread evidence. */
 export async function conversationComments(cwd: string, pr: number, since?: string): Promise<ConversationComment[]> {
-  const raw = await gh(cwd, "pr", "view", String(pr), "--json", "author,comments,reviews");
-  const j = JSON.parse(raw) as {
+  const j = await viewPr(cwd, pr, `${ACTOR},${COMMENTS},${REVIEWS}`) as {
     author?: { login?: string };
     comments?: Array<{ id?: string; author?: { login?: string }; body?: string; createdAt?: string; url?: string }>;
     reviews?: Array<{ id?: string; author?: { login?: string }; body?: string; submittedAt?: string; url?: string; state?: string }>;
@@ -93,13 +160,9 @@ export async function conversationComments(cwd: string, pr: number, since?: stri
 
 /** Unresolved inline review threads for one PR. This GraphQL call is intentionally on-demand. */
 export async function reviewEvidence(cwd: string, pr: number): Promise<ReviewThreadEvidence[]> {
-  const repoRaw = await gh(cwd, "repo", "view", "--json", "nameWithOwner");
-  const nameWithOwner = JSON.parse(repoRaw).nameWithOwner as string;
-  const [owner, name] = nameWithOwner.split("/");
-  if (!owner || !name) throw new Error("could not resolve GitHub repository");
+  const c = await forRepo(cwd);
   const query = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id,isResolved,path,line,originalLine,comments(first:20){nodes{author{login},body,url}}}}}}}`;
-  const raw = await gh(cwd, "api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${pr}`);
-  const nodes = JSON.parse(raw)?.data?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
+  const nodes = (await c.gql(query, { owner: c.owner, name: c.name, number: pr }))?.repository?.pullRequest?.reviewThreads?.nodes ?? [];
   const evidence: ReviewThreadEvidence[] = [];
   let used = 0;
   for (const thread of nodes) {
@@ -141,17 +204,14 @@ export type ReviewSignal = {
 const SIGNAL_BODY_LIMIT = 600;
 
 export async function reviewSignal(cwd: string, pr: number): Promise<ReviewSignal> {
-  const repoRaw = await gh(cwd, "repo", "view", "--json", "nameWithOwner");
-  const [owner, name] = String(JSON.parse(repoRaw).nameWithOwner ?? "").split("/");
-  if (!owner || !name) throw new Error("could not resolve GitHub repository");
+  const c = await forRepo(cwd);
   const who = "author{__typename,login}";
   const query = `query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){author{login},`
     + `commits(last:1){nodes{commit{committedDate}}},`
     + `reviews(last:100){nodes{id,${who},state,body,submittedAt,url}},`
     + `comments(last:100){nodes{id,${who},body,createdAt,url}},`
     + `reviewThreads(first:100){nodes{id,isResolved,isOutdated,path,line,originalLine,comments(first:1){nodes{${who},body,url,createdAt}}}}}}}`;
-  const raw = await gh(cwd, "api", "graphql", "-f", `query=${query}`, "-F", `owner=${owner}`, "-F", `name=${name}`, "-F", `number=${pr}`);
-  const p = JSON.parse(raw)?.data?.repository?.pullRequest ?? {};
+  const p = (await c.gql(query, { owner: c.owner, name: c.name, number: pr }))?.repository?.pullRequest ?? {};
   const prAuthor: string | undefined = p.author?.login;
   const headCommitAt: string | undefined = p.commits?.nodes?.[0]?.commit?.committedDate || undefined;
   const isBot = (a: any) => a?.__typename === "Bot" || botLogin(a?.login);
@@ -188,10 +248,23 @@ function usefulLogExcerpt(raw: string): string | undefined {
   return truncate(selected.join("\n"), CI_EXCERPT_LIMIT);
 }
 
+/** `gh run view <id> --log-failed`: the logs of the run's failed jobs, each line prefixed by its job
+ *  name as gh did. A log download redirects to a storage host, which must not get the token. */
+async function failedRunLog(cwd: string, runId: string): Promise<string> {
+  const c = await forRepo(cwd);
+  const jobs = (await c.rest<{ jobs?: Array<{ id: number; name?: string; conclusion?: string | null }> }>(`{repo}/actions/runs/${runId}/jobs?filter=latest&per_page=100`))?.jobs ?? [];
+  const failed = jobs.filter((j) => j.conclusion && FAIL.has(j.conclusion.toUpperCase()));
+  const parts: string[] = [];
+  for (const job of failed) {
+    const log = String(await c.rest(`{repo}/actions/jobs/${job.id}/logs`, { accept: "application/vnd.github.v3.raw", redirectWithoutAuth: true }) ?? "");
+    parts.push(log.split(/\r?\n/).filter(Boolean).map((line) => `${job.name ?? "job"}\t${line}`).join("\n"));
+  }
+  return parts.join("\n");
+}
+
 /** Failing checks plus bounded GitHub Actions failed-step logs for one PR, fetched on demand. */
 export async function ciEvidence(cwd: string, pr: number): Promise<CiFailureEvidence[]> {
-  const raw = await gh(cwd, "pr", "view", String(pr), "--json", "statusCheckRollup");
-  const checks = JSON.parse(raw)?.statusCheckRollup ?? [];
+  const checks = (await viewPr(cwd, pr, ROLLUP)).statusCheckRollup ?? [];
   const failures = checks.filter((check: any) => checkOutcome(check) === "failing");
   const result: CiFailureEvidence[] = [];
   const logs = new Map<string, string | undefined>();
@@ -203,7 +276,7 @@ export async function ciEvidence(cwd: string, pr: number): Promise<CiFailureEvid
     let excerpt: string | undefined;
     if (runId) {
       if (!logs.has(runId)) {
-        try { logs.set(runId, usefulLogExcerpt(await gh(cwd, "run", "view", runId, "--log-failed"))); }
+        try { logs.set(runId, usefulLogExcerpt(await failedRunLog(cwd, runId))); }
         catch { logs.set(runId, undefined); }
       }
       excerpt = logs.get(runId);
@@ -227,14 +300,11 @@ export async function createPr(
   worktreePath: string,
   opts: { title: string; body: string; base: string; head: string; draft?: boolean },
 ): Promise<{ number: number; url: string }> {
-  const url = (
-    await gh(worktreePath, "pr", "create",
-      "--base", opts.base, "--head", opts.head,
-      "--title", opts.title, "--body", opts.body,
-      ...(opts.draft ? ["--draft"] : []))
-  ).trim().split("\n").filter(Boolean).at(-1) ?? "";
-  const number = Number(url.split("/").at(-1));
-  return { number, url };
+  const c = await forRepo(worktreePath);
+  const res = await c.rest<{ number: number; html_url: string }>("{repo}/pulls", {
+    method: "POST", body: { title: opts.title, body: opts.body, base: opts.base, head: opts.head, draft: Boolean(opts.draft) },
+  });
+  return { number: res.number, url: res.html_url };
 }
 
 export type PrSummary = PrStatus & {
@@ -275,7 +345,7 @@ export function countExternalFeedback(
 // PRs into ~14s, so both are detail-only (see listReviewPrs / prDetail). What's left are plain
 // index fields (state/draft/mergeable/reviewDecision) that come back in the single list call —
 // additions/deletions among them, so the Agents row's diffstat costs nothing extra.
-const PR_META_FIELDS = "number,title,headRefName,headRefOid,baseRefName,url,state,isDraft,mergeable,reviewDecision,autoMergeRequest,additions,deletions";
+const PR_META_FIELDS = `number,title,headRefName,headRefOid,baseRefName,url,state,isDraft,mergeable,reviewDecision,${AUTO_MERGE},additions,deletions`;
 type RawPr = {
   number: number; title: string; headRefName: string; headRefOid?: string; baseRefName?: string; url: string;
   state: string; isDraft: boolean; mergeable: string; reviewDecision: string;
@@ -332,8 +402,8 @@ const mapSummary = (j: RawPr, required: Set<string> = new Set(), previewLabelNam
  *  comments + reviews too (there are few of your own PRs) so the board shows checks, links the deploy
  *  preview, and "Follow PR" can react to new reviewer feedback. */
 export async function listPrs(cwd: string, previewLabelName = "preview"): Promise<PrSummary[]> {
-  const raw = await gh(cwd, "pr", "list", "--state", "open", "--author", "@me", "--json", `${PR_META_FIELDS},statusCheckRollup,comments,author,reviews,labels`);
-  const prs = JSON.parse(raw) as RawPr[];
+  // gh pr list's default --limit is 30.
+  const prs = await searchPrs(cwd, "is:open author:@me", 30, `${PR_META_FIELDS},${ROLLUP},${COMMENTS},${ACTOR},${REVIEWS},${LABELS}`) as RawPr[];
   // Resolve each distinct base branch's required-check set once, so CI status reflects only checks
   // that actually gate merge (advisory bots like an AI reviewer don't turn the badge red).
   const bases = [...new Set(prs.map((p) => p.baseRefName).filter((b): b is string => Boolean(b)))];
@@ -355,8 +425,7 @@ export async function requiredChecks(cwd: string, branch: string): Promise<Set<s
   if (hit && Date.now() - hit.at < REQUIRED_TTL_MS) return hit.checks;
   const checks = new Set<string>();
   try {
-    const raw = await gh(cwd, "api", `repos/{owner}/{repo}/rules/branches/${branch}`);
-    const rules = JSON.parse(raw) as Array<{ type?: string; parameters?: { required_status_checks?: Array<{ context?: string }> } }>;
+    const rules = await (await forRepo(cwd)).rest(`{repo}/rules/branches/${branch}`) as Array<{ type?: string; parameters?: { required_status_checks?: Array<{ context?: string }> } }>;
     for (const r of rules) if (r.type === "required_status_checks") for (const c of r.parameters?.required_status_checks ?? []) if (c.context) checks.add(c.context);
   } catch { /* no protection / no access → empty set → callers keep the all-checks behaviour */ }
   requiredCache.set(key, { at: Date.now(), checks });
@@ -365,7 +434,7 @@ export async function requiredChecks(cwd: string, branch: string): Promise<Set<s
 
 export type ReviewPr = PrSummary & { author: string; authorName: string; updatedAt: string };
 
-const REVIEW_FIELDS = "number,title,headRefName,baseRefName,url,state,isDraft,reviewDecision,author,updatedAt";
+const REVIEW_FIELDS = `number,title,headRefName,baseRefName,url,state,isDraft,reviewDecision,${ACTOR},updatedAt`;
 
 async function fetchReviewPrs(cwd: string): Promise<ReviewPr[]> {
   // `-author:@me` (gh expands @me to the authenticated user) excludes your own PRs server-side.
@@ -373,9 +442,7 @@ async function fetchReviewPrs(cwd: string): Promise<ReviewPr[]> {
   // Fields GitHub computes PER PR (mergeable, autoMergeRequest) are left out: over ~250 PRs they add
   // seconds, and the queue doesn't show them — the PR page fetches its own (prDetail). reviewDecision
   // stays: approved / changes requested is what a review queue is for.
-  const raw = await gh(cwd, "pr", "list", "--state", "open", "--search", "-author:@me", "--limit", "500",
-    "--json", REVIEW_FIELDS);
-  const arr = JSON.parse(raw) as Array<RawPr & { author?: { login?: string; name?: string }; updatedAt?: string }>;
+  const arr = await searchPrs(cwd, "is:open -author:@me", 500, REVIEW_FIELDS) as Array<RawPr & { author?: { login?: string; name?: string }; updatedAt?: string }>;
   return arr
     .map((j) => ({ ...mapSummary(j), author: j.author?.login ?? "", authorName: j.author?.name || j.author?.login || "", updatedAt: j.updatedAt ?? "" }))
     .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
@@ -459,10 +526,9 @@ const defined = <T extends Record<string, unknown>>(o: T): T => Object.fromEntri
 
 /** Full detail for one PR — overview, files, reviews, comments. */
 export async function prDetail(cwd: string, pr: number): Promise<PrDetail> {
-  const raw = await gh(cwd, "pr", "view", String(pr), "--json",
-    "number,title,body,author,state,url,headRefName,baseRefName,additions,deletions,changedFiles,files,reviews,comments,mergeable,reviewDecision,statusCheckRollup,autoMergeRequest");
-  // deno-lint-ignore no-explicit-any -- gh's json is broad; we normalise below
-  const j = JSON.parse(raw) as any;
+  // deno-lint-ignore no-explicit-any -- GitHub's json is broad; we normalise below
+  const j = await viewPr(cwd, pr,
+    `number,title,body,${ACTOR},state,url,headRefName,baseRefName,additions,deletions,changedFiles,${FILES},${REVIEWS},${COMMENTS},mergeable,reviewDecision,${ROLLUP},${AUTO_MERGE}`) as any;
   return {
     number: j.number,
     title: j.title ?? "",
@@ -493,7 +559,8 @@ export async function prDetail(cwd: string, pr: number): Promise<PrDetail> {
 }
 
 /** Raw unified diff for a PR. */
-export const prDiff = (cwd: string, pr: number) => gh(cwd, "pr", "diff", String(pr));
+export const prDiff = async (cwd: string, pr: number): Promise<string> =>
+  String(await (await forRepo(cwd)).rest(`{repo}/pulls/${pr}`, { accept: "application/vnd.github.diff" }) ?? "");
 
 /** `headSha`: the PR's last head — a worktree past it is a reused branch, not this PR
  *  (`mergedPrIsHistory`), UNLESS `headBehindPr` says the worktree is merely behind it (never fetched
@@ -510,10 +577,9 @@ async function mergedRows(cwd: string): Promise<RawMergedPr[]> {
   const hit = mergedCache.get(cwd);
   if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit.rows;
   if (hit?.inflight) return hit.inflight;
-  const inflight = gh(cwd, "pr", "list", "--state", "merged", "--author", "@me", "--limit", "50",
-    "--json", "number,title,headRefName,url,mergedAt,headRefOid")
-    .then((raw) => {
-      const rows = JSON.parse(raw) as RawMergedPr[];
+  const inflight = searchPrs(cwd, "is:merged author:@me", 50, "number,title,headRefName,url,mergedAt,headRefOid")
+    .then((found) => {
+      const rows = found as RawMergedPr[];
       mergedCache.set(cwd, { at: Date.now(), rows });
       return rows;
     })
@@ -550,9 +616,9 @@ async function closedRows(cwd: string): Promise<RawClosedPr[]> {
   const hit = closedCache.get(cwd);
   if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit.rows;
   if (hit?.inflight) return hit.inflight;
-  const inflight = gh(cwd, "pr", "list", "--state", "closed", "--author", "@me", "--limit", "50", "--json", "number,headRefName,headRefOid,closedAt,mergedAt")
-    .then((raw) => {
-      const rows = (JSON.parse(raw) as RawClosedPr[]).filter((j) => j.headRefName);
+  const inflight = searchPrs(cwd, "is:closed author:@me", 50, "number,headRefName,headRefOid,closedAt,mergedAt")
+    .then((found) => {
+      const rows = (found as RawClosedPr[]).filter((j) => j.headRefName);
       closedCache.set(cwd, { at: Date.now(), rows });
       return rows;
     })
@@ -588,21 +654,22 @@ export async function mergedBranches(cwd: string): Promise<Set<string>> {
 }
 
 /** Close a PR without merging (best-effort). */
-export const closePr = (cwd: string, pr: number) => gh(cwd, "pr", "close", String(pr));
+export const closePr = async (cwd: string, pr: number) =>
+  (await forRepo(cwd)).rest(`{repo}/pulls/${pr}`, { method: "PATCH", body: { state: "closed" } });
 
 /** Add a label to a PR (e.g. to trigger the deploy-preview action). */
-export const addLabel = (cwd: string, pr: number, label: string) =>
-  gh(cwd, "pr", "edit", String(pr), "--add-label", label);
+export const addLabel = async (cwd: string, pr: number, label: string) =>
+  (await forRepo(cwd)).rest(`{repo}/issues/${pr}/labels`, { method: "POST", body: { labels: label.split(",").map((l) => l.trim()).filter(Boolean) } });
 
 /** Rename a PR — the GitHub title is the card's title for a PR row, so this is how a rename sticks. */
-export const editTitle = (cwd: string, pr: number, title: string) =>
-  gh(cwd, "pr", "edit", String(pr), "--title", title);
+export const editTitle = async (cwd: string, pr: number, title: string) =>
+  (await forRepo(cwd)).rest(`{repo}/pulls/${pr}`, { method: "PATCH", body: { title } });
 
 /** Mark a draft PR ready for review. */
-export const markReady = (cwd: string, pr: number) => gh(cwd, "pr", "ready", String(pr));
+export const markReady = (cwd: string, pr: number) => mutatePr(cwd, pr, "markPullRequestReadyForReview");
 
 /** Convert an open PR back to a draft. */
-export const convertToDraft = (cwd: string, pr: number) => gh(cwd, "pr", "ready", String(pr), "--undo");
+export const convertToDraft = (cwd: string, pr: number) => mutatePr(cwd, pr, "convertPullRequestToDraft");
 
 // A PR in a GitHub *stack* can't be merged through the mutation `gh pr merge` uses — GitHub answers
 // "This pull request is part of a stack and must be merged using the asynchronous merge REST API".
@@ -613,19 +680,19 @@ const STACKED = /part of a stack/i;
  *  little for the background merge to land so a failure surfaces here rather than on the next poll.
  *  `merge_action: default` lets GitHub pick the merge queue when the base requires one. */
 async function mergeAsync(cwd: string, pr: number, auto: boolean): Promise<void> {
-  const raw = await gh(cwd, "api", "-X", "PUT", `repos/{owner}/{repo}/pulls/${pr}/merge-async`, "-f", "merge_method=squash", "-f", `merge_action=${auto ? "default" : "direct_merge"}`);
-  let res = JSON.parse(raw) as { status: string; details?: { uuid?: string; message?: string } };
+  const c = await forRepo(cwd);
+  let res = await c.rest(`{repo}/pulls/${pr}/merge-async`, { method: "PUT", body: { merge_method: "squash", merge_action: auto ? "default" : "direct_merge" } }) as { status: string; details?: { uuid?: string; message?: string } };
   // ponytail: ~20s of polling, then trust the board's own PR poll to show the result.
   for (let i = 0; i < 10 && res.status === "pending" && res.details?.uuid; i++) {
     await Bun.sleep(2_000);
-    res = JSON.parse(await gh(cwd, "api", `repos/{owner}/{repo}/pulls/${pr}/merge-async/${res.details.uuid}`));
+    res = await c.rest(`{repo}/pulls/${pr}/merge-async/${res.details.uuid}`);
   }
   if (res.status === "failed") throw new Error(`stacked merge of PR #${pr} failed: ${res.details?.message ?? "see the PR on GitHub"}`);
 }
 
 /** Squash-merge a PR. A PR that is part of a stack falls back to the asynchronous merge API. */
 export async function mergePr(cwd: string, pr: number): Promise<void> {
-  await gh(cwd, "pr", "merge", String(pr), "--squash").catch((e: Error) => STACKED.test(e.message) ? mergeAsync(cwd, pr, false) : Promise.reject(e));
+  await mutatePr(cwd, pr, "mergePullRequest", ",mergeMethod:SQUASH").catch((e: Error) => STACKED.test(e.message) ? mergeAsync(cwd, pr, false) : Promise.reject(e));
 }
 
 // A repo without "Allow auto-merge" in its settings refuses `--auto` outright: "GraphQL: Auto merge is
@@ -637,7 +704,7 @@ const AUTO_NOT_ALLOWED = /auto merge is not allowed/i;
  *  doesn't allow auto-merge, a PR that is safe to merge now is merged directly (`mergePr`, which keeps
  *  the stacked fallback); otherwise the refusal surfaces with what to do about it. */
 export const enableAutoMerge = (cwd: string, pr: number) =>
-  gh(cwd, "pr", "merge", String(pr), "--auto", "--squash").catch(async (e: Error) => {
+  mutatePr(cwd, pr, "enablePullRequestAutoMerge", ",mergeMethod:SQUASH").catch(async (e: Error) => {
     if (STACKED.test(e.message)) return mergeAsync(cwd, pr, true);
     if (!AUTO_NOT_ALLOWED.test(e.message)) throw e;
     if (mergeSafe(await prStatus(cwd, pr))) return mergePr(cwd, pr);
@@ -646,12 +713,10 @@ export const enableAutoMerge = (cwd: string, pr: number) =>
 
 /** Disable auto-merge: GitHub cancels the queued auto-merge on the PR. */
 export const disableAutoMerge = (cwd: string, pr: number) =>
-  gh(cwd, "pr", "merge", String(pr), "--disable-auto");
+  mutatePr(cwd, pr, "disablePullRequestAutoMerge");
 
 export async function prStatus(cwd: string, pr: number): Promise<PrStatus> {
-  const raw = await gh(cwd, "pr", "view", String(pr),
-    "--json", "state,mergeable,reviewDecision,statusCheckRollup");
-  const json = JSON.parse(raw) as {
+  const json = await viewPr(cwd, pr, `state,mergeable,reviewDecision,${ROLLUP}`) as {
     state: string;
     mergeable: string;
     reviewDecision: string;
@@ -665,16 +730,14 @@ export async function prStatus(cwd: string, pr: number): Promise<PrStatus> {
   };
 }
 
-/** Everything the merge queue (server/mergeQueue.ts) weighs about one PR, in one `gh pr view`. */
+/** Everything the merge queue (server/mergeQueue.ts) weighs about one PR, in one GraphQL query. */
 export type PrMergeGate = PrStatus & {
   number: number; title: string; branch: string; url: string; isDraft: boolean; headSha: string;
-  /** Changed paths as GitHub lists them — capped by gh, so `changedFiles` is the true count. */
+  /** Changed paths as GitHub lists them — capped at 100, so `changedFiles` is the true count. */
   files: string[]; changedFiles: number; failingChecks: string[];
 };
 export async function prMergeGate(cwd: string, pr: number): Promise<PrMergeGate> {
-  const raw = await gh(cwd, "pr", "view", String(pr), "--json",
-    "number,title,headRefName,url,isDraft,headRefOid,state,mergeable,reviewDecision,statusCheckRollup,files,changedFiles");
-  const j = JSON.parse(raw) as {
+  const j = await viewPr(cwd, pr, `number,title,headRefName,url,isDraft,headRefOid,state,mergeable,reviewDecision,${ROLLUP},${FILES},changedFiles`) as {
     number: number; title: string; headRefName: string; url: string; isDraft: boolean; headRefOid: string;
     state: string; mergeable: string; reviewDecision: string; changedFiles?: number; files?: Array<{ path: string }>;
     statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string }>;

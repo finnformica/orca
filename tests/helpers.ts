@@ -1,7 +1,12 @@
-import { mkdtemp, writeFile, readFile, chmod } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, chmod, appendFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "../server/run";
+import { setFetch } from "../server/github";
+import { native } from "./happydom";
+
+// Bun's own Response: a component test's happy-dom replaces the global one, which Bun.serve rejects.
+const R = native.Response;
 
 /** Create a throwaway git repo on `main` with one commit. Returns its path. */
 export async function makeScratchRepo(): Promise<string> {
@@ -15,51 +20,137 @@ export async function makeScratchRepo(): Promise<string> {
   return dir;
 }
 
-// A `gh` stand-in: `pr create` prints a URL, `pr view` cats the fixture file,
-// `pr merge` succeeds (or, with ORCA_GH_STACKED set, fails the way GitHub refuses a stacked PR, and
-// the merge-async endpoint answers ORCA_GH_MERGE_ASYNC; with ORCA_GH_NO_AUTO set, `--auto` fails the
-// way a repo without auto-merge enabled refuses it). Same code path as real gh, no network. When ORCA_GH_ARGS_LOG is set it
-// records each invocation's args, so a test can assert *which* --json fields we ask gh for (the
-// shim otherwise ignores the field list — cat'ing the whole fixture regardless).
+// A `gh` stand-in for what is still the CLI: the auth flows (`auth status`, `auth token`), the
+// identity lookup (`api user`) and `repo clone`. Accounts: ORCA_GH_ACCOUNTS lists logins, the first
+// active; a token is tok-<login>. Every other GitHub call goes to FAKE_GITHUB below.
 const GH_SHIM = `#!/bin/sh
-[ -n "$ORCA_GH_ARGS_LOG" ] && echo "$*" >> "$ORCA_GH_ARGS_LOG"
-case "$*" in *merge-async*) if [ -n "$ORCA_GH_MERGE_ASYNC" ]; then echo "$ORCA_GH_MERGE_ASYNC"; else echo '{"status":"merged"}'; fi; exit 0 ;; esac
-# pr-assets cleanup (server/prShots.ts): the matching refs from ORCA_GH_REFS_FIXTURE, a DELETE succeeds.
-case "$*" in *git/matching-refs/*) cat "$ORCA_GH_REFS_FIXTURE" 2>/dev/null || echo '[]'; exit 0 ;; "api -X DELETE "*) exit 0 ;; esac
+[ -n "$ORCA_GH_ARGS_LOG" ] && echo "gh $*" >> "$ORCA_GH_ARGS_LOG"
 case "$1 $2" in
-  "pr create") echo "https://github.com/acme/app/pull/\${ORCA_PR_NUMBER:-123}" ;;
-  "pr view") cat "$ORCA_GH_FIXTURE" ;;
-  "pr list") case "$*" in *"--state merged"*|*"--state closed"*) [ -n "$ORCA_PRLIST_DONE_FIXTURE" ] && { cat "$ORCA_PRLIST_DONE_FIXTURE"; exit 0; } ;; esac
-    cat "$ORCA_PRLIST_FIXTURE" ;;
-  "pr diff") printf 'diff --git a/x.ts b/x.ts\\n@@ -1 +1 @@\\n+added line\\n-removed line\\n' ;;
-  # ORCA_GH_VIEW_DENY lists logins (space-separated) whose GH_TOKEN makes repo view fail, the way
-  # GitHub refuses a repo the token's account can't see (server/repos.ts tries the next login).
-  "repo view") for d in $ORCA_GH_VIEW_DENY; do [ "$GH_TOKEN" = "tok-$d" ] && { echo "GraphQL: Could not resolve to a Repository with the name '$3'." >&2; exit 1; }; done
-    cat "$ORCA_GH_REPO_FIXTURE" ;;
-  # Accounts (server/repos.ts, server/env.ts): ORCA_GH_ACCOUNTS lists logins, the first active; a token is tok-<login>.
   "auth status") first=1; for a in $ORCA_GH_ACCOUNTS; do echo "  ✓ Logged in to github.com account $a (keyring)"; [ $first = 1 ] && echo "  - Active account: true" || echo "  - Active account: false"; first=0; done ;;
   "auth token") shift 2; while [ $# -gt 0 ]; do [ "$1" = "--user" ] && { echo "tok-$2"; exit 0; }; shift; done; echo "tok-active" ;;
-  # repo list with no owner lists the account's own repos; repo list <org> (ORCA_GH_ORGREPOLIST_FIXTURE)
-  # lists an org's — server/repos.ts also asks for each org via api user/orgs (ORCA_GH_ORGS_FIXTURE).
-  "repo list") if [ "$3" = "--limit" ]; then cat "$ORCA_GH_REPOLIST_FIXTURE"; else cat "\${ORCA_GH_ORGREPOLIST_FIXTURE:-$ORCA_GH_REPOLIST_FIXTURE}"; fi ;;
-  "api user/orgs") [ -n "$ORCA_GH_ORGS_FIXTURE" ] && cat "$ORCA_GH_ORGS_FIXTURE" || echo '[]' ;;
   "api user") printf '{"id":4242,"login":"%s","name":"Finn P","email":null}' "\${GH_TOKEN#tok-}" ;;
   "repo clone") git clone -q "$ORCA_GH_CLONE_SRC" "$4" ;;
-  "api graphql") cat "$ORCA_GH_GRAPHQL_FIXTURE" ;;
-  *rules/branches*) cat "$ORCA_GH_RULES_FIXTURE" 2>/dev/null || echo '[]' ;;
-  "run view") cat "$ORCA_GH_RUN_LOG_FIXTURE" ;;
-  "pr merge") case "$*" in *--auto*) [ -n "$ORCA_GH_NO_AUTO" ] && { echo "GraphQL: Auto merge is not allowed for this repository (enablePullRequestAutoMerge)" >&2; exit 1; } ;; esac
-    [ -n "$ORCA_GH_STACKED" ] && { echo "GraphQL: This pull request is part of a stack and must be merged using the asynchronous merge REST API. For more information, see https://docs.github.com/rest/pulls/pulls#merge-a-pull-request-asynchronously (mergePullRequest)" >&2; exit 1; }; exit 0 ;;
-  "pr ready") exit 0 ;;
-  "pr edit") exit 0 ;;
   *) echo "fake-gh: unhandled: $*" >&2; exit 1 ;;
 esac
 `;
 
+// A fake GitHub API (server/github.ts points at it through ORCA_GITHUB_API_URL): REST and GraphQL
+// answered from the same fixture files the old `gh` shim read, gh-shaped fixtures converted to
+// GraphQL's shape. No network. When ORCA_GH_ARGS_LOG is set, each request is one line in it:
+// `<METHOD> <path> <json body>` for REST, `graphql <first field> <json variables> <query>` for
+// GraphQL — so a test can assert which call was made, and which fields a query asks for.
+// - `pr view` → ORCA_GH_FIXTURE; `pr list` → ORCA_PRLIST_FIXTURE (merged/closed: ORCA_PRLIST_DONE_FIXTURE).
+// - ORCA_GH_STACKED: a merge fails the way GitHub refuses a stacked PR; merge-async answers
+//   ORCA_GH_MERGE_ASYNC. ORCA_GH_NO_AUTO: auto-merge fails the way a repo without it refuses it.
+// - ORCA_GH_VIEW_DENY: logins whose token cannot see a repository (server/repos.ts tries the next).
+const env = (k: string) => process.env[k];
+const read = async (k: string): Promise<string | undefined> => { const f = env(k); if (!f) return undefined; try { return await readFile(f, "utf8"); } catch { return undefined; } };
+const readJson = async (k: string, fallback: unknown): Promise<any> => { const t = await read(k); try { return t ? JSON.parse(t) : fallback; } catch { return fallback; } };
+const conn = (a: unknown) => (Array.isArray(a) ? { nodes: a } : a);
+/** A gh `--json` PR fixture in GraphQL's shape (the inverse of gh.ts `flatPr`). */
+export function toGraphqlPr(f: any): any {
+  if (!f || typeof f !== "object") return f;
+  const out: any = { ...f };
+  for (const k of ["comments", "reviews", "labels", "files"]) if (k in f) out[k] = conn(f[k]);
+  if ("statusCheckRollup" in f) {
+    const nodes = (f.statusCheckRollup ?? []).map((c: any) => ("state" in c && !("conclusion" in c))
+      ? { __typename: "StatusContext", ...c, createdAt: c.startedAt }
+      : { __typename: "CheckRun", ...c });
+    out.commits = { nodes: [{ commit: { statusCheckRollup: { contexts: { nodes } } } }] };
+    delete out.statusCheckRollup;
+  }
+  if (f.author) out.author = { __typename: f.author.is_bot ? "Bot" : "User", ...f.author };
+  return out;
+}
+const STACKED_MSG = "This pull request is part of a stack and must be merged using the asynchronous merge REST API. For more information, see https://docs.github.com/rest/pulls/pulls#merge-a-pull-request-asynchronously";
+const json = (body: unknown, status = 200) => new R(body === undefined ? null : JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+const gqlError = (message: string, path: string, type?: string) => json({ data: null, errors: [{ message, path: [path], ...(type ? { type } : {}) }] });
+async function logLine(line: string): Promise<void> {
+  const f = env("ORCA_GH_ARGS_LOG");
+  if (f) await appendFile(f, `${line}\n`);
+}
+
+async function fakeGraphql(query: string, vars: Record<string, any>, token: string): Promise<Response> {
+  const field = /\{\s*(\w+)/.exec(query)?.[1] ?? "";
+  await logLine(`graphql ${field} ${JSON.stringify(vars)} ${query}`);
+  if (/^\s*mutation/.test(query)) {
+    const name = /\{\s*(\w+)\(/.exec(query)?.[1] ?? "";
+    if (name === "enablePullRequestAutoMerge" && env("ORCA_GH_NO_AUTO")) return gqlError("Auto merge is not allowed for this repository", name);
+    if ((name === "mergePullRequest" || name === "enablePullRequestAutoMerge") && env("ORCA_GH_STACKED")) return gqlError(STACKED_MSG, name);
+    return json({ data: { [name]: { clientMutationId: null } } });
+  }
+  if (field === "search") {
+    const key = /is:(merged|closed)/.test(String(vars.q)) && env("ORCA_PRLIST_DONE_FIXTURE") ? "ORCA_PRLIST_DONE_FIXTURE" : "ORCA_PRLIST_FIXTURE";
+    const list = await readJson(key, undefined) as any[] | undefined;
+    if (!Array.isArray(list)) return json({ message: `fake-github: no ${key}` }, 502); // what `cat` of a missing fixture did
+    return json({ data: { search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: list.map(toGraphqlPr) } } });
+  }
+  if (field === "viewer") return json({ data: { viewer: { repositories: { nodes: await readJson("ORCA_GH_REPOLIST_FIXTURE", []) } } } });
+  if (field === "repositoryOwner") return json({ data: { repositoryOwner: { repositories: { nodes: await readJson(env("ORCA_GH_ORGREPOLIST_FIXTURE") ? "ORCA_GH_ORGREPOLIST_FIXTURE" : "ORCA_GH_REPOLIST_FIXTURE", []) } } } });
+  if (/reviewThreads/.test(query)) return json(await readJson("ORCA_GH_GRAPHQL_FIXTURE", { data: null }));
+  if (/pullRequest\(number/.test(query)) {
+    const pr = toGraphqlPr(await readJson("ORCA_GH_FIXTURE", {}));
+    return json({ data: { repository: { pullRequest: { id: `PR_${vars.number}`, ...pr } } } });
+  }
+  if (field === "repository") {
+    for (const d of (env("ORCA_GH_VIEW_DENY") ?? "").split(/\s+/).filter(Boolean)) {
+      if (token === `tok-${d}`) return gqlError(`Could not resolve to a Repository with the name '${vars.owner}/${vars.name}'.`, "repository", "NOT_FOUND");
+    }
+    return json({ data: { repository: await readJson("ORCA_GH_REPO_FIXTURE", null) } });
+  }
+  return gqlError(`fake-github: unhandled query ${field}`, field);
+}
+
+async function fakeRest(req: Request, url: URL): Promise<Response> {
+  const path = url.pathname + url.search;
+  const text = req.method === "GET" || req.method === "DELETE" ? "" : await req.text();
+  await logLine(`${req.method} ${path}${text ? ` ${text}` : ""}`);
+  const p = url.pathname;
+  const token = (req.headers.get("authorization") ?? "").replace(/^Bearer /, "");
+  if (p === "/user") return json({ id: 4242, login: token.replace(/^tok-/, ""), name: "Finn P", email: null });
+  if (p === "/user/orgs") return json(await readJson("ORCA_GH_ORGS_FIXTURE", []));
+  if (req.method === "DELETE") return new R(null, { status: 204 });
+  if (/\/merge-async/.test(p)) return new R(env("ORCA_GH_MERGE_ASYNC") || '{"status":"merged"}', { headers: { "content-type": "application/json" } });
+  if (/\/rules\/branches\//.test(p)) return json(await readJson("ORCA_GH_RULES_FIXTURE", []));
+  if (/\/git\/matching-refs\//.test(p)) return json(await readJson("ORCA_GH_REFS_FIXTURE", []));
+  if (/\/actions\/runs\/\d+\/jobs$/.test(p)) return json({ jobs: [{ id: 1, name: "test", conclusion: "failure" }, { id: 2, name: "lint", conclusion: "success" }] });
+  if (p.startsWith("/_logs/")) return req.headers.get("authorization") ? new R("token leaked to the log host", { status: 403 }) : new R(await read("ORCA_GH_RUN_LOG_FIXTURE") ?? "");
+  if (/\/actions\/jobs\/\d+\/logs$/.test(p)) return new R(null, { status: 302, headers: { location: `${url.origin}/_logs${p}` } });
+  if (/\/pulls$/.test(p) && req.method === "POST") { const n = Number(env("ORCA_PR_NUMBER") ?? 123); return json({ number: n, html_url: `https://github.com/acme/app/pull/${n}` }, 201); }
+  if (/\/pulls\/\d+$/.test(p)) {
+    if (req.method !== "GET") return json({});
+    if (/diff/.test(req.headers.get("accept") ?? "")) return new R("diff --git a/x.ts b/x.ts\n@@ -1 +1 @@\n+added line\n-removed line\n", { headers: { "content-type": "application/vnd.github.diff" } });
+    return json({ number: Number(p.split("/").at(-1)), body: (await readJson("ORCA_GH_FIXTURE", {})).body ?? "" });
+  }
+  if (/\/issues\/\d+\/labels$/.test(p)) return json([]);
+  return json({ message: `fake-github: unhandled ${req.method} ${path}` }, 404);
+}
+
+let fakeGithub: ReturnType<typeof Bun.serve> | undefined;
+/** Start the fake GitHub API once per process and point server/github.ts at it. */
+export function installFakeGithub(): void {
+  fakeGithub ??= Bun.serve({
+    port: 0, hostname: "127.0.0.1",
+    async fetch(req) {
+      const url = new URL(req.url);
+      if (url.pathname === "/graphql" && req.method === "POST") {
+        const body = await req.json() as { query: string; variables?: Record<string, unknown> };
+        return fakeGraphql(body.query, body.variables ?? {}, (req.headers.get("authorization") ?? "").replace(/^Bearer /, ""));
+      }
+      return fakeRest(req, url);
+    },
+  });
+  fakeGithub.unref();
+  setFetch(native.fetch); // happy-dom's fetch CORS-blocks a real port
+  process.env.ORCA_GITHUB_API_URL = `http://127.0.0.1:${fakeGithub.port}`;
+  process.env.ORCA_GITHUB_REPO = "acme/app"; // the scratch repos have no GitHub remote
+}
+
 let realPath: string | undefined;
 
-/** Prepend a fake `gh` to PATH. Call restorePath() when done. */
+/** Prepend a fake `gh` to PATH and start the fake GitHub API. Call restorePath() when done. */
 export async function installFakeGh(): Promise<void> {
+  installFakeGithub();
   const dir = await mkdtemp(join(tmpdir(), "orca-shim-"));
   const gh = join(dir, "gh");
   await writeFile(gh, GH_SHIM);
