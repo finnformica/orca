@@ -235,6 +235,21 @@ export async function archiveWorkstream(repo: RepoConfig, branch: string): Promi
   await db.archive(repo.name, branch); // idempotent — a no-op if removeWorktree already archived it
 }
 
+/** Stop a workstream's running agent, keeping everything else: the worktree, its commits, queued
+ *  messages and the provider session all stay, so a later `orca send` resumes the same conversation.
+ *  The `orca stop` behind the orchestrator verb, built on the same `agent.interrupt` the chat's Stop
+ *  button uses. `dropQueue` drops anything queued first, so Stop alone does not relaunch it. */
+export async function stopWorkstream(repo: RepoConfig, branch: string, opts: { dropQueue?: boolean } = {}): Promise<{ runId?: string }> {
+  const existing = (await git.listWorktrees(repo.repoPath, repo.worktreeRoot)).find((w) => w.branch === branch);
+  // agent.interrupt would otherwise return the LAST run's id even once it finished — runs.get(key)
+  // keeps a finished entry until something stops it — so "nothing to stop" needs its own check.
+  if (!existing || !agent.isRunning(existing.worktreePath)) return {};
+  if (opts.dropQueue) await db.dropQueuedMessages(repo.name, branch); // before stopping, so the exit handler can't claim one first
+  const runId = await agent.interrupt(existing.worktreePath);
+  if (runId) void notify.stopped(runId); // the centre hears it from here, as /api/agent/stop does
+  return { runId };
+}
+
 /** Settle a branch's conflict with its base without an agent where no judgement is needed: Orca
  *  merges the base itself and, when the only conflicts are in the repo's changelog files, unions them
  *  and pushes (`git.mergeBaseUnioningChangelogs`). Every other outcome leaves the worktree untouched
