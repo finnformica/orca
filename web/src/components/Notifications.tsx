@@ -39,6 +39,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Segmented } from "@/components/console";
 import { Kbd } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
+import { MarqueeText } from "@/components/ui/marquee-text";
 import { useOrchestrator } from "@/components/Terminal";
 import type { ShortcutId } from "@/lib/shortcuts";
 
@@ -394,7 +395,9 @@ function Toast({ n, place, expanded, count, removed = false, onHeight, onOpen }:
         <div className="min-w-0 flex-1">
           <div className="flex items-baseline gap-1.5 text-sm leading-5">
             <RepoLabel repo={n.repo} />
-            <button type="button" data-slot="notification-title" className="truncate font-medium hover:underline" onClick={onOpen}>{n.title}</button>
+            <button type="button" data-slot="notification-title" className="min-w-0 font-medium hover:underline" onClick={onOpen}>
+              <MarqueeText>{n.title}</MarqueeText>
+            </button>
             <span className={cn("shrink-0 text-xs", TONE_TEXT[meta.tone])}>{labelOf(n)}</span>
           </div>
           {/* A phone keeps the toast to two lines — the body (and the time below) are a tap away on
@@ -526,7 +529,7 @@ function CentreRow({ n, onOpen }: { n: Notification; onOpen: () => void }) {
         <span className="min-w-0 flex-1">
           <span className="flex items-baseline gap-1.5 text-sm leading-5">
             <RepoLabel repo={n.repo} />
-            <span className="truncate font-medium">{n.title}</span>
+            <MarqueeText className="min-w-0 font-medium">{n.title}</MarqueeText>
             <span className={cn("shrink-0 text-xs", TONE_TEXT[KIND_META[n.kind].tone])}>{labelOf(n)}</span>
           </span>
           {n.body && <span className="text-muted-foreground block truncate text-xs leading-5">{n.body}</span>}
