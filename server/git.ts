@@ -248,6 +248,18 @@ export type ReapReason = "merged" | "closed" | "archived";
 const commitExists = (cwd: string, ref: string) =>
   git(cwd, "rev-parse", "--verify", "--quiet", `${ref}^{commit}`).then(() => true, () => false);
 
+/** Is `maybeAncestor` already part of `head`'s history, or `head` itself (`mergedPrIsHistory`'s
+ *  `headBehindPr`)? A worktree whose branch was last pushed from somewhere else never fetched that
+ *  commit, so a plain `merge-base --is-ancestor` on it errors on the unknown object instead of
+ *  answering "no" — fetch `branch` once and retry before giving up. Best-effort: a failed fetch
+ *  (offline, local-only repo) just leaves the check unconfirmed. */
+export async function isAncestor(repoPath: string, maybeAncestor: string, head: string, branch: string): Promise<boolean> {
+  const check = () => git(repoPath, "merge-base", "--is-ancestor", maybeAncestor, head).then(() => true, () => false);
+  if (await check()) return true;
+  await git(repoPath, "fetch", "origin", branch).catch(() => {});
+  return check();
+}
+
 /** How many commits on `ref` exist nowhere else: on no remote-tracking branch, not in `base`, and
  *  not in `head` (a PR's last pushed commit — after a squash merge GitHub deletes the remote branch
  *  and a prune drops it from `--remotes`, yet those commits were pushed). A ref git can't read counts

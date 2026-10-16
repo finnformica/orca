@@ -820,7 +820,15 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/prs/merged") {
     // `since` is the client's local midnight in ms — see gh.listMerged.
     const since = Number(url.searchParams.get("since"));
-    return json(await gh.listMerged(repo.repoPath, Number.isFinite(since) && since > 0 ? since : undefined));
+    const merged = await gh.listMerged(repo.repoPath, Number.isFinite(since) && since > 0 ? since : undefined);
+    // The browser has no git, so `headBehindPr` (mergedPrIsHistory's reuse-vs-behind fact) is
+    // computed here, where the repo is actually checked out, and shipped down on each row.
+    const heads = new Map((await git.listWorktrees(repo.repoPath, repo.worktreeRoot)).map((w) => [w.branch, w.head]));
+    return json(await Promise.all(merged.map(async (m) => {
+      const head = heads.get(m.branch);
+      if (!head || !m.headSha || head === m.headSha) return m;
+      return { ...m, headBehindPr: await git.isAncestor(repo.repoPath, head, m.headSha, m.branch) };
+    })));
   }
   const commentsMatch = p.match(/^\/api\/prs\/(\d+)\/comments$/);
   if (req.method === "GET" && commentsMatch) {

@@ -69,22 +69,29 @@ export function deriveKanbanState(s: PrStatusLike): WorkstreamState {
   return s.reviewStatus === "approved" ? "MERGEABLE" : "IN_REVIEW"; // conflict/CI/ready show as badges
 }
 
-/** What the branch's live side says about it, for `mergedPrIsHistory`. */
-export type BranchActivity = { agentStatus?: string; queued?: number; agentStartedAt?: number; head?: string; openPr?: boolean };
+/** What the branch's live side says about it, for `mergedPrIsHistory`. `headBehindPr`: a fact only
+ *  git can supply (`git.isAncestor`) — true when `head` is an ancestor of, or equal to, the merged
+ *  PR's `headSha`, i.e. the worktree simply never fetched the PR's last push. Undefined means the
+ *  caller never checked (a pure-web caller with no git), so a differing head still reads as reuse. */
+export type BranchActivity = { agentStatus?: string; queued?: number; agentStartedAt?: number; head?: string; headBehindPr?: boolean; openPr?: boolean };
 
 /** Is a merged PR found by head branch only HISTORY for this workstream? GitHub matches PRs by
  *  branch name, and the orchestrator reuses a branch after its PR merged (`orca send` to it: the
  *  worker resets onto the base and starts again) — so the old merged PR must not make the row Done
  *  (hidden under "Not merged") while new work runs. It is history once anything happened since the
  *  merge: a newer open PR for the branch, the agent running or a message queued, a run started after
- *  `mergedAt`, or the worktree's HEAD moved off the PR's last head. With nothing live behind the
- *  branch (no worktree) the merge stands. ONE derivation for the board UI and `orca board`. Pure. */
+ *  `mergedAt`, or the worktree's HEAD has commits the PR's last head doesn't (`headBehindPr` is not
+ *  true) — a worktree that is merely BEHIND the PR's head (its last push landed from somewhere else
+ *  and this worktree never fetched it) is not reuse; it is the same work, just not caught up. With
+ *  nothing live behind the branch (no worktree) the merge stands. ONE derivation for the board UI
+ *  and `orca board`. Pure. */
 export function mergedPrIsHistory(m: { mergedAt?: string; headSha?: string }, w: BranchActivity | undefined): boolean {
   if (!w) return false;
   if (w.openPr || w.agentStatus === "running" || (w.queued ?? 0) > 0) return true;
   const mergedMs = m.mergedAt ? Date.parse(m.mergedAt) : NaN;
   if (w.agentStartedAt && Number.isFinite(mergedMs) && w.agentStartedAt > mergedMs) return true;
-  return Boolean(w.head && m.headSha && w.head !== m.headSha);
+  if (!w.head || !m.headSha || w.head === m.headSha) return false;
+  return w.headBehindPr !== true;
 }
 
 // The "PR" submenu: every action that only makes sense once a branch has an open PR, grouped in one

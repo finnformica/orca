@@ -495,8 +495,11 @@ export async function prDetail(cwd: string, pr: number): Promise<PrDetail> {
 /** Raw unified diff for a PR. */
 export const prDiff = (cwd: string, pr: number) => gh(cwd, "pr", "diff", String(pr));
 
-/** `headSha`: the PR's last head — a worktree past it is a reused branch, not this PR (`mergedPrIsHistory`). */
-export type MergedPr = { number: number; title: string; branch: string; url: string; mergedAt: string; headSha?: string };
+/** `headSha`: the PR's last head — a worktree past it is a reused branch, not this PR
+ *  (`mergedPrIsHistory`), UNLESS `headBehindPr` says the worktree is merely behind it (never fetched
+ *  the last push). `listMerged` never sets `headBehindPr` — it has no worktree to compare against;
+ *  the `/api/prs/merged` handler attaches it, since that's where git is available. */
+export type MergedPr = { number: number; title: string; branch: string; url: string; mergedAt: string; headSha?: string; headBehindPr?: boolean };
 
 type RawMergedPr = { number: number; title: string; headRefName: string; url: string; mergedAt: string; headRefOid?: string };
 const MERGED_TTL_MS = 15_000;
