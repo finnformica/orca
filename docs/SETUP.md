@@ -25,6 +25,7 @@ values in `<angle brackets>`. **Do not commit these values.**
 12. [Verify it works](#12-verify-it-works)
 13. [Upgrading and auto-deploy](#13-upgrading-and-auto-deploy)
 14. [Troubleshooting and known pitfalls](#14-troubleshooting-and-known-pitfalls)
+15. [Server switcher](#15-server-switcher)
 
 ---
 
@@ -219,9 +220,13 @@ has its own `.env`. Start from `.env.example`. This table shows all variables:
 | `ORCA_PREVIEW_BRIDGE` | unset | Only `scripts/preview-orca.sh` sets it. It makes the bridge the read-only `/api` of an Orca preview. |
 | `ORCA_SHOT_BROWSER` | the newest Playwright `chrome-headless-shell` in `~/.cache/ms-playwright`, else one on `PATH` | The browser that the screenshot service (`orca-shot`) controls. |
 | `ORCA_URL` | `http://127.0.0.1:$ORCA_API_PORT` | The bridge that `bin/orca` and `orca-shot` call. |
+| `TS_OAUTH_CLIENT_ID` | none | The Tailscale OAuth client for the server switcher ([§15](#15-server-switcher)). |
+| `TS_OAUTH_CLIENT_SECRET` | none | The secret of that OAuth client. Orca sends it only to the Tailscale API. Orca does not write it to a log. |
+| `ORCA_SERVER_URL` | `http://<MagicDNS name>:<port>` | The URL of this server in the server switcher. Set it only when the MagicDNS name from `tailscale status` is wrong. |
+| `ORCA_TAILSCALE_BIN` | `tailscale` on `PATH`, else `/usr/bin/tailscale` | The Tailscale CLI that the server switcher uses for `whois` and `status`. |
 
-Agents never see the secrets of Orca. Orca removes `SLACK_TOKEN`, `ORCA_DATABASE_URL` and
-`ORCA_TEST_DATABASE_URL` from the environment of each agent (`agentEnv` in `server/agent.ts`).
+Agents never see the secrets of Orca. Orca removes `SLACK_TOKEN`, `ORCA_DATABASE_URL`,
+`ORCA_TEST_DATABASE_URL`, `TS_OAUTH_CLIENT_ID` and `TS_OAUTH_CLIENT_SECRET` from the environment of each agent (`agentEnv` in `server/agent.ts`).
 
 `deploy/autodeploy.sh` also reads `ORCA_REPO` (default `/opt/orca`), `ORCA_SERVICE_NAME` (`orca`),
 `ORCA_BRIDGE_URL` (`http://127.0.0.1:8787`) and `ORCA_STATE_DIR`.
@@ -586,3 +591,70 @@ the box).
 | The home-screen icon did not update on iOS | iOS keeps the old icon in a cache. Remove the shortcut and add it again. |
 | The orchestrator does not remember something | Read `orca notes`. Its session is temporary. Its notes are the data that continues to the next session. |
 | Your own PRs do not show on the board | The PR lanes show the PRs that the `gh` account on the box wrote ([§1](#1-prerequisites)). |
+
+---
+
+## 15. Server switcher
+
+The server switcher lets one browser use several Orca servers. Each server is fully separate: it has
+its own database and its own config. The servers do not talk to each other. Only your browser talks
+to each server. The web app changes the server that it calls.
+
+The feature is off by default. When it is off, Orca does not change its behaviour.
+
+### How it works
+
+- `GET /api/servers` lists the Orca servers. The source is the Tailscale API, or the config list.
+- A page from one listed server can call the `/api` and `/api/events` of another listed server
+  (CORS). Other origins get no CORS headers.
+- For each such cross-origin call, Orca runs `tailscale whois --json` on the caller address.
+  Orca accepts only a user device. Orca refuses a tagged node, so a server cannot call another
+  server. A refusal is a `403` with a JSON `error`.
+- Same-origin calls and calls with no `Origin` header (the CLI, workers, other bridges) do not
+  change.
+
+Orca uses the Tailscale API and not `tailscale status`. A Tailscale ACL that blocks traffic between
+the boxes also removes the other box from the local netmap.
+
+### Set it up
+
+1. Tag each Orca server. In the Tailscale admin console, add `tag:orca` to the `tagOwners` of the
+   ACL policy:
+
+   ```json
+   "tagOwners": { "tag:orca": ["autogroup:admin"] }
+   ```
+
+2. Apply the tag to each box. Run `sudo tailscale up --advertise-tags=tag:orca` on the box, or
+   edit the tags of the machine in the admin console.
+3. Let your user devices reach each box on port 8787. Do not let a box reach another box.
+4. Create an OAuth client. In the admin console, open **Settings → OAuth clients**. Give it the
+   scope `devices:core:read`. Copy the client ID and the secret.
+5. Add the two values to the `.env` of each server:
+
+   ```sh
+   TS_OAUTH_CLIENT_ID=<client id>
+   TS_OAUTH_CLIENT_SECRET=<secret>
+   ```
+
+6. Restart the service: `sudo systemctl restart orca`.
+7. In Settings, turn on **Server switcher**. The web app calls `POST /api/config/server-switcher`
+   with `{"enabled": true}`.
+
+### The config block
+
+The `serverSwitcher` block of the config document ([§6](#6-the-config-document)) has these fields:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `false` | Turns the feature on. When it is `false`, `/api/servers` lists only this server, and no CORS or `whois` runs. |
+| `tag` | `tag:orca` | The Tailscale tag of an Orca server. |
+| `port` | `8787` | The port of each Orca server. Orca makes each URL as `http://<MagicDNS name>:<port>`. |
+| `servers` | none | A list of `{ "name", "url" }`. Orca uses it when the OAuth client is not set or the API call fails. |
+| `allowedLogins` | none | A list of Tailscale logins. When it is set, Orca accepts only these logins. |
+
+### Caches
+
+- Orca keeps the server list for 60 seconds.
+- Orca keeps each `whois` result for 5 minutes, for each IP address. Orca does not keep a failed
+  `whois`.
