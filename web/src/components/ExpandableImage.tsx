@@ -96,7 +96,10 @@ export function ExpandableImage({
   useEffect(() => {
     const d = dialogRef.current;
     if (!d) return;
-    if (open && !d.open) d.showModal();
+    // Focus the dialog itself, not whichever chevron happens to render first: a chevron that
+    // later unmounts at the end of the gallery would otherwise drop focus to <body>, outside the
+    // dialog's subtree, and Left/Right (handled on the dialog, below) would stop responding.
+    if (open && !d.open) { d.showModal(); d.focus(); }
     else if (!open && d.open) d.close();
   }, [open]);
 
@@ -114,8 +117,8 @@ export function ExpandableImage({
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDialogElement>) => {
     if (total <= 1) return;
-    if (e.key === "ArrowLeft") { e.preventDefault(); setActiveIndex((i) => Math.max(0, i - 1)); }
-    else if (e.key === "ArrowRight") { e.preventDefault(); setActiveIndex((i) => Math.min(total - 1, i + 1)); }
+    if (e.key === "ArrowLeft") { e.preventDefault(); setActiveIndex((i) => Math.max(0, i - 1)); e.currentTarget.focus(); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); setActiveIndex((i) => Math.min(total - 1, i + 1)); e.currentTarget.focus(); }
   };
 
   return (
@@ -149,6 +152,7 @@ export function ExpandableImage({
         onCancel={() => setOpen(false)}
         onClick={(e) => { if (e.target === dialogRef.current) setOpen(false); }} // click the backdrop → close
         onKeyDown={onKeyDown}
+        tabIndex={-1}
         aria-label={alt || "Expanded image"}
         data-slot="image-lightbox"
         // Constrained (max-h/max-w) sizing is desktop-only (md:) and full-bleed sizing is
@@ -169,7 +173,7 @@ export function ExpandableImage({
                 <Button
                   type="button" size="icon" variant="ghost" aria-label="Previous screenshot"
                   className="absolute top-1/2 left-2 size-8 -translate-y-1/2 bg-background/80 text-foreground opacity-0 transition-opacity hover:bg-background group-hover:opacity-100 [@media(hover:none)]:opacity-100"
-                  onClick={(e) => { e.stopPropagation(); setActiveIndex((i) => Math.max(0, i - 1)); }}
+                  onClick={(e) => { e.stopPropagation(); setActiveIndex((i) => Math.max(0, i - 1)); dialogRef.current?.focus(); }}
                 >
                   <ChevronLeft className="size-5" />
                 </Button>
@@ -178,7 +182,7 @@ export function ExpandableImage({
                 <Button
                   type="button" size="icon" variant="ghost" aria-label="Next screenshot"
                   className="absolute top-1/2 right-2 size-8 -translate-y-1/2 bg-background/80 text-foreground opacity-0 transition-opacity hover:bg-background group-hover:opacity-100 [@media(hover:none)]:opacity-100"
-                  onClick={(e) => { e.stopPropagation(); setActiveIndex((i) => Math.min(total - 1, i + 1)); }}
+                  onClick={(e) => { e.stopPropagation(); setActiveIndex((i) => Math.min(total - 1, i + 1)); dialogRef.current?.focus(); }}
                 >
                   <ChevronRight className="size-5" />
                 </Button>

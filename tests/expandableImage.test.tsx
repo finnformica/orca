@@ -190,6 +190,41 @@ test("Right/Left move between the gallery's images, stopping at the ends, and sh
   expect(dialog.querySelector("img")!.getAttribute("src")).toBe(GALLERY[0]!.src);
 });
 
+// A real keydown lands wherever the browser's focus is, not on the dialog directly — unlike the
+// test above, which dispatches straight onto the dialog regardless of focus. The chevron buttons
+// unmount at the ends of the gallery (PR 250); if the "Next" chevron holds focus when it unmounts,
+// the browser moves focus to <body>, outside the dialog, and a keydown dispatched there never
+// bubbles into the dialog's handler. This reproduces that: focus the chevron, drive it past the
+// last image (so the chevron unmounts while focused), then press Left from wherever focus landed.
+const pressFocused = async (key: string) => act(async () => {
+  document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+  await flush();
+});
+
+test("Left still works after Right is pressed past the last image and the Next chevron unmounts focused", async () => {
+  mount(<ExpandableImage src={GALLERY[0]!.src} alt={GALLERY[0]!.alt} gallery={{ images: GALLERY, index: 0 }} />);
+  const dialog = container!.querySelector<HTMLDialogElement>('[data-slot="image-lightbox"]')!;
+
+  await click(container!.querySelector('[data-slot="expandable-image"]')!);
+  expect(dialog.open).toBe(true);
+
+  // Focus the Next chevron, as a real browser would after the user tabs to it or clicks it.
+  act(() => { dialog.querySelector<HTMLButtonElement>('button[aria-label="Next screenshot"]')!.focus(); });
+
+  // Press Right past the end: index 0 -> 1 -> 2, then one more press that does nothing (the
+  // Next chevron is gone by then, so this extra press — "many times past the last image" —
+  // must land wherever focus ended up and still do no harm).
+  await pressFocused("ArrowRight");
+  await pressFocused("ArrowRight");
+  await pressFocused("ArrowRight");
+  expect(dialog.querySelector("img")!.getAttribute("src")).toBe(GALLERY[2]!.src);
+  // Focus must still be inside the dialog — never dropped to <body> — or Left below would be a no-op.
+  expect(dialog.contains(document.activeElement)).toBe(true);
+
+  await pressFocused("ArrowLeft");
+  expect(dialog.querySelector("img")!.getAttribute("src")).toBe(GALLERY[1]!.src);
+});
+
 test("Esc still closes a gallery lightbox", async () => {
   mount(<ExpandableImage src={GALLERY[0]!.src} alt={GALLERY[0]!.alt} gallery={{ images: GALLERY, index: 0 }} />);
   const dialog = container!.querySelector<HTMLDialogElement>('[data-slot="image-lightbox"]')!;

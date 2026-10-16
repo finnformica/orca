@@ -154,6 +154,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
               </div>
             </VCard>
           )}
+          <ReviewPanel repo={repo} prNumber={number} sig={sig} />
           {/* Side by side at desktop widths — two cards that otherwise each leave half the row
               empty. `:only-child` picks up the common case (no screenshots yet) with no extra
               state: ScreenshotsCard renders nothing then, so Checks is the grid's sole child and
@@ -162,7 +163,6 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
             <ScreenshotsCard repo={repo} branch={pr.head} version={liveRow?.agentStatus} />
             <ChecksCard checks={pr.checks} />
           </div>
-          <ReviewPanel repo={repo} prNumber={number} sig={sig} />
           <VCard slot="pr-description" title="Description">
             <div className="p-4">
               {pr.body ? <Markdown>{pr.body}</Markdown> : <p className="text-muted-foreground text-sm">No description.</p>}
