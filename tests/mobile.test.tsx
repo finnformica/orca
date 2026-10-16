@@ -218,6 +218,23 @@ describe("the phone layout (390px, touch)", () => {
     expect(items[0]!.getAttribute("aria-current")).toBeNull();
   });
 
+  // Regression: the dialog used to render inside the sidebar's hidden-on-phone <aside> (max-md:hidden).
+  // A browser never promotes a <dialog> to the top layer while an ancestor has display: none, so
+  // showModal() opened it with nothing on screen even though .open read true. It must now sit
+  // outside that <aside> (Shell.AddNew portals it to document.body) so it shows on a phone too.
+  test("the bottom bar's New agent opens Add New outside the hidden sidebar, so it is visible on a phone", async () => {
+    await mount("/", true);
+    const sidebar = $('[data-slot="sidebar"]')!;
+    expect(sidebar.className).toContain("max-md:hidden");
+    const bar = $('[data-slot="bottom-bar"]')!;
+    await click([...bar.querySelectorAll("button")].find((b) => b.textContent === "New agent")!);
+    const dialog = $<HTMLDialogElement>('dialog[data-slot="add-new-dialog"]')!;
+    expect(dialog.open).toBe(true);
+    expect(sidebar.contains(dialog)).toBe(false); // never a descendant of the hidden aside
+    expect(document.body.contains(dialog)).toBe(true);
+    expect(dialog.querySelector("textarea")).not.toBeNull(); // the New-draft composer renders inside it
+  });
+
   test("the bottom bar's Settings navigates to /settings and is marked current there", async () => {
     await mount("/", true);
     const bar = $('[data-slot="bottom-bar"]')!;
