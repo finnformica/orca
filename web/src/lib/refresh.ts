@@ -6,6 +6,7 @@
 // every source at once and resolves when all have settled. A refresh still pending after DEADLINE_MS
 // means the page itself is wedged: it falls back to a hard reload.
 import { useSyncExternalStore } from "react";
+import { apiFetch } from "./server";
 
 export const STUCK_MS = 3_000;
 export const DEADLINE_MS = 15_000;
@@ -13,11 +14,12 @@ export const DEADLINE_MS = 15_000;
 type InFlight = { ctl: AbortController; at: number };
 const inflight = new Set<InFlight>();
 
-/** `fetch` for a GET, tracked so a refresh can abort it once it is stuck. */
+/** `fetch` for a GET, tracked so a refresh can abort it once it is stuck. An `/api/…` path goes to
+ *  the chosen server (lib/server.ts `apiFetch`; the home origin unless the switcher says otherwise). */
 export function trackedFetch(input: string, init?: RequestInit): Promise<Response> {
   const entry: InFlight = { ctl: new AbortController(), at: Date.now() };
   inflight.add(entry);
-  return fetch(input, { ...init, signal: entry.ctl.signal }).finally(() => inflight.delete(entry));
+  return apiFetch(input, { ...init, signal: entry.ctl.signal }).finally(() => inflight.delete(entry));
 }
 
 /** Abort every tracked GET older than `ms`; returns how many. */

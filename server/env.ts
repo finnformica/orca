@@ -5,7 +5,7 @@
 // they are the CLI's, not ours.
 
 /** Orca's secrets. Add one here and every spawn drops it. */
-export const ORCA_SECRETS = ["SLACK_TOKEN", "ORCA_DATABASE_URL", "ORCA_TEST_DATABASE_URL"] as const;
+export const ORCA_SECRETS = ["SLACK_TOKEN", "ORCA_DATABASE_URL", "ORCA_TEST_DATABASE_URL", "TS_OAUTH_CLIENT_ID", "TS_OAUTH_CLIENT_SECRET"] as const;
 
 export type Env = Record<string, string | undefined>;
 
