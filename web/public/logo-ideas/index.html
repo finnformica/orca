@@ -56,7 +56,7 @@
 
 <h2>Phone home screen</h2>
 <p>iOS rounded tile, Android circle crop, and the maskable icon with its safe zone.</p>
-<div class="grid" id="phones" style="grid-template-columns: repeat(auto-fill, minmax(460px, 1fr))"></div>
+<div class="grid" id="phones" style="grid-template-columns: repeat(auto-fill, minmax(min(460px, 100%), 1fr))"></div>
 
 <h2>512 px tile</h2>
 <div class="big" id="big"></div>
@@ -108,7 +108,7 @@ document.querySelector("#tabs").innerHTML = ideas.map((i) => {
 
 document.querySelector("#phones").innerHTML = ideas.map((i) => {
   const app = (cls) => `<div class="app">${img(i.tile, 60, "ico " + cls)}Orca</div>`;
-  return `<div class="card">${label(i)}<div style="height:8px"></div><div style="display:flex;gap:12px;align-items:center">` +
+  return `<div class="card">${label(i)}<div style="height:8px"></div><div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">` +
     `<div class="phone">${app("ios")}${app("android")}</div><div class="phone dk">${app("ios")}</div>` +
     `<div class="safe">${img(i.tile, 120)}</div></div></div>`;
 }).join("");
