@@ -611,6 +611,19 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       else await verbs.archiveWorkstream(repo, branch);
       return `Archived ${repo.name}/${branch}. Its branch, commits and transcript stay readable with \`orca chats\` / \`orca read\`.`;
     }
+    case "stop": {
+      const repo = repoNamed(cfg, args.repo);
+      const branch = required(args, "branch");
+      const e = (await db.enrichment(repo.name))[branch];
+      if (!e?.orchestrated) throw new Error(`${repo.name}/${branch} is not an orchestrated workstream; this command only stops ones this orchestrator spawned or sent to`);
+      const dropQueue = "drop-queue" in args;
+      const home = await verbs.placement(repo, { branch });
+      const r = home !== db.instanceName()
+        ? (await viaInstance(cfg, home, "/api/workstreams/stop", { repo: repo.name, branch, dropQueue }) as { runId?: string })
+        : await verbs.stopWorkstream(repo, branch, { dropQueue });
+      if (!r.runId) return `Nothing running on ${repo.name}/${branch}.`;
+      return `Stopped ${repo.name}/${branch} (run ${r.runId}).${dropQueue ? " Its queued messages were dropped." : " Its worktree, commits, queue and session stay; `orca send` resumes it."}`;
+    }
     case "sweep": {
       // Finished worktrees, dead previews and orphan branches on every instance. Dry run unless --confirm.
       return sweepText(await verbs.sweepAll(cfg, { confirm: "confirm" in args }));
@@ -712,7 +725,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes`);
   }
 }
 
