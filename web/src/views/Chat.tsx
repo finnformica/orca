@@ -28,6 +28,7 @@ import { onRefresh } from "@/lib/refresh";
 import { onOrchestratorDelivered, useOrchestratorOutbox } from "@/lib/orchestratorOutbox";
 import { ChatControls, type ChatControlsProps } from "@/components/ChatControls";
 import type { OrchestratorPrefill } from "@/lib/atoms";
+import { apiUrl } from "@/lib/server";
 
 // How close to the bottom still counts as "following". A few pixels of slack absorbs sub-pixel
 // rounding and the composer resizing, so following doesn't switch off on its own.
@@ -52,7 +53,7 @@ const ChatSkeleton = ({ rows }: { rows: number }) => (
  *  embeds) through the same lightbox + copy button as every other image, instead of react-markdown's
  *  bare `<img>` — capped to a readable size inline, full size on click. */
 const markdownImg = ({ src, alt }: { src?: string; alt?: string }) =>
-  src ? <ExpandableImage src={src} alt={alt ?? ""} imgClassName="max-h-80 max-w-full rounded-md border object-contain" /> : null;
+  src ? <ExpandableImage src={apiUrl(src)} alt={alt ?? ""} imgClassName="max-h-80 max-w-full rounded-md border object-contain" /> : null;
 
 /** A markdown table wrapped so it scrolls sideways inside itself (overflow-x-auto, max-w-full)
  *  instead of squashing its columns or widening the page — a table of more than a couple of
@@ -211,11 +212,11 @@ const Facet = ({ title, items, tone }: { title: string; items: string[]; tone: s
 export function Attachments({ files, className = "" }: { files: AttachmentRef[]; className?: string }) {
   if (!files.length) return null;
   // Just the images, in order: the other images this message carried are this one's lightbox gallery.
-  const images = files.filter((f) => isImageName(f.name)).map((f) => ({ src: `/api/attachments/${f.id}`, alt: f.name }));
+  const images = files.filter((f) => isImageName(f.name)).map((f) => ({ src: apiUrl(`/api/attachments/${f.id}`), alt: f.name }));
   return (
     <div className={`flex flex-wrap gap-1.5 ${className}`} data-slot="message-attachments">
       {files.map((f) => {
-        const href = `/api/attachments/${f.id}`;
+        const href = apiUrl(`/api/attachments/${f.id}`);
         const imgIndex = images.findIndex((im) => im.src === href);
         return isImageName(f.name) ? (
           <ExpandableImage key={f.id} src={href} alt={f.name} downloadName={f.name}

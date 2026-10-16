@@ -35,6 +35,7 @@ export type LiveAgent = {
 
 import { asTurnPage } from "./workstream";
 import { trackedFetch as get } from "./lib/refresh";
+import { apiFetch, apiUrl } from "./lib/server";
 
 /** `dbUnavailable`: the bridge answered without the database — the turns are what it journaled
  *  locally (server/outbox.ts), to be synced when the database is back. */
@@ -65,7 +66,7 @@ export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb
 export type PreviewSvc = { name: string; port: number; url: string; localUrl?: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const post = (path: string, body: unknown) =>
-  fetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then(res);
+  apiFetch(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) }).then(res);
 
 async function res(r: Response) {
   const data = await r.json();
@@ -146,7 +147,7 @@ export const api = {
       .then(res).then((body) => asTurnPage<AgentTurn>(body)), // a pre-paging bridge answers with the whole array
   /** URL for the tab's ONE live feed (every chat's steps and turn events, multiplexed — see
    *  lib/events.ts). A URL, not a fetch, because EventSource opens it itself and reconnects on its own. */
-  eventsUrl: (): string => "/api/events",
+  eventsUrl: (): string => apiUrl("/api/events"),
   /** Instructions typed while a run was in flight, waiting to be sent. */
   queued: (repo: string, branch: string): Promise<QueuedMessage[]> =>
     get(`/api/queued${q(repo, `&branch=${encodeURIComponent(branch)}`)}`).then(res),
@@ -219,6 +220,6 @@ export const api = {
   uploadAttachments: async (files: File[]): Promise<string[]> => {
     const form = new FormData();
     for (const f of files) form.append("files", f);
-    return (await fetch("/api/attachments", { method: "POST", body: form }).then(res)).paths;
+    return (await apiFetch("/api/attachments", { method: "POST", body: form }).then(res)).paths;
   },
 };
