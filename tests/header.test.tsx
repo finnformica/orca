@@ -4,6 +4,8 @@
 // swimlanes behind a persisted List | Board toggle (with the density toggle beside it on Board).
 // Driven against the fake api (tests/apiFake.ts), rendered into a real DOM.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "fs";
+import { join } from "path";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
@@ -92,6 +94,22 @@ describe("console shell", () => {
     expect(group.className).toContain("ml-auto");
     expect(group.parentElement).toBe(bar);
     expect([...bar.children].at(-1)).toBe(group); // still the rightmost thing, loaded or not
+  });
+
+  // Measured on a cold load (orca-shot, a trace of getBoundingClientRect each frame): the button's
+  // left edge moved 1211.2 → 1222.0 when Geist replaced the fallback font, and the page then grew
+  // past the viewport, so a classic scrollbar took ~15px off the right. Neither shows in a DOM-only
+  // render, so this pins the two rules that hold the button still.
+  test("\"Ask the orchestrator\" keeps its place while the page loads: a fixed width, and the scrollbar gutter reserved", async () => {
+    await mount();
+    const ask = container!.querySelector<HTMLElement>('[data-slot="ask-orchestrator"]')!;
+    expect(ask.className.split(/\s+/)).toContain("w-[12.25rem]"); // its width can't follow the font
+    const label = ask.querySelector<HTMLElement>('[data-slot="ask-orchestrator-label"]')!;
+    expect(label.className.split(/\s+/)).toEqual(expect.arrayContaining(["truncate", "min-w-0"])); // a wider fallback font can't widen it
+    const css = readFileSync(join(import.meta.dir, "..", "web", "src", "styles.css"), "utf8");
+    expect(css).toMatch(/html\s*\{\s*scrollbar-gutter:\s*stable;/);
+    // Radix's scroll lock would add the reserved gutter again as a body margin on every menu open.
+    expect(css).toMatch(/html body\[data-scroll-locked\]\s*\{\s*margin-right:\s*0 !important;/);
   });
 
   test("the top bar is opaque: a solid background, no translucency or blur for scrolled content to show through", async () => {
