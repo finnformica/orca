@@ -14,10 +14,10 @@ import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { poll } from "@/lib/poll";
 import { type OrchestratorPrefill, orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom, orchestratorWidthAtom } from "@/lib/atoms";
-import { useNarrow } from "@/lib/viewport";
+import { useCoarse, useNarrow } from "@/lib/viewport";
 import { openOrchestrator } from "@/lib/orchestratorOpen";
 import { sendToOrchestrator } from "@/lib/orchestratorOutbox";
-import { useSwipeToClose } from "@/lib/gestures";
+import { useSwipeToDismiss } from "@/lib/gestures";
 import { useRoute } from "@/lib/route";
 
 // The card's terminal: a modal you open in place (no navigating to the detail page) showing the
@@ -27,7 +27,7 @@ import { useRoute } from "@/lib/route";
 // ChatPanel mounts ONLY while open so its poll/composer aren't running behind a closed dialog.
 export function TerminalDialog({ row, open, onClose }: { row: Row; open: boolean; onClose: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
-  const swipe = useSwipeToClose(() => ref.current, onClose, useNarrow()); // a phone's sheet: swipe its header down
+  const swipe = useSwipeToDismiss("bottom", () => ref.current, onClose, { enabled: useNarrow() }); // a phone's sheet: swipe its header down (the chat scrolls on its own)
   useEffect(() => {
     const d = ref.current;
     if (!d) return;
@@ -287,6 +287,12 @@ export function OrchestratorPanel() {
   }, []);
   const width = clampPanelWidth(savedWidth, vw);
   const panelRef = useRef<HTMLDivElement>(null);
+  // A touch screen: swipe the header right to close it (the edge it comes from). A mouse keeps only
+  // the resize edge. The panel's own class transition slides it the rest of the way, from where the
+  // finger let go, once the inline drag style is cleared.
+  const coarse = useCoarse();
+  const swipe = useSwipeToDismiss("right", () => panelRef.current, () => setOpen(false), { enabled: coarse && !pip, hold: true });
+  useEffect(() => { const el = panelRef.current; if (el) el.style.transition = el.style.transform = ""; }, [open]);
   const onResizeStart = (e: ReactPointerEvent) => {
     if (e.button !== 0) return;
     const el = panelRef.current;
@@ -308,7 +314,7 @@ export function OrchestratorPanel() {
     e.preventDefault();
   };
   const header = (
-    <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3 select-none" data-slot="orchestrator-handle">
+    <div {...swipe} className={cn("flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3 select-none", coarse && !pip && "touch-none")} data-slot="orchestrator-handle">
       <div className="flex min-w-0 items-center gap-2">
         <span className="bg-accent text-foreground inline-flex size-6 shrink-0 items-center justify-center rounded-full"><Bot className="size-3.5" /></span>
         <div className="min-w-0">

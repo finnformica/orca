@@ -372,8 +372,13 @@ the SAME items fragment as the desktop dropdown (`WorkstreamActions`' `Item`/`Su
 context), and only on a tap: a long-press / contextmenu never opens it (it popped while scrolling),
 nor a touch's contextmenu on desktop rows; inputs are 16px, touch targets 44px, Enter on a touch screen
 is a newline. A `BottomSheet` slides up on the sheet spring and down before it closes (reduced motion:
-instant), with a haptic tick. Swipe a sheet's header down to close it (a `BottomSheet`'s body too, from
-the top of its scroll); pull the Agents list down to refresh (`lib/gestures.ts`). It installs as a PWA
+instant), with a haptic tick. **Every drawer and sheet dismisses by a swipe toward the edge it comes
+from** — ONE hook, `useSwipeToDismiss(edge, …)` (`lib/gestures.ts`; decisions pure in `workstream.ts`
+`swipeOffset` / `swipeArm` / `swipeDecision`): its header follows the finger, and its scrolling body
+joins in only when the move is mostly along that axis and the content is at its start. Bottom sheets,
+Add New and the image lightbox (header + body), the terminal (header only: its chat scrolls) swipe down;
+the orchestrator's right-hand panel swipes right on a touch screen only. Pull the Agents list down to
+refresh. It installs as a PWA
 (`web/public/manifest.webmanifest`: round icons plus a full-bleed maskable one, New agent /
 Orchestrator shortcuts as `/?open=…`). `vite build` writes `version.json` and `sw.js` (from
 `web/sw.template.js`: this build's shell + hashed assets precached, `offline.html` with neither, and
