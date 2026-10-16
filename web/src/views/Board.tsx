@@ -10,13 +10,14 @@ import {
 } from "../store";
 import { BULK_GROUPS, BULK_IRREVERSIBLE, BULK_LABELS, bulkActions, bulkCopyText, draftInstance, type BulkAction } from "../workstream";
 import { navigate } from "@/lib/route";
-import { Bot, Check, CircleStop, Clock, Copy, ExternalLink, Eye, GitMerge, Loader2, MoreHorizontal, Play, SquareTerminal, X } from "lucide-react";
+import { Bot, Check, CircleStop, Copy, ExternalLink, Eye, GitMerge, Loader2, MoreHorizontal, Play, SquareTerminal, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ChatComposer } from "@/components/ChatComposer";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
+import { CiChip } from "./PrPanels";
 import { OrchStatusNote, Skeleton, UpkeepNote } from "@/components/console";
 import { PreviewControl } from "./PreviewControl";
 import { TerminalDialog } from "@/components/Terminal";
@@ -325,9 +326,7 @@ export function ConditionBadges({ row }: { row: Row }) {
       {row.reviewStatus === "changes_requested" && <Badge variant="destructive">Changes requested</Badge>}
       {row.mergeable === "CONFLICTING" && <Badge variant="destructive">Conflicts</Badge>}
       {row.mergeable === "UNKNOWN" && <Badge variant="outline">Checking…</Badge>}
-      {row.ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
-      {row.ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
-      {row.ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
+      <CiChip repo={row.repo} prNumber={row.prNumber} ciStatus={row.ciStatus} />
     </>
   );
 }
