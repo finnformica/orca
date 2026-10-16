@@ -108,7 +108,11 @@ const tailscaleSelf: SelfUser = async () => {
 
 // ---- sessions ----
 
-type PtyData = { kind: "pty"; who: string; instance: string; cols: number; rows: number; idleMs: number; enabled: () => Promise<boolean> };
+type PtyData = {
+  kind: "pty"; who: string; instance: string; cols: number; rows: number; idleMs: number; enabled: () => Promise<boolean>;
+  /** Messages that arrived while `open` still checked the flag — replayed once the shell exists. */
+  early: (string | Buffer)[];
+};
 type RelayData = { kind: "relay"; who: string; instance: string; target: string };
 export type TerminalData = PtyData | RelayData;
 type Session = { proc: Bun.Subprocess; idle?: ReturnType<typeof setTimeout>; startedAt: number; ended?: string };
@@ -161,6 +165,7 @@ export async function upgrade(req: Request, server: Server<TerminalData>, deps: 
     cols: dims(url.searchParams.get("cols"), 80, 500), rows: dims(url.searchParams.get("rows"), 24, 200),
     // Read again at open: the config may change between the check below and the socket opening.
     enabled: async () => terminalEnabled(await deps.config(), instance),
+    early: [],
   };
   return server.upgrade(req, { data }) ? undefined : Response.json({ error: "upgrade failed" }, { status: 400 });
 }
@@ -214,6 +219,7 @@ async function openPty(ws: ServerWebSocket<PtyData>): Promise<void> {
   sessions.set(ws, s);
   touch(ws, s, d.idleMs);
   log("start", d, `pid=${proc.pid}`);
+  for (const m of d.early.splice(0)) websocket.message!(ws as ServerWebSocket<TerminalData>, m);
   void proc.exited.then((code) => {
     if (!sessions.has(ws)) return;
     end(ws, "exited");
@@ -249,8 +255,9 @@ export const websocket: Bun.WebSocketHandler<TerminalData> = {
       if (relay.up.readyState === WebSocket.OPEN) relay.up.send(m); else relay.queue.push(m);
       return;
     }
+    if (ws.data.kind !== "pty") return;
     const s = sessions.get(ws);
-    if (!s || ws.data.kind !== "pty") return;
+    if (!s) { if (ws.data.early.length < 100) ws.data.early.push(raw); return; }
     let msg: ClientMessage;
     try { msg = JSON.parse(typeof raw === "string" ? raw : raw.toString()) as ClientMessage; } catch { return; }
     if (msg.t === "i" && typeof msg.d === "string") {
