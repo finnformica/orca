@@ -32,6 +32,7 @@ import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
 import { repoLabel, summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
+import { ServerMenu, ServerOffline, useServerProblem } from "@/components/ServerMenu";
 import { NotificationBell } from "@/components/Notifications";
 import { notifyLocal } from "@/lib/notificationStore";
 import { Button } from "@/components/ui/button";
@@ -62,6 +63,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
   const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
   const [updateAvailable, setUpdateAvailable] = useState(false); // the banner, when shown, is topmost and clears the notch itself
   const offline = useConfigFailed();
+  const serverProblem = useServerProblem(offline); // another server chosen, and it is offline or refuses us
   useShellFallbacks();
   const activity = useOrchestratorActivity(); // the ONE subscriber feeding every launcher's indicator
   const route = useRoute();
@@ -90,6 +92,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
           )}
         >
           <button type="button" data-slot="topbar-mark" onClick={() => navigate("/")} aria-label="Orca — go to overview" className="shrink-0 md:hidden"><RoundMark /></button>
+          <ServerMenu />
           <RepoSwitcher />
           <nav aria-label="Breadcrumb" className="text-muted-foreground flex min-w-0 items-center gap-2 text-sm">{crumbs}</nav>
           <span className="contents max-md:ml-auto max-md:flex"><BridgeLabel /><StaleIndicator /></span>
@@ -102,7 +105,10 @@ export function Shell({ crumbs, sidebarActions, children }: {
           </div>
         </header>
         <DatabaseBanner />
-        <main className="w-full flex-1 px-4 py-6 md:px-6 max-md:min-w-0 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pb-[calc(5.5rem+env(safe-area-inset-bottom))]">{offline ? <OfflineScreen /> : children}</main>
+        <main className="w-full flex-1 px-4 py-6 md:px-6 max-md:min-w-0 max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pb-[calc(5.5rem+env(safe-area-inset-bottom))]">
+          {serverProblem && <ServerOffline configFailed={offline} />}
+          {offline ? (serverProblem ? null : <OfflineScreen />) : children}
+        </main>
       </div>
       <BottomBar activity={activity} />
       {/* The quick-ask pill, bottom centre of every page but an agent's Chat tab (desktop; the phone's bottom bar has the orchestrator). */}

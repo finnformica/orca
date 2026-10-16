@@ -7,6 +7,7 @@
 // means the page itself is wedged: it falls back to a hard reload.
 import { useSyncExternalStore } from "react";
 import { databaseDownSince } from "../workstream";
+import { apiFetch } from "./server";
 
 export const STUCK_MS = 3_000;
 export const DEADLINE_MS = 15_000;
@@ -14,11 +15,12 @@ export const DEADLINE_MS = 15_000;
 type InFlight = { ctl: AbortController; at: number };
 const inflight = new Set<InFlight>();
 
-/** `fetch` for a GET, tracked so a refresh can abort it once it is stuck. */
+/** `fetch` for a GET, tracked so a refresh can abort it once it is stuck. An `/api/…` path goes to
+ *  the chosen server (lib/server.ts `apiFetch`; the home origin unless the switcher says otherwise). */
 export function trackedFetch(input: string, init?: RequestInit): Promise<Response> {
   const entry: InFlight = { ctl: new AbortController(), at: Date.now() };
   inflight.add(entry);
-  return fetch(input, { ...init, signal: entry.ctl.signal })
+  return apiFetch(input, { ...init, signal: entry.ctl.signal })
     .then((r) => { noteDatabase(r.headers?.get("x-orca-database")); return r; })
     .finally(() => inflight.delete(entry));
 }

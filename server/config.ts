@@ -4,6 +4,7 @@ import { readJsonSync, statePath, writeJsonSync } from "./state";
 import { AGENT_PROVIDERS, type AgentProvider } from "../shared/agent";
 import type { AgentProxy } from "../shared/cavemanTrial";
 import { MERGE_WHEN_GREEN, type MergePolicy } from "../web/src/workstream";
+import { serverSwitcherProblems, type ServerSwitcherConfig } from "./servers";
 
 /** Preview service: `{port}` = this service's assigned port; `{svc:name}` = another's. */
 export type PreviewService = {
@@ -196,6 +197,9 @@ export type OrcaConfig = {
    *  account's GitHub profile (`gh api user`) — its name, and its public email else the
    *  `<id>+<login>@users.noreply.github.com` address. */
   githubAccounts?: Record<string, { name?: string; email?: string }>;
+  /** The server switcher (server/servers.ts): other Orca servers a browser may switch to, and the
+   *  CORS + Tailscale whois gate for their pages' calls. Off unless `enabled` is true. */
+  serverSwitcher?: ServerSwitcherConfig;
 };
 
 /** The model a repo's Claude runs use: its own pin, else the global default, else the CLI's. Pure. */
@@ -365,6 +369,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
   if (d.agentCpuWeight !== undefined && (typeof d.agentCpuWeight !== "number" || !(d.agentCpuWeight > 0))) {
     errors.push("agentCpuWeight must be a positive number (systemd CPUWeight, 1-10000)");
   }
+  errors.push(...serverSwitcherProblems(d.serverSwitcher));
   if (errors.length) return { errors };
   return {
     errors: [],
@@ -383,6 +388,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       orchestratorOn: d.orchestratorOn as string | undefined,
       agentCpuWeight: d.agentCpuWeight as number | undefined,
       githubAccounts: d.githubAccounts as OrcaConfig["githubAccounts"],
+      serverSwitcher: d.serverSwitcher as ServerSwitcherConfig | undefined,
     },
   };
 }
@@ -447,6 +453,7 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
       ...(file.orchestratorOn === undefined ? {} : { orchestratorOn: file.orchestratorOn }),
       ...(file.agentCpuWeight === undefined ? {} : { agentCpuWeight: file.agentCpuWeight }),
       ...(file.githubAccounts === undefined ? {} : { githubAccounts: file.githubAccounts }),
+      ...(file.serverSwitcher === undefined ? {} : { serverSwitcher: file.serverSwitcher as unknown as db.Fields }),
     },
   });
 }
@@ -516,6 +523,7 @@ async function loadFromDb(): Promise<OrcaConfig> {
     orchestratorOn: app.orchestratorOn as string | undefined,
     agentCpuWeight: app.agentCpuWeight as number | undefined,
     githubAccounts: app.githubAccounts as OrcaConfig["githubAccounts"],
+    serverSwitcher: app.serverSwitcher as ServerSwitcherConfig | undefined,
   };
   cached = config;
   cachedAt = Date.now();
@@ -553,6 +561,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.orchestratorOn === undefined ? {} : { orchestratorOn: config.orchestratorOn }),
       ...(config.agentCpuWeight === undefined ? {} : { agentCpuWeight: config.agentCpuWeight }),
       ...(config.githubAccounts === undefined ? {} : { githubAccounts: config.githubAccounts }),
+      ...(config.serverSwitcher === undefined ? {} : { serverSwitcher: config.serverSwitcher as unknown as db.Fields }),
     },
   });
   invalidateConfig();

@@ -8,7 +8,7 @@
 // reopens and every chat catches up from its cursor.
 import type { AgentStep } from "../../../shared/agent";
 import type { Notification } from "../../../shared/notifications";
-import { api } from "../api";
+import { apiUrl, onBaseChange } from "./server";
 
 export type TurnHandlers = {
   step: (runId: string, steps: AgentStep[]) => void;
@@ -46,7 +46,7 @@ export function syncEvents(): void {
 
 function open(): void {
   clearTimeout(reopen);
-  const s = new EventSource(api.eventsUrl());
+  const s = new EventSource(apiUrl("/api/events"));
   source = s;
   s.addEventListener("ready", () => { for (const sub of [...subs]) sub.resync(); });
   // A network drop is retried by the browser itself (and its `ready` catches up), but an HTTP error —
@@ -73,6 +73,8 @@ function open(): void {
 }
 
 if (typeof document !== "undefined") document.addEventListener("visibilitychange", syncEvents);
+// Another server chosen (lib/server.ts): the stream on the old base is closed and opened on the new.
+onBaseChange(() => { clearTimeout(reopen); source?.close(); source = null; syncEvents(); });
 
 /** The notification centre's live feed: every new notification, from either instance. Holding this
  *  keeps the tab's one stream open while the tab is visible (a hidden tab still gives it back, and
