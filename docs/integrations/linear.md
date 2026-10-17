@@ -124,6 +124,7 @@ A bad key does not start the adapter. The status of the `integration` row shows 
 | `pollSeconds` | 60 | The time between two polls. The minimum is 10. |
 | `userId` | the key's owner | The Linear user whose issues and mentions come in. |
 | `lookbackMinutes` | 0 | On the first start only, read the changes of this many minutes before now. |
+| `machineEventsOnNotify` | false | Let events through on a `notify` link. They go to subscriptions only, never to the orchestrator or a workstream ([ADAPTERS.md](ADAPTERS.md) section 7). |
 
 ## 7. Limits
 
