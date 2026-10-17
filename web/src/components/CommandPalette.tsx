@@ -231,6 +231,8 @@ export function Shortcuts() {
     let goUntil = 0; // a G arms a page chord until then
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing) return;
+      // A key typed in a terminal session is the shell's: Ctrl+K kills a line, Esc leaves vi's insert.
+      if (e.target instanceof Element && e.target.closest('[data-slot="terminal-screen"]')) return;
       if (e.key === "Shift" || e.key === "Meta" || e.key === "Control" || e.key === "Alt") return; // a bare modifier doesn't end a chord
       const pending = Date.now() < goUntil;
       goUntil = 0; // whatever this key is, it ends the chord

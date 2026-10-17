@@ -14,7 +14,8 @@ import {
   mergeSettled, newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, rowTitle, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { MergeMark } from "./workstream";
-import type { BridgeInfo, ReviewDigest } from "./workstream";
+import type { BridgeInfo, ReviewDigest, TerminalTargetContext } from "./workstream";
+import { apiBase } from "./lib/server";
 import type { CheckRow, OrchStatus, PrRef, UpkeepRecord, WorkstreamRef } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
@@ -39,7 +40,7 @@ const notify = () => { version++; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.delete(l); };
 
 // ---- config ----
-let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; bridge?: BridgeInfo } | null = null;
+let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; terminal?: Record<string, boolean>; instanceUrls?: Record<string, string>; bridge?: BridgeInfo } | null = null;
 export const configReady = api.config()
   .then(async (c) => { cfg = c; notify(); await migrateLocalEnrichment(); void refresh(); })
   .catch(() => { cfg = { repos: EMPTY_REPOS, staleHours: 24, agentProviders: DEFAULT_AGENT_PROVIDERS }; configFailed = true; notify(); });
@@ -107,6 +108,22 @@ export async function setInstanceRate(instance: string, hourlyUsd: number | null
   const next = { ...(cfg.instanceHourlyUsd ?? {}) };
   if (hourlyUsd === null) delete next[instance]; else next[instance] = hourlyUsd;
   cfg = { ...cfg, instanceHourlyUsd: next };
+  notify();
+}
+/** Which machines serve the web terminal (`terminal` in the app config) — Settings' Terminal card and
+ *  the instance cards' Terminal action. The bridge enforces it; this only shows it. */
+const NO_TERMINALS: Record<string, boolean> = {};
+export const useInstanceTerminals = (): Record<string, boolean> => useSyncExternalStore(subscribe, () => cfg?.terminal ?? NO_TERMINALS);
+/** Where each machine's terminal is, for `terminalTarget`: the browser connects to each one directly. */
+export const terminalContext = (): TerminalTargetContext =>
+  ({ page: location, apiBase: apiBase(), apiPort: apiPort(), here: cfg?.instance, urls: cfg?.instanceUrls ?? {} });
+/** Turn one machine's web terminal on or off on the bridge, then in the config mirror. */
+export async function setInstanceTerminal(instance: string, on: boolean): Promise<void> {
+  await api.setInstanceTerminal(instance, on);
+  if (!cfg) return;
+  const next = { ...(cfg.terminal ?? {}) };
+  if (on) next[instance] = true; else delete next[instance];
+  cfg = { ...cfg, terminal: next };
   notify();
 }
 /** This bridge's instance name, and every instance a workstream can be placed on, in display order
