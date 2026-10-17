@@ -9,6 +9,7 @@
 // (Previews, Repos, Usage, Find, the instance switcher) is reachable from Settings on a phone — see
 // MobileNav in views/Pages.tsx.
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { useAtom, useSetAtom } from "jotai";
 import {
   Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderGit2, FolderSync, Gauge, LayoutGrid, Loader2,
@@ -333,8 +334,12 @@ function RepoSwitcher() {
  *  makes the rest of the page inert — a select rendered into <body> would be unclickable). Sending
  *  closes it and raises a "Sent" side notification (the one toast surface — Notifications.tsx) with
  *  Undo and Open, instead of a bottom-centre toast of its own. `C` (and the palette's
- *  New agent) opens it from anywhere outside a text field — `addNewOpenAtom`. The typed draft
- *  persists either way (the composer's persistKey). */
+ *  New agent, and the phone's bottom-bar New agent button) opens it from anywhere outside a text
+ *  field — `addNewOpenAtom`. The typed draft persists either way (the composer's persistKey).
+ *  The trigger button is rendered where `sidebarActions` places it (the sidebar, desktop only), but
+ *  the <dialog> itself is portaled to `document.body`: a descendant of an ancestor with
+ *  `display: none` (the sidebar's `max-md:hidden` <aside>) never promotes to the top layer, so
+ *  `showModal()` opened it with nothing visible on a phone even though `.open` read true. */
 export function AddNew({ children, collapsed = false }: { children: (onSent: (draft: OptimisticDraft) => void) => ReactNode; collapsed?: boolean }) {
   const [open, setOpen] = useAtom(addNewOpenAtom);
   const [dialog, setDialog] = useState<HTMLDialogElement | null>(null);
@@ -366,23 +371,26 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
           <Shortcut id="new" className={cn("ml-auto max-md:hidden", collapsed && "md:hidden")} />
         </Button>
       </Tip>
-      <dialog
-        ref={setDialog} data-slot="add-new-dialog" aria-label="New agent"
-        onClose={() => setOpen(false)} onCancel={() => setOpen(false)}
-        onClick={(e) => { if (e.target === dialog) setOpen(false); }} // backdrop click
-        className="bg-card text-foreground m-auto mt-[12vh] w-[92vw] max-w-2xl rounded-lg border p-0 shadow-modal backdrop:bg-black/50 max-md:sheet"
-      >
-        <PortalContainer.Provider value={dialog ?? undefined}>
-          <header {...swipe} className="flex h-12 items-center justify-between border-b px-4 max-md:touch-none">
-            <h2 className="text-sm font-medium">New agent</h2>
-            <Button size="icon" variant="ghost" className="size-7" onClick={() => setOpen(false)} aria-label="Close"><X className="size-4" /></Button>
-          </header>
-          <div className="space-y-3 p-4 [&_textarea]:min-h-32">
-            <p className="text-muted-foreground text-xs">Describe a feature, pick a repo and a model — Auto lets the orchestrator write the brief and choose.</p>
-            {open && children(onSent)}
-          </div>
-        </PortalContainer.Provider>
-      </dialog>
+      {createPortal(
+        <dialog
+          ref={setDialog} data-slot="add-new-dialog" aria-label="New agent"
+          onClose={() => setOpen(false)} onCancel={() => setOpen(false)}
+          onClick={(e) => { if (e.target === dialog) setOpen(false); }} // backdrop click
+          className="bg-card text-foreground m-auto mt-[12vh] w-[92vw] max-w-2xl rounded-lg border p-0 shadow-modal backdrop:bg-black/50 max-md:sheet"
+        >
+          <PortalContainer.Provider value={dialog ?? undefined}>
+            <header {...swipe} className="flex h-12 items-center justify-between border-b px-4 max-md:touch-none">
+              <h2 className="text-sm font-medium">New agent</h2>
+              <Button size="icon" variant="ghost" className="size-7" onClick={() => setOpen(false)} aria-label="Close"><X className="size-4" /></Button>
+            </header>
+            <div className="space-y-3 p-4 [&_textarea]:min-h-32">
+              <p className="text-muted-foreground text-xs">Describe a feature, pick a repo and a model — Auto lets the orchestrator write the brief and choose.</p>
+              {open && children(onSent)}
+            </div>
+          </PortalContainer.Provider>
+        </dialog>,
+        document.body,
+      )}
     </>
   );
 }
