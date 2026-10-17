@@ -1614,6 +1614,10 @@ const ORCA_COMMANDS = [
   "                                  (the one whose account owns it, else the default), add it to the config with its",
   "                                  default branch and no previews. Do this when the user names work on a repo the",
   "                                  board doesn't have, then spawn on it",
+  "  orca handoff create --to <server> --title \"…\" [--message \"…\"] [--file <path|attachment id>]… [--chat <id>]…",
+  "                                  pack context (docs, chat transcripts, files) for ANOTHER Orca server (its",
+  "                                  Tailscale hostname). It only prepares the pack: the user sends it with a click",
+  "                                  on the Handoffs page. A secret or a file over 10 MB blocks it. `orca handoff list`",
   "  orca notes                      print your notes",
   "  orca notes set \"<the whole new text>\"",
 ].join("\n");
