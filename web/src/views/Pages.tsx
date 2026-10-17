@@ -19,7 +19,6 @@ import { browserNotifyAtom, densityAtom, instanceScopeAtom, notifyDndAtom, repoF
 import { KIND_META, NOTIFICATION_KINDS, browserNotifyChecked, browserNotifyNote, browserPermission } from "../../../shared/notifications";
 import { navigate } from "@/lib/route";
 import { useTheme, type Theme } from "@/lib/theme";
-import { setSwitcher, useSwitcherOn } from "@/lib/server";
 import { instanceChoices, setInstanceRate, setInstanceTerminal, staleHours, terminalContext, thisInstance, useAgentProviders, useInstanceRates, useInstanceTerminals, useRepos, useWorkstreams } from "../store";
 import { terminalMachines, useOpenTerminal } from "@/components/InstanceTerminal";
 import { ago, repoSummaries, terminalBlocked } from "../workstream";
@@ -111,7 +110,6 @@ export function Settings() {
         </Setting>
       </VCard>
       <NotificationSettings />
-      <ServerSettings />
       <MachineCostSettings />
       <InstancesSettings />
       <VCard slot="settings-config" title="Configuration" aside={<span className="text-muted-foreground text-xs">read-only · orca.config.ts</span>}>
@@ -164,19 +162,6 @@ function MobileNav() {
           </button>
         ))}
       </nav>
-    </VCard>
-  );
-}
-
-/** Settings → Server switcher (lib/server.ts): off by default, per browser. Off, the app calls only
- *  the server that served it; on, the top bar gets the server menu. */
-function ServerSettings() {
-  const on = useSwitcherOn();
-  return (
-    <VCard slot="settings-servers" title="Servers" bodyClass="divide-y">
-      <Setting label="Server switcher" hint="Show a server menu in the top bar, to use other Orca servers from this browser." htmlFor="setting-server-switcher">
-        <Switch id="setting-server-switcher" checked={on} onCheckedChange={setSwitcher} />
-      </Setting>
     </VCard>
   );
 }

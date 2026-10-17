@@ -600,13 +600,47 @@ The server switcher lets one browser use several Orca servers. Each server is fu
 its own database and its own config. The servers do not talk to each other. Only your browser talks
 to each server. The web app changes the server that it calls.
 
-The feature is off by default. When it is off, Orca does not change its behaviour.
+The feature is on by default. To turn it off on a server, set `serverSwitcher.enabled` to `false`.
+
+### The server menu
+
+The server menu is in the top bar, before the repo menu. It looks like the repo menu.
+
+- Each row shows a status dot and the server name. A check mark shows the current server.
+- Green is online. Red is offline, or the server refused this browser. Grey means that the check
+  did not finish yet.
+- Click a server to switch the whole app to it. You cannot click an offline server.
+- **Add server…** asks for an address, for example `orca-personal-box:8787`. Orca asks the server
+  at once. When it answers, Orca switches to it under its own name.
+- When the Tailscale API is not configured, a hint names `TS_OAUTH_CLIENT_ID` and
+  `TS_OAUTH_CLIENT_SECRET`.
+
+The menu shows when Orca knows more than one server. It also shows when the Tailscale API is not
+configured, so that **Add server…** is available.
+
+### Discovery order
+
+1. The Tailscale API, when the server that served the page has an OAuth client. Its list is the
+   whole list.
+2. Else, Orca merges these lists, in this order:
+   - the server that served the page, and its config list (`serverSwitcher.servers`),
+   - each server that this browser opened, switched to or added (local storage),
+   - the list of each server that answers this browser.
+
+Each server shows once. When a server answers, Orca uses the name that the server gives.
+
+The browser checks the health of each server itself. Each check has a timeout of 2.5 seconds. A slow
+server does not stop the menu. The boxes cannot see each other, but your device can see each box.
 
 ### How it works
 
 - `GET /api/servers` lists the Orca servers. The source is the Tailscale API, or the config list.
-- A page from one listed server can call the `/api` and `/api/events` of another listed server
-  (CORS). Other origins get no CORS headers.
+  The field `tailscaleApi` tells the browser if the API is configured.
+- A page from another Orca server can call `/api` and `/api/events` (CORS). Orca accepts the
+  origin of a listed server. Orca also accepts an origin on this tailnet on the Orca port: a
+  MagicDNS name of this tailnet, a MagicDNS short name or a `100.64.0.0/10` address. An `https`
+  origin on these hosts is also accepted. Other origins get no CORS headers. A preview on another
+  port gets no CORS headers.
 - For each such cross-origin call, Orca runs `tailscale whois --json` on the caller address.
   Orca accepts only a user device. Orca refuses a tagged node, so a server cannot call another
   server. A refusal is a `403` with a JSON `error`.
@@ -638,8 +672,8 @@ the boxes also removes the other box from the local netmap.
    ```
 
 6. Restart the service: `sudo systemctl restart orca`.
-7. In Settings, turn on **Server switcher**. The web app calls `POST /api/config/server-switcher`
-   with `{"enabled": true}`.
+
+Steps 4 to 6 are optional. Without them, use **Add server…** in the server menu.
 
 ### The config block
 
@@ -647,7 +681,7 @@ The `serverSwitcher` block of the config document ([§6](#6-the-config-document)
 
 | Field | Default | Meaning |
 | --- | --- | --- |
-| `enabled` | `false` | Turns the feature on. When it is `false`, `/api/servers` lists only this server, and no CORS or `whois` runs. |
+| `enabled` | `true` | When it is `false`, `/api/servers` lists only this server, and no CORS or `whois` runs. `POST /api/config/server-switcher` with `{"enabled": false}` sets it. |
 | `tag` | `tag:orca` | The Tailscale tag of an Orca server. |
 | `port` | `8787` | The port of each Orca server. Orca makes each URL as `http://<MagicDNS name>:<port>`. |
 | `servers` | none | A list of `{ "name", "url" }`. Orca uses it when the OAuth client is not set or the API call fails. |

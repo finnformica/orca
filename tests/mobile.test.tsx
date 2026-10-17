@@ -115,6 +115,20 @@ describe("installable app (PWA files)", () => {
     expect(touch).toContain("currentColor");
   });
 
+  // Finn: the repos selector opened as a bottom sheet on a phone, and the top bar vanished while it
+  // was open. Menus and selects now anchor under their trigger (only BottomSheet.tsx is a sheet), and
+  // Radix's scroll lock may not turn the body into a scroll container that takes the sticky bar away.
+  test("phone CSS: menus and selects anchor like desktop, and a scroll lock keeps the top bar in place", async () => {
+    const css = await read("src/styles.css").text();
+    const i = css.indexOf("@media (max-width: 767px) {");
+    let depth = 0, j = css.indexOf("{", i);
+    for (; j < css.length; j++) { if (css[j] === "{") depth++; else if (css[j] === "}" && --depth === 0) break; }
+    const phone = css.slice(i, j);
+    expect(phone).not.toMatch(/inset:\s*auto 0 0 0/); // nothing pins the popper wrapper to the foot
+    expect(phone).not.toMatch(/border-radius:\s*12px 12px 0 0/);
+    expect(phone).toMatch(/html body\[data-scroll-locked\]\s*\{\s*overflow-x:\s*clip !important;\s*overflow-y:\s*visible !important;/);
+  });
+
   test("index.html: manifest, theme-color per scheme, Apple tags, safe-area viewport", async () => {
     const html = await read("index.html").text();
     expect(html).toContain('<link rel="manifest" href="/manifest.webmanifest" />');

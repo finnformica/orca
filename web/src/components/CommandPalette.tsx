@@ -16,8 +16,8 @@ import { Kbd, MenuShortcut, Shortcut } from "@/components/ui/kbd";
 import { instanceChoices, testLocally, useRepos, useWorkstreams, type Row } from "../store";
 import { detailPath } from "@/views/Agents";
 import { useOrchestrator } from "@/components/Terminal";
-import { addServerOpenAtom, useServerList } from "@/components/ServerMenu";
-import { currentServer, switchServer, useSwitcherOn } from "@/lib/server";
+import { addServerOpenAtom, useServers } from "@/components/ServerMenu";
+import { currentServer, switchServer } from "@/lib/server";
 import { Input } from "@/components/ui/input";
 
 type Command = PaletteItem & { run: () => void; shortcut?: ShortcutId };
@@ -49,8 +49,7 @@ function useCommands(): Command[] {
   const setRepo = useSetAtom(repoFilterAtom);
   const setScope = useSetAtom(instanceScopeAtom);
   const { ask } = useOrchestrator();
-  const serversOn = useSwitcherOn();
-  const servers = useServerList();
+  const { servers, visible: serversShown } = useServers();
   const setAddServer = useSetAtom(addServerOpenAtom);
   const out: Command[] = [];
   for (const row of rows) {
@@ -87,14 +86,14 @@ function useCommands(): Command[] {
     action("instance:all", "Switch instance: All instances", () => setScope("all"));
     for (const i of instances) action(`instance:${i}`, `Switch instance: ${i}`, () => setScope(i));
   }
-  // The server switcher (Settings): every other server, and Add server by URL.
-  if (serversOn) {
+  // The server switcher (whenever the top bar shows it): every other server that answers, and Add server.
+  if (serversShown) {
     const here = currentServer(servers);
     for (const s of servers) {
-      if (s.url === here.url) continue;
+      if (s.url === here.url || s.health === "offline" || s.health === "refused") continue;
       action(`server:${s.url}`, `Switch server: ${s.name}`, () => switchServer(s.self ? null : s), undefined, `server ${s.url}`);
     }
-    action("server:add", "Add server by URL", () => setAddServer(true), undefined, "server switch");
+    action("server:add", "Add server", () => setAddServer(true), undefined, "server switch url");
   }
   return out;
 }

@@ -398,8 +398,11 @@ at desktop widths): a bottom bar (Menu · Agents · New agent · Orchestrator) r
 box; Agents rows stack with every action in the one ⋯ and the chips + sort in a Filters bottom sheet;
 the orchestrator, the terminal and Add New are full-screen `sheet`s sized to the visual viewport
 (`--vvh`, so the composer clears the keyboard; no resize / PiP; the quick-ask pill is hidden — the
-bottom bar's Orchestrator carries its dot); menus and selects open as bottom
-sheets — a workstream's ⋯ (Agents row, agent page header) opens a real `BottomSheet` of large icon rows,
+bottom bar's Orchestrator carries its dot); small menus and selects (the repo switcher, the server
+menu, the profile menu, the model picker…) anchor under their trigger as on desktop, and the top bar
+stays put while one is open (Finn found a bottom sheet for them jarring; `styles.css` keeps Radix's
+scroll lock from making the body a scroll container, which scrolled the sticky bar away). Only the
+large menus are a `BottomSheet`: the Agents Filters sheet, and a workstream's ⋯ (Agents row, agent page header) opens a real `BottomSheet` of large icon rows,
 the SAME items fragment as the desktop dropdown (`WorkstreamActions`' `Item`/`Sub` switch on a
 context), and only on a tap: a long-press / contextmenu never opens it (it popped while scrolling),
 nor a touch's contextmenu on desktop rows; inputs are 16px, touch targets 44px, Enter on a touch screen

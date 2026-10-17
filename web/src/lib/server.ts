@@ -1,9 +1,14 @@
-// The server switcher (Settings → Server switcher): several fully separate Orca servers — a work box,
+// The server switcher (the top bar's server menu): several fully separate Orca servers — a work box,
 // a personal one — that never talk to each other; only this browser talks to each. The app is
 // always served by its HOME server (the origin that loaded the page); every API call and the event
-// stream go to ONE base URL, which is empty (same origin) unless the switcher is on and another
-// server is chosen. Off, nothing here changes a request: the base is "" and the app calls only its
-// own origin, exactly as before.
+// stream go to ONE base URL, which is empty (same origin) unless another server is chosen. With
+// nothing chosen, nothing here changes a request.
+//
+// The list (`mergeServers`): the home server's GET /api/servers first. When that server has the
+// Tailscale API configured, its list is the whole list. Else the browser adds every server it has
+// opened, switched to or added (`KNOWN_KEY`), and the lists of the servers that answer it. The
+// health of each server is checked FROM THIS BROWSER (`probeServer`, a short timeout), because the
+// boxes cannot see each other and the browser is what has to reach them.
 //
 // A change of server is stored, the event stream is closed and reopened on the new base, and the
 // page reloads — on the same (home) origin, so the installed iPhone app keeps its shell — which
@@ -14,19 +19,29 @@ import { useSyncExternalStore } from "react";
 import { persistedKey, readPersisted, writePersisted } from "./persisted";
 
 export type ServerRef = { name: string; url: string };
-/** One row of the server menu: GET /api/servers' entries plus the ones added by hand. */
-export type ServerEntry = ServerRef & { online?: boolean; self?: boolean; manual?: boolean };
-/** GET /api/servers on the home server (the server workstream's contract). */
-export type ServersAnswer = { self: ServerRef; servers: { name: string; url: string; online: boolean; self: boolean }[] };
+/** What this browser found when it asked a server (`probeServer`): it answered, it answered 403
+ *  (whois refused this device, or no CORS), or no answer inside the timeout. */
+export type ServerHealth = "checking" | "online" | "offline" | "refused";
+/** One row of the server menu. */
+export type ServerEntry = ServerRef & { health: ServerHealth; self?: boolean };
+/** GET /api/servers (server/servers.ts). `tailscaleApi` and `enabled` are absent on an older server. */
+export type ServersAnswer = {
+  self: ServerRef; servers: { name: string; url: string; online: boolean; self: boolean }[];
+  enabled?: boolean; source?: string; tailscaleApi?: boolean;
+};
+export type Probe = { health: "online"; answer: ServersAnswer } | { health: "offline" | "refused" };
 
-export const SWITCHER_KEY = persistedKey("serverSwitcher");
-export const CHOICE_KEY = persistedKey("server");
-export const MANUAL_KEY = persistedKey("servers.manual");
+/** A new key: a choice stored under the old Settings switch (off by default) is never applied now. */
+export const CHOICE_KEY = persistedKey("server.choice");
+/** Every server this browser opened, switched to or added. */
+export const KNOWN_KEY = persistedKey("servers.known");
+/** How long a health check waits. An offline tailnet peer never refuses; it is silent. */
+export const PROBE_TIMEOUT_MS = 2_500;
 
-const isBool = (v: unknown): v is boolean => typeof v === "boolean";
 const isRef = (v: unknown): v is ServerRef =>
   !!v && typeof v === "object" && typeof (v as ServerRef).name === "string" && typeof (v as ServerRef).url === "string";
 const isRefs = (v: unknown): v is ServerRef[] => Array.isArray(v) && v.every(isRef);
+const isAnswer = (v: unknown): v is ServersAnswer => !!v && typeof v === "object" && isRef((v as ServersAnswer).self) && Array.isArray((v as ServersAnswer).servers);
 
 /** A server URL as an origin (`http://host:port`, no path or trailing slash), or null if it isn't
  *  an http(s) URL. A bare `host:port` is read as http. */
@@ -39,14 +54,20 @@ export function serverOrigin(raw: string): string | null {
   } catch { return null; }
 }
 
+/** The name of a server that has not answered yet: its host's first label, or the whole host for an
+ *  IP address (the first label of 100.101.1.2 is "100"). The server's own name replaces it once it
+ *  answers. Pure. */
+export function defaultServerName(origin: string): string {
+  const host = new URL(origin).hostname;
+  return /^[\d.]+$|:/.test(host) ? host : host.split(".")[0]!;
+}
+
 export const homeOrigin = () => (typeof location === "undefined" ? "" : location.origin);
-export const switcherOn = (): boolean => readPersisted(SWITCHER_KEY, false, isBool);
 const storedChoice = (): ServerRef | null => readPersisted<ServerRef | null>(CHOICE_KEY, null, (v): v is ServerRef | null => v === null || isRef(v));
 
-/** The server the app talks to, or null for the home server (the switcher off, nothing chosen, or
- *  the home server itself chosen). */
+/** The server the app talks to, or null for the home server (nothing chosen, or the home server
+ *  itself chosen). */
 export function chosenServer(): ServerRef | null {
-  if (!switcherOn()) return null;
   const c = storedChoice();
   const origin = c && serverOrigin(c.url);
   return c && origin && origin !== homeOrigin() ? { name: c.name, url: origin } : null;
@@ -100,85 +121,107 @@ let reloader = (): void => { window.location.reload(); };
 /** Tests: replace the page reload. */
 export function _setReloader(fn: () => void): void { reloader = fn; }
 
-/** Talk to `server` from now on (null: the home server): stored, the stream moved, the page
- *  reloaded so every store loads again from there. */
+/** Talk to `server` from now on (null: the home server): stored, remembered, the stream moved, the
+ *  page reloaded so every store loads again from there. */
 export function switchServer(server: ServerRef | null): void {
   const origin = server && serverOrigin(server.url);
   const next = origin && origin !== homeOrigin() ? { name: server.name, url: origin } : null;
+  if (next) rememberServer(next);
   writePersisted(CHOICE_KEY, next);
   setBase(chosenServer()?.url ?? "");
   reloader();
 }
 
-/** Settings' switch. Off while on another server goes back home (reloads). */
-export function setSwitcher(on: boolean): void {
-  writePersisted(SWITCHER_KEY, on);
-  switcherSubs.forEach((f) => f());
-  if (setBase(chosenServer()?.url ?? "")) reloader();
-}
-const switcherSubs = new Set<() => void>();
-export const useSwitcherOn = (): boolean =>
-  useSyncExternalStore((cb) => { switcherSubs.add(cb); return () => { switcherSubs.delete(cb); }; }, switcherOn);
-
 // ---- the list ----
-export const manualServers = (): ServerRef[] => readPersisted(MANUAL_KEY, [], isRefs);
-/** Add a server by URL (the fallback when the home server's list lacks it). Returns the entry, or
- *  null for a URL that isn't http(s). The name defaults to the host's first label. */
-export function addManualServer(rawUrl: string, rawName = ""): ServerRef | null {
-  const url = serverOrigin(rawUrl);
+export const knownServers = (): ServerRef[] => readPersisted(KNOWN_KEY, [], isRefs);
+const knownSubs = new Set<() => void>();
+/** Called when the known list changes. */
+export function onKnownChange(fn: () => void): () => void { knownSubs.add(fn); return () => { knownSubs.delete(fn); }; }
+/** Remember a server (by origin; a new name replaces the old one). Returns the stored entry, or
+ *  null for a URL that isn't http(s). */
+export function rememberServer(server: { url: string; name?: string }): ServerRef | null {
+  const url = serverOrigin(server.url);
   if (!url) return null;
-  const name = rawName.trim() || new URL(url).hostname.split(".")[0]!;
-  writePersisted(MANUAL_KEY, [...manualServers().filter((s) => s.url !== url), { name, url }]);
-  listSubs.forEach((f) => f());
+  const name = server.name?.trim() || defaultServerName(url);
+  const known = knownServers();
+  const prev = known.find((s) => s.url === url);
+  if (prev?.name === name) return prev;
+  writePersisted(KNOWN_KEY, prev ? known.map((s) => (s.url === url ? { name, url } : s)) : [...known, { name, url }]);
+  knownSubs.forEach((f) => f());
   return { name, url };
 }
-const listSubs = new Set<() => void>();
-/** Called when a server is added by hand. */
-export function onManualChange(fn: () => void): () => void { listSubs.add(fn); return () => { listSubs.delete(fn); }; }
 
-/** The menu's rows: the home server's answer (self first), then the added-by-hand ones it lacks.
- *  With no answer (an older server without the route, or a failed fetch) the home server is still
- *  listed, as "Home". Pure. */
-export function mergeServers(answer: ServersAnswer | null, manual: ServerRef[], home: string): ServerEntry[] {
+/** Ask one server for its GET /api/servers, with a short timeout. A cross-origin call: the server
+ *  answers it only for a Tailscale user device (server/servers.ts `serverGate`). Never throws. */
+export async function probeServer(url: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<Probe> {
+  try {
+    const r = await fetch(`${url}/api/servers`, { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
+    if (r.status === 403) return { health: "refused" };
+    const v: unknown = r.ok ? await r.json() : null;
+    return isAnswer(v) ? { health: "online", answer: v } : { health: "offline" };
+  } catch { return { health: "offline" }; }
+}
+
+/**
+ * The menu's rows, in order; each server once. Pure.
+ * 1. The home server (the origin that served this page), under the name its answer gives it.
+ * 2. The home server's list: the Tailscale API's devices, else its config list.
+ * 3. Only when the home server has no Tailscale API: every server this browser knows, then the
+ *    lists of the servers that answered this browser.
+ * The chosen server is always listed. A server that answered goes by ITS OWN name, and a second
+ * URL for a server already listed (a short name, an IP, the MagicDNS name) is dropped.
+ */
+export function mergeServers(
+  home: string, answer: ServersAnswer | null, known: ServerRef[], probes: Record<string, Probe>, chosen: ServerRef | null = null,
+): ServerEntry[] {
   const out: ServerEntry[] = [];
-  const seen = new Set<string>();
-  const push = (e: ServerEntry) => { const u = serverOrigin(e.url); if (!u || seen.has(u)) return; seen.add(u); out.push({ ...e, url: u }); };
-  const self = answer?.self ? { ...answer.self, url: home } : { name: "Home", url: home };
-  push({ ...self, self: true, online: true });
-  for (const s of answer?.servers ?? []) if (!s.self) push({ name: s.name, url: s.url, online: s.online });
-  for (const s of manual) push({ ...s, manual: true });
+  const origins = new Set<string>();
+  const names = new Set<string>();
+  const homeName = answer?.self.name ?? "This server";
+  out.push({ name: homeName, url: home, self: true, health: "online" });
+  origins.add(home);
+  names.add(homeName.toLowerCase());
+  const selfUrl = answer && serverOrigin(answer.self.url);
+  if (selfUrl) origins.add(selfUrl);
+  const candidates: ServerRef[] = [...(answer?.servers ?? []).filter((s) => !s.self), ...(chosen ? [chosen] : [])];
+  if (!answer?.tailscaleApi) {
+    candidates.push(...known);
+    for (const p of Object.values(probes)) if (p.health === "online") candidates.push(p.answer.self, ...p.answer.servers.filter((s) => !s.self));
+  }
+  for (const c of candidates) {
+    const url = serverOrigin(c.url);
+    if (!url || origins.has(url)) continue;
+    const probe = probes[url];
+    const name = probe?.health === "online" ? probe.answer.self.name : c.name || defaultServerName(url);
+    if (names.has(name.toLowerCase())) continue;
+    origins.add(url);
+    names.add(name.toLowerCase());
+    if (probe?.health === "online") { const own = serverOrigin(probe.answer.self.url); if (own) origins.add(own); }
+    out.push({ name, url, health: probe?.health ?? "checking" });
+  }
   return out;
 }
+
+/** Whether the top bar shows the server menu: the home server has not turned the switcher off, and
+ *  there is more than one server — or there is no Tailscale API, so Add server must be reachable.
+ *  No answer (a fetch failure, an older server): only with more than one server. Pure. */
+export const showServerMenu = (answer: ServersAnswer | null, list: ServerEntry[]): boolean =>
+  answer ? answer.enabled !== false && (list.length > 1 || !answer.tailscaleApi) : list.length > 1;
 
 /** GET /api/servers on the HOME server — never the chosen base: the list is the home server's. */
 export async function fetchServers(): Promise<ServersAnswer | null> {
   try {
     const r = await fetch("/api/servers", { cache: "no-store" });
     if (!r.ok) return null;
-    const v = await r.json() as ServersAnswer;
-    return v && isRef(v.self) && Array.isArray(v.servers) ? v : null;
+    const v: unknown = await r.json();
+    return isAnswer(v) ? v : null;
   } catch { return null; }
 }
 
-/** The current side: the chosen server, else the home server under the name its list gives it. */
+/** The current side: the chosen server, else the home server. */
 export function currentServer(list: ServerEntry[]): ServerEntry {
   const c = chosenServer();
-  return (c && list.find((s) => s.url === c.url)) ?? (c ? { ...c } : list.find((s) => s.self) ?? { name: "Home", url: homeOrigin(), self: true });
-}
-
-/** A stable tint per server name, so each side reads at a glance. Pure. */
-const TONES = [
-  "bg-geist-blue/15 text-geist-blue",
-  "bg-geist-green/15 text-geist-green",
-  "bg-purple-500/15 text-purple-700 dark:text-purple-400",
-  "bg-geist-amber/15 text-geist-warning-fg",
-  "bg-geist-pink/15 text-geist-pink",
-  "bg-geist-teal/20 text-teal-700 dark:text-geist-teal",
-];
-export function serverTone(name: string): string {
-  let h = 0;
-  for (const ch of name.toLowerCase()) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-  return TONES[h % TONES.length]!;
+  return (c && list.find((s) => s.url === c.url)) ?? (c ? { ...c, health: "checking" } : list.find((s) => s.self) ?? { name: "This server", url: homeOrigin(), self: true, health: "online" });
 }
 
 /** Tests: re-read the stored choice and forget the status. */
