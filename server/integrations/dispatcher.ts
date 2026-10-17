@@ -84,7 +84,7 @@ export async function dispatchOnce(now = Date.now()): Promise<number> {
   for (const d of claimed) {
     const r = await sendOne(d, now);
     if (r === "deferred") continue;
-    const next = afterAttempt(r, d.attempts, Date.now());
+    const next = afterAttempt(r, d.attempts, now);
     await store.finishDelivery(d.id, { ...next, ...(r.ok ? { externalMsgId: r.externalMsgId } : { error: r.error }) });
     if (next.state === "dead") await died(d, r.ok ? "" : r.error);
   }
