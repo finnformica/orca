@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { createPortal } from "react-dom";
 import { ArrowLeft, Bot, PictureInPicture2, PanelBottomClose, X } from "lucide-react";
@@ -7,7 +7,8 @@ import { ChatPanel } from "@/views/Chat";
 import type { ChatControlsProps, CompactControl } from "@/components/ChatControls";
 import { api } from "../api";
 import { useWorkstreams, type Row } from "../store";
-import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, orchestratorStatus } from "../workstream";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, orchestratorStatus } from "../workstream";
+import { PanelHeader, SidePanel, usePanelWidth, type SwipeProps } from "@/components/SidePanel";
 import { PipContext, PortalContainer, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
@@ -146,9 +147,6 @@ export function AskOrchestrator() {
 /** The orchestrator's model until its status read answers (server/orchestrator.ts's default). */
 const ORCHESTRATOR_DEFAULT_MODEL = "claude-opus-5-5";
 
-/** How long the slide takes (ms); the panel is hidden from assistive tech once it has slid out. */
-const SLIDE_MS = 200;
-
 /** The header's live line under "Orchestrator", the same in the panel and the page: Idle, or Working
  *  with the wake's elapsed time, plus what's queued for it and how many of its workers are running
  *  (the board's own rows — orchestrated and running — so no endpoint of its own). The last wake's
@@ -274,56 +272,20 @@ export function OrchestratorPanel() {
     repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
     worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
   };
-  // Width: dragged from the panel's left edge, remembered per browser (lib/persisted), clamped to the
-  // viewport on load and on browser resize. During a drag the element's style is written DIRECTLY —
-  // a React state update per pointer move re-rendered the whole chat and lagged; state (and storage)
-  // is updated once, when the pointer lets go.
-  const [savedWidth, setSavedWidth] = useAtom(orchestratorWidthAtom);
-  const [vw, setVw] = useState(() => window.innerWidth);
-  useEffect(() => {
-    const fit = () => setVw(window.innerWidth);
-    window.addEventListener("resize", fit);
-    return () => window.removeEventListener("resize", fit);
-  }, []);
-  const width = clampPanelWidth(savedWidth, vw);
-  const panelRef = useRef<HTMLDivElement>(null);
+  // Width: dragged from the panel's left edge (SidePanel), remembered per browser, clamped to the
+  // viewport. Read here too for the Pop out window's first size.
+  const { width } = usePanelWidth(orchestratorWidthAtom);
   // A touch screen: swipe the header right to close it (the edge it comes from). A mouse keeps only
-  // the resize edge. The panel's own class transition slides it the rest of the way, from where the
-  // finger let go, once the inline drag style is cleared.
+  // the resize edge.
   const coarse = useCoarse();
-  const swipe = useSwipeToDismiss("right", () => panelRef.current, () => setOpen(false), { enabled: coarse && !pip, hold: true });
-  useEffect(() => { const el = panelRef.current; if (el) el.style.transition = el.style.transform = ""; }, [open]);
-  const onResizeStart = (e: ReactPointerEvent) => {
-    if (e.button !== 0) return;
-    const el = panelRef.current;
-    if (!el) return;
-    const x0 = e.clientX, w0 = width;
-    let last = w0;
-    const move = (ev: PointerEvent) => {
-      last = clampPanelWidth(w0 + (x0 - ev.clientX), window.innerWidth); // the edge is on the LEFT: dragging left widens
-      el.style.width = `${last}px`;
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
-      document.body.style.cursor = "";
-      setSavedWidth(last);
-    };
-    document.body.style.cursor = "ew-resize";
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-    e.preventDefault();
-  };
-  const header = (
-    <div {...swipe} className={cn("flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3 select-none", coarse && !pip && "touch-none")} data-slot="orchestrator-handle">
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="bg-accent text-foreground inline-flex size-6 shrink-0 items-center justify-center rounded-full"><Bot className="size-3.5" /></span>
-        <div className="min-w-0">
-          {/* Paused = it has woken itself as many times as it may without hearing from you. */}
-          <div className="truncate text-sm font-medium" id="orchestrator-title">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
-          <OrchestratorStatusLine state={state} />
-        </div>
-      </div>
-      <div className="flex shrink-0 items-center">
+  const header = (swipe?: SwipeProps) => (
+    <PanelHeader
+      slot="orchestrator-handle" swipe={swipe} touch={coarse && !pip}
+      icon={<Bot className="size-3.5" />} titleId="orchestrator-title"
+      // Paused = it has woken itself as many times as it may without hearing from you.
+      title={state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}
+      status={<OrchestratorStatusLine state={state} />}
+      actions={<>
         {pip ? (
           <Button size="icon" variant="ghost" className="size-7" aria-label="Return to tab" onClick={() => pip.close()}>
             <PanelBottomClose className="size-4" />
@@ -340,8 +302,8 @@ export function OrchestratorPanel() {
             <X className="size-4" />
           </Button>
         </Tip>
-      </div>
-    </div>
+      </>}
+    />
   );
   // The conversation fills the panel edge to edge, in the chat styling that follows the page's theme.
   const chat = (
@@ -361,32 +323,16 @@ export function OrchestratorPanel() {
         // PipContext tells the composer not to trust ITS narrow viewport for max-md: sizing.
         <PortalContainer.Provider value={pip.document.body}>
           <PipContext.Provider value={true}>
-            <div role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel" data-pip="" className={`${panelClass} h-screen w-screen`}>{header}{chat}</div>
+            <div role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel" data-pip="" className={`${panelClass} h-screen w-screen`}>{header()}{chat}</div>
           </PipContext.Provider>
         </PortalContainer.Provider>,
         pip.document.body,
       )}
       {!pip && (
-        // z-40: above the page and its sticky top bar (z-30), below menus and popovers (z-50), which
-        // must still open over it. `aria-modal=false`: the page behind stays usable. Slid out, it is
-        // hidden (visibility, after the transform finishes) and inert to assistive tech.
-        <div
-          ref={panelRef}
-          role="dialog" aria-modal="false" aria-label="Orchestrator" aria-labelledby="orchestrator-title" aria-hidden={!open}
-          data-slot="orchestrator-panel" data-state={open ? "open" : "closed"}
-          // Opening, only the transform transitions — `visibility` flips to visible AT ONCE, so the
-          // composer can take focus in the same commit (a hidden element refuses focus, and a
-          // visibility transition starts at its old value). Closing, visibility waits for the slide.
-          className={cn(panelClass, "fixed inset-y-0 right-0 z-40 border-l shadow-modal ease-out motion-reduce:transition-none",
-            open ? "visible translate-x-0 transition-transform" : "invisible translate-x-full transition-[transform,visibility]")}
-          style={{ width, maxWidth: "100vw", minWidth: Math.min(PANEL_MIN_W, vw), transitionDuration: `${SLIDE_MS}ms` }}
-        >
-          {/* The resize handle: the panel's left edge. Dragging left widens; the width is remembered. */}
-          <div data-slot="orchestrator-resize" role="separator" aria-orientation="vertical" aria-label="Resize panel" onPointerDown={onResizeStart}
-            className="hover:bg-geist-blue/40 absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize transition-colors" />
-          {header}
+        <SidePanel open={open} onClose={() => setOpen(false)} slot="orchestrator" label="Orchestrator" labelledBy="orchestrator-title"
+          widthAtom={orchestratorWidthAtom} swipe={coarse && !pip} header={header}>
           {chat}
-        </div>
+        </SidePanel>
       )}
     </div>
   );

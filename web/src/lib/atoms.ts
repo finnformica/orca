@@ -1,6 +1,7 @@
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
 import { isBoolean, isNumber, isString, isStringArray, oneOf, persistedAtom } from "./persisted";
+import { TERMINAL_PANEL_INITIAL, type TerminalPanelState } from "../workstream";
 
 // New-draft composer's selected repo, persisted. The prompt + attachments are persisted by
 // ChatComposer itself (see lib/composerDraft), so a reload never loses an in-progress draft.
@@ -48,6 +49,11 @@ export type OrchestratorPrefill = { text: string; session: number; seq: number }
 export const orchestratorPrefillAtom = atom<OrchestratorPrefill | null>(null);
 // The side panel's width (px), remembered per browser; clamped to the viewport on use.
 export const orchestratorWidthAtom = persistedAtom<number>("orchestratorWidth", 460, isNumber);
+// The instance terminal's panel (components/InstanceTerminal.tsx): open or not, and its sessions as
+// tabs (workstream.ts `terminal*`). Not persisted: a session is a live socket, gone with the page.
+export const terminalPanelAtom = atom<TerminalPanelState>(TERMINAL_PANEL_INITIAL);
+// Its width, like the orchestrator's: remembered per browser, clamped to the viewport on use.
+export const terminalWidthAtom = persistedAtom<number>("terminalWidth", 460, isNumber);
 // The quick-ask box (the bottom-centre pill, the A key): one message to the orchestrator, no history.
 export const quickAskOpenAtom = atom(false);
 // What the orchestrator is up to, for the launcher's indicator: `running` while a wake is in flight,
