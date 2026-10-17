@@ -33,7 +33,7 @@ import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
 import { repoLabel, summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
-import { ServerMenu, ServerOffline, useServerProblem } from "@/components/ServerMenu";
+import { AddServerDialog, ServerMenu, ServerOffline, useServerProblem } from "@/components/ServerMenu";
 import { NotificationBell } from "@/components/Notifications";
 import { notifyLocal } from "@/lib/notificationStore";
 import { Button } from "@/components/ui/button";
@@ -118,6 +118,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
       <Shortcuts />
       <CommandPalette />
       <ShortcutsHelp />
+      <AddServerDialog />
     </div>
   );
 }

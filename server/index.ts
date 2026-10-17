@@ -487,7 +487,8 @@ async function api(req: Request, url: URL): Promise<Response> {
   // The server switcher (server/servers.ts): the Orca servers a browser may switch to. Answered here,
   // never forwarded — each server names itself and its own discovery.
   if (req.method === "GET" && p === "/api/servers") return json(await listServers(cfg.serverSwitcher));
-  // Settings' Server switcher toggle: sets `serverSwitcher.enabled` and keeps the rest of the document.
+  // The server's off switch for the switcher (on unless false): sets `serverSwitcher.enabled` and keeps
+  // the rest of the document. No web control calls it; the browser has no switch of its own.
   if (req.method === "POST" && p === "/api/config/server-switcher") {
     if (typeof body.enabled !== "boolean") return json({ error: "enabled must be true or false" }, 400);
     const doc = await configDocument();
@@ -1295,9 +1296,9 @@ for (const hostname of BIND) Bun.serve({
         return json({ error: e instanceof Error ? e.message : String(e) }, 500);
       }
     };
-    // A cross-origin call from another listed Orca server's page gets CORS and a Tailscale whois
-    // check (errors included, so its page can read them); anything else — same-origin, no Origin,
-    // the switcher off — passes through unchanged.
+    // A cross-origin call from another Orca server's page (servers.ts `trustedOrigin`) gets CORS and
+    // a Tailscale whois check (errors included, so its page can read them); anything else —
+    // same-origin, no Origin, the switcher off — passes through unchanged.
     if (!req.headers.get("origin")) return handle();
     const switcher = await loadConfig().then((c) => c.serverSwitcher).catch(() => undefined);
     return serverGate(req, server.requestIP(req)?.address, switcher, handle)

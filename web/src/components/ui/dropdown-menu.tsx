@@ -72,14 +72,15 @@ function DropdownMenuCheckboxItem({ className, children, checked, ...props }: Re
   );
 }
 
-function DropdownMenuRadioItem({ className, children, ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.RadioItem>) {
+/** `indicator` replaces the checked dot — the server menu checks its row, as its rows carry a status dot. */
+function DropdownMenuRadioItem({ className, children, indicator, ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.RadioItem> & { indicator?: React.ReactNode }) {
   return (
     <DropdownMenuPrimitive.RadioItem
       className={cn("focus:bg-accent focus:text-accent-foreground relative flex cursor-pointer items-center gap-2 rounded-md py-1.5 pr-2 pl-7 text-sm outline-none select-none", className)}
       {...props}
     >
       <span className="absolute left-2 flex size-3.5 items-center justify-center">
-        <DropdownMenuPrimitive.ItemIndicator><CircleIcon className="size-2 fill-current" /></DropdownMenuPrimitive.ItemIndicator>
+        <DropdownMenuPrimitive.ItemIndicator>{indicator ?? <CircleIcon className="size-2 fill-current" />}</DropdownMenuPrimitive.ItemIndicator>
       </span>
       {children}
     </DropdownMenuPrimitive.RadioItem>
