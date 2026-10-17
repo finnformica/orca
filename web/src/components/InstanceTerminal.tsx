@@ -148,7 +148,8 @@ function TabStrip({ tabs, active, labels, statuses, onSelect, onClose, onNew }: 
             </Button>
           </DropdownMenuTrigger>
         </Tip>
-        <DropdownMenuContent align="end" className="min-w-48">
+        {/* No focus back to +: the new session takes it, so the next keys go to its shell. */}
+        <DropdownMenuContent align="end" className="min-w-48" onCloseAutoFocus={(e) => e.preventDefault()}>
           <DropdownMenuLabel className="text-muted-foreground text-xs font-normal">New session on</DropdownMenuLabel>
           {terminalMachines().map((m) => {
             const why = terminalBlocked(m, on[m] === true, ctx);
@@ -169,8 +170,8 @@ function TabStrip({ tabs, active, labels, statuses, onSelect, onClose, onNew }: 
 }
 
 /** xterm's colours from the panel's own (the app theme, light or dark): computed off the screen's
- *  host, which carries `bg-card text-foreground`. A light page gets a palette whose white and yellow
- *  stay readable on white. */
+ *  host, which carries `bg-card text-foreground`. A light page gets a palette whose white, yellow and
+ *  bright colours stay readable on white. */
 function themeOf(el: HTMLElement) {
   const cs = getComputedStyle(el);
   const dark = document.documentElement.classList.contains("dark");
@@ -179,7 +180,11 @@ function themeOf(el: HTMLElement) {
   return {
     background, foreground, cursor: foreground, cursorAccent: background,
     selectionBackground: dark ? "#ffffff33" : "#0070f333",
-    ...(dark ? {} : { white: "#6b6b6b", brightWhite: "#3d3d3d", yellow: "#946300", brightYellow: "#a35200", black: "#171717", brightBlack: "#6b6b6b" }),
+    ...(dark ? {} : {
+      black: "#171717", brightBlack: "#6b6b6b", white: "#6b6b6b", brightWhite: "#3d3d3d",
+      green: "#1a7f37", brightGreen: "#116329", yellow: "#946300", brightYellow: "#a35200",
+      blue: "#0058c4", brightBlue: "#0070f3", cyan: "#0b7285", brightCyan: "#0a6a7a", magenta: "#8250df", brightMagenta: "#6639ba",
+    }),
   };
 }
 
@@ -330,14 +335,14 @@ function Session({ instance, visible, focus, keysRow, reconnect, onStatus, onRec
         </form>
       )}
       {keysRow && (
-        <div data-slot="terminal-keys" role="toolbar" aria-label="Extra keys" className="flex gap-1.5 overflow-x-auto border-t px-2 py-2">
+        <div data-slot="terminal-keys" role="toolbar" aria-label="Extra keys" className="flex gap-1 overflow-x-auto border-t px-2 py-2">
           {TERMINAL_KEYS.map((k) => (
             <Button key={k.id} type="button" size="sm" variant={k.id === "ctrl" && ctrl ? "default" : "outline"}
               aria-pressed={k.id === "ctrl" ? ctrl : undefined} aria-label={k.id === "paste" ? "Paste" : k.label}
               // Keep the terminal's focus (and the phone's keyboard) through the tap.
               onPointerDown={(e) => e.preventDefault()}
               onClick={() => key(k.id, k.send)}
-              className="h-10 min-w-11 flex-1 px-2 font-mono text-sm">
+              className="h-11 min-w-10 flex-1 px-1 font-mono text-sm">
               {k.id === "paste" ? <ClipboardPaste className="size-4" /> : k.label}
             </Button>
           ))}
