@@ -11,9 +11,9 @@ import * as registry from "../server/integrations/registry";
 import * as store from "../server/integrations/store";
 import type { Adapter } from "../server/integrations/adapter";
 import { inboundEnvelope } from "../shared/integrations";
-import { replyTo } from "../server/integrations/reply";
+import { replyToEvent as replyTo } from "../server/integrations/router";
 import {
-  conversationParam, replyPlan, threadActions, muteKey, filterInbox, inboundConversation, inboxFacets, inboxRows, parseConversation, personId, sourceLabel, threadItems, threadSources,
+  conversationParam, replyRefusal, threadActions, muteKey, filterInbox, inboundConversation, inboxFacets, inboxRows, parseConversation, personId, sourceLabel, threadItems, threadSources,
 } from "../shared/inbox";
 import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
@@ -183,7 +183,7 @@ describe("with Postgres", () => {
       ["email", "orca@example.com", "<root@x>", "Hello Ada", "<m1@x>"], // the catch-all link's "*" is no place: the event's channel is
     ]);
     await expect(replyTo(slack!.id, "   ")).rejects.toThrow("the reply is empty");
-    expect(replyPlan({ key: "question:1", topic: "orca.question", source: { adapter: "orca" } }, "x", undefined, undefined, "k", 0)).toContain("nowhere to reply");
+    expect(replyRefusal({ key: "question:1", topic: "orca.question", source: { adapter: "orca" } }, "x", undefined)).toContain("nowhere to reply");
 
     const rowsNow = async () => {
       const events = await store.inboxEvents({ limit: 10 });

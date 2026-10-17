@@ -2,7 +2,7 @@
 // came in from every integration, newest first, and one thread view across inbound and outbound.
 // Generic over adapter kinds: it reads only the core's envelope, delivery target and thread link.
 // Pure: the server builds the rows with it, the web renders them, the tests import it as is.
-import { replyToOf, type DeliveryState, type DeliveryTarget, type Envelope, type InboundEnvelope } from "./integrations";
+import { replyToOf, type DeliveryState, type DeliveryTarget, type Envelope } from "./integrations";
 
 /** An inbox topic: every external event (`ext.*`) and every question the orchestrator asks you. */
 export const isInboxTopic = (topic: string): boolean => topic.startsWith("ext.") || topic === "orca.question";
@@ -76,7 +76,7 @@ export type InboxRow = {
   read: boolean;
   /** Its sender is muted (per user, `inbox_mute`); hidden unless the filter asks for muted rows. */
   muted: boolean;
-  /** A message that came in on a link: Orca can answer it there (`replyPlan`). */
+  /** A message that came in on a link: Orca can answer it there (`replyRefusal`). */
   canReply: boolean;
   /** Its conversation is a real place or thread, not yet bound to a workstream (`thread_link`). */
   canLink: boolean;
@@ -90,32 +90,17 @@ const NO_STATE: InboxState = { read: new Set(), muted: new Set() };
 export const canReplyTo = (e: Pick<Envelope, "topic" | "source">): boolean =>
   inboxKind(e.topic) !== "question" && !!e.source.linkId && e.source.adapter !== "orca";
 
-/** Where a reply to an inbound event goes, and the envelope it rides (the `orca post` path: an
- *  `orca.message` with one explicit delivery to the link). The place is the event's own channel
- *  (a catch-all link's `*` is no place), its thread when it has one; the thread's message id makes
- *  an email reply an `In-Reply-To`. A string is the refusal. */
-export function replyPlan(
-  e: Pick<Envelope, "key" | "topic" | "source" | "thread" | "scope">, text: string,
-  link: { id: string; integrationId: string; externalId: string } | undefined, adapterKind: string | undefined, key: string, now: number,
-): { envelope: InboundEnvelope; target: DeliveryTarget } | string {
+/** Why the inbox cannot answer an inbound event, or undefined when it can. The answer itself is
+ *  `orca post --reply`'s (server/integrations/router.ts `replyToEvent`): the event's own channel
+ *  (a catch-all link's `*` is no place) and its thread. */
+export function replyRefusal(
+  e: Pick<Envelope, "key" | "topic" | "source" | "thread">, text: string, link: { id: string; externalId: string } | undefined,
+): string | undefined {
   if (!canReplyTo(e)) return "this event came in on no link, so there is nowhere to reply";
   if (!text.trim()) return "the reply is empty";
   if (!link || link.id !== e.source.linkId) return `the link "${e.source.linkId}" no longer exists`;
-  // The place, as `orca post --reply` reads it (shared/integrations.ts replyToOf).
-  const place = replyToOf(e);
-  const externalId = place?.channel ?? (link.externalId !== "*" ? link.externalId : undefined);
-  if (!externalId) return "the event names no place to reply to";
-  const scope = e.scope?.repo ? { scope: e.scope } : {};
-  return {
-    envelope: {
-      key, topic: "orca.message", at: now, source: { adapter: "orca", linkId: link.id }, text: text.trim(), ...scope,
-      ...(e.thread ? { thread: e.thread } : {}),
-    },
-    target: {
-      kind: "link", integrationId: link.integrationId, adapter: adapterKind ?? e.source.adapter, linkId: link.id, externalId,
-      ...(place?.threadId ? { threadId: place.threadId } : {}),
-    },
-  };
+  if (!(replyToOf(e)?.channel ?? (link.externalId !== "*" ? link.externalId : undefined))) return "the event names no place to reply to";
+  return undefined;
 }
 
 /** Text on a row: the first `INBOX_TEXT_MAX` characters. The thread view shows all of it. */

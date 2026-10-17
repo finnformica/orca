@@ -27,7 +27,7 @@ import * as dispatcher from "./integrations/dispatcher";
 import * as inbox from "./integrations/inbox";
 import * as integrationStore from "./integrations/store";
 import { filterInbox, inboundConversation, inboxFacets, inboxRows, OWN_EVENT, parseConversation, threadActions, threadItems, workstreamOf } from "../shared/inbox";
-import { replyTo } from "./integrations/reply";
+import { replyToEvent } from "./integrations/router";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
 import * as primary from "./primary";
@@ -645,12 +645,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ conversation: c, items: threadItems(conv.events, conv.outbound, principals, labels), ...(workstream ? { workstream } : {}), ...threadActions(conv.events, !!conv.link, { read, muted }, principals) });
   }
   // The inbox's actions, each on one inbound event: Reply where it came from (the `orca post` path,
-  // server/integrations/reply.ts), read state and mute (per user), and Link its conversation to a
+  // server/integrations/router.ts replyToEvent), read state and mute (per user), and Link its conversation to a
   // workstream (a thread_link, so later replies there reach that workstream).
   if (req.method === "POST" && p === "/api/inbox/reply") {
     if (typeof body.eventId !== "string" || typeof body.text !== "string") return json({ error: "eventId and text required" }, 400);
     try {
-      const r = await replyTo(body.eventId, body.text);
+      const r = await replyToEvent(body.eventId, body.text);
       await integrationStore.setRead([body.eventId], true);
       return json(r);
     } catch (e) {
