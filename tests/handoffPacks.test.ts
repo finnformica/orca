@@ -155,3 +155,16 @@ test("import caller: a browser page only, from loopback or a whois-verified user
   expect(await handoff.importCallerVerdict("http://orca-flow-box:8787", "100.64.0.5", userDevice)).toEqual({ ok: true });
   expect(await handoff.importCallerVerdict("http://orca-flow-box:8787", "100.64.0.9", taggedBox)).toMatchObject({ ok: false, reason: expect.stringContaining("tagged node") });
 });
+
+test("the Handoffs page's pure parts: the target server by name, never the source; the card's draft link", async () => {
+  const { handoffTarget, handoffDraftPath, parseHandoffDraft, byteSize } = await import("../web/src/workstream");
+  const servers = [{ name: "orca-flow-box", url: "http://a:8787" }, { name: "orca-personal-box", url: "http://b:8787" }];
+  expect(handoffTarget(servers, "ORCA-personal-box", "http://a:8787")?.url).toBe("http://b:8787");
+  expect(handoffTarget(servers, "orca-flow-box", "http://a:8787")).toBeUndefined(); // never to itself
+  expect(handoffTarget(servers, "nope", "http://a:8787", "http://b:8787")?.name).toBe("orca-personal-box");
+  const path = handoffDraftPath({ repo: "orca", branch: "feat/discord", title: "Discord & co" });
+  expect(path.startsWith("/handoffs?")).toBe(true);
+  expect(parseHandoffDraft(path.slice("/handoffs".length))).toEqual({ repo: "orca", branch: "feat/discord", title: "Discord & co" });
+  expect(parseHandoffDraft("?repo=orca")).toBeNull();
+  expect([byteSize(812), byteSize(4300), byteSize(1_400_000)]).toEqual(["812 B", "4.2 KB", "1.3 MB"]);
+});

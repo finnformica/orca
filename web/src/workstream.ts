@@ -3730,3 +3730,26 @@ export function terminalClosedText(code: number, reason: string): string {
   if (code === 1000) return "Session ended.";
   return "Could not connect — the terminal may be off, or this device is not allowed.";
 }
+
+// ---- handoff packs (server/handoff.ts; views/Handoffs.tsx) ----
+/** The server a pack goes to: the switcher row whose name is the pack's target (any case), never
+ *  the server the pack is on. A user's pick (`chosenUrl`) wins. Pure. */
+export function handoffTarget<T extends { name: string; url: string }>(servers: T[], target: string, currentUrl: string, chosenUrl?: string): T | undefined {
+  const others = servers.filter((s) => s.url !== currentUrl);
+  if (chosenUrl) return others.find((s) => s.url === chosenUrl);
+  return others.find((s) => s.name.toLowerCase() === target.trim().toLowerCase());
+}
+
+/** The Handoffs page's link that opens a new pack of one workstream's chat (a card's Hand off). Pure. */
+export const handoffDraftPath = (row: { repo: string; branch: string; title?: string }): string =>
+  `/handoffs?${new URLSearchParams({ repo: row.repo, branch: row.branch, ...(row.title ? { title: row.title } : {}) })}`;
+
+/** The draft a `handoffDraftPath` link carries, or null. Pure. */
+export function parseHandoffDraft(search: string): { repo: string; branch: string; title: string } | null {
+  const q = new URLSearchParams(search);
+  const repo = q.get("repo"), branch = q.get("branch");
+  return repo && branch ? { repo, branch, title: q.get("title") ?? branch } : null;
+}
+
+/** A byte count for a file list ("812 B", "4.2 KB", "1.3 MB"). Pure. */
+export const byteSize = (n: number): string => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
