@@ -3584,3 +3584,145 @@ export function quickActions(row: QuickActionRow, ctx: QuickActionContext): Quic
   out.push(autoMerge);
   return out;
 }
+
+// ---- the instance web terminal (components/InstanceTerminal.tsx, server/terminal.ts) ----
+
+/** The phone's extra-keys row, left to right: what each key sends to the shell. `ctrl` and `paste`
+ *  are not bytes — Ctrl applies to the next key, Paste reads the clipboard. */
+export const TERMINAL_KEYS: { id: string; label: string; send?: string }[] = [
+  { id: "esc", label: "Esc", send: "\x1b" },
+  { id: "tab", label: "Tab", send: "\t" },
+  { id: "ctrl", label: "Ctrl" },
+  { id: "left", label: "←", send: "\x1b[D" },
+  { id: "up", label: "↑", send: "\x1b[A" },
+  { id: "down", label: "↓", send: "\x1b[B" },
+  { id: "right", label: "→", send: "\x1b[C" },
+  { id: "paste", label: "Paste" },
+];
+
+/** Ctrl + a typed key, as the terminal byte: `c` → ETX (0x03), `[` → ESC. Anything without a control
+ *  form (a digit, a word pasted in) is sent as typed. */
+export function ctrlChord(data: string): string {
+  if (data.length !== 1) return data;
+  const c = data.toUpperCase().charCodeAt(0);
+  if (c >= 64 && c <= 95) return String.fromCharCode(c - 64); // @ A-Z [ \ ] ^ _
+  if (data === "?") return "\x7f";
+  if (data === " ") return "\x00";
+  return data;
+}
+
+/** Where the browser opens an instance's terminal, or why it can't. Each machine serves only its own
+ *  shell and no bridge relays one (box-to-box traffic is blocked on purpose), so the socket goes
+ *  STRAIGHT to that machine: the API's own server (`apiBase` when the server switcher chose another
+ *  one, else this page's host on the bridge's port — Vite's Bun proxy can't forward an upgrade) for
+ *  the instance it says it is, else the instance's configured address. A page on loopback can't open
+ *  another machine's terminal: that machine trusts only Orca's tailnet pages. */
+export type TerminalTargetContext = {
+  page: { protocol: string; hostname: string };
+  apiBase: string; apiPort: string;
+  /** The instance the API's server is (`/api/config`'s `instance`). */
+  here?: string;
+  /** Every instance's address (`/api/config`'s `instanceUrls`). */
+  urls: Record<string, string>;
+};
+const LOOPBACK_HOST = /^(localhost|127(?:\.\d+){3}|::1|\[::1\])$/i;
+export function terminalTarget(instance: string, ctx: TerminalTargetContext, cols = 80, rows = 24): { url: string } | { reason: string } {
+  const q = new URLSearchParams({ instance, cols: String(cols), rows: String(rows) });
+  const ws = (u: URL) => `${u.protocol === "https:" ? "wss" : "ws"}://${u.host}/api/terminal?${q}`;
+  if (!ctx.here || instance === ctx.here) {
+    if (ctx.apiBase) return { url: ws(new URL(ctx.apiBase)) };
+    const host = ctx.page.hostname.includes(":") ? `[${ctx.page.hostname}]` : ctx.page.hostname;
+    return { url: ws(new URL(`${ctx.page.protocol}//${host}${ctx.apiPort ? `:${ctx.apiPort}` : ""}`)) };
+  }
+  const raw = ctx.urls[instance];
+  let target: URL;
+  try { target = new URL(raw ?? ""); } catch { return { reason: `No address for ${instance} in the config` }; }
+  if (LOOPBACK_HOST.test(ctx.page.hostname) && !LOOPBACK_HOST.test(target.hostname)) {
+    return { reason: `Open Orca by its tailnet address to reach ${instance}` };
+  }
+  return { url: ws(target) };
+}
+
+/** Why a machine's Open terminal is disabled, or null when it can open. Off first: it is the one
+ *  the user can change on the same row. */
+export function terminalBlocked(instance: string, on: boolean, ctx: TerminalTargetContext): string | null {
+  if (!on) return "Terminal is off";
+  const t = terminalTarget(instance, ctx);
+  return "reason" in t ? t.reason : null;
+}
+
+/** After a close, retry in this many ms, or null to stay closed. Only a dropped connection (no
+ *  reason, not a clean end) of a session that was open is retried — a phone that slept, a network
+ *  blip — three times, backing off. The server's own refusals (off, full, idle, shell exited) carry a
+ *  reason and are final: the Reconnect button is the user's to press. */
+export const TERMINAL_RETRIES = 3;
+export function terminalRetry(code: number, reason: string, wasOpen: boolean, attempts: number): number | null {
+  if (!wasOpen || reason || code === 1000 || code >= 4000 || attempts >= TERMINAL_RETRIES) return null;
+  return 1000 * 2 ** attempts;
+}
+
+/** One session's connection, as its status dot shows it. */
+export type TerminalStatus = "connecting" | "connected" | "reconnecting" | "closed";
+export const TERMINAL_STATUS: Record<TerminalStatus, { label: string; tone: "ready" | "building" | "neutral" }> = {
+  connecting: { label: "Connecting…", tone: "building" },
+  connected: { label: "Connected", tone: "ready" },
+  reconnecting: { label: "Reconnecting…", tone: "building" },
+  closed: { label: "Closed", tone: "neutral" },
+};
+
+// ---- the terminal panel's tabs (components/InstanceTerminal.tsx) ----
+// One tab per session; a session is one shell on one machine. The panel stays mounted while closed,
+// so its sessions survive moving around the app; only closing a tab ends its shell.
+
+export type TerminalTab = { id: string; instance: string };
+export type TerminalPanelState = { open: boolean; tabs: TerminalTab[]; active: string | null; next: number };
+export const TERMINAL_PANEL_INITIAL: TerminalPanelState = { open: false, tabs: [], active: null, next: 1 };
+
+/** Open the panel on a NEW session on `instance` (the + menu). */
+export function terminalNewTab(s: TerminalPanelState, instance: string): TerminalPanelState {
+  const id = `t${s.next}`;
+  return { open: true, tabs: [...s.tabs, { id, instance }], active: id, next: s.next + 1 };
+}
+/** Open the panel on `instance` (Settings' Open terminal): its newest session if it has one, else a
+ *  new one. */
+export function terminalShowInstance(s: TerminalPanelState, instance: string): TerminalPanelState {
+  const tab = [...s.tabs].reverse().find((t) => t.instance === instance);
+  return tab ? { ...s, open: true, active: tab.id } : terminalNewTab(s, instance);
+}
+export function terminalSelectTab(s: TerminalPanelState, id: string): TerminalPanelState {
+  return s.tabs.some((t) => t.id === id) ? { ...s, active: id } : s;
+}
+/** Close a tab (its shell ends). The active one hands over to its right neighbour, else its left; the
+ *  last one closes the panel. */
+export function terminalCloseTab(s: TerminalPanelState, id: string): TerminalPanelState {
+  const i = s.tabs.findIndex((t) => t.id === id);
+  if (i < 0) return s;
+  const tabs = s.tabs.filter((t) => t.id !== id);
+  if (!tabs.length) return { ...s, open: false, tabs, active: null };
+  const active = s.active === id ? (tabs[i] ?? tabs[i - 1])!.id : s.active;
+  return { ...s, tabs, active };
+}
+/** Hide or show the panel; the sessions keep running. Showing it with no session opens nothing. */
+export function terminalSetOpen(s: TerminalPanelState, open: boolean): TerminalPanelState {
+  return { ...s, open: open && s.tabs.length > 0 };
+}
+/** Each tab's label: the instance name, numbered from the second session on one machine
+ *  ("cloud", "cloud 2"). */
+export function terminalTabLabels(tabs: TerminalTab[]): Record<string, string> {
+  const seen = new Map<string, number>();
+  const out: Record<string, string> = {};
+  for (const t of tabs) {
+    const n = (seen.get(t.instance) ?? 0) + 1;
+    seen.set(t.instance, n);
+    out[t.id] = n === 1 ? t.instance : `${t.instance} ${n}`;
+  }
+  return out;
+}
+
+/** What the panel says when the socket closes — the server's own reason when it gave one (off,
+ *  full, idle, shell exited); a refusal before the upgrade (not the owner) arrives with none. */
+export function terminalClosedText(code: number, reason: string): string {
+  if (reason) return reason;
+  if (code === 1000) return "Session ended.";
+  return "Could not connect — the terminal may be off, or this device is not allowed.";
+}

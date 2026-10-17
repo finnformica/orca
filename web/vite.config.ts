@@ -82,6 +82,8 @@ export default defineConfig(({ command }) => ({
     // HTTP /api only. The interactive terminal's WebSocket does NOT go through here: Vite runs under
     // Bun (the Node-is-blocked rule), and Bun's proxy doesn't complete WS upgrades, so the terminal
     // connects straight to the bridge port instead (see Terminal.tsx / apiPort in /api/config).
-    proxy: { "/api": `http://localhost:${API_PORT}` },
+    // `xfwd` names the real caller to the bridge, which identifies it before a terminal toggle
+    // (server/terminal.ts callerAddress) — through the proxy every request is otherwise loopback.
+    proxy: { "/api": { target: `http://localhost:${API_PORT}`, xfwd: true } },
   },
 }));

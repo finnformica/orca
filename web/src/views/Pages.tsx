@@ -6,7 +6,7 @@
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
 import { useEffect, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { FolderGit2, GitBranch } from "lucide-react";
+import { FolderGit2, GitBranch, Server, SquareTerminal } from "lucide-react";
 import { api, type GithubAccount } from "../api";
 import { refreshVitals } from "@/lib/vitals";
 import { notifyLocal, setBrowserNotify } from "@/lib/notificationStore";
@@ -20,8 +20,9 @@ import { KIND_META, NOTIFICATION_KINDS, browserNotifyChecked, browserNotifyNote,
 import { navigate } from "@/lib/route";
 import { useTheme, type Theme } from "@/lib/theme";
 import { setSwitcher, useSwitcherOn } from "@/lib/server";
-import { instanceChoices, setInstanceRate, staleHours, thisInstance, useAgentProviders, useInstanceRates, useRepos, useWorkstreams } from "../store";
-import { ago, repoSummaries } from "../workstream";
+import { instanceChoices, setInstanceRate, setInstanceTerminal, staleHours, terminalContext, thisInstance, useAgentProviders, useInstanceRates, useInstanceTerminals, useRepos, useWorkstreams } from "../store";
+import { terminalMachines, useOpenTerminal } from "@/components/InstanceTerminal";
+import { ago, repoSummaries, terminalBlocked } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
 import { FindBox, NAV, THEMES } from "@/components/Shell";
 import { InstanceCard, RefreshVitals, UsageCard } from "./Vitals";
@@ -112,6 +113,7 @@ export function Settings() {
       <NotificationSettings />
       <ServerSettings />
       <MachineCostSettings />
+      <InstancesSettings />
       <VCard slot="settings-config" title="Configuration" aside={<span className="text-muted-foreground text-xs">read-only · orca.config.ts</span>}>
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-b p-4 sm:grid-cols-4">
           <Detail label="This instance"><StatusDot tone="ready" />{here ?? "—"}</Detail>
@@ -232,6 +234,59 @@ function MachineCostSettings() {
   return (
     <VCard slot="settings-machine-cost" title="Machine cost" bodyClass="divide-y">
       {machines.map((m) => <MachineRate key={m} instance={m} saved={rates[m]} />)}
+    </VCard>
+  );
+}
+
+/** Settings → Instances: one row per machine, with its web terminal — the on/off Switch (`terminal`
+ *  in the app config, OFF unless turned on here; this row is the only way to set it, as the bridge
+ *  keeps it out of a pasted config document) and Open terminal, which opens the terminal panel
+ *  (components/InstanceTerminal.tsx) on that machine. A disabled Open says why on the row. */
+function InstancesSettings() {
+  const on = useInstanceTerminals();
+  const here = thisInstance();
+  const machines = terminalMachines();
+  const openTerminal = useOpenTerminal();
+  const [busy, setBusy] = useState<string | null>(null);
+  if (!machines.length) return null;
+  const ctx = terminalContext();
+  const set = async (instance: string, value: boolean) => {
+    setBusy(instance);
+    try { await setInstanceTerminal(instance, value); }
+    catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      notifyLocal({
+        kind: "action_failed", repo: "", title: `Terminal · ${instance}`, label: "Terminal setting failed", body: error,
+        copy: `Action: Turn the terminal ${value ? "on" : "off"} for ${instance}\nError:\n${error}`,
+        ask: `Turning the terminal ${value ? "on" : "off"} for ${instance} failed: ${error}. Please investigate and fix.`,
+      });
+    }
+    finally { setBusy(null); }
+  };
+  return (
+    <VCard slot="settings-instances" title="Instances" bodyClass="divide-y">
+      {machines.map((m) => {
+        const why = terminalBlocked(m, on[m] === true, ctx);
+        return (
+          <div key={m} data-slot="instance-row" data-instance={m} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2 text-sm font-medium"><Server className="text-muted-foreground size-4" />{m}{m === here && <span className="text-muted-foreground font-normal">· this machine</span>}</div>
+              <div className="text-muted-foreground text-xs">Terminal: a shell as the Orca user. Owner only, 2 sessions, 30 minutes idle.</div>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2">
+                <Label htmlFor={`terminal-${m}`} className="text-muted-foreground text-xs font-normal">Terminal</Label>
+                <Switch id={`terminal-${m}`} data-slot="terminal-switch" aria-label={`${m} terminal`} checked={on[m] === true}
+                  disabled={busy === m} onCheckedChange={(v) => void set(m, v)} />
+              </div>
+              {why && <span data-slot="terminal-blocked" className="text-muted-foreground text-xs">{why}</span>}
+              <Button type="button" size="sm" variant="secondary" data-slot="terminal-open" disabled={why !== null} onClick={() => openTerminal(m)}>
+                <SquareTerminal className="size-4" />Open terminal
+              </Button>
+            </div>
+          </div>
+        );
+      })}
     </VCard>
   );
 }
