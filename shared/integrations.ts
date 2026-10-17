@@ -45,7 +45,12 @@ export type Envelope = {
   at: number;
   /** Where it came from. An adapter sets `channel` (the external place: a Slack channel id, a
    *  mailbox, a hook) and the core resolves it to `linkId`. */
-  source: { adapter: string; integrationId?: string; channel?: string; linkId?: string };
+  source: {
+    adapter: string; integrationId?: string; channel?: string; linkId?: string;
+    /** Wider places that hold `channel`, most specific first (a Linear issue's project, then its
+     *  team). The core tries `channel`, then each of these, then the catch-all link. */
+    parents?: string[];
+  };
   actor?: Actor;
   scope?: { repo?: string; branch?: string }; // set when known (PR, worker, thread link)
   thread?: ConversationRef;
