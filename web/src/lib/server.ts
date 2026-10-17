@@ -174,14 +174,23 @@ export async function probeServer(url: string, timeoutMs = PROBE_TIMEOUT_MS): Pr
   }
 }
 
+/** Whether `origin` is this machine talking to itself with no tailnet name: `localhost` or
+ *  `127.0.0.1` (the laptop dev app, run as instance `local`). Such an origin is never an Orca box —
+ *  it is never listed in the switcher, as a home row or learned from any other source. Pure. */
+function isLocalOrigin(origin: string): boolean {
+  try { return ["localhost", "127.0.0.1"].includes(new URL(origin).hostname); } catch { return false; }
+}
+
 /**
  * The menu's rows, in order; each server once. Pure.
- * 1. The home server (the origin that served this page), under the name its answer gives it.
+ * 1. The home server (the origin that served this page), under the name its answer gives it —
+ *    unless that origin is localhost/127.0.0.1 (not an Orca box), which is never listed.
  * 2. The home server's list: the Tailscale API's devices, else its config list.
  * 3. Only when the home server has no Tailscale API: every server this browser knows, then the
  *    lists of the servers that answered this browser.
  * The chosen server is always listed. A server that answered goes by ITS OWN name, and a second
- * URL for a server already listed (a short name, an IP, the MagicDNS name) is dropped.
+ * URL for a server already listed (a short name, an IP, the MagicDNS name) is dropped. A
+ * localhost/127.0.0.1 URL, learned from any source, is never listed.
  */
 export function mergeServers(
   home: string, answer: ServersAnswer | null, known: ServerRef[], probes: Record<string, Probe>, chosen: ServerRef | null = null,
@@ -189,10 +198,13 @@ export function mergeServers(
   const out: ServerEntry[] = [];
   const origins = new Set<string>();
   const names = new Set<string>();
-  const homeName = answer?.self.name ?? "This server";
-  out.push({ name: homeName, url: home, self: true, health: "online" });
+  const homeLocal = isLocalOrigin(home);
+  if (!homeLocal) {
+    const homeName = answer?.self.name ?? "This server";
+    out.push({ name: homeName, url: home, self: true, health: "online" });
+    names.add(homeName.toLowerCase());
+  }
   origins.add(home);
-  names.add(homeName.toLowerCase());
   const selfUrl = answer && serverOrigin(answer.self.url);
   if (selfUrl) origins.add(selfUrl);
   const candidates: ServerRef[] = [...(answer?.servers ?? []).filter((s) => !s.self), ...(chosen ? [chosen] : [])];
@@ -202,7 +214,7 @@ export function mergeServers(
   }
   for (const c of candidates) {
     const url = serverOrigin(c.url);
-    if (!url || origins.has(url)) continue;
+    if (!url || origins.has(url) || isLocalOrigin(url)) continue;
     const probe = probes[url];
     const name = probe?.health === "online" ? probe.answer.self.name : c.name || defaultServerName(url);
     if (names.has(name.toLowerCase())) continue;
@@ -215,10 +227,14 @@ export function mergeServers(
 }
 
 /** Whether the top bar shows the server menu: the home server has not turned the switcher off, and
- *  there is more than one server — or there is no Tailscale API, so Add server must be reachable.
- *  No answer (a fetch failure, an older server): only with more than one server. Pure. */
-export const showServerMenu = (answer: ServersAnswer | null, list: ServerEntry[]): boolean =>
-  answer ? answer.enabled !== false && (list.length > 1 || !answer.tailscaleApi) : list.length > 1;
+ *  there is a server to switch to — or there is no Tailscale API, so Add server must be reachable.
+ *  The list has a self row only when the home origin is an Orca box (not localhost/127.0.0.1): then
+ *  "a server to switch to" needs more than that one row; with no self row, any row is one. No
+ *  answer (a fetch failure, an older server): only with more than one server. Pure. */
+export const showServerMenu = (answer: ServersAnswer | null, list: ServerEntry[]): boolean => {
+  const minListed = list.some((s) => s.self) ? 1 : 0;
+  return answer ? answer.enabled !== false && (list.length > minListed || !answer.tailscaleApi) : list.length > 1;
+};
 
 /** GET /api/servers on the HOME server — never the chosen base: the list is the home server's. */
 export async function fetchServers(): Promise<ServersAnswer | null> {
@@ -230,10 +246,12 @@ export async function fetchServers(): Promise<ServersAnswer | null> {
   } catch { return null; }
 }
 
-/** The current side: the chosen server, else the home server. */
+/** The current side: the chosen server, else the home server — or, on a localhost/127.0.0.1 home
+ *  (not an Orca box, so it is not in the list), the first server of the home answer's list. */
 export function currentServer(list: ServerEntry[]): ServerEntry {
   const c = chosenServer();
-  return (c && list.find((s) => s.url === c.url)) ?? (c ? { ...c, health: "checking" } : list.find((s) => s.self) ?? { name: "This server", url: homeOrigin(), self: true, health: "online" });
+  return (c && list.find((s) => s.url === c.url)) ?? (c ? { ...c, health: "checking" }
+    : list.find((s) => s.self) ?? list[0] ?? { name: "This server", url: homeOrigin(), self: true, health: "online" });
 }
 
 /** Tests: re-read the stored choice and forget the status. */

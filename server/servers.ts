@@ -100,19 +100,23 @@ async function runTailscale(args: string[]): Promise<unknown> {
 
 /** This server's own entry and its tailnet's MagicDNS suffix (`tail1234.ts.net`). The url is
  *  `ORCA_SERVER_URL`, else this node's MagicDNS name from the local `tailscale status`, else
- *  localhost. Cached for the process: none of it changes while it runs. */
+ *  localhost. The name is the MagicDNS name's first label (its Tailscale hostname, e.g.
+ *  `orca-flow-box`) when `tailscale status` gives one, else `instanceName()` — the Orca instance
+ *  name (`cloud`, `local`) stays the name everywhere else in Orca (the board's `on:`, `instances`);
+ *  only the switcher's self entry reads the tailnet hostname. Cached for the process: none of it
+ *  changes while it runs. */
 let selfCache: { key: string; entry: ServerEntry; suffix?: string } | undefined;
 async function selfInfo(sw: ServerSwitcherConfig): Promise<{ entry: ServerEntry; suffix?: string }> {
   const port = portOf(sw);
   const key = `${process.env.ORCA_SERVER_URL ?? ""}|${port}`;
   if (selfCache?.key === key) return selfCache;
-  const name = instanceName();
   let url = originOf(process.env.ORCA_SERVER_URL);
   let dns: string | undefined;
   try {
     const status = await runTailscale(["status", "--json"]) as { Self?: { DNSName?: string } };
     dns = status.Self?.DNSName?.replace(/\.$/, "") || undefined;
   } catch { /* no tailscale here: a laptop without it, a CI runner */ }
+  const name = dns ? dns.split(".")[0]! : instanceName();
   if (!url && dns) url = `http://${dns}:${port}`;
   const suffix = dns?.includes(".") ? dns.slice(dns.indexOf(".") + 1) : undefined;
   selfCache = { key, entry: { name, url: url ?? `http://localhost:${port}` }, suffix };
