@@ -183,7 +183,7 @@ describe("with Postgres", () => {
       ["email", "orca@example.com", "<root@x>", "Hello Ada", "<m1@x>"], // the catch-all link's "*" is no place: the event's channel is
     ]);
     await expect(replyTo(slack!.id, "   ")).rejects.toThrow("the reply is empty");
-    expect(replyPlan({ topic: "orca.question", source: { adapter: "orca" } }, "x", undefined, undefined, "k", 0)).toContain("nowhere to reply");
+    expect(replyPlan({ key: "question:1", topic: "orca.question", source: { adapter: "orca" } }, "x", undefined, undefined, "k", 0)).toContain("nowhere to reply");
 
     const rowsNow = async () => {
       const events = await store.inboxEvents({ limit: 10 });

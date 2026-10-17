@@ -2,7 +2,7 @@
 // came in from every integration, newest first, and one thread view across inbound and outbound.
 // Generic over adapter kinds: it reads only the core's envelope, delivery target and thread link.
 // Pure: the server builds the rows with it, the web renders them, the tests import it as is.
-import type { DeliveryState, DeliveryTarget, Envelope, InboundEnvelope } from "./integrations";
+import { replyToOf, type DeliveryState, type DeliveryTarget, type Envelope, type InboundEnvelope } from "./integrations";
 
 /** An inbox topic: every external event (`ext.*`) and every question the orchestrator asks you. */
 export const isInboxTopic = (topic: string): boolean => topic.startsWith("ext.") || topic === "orca.question";
@@ -95,13 +95,15 @@ export const canReplyTo = (e: Pick<Envelope, "topic" | "source">): boolean =>
  *  (a catch-all link's `*` is no place), its thread when it has one; the thread's message id makes
  *  an email reply an `In-Reply-To`. A string is the refusal. */
 export function replyPlan(
-  e: Pick<Envelope, "topic" | "source" | "thread" | "scope">, text: string,
+  e: Pick<Envelope, "key" | "topic" | "source" | "thread" | "scope">, text: string,
   link: { id: string; integrationId: string; externalId: string } | undefined, adapterKind: string | undefined, key: string, now: number,
 ): { envelope: InboundEnvelope; target: DeliveryTarget } | string {
   if (!canReplyTo(e)) return "this event came in on no link, so there is nowhere to reply";
   if (!text.trim()) return "the reply is empty";
   if (!link || link.id !== e.source.linkId) return `the link "${e.source.linkId}" no longer exists`;
-  const externalId = e.source.channel ?? (link.externalId !== "*" ? link.externalId : undefined);
+  // The place, as `orca post --reply` reads it (shared/integrations.ts replyToOf).
+  const place = replyToOf(e);
+  const externalId = place?.channel ?? (link.externalId !== "*" ? link.externalId : undefined);
   if (!externalId) return "the event names no place to reply to";
   const scope = e.scope?.repo ? { scope: e.scope } : {};
   return {
@@ -111,7 +113,7 @@ export function replyPlan(
     },
     target: {
       kind: "link", integrationId: link.integrationId, adapter: adapterKind ?? e.source.adapter, linkId: link.id, externalId,
-      ...(e.thread ? { threadId: e.thread.externalId } : {}),
+      ...(place?.threadId ? { threadId: place.threadId } : {}),
     },
   };
 }
