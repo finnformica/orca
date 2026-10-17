@@ -12,6 +12,7 @@ import {
 } from "@/lib/server";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuSeparator, DropdownMenuTrigger,
@@ -112,7 +113,6 @@ export function AddServerDialog() {
     setOpen(false); setUrl(""); setName("");
     switchServer(s);
   };
-  const field = "bg-card focus:ring-ring/40 h-9 w-full rounded-md border px-2 text-base outline-none focus:ring-2 md:text-sm";
   return (
     <dialog ref={setDialog} data-slot="add-server-dialog" aria-label="Add server"
       onClose={() => setOpen(false)} onCancel={() => setOpen(false)}
@@ -122,11 +122,11 @@ export function AddServerDialog() {
         <h2 className="text-sm font-semibold">Add server</h2>
         <label className="block space-y-1 text-xs">
           <span className="text-muted-foreground">Address</span>
-          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://smf-box:8787" inputMode="url" autoCapitalize="off" autoCorrect="off" className={field} />
+          <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://smf-box:8787" inputMode="url" autoCapitalize="off" autoCorrect="off" className="bg-card h-9" />
         </label>
         <label className="block space-y-1 text-xs">
           <span className="text-muted-foreground">Name (optional)</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="SMF" className={field} />
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="SMF" className="bg-card h-9" />
         </label>
         {error && <p role="alert" className="text-geist-red text-xs">{error}</p>}
         <div className="flex justify-end gap-2">

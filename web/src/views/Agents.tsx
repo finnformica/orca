@@ -35,6 +35,7 @@ import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PrPreviewInline } from "./PreviewControl";
 import { ReviewCluster } from "./Review";
 import { StatusHoverCard } from "./StatusCard";
+import { Input } from "@/components/ui/input";
 
 export function Agents() {
   const [view, setView] = useAtom(boardViewAtom);
@@ -271,8 +272,8 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
   const searchBox = (
         <label className="bg-card focus-within:ring-ring/40 flex h-8 min-w-48 flex-1 items-center gap-2 rounded-md border px-2.5 focus-within:ring-2 sm:max-w-72 max-md:h-11 max-md:min-w-0">
           <Search className="text-muted-foreground size-4 shrink-0" strokeWidth={1.5} />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search agents…" aria-label="Search workstreams"
-            className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-[13px] outline-none" />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search agents…" aria-label="Search workstreams"
+            className="h-auto rounded-none border-0 bg-transparent px-0 py-0 focus-visible:ring-0 flex-1 md:text-[13px]" />
           {q && <button type="button" onClick={() => setQ("")} aria-label="Clear search" className="text-muted-foreground hover:text-foreground max-md:-mr-2 max-md:inline-flex max-md:size-11 max-md:items-center max-md:justify-center"><X className="size-3.5" /></button>}
         </label>
   );

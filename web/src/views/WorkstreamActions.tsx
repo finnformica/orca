@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { ModelPicker } from "@/components/ModelPicker";
 import { BottomSheet } from "@/components/BottomSheet";
 import { useNarrow } from "@/lib/viewport";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
@@ -375,13 +376,13 @@ function RenameDialog({ row, open, onClose }: { row: Row; open: boolean; onClose
     >
       <form className="flex flex-col gap-3 p-4" onSubmit={(e) => { e.preventDefault(); void save(); }}>
         <div className="text-sm font-medium">Rename {row.prNumber ? `PR #${row.prNumber}` : "card"}</div>
-        <input
+        <Input
           autoFocus
           aria-label="Card title"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Card title"
-          className="bg-background focus-visible:ring-ring w-full rounded-md border px-3 py-2 text-sm outline-none focus-visible:ring-2"
+          className="bg-background h-9 px-3"
         />
         {row.prNumber ? <p className="text-muted-foreground text-xs">Updates the GitHub PR title.</p> : null}
         {err && <p className="text-destructive text-xs break-words">{err}</p>}

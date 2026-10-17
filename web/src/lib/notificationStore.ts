@@ -10,7 +10,7 @@ import { onRefresh } from "./refresh";
 import { browserNotifyAtom, notifyDndAtom, orchestratorOpenAtom, toastPrefsAtom } from "./atoms";
 import { openOrchestrator } from "./orchestratorOpen";
 import { isMobile } from "./viewport";
-import { KIND_META, TOAST_AUTO_HIDE_MS, clockPause, clockResume, clockStart, notificationPath, shouldNotifyBrowser, shouldToast, type HideClock, type Notification, type ToastPrefs } from "../../../shared/notifications";
+import { KIND_META, TOAST_AUTO_HIDE_MS, browserPermission, type BrowserPermission, clockPause, clockResume, clockStart, notificationPath, shouldNotifyBrowser, shouldToast, type HideClock, type Notification, type ToastPrefs } from "../../../shared/notifications";
 import { navigate } from "./route";
 import { actionFailureAsk, actionFailureCopy, type ActionFailure } from "../workstream";
 
@@ -101,6 +101,25 @@ export function resumeToasts(): void {
 
 /** Tests: whether the clocks are held. */
 export const toastsPaused = (): boolean => paused;
+
+/** The Settings switch: asks for the permission when switched on — called straight from the click,
+ *  as a browser needs — and returns the permission it ends with. Both forms of
+ *  `requestPermission` are handled: a promise, and old Safari's callback (which returns undefined,
+ *  so a `.catch` on it threw and the click did nothing). Refused, the stored choice stays off. */
+export async function setBrowserNotify(on: boolean): Promise<BrowserPermission> {
+  const store = getDefaultStore();
+  let p = browserPermission();
+  if (on && p === "default") {
+    const api = (globalThis as { Notification?: { requestPermission: (cb?: (r: string) => void) => Promise<string> | undefined } }).Notification!;
+    await new Promise<void>((done) => {
+      try { const r = api.requestPermission(() => done()); if (r) r.then(() => done(), () => done()); }
+      catch { done(); }
+    });
+    p = browserPermission();
+  }
+  store.set(browserNotifyAtom, on && p === "granted");
+  return p;
+}
 
 /** A browser notification for an urgent event while the tab is hidden; clicking it brings the tab
  *  back and opens the thing. Silently nothing without the permission. */

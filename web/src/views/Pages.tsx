@@ -5,14 +5,18 @@
 // is edited in orca.config.ts / the config table, not here). Notifications: do not
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
 import { useEffect, useState } from "react";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { FolderGit2, GitBranch } from "lucide-react";
 import { api, type GithubAccount } from "../api";
 import { refreshVitals } from "@/lib/vitals";
-import { notifyLocal } from "@/lib/notificationStore";
+import { notifyLocal, setBrowserNotify } from "@/lib/notificationStore";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { browserNotifyAtom, densityAtom, instanceScopeAtom, notifyDndAtom, repoFilterAtom, toastPrefsAtom } from "@/lib/atoms";
-import { KIND_META, NOTIFICATION_KINDS } from "../../../shared/notifications";
+import { KIND_META, NOTIFICATION_KINDS, browserNotifyChecked, browserNotifyNote, browserPermission } from "../../../shared/notifications";
 import { navigate } from "@/lib/route";
 import { useTheme, type Theme } from "@/lib/theme";
 import { setSwitcher, useSwitcherOn } from "@/lib/server";
@@ -168,8 +172,8 @@ function ServerSettings() {
   const on = useSwitcherOn();
   return (
     <VCard slot="settings-servers" title="Servers" bodyClass="divide-y">
-      <Setting label="Server switcher" hint="Show a server menu in the top bar, to use other Orca servers from this browser.">
-        <Segmented label="Server switcher" value={on ? "on" : "off"} onChange={(v) => setSwitcher(v === "on")} options={[{ value: "on", label: "On" }, { value: "off", label: "Off" }]} />
+      <Setting label="Server switcher" hint="Show a server menu in the top bar, to use other Orca servers from this browser." htmlFor="setting-server-switcher">
+        <Switch id="setting-server-switcher" checked={on} onCheckedChange={setSwitcher} />
       </Setting>
     </VCard>
   );
@@ -177,35 +181,38 @@ function ServerSettings() {
 
 function NotificationSettings() {
   const [dnd, setDnd] = useAtom(notifyDndAtom);
-  const [browser, setBrowser] = useAtom(browserNotifyAtom);
+  const browser = useAtomValue(browserNotifyAtom);
   const [prefs, setPrefs] = useAtom(toastPrefsAtom);
-  const onOff = [{ value: "on", label: "On" }, { value: "off", label: "Off" }];
-  const enableBrowser = async (on: boolean) => {
-    // The permission is asked for when switched on; refused, the switch stays off.
-    if (on && typeof Notification !== "undefined" && Notification.permission !== "granted") {
-      const r = await Notification.requestPermission().catch(() => "denied");
-      if (r !== "granted") return setBrowser(false);
-    }
-    setBrowser(on);
-  };
+  // Read again when the tab comes back: the user may have changed the site settings meanwhile.
+  const [permission, setPermission] = useState(() => browserPermission());
+  useEffect(() => {
+    const reread = () => setPermission(browserPermission());
+    window.addEventListener("focus", reread);
+    return () => window.removeEventListener("focus", reread);
+  }, []);
+  const browserNote = browserNotifyNote(permission);
   return (
     <VCard slot="settings-notifications" title="Notifications" bodyClass="divide-y">
-      <Setting label="Do not disturb" hint="Silence the toasts; the centre still collects everything.">
-        <Segmented label="Do not disturb" value={dnd ? "on" : "off"} onChange={(v) => setDnd(v === "on")} options={onOff} />
+      <Setting label="Do not disturb" hint="Silence the toasts; the centre still collects everything." htmlFor="setting-dnd">
+        <Switch id="setting-dnd" checked={dnd} onCheckedChange={setDnd} />
       </Setting>
-      <Setting label="Browser notifications" hint="When this tab is hidden: an agent needing input, a failure, a failed check.">
-        <Segmented label="Browser notifications" value={browser ? "on" : "off"} onChange={(v) => void enableBrowser(v === "on")} options={onOff} />
+      <Setting label="Browser notifications" hint="When this tab is hidden: an agent needing input, a failure, a failed check."
+        htmlFor={browserNote ? undefined : "setting-browser-notify"}
+        note={browserNote && <p role="note" data-slot="browser-notify-note" className="text-foreground mt-1 text-xs">{browserNote}</p>}>
+        {!browserNote && (
+          <Switch id="setting-browser-notify" data-slot="browser-notify" checked={browserNotifyChecked(browser, permission)}
+            onCheckedChange={(on) => { void setBrowserNotify(on).then(setPermission); }} />
+        )}
       </Setting>
       <div className="px-4 py-3">
         <div className="text-sm font-medium">Toasts</div>
         <div className="text-muted-foreground mb-2 text-xs">Which kinds pop up in the corner.</div>
         <ul data-slot="notification-kinds" className="grid grid-cols-2 gap-x-6 gap-y-1.5 sm:grid-cols-3">
           {NOTIFICATION_KINDS.map((k) => (
-            <li key={k}>
-              <label className="flex items-center gap-2 text-sm">
-                <input type="checkbox" className="accent-geist-blue" checked={prefs[k] !== false} onChange={(e) => setPrefs({ ...prefs, [k]: e.target.checked })} />
-                {KIND_META[k].label}
-              </label>
+            <li key={k} className="flex items-start gap-2">
+              <Checkbox id={`toast-kind-${k}`} className="mt-0.5" checked={prefs[k] !== false}
+                onCheckedChange={(v) => setPrefs({ ...prefs, [k]: v === true })} />
+              <Label htmlFor={`toast-kind-${k}`} className="leading-5 font-normal">{KIND_META[k].label}</Label>
             </li>
           ))}
         </ul>
@@ -253,9 +260,9 @@ function MachineRate({ instance, saved }: { instance: string; saved: number | un
     <Setting label={instance} hint="USD per hour. Empty: an EC2 on-demand estimate, else 0.">
       <form className="flex items-center gap-2" onSubmit={(e) => { e.preventDefault(); if (valid && dirty) void save(); }}>
         <span className="text-muted-foreground text-sm">$</span>
-        <input data-slot="machine-rate" aria-label={`${instance} USD per hour`} inputMode="decimal" placeholder="auto" value={text}
+        <Input data-slot="machine-rate" aria-label={`${instance} USD per hour`} inputMode="decimal" placeholder="auto" value={text}
           onChange={(e) => setText(e.target.value)} aria-invalid={!valid}
-          className="border-input bg-background h-8 w-24 rounded-md border px-2 text-sm tabular-nums" />
+          className="bg-background w-24 tabular-nums" />
         <span className="text-muted-foreground text-sm">/h</span>
         <Button type="submit" variant="secondary" size="sm" disabled={!valid || !dirty || busy}>Save</Button>
       </form>
@@ -263,9 +270,15 @@ function MachineRate({ instance, saved }: { instance: string; saved: number | un
   );
 }
 
-const Setting = ({ label, hint, children }: { label: string; hint: string; children: React.ReactNode }) => (
+/** One settings row: the label and hint on the left, the control on the right. `htmlFor` names the
+ *  control, so a click on the label works it; `note` goes under the hint (a control that can't work). */
+const Setting = ({ label, hint, htmlFor, note, children }: { label: string; hint: string; htmlFor?: string; note?: React.ReactNode; children?: React.ReactNode }) => (
   <div className="flex items-center justify-between gap-4 px-4 py-3">
-    <div><div className="text-sm font-medium">{label}</div><div className="text-muted-foreground text-xs">{hint}</div></div>
+    <div className="min-w-0">
+      {htmlFor ? <Label htmlFor={htmlFor}>{label}</Label> : <div className="text-sm font-medium">{label}</div>}
+      <div className="text-muted-foreground text-xs">{hint}</div>
+      {note}
+    </div>
     {children}
   </div>
 );
@@ -333,10 +346,10 @@ function AccountRowView({ account: a, onSaved }: { account: GithubAccount; onSav
         </span>
       </div>
       <form className="flex flex-col gap-2 md:flex-row md:items-center" onSubmit={(e) => { e.preventDefault(); if (dirty) void save(); }}>
-        <input aria-label={`${a.login} name`} placeholder={a.name ?? "name"} value={name} onChange={(e) => setName(e.target.value)}
-          className="border-input bg-background h-10 w-full rounded-md border px-2 text-sm md:h-8 md:w-36" />
-        <input aria-label={`${a.login} email`} placeholder={a.email ?? "email"} value={email} onChange={(e) => setEmail(e.target.value)} type="email"
-          className="border-input bg-background h-10 w-full rounded-md border px-2 text-sm md:h-8 md:w-56" />
+        <Input aria-label={`${a.login} name`} placeholder={a.name ?? "name"} value={name} onChange={(e) => setName(e.target.value)}
+          className="bg-background h-10 md:h-8 md:w-36" />
+        <Input aria-label={`${a.login} email`} placeholder={a.email ?? "email"} value={email} onChange={(e) => setEmail(e.target.value)} type="email"
+          className="bg-background h-10 md:h-8 md:w-56" />
         <Button type="submit" variant="secondary" size="sm" disabled={!dirty || busy} className="h-10 w-full md:h-8 md:w-auto">Save</Button>
       </form>
     </div>
