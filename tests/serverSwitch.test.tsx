@@ -14,7 +14,7 @@ import { navigate } from "@/lib/route";
 import { subscribeTurns } from "@/lib/events";
 import {
   CHOICE_KEY, KNOWN_KEY, _resetServer, _setReloader, apiBase, apiFetch, apiUrl, defaultServerName, knownServers, mergeServers,
-  rememberServer, serverOrigin, serverStatus, showServerMenu, switchServer, type Probe, type ServersAnswer,
+  probeServer, rememberServer, serverOrigin, serverStatus, showServerMenu, switchServer, type Probe, type ServersAnswer,
 } from "@/lib/server";
 import { _resetServerList } from "@/components/ServerMenu";
 import { getDefaultStore } from "jotai";
@@ -321,6 +321,25 @@ test("S9: an abort says nothing about the server; the home server is never judge
   answer = async () => { throw new TypeError("Failed to fetch"); };
   await apiFetch("/api/agents").catch(() => {});
   expect(serverStatus()).toBe("ok");
+});
+
+test("S11: probeServer tells a CORS-blocked origin apart from a dead server with a no-cors fallback", async () => {
+  setup();
+  // The first (cors) fetch fails exactly as it would for a dead server; the server answers the
+  // second (no-cors) one, so it is alive, just not trusting this origin — "refused", not "offline".
+  let noCorsCalls = 0;
+  globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.mode === "no-cors") { noCorsCalls++; return new Response(null, { status: 200 }); }
+    throw new TypeError("Failed to fetch");
+  }) as typeof fetch;
+  expect(await probeServer("http://box-b:8787")).toEqual({ health: "refused" });
+  expect(noCorsCalls).toBe(1);
+});
+
+test("S12: probeServer reads a server that fails both the cors and no-cors fetch as offline", async () => {
+  setup();
+  globalThis.fetch = (async (_input: RequestInfo | URL) => { throw new TypeError("Failed to fetch"); }) as unknown as typeof fetch;
+  expect(await probeServer("http://ghost-box:8787")).toEqual({ health: "offline" });
 });
 
 test("S10: URLs and names (pure)", () => {

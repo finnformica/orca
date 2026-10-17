@@ -152,14 +152,26 @@ export function rememberServer(server: { url: string; name?: string }): ServerRe
 }
 
 /** Ask one server for its GET /api/servers, with a short timeout. A cross-origin call: the server
- *  answers it only for a Tailscale user device (server/servers.ts `serverGate`). Never throws. */
+ *  answers it only for a Tailscale user device (server/servers.ts `serverGate`). Never throws.
+ *
+ *  An origin the server does not trust (server/servers.ts `trustedOrigin`) sends no
+ *  Access-Control-Allow-Origin header at all, so the browser blocks the answer before this code ever
+ *  sees it — the same network-error shape as a server that is simply down. The two are told apart
+ *  with a second, `no-cors` fetch of the same URL: it still fails for a dead server (the connection
+ *  itself never succeeds), but resolves (as an unreadable opaque response) for a live server that
+ *  just refused the first call on origin — read as "refused", not "offline". */
 export async function probeServer(url: string, timeoutMs = PROBE_TIMEOUT_MS): Promise<Probe> {
   try {
     const r = await fetch(`${url}/api/servers`, { cache: "no-store", signal: AbortSignal.timeout(timeoutMs) });
     if (r.status === 403) return { health: "refused" };
     const v: unknown = r.ok ? await r.json() : null;
     return isAnswer(v) ? { health: "online", answer: v } : { health: "offline" };
-  } catch { return { health: "offline" }; }
+  } catch {
+    try {
+      await fetch(`${url}/api/servers`, { cache: "no-store", mode: "no-cors", signal: AbortSignal.timeout(timeoutMs) });
+      return { health: "refused" };
+    } catch { return { health: "offline" }; }
+  }
 }
 
 /**
