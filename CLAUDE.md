@@ -198,7 +198,12 @@ pairing code (`pairing_code`; approve with `POST /api/integrations/pairing/appro
 has `orca channels`, `post`, `thread link` and `ask-user`. A subscription's `digest_seconds` batches
 its deliveries per fixed window (`delivery.digest_key`). `/api/slack` still posts at once as
 you (`postAsUser`), not through the queue; `/api/orchestrator/event` stays for instance-to-instance
-reports, scripts use a signed webhook (`/api/integrations/<id>/inbound`).
+reports, scripts use a signed webhook (`/api/integrations/<id>/inbound`). **Linear** (`adapters/linear.ts`,
+`docs/integrations/linear.md`) polls GraphQL with an `updatedAt` cursor (`ORCA_SECRET_LINEAR`): issues
+assigned to or mentioning the key's user are `ext.linear.issue`, others' comments on them (or that
+mention the user) `ext.linear.message` in the issue's thread; the place is `project:<id>` then
+`team:<KEY>` (`source.parents`); PR events reach a linked issue (`orca thread link linear <issue id>
+… --link`) as a comment. Agent-app mode needs a relay and is not built.
 
 ## Multi-repo (aggregated)
 
