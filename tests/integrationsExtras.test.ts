@@ -11,7 +11,7 @@ import * as store from "../server/integrations/store";
 import { launchOptions, permissionFor } from "../server/verbs";
 import type { Adapter } from "../server/integrations/adapter";
 import {
-  PAIRING_ALPHABET, PAIRING_TTL_MS, digestEnvelope, digestWindow, grantRefusal, inboundEnvelope, pairingCode, pairingReply,
+  PAIRING_ALPHABET, PAIRING_TTL_MS, digestEnvelope, digestWindow, fenceExternal, grantRefusal, inboundEnvelope, pairingCode, pairingReply, replyToOf,
   type Envelope, type OutboundMessage, type Target,
 } from "../shared/integrations";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, wakeProgress } from "../web/src/workstream";
@@ -198,6 +198,39 @@ describe("with Postgres", () => {
     expect((await store.deliveries()).map((d) => d.target)).toEqual([{ kind: "web" }]); // not the orchestrator, not the inbound default
     await store.addPrincipal({ id: "ana", name: "Ana", maxLevel: "work" }, [{ adapter: "github", externalId: "ana" }]);
     expect(await router.ingest("slack-work", { ...machine("3"), actor: { external: { adapter: "github", id: "ana" } } })).toBe("rejected"); // a person still gets nothing on notify
+  });
+
+  test("orca post --reply answers the outside message that woke the orchestrator, on its link, place and thread", async () => {
+    const cfg = { repos: [] } as unknown as OrcaConfig;
+    // What the inbox hands the wake: the event's link, place and thread (shared replyToOf).
+    const e = { key: "slack:e9", source: { adapter: "slack", linkId: "L1", channel: "C1" }, thread: { adapter: "slack", externalId: "C1:7.7" } };
+    const replyTo = replyToOf(e)!;
+    expect(replyTo).toEqual({ linkId: "L1", channel: "C1", threadId: "C1:7.7", eventKey: "slack:e9" });
+    expect(replyToOf({ key: "x", source: { adapter: "orca" } })).toBeUndefined();
+    expect(fenceExternal({ text: "hi", source: { adapter: "slack" } })).toContain('orca post --reply "<text>"');
+
+    // It rides the queue with the message, so a busy orchestrator still knows where to answer.
+    await db.queueMessage({ repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH, worktreePath: "/tmp/o", instruction: "q", attachments: [], grant: { level: "ask", repos: [] }, replyTo });
+    expect((await db.claimQueuedMessage(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, "ask:"))?.replyTo).toEqual(replyTo);
+
+    await expect(orchestrator.tool(cfg, "post", { reply: "Done." })).rejects.toThrow("this wake has no outside message to answer");
+    await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: { level: "ask", repos: [], linkId: "L1" } as never, wakeReplyTo: replyTo as never });
+    // bin/orca puts `--reply "Done."` in the flag's value; `--reply` then words works too.
+    expect(await orchestrator.tool(cfg, "post", { reply: "Done." })).toContain("Queued for #eng (thread C1:7.7)");
+    expect(await orchestrator.tool(cfg, "post", { reply: "", _: ["Merged", "too."] })).toContain("Queued for #eng");
+    await dispatcher.dispatchOnce();
+    expect(sent.map((x) => [x.target.externalId, x.target.threadId, x.msg.text])).toEqual([["C1", "C1:7.7", "Done."], ["C1", "C1:7.7", "Merged too."]]);
+
+    // A catch-all link's reply goes to the DM it came from, never to "*".
+    await store.addLink({ id: "Lstar", integrationId: "slack-work", externalId: "*", level: "ask", repos: [], requireMention: false });
+    await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: { level: "ask", repos: [], linkId: "Lstar" } as never, wakeReplyTo: { linkId: "Lstar", channel: "D-dm" } as never });
+    expect(await orchestrator.tool(cfg, "post", { reply: "Hi." })).toContain("D-dm");
+    await dispatcher.dispatchOnce(Date.now() + 2_000);
+    expect(sent.at(-1)!.target).toMatchObject({ externalId: "D-dm" });
+
+    // The grant check sees the resolved link: a reply target outside the wake's own link is refused.
+    await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: { level: "ask", repos: [], linkId: "L1" } as never, wakeReplyTo: { linkId: "Lstar", channel: "D-dm" } as never });
+    await expect(orchestrator.tool(cfg, "post", { reply: "x" })).rejects.toThrow("only on its own link (L1)");
   });
 
   test("orca channels, post, thread link and ask-user — and the grant on post", async () => {

@@ -1620,6 +1620,8 @@ const ORCA_COMMANDS = [
   "  orca post --link <id> [--thread <id> | --repo <repo> --branch <branch>] \"<text>\"   post through a channel",
   "                                  link (retried if it fails); with --repo/--branch, in that workstream's thread.",
   "                                  Answer an outside sender on the link their message came from",
+  "  orca post --reply \"<text>\"      answer the outside message that woke you, on its link and in its thread —",
+  "                                  never copy a thread id by hand",
   "  orca thread link <adapter> <thread-id> --repo <repo> --branch <branch> [--link <id>]   send replies in that",
   "                                  external thread to the workstream",
   "  orca ask-user \"<question>\"      ask the user in Orca and on every channel subscribed to questions",

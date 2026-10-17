@@ -293,8 +293,13 @@ first (section 7).
 |---|---|
 | `orca channels` | Lists every link (integration, place, level, repos), every subscription and the pending pairing codes. |
 | `orca post --link <id> [--thread <id> \| --repo r --branch b] "<text>"` | Publishes `orca.message` with a delivery to the link. With `--repo` and `--branch` it continues that workstream's thread on the link, or starts it. |
+| `orca post --reply "<text>"` | Answers the outside message that woke the orchestrator: its link, its place (the DM for a catch-all link) and its thread. The grant check runs on that link. A wake from your own chat or a worker report has nothing to answer, so `--reply` fails there. |
 | `orca thread link <adapter> <thread-id> --repo r --branch b [--link <id>]` | Binds an external thread to a workstream. Replies in it then go to the workstream (with a `work` grant on its repo). |
 | `orca ask-user "<question>"` | Publishes `orca.question`. The bell shows it as `needs_input`. Subscriptions to `orca.question` also send it out (for example to your Slack DM). |
+
+The wake knows its source event. `inbox.toOrchestrator` passes the event's `ReplyTo` (`replyToOf`:
+link, place, thread, event key) with the message. The queue keeps it in `queued_message.reply_to`,
+and the wake stores the newest one as `wakeReplyTo`, beside `wakeGrant`.
 
 `publish(envelope, now, extra)` takes explicit deliveries (`extra`) beside the subscriptions'. Use
 it from the core for a delivery to one known target.
