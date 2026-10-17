@@ -41,7 +41,9 @@ export type Envelope = {
   key: string; // idempotency key: the platform's event id ("slack:T1:Ev123") or the notification key
   topic: Topic;
   at: number;
-  source: { adapter: string; integrationId?: string; linkId?: string };
+  /** Where it came from. An adapter sets `channel` (the external place: a Slack channel id, a
+   *  mailbox, a hook) and the core resolves it to `linkId`. */
+  source: { adapter: string; integrationId?: string; channel?: string; linkId?: string };
   actor?: Actor;
   scope?: { repo?: string; branch?: string }; // set when known (PR, worker, thread link)
   thread?: ConversationRef;
@@ -49,6 +51,8 @@ export type Envelope = {
   title?: string;
   attachments?: string[]; // orca-attachment:// refs (server/attachments.ts)
   link?: { url?: string; pr?: number; orchestrator?: boolean };
+  /** A chat message that @-mentions Orca. `false` on a link with require_mention is dropped. */
+  mentioned?: boolean;
   grant?: Grant; // set by the gate on ingest; never by an adapter
   raw?: unknown; // the platform's payload, for debug
 };
@@ -98,7 +102,7 @@ export type SendResult =
 export type InboundMessage = {
   adapter: string;
   integrationId?: string;
-  linkId?: string;
+  channel?: string; // the external place (channel id, mailbox); the core resolves the link
   eventId: string; // the platform's own id: retries and reconnects reuse it
   from: Actor["external"];
   text: string;
@@ -113,8 +117,9 @@ export const inboundEnvelope = (m: InboundMessage): InboundEnvelope => ({
   key: `${m.adapter}:${m.eventId}`,
   topic: `ext.${m.adapter}.message`,
   at: m.at ?? Date.now(),
-  source: { adapter: m.adapter, integrationId: m.integrationId, linkId: m.linkId },
+  source: { adapter: m.adapter, integrationId: m.integrationId, channel: m.channel },
   actor: { external: m.from },
+  ...(m.mentioned !== undefined ? { mentioned: m.mentioned } : {}),
   ...(m.thread ? { thread: m.thread } : {}),
   text: m.text,
   ...(m.attachments?.length ? { attachments: m.attachments } : {}),
@@ -175,6 +180,45 @@ export function defaultInboundTarget(e: Pick<Envelope, "topic" | "grant">, threa
   return { kind: "orchestrator" };
 }
 
+/** The deliveries one event makes (§3.5 rule 2), pure: every matching subscription, resolved to a
+ *  stored target, plus the default route for an inbound message no subscription took.
+ *  - A link target continues the workstream's thread on that link when one exists (`threads`).
+ *  - `orca.integration.failed` never goes to a link: a broken link would feed itself.
+ *  - An event is never echoed to the link it came in on.
+ *  - An outside sender's message reaches a workstream only with "work" on its repo. */
+export function planDeliveries(
+  e: Pick<Envelope, "topic" | "scope" | "source" | "grant">,
+  subs: Subscription[],
+  links: Map<string, { integrationId: string; adapter: string; externalId: string }>,
+  threads: Map<string, string> = new Map(),
+  inboundThread?: { repo: string; branch: string },
+): { subscriptionId: number | null; target: DeliveryTarget }[] {
+  const out: { subscriptionId: number | null; target: DeliveryTarget }[] = [];
+  for (const s of subs) {
+    if (!subscriptionMatches(s, e)) continue;
+    if (s.targetKind === "link") {
+      const l = s.targetId ? links.get(s.targetId) : undefined;
+      if (!l || e.topic === "orca.integration.failed" || e.source.linkId === s.targetId) continue;
+      const threadId = threads.get(s.targetId!);
+      out.push({ subscriptionId: s.id, target: { kind: "link", integrationId: l.integrationId, adapter: l.adapter, linkId: s.targetId!, externalId: l.externalId, ...(threadId ? { threadId } : {}) } });
+    } else if (s.targetKind === "workstream") {
+      const [repo, branch] = (s.targetId ?? "").split("::");
+      if (!repo || !branch || !grantAllowsRepo(e.grant, repo, "work")) continue;
+      out.push({ subscriptionId: s.id, target: { kind: "workstream", repo, branch } });
+    } else if (s.targetKind === "orchestrator") {
+      if (e.grant && e.grant.level === "notify") continue;
+      out.push({ subscriptionId: s.id, target: { kind: "orchestrator" } });
+    } else {
+      out.push({ subscriptionId: s.id, target: { kind: "web" } });
+    }
+  }
+  if (!out.some((d) => d.target.kind === "orchestrator" || d.target.kind === "workstream")) {
+    const fallback = defaultInboundTarget(e, inboundThread);
+    if (fallback) out.push({ subscriptionId: null, target: fallback });
+  }
+  return out;
+}
+
 // ── Delivery: retry, dead state, pace ────────────────────────────────────────────────────────────
 
 /** §3.5: 5 s, 30 s, 2 min, 10 min, 1 h, then dead after the sixth attempt. */
@@ -188,14 +232,14 @@ export function afterAttempt(r: SendResult, attempts: number, now: number): { st
   if (r.ok) return { state: "sent", nextAt: now };
   if (!r.retryable || attempts >= MAX_ATTEMPTS) return { state: "dead", nextAt: now };
   const backoff = RETRY_DELAYS_MS[Math.min(attempts - 1, RETRY_DELAYS_MS.length - 1)];
-  return { state: "failed", nextAt: now + Math.max(backoff, r.retryAfterMs ?? 0) };
+  return { state: "failed", nextAt: now + Math.max(backoff ?? 0, r.retryAfterMs ?? 0) };
 }
 
 /** A sliding-window pace check: the wait before one more event fits in `windowMs`, given the
  *  recent event times (oldest first). 0 = go now. Used for outbound per target and inbound per sender. */
 export function paceWait(recent: number[], now: number, limit: number, windowMs: number): number {
   const live = recent.filter((t) => now - t < windowMs);
-  return live.length < limit ? 0 : live[live.length - limit] + windowMs - now;
+  return live.length < limit ? 0 : (live[live.length - limit] ?? now) + windowMs - now;
 }
 
 /** §3.8: an outside sender gets at most 20 messages in 10 minutes. */
