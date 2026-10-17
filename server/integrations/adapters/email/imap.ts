@@ -42,12 +42,14 @@ export class ImapClient {
     });
     sock.setTimeout(0);
     const c = new ImapClient(sock);
-    const greet = await c.next(timeout);
-    if (!/^\* (OK|PREAUTH)/i.test(greet.text)) throw new ImapError(`IMAP greeting: ${greet.text}`);
-    await c.command(`LOGIN ${quote(o.user)} ${quote(o.password)}`, timeout);
-    const caps = await c.command("CAPABILITY", timeout);
-    for (const l of caps.untagged) if (/^\* CAPABILITY /i.test(l.text)) for (const t of l.text.split(" ").slice(2)) c.capabilities.add(t.toUpperCase());
-    return c;
+    try {
+      const greet = await c.next(timeout);
+      if (!/^\* (OK|PREAUTH)/i.test(greet.text)) throw new ImapError(`IMAP greeting: ${greet.text}`);
+      await c.command(`LOGIN ${quote(o.user)} ${quote(o.password)}`, timeout);
+      const caps = await c.command("CAPABILITY", timeout);
+      for (const l of caps.untagged) if (/^\* CAPABILITY /i.test(l.text)) for (const t of l.text.split(" ").slice(2)) c.capabilities.add(t.toUpperCase());
+      return c;
+    } catch (e) { sock.destroy(); throw e; }
   }
 
   private wake() { for (const w of this.waiters.splice(0)) w(); }
