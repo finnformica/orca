@@ -224,6 +224,19 @@ once for the orchestrator's window (#96: Claude Code's TUI in tmux, streamed ove
 the user found it didn't work for them and had it reverted the next day. The orchestrator's panel
 is the chat panel over its recorded turns; a wake is `claude -p --resume` on its session.
 
+**One exception: the instance web terminal** (`server/terminal.ts`, `components/InstanceTerminal.tsx`).
+It is a shell on a MACHINE, not a lane for a card: the Terminal action on an instance card opens
+xterm.js over one WebSocket (`/api/terminal`) to a real PTY (`Bun.spawn({ terminal })`, no library).
+The shell runs as the service user, in its home, with `agentEnv()`. Its first use was `gh auth login`
+for a second account from the phone. Rules:
+- It is OFF unless `terminal[<instance>]` is `true` in the app config. Only Settings' Terminal card
+  sets it (`POST /api/config/terminal`). A pasted config document keeps the stored value.
+- Owner only: loopback, or a tailnet node of the same Tailscale user (`tailscale whois`). A browser's
+  Origin must name the host. A local proxy's `x-forwarded-for` is the caller that is checked.
+- At most 2 shells per instance. No input for 30 minutes closes the shell. The PTY closes with its socket.
+- Start and end are logged (who, instance, time). Keystrokes and output are never logged.
+- Another instance's terminal relays through the bridge you are on. The target runs the gate again.
+
 ## The one board & model
 
 **The console is Vercel's, copied outright** (Finn's re-brief after the first, swimlane-ish

@@ -6,7 +6,7 @@
 // around this exact UsageCard — no second usage widget to keep in sync.
 import { useState } from "react";
 import { useAtom } from "jotai";
-import { AlertTriangle, Check, ChevronDown, ChevronUp, Loader2, RefreshCw, Server, X } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronUp, Loader2, RefreshCw, Server, SquareTerminal, X } from "lucide-react";
 import { api } from "@/api";
 import { usageExpandedAtom } from "@/lib/atoms";
 import { notifyLocal } from "@/lib/notificationStore";
@@ -18,7 +18,8 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/h
 import { Tip } from "@/components/ui/tip";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
-import { thisInstance } from "../store";
+import { thisInstance, useInstanceTerminals } from "../store";
+import { InstanceTerminal } from "@/components/InstanceTerminal";
 import { HISTORY_RANGES, countMax, headerUsage, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard } from "@/components/console";
 
@@ -274,6 +275,7 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   // The range is remembered per machine (`orca.ui.v1.instanceRange:<instance>`).
   const [hours, setHours] = usePersisted<number>(persistedKey("instanceRange", instance), 24, isRange);
   const reading = useHealth(here ? undefined : instance);
+  const [terminal, setTerminal] = useState(false);
   const history = useHealthHistory(instance, hours);
   const h = reading?.health;
   const down = Boolean(reading?.down);
@@ -289,10 +291,14 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const memTotal = h?.memTotalGb ?? Math.max(1, ...(history ?? []).map((p) => p.memTotalGb));
   const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
   return (
+    <>
     <VCard
       slot={`instance-${instance}`}
       title={<span className="flex items-center gap-2"><Server className="text-muted-foreground size-4" />{instance}{here && <span className="text-muted-foreground font-normal">· this machine</span>}</span>}
-      aside={<Segmented label="Range" value={String(hours)} onChange={(v) => setHours(Number(v))} options={HISTORY_RANGES.map((r) => ({ value: String(r.hours), label: r.label }))} />}
+      aside={<>
+        <TerminalAction instance={instance} down={down} onOpen={() => setTerminal(true)} />
+        <Segmented label="Range" value={String(hours)} onChange={(v) => setHours(Number(v))} options={HISTORY_RANGES.map((r) => ({ value: String(r.hours), label: r.label }))} />
+      </>}
     >
       <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-b p-4 sm:grid-cols-3 lg:grid-cols-6">
         <Detail label="Status" slot="instance-status">
@@ -328,5 +334,24 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
           </div>
         )}
     </VCard>
+    <InstanceTerminal instance={instance} open={terminal} onClose={() => setTerminal(false)} />
+    </>
+  );
+}
+
+/** The card's Terminal action: a shell on this machine (components/InstanceTerminal.tsx). Off until
+ *  Settings turns it on for the machine — shown disabled, with where to turn it on. */
+function TerminalAction({ instance, down, onOpen }: { instance: string; down: boolean; onOpen: () => void }) {
+  const on = useInstanceTerminals()[instance] === true;
+  const why = !on ? "Off — turn it on in Settings › Terminal" : down ? "The machine is unreachable" : `Open a shell on ${instance}`;
+  return (
+    <Tip label={why}>
+      {/* A span, so the tooltip still shows on a disabled button. */}
+      <span className="inline-flex">
+        <Button type="button" variant="secondary" size="sm" data-slot="instance-terminal-open" disabled={!on || down} onClick={onOpen} className="h-7 px-2 text-xs">
+          <SquareTerminal className="size-3.5" />Terminal
+        </Button>
+      </span>
+    </Tip>
   );
 }
