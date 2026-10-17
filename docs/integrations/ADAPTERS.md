@@ -130,6 +130,8 @@ export type InboundMessage = {
 - Set `source.channel` to the external place (a Slack channel id, a mailbox, a hook name). The core
   finds the `channel_link` row for it. If there is none, it uses the integration's catch-all link
   (`external_id = '*'`), if one exists. A place with no link is `"rejected"`.
+- Set `source.parents` when the place sits inside wider places, most specific first. Linear sets
+  the issue's project, then its team. The core tries `channel`, then each parent, then `*`.
 - Set `actor` for a person. The core finds the person through `identity`. An unknown person is
   `"rejected"`, and the core sends them a pairing code (section 10). Do not send it yourself.
 - Leave `actor` empty for a machine sender (a webhook, a poller). The integration is then the

@@ -43,10 +43,10 @@ export const resetPace = (): void => recent.clear();
 export async function ingest(integrationId: string, e: InboundEnvelope, now = Date.now()): Promise<"new" | "duplicate" | "rejected"> {
   // Dedupe first, so a platform retry of an accepted event is "duplicate", never a second pace hit.
   if (await store.event(e.key)) return "duplicate";
-  // A link for the exact place, else the integration's catch-all link (external_id "*": DMs, a bot's
-  // every channel). No link = nobody said Orca may listen there.
-  const link = e.source.linkId ? await store.link(e.source.linkId)
-    : e.source.channel ? (await store.linkFor(integrationId, e.source.channel)) ?? (await store.linkFor(integrationId, "*")) : undefined;
+  // A link for the exact place, else for a wider place that holds it (`source.parents`), else the
+  // integration's catch-all link (external_id "*": DMs, a bot's every channel). No link = nobody
+  // said Orca may listen there.
+  const link = e.source.linkId ? await store.link(e.source.linkId) : e.source.channel ? await firstLink(integrationId, [e.source.channel, ...(e.source.parents ?? []), "*"]) : undefined;
   if (!link || link.integrationId !== integrationId) return "rejected"; // no link = nobody said Orca may listen here
   if (link.requireMention && e.mentioned === false) return "rejected";
   const who = `${integrationId}:${e.actor?.external.id ?? link.id}`;
@@ -69,6 +69,11 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
     grant,
   }, now);
   return r.status;
+}
+
+async function firstLink(integrationId: string, places: string[]): Promise<store.Link | undefined> {
+  for (const p of places) { const l = await store.linkFor(integrationId, p); if (l) return l; }
+  return undefined;
 }
 
 /** An unknown sender on a linked place: their pending code, or a new one. A NEW code is sent back to
