@@ -213,10 +213,37 @@ test("trustedOrigin: a listed origin, or an Orca page on this tailnet on the Orc
   expect(ok("http://box-c.tail1234.ts.net:5173")).toBe(false); // a preview on the box: agent code
   expect(ok("http://box-c.other.ts.net:8787")).toBe(false); // another tailnet
   expect(ok("http://evil.example:8787")).toBe(false);
-  expect(ok("http://localhost:8787")).toBe(false);
   expect(ok("http://192.168.1.4:8787")).toBe(false);
   expect(ok("http://100.12.0.1:8787")).toBe(false); // public, not 100.64.0.0/10
   expect(trustedOrigin("http://box-c.tail1234.ts.net:8787", [], undefined, 8787)).toBe(false); // no tailnet known here
+});
+
+test("trustedOrigin: localhost/127.0.0.1 is trusted on the API port and the Vite dev port only", () => {
+  const ok = (o: string) => trustedOrigin(o, [], "tail1234.ts.net", 8787, 8788);
+  expect(ok("http://localhost:8787")).toBe(true); // the API port, called straight (no dev app)
+  expect(ok("http://localhost:8788")).toBe(true); // the Vite dev port: the laptop dev app
+  expect(ok("http://127.0.0.1:8787")).toBe(true);
+  expect(ok("http://127.0.0.1:8788")).toBe(true);
+  expect(ok("http://localhost:5173")).toBe(false); // some other local app on this machine
+  expect(ok("http://127.0.0.1:3000")).toBe(false);
+  expect(ok("https://localhost:8787")).toBe(false); // the http(s) rule stays unix: no HTTPS localhost
+  // A different uiPort is honoured, not hardcoded.
+  expect(trustedOrigin("http://localhost:9999", [], "tail1234.ts.net", 8787, 9999)).toBe(true);
+});
+
+test("serverGate: a localhost origin on the API or Vite dev port gets CORS after whois, like a tailnet page", async () => {
+  const h = handler();
+  const fromDevApp = await serverGate(req("GET", "http://localhost:8788"), "100.64.0.5", {}, h.next);
+  expect(fromDevApp.status).toBe(200);
+  expect(fromDevApp.headers.get("access-control-allow-origin")).toBe("http://localhost:8788");
+  const fromApiPort = await serverGate(req("GET", "http://localhost:8787"), "100.64.0.5", {}, h.next);
+  expect(fromApiPort.headers.get("access-control-allow-origin")).toBe("http://localhost:8787");
+  // Still a tagged node (a box, not a user device): the whois check still refuses it.
+  const fromBox = await serverGate(req("GET", "http://localhost:8788"), "100.64.0.9", {}, h.next);
+  expect(fromBox.status).toBe(403);
+  // Not an Orca port: no CORS header at all.
+  const wrongPort = await serverGate(req("GET", "http://localhost:5173"), "100.64.0.5", {}, h.next);
+  expect(wrongPort.headers.get("access-control-allow-origin")).toBeNull();
 });
 
 test("with no API and no list, a page from the other box (same tailnet) gets CORS after whois", async () => {
