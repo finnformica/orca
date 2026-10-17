@@ -3,8 +3,8 @@
 // outbound. The core owns everything else — the gate (link level, the person, the link's repos),
 // dedupe, retries, pacing and the thread → workstream map — so this file only speaks Discord.
 //
-// Inbound: a message that @-mentions the bot in a linked channel (or in a thread of one), or any DM
-// when the integration's `config.dmLink` names the link DMs fall under. A thread's messages carry
+// Inbound: a message that @-mentions the bot in a linked channel (or in a thread of one), or a DM —
+// under the link `config.dmLink` names, else the integration's catch-all link ("*"). A thread's messages carry
 // `thread` (its channel id) and its PARENT channel as `source.channel`, so the link is the parent's.
 // A top-level mention gets `thread` = its own message id: Discord gives a thread started from a
 // message that message's id, so once the core accepts the event the adapter opens that thread and
@@ -87,8 +87,8 @@ export function render(msg: OutboundMessage): Record<string, unknown> {
   };
 }
 
-/** A Gateway MESSAGE_CREATE as the core's envelope, or undefined when it is not for Orca (a bot,
- *  an empty message, a DM with no DM link). `parentOf` maps a thread to its channel. Pure but for it. */
+/** A Gateway MESSAGE_CREATE as the core's envelope, or undefined when it is not for Orca (a bot, an
+ *  empty message). `parent` is the channel's parent when it is a thread. Pure. */
 export type DiscordMessage = {
   id: string; channel_id: string; guild_id?: string; content?: string; timestamp?: string;
   author: { id: string; username?: string; global_name?: string | null; bot?: boolean };
@@ -97,7 +97,6 @@ export type DiscordMessage = {
 export function toEnvelope(m: DiscordMessage, o: { integrationId: string; botId?: string; dmLink?: string; parent?: string }) {
   if (m.author.bot || (o.botId && m.author.id === o.botId)) return undefined;
   const dm = !m.guild_id;
-  if (dm && !o.dmLink) return undefined;
   const mentioned = dm || Boolean(o.botId && (m.mentions?.some((u) => u.id === o.botId) || m.content?.includes(`<@${o.botId}>`)));
   const text = [
     (m.content ?? "").replace(new RegExp(`<@!?${o.botId ?? "-"}>`, "g"), "").trim(),
@@ -109,14 +108,16 @@ export function toEnvelope(m: DiscordMessage, o: { integrationId: string; botId?
   const inThread = !dm && Boolean(o.parent && o.parent !== m.channel_id);
   const e = inboundEnvelope({
     adapter: "discord", integrationId: o.integrationId, eventId: m.id,
-    channel: dm ? undefined : inThread ? o.parent : m.channel_id,
+    // A DM: the link `dmLink` names, else the DM channel itself, which the core matches to the
+    // integration's catch-all link ("*") — no such link drops it.
+    channel: dm ? (o.dmLink ? undefined : m.channel_id) : inThread ? o.parent : m.channel_id,
     from: { adapter: "discord", id: m.author.id, name: m.author.global_name || m.author.username },
     text, mentioned,
     thread: { adapter: "discord", externalId: dm ? m.channel_id : inThread ? m.channel_id : m.id, messageId: m.id },
     at: m.timestamp ? Date.parse(m.timestamp) : undefined,
     raw: { id: m.id, channel_id: m.channel_id, guild_id: m.guild_id }, // ids only: no content twice, never a token
   });
-  return { envelope: dm ? { ...e, source: { ...e.source, linkId: o.dmLink } } : e, opensThread: !dm && !inThread };
+  return { envelope: dm && o.dmLink ? { ...e, source: { ...e.source, linkId: o.dmLink } } : e, opensThread: !dm && !inThread };
 }
 
 /** The wait before reconnect number `attempt`: 1s, 2s, 4s … 60s. */
@@ -260,7 +261,17 @@ export function discordAdapter(connection: Connection): Adapter {
         const r = await discordApi(token(), "PATCH", `/channels/${channel}/messages/${target.messageId}`, body);
         return r.ok ? { ok: true, externalMsgId: target.messageId, ...(target.threadId ? { threadId: target.threadId } : {}) } : failure(r);
       }
-      const r = await discordApi(token(), "POST", `/channels/${channel}/messages`, body);
+      let r = await discordApi(token(), "POST", `/channels/${channel}/messages`, body);
+      // A thread id that is a message id in the link's channel names a thread nobody opened yet: the
+      // core's pairing reply to a new sender, or `orca post --thread` after the open at ingest failed.
+      // Open it on that message, then post again. Discord's 160004 = a thread already exists there.
+      if (!r.ok && r.status === 404 && target.threadId && target.threadId !== target.externalId) {
+        const t = await discordApi(token(), "POST", `/channels/${target.externalId}/messages/${target.threadId}/threads`, { name: clip(msg.title || msg.text.split("\n")[0] || "Orca", 90), auto_archive_duration: 1440 });
+        if (t.ok || t.data.code === 160004) {
+          parents.set(target.threadId, target.externalId);
+          r = await discordApi(token(), "POST", `/channels/${channel}/messages`, body);
+        }
+      }
       if (!r.ok) return failure(r);
       const id = typeof r.data.id === "string" ? r.data.id : undefined;
       if (target.threadId || !id) return { ok: true, ...(id ? { externalMsgId: id } : {}), ...(target.threadId ? { threadId: target.threadId } : {}) };

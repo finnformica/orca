@@ -19,8 +19,10 @@ selects the box. Each other instance ignores the row.
     conversation.
   - A new request (a mention at the top level of a channel) gets its own thread. The adapter opens
     the thread on that message after the core accepts the message.
-  - A direct message (DM) goes to the link that `config.dmLink` names. With no `dmLink`, the adapter
-    drops all DMs.
+  - A direct message (DM) goes to the link that `config.dmLink` names. With no `dmLink`, it goes to
+    the integration's catch-all link (`external_id` `*`). With neither link, the core drops it.
+  - An unknown person gets a pairing code from the core. The reply goes into the thread of their
+    message. The adapter opens that thread when it sends the reply.
   - The adapter ignores messages from bots.
 - Outbound: a post to the link's channel.
   - The first post for a workstream opens a thread on that post. The core keeps the thread id.
@@ -92,12 +94,21 @@ VALUES ('me', 'orca.pr.*', '{"repo":"site-templates"}', 'link', 'site-templates'
 Check the columns against `server/integrations/store.ts` before you run this. The core owns the
 schema.
 
-To accept DMs, add a link for them and name it in the integration's config:
+To accept DMs, add a catch-all link (`*`). It also covers each channel that has no link of its own.
+
+```sql
+INSERT INTO channel_link (id, user_id, integration_id, external_id, level) VALUES ('discord-dm', 'me', 'discord', '*', 'ask');
+```
+
+To accept DMs only, give the link another `external_id` and name it in the integration's config:
 
 ```sql
 INSERT INTO channel_link (id, user_id, integration_id, external_id, level) VALUES ('discord-dm', 'me', 'discord', 'dm', 'ask');
 UPDATE integration SET config = '{"dmLink":"discord-dm"}' WHERE id = 'discord';
 ```
+
+To let a new person in, approve their pairing code in Orca (`POST /api/integrations/pairing/approve`).
+You can also add `principal` and `identity` rows by hand.
 
 The primary bridge reads the rows each minute. `GET /api/integrations` shows the health line:
 `connected as <bot name>`, or the reason it is down.

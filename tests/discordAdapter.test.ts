@@ -170,9 +170,9 @@ describe("Discord inbound", () => {
     await a.stop();
   });
 
-  test("a DM goes to the configured DM link, and is dropped without one", () => {
+  test("a DM goes to the configured DM link, else to the core's catch-all link by its channel", () => {
     const dm = msg({ guild_id: undefined, channel_id: "D1", content: "hi", mentions: [] }) as never;
-    expect(toEnvelope(dm, { integrationId: "dc", botId: "BOT" })).toBeUndefined();
+    expect(toEnvelope(dm, { integrationId: "dc", botId: "BOT" })!.envelope).toMatchObject({ source: { channel: "D1" }, mentioned: true, thread: { externalId: "D1" } });
     const made = toEnvelope(dm, { integrationId: "dc", botId: "BOT", dmLink: "dm-finn" })!;
     expect(made.envelope).toMatchObject({ source: { linkId: "dm-finn" }, mentioned: true, thread: { externalId: "D1" } });
     expect(made.opensThread).toBe(false);
