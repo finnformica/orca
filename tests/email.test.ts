@@ -69,7 +69,7 @@ function fakeImap(opts: { password: string; idle?: boolean }) {
     all.add(s);
     s.on("error", () => {});
     s.write("* OK fake IMAP ready\r\n");
-    let buf = "", idleTag: string | undefined;
+    let buf = "", idleTag: string | undefined, told = 0; // the EXISTS count this client last heard
     const ok = (tag: string, text = "done") => s.write(`${tag} OK ${text}\r\n`);
     s.on("data", (d: Buffer) => {
       buf += d.toString("latin1");
@@ -83,7 +83,7 @@ function fakeImap(opts: { password: string; idle?: boolean }) {
         else if (cmd === "LOGIN") {
           const args = [...line.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]!.replace(/\\(.)/g, "$1"));
           if (args[1] === opts.password) ok(tag); else s.write(`${tag} NO [AUTHENTICATIONFAILED] Invalid credentials\r\n`);
-        } else if (cmd === "SELECT") { s.write(`* ${box.length} EXISTS\r\n* OK [UIDVALIDITY 7] ok\r\n* OK [UIDNEXT ${nextUid}] ok\r\n`); ok(tag, "[READ-WRITE] selected"); }
+        } else if (cmd === "SELECT") { told = box.length; s.write(`* ${box.length} EXISTS\r\n* OK [UIDVALIDITY 7] ok\r\n* OK [UIDNEXT ${nextUid}] ok\r\n`); ok(tag, "[READ-WRITE] selected"); }
         else if (cmd === "NOOP") ok(tag);
         else if (cmd === "UID" && rest[0]?.toUpperCase() === "SEARCH") {
           let uids = box.map((m) => m.uid);
@@ -99,7 +99,10 @@ function fakeImap(opts: { password: string; idle?: boolean }) {
           if (i >= 0) s.write(Buffer.concat([Buffer.from(`* ${i + 1} FETCH (UID ${uid} BODY[] {${box[i]!.raw.length}}\r\n`, "latin1"), box[i]!.raw, Buffer.from(")\r\n")]));
           ok(tag);
         } else if (cmd === "UID") ok(tag);
-        else if (cmd === "IDLE") { idleTag = tag; idlers.add(s); s.write("+ idling\r\n"); }
+        else if (cmd === "IDLE") {
+          idleTag = tag; idlers.add(s); s.write("+ idling\r\n");
+          if (box.length > told) { told = box.length; s.write(`* ${box.length} EXISTS\r\n`); } // mail that came before IDLE
+        }
         else if (cmd === "LOGOUT") { s.write("* BYE\r\n"); ok(tag); s.end(); }
         else s.write(`${tag} BAD unknown\r\n`);
       }
@@ -448,6 +451,22 @@ describe("with Postgres", () => {
     expect(ev).toMatchObject({ text: "Subject: Re: Fix login\n\nRetry with the new fixture.", thread: { externalId: first.messageId, messageId: "<reply@example.com>" } });
     const targets = (await store.deliveries()).filter((x) => x.envelope.key === ev.key).map((x) => x.target);
     expect(targets).toEqual([{ kind: "workstream", repo: "r", branch: "b" }]);
+  });
+
+  test("pairing: an allowed, authenticated stranger on the catch-all link gets a code by mail, in reply to their mail", async () => {
+    const c = await setup({ allowedSenders: ["@example.com"] });
+    await store.addLink({ id: "EALL", integrationId: "mail", externalId: "*", level: "ask", repos: [], requireMention: false });
+    expect(await registry.startOne(c)).toBe(true);
+    dispatcher.configure({ adapter: (i) => registry.adapterFor(i) });
+    dispatcher.setRunning(registry.runningIds);
+    imap.deliver(mail({ id: "<ann1@example.com>", from: "Ann <ann@example.com>", text: "Hi, can I use Orca?" }));
+    await cursorAt(1);
+    expect(await store.event("email:mail:<ann1@example.com>")).toBeUndefined(); // dropped until approved
+    await until(async () => (await dispatcher.dispatchOnce()) > 0 && smtp.got.length > 0);
+    expect(smtp.got[0]!.to).toEqual(["ann@example.com"]);
+    const reply = parseMail(Buffer.from(smtp.got[0]!.data));
+    expect(reply).toMatchObject({ inReplyTo: "<ann1@example.com>", references: ["<ann1@example.com>"] });
+    expect(reply.text).toMatch(/[A-Z0-9]{4,}/);
   });
 
   test("poll fallback: a server without IDLE is polled; a wrong password fails the start", async () => {

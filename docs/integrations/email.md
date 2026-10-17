@@ -84,6 +84,10 @@ else `me`).
    VALUES ('mail-finn', 'me', 'mail', 'finn@yourdomain.com', 'work', '{orca}', false);
    ```
 
+   You can also add one catch-all link with external id `*`. It accepts mail from every address in
+   `allowedSenders`. A sender with no `identity` row gets a pairing code by mail, in reply to their
+   mail. Approve the code in Orca. A subscription cannot send to `*`: use a link with the address.
+
 3. Add the person and their address.
 
    ```sql
