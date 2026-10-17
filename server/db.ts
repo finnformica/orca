@@ -248,8 +248,15 @@ export function downFor(ms: number): string {
  *  written next to journaled history (server/outbox.ts replays only into the database it was for). */
 export const databaseKey = (): string => new Bun.CryptoHasher("sha256").update(databaseUrl()).digest("hex").slice(0, 16);
 
-/** Close the pool (tests, so a repointed database opens cleanly). */
+/** Close the pool (tests, so a repointed database opens cleanly), and forget the outage and the
+ *  "connection dropped" line. */
 export async function close(): Promise<void> {
+  dropLoggedAt = 0;
+  await resetPool();
+}
+
+/** Drop the pool and the outage state — what `withRetry` does on a dropped connection. */
+async function resetPool(): Promise<void> {
   const closing = handle;
   handle = null;
   handleUrl = null;
@@ -315,7 +322,7 @@ export async function withRetry<T>(fn: (sql: Bun.SQL) => Promise<T>): Promise<T>
     noteDropped(err);
     // Only the pool this query used: ten duties dropped together must not each close the fresh pool
     // the first one just opened (each retry then failed on a pool a sibling had closed under it).
-    if (sql === null || handle === sql) await close();
+    if (sql === null || handle === sql) await resetPool();
     try {
       return await fn(await open());
     } catch (again) {
