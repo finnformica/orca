@@ -13,8 +13,8 @@ import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import { subscribeTurns } from "@/lib/events";
 import {
-  CHOICE_KEY, KNOWN_KEY, _resetServer, _setReloader, apiBase, apiFetch, apiUrl, defaultServerName, knownServers, mergeServers,
-  probeServer, rememberServer, serverOrigin, serverStatus, showServerMenu, switchServer, type Probe, type ServersAnswer,
+  CHOICE_KEY, KNOWN_KEY, _resetServer, _setReloader, apiBase, apiFetch, apiUrl, currentServer, defaultServerName, knownServers,
+  mergeServers, probeServer, rememberServer, serverOrigin, serverStatus, showServerMenu, switchServer, type Probe, type ServersAnswer,
 } from "@/lib/server";
 import { _resetServerList } from "@/components/ServerMenu";
 import { getDefaultStore } from "jotai";
@@ -168,6 +168,45 @@ test("S5b: with the Tailscale API the home server's list is the whole list; the 
   expect(showServerMenu({ ...HOME, tailscaleApi: true }, rows)).toBe(true);
   expect(showServerMenu({ ...HOME, enabled: false }, rows)).toBe(false); // the server turned it off
   expect(showServerMenu(null, one)).toBe(false);
+});
+
+// Two real boxes: their own answer's self name is now the Tailscale host (its MagicDNS name's
+// first label), not the Orca instance name (server/servers.ts selfInfo).
+const FLOW: ServersAnswer = { enabled: true, source: "config", tailscaleApi: false, self: { name: "orca-flow-box", url: "http://orca-flow-box.tail1.ts.net:8787" },
+  servers: [{ name: "orca-flow-box", url: "http://orca-flow-box.tail1.ts.net:8787", online: true, self: true },
+    { name: "orca-personal-box", url: "http://orca-personal-box.tail1.ts.net:8787", online: true, self: false }] };
+const PERSONAL_BOX: ServersAnswer = { enabled: true, source: "config", tailscaleApi: false, self: { name: "orca-personal-box", url: "http://orca-personal-box.tail1.ts.net:8787" },
+  servers: [{ name: "orca-personal-box", url: "http://orca-personal-box.tail1.ts.net:8787", online: true, self: true }] };
+
+test("S5c: a server's name is the Tailscale host from its own answer's self name, for the home row and a probed server alike (pure)", () => {
+  const home = "http://orca-flow-box.tail1.ts.net:8787";
+  const probes: Record<string, Probe> = { "http://orca-personal-box.tail1.ts.net:8787": online(PERSONAL_BOX) };
+  expect(mergeServers(home, FLOW, [], probes)).toEqual([
+    { name: "orca-flow-box", url: home, self: true, health: "online" }, // the home row, under its own answer's self name
+    { name: "orca-personal-box", url: "http://orca-personal-box.tail1.ts.net:8787", health: "online" }, // a probed box, under its own self name
+  ]);
+});
+
+test("S5d: a localhost home is not listed (not an Orca box); the default selection is the first box (pure)", () => {
+  setup();
+  for (const home of ["http://localhost:8788", "http://127.0.0.1:8788"]) {
+    const list = mergeServers(home, FLOW, [], {});
+    expect(list).toEqual([{ name: "orca-personal-box", url: "http://orca-personal-box.tail1.ts.net:8787", health: "checking" }]);
+    expect(currentServer(list)).toEqual(list[0]!); // no choice made: defaults to the first box, not a phantom self row
+  }
+  // A localhost URL learned any other way (known, a probe's own answer) is never listed either,
+  // even on a different port from the home origin (so it is not merely deduped as "the same server").
+  const known = [{ name: "home", url: "http://localhost:9000" }];
+  const probes: Record<string, Probe> = { "http://127.0.0.1:9001": { health: "online", answer: { ...PERSONAL_BOX, self: { name: "x", url: "http://127.0.0.1:9001" } } } };
+  expect(mergeServers("http://localhost:8788", FLOW, known, probes).map((s) => s.url)).toEqual(["http://orca-personal-box.tail1.ts.net:8787"]);
+});
+
+test("S5e: a box home (not localhost) is listed as the self row (pure)", () => {
+  const home = "http://orca-flow-box.tail1.ts.net:8787";
+  const list = mergeServers(home, FLOW, [], {});
+  expect(list[0]).toEqual({ name: "orca-flow-box", url: home, self: true, health: "online" });
+  setup();
+  expect(currentServer(list)).toEqual(list[0]!); // no choice made: defaults to the home (self) row
 });
 
 /** The fetch stub: home answers HOME, personal answers, lab never answers. */
