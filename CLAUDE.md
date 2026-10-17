@@ -265,7 +265,7 @@ both, so it carries the pack (`server/handoff.ts`, `views/Handoffs.tsx`, table `
   `attachment`. Chats become markdown transcripts.
 - Make one with `orca handoff create --to <server> --title … [--message …] [--file <path|id>]…
   [--chat <id>]…`, or with Hand off… in a card's menu (it packs that chat). `orca handoff list`.
-- The Handoffs page (`/handoffs`) shows each pack in full: the exact message and every file.
+- The Handoffs page (`/handoffs`, nav item after GitHub, `G K`) shows each pack in full: the exact message and every file.
 - Send is the ONLY way out: a click, a confirm with the file list, GET `/api/handoffs/<id>/export`
   here, POST `/api/handoff/import` on the target, POST `/api/handoffs/<id>/sent` here.
 - The import stores the files as attachments and queues ONE message to the target's orchestrator:
