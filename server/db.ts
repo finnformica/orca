@@ -873,6 +873,22 @@ export const MIGRATIONS: MigrationStep[] = [
       ALTER TABLE queued_message ADD COLUMN IF NOT EXISTS grant_scope JSONB;
     `,
   },
+  {
+    name: "20261018-integration-pairing",
+    idempotent: true,
+    // Pending pairing codes (docs/research/integrations.md §3.7): an unknown sender on a link gets a
+    // code; Settings > Integrations approves it (a principal + identity) or denies it. Built ahead of
+    // the core's pairing API to its documented shape — the core takes this table over.
+    sql: `
+      CREATE TABLE IF NOT EXISTS pairing (
+        user_id TEXT NOT NULL, code TEXT NOT NULL, integration_id TEXT NOT NULL, adapter TEXT NOT NULL,
+        external_id TEXT NOT NULL, name TEXT, created_at BIGINT NOT NULL, expires_at BIGINT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'pending' CHECK (state IN ('pending','approved','denied')),
+        PRIMARY KEY (user_id, code)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS pairing_pending_sender ON pairing (user_id, adapter, external_id) WHERE state = 'pending';
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
