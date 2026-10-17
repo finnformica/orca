@@ -14,7 +14,7 @@ import {
   PAIRING_ALPHABET, PAIRING_TTL_MS, digestEnvelope, digestWindow, grantRefusal, inboundEnvelope, pairingCode, pairingReply,
   type Envelope, type OutboundMessage, type Target,
 } from "../shared/integrations";
-import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../web/src/workstream";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, wakeProgress } from "../web/src/workstream";
 import type { OrcaConfig, RepoConfig } from "../server/config";
 import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
@@ -54,6 +54,18 @@ describe("decisions (pure)", () => {
     expect(grantRefusal({ level: "work", repos: ["r"] }, "thread", { _: ["link"], repo: "r" })).toBeUndefined();
     expect(grantRefusal(ask, "preview", { status: "" })).toBeUndefined(); // bin/orca sends a bare --status as ""
     expect(grantRefusal(undefined, "post", { link: "anywhere" })).toBeUndefined();
+  });
+
+  test("a cut-off wake's report lists the channel verbs it ran, so the next wake does not post twice", () => {
+    const steps = [
+      { at: 1, kind: "tool" as const, id: "a", name: "Bash", input: { command: 'orca post --link L1 "Merged #12."' } },
+      { at: 2, kind: "tool" as const, id: "b", name: "Bash", input: { command: 'orca ask-user "Merge #13?"' } },
+      { at: 3, kind: "tool" as const, id: "c", name: "Bash", input: { command: "orca channels" } },
+    ];
+    const text = wakeProgress(steps as never);
+    expect(text).toContain("orca post");
+    expect(text).toContain("orca ask-user");
+    expect(text).not.toContain("orca channels");
   });
 
   test("a workstream an outside sender's wake touched runs with permission prompts on", () => {
