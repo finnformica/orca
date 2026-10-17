@@ -423,17 +423,17 @@ export async function inboxEvents(opts: { before?: string; limit: number }): Pro
   });
 }
 
-type OutboundRow = { id: number; event_id: string; created_at: number; state: DeliveryState; attempts: number; last_error: string | null; target: DeliveryTarget; envelope: Envelope };
+type OutboundRow = { id: number; event_id: string; subscription_id: number | null; created_at: number; state: DeliveryState; attempts: number; last_error: string | null; target: DeliveryTarget; envelope: Envelope };
 const toOutbound = (r: OutboundRow): OutboundRecord => ({
-  deliveryId: Number(r.id), eventId: r.event_id, at: Number(r.created_at), state: r.state, attempts: Number(r.attempts),
+  deliveryId: Number(r.id), eventId: r.event_id, ...(r.subscription_id != null ? { subscriptionId: Number(r.subscription_id) } : {}), at: Number(r.created_at), state: r.state, attempts: Number(r.attempts),
   ...(r.last_error ? { lastError: r.last_error } : {}), target: r.target,
-  envelope: { topic: r.envelope.topic, text: r.envelope.text, ...(r.envelope.title ? { title: r.envelope.title } : {}), ...(r.envelope.scope ? { scope: r.envelope.scope } : {}) },
+  envelope: { key: r.envelope.key, topic: r.envelope.topic, text: r.envelope.text, ...(r.envelope.title ? { title: r.envelope.title } : {}), ...(r.envelope.scope ? { scope: r.envelope.scope } : {}) },
 });
 
 /** Every delivery to a link planned since `since`, newest first: the replies the inbox rows show. */
 export async function linkDeliveries(since: number, limit = 1000): Promise<OutboundRecord[]> {
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT d.id, d.event_id, d.created_at, d.state, d.attempts, d.last_error, d.target, e.envelope
+    const rows = await sql`SELECT d.id, d.event_id, d.subscription_id, d.created_at, d.state, d.attempts, d.last_error, d.target, e.envelope
       FROM delivery d JOIN event e ON e.id = d.event_id
       WHERE d.user_id = ${user()} AND d.target->>'kind' = 'link' AND d.created_at >= ${since}
       ORDER BY d.id DESC LIMIT ${limit}`;
@@ -459,7 +459,8 @@ export async function principalNames(): Promise<Map<string, string>> {
 }
 
 /** One conversation (shared/inbox.ts `Conversation`): the inbox events in it, oldest first, and the
- *  link deliveries that went to it. A thread linked to a workstream also takes the post that started
+ *  link deliveries that went to it (at the place itself, only explicit posts: a subscription's
+ *  broadcast to a channel is not part of one person's conversation there). A thread linked to a workstream also takes the post that started
  *  it: the newest delivery to that link about that workstream, with no thread, before the bind. */
 export async function conversation(c: Conversation, limit = 500): Promise<{ events: Envelope[]; outbound: OutboundRecord[]; link?: ThreadLinkRecord }> {
   return db.withRetry(async (sql) => {
@@ -472,10 +473,10 @@ export async function conversation(c: Conversation, limit = 500): Promise<{ even
           ORDER BY id LIMIT ${limit}`;
     const events = (evRows as { envelope: Envelope }[]).map((r) => r.envelope);
     const ids = events.map((e) => e.id);
-    const outRows = await sql`SELECT d.id, d.event_id, d.created_at, d.state, d.attempts, d.last_error, d.target, e.envelope
+    const outRows = await sql`SELECT d.id, d.event_id, d.subscription_id, d.created_at, d.state, d.attempts, d.last_error, d.target, e.envelope
       FROM delivery d JOIN event e ON e.id = d.event_id
       WHERE d.user_id = ${user()} AND d.target->>'kind' = 'link' AND (
-        (d.target->>'adapter' = ${c.adapter} AND (d.target->>'threadId' = ${c.id} OR (d.target->>'threadId' IS NULL AND d.target->>'externalId' = ${c.id})))
+        (d.target->>'adapter' = ${c.adapter} AND (d.target->>'threadId' = ${c.id} OR (d.target->>'threadId' IS NULL AND d.target->>'externalId' = ${c.id} AND d.subscription_id IS NULL AND e.key NOT LIKE 'pairing:%')))
         OR d.event_id = ANY(${sql.array(ids, "TEXT")}))
       ORDER BY d.id LIMIT ${limit}`;
     const outbound = (outRows as OutboundRow[]).map(toOutbound);
@@ -485,7 +486,7 @@ export async function conversation(c: Conversation, limit = 500): Promise<{ even
     if (!tl) return { events, outbound };
     const link: ThreadLinkRecord = { adapter: tl.adapter, externalThreadId: tl.external_thread_id, ...(tl.link_id ? { linkId: tl.link_id } : {}), repo: tl.repo, branch: tl.branch };
     if (tl.link_id) {
-      const start = await sql`SELECT d.id, d.event_id, d.created_at, d.state, d.attempts, d.last_error, d.target, e.envelope
+      const start = await sql`SELECT d.id, d.event_id, d.subscription_id, d.created_at, d.state, d.attempts, d.last_error, d.target, e.envelope
         FROM delivery d JOIN event e ON e.id = d.event_id
         WHERE d.user_id = ${user()} AND d.target->>'kind' = 'link' AND d.target->>'linkId' = ${tl.link_id} AND d.target->>'threadId' IS NULL
           AND e.envelope->'scope'->>'repo' = ${tl.repo} AND e.envelope->'scope'->>'branch' = ${tl.branch} AND d.created_at <= ${Number(tl.created_at)}

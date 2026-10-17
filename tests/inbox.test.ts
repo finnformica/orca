@@ -95,7 +95,10 @@ describe("with Postgres", () => {
     expect(await router.ingest("mail", inboundEnvelope({ adapter: "email", channel: "orca@example.com", eventId: "<m1@example.com>", from: { adapter: "email", id: "ada@example.com", name: "Ada L" }, text: "Is the demo up?", at: 4_000 }), 4_000)).toBe("new");
     expect(await router.ingest("hook", { key: "webhook:hook:d1", topic: "ext.webhook.deploy", at: 5_000, source: { adapter: "webhook", channel: "deploys" }, title: "Deploy", text: "v1.2 is live" }, 5_000)).toBe("new");
 
-    // 6. The orchestrator asks you; its Slack delivery goes dead.
+    // 5b. Saajan writes at the top of #eng (no thread): the channel itself is the conversation.
+    expect(await router.ingest("slack-work", inboundEnvelope({ adapter: "slack", channel: "C1", eventId: "Ev2", from: { adapter: "slack", id: "U1" }, text: "Anyone on the flaky test?", at: 5_500 }), 5_500)).toBe("new");
+
+    // 6. The orchestrator asks you (a subscription posts it to #eng); its Slack delivery goes dead.
     fail = true;
     await router.publish({ key: "question:1", topic: "orca.question", at: 6_000, source: { adapter: "orca" }, text: "Merge #12 now?" }, 6_000);
     await dispatcher.dispatchOnce(6_000);
@@ -106,8 +109,13 @@ describe("with Postgres", () => {
     const events = await store.inboxEvents({ limit: 300 });
     const all = inboxRows(events, await store.linkDeliveries(0), await store.threadLinks(), await store.principalNames());
     // Newest first; only inbox topics (not the run event, the post, the pairing reply or request).
-    expect(all.map((r) => [r.adapter, r.kind])).toEqual([["orca", "question"], ["webhook", "event"], ["email", "message"], ["slack", "message"]]);
-    const [question, hook, mail, slack] = all;
+    expect(all.map((r) => [r.adapter, r.kind])).toEqual([["orca", "question"], ["slack", "message"], ["webhook", "event"], ["email", "message"], ["slack", "message"]]);
+    const [question, top, hook, mail, slack] = all;
+    // The question's broadcast to #eng came after Saajan's top-level message, but it is not a reply to it.
+    expect(top).toMatchObject({ conversation: "slack|C1", text: "Anyone on the flaky test?" });
+    expect(top!.reply).toBeUndefined();
+    const topConv = await store.conversation({ adapter: "slack", id: "C1" });
+    expect(threadItems(topConv.events, topConv.outbound, new Map()).map((i) => i.dir)).toEqual(["in"]);
     expect(slack).toMatchObject({ sender: { name: "Saajan", principalId: "saajan", externalId: "U1" }, workstream: { repo: "r", branch: "feat" }, reply: { state: "sent" }, conversation: `slack|${thread}` });
     expect(mail).toMatchObject({ sender: { name: "Ada", principalId: "ada" }, conversation: "email|orca@example.com" });
     expect(mail!.reply).toBeUndefined(); // nothing went back to Ada yet
@@ -117,15 +125,16 @@ describe("with Postgres", () => {
 
     // Facets over every row; the filters by source and by person.
     expect(inboxFacets(all)).toEqual({
-      sources: [{ adapter: "email", count: 1 }, { adapter: "orca", count: 1 }, { adapter: "slack", count: 1 }, { adapter: "webhook", count: 1 }],
-      people: [{ id: "ada", name: "Ada", count: 1 }, { id: "saajan", name: "Saajan", count: 1 }],
+      sources: [{ adapter: "slack", count: 2 }, { adapter: "email", count: 1 }, { adapter: "orca", count: 1 }, { adapter: "webhook", count: 1 }],
+      people: [{ id: "saajan", name: "Saajan", count: 2 }, { id: "ada", name: "Ada", count: 1 }],
     });
-    expect(filterInbox(all, { source: "slack" }).map((r) => r.id)).toEqual([slack!.id]);
+    expect(filterInbox(all, { source: "slack" }).map((r) => r.id)).toEqual([top!.id, slack!.id]);
     expect(filterInbox(all, { person: personId("email", mail!.sender!) }).map((r) => r.id)).toEqual([mail!.id]);
     expect(filterInbox(all, { source: "slack", person: "ada" })).toEqual([]);
 
     // Paging: a window before an id holds only older events.
     expect((await store.inboxEvents({ before: hook!.id, limit: 300 })).map((e) => e.id)).toEqual([mail!.id, slack!.id]);
+    expect(await store.inboxEvents({ limit: 2 })).toHaveLength(2);
 
     // The thread view: the post that started the thread, Saajan's message, Orca's reply, in order.
     const conv = await store.conversation(parseConversation(slack!.conversation)!);

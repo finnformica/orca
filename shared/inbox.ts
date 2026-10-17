@@ -36,10 +36,21 @@ export function outboundConversation(t: DeliveryTarget): Conversation | undefine
 
 const same = (a: Conversation | undefined, b: Conversation | undefined): boolean => !!a && !!b && a.adapter === b.adapter && a.id === b.id;
 
+/** A delivery that belongs to a conversation: every post in its thread, but at the place itself
+ *  (a channel, a mailbox) only an explicit post — a subscription's broadcast to the channel (a CI
+ *  failure, a question) is not a reply to the last person who wrote there, and nor is a pairing
+ *  code sent to an unknown sender there (`pairing:<code>:reply`). */
+export const inConversation = (d: Pick<OutboundRecord, "target" | "subscriptionId" | "envelope">, c: Conversation): boolean =>
+  same(outboundConversation(d.target), c)
+  && (d.target.kind === "link" && d.target.threadId ? true : d.subscriptionId === undefined && !d.envelope.key.startsWith(PAIRING_KEY));
+const PAIRING_KEY = "pairing:";
+
 /** One outbound delivery to a link, with its event (server/integrations/store.ts `linkDeliveries`). */
 export type OutboundRecord = {
-  deliveryId: number; eventId: string; at: number; state: DeliveryState; attempts: number; lastError?: string;
-  target: DeliveryTarget; envelope: Pick<Envelope, "topic" | "text" | "title" | "scope">;
+  deliveryId: number; eventId: string; at: number;
+  /** The subscription that planned it; absent for an explicit target (`orca post`, a pairing reply). */
+  subscriptionId?: number; state: DeliveryState; attempts: number; lastError?: string;
+  target: DeliveryTarget; envelope: Pick<Envelope, "key" | "topic" | "text" | "title" | "scope">;
 };
 
 export type ThreadLinkRecord = { adapter: string; externalThreadId: string; linkId?: string; repo: string; branch: string };
@@ -100,7 +111,7 @@ export function inboxRows(events: readonly Envelope[], outbound: readonly Outbou
     const kind = inboxKind(e.topic);
     let reply: OutboundRecord | undefined;
     for (const d of outbound) {
-      const mine = d.eventId === e.id || (d.at >= e.at && same(outboundConversation(d.target), conv));
+      const mine = d.eventId === e.id || (d.at >= e.at && inConversation(d, conv));
       if (mine && (!reply || d.at > reply.at || (d.at === reply.at && d.deliveryId > reply.deliveryId))) reply = d;
     }
     const sender = senderOf(e, principals);
