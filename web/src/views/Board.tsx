@@ -9,6 +9,7 @@ import {
   type Lane, type OptimisticDraft, type Row,
 } from "../store";
 import { BULK_GROUPS, BULK_IRREVERSIBLE, BULK_LABELS, bulkActions, bulkCopyText, draftInstance, type BulkAction } from "../workstream";
+import { confirmDialog, copyText } from "@/lib/dialogs";
 import { navigate } from "@/lib/route";
 import { Bot, Check, CircleStop, Copy, ExternalLink, Eye, GitMerge, Loader2, MoreHorizontal, Play, SquareTerminal, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -164,11 +165,16 @@ export function LaneActions({ lane, cards }: { lane: Lane; cards: Row[] }) {
     // Copy is a clipboard read-out, not a fleet of mutations — no confirm, nothing to fail per card.
     if (action === "copyLink") {
       const text = bulkCopyText(rows);
-      try { await navigator.clipboard.writeText(text); setErr(null); } catch { window.prompt("Copy the PR links:", text); }
+      await copyText(text, "PR links"); setErr(null);
       return;
     }
-    const warn = BULK_IRREVERSIBLE.includes(action) ? " This can't be undone." : "";
-    if (!window.confirm(`${label} on ${rows.length} card${rows.length === 1 ? "" : "s"} in ${lane.replace("_", " ").toLowerCase()}?${warn}`)) return;
+    const irreversible = BULK_IRREVERSIBLE.includes(action);
+    const cards = `${rows.length} card${rows.length === 1 ? "" : "s"}`;
+    if (!(await confirmDialog({
+      title: `${label} on ${cards}?`,
+      description: `Run ${label.toLowerCase()} on ${cards} in ${lane.replace("_", " ").toLowerCase()}.${irreversible ? " You cannot undo this." : ""}`,
+      confirmLabel: label, destructive: action === "closePr" || action === "discard",
+    }))) return;
     setBusy(action); setErr(null);
     // Sequential on purpose: each action shells out to git/gh (and may adopt a worktree or launch an
     // agent), so firing a whole lane at once would race on adoption and hammer the API.
@@ -239,13 +245,13 @@ export function CopyMenu({ row }: { row: Row }) {
   const [copied, setCopied] = useState(false);
   const flash = () => { setCopied(true); setTimeout(() => setCopied(false), 1500); };
   const copy = (text: string, label: string) => {
-    navigator.clipboard.writeText(text).then(flash, () => window.prompt(`Copy the ${label}:`, text));
+    void copyText(text, label).then((ok) => { if (ok) flash(); });
   };
   // Copy CLI adopts a worktree if needed, resumes the pinned agent's session when it last ran here,
   // or (on a model switch) seeds a fresh interactive session with the portable transcript.
   const copyCli = async () => {
     const cmd = await cliCommand(row);
-    try { await navigator.clipboard.writeText(cmd); flash(); } catch { window.prompt("Copy the CLI command:", cmd); }
+    if (await copyText(cmd, "CLI command")) flash();
   };
   return (
     <DropdownMenu>
