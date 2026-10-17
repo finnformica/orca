@@ -16,6 +16,7 @@ import { applyProfileToggle, optimisticProfileToggle, refreshUsageNow, refreshVi
 import { Button } from "@/components/ui/button";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Tip } from "@/components/ui/tip";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
 import { HISTORY_RANGES, countMax, headerUsage, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, routingBroken, usageGroups, type UsageGroup } from "../workstream";
@@ -180,16 +181,14 @@ function LoginToggle({ name, enabled }: { name: string; enabled: boolean }) {
   };
   return (
     <Tip label={enabled ? `Take ${name} out of hydra's rotation` : `Put ${name} back`}>
-      <button type="button" role="switch" aria-checked={enabled} data-slot="login-toggle"
-        onClick={(e) => { e.stopPropagation(); toggle(); }}
+      <Switch size="sm" checked={enabled} data-slot="login-toggle"
+        onClick={(e) => e.stopPropagation()} onCheckedChange={toggle}
         className={cn(
-          "relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors",
-          error ? "bg-destructive" : enabled ? "bg-geist-blue" : "bg-input",
+          "data-[state=checked]:bg-geist-blue [&>[data-slot=switch-thumb]]:bg-white",
+          error && "data-[state=checked]:bg-destructive data-[state=unchecked]:bg-destructive",
         )}>
-        <span className={cn("flex size-3 items-center justify-center rounded-full bg-white transition-transform", enabled ? "translate-x-3.5" : "translate-x-0.5")}>
-          {error && <X className="size-2.5" />}
-        </span>
-      </button>
+        {error && <X className="size-2.5" />}
+      </Switch>
     </Tip>
   );
 }

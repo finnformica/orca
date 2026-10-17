@@ -251,9 +251,14 @@ describe("the notification centre", () => {
     await open("/settings");
     const s = await live();
     const kinds = $("notification-kinds")!;
-    const finished = [...kinds.querySelectorAll("label")].find((l) => l.textContent!.includes("Finished"))!.querySelector("input")!;
+    // The shadcn Checkbox (a role=checkbox button) beside its Label, which names it by htmlFor.
+    const label = [...kinds.querySelectorAll("label")].find((l) => l.textContent!.includes("Finished"))!;
+    const finished = kinds.querySelector<HTMLElement>(`#${label.htmlFor}`)!;
+    expect(finished.getAttribute("role")).toBe("checkbox");
+    expect(finished.getAttribute("aria-checked")).toBe("true");
     await act(async () => { finished.click(); await flush(); });
     expect(getDefaultStore().get(toastPrefsAtom)).toEqual({ finished: false });
+    expect(finished.getAttribute("aria-checked")).toBe("false");
     await push(s, note({ kind: "finished" }));
     expect($("notification-host")).toBeNull();
     const failed = note({ kind: "failed" });

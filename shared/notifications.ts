@@ -249,6 +249,32 @@ export function shouldToast(n: Pick<Notification, "kind" | "createdAt" | "readAt
 export const shouldNotifyBrowser = (n: Pick<Notification, "kind">, opts: { enabled: boolean; hidden: boolean; dnd: boolean }): boolean =>
   opts.enabled && opts.hidden && !opts.dnd && KIND_META[n.kind].urgent;
 
+// ---- browser notifications: what the Settings switch can do in this browser ----
+// The switch used to ask for the permission and, on any answer but "granted", quietly set itself
+// back off. Over the plain-http tailnet that answer is always "denied" (the Notification API needs a
+// secure context, and the browser refuses it without a prompt), so the switch never turned on and
+// said nothing. Now the page reads the state first and shows how to allow it instead of a dead switch.
+export type BrowserPermission = "granted" | "default" | "denied" | "insecure" | "unsupported";
+
+/** The browser's notification permission, read off `globalThis` (a parameter, so tests pass a fake). */
+export function browserPermission(g: { isSecureContext?: boolean; Notification?: { permission?: string } } = globalThis as never): BrowserPermission {
+  if (g.isSecureContext === false) return "insecure";
+  if (!g.Notification) return "unsupported";
+  const p = g.Notification.permission;
+  return p === "granted" || p === "denied" ? p : "default";
+}
+
+/** The switch reads on only when the stored choice is on AND the browser will show one. */
+export const browserNotifyChecked = (enabled: boolean, p: BrowserPermission): boolean => enabled && p === "granted";
+
+/** The note that replaces the switch where it can do nothing; null where the switch works. */
+export function browserNotifyNote(p: BrowserPermission): string | null {
+  if (p === "denied") return "This browser blocks notifications for Orca. Allow them in the site settings (the icon left of the address), then reload.";
+  if (p === "insecure") return "Browser notifications need HTTPS or localhost. Open Orca at a secure address to use them.";
+  if (p === "unsupported") return "This browser has no notifications. On an iPhone, add Orca to the Home Screen first.";
+  return null;
+}
+
 // ---- the toast stack: branch-demo's inbox toasts, which are sonner's bottom-left stack ----
 // Re-implemented with CSS transitions (no dependency), with sonner's numbers: three visible, a 14px
 // lift between collapsed cards each 5% smaller, spread on hover by the real heights plus the gap,
