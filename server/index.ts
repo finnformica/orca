@@ -642,7 +642,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const labels = new Map(allLinks.map((l) => [l.id, l.label ?? l.externalId]));
     const workstream = conv.link ? { repo: conv.link.repo, branch: conv.link.branch } : conv.events.map((e) => workstreamOf(e, [])).find(Boolean);
     const [read, muted] = await Promise.all([integrationStore.readEvents(conv.events.map((e) => e.id)), integrationStore.mutedSenders()]);
-    return json({ conversation: c, items: threadItems(conv.events, conv.outbound, principals, labels), ...(workstream ? { workstream } : {}), ...threadActions(conv.events, !!conv.link, { read, muted }) });
+    return json({ conversation: c, items: threadItems(conv.events, conv.outbound, principals, labels), ...(workstream ? { workstream } : {}), ...threadActions(conv.events, !!conv.link, { read, muted }, principals) });
   }
   // The inbox's actions, each on one inbound event: Reply where it came from (the `orca post` path,
   // server/integrations/reply.ts), read state and mute (per user), and Link its conversation to a

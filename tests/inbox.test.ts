@@ -218,8 +218,8 @@ describe("with Postgres", () => {
 
     // The thread view's actions: reply to the newest linked event, mute its sender, what is unread.
     const conv = await store.conversation({ adapter: "slack", id: "C1:1.5" });
-    expect(threadActions(conv.events, !!conv.link, { read: new Set(), muted: new Set() })).toEqual({
-      replyTo: slack!.id, canLink: false, sender: { eventId: slack!.id, name: "U1", muted: false }, unread: [slack!.id],
+    expect(threadActions(conv.events, !!conv.link, { read: new Set(), muted: new Set() }, await store.principalNames())).toEqual({
+      replyTo: slack!.id, canLink: false, sender: { eventId: slack!.id, name: "Saajan", muted: false }, unread: [slack!.id], // the paired name, not the handle
     });
     expect(threadItems(conv.events, conv.outbound, new Map()).map((i) => i.dir)).toEqual(["in", "out"]);
   });

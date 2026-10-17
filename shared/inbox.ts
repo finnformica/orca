@@ -263,7 +263,7 @@ export const deliveryLabel = (s: DeliveryState): string => STATE_LABELS[s];
  *  conversation to a workstream, mute its newest sender, and which events are still unread. */
 export type ThreadActions = { replyTo?: string; canLink: boolean; sender?: { eventId: string; name: string; muted: boolean }; unread: string[] };
 
-export function threadActions(events: readonly Envelope[], linked: boolean, state: InboxState): ThreadActions {
+export function threadActions(events: readonly Envelope[], linked: boolean, state: InboxState, principals: ReadonlyMap<string, string> = new Map()): ThreadActions {
   const newest = [...events].reverse();
   const reply = newest.find(canReplyTo);
   const who = newest.find((e) => e.actor);
@@ -271,7 +271,7 @@ export function threadActions(events: readonly Envelope[], linked: boolean, stat
   return {
     ...(reply ? { replyTo: reply.id } : {}),
     canLink: !linked && !!first && inboxKind(first.topic) !== "question" && !inboundConversation(first).id.startsWith(OWN_EVENT),
-    ...(who ? { sender: { eventId: who.id, name: who.actor!.external.name ?? who.actor!.external.id, muted: state.muted.has(muteKey(who.actor!.external.adapter, who.actor!.external.id)) } } : {}),
+    ...(who ? { sender: { eventId: who.id, name: senderOf(who, principals)!.name, muted: state.muted.has(muteKey(who.actor!.external.adapter, who.actor!.external.id)) } } : {}),
     unread: events.filter((e) => !state.read.has(e.id)).map((e) => e.id),
   };
 }
