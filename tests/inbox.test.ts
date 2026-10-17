@@ -11,8 +11,9 @@ import * as registry from "../server/integrations/registry";
 import * as store from "../server/integrations/store";
 import type { Adapter } from "../server/integrations/adapter";
 import { inboundEnvelope } from "../shared/integrations";
+import { replyTo } from "../server/integrations/reply";
 import {
-  conversationParam, filterInbox, inboundConversation, inboxFacets, inboxRows, parseConversation, personId, sourceLabel, threadItems, threadSources,
+  conversationParam, replyPlan, threadActions, muteKey, filterInbox, inboundConversation, inboxFacets, inboxRows, parseConversation, personId, sourceLabel, threadItems, threadSources,
 } from "../shared/inbox";
 import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
@@ -125,6 +126,7 @@ describe("with Postgres", () => {
 
     // Facets over every row; the filters by source and by person.
     expect(inboxFacets(all)).toEqual({
+      unread: 5, muted: 0,
       sources: [{ adapter: "slack", count: 2 }, { adapter: "email", count: 1 }, { adapter: "orca", count: 1 }, { adapter: "webhook", count: 1 }],
       people: [{ id: "saajan", name: "Saajan", count: 2 }, { id: "ada", name: "Ada", count: 1 }],
     });
@@ -151,5 +153,74 @@ describe("with Postgres", () => {
 
     // The card chip: r/feat has a Slack thread.
     expect([...threadSources(await store.threadLinks())]).toEqual([["r::feat", ["slack"]]]);
+  });
+  test("Reply, read state, mute, the unread filter and Link to workstream", async () => {
+    await store.addIntegration({ id: "slack-work", kind: "slack", name: "Work Slack", instance: "local", config: {}, secretRef: "ORCA_SECRET_SLACK_BOT", enabled: true });
+    await store.addIntegration({ id: "mail", kind: "email", name: "Mail", instance: "local", config: {}, secretRef: "ORCA_SECRET_MAIL", enabled: true });
+    await store.addLink({ id: "eng", integrationId: "slack-work", externalId: "C1", level: "ask", repos: [], requireMention: false });
+    await store.addLink({ id: "mailbox", integrationId: "mail", externalId: "*", level: "ask", repos: [], requireMention: false });
+    await store.addPrincipal({ id: "saajan", name: "Saajan", maxLevel: "ask" }, [{ adapter: "slack", externalId: "U1" }]);
+    await store.addPrincipal({ id: "ada", name: "Ada", maxLevel: "ask" }, [{ adapter: "email", externalId: "ada@example.com" }]);
+    const sent: { adapter: string; target: any; msg: any }[] = [];
+    const fake = (kind: string): Adapter => ({
+      kind, caps: { inbound: "none", outbound: true, threads: true, edits: false, reactions: false, attachments: false, maxTextLength: 4000 },
+      start: async () => {}, stop: async () => {}, health: async () => ({ ok: true }),
+      send: async (target, msg) => { sent.push({ adapter: kind, target, msg }); return { ok: true, externalMsgId: `m${sent.length}` }; },
+    });
+    dispatcher.configure({ adapter: (id: string) => fake(id === "mail" ? "email" : "slack") });
+    dispatcher.setRunning(() => ["slack-work", "mail"]);
+
+    await router.ingest("slack-work", inboundEnvelope({ adapter: "slack", channel: "C1", eventId: "Ev1", from: { adapter: "slack", id: "U1" }, text: "Status?", thread: { adapter: "slack", externalId: "C1:1.5" }, at: 1_000 }), 1_000);
+    await router.ingest("mail", inboundEnvelope({ adapter: "email", channel: "orca@example.com", eventId: "<m1@x>", from: { adapter: "email", id: "ada@example.com" }, text: "Hi", thread: { adapter: "email", externalId: "<root@x>", messageId: "<m1@x>" }, at: 2_000 }), 2_000);
+    const [mail, slack] = await store.inboxEvents({ limit: 10 });
+
+    // Reply: the orca post path to the event's own place and thread; email answers In-Reply-To.
+    await replyTo(slack!.id, "  Green, merging now. ", 3_000);
+    await replyTo(mail!.id, "Hello Ada", 3_000);
+    await dispatcher.dispatchOnce(3_000);
+    expect(sent.map((s) => [s.adapter, s.target.externalId, s.target.threadId, s.msg.text, s.msg.replyToExternalMsgId])).toEqual([
+      ["slack", "C1", "C1:1.5", "Green, merging now.", undefined],
+      ["email", "orca@example.com", "<root@x>", "Hello Ada", "<m1@x>"], // the catch-all link's "*" is no place: the event's channel is
+    ]);
+    await expect(replyTo(slack!.id, "   ")).rejects.toThrow("the reply is empty");
+    expect(replyPlan({ topic: "orca.question", source: { adapter: "orca" } }, "x", undefined, undefined, "k", 0)).toContain("nowhere to reply");
+
+    const rowsNow = async () => {
+      const events = await store.inboxEvents({ limit: 10 });
+      return inboxRows(events, await store.linkDeliveries(0), await store.threadLinks(), await store.principalNames(),
+        { read: await store.readEvents(events.map((e) => e.id)), muted: await store.mutedSenders() });
+    };
+    let rows = await rowsNow();
+    expect(rows.map((r) => [r.adapter, r.read, r.canReply, r.canLink, r.reply?.state])).toEqual([["email", false, true, true, "sent"], ["slack", false, true, true, "sent"]]);
+    expect(inboxFacets(rows)).toMatchObject({ unread: 2, muted: 0 });
+
+    // Read state: per user, undone by unread, kept out of the Unread filter.
+    await store.setRead([slack!.id, "no-such-event"], true);
+    rows = await rowsNow();
+    expect(filterInbox(rows, { unread: true }).map((r) => r.adapter)).toEqual(["email"]);
+    await store.setRead([slack!.id], false);
+    expect(filterInbox(await rowsNow(), { unread: true })).toHaveLength(2);
+
+    // Mute: the sender's rows leave the inbox and its facets; the Muted filter shows only them.
+    await store.setMuted("email", "ada@example.com", true, "Ada");
+    rows = await rowsNow();
+    expect(filterInbox(rows, {}).map((r) => r.adapter)).toEqual(["slack"]);
+    expect(filterInbox(rows, { muted: true }).map((r) => r.adapter)).toEqual(["email"]);
+    expect(inboxFacets(rows)).toMatchObject({ muted: 1, unread: 1, people: [{ id: "saajan", name: "Saajan", count: 1 }] });
+    expect(await store.mutedSenders()).toEqual(new Set([muteKey("email", "ada@example.com")]));
+    await store.setMuted("email", "ada@example.com", false);
+    expect(filterInbox(await rowsNow(), {})).toHaveLength(2);
+
+    // Link to workstream: the conversation is bound; the row can no longer be linked, and shows it.
+    await store.setThreadLink({ adapter: "slack", externalThreadId: "C1:1.5", linkId: "eng", repo: "r", branch: "feat" });
+    const linked = (await rowsNow()).find((r) => r.adapter === "slack")!;
+    expect(linked).toMatchObject({ canLink: false, workstream: { repo: "r", branch: "feat" } });
+
+    // The thread view's actions: reply to the newest linked event, mute its sender, what is unread.
+    const conv = await store.conversation({ adapter: "slack", id: "C1:1.5" });
+    expect(threadActions(conv.events, !!conv.link, { read: new Set(), muted: new Set() })).toEqual({
+      replyTo: slack!.id, canLink: false, sender: { eventId: slack!.id, name: "U1", muted: false }, unread: [slack!.id],
+    });
+    expect(threadItems(conv.events, conv.outbound, new Map()).map((i) => i.dir)).toEqual(["in", "out"]);
   });
 });
