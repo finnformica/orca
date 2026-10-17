@@ -25,7 +25,7 @@
 //
 // Contains prompts and responses in plaintext: keep the database off the public internet (it is
 // reached over the tailnet) and never inside a worktree, so it can't leak into a diff or PR.
-import { grantKey, type Grant } from "../shared/integrations";
+import { grantKey, type Grant, type ReplyTo } from "../shared/integrations";
 import { statSync } from "fs";
 import { hostname } from "os";
 import { join } from "path";
@@ -893,6 +893,13 @@ export const MIGRATIONS: MigrationStep[] = [
       ALTER TABLE delivery ADD COLUMN IF NOT EXISTS digest_key TEXT;
       CREATE INDEX IF NOT EXISTS delivery_digest ON delivery (digest_key) WHERE digest_key IS NOT NULL AND state IN ('pending','sending','failed');
     `,
+  },
+  {
+    name: "20261017-integrations-reply-to",
+    idempotent: true,
+    // Where an outside sender's queued message came from (shared/integrations.ts ReplyTo: link,
+    // place, thread, event key), so the wake that takes it can answer with `orca post --reply`.
+    sql: `ALTER TABLE queued_message ADD COLUMN IF NOT EXISTS reply_to JSONB`,
   },
 ];
 
@@ -1777,6 +1784,8 @@ export type QueuedMessage = {
   instruction: string; attachments: string[]; provider?: string; createdAt: number;
   /** The permission grant of an outside sender's message (shared/integrations.ts); absent = full. */
   grant?: Grant;
+  /** Where an answer goes (`orca post --reply`): the link and thread the message came from. */
+  replyTo?: ReplyTo;
 };
 
 const grantScope = (g?: Grant) => (g && g.level !== "full" ? { ...g, key: grantKey(g) } : null);
@@ -1790,9 +1799,9 @@ const grantOf = (v: unknown): Grant | undefined => {
 export async function queueMessage(input: Omit<QueuedMessage, "id" | "createdAt">): Promise<QueuedMessage> {
   return withRetry(async (sql) => {
     const rows = await sql`
-      INSERT INTO queued_message (user_id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope)
+      INSERT INTO queued_message (user_id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope, reply_to)
       VALUES (${currentUser()}, ${input.repo}, ${input.branch}, ${input.worktreePath}, ${input.instruction},
-              ${input.attachments}, ${input.provider ?? null}, ${Date.now()}, ${grantScope(input.grant)})
+              ${input.attachments}, ${input.provider ?? null}, ${Date.now()}, ${grantScope(input.grant)}, ${input.replyTo ?? null})
       RETURNING id, created_at`;
     return { ...input, id: Number(rows[0].id), createdAt: Number(rows[0].created_at) };
   });
@@ -1803,7 +1812,7 @@ export async function queueMessage(input: Omit<QueuedMessage, "id" | "createdAt"
 export async function queuedMessages(repo: string, branch: string): Promise<QueuedMessage[]> {
   return withRetry(async (sql) => {
     const rows = await sql`
-      SELECT id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope
+      SELECT id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope, reply_to
       FROM queued_message
       WHERE user_id = ${currentUser()} AND repo = ${repo} AND branch = ${branch} AND dispatched_at IS NULL
       ORDER BY id`;
@@ -1812,6 +1821,7 @@ export async function queuedMessages(repo: string, branch: string): Promise<Queu
       instruction: String(r.instruction), attachments: (r.attachments as string[]) ?? [],
       provider: (r.provider as string) ?? undefined, createdAt: Number(r.created_at),
       ...(grantOf(r.grant_scope) ? { grant: grantOf(r.grant_scope) } : {}),
+      ...(r.reply_to ? { replyTo: r.reply_to as ReplyTo } : {}),
     }));
   });
 }
@@ -1843,13 +1853,14 @@ export async function claimQueuedMessage(repo: string, branch: string, onlyGrant
         ORDER BY id LIMIT 1
         FOR UPDATE SKIP LOCKED
       )
-      RETURNING id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope`;
+      RETURNING id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope, reply_to`;
     const r = rows[0] as Record<string, unknown> | undefined;
     return r && {
       id: Number(r.id), repo: String(r.repo), branch: String(r.branch), worktreePath: String(r.worktree_path),
       instruction: String(r.instruction), attachments: (r.attachments as string[]) ?? [],
       provider: (r.provider as string) ?? undefined, createdAt: Number(r.created_at),
       ...(grantOf(r.grant_scope) ? { grant: grantOf(r.grant_scope) } : {}),
+      ...(r.reply_to ? { replyTo: r.reply_to as ReplyTo } : {}),
     };
   });
 }
