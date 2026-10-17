@@ -26,6 +26,7 @@ import * as integrations from "./integrations/registry";
 import * as dispatcher from "./integrations/dispatcher";
 import * as inbox from "./integrations/inbox";
 import * as integrationStore from "./integrations/store";
+import { filterInbox, inboxFacets, inboxRows, parseConversation, threadItems, workstreamOf } from "../shared/inbox";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
 import * as primary from "./primary";
@@ -349,6 +350,9 @@ async function foreignInventory(repo: string, exclude?: string): Promise<unknown
 const notEnabled = (repo: RepoConfig, feature: string) =>
   json({ error: `${feature} is not enabled for ${repo.name} — turn it on in the repo's config` }, 403);
 
+/** How many inbox events one /api/inbox answer reads (a window; `older` pages past it). */
+const INBOX_WINDOW = 300;
+
 // Routes served by ANY instance because they read only Postgres — history stays readable even when
 // the machine that produced it is asleep. Everything else touches a worktree or spawns a process and
 // must run where the repo lives.
@@ -370,6 +374,8 @@ const DATABASE_ONLY = new Set([
   "/api/previews",
   // The notification centre: one table, written once by the instance where each event happened.
   "/api/notifications", "/api/notifications/read",
+  // The unified inbox: the integrations' event, delivery and thread_link rows.
+  "/api/inbox", "/api/inbox/thread", "/api/inbox/threads",
 ]);
 
 // DATABASE_ONLY routes whose `?instance=` selects rows rather than a machine — never forwarded.
@@ -611,6 +617,28 @@ async function api(req: Request, url: URL): Promise<Response> {
   // Pairing (server/integrations/router.ts): an unknown sender got a code; you approve it here, which
   // binds their platform identity to a principal (new, or an existing id). The Settings page calls
   // the same routes later. Body: { code, principal?, name?, maxLevel? ("notify" | "ask" | "work") }.
+  // The unified inbox (shared/inbox.ts): the newest INBOX_WINDOW inbox events before `?before=`, as
+  // rows with their reply's delivery state, filtered by `?source=` / `?person=`; the facets are over
+  // the whole window, so a chip never hides its siblings. `older` is the cursor for the next window.
+  if (req.method === "GET" && p === "/api/inbox") {
+    const before = url.searchParams.get("before") || undefined;
+    const events = await integrationStore.inboxEvents({ before, limit: INBOX_WINDOW });
+    const since = events.length ? Math.min(...events.map((e) => e.at)) : Date.now();
+    const [outbound, links, principals] = await Promise.all([integrationStore.linkDeliveries(since), integrationStore.threadLinks(), integrationStore.principalNames()]);
+    const all = inboxRows(events, outbound, links, principals);
+    const rows = filterInbox(all, { source: url.searchParams.get("source") || undefined, person: url.searchParams.get("person") || undefined });
+    return json({ rows, facets: inboxFacets(all), older: events.length === INBOX_WINDOW ? events[events.length - 1]!.id : null });
+  }
+  if (req.method === "GET" && p === "/api/inbox/thread") {
+    const c = parseConversation(url.searchParams.get("c"));
+    if (!c) return json({ error: "c=<adapter>|<id> required" }, 400);
+    const [conv, principals, allLinks] = await Promise.all([integrationStore.conversation(c), integrationStore.principalNames(), integrationStore.links()]);
+    const labels = new Map(allLinks.map((l) => [l.id, l.label ?? l.externalId]));
+    const workstream = conv.link ? { repo: conv.link.repo, branch: conv.link.branch } : conv.events.map((e) => workstreamOf(e, [])).find(Boolean);
+    return json({ conversation: c, items: threadItems(conv.events, conv.outbound, principals, labels), ...(workstream ? { workstream } : {}) });
+  }
+  // The workstream cards' source chips: every thread link (repo, branch, adapter).
+  if (req.method === "GET" && p === "/api/inbox/threads") return json({ links: await integrationStore.threadLinks() });
   if (req.method === "GET" && p === "/api/integrations/pairing") return json({ pairings: await integrationStore.pendingPairings() });
   if (req.method === "POST" && p === "/api/integrations/pairing/approve") {
     const level = body.maxLevel;
