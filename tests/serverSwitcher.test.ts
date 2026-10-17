@@ -7,7 +7,7 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  listServers, resetServerCaches, serverGate, serverSwitcherProblems, type ServerSwitcherConfig,
+  listServers, resetServerCaches, serverGate, serverSwitcherProblems, trustedOrigin, type ServerSwitcherConfig,
 } from "../server/servers";
 import { parseConfigDocument } from "../server/config";
 import { native } from "./happydom";
@@ -104,6 +104,7 @@ test("discovery from the Tailscale API: only tagged devices, MagicDNS url, onlin
     enabled: true,
     self: { name: "box-a", url: SELF },
     source: "tailscale",
+    tailscaleApi: true,
     servers: [
       { name: "box-a", url: SELF, online: true, self: true },
       { name: "box-b", url: OTHER, online: false, self: false },
@@ -132,6 +133,7 @@ test("discovery from the config list when no OAuth client is set; self is added 
   const answer = await listServers({ enabled: true, servers: [{ name: "smf", url: "http://smf.tail1234.ts.net:8787" }] }, now);
   expect(apiHits.token).toBe(0);
   expect(answer.source).toBe("config");
+  expect(answer.tailscaleApi).toBe(false); // the browser then adds the servers it knows, and shows the env hint
   expect(answer.servers).toEqual([
     { name: "box-a", url: SELF, online: true, self: true },
     { name: "smf", url: "http://smf.tail1234.ts.net:8787", online: true, self: false },
@@ -150,16 +152,24 @@ test("a failed Tailscale API call falls back to the config list", async () => {
 test("self comes from the local tailscale status when ORCA_SERVER_URL is unset", async () => {
   delete process.env.ORCA_SERVER_URL;
   const answer = await listServers({ enabled: false }, now);
-  expect(answer).toEqual({ enabled: false, self: { name: "box-a", url: SELF }, source: "self", servers: [{ name: "box-a", url: SELF, online: true, self: true }] });
+  expect(answer).toEqual({ enabled: false, self: { name: "box-a", url: SELF }, source: "self", tailscaleApi: false, servers: [{ name: "box-a", url: SELF, online: true, self: true }] });
 });
 
-test("feature off: /api/servers is only self, and the gate adds no CORS header and runs no whois", async () => {
+test("on by default: with no serverSwitcher block, /api/servers is on and a tailnet Orca origin gets CORS", async () => {
+  const answer = await listServers(undefined, now);
+  expect(answer.enabled).toBe(true);
+  expect(answer.source).toBe("config");
+  const pre = await serverGate(req("OPTIONS", OTHER), "100.64.0.5", undefined, handler().next);
+  expect(pre.status).toBe(204);
+});
+
+test("feature off (enabled: false): /api/servers is only self, and the gate adds no CORS header and runs no whois", async () => {
   process.env.TS_OAUTH_CLIENT_ID = "cid";
   process.env.TS_OAUTH_CLIENT_SECRET = "csecret";
   const off = await listServers({ ...ON, enabled: false }, now);
   expect(off.servers).toEqual([{ name: "box-a", url: SELF, online: true, self: true }]);
   expect(apiHits.token).toBe(0);
-  for (const cfg of [undefined, { ...ON, enabled: false }]) {
+  for (const cfg of [{ ...ON, enabled: false }]) {
     const h = handler();
     const res = await serverGate(req("GET", OTHER), "100.64.0.9", cfg, h.next);
     expect(res.status).toBe(200);
@@ -191,6 +201,33 @@ test("an origin not in the list gets no CORS header and no whois", async () => {
   const pre = await serverGate(req("OPTIONS", "http://localhost:5173"), "100.64.0.5", ON, h.next);
   expect(pre.headers.get("access-control-allow-origin")).toBeNull();
   expect(calls().filter((c) => c.startsWith("whois"))).toEqual([]);
+});
+
+test("trustedOrigin: a listed origin, or an Orca page on this tailnet on the Orca port (pure)", () => {
+  const ok = (o: string) => trustedOrigin(o, [OTHER], "tail1234.ts.net", 8787);
+  expect(ok(OTHER)).toBe(true);
+  expect(ok("http://box-c.tail1234.ts.net:8787")).toBe(true); // MagicDNS name, not in the list
+  expect(ok("http://box-c:8787")).toBe(true); // the MagicDNS short name a phone types
+  expect(ok("http://100.101.1.2:8787")).toBe(true); // a Tailscale address
+  expect(ok("https://box-c.tail1234.ts.net")).toBe(true); // tailscale serve
+  expect(ok("http://box-c.tail1234.ts.net:5173")).toBe(false); // a preview on the box: agent code
+  expect(ok("http://box-c.other.ts.net:8787")).toBe(false); // another tailnet
+  expect(ok("http://evil.example:8787")).toBe(false);
+  expect(ok("http://localhost:8787")).toBe(false);
+  expect(ok("http://192.168.1.4:8787")).toBe(false);
+  expect(ok("http://100.12.0.1:8787")).toBe(false); // public, not 100.64.0.0/10
+  expect(trustedOrigin("http://box-c.tail1234.ts.net:8787", [], undefined, 8787)).toBe(false); // no tailnet known here
+});
+
+test("with no API and no list, a page from the other box (same tailnet) gets CORS after whois", async () => {
+  const h = handler();
+  const pageOfB = "http://orca-personal-box:8787";
+  const res = await serverGate(req("GET", pageOfB, "/api/servers"), "100.64.0.5", {}, h.next);
+  expect(res.status).toBe(200);
+  expect(res.headers.get("access-control-allow-origin")).toBe(pageOfB);
+  const server = await serverGate(req("GET", pageOfB, "/api/servers"), "100.64.0.9", {}, h.next);
+  expect(server.status).toBe(403); // a box (tagged node) is still refused
+  expect(h.calls).toBe(1);
 });
 
 test("preflight from a listed origin: 204 with the CORS headers", async () => {

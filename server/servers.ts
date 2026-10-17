@@ -1,12 +1,15 @@
 // The server switcher (Option B): several fully separate Orca servers that never talk to each other —
 // a work box, later a personal one — and ONE browser that talks to each. This module is the server
-// side of it, and all of it is off unless the app config says `serverSwitcher.enabled`:
+// side of it. It is on unless the app config says `serverSwitcher.enabled: false`:
 //
 // - Discovery (`GET /api/servers`): the Tailscale API's devices with the Orca tag, else the config's
 //   own `servers` list. The API, not `tailscale status`: an ACL that blocks box-to-box traffic hides
-//   the other box from the local netmap, and the boxes are meant to be blind to each other.
-// - CORS: a browser page served by one listed server may call another listed server's `/api`,
-//   `/api/events` included. No other origin gets a CORS header.
+//   the other box from the local netmap, and the boxes are meant to be blind to each other. The
+//   answer says whether the API is configured (`tailscaleApi`); without it the browser adds the
+//   servers it already knows (web/src/lib/server.ts), and it checks every server's health itself.
+// - CORS: a browser page served by another Orca server may call this server's `/api`, `/api/events`
+//   included. "Another Orca server" is a listed origin, or an origin on this tailnet on the Orca port
+//   (`trustedOrigin`) — so it works with no API and no list. No other origin gets a CORS header.
 // - The caller check: such a cross-origin call is accepted only from a Tailscale USER device
 //   (`tailscale whois`), never a tagged node — so a server can never call another server.
 //
@@ -17,7 +20,7 @@ import { API_PORT } from "./ports";
 
 export type ServerEntry = { name: string; url: string };
 export type ServerSwitcherConfig = {
-  /** Off unless true: /api/servers names only this server, and no CORS header or whois runs. */
+  /** On unless false. False: /api/servers names only this server, and no CORS header or whois runs. */
   enabled?: boolean;
   /** The Tailscale tag that marks an Orca server (default `tag:orca`). */
   tag?: string;
@@ -30,7 +33,11 @@ export type ServerSwitcherConfig = {
 };
 /** One row of `GET /api/servers`. */
 export type ServerInfo = { name: string; url: string; online: boolean; self: boolean };
-export type ServersAnswer = { enabled: boolean; self: ServerEntry; servers: ServerInfo[]; source: "tailscale" | "config" | "self" };
+export type ServersAnswer = {
+  enabled: boolean; self: ServerEntry; servers: ServerInfo[]; source: "tailscale" | "config" | "self";
+  /** The Tailscale API is configured here (TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET are set). */
+  tailscaleApi: boolean;
+};
 
 export const DEFAULT_TAG = "tag:orca";
 export const DISCOVERY_TTL_MS = 60_000;
@@ -71,6 +78,9 @@ export function originOf(url: unknown): string | undefined {
 
 const tailscaleBin = () => process.env.ORCA_TAILSCALE_BIN || Bun.which("tailscale") || "/usr/bin/tailscale";
 const portOf = (sw: ServerSwitcherConfig) => sw.port ?? API_PORT;
+/** The switcher is on unless the config turns it off. */
+export const switcherEnabled = (sw: ServerSwitcherConfig | undefined): boolean => sw?.enabled !== false;
+const apiConfigured = () => !!(process.env.TS_OAUTH_CLIENT_ID && process.env.TS_OAUTH_CLIENT_SECRET);
 
 async function runTailscale(args: string[]): Promise<unknown> {
   const proc = Bun.spawn([tailscaleBin(), ...args], { stdout: "pipe", stderr: "pipe" });
@@ -82,25 +92,43 @@ async function runTailscale(args: string[]): Promise<unknown> {
   } finally { clearTimeout(timer); }
 }
 
-/** This server's own entry. `ORCA_SERVER_URL` wins; else this node's MagicDNS name from the local
- *  `tailscale status`; else localhost. Cached for the process: neither changes while it runs. */
-let selfCache: { key: string; entry: ServerEntry } | undefined;
-export async function selfServer(sw: ServerSwitcherConfig): Promise<ServerEntry> {
+/** This server's own entry and its tailnet's MagicDNS suffix (`tail1234.ts.net`). The url is
+ *  `ORCA_SERVER_URL`, else this node's MagicDNS name from the local `tailscale status`, else
+ *  localhost. Cached for the process: none of it changes while it runs. */
+let selfCache: { key: string; entry: ServerEntry; suffix?: string } | undefined;
+async function selfInfo(sw: ServerSwitcherConfig): Promise<{ entry: ServerEntry; suffix?: string }> {
   const port = portOf(sw);
   const key = `${process.env.ORCA_SERVER_URL ?? ""}|${port}`;
-  if (selfCache?.key === key) return selfCache.entry;
+  if (selfCache?.key === key) return selfCache;
   const name = instanceName();
   let url = originOf(process.env.ORCA_SERVER_URL);
-  if (!url) {
-    try {
-      const status = await runTailscale(["status", "--json"]) as { Self?: { DNSName?: string } };
-      const dns = status.Self?.DNSName?.replace(/\.$/, "");
-      if (dns) url = `http://${dns}:${port}`;
-    } catch { /* no tailscale here: a laptop without it, a CI runner */ }
-  }
-  const entry = { name, url: url ?? `http://localhost:${port}` };
-  selfCache = { key, entry };
-  return entry;
+  let dns: string | undefined;
+  try {
+    const status = await runTailscale(["status", "--json"]) as { Self?: { DNSName?: string } };
+    dns = status.Self?.DNSName?.replace(/\.$/, "") || undefined;
+  } catch { /* no tailscale here: a laptop without it, a CI runner */ }
+  if (!url && dns) url = `http://${dns}:${port}`;
+  const suffix = dns?.includes(".") ? dns.slice(dns.indexOf(".") + 1) : undefined;
+  selfCache = { key, entry: { name, url: url ?? `http://localhost:${port}` }, suffix };
+  return selfCache;
+}
+export const selfServer = async (sw: ServerSwitcherConfig): Promise<ServerEntry> => (await selfInfo(sw)).entry;
+
+/** May a page from `origin` call this server cross-origin (subject to whois)? Yes when the
+ *  discovery lists it, or when it is an Orca page on this tailnet: a host under this node's MagicDNS
+ *  suffix, a MagicDNS short name or a Tailscale address (100.64.0.0/10) — on the Orca port, or on
+ *  HTTPS (`tailscale serve`). A preview on another port, or any site off the tailnet, is not. Pure. */
+export function trustedOrigin(origin: string, listed: string[], suffix: string | undefined, port: number): boolean {
+  if (listed.includes(origin)) return true;
+  let u: URL;
+  try { u = new URL(origin); } catch { return false; }
+  const onPort = u.protocol === "https:" ? u.port === "" || u.port === "443" : u.protocol === "http:" && u.port === String(port);
+  if (!onPort) return false;
+  const host = u.hostname.toLowerCase();
+  const m = /^100\.(\d+)\.\d+\.\d+$/.exec(host);
+  if (m) return Number(m[1]) >= 64 && Number(m[1]) <= 127;
+  if (/^[a-z0-9-]+$/.test(host)) return host !== "localhost";
+  return !!suffix && host.endsWith(`.${suffix.toLowerCase()}`);
 }
 
 type TsDevice = { name?: string; hostname?: string; tags?: string[]; lastSeen?: string; connectedToControl?: boolean };
@@ -154,18 +182,20 @@ let discovery: { key: string; at: number; answer: ServersAnswer } | undefined;
 export async function listServers(sw: ServerSwitcherConfig | undefined, now = Date.now()): Promise<ServersAnswer> {
   const cfg = sw ?? {};
   const self = await selfServer(cfg);
-  if (!cfg.enabled) return { enabled: false, self, servers: [{ ...self, online: true, self: true }], source: "self" };
+  const tailscaleApi = apiConfigured();
+  if (!switcherEnabled(cfg)) return { enabled: false, self, servers: [{ ...self, online: true, self: true }], source: "self", tailscaleApi };
   const key = JSON.stringify(cfg);
   if (discovery && discovery.key === key && now - discovery.at < DISCOVERY_TTL_MS) return discovery.answer;
   let answer: ServersAnswer | undefined;
   try {
     const devices = await tailscaleDevices(cfg.tag ?? DEFAULT_TAG);
-    if (devices) answer = { enabled: true, self, servers: withSelf(devicesToServers(devices, portOf(cfg), now), self), source: "tailscale" };
+    if (devices) answer = { enabled: true, self, servers: withSelf(devicesToServers(devices, portOf(cfg), now), self), source: "tailscale", tailscaleApi };
   } catch (e) {
     console.error(`orca: server discovery from the Tailscale API failed, the config list is used: ${(e as Error).message}`);
   }
-  // Config entries are not probed: the boxes may not reach each other at all. The browser finds out.
-  answer ??= { enabled: true, self, servers: withSelf((cfg.servers ?? []).map((s) => ({ name: s.name, url: s.url, online: true })), self), source: "config" };
+  // Config entries are not probed: the boxes may not reach each other at all. The browser checks
+  // each server itself, so `online` here is only the API's view (true for a config entry).
+  answer ??= { enabled: true, self, servers: withSelf((cfg.servers ?? []).map((s) => ({ name: s.name, url: s.url, online: true })), self), source: "config", tailscaleApi };
   discovery = { key, at: now, answer };
   return answer;
 }
@@ -233,7 +263,7 @@ export const plainIp = (ip: string): string => ip.replace(/^::ffff:(?=\d+\.\d+\.
 /**
  * Wrap one `/api` request. `next` is the normal handler. Unchanged (no CORS header, no whois) when:
  * the feature is off; the request has no Origin; the Origin is this server's own (or the request's
- * own); or the Origin is not a listed server. A listed foreign Origin gets a 204 preflight answer,
+ * own); or the Origin is not trusted (`trustedOrigin`). A trusted foreign Origin gets a 204 preflight answer,
  * and every other method is first checked with whois — a 403 JSON error on refusal, else the answer
  * of `next` with CORS headers.
  */
@@ -242,14 +272,15 @@ export async function serverGate(
   next: () => Promise<Response>,
 ): Promise<Response> {
   const origin = req.headers.get("origin");
-  if (!sw?.enabled || !origin) return next();
+  if (!switcherEnabled(sw) || !origin) return next();
   if (origin === new URL(req.url).origin) return next();
-  const answer = await listServers(sw);
+  const cfg = sw ?? {};
+  const answer = await listServers(cfg);
   if (origin === originOf(answer.self.url)) return next();
-  const listed = answer.servers.some((s) => !s.self && originOf(s.url) === origin);
-  if (!listed) return next();
+  const listed = answer.servers.filter((s) => !s.self).map((s) => originOf(s.url)).filter((o): o is string => !!o);
+  if (!trustedOrigin(origin, listed, (await selfInfo(cfg)).suffix, portOf(cfg))) return next();
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(origin) });
-  const verdict = remoteIp ? await checkCaller(plainIp(remoteIp), sw) : { ok: false as const, reason: "the caller address is unknown" };
+  const verdict = remoteIp ? await checkCaller(plainIp(remoteIp), cfg) : { ok: false as const, reason: "the caller address is unknown" };
   if (!verdict.ok) {
     return withCors(Response.json({ error: `Cross-origin call refused: ${verdict.reason}. Only a Tailscale user device may call this Orca server from another Orca server's page.` }, { status: 403 }), origin);
   }

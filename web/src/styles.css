@@ -286,24 +286,20 @@ dialog[data-bottom-sheet][data-closing]::backdrop {
   select {
     font-size: 16px !important;
   }
-  /* Menus and selects open as bottom sheets: pinned to the foot of the screen, full width. Radix
-     positions them with an inline transform on this wrapper; the sheet overrides it. */
-  [data-radix-popper-content-wrapper]:has(> [role="menu"], > [role="listbox"]) {
-    position: fixed !important;
-    inset: auto 0 0 0 !important;
-    transform: none !important;
-    min-width: 0 !important;
-    width: 100% !important;
+  /* Menus and selects anchor under their trigger, as on desktop — no bottom sheet (only BottomSheet.tsx
+     is one). Radix's scroll lock sets overflow: hidden on the body while one is open. With html's
+     overflow-x: clip above, that no longer moves to the viewport: the body becomes the scroll
+     container, and the sticky top bar scrolled away with the page under it. Keep the body as it is;
+     the lock still stops the scroll, as it also cancels the wheel and touch moves. */
+  html body[data-scroll-locked] {
+    overflow-x: clip !important;
+    overflow-y: visible !important;
   }
+  /* A long menu scrolls inside itself rather than past the screen's foot. */
   [data-radix-popper-content-wrapper] > [role="menu"],
   [data-radix-popper-content-wrapper] > [role="listbox"] {
-    width: 100%;
-    max-width: none;
-    max-height: 70dvh !important;
+    max-height: var(--radix-dropdown-menu-content-available-height, var(--radix-select-content-available-height, 70dvh));
     overflow-y: auto;
-    border-radius: 12px 12px 0 0;
-    border-bottom-width: 0;
-    padding-bottom: calc(0.5rem + env(safe-area-inset-bottom));
   }
   /* Tab bars scroll sideways inside themselves rather than widening the page. */
   [data-slot="tabs-list"] {

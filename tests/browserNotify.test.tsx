@@ -157,6 +157,5 @@ describe("Settings page", () => {
     expect(row.querySelector('[role="checkbox"]')!.className).toMatch(/\bmt-0\.5\b/);
     expect(row.querySelector("label")!.className).toMatch(/\bleading-5\b/);
     expect(document.querySelector('[data-slot="settings-notifications"] input[type="checkbox"]')).toBeNull();
-    expect(document.querySelector('#setting-server-switcher')!.getAttribute("role")).toBe("switch");
   });
 });
