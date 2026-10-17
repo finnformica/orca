@@ -121,7 +121,7 @@ export function emailAdapter(connection: Connection): Adapter {
       const sel = await c.select(i.mailbox ?? "INBOX");
       const [v, u] = ((await ctx!.cursor.get()) ?? "").split(":").map(Number);
       // A first start, or a mailbox whose UIDs were reset: begin at the newest mail, never replay history.
-      pos = v === sel.uidValidity && Number.isFinite(u) ? { uidValidity: v!, uid: u! } : { uidValidity: sel.uidValidity, uid: await c.maxUid() };
+      pos = v === sel.uidValidity && Number.isFinite(u) ? { uidValidity: v!, uid: u! } : { uidValidity: sel.uidValidity, uid: sel.uidNext ? sel.uidNext - 1 : await c.maxUid() };
       await ctx!.cursor.set(`${pos.uidValidity}:${pos.uid}`);
       return c;
     } catch (e) { await c.logout(); throw e; }
