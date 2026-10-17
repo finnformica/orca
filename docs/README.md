@@ -6,6 +6,7 @@ One line per doc, so you can find the right file fast.
 
 - [WORKFLOW.md](WORKFLOW.md) — how Orca works, and how you work with it.
 - [SETUP.md](SETUP.md) — how to deploy your own Orca from the start.
+- [personal-box.md](personal-box.md) — the personal Orca box: provider facts, backup restore, and the setup runbook.
 
 ## Research (`docs/research/`)
 

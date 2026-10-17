@@ -73,7 +73,8 @@
 
 ## Open decisions
 
-- [ ] **Open:** the personal box provider.
+- [x] **Decided:** the personal box provider is OVH VPS-2. The box is ordered. See
+  [../personal-box.md](../personal-box.md) for the facts and the setup runbook.
 - [ ] **Open:** the Claude plan for SMF work: personal subscription, API key or Team plan.
 
 ---
