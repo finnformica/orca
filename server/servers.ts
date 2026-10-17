@@ -9,7 +9,10 @@
 //   servers it already knows (web/src/lib/server.ts), and it checks every server's health itself.
 // - CORS: a browser page served by another Orca server may call this server's `/api`, `/api/events`
 //   included. "Another Orca server" is a listed origin, or an origin on this tailnet on the Orca port
-//   (`trustedOrigin`) — so it works with no API and no list. No other origin gets a CORS header.
+//   (`trustedOrigin`) — so it works with no API and no list. A `localhost`/`127.0.0.1` origin on the
+//   API port or the Vite dev port (`ORCA_UI_PORT`, 8788) is trusted too: the laptop dev app runs on
+//   plain localhost, with no tailnet name of its own, and must still reach a box's switcher. No other
+//   origin gets a CORS header.
 // - The caller check: such a cross-origin call is accepted only from a Tailscale USER device
 //   (`tailscale whois`), never a tagged node — so a server can never call another server.
 //
@@ -78,6 +81,9 @@ export function originOf(url: unknown): string | undefined {
 
 const tailscaleBin = () => process.env.ORCA_TAILSCALE_BIN || Bun.which("tailscale") || "/usr/bin/tailscale";
 const portOf = (sw: ServerSwitcherConfig) => sw.port ?? API_PORT;
+/** The Vite dev port (web/vite.config.ts), trusted for a localhost/127.0.0.1 origin alongside the
+ *  API port, so the laptop dev app (http://localhost:8788) reaches a box's switcher. */
+const DEV_UI_PORT = Number(process.env.ORCA_UI_PORT ?? 8788);
 /** The switcher is on unless the config turns it off. */
 export const switcherEnabled = (sw: ServerSwitcherConfig | undefined): boolean => sw?.enabled !== false;
 const apiConfigured = () => !!(process.env.TS_OAUTH_CLIENT_ID && process.env.TS_OAUTH_CLIENT_SECRET);
@@ -117,14 +123,21 @@ export const selfServer = async (sw: ServerSwitcherConfig): Promise<ServerEntry>
 /** May a page from `origin` call this server cross-origin (subject to whois)? Yes when the
  *  discovery lists it, or when it is an Orca page on this tailnet: a host under this node's MagicDNS
  *  suffix, a MagicDNS short name or a Tailscale address (100.64.0.0/10) — on the Orca port, or on
- *  HTTPS (`tailscale serve`). A preview on another port, or any site off the tailnet, is not. Pure. */
-export function trustedOrigin(origin: string, listed: string[], suffix: string | undefined, port: number): boolean {
+ *  HTTPS (`tailscale serve`). A preview on another port, or any site off the tailnet, is not. A plain
+ *  `localhost`/`127.0.0.1` origin is trusted too, but only on the API port or the Vite dev port
+ *  (`uiPort`): the laptop dev app has no tailnet name of its own and must still reach a box. The
+ *  whois check still runs after this (`checkCaller`): only a Tailscale user device, never a tagged
+ *  node or an off-tailnet caller, gets through. Pure. */
+export function trustedOrigin(origin: string, listed: string[], suffix: string | undefined, port: number, uiPort: number = DEV_UI_PORT): boolean {
   if (listed.includes(origin)) return true;
   let u: URL;
   try { u = new URL(origin); } catch { return false; }
+  const host = u.hostname.toLowerCase();
+  if (u.protocol === "http:" && (host === "localhost" || host === "127.0.0.1")) {
+    return u.port === String(port) || u.port === String(uiPort);
+  }
   const onPort = u.protocol === "https:" ? u.port === "" || u.port === "443" : u.protocol === "http:" && u.port === String(port);
   if (!onPort) return false;
-  const host = u.hostname.toLowerCase();
   const m = /^100\.(\d+)\.\d+\.\d+$/.exec(host);
   if (m) return Number(m[1]) >= 64 && Number(m[1]) <= 127;
   if (/^[a-z0-9-]+$/.test(host)) return host !== "localhost";
