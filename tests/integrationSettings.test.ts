@@ -13,7 +13,7 @@ import * as store from "../server/integrations/store";
 import type { Adapter } from "../server/integrations/adapter";
 import type { Capabilities, OutboundMessage, SendResult } from "../shared/integrations";
 import {
-  healthLine, healthTone, integrationProblem, linkProblem, pairingCode, parseFilter, personIdFor, span, targetLabel,
+  healthLine, healthTone, integrationProblem, linkProblem, parseFilter, span, targetLabel,
   type IntegrationCard,
 } from "../shared/integrationSettings";
 import { native } from "./happydom";
@@ -59,14 +59,11 @@ describe("decisions (pure)", () => {
     expect(parseFilter("team=x")).toBeUndefined();
   });
 
-  test("labels and pairing ids", () => {
+  test("labels", () => {
     const links = [{ id: "eng", integrationId: "w", externalId: "C1", label: "#eng", level: "ask" as const, repos: [], requireMention: true }];
     expect(targetLabel({ targetKind: "link", targetId: "eng" }, links, [{ id: "w", name: "Work Slack" }])).toBe("#eng · Work Slack");
     expect(targetLabel({ targetKind: "link", targetId: "gone" }, links, [])).toBe("link gone (removed)");
     expect(targetLabel({ targetKind: "orchestrator" }, [], [])).toBe("the orchestrator");
-    expect(personIdFor({ adapter: "discord", externalId: "42", name: "Saajan P." })).toBe("saajan-p");
-    expect(pairingCode(() => 0)).toBe("AAAAAA");
-    expect(pairingCode()).toMatch(/^[A-HJ-NP-Z2-9]{6}$/);
   });
 });
 
@@ -160,15 +157,15 @@ describe("with Postgres", () => {
     expect((await store.deliveries({ state: "dead" }))).toHaveLength(0);
   });
 
-  test("people: pairing approval makes a person whose identity the gate then trusts; deny closes the code", async () => {
+  test("people: an unknown sender's pairing code shows; approval makes a person the gate then trusts; deny closes a code", async () => {
     await connect();
-    const p = await admin.requestPairing({ integrationId: "chat", adapter: "fakechat", externalId: "U9", name: "Saajan" }, Date.now(), () => 0.5);
-    expect(await admin.requestPairing({ integrationId: "chat", adapter: "fakechat", externalId: "U9" })).toMatchObject({ code: p.code }); // one code per sender
-    expect((await admin.overview("local")).pairings).toEqual([expect.objectContaining({ code: p.code, externalId: "U9", name: "Saajan" })]);
-    // Before approval the sender is unknown: the gate drops the message.
-    const msg = (id: string) => ({ key: `fakechat:${id}`, topic: "ext.fakechat.message" as const, at: Date.now(), source: { adapter: "fakechat", channel: "R1" }, actor: { external: { adapter: "fakechat", id: "U9" } }, mentioned: true, text: "status?" });
-    expect(await router.ingest("chat", msg("e1"))).toBe("rejected");
-    await admin.route("/api/integrations/pairing", { code: p.code, action: "approve", name: "Saajan", maxLevel: "ask" });
+    const msg = (id: string, from = "U9", name?: string) => ({ key: `fakechat:${id}`, topic: "ext.fakechat.message" as const, at: Date.now(), source: { adapter: "fakechat", channel: "R1" }, actor: { external: { adapter: "fakechat", id: from, ...(name ? { name } : {}) } }, mentioned: true, text: "status?" });
+    // The core's gate: an unknown sender is dropped and gets a pairing code, which the page lists.
+    expect(await router.ingest("chat", msg("e1", "U9", "Saajan"))).toBe("rejected");
+    const [p] = (await admin.overview("local")).pairings;
+    expect(p).toMatchObject({ integrationId: "chat", adapter: "fakechat", externalId: "U9", name: "Saajan", state: "pending" });
+    // Approve as a new person (the page's POST pairing/approve {code, name, maxLevel} → the core's approvePairing).
+    await store.approvePairing(p!.code, { id: "saajan", name: "Saajan", maxLevel: "ask" });
     const o = await admin.overview("local");
     expect(o.pairings).toEqual([]);
     expect(o.people).toEqual([{ id: "saajan", name: "Saajan", maxLevel: "ask", identities: [{ adapter: "fakechat", externalId: "U9" }] }]);
@@ -176,14 +173,15 @@ describe("with Postgres", () => {
     expect((await store.event("fakechat:e2"))!.grant).toMatchObject({ level: "ask", principalId: "saajan" }); // min(work link, ask person)
     expect((await admin.overview("local")).integrations[0]!.lastEventAt).toBeGreaterThan(0);
 
-    // A second sender joins the existing person; deny closes a third.
-    const p2 = await admin.requestPairing({ integrationId: "chat", adapter: "fakechat", externalId: "U10" });
-    await admin.route("/api/integrations/pairing", { code: p2.code, action: "approve", personId: "saajan" });
-    const p3 = await admin.requestPairing({ integrationId: "chat", adapter: "fakechat", externalId: "U11" });
-    await admin.route("/api/integrations/pairing", { code: p3.code, action: "deny" });
-    expect((await admin.overview("local")).people[0]!.identities.map((i) => i.externalId)).toEqual(["U10", "U9"]);
+    // A second sender joins the existing person ({code, principal}); deny closes a third.
+    router.resetPace();
+    await router.ingest("chat", msg("e4", "U10"));
+    await router.ingest("chat", msg("e5", "U11"));
+    const codes = new Map((await admin.overview("local")).pairings.map((x) => [x.externalId, x.code]));
+    await store.approvePairing(codes.get("U10")!, { id: "saajan" });
+    expect(await store.denyPairing(codes.get("U11")!)).toBe(true);
+    expect((await admin.overview("local")).people[0]).toMatchObject({ maxLevel: "ask", identities: [{ externalId: "U10" }, { externalId: "U9" }] });
     expect((await admin.overview("local")).pairings).toEqual([]);
-    await expect(admin.route("/api/integrations/pairing", { code: p3.code, action: "approve" })).rejects.toThrow("no pending pairing");
 
     // Level change, unpair, remove.
     await admin.route("/api/integrations/people/save", { id: "saajan", name: "Saajan", maxLevel: "work" });

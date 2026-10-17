@@ -349,7 +349,7 @@ function PeopleCard({ data, onChange }: { data: Overview; onChange: () => void }
             </div>
             <div className="flex gap-2">
               <Button size="sm" onClick={() => setApprove(p)} className="max-sm:h-10 max-sm:flex-1">Approve</Button>
-              <Button size="sm" variant="secondary" onClick={() => void act(`Deny ${p.code}`, "pairing", { code: p.code, action: "deny" }, onChange)} className="max-sm:h-10 max-sm:flex-1">Deny</Button>
+              <Button size="sm" variant="secondary" onClick={() => void act(`Deny ${p.code}`, "pairing/deny", { code: p.code }, onChange)} className="max-sm:h-10 max-sm:flex-1">Deny</Button>
             </div>
           </div>
         ))}
@@ -398,7 +398,7 @@ function ApproveDialog({ pairing: p, people, onClose, onSaved }: { pairing: Pair
   const [busy, setBusy] = useState(false);
   const save = async () => {
     setBusy(true);
-    const r = await act(`Approve ${p.code}`, "pairing", { code: p.code, action: "approve", ...(personId === "new" ? { name, maxLevel } : { personId }) }, onSaved);
+    const r = await act(`Approve ${p.code}`, "pairing/approve", { code: p.code, ...(personId === "new" ? { name, maxLevel } : { principal: personId }) }, onSaved);
     setBusy(false); if (r) onClose();
   };
   return (

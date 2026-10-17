@@ -20,9 +20,12 @@ export type IntegrationCard = {
 export type LinkRow = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean };
 export type PersonRow = { id: string; name: string; maxLevel: Exclude<Level, "full">; identities: { adapter: string; externalId: string }[] };
 
-/** A pending pairing code: an unknown sender wrote to a link; you approve or deny them here.
- *  The shape the core's pairing API is to keep (see server/integrations/admin.ts). */
-export type Pairing = { code: string; integrationId: string; adapter: string; externalId: string; name?: string; createdAt: number; expiresAt: number };
+/** A pending pairing code (the core's server/integrations/store.ts `Pairing`): an unknown sender
+ *  wrote to a link; you approve or deny them here. */
+export type Pairing = {
+  code: string; integrationId: string; adapter: string; externalId: string; name?: string; linkId?: string;
+  createdAt: number; expiresAt: number; state: "pending" | "approved" | "denied"; principalId?: string;
+};
 
 export type DeadRow = { id: number; eventId: string; target: DeliveryTarget; attempts: number; lastError?: string; topic: string; key: string; title?: string; at?: number };
 
@@ -127,14 +130,3 @@ export function linkProblem(l: { id?: string; integrationId?: string; externalId
   if (l.level === "work" && !l.repos?.length) return "a work link needs at least one repo";
   return undefined;
 }
-
-/** A pairing approval makes a new person from the sender, or adds the identity to one you name. */
-export const personIdFor = (p: Pick<Pairing, "adapter" | "externalId" | "name">): string =>
-  (p.name ?? `${p.adapter}-${p.externalId}`).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || `${p.adapter}-person`;
-
-/** Six letters a person types back to Orca; no 0/O or 1/I. */
-export function pairingCode(rand: () => number = Math.random): string {
-  const A = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  return Array.from({ length: 6 }, () => A[Math.floor(rand() * A.length)]).join("");
-}
-export const PAIRING_TTL_MS = 24 * 3_600_000;

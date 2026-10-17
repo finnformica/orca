@@ -1,14 +1,14 @@
 // Settings > Integrations (docs/research/integrations.md §6.1): what the page reads in one GET and
 // the writes behind its buttons. Built ONLY on the core (store.ts, the registry, the dispatcher);
 // the few queries the core lacked (status, last event, removals, one-row retry, people) are here so
-// the core can take them over as they are. Pairing codes are built ahead of the core's pairing API
-// to the shape in shared/integrationSettings.ts (`Pairing`) — the core moves them into its gate.
+// the core can take them over as they are. Pairing codes are the core's (store.pendingPairings, and
+// the /api/integrations/pairing/approve|deny routes the page posts to).
 import * as db from "../db";
 import { ORCA_SECRETS } from "../env";
 import { secretRefRefusal, type Level, type Subscription, type TargetKind } from "../../shared/integrations";
 import {
-  integrationProblem, linkProblem, pairingCode, personIdFor, PAIRING_TTL_MS,
-  type DeadRow, type IntegrationCard, type IntegrationsOverview, type Pairing, type PersonRow,
+  integrationProblem, linkProblem,
+  type DeadRow, type IntegrationCard, type IntegrationsOverview, type PersonRow,
 } from "../../shared/integrationSettings";
 import * as registry from "./registry";
 import * as router from "./router";
@@ -54,7 +54,7 @@ const secretSetHere = (c: Connection, here: string): boolean | undefined =>
 
 export async function overview(here = db.instanceName()): Promise<IntegrationsOverview> {
   const [rows, st, last, links, persons, pairs, subs, dead, live] = await Promise.all([
-    store.integrations(), statuses(), lastEvents(), store.links(), people(), pairings(), allSubscriptions(),
+    store.integrations(), statuses(), lastEvents(), store.links(), people(), store.pendingPairings(), allSubscriptions(),
     store.deliveries({ state: "dead", limit: 100 }), registry.health(),
   ]);
   const cards: IntegrationCard[] = rows.map((c) => {
@@ -227,51 +227,6 @@ export async function testLink(linkId: string, opts: { waitMs?: number; now?: nu
   }
 }
 
-// ── pairing (ahead of the core's API; shape: shared/integrationSettings.ts `Pairing`) ────────────
-
-type PairingRow = { code: string; integration_id: string; adapter: string; external_id: string; name: string | null; created_at: number; expires_at: number };
-const toPairing = (r: PairingRow): Pairing => ({
-  code: r.code, integrationId: r.integration_id, adapter: r.adapter, externalId: r.external_id,
-  ...(r.name ? { name: r.name } : {}), createdAt: Number(r.created_at), expiresAt: Number(r.expires_at),
-});
-
-/** The pending codes that have not expired, newest first. */
-export async function pairings(now = Date.now()): Promise<Pairing[]> {
-  return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT code, integration_id, adapter, external_id, name, created_at, expires_at FROM pairing
-      WHERE user_id = ${user()} AND state = 'pending' AND expires_at > ${now} ORDER BY created_at DESC`;
-    return (rows as PairingRow[]).map(toPairing);
-  });
-}
-
-/** Give an unknown sender a code (the gate calls this; one pending code per sender). */
-export async function requestPairing(p: { integrationId: string; adapter: string; externalId: string; name?: string }, now = Date.now(), rand?: () => number): Promise<Pairing> {
-  return db.withRetry(async (sql) => {
-    const open = (await sql`SELECT code, integration_id, adapter, external_id, name, created_at, expires_at FROM pairing
-      WHERE user_id = ${user()} AND adapter = ${p.adapter} AND external_id = ${p.externalId} AND state = 'pending'`) as PairingRow[];
-    if (open[0] && Number(open[0].expires_at) > now) return toPairing(open[0]);
-    if (open[0]) await sql`UPDATE pairing SET state = 'denied' WHERE user_id = ${user()} AND code = ${open[0].code}`;
-    const code = pairingCode(rand);
-    await sql`INSERT INTO pairing (user_id, code, integration_id, adapter, external_id, name, created_at, expires_at)
-      VALUES (${user()}, ${code}, ${p.integrationId}, ${p.adapter}, ${p.externalId}, ${p.name ?? null}, ${now}, ${now + PAIRING_TTL_MS})`;
-    return { code, integrationId: p.integrationId, adapter: p.adapter, externalId: p.externalId, ...(p.name ? { name: p.name } : {}), createdAt: now, expiresAt: now + PAIRING_TTL_MS };
-  });
-}
-
-/** Approve: the sender's identity joins `personId` (an existing person) or a new person named after
- *  them with `maxLevel`. Deny: the code closes and the sender stays unknown. */
-export async function decidePairing(code: string, action: "approve" | "deny", opts: { personId?: string; name?: string; maxLevel?: string } = {}): Promise<void> {
-  const p = (await pairings()).find((x) => x.code === code) ?? fail(`no pending pairing ${code}`);
-  if (action === "approve") {
-    const existing = opts.personId ? (await people()).find((x) => x.id === opts.personId) : undefined;
-    if (opts.personId && !existing) fail(`no person ${opts.personId}`);
-    const level = existing?.maxLevel ?? (LEVEL_OK(opts.maxLevel) ? opts.maxLevel : "ask");
-    const name = existing?.name ?? (opts.name?.trim() || p.name || p.externalId);
-    await store.addPrincipal({ id: existing?.id ?? personIdFor({ ...p, name }), name, maxLevel: level }, [{ adapter: p.adapter, externalId: p.externalId }]);
-  }
-  await db.withRetry(async (sql) => { await sql`UPDATE pairing SET state = ${action === "approve" ? "approved" : "denied"} WHERE user_id = ${user()} AND code = ${code}`; });
-}
-
 /** Every POST the page makes, by path. Returns undefined for a path that is not the page's. */
 export async function route(p: string, b: Record<string, unknown>): Promise<unknown | undefined> {
   switch (p) {
@@ -284,7 +239,6 @@ export async function route(p: string, b: Record<string, unknown>): Promise<unkn
     case "/api/integrations/people/save": await savePerson(b); return { ok: true };
     case "/api/integrations/people/remove": await removePerson(String(b.id)); return { ok: true };
     case "/api/integrations/identities/remove": await removeIdentity(String(b.adapter), String(b.externalId)); return { ok: true };
-    case "/api/integrations/pairing": await decidePairing(String(b.code), b.action === "approve" ? "approve" : "deny", { personId: b.personId as string | undefined, name: b.name as string | undefined, maxLevel: b.maxLevel as string | undefined }); return { ok: true };
     case "/api/integrations/subscriptions/add": return { ok: true, id: await addSubscription(b) };
     case "/api/integrations/subscriptions/remove": await store.removeSubscription(Number(b.id)); return { ok: true };
     case "/api/integrations/deliveries/retry": return { ok: true, retried: await retry(b.id === undefined ? undefined : Number(b.id)) };
