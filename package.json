@@ -8,8 +8,7 @@
     "build": "cd web && bunx --bun vite build",
     "check": "bunx --bun tsc --noEmit && bun test",
     "test": "bun test",
-    "db:check": "bun run scripts/db-check.ts",
-    "trial:caveman": "bun run scripts/caveman-report.ts"
+    "db:check": "bun run scripts/db-check.ts"
   },
   "dependencies": {
     "@radix-ui/react-accordion": "^1.2.15",

@@ -19,9 +19,6 @@ import { resolvePrompt } from "./attachments";
 import * as cgroup from "./cgroup";
 import { noteOomKill } from "./health";
 import { tmpdir } from "os";
-import * as caveman from "./caveman";
-import { cavemanRetryInstruction, retryDirect, wantsCaveman, type AgentProxy } from "../shared/cavemanTrial";
-import { ORCHESTRATOR_REPO } from "../web/src/workstream";
 
 /** Persist a turn, but never let the history write break the run that produced it. Repo-level runs
  *  (Slack, keyed `slack:…`) carry no branch and so belong to no workstream — they're skipped.
@@ -131,8 +128,6 @@ export type LaunchOptions = {
   memoryMaxGb?: number;
   /** The app's `agentCpuWeight`; unset means the default (50, systemd's own neutral weight). */
   cpuWeight?: number;
-  /** The repo's `agentProxy` (the caveman trial, server/caveman.ts). Claude workers only. */
-  agentProxy?: AgentProxy;
 };
 
 /** What a finished run looked like — handed to the onRunFinished hook. */
@@ -547,7 +542,7 @@ export function parseCursorOutput(raw: string): { sessionId?: string; result?: s
 // all three CLIs' arg parsers read that leading dash as an unknown option and the run dies before the
 // agent ever sees the prompt — e.g. claude `error: unknown option '- gather children…'`. Reproduced
 // and each `--` form verified against the real CLIs (see multiAgent.test's leading-dash case).
-export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string, permissionMode: "bypass" | "ask" = "ask", maxBudgetUsd?: number, allowedTools?: string[], extraArgs: string[] = []): string[] {
+export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string, permissionMode: "bypass" | "ask" = "ask", maxBudgetUsd?: number, allowedTools?: string[]): string[] {
   // `model` is the card's pinned model (shared/models.ts) or the config default; unset → each CLI's own.
   const m = model ? ["--model", model] : [];
   if (provider === "codex") {
@@ -574,7 +569,7 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
   // `maxBudgetUsd` is the repo's cost ceiling per run: the CLI stops issuing model requests once
   // the run's spend reaches it and reports a budget result, which the turn records as
   // `budget_reached` — the same stop reason Managed Agents uses for a session budget.
-  return ["claude", "-p", "--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...m, ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), ...(allowedTools?.length ? ["--allowedTools", allowedTools.join(",")] : []), ...extraArgs, "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--", prompt];
+  return ["claude", "-p", "--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...m, ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), ...(allowedTools?.length ? ["--allowedTools", allowedTools.join(",")] : []), "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--", prompt];
 }
 
 // Launches between their call and their return, by key: a Stop pressed while a run is still
@@ -623,17 +618,12 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   const cpuWeight = options.cpuWeight ?? cgroup.DEFAULT_CPU_WEIGHT;
   const scoped = cgroup.available();
   const scopedEnv = scoped ? cgroup.runtimeEnv() : {};
-  // The caveman trial: a repo that opted in sends its Claude workers through the local proxy, or
-  // direct when the proxy can't be had (prepare never throws). Undefined for every other run.
-  const wiring = wantsCaveman({ agentProxy: options.agentProxy, provider, repo: options.repo, orchestratorRepo: ORCHESTRATOR_REPO })
-    ? await caveman.prepare() : undefined;
-  const viaCaveman = wiring?.on === true;
   const proc = Bun.spawn(
     cgroup.scopedCommand(
-      agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd, options.allowedTools, wiring?.on ? wiring.args : []),
+      agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd, options.allowedTools),
       { available: scoped, memoryMaxGb, cpuWeight, unit: scopeUnit },
     ),
-    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...scopedEnv, ...options.env, ...(wiring?.on ? wiring.env : {}) }, stdout: "pipe", stderr: "pipe" },
+    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...scopedEnv, ...options.env }, stdout: "pipe", stderr: "pipe" },
   );
   let timedOut = false;
   const timeout = options.timeoutMs ? setTimeout(() => { timedOut = true; proc.kill(); }, options.timeoutMs) : undefined;
@@ -727,30 +717,8 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       cacheReadTokens: meta?.cacheReadTokens, cacheCreationTokens: meta?.cacheCreationTokens,
       evidenceChars: options.evidenceChars, costUsd: meta?.costUsd,
       errorKind: ok ? undefined : oomKilled ? "oom" : budgetReached ? "budget" : timedOut ? "timeout" : code !== 0 ? "nonzero-exit" : "agent-error",
-      repo: options.repo, caveman: wiring ? viaCaveman : undefined,
+      repo: options.repo,
     });
-    // The caveman trial's own record: every worker run, both arms (the orchestrator is neither).
-    if (options.repo && options.repo !== ORCHESTRATOR_REPO) {
-      caveman.recordRun({
-        at: finishedAt, repo: options.repo, provider, caveman: viaCaveman,
-        ...(wiring && !wiring.on ? { fallback: wiring.fallback } : {}),
-        status: wasStopped ? "stopped" : ok ? "done" : "error",
-        durationMs: meta?.durationMs ?? finishedAt - startedAt,
-        inputTokens: meta?.inputTokens, cacheReadTokens: meta?.cacheReadTokens, cacheCreationTokens: meta?.cacheCreationTokens,
-        outputTokens: meta?.outputTokens, costUsd: meta?.costUsd, model: meta?.model,
-        action: options.action, mode: runMode(options), runId,
-      });
-    }
-    // A caveman run that failed on the connection is the trial's fault, not the worker's: take the
-    // proxy out of use and queue ONE direct retry on the same session (dispatchQueued below sends it).
-    if (viaCaveman && options.repo && options.branch && primary.held()
-      && retryDirect({ caveman: true, ok, stopped: wasStopped, instruction: options.instruction, proxyHealthy: await caveman.healthy(), error })) {
-      caveman.markDown(`a run failed through the proxy: ${(error ?? "").split("\n")[0]!.slice(0, 120)}`);
-      await db.queueMessage({
-        repo: options.repo, branch: options.branch, worktreePath: cwd, provider,
-        instruction: cavemanRetryInstruction(error ?? `exit ${code}`), attachments: [],
-      }).catch((e) => console.error("orca: caveman direct retry queue failed", e));
-    }
     // The verification gate: a run that committed gets the repo's check command run over it, and
     // the result lands on the turn as evidence. Only a successful run is checked — a failed one has
     // its own error, and a stopped one is mid-work by definition.
