@@ -138,7 +138,7 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
             <div data-slot="integration-health" className="break-words">{healthLine(c)}</div>
             <div className="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2 text-xs">
               {c.secretRef
-                ? <span data-slot="secret-status"><span className="font-mono">{c.secretRef}</span> · {c.secretSet === undefined ? `checked on ${c.instance}` : c.secretSet ? "set" : "not set"}</span>
+                ? <span data-slot="secret-status"><span className="font-mono">{c.secretRef}</span> · {c.secretSet === undefined ? "not checked yet" : c.secretSet ? "set" : "not set"}</span>
                 : <span>no secret</span>}
               <span className="sm:hidden">· on {c.instance}</span>
               {c.running && <span>· running on this bridge</span>}
