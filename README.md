@@ -95,30 +95,3 @@ that checkout**. Do these steps:
 
 Auto-deploy gets `main` in one minute. It waits while the orchestrator is in a wake. Each behaviour change must have a test.
 `bun run check` is the gate (see [`CLAUDE.md`](CLAUDE.md)).
-
-## Caveman trial (until 2026-10-22)
-
-This is an A/B trial of [caveman](https://github.com/JuliusBrussee/caveman), binaries `bin-v4.0.1`.
-The `orca` repo has `agentProxy: "caveman"`. Its Claude workers use caveman. The `branch-demo` workers are the control.
-The sample runs are in `docs/research/caveman-trial-samples-2026-10-15.md`.
-
-- **Read less:** the run sends its API calls through `caveman-proxy` on `127.0.0.1:8797`, mode `compress`.
-- **Say less:** the run gets the pinned `caveman` skill as `--append-system-prompt`.
-- **Recovery:** the run gets `caveman-mcp` as a per-run `--mcp-config`.
-- **Off:** Auto, browse, cloud, login and telemetry. Orca changes no user-level Claude settings. The orchestrator always runs direct.
-- **Logins:** the proxy forwards the run's own credential. Hydra picks the login as before.
-- **Prompt cache:** the run sets `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` and `ENABLE_TOOL_SEARCH=true`. Without them, Claude Code treats the proxy as a third-party gateway. It then sends every tool schema and loses the global cache scope. This adds about 16k input tokens to each request.
-- **Fallback:** when the proxy does not start, the run goes direct and Orca logs it. When a run fails on the API connection, Orca stops the proxy use for 10 minutes and queues one direct retry.
-
-Install (once per host, already done on the box):
-
-1. Download `caveman-proxy`, `caveman-engine`, `caveman-mcp` for your platform and `checksums.txt` from release `bin-v4.0.1`.
-2. Run `sha256sum -c` on the three files against `checksums.txt`.
-3. Put the binaries in `~/.caveman/bin/` without the platform suffix.
-4. Put `plugins/caveman/skills/caveman/SKILL.md` at tag `v4.0.1` in `~/.caveman/skills/caveman/SKILL.md`.
-
-A host without the install runs every worker direct. The trial log records this as a fallback.
-
-**Turn it off:** remove the `agentProxy: "caveman"` line from the `orca` repo in the config document (Settings, or `PUT /api/config/document`).
-
-**Report:** run `bun run trial:caveman --from 2026-10-15 --to 2026-10-22`. It reads this host's log, `~/.orca/trial/caveman.jsonl`. Add `--file <path>` once for each log to merge logs from other hosts. The report gives the trial start time. This is the time of the first caveman run on the host.
