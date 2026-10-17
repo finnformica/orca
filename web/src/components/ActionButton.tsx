@@ -3,6 +3,7 @@ import { Check, Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { actionFailed } from "@/lib/notificationStore";
+import { confirmDialog, type ConfirmOptions } from "@/lib/dialogs";
 import { firstLine, type ActionFailure } from "../workstream";
 
 type Variant = "default" | "outline" | "ghost" | "secondary" | "destructive";
@@ -12,7 +13,8 @@ type State = "idle" | "loading" | "done" | "error";
  *  Disabled while running so it can't be double-fired. A failure's message goes to the notification
  *  toasts (an `action_failed` with Copy + Ask the orchestrator) when `failure` names the action and workstream; the button itself
  *  keeps only the ✗, with the message's first line as its tooltip. `size="icon"` is an icon-only
- *  button (its `label` the aria-label): the spinner / ✓ / ✗ stand in for the icon while they show. */
+ *  button (its `label` the aria-label): the spinner / ✓ / ✗ stand in for the icon while they show.
+ *  `confirm` asks first, in the in-app AlertDialog (lib/dialogs). */
 export function ActionButton({
   onRun,
   children,
@@ -29,7 +31,7 @@ export function ActionButton({
   size?: "sm" | "default" | "icon";
   variant?: Variant;
   disabled?: boolean;
-  confirm?: string;
+  confirm?: ConfirmOptions;
   failure?: Omit<ActionFailure, "error">;
   className?: string;
   label?: string;
@@ -39,7 +41,7 @@ export function ActionButton({
 
   const run = async () => {
     if (state === "loading") return;
-    if (confirm && !window.confirm(confirm)) return;
+    if (confirm && !(await confirmDialog(confirm))) return;
     setState("loading");
     try {
       await onRun();

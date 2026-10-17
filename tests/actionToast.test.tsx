@@ -6,6 +6,7 @@
 // it is listed in the bell's centre too. It is local: never sent to the bridge. The row itself keeps
 // only a ✗ on its ⋯. A preview that crashes is ONE notification — the bridge's `preview_failed` —
 // never also a failed-action one. The whole App against the fake api.
+import { answer } from "./dialogs";
 import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -75,12 +76,11 @@ test("T2 a failed Merge on the Agents list: a card in the notification stack and
   apiFake.mergeError = ERROR;
   const copied: string[] = [];
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (t: string) => { copied.push(t); } } });
-  const confirm = window.confirm;
-  window.confirm = () => true;
-  try {
+  {
     await mount("/agents");
     await pointerdown(q(`[data-branch="feat-ok"]`)!.querySelector('button[aria-label="Actions"]')!);
     await click([...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Merge")!);
+    expect(await answer()).toBe('Merge PR #9? — Merge "Approved thing" into main. You cannot undo this.');
     await act(async () => { await flush(); await flush(); });
     expect(apiFake.calls).toContain("merge:9");
 
@@ -129,8 +129,6 @@ test("T2 a failed Merge on the Agents list: a card in the notification stack and
     expect(cards()).toHaveLength(0);
     expect(q('[data-slot="notifications-unread"]')).toBeNull();
     expect(apiFake.notificationCalls).toEqual([]);
-  } finally {
-    window.confirm = confirm;
   }
 });
 

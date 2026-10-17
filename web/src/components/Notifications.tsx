@@ -42,6 +42,7 @@ import { Tip } from "@/components/ui/tip";
 import { MarqueeText } from "@/components/ui/marquee-text";
 import { useOrchestrator } from "@/components/Terminal";
 import type { ShortcutId } from "@/lib/shortcuts";
+import { copyText } from "@/lib/dialogs";
 
 const ICON: Record<NotificationKind, typeof Bell> = {
   needs_input: MessageCircleQuestion, finished: Check, failed: CircleX, stopped: OctagonPause, check_failed: ShieldX,
@@ -72,11 +73,6 @@ const ACTION_ICON: Record<NotificationActionId, typeof Bell> = {
   ask: Bot, copy: Copy, undo: Undo2,
 };
 
-/** Copy a failed action's text; where the clipboard is refused (no secure context over the plain-http
- *  tailnet), a prompt with the text selected is the fallback. */
-async function copyText(text: string): Promise<void> {
-  try { await navigator.clipboard.writeText(text); } catch { window.prompt("Copy the error:", text); }
-}
 
 /** What a card says beside its title: the failed verb for a failed action ("Merge failed"), else
  *  the kind's own label. */
@@ -136,7 +132,7 @@ function useNotificationActions() {
       case "openPreview": return n.link?.url ? () => void window.open(n.link!.url, "_blank", "noopener") : undefined;
       case "openOrchestrator": return () => openOrchestrator();
       case "ask": return n.ask ? () => openOrchestrator(n.ask) : undefined;
-      case "copy": return n.copy ? () => void copyText(n.copy!) : undefined;
+      case "copy": return n.copy ? () => void copyText(n.copy!, "error") : undefined;
       case "undo": return n.onUndo ? () => n.onUndo!() : undefined;
       default: return undefined;
     }
