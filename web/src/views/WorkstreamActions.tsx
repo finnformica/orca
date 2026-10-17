@@ -13,6 +13,7 @@ import { ActionButton } from "@/components/ActionButton";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { actionFailed } from "@/lib/notificationStore";
+import { confirmDialog, copyText, type ConfirmOptions } from "@/lib/dialogs";
 import { ChatComposer } from "@/components/ChatComposer";
 import { clearDraft, hasDraft } from "@/lib/composerDraft";
 import { Button } from "@/components/ui/button";
@@ -95,6 +96,15 @@ function Sep() {
   return useContext(SheetMenu) ? <div role="separator" className="bg-border -mx-2 my-1 h-px" /> : <DropdownMenuSeparator />;
 }
 
+// Merge asks first everywhere it is offered (the menus and the quick action): it can't be undone.
+const mergeConfirm = (row: Row): ConfirmOptions => ({
+  title: row.prNumber ? `Merge PR #${row.prNumber}?` : `Merge ${row.branch}?`,
+  description: row.prNumber
+    ? `Merge "${row.title}" into ${baseBranch(row.repo)}. You cannot undo this.`
+    : `Merge ${row.branch} into ${baseBranch(row.repo)} locally. You cannot undo this.`,
+  confirmLabel: "Merge",
+});
+
 // `compact` renders the toolbar as icon-only buttons (dense view). The toolbar opens with the
 // state-aware quick actions (QuickActionButtons) and then `leading` — the Test / Preview control — so
 // the quick icons always sit immediately left of it; `quick={false}` leaves them to the caller (the
@@ -149,24 +159,22 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   // the card's top-right copy menu: this submenu is discoverable while the icon is faster.
   const copyWorktree = async () => {
     const path = row.worktreePath ?? (await ensureWorktree(row));
-    try { await navigator.clipboard.writeText(path); } catch { window.prompt("Copy the worktree path:", path); }
+    await copyText(path, "worktree path");
   };
   const copyCli = async () => {
     const command = await cliCommand(row);
-    try { await navigator.clipboard.writeText(command); } catch { window.prompt("Copy the CLI command:", command); }
+    await copyText(command, "CLI command");
   };
   const copyLink = async () => {
     if (!row.prUrl) return;
-    try { await navigator.clipboard.writeText(row.prUrl); } catch { window.prompt("Copy the PR link:", row.prUrl); }
+    await copyText(row.prUrl, "PR link");
   };
   const copyBranch = async () => {
-    try { await navigator.clipboard.writeText(row.branch); } catch { window.prompt("Copy the branch:", row.branch); }
+    await copyText(row.branch, "branch");
   };
   const prActions = prMenuActions(row);
   const prPreview = prPreviewState(row, previewConfigured(row.repo));
-  const mergeConfirm = isPr
-    ? `Merge PR #${row.prNumber} "${row.title}" into ${baseBranch(row.repo)}? This can't be undone.`
-    : `Merge ${row.branch} into ${baseBranch(row.repo)} locally? This can't be undone.`;
+  const confirmMerge = async () => { if (await confirmDialog(mergeConfirm(row))) await run("Merge", () => merge(row))(); };
 
   // Icon-only in compact (dense) view; labelled otherwise. `icon` keeps every toolbar button a
   // consistent square so the row lines up regardless of which verbs are present.
@@ -191,7 +199,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
           <Item icon={Copy} onSelect={run("Copy branch", copyBranch)}>Copy branch</Item>
           <Sep />
           <Item icon={MessageSquarePlus} disabled={submitting} onSelect={() => (onFollowUp ? onFollowUp() : setComposing(true))}>Follow up…</Item>
-          {row.lane === "MERGEABLE" && <Item icon={GitMerge} onSelect={() => { if (window.confirm(mergeConfirm)) run("Merge", () => merge(row))(); }}>{mergeLabel}</Item>}
+          {row.lane === "MERGEABLE" && <Item icon={GitMerge} onSelect={() => void confirmMerge()}>{mergeLabel}</Item>}
           <Sep />
         </>
       )}
@@ -210,7 +218,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
         ? <PromoteSubmenu row={row} disabled={!hasWork} run={run} />
         : <Item icon={GitPullRequestArrow} disabled={!hasWork} onSelect={run("Promote", () => promote(row))}>Promote</Item>)}
       {canMergeNow && row.lane !== "MERGEABLE" && (
-        <Item icon={GitMerge} onSelect={() => { if (window.confirm(mergeConfirm)) run("Merge", () => merge(row))(); }}>
+        <Item icon={GitMerge} onSelect={() => void confirmMerge()}>
           Merge{unreviewed ? " (unreviewed)" : ""}
         </Item>
       )}
@@ -262,14 +270,18 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
       {isPr ? (
         <Item icon={XCircle}
           className="text-destructive focus:text-destructive"
-          onSelect={() => { if (window.confirm(`Close PR #${row.prNumber} "${row.title}" without merging? Removes the worktree and local branch.`)) run("Close PR", () => closePr(row))(); }}
+          onSelect={() => void (async () => {
+            if (await confirmDialog({ title: `Close PR #${row.prNumber}?`, description: `Close "${row.title}" without a merge. This removes the worktree and the local branch.`, confirmLabel: "Close PR", destructive: true })) await run("Close PR", () => closePr(row))();
+          })()}
         >
           Close PR
         </Item>
       ) : (
         <Item icon={Trash2}
           className="text-destructive focus:text-destructive"
-          onSelect={() => { if (window.confirm(`Discard "${row.title}" (${row.branch})? Removes the worktree and branch.`)) void discardDraft(row); }}
+          onSelect={() => void (async () => {
+            if (await confirmDialog({ title: `Discard "${row.title}"?`, description: `This removes the worktree and the branch ${row.branch}. You cannot undo this.`, confirmLabel: "Discard", destructive: true })) await discardDraft(row);
+          })()}
         >
           Discard
         </Item>
@@ -505,9 +517,7 @@ export function QuickActionButtons({ row, hasWork = true, onBusy, peek = false, 
             <span data-quick-action={a.id} className="inline-flex">
               <ActionButton size="icon" variant="ghost" label={a.label} disabled={Boolean(a.disabled)}
                 className={cn("size-7", i === 0 ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
-                confirm={a.id === "merge" ? (row.prNumber
-                  ? `Merge PR #${row.prNumber} "${row.title}" into ${baseBranch(row.repo)}? This can't be undone.`
-                  : `Merge ${row.branch} into ${baseBranch(row.repo)} locally? This can't be undone.`) : undefined}
+                confirm={a.id === "merge" ? mergeConfirm(row) : undefined}
                 failure={{ action: a.label, title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }}
                 onRun={async () => { onBusy?.(true); try { await run(); } finally { onBusy?.(false); } }}>
                 {/* Auto-merge already on: a filled bolt, so the state reads at a glance. */}

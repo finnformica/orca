@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { Board } from "@/views/Board";
+import { answer } from "./dialogs";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -31,8 +32,9 @@ async function mount() {
   await act(async () => { await store.refresh(); await flush(); });
 }
 
+// Each mutating bulk verb asks first in the in-app AlertDialog; `answer` confirms it and records the question.
 const confirmed: string[] = [];
-window.confirm = (message?: string) => { confirmed.push(String(message)); return true; };
+const confirmIt = async () => { confirmed.push(await answer()); };
 // Copy verbs are aggregate (one clipboard write per lane, not per card) — capture what they write.
 const copied: string[] = [];
 Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async (t: string) => { copied.push(t); } } });
@@ -72,7 +74,8 @@ describe("swimlane bulk actions", () => {
     await openSub("Slack");
     expect(items().slice(5)).toEqual(["Send message 1", "Send bump 1"]); // counts: eligible cards per action
     await click(item("Send message"));
-    expect(confirmed).toEqual(["Send message on 1 card in in review?"]);
+    await confirmIt();
+    expect(confirmed).toEqual(["Send message on 1 card? — Run send message on 1 card in in review."]);
     expect(apiFake.slackSends).toEqual([{ repo: "r", text: "<https://x/7|#7 feat>" }]); // only the un-announced PR
   });
 
@@ -82,7 +85,8 @@ describe("swimlane bulk actions", () => {
     await pointerdown(laneMenu("In Review")!);
     await openSub("PR");
     await click(item("Add preview"));
-    expect(confirmed).toEqual(["Add preview on 2 cards in in review?"]);
+    await confirmIt();
+    expect(confirmed).toEqual(["Add preview on 2 cards? — Run add preview on 2 cards in in review."]);
     expect(apiFake.calls.filter((c) => c.startsWith("addPreviewLabel:"))).toEqual(["addPreviewLabel:7", "addPreviewLabel:8"]);
 
     await pointerdown(laneMenu("In Review")!);
@@ -98,6 +102,7 @@ describe("swimlane bulk actions", () => {
     await pointerdown(laneMenu("In Review")!);
     await openSub("Agent");
     await click(item("Address PR"));
+    await confirmIt();
     expect(apiFake.agentLaunches).toHaveLength(2);
   });
 
@@ -106,7 +111,8 @@ describe("swimlane bulk actions", () => {
     await mount();
     await pointerdown(laneMenu("Mergeable")!);
     await click(item("Merge"));
-    expect(confirmed).toEqual(["Merge on 2 cards in mergeable? This can't be undone."]);
+    await confirmIt();
+    expect(confirmed).toEqual(["Merge on 2 cards? — Run merge on 2 cards in mergeable. You cannot undo this."]);
     expect(apiFake.calls.filter((c) => c.startsWith("merge:"))).toEqual(["merge:7", "merge:8"]);
   });
 });
