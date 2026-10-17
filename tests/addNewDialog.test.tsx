@@ -33,7 +33,8 @@ afterEach(async () => {
   await act(async () => { await store.refresh(); });
 });
 
-const dialog = () => container!.querySelector<HTMLDialogElement>('[data-slot="add-new-dialog"]')!;
+// Portaled to document.body (Shell.AddNew), not a descendant of the mounted container.
+const dialog = () => document.querySelector<HTMLDialogElement>('[data-slot="add-new-dialog"]')!;
 const click = async (el: Element) => { await act(async () => { (el as HTMLElement).click(); await flush(); await flush(); }); };
 async function type(textarea: HTMLTextAreaElement, value: string) {
   await act(async () => {
@@ -58,7 +59,9 @@ test("Add New opens a modal dialog with the New-draft box — not a popover", as
     trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" }));
     await flush(); await flush();
   });
-  const list = document.querySelector('[role="listbox"]');
+  // data-slot, not the bare role: the command palette's own (always-mounted, closed) listbox shares
+  // that role, and now sits before this portaled dialog in document order.
+  const list = document.querySelector('[data-slot="select-content"]');
   expect(list).not.toBeNull();
   expect(dialog().contains(list)).toBe(true);
 });
