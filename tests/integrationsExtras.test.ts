@@ -164,6 +164,27 @@ describe("with Postgres", () => {
     expect(sent.map((s) => s.target.externalId)).toEqual(["D-dm"]); // the reply goes to the DM, not to "*"
   });
 
+  test("a place resolves to its own link, then each parent place in order, then the catch-all link", async () => {
+    // A Linear issue sits in a project and a team: channel "issue:1", parents project, then team.
+    await store.addPrincipal({ id: "ana", name: "Ana", maxLevel: "work" }, [{ adapter: "linear", externalId: "A1" }]);
+    const ev = (id: string, channel: string, parents?: string[]) => ({
+      ...inboundEnvelope({ adapter: "linear", channel, eventId: id, from: { adapter: "linear", id: "A1", name: "Ana" }, text: "hi" }),
+      ...(parents ? { source: { adapter: "linear", channel, parents } } : {}),
+    });
+    await store.addLink({ id: "Lstar", integrationId: "slack-work", externalId: "*", level: "ask", repos: [], requireMention: false });
+    await store.addLink({ id: "Lteam", integrationId: "slack-work", externalId: "team:ENG", level: "ask", repos: [], requireMention: false });
+    expect(await router.ingest("slack-work", ev("x1", "issue:1", ["project:p-1", "team:ENG"]))).toBe("new");
+    expect((await store.event("linear:x1"))?.source.linkId).toBe("Lteam");
+    await store.addLink({ id: "Lproj", integrationId: "slack-work", externalId: "project:p-1", level: "ask", repos: [], requireMention: false });
+    expect(await router.ingest("slack-work", ev("x2", "issue:1", ["project:p-1", "team:ENG"]))).toBe("new");
+    expect((await store.event("linear:x2"))?.source.linkId).toBe("Lproj"); // the most specific parent wins
+    expect(await router.ingest("slack-work", ev("x3", "issue:2", ["project:other"]))).toBe("new");
+    expect((await store.event("linear:x3"))?.source.linkId).toBe("Lstar"); // no parent has a link: the catch-all
+    await store.addLink({ id: "Lissue", integrationId: "slack-work", externalId: "issue:1", level: "ask", repos: [], requireMention: false });
+    expect(await router.ingest("slack-work", ev("x4", "issue:1", ["project:p-1"]))).toBe("new");
+    expect((await store.event("linear:x4"))?.source.linkId).toBe("Lissue"); // the place's own link first
+  });
+
   test("orca channels, post, thread link and ask-user — and the grant on post", async () => {
     const cfg = { repos: [{ name: "r", repoPath: "/nope", worktreeRoot: "/nope", baseBranch: "main", previewServices: [] }] } as unknown as OrcaConfig;
     await store.addSubscription({ topicPattern: "orca.question", filter: {}, targetKind: "link", targetId: "L1", digestSeconds: 0 });
