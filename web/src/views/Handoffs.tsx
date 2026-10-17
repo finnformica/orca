@@ -8,7 +8,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Package, Send, Trash2 } from "lucide-react";
 import { api } from "../api";
 import type { PackView } from "../../../server/handoff";
-import { byteSize, handoffTarget, parseHandoffDraft } from "../workstream";
+import { byteSize, handoffTarget, handoffTargets, parseHandoffDraft } from "../workstream";
 import { Empty, Pill, VCard } from "@/components/console";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,7 +16,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tip } from "@/components/ui/tip";
 import { useServers } from "@/components/ServerMenu";
-import { currentServer, type ServerEntry } from "@/lib/server";
+import { apiBase, type ServerEntry } from "@/lib/server";
 import { confirmDialog } from "@/lib/dialogs";
 import { notifyLocal } from "@/lib/notificationStore";
 import { navigate, useSearch } from "@/lib/route";
@@ -32,8 +32,9 @@ export function HandoffsPage() {
   useEffect(() => { void load(); }, [load]);
   const draft = parseHandoffDraft(useSearch());
   const { servers } = useServers();
-  const current = currentServer(servers);
-  const others = servers.filter((s) => s.url !== current.url);
+  // The source is the server this page reads the packs from: its own name, and the chosen API base.
+  const source = { name: data?.self ?? "", url: apiBase() || undefined };
+  const others = handoffTargets(servers, source);
   const out = data?.packs.filter((p) => p.direction === "out") ?? [];
   const received = data?.packs.filter((p) => p.direction === "in") ?? [];
   return (
@@ -48,7 +49,7 @@ export function HandoffsPage() {
       <VCard slot="handoffs" title="Packs" bodyClass="divide-y">
         {data === null ? <Empty>Loading…</Empty>
           : out.length === 0 ? <Empty icon={<Package />}>No packs. Ask the orchestrator: <code className="font-mono">orca handoff create --to &lt;server&gt; …</code>, or use Hand off… on a card.</Empty>
-          : out.map((p) => <PackRow key={p.id} pack={p} current={current} servers={servers} onChange={load} />)}
+          : out.map((p) => <PackRow key={p.id} pack={p} source={source} servers={servers} onChange={load} />)}
       </VCard>
       {received.length > 0 && (
         <VCard slot="handoffs-received" title="Received" bodyClass="divide-y">
@@ -99,12 +100,12 @@ function NewPack({ draft, others, onCreated }: { draft: { repo: string; branch: 
   );
 }
 
-function PackRow({ pack, current, servers, onChange }: { pack: PackView; current: ServerEntry; servers: ServerEntry[]; onChange: () => void }) {
+function PackRow({ pack, source, servers, onChange }: { pack: PackView; source: { name: string; url?: string }; servers: ServerEntry[]; onChange: () => void }) {
   const [open, setOpen] = useState(!pack.sentAt);
   const [chosen, setChosen] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
-  const others = servers.filter((s) => s.url !== current.url);
-  const target = handoffTarget(servers, pack.target, current.url, chosen);
+  const others = handoffTargets(servers, source);
+  const target = handoffTarget(servers, pack.target, source, chosen);
   const blocked = pack.problems.length > 0;
   const total = pack.files.reduce((n, f) => n + f.size, 0);
   const send = async () => {

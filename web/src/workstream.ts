@@ -3732,10 +3732,17 @@ export function terminalClosedText(code: number, reason: string): string {
 }
 
 // ---- handoff packs (server/handoff.ts; views/Handoffs.tsx) ----
-/** The server a pack goes to: the switcher row whose name is the pack's target (any case), never
- *  the server the pack is on. A user's pick (`chosenUrl`) wins. Pure. */
-export function handoffTarget<T extends { name: string; url: string }>(servers: T[], target: string, currentUrl: string, chosenUrl?: string): T | undefined {
-  const others = servers.filter((s) => s.url !== currentUrl);
+/** The servers a pack on `source` may go to: every switcher row but the source itself, known by the
+ *  name its own answer gives (any case) or by the API base the browser talks to. The URL alone is not
+ *  enough: on a localhost page the switcher's "current" row is just the list's first. Pure. */
+export function handoffTargets<T extends { name: string; url: string }>(servers: T[], source: { name: string; url?: string }): T[] {
+  return servers.filter((s) => s.name.toLowerCase() !== source.name.toLowerCase() && (!source.url || s.url !== source.url));
+}
+
+/** The server a pack goes to: the row named as the pack's target (any case), never the source. A
+ *  user's pick (`chosenUrl`) wins. Pure. */
+export function handoffTarget<T extends { name: string; url: string }>(servers: T[], target: string, source: { name: string; url?: string }, chosenUrl?: string): T | undefined {
+  const others = handoffTargets(servers, source);
   if (chosenUrl) return others.find((s) => s.url === chosenUrl);
   return others.find((s) => s.name.toLowerCase() === target.trim().toLowerCase());
 }
