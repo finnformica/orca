@@ -5,6 +5,10 @@ import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSumm
 import type { Usage } from "../../server/usage";
 import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
 import type { Notification } from "../../shared/notifications";
+import type { Conversation, InboxFacets, InboxRow, ThreadItem, ThreadLinkRecord } from "../../shared/inbox";
+
+export type InboxPage = { rows: InboxRow[]; facets: InboxFacets; older: string | null; dbUnavailable?: boolean };
+export type InboxThread = { conversation: Conversation; items: ThreadItem[]; workstream?: { repo: string; branch: string } };
 import type { BridgeInfo, MechanicalMerge, MergePolicy, SyncResult, TurnShots } from "./workstream";
 
 export type LiveAgent = {
@@ -91,6 +95,13 @@ export const api = {
   setInstanceRate: (instance: string, hourlyUsd: number | null): Promise<{ ok: true }> => post("/api/config/instance-rate", { instance, hourlyUsd }),
   setInstanceTerminal: (instance: string, on: boolean): Promise<{ ok: true }> => post("/api/config/terminal", { instance, on }),
   usage: (): Promise<Usage | null> => get("/api/usage").then(res),
+  /** The unified inbox (shared/inbox.ts): one window of rows, newest first, with the filter facets. */
+  inbox: (q: { before?: string; source?: string; person?: string } = {}): Promise<InboxPage> =>
+    get(`/api/inbox?${new URLSearchParams(Object.entries(q).filter(([, v]) => v) as [string, string][])}`).then(res),
+  /** One conversation across inbound and outbound (`c` is shared/inbox.ts `conversationParam`). */
+  inboxThread: (c: string): Promise<InboxThread> => get(`/api/inbox/thread?c=${encodeURIComponent(c)}`).then(res),
+  /** Every thread link: the source chips on workstream cards. */
+  threadLinks: (): Promise<{ links: ThreadLinkRecord[] }> => get("/api/inbox/threads").then(res),
   /** The GitHub page: this host's signed-in gh accounts, the identity each commits as, the repos on each. */
   githubAccounts: (): Promise<{ accounts: GithubAccount[] }> => get("/api/github/accounts").then(res),
   setGithubAccount: (login: string, fields: { name?: string; email?: string }): Promise<{ accounts: GithubAccount[] }> => post("/api/github/accounts", { login, ...fields }),

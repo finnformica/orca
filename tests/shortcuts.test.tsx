@@ -65,7 +65,7 @@ describe("the shortcut matcher", () => {
     expect(matchShortcut({ key: "n" }, false, true, false)).toBe("notifications");
     // Every page chord is in the table with its destination, and labels as two keycaps.
     expect(SHORTCUTS.filter((s) => s.chord).map((s) => [s.id, s.to])).toEqual([
-      ["goOverview", "/"], ["goAgents", "/agents"], ["goPreviews", "/previews"], ["goRepos", "/repos"], ["goGithub", "/github"], ["goUsage", "/usage"], ["goSettings", "/settings"],
+      ["goOverview", "/"], ["goAgents", "/agents"], ["goInbox", "/inbox"], ["goPreviews", "/previews"], ["goRepos", "/repos"], ["goGithub", "/github"], ["goUsage", "/usage"], ["goSettings", "/settings"],
     ]);
     expect(shortcutKeys("goAgents", true)).toEqual(["G", "A"]);
     expect(shortcutLabel("goSettings")).toBe("G then S");
