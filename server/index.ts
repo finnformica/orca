@@ -439,10 +439,10 @@ async function agentRows(repo: RepoConfig): Promise<unknown[]> {
 
 // The remote address of each request, for the routes that must know who asks (the terminal's).
 const remoteAddr = new WeakMap<Request, string | undefined>();
-/** The web terminal's owner gate for a plain request: same-origin and the owner (server/terminal.ts). */
-async function terminalOwner(req: Request): Promise<Response | undefined> {
-  if (!terminal.originAllowed(req.headers.get("origin"), req.headers.get("host"))) return json({ error: "cross-origin request refused" }, 403);
-  const id = await terminal.identify(terminal.callerAddress(remoteAddr.get(req), req.headers));
+/** The web terminal's owner gate for a plain request: a known Orca page and the owner (server/terminal.ts). */
+async function terminalOwner(req: Request, cfg: OrcaConfig): Promise<Response | undefined> {
+  if (!terminal.originAllowed(req.headers.get("origin"), req.headers.get("host"), await terminal.trustedOrigins(cfg))) return json({ error: "cross-origin request refused" }, 403);
+  const id = await terminal.identify(terminal.callerAddress(remoteAddr.get(req), req.headers), undefined, undefined, cfg.serverSwitcher?.allowedLogins ?? []);
   return id.ok ? undefined : json({ error: `refused: ${id.reason}` }, 403);
 }
 
@@ -729,7 +729,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/config/terminal") {
     // Settings' Terminal row: one instance's web terminal on or off. It hands out a shell, so it is
     // gated like the terminal itself — the owner only, never a cross-origin page.
-    const gate = await terminalOwner(req);
+    const gate = await terminalOwner(req, cfg);
     if (gate) return gate;
     const instance = typeof body.instance === "string" ? body.instance.trim() : "";
     if (!instance || typeof body.on !== "boolean") return json({ error: "instance and on (true or false) are required" }, 400);
@@ -762,6 +762,9 @@ async function api(req: Request, url: URL): Promise<Response> {
       instance: db.instanceName(), instances: Object.keys(cfg.instances ?? {}),
       instanceHourlyUsd: cfg.instanceHourlyUsd ?? {},
       terminal: cfg.terminal ?? {},
+      // Each machine's address: the terminal panel connects to a machine's own bridge directly (a
+      // bridge never relays another machine's shell). Tailnet addresses, no secret.
+      instanceUrls: cfg.instances ?? {},
       // `ok`, or `unreachable since <iso>`: the bridge serves (and runs agents) without the database,
       // from the last good config, journaling history until it is back.
       database: db.databaseStatus(),

@@ -7,29 +7,32 @@
 //    (`/api/config/terminal`; a pasted config document keeps the stored value, the file never seeds
 //    it, and the orchestrator's `orca` command has no verb for it).
 //  - The owner only. The API has no auth of its own: it is reached over loopback or the tailnet, and
-//    nothing else. A shell needs more than "can reach the port", so a tailnet peer must be a node of
-//    the SAME Tailscale user as this machine (`tailscale whois`), and a browser's Origin must name
-//    the host it connects to (a WebSocket is not covered by the same-origin policy, so without this
-//    any page Finn opens could open a shell on loopback).
+//    nothing else. A shell needs more than "can reach the port", so a tailnet peer must be a USER
+//    device (never a tagged node: a server never gets another server's shell) of this machine's
+//    owner (`tailscale whois`): the same Tailscale user as this machine, or — on a tagged machine,
+//    whose own user is Tailscale's `tagged-devices` — a login in `serverSwitcher.allowedLogins`.
+//  - A browser's Origin must be a known Orca page: the host it connects to, an `instances` address,
+//    or a server the switcher lists (a WebSocket is not covered by the same-origin policy, so
+//    without this any page Finn opens could open a shell on loopback).
 //  - At most MAX_SESSIONS shells per instance; a shell with no input for IDLE_MS is closed.
 //  - The PTY is closed (the shell SIGHUPed, then killed) when its socket closes, for any reason.
 //  - Start and end are logged (who, instance, time). Keystrokes and output are NEVER logged.
 //
-// Another instance's terminal (the laptop's, from a phone on the box) goes through the bridge you are
-// on: it runs the same gate, then relays the socket to the target's own `/api/terminal`, which runs
-// its gate again (the relay's address must be a node of the same user) and owns the PTY.
+// Each machine serves ONLY its own shell. The browser connects to that machine's bridge directly (the
+// panel reads its address from `/api/config`'s `instanceUrls`); a bridge never relays a terminal to
+// another box — box-to-box traffic is blocked on purpose — so a request that names another instance
+// is closed with the reason.
 import type { Server, ServerWebSocket } from "bun";
 import type { OrcaConfig } from "./config";
 import { agentEnv } from "./env";
 import { runCmd } from "./run";
-import { reachable } from "./peer";
 
 export const MAX_SESSIONS = 2;
 export const IDLE_MS = 30 * 60_000;
 export const PATH = "/api/terminal";
 
 /** Close codes the browser shows as a reason (4000-4999 are the application's). */
-export const CLOSE = { off: 4403, limit: 4429, idle: 4408, exited: 4000, upstream: 4502 } as const;
+export const CLOSE = { off: 4403, limit: 4429, idle: 4408, exited: 4000, elsewhere: 4421 } as const;
 
 /** Is this instance's terminal turned on? Off unless the config says exactly `true`. */
 export const terminalEnabled = (cfg: Pick<OrcaConfig, "terminal">, instance: string): boolean => cfg.terminal?.[instance] === true;
@@ -47,16 +50,31 @@ export const isTailnet = (addr: string): boolean => {
   return a.startsWith("fd7a:115c:a1e0:");
 };
 
-/** A browser's Origin must name the host it connects to (any port — the dev UI and the bridge are
- *  on two). No Origin is a non-browser client (the relay from another instance, a test). */
-export function originAllowed(origin: string | null, host: string | null): boolean {
+const hostnameOf = (url: string): string | null => {
+  try { return new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase(); } catch { return null; }
+};
+/** A browser's Origin must name the host it connects to, or one of `trusted` — the other Orca pages
+ *  (`instances` addresses, the switcher's servers) that open this machine's terminal directly. The
+ *  host name decides, any port (the dev UI and the bridge are on two). No Origin is a non-browser
+ *  client (a test, a script on the tailnet — the identity gate still applies). */
+export function originAllowed(origin: string | null, host: string | null, trusted: string[] = []): boolean {
   if (!origin) return true;
-  if (!host) return false;
-  try {
-    const o = new URL(origin).hostname.replace(/^\[|\]$/g, "");
-    const h = new URL(`http://${host}`).hostname.replace(/^\[|\]$/g, "");
-    return o === h;
-  } catch { return false; }
+  const o = hostnameOf(origin);
+  if (!o) return false;
+  if (host && o === hostnameOf(`http://${host}`)) return true;
+  return trusted.some((t) => hostnameOf(t) === o);
+}
+
+/** The Orca pages a browser may open this machine's terminal from, besides its own host: every
+ *  configured instance address and, with the switcher on, every server it lists. */
+export async function trustedOrigins(cfg: Pick<OrcaConfig, "instances" | "serverSwitcher">): Promise<string[]> {
+  const out = Object.values(cfg.instances ?? {});
+  if (cfg.serverSwitcher?.enabled) {
+    const { listServers } = await import("./servers");
+    const answer = await listServers(cfg.serverSwitcher).catch(() => null);
+    for (const s of answer?.servers ?? []) out.push(s.url);
+  }
+  return out;
 }
 
 /** The address to identify. A request from loopback that carries `x-forwarded-for` came through a
@@ -68,21 +86,28 @@ export function callerAddress(remote: string | undefined, headers: Headers): str
 }
 
 export type Identity = { ok: true; who: string } | { ok: false; reason: string };
-/** A tailnet address → its node's user (id + login), or null when Tailscale can't say. */
-export type Whois = (addr: string) => Promise<{ userId: string; login: string } | null>;
-/** This machine's own Tailscale user id, or null when Tailscale isn't running. */
-export type SelfUser = () => Promise<string | null>;
+/** A tailnet address → its node's user (id + login) and whether the node is tagged, or null when
+ *  Tailscale can't say. */
+export type Whois = (addr: string) => Promise<{ userId: string; login: string; tagged?: boolean } | null>;
+/** This machine's own Tailscale user id and whether it is a tagged node, or null when Tailscale
+ *  isn't running. */
+export type SelfUser = () => Promise<{ userId: string; tagged?: boolean } | null>;
 
-/** Who is asking. Loopback is this machine's own user (the bridge's own browser, the Vite proxy);
- *  a tailnet peer is the owner only when its node belongs to this machine's Tailscale user; any
- *  other address is refused. */
-export async function identify(addr: string | undefined, whois: Whois = tailscaleWhois, self: SelfUser = tailscaleSelf): Promise<Identity> {
+/** Who is asking. Loopback is this machine's own user (the bridge's own browser, the Vite proxy).
+ *  A tailnet peer must be an untagged user device, and the owner: on an untagged machine, a node of
+ *  the same Tailscale user; on a tagged machine (its user is Tailscale's `tagged-devices`, so no
+ *  device matches it), a login in `owners` — `serverSwitcher.allowedLogins`. Anything else is refused. */
+export async function identify(addr: string | undefined, whois: Whois = tailscaleWhois, self: SelfUser = tailscaleSelf, owners: string[] = []): Promise<Identity> {
   if (!addr) return { ok: false, reason: "no remote address" };
   if (isLoopback(addr)) return { ok: true, who: "loopback" };
   if (!isTailnet(addr)) return { ok: false, reason: `${addr} is not on the tailnet` };
   const [peer, mine] = await Promise.all([whois(unmap(addr)), self()]);
   if (!peer || !mine) return { ok: false, reason: `tailscale cannot identify ${addr}` };
-  if (peer.userId !== mine) return { ok: false, reason: `${peer.login} is not this machine's owner` };
+  if (peer.tagged) return { ok: false, reason: `${addr} is a tagged node (a server), not a user device` };
+  if (mine.tagged) {
+    if (!owners.length) return { ok: false, reason: "this machine is a tagged node: name its owner in serverSwitcher.allowedLogins" };
+    if (!owners.includes(peer.login)) return { ok: false, reason: `${peer.login} is not in serverSwitcher.allowedLogins` };
+  } else if (peer.userId !== mine.userId) return { ok: false, reason: `${peer.login} is not this machine's owner` };
   return { ok: true, who: peer.login };
 }
 
@@ -94,16 +119,16 @@ const tailscaleJson = async (args: string[]): Promise<Record<string, unknown> | 
 };
 const tailscaleWhois: Whois = async (addr) => {
   const j = await tailscaleJson(["whois", "--json", addr]);
-  const user = (j?.Node as { User?: number } | undefined)?.User;
+  const node = j?.Node as { User?: number; Tags?: string[] } | undefined;
   const login = (j?.UserProfile as { LoginName?: string } | undefined)?.LoginName;
-  return user ? { userId: String(user), login: login ?? String(user) } : null;
+  return node?.User ? { userId: String(node.User), login: login ?? String(node.User), tagged: Boolean(node.Tags?.length) } : null;
 };
-let selfId: string | null = null;
+let selfInfo: { userId: string; tagged: boolean } | null = null;
 const tailscaleSelf: SelfUser = async () => {
-  if (selfId) return selfId;
+  if (selfInfo) return selfInfo;
   const j = await tailscaleJson(["status", "--json"]);
-  const id = (j?.Self as { UserID?: number } | undefined)?.UserID;
-  return (selfId = id ? String(id) : null);
+  const me = j?.Self as { UserID?: number; Tags?: string[] } | undefined;
+  return (selfInfo = me?.UserID ? { userId: String(me.UserID), tagged: Boolean(me.Tags?.length) } : null);
 };
 
 // ---- sessions ----
@@ -112,13 +137,13 @@ type PtyData = {
   kind: "pty"; who: string; instance: string; cols: number; rows: number; idleMs: number; enabled: () => Promise<boolean>;
   /** Messages that arrived while `open` still checked the flag — replayed once the shell exists. */
   early: (string | Buffer<ArrayBuffer>)[];
+  /** Close at once with this reason (a request for another machine's shell). */
+  refuse?: { code: number; reason: string };
 };
-type RelayData = { kind: "relay"; who: string; instance: string; target: string };
-export type TerminalData = PtyData | RelayData;
+export type TerminalData = PtyData;
 type Session = { proc: Bun.Subprocess; idle?: ReturnType<typeof setTimeout>; startedAt: number; ended?: string };
 
 const sessions = new Map<ServerWebSocket<TerminalData>, Session>();
-const relays = new Map<ServerWebSocket<TerminalData>, { up: WebSocket; queue: (string | Uint8Array)[] }>();
 
 /** Live shells on this instance (the session limit counts these). */
 export const liveSessions = (): number => sessions.size;
@@ -130,7 +155,7 @@ export type UpgradeDeps = {
   config: () => Promise<OrcaConfig>;
   /** This instance's name. */
   here: string;
-  identify?: (addr: string | undefined) => Promise<Identity>;
+  identify?: (addr: string | undefined, owners: string[]) => Promise<Identity>;
   idleMs?: number;
 };
 
@@ -144,28 +169,24 @@ const dims = (v: string | null, fallback: number, max: number) => {
 export async function upgrade(req: Request, server: Server<TerminalData>, deps: UpgradeDeps): Promise<Response | undefined> {
   const url = new URL(req.url);
   if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") return Response.json({ error: "expected a WebSocket upgrade" }, { status: 426 });
-  if (!originAllowed(req.headers.get("origin"), req.headers.get("host"))) return Response.json({ error: "cross-origin terminal request refused" }, { status: 403 });
-  const id = await (deps.identify ?? identify)(callerAddress(server.requestIP(req)?.address, req.headers));
+  const cfg = await deps.config();
+  if (!originAllowed(req.headers.get("origin"), req.headers.get("host"), await trustedOrigins(cfg))) return Response.json({ error: "cross-origin terminal request refused" }, { status: 403 });
+  const owners = cfg.serverSwitcher?.allowedLogins ?? [];
+  const id = await (deps.identify ? deps.identify(callerAddress(server.requestIP(req)?.address, req.headers), owners)
+    : identify(callerAddress(server.requestIP(req)?.address, req.headers), undefined, undefined, owners));
   if (!id.ok) {
     log("refused", { who: "unknown", instance: deps.here }, `reason="${id.reason}"`);
     return Response.json({ error: `terminal refused: ${id.reason}` }, { status: 403 });
   }
-  const cfg = await deps.config();
   const instance = url.searchParams.get("instance") || deps.here;
-  if (instance !== deps.here) {
-    const base = cfg.instances?.[instance];
-    if (!base) return Response.json({ error: `no address configured for "${instance}"` }, { status: 502 });
-    if (!(await reachable(base))) return Response.json({ error: `${instance} is unreachable` }, { status: 502 });
-    const target = new URL(PATH + url.search, base);
-    target.protocol = target.protocol === "https:" ? "wss:" : "ws:";
-    return server.upgrade(req, { data: { kind: "relay", who: id.who, instance, target: target.href } }) ? undefined : Response.json({ error: "upgrade failed" }, { status: 400 });
-  }
   const data: PtyData = {
     kind: "pty", who: id.who, instance, idleMs: deps.idleMs ?? IDLE_MS,
     cols: dims(url.searchParams.get("cols"), 80, 500), rows: dims(url.searchParams.get("rows"), 24, 200),
     // Read again at open: the config may change between the check below and the socket opening.
     enabled: async () => terminalEnabled(await deps.config(), instance),
     early: [],
+    // Never a relay: another machine's shell is that machine's bridge's to serve.
+    ...(instance === deps.here ? {} : { refuse: { code: CLOSE.elsewhere, reason: `this is ${deps.here}; open ${instance}'s terminal on ${instance}'s own server` } }),
   };
   return server.upgrade(req, { data }) ? undefined : Response.json({ error: "upgrade failed" }, { status: 400 });
 }
@@ -192,8 +213,12 @@ function touch(ws: ServerWebSocket<TerminalData>, s: Session, idleMs: number): v
   s.idle = setTimeout(() => { end(ws, "idle"); ws.close(CLOSE.idle, `closed after ${Math.round(idleMs / 60_000)} minutes with no input`); }, idleMs);
 }
 
-async function openPty(ws: ServerWebSocket<PtyData>): Promise<void> {
+async function openPty(ws: ServerWebSocket<TerminalData>): Promise<void> {
   const d = ws.data;
+  if (d.refuse) {
+    log("refused", d, "reason=elsewhere");
+    return ws.close(d.refuse.code, d.refuse.reason);
+  }
   if (!(await d.enabled())) {
     log("refused", d, "reason=off");
     return ws.close(CLOSE.off, `the terminal is off for ${d.instance} — turn it on in Settings`);
@@ -219,7 +244,7 @@ async function openPty(ws: ServerWebSocket<PtyData>): Promise<void> {
   sessions.set(ws, s);
   touch(ws, s, d.idleMs);
   log("start", d, `pid=${proc.pid}`);
-  for (const m of d.early.splice(0)) websocket.message!(ws as ServerWebSocket<TerminalData>, m);
+  for (const m of d.early.splice(0)) websocket.message!(ws, m);
   void proc.exited.then((code) => {
     if (!sessions.has(ws)) return;
     end(ws, "exited");
@@ -227,35 +252,12 @@ async function openPty(ws: ServerWebSocket<PtyData>): Promise<void> {
   });
 }
 
-function openRelay(ws: ServerWebSocket<RelayData>): void {
-  const up = new WebSocket(ws.data.target);
-  up.binaryType = "arraybuffer";
-  const r = { up, queue: [] as (string | Uint8Array)[] };
-  relays.set(ws, r);
-  log("start", ws.data, "relay=true");
-  up.onopen = () => { for (const m of r.queue) up.send(m); r.queue = []; };
-  up.onmessage = (e) => { if (ws.readyState === 1) typeof e.data === "string" ? ws.send(e.data) : ws.sendBinary(new Uint8Array(e.data as ArrayBuffer)); };
-  up.onclose = (e) => {
-    relays.delete(ws);
-    if (ws.readyState === 1) ws.close(e.code >= 4000 ? e.code : CLOSE.upstream, e.reason || `${ws.data.instance} closed the terminal`);
-  };
-  up.onerror = () => { /* onclose follows */ };
-}
-
 /** Bun.serve's `websocket` handlers for the terminal (the only WebSocket the bridge serves). */
 export const websocket: Bun.WebSocketHandler<TerminalData> = {
   open(ws) {
-    if (ws.data.kind === "relay") openRelay(ws as ServerWebSocket<RelayData>);
-    else void openPty(ws as ServerWebSocket<PtyData>);
+    void openPty(ws);
   },
   message(ws, raw) {
-    const relay = relays.get(ws);
-    if (relay) {
-      const m = typeof raw === "string" ? raw : new Uint8Array(raw);
-      if (relay.up.readyState === WebSocket.OPEN) relay.up.send(m); else relay.queue.push(m);
-      return;
-    }
-    if (ws.data.kind !== "pty") return;
     const s = sessions.get(ws);
     if (!s) { if (ws.data.early.length < 100) ws.data.early.push(raw); return; }
     let msg: ClientMessage;
@@ -268,13 +270,6 @@ export const websocket: Bun.WebSocketHandler<TerminalData> = {
     }
   },
   close(ws) {
-    const relay = relays.get(ws);
-    if (relay) {
-      relays.delete(ws);
-      try { relay.up.close(); } catch { /* closed */ }
-      log("end", ws.data, "relay=true");
-      return;
-    }
     end(ws, "socket closed");
   },
 };

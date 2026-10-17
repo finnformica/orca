@@ -340,27 +340,6 @@ describe("the console's pages", () => {
     expect(input("cloud").value).toBe("");
   });
 
-  test("Settings: the web terminal is off per machine until turned on there, and the card's Terminal action follows", async () => {
-    // One page at a time: a page left mounted keeps its cards polling into the next test file.
-    const reopen = async (path: string) => { await act(async () => { root?.unmount(); }); container?.remove(); await open(path); };
-    await open("/");
-    const action = () => document.querySelector<HTMLButtonElement>('[data-slot="instance-cloud"] [data-slot="instance-terminal-open"]')!;
-    expect(action().disabled).toBe(true); // off by default
-    await reopen("/settings");
-    const group = $("settings-terminal").querySelector<HTMLElement>('[role="group"][aria-label="cloud terminal"]')!;
-    expect(group.querySelector('[aria-pressed="true"]')!.textContent).toBe("Off");
-    const on = [...group.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === "On")!;
-    await act(async () => { on.click(); await flush(); });
-    expect(apiFake.setInstanceTerminalCalls).toEqual([{ instance: "cloud", on: true }]);
-    expect(group.querySelector('[aria-pressed="true"]')!.textContent).toBe("On");
-    await reopen("/");
-    expect(action().disabled).toBe(false);
-    // Back off, so the store's mirror is as the other tests expect it.
-    await reopen("/settings");
-    const off = [...$("settings-terminal").querySelectorAll<HTMLButtonElement>('[aria-label="cloud terminal"] button')].find((b) => b.textContent === "Off")!;
-    await act(async () => { off.click(); await flush(); });
-  });
-
   test("GitHub: one row per signed-in gh account — login, active, the identity it commits as, its repos — and a saved identity", async () => {
     apiFake.githubAccounts = [
       { login: "finnformica", active: true, name: "Finn F", email: "finn@work.example", configured: {}, repos: ["r"] },

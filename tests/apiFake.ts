@@ -188,7 +188,7 @@ mock.module("@/api", () => ({
     // Two instances, so the cards' instance chip and "Move to" control render in tests. Previews
     // on by default (RepoFeatures.previews) — a row with a repo absent from this list (e.g. "nopreview"
     // in tests) reads as previews-disabled, since there's no config entry to say otherwise.
-    config: async () => { if (apiFake.holdConfig) await new Promise<void>((r) => { apiFake.releaseConfig = r; }); return ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false, features: { previews: true } }], staleHours: 24, agentProviders: ["claude", "codex", "cursor"], apiPort: 8787, instance: "laptop", instances: ["cloud"], instanceHourlyUsd: { ...apiFake.instanceRates } }); },
+    config: async () => { if (apiFake.holdConfig) await new Promise<void>((r) => { apiFake.releaseConfig = r; }); return ({ repos: [{ name: "r", baseBranch: "main", hasRemote: false, features: { previews: true } }], staleHours: 24, agentProviders: ["claude", "codex", "cursor"], apiPort: 8787, instance: "laptop", instances: ["cloud"], instanceUrls: { cloud: "http://100.64.0.5:8787" }, instanceHourlyUsd: { ...apiFake.instanceRates } }); },
     githubAccounts: async () => ({ accounts: apiFake.githubAccounts }),
     setGithubAccount: async (login: string, fields: { name?: string; email?: string }) => {
       apiFake.setGithubAccountCalls.push({ login, ...fields });

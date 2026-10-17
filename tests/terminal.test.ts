@@ -7,11 +7,11 @@ import type { Server } from "bun";
 import * as db from "../server/db";
 import { configDocument, invalidateConfig, loadConfig, parseConfigDocument, saveConfigDocument, setInstanceTerminal, type OrcaConfig } from "../server/config";
 import * as terminal from "../server/terminal";
-import { TERMINAL_KEYS, ctrlChord, terminalClosedText, terminalSocketUrl } from "../web/src/workstream";
+import { TERMINAL_KEYS, ctrlChord, terminalBlocked, terminalClosedText, terminalRetry, terminalTarget } from "../web/src/workstream";
 import { freshSchema, type TestDb } from "./pg";
 import { native } from "./happydom";
 
-// Bun's own fetch / Response / WebSocket for this file: the server and its relay run on them.
+// Bun's own fetch / Response / WebSocket for this file: the server and its clients run on them.
 const g = globalThis as unknown as Record<string, unknown>;
 const saved: Record<string, unknown> = {};
 beforeAll(() => { for (const k of ["fetch", "Response", "WebSocket"] as const) { saved[k] = g[k]; g[k] = native[k]; } });
@@ -19,7 +19,7 @@ afterAll(() => { Object.assign(g, saved); });
 
 const HERE = "box";
 let server: Server<terminal.TerminalData> | undefined;
-let cfg: Pick<OrcaConfig, "terminal" | "instances">;
+let cfg: Pick<OrcaConfig, "terminal" | "instances" | "serverSwitcher">;
 const open: WebSocket[] = [];
 
 function serve(deps: Partial<terminal.UpgradeDeps> = {}): string {
@@ -57,10 +57,11 @@ function connect(url: string, headers?: Record<string, string>) {
   return { ws, closed, opened, until, send, get out() { return out; } };
 }
 
-test("the auth gate: loopback and the owner's tailnet nodes only, never a cross-origin page", async () => {
+test("the auth gate: loopback and the owner's tailnet user devices only, never a cross-origin page", async () => {
   // Who: pure, with Tailscale's answers supplied.
-  const whois: terminal.Whois = async (a) => a === "100.98.1.2" ? { userId: "7", login: "finn@github" } : { userId: "9", login: "guest@github" };
-  const self = async () => "7";
+  const whois: terminal.Whois = async (a) => a === "100.98.1.2" ? { userId: "7", login: "finn@github" }
+    : a === "100.98.1.9" ? { userId: "7", login: "finn@github", tagged: true } : { userId: "9", login: "guest@github" };
+  const self = async () => ({ userId: "7" });
   expect(await terminal.identify("127.0.0.1", whois, self)).toEqual({ ok: true, who: "loopback" });
   expect(await terminal.identify("::ffff:127.0.0.1", whois, self)).toEqual({ ok: true, who: "loopback" });
   expect(await terminal.identify("100.98.1.2", whois, self)).toEqual({ ok: true, who: "finn@github" });
@@ -68,12 +69,29 @@ test("the auth gate: loopback and the owner's tailnet nodes only, never a cross-
   expect(await terminal.identify("192.168.1.20", whois, self)).toMatchObject({ ok: false, reason: expect.stringContaining("not on the tailnet") });
   expect(await terminal.identify("100.98.1.2", async () => null, self)).toMatchObject({ ok: false });
   expect(await terminal.identify(undefined, whois, self)).toMatchObject({ ok: false });
+  // A tagged node is a server: it never gets a shell, even under the owner's user.
+  expect(await terminal.identify("100.98.1.9", whois, self)).toMatchObject({ ok: false, reason: expect.stringContaining("tagged node") });
+  // A tagged machine (its user is `tagged-devices`, which no device shares): the owner is a login in
+  // serverSwitcher.allowedLogins, and with none named nobody gets in.
+  const taggedSelf = async () => ({ userId: "1", tagged: true });
+  expect(await terminal.identify("100.98.1.2", whois, taggedSelf)).toMatchObject({ ok: false, reason: expect.stringContaining("allowedLogins") });
+  expect(await terminal.identify("100.98.1.2", whois, taggedSelf, ["finn@github"])).toEqual({ ok: true, who: "finn@github" });
+  expect(await terminal.identify("100.98.1.3", whois, taggedSelf, ["finn@github"])).toMatchObject({ ok: false, reason: expect.stringContaining("guest@github") });
+  expect(await terminal.identify("100.98.1.9", whois, taggedSelf, ["finn@github"])).toMatchObject({ ok: false, reason: expect.stringContaining("tagged node") });
   // A local proxy's forwarded caller is the one identified; only loopback may forward.
   expect(terminal.callerAddress("127.0.0.1", new Headers({ "x-forwarded-for": "100.98.1.3" }))).toBe("100.98.1.3");
   expect(terminal.callerAddress("100.98.1.3", new Headers({ "x-forwarded-for": "127.0.0.1" }))).toBe("100.98.1.3");
   expect(terminal.originAllowed("http://orca-box:5173", "orca-box:8787")).toBe(true);
   expect(terminal.originAllowed("https://evil.example", "127.0.0.1:8787")).toBe(false);
   expect(terminal.originAllowed(null, "127.0.0.1:8787")).toBe(true);
+  // Another Orca page opens this machine's terminal directly: only a trusted one (an instance address,
+  // a listed server), by host name.
+  expect(terminal.originAllowed("http://orca-box:8787", "100.64.0.5:8787", ["http://orca-box:8787"])).toBe(true);
+  expect(terminal.originAllowed("http://orca-box:5173", "100.64.0.5:8787", ["http://orca-box:8787"])).toBe(true);
+  expect(terminal.originAllowed("https://evil.example", "100.64.0.5:8787", ["http://orca-box:8787"])).toBe(false);
+  expect(terminal.originAllowed("http://localhost:5173", "100.64.0.5:8787", ["http://orca-box:8787"])).toBe(false);
+  expect(await terminal.trustedOrigins({ instances: { local: "http://100.64.0.7:8787", cloud: "http://orca-box:8787" } })).toEqual(["http://100.64.0.7:8787", "http://orca-box:8787"]);
+  expect(await terminal.trustedOrigins({ serverSwitcher: { enabled: true, servers: [{ name: "home", url: "http://orca-home:8787" }] } })).toContain("http://orca-home:8787");
 
   // Over the wire: a refused caller gets a 403 and no socket, before the config is even read.
   cfg = { terminal: { [HERE]: true } };
@@ -147,28 +165,18 @@ test("a shell with no input for the idle time is closed and its process ended", 
   expect(terminal.liveSessions()).toBe(0);
 });
 
-test("another instance's terminal relays through this bridge, and its own gate decides", async () => {
-  // The target instance ("laptop"): its own server, its own flag.
-  const laptop = Bun.serve<terminal.TerminalData>({
-    port: 0, hostname: "127.0.0.1", websocket: terminal.websocket,
-    fetch: (req, srv) => terminal.upgrade(req, srv, { config: async () => ({ terminal: { laptop: laptopOn } }) as unknown as OrcaConfig, here: "laptop" }),
-  });
-  let laptopOn = true;
+test("never a relay: a request for another instance's shell is closed with where to open it", async () => {
+  // The laptop is configured and its own server is up — this bridge still never connects to it.
+  let laptopHit = false;
+  const laptop = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => { laptopHit = true; return new Response("no"); } });
   try {
-    cfg = { terminal: {}, instances: { laptop: `http://127.0.0.1:${laptop.port}` } };
-    const url = `${serve()}?instance=laptop&cols=30&rows=7`;
-    const c = connect(url);
-    c.send("stty size; echo relayed-$((40+2))\n");
-    expect(await c.until("7 30")).toBe(true);
-    expect(await c.until("relayed-42")).toBe(true);
-    c.ws.close();
-    await c.closed;
-    // Off on the target: its refusal reaches the browser through the relay.
-    laptopOn = false;
-    const off = connect(url);
-    const { code, reason } = await off.closed;
-    expect(code).toBe(terminal.CLOSE.off);
-    expect(reason).toContain("laptop");
+    cfg = { terminal: { [HERE]: true, laptop: true }, instances: { laptop: `http://127.0.0.1:${laptop.port}` } };
+    const c = connect(`${serve()}?instance=laptop`);
+    const { code, reason } = await c.closed;
+    expect(code).toBe(terminal.CLOSE.elsewhere);
+    expect(reason).toContain("laptop's own server");
+    expect(laptopHit).toBe(false);
+    expect(terminal.liveSessions()).toBe(0);
   } finally {
     laptop.stop(true);
   }
@@ -217,8 +225,26 @@ test("the phone's extra keys and Ctrl send the bytes a terminal expects", () => 
   expect(ctrlChord("[")).toBe("\x1b");
   expect(ctrlChord("5")).toBe("5");
   expect(ctrlChord("ls")).toBe("ls");
-  expect(terminalSocketUrl({ protocol: "http:", hostname: "orca-box" }, "8787", "local", 52, 30)).toBe("ws://orca-box:8787/api/terminal?instance=local&cols=52&rows=30");
-  expect(terminalSocketUrl({ protocol: "https:", hostname: "::1" }, "", "cloud", 80, 24)).toBe("wss://[::1]/api/terminal?instance=cloud&cols=80&rows=24");
+  // The browser connects to each machine's own bridge: this one on the page's host (the bridge's port),
+  // the switcher's chosen server on its base, another machine on its configured address.
+  const ctx = { page: { protocol: "http:", hostname: "orca-box" }, apiBase: "", apiPort: "8787", here: "cloud", urls: { local: "http://100.64.0.7:8787", cloud: "http://orca-box:8787" } };
+  expect(terminalTarget("cloud", ctx, 52, 30)).toEqual({ url: "ws://orca-box:8787/api/terminal?instance=cloud&cols=52&rows=30" });
+  expect(terminalTarget("local", ctx)).toEqual({ url: "ws://100.64.0.7:8787/api/terminal?instance=local&cols=80&rows=24" });
+  expect(terminalTarget("cloud", { ...ctx, page: { protocol: "https:", hostname: "::1" }, apiPort: "" })).toEqual({ url: "wss://[::1]/api/terminal?instance=cloud&cols=80&rows=24" });
+  expect(terminalTarget("home", { ...ctx, apiBase: "https://orca-home.ts.net:8787", here: "home" })).toEqual({ url: "wss://orca-home.ts.net:8787/api/terminal?instance=home&cols=80&rows=24" });
+  expect(terminalTarget("spare", ctx)).toEqual({ reason: "No address for spare in the config" });
+  // A page on loopback can't open another machine's terminal (that machine trusts Orca's tailnet pages).
+  expect(terminalTarget("cloud", { ...ctx, page: { protocol: "http:", hostname: "localhost" }, here: "local" })).toEqual({ reason: "Open Orca by its tailnet address to reach cloud" });
+  expect(terminalBlocked("cloud", false, ctx)).toBe("Terminal is off");
+  expect(terminalBlocked("cloud", true, ctx)).toBeNull();
+  expect(terminalBlocked("spare", true, ctx)).toContain("No address");
+  // Only a dropped open session is retried (three times, backing off); a refusal or clean end is final.
+  expect(terminalRetry(1006, "", true, 0)).toBe(1000);
+  expect(terminalRetry(1006, "", true, 2)).toBe(4000);
+  expect(terminalRetry(1006, "", true, 3)).toBeNull();
+  expect(terminalRetry(1006, "", false, 0)).toBeNull();
+  expect(terminalRetry(4403, "the terminal is off", true, 0)).toBeNull();
+  expect(terminalRetry(1000, "", true, 0)).toBeNull();
   expect(terminalClosedText(4403, "the terminal is off for cloud — turn it on in Settings")).toContain("Settings");
   expect(terminalClosedText(1006, "")).toContain("not allowed");
 });

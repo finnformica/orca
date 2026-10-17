@@ -225,17 +225,36 @@ the user found it didn't work for them and had it reverted the next day. The orc
 is the chat panel over its recorded turns; a wake is `claude -p --resume` on its session.
 
 **One exception: the instance web terminal** (`server/terminal.ts`, `components/InstanceTerminal.tsx`).
-It is a shell on a MACHINE, not a lane for a card: the Terminal action on an instance card opens
-xterm.js over one WebSocket (`/api/terminal`) to a real PTY (`Bun.spawn({ terminal })`, no library).
-The shell runs as the service user, in its home, with `agentEnv()`. Its first use was `gh auth login`
-for a second account from the phone. Rules:
-- It is OFF unless `terminal[<instance>]` is `true` in the app config. Only Settings' Terminal card
-  sets it (`POST /api/config/terminal`). A pasted config document keeps the stored value.
-- Owner only: loopback, or a tailnet node of the same Tailscale user (`tailscale whois`). A browser's
-  Origin must name the host. A local proxy's `x-forwarded-for` is the caller that is checked.
+It is a shell on a MACHINE, not a lane for a card: xterm.js over one WebSocket (`/api/terminal`) to a
+real PTY (`Bun.spawn({ terminal })`, no library). The shell runs as the service user, in its home,
+with `agentEnv()`. Its first use was `gh auth login` for a second account from the phone. The UX (v2;
+Finn did not like #265's bare panel off an instance card):
+- Entry: Settings → Instances. Each machine's row has the on/off Switch and Open terminal. A disabled
+  Open says why on the row (`terminalBlocked`): off, no address, or a page on loopback.
+- It opens like the orchestrator: the shared `SidePanel` (`components/SidePanel.tsx`, the same
+  header, width rules and left-edge resize; width `orca.ui.v1.terminalWidth`). On a phone it is a
+  full page with Back, swiped right to close. One right-edge panel at a time: each hides the other.
+- It is mounted at the app's root and stays mounted while closed, so sessions survive navigation.
+  Tabs: one per session, labelled with the machine (`terminalTabLabels`), + opens a new one on a
+  chosen machine. Only a tab's ✕ ends a shell. The state is pure (`terminal*` in `workstream.ts`).
+- The app theme and mono font (13px, 14px on a phone), the chat's padding, a status dot (connecting,
+  connected, reconnecting, closed) and Reconnect. A dropped open session retries 3 times
+  (`terminalRetry`); a server refusal is final. A phone gets the extra-keys row as shadcn buttons.
+- Keys in the screen belong to the shell: the global shortcut listener skips `terminal-screen`.
+Rules:
+- It is OFF unless `terminal[<instance>]` is `true` in the app config. Only the Settings row sets it
+  (`POST /api/config/terminal`). A pasted config document keeps the stored value.
+- Each machine serves only its own shell. The browser connects to that machine's bridge directly
+  (`terminalTarget`, addresses from `/api/config`'s `instanceUrls`, or the switcher's base). A bridge
+  NEVER relays a terminal to another box (box-to-box traffic is blocked on purpose): a request that
+  names another instance closes with `CLOSE.elsewhere`.
+- Owner only: loopback, or an UNTAGGED tailnet user device (`tailscale whois`) of the owner. On an
+  untagged machine that is the same Tailscale user. On a tagged box (`tag:orca`, whose own user is
+  `tagged-devices`) it is a login in `serverSwitcher.allowedLogins`; with none named, nobody.
+- The Origin must be a known Orca page: the host itself, an `instances` address, or a server the
+  switcher lists (`trustedOrigins`). A local proxy's `x-forwarded-for` is the caller that is checked.
 - At most 2 shells per instance. No input for 30 minutes closes the shell. The PTY closes with its socket.
 - Start and end are logged (who, instance, time). Keystrokes and output are never logged.
-- Another instance's terminal relays through the bridge you are on. The target runs the gate again.
 
 ## The one board & model
 
