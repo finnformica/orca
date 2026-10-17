@@ -18,6 +18,7 @@ import { detailPath } from "@/views/Agents";
 import { useOrchestrator } from "@/components/Terminal";
 import { addServerOpenAtom, useServerList } from "@/components/ServerMenu";
 import { currentServer, switchServer, useSwitcherOn } from "@/lib/server";
+import { Input } from "@/components/ui/input";
 
 type Command = PaletteItem & { run: () => void; shortcut?: ShortcutId };
 
@@ -144,11 +145,11 @@ export function CommandPalette() {
     >
       <div className="flex h-12 items-center gap-2 border-b px-3">
         <Search className="text-muted-foreground size-4 shrink-0" />
-        <input
+        <Input
           value={query} onChange={(e) => { setQuery(e.target.value); setSel(0); }} onKeyDown={onKey}
           placeholder="Search workstreams, PRs, pages and actions…" aria-label="Search commands"
           role="combobox" aria-expanded aria-controls={listId} aria-activedescendant={ranked[index] ? `${listId}-${index}` : undefined}
-          className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-sm outline-none"
+          className="h-auto rounded-none border-0 bg-transparent px-0 py-0 focus-visible:ring-0 flex-1 md:text-sm"
         />
         <Kbd>Esc</Kbd>
       </div>

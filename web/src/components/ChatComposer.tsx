@@ -14,6 +14,7 @@ import { joinPrefill } from "@/lib/palette";
 import { endTypeahead } from "@/lib/orchestratorOpen";
 import type { OrchestratorPrefill } from "@/lib/atoms";
 import { enterSends, isCoarse, isMobile, keepComposerFocus } from "@/lib/viewport";
+import { Textarea } from "@/components/ui/textarea";
 
 // historyKey's firstVisualRow/lastVisualRow, measured against the box's real layout — only for
 // ArrowUp/ArrowDown, and only for the line historyKey's own "\n" check would otherwise defer to (a
@@ -308,14 +309,15 @@ export function ChatComposer({
   const cancel = () => { if (persistKey) clearDraft(persistKey); onCancel?.(); };
 
   const textarea = (
-    <textarea
+    <Textarea
       ref={textRef}
       autoFocus={autoFocus && !isMobile()}
       rows={quick ? 3 : 2}
       aria-label={inputLabel}
-      className={quick
-        ? "placeholder:text-muted-foreground field-sizing-content max-h-40 min-h-[4.5rem] min-w-0 flex-1 resize-none overflow-y-auto bg-transparent py-0.5 text-sm outline-none"
-        : "placeholder:text-muted-foreground field-sizing-content max-h-48 w-full resize-none bg-transparent px-3 py-2.5 text-sm outline-none"}
+      // The shadcn Textarea with its own frame off: the composer's box is the frame (InputGroupTextarea).
+      className={cn("inline-block rounded-none border-0 text-sm focus-visible:ring-0 md:text-sm", quick
+        ? "max-h-40 min-h-[4.5rem] min-w-0 flex-1 overflow-y-auto px-0 py-0.5"
+        : "max-h-48 min-h-0 px-3 py-2.5", "resize-none")}
       placeholder={placeholder}
       value={value}
       role="combobox"

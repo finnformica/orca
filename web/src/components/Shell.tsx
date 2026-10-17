@@ -39,6 +39,7 @@ import { notifyLocal } from "@/lib/notificationStore";
 import { Button } from "@/components/ui/button";
 import { MenuShortcut, Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
+import { Input } from "@/components/ui/input";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
@@ -297,9 +298,9 @@ export function FindBox() {
   return (
     <label className="bg-card focus-within:ring-ring/40 flex h-8 items-center gap-2 rounded-md border px-2 focus-within:ring-2">
       <Search className="text-muted-foreground size-3.5 shrink-0" />
-      <input value={q} aria-label="Find agents" placeholder="Find…"
+      <Input value={q} aria-label="Find agents" placeholder="Find…"
         onChange={(e) => { setQ(e.target.value); if (location.pathname !== "/agents") navigate("/agents"); }}
-        className="placeholder:text-muted-foreground min-w-0 flex-1 bg-transparent text-sm outline-none" />
+        className="h-auto rounded-none border-0 bg-transparent px-0 py-0 focus-visible:ring-0 flex-1 md:text-sm" />
       <Shortcut id="find" />
     </label>
   );
