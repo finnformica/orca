@@ -894,6 +894,23 @@ export const MIGRATIONS: MigrationStep[] = [
       CREATE INDEX IF NOT EXISTS delivery_digest ON delivery (digest_key) WHERE digest_key IS NOT NULL AND state IN ('pending','sending','failed');
     `,
   },
+  {
+    name: "20261018-inbox-state",
+    idempotent: true,
+    // The unified inbox's own state (shared/inbox.ts), per user: which inbox events you have read
+    // (gone with the event when it is pruned), and which senders you muted (hidden from the inbox;
+    // the gate still lets their messages through).
+    sql: `
+      CREATE TABLE IF NOT EXISTS inbox_read (
+        user_id TEXT NOT NULL, event_id TEXT NOT NULL REFERENCES event (id) ON DELETE CASCADE, read_at BIGINT NOT NULL,
+        PRIMARY KEY (user_id, event_id)
+      );
+      CREATE TABLE IF NOT EXISTS inbox_mute (
+        user_id TEXT NOT NULL, adapter TEXT NOT NULL, external_id TEXT NOT NULL, name TEXT, created_at BIGINT NOT NULL,
+        PRIMARY KEY (user_id, adapter, external_id)
+      );
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };

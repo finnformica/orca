@@ -26,7 +26,8 @@ import * as integrations from "./integrations/registry";
 import * as dispatcher from "./integrations/dispatcher";
 import * as inbox from "./integrations/inbox";
 import * as integrationStore from "./integrations/store";
-import { filterInbox, inboxFacets, inboxRows, parseConversation, threadItems, workstreamOf } from "../shared/inbox";
+import { filterInbox, inboundConversation, inboxFacets, inboxRows, OWN_EVENT, parseConversation, threadActions, threadItems, workstreamOf } from "../shared/inbox";
+import { replyTo } from "./integrations/reply";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
 import * as primary from "./primary";
@@ -376,6 +377,7 @@ const DATABASE_ONLY = new Set([
   "/api/notifications", "/api/notifications/read",
   // The unified inbox: the integrations' event, delivery and thread_link rows.
   "/api/inbox", "/api/inbox/thread", "/api/inbox/threads",
+  "/api/inbox/reply", "/api/inbox/read", "/api/inbox/mute", "/api/inbox/link",
 ]);
 
 // DATABASE_ONLY routes whose `?instance=` selects rows rather than a machine — never forwarded.
@@ -624,9 +626,13 @@ async function api(req: Request, url: URL): Promise<Response> {
     const before = url.searchParams.get("before") || undefined;
     const events = await integrationStore.inboxEvents({ before, limit: INBOX_WINDOW });
     const since = events.length ? Math.min(...events.map((e) => e.at)) : Date.now();
-    const [outbound, links, principals] = await Promise.all([integrationStore.linkDeliveries(since), integrationStore.threadLinks(), integrationStore.principalNames()]);
-    const all = inboxRows(events, outbound, links, principals);
-    const rows = filterInbox(all, { source: url.searchParams.get("source") || undefined, person: url.searchParams.get("person") || undefined });
+    const [outbound, links, principals, read, muted] = await Promise.all([
+      integrationStore.linkDeliveries(since), integrationStore.threadLinks(), integrationStore.principalNames(),
+      integrationStore.readEvents(events.map((e) => e.id)), integrationStore.mutedSenders(),
+    ]);
+    const all = inboxRows(events, outbound, links, principals, { read, muted });
+    const flag = (k: string) => url.searchParams.get(k) === "1";
+    const rows = filterInbox(all, { source: url.searchParams.get("source") || undefined, person: url.searchParams.get("person") || undefined, unread: flag("unread"), muted: flag("muted") });
     return json({ rows, facets: inboxFacets(all), older: events.length === INBOX_WINDOW ? events[events.length - 1]!.id : null });
   }
   if (req.method === "GET" && p === "/api/inbox/thread") {
@@ -635,7 +641,44 @@ async function api(req: Request, url: URL): Promise<Response> {
     const [conv, principals, allLinks] = await Promise.all([integrationStore.conversation(c), integrationStore.principalNames(), integrationStore.links()]);
     const labels = new Map(allLinks.map((l) => [l.id, l.label ?? l.externalId]));
     const workstream = conv.link ? { repo: conv.link.repo, branch: conv.link.branch } : conv.events.map((e) => workstreamOf(e, [])).find(Boolean);
-    return json({ conversation: c, items: threadItems(conv.events, conv.outbound, principals, labels), ...(workstream ? { workstream } : {}) });
+    const [read, muted] = await Promise.all([integrationStore.readEvents(conv.events.map((e) => e.id)), integrationStore.mutedSenders()]);
+    return json({ conversation: c, items: threadItems(conv.events, conv.outbound, principals, labels), ...(workstream ? { workstream } : {}), ...threadActions(conv.events, !!conv.link, { read, muted }) });
+  }
+  // The inbox's actions, each on one inbound event: Reply where it came from (the `orca post` path,
+  // server/integrations/reply.ts), read state and mute (per user), and Link its conversation to a
+  // workstream (a thread_link, so later replies there reach that workstream).
+  if (req.method === "POST" && p === "/api/inbox/reply") {
+    if (typeof body.eventId !== "string" || typeof body.text !== "string") return json({ error: "eventId and text required" }, 400);
+    try {
+      const r = await replyTo(body.eventId, body.text);
+      await integrationStore.setRead([body.eventId], true);
+      return json(r);
+    } catch (e) {
+      if (e instanceof db.DbUnavailable) throw e;
+      return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  }
+  if (req.method === "POST" && p === "/api/inbox/read") {
+    const ids = Array.isArray(body.ids) ? body.ids.filter((x: unknown): x is string => typeof x === "string") : [];
+    if (!ids.length) return json({ error: "ids required" }, 400);
+    await integrationStore.setRead(ids, body.read !== false);
+    return json({ ok: true });
+  }
+  if (req.method === "POST" && (p === "/api/inbox/mute" || p === "/api/inbox/link")) {
+    const e = typeof body.eventId === "string" ? await integrationStore.eventById(body.eventId) : undefined;
+    if (!e) return json({ error: "eventId must name an event" }, 400);
+    if (p === "/api/inbox/mute") {
+      if (!e.actor) return json({ error: "this event has no sender to mute" }, 400);
+      await integrationStore.setMuted(e.actor.external.adapter, e.actor.external.id, body.muted !== false, e.actor.external.name);
+      return json({ ok: true });
+    }
+    const repo = typeof body.repo === "string" ? body.repo : "", branch = typeof body.branch === "string" ? body.branch : "";
+    if (!cfg.repos.some((r) => r.name === repo) || !branch) return json({ error: "repo (a configured repo) and branch required" }, 400);
+    const c = inboundConversation(e);
+    if (c.id.startsWith(OWN_EVENT)) return json({ error: "this event has no thread or place to link" }, 400);
+    await integrationStore.setThreadLink({ adapter: c.adapter, externalThreadId: c.id, repo, branch, ...(e.source.linkId ? { linkId: e.source.linkId } : {}) });
+    const linked = await integrationStore.threadLink(c.adapter, c.id);
+    return json({ link: linked });
   }
   // The workstream cards' source chips: every thread link (repo, branch, adapter).
   if (req.method === "GET" && p === "/api/inbox/threads") return json({ links: await integrationStore.threadLinks() });

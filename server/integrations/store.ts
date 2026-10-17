@@ -4,7 +4,7 @@
 import * as db from "../db";
 import { digestWindow, PAIRING_TTL_MS, type DeliveryState, type DeliveryTarget, type Envelope, type Level, type PlannedDelivery, type Subscription, type TargetKind } from "../../shared/integrations";
 import type { Connection } from "./adapter";
-import { OWN_EVENT, type Conversation, type OutboundRecord, type ThreadLinkRecord } from "../../shared/inbox";
+import { muteKey, OWN_EVENT, type Conversation, type OutboundRecord, type ThreadLinkRecord } from "../../shared/inbox";
 
 const user = () => db.currentUser();
 
@@ -495,5 +495,55 @@ export async function conversation(c: Conversation, limit = 500): Promise<{ even
       if (first && !outbound.some((d) => d.deliveryId === first.deliveryId)) outbound.unshift(first);
     }
     return { events, outbound, link };
+  });
+}
+
+/** One event by Orca's id. */
+export async function eventById(id: string): Promise<Envelope | undefined> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND id = ${id}`;
+    return (rows as { envelope: Envelope }[])[0]?.envelope;
+  });
+}
+
+/** Which of these events you have read. */
+export async function readEvents(ids: string[]): Promise<Set<string>> {
+  if (!ids.length) return new Set();
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT event_id FROM inbox_read WHERE user_id = ${user()} AND event_id = ANY(${sql.array(ids, "TEXT")})`;
+    return new Set((rows as { event_id: string }[]).map((r) => r.event_id));
+  });
+}
+
+/** Mark events read (or unread again). An id with no event is skipped. */
+export async function setRead(ids: string[], read: boolean, now = Date.now()): Promise<void> {
+  if (!ids.length) return;
+  return db.withRetry(async (sql) => {
+    if (read) {
+      await sql`INSERT INTO inbox_read (user_id, event_id, read_at)
+        SELECT ${user()}, id, ${now} FROM event WHERE user_id = ${user()} AND id = ANY(${sql.array(ids, "TEXT")})
+        ON CONFLICT (user_id, event_id) DO NOTHING`;
+    } else {
+      await sql`DELETE FROM inbox_read WHERE user_id = ${user()} AND event_id = ANY(${sql.array(ids, "TEXT")})`;
+    }
+  });
+}
+
+/** Every muted sender, as shared/inbox.ts `muteKey`s. */
+export async function mutedSenders(): Promise<Set<string>> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT adapter, external_id FROM inbox_mute WHERE user_id = ${user()}`;
+    return new Set((rows as { adapter: string; external_id: string }[]).map((r) => muteKey(r.adapter, r.external_id)));
+  });
+}
+
+export async function setMuted(adapter: string, externalId: string, muted: boolean, name?: string, now = Date.now()): Promise<void> {
+  return db.withRetry(async (sql) => {
+    if (muted) {
+      await sql`INSERT INTO inbox_mute (user_id, adapter, external_id, name, created_at) VALUES (${user()}, ${adapter}, ${externalId}, ${name ?? null}, ${now})
+        ON CONFLICT (user_id, adapter, external_id) DO NOTHING`;
+    } else {
+      await sql`DELETE FROM inbox_mute WHERE user_id = ${user()} AND adapter = ${adapter} AND external_id = ${externalId}`;
+    }
   });
 }

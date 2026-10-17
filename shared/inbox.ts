@@ -2,7 +2,7 @@
 // came in from every integration, newest first, and one thread view across inbound and outbound.
 // Generic over adapter kinds: it reads only the core's envelope, delivery target and thread link.
 // Pure: the server builds the rows with it, the web renders them, the tests import it as is.
-import type { DeliveryState, DeliveryTarget, Envelope } from "./integrations";
+import type { DeliveryState, DeliveryTarget, Envelope, InboundEnvelope } from "./integrations";
 
 /** An inbox topic: every external event (`ext.*`) and every question the orchestrator asks you. */
 export const isInboxTopic = (topic: string): boolean => topic.startsWith("ext.") || topic === "orca.question";
@@ -72,7 +72,49 @@ export type InboxRow = {
   conversation: string; // conversationParam
   workstream?: { repo: string; branch: string };
   reply?: ReplyState;
+  /** You opened it (per user, `inbox_read`). */
+  read: boolean;
+  /** Its sender is muted (per user, `inbox_mute`); hidden unless the filter asks for muted rows. */
+  muted: boolean;
+  /** A message that came in on a link: Orca can answer it there (`replyPlan`). */
+  canReply: boolean;
+  /** Its conversation is a real place or thread, not yet bound to a workstream (`thread_link`). */
+  canLink: boolean;
 };
+
+/** The per-user inbox state the rows read: read event ids and muted senders (`muteKey`). */
+export type InboxState = { read: ReadonlySet<string>; muted: ReadonlySet<string> };
+export const muteKey = (adapter: string, externalId: string): string => `${adapter}:${externalId}`;
+const NO_STATE: InboxState = { read: new Set(), muted: new Set() };
+
+export const canReplyTo = (e: Pick<Envelope, "topic" | "source">): boolean =>
+  inboxKind(e.topic) !== "question" && !!e.source.linkId && e.source.adapter !== "orca";
+
+/** Where a reply to an inbound event goes, and the envelope it rides (the `orca post` path: an
+ *  `orca.message` with one explicit delivery to the link). The place is the event's own channel
+ *  (a catch-all link's `*` is no place), its thread when it has one; the thread's message id makes
+ *  an email reply an `In-Reply-To`. A string is the refusal. */
+export function replyPlan(
+  e: Pick<Envelope, "topic" | "source" | "thread" | "scope">, text: string,
+  link: { id: string; integrationId: string; externalId: string } | undefined, adapterKind: string | undefined, key: string, now: number,
+): { envelope: InboundEnvelope; target: DeliveryTarget } | string {
+  if (!canReplyTo(e)) return "this event came in on no link, so there is nowhere to reply";
+  if (!text.trim()) return "the reply is empty";
+  if (!link || link.id !== e.source.linkId) return `the link "${e.source.linkId}" no longer exists`;
+  const externalId = e.source.channel ?? (link.externalId !== "*" ? link.externalId : undefined);
+  if (!externalId) return "the event names no place to reply to";
+  const scope = e.scope?.repo ? { scope: e.scope } : {};
+  return {
+    envelope: {
+      key, topic: "orca.message", at: now, source: { adapter: "orca", linkId: link.id }, text: text.trim(), ...scope,
+      ...(e.thread ? { thread: e.thread } : {}),
+    },
+    target: {
+      kind: "link", integrationId: link.integrationId, adapter: adapterKind ?? e.source.adapter, linkId: link.id, externalId,
+      ...(e.thread ? { threadId: e.thread.externalId } : {}),
+    },
+  };
+}
 
 /** Text on a row: the first `INBOX_TEXT_MAX` characters. The thread view shows all of it. */
 export const INBOX_TEXT_MAX = 400;
@@ -105,7 +147,7 @@ export function workstreamOf(e: Pick<Envelope, "thread" | "scope">, links: reado
 }
 
 /** The inbox rows, newest first, from the core's event, delivery and thread_link rows. */
-export function inboxRows(events: readonly Envelope[], outbound: readonly OutboundRecord[], links: readonly ThreadLinkRecord[], principals: ReadonlyMap<string, string>): InboxRow[] {
+export function inboxRows(events: readonly Envelope[], outbound: readonly OutboundRecord[], links: readonly ThreadLinkRecord[], principals: ReadonlyMap<string, string>, state: InboxState = NO_STATE): InboxRow[] {
   return events.filter((e) => isInboxTopic(e.topic)).map((e) => {
     const conv = inboundConversation(e);
     const kind = inboxKind(e.topic);
@@ -127,21 +169,30 @@ export function inboxRows(events: readonly Envelope[], outbound: readonly Outbou
       conversation: conversationParam(conv),
       ...(workstream ? { workstream } : {}),
       ...(reply ? { reply: { state: reply.state, at: reply.at, attempts: reply.attempts, ...(reply.lastError ? { error: reply.lastError } : {}) } } : {}),
+      read: state.read.has(e.id),
+      muted: !!e.actor && state.muted.has(muteKey(e.actor.external.adapter, e.actor.external.id)),
+      canReply: canReplyTo(e),
+      canLink: kind !== "question" && !conv.id.startsWith(OWN_EVENT) && !links.some((l) => l.adapter === conv.adapter && l.externalThreadId === conv.id),
     };
   }).sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : -1));
 }
 
-export type InboxFilter = { source?: string; person?: string };
+/** `unread` keeps the rows you have not opened; `muted` shows ONLY muted senders' rows (they are
+ *  hidden otherwise). */
+export type InboxFilter = { source?: string; person?: string; unread?: boolean; muted?: boolean };
 
 export function filterInbox(rows: readonly InboxRow[], f: InboxFilter): InboxRow[] {
-  return rows.filter((r) => (!f.source || r.adapter === f.source) && (!f.person || (r.sender && personId(r.adapter, r.sender) === f.person)));
+  return rows.filter((r) => r.muted === !!f.muted && (!f.unread || !r.read)
+    && (!f.source || r.adapter === f.source) && (!f.person || (r.sender && personId(r.adapter, r.sender) === f.person)));
 }
 
-export type InboxFacets = { sources: { adapter: string; count: number }[]; people: { id: string; name: string; count: number }[] };
+export type InboxFacets = { sources: { adapter: string; count: number }[]; people: { id: string; name: string; count: number }[]; unread: number; muted: number };
 
-/** The filter chips: every source and every person in the rows, with counts, most first. */
-export function inboxFacets(rows: readonly InboxRow[]): InboxFacets {
+/** The filter chips: every source and every person in the rows not muted, with counts, most first;
+ *  how many of those are unread, and how many rows are muted. */
+export function inboxFacets(all: readonly InboxRow[]): InboxFacets {
   const sources = new Map<string, number>(), people = new Map<string, { name: string; count: number }>();
+  const rows = all.filter((r) => !r.muted);
   for (const r of rows) {
     sources.set(r.adapter, (sources.get(r.adapter) ?? 0) + 1);
     if (r.sender) {
@@ -152,6 +203,7 @@ export function inboxFacets(rows: readonly InboxRow[]): InboxFacets {
   }
   const byCount = <T extends { count: number }>(a: T & { k: string }, b: T & { k: string }) => b.count - a.count || a.k.localeCompare(b.k);
   return {
+    unread: rows.filter((r) => !r.read).length, muted: all.length - rows.length,
     sources: [...sources].map(([adapter, count]) => ({ adapter, count, k: adapter })).sort(byCount).map(({ k: _k, ...s }) => s),
     people: [...people].map(([id, p]) => ({ id, ...p, k: p.name })).sort(byCount).map(({ k: _k, ...p }) => p),
   };
@@ -206,3 +258,20 @@ export const sourceLabel = (adapter: string): string => LABELS[adapter] ?? (adap
 
 const STATE_LABELS: Record<DeliveryState, string> = { pending: "Queued", sending: "Sending", sent: "Sent", failed: "Retrying", dead: "Failed" };
 export const deliveryLabel = (s: DeliveryState): string => STATE_LABELS[s];
+
+/** What the thread view can do: reply to its newest event that came in on a link, link the
+ *  conversation to a workstream, mute its newest sender, and which events are still unread. */
+export type ThreadActions = { replyTo?: string; canLink: boolean; sender?: { eventId: string; name: string; muted: boolean }; unread: string[] };
+
+export function threadActions(events: readonly Envelope[], linked: boolean, state: InboxState): ThreadActions {
+  const newest = [...events].reverse();
+  const reply = newest.find(canReplyTo);
+  const who = newest.find((e) => e.actor);
+  const first = events[0];
+  return {
+    ...(reply ? { replyTo: reply.id } : {}),
+    canLink: !linked && !!first && inboxKind(first.topic) !== "question" && !inboundConversation(first).id.startsWith(OWN_EVENT),
+    ...(who ? { sender: { eventId: who.id, name: who.actor!.external.name ?? who.actor!.external.id, muted: state.muted.has(muteKey(who.actor!.external.adapter, who.actor!.external.id)) } } : {}),
+    unread: events.filter((e) => !state.read.has(e.id)).map((e) => e.id),
+  };
+}
