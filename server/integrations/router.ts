@@ -61,7 +61,10 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
     return "rejected";
   }
   const grant: Grant = e.actor ? effectiveGrant(link, principal) : { level: link.level, repos: link.repos, linkId: link.id };
-  if (grant.level === "notify") return "rejected";
+  // A notify link takes nothing in — except, when its integration says so (`config.machineEventsOnNotify`),
+  // a machine event (no person: a poller, a webhook). That event is recorded and fans out to its
+  // subscriptions (the web, other links) with the grant "notify", so no agent acts on it.
+  if (grant.level === "notify" && (e.actor || !(await machineEventsOnNotify(integrationId)))) return "rejected";
   const principalId = grant.principalId;
   const r = await publish({
     ...e, source: { ...e.source, integrationId, linkId: link.id },
@@ -69,6 +72,11 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
     grant,
   }, now);
   return r.status;
+}
+
+/** The integration's switch for machine events on a notify link. Off unless set to exactly `true`. */
+async function machineEventsOnNotify(integrationId: string): Promise<boolean> {
+  return (await store.integration(integrationId))?.config.machineEventsOnNotify === true;
 }
 
 async function firstLink(integrationId: string, places: string[]): Promise<store.Link | undefined> {

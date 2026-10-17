@@ -180,9 +180,11 @@ export const subscriptionMatches = (s: Pick<Subscription, "topicPattern" | "filt
   topicMatches(s.topicPattern, e.topic) && filterMatches(s.filter, e);
 
 /** Where an inbound external message goes when no subscription claims it (§3.6): its thread's
- *  workstream when the thread is linked and the grant allows work on that repo, else the orchestrator. */
+ *  workstream when the thread is linked and the grant allows work on that repo, else the orchestrator.
+ *  Nowhere for a `notify` grant. */
 export function defaultInboundTarget(e: Pick<Envelope, "topic" | "grant">, threadLink?: { repo: string; branch: string }): DeliveryTarget | undefined {
   if (!/^ext\.[^.]+\.message$/.test(e.topic)) return undefined;
+  if (e.grant?.level === "notify") return undefined; // a machine event let through on a notify link: no agent acts on it
   if (threadLink && grantAllowsRepo(e.grant, threadLink.repo, "work")) return { kind: "workstream", repo: threadLink.repo, branch: threadLink.branch };
   return { kind: "orchestrator" };
 }

@@ -192,6 +192,8 @@ Until the Settings page lands, configure an integration with SQL or with `store.
    `{"repo":"orca"}`), `target_kind` (`link`, `orchestrator`, `workstream`, `web`), `target_id`
    (the link id, or `repo::branch`). Set `digest_seconds` for a digest (section 12).
 6. For DMs, add a catch-all link with `external_id = '*'`. A place with no link of its own uses it.
+7. To let a poller's events through on a `notify` link, set `"machineEventsOnNotify": true` in the
+   integration's `config` (section 7).
 
 The primary bridge syncs the rows each minute. You do not need a restart.
 `GET /api/integrations` shows the rows, what runs on this bridge, its health and the dead deliveries.
@@ -219,6 +221,12 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 | `full` | Your own chat in Orca. | Every verb. |
 
 - The grant is min(link level, person's max level). The link's repos limit `work`.
+- A `notify` link takes nothing in, as above. One exception is opt-in: set
+  `"machineEventsOnNotify": true` in the integration's `config`. Then a machine event (no `actor`:
+  a poller such as GitHub, or a webhook) on a `notify` link gets through.
+  - The core records the event and sends it to its subscriptions (the web, other links).
+  - Its grant stays `notify`, so it never reaches the orchestrator or a workstream.
+  - A person on that link still gets nothing. The switch is off unless set to exactly `true`.
 - The orchestrator wakes for one grant at a time. Messages of another grant wait in the queue.
 - The orchestrator's tool route (`POST /api/orchestrator/tool`) checks every verb against the
   grant of the wake in flight. A prompt cannot get past it.

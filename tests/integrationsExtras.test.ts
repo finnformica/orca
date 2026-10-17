@@ -185,6 +185,21 @@ describe("with Postgres", () => {
     expect((await store.event("linear:x4"))?.source.linkId).toBe("Lissue"); // the place's own link first
   });
 
+  test("machine events on a notify link: off by default; with machineEventsOnNotify they fan out but no agent gets them", async () => {
+    await store.addLink({ id: "Lgh", integrationId: "slack-work", externalId: "repo:orca", level: "notify", repos: [], requireMention: false });
+    await store.addSubscription({ topicPattern: "ext.github.*", filter: {}, targetKind: "web" });
+    await store.addSubscription({ topicPattern: "ext.github.*", filter: {}, targetKind: "orchestrator" });
+    const machine = (id: string) => ({ key: `gh:${id}`, topic: "ext.github.message" as const, at: 0, source: { adapter: "github", channel: "repo:orca" }, text: "PR #12 merged" });
+    expect(await router.ingest("slack-work", machine("1"))).toBe("rejected"); // as today
+    await store.addIntegration({ id: "slack-work", kind: "slack", name: "Work Slack", instance: "local", config: { machineEventsOnNotify: true }, enabled: true });
+    expect(await router.ingest("slack-work", machine("2"))).toBe("new");
+    const ev = await store.event("gh:2");
+    expect(ev?.grant).toMatchObject({ level: "notify", linkId: "Lgh" });
+    expect((await store.deliveries()).map((d) => d.target)).toEqual([{ kind: "web" }]); // not the orchestrator, not the inbound default
+    await store.addPrincipal({ id: "ana", name: "Ana", maxLevel: "work" }, [{ adapter: "github", externalId: "ana" }]);
+    expect(await router.ingest("slack-work", { ...machine("3"), actor: { external: { adapter: "github", id: "ana" } } })).toBe("rejected"); // a person still gets nothing on notify
+  });
+
   test("orca channels, post, thread link and ask-user — and the grant on post", async () => {
     const cfg = { repos: [{ name: "r", repoPath: "/nope", worktreeRoot: "/nope", baseBranch: "main", previewServices: [] }] } as unknown as OrcaConfig;
     await store.addSubscription({ topicPattern: "orca.question", filter: {}, targetKind: "link", targetId: "L1", digestSeconds: 0 });
