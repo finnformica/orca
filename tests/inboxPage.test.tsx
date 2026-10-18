@@ -164,6 +164,12 @@ describe("the Inbox page", () => {
     // One count: the bell's unread row plus the two messages, on the bell and the Inbox nav item.
     expect(all("notifications-unread")[0]!.textContent).toBe("3");
     expect(all("inbox-unread-count")[0]!.textContent).toBe("3");
+    // Both badges are the one shared CountBadge: same colour, size, radius, font and padding.
+    const sharedClasses = ["bg-geist-blue", "text-white", "h-4", "min-w-4", "rounded-full", "text-[10px]", "font-semibold"];
+    for (const c of sharedClasses) {
+      expect(all("notifications-unread")[0]!.className.split(" ")).toContain(c);
+      expect(all("inbox-unread-count")[0]!.className.split(" ")).toContain(c);
+    }
     // Open: the PR's Chat tab with the composer focused (the bell's Open), and the bell's row is read.
     await click(note);
     expect(location.pathname + location.search).toBe("/r/prs/7/chat?reply=1");

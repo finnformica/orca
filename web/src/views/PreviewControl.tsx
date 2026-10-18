@@ -5,7 +5,7 @@ import { addPreviewLabel, baseBranch, previewConfigured, previewKeyOf, previewsE
 import { previewHref, previewLabel, prPreviewState } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { StatusDot } from "@/components/console";
+import { CountBadge, StatusDot } from "@/components/console";
 import { Tip } from "@/components/ui/tip";
 import { poll } from "@/lib/poll";
 import { sharedSource } from "@/lib/vitals";
@@ -396,11 +396,7 @@ export function PreviewsBadge({ compact = false }: { compact?: boolean }) {
     <span data-slot="previews-badge" className={compact ? "absolute -top-0.5 -right-0.5 flex items-center" : "ml-auto flex items-center gap-1.5"}>
       {loading ? <Loader2 className="size-3 animate-spin" aria-label="a base preview is starting" />
         : active && <span className="bg-geist-blue size-1.5 rounded-full" aria-label="a base preview is running" />}
-      {!unavailable && running > 0 && (
-        <span className="bg-foreground text-background flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold tabular-nums" aria-label={`${running} running previews`}>
-          {running}
-        </span>
-      )}
+      {!unavailable && running > 0 && <CountBadge count={running} slot="previews-running-count" label="running previews" />}
     </span>
   );
 }
