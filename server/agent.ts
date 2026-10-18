@@ -239,10 +239,14 @@ export function scopedRules(cwd: string, o: { baseBranch?: string; checkCommand?
   return {
     allow: [`Read(${wt}/**)`, `Edit(${wt}/**)`, `Write(${wt}/**)`, "Glob", "Grep", ...tool.map((t) => `Bash(${t} *)`), ...check],
     deny: [
-      "Bash(git *--no-verify*)", "Bash(git commit -n*)", "Bash(git commit * -n)", "Bash(git commit * -n *)",
-      "Bash(git -c *)", "Bash(git config *)",
-      `Bash(git push * ${base})`, `Bash(git push * ${base} *)`, `Bash(git push *:${base})`, `Bash(git push *:${base} *)`,
-      `Bash(git push *:refs/heads/${base}*)`, `Bash(git push * +${base}*)`,
+      "Bash(git *--no-verify*)",
+      // Each git rule in both spellings: a model often writes `git -C <worktree> push …`, which a
+      // `git push` rule does not match (seen in the headless check).
+      ...["git", "git -C *"].flatMap((g) => [
+        `Bash(${g} commit -n*)`, `Bash(${g} commit * -n)`, `Bash(${g} commit * -n *)`, `Bash(${g} -c *)`, `Bash(${g} config *)`,
+        `Bash(${g} push * ${base})`, `Bash(${g} push * ${base} *)`, `Bash(${g} push *:${base})`, `Bash(${g} push *:${base} *)`,
+        `Bash(${g} push *:refs/heads/${base}*)`, `Bash(${g} push * +${base}*)`,
+      ]),
       ...[...new Set(secrets)].flatMap((p) => [`Read(${p})`, `Edit(${p})`]),
     ],
     addDirs: [join(state, "attachments")],

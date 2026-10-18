@@ -32,6 +32,7 @@ describe("decisions (pure)", () => {
     expect(r.deny).toEqual(expect.arrayContaining([
       "Bash(git *--no-verify*)", "Bash(git commit -n*)", "Bash(git -c *)", "Bash(git config *)",
       "Bash(git push * main)", "Bash(git push *:main)", "Bash(git push *:refs/heads/main*)",
+      "Bash(git -C * push *:main)", "Bash(git -C * push * main)", "Bash(git -C * commit -n*)", "Bash(git -C * config *)",
       "Read(//opt/orca/.env)", "Read(//srv/orca/.env)", "Read(~/.ssh/**)", "Edit(~/.ssh/**)", "Read(~/.config/gh/**)",
       "Read(//home/u/.orca/secrets/**)", "Read(~/.hydra/**)",
     ]));
