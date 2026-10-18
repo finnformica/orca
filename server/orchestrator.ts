@@ -584,11 +584,14 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
     case "board": return boardText(await board(cfg));
     case "channels": return channelsText();
     case "post": {
-      // `orca post --link <id> [--thread <id> | --repo r --branch b] "<text>"`: a durable delivery
+      // `orca post --link <id> [--thread <id> | --repo r --branch b] [--thread] "<text>"`: a durable delivery
       // through the link's adapter, retried if it fails. With --repo/--branch it continues that
       // workstream's thread on the link, or starts it.
       // `--reply "<text>"` arrives as the flag's value (bin/orca takes the next word), so read it there too.
-      const text = (words.join(" ").trim() || (typeof args.reply === "string" ? args.reply.trim() : ""));
+      // `--thread` opens a thread for the post (Discord: on the mention it answers). With `--reply`, or
+      // with no value, it is a switch, and `--reply --thread "<text>"` gives it the text.
+      const openThread = typeof args.thread === "string" && (reply !== undefined || !args.thread);
+      const text = (words.join(" ").trim() || (typeof args.reply === "string" ? args.reply.trim() : "") || (openThread && typeof args.thread === "string" ? args.thread.trim() : ""));
       const link = typeof args.link === "string" && args.link ? await integrationStore.link(args.link) : undefined;
       if (!link) throw new Error(`--link must name a channel link (orca channels lists them)${args.link ? `: no link "${args.link}"` : ""}`);
       if (!text) throw new Error('the message is required: orca post --link <id> "<text>"');
@@ -596,17 +599,18 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const repo = typeof args.repo === "string" && args.repo ? args.repo : undefined;
       const branch = typeof args.branch === "string" && args.branch ? args.branch : undefined;
       const threadId = reply ? reply.threadId
-        : typeof args.thread === "string" && args.thread ? args.thread
+        : !openThread && typeof args.thread === "string" && args.thread ? args.thread
         : repo && branch ? (await integrationStore.threadsForWorkstream(repo, branch)).get(link.id) : undefined;
       // A reply goes to the place it came from: a catch-all link's DM, not "*".
       const externalId = reply?.channel ?? link.externalId;
       const r = await integrationRouter.publish({
         key: `post:${crypto.randomUUID()}`, topic: "orca.message", at: Date.now(), source: { adapter: "orca", linkId: link.id },
         ...(repo ? { scope: { repo, ...(branch ? { branch } : {}) } } : {}), text,
+        ...(openThread ? { openThread: reply?.messageId ? { messageId: reply.messageId } : {} } : {}),
       }, Date.now(), [{ subscriptionId: null, target: {
         kind: "link", integrationId: link.integrationId, adapter: conn?.kind ?? "?", linkId: link.id, externalId, ...(threadId ? { threadId } : {}),
       } }]);
-      return `Queued for ${link.label ?? link.id}${externalId !== link.externalId ? ` ${externalId}` : ""}${threadId ? ` (thread ${threadId})` : ""} as delivery ${r.deliveries[0] ?? "?"}; Orca retries it if the send fails.`;
+      return `Queued for ${link.label ?? link.id}${externalId !== link.externalId ? ` ${externalId}` : ""}${threadId ? ` (thread ${threadId})` : ""}${openThread ? " in a new thread" : ""} as delivery ${r.deliveries[0] ?? "?"}; Orca retries it if the send fails.`;
     }
     case "thread": {
       // `orca thread link <adapter> <thread-id> --repo r --branch b [--link <id>]`: replies in that
