@@ -161,9 +161,12 @@ function useHeld<T>(want: T): T {
   return shown;
 }
 
-/** One line of text that cross-fades when it changes: the old text fades up and out over the new
- *  one, which fades up and in, in ONE grid cell — so the line never changes height. The `label-*`
- *  classes are in styles.css (none under reduced motion). */
+/** One line of text that cross-fades when it changes: the old line and the new line run their
+ *  animations TOGETHER, same duration and easing (LABEL_FADE_MS) — the old one translates up and
+ *  OUT while it fades, the new one translates up and IN while it fades, so neither sits fully
+ *  opaque over the other and the text never overlaps. Both sit in ONE grid cell with a fixed line
+ *  height and `overflow-hidden`, so the line never changes height and nothing sliding leaks outside
+ *  it. The `label-*` classes are in styles.css (a plain opacity cross-fade under reduced motion). */
 function CrossFade({ text, slot }: { text: string; slot?: string }) {
   const [s, setS] = useState<{ text: string; n: number; gone: string | null }>({ text, n: 0, gone: null });
   if (s.text !== text) setS({ text, n: s.n + 1, gone: s.text });
@@ -173,13 +176,13 @@ function CrossFade({ text, slot }: { text: string; slot?: string }) {
     return () => clearTimeout(t);
   }, [s.n, s.gone]);
   return (
-    <span className="grid min-w-0 flex-1">
-      {s.gone !== null && <span key={`out-${s.n}`} aria-hidden="true" className="label-out truncate [grid-area:1/1]">{s.gone}</span>}
+    <span className="grid h-[1.2em] min-w-0 flex-1 overflow-hidden">
+      {s.gone !== null && <span key={`out-${s.n}`} aria-hidden="true" data-slot={slot && `${slot}-out`} className="label-out truncate [grid-area:1/1]">{s.gone}</span>}
       <span key={`in-${s.n}`} data-slot={slot} className={cn("truncate [grid-area:1/1]", s.n > 0 && "label-in")}>{text}</span>
     </span>
   );
 }
-const LABEL_FADE_MS = 200;
+const LABEL_FADE_MS = 220;
 
 const STATUS_ICON: Record<StepStatus, ReactNode> = {
   running: <Loader2 className="size-3 shrink-0 animate-spin motion-reduce:animate-none" />,
@@ -257,12 +260,15 @@ function Activity({ steps: given, live, startedAt, finishedAt, load }: {
             {startedAt ? <span className="text-muted-foreground shrink-0 tabular-nums" data-slot="activity-elapsed">{formatDuration(now - startedAt)}</span> : null}
             <span className="text-muted-foreground">{chevron}</span>
           </button>
-          {/* The count line and the trail open together on the first step, and the trail keeps room
-              for its three rows, so a row that lands slides in without pushing the chat down. */}
+          {/* The count line and the trail open together on the first step. The trail's height
+              grows with its rows (never shrinks within a live turn, since steps only accumulate)
+              and the growth itself is what animates \u2014 no space is reserved ahead of what is
+              actually shown, so a short run leaves no gap below its last row. */}
           <Fold open={Boolean(counts || trail.length)}>
             <div className="text-muted-foreground mt-0.5 truncate pl-5.5 text-[11px] leading-4" data-slot="activity-counts">{counts || "\u00a0"}</div>
             {!open && (
-              <ul className="mt-1 min-h-[52px] space-y-0.5 pl-5.5 text-[11px] leading-4 opacity-60" data-slot="activity-trail">
+              <ul className="mt-1 space-y-0.5 pl-5.5 text-[11px] leading-4 opacity-60 transition-[min-height] duration-200 ease-out motion-reduce:transition-none"
+                style={trail.length ? { minHeight: `${trail.length * 18 - 2}px` } : undefined} data-slot="activity-trail">
                 {trail.map((run) => (
                   <li key={stepKey(run.steps[0]!)} className={cn("step-in truncate", run.kind === "text" ? "text-foreground" : "text-muted-foreground")}>{runLabel(run)}</li>
                 ))}

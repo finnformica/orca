@@ -24,7 +24,9 @@ async function mount() {
   document.body.appendChild(container);
   await act(async () => { root = createRoot(container!); root.render(<App />); await flush(); await flush(); });
 }
+const SPAWN_POLL_MS = store.spawnPoll.ms;
 afterEach(async () => {
+  store.spawnPoll.ms = SPAWN_POLL_MS;
   act(() => root?.unmount());
   container?.remove();
   root = container = undefined;
@@ -67,6 +69,11 @@ test("Add New opens a modal dialog with the New-draft box — not a popover", as
 });
 
 test("sending closes the dialog and raises a Sent side notification with Undo; Undo tears the draft down", async () => {
+  // Auto sends the draft to the orchestrator, and the store then waits for the branch it spawns
+  // (createViaOrchestrator). After an Undo it keeps that wait for 60s and discards the first NEW
+  // branch in the repo. Bun runs every file in one process, so a wait left running here discarded
+  // a later file's branch (stickyDetailHeader's "sticky-1" in CI). Poll fast, and end the wait below.
+  store.spawnPoll.ms = 10;
   await mount();
   await click(container!.querySelector('[data-slot="add-new"]')!);
   await type(dialog().querySelector("textarea")!, "Add a fancy widget");
@@ -84,6 +91,12 @@ test("sending closes the dialog and raises a Sent side notification with Undo; U
   expect(toast.getAttribute("data-removed")).toBe("true"); // marked read (and Undo fired) at once; the exit plays…
   await act(async () => { await wait(TOAST_EXIT_MS + 30); });
   expect(container!.querySelector('[data-slot="notification-toast"][data-kind="draft_sent"]')).toBeNull(); // …then it's gone
+  // The orchestrator then spawns the draft: the undone wait discards that branch, and so it ends here.
+  apiFake.worktrees.set("orca/fancy-widget-1", { branch: "orca/fancy-widget-1", worktreePath: "/wt/orca/fancy-widget-1" });
+  for (const until = Date.now() + 2_000; !apiFake.calls.includes("discard:orca/fancy-widget-1") && Date.now() < until;) {
+    await act(async () => { await wait(10); });
+  }
+  expect(apiFake.calls).toContain("discard:orca/fancy-widget-1");
 });
 
 test("closing keeps what you typed; `C` opens it from anywhere outside a text field", async () => {

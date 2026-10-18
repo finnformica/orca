@@ -7,11 +7,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
-import { Agents } from "@/views/Agents";
+import { Agents, LIST_CELL_SHOWN, LIST_FOLDED } from "@/views/Agents";
 import { Board } from "@/views/Board";
 import { navigate } from "@/lib/route";
 import { createTicker, ticker } from "@/lib/ticker";
-import { LIST_CHROME_PX, formatElapsed, listColumns, listFits, listGridTemplate, listMinWidth, modelBadge } from "@/workstream";
+import { LIST_CHROME_PX, LIST_TIER_MIN_REM, LIST_TIERS, formatElapsed, listColumnTiers, listColumns, listFits, listGridTemplate, listMinWidth, listTier, modelBadge } from "@/workstream";
 import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -33,6 +33,29 @@ describe("agents list layout (pure)", () => {
     expect(t).toBe("minmax(10rem,2fr) 8.5rem 8.5rem minmax(6rem,1fr) 10rem");
     expect(cols.at(-1)).toMatchObject({ key: "actions", label: "Actions" });
     expect(t).not.toContain("auto"); // a content-sized track could push the row wider than the card
+  });
+
+  test("a narrower page folds the lower-value columns first: Status under the title, then Checks into the PR cell", () => {
+    expect(listColumns("wide").map((c) => c.key)).toEqual(["workstream", "status", "pr", "signals", "actions"]);
+    expect(listColumns("mid").map((c) => c.key)).toEqual(["workstream", "pr", "signals", "actions"]);
+    expect(listColumns("narrow").map((c) => c.key)).toEqual(["workstream", "pr", "actions"]);
+    expect(listColumns("narrow").find((c) => c.key === "pr")!.grow).toBe(2); // the PR cell holds the checks too: as much room as the title
+    // The page widths Finn checks: 1440 with the panel open (~1100), ~900, ~700.
+    expect(listTier(1100)).toBe("wide");
+    expect(listTier(900)).toBe("mid");
+    expect(listTier(700)).toBe("narrow");
+    // Each tier's floors fit its narrowest page: the page's px-6 and the card's border beside the row.
+    for (const t of LIST_TIERS) {
+      const page = Math.max(LIST_TIER_MIN_REM[t] * 16, 640); // the dock never leaves the page under 640 (DOCK_PAGE_MIN_W)
+      expect(listMinWidth(listColumns(t))).toBeLessThanOrEqual(page - 48 - 2);
+    }
+    // The CSS classes use the same breakpoints as the logic.
+    expect(listColumnTiers("status")).toEqual(["wide"]);
+    expect(listColumnTiers("signals")).toEqual(["mid", "wide"]);
+    expect(LIST_CELL_SHOWN.status).toContain(`@min-[${LIST_TIER_MIN_REM.wide}rem]/page:block`);
+    expect(LIST_FOLDED.status).toBe(`@min-[${LIST_TIER_MIN_REM.wide}rem]/page:hidden`);
+    expect(LIST_CELL_SHOWN.signals).toContain(`@min-[${LIST_TIER_MIN_REM.mid}rem]/page:flex`);
+    expect(LIST_FOLDED.signals).toBe(`@min-[${LIST_TIER_MIN_REM.mid}rem]/page:hidden`);
   });
 
   test("elapsed: clock-style, stable width as it ticks", () => {
@@ -122,7 +145,13 @@ describe("agents list view", () => {
     expect(list.className).toContain("overflow-hidden");
     expect(list.className).not.toContain("overflow-x-auto");
     expect(list.querySelector('[class*="min-w-["]')).toBeNull(); // no fixed minimum forcing a scroll
-    expect(rowOf("feat-ci").style.gridTemplateColumns).toBe(listGridTemplate(listColumns()));
+    for (const t of LIST_TIERS) expect(rowOf("feat-ci").style.getPropertyValue(`--list-${t}`)).toBe(listGridTemplate(listColumns(t)));
+    // The folded copies: the status leads the subline, the checks follow the PR number; each is
+    // hidden by the same container query that shows its own column. The subline clips, never overlaps.
+    const ci = rowOf("feat-ci");
+    expect(ci.querySelector('[data-slot="folded-status"] [data-slot="run-status"]')).not.toBeNull();
+    expect(ci.querySelector('[data-slot="folded-signals"]')!.textContent).toBe(ci.querySelector('[data-slot="row-signals"]')!.textContent);
+    expect(ci.querySelector('[data-slot="row-subline"]')!.className).toContain("overflow-hidden");
     expect(rowOf("feat-ci").querySelectorAll('[role="cell"]')).toHaveLength(5); // one per header, the last holding preview + ⋯
     expect(rowOf("feat-ci").querySelector(".lucide-folder-git2")).toBeNull();
     // The row menu's trigger is vertical dots, not horizontal — same menu, same right-click.
@@ -190,7 +219,7 @@ describe("agents list view", () => {
     const elapsed = () => run.querySelector('[data-slot="elapsed"]')!.textContent!;
     expect(elapsed()).toMatch(/^1:0[56]$/);
     expect(rowOf("local-idle").querySelector('[data-slot="elapsed"]')).toBeNull();
-    expect(ticker.stats()).toEqual({ listeners: 1, running: true }); // only the running row subscribes
+    expect(ticker.stats()).toEqual({ listeners: 2, running: true }); // only the running row subscribes: its Status cell and the copy folded under the title (one shows)
     const before = elapsed();
     await act(async () => { await new Promise((r) => setTimeout(r, 1100)); });
     expect(elapsed()).not.toBe(before);

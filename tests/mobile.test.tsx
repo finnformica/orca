@@ -266,10 +266,10 @@ describe("the phone layout (390px, touch)", () => {
     expect(nav.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     expect(nav.querySelector('[role="group"][aria-label="Instance"]')).not.toBeNull();
     const links = [...nav.querySelectorAll('nav[aria-label="More pages"] button')].map((b) => b.textContent);
-    expect(links).toEqual(["Previews", "Integrations", "Handoffs"]);
+    expect(links).toEqual(["Inbox", "Previews", "Integrations", "Handoffs"]);
     expect($('[data-slot="settings-repos"]')).not.toBeNull();
     expect($('[data-slot="settings-github"]')).not.toBeNull();
-    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[1]!); // Integrations
+    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[2]!); // Integrations
     expect(location.pathname).toBe("/integrations");
   });
 
@@ -816,6 +816,19 @@ describe("home-screen shortcuts", () => {
   });
 });
 
+describe("the orchestrator's persisted open state", () => {
+  test("a phone never auto-opens the dock from a persisted open state, and does not navigate to /orchestrator", async () => {
+    localStorage.setItem("orca.ui.v1.orchestratorOpen", "true"); // e.g. left open on a desktop session in the same browser
+    // A real reload reads storage on the atom's first access (`getOnInit`). This test process shares
+    // one jotai store across tests, so the atom already holds a value: give it the stored one first.
+    act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
+    await mount("/agents", true);
+    expect(location.pathname).toBe("/agents"); // no auto-navigation
+    expect($('[data-slot="orchestrator-panel"]') === null).toBe(true); // never mounted (a boolean: a failed toBeNull prints the whole panel)
+    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(true); // the stored preference itself is untouched, for a later desktop load
+  });
+});
+
 describe("the desktop layout is untouched", () => {
   test("columns and chips as before; the orchestrator is the right-hand side panel", async () => {
     await mount("/agents", false);
@@ -826,7 +839,7 @@ describe("the desktop layout is untouched", () => {
     act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
     await act(async () => { await flush(); await flush(); });
     expect($('[data-slot="orchestrator-panel"]')!.hasAttribute("data-sheet")).toBe(false);
-    expect($('[data-slot="orchestrator-panel"]')!.parentElement!.dataset.slot).toBe("dock"); // docked in the shell card
+    expect($('[data-slot="orchestrator-panel"]')!.parentElement!.parentElement!.dataset.slot).toBe("dock"); // docked in the shell card (inside its clip)
     expect(document.querySelectorAll('[data-slot="orchestrator-resize"]').length).toBe(1); // its left edge
     expect($('[data-slot="orchestrator-handle"]')!.hasAttribute("data-swipe-handle")).toBe(false); // a mouse: no swipe
     expect($('[data-slot="quick-ask-pill"]')).not.toBeNull(); // the desktop has the quick-ask pill…

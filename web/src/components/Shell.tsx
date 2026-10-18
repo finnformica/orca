@@ -14,7 +14,7 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderSync, LayoutGrid, Loader2,
   Bot, Command, Keyboard, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
-  Package, Plug,
+  Package, Plug, Inbox,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom } from "@/lib/atoms";
@@ -23,7 +23,7 @@ import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPa
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
 import { SLIDE_MS } from "@/components/SidePanel";
-import { dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
+import { dockClipElementAtom, dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
 import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
@@ -35,6 +35,7 @@ import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
 import { NAV_RAIL_W, NAV_W, SHELL_GAP, frozenPageWidth, repoLabel, summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
+import { useInboxUnread } from "@/lib/inboxUnread";
 import { AddServerDialog, ServerMenu, ServerOffline, useServerProblem, useServers } from "@/components/ServerMenu";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
 import { poll } from "@/lib/poll";
@@ -60,6 +61,9 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
   { to: "/", label: "Overview", Icon: LayoutGrid, match: (r) => r.name === "board" },
   // An agent's own page (PR or local detail) is "inside" Agents, as a deployment is inside Deployments.
   { to: "/agents", label: "Agents", Icon: Boxes, match: (r) => r.name === "agents" || r.name === "pr" || r.name === "local" },
+  // Every integration's inbound messages and events, one timeline (views/Inbox.tsx).
+  // Orca's own notifications are rows here too; its count is the bell's (lib/inboxUnread.ts).
+  { to: "/inbox", label: "Inbox", Icon: Inbox, match: (r) => r.name === "inbox", badge: (compact) => <InboxBadge compact={compact} /> },
   // The previews (and Test master) page; its badges are what the two header buttons used to carry.
   { to: "/previews", label: "Previews", Icon: MonitorPlay, match: (r) => r.name === "previews", badge: (compact) => <PreviewsBadge compact={compact} /> },
   { to: "/integrations", label: "Integrations", Icon: Plug, match: (r) => r.name === "integrations" },
@@ -73,10 +77,12 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
  *  (SidePanel's portal) at its full width; only the width and the start margin animate (branch-demo's
  *  150ms, Tailwind's default ease) and the card clips the panel, so the panel slides and never
  *  reflows. Closed, a negative start margin cancels the gutter (a 0-wide flex item still takes the gap). The card's
- *  surface stays until the close has finished (`painted`), so its edge does not vanish mid-slide. */
+ *  surface stays until the close has finished (`painted`), so its edge does not vanish mid-slide.
+ *  The clip is an inner element, not the dock: the resize handle hangs in the gutter, outside the card. */
 export function Dock() {
   const dock = useAtomValue(dockWidthAtom);
   const setDockElement = useSetAtom(dockElementAtom);
+  const setDockClip = useSetAtom(dockClipElementAtom);
   const [painted, setPainted] = useState(dock > 0);
   if (dock > 0 && !painted) setPainted(true);
   useEffect(() => {
@@ -92,8 +98,10 @@ export function Dock() {
       // of the chat restyles its whole subtree (measured: ~4000 elements, 100–150ms each at 4× CPU, twice
       // per open / close). The margin is an inline style; the card's surface rides `data-painted`.
       data-painted={painted ? "" : undefined}
-      className="relative shrink-0 overflow-hidden transition-[width,margin-inline-start] data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden md:data-[painted]:rounded-[10px] md:data-[painted]:bg-card md:data-[painted]:shadow-shell"
-      style={{ width: dock, marginInlineStart: dock > 0 ? 0 : -SHELL_GAP, transitionDuration: `${SLIDE_MS}ms` }} />
+      className="relative shrink-0 transition-[width,margin-inline-start] data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden md:data-[painted]:rounded-[10px] md:data-[painted]:bg-card md:data-[painted]:shadow-shell"
+      style={{ width: dock, marginInlineStart: dock > 0 ? 0 : -SHELL_GAP, transitionDuration: `${SLIDE_MS}ms` }}>
+      <div data-slot="dock-clip" ref={setDockClip} className="absolute inset-0 overflow-hidden rounded-[inherit]" />
+    </div>
   );
 }
 
@@ -635,5 +643,18 @@ export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
         </DropdownMenuSub>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/** The Inbox nav item's unread count: the one count the bell shows too. */
+function InboxBadge({ compact = false }: { compact?: boolean }) {
+  const unread = useInboxUnread();
+  // At zero it still holds the row's right edge, so the keycap after it stays where it was.
+  if (!unread) return compact ? null : <span className="ml-auto" />;
+  return (
+    <span data-slot="inbox-unread-count" aria-label={`${unread} unread`}
+      className={cn("bg-geist-blue flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold text-white tabular-nums", compact ? "absolute -top-0.5 -right-0.5" : "ml-auto")}>
+      {unread > 99 ? "99+" : unread}
+    </span>
   );
 }

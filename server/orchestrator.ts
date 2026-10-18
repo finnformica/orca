@@ -80,6 +80,10 @@ type Blob = {
   /** Where `orca post --reply` answers in the wake in flight: the newest outside message's link and
    *  thread. Set and cleared with `wakeGrant`. */
   wakeReplyTo?: ReplyTo | null;
+  /** Every message of the wake in flight is yours (no outside sender, no worker report). Only such a
+   *  wake's `send` / `address` clears a workstream's `grantScope`: a worker report is model output
+   *  that may carry Discord text, so it must not lift the scope. Set and cleared with `wakeGrant`. */
+  wakeFromUser?: boolean | null;
 };
 /** The model it runs on: its pin, else Opus. Its judgement — what to delegate, how to brief, which
  *  model a task deserves — is what the workers' quality rests on, so it gets a strong model; Fable
@@ -171,7 +175,7 @@ export function compact(cfg: OrcaConfig): Promise<{ runId: string }> {
 export async function stop(cfg: OrcaConfig): Promise<string | undefined> {
   const runId = await agent.interrupt(dir(), { queue: false });
   await serial(async () => {
-    if (runId && (await blob()).handling?.runId === runId) await patch({ handling: null, wakeGrant: null, wakeReplyTo: null, died: null });
+    if (runId && (await blob()).handling?.runId === runId) await patch({ handling: null, wakeGrant: null, wakeReplyTo: null, wakeFromUser: null, died: null });
     // Only the primary drains (as the run-finished hook does), and a failed drain never fails Stop.
     if (primary.held()) await drain(cfg).catch(db.logUnlessDown("orca: orchestrator drain after stop failed"));
   });
@@ -195,7 +199,7 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
       });
       if (exit) await died(run.runId, exit, run.meta?.costUsd);
       // Only its own claim: a message of yours may have launched the next wake already.
-      else if ((await blob()).handling?.runId === run.runId) await patch({ handling: null, wakeGrant: null, wakeReplyTo: null, died: null });
+      else if ((await blob()).handling?.runId === run.runId) await patch({ handling: null, wakeGrant: null, wakeReplyTo: null, wakeFromUser: null, died: null });
       await drain(cfg);
     });
     return;
@@ -210,7 +214,7 @@ export async function onRunFinished(cfg: OrcaConfig, run: agent.RunFinished): Pr
   const opened = await autoPr(cfg, repo, branch, run);
   const text = workerEvent({
     repo, branch, title: e.title as string | undefined, runId: run.runId, status: run.status,
-    outcome: run.structured, response: run.result, check: run.check,
+    outcome: run.structured, response: run.result, check: run.check, denied: run.meta?.permissionDenials,
   }) + (opened ? `\n${opened}` : "") + (step ? `\n${step}` : "");
   await report(cfg, text, run.key);
 }
@@ -310,7 +314,7 @@ async function died(runId: string, exit: WakeExit, costUsd?: number): Promise<vo
   await db.failTurn(runId, wakeStoppedLine({ reason, toolCalls, costUsd, retried: retry.length, dropped: messages.length - retry.length }));
   // What it had done is read off the steps it recorded as it went — they outlive the process — so the
   // next wake neither repeats a spawn/merge nor leaves the user without the reply it had started.
-  await patch({ handling: null, wakeGrant: null, wakeReplyTo: null, died: retry, cutOff: retry.length ? reason : null, cutOffProgress: wakeProgress(steps) || null });
+  await patch({ handling: null, wakeGrant: null, wakeReplyTo: null, wakeFromUser: null, died: retry, cutOff: retry.length ? reason : null, cutOffProgress: wakeProgress(steps) || null });
 }
 
 /** Startup: a wake that was in flight when the previous bridge stopped has nobody to report its
@@ -336,7 +340,7 @@ export async function recover(cfg: OrcaConfig, reconcile: () => Promise<unknown>
   const finished = Boolean(turn?.finishedAt) && !turn?.failed && (turn?.stopped || last?.kind === "text");
   await serial(async () => {
     if ((await blob()).handling?.runId !== handling.runId) return;
-    if (finished) await patch({ handling: null, wakeGrant: null, wakeReplyTo: null, died: null });
+    if (finished) await patch({ handling: null, wakeGrant: null, wakeReplyTo: null, wakeFromUser: null, died: null });
     else await died(handling.runId, { kind: "restart" });
     await drain(cfg);
   });
@@ -416,7 +420,8 @@ async function wake(cfg: OrcaConfig, fresh: string[], grant?: Grant, freshReplyT
     const shell = cfg.orchestratorShell !== false && !grant;
     // The newest outside message is the one `orca post --reply` answers.
     const replyTo = freshReplyTo ?? [...claimed].reverse().find((m) => m.replyTo)?.replyTo;
-    await patch({ wakeGrant: grant ?? null, wakeReplyTo: replyTo ?? null }); // before the launch: its first `orca` call is checked
+    const fromUser = !grant && messages.every((m) => !isWorkerEvent(m));
+    await patch({ wakeGrant: grant ?? null, wakeReplyTo: replyTo ?? null, wakeFromUser: fromUser || null }); // before the launch: its first `orca` call is checked
     const prompt = orchestratorPrompt({ fresh: !next.resume, notes: b.notes, board: boardText(await board(cfg)), messages, shell, cutOff: b.cutOff, cutOffProgress: b.cutOffProgress });
     const receipt = await agent.launch(dir(), dir(), prompt, {
       ...next, provider: "claude", repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
@@ -441,7 +446,7 @@ async function wake(cfg: OrcaConfig, fresh: string[], grant?: Grant, freshReplyT
     // The messages were claimed off the queue; a launch that never happened must not eat them.
     for (const m of claimed) await enqueue(m.instruction, m.attachments, m.grant, m.replyTo).catch(() => {});
     for (const text of fresh) await enqueue(text, [], grant, freshReplyTo).catch(() => {});
-    await patch({ wakeGrant: null, wakeReplyTo: null }).catch(() => {});
+    await patch({ wakeGrant: null, wakeReplyTo: null, wakeFromUser: null }).catch(() => {});
     throw e;
   }
 }
@@ -561,6 +566,16 @@ async function channelsText(): Promise<string> {
   return [...lines, ...subLines, ...pairLines].join("\n");
 }
 
+/** Who an outside grant came from, for the card: the paired person's name and the link's adapter
+ *  (discord, slack, …). Best effort: a lookup that fails leaves them out. */
+async function grantOrigin(g: Grant): Promise<{ by?: string; via?: string }> {
+  try {
+    const [p, l] = await Promise.all([g.principalId ? integrationStore.principal(g.principalId) : undefined, g.linkId ? integrationStore.link(g.linkId) : undefined]);
+    const c = l ? await integrationStore.integration(l.integrationId) : undefined;
+    return { ...(p ? { by: p.name } : {}), ...(c ? { via: c.kind } : {}) };
+  } catch { return {}; }
+}
+
 /** Run one `orca <verb>` and return what it prints. Throws with a message the model can act on. */
 export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): Promise<string> {
   // The grant check (§3.7): a wake an outside sender caused may only use the verbs its grant allows.
@@ -576,37 +591,36 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
   }
   const refusal = grantRefusal(wakeGrant, verb, args);
   if (refusal) throw new Error(refusal);
-  // A workstream an outside sender's wake starts or steers runs with permission prompts on
-  // (`agentPermissionMode: "ask"`), whatever its repo says — sticky on its enrichment.
-  const restricted: db.Fields = wakeGrant ? { grantScope: wakeGrant } : {};
+  // A workstream an outside sender's wake starts or steers runs in scoped mode (verbs.permissionFor,
+  // agent.scopedRules), whatever its repo says — sticky on its enrichment, with who started it for
+  // the card. Your own chat steering it (every message yours) clears it again.
+  const restricted: db.Fields = wakeGrant ? { grantScope: { ...wakeGrant, ...(await grantOrigin(wakeGrant)) } } : {};
+  const steer: db.Fields = wakeGrant ? restricted : b.wakeFromUser ? { grantScope: null } : {};
   const words = args._ ?? [];
   switch (verb) {
     case "board": return boardText(await board(cfg));
     case "channels": return channelsText();
     case "post": {
-      // `orca post --link <id> [--thread <id> | --repo r --branch b] "<text>"`: a durable delivery
+      // `orca post --link <id> [--thread <id> | --repo r --branch b] [--thread] "<text>"`: a durable delivery
       // through the link's adapter, retried if it fails. With --repo/--branch it continues that
       // workstream's thread on the link, or starts it.
       // `--reply "<text>"` arrives as the flag's value (bin/orca takes the next word), so read it there too.
-      const text = (words.join(" ").trim() || (typeof args.reply === "string" ? args.reply.trim() : ""));
+      // `--thread` opens a thread for the post (Discord: on the mention it answers). With `--reply`, or
+      // with no value, it is a switch, and `--reply --thread "<text>"` gives it the text.
+      const openThread = typeof args.thread === "string" && (reply !== undefined || !args.thread);
+      const text = (words.join(" ").trim() || (typeof args.reply === "string" ? args.reply.trim() : "") || (openThread && typeof args.thread === "string" ? args.thread.trim() : ""));
       const link = typeof args.link === "string" && args.link ? await integrationStore.link(args.link) : undefined;
       if (!link) throw new Error(`--link must name a channel link (orca channels lists them)${args.link ? `: no link "${args.link}"` : ""}`);
       if (!text) throw new Error('the message is required: orca post --link <id> "<text>"');
-      const conn = await integrationStore.integration(link.integrationId);
       const repo = typeof args.repo === "string" && args.repo ? args.repo : undefined;
       const branch = typeof args.branch === "string" && args.branch ? args.branch : undefined;
-      const threadId = reply ? reply.threadId
-        : typeof args.thread === "string" && args.thread ? args.thread
+      const threadId = !openThread && typeof args.thread === "string" && args.thread ? args.thread
         : repo && branch ? (await integrationStore.threadsForWorkstream(repo, branch)).get(link.id) : undefined;
-      // A reply goes to the place it came from: a catch-all link's DM, not "*".
-      const externalId = reply?.channel ?? link.externalId;
-      const r = await integrationRouter.publish({
-        key: `post:${crypto.randomUUID()}`, topic: "orca.message", at: Date.now(), source: { adapter: "orca", linkId: link.id },
-        ...(repo ? { scope: { repo, ...(branch ? { branch } : {}) } } : {}), text,
-      }, Date.now(), [{ subscriptionId: null, target: {
-        kind: "link", integrationId: link.integrationId, adapter: conn?.kind ?? "?", linkId: link.id, externalId, ...(threadId ? { threadId } : {}),
-      } }]);
-      return `Queued for ${link.label ?? link.id}${externalId !== link.externalId ? ` ${externalId}` : ""}${threadId ? ` (thread ${threadId})` : ""} as delivery ${r.deliveries[0] ?? "?"}; Orca retries it if the send fails.`;
+      const r = await integrationRouter.post(link, text, {
+        ...(reply ? { reply } : threadId ? { threadId } : {}), ...(repo ? { scope: { repo, ...(branch ? { branch } : {}) } } : {}),
+        ...(openThread ? { openThread } : {}),
+      });
+      return `Queued for ${link.label ?? link.id}${r.externalId !== link.externalId ? ` ${r.externalId}` : ""}${r.threadId ? ` (thread ${r.threadId})` : ""}${openThread ? " in a new thread" : ""} as delivery ${r.delivery ?? "?"}; Orca retries it if the send fails.`;
     }
     case "thread": {
       // `orca thread link <adapter> <thread-id> --repo r --branch b [--link <id>]`: replies in that
@@ -660,7 +674,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         if (!provider) throw new Error(`unknown model "${args.model}"`);
         await db.patchEnrichment(repo.name, branch, { preferredModel: args.model, preferredProvider: provider });
       }
-      if (wakeGrant) await db.patchEnrichment(repo.name, branch, restricted);
+      if (Object.keys(steer).length) await db.patchEnrichment(repo.name, branch, steer);
       const home = await verbs.placement(repo, { branch });
       const { status } = home !== db.instanceName()
         ? (await viaInstance(cfg, home, "/api/workstreams/followup", { repo: repo.name, branch, instruction: text }) as { status: string })
@@ -671,7 +685,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
     case "address": {
       const repo = repoNamed(cfg, args.repo);
       const branch = required(args, "branch");
-      if (wakeGrant) await db.patchEnrichment(repo.name, branch, restricted);
+      if (Object.keys(steer).length) await db.patchEnrichment(repo.name, branch, steer);
       const home = await verbs.placement(repo, { branch });
       const { status, pr } = home !== db.instanceName()
         ? (await viaInstance(cfg, home, "/api/workstreams/address", { repo: repo.name, branch }) as { status: string; pr: number })
@@ -795,6 +809,11 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       // Enrichment is in the shared database, so any instance can write it — no forwarding.
       const repo = repoNamed(cfg, args.repo);
       const branch = required(args, "branch");
+      // `--clear-grant`: back to the repo's own permission mode (grantRefusal keeps it to your chat).
+      if ("clear-grant" in args) {
+        await db.patchEnrichment(repo.name, branch, { grantScope: null });
+        return `Cleared the outside grant of ${repo.name}/${branch}: its next run uses the repo's permission mode.`;
+      }
       const prev = (await db.enrichment(repo.name))[branch]?.orchStatus as OrchStatus | undefined;
       const next = orchStatusUpdate(prev, args, new Date().toISOString());
       if (next === undefined) return orchStatusText(prev) || `(no status for ${repo.name}/${branch})`;

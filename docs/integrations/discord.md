@@ -22,6 +22,10 @@ has it, the card says which servers do not have it.
   `MESSAGE_CONTENT`.
   - A message in a linked channel goes to the core. A message with no mention of the bot has
     `mentioned: false`. A link with `require_mention` drops it.
+  - A mention of the bot's managed role is a mention too. Discord's autocomplete offers the bot
+    user and this role, with the same name. The adapter finds the role from `GUILD_CREATE` (the
+    role whose `tags.bot_id` is the bot), else from one `GET /guilds/<id>/roles`. It removes
+    `<@&role id>` from the text, as it removes `<@bot id>`.
   - A message in a thread uses the link of the thread's parent channel. The thread is its
     conversation.
   - A new request is a mention at the top level of a channel. By default Orca replies in place: a
@@ -32,6 +36,10 @@ has it, the card says which servers do not have it.
   - An unknown person gets a pairing code from the core. The code is a reply to their message.
   - The adapter ignores messages from bots.
 - Outbound: a post to the link's channel.
+  - A catch-all link (`external_id` `*`) only receives. It names no channel, so nothing posts to
+    it. A reply to a message on it goes to the DM or channel that the message came from. Test, a
+    subscription and `orca post --link` refuse a catch-all link at once. The dispatcher ends an
+    old delivery to `*` with the same error, and does not call Discord.
   - The first post for a workstream starts its conversation. The core keeps its thread id. Later
     posts for the workstream continue there, and a reply there goes to the workstream.
   - A post with a title is an embed (a linked title and a colour). This matches the build posts in
@@ -58,6 +66,29 @@ The integration's `config.threads` sets what Orca does with a mention at the top
 
 A mention inside a thread gets its answer in that thread. A DM gets its answer in the DM. The flag
 does not change these two. A thread that Orca opened before you change the flag stays a thread.
+
+### A thread for one answer
+
+With the default, the orchestrator can open a thread for one answer when a thread helps. Examples
+are a long answer, a job with many steps, a workstream, or a long conversation.
+
+```bash
+orca post --reply --thread "<text>"
+orca post --reply --thread --repo <repo> --branch <branch> "<text>"
+```
+
+- The adapter opens a thread on the mention. It posts the answer in that thread.
+- The thread is the conversation from then on. A message in the thread reaches the orchestrator,
+  or the workstream when the thread is linked to one.
+- With `--repo` and `--branch`, the thread becomes that workstream's thread on the link. A thread
+  opened from a reply chain that was linked to a workstream keeps that link.
+- If Discord refuses the thread (for example, no **Create Public Threads** permission), the answer
+  is a reply in place.
+- In a thread or a DM, `--thread` changes nothing.
+- `orca post --link <id> --thread "<text>"` opens a thread on the post itself.
+
+`config.threads` stays. It is for a server where each request must get a thread. `--thread` is
+for one answer when the default is in place.
 
 The adapter keeps the newest message of each chain in memory. After a restart it reads the chain
 up from the reply (at most 25 messages, `Read Message History`). The first answer after a restart
@@ -91,7 +122,7 @@ UPDATE integration SET config = config::jsonb || '{"threads": true}' WHERE id = 
    - View Channels
    - Send Messages
    - Send Messages in Threads
-   - Create Public Threads (only with `config.threads` true)
+   - Create Public Threads (for `config.threads` true, or `orca post --thread`)
    - Read Message History
 7. Open the URL that the page gives. Add the bot to the server.
 8. In Discord, open **User Settings → Advanced**. Turn on **Developer Mode**.
@@ -141,6 +172,7 @@ Check the columns against `server/integrations/store.ts` before you run this. Th
 schema.
 
 To accept DMs, add a catch-all link (`*`). It also covers each channel that has no link of its own.
+A catch-all link only receives: Settings shows no Test for it, and nothing posts to it.
 
 ```sql
 INSERT INTO channel_link (id, user_id, integration_id, external_id, level) VALUES ('discord-dm', 'me', 'discord', '*', 'ask');

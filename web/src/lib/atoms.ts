@@ -23,11 +23,6 @@ export const densityAtom = persistedAtom<Density>("density", "comfortable", oneO
 // The card clears it once opened, so a later re-render doesn't reopen it.
 export const openTerminalAtom = atom<string | null>(null);
 
-// Which view "/" shows, persisted: "list" is the overview (stat tiles, the workstreams table and
-// recent activity), "board" the original five swimlanes of cards. List is the default.
-export type BoardView = "list" | "board";
-// `orca.ui.v1.agents.view`; the pre-versioned `orca.boardView` is read once if present.
-export const boardViewAtom = persistedAtom<BoardView>("agents.view", "list", oneOf("list", "board"), "orca.boardView");
 
 // The console shell. The sidebar can be collapsed to icons (persisted); the instance switcher at its
 // top scopes the Overview and Agents pages to one machine ("all" or an instance name, persisted);
@@ -44,7 +39,11 @@ export const usageExpandedAtom = persistedAtom("usageExpanded", false, isBoolean
 // the one window; `orchestratorPrefillAtom` is text for its composer. `session` groups the keystrokes
 // of one ask (typed in the entry before the composer mounts) so they replace each other rather than
 // stacking; `seq` makes every ask an event, even with the same text (it also refocuses the composer).
-export const orchestratorOpenAtom = atom(false);
+// Persisted (a reversal of #305's "always closed on reload"): a reload with it open shows the
+// panel open at once, with no slide to replay (SidePanel's `appStarting`) — OrchestratorPanel still
+// never auto-opens the dock on a narrow screen (phones route to `/orchestrator` instead; see its
+// `mounted` guard), so a stored "open" from a desktop session stays dormant there.
+export const orchestratorOpenAtom = persistedAtom("orchestratorOpen", false, isBoolean);
 export type OrchestratorPrefill = { text: string; session: number; seq: number };
 export const orchestratorPrefillAtom = atom<OrchestratorPrefill | null>(null);
 // The side panel's width (px), remembered per browser; clamped to the viewport on use.

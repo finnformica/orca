@@ -1,7 +1,6 @@
 // E2E for the console shell (App + components/Shell): Vercel's left sidebar — the Orca mark with the
 // instance switcher, Find, the nav (Overview, Agents, Repos, Usage, Settings), you at the foot and a
-// persisted collapse — and a top bar with the breadcrumb. "/" is the Overview; Agents keeps the
-// swimlanes behind a persisted List | Board toggle (with the density toggle beside it on Board).
+// persisted collapse — and a top bar with the breadcrumb. "/" is the Overview; Agents is the list.
 // Driven against the fake api (tests/apiFake.ts), rendered into a real DOM.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
@@ -12,7 +11,7 @@ import { apiFake } from "./apiFake";
 import { getDefaultStore } from "jotai";
 import * as store from "@/store";
 import { App } from "@/App";
-import { agentQueryAtom, boardViewAtom, densityAtom, instanceScopeAtom, sidebarCollapsedAtom } from "@/lib/atoms";
+import { agentQueryAtom, densityAtom, instanceScopeAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -38,7 +37,6 @@ afterEach(async () => {
   // The atoms outlive localStorage within one run: a dense board left behind here once made later
   // files' cards hide their prompt.
   const s = getDefaultStore();
-  s.set(boardViewAtom, "list");
   s.set(densityAtom, "comfortable");
   s.set(sidebarCollapsedAtom, false);
   s.set(instanceScopeAtom, "all");
@@ -131,9 +129,9 @@ describe("console shell", () => {
     expect(sidebar.querySelector('[data-slot="instance-scope"]')!.textContent).toBe("All instances"); // two instances in the fake config
     expect(sidebar.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     const items = [...sidebar.querySelectorAll('nav[aria-label="Main"] button')].map(navLabel);
-    expect(items).toEqual(["Overview", "Agents", "Previews", "Integrations", "Handoffs", "Settings"]);
+    expect(items).toEqual(["Overview", "Agents", "Inbox", "Previews", "Integrations", "Handoffs", "Settings"]);
     expect(navItem("Overview").getAttribute("aria-current")).toBe("page");
-    for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Integrations", "/integrations", "integrations-page"], ["Settings", "/settings", "settings-appearance"]] as const) {
+    for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Inbox", "/inbox", "inbox-unread"], ["Integrations", "/integrations", "integrations-page"], ["Settings", "/settings", "settings-appearance"]] as const) {
       await click(navItem(label));
       expect(location.pathname).toBe(path);
       expect(navItem(label).getAttribute("aria-current")).toBe("page");
@@ -208,35 +206,13 @@ describe("console shell", () => {
     expect(container!.querySelector('button[aria-label="Expand sidebar"]')).not.toBeNull();
   });
 
-  test("Agents: the List | Board toggle swaps the view and is remembered across a reload", async () => {
+  test("Agents: the list only — no List | Board toggle, no density toggle", async () => {
     navigate("/agents");
     await mount();
-    expect(btnByText("List")!.getAttribute("aria-pressed")).toBe("true");
-    await click(btnByText("Board")!);
-    expect(gridEl()).not.toBeNull(); // the swimlanes
-    expect(container!.querySelector('[data-slot="workstream-list"]')).toBeNull();
-    expect(localStorage.getItem("orca.ui.v1.agents.view")).toBe('"board"');
-    // A fresh mount (a reload) keeps the choice.
-    act(() => root?.unmount());
-    container?.remove();
-    await mount();
-    expect(btnByText("Board")!.getAttribute("aria-pressed")).toBe("true");
-    expect(gridEl()).not.toBeNull();
-    await click(btnByText("List")!);
-    expect(localStorage.getItem("orca.ui.v1.agents.view")).toBe('"list"');
+    expect(container!.querySelector('[data-slot="workstream-list"]')).not.toBeNull();
+    expect(container!.querySelector('[role="group"][aria-label="View"]')).toBeNull();
+    expect(btnByText("Board")).toBeUndefined();
     expect(gridEl()).toBeNull();
-  });
-
-  test("the density toggle (Board view only) flips comfortable ⇄ dense (aria-pressed + persisted)", async () => {
-    navigate("/agents");
-    await mount();
-    expect(container!.querySelector('button[aria-label^="Switch to"]')).toBeNull(); // the list has no cards to densify
-    await click(btnByText("Board")!);
-    const toggle = container!.querySelector<HTMLButtonElement>('button[aria-label^="Switch to"]')!;
-    expect(toggle).not.toBeNull();
-    expect(toggle.getAttribute("aria-pressed")).toBe("false"); // comfortable by default
-    await act(async () => { toggle.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
-    expect(toggle.getAttribute("aria-pressed")).toBe("true");
-    expect(localStorage.getItem("orca.ui.v1.density")).toBe('"dense"');
+    expect(container!.querySelector('button[aria-label^="Switch to"]')).toBeNull();
   });
 });

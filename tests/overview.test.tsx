@@ -10,7 +10,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { Overview } from "@/views/Overview";
 import { Agents } from "@/views/Agents";
-import { agentQueryAtom, boardViewAtom, repoFilterAtom } from "@/lib/atoms";
+import { agentQueryAtom, repoFilterAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
 import {
   DEFAULT_LIST_FILTER, attentionReasons, filterRows, lastActivity, overviewStats, recentActivity, rowTone, sortRows, turnsByHour,
@@ -267,18 +267,5 @@ describe("agents list", () => {
     const local = container!.querySelector<HTMLElement>('[data-branch="local-run"]')!;
     await click(local.querySelector(".font-medium")!);
     expect(location.pathname).toBe("/r/local/local-run");
-  });
-});
-
-describe("view toggle persistence", () => {
-  test("List is the default and the choice is read back from localStorage", () => {
-    localStorage.removeItem("orca.boardView");
-    const fresh = createStore();
-    fresh.sub(boardViewAtom, () => {});
-    expect(fresh.get(boardViewAtom)).toBe("list");
-    localStorage.setItem("orca.boardView", JSON.stringify("board"));
-    const reloaded = createStore(); // a reload: a new store reads the saved choice on mount
-    reloaded.sub(boardViewAtom, () => {});
-    expect(reloaded.get(boardViewAtom)).toBe("board");
   });
 });
