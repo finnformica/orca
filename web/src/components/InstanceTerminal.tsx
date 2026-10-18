@@ -125,7 +125,7 @@ function TabStrip({ tabs, active, labels, statuses, onSelect, onClose, onNew }: 
           const s = statuses[t.id] ?? "connecting";
           return (
             <div key={t.id} data-slot="terminal-tab" data-state={selected ? "active" : "inactive"}
-              className={cn("group flex h-7 shrink-0 items-center rounded-md text-xs max-md:h-9", selected ? "bg-selected text-selected-foreground" : "text-muted-foreground hover:bg-accent/60")}>
+              className={cn("group flex h-7 shrink-0 items-center rounded-md text-xs max-md:h-9", selected ? "bg-selected text-selected-foreground" : "text-muted-foreground hover:bg-accent")}>
               <button type="button" role="tab" aria-selected={selected} onClick={() => onSelect(t.id)}
                 className="flex h-full items-center gap-1.5 pr-1 pl-2 font-mono outline-none focus-visible:ring-2 focus-visible:ring-ring rounded-md">
                 <StatusDot tone={TERMINAL_STATUS[s].tone} className="size-1.5" />{labels[t.id]}

@@ -197,10 +197,10 @@
   }
 }
 
-/* The themed frame (Slack's workspace sidebar plus top bar): the sidebar, the top bar and the closed
-   Ask pill carry `data-chrome`. Inside it the neutral tokens become the frame's tones, so the Find
-   box, the keycaps, the badges, the menus' triggers and the Ask button follow with no class of
-   their own. Menus portal out of it and take the page's tinted tokens. */
+/* The themed frame (Slack's workspace sidebar plus top bar): the sidebar and the phone's top bar
+   carry `data-chrome`. Inside it the neutral tokens become the frame's tones, so the Find box, the
+   keycaps, the badges and the menus' triggers follow with no class of their own. The Ask pill is an
+   overlay, not the frame (docs/design/surfaces.md). Menus portal out of it and take the page's tinted tokens. */
 [data-chrome] {
   --background: var(--sb-bg);
   --selected: var(--sb-active);

@@ -311,8 +311,10 @@ to a middle ground between Geist's flat grays and a first, too-soft pass after r
 `#f9f9f8`/`#fff` light and `#111111`/`#161616` dark, translucent hairline borders rather than flat
 gray, the Geist grays elsewhere, 1px hairlines, no card shadows, `#0070f3` as the one accent,
 status dots and pills as `--geist-*` tokens — all CSS variables in `styles.css`, so every component
-inherits it. **Surface rules** (Finn found the first pass heavy-handed; `tests/console.test.tsx`
-asserts them on every page): 1px hairlines only, never 2px; rows use dividers, never a box inside a
+inherits it. **Surface rules — read `docs/design/surfaces.md` before you touch a fill, border or
+shadow** (four levels: frame, page, raised, overlay; a header shares its body's surface; the composer
+is raised; `tests/surfaces.test.tsx` guards it). In short (Finn found the first pass heavy-handed;
+`tests/console.test.tsx` asserts them on every page): 1px hairlines only, never 2px; rows use dividers, never a box inside a
 card's border; 8px cards (`rounded-lg`), 6px controls (`rounded-md`); 13px body / 12px meta; icons at
 1.5 stroke (a global `svg.lucide` rule); NO shadows except Geist's menu / modal tokens
 (`shadow-menu`, `shadow-modal`) and the orchestrator's side panel (`shadow-modal`); badges are tinted fills

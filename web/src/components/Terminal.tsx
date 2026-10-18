@@ -137,7 +137,7 @@ export function AskOrchestrator() {
       // Below md the bottom bar's Orchestrator button takes its place.
       // A fixed width (Geist renders it at 194px): its LEFT edge moved 10.8px when the web font
       // replaced the wider fallback font after first paint. The label truncates if a fallback is wider.
-      className="bg-card hover:bg-accent/60 text-foreground flex h-8 w-[12.25rem] shrink-0 items-center gap-2 rounded-md border px-2.5 text-sm max-md:hidden">
+      className="bg-card hover:bg-accent text-foreground flex h-8 w-[12.25rem] shrink-0 items-center gap-2 rounded-md border px-2.5 text-sm max-md:hidden">
       <span className="relative inline-flex shrink-0"><Bot className="text-muted-foreground size-3.5 shrink-0" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
       <span data-slot="ask-orchestrator-label" className="text-muted-foreground min-w-0 flex-1 truncate text-left">Ask the orchestrator</span>
       <Shortcut id="orchestrator" />
@@ -337,7 +337,7 @@ export function OrchestratorPanel() {
       <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} />
     </div>
   );
-  const panelClass = "bg-card text-foreground flex flex-col overflow-hidden";
+  const panelClass = "bg-background text-foreground flex flex-col overflow-hidden";
   const onKeyDown = (e: React.KeyboardEvent) => { if (e.key === "Escape" && !pip) { e.stopPropagation(); setOpen(false); } };
   if (!mounted) return null;
   return (
@@ -460,7 +460,7 @@ export function OrchestratorWindow() {
   }, []);
   return (
     <PipContext.Provider value={true}>
-      <div role="main" aria-label="Orchestrator" data-slot="orchestrator-window" className="bg-card text-foreground flex h-[100dvh] w-screen flex-col overflow-hidden">
+      <div role="main" aria-label="Orchestrator" data-slot="orchestrator-window" className="bg-background text-foreground flex h-[100dvh] w-screen flex-col overflow-hidden">
         <PanelHeader slot="orchestrator-handle" icon={<Bot className="size-3.5" />}
           title={state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}
           status={<OrchestratorStatusLine state={state} />} />

@@ -107,7 +107,7 @@ export function ReviewPanel({ repo, prNumber, sig, className, bodyClass }: { rep
 /** A labelled run of divided rows inside the card — Vercel's grouped list, no box of its own. */
 const ReviewSection = ({ title, items }: { title: string; items: ReviewItem[] }) => (
   <div className="border-b last:border-b-0">
-    <div className="text-muted-foreground bg-background/60 px-4 py-2 text-xs font-medium">{title}</div>
+    <div className="text-muted-foreground px-4 py-2 text-xs font-medium">{title}</div>
     <ul className="divide-y border-t">{items.map((i) => <ItemLine key={i.id} item={i} />)}</ul>
   </div>
 );
