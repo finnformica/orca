@@ -25,6 +25,7 @@ import { QuickAsk } from "@/components/QuickAsk";
 import { SLIDE_MS } from "@/components/SidePanel";
 import { dockClipElementAtom, dockElementAtom, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
+import { CountBadge } from "@/components/console";
 import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
 import { cn, PortalContainer } from "@/lib/utils";
@@ -612,10 +613,5 @@ function InboxBadge({ compact = false }: { compact?: boolean }) {
   const unread = useInboxUnread();
   // At zero it still holds the row's right edge, so the keycap after it stays where it was.
   if (!unread) return compact ? null : <span className="ml-auto" />;
-  return (
-    <span data-slot="inbox-unread-count" aria-label={`${unread} unread`}
-      className={cn("bg-geist-blue flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold text-white tabular-nums", compact ? "absolute -top-0.5 -right-0.5" : "ml-auto")}>
-      {unread > 99 ? "99+" : unread}
-    </span>
-  );
+  return <CountBadge count={unread} placement={compact ? "compact" : "inline"} slot="inbox-unread-count" />;
 }

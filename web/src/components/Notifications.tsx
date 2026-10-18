@@ -38,7 +38,7 @@ import { ActionButton } from "@/components/ActionButton";
 import { detailPath } from "@/views/Agents";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Segmented } from "@/components/console";
+import { CountBadge, Segmented } from "@/components/console";
 import { Kbd } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { MarqueeText } from "@/components/ui/marquee-text";
@@ -450,11 +450,7 @@ export function NotificationBell({ collapsed = false }: { collapsed?: boolean })
           <button type="button" data-slot="notifications-bell" aria-label={`Notifications${unread ? ` (${unread} unread)` : ""}`}
             className={footIcon}>
             {dnd ? <BellOff className="size-4" /> : <Bell className="size-4" />}
-            {unread > 0 && (
-              <span data-slot="notifications-unread" className="bg-foreground text-background absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold tabular-nums">
-                {unread > 99 ? "99+" : unread}
-              </span>
-            )}
+            <CountBadge count={unread} placement="compact" slot="notifications-unread" />
           </button>
         </PopoverTrigger>
       </Tip>
