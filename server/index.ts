@@ -43,7 +43,9 @@ import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
 import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
-import { checkCaller, listServers, selfServer, serverGate, withIdentity } from "./servers";
+import { checkCaller, instanceHosts, listServers, selfServer, serverGate, withIdentity } from "./servers";
+import { isAutomatic, leaseHolder } from "../shared/integrations";
+import { instanceOptions } from "../shared/integrationSettings";
 import { identityUpdate, serverIdentityProblems } from "../shared/serverIdentity";
 import * as handoff from "./handoff";
 
@@ -654,14 +656,19 @@ async function api(req: Request, url: URL): Promise<Response> {
     // Settings > Integrations in one read (server/integrations/admin.ts): the kinds the registry
     // knows, every integration with its health and last event, links, people, pending pairing codes,
     // subscriptions and the dead deliveries. `running` keeps the diagnostics' map of this bridge.
-    return json({ ...(await integrationAdmin.overview()), running: await integrations.health() });
+    // `instanceOptions`: each instance by the server's display name or its Tailscale host, not its id.
+    const ids = [...Object.keys(cfg.instances ?? {}), db.instanceName()];
+    const hosts = await instanceHosts(cfg.instances ?? {}, cfg.serverSwitcher ?? {}).catch(() => ({}));
+    const options = instanceOptions(ids, hosts, cfg.serverIdentity?.name, cfg.orchestratorOn ?? db.instanceName());
+    return json({ ...(await integrationAdmin.overview()), instanceOptions: options, running: await integrations.health() });
   }
   if (req.method === "POST" && p === "/api/integrations/test") {
     // The card's Test: the adapter's own health check, on the instance that runs it.
     const row = await integrationStore.integration(String(body.id ?? ""));
     if (!row) return json({ error: `no integration ${String(body.id ?? "")}` }, 404);
-    if (row.instance !== db.instanceName()) {
-      try { return json(await orchestrator.viaInstance(cfg, row.instance, "/api/integrations/test", { id: row.id })); }
+    const on = isAutomatic(row.instance) ? leaseHolder(row.auto, Date.now()) : row.instance; // Automatic: its lease holder
+    if (on && on !== db.instanceName()) {
+      try { return json(await orchestrator.viaInstance(cfg, on, "/api/integrations/test", { id: row.id })); }
       catch (e) { return json({ ok: false, detail: e instanceof Error ? e.message : String(e) }); }
     }
     return json(await integrationAdmin.testIntegration(row.id));

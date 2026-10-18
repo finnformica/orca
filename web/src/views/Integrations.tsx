@@ -16,16 +16,16 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectSeparator, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Empty, Pill, SectionTitle, StatusDot, VCard } from "@/components/console";
 import {
-  SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, integrationProblem, linkProblem, parseFilter, postableLinks, targetLabel,
-  type IntegrationCard, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow,
+  SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, instanceText, integrationProblem, linkProblem, parseFilter, postableLinks, targetLabel,
+  type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow,
 } from "../../../shared/integrationSettings";
-import { isReceiveOnly, type AdapterMeta, type Level } from "../../../shared/integrations";
+import { AUTO_INSTANCE, isAutomatic, isReceiveOnly, type AdapterMeta, type Level } from "../../../shared/integrations";
 
 type Overview = IntegrationsOverview;
 type LinkLevel = Exclude<Level, "full">;
@@ -77,7 +77,7 @@ export function IntegrationsPage() {
     <div className="max-w-4xl space-y-6" data-slot="integrations-page">
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold tracking-tight">Integrations</h1>
-        {data && <ConnectButton kinds={data.kinds} onSaved={reload} />}
+        {data && <ConnectButton kinds={data.kinds} options={data.instanceOptions ?? []} onSaved={reload} />}
       </div>
       {error && !data && <VCard><Empty>{error}</Empty></VCard>}
       {!data && !error && <VCard><Empty>Loading…</Empty></VCard>}
@@ -112,6 +112,9 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
   };
   const tone = healthTone(c);
   const [ask, confirmNode] = useConfirm();
+  const options = data.instanceOptions ?? [];
+  // Where it runs, in words: "Flow / orca-flow-box", or "Automatic · Flow / orca-flow-box" (its holder now).
+  const where = isAutomatic(c.instance) ? `Automatic${c.runsOn ? ` · ${instanceText(c.runsOn, options)}` : ""}` : instanceText(c.instance, options);
   return (
     <VCard slot="integration-card" title={
       <span className="flex min-w-0 items-center gap-2">
@@ -119,7 +122,7 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
         <span className="truncate">{c.name}</span>
         <Pill>{meta?.label ?? c.kind}</Pill>
         {receiveOnly && <Pill slot="receive-only">Receive-only</Pill>}
-        <span className="max-sm:hidden"><Pill>on {c.instance}</Pill></span>
+        <span className="max-sm:hidden" data-slot="integration-where"><Pill>{isAutomatic(c.instance) ? where : `on ${where}`}</Pill></span>
       </span>
     } aside={
       <>
@@ -138,12 +141,12 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
         <div className="flex min-w-0 items-start gap-2.5">
           <StatusDot tone={tone} className="mt-1.5" />
           <div className="min-w-0">
-            <div data-slot="integration-health" className="break-words">{healthLine(c)}</div>
+            <div data-slot="integration-health" className="break-words">{healthLine(c, Date.now(), options)}</div>
             <div className="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2 text-xs">
               {c.secretRef
                 ? <span data-slot="secret-status"><span className="font-mono">{c.secretRef}</span> · {c.secretSet === undefined ? "not checked yet" : c.secretSet ? "set" : "not set"}</span>
                 : <span>no secret</span>}
-              <span className="sm:hidden">· on {c.instance}</span>
+              <span className="sm:hidden">· {isAutomatic(c.instance) ? where : `on ${where}`}</span>
               {c.running && <span>· running on this bridge</span>}
             </div>
           </div>
@@ -159,7 +162,7 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
         : <ul data-slot="integration-links" className="divide-y">{links.map((l) => <LinkRowView key={l.id} link={l} receiveOnly={receiveOnly} onEdit={() => setLinkOpen(l)} onChange={onChange} />)}</ul>}
       {receiveOnly && <div data-slot="receive-only-note" className="text-muted-foreground px-4 py-3 text-xs">Receive-only: messages here reach Orca and the inbox. Orca never posts to {meta?.label ?? c.kind}; answers stay in Orca.</div>}
       {linkOpen && <LinkDialog integration={c} meta={meta} link={linkOpen === "new" ? undefined : linkOpen} onClose={() => setLinkOpen(null)} onSaved={onChange} />}
-      {editOpen && <IntegrationDialog kinds={data.kinds} existing={c} onClose={() => setEditOpen(false)} onSaved={onChange} />}
+      {editOpen && <IntegrationDialog kinds={data.kinds} options={options} existing={c} onClose={() => setEditOpen(false)} onSaved={onChange} />}
       {confirmNode}
     </VCard>
   );
@@ -232,23 +235,25 @@ function FormDialog({ title, description, problem, busy, onSubmit, onClose, chil
   );
 }
 
-function ConnectButton({ kinds, onSaved }: { kinds: AdapterMeta[]; onSaved: () => void }) {
+function ConnectButton({ kinds, options, onSaved }: { kinds: AdapterMeta[]; options: InstanceOption[]; onSaved: () => void }) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <Button size="sm" onClick={() => setOpen(true)} data-slot="integration-connect"><Plus />Connect</Button>
-      {open && <IntegrationDialog kinds={kinds} onClose={() => setOpen(false)} onSaved={onSaved} />}
+      {open && <IntegrationDialog kinds={kinds} options={options} onClose={() => setOpen(false)} onSaved={onSaved} />}
     </>
   );
 }
 
-function IntegrationDialog({ kinds, existing, onClose, onSaved }: { kinds: AdapterMeta[]; existing?: IntegrationCard; onClose: () => void; onSaved: () => void }) {
+function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kinds: AdapterMeta[]; options: InstanceOption[]; existing?: IntegrationCard; onClose: () => void; onSaved: () => void }) {
   const [kind, setKind] = useState(existing?.kind ?? kinds[0]?.kind ?? "");
   const meta = kinds.find((k) => k.kind === kind);
   const [name, setName] = useState(existing?.name ?? "");
   const [id, setId] = useState(existing?.id ?? "");
   const instances = instanceChoices().length ? instanceChoices() : [thisInstance() ?? "local"];
-  const [instance, setInstance] = useState(existing?.instance ?? thisInstance() ?? instances[0]!);
+  // A new integration is Automatic: any server's primary bridge runs it. Pinning is the advanced choice.
+  const [instance, setInstance] = useState(existing?.instance ?? AUTO_INSTANCE);
+  const pinned = [...new Set([...options.map((o) => o.id), ...instances, ...(isAutomatic(instance) ? [] : [instance])])];
   const [secretRef, setSecretRef] = useState(existing?.secretRef ?? "");
   const [config, setConfig] = useState<Record<string, string>>(() => Object.fromEntries(Object.entries(existing?.config ?? {}).map(([k, v]) => [k, String(v)])));
   const [busy, setBusy] = useState(false);
@@ -269,13 +274,28 @@ function IntegrationDialog({ kinds, existing, onClose, onSaved }: { kinds: Adapt
         <Field label="Name" htmlFor="int-name"><Input id="int-name" value={name} onChange={(e) => setName(e.target.value)} placeholder={`Work ${meta?.label ?? ""}`.trim()} /></Field>
         <Field label="Id" htmlFor="int-id"><Input id="int-id" value={existing ? existing.id : id} disabled={!!existing} onChange={(e) => setId(e.target.value)} placeholder={autoId || "work-slack"} className="font-mono" /></Field>
       </div>
-      <Field label="Runs on" htmlFor="int-instance" hint="One instance opens the connection. Put a personal account on your own machine.">
+      <Field label="Runs on" htmlFor="int-instance" hint={isAutomatic(instance)
+        ? "Automatic: the primary bridge of one server opens the connection. If that server stops, another server takes over."
+        : "Only this server opens the connection. Use this for a personal account on your own machine."}>
         <Select value={instance} onValueChange={setInstance}>
-          <SelectTrigger id="int-instance" className="w-full"><SelectValue /></SelectTrigger>
-          <SelectContent>{[...new Set([...instances, instance])].map((i) => <SelectItem key={i} value={i}>{i}</SelectItem>)}</SelectContent>
+          <SelectTrigger id="int-instance" data-slot="integration-instance" className="w-full"><SelectValue>{instanceText(instance, options)}</SelectValue></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={AUTO_INSTANCE}>
+              <span className="flex flex-col"><span>Automatic</span><span className="text-muted-foreground text-xs">Any server. Recommended.</span></span>
+            </SelectItem>
+            <SelectSeparator />
+            <SelectGroup>
+              <SelectLabel>Pin to one server</SelectLabel>
+              {pinned.map((i) => (
+                <SelectItem key={i} value={i}>
+                  <span className="flex flex-col"><span>{instanceText(i, options)}</span>{instanceText(i, options) !== i && <span className="text-muted-foreground font-mono text-xs">{i}</span>}</span>
+                </SelectItem>
+              ))}
+            </SelectGroup>
+          </SelectContent>
         </Select>
       </Field>
-      <Field label="Secret variable" htmlFor="int-secret" hint={<>Set it in that instance's <span className="font-mono">.env</span>. It must start with <span className="font-mono">ORCA_SECRET_</span>, so agents never see it.</>}>
+      <Field label="Secret variable" htmlFor="int-secret" hint={<>Set it in the <span className="font-mono">.env</span> of {isAutomatic(instance) ? "each server that can run it" : "that server"}. It must start with <span className="font-mono">ORCA_SECRET_</span>, so agents never see it.</>}>
         <Input id="int-secret" value={secretRef} onChange={(e) => setSecretRef(e.target.value.toUpperCase())} placeholder={meta?.secretExample ?? "ORCA_SECRET_…"} className="font-mono" />
       </Field>
       {meta?.config?.map((f) => (
