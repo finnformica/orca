@@ -227,7 +227,6 @@ export function themeTones(color: string, mode: "light" | "dark"): ThemeTones {
   if (mode === "light") {
     const fg = tone(o, 0.97, 0.1, 0.012);
     return {
-      ...neutrals(o, mode),
       primary: tone(o, 0.5, 1, 0.17), "primary-foreground": "#ffffff",
       link: tone(o, 0.48, 1, 0.16), "server-fg": tone(o, 0.48, 1, 0.16), ring: tone(o, 0.6, 1, 0.17),
       selection: alpha(tone(o, 0.7, 1, 0.14), 0.35), "server-soft": alpha(tone(o, 0.6, 1, 0.15), 0.14),
@@ -238,11 +237,11 @@ export function themeTones(color: string, mode: "light" | "dark"): ThemeTones {
       "sb-bg": tone(o, 0.33, 0.8, 0.1), "sb-fg": fg, "sb-muted": tone(o, 0.83, 0.3, 0.035),
       "sb-hover": tone(o, 0.4, 0.8, 0.1), "sb-field": tone(o, 0.28, 0.8, 0.09), "sb-border": alpha("#ffffff", 0.14),
       "sb-active": tone(o, 0.52, 1, 0.15), "sb-active-fg": "#ffffff",
+      ...neutrals(o, mode),
     };
   }
   const fg = tone(o, 0.93, 0.1, 0.01);
   return {
-    ...neutrals(o, mode),
     primary: tone(o, 0.52, 0.85, 0.13), "primary-foreground": "#ffffff",
     link: tone(o, 0.8, 0.8, 0.11), "server-fg": tone(o, 0.8, 0.8, 0.11), ring: tone(o, 0.68, 0.85, 0.13),
     selection: alpha(tone(o, 0.55, 0.8, 0.12), 0.45), "server-soft": alpha(tone(o, 0.6, 0.8, 0.1), 0.2),
@@ -253,6 +252,7 @@ export function themeTones(color: string, mode: "light" | "dark"): ThemeTones {
     "sb-bg": tone(o, 0.215, 0.4, 0.04), "sb-fg": fg, "sb-muted": tone(o, 0.74, 0.2, 0.02),
     "sb-hover": tone(o, 0.27, 0.45, 0.045), "sb-field": tone(o, 0.18, 0.4, 0.035), "sb-border": alpha("#ffffff", 0.09),
     "sb-active": tone(o, 0.36, 0.6, 0.075), "sb-active-fg": fg,
+    ...neutrals(o, mode),
   };
 }
 
