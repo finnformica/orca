@@ -43,6 +43,19 @@ async function mount(node: React.ReactNode = <LocalDetail repo="r" branch="stick
   }
 }
 
+// The "Loading diff…" text and the accordion trigger are not guaranteed to land in the same commit
+// under a busy CI runner (PR #298: one query right after mount() hit the trigger before it rendered,
+// "null is not an object" at the getBoundingClientRect assignment, then passed on rerun). Poll for
+// the trigger itself — the thing the test actually needs — rather than a text proxy for it.
+async function waitForTrigger(): Promise<HTMLElement> {
+  let trigger: HTMLElement | null = null;
+  for (let i = 0; i < 20 && !(trigger = container!.querySelector("[data-slot=accordion-trigger]")); i++) {
+    await act(async () => { await flush(); });
+  }
+  expect(trigger).not.toBeNull();
+  return trigger!;
+}
+
 afterEach(() => {
   act(() => root?.unmount());
   container?.remove();
@@ -71,9 +84,9 @@ describe("sticky worktree-detail header", () => {
 
     // The file's accordion header sticks (on Radix's h3 wrapper — the trigger can't move inside it)
     // at that offset, and no clipping ancestor kills it.
-    const trigger = container!.querySelector<HTMLElement>("[data-slot=accordion-trigger]");
-    expect(trigger?.textContent).toContain("web/src/App.tsx");
-    const item = trigger!.closest("[data-slot=accordion-item]")!;
+    const trigger = await waitForTrigger();
+    expect(trigger.textContent).toContain("web/src/App.tsx");
+    const item = trigger.closest("[data-slot=accordion-item]")!;
     expect(item.className).toContain("[&>h3]:sticky");
     expect(item.className).toContain("var(--stick");
     expect(item.className).not.toContain("overflow-hidden");
@@ -93,7 +106,7 @@ describe("sticky worktree-detail header", () => {
     await store.refresh();
     await mount();
 
-    const trigger = container!.querySelector<HTMLElement>("[data-slot=accordion-trigger]")!;
+    const trigger = await waitForTrigger();
     // happy-dom has no layout engine, so script the two measurements the handler takes: stuck just
     // below the page header, then (once the diff collapsed) far above the viewport.
     const tops = [64, -1800];
