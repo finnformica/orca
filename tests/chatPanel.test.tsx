@@ -373,6 +373,24 @@ test("a live turn shows ONE compact activity block, and on finish it folds into 
   expect(slot("activity-current")).toBeNull();
 });
 
+test("the live header names the newest call with no result, not the last step; the trail leaves it out", async () => {
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", prompt: "why the restart", response: "", startedAt: Date.now(),
+    steps: [
+      { at: 1, kind: "tool", id: "a", name: "Bash", input: { command: "orca board" } },
+      { at: 2, kind: "result", id: "a", output: "x" },
+      { at: 3, kind: "tool", id: "b", name: "Bash", input: { command: "git -C /opt/orca log" } }, // still running
+      { at: 4, kind: "tool", id: "c", name: "Read", input: { file_path: "/a/notes.md" } },        // parallel, returned
+      { at: 5, kind: "result", id: "c", output: "x" },
+      { at: 6, kind: "thinking", text: "hm" },
+    ],
+  }]);
+  await mount({ ...base, agentStatus: "running" });
+  expect(container!.querySelector('[data-slot="activity-current"]')?.textContent).toBe("Running: git -C /opt/orca log…");
+  const trail = [...container!.querySelectorAll('[data-slot="activity-trail"] li')].map((li) => li.textContent);
+  expect(trail).toEqual(["Running: orca board", "Reading notes.md"]);
+});
+
 test("a finished turn does not repeat its final message as the last step", async () => {
   // The model's last text IS the response Output renders; showing it in the steps too doubled it.
   apiFake.turnsData.set("r::feat", [{

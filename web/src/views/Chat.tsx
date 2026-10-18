@@ -16,7 +16,7 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory } from "../workstream";
-import { activityCounts, currentActivity, runLabel, stepRuns, toolDetail, toolLabel, workSteps, type StepRun } from "../steps";
+import { activityCounts, currentActivity, runLabel, stepInFlight, stepRuns, toolDetail, toolLabel, workSteps, type StepRun } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { ExpandableImage } from "@/components/ExpandableImage";
@@ -198,9 +198,9 @@ function Activity({ steps: given, live, startedAt, finishedAt, load }: {
   const now = useNow(live);
   if (!steps.length && !(load && !live)) return null;
 
-  const last = steps.at(-1);
-  const inFlight = last?.kind === "tool" && !last.done;
-  const trail = stepRuns((inFlight ? steps.slice(0, -1) : steps).filter((s) => s.kind !== "thinking")).slice(-3);
+  // The header names the call in progress, so the trail leaves that one out.
+  const inFlight = stepInFlight(steps);
+  const trail = stepRuns(steps.filter((s) => s !== inFlight && s.kind !== "thinking")).slice(-3);
   const counts = activityCounts(steps);
   const took = startedAt && finishedAt ? `Worked for ${formatDuration(finishedAt - startedAt)}` : "Worked";
   const n = workSteps(steps);

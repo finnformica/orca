@@ -1,7 +1,7 @@
 // The live activity block's pure decisions (web/src/steps.ts): how steps group, count and label.
 import { expect, test } from "bun:test";
 import type { AgentStep } from "../shared/agent";
-import { activityCounts, currentActivity, runLabel, stepRuns, workSteps } from "@/steps";
+import { activityCounts, currentActivity, runLabel, stepInFlight, stepRuns, workSteps } from "@/steps";
 
 const tool = (name: string, input: Record<string, unknown> = {}, done = true): AgentStep => ({ at: 0, kind: "tool", name, input, done });
 const text = (t: string): AgentStep => ({ at: 0, kind: "text", text: t });
@@ -26,4 +26,13 @@ test("the live verb is the call in flight, else Thinking; the step count skips t
   expect(currentActivity([tool("Bash", { command: "orca board" })])).toBe("Thinking");
   expect(currentActivity([])).toBe("Thinking");
   expect(workSteps([tool("Read"), { at: 0, kind: "thinking", text: "hm" }, text("ok")])).toBe(2);
+});
+
+test("the live verb is the NEWEST call with no result, even when later steps landed after it", () => {
+  const run = (c: string) => ({ ...tool("Bash", { command: c }, false), id: c });
+  // A parallel call returned, then the model thought: the header still names the call that runs.
+  expect(currentActivity([tool("Bash", { command: "orca board" }), run("git -C /opt/orca log"), tool("Read", { file_path: "/n.md" }), { at: 0, kind: "thinking", text: "hm" }])).toBe("Running: git -C /opt/orca log");
+  // Two calls in progress: the newer one.
+  expect(stepInFlight([run("first"), run("second")])?.id).toBe("second");
+  expect(stepInFlight([tool("Bash")])).toBeUndefined();
 });

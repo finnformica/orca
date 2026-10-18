@@ -115,11 +115,16 @@ export function activityCounts(steps: AgentStep[]): string {
   return parts.filter(([k]) => n.has(k)).map(([k, f]) => f(n.get(k)!)).join(", ");
 }
 
-/** The live header's verb: the call in flight (`Running: orca board`), else `Thinking`. */
+/** The call in progress: the NEWEST tool call with no result yet — not merely the last step, which
+ *  can be a message written while a call runs, or a parallel call that already returned. */
+export function stepInFlight(steps: AgentStep[]): AgentStep | undefined {
+  return steps.findLast((s) => s.kind === "tool" && !s.done);
+}
+
+/** The live header's verb: the call in progress (`Running: orca board`), else `Thinking`. */
 export function currentActivity(steps: AgentStep[]): string {
-  const last = steps.at(-1);
-  if (last?.kind === "tool" && !last.done) return toolLabel(last);
-  return "Thinking";
+  const step = stepInFlight(steps);
+  return step ? toolLabel(step) : "Thinking";
 }
 
 /** The step count a finished turn's summary chip shows: the tool calls and messages, not thinking. */
