@@ -192,7 +192,7 @@ function StepRow({ step, live }: { step: AgentStep; live: boolean }) {
   const row = stepRow(step, live);
   return (
     <div data-slot="step-tool" data-status={row.status}>
-      <button type="button" onClick={() => setOpen((v) => !v)} disabled={!body} title={row.verb ? `${row.verb} ${row.text}` : row.text}
+      <button type="button" onClick={() => setOpen((v) => !v)} disabled={!body}
         className={cn("flex w-full min-w-0 items-center gap-1.5 text-left", row.status === "failed" ? "text-red-400" : "text-muted-foreground", body ? "hover:text-foreground" : "cursor-default")}>
         <ChevronRight className={cn("size-3 shrink-0 transition-transform motion-reduce:transition-none", open && "rotate-90", !body && "invisible")} />
         <span className="sr-only">{row.status}</span>
