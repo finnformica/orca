@@ -1146,12 +1146,14 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     <div className="log-themed flex h-full flex-col" data-slot="chat-panel" data-size={size}>
       <div
         ref={scroller}
+        data-slot="chat-log"
         onScroll={onScroll}
         onWheel={() => { seek.current++; }}
         onTouchStart={() => { seek.current++; }}
         // overscroll-contain: hitting the chat's top or bottom must not hand the gesture to the page —
         // it did, and the page then kept scrolling when you turned back to scroll the chat up.
-        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain bg-neutral-950 leading-relaxed ${size === "page" ? "px-4 py-3 md:px-6" : "p-3"} font-sans text-[13px] text-neutral-200 [&_.prose]:text-[13px]`}
+        // No fill of its own: the log takes the surface of what holds it (docs/design/surfaces.md).
+        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain leading-relaxed ${size === "page" ? "px-4 py-3 md:px-6" : "p-3"} font-sans text-[13px] text-neutral-200 [&_.prose]:text-[13px]`}
       >
         {running && (
           <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-end">
