@@ -81,8 +81,9 @@ test("open, the panel is a docked column: the page reflows, the button and O tog
   expect(page.length && $('[data-slot="page-scroll"]')!.parentElement).toBe(card);
   expect(dock().parentElement).toBe(card.parentElement); // a sibling card, not inside the page card
   expect(card.parentElement!.className).toContain("md:gap-1.5");
-  expect(dock().className).toContain("-ms-1.5"); // closed: cancels the gutter, no empty gap
-  expect(dock().className).not.toContain("md:shadow-shell"); // no card surface while closed
+  expect(dock().style.marginInlineStart).toBe(`-${SHELL_GAP}px`); // closed: cancels the gutter, no empty gap
+  expect(dock().hasAttribute("data-painted")).toBe(false); // no card surface while closed
+  expect(dock().className).toContain("md:data-[painted]:shadow-shell"); // the surface rides an attribute, not a class change
   expect(dock().className).toContain("transition-[width,margin-inline-start]"); // width and margin only
   expect(page.some((c) => c.startsWith("max-md:") && c.includes("overflow"))).toBe(false);
   await click(askButton());
@@ -93,8 +94,8 @@ test("open, the panel is a docked column: the page reflows, the button and O tog
   expect(panel.className).not.toContain("shadow-modal"); // not an overlay
   expect(panel.className).not.toContain("border-l"); // no shared hairline: the dock card is the edge
   expect(dock().style.width).toBe("460px"); // the page's row reserves the panel's width
-  expect(dock().className).toContain("ms-0");
-  expect(dock().className).toEqual(expect.stringContaining("md:rounded-[10px] md:bg-card md:shadow-shell")); // its own raised card
+  expect(["0", "0px"]).toContain(dock().style.marginInlineStart);
+  expect(dock().hasAttribute("data-painted")).toBe(true); // its own raised card
   expect(askButton().getAttribute("aria-expanded")).toBe("true");
   expect($('[data-slot="quick-ask"]')!.style.right).toBe("460px"); // the pill centres on the page column
   expect(sidebar().dataset.collapsed).toBe("false"); // 1440: the full nav still fits
@@ -167,7 +168,7 @@ test("opening: the panel shows in the commit that opens it at dock width 0, and 
   act(() => { askButton().dispatchEvent(new MouseEvent("click", { bubbles: true })); }); // the commit, before any frame
   const panel = $('[data-slot="orchestrator-panel"]')!;
   expect(panel.dataset.state).toBe("open");
-  expect(panel.className).toContain("visible"); // it can take focus now
+  expect(panel.className).not.toMatch(/invisible|visibility/); // it can take focus now
   expect(dock().style.width).toBe("0px"); // …but the width waits a frame, so 0 → 460 is a real transition
   await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(null))); await flush(); });
   expect(dock().style.width).toBe("460px");
@@ -196,14 +197,42 @@ test("a dock change holds the page frame at its end width during the slide, then
   expect(frame.style.width).toBe(""); // the slide is over: it follows the column again
 });
 
-test("the closed panel does no layout work: content-visibility hidden once the close has finished", async () => {
+test("open and close change NO class on the chat's ancestors (a class change there restyles the whole prose chat)", async () => {
+  // Measured: Tailwind Typography's `:not(:where([class~=not-prose] *))` makes any class change on an
+  // ancestor of the chat restyle all of it — ~4000 elements, 100–150ms each at 4× CPU.
   await mount(1440);
   await click(askButton());
   const panel = $('[data-slot="orchestrator-panel"]')!;
+  const classes = () => [dock().className, panel.className];
+  const open = classes();
   await click(askButton());
-  expect(panel.className).not.toContain("[content-visibility:hidden]"); // still sliding out
+  expect(classes()).toEqual(open); // closing
   await act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 200)); });
-  expect(panel.className).toContain("[content-visibility:hidden]");
-  expect(dock().className).not.toContain("md:shadow-shell"); // the card's surface goes with it
+  expect(classes()).toEqual(open); // closed and idle
+  expect(dock().hasAttribute("data-painted")).toBe(false); // the card's surface went with it, by attribute
+  await click(askButton());
+  expect(classes()).toEqual(open); // open again
+});
+
+test("a close moves the dock's width in the click's own commit: no frame, no effect round trip", async () => {
+  await mount(1440);
+  await click(askButton());
+  expect(dock().style.width).toBe("460px");
+  act(() => { askButton().dispatchEvent(new MouseEvent("click", { bubbles: true })); }); // the commit, before any frame
+  expect(dock().style.width).toBe("0px");
+});
+
+test("a closed, idle panel keeps focus out (no inert: that restyles the chat), and keeps its draft", async () => {
+  await mount(1440);
+  await click(askButton());
+  const panel = $('[data-slot="orchestrator-panel"]')!;
+  const box = panel.querySelector("textarea")!;
+  await click(askButton());
+  await act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 200)); });
+  expect(panel.hasAttribute("data-idle")).toBe(true);
+  expect(panel.hasAttribute("inert")).toBe(false);
+  act(() => { box.focus(); });
+  expect(document.activeElement).not.toBe(box); // blurred at once
+  expect(panel.contains(box)).toBe(true); // still mounted: the draft and the scroll stay
 });
 

@@ -77,9 +77,10 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   expect(p.className).not.toContain("fixed");
   expect(p.className).not.toContain("translate-x");
   expect(p.className).not.toContain("shadow-modal");
-  // Opening, visibility flips at once (only the transform animates): a hidden element can't take focus.
-  expect(p.className).toContain("visible z-10");
-  expect(p.className).not.toContain("transition-[visibility]");
+  // Never hidden by a style (a visibility / content-visibility / inert flip restyles the whole chat):
+  // open, it is on top by an inline z-index, and it can take focus at once.
+  expect(p.className).not.toMatch(/invisible|visibility|inert/);
+  expect(p.style.zIndex).toBe("1");
   expect(p.getAttribute("role")).toBe("dialog");
   expect(p.getAttribute("aria-modal")).toBe("false");
   expect(p.getAttribute("aria-hidden")).toBe("false");
@@ -132,13 +133,12 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   expect(panel()).toBeNull();
   expect(panelEl()!.dataset.state).toBe("closed");
   expect(panelEl()!.getAttribute("aria-hidden")).toBe("true");
-  // Closing, it stays painted while the dock's width slides it out (branch-demo: unmount on the
-  // width's transitionend) — then it is hidden, still mounted. No transition runs here, so the
-  // fallback ends it.
-  expect(panelEl()!.className).toContain("visible");
-  expect(panelEl()!.className).not.toContain("invisible");
+  // Closing, the dock's width slides it out and clips it; once the slide is over (no transition runs
+  // here, so the fallback ends it) it is idle: focus may not enter it. Its class never changes.
+  expect(panelEl()!.hasAttribute("data-idle")).toBe(false);
   await act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 200)); });
-  expect(panelEl()!.className).toContain("invisible");
+  expect(panelEl()!.hasAttribute("data-idle")).toBe(true);
+  expect(panelEl()!.className).not.toMatch(/invisible|visibility/);
   expect(document.activeElement).toBe(launcher());
   const pagesBefore = apiFake.turnPageCalls.length;
   await click(launcher());
