@@ -267,11 +267,10 @@ describe("the phone layout (390px, touch)", () => {
     expect(nav.querySelector('[role="group"][aria-label="Instance"]')).not.toBeNull();
     const links = [...nav.querySelectorAll('nav[aria-label="More pages"] button')].map((b) => b.textContent);
     expect(links).toEqual(["Previews", "Integrations", "Handoffs"]);
-    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[1]!); // Integrations
-    expect(location.pathname).toBe("/integrations");
-    await mount("/settings", true);
     expect($('[data-slot="settings-repos"]')).not.toBeNull();
     expect($('[data-slot="settings-github"]')).not.toBeNull();
+    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[1]!); // Integrations
+    expect(location.pathname).toBe("/integrations");
   });
 
   test("Agents: rows stack with the instruction, error and branch on screen; one ⋯ per row; filters in a sheet", async () => {
