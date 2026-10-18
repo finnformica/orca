@@ -34,3 +34,18 @@ if (typeof globalThis.EventSource === "undefined") {
   }
   (globalThis as unknown as { EventSource: unknown }).EventSource = FakeEventSource;
 }
+
+// happy-dom's IntersectionObserver never calls back, and has no layout to measure against. The chat
+// mounts only the items near its viewport (views/Chat.tsx LazyItem), so with that stub every older
+// turn stayed an empty box. This one reports each observed element as visible at once — a viewport
+// tall enough for everything. A test of the lazy mount itself swaps in its own (chatPagination).
+class VisibleIntersectionObserver {
+  constructor(private readonly callback: IntersectionObserverCallback) {}
+  observe(target: Element): void {
+    this.callback([{ target, isIntersecting: true, intersectionRatio: 1 } as unknown as IntersectionObserverEntry], this as unknown as IntersectionObserver);
+  }
+  unobserve(): void {}
+  disconnect(): void {}
+  takeRecords(): IntersectionObserverEntry[] { return []; }
+}
+(globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = VisibleIntersectionObserver;

@@ -841,7 +841,7 @@ describe("the desktop layout is untouched", () => {
 });
 
 describe("a newer build", () => {
-  test("the banner appears when version.json names another build, and only then; it clears the status bar itself and reports its state up", async () => {
+  test("the bar appears when version.json names another build, and only then; it floats (zero height, sticky) so nothing moves, and slides out on Refresh", async () => {
     const realFetch = globalThis.fetch;
     let served = "build-1";
     globalThis.fetch = (async (url: string) => {
@@ -850,26 +850,37 @@ describe("a newer build", () => {
     }) as unknown as typeof fetch;
     container = document.createElement("div");
     document.body.appendChild(container);
-    const staleChanges: boolean[] = [];
-    await act(async () => { root = createRoot(container!); root.render(<UpdateBanner build="build-1" every={5} onStaleChange={(s) => staleChanges.push(s)} />); await flush(); });
+    await act(async () => { root = createRoot(container!); root.render(<UpdateBanner build="build-1" every={5} />); await flush(); });
     await act(async () => { await Bun.sleep(20); });
     expect(container.querySelector('[data-slot="update-banner"]')).toBeNull();
-    expect(staleChanges).toEqual([false]); // told up front it isn't shown, so a header can keep its own inset
     served = "build-2";
     await act(async () => { await Bun.sleep(30); });
     const banner = container.querySelector<HTMLElement>('[data-slot="update-banner"]')!;
-    expect(banner.textContent).toContain("Refresh");
-    // It is now the topmost element on a narrow layout, so its frame — not the header below it — clears the notch.
-    const frame = banner.parentElement!;
-    expect(frame.dataset.slot).toBe("update-banner-frame");
-    expect(frame.className).toContain("max-md:pt-[max(0.5rem,env(safe-area-inset-top))]");
-    expect(staleChanges).toEqual([false, true]);
-    // branch-demo's app-level alert card: a hairline border, 8px corners, a title over one line of text,
-    // the button at the right; on the shell's lower surface with its gutter.
-    expect(banner.className).toEqual(expect.stringContaining("rounded-lg border px-4 py-3"));
-    expect(frame.className).toContain("md:px-1.5 md:pt-1.5");
-    expect(banner.textContent).toContain("A new version of Orca is available");
-    expect(banner.lastElementChild!.tagName).toBe("BUTTON");
+    // The frame takes no room: a zero-height sticky slot at the top of the page column, above the top bar,
+    // so the layout never shifts. It clears the notch itself on a phone.
+    const frame = container.querySelector<HTMLElement>('[data-slot="update-banner-frame"]')!;
+    expect(frame.contains(banner)).toBe(true);
+    expect(frame.className).toEqual(expect.stringContaining("pointer-events-none sticky top-0 z-40 h-0"));
+    expect(banner.parentElement!.className).toContain("justify-center");
+    expect(banner.parentElement!.className).toContain("max-md:pt-[max(0.5rem,env(safe-area-inset-top))]");
+    // branch-demo's floating bar: hairline border, h-12 p-1, a translucent blurred surface, one line.
+    expect(banner.className).toEqual(expect.stringContaining("bg-background/95"));
+    expect(banner.className).toEqual(expect.stringContaining("h-12"));
+    expect(banner.className).toEqual(expect.stringContaining("rounded-lg border p-1"));
+    expect(banner.className).toEqual(expect.stringContaining("shadow-menu backdrop-blur"));
+    // Slides down and fades in; slides up and fades out.
+    expect(banner.dataset.state).toBe("open");
+    expect(banner.className).toEqual(expect.stringContaining("animate-in fade-in slide-in-from-top-4"));
+    expect(banner.className).toEqual(expect.stringContaining("data-[state=closed]:slide-out-to-top-4"));
+    expect(banner.textContent).toBe("A new version of Orca is ready.Refresh");
+    expect(banner.querySelectorAll("button")).toHaveLength(1);
+    const refresh = banner.lastElementChild as HTMLButtonElement;
+    expect(refresh.tagName).toBe("BUTTON");
+    await act(async () => { refresh.click(); await flush(); });
+    expect(banner.dataset.state).toBe("closed");
+    expect(refresh.disabled).toBe(true);
+    await act(async () => { banner.dispatchEvent(new Event("animationend", { bubbles: true })); await flush(); });
+    expect(container.querySelector('[data-slot="update-banner"]')).toBeNull();
     globalThis.fetch = realFetch;
   });
 
@@ -880,7 +891,7 @@ describe("a newer build", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     await act(async () => { root = createRoot(container!); root.render(<UpdateBanner build="dev" forced />); await flush(); });
-    expect(container.querySelector('[data-slot="update-banner"]')!.textContent).toContain("A new version of Orca is available");
+    expect(container.querySelector('[data-slot="update-banner"]')!.textContent).toContain("A new version of Orca is ready.");
     expect(asked).toBe(0);
     globalThis.fetch = realFetch;
   });

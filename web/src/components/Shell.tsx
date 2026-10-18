@@ -164,7 +164,6 @@ export function Shell({ crumbs, sidebarActions, children }: {
   // The nav renders as its icon rail by your choice OR while the docked right column needs the room
   // (lib/dock.ts); either way the page column keeps at least DOCK_PAGE_MIN_W.
   const { rail: collapsed, setRail } = useNavToggle();
-  const [updateAvailable, setUpdateAvailable] = useState(false); // the banner, when shown, is topmost and clears the notch itself
   const offline = useConfigFailed();
   const serverProblem = useServerProblem(offline); // another server chosen, and it is offline or refuses us
   useShellFallbacks();
@@ -185,8 +184,6 @@ export function Shell({ crumbs, sidebarActions, children }: {
     // (`data-slot="shell-card"`, a 6px gutter, a 10px corner, `shadow-shell`), so the nav reads as
     // behind the content. A phone has no card: the page is the whole screen.
     <div data-slot="shell" ref={setShellEl} className="md:bg-sidebar flex min-h-screen w-full flex-col md:h-screen md:overflow-hidden">
-      {/* The update banner: on the lower surface, above the nav and the card (branch-demo's app-level banner). */}
-      <UpdateBanner onStaleChange={setUpdateAvailable} />
       {/* The row on the canvas: the nav, then the page card and the panel card, the shell's gutter
           between the cards and round them (branch-demo's p-shell / gap-shell). */}
       <div data-slot="shell-row" className="flex min-h-0 w-full flex-1 md:gap-1.5 md:py-1.5 md:pr-1.5">
@@ -214,14 +211,17 @@ export function Shell({ crumbs, sidebarActions, children }: {
           the page has none; the Agents row's right-click anchor is portaled to <body>.) */}
       <div data-slot="page-scroll" ref={setColEl} className="flex min-w-0 flex-1 flex-col md:h-full md:overflow-x-hidden md:overflow-y-auto md:[scrollbar-gutter:stable] md:[contain:layout_paint]">
       <div data-slot="page-frame" ref={setFrameEl} className="@container/page flex min-w-0 flex-1 shrink-0 flex-col md:*:shrink-0">
+        {/* The update bar floats at the top centre of the page column (zero height, sticky), so it covers
+            neither the nav nor the docked panel and never moves the layout. */}
+        <UpdateBanner />
         {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it.
-            The notch inset goes to whichever is topmost: the banner when it's shown, else the header. */}
+            The header always clears the notch: the update bar floats over it. */}
         {/* On a desktop the top bar is part of the card (neutral); on a phone it is the themed frame. */}
         <header
           data-slot="topbar" data-chrome={narrow ? "" : undefined}
           className={cn(
             "bg-background sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 md:px-6 max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))]",
-            !updateAvailable && "max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:pt-[env(safe-area-inset-top)]",
+            "max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:pt-[env(safe-area-inset-top)]",
           )}
         >
           <button type="button" data-slot="topbar-mark" onClick={() => navigate("/")} aria-label="Orca — go to overview" className="shrink-0 md:hidden"><RoundMark /></button>
