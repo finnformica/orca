@@ -105,7 +105,8 @@ export function QuickAsk() {
       {/* ONE surface for both states, so the pill grows into the box rather than being swapped for it.
           `interpolate-size` lets the height animate to `auto` (Chromium; elsewhere it snaps). Solid
           card / accent fills — never a translucent hover, which let the page show through. */}
-      <div data-slot="quick-ask-surface" data-state={open ? "open" : "closed"}
+      {/* Closed, the pill is part of the themed frame (`data-chrome`): the server's deep shade. */}
+      <div data-slot="quick-ask-surface" data-state={open ? "open" : "closed"} data-chrome={mounted ? undefined : ""}
         className={cn(
           "[interpolate-size:allow-keywords] bg-card text-foreground pointer-events-auto overflow-hidden border transition-[width,height,border-radius,box-shadow,background-color] duration-200 ease-out motion-reduce:transition-none",
           open ? "h-auto w-[min(560px,calc(100%-2rem))] rounded-xl shadow-modal" : "h-8 w-[6.5rem] rounded-[16px] shadow-menu",
@@ -132,7 +133,7 @@ export function QuickAsk() {
                   <span role="status" aria-live="polite" data-slot="quick-ask-sent" className="text-muted-foreground flex min-w-0 items-center gap-1.5 pl-1 text-xs whitespace-nowrap">
                     {flash > 0 && <>
                       <Check className="text-geist-blue size-3.5" />Sent
-                      <button type="button" className="text-geist-blue hover:underline" onClick={() => { setOpen(false); ask(); }}>Open chat</button>
+                      <button type="button" className="text-link hover:underline" onClick={() => { setOpen(false); ask(); }}>Open chat</button>
                     </>}
                   </span>
                 </div>

@@ -18,8 +18,10 @@ import {
 } from "@/lib/server";
 import { _resetServerList } from "@/components/ServerMenu";
 import { _resetIdentity } from "@/lib/identity";
+import { IDENTITY_COLORS, colorFromName, markBg, markColor, themeCss } from "../shared/serverIdentity";
 import { getDefaultStore } from "jotai";
 import { paletteOpenAtom } from "@/lib/atoms";
+import { apiFake } from "./apiFake";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 type FakeSource = { url: string; close(): void };
@@ -273,7 +275,11 @@ test("S6e: the ACTIVE server's identity — title, accent, favicon and sidebar n
   expect(calls).toContain("http://orca-personal-box:8787/api/servers"); // asked of the chosen server, cross-origin
   expect(document.title).toBe("Orca | Personal");
   expect(document.documentElement.style.getPropertyValue("--server")).toBe("#1f9d55");
-  expect(decodeURIComponent(icon.href)).toContain('fill="#1f9d55"');
+  expect(document.documentElement.style.getPropertyValue("--server-mark")).toBe(markColor("#1f9d55"));
+  expect(decodeURIComponent(icon.href)).toContain(`<path fill="${markColor("#1f9d55")}"`); // the orca in the colour
+  expect(decodeURIComponent(icon.href)).toContain(`fill="${markBg("#1f9d55")}"`); // on a very dark green circle
+  expect(document.documentElement.style.getPropertyValue("--server-mark-bg")).toBe(markBg("#1f9d55"));
+  expect(document.getElementById("orca-server-theme")!.textContent).toBe(themeCss("#1f9d55")); // the theme's tones
   expect(q('[data-slot="server-identity"]')!.textContent).toBe("Personal"); // beside the mark, top left
   expect(q('[data-slot="server-label"]')!.textContent).toBe("Personal");
   const items = await openMenu();
@@ -284,6 +290,81 @@ test("S6e: the ACTIVE server's identity — title, accent, favicon and sidebar n
   expect(swatches[1]).toMatch(/#1f9d55|rgb\(31, 157, 85\)/);
   // The same answer, cached per server, paints the next load before the fetch lands.
   expect(localStorage.getItem("orca.ui.v1.server.identity:http://orca-personal-box:8787")).toContain("Personal");
+  icon.remove();
+});
+
+test("S6g: Settings' theme colour is a popover — the 8 presets, a hex field for a custom colour, Auto — and Save stores the pick", async () => {
+  setup();
+  apiFake.setServerIdentityCalls = [];
+  network((u) => (u === "/api/servers" ? json({ ...HOME, self: { ...HOME.self, label: "cloud", color: colorFromName("cloud"), identity: {} } }) : undefined));
+  await mount();
+  await act(async () => { navigate("/settings"); await flush(); await flush(); await flush(); });
+  const trigger = q('[data-slot="identity-color-trigger"]')!;
+  // Auto: the colour of the shown name.
+  expect(trigger.getAttribute("aria-label")).toBe(`Theme colour: ${IDENTITY_COLORS.find((c) => c.value === colorFromName("cloud"))!.name} (auto)`);
+  expect(q('[data-slot="identity-color"]')).toBeNull(); // no row of buttons: the presets live in the popover
+  const open = async () => act(async () => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" })); trigger.click(); await flush(); await flush(); });
+  await open();
+  const picker = document.querySelector<HTMLElement>('[data-slot="identity-picker"]')!;
+  // Word's grid: the base row is the presets plus 2 hues, then 5 rows of tints and shades.
+  const swatches = [...picker.querySelectorAll<HTMLElement>('[data-slot="identity-color"]')];
+  expect(swatches.length).toBe(61);
+  // Neutral (no theme) is the first cell, with its name on it.
+  expect(swatches[0]!.dataset.row).toBe("neutral");
+  expect(swatches[0]!.textContent).toBe("Neutral");
+  const base = swatches.filter((b) => b.dataset.row === "base").map((b) => b.getAttribute("data-color"));
+  expect(base.slice(0, 8)).toEqual(IDENTITY_COLORS.map((c) => c.value));
+  expect(base.length).toBe(10);
+  const tint = swatches.find((b) => b.getAttribute("aria-label") === "Green, lighter 2")!;
+  await act(async () => { tint.click(); await flush(); });
+  expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Green, lighter 2");
+  expect(tint.getAttribute("aria-checked")).toBe("true"); // the selected cell has the ring
+  expect(tint.className).toContain("ring-2");
+  expect(picker.querySelector("[title]")).toBeNull(); // tooltips, never native title boxes
+  await act(async () => { swatches.find((b) => b.getAttribute("aria-label") === "Purple")!.click(); await flush(); });
+  expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Purple");
+  // A custom colour: only a whole #rrggbb applies.
+  const hex = picker.querySelector<HTMLInputElement>('[data-slot="identity-hex"]')!;
+  const type = async (v: string) => act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(hex, v);
+    hex.dispatchEvent(new Event("input", { bubbles: true })); await flush();
+  });
+  await type("#12a");
+  expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Purple");
+  await type("#12ab34");
+  expect(trigger.getAttribute("aria-label")).toBe("Theme colour: #12ab34");
+  await act(async () => { hex.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
+  expect(document.querySelector('[data-slot="identity-picker"]')).toBeNull();
+  await act(async () => { q('[data-slot="identity-save"]')!.click(); await flush(); await flush(); });
+  expect(apiFake.setServerIdentityCalls).toEqual([{ name: "", color: "#12ab34" }]);
+  // Neutral: picked from the grid, saved as "neutral"; the hex field empties.
+  await open();
+  const neutral = document.querySelector<HTMLElement>('[data-slot="identity-picker"] [data-row="neutral"]')!;
+  await act(async () => { neutral.click(); await flush(); });
+  expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Neutral");
+  expect(neutral.getAttribute("aria-checked")).toBe("true");
+  expect(document.querySelector<HTMLInputElement>('[data-slot="identity-hex"]')!.value).toBe("");
+  await act(async () => { document.querySelector('[data-slot="identity-hex"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
+  await act(async () => { q('[data-slot="identity-save"]')!.click(); await flush(); await flush(); });
+  expect(apiFake.setServerIdentityCalls.at(-1)).toEqual({ name: "", color: "neutral" });
+});
+
+test("S6h: a Neutral server has the old look — no theme sheet, no accent, the black-and-white favicon", async () => {
+  const NEUTRAL_HOME = { ...HOME, self: { ...HOME.self, label: "Work", color: "neutral", identity: { name: "Work", color: "neutral" } } };
+  const icon = document.createElement("link");
+  icon.rel = "icon"; icon.href = "/favicon.svg";
+  document.head.appendChild(icon);
+  setup();
+  network((u) => (u === "/api/servers" ? json(NEUTRAL_HOME) : undefined));
+  await mount();
+  await act(async () => { await flush(); await flush(); await flush(); });
+  expect(document.title).toBe("Orca | Work");
+  expect(document.documentElement.style.getPropertyValue("--server")).toBe("");
+  expect(document.documentElement.style.getPropertyValue("--server-mark-bg")).toBe("");
+  expect(document.getElementById("orca-server-theme")).toBeNull();
+  expect(decodeURIComponent(icon.href)).toContain('fill="#000000"');
+  expect(decodeURIComponent(icon.href)).toContain('<path fill="#ffffff"');
+  expect(q('[data-slot="server-menu"] [data-slot="server-swatch"]')!.getAttribute("style")).toContain("linear-gradient");
   icon.remove();
 });
 

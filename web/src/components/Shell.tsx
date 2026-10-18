@@ -57,7 +57,7 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
   { to: "/github", label: "GitHub", Icon: Users, match: (r) => r.name === "github" },
   { to: "/handoffs", label: "Handoffs", Icon: Package, match: (r) => r.name === "handoffs" },
   { to: "/usage", label: "Usage", Icon: Gauge, match: (r) => r.name === "usage" },
-  { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
+  { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" || r.name === "integrations" },
 ];
 
 /** `sidebarActions` renders the last of the sidebar's actions (Add New), above the divider and you;
@@ -80,7 +80,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
       {/* Desktop only: a phone's nav is the bottom bar + Settings (see MobileNav in views/Pages.tsx) —
           there is no off-canvas drawer any more. */}
       <aside
-        data-slot="sidebar" data-collapsed={collapsed}
+        data-slot="sidebar" data-chrome="" data-collapsed={collapsed}
         className={cn(
           "bg-sidebar z-50 max-md:hidden md:sticky md:top-0 md:flex md:h-screen md:flex-col md:border-r",
           collapsed ? "md:w-14" : "md:w-60",
@@ -93,7 +93,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
         {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it.
             The notch inset goes to whichever is topmost: the banner when it's shown, else the header. */}
         <header
-          data-slot="topbar"
+          data-slot="topbar" data-chrome=""
           className={cn(
             "bg-background sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 md:px-6 max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))]",
             !updateAvailable && "max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:pt-[env(safe-area-inset-top)]",
@@ -163,8 +163,8 @@ function Sidebar({ collapsed, onToggle, actions }: {
           const item = (
             <button key={to} type="button" onClick={() => navigate(to)} aria-current={active ? "page" : undefined}
               aria-keyshortcuts={shortcut ? shortcutKeys(shortcut).join(" ") : undefined}
-              className={cn("relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-server-soft text-foreground font-medium" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
-              <Icon className={cn("size-4 shrink-0", active && "text-server-fg")} />
+              className={cn("relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-sidebar-active text-sidebar-active-foreground font-medium" : "text-muted-foreground hover:bg-accent hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
+              <Icon className="size-4 shrink-0" />
               <span data-slot="nav-label" className={cn(collapsed && "md:hidden")}>{label}</span>
               {badge?.(collapsed)}
               {/* G then a letter: always-visible muted keycaps, like Find / Add New. Never on a phone
@@ -211,15 +211,16 @@ export function OrcaMark({ className }: { className?: string }) {
   );
 }
 
-/** The mark inside a circle — Vercel's round avatar logo, in the active server's theme colour; the
- *  favicon matches it (lib/identity.ts draws it in the same colour). */
+/** The mark inside a circle — Vercel's round avatar logo: the circle a very dark shade of the active
+ *  server's theme colour (`--server-mark-bg`), the orca the colour (`--server-mark`); the favicon
+ *  matches it. Neutral: a black circle and a white orca. */
 export const RoundMark = ({ className }: { className?: string }) => (
-  <span data-slot="round-mark" className={cn("bg-server inline-flex text-white size-6 shrink-0 items-center justify-center rounded-full", className)}>
+  <span data-slot="round-mark" className={cn("text-server-mark inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-server-mark-bg", className)}>
     <OrcaMark className="size-4" />
   </span>
 );
 
-/** The phone's bottom bar (below md only): what a thumb needs — Overview, Agents, New agent, the
+/** The phone's bottom bar (below md only; the active page and New agent in the server's theme): what a thumb needs — Overview, Agents, New agent, the
  *  orchestrator and Settings, New agent centred — at the foot of the screen, above the home indicator.
  *  Everything else the old hamburger drawer exposed (Previews, Repos, Usage, Find, the instance
  *  switcher) now lives in Settings — see MobileNav in views/Pages.tsx. */
@@ -235,17 +236,17 @@ function BottomBar({ activity }: { activity: { running: boolean; unread: boolean
   return (
     <nav aria-label="Quick actions" data-slot="bottom-bar"
       className="bg-background/95 fixed inset-x-0 bottom-0 z-30 flex items-stretch gap-1 border-t px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] backdrop-blur md:hidden">
-      <button type="button" className={cn(item, overview.match(route) && "text-foreground")} aria-current={overview.match(route) ? "page" : undefined} onClick={() => navigate(overview.to)}><overview.Icon className="size-5" /><span className={label}>{overview.label}</span></button>
-      <button type="button" className={cn(item, agents.match(route) && "text-foreground")} aria-current={agents.match(route) ? "page" : undefined} onClick={() => navigate("/agents")}><Boxes className="size-5" /><span className={label}>Agents</span></button>
+      <button type="button" className={cn(item, overview.match(route) && "text-server-fg")} aria-current={overview.match(route) ? "page" : undefined} onClick={() => navigate(overview.to)}><overview.Icon className="size-5" /><span className={label}>{overview.label}</span></button>
+      <button type="button" className={cn(item, agents.match(route) && "text-server-fg")} aria-current={agents.match(route) ? "page" : undefined} onClick={() => navigate("/agents")}><Boxes className="size-5" /><span className={label}>Agents</span></button>
       <button type="button" className={cn(item, "text-foreground")} onClick={() => setAddNew(true)}>
-        <span className="bg-foreground text-background inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span><span className={label}>New agent</span>
+        <span className="bg-primary text-primary-foreground inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span><span className={label}>New agent</span>
       </button>
       {/* The orchestrator, carrying the activity dot the desktop's quick-ask pill shows (there is no pill below md).
           `ask()` routes here to /orchestrator on a narrow screen rather than opening the side panel. */}
-      <button type="button" className={cn(item, "relative", route.name === "orchestrator" && "text-foreground")} aria-current={route.name === "orchestrator" ? "page" : undefined} onClick={() => ask()}>
+      <button type="button" className={cn(item, "relative", route.name === "orchestrator" && "text-server-fg")} aria-current={route.name === "orchestrator" ? "page" : undefined} onClick={() => ask()}>
         <Bot className="size-5" /><ActivityDot activity={activity} className="absolute top-1.5 right-[calc(50%-0.9rem)]" /><span className={label}>Orchestrator</span>
       </button>
-      <button type="button" className={cn(item, settings.match(route) && "text-foreground")} aria-current={settings.match(route) ? "page" : undefined} onClick={() => navigate("/settings")}><Settings className="size-5" /><span className={label}>Settings</span></button>
+      <button type="button" className={cn(item, settings.match(route) && "text-server-fg")} aria-current={settings.match(route) ? "page" : undefined} onClick={() => navigate("/settings")}><Settings className="size-5" /><span className={label}>Settings</span></button>
     </nav>
   );
 }

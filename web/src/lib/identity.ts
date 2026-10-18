@@ -4,13 +4,14 @@
 // answers cross-origin like every other call. The last answer is kept per base, so the reload after
 // a switch paints the right name and colour before the first fetch lands.
 //
-// Applied to the document in one place (`applyIdentity`): `--server` on <html> (styles.css derives
-// the accent tints from it), the page title (`Orca | Personal`) and the favicon (the mark on a
-// circle of the theme colour).
+// Applied to the document in one place (`applyIdentity`): `--server` and `--server-mark` on <html>,
+// one style sheet with every theme tone for both modes (`themeCss`: the sidebar, primary buttons,
+// links, focus rings, the selection), the page title (`Orca | Personal`) and the favicon (the black
+// circle a very dark shade of the theme colour, the orca the colour). Neutral sets no theme at all.
 import { useSyncExternalStore } from "react";
 import { apiBase, apiFetch, identityOf, type ServersAnswer } from "./server";
 import { persistedKey, readPersisted, writePersisted } from "./persisted";
-import { faviconSvg, pageTitle, type ServerIdentityConfig } from "../../../shared/serverIdentity";
+import { faviconSvg, isNeutral, markBg, markColor, pageTitle, themeCss, type ServerIdentityConfig } from "../../../shared/serverIdentity";
 
 export type ActiveIdentity = {
   /** The display name. */
@@ -37,11 +38,24 @@ export function activeIdentityOf(answer: ServersAnswer): ActiveIdentity {
   return { label, color, host: answer.self.name, stored: answer.self.identity ?? {} };
 }
 
-/** Put the identity on the document: the accent variable, the title, the favicon. */
+const THEME_ID = "orca-server-theme";
+
+/** Put the identity on the document: the theme, the title, the favicon. */
 export function applyIdentity(id: ActiveIdentity | null): void {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
-  if (id) root.style.setProperty("--server", id.color); else root.style.removeProperty("--server");
+  // Neutral sets nothing: styles.css's defaults are the neutral look.
+  const themed = id && !isNeutral(id.color) ? id : null;
+  if (themed) {
+    root.style.setProperty("--server", themed.color);
+    root.style.setProperty("--server-mark", markColor(themed.color));
+    root.style.setProperty("--server-mark-bg", markBg(themed.color));
+  } else for (const v of ["--server", "--server-mark", "--server-mark-bg"]) root.style.removeProperty(v);
+  let sheet = document.getElementById(THEME_ID);
+  if (themed) {
+    if (!sheet) { sheet = document.createElement("style"); sheet.id = THEME_ID; document.head.appendChild(sheet); }
+    sheet.textContent = themeCss(themed.color);
+  } else sheet?.remove();
   document.title = pageTitle(id?.label);
   const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
   if (icon) icon.href = id ? `data:image/svg+xml,${encodeURIComponent(faviconSvg(id.color))}` : "/favicon.svg";

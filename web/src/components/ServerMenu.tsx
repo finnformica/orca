@@ -13,6 +13,7 @@ import {
 } from "@/lib/server";
 import { cn } from "@/lib/utils";
 import { useServerIdentity } from "@/lib/identity";
+import { isNeutral, swatchBackground } from "../../../shared/serverIdentity";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -90,7 +91,7 @@ const Dot = ({ health }: { health: ServerHealth }) => (
 
 /** A server's theme colour, as a small rounded square (Slack's workspace tile). */
 const Swatch = ({ color }: { color: string }) => (
-  <span aria-hidden="true" data-slot="server-swatch" className="inline-block size-3 shrink-0 rounded-[3px]" style={{ background: color }} />
+  <span aria-hidden="true" data-slot="server-swatch" className={cn("inline-block size-3 shrink-0 rounded-[3px]", isNeutral(color) && "border")} style={{ background: swatchBackground(color) }} />
 );
 
 /** The top bar's server menu, in front of the repo menu: the repos selector's look, the current
@@ -131,7 +132,8 @@ export function ServerMenu() {
               const down = s.health === "offline" || s.health === "refused";
               return (
                 <DropdownMenuRadioItem key={s.url} value={s.url} data-server={s.name} aria-label={`${s.label}, ${healthText(s.health)}`}
-                  disabled={down && s.url !== current.url} indicator={<Check className="size-3.5" />}>
+                  disabled={down && s.url !== current.url} indicator={<Check className="text-server-fg size-3.5" />}
+                  className="data-[state=checked]:bg-server-soft data-[state=checked]:focus:bg-server-soft">
                   <Swatch color={s.color} />
                   <span className="min-w-0 flex-1 truncate">{s.label}</span>
                   <Dot health={s.health} />
