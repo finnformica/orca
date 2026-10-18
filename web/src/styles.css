@@ -574,3 +574,16 @@ dialog[data-bottom-sheet][data-closing]::backdrop {
 @media (prefers-reduced-motion: reduce) {
   [data-slot="marquee-text"] > [data-slot="marquee-text-inner"] { transition: none; }
 }
+
+/* The live activity block (views/Chat.tsx): a trail row fades and slides in (180ms); the header
+   label cross-fades — the old one up and out, the new one up and in (200ms, LABEL_FADE_MS). */
+@keyframes step-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes label-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@keyframes label-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-3px); } }
+.step-in { animation: step-in 180ms ease-out both; }
+.label-in { animation: label-in 200ms ease-out both; }
+.label-out { animation: label-out 200ms ease-in both; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .step-in, .label-in, .label-out { animation: none; }
+  .label-out { visibility: hidden; }
+}
