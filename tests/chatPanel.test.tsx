@@ -345,6 +345,9 @@ test("a live turn shows ONE compact activity block, and on finish it folds into 
   expect(slot("activity-counts")?.textContent).toBe("1 command, 3 files read");
   // The trail: consecutive reads grouped, the interim message as one line of text.
   expect([...slot("activity-trail")!.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Read 3 files", "Now the suite."]); // markdown stripped on a faded line
+  // The reserved height matches these two rows, not a fixed three-row box that would leave a
+  // gap under a shorter trail (the bug: it always reserved room for three).
+  expect((slot("activity-trail") as HTMLElement).style.minHeight).toBe("34px");
   // Nothing opens by itself: no command input, no output, no code block.
   expect(container!.querySelector("pre")).toBeNull();
   expect(text()).not.toContain("SECRET_FILE_BODY");
