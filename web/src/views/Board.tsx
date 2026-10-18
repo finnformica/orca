@@ -111,11 +111,12 @@ function WorkstreamCardSkeleton() {
 // since `cards` is already filtered). Handy for standups / status posts.
 export function CopyDone({ cards }: { cards: Row[] }) {
   const [copied, setCopied] = useState(false);
-  const copy = () => {
+  const copy = async () => {
     const text = cards.map((c) => `- ${c.title}${c.prNumber ? ` (#${c.prNumber})` : ""}${c.prUrl ? ` — ${c.prUrl}` : ""}`).join("\n");
-    void navigator.clipboard.writeText(`Completed today:\n${text}`);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    if (await copyText(`Completed today:\n${text}`, "completed work")) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
   };
   return (
     <Tip label="Copy completed work (respects the repo filter)">

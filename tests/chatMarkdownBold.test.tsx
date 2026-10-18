@@ -12,6 +12,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
+import { outcomeLead, parseAgentOutcome } from "../shared/agent";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -99,4 +100,46 @@ test("fenced blocks render as snippet cards whose Copy writes the raw source", a
   }
   expect(writes).toEqual([plan, code]);
   expect(cards[1]!.querySelector("button[aria-label='Copy snippet'] .lucide-check")).toBeTruthy();
+});
+
+// The snippet that vanished after Copy: a worker put its PR text in a ```md snippet BEFORE its
+// `## Outcome`, and the PR text has its own `## Outcome`. A finished turn showed only the parsed
+// sections, so the snippet showed while the turn ran and went away when it finished. Now the text
+// before the sections (outcomeLead) shows above them, a heading inside a fence is not a section, and
+// Copy over plain http (no navigator.clipboard) copies in place: a check, no dialog, the same card.
+test("a snippet before ## Outcome stays in the finished turn, and Copy over plain http keeps it", async () => {
+  const pr = "## Outcome\nFixed the leak.\n\n## Verification\n- 0/20 failed";
+  const response = `The PR text is below.\n\n\`\`\`md title=PR text\n${pr}\n\`\`\`\n\n## Outcome\nThe cause is a leak.\n\n## Verification\n- tsc: clean\n\n## Remaining\n- None`;
+  const structured = parseAgentOutcome(response)!;
+  expect(structured.outcome).toBe("The cause is a leak.");
+  expect(structured.verification).toEqual(["tsc: clean"]);
+  expect(outcomeLead(response)).toBe(`The PR text is below.\n\n\`\`\`md title=PR text\n${pr}\n\`\`\``);
+  apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "p", response, structured, finishedAt: 2 }]);
+  Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
+  const copies: string[] = [];
+  (document as unknown as { execCommand: (c: string) => boolean }).execCommand = (cmd) => {
+    const f = document.activeElement as HTMLTextAreaElement;
+    if (cmd === "copy") copies.push(f.value);
+    return true;
+  };
+
+  try {
+    await mount(base);
+    const card = container!.querySelector("[data-slot=turn-lead] [data-slot=snippet]")!;
+    expect(card.querySelector("[data-slot=snippet-header]")!.textContent).toContain("PR text");
+    expect(container!.textContent).toContain("The cause is a leak.");
+
+    const button = card.querySelector<HTMLButtonElement>("button[aria-label='Copy snippet']")!;
+    act(() => button.focus());
+    await act(async () => { button.click(); await flush(); await flush(); });
+
+    expect(copies).toEqual([pr]);
+    expect(document.querySelector("[data-slot=copy-text]")).toBeNull(); // no copy dialog
+    expect(button.querySelector(".lucide-check")).toBeTruthy(); // the check, in place
+    expect(card.isConnected).toBe(true); // the same card, not a remount
+    expect(container!.querySelectorAll("[data-slot=snippet]").length).toBe(1);
+    expect(document.activeElement).toBe(button);
+  } finally {
+    delete (document as unknown as { execCommand?: unknown }).execCommand;
+  }
 });
