@@ -347,6 +347,18 @@ export const RoundMark = ({ className }: { className?: string }) => (
   </span>
 );
 
+/** "Orca | <name>" beside the mark, as the page title reads: a thin muted pipe with even space on each
+ *  side. The sidebar and Settings' identity preview both use it, so they cannot differ. */
+export const BrandName = ({ label, labelClass, labelSlot = "server-identity", className }: { label?: string; labelClass?: string; labelSlot?: string; className?: string }) => (
+  <span data-slot="brand-name" className={cn("flex min-w-0 items-baseline gap-1.5", className)}>
+    <span className="shrink-0">Orca</span>
+    {label && <>
+      <span aria-hidden="true" data-slot="brand-sep" className="text-muted-foreground/60 shrink-0 font-light">|</span>
+      <span data-slot={labelSlot} className={cn("truncate", labelClass)}>{label}</span>
+    </>}
+  </span>
+);
+
 /** The phone's bottom bar (below md only; the active page and New agent in the server's theme): what a thumb needs — Overview, Agents, New agent, the
  *  orchestrator and Settings, New agent centred — at the foot of the screen, above the home indicator.
  *  Everything else the old hamburger drawer exposed (Previews, Repos, Usage, Find, the instance
@@ -406,10 +418,7 @@ function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
     <>
       {mark}
       <span className={cn("min-w-0 flex-1 text-left", collapsed && "md:hidden")}>
-        <span className="flex min-w-0 items-baseline gap-1.5 text-sm font-medium">
-          <span className="shrink-0">Orca</span>
-          {identity && <span data-slot="server-identity" className="text-server-fg truncate">{identity.label}</span>}
-        </span>
+        <BrandName label={identity?.label} labelClass="text-server-fg" className="text-sm font-medium" />
         <span data-slot="instance-scope" className="text-muted-foreground block truncate text-xs">{label}</span>
       </span>
     </>

@@ -5,9 +5,16 @@ People in a linked channel can @mention the bot to ask a question or to start wo
 results back to the channel. The integrations core does the permission checks. See
 [ADAPTERS.md](ADAPTERS.md).
 
-Run Discord only on the personal box (`orca-personal-box`). One bot token must have only one
-Gateway session, because two sessions give each event twice. The `integration.instance` column
-selects the box. Each other instance ignores the row.
+One bot token must have only one Gateway session, because two sessions give each event twice.
+Orca opens it on one primary bridge only:
+
+- **Automatic** (the default, `integration.instance = '*'`): the primary bridge that holds the
+  row's lease runs it. If that server stops, another server with the token takes over within
+  about three minutes. See [ADAPTERS.md section 6.1](ADAPTERS.md#61-where-it-runs-automatic-or-pinned).
+- **Pinned** (an instance name, for example the personal box): only that instance runs it.
+
+Put `ORCA_SECRET_DISCORD_BOT` in the `.env` of each server that can run it. If no primary bridge
+has it, the card says which servers do not have it.
 
 ## What the adapter does
 
@@ -17,22 +24,61 @@ selects the box. Each other instance ignores the row.
     `mentioned: false`. A link with `require_mention` drops it.
   - A message in a thread uses the link of the thread's parent channel. The thread is its
     conversation.
-  - A new request (a mention at the top level of a channel) gets its own thread. The adapter opens
-    the thread on that message after the core accepts the message.
+  - A new request is a mention at the top level of a channel. By default Orca replies in place: a
+    Discord reply to the mention, in the same channel. It opens no thread. See
+    [Reply in place or threads](#reply-in-place-or-threads).
   - A direct message (DM) goes to the link that `config.dmLink` names. With no `dmLink`, it goes to
     the integration's catch-all link (`external_id` `*`). With neither link, the core drops it.
-  - An unknown person gets a pairing code from the core. The reply goes into the thread of their
-    message. The adapter opens that thread when it sends the reply.
+  - An unknown person gets a pairing code from the core. The code is a reply to their message.
   - The adapter ignores messages from bots.
 - Outbound: a post to the link's channel.
-  - The first post for a workstream opens a thread on that post. The core keeps the thread id.
-    Later posts for the workstream go into that thread.
+  - The first post for a workstream starts its conversation. The core keeps its thread id. Later
+    posts for the workstream continue there, and a reply there goes to the workstream.
   - A post with a title is an embed (a linked title and a colour). This matches the build posts in
     the same server. A reply with no title is plain text.
   - An edit replaces the message (`PATCH`).
   - Posts never ping `@everyone`, roles or users (`allowed_mentions` is empty).
   - Rate limits: the core sends at most 5 messages each 5 seconds to one channel. A `429` is retried
     after Discord's `retry_after`.
+
+## Reply in place or threads
+
+The integration's `config.threads` sets what Orca does with a mention at the top level of a channel.
+
+- `false` or absent (the default): Orca replies in place.
+  - The answer is a Discord reply (`message_reference`, `fail_if_not_exists: false`) in the channel.
+  - The conversation is the mention's reply chain. Its thread id is `<channel id>:<root message id>`.
+    The root is the top message of the chain.
+  - A person continues the conversation with a Discord reply to Orca's answer. A new mention with no
+    reply starts a new conversation. So several conversations in one channel stay apart.
+  - Each answer replies to the newest message in the chain.
+  - A first post for a workstream starts its own reply chain, `<channel id>:<post id>`.
+- `true`: the behaviour before reply in place. A mention gets its own thread, on that message. A
+  first post for a workstream opens a thread on that post.
+
+A mention inside a thread gets its answer in that thread. A DM gets its answer in the DM. The flag
+does not change these two. A thread that Orca opened before you change the flag stays a thread.
+
+The adapter keeps the newest message of each chain in memory. After a restart it reads the chain
+up from the reply (at most 25 messages, `Read Message History`). The first answer after a restart
+replies to the root, because Orca does not know the newest message then.
+
+To set the flag on a box, use Settings or SQL. A running adapter keeps its config until it starts
+again, so restart it after the change.
+
+1. Open **Settings → Integrations** on the box. Edit the Discord integration.
+2. Type `true` in **Threads** for a thread for each request. Clear the field to reply in place.
+3. Click **Save**.
+4. Turn the integration off, then on. Or restart the bridge.
+
+With SQL, update the row, then do step 4:
+
+```sql
+-- Reply in place (the default): remove the key.
+UPDATE integration SET config = config::jsonb - 'threads' WHERE id = 'discord';
+-- A thread for each request.
+UPDATE integration SET config = config::jsonb || '{"threads": true}' WHERE id = 'discord';
+```
 
 ## Create the bot
 
@@ -45,7 +91,7 @@ selects the box. Each other instance ignores the row.
    - View Channels
    - Send Messages
    - Send Messages in Threads
-   - Create Public Threads
+   - Create Public Threads (only with `config.threads` true)
    - Read Message History
 7. Open the URL that the page gives. Add the bot to the server.
 8. In Discord, open **User Settings → Advanced**. Turn on **Developer Mode**.
@@ -74,9 +120,9 @@ Until the Settings page lands, add rows with SQL. `user_id` is `db.currentUser()
 `me`). Replace the ids with the ids that you copied.
 
 ```sql
--- The bot. It runs only on the personal box.
+-- The bot. '*' is Automatic: one primary bridge with the token runs it.
 INSERT INTO integration (id, user_id, kind, name, instance, config, secret_ref, created_at)
-VALUES ('discord', 'me', 'discord', 'Discord', 'orca-personal-box', '{}', 'ORCA_SECRET_DISCORD_BOT', 0);
+VALUES ('discord', 'me', 'discord', 'Discord', '*', '{}', 'ORCA_SECRET_DISCORD_BOT', 0);
 
 -- A channel. "work" lets the people start and steer work on the listed repos.
 INSERT INTO channel_link (id, user_id, integration_id, external_id, level, repos, require_mention)

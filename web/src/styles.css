@@ -28,12 +28,19 @@
   --destructive: #e5484d;
   --border: rgba(0, 0, 0, 0.1);
   --input: rgba(0, 0, 0, 0.1);
+  /* The chat log's text stops between the foreground and the muted text (styles below). */
+  --text-soft: #4d4d4d;
+  --text-faint: #8f8f8f;
+  --text-fainter: #8f8f8f;
   /* The active server's theme, like a Slack workspace theme. lib/identity.ts sets --server and
      --server-mark on <html> and puts every tone below in a style sheet built from that one colour
      (shared/serverIdentity.ts `themeTones`: OKLCH, fixed lightness per tone, so any colour gives
-     the same contrast). These are the neutral defaults until the identity is known. The theme
-     carries the chrome: the sidebar (the sb-* tones), primary buttons, links, focus rings, the
-     selection, the active page and the server menu. Cards, tables, charts and chat stay neutral. */
+     the same contrast). These are the neutral defaults until the identity is known, and Neutral
+     keeps them. The theme carries the chrome: the sidebar (the sb-* tones), primary buttons, links,
+     focus rings, the selection, the active page and the server menu. Every surface, text and border
+     token above (card, popover, muted, accent, border…) becomes a tinted neutral of the same
+     lightness, so cards, menus, dialogs, chart frames and chat follow too. Status colours (geist-*)
+     and chart series colours never change. */
   --server: #8f8f8f;
   --server-mark: #ffffff;
   --server-mark-bg: #000000;
@@ -90,6 +97,9 @@
   --destructive: #e5484d;
   --border: rgba(255, 255, 255, 0.12);
   --input: rgba(255, 255, 255, 0.12);
+  --text-soft: #d2d2d2;
+  --text-faint: #848484;
+  --text-fainter: #6a6a6a;
   --server-soft: color-mix(in oklab, var(--server) 22%, transparent);
   --server-fg: color-mix(in oklab, var(--server) 62%, white);
   --link: #52a8ff;
@@ -186,7 +196,7 @@
 /* The themed frame (Slack's workspace sidebar plus top bar): the sidebar, the top bar and the closed
    Ask pill carry `data-chrome`. Inside it the neutral tokens become the frame's tones, so the Find
    box, the keycaps, the badges, the menus' triggers and the Ask button follow with no class of
-   their own. Menus portal out of it and stay neutral. */
+   their own. Menus portal out of it and take the page's tinted tokens. */
 [data-chrome] {
   --background: var(--sb-bg);
   --selected: var(--sb-active);
@@ -225,10 +235,10 @@
   --color-neutral-950: var(--card);
   --color-neutral-900: var(--muted);
   --color-neutral-800: var(--border);
-  --color-neutral-600: #8f8f8f;
-  --color-neutral-500: #8f8f8f;
+  --color-neutral-600: var(--text-fainter);
+  --color-neutral-500: var(--text-faint);
   --color-neutral-400: var(--muted-foreground);
-  --color-neutral-300: #4d4d4d;
+  --color-neutral-300: var(--text-soft);
   --color-neutral-200: var(--foreground);
   --color-emerald-400: #297a3a;
   --color-red-400: #cb2a2f;
@@ -238,14 +248,14 @@
   --color-amber-800: #f5d48e;
   --color-sky-300: #0068d6;
   --color-sky-400: #0068d6;
-  --tw-prose-invert-body: #4d4d4d;
+  --tw-prose-invert-body: var(--text-soft);
   --tw-prose-invert-headings: var(--foreground);
   --tw-prose-invert-bold: var(--foreground);
   --tw-prose-invert-links: var(--link);
   --tw-prose-invert-code: #0068d6;
-  --tw-prose-invert-bullets: #8f8f8f;
-  --tw-prose-invert-counters: #8f8f8f;
-  --tw-prose-invert-quotes: #4d4d4d;
+  --tw-prose-invert-bullets: var(--text-faint);
+  --tw-prose-invert-counters: var(--text-faint);
+  --tw-prose-invert-quotes: var(--text-soft);
   --tw-prose-invert-quote-borders: var(--border);
   --tw-prose-invert-hr: var(--border);
   --tw-prose-invert-th-borders: var(--border);
@@ -258,15 +268,15 @@
    dark regardless of page theme, built on Tailwind's raw neutral-* palette. Softening the dark
    surface tokens above without updating these left the log a different shade of black than the
    cards around it — bind the stops it actually uses to the same tokens (so this can't drift out
-   of step again) and keep the text stops with no token of their own in the same family. */
+   of step again), the text stops included (the text-* tokens), so the server theme tints it too. */
 .dark {
   --color-neutral-950: var(--background);
   --color-neutral-900: var(--card);
   --color-neutral-800: var(--border);
-  --color-neutral-600: #6a6a6a;
-  --color-neutral-500: #848484;
+  --color-neutral-600: var(--text-fainter);
+  --color-neutral-500: var(--text-faint);
   --color-neutral-400: var(--muted-foreground);
-  --color-neutral-300: #d2d2d2;
+  --color-neutral-300: var(--text-soft);
   --color-neutral-200: var(--foreground);
 }
 
@@ -582,4 +592,17 @@ dialog[data-bottom-sheet][data-closing]::backdrop {
 }
 @media (prefers-reduced-motion: reduce) {
   [data-slot="marquee-text"] > [data-slot="marquee-text-inner"] { transition: none; }
+}
+
+/* The live activity block (views/Chat.tsx): a trail row fades and slides in (180ms); the header
+   label cross-fades — the old one up and out, the new one up and in (200ms, LABEL_FADE_MS). */
+@keyframes step-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes label-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@keyframes label-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-3px); } }
+.step-in { animation: step-in 180ms ease-out both; }
+.label-in { animation: label-in 200ms ease-out both; }
+.label-out { animation: label-out 200ms ease-in both; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .step-in, .label-in, .label-out { animation: none; }
+  .label-out { visibility: hidden; }
 }

@@ -1,7 +1,7 @@
 // The Adapter contract (docs/research/integrations.md §3.3; how to write one: docs/integrations/
 // ADAPTERS.md). One adapter per platform. The core owns everything else — dedupe, the permission
 // gate, routing, the durable outbox, retry, threads — so an adapter only speaks its platform.
-import type { AdapterKind, Capabilities, InboundEnvelope, OutboundMessage, SendResult, Target } from "../../shared/integrations";
+import type { AdapterKind, AutoLease, Capabilities, InboundEnvelope, OutboundMessage, SendResult, Target } from "../../shared/integrations";
 export type { AdapterKind, Capabilities, InboundEnvelope, OutboundMessage, SendResult, Target } from "../../shared/integrations";
 
 /** One `integration` row: an account, bot, mailbox or hook. Credentials are NOT on it — `secret()`
@@ -10,10 +10,11 @@ export type Connection = {
   id: string;
   kind: AdapterKind;
   name: string;
-  instance: string; // the ONE instance that runs it
+  instance: string; // the ONE instance that runs it, or AUTO_INSTANCE ("*"): any primary, by lease
   config: Record<string, unknown>; // the platform's non-secret settings (team id, mailbox, poll interval…)
   secretRef?: string; // an environment variable name: ORCA_SECRET_* or one of server/env.ts ORCA_SECRETS
   enabled: boolean;
+  auto?: AutoLease; // an Automatic row's lease (status.auto): who runs it now
 };
 
 /** What the core hands an adapter at start. */

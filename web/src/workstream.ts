@@ -4,7 +4,7 @@
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import { AUTOFIX_MARKER, OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type TurnCheck, type TurnSource } from "../../shared/agent";
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
-import { WRITING_STYLE } from "../../shared/writingStyle";
+import { SNIPPETS, WRITING_STYLE } from "../../shared/writingStyle";
 import { asksForInput } from "../../shared/notifications";
 export { attachCommand } from "../../shared/agent";
 
@@ -415,6 +415,8 @@ export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean
     "",
     WRITING_STYLE,
     "",
+    SNIPPETS,
+    "",
     "If (and only if) you changed something, finish with the usual sections:",
     OUTCOME_CONTRACT,
   ].join("\n");
@@ -608,6 +610,25 @@ export function withoutAttachmentList(text: string): string {
  *  blockquote), followed by a blank line so typing continues as ordinary text below it. */
 export function quoteMarkdown(text: string): string {
   return `${text.split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
+}
+
+/** A fenced code block's header, read off its info string (```plan title=Rollout steps): the
+ *  language (the first word, from the `language-*` class) and an optional `title=` from the rest
+ *  (quoted, or the remainder of the line). `markdown` is true for plan / md / markdown, which the
+ *  snippet card shows rendered but still copies as source. */
+export interface SnippetInfo { lang: string; title: string | null; markdown: boolean }
+const MARKDOWN_SNIPPETS = new Set(["plan", "md", "markdown"]);
+export function snippetInfo(className: string | undefined, meta: string | null | undefined): SnippetInfo {
+  const lang = (className ?? "").split(/\s+/).find((c) => c.startsWith("language-"))?.slice("language-".length).toLowerCase() ?? "";
+  const m = (meta ?? "").match(/(?:^|\s)title=(?:"([^"]*)"|'([^']*)'|(.*))/);
+  const title = (m ? (m[1] ?? m[2] ?? m[3] ?? "") : "").trim() || null;
+  return { lang, title, markdown: MARKDOWN_SNIPPETS.has(lang) };
+}
+
+/** What a snippet's Copy button writes: the block's raw source exactly. The markdown → HTML step
+ *  ends a fenced block's text with one added newline; that one is dropped, nothing else is. */
+export function snippetCopyText(text: string): string {
+  return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
 
 /** Append a Quote block after whatever draft is already in the composer, keeping it intact: a
@@ -1716,6 +1737,7 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     `A message opening with \`${NEW_DRAFT_MARKER}\` is the user's New-draft box: spawn exactly ONE workstream for it, in the repo it names, with a brief you write from it and a model you choose. Reply with one line: branch and model.`,
     // Every wake as well: a resumed session sees the role once, and the user wants STE ALWAYS.
     "", WRITING_STYLE,
+    "", SNIPPETS,
     "", "## Your notes", input.notes?.trim() || "(empty)",
     "", "## Board", input.board,
     // The wake before this one died mid-turn: say so, or the user has to ask why it went quiet.

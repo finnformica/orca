@@ -114,6 +114,24 @@ test("ID6: every theme tone comes from the one colour, and its text keeps WCAG A
       expect([at, contrast(t.heading, t.background) >= 7]).toEqual([at, true]);
       expect([at, contrast(t["selected-fg"], t.selected) >= 4.5]).toEqual([at, true]);
       expect([at, contrast(text, t.selected) >= 4.5]).toEqual([at, true]); // a selected row's own text
+      // The tinted neutrals (every shadcn surface): text reads on each surface, as with the neutral
+      // tokens; the muted text and the chat log's text stops too.
+      for (const surface of ["background", "card", "popover", "muted", "accent", "secondary"] as const) {
+        expect([at, surface, contrast(t.foreground, t[surface]) >= 12]).toEqual([at, surface, true]);
+        expect([at, surface, contrast(t["muted-foreground"], t[surface]) >= 4.5]).toEqual([at, surface, true]);
+      }
+      for (const fg of ["card-foreground", "popover-foreground", "secondary-foreground", "accent-foreground"] as const) expect(t[fg]).toBe(t.foreground);
+      expect([at, contrast(t["text-soft"], t.card) >= 7]).toEqual([at, true]);
+      expect([at, contrast(t["text-faint"], t.card) >= 3]).toEqual([at, true]);
+      expect([at, contrast(t["text-fainter"], t.card) >= 3]).toEqual([at, true]);
+      expect([at, contrast(t.link, t.card) >= 4.5 && contrast(t.link, t.popover) >= 4.5]).toEqual([at, true]);
+      // Low chroma: a tint of the hue, never a coloured block.
+      for (const k of ["foreground", "card", "popover", "muted", "accent", "muted-foreground", "text-soft", "text-faint"] as const) {
+        expect([at, k, hexToOklch(t[k]).c <= 0.032]).toEqual([at, k, true]);
+      }
+      // The surfaces keep their order: in dark mode each layer is lighter than the one under it.
+      if (mode === "dark") expect([at, hexToOklch(t.background).l < hexToOklch(t.card).l && hexToOklch(t.card).l < hexToOklch(t.popover).l]).toEqual([at, true]);
+      expect(t.border).toMatch(/^rgb\(\d+ \d+ \d+ \/ 0\.1\d\)$/); // a translucent hairline, as the neutral one
       // The wash is faint: the page is still near white / near black.
       expect([at, Math.abs(hexToOklch(t.background).l - hexToOklch(page).l) < 0.03]).toEqual([at, true]);
     }
@@ -127,6 +145,9 @@ test("ID6: every theme tone comes from the one colour, and its text keeps WCAG A
   const css = themeCss("#7c4ddb");
   expect(css).toMatch(/^:root:root\{--primary:#[0-9a-f]{6};.*\}:root:root\.dark\{--primary:#[0-9a-f]{6};.*\}$/);
   expect(css).toContain(`--sb-bg:${themeTones("#7c4ddb", "dark")["sb-bg"]};`);
+  expect(css).toContain(`--popover:${themeTones("#7c4ddb", "dark").popover};`); // menus and popovers follow the theme
+  // A blue server's popover is blue-tinted, a green one's green-tinted.
+  for (const c of ["#2f6feb", "#1f9d55"]) expect(Math.abs(hexToOklch(themeTones(c, "dark").popover).h - hexToOklch(c).h)).toBeLessThan(15);
 });
 
 test("ID7: the picker's grid — the 8 presets plus 2 hues as the base row, each with 3 tints and 2 shades", () => {
