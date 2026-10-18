@@ -92,7 +92,9 @@ test("open, the panel is a docked column: the page reflows, the button and O tog
   expect(dock().style.marginInlineStart).toBe(`-${SHELL_GAP}px`); // closed: cancels the gutter, no empty gap
   expect(dock().hasAttribute("data-painted")).toBe(false); // no card surface while closed
   expect(dock().className).toContain("md:data-[painted]:shadow-shell"); // the surface rides an attribute, not a class change
-  expect(dock().className).toContain("transition-[width,margin-inline-start]"); // width and margin only
+  expect(dock().className).toContain("transition-[width,min-width,margin-inline-start]"); // width, min-width and margin only
+  expect(dock().className).toContain("ease-out");
+  expect(parseFloat(dock().style.minWidth)).toBe(0); // closed: no floor, so the width really reaches 0
   expect(page.some((c) => c.startsWith("max-md:") && c.includes("overflow"))).toBe(false);
   await click(askButton());
   const panel = $('[data-slot="orchestrator-panel"]')!;
@@ -270,7 +272,7 @@ test("opening: the panel shows in the commit that opens it at dock width 0, and 
   expect(dock().style.width).toBe("0px"); // …but the width waits a frame, so 0 → 460 is a real transition
   await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(null))); await flush(); });
   expect(dock().style.width).toBe("460px");
-  expect(dock().className).toContain("transition-[width,margin-inline-start]");
+  expect(dock().style.minWidth).toBe("360px"); // open: the floor tweens with the width
   expect(dock().className).toContain("data-[resizing]:transition-none");
   expect($('[data-slot="page-scroll"]')!.className).toContain("md:[contain:layout_paint]");
 });

@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils";
 import { useNarrow } from "@/lib/viewport";
 import { appStarting, dockClipElementAtom, dockElementAtom, dockWidthsAtom } from "@/lib/dock";
 
-/** The dock's open / close: branch-demo's `transition-all` (150ms, Tailwind's default ease). */
+/** The dock's open / close: branch-demo's docked chat (150ms ease-out). */
 export const SLIDE_MS = 150;
 /** One arrow key on the focused resize edge (Shift: three times as far). */
 export const RESIZE_STEP = 40;

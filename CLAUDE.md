@@ -635,7 +635,7 @@ its own and is the `@container/page` a page's layout should query (the Overview 
 window; a phone keeps the window's scroll. The edge resizes by drag or by arrow keys. **Open / close
 is branch-demo's right panel**: the panel renders INTO the dock (a portal) at its full width, shows at
 dock width 0 in the commit that opens it, and the dock's width opens on the next frame (a real 150ms
-`width` transition, none while dragging); closing moves the width in the click's OWN commit (the dock
+`width` + `min-width` transition, ease-out, min-width 0 when closed, none while dragging; the nav uses the same ease-out); closing moves the width in the click's OWN commit (the dock
 width is published from a layout effect keyed on `open && expanded`). A closed panel stays mounted —
 draft and scroll kept — clipped by the 0-wide dock, `aria-hidden`, and a focus guard once idle.
 **Measured rules (CDP traces of the production build, 4× CPU, a long orchestrator thread; method and

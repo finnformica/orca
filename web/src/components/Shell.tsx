@@ -33,7 +33,7 @@ import { useSwipeToDismiss } from "@/lib/gestures";
 import { isMobile, useNarrow } from "@/lib/viewport";
 import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
-import { SHELL_GAP, repoLabel, summarizeSync } from "../workstream";
+import { PANEL_MIN_W, SHELL_GAP, repoLabel, summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
 import { useInboxUnread } from "@/lib/inboxUnread";
 import { AddServerDialog, ServerMenu, ServerOffline, useServerProblem, useServers } from "@/components/ServerMenu";
@@ -75,7 +75,7 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
 /** The docked right column (desktop): its OWN card beside the page card, as branch-demo's right panel
  *  — the shell's gutter between them, no shared hairline. The open side panel renders INTO it
  *  (SidePanel's portal) at its full width; only the width and the start margin animate (branch-demo's
- *  150ms, Tailwind's default ease) and the card clips the panel, so the panel slides and never
+ *  150ms ease-out; the min-width tweens with the width, so an open never pops to it) and the card clips the panel, so the panel slides and never
  *  reflows. Closed, a negative start margin cancels the gutter (a 0-wide flex item still takes the gap). The card's
  *  surface stays until the close has finished (`painted`), so its edge does not vanish mid-slide.
  *  The clip is an inner element, not the dock: the resize handle hangs in the gutter, outside the card. */
@@ -98,8 +98,8 @@ export function Dock() {
       // of the chat restyles its whole subtree (measured: ~4000 elements, 100–150ms each at 4× CPU, twice
       // per open / close). The margin is an inline style; the card's surface rides `data-painted`.
       data-painted={painted ? "" : undefined}
-      className="relative shrink-0 transition-[width,margin-inline-start] data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden md:data-[painted]:rounded-[10px] md:data-[painted]:bg-background md:data-[painted]:shadow-shell"
-      style={{ width: dock, marginInlineStart: dock > 0 ? 0 : -SHELL_GAP, transitionDuration: `${SLIDE_MS}ms` }}>
+      className="relative shrink-0 transition-[width,min-width,margin-inline-start] ease-out data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden md:data-[painted]:rounded-[10px] md:data-[painted]:bg-background md:data-[painted]:shadow-shell"
+      style={{ width: dock, minWidth: dock > 0 ? Math.min(PANEL_MIN_W, dock) : 0, marginInlineStart: dock > 0 ? 0 : -SHELL_GAP, transitionDuration: `${SLIDE_MS}ms` }}>
       <div data-slot="dock-clip" ref={setDockClip} className="absolute inset-0 overflow-hidden rounded-[inherit]" />
     </div>
   );
@@ -153,7 +153,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
       <aside
         data-slot="sidebar" data-chrome="" data-collapsed={collapsed}
         className={cn(
-          "z-50 max-md:hidden md:flex md:shrink-0 md:flex-col md:overflow-hidden md:transition-[width] md:duration-150 motion-reduce:transition-none",
+          "z-50 max-md:hidden md:flex md:shrink-0 md:flex-col md:overflow-hidden md:transition-[width] md:duration-150 md:ease-out motion-reduce:transition-none",
           collapsed ? "md:w-14" : "md:w-60",
         )}
       >
