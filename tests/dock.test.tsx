@@ -11,6 +11,8 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { App } from "@/App";
 import { afterDockMotion, dockMoving, noteDockMotion } from "@/lib/dock";
+import { SHELL_GAP, frozenPageWidth } from "@/workstream";
+import { SLIDE_MS } from "@/components/SidePanel";
 import { orchestratorOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { navExpandedOverrideAtom } from "@/lib/dock";
 import { DOCK_PAGE_MIN_W, NAV_W, PANEL_MIN_W, clampPanelWidth, navRail } from "@/workstream";
@@ -63,26 +65,36 @@ test("navRail: your choice, else the rail only while the dock leaves the page un
 test("open, the panel is a docked column: the page reflows, the button and O toggle it", async () => {
   await mount(1440);
   expect(dock().style.width).toBe("0px"); // closed: the column takes no room
-  // The page column scrolls on its own on a desktop (no page scrollbar outside the dock) and is the
-  // container the pages' layouts query; a phone keeps the window's scroll.
+  // The page column scrolls on its own on a desktop (no page scrollbar outside the dock); its frame is
+  // the container the pages' layouts query; a phone keeps the window's scroll.
   const page = $('[data-slot="page-scroll"]')!.className.split(/\s+/);
-  expect(page).toEqual(expect.arrayContaining(["@container/page", "md:h-full", "md:overflow-y-auto"]));
-  // branch-demo's app shell: the nav on the themed canvas, the page and the dock in ONE raised card.
+  expect(page).toEqual(expect.arrayContaining(["md:h-full", "md:overflow-y-auto", "md:overflow-x-hidden"]));
+  expect($('[data-slot="page-frame"]')!.className).toContain("@container/page");
+  expect($('[data-slot="page-frame"]')!.parentElement!.dataset.slot).toBe("page-scroll");
+  // branch-demo's app shell: the nav on the themed canvas; the page card and, beside it with the
+  // shell's gutter, the panel's own card.
   expect($('[data-slot="shell"]')!.className).toContain("md:bg-sidebar");
   expect(sidebar().className).not.toContain("border-r");
   const card = $('[data-slot="shell-card"]')!;
   expect(card.className).toEqual(expect.stringContaining("md:rounded-[10px]"));
   expect(card.className).toContain("md:shadow-shell");
   expect(page.length && $('[data-slot="page-scroll"]')!.parentElement).toBe(card);
-  expect(dock().parentElement).toBe(card);
+  expect(dock().parentElement).toBe(card.parentElement); // a sibling card, not inside the page card
+  expect(card.parentElement!.className).toContain("md:gap-1.5");
+  expect(dock().className).toContain("-ms-1.5"); // closed: cancels the gutter, no empty gap
+  expect(dock().className).not.toContain("md:shadow-shell"); // no card surface while closed
+  expect(dock().className).toContain("transition-[width,margin-inline-start]"); // width and margin only
   expect(page.some((c) => c.startsWith("max-md:") && c.includes("overflow"))).toBe(false);
   await click(askButton());
   const panel = $('[data-slot="orchestrator-panel"]')!;
   expect(panel.dataset.state).toBe("open");
   expect(panel.hasAttribute("data-docked")).toBe(true);
   expect(panel.parentElement).toBe(dock()); // in the dock: its width slides the panel, no transform
-  expect(panel.className).not.toContain("shadow-modal"); // a column with a hairline, not an overlay
+  expect(panel.className).not.toContain("shadow-modal"); // not an overlay
+  expect(panel.className).not.toContain("border-l"); // no shared hairline: the dock card is the edge
   expect(dock().style.width).toBe("460px"); // the page's row reserves the panel's width
+  expect(dock().className).toContain("ms-0");
+  expect(dock().className).toEqual(expect.stringContaining("md:rounded-[10px] md:bg-card md:shadow-shell")); // its own raised card
   expect(askButton().getAttribute("aria-expanded")).toBe("true");
   expect($('[data-slot="quick-ask"]')!.style.right).toBe("460px"); // the pill centres on the page column
   expect(sidebar().dataset.collapsed).toBe("false"); // 1440: the full nav still fits
@@ -159,8 +171,39 @@ test("opening: the panel shows in the commit that opens it at dock width 0, and 
   expect(dock().style.width).toBe("0px"); // …but the width waits a frame, so 0 → 460 is a real transition
   await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(null))); await flush(); });
   expect(dock().style.width).toBe("460px");
-  expect(dock().className).toContain("transition-[width]");
+  expect(dock().className).toContain("transition-[width,margin-inline-start]");
   expect(dock().className).toContain("data-[resizing]:transition-none");
   expect($('[data-slot="page-scroll"]')!.className).toContain("md:[contain:layout_paint]");
+});
+
+test("frozenPageWidth: the page content's end width, so the content lays out once and only the card edge moves", () => {
+  // Opening a 460 panel beside the full nav: the column gives the dock its width and the gutter back.
+  expect(frozenPageWidth({ col: 1170, nav: 240, dock: 0, dockMargin: -SHELL_GAP }, { nav: 240, dock: 460, dockMargin: 0 })).toBe(1170 - 460 - SHELL_GAP);
+  // At 1280 the nav also turns into its rail: the 184 px it gives back are the page's.
+  expect(frozenPageWidth({ col: 1010, nav: 240, dock: 0, dockMargin: -SHELL_GAP }, { nav: 56, dock: 460, dockMargin: 0 })).toBe(1010 + 184 - 460 - SHELL_GAP);
+  // Closing reverses it exactly; a reversal mid-slide starts from the in-flight widths.
+  expect(frozenPageWidth({ col: 544, nav: 56, dock: 460, dockMargin: 0 }, { nav: 240, dock: 0, dockMargin: -SHELL_GAP })).toBe(544 - 184 + 460 + SHELL_GAP);
+  expect(frozenPageWidth({ col: 700, nav: 240, dock: 230, dockMargin: -3 }, { nav: 240, dock: 0, dockMargin: -SHELL_GAP })).toBe(700 + 230 + 3);
+});
+
+test("a dock change holds the page frame at its end width during the slide, then lets it go", async () => {
+  await mount(1440);
+  const frame = $('[data-slot="page-frame"]')!;
+  expect(frame.style.width).toBe("");
+  await click(askButton());
+  expect(frame.style.width).toMatch(/^\d+px$/); // held at its end width while the dock slides
+  await act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 120)); });
+  expect(frame.style.width).toBe(""); // the slide is over: it follows the column again
+});
+
+test("the closed panel does no layout work: content-visibility hidden once the close has finished", async () => {
+  await mount(1440);
+  await click(askButton());
+  const panel = $('[data-slot="orchestrator-panel"]')!;
+  await click(askButton());
+  expect(panel.className).not.toContain("[content-visibility:hidden]"); // still sliding out
+  await act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 200)); });
+  expect(panel.className).toContain("[content-visibility:hidden]");
+  expect(dock().className).not.toContain("md:shadow-shell"); // the card's surface goes with it
 });
 
