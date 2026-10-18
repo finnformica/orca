@@ -3,6 +3,9 @@
 **Slack is receive-only, by rule.** Orca reads Slack. Orca never sends anything to Slack: no post,
 no thread reply, no edit, no reaction, no "post as me". Finn set this rule.
 
+The rule is for Orca only. A repo that Orca manages keeps its own Slack features. For example,
+branch-demo still sends to Slack. Do not change a managed repo's Slack code for this rule.
+
 - **In.** A mention of the bot or a DM to the bot becomes an `ext.slack.message` event. The core
   gates it and routes it to the orchestrator, or to the workstream that owns the thread. The message
   shows in Orca and in the inbox.

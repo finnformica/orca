@@ -178,7 +178,9 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   (no post, reply, edit, reaction or "post as me"; `RECEIVE_ONLY` in `shared/integrations.ts`, see
   Integrations). The card's Slack items copy the message — the linked `#7 Title` as rich HTML, plain
   text as the fallback — and you paste it. (History: they once posted as you with `SLACK_TOKEN`
-  through `/api/slack`; that route now answers 410 and `server/slack-api.ts` is gone.)
+  through `/api/slack`; that route now answers 410 and `server/slack-api.ts` is gone.) **The rule is
+  for Orca only:** a repo Orca manages keeps its own Slack features (branch-demo still sends to Slack).
+  Do not change a managed repo's Slack code for this rule.
 
 ## Integrations (one path in, one path out)
 

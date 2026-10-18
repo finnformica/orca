@@ -432,7 +432,8 @@ export const replyToOf = (e: Pick<Envelope, "key" | "source" | "thread">): Reply
 
 /** Adapter kinds Orca must never send anything to. Slack: Finn's rule — Orca reads Slack and answers
  *  only in Orca. The core drops every delivery to such a link (`publish`), refuses a subscription or a
- *  test to one (Settings), and `orca post` refuses it; the adapter's `send` refuses as the last guard. */
+ *  test to one (Settings), and `orca post` refuses it; the adapter's `send` refuses as the last guard.
+ *  The rule covers Orca only: a managed repo (branch-demo) keeps its own Slack features. */
 export const RECEIVE_ONLY: readonly string[] = ["slack"];
 export const isReceiveOnly = (adapter: string | undefined): boolean => !!adapter && RECEIVE_ONLY.includes(adapter);
 export const receiveOnlyRefusal = (adapter: string): string =>
