@@ -20,6 +20,7 @@
 // untouched, and so does everything when the feature is off.
 import { instanceName } from "./db";
 import { API_PORT } from "./ports";
+import { resolveIdentity, type ServerIdentity, type ServerIdentityConfig } from "../shared/serverIdentity";
 
 export type ServerEntry = { name: string; url: string };
 export type ServerSwitcherConfig = {
@@ -37,7 +38,7 @@ export type ServerSwitcherConfig = {
 /** One row of `GET /api/servers`. */
 export type ServerInfo = { name: string; url: string; online: boolean; self: boolean };
 export type ServersAnswer = {
-  enabled: boolean; self: ServerEntry; servers: ServerInfo[]; source: "tailscale" | "config" | "self";
+  enabled: boolean; self: ServerEntry & Partial<ServerIdentity> & { identity?: ServerIdentityConfig }; servers: ServerInfo[]; source: "tailscale" | "config" | "self";
   /** The Tailscale API is configured here (TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET are set). */
   tailscaleApi: boolean;
 };
@@ -215,6 +216,14 @@ export async function listServers(sw: ServerSwitcherConfig | undefined, now = Da
   answer ??= { enabled: true, self, servers: withSelf((cfg.servers ?? []).map((s) => ({ name: s.name, url: s.url, online: true })), self), source: "config", tailscaleApi };
   discovery = { key, at: now, answer };
   return answer;
+}
+
+/** The answer with this server's identity on its `self` row: the display name (`label`) and theme
+ *  colour. Added per request, outside the discovery cache, so a saved identity shows at once. The
+ *  `name` stays the Tailscale host name: the browser matches servers by it. `identity` is what is
+ *  stored (Settings' form edits it). Pure. */
+export function withIdentity(answer: ServersAnswer, identity: ServerIdentityConfig | undefined): ServersAnswer {
+  return { ...answer, self: { ...answer.self, ...resolveIdentity(identity, answer.self.name), identity: identity ?? {} } };
 }
 
 export type WhoisVerdict = { ok: true; login: string } | { ok: false; reason: string };

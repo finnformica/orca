@@ -1,5 +1,5 @@
 import {
-  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, modelFor, parseConfigDocument,
+  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
@@ -42,7 +42,9 @@ import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
 import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
-import { listServers, serverGate } from "./servers";
+import { checkCaller, listServers, selfServer, serverGate, withIdentity } from "./servers";
+import { identityUpdate, serverIdentityProblems } from "../shared/serverIdentity";
+import * as handoff from "./handoff";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -358,7 +360,7 @@ const DATABASE_ONLY = new Set([
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history", "/api/config/instance-rate", "/api/config/terminal",
+  "/api/health/history", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity",
   // A workstream's reported screenshots, read off its turns (the files are served per shot).
   "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -535,7 +537,52 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   // The server switcher (server/servers.ts): the Orca servers a browser may switch to. Answered here,
   // never forwarded — each server names itself and its own discovery.
-  if (req.method === "GET" && p === "/api/servers") return json(await listServers(cfg.serverSwitcher));
+  if (req.method === "GET" && p === "/api/servers") return json(withIdentity(await listServers(cfg.serverSwitcher), cfg.serverIdentity));
+  // Handoff packs (server/handoff.ts): context for another Orca server, carried by the browser. Never
+  // forwarded: the packs are this database's, and the import queues to THIS side's orchestrator.
+  if (p === "/api/handoffs" || p.startsWith("/api/handoffs/") || p === "/api/handoff/import") {
+    try {
+      if (req.method === "GET" && p === "/api/handoffs") return json({ self: (await selfServer(cfg.serverSwitcher ?? {})).name, packs: await handoff.list() });
+      if (req.method === "POST" && p === "/api/handoffs") {
+        // The UI's Hand off on a card packs that workstream's chat.
+        const chats: number[] = Array.isArray(body.chats) ? body.chats.map(Number) : [];
+        if (typeof body.repo === "string" && typeof body.branch === "string") {
+          const id = await handoff.chatOf(body.repo, body.branch);
+          if (!id) return json({ error: `${body.repo}/${body.branch} has no chat yet` }, 400);
+          chats.push(id);
+        }
+        const r = await handoff.createPack({ to: String(body.to ?? ""), title: String(body.title ?? ""), message: typeof body.message === "string" ? body.message : "", chats, source: (await selfServer(cfg.serverSwitcher ?? {})).name });
+        return json({ pack: await handoff.one(r.pack.id) });
+      }
+      const m = p.match(/^\/api\/handoffs\/([\w-]+)(\/export|\/sent)?$/);
+      if (m && req.method === "GET" && m[2] === "/export") return json(await handoff.exportPack(m[1]!));
+      if (m && req.method === "POST" && m[2] === "/sent") {
+        if (typeof body.to !== "string" || !body.to.trim()) return json({ error: "to required" }, 400);
+        await db.markHandoffSent(m[1]!, body.to.trim());
+        return json({ ok: true });
+      }
+      if (m && req.method === "DELETE" && !m[2]) { await db.deleteHandoff(m[1]!); return json({ ok: true }); }
+      if (req.method === "POST" && p === "/api/handoff/import") {
+        // The switcher's gate (serverGate) already added CORS and ran whois for a foreign Origin; this
+        // runs the same whois for every caller, so a same-origin or Origin-less call can't skip it.
+        const verdict = await handoff.importCallerVerdict(req.headers.get("origin"), remoteAddr.get(req), (ip) => checkCaller(ip, cfg.serverSwitcher ?? {}));
+        if (!verdict.ok) return json({ error: `Import refused: ${verdict.reason}.` }, 403);
+        const elsewhere = cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName() ? cfg.orchestratorOn : undefined;
+        if (!elsewhere && !primary.held()) return json({ error: `this is a secondary bridge (${primary.state().reason}); send the pack to the instance's primary bridge` }, 503);
+        const queue = async (text: string, refs: string[]) => {
+          if (!elsewhere) return orchestrator.message(cfg, text, refs);
+          const base = cfg.instances?.[elsewhere];
+          if (!base) throw new handoff.HandoffError(`the orchestrator lives on "${elsewhere}", which has no address configured`, 502);
+          const r = await fetch(new URL("/api/orchestrator/message", base), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, attachments: refs }) });
+          if (!r.ok) throw new handoff.HandoffError(`${elsewhere} refused the message: HTTP ${r.status}`, 502);
+        };
+        return json(await handoff.importPack(body, queue));
+      }
+    } catch (e) {
+      if (e instanceof handoff.HandoffError) return json({ error: e.message }, e.status);
+      throw e;
+    }
+  }
   // The server's off switch for the switcher (on unless false): sets `serverSwitcher.enabled` and keeps
   // the rest of the document. No web control calls it; the browser has no switch of its own.
   if (req.method === "POST" && p === "/api/config/server-switcher") {
@@ -784,7 +831,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     const { config, errors } = parseConfigDocument(body.config ?? body);
     if (!config) return json({ errors }, 400);
     // The web terminal's flag is NOT part of a pasted document: only Settings' own route sets it.
-    await saveConfigDocument({ ...config, ...(cfg.terminal ? { terminal: cfg.terminal } : {}) });
+    // Nor is the server identity: a document copied from another server must not rename this one.
+    const { serverIdentity: _pasted, ...pasted } = config;
+    await saveConfigDocument({ ...pasted, ...(cfg.terminal ? { terminal: cfg.terminal } : {}), ...(cfg.serverIdentity ? { serverIdentity: cfg.serverIdentity } : {}) });
     return json({ ok: true, repos: config.repos.map((r) => r.name) });
   }
   if (req.method === "POST" && p === "/api/config/instance-rate") {
@@ -794,6 +843,13 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!instance || (usd !== null && !(Number.isFinite(usd) && usd >= 0))) return json({ error: "instance and a non-negative hourlyUsd (or null) are required" }, 400);
     await db.setInstanceHourlyUsd(instance, usd);
     invalidateConfig();
+    return json({ ok: true });
+  }
+  if (req.method === "POST" && p === "/api/config/identity") {
+    // Settings' Server identity: this server's display name and theme colour. Empty fields clear.
+    const problems = serverIdentityProblems({ name: body.name || undefined, color: body.color || undefined });
+    if (problems.length) return json({ error: problems.join("; ") }, 400);
+    await setServerIdentity(identityUpdate(body.name, body.color));
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/config/terminal") {

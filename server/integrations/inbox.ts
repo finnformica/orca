@@ -5,7 +5,7 @@ import * as db from "../db";
 import * as orchestrator from "../orchestrator";
 import * as verbs from "../verbs";
 import type { OrcaConfig } from "../config";
-import { fenceExternal, type Envelope, type SendResult } from "../../shared/integrations";
+import { fenceExternal, replyToOf, type Envelope, type SendResult } from "../../shared/integrations";
 
 /** The text an event becomes for an agent: an outside sender's fenced as data, Orca's own as is. */
 export const agentText = (e: Envelope): string => (e.grant ? fenceExternal(e) : e.title ? `${e.title}: ${e.text}` : e.text);
@@ -17,7 +17,8 @@ export const agentText = (e: Envelope): string => (e.grant ? fenceExternal(e) : 
 export async function toOrchestrator(cfg: OrcaConfig, e: Envelope): Promise<SendResult> {
   if (e.grant) {
     if (e.grant.level === "notify") return { ok: false, retryable: false, error: "notify links send nothing inbound" };
-    await orchestrator.message(cfg, agentText(e), e.attachments ?? [], { grant: e.grant, person: Boolean(e.actor) });
+    const replyTo = replyToOf(e);
+    await orchestrator.message(cfg, agentText(e), e.attachments ?? [], { grant: e.grant, person: Boolean(e.actor), ...(replyTo ? { replyTo } : {}) });
   } else {
     await orchestrator.deliverReport(cfg, agentText(e));
   }

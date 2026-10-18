@@ -69,9 +69,9 @@ test("S3: a worker report's screenshot paths render as thumbnails, not raw paths
   const row: Row = { repo: "r", hasRemote: false, branch: "orch", title: "Orch", prompt: "", lane: "LOCAL", worktreePath: "/wt/orch", agentProvider: "claude" };
   apiFake.turnsData.set("r::orch", [{ id: "run-1", provider: "claude", instruction: report, prompt: "", response: "noted", startedAt: 1000, finishedAt: 1001, source: "agents" }]);
   await mount(<ChatPanel row={row} />);
-  const marker = container!.querySelector<HTMLElement>('[data-slot="agents-marker"]')!;
-  await act(async () => { marker.querySelector("button")!.click(); await flush(); });
-  // …then the turn's own collapsed report block.
+  // The only turn is the newest answer, which is never folded into the agents block — so the
+  // turn's own collapsed report block is what to open.
+  expect(container!.querySelector('[data-slot="agents-marker"]')).toBeNull();
   await act(async () => { container!.querySelector<HTMLElement>('[data-slot="turn-reports"] button')!.click(); await flush(); });
   const reports = container!.querySelector<HTMLElement>('[data-slot="worker-reports"]')!;
   // The body is markdown, not a raw <pre> block — a report's own prose (and any table in it) renders
