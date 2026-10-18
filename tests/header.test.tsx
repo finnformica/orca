@@ -108,7 +108,7 @@ describe("console shell", () => {
     expect(label.className.split(/\s+/)).toEqual(expect.arrayContaining(["truncate", "min-w-0"])); // a wider fallback font can't widen it
     const css = readFileSync(join(import.meta.dir, "..", "web", "src", "styles.css"), "utf8");
     // A phone reserves it on <html>; a desktop on the page column, which scrolls on its own there.
-    expect(css).toMatch(/@media \(max-width: 767px\)\s*\{\s*html\s*\{\s*scrollbar-gutter:\s*stable;/);
+    expect(css).toMatch(/@media \(max-width: 767px\)\s*\{\s*\/\*[^*]*\*\/\s*html\s*\{\s*scrollbar-gutter:\s*stable;/);
     expect(container!.querySelector('[data-slot="page-scroll"]')!.className.split(/\s+/)).toContain("md:[scrollbar-gutter:stable]");
     // Radix's scroll lock would add the reserved gutter again as a body margin on every menu open.
     expect(css).toMatch(/html body\[data-scroll-locked\]\s*\{\s*margin-right:\s*0 !important;/);

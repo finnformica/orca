@@ -280,11 +280,7 @@
      no gutter, so nothing changes there. On a desktop the page column scrolls on its own (Shell's
      `page-scroll`) and reserves the gutter itself, so <html> does it only on a phone — a gutter on
      <html> was an empty strip beside the docked panel. */
-  @media (max-width: 767px) {
-    html {
-      scrollbar-gutter: stable;
-    }
-  }
+  /* (the rule itself: in the phone block below) */
   /* Radix's scroll lock (react-remove-scroll-bar) adds margin-right = innerWidth - clientWidth to the
      body while a menu or dialog is open. With the gutter reserved that is the gutter itself, and the
      page jumped left on every open. The gutter already holds the space, so no margin is needed. */
@@ -363,6 +359,10 @@ dialog[data-bottom-sheet][data-closing]::backdrop {
 }
 
 @media (max-width: 767px) {
+  /* The scrollbar gutter, reserved on <html> (see the note in the base layer). */
+  html {
+    scrollbar-gutter: stable;
+  }
   /* Nothing scrolls sideways: wide content wraps or scrolls inside its own box. */
   html,
   body {
