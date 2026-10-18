@@ -40,7 +40,7 @@ export function HandoffsPage() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Handoffs</h1>
+        <h1 className="text-heading text-2xl font-semibold tracking-tight">Handoffs</h1>
         <p className="text-muted-foreground mt-1 text-sm">
           Context for another Orca server{data?.self ? <> from <span className="font-medium">{data.self}</span></> : null}. This browser carries each pack. Nothing goes until you click Send.
         </p>

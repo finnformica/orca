@@ -110,7 +110,8 @@ export function QuickAsk() {
       {/* ONE surface for both states, so the pill grows into the box rather than being swapped for it.
           `interpolate-size` lets the height animate to `auto` (Chromium; elsewhere it snaps). Solid
           card / accent fills — never a translucent hover, which let the page show through. */}
-      <div data-slot="quick-ask-surface" data-state={open ? "open" : "closed"}
+      {/* Closed, the pill is part of the themed frame (`data-chrome`): the server's deep shade. */}
+      <div data-slot="quick-ask-surface" data-state={open ? "open" : "closed"} data-chrome={mounted ? undefined : ""}
         className={cn(
           "[interpolate-size:allow-keywords] bg-card text-foreground pointer-events-auto overflow-hidden border transition-[width,height,border-radius,box-shadow,background-color] duration-200 ease-out motion-reduce:transition-none",
           open ? "h-auto w-[min(560px,calc(100%-2rem))] rounded-xl shadow-modal" : "h-8 w-[6.5rem] rounded-[16px] shadow-menu",

@@ -114,7 +114,9 @@ test("Q4: one surface morphs pill ↔ box (width, height, radius; none under red
   expect(cls()).toEqual(expect.arrayContaining(["transition-[width,height,border-radius,box-shadow,background-color]", "motion-reduce:transition-none", "h-8", "rounded-[16px]", "bg-card", "hover:bg-accent"]));
   expect(surface().className).not.toMatch(/hover:bg-[\w-]+\/\d+/); // no translucent hover: the page never shows through
   expect(cls()).toContain("[interpolate-size:allow-keywords]"); // height can animate to auto
+  expect(closed.hasAttribute("data-chrome")).toBe(true); // the closed pill is part of the server's themed frame
   await click($('[data-slot="quick-ask-pill"]')!);
+  expect(surface().hasAttribute("data-chrome")).toBe(false); // the open box is a neutral card
   expect(surface()).toBe(closed); // the SAME element, so its box animates rather than being swapped
   expect(surface().dataset.state).toBe("open");
   expect(cls()).toEqual(expect.arrayContaining(["h-auto", "rounded-xl", "w-[min(560px,calc(100%-2rem))]"]));
