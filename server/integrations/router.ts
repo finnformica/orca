@@ -43,10 +43,10 @@ export const resetPace = (): void => recent.clear();
 export async function ingest(integrationId: string, e: InboundEnvelope, now = Date.now()): Promise<"new" | "duplicate" | "rejected"> {
   // Dedupe first, so a platform retry of an accepted event is "duplicate", never a second pace hit.
   if (await store.event(e.key)) return "duplicate";
-  // A link for the exact place, else the integration's catch-all link (external_id "*": DMs, a bot's
-  // every channel). No link = nobody said Orca may listen there.
-  const link = e.source.linkId ? await store.link(e.source.linkId)
-    : e.source.channel ? (await store.linkFor(integrationId, e.source.channel)) ?? (await store.linkFor(integrationId, "*")) : undefined;
+  // A link for the exact place, else for a wider place that holds it (`source.parents`), else the
+  // integration's catch-all link (external_id "*": DMs, a bot's every channel). No link = nobody
+  // said Orca may listen there.
+  const link = e.source.linkId ? await store.link(e.source.linkId) : e.source.channel ? await firstLink(integrationId, [e.source.channel, ...(e.source.parents ?? []), "*"]) : undefined;
   if (!link || link.integrationId !== integrationId) return "rejected"; // no link = nobody said Orca may listen here
   if (link.requireMention && e.mentioned === false) return "rejected";
   if (e.actor) {
@@ -63,7 +63,10 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
     return "rejected";
   }
   const grant: Grant = e.actor ? effectiveGrant(link, principal) : { level: link.level, repos: link.repos, linkId: link.id };
-  if (grant.level === "notify") return "rejected";
+  // A notify link takes nothing in — except, when its integration says so (`config.machineEventsOnNotify`),
+  // a machine event (no person: a poller, a webhook). That event is recorded and fans out to its
+  // subscriptions (the web, other links) with the grant "notify", so no agent acts on it.
+  if (grant.level === "notify" && (e.actor || !(await machineEventsOnNotify(integrationId)))) return "rejected";
   const principalId = grant.principalId;
   const r = await publish({
     ...e, source: { ...e.source, integrationId, linkId: link.id },
@@ -71,6 +74,16 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
     grant,
   }, now);
   return r.status;
+}
+
+/** The integration's switch for machine events on a notify link. Off unless set to exactly `true`. */
+async function machineEventsOnNotify(integrationId: string): Promise<boolean> {
+  return (await store.integration(integrationId))?.config.machineEventsOnNotify === true;
+}
+
+async function firstLink(integrationId: string, places: string[]): Promise<store.Link | undefined> {
+  for (const p of places) { const l = await store.linkFor(integrationId, p); if (l) return l; }
+  return undefined;
 }
 
 /** An unknown sender on a linked place: their pending code, or a new one. A NEW code is sent back to
