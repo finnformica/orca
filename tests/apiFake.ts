@@ -217,7 +217,8 @@ mock.module("@/api", () => ({
       return t;
     },
     threadLinks: async () => ({ links: apiFake.threadLinksData }),
-    integrations: async () => ({ links: apiFake.integrationLinks }),
+    // An empty Settings > Integrations overview, plus the links a test sets.
+    integrations: async () => ({ instance: "local", kinds: [], integrations: [], links: apiFake.integrationLinks, people: [], pairings: [], subscriptions: [], dead: [] }),
     // The inbox's actions mutate inboxData the way the bridge's tables would.
     inboxReply: async (eventId: string, text: string) => {
       apiFake.inboxActions.push(["reply", eventId, text]);
