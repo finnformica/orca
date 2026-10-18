@@ -38,7 +38,7 @@ import { PreviewsBadge } from "@/views/PreviewControl";
 import { AddServerDialog, ServerMenu, ServerOffline, useServerProblem, useServers } from "@/components/ServerMenu";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
 import { poll } from "@/lib/poll";
-import { NotificationBell } from "@/components/Notifications";
+import { NotificationBell, footIcon } from "@/components/Notifications";
 import { notifyLocal } from "@/lib/notificationStore";
 import { Button } from "@/components/ui/button";
 import { MenuShortcut, Shortcut } from "@/components/ui/kbd";
@@ -49,6 +49,13 @@ import {
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+/** One row of the nav: the pages, and Add New below them — the same height, padding, icon size and
+ *  hover, ghost on the lower surface (branch-demo's sidebar). Collapsed, an icon centred in the rail. */
+export const navRow = (collapsed: boolean, active = false) => cn(
+  "relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors",
+  active ? "bg-sidebar-active text-sidebar-active-foreground font-medium" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+  collapsed && "md:justify-center md:px-0",
+);
 export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (r: Route) => boolean; badge?: (compact: boolean) => ReactNode }[] = [
   { to: "/", label: "Overview", Icon: LayoutGrid, match: (r) => r.name === "board" },
   // An agent's own page (PR or local detail) is "inside" Agents, as a deployment is inside Deployments.
@@ -97,13 +104,16 @@ export function Shell({ crumbs, sidebarActions, children }: {
     // server's theme colour — and the page and the docked panel float together in ONE rounded card
     // (`data-slot="shell-card"`, a 6px gutter, a 10px corner, `shadow-shell`), so the nav reads as
     // behind the content. A phone has no card: the page is the whole screen.
-    <div data-slot="shell" className="md:bg-sidebar flex min-h-screen w-full md:h-screen md:overflow-hidden">
+    <div data-slot="shell" className="md:bg-sidebar flex min-h-screen w-full flex-col md:h-screen md:overflow-hidden">
+      {/* The update banner: on the lower surface, above the nav and the card (branch-demo's app-level banner). */}
+      <UpdateBanner onStaleChange={setUpdateAvailable} />
+      <div data-slot="shell-row" className="flex min-h-0 w-full flex-1">
       {/* Desktop only: a phone's nav is the bottom bar + Settings (see MobileNav in views/Pages.tsx) —
           there is no off-canvas drawer any more. */}
       <aside
         data-slot="sidebar" data-chrome="" data-collapsed={collapsed}
         className={cn(
-          "z-50 max-md:hidden md:flex md:h-screen md:shrink-0 md:flex-col md:overflow-hidden md:transition-[width] md:duration-200 md:ease-out motion-reduce:transition-none",
+          "z-50 max-md:hidden md:flex md:shrink-0 md:flex-col md:overflow-hidden md:transition-[width] md:duration-200 md:ease-out motion-reduce:transition-none",
           collapsed ? "md:w-14" : "md:w-60",
         )}
       >
@@ -117,7 +127,6 @@ export function Shell({ crumbs, sidebarActions, children }: {
           code read window.scrollY). The column is the `@container/page` the pages' layouts query, so
           they respond to the room the dock leaves, not to the window. */}
       <div data-slot="page-scroll" className="@container/page flex min-w-0 flex-1 flex-col md:h-full md:overflow-y-auto md:[scrollbar-gutter:stable] md:*:shrink-0">
-        <UpdateBanner onStaleChange={setUpdateAvailable} />
         {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it.
             The notch inset goes to whichever is topmost: the banner when it's shown, else the header. */}
         {/* On a desktop the top bar is part of the card (neutral); on a phone it is the themed frame. */}
@@ -151,6 +160,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
         </main>
       </div>
       <Dock />
+      </div>
       </div>
       <BottomBar activity={activity} />
       {/* The quick-ask pill, bottom centre of every page but an agent's Chat tab (desktop; the phone's bottom bar has the orchestrator). */}
@@ -194,7 +204,7 @@ function Sidebar({ collapsed, onToggle, actions }: {
           const item = (
             <button key={to} type="button" onClick={() => navigate(to)} aria-current={active ? "page" : undefined}
               aria-keyshortcuts={shortcut ? shortcutKeys(shortcut).join(" ") : undefined}
-              className={cn("relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-sidebar-active text-sidebar-active-foreground font-medium" : "text-muted-foreground hover:bg-accent hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
+              className={navRow(collapsed, active)}>
               <Icon className="size-4 shrink-0" />
               <span data-slot="nav-label" className={cn(collapsed && "md:hidden")}>{label}</span>
               {badge?.(collapsed)}
@@ -209,18 +219,20 @@ function Sidebar({ collapsed, onToggle, actions }: {
           return collapsed && !narrow ? <Tip key={to} label={label} shortcut={shortcut} side="right" className="flex">{item}</Tip> : item;
         })}
       </nav>
-      {/* Add New is the last of the actions — pushed to the bottom, just above the divider and you.
-          Collapsed, it is an icon in the same column. */}
-      <div data-slot="sidebar-actions" className={cn("mt-auto px-2 pb-2", collapsed && "flex flex-col md:items-center")}>
+      {/* Add New is the last of the actions — pushed to the bottom, just above the divider and you. It
+          is a nav row (navRow), not a boxed button, so the lower surface reads as one column. */}
+      <div data-slot="sidebar-actions" className="mt-auto px-2 pb-2">
         {actions?.(collapsed)}
       </div>
-      {/* The foot: you, with the collapse toggle — above you when collapsed, so nothing overlaps. */}
-      <div data-slot="sidebar-foot" className={cn("flex flex-col border-t p-2", collapsed && "items-stretch md:items-center")}>
-        <div data-slot="sidebar-you" className={cn("flex items-center gap-1", collapsed && "md:flex-col-reverse")}>
+      {/* The foot, like branch-demo's: a hairline, then you (a ghost row with a chevron, it opens a
+          menu) and the bell and the collapse toggle as ghost icons. Collapsed, one centred column with
+          the toggle on top, so nothing overlaps. */}
+      <div data-slot="sidebar-foot" className="border-t px-2 py-2">
+        <div data-slot="sidebar-you" className={cn("flex items-center gap-0.5", collapsed && "md:flex-col-reverse md:gap-1")}>
           <ProfileMenu collapsed={collapsed} />
           <NotificationBell collapsed={collapsed} />
-          <Tip label={collapsed ? "Expand sidebar" : "Collapse sidebar"} shortcut="sidebar" className={cn("hidden md:inline-flex", !collapsed && "ml-auto")}>
-            <button type="button" onClick={onToggle} className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-8 shrink-0 items-center justify-center rounded-md"
+          <Tip label={collapsed ? "Expand sidebar" : "Collapse sidebar"} shortcut="sidebar" className="hidden md:inline-flex">
+            <button type="button" onClick={onToggle} className={footIcon}
               aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
               {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
             </button>
@@ -413,11 +425,11 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
   const swipe = useSwipeToDismiss("bottom", () => dialog, () => setOpen(false), { enabled: useNarrow(), body: dialog });
   return (
     <>
-      <Tip label="Add New" shortcut="new" side="right" className={cn("w-full", collapsed && "md:w-auto")}>
-        <Button variant="secondary" size="sm" data-slot="add-new" aria-label="Add New" onClick={() => setOpen(true)} className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
-          <Plus className="size-4" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
-          <Shortcut id="new" className={cn("ml-auto max-md:hidden", collapsed && "md:hidden")} />
-        </Button>
+      <Tip label="Add New" shortcut="new" side="right" className="flex w-full">
+        <button type="button" data-slot="add-new" aria-label="Add New" onClick={() => setOpen(true)} className={navRow(collapsed)}>
+          <Plus className="size-4 shrink-0" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
+          <Shortcut id="new" className={cn("ml-auto max-md:hidden [@media(pointer:coarse)]:hidden", collapsed && "md:hidden")} />
+        </button>
       </Tip>
       {createPortal(
         <dialog
@@ -491,13 +503,15 @@ export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" data-slot="profile" className={cn("hover:bg-accent/60 flex h-8 min-w-0 items-center gap-2 rounded-md px-1.5 text-sm", collapsed ? "md:size-8 md:justify-center md:p-0" : "flex-1")} aria-label="Profile menu">
-          <CircleUser className="text-muted-foreground size-5 shrink-0" />
+        <button type="button" data-slot="profile" className={cn("hover:bg-accent flex h-9 min-w-0 items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors", collapsed ? "md:size-9 md:justify-center md:p-0" : "flex-1")} aria-label="Profile menu">
+          <CircleUser className="text-muted-foreground size-4 shrink-0" />
           {/* One line: who, then which machine — "You · local". */}
           <span className={cn("flex min-w-0 items-center gap-1.5 whitespace-nowrap", collapsed && "md:hidden")}>
             <span className="truncate">You</span>
             {thisInstance() && <><span className="bg-muted-foreground/60 size-1 shrink-0 rounded-full" aria-hidden="true" /><span data-slot="profile-instance" className="text-muted-foreground truncate">{thisInstance()}</span></>}
           </span>
+          {/* It opens a menu: the chevron at the far right, as branch-demo's user row. */}
+          <ChevronsUpDown className={cn("text-muted-foreground ml-auto size-3.5 shrink-0", collapsed && "md:hidden")} aria-hidden="true" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top">

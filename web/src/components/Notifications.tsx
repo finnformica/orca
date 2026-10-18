@@ -429,6 +429,10 @@ function focusMarkAllRead(e: Event) {
  *  `notificationsOpenAtom` (not just the trigger click) so the N key and the palette's Notifications
  *  action can open/toggle it too; its hint is the hover tooltip (it's icon-only either way, collapsed
  *  or not — there's no row to carry an inline keycap next to it). */
+/** A ghost icon button of the sidebar's foot (the bell, the collapse toggle in Shell): the nav rows'
+ *  height and icon size, no box — it sits on the lower surface. */
+export const footIcon = "text-muted-foreground hover:text-foreground hover:bg-accent relative inline-flex size-9 shrink-0 items-center justify-center rounded-md transition-colors";
+
 export function NotificationBell({ collapsed = false }: { collapsed?: boolean }) {
   const { list } = useNotifications();
   const dnd = useAtomValue(notifyDndAtom);
@@ -440,7 +444,7 @@ export function NotificationBell({ collapsed = false }: { collapsed?: boolean })
       <Tip label="Notifications" shortcut="notifications">
         <PopoverTrigger asChild>
           <button type="button" data-slot="notifications-bell" aria-label={`Notifications${unread ? ` (${unread} unread)` : ""}`}
-            className={cn("text-muted-foreground hover:text-foreground hover:bg-accent relative inline-flex size-8 shrink-0 items-center justify-center rounded-md", collapsed && "md:mx-auto")}>
+            className={footIcon}>
             {dnd ? <BellOff className="size-4" /> : <Bell className="size-4" />}
             {unread > 0 && (
               <span data-slot="notifications-unread" className="bg-foreground text-background absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold tabular-nums">

@@ -11,6 +11,7 @@ import { applyUpdate } from "@/lib/sw";
 import { useBridge, useLastSync } from "../store";
 import { ago, bridgeLabel, databaseBannerText, newerBuild, staleAge } from "../workstream";
 import { Tip } from "@/components/ui/tip";
+import { Button } from "@/components/ui/button";
 
 const RUNNING_BUILD = typeof __ORCA_BUILD__ === "undefined" ? undefined : __ORCA_BUILD__;
 const PREVIEW_PAGE = typeof __ORCA_PREVIEW__ === "undefined" ? false : __ORCA_PREVIEW__;
@@ -54,9 +55,10 @@ export function StaleIndicator() {
  *  is being served, shows a bar with Refresh. A dev server has no build id and never asks. On a narrow
  *  layout it is the topmost element, so it (not the header below it) clears the status bar; `onStaleChange`
  *  lets the shell drop the header's own inset while the banner is shown, so the gap isn't reserved twice.
- *  The look is branch-demo's `DetailsBanner`: a 48px full-width strip of the page column with a hairline
- *  edge, the icon, the message (one line, cut short) and a small raised button at the right; the tint is
- *  the server's theme (`--server-soft` / `--server-fg`), so it sits with the themed top bar below it.
+ *  The look is branch-demo's app-level `LicenseBanner`: an alert card (a hairline border, 8px corners,
+ *  the icon, a title over one line of text) with the action at the right. It sits on the shell's
+ *  lower surface, above the nav and the page card, the full width of the window with the shell's 6px
+ *  gutter — in the flow, not over the top bar, because it stays until you refresh.
  *  `?update-banner` in the URL shows it at once (screenshots, a check of the layout). */
 export function UpdateBanner({ build = RUNNING_BUILD, every = 60_000, onStaleChange, forced = forceUpdateBanner() }: { build?: string; every?: number; onStaleChange?: (stale: boolean) => void; forced?: boolean }) {
   const [stale, setStale] = useState(forced);
@@ -67,14 +69,18 @@ export function UpdateBanner({ build = RUNNING_BUILD, every = 60_000, onStaleCha
   useEffect(() => { onStaleChange?.(stale); }, [stale, onStaleChange]);
   if (!stale) return null;
   return (
-    <div role="status" data-slot="update-banner"
-      className="bg-server-soft text-server-fg flex h-12 min-w-0 items-center gap-2 border-b px-4 text-sm md:px-6 max-md:h-[calc(3rem+env(safe-area-inset-top))] max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pt-[env(safe-area-inset-top)]">
-      <CircleArrowUp className="size-3.5 shrink-0" aria-hidden="true" />
-      <span className="min-w-0 flex-1 truncate">A new version of Orca is available.</span>
-      <button type="button" onClick={() => void applyUpdate()}
-        className="bg-background text-foreground hover:bg-accent inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium max-md:h-9">
-        <RefreshCw className="size-3.5" aria-hidden="true" />Refresh
-      </button>
+    <div data-slot="update-banner-frame" className="shrink-0 px-2 pt-2 md:px-1.5 md:pt-1.5 max-md:pt-[max(0.5rem,env(safe-area-inset-top))]">
+      <div role="status" data-slot="update-banner"
+        className="bg-background text-foreground flex min-w-0 items-center gap-3 rounded-lg border px-4 py-3">
+        <CircleArrowUp className="text-server-fg size-4 shrink-0" aria-hidden="true" />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm leading-none font-medium">A new version of Orca is available</div>
+          <div className="text-muted-foreground mt-1 truncate text-sm">Refresh the page to load the new build.</div>
+        </div>
+        <Button variant="secondary" size="sm" onClick={() => void applyUpdate()} className="shrink-0 max-md:h-9">
+          <RefreshCw className="size-3.5" aria-hidden="true" />Refresh
+        </Button>
+      </div>
     </div>
   );
 }

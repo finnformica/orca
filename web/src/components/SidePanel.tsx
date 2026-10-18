@@ -6,7 +6,9 @@
 // overlay that slides in from the right edge (a transform). It is
 // resized from its LEFT edge with the width remembered per browser, and — on a touch screen — swiped
 // right to close (the edge it comes from, through the one `useSwipeToDismiss`). `fullScreen` is the
-// phone's form: the whole visual viewport, no resize edge. The header (`PanelHeader`) is one h-12 row:
+// phone's form: the whole visual viewport, no resize edge. The header (`PanelHeader`) is one row — h-14
+// on a desktop, the top bar's height, so the two headers and their hairlines read as one row across
+// the shell card (h-12 on a phone):
 // an icon or a Back arrow, the title over a status line, then the actions.
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -162,7 +164,7 @@ export function PanelHeader({ slot, swipe, touch, icon, onBack, title, titleId, 
   title: ReactNode; titleId?: string; status?: ReactNode; actions?: ReactNode;
 }) {
   return (
-    <div {...swipe} className={cn("flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3 select-none", touch && "touch-none")} data-slot={slot}>
+    <div {...swipe} className={cn("flex h-12 shrink-0 items-center justify-between gap-2 border-b px-3 select-none md:h-14", touch && "touch-none")} data-slot={slot}>
       <div className="flex min-w-0 items-center gap-2">
         {onBack ? (
           <Button size="icon" variant="ghost" className="-ml-2 size-9 shrink-0" aria-label="Back" onClick={onBack}>
