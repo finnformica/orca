@@ -40,18 +40,20 @@ const markOf = (e: db.Fields | undefined): MergeMark | undefined => {
 const queueRepos = (cfg: OrcaConfig): RepoConfig[] => cfg.repos.filter((r) => repoHere(r) && runsHere(r, db.instanceName()));
 
 /** Mark a PR (or a branch whose PR doesn't exist yet) merge-when-green. Refused up front when the
- *  repo's policy would never merge it, so the caller hears why now rather than never. Then looked at
- *  once immediately — an already-green PR merges on the spot. */
-export async function request(cfg: OrcaConfig, repo: RepoConfig, target: { pr?: number; branch?: string }, opts: { small?: boolean; by: "orchestrator" | "user" }): Promise<string> {
+ *  repo's policy would never merge it, so the caller hears why now rather than never — unless
+ *  `bypassPolicy` (the Enable-auto-merge fallback: GitHub refused it, and this is the user's own
+ *  click, not the orchestrator's). Then looked at once immediately — an already-green PR merges on
+ *  the spot. */
+export async function request(cfg: OrcaConfig, repo: RepoConfig, target: { pr?: number; branch?: string }, opts: { small?: boolean; by: "orchestrator" | "user"; bypassPolicy?: boolean }): Promise<string> {
   const policy = repo.mergePolicy;
-  const early = mergeRefusal(policy, opts);
+  const early = mergeRefusal(policy, { small: opts.small, exempt: opts.bypassPolicy });
   if (early) throw new Error(`Not queued: ${early}.`);
   let pr = target.pr;
   let branch = target.branch;
   if (pr) branch = (await gh.prMergeGate(repo.repoPath, pr)).branch;
   else if (branch) pr = (await gh.listPrs(repo.repoPath).catch(() => [])).find((p) => p.branch === branch)?.number;
   if (!branch) throw new Error("merge needs --pr <number> or --branch <branch>");
-  const mark: MergeMark = { pr, small: opts.small || undefined, by: opts.by, at: Date.now() };
+  const mark: MergeMark = { pr, small: opts.small || undefined, by: opts.by, at: Date.now(), exempt: opts.bypassPolicy || undefined };
   await db.patchEnrichment(repo.name, branch, { [MARK]: mark });
   if (!pr) return `Marked ${repo.name}/${branch} merge-when-green; it has no PR yet, and is merged once one is open, green and clean.`;
   const verdict = await look(cfg, repo, branch, mark);

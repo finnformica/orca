@@ -238,7 +238,9 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
         <Sub label="PR">
             {prActions.includes("markReady") && <Item icon={CheckCheck} onSelect={run("Mark ready", () => markReady(row))}>Mark ready for review</Item>}
             {prActions.includes("moveToDraft") && <Item icon={GitPullRequestDraft} onSelect={run("Move to draft", () => convertToDraft(row))}>Move to draft</Item>}
-            {prActions.includes("autoMerge") && (row.autoMergeEnabled
+            {/* A PR Orca queued itself (the repo refused GitHub's auto-merge) reads the same as GitHub's
+                own auto-merge here: Disable cancels whichever is actually active (store.disableAutoMerge). */}
+            {prActions.includes("autoMerge") && (row.autoMergeEnabled || row.mergeWhenGreen
               ? <Item icon={Zap} onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</Item>
               : <Item icon={Zap} onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</Item>)}
             {/* One agent verb: conflicts, CI and review in a single run (store.addressPr). */}
