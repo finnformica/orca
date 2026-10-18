@@ -96,6 +96,7 @@ export const api = {
   /** Settings' Machine cost: one instance's USD/hour; null clears it (back to the EC2 estimate / 0). */
   setInstanceRate: (instance: string, hourlyUsd: number | null): Promise<{ ok: true }> => post("/api/config/instance-rate", { instance, hourlyUsd }),
   setInstanceTerminal: (instance: string, on: boolean): Promise<{ ok: true }> => post("/api/config/terminal", { instance, on }),
+  setServerIdentity: (name: string, color: string): Promise<{ ok: true }> => post("/api/config/identity", { name, color }),
   usage: (): Promise<Usage | null> => get("/api/usage").then(res),
   /** The unified inbox (shared/inbox.ts): one window of rows, newest first, with the filter facets. */
   inbox: (q: InboxQuery = {}): Promise<InboxPage> =>
