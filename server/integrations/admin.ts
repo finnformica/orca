@@ -5,7 +5,7 @@
 // the /api/integrations/pairing/approve|deny routes the page posts to).
 import * as db from "../db";
 import { ORCA_SECRETS } from "../env";
-import { secretRefRefusal, type Level, type Subscription, type TargetKind } from "../../shared/integrations";
+import { isAutomatic, leaseHolder, secretRefRefusal, type Level, type Subscription, type TargetKind } from "../../shared/integrations";
 import {
   integrationProblem, linkProblem,
   type DeadRow, type IntegrationCard, type IntegrationsOverview, type PersonRow,
@@ -17,7 +17,7 @@ import * as dispatcher from "./dispatcher";
 import type { Connection } from "./adapter";
 
 const user = () => db.currentUser();
-type Status = { ok?: boolean; detail?: string; at?: number; startedAt?: number; error?: string | null; lastEventAt?: number; secretSet?: boolean };
+type Status = { ok?: boolean; detail?: string; at?: number; startedAt?: number; error?: string | null; lastEventAt?: number; secretSet?: boolean; secretMissing?: Record<string, number> };
 
 async function statuses(): Promise<Map<string, Status>> {
   return db.withRetry(async (sql) => {
@@ -48,11 +48,14 @@ async function people(): Promise<PersonRow[]> {
 
 async function allSubscriptions(): Promise<Subscription[]> { return store.subscriptions(); }
 
-/** Whether the variable is set HERE. Undefined when the row runs elsewhere (its env is not ours). */
-const secretSetHere = (c: Connection, here: string): boolean | undefined =>
-  c.instance !== here ? undefined : !c.secretRef ? true : !!process.env[c.secretRef];
+/** The instance that runs `c` now: its pinned instance, or an Automatic row's lease holder. */
+const runner = (c: Connection, now = Date.now()): string | undefined => (isAutomatic(c.instance) ? leaseHolder(c.auto, now) : c.instance);
 
-export async function overview(here = db.instanceName()): Promise<IntegrationsOverview> {
+/** Whether the variable is set HERE. Undefined when the row runs elsewhere (its env is not ours). */
+const secretSetHere = (c: Connection, here: string, now = Date.now()): boolean | undefined =>
+  runner(c, now) !== here ? undefined : registry.secretHere(c);
+
+export async function overview(here = db.instanceName(), now = Date.now()): Promise<IntegrationsOverview> {
   const [rows, st, last, links, persons, pairs, subs, dead, live] = await Promise.all([
     store.integrations(), statuses(), lastEvents(), store.links(), people(), store.pendingPairings(), allSubscriptions(),
     store.deliveries({ state: "dead", limit: 100 }), registry.health(),
@@ -62,11 +65,16 @@ export async function overview(here = db.instanceName()): Promise<IntegrationsOv
     const running = c.id in live;
     const h = running ? { ...live[c.id]!, at: Date.now(), startedAt: s.startedAt } : s.ok === undefined ? undefined
       : { ok: !!s.ok, ...(s.detail ? { detail: s.detail } : {}), ...(s.error ? { error: s.error } : {}), ...(s.at ? { at: s.at } : {}), ...(s.startedAt ? { startedAt: s.startedAt } : {}) };
-    const secretSet = secretSetHere(c, here) ?? s.secretSet;
+    const auto = isAutomatic(c.instance);
+    const runsOn = runner(c, now);
+    // An Automatic row with nobody running it: the instances whose primary lacks its secret.
+    const secretMissingOn = auto && !runsOn ? Object.keys(s.secretMissing ?? {}).sort() : [];
+    const secretSet = secretSetHere(c, here, now) ?? (auto && !runsOn ? undefined : s.secretSet);
     const lastEventAt = Math.max(last.get(c.id) ?? 0, s.lastEventAt ?? 0) || undefined;
     return {
       id: c.id, kind: c.kind, name: c.name, instance: c.instance, enabled: c.enabled, config: c.config,
       ...(c.secretRef ? { secretRef: c.secretRef } : {}), ...(secretSet !== undefined ? { secretSet } : {}),
+      ...(auto && runsOn ? { runsOn } : {}), ...(secretMissingOn.length ? { secretMissingOn } : {}),
       running, ...(h ? { health: h } : {}), ...(lastEventAt ? { lastEventAt } : {}),
     };
   });
@@ -189,7 +197,8 @@ export async function retry(id?: number, now = Date.now()): Promise<number> {
  *  there). Recorded on the status row, with whether the secret is set, so every instance sees it. */
 export async function testIntegration(id: string, here = db.instanceName()): Promise<{ ok: boolean; detail?: string }> {
   const c = (await store.integration(id)) ?? fail(`no integration ${id}`);
-  if (c.instance !== here) fail(`${id} runs on ${c.instance}`);
+  const on = runner(c);
+  if (on && on !== here) fail(`${id} runs on ${on}`);
   const secretSet = secretSetHere(c, here);
   const refusal = secretRefRefusal(c.secretRef, ORCA_SECRETS);
   const running = registry.adapterFor(id);

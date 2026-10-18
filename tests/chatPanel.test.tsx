@@ -309,12 +309,12 @@ test("a tool's output stays inside its own accordion instead of spilling into th
   await act(async () => { fold!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
 
   expect(text()).toContain("Running the suite now."); // narration is the readable thread — visible
-  expect(text()).toContain("Running: bun test");      // the call's label, derived from its input — visible
+  expect(container!.querySelector('[data-slot="step-call"]')?.textContent).toBe("bun test"); // the real command, derived from its input — visible
   expect(text()).not.toContain("SECRET_TOOL_OUTPUT"); // its output — behind the toggle
   expect(text()).not.toContain("Tool result");        // and NOT a second row of its own
 
   // Opening that one call reveals the command AND its output together.
-  const toggle = [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("Running: bun test"));
+  const toggle = container!.querySelector('[data-slot="step-call"]')!.closest("button");
   await act(async () => { toggle!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
   expect(text()).toContain("SECRET_TOOL_OUTPUT 289 pass");
 });
@@ -348,9 +348,15 @@ test("a live turn shows ONE compact activity block, and on finish it folds into 
   // Nothing opens by itself: no command input, no output, no code block.
   expect(container!.querySelector("pre")).toBeNull();
   expect(text()).not.toContain("SECRET_FILE_BODY");
-  // The header opens the full list: one line per run, the interim text as prose, not code.
+  // The header opens the full list: every REAL call on its own row — never the trail's summary
+  // again — each with its status, and the interim text as prose, not code.
   await act(async () => { (slot("activity-head") as HTMLButtonElement).click(); });
-  expect(slot("activity-steps")?.textContent).toContain("Read 3 files");
+  const rows = [...container!.querySelectorAll('[data-slot="activity-list"] [data-slot="step-tool"]')];
+  expect(rows.map((r) => r.querySelector('[data-slot="step-call"]')?.textContent)).toEqual(["one.ts", "two.ts", "three.ts", "bun test"]);
+  expect(rows.map((r) => r.getAttribute("data-status"))).toEqual(["done", "done", "done", "running"]);
+  expect(rows[0]!.querySelector('[data-slot="step-duration"]')).toBeNull(); // result 1ms later: under 100ms, no `0.0s`
+  expect(rows[3]!.querySelector('[data-slot="step-call"]')?.className).toContain("font-mono");
+  expect(slot("activity-steps")?.textContent).not.toContain("Read 3 files");
   expect(slot("step-text")?.querySelector("strong")?.textContent).toBe("suite");
   await act(async () => { (slot("activity-head") as HTMLButtonElement).click(); });
 

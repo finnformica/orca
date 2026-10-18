@@ -2,7 +2,7 @@
 // Through db.withRetry like every other query, so a dropped connection is retried and an outage is
 // db.DbUnavailable. Every row carries user_id (db.currentUser()).
 import * as db from "../db";
-import { digestWindow, PAIRING_TTL_MS, type DeliveryState, type DeliveryTarget, type Envelope, type Level, type PlannedDelivery, type Subscription, type TargetKind } from "../../shared/integrations";
+import { AUTO_INSTANCE, digestWindow, PAIRING_TTL_MS, type AutoLease, type DeliveryState, type DeliveryTarget, type Envelope, type Level, type PlannedDelivery, type Subscription, type TargetKind } from "../../shared/integrations";
 import type { Connection } from "./adapter";
 import type { Notification } from "../../shared/notifications";
 import { muteKey, OWN_EVENT, type Conversation, type OutboundRecord, type ThreadLinkRecord } from "../../shared/inbox";
@@ -11,10 +11,11 @@ const user = () => db.currentUser();
 
 // ── integration (credentials: a variable NAME only) ─────────────────────────────────────────────
 
-type IntegrationRow = { id: string; kind: string; name: string; instance: string; config: Record<string, unknown> | null; secret_ref: string | null; enabled: boolean };
+type IntegrationRow = { id: string; kind: string; name: string; instance: string; config: Record<string, unknown> | null; secret_ref: string | null; enabled: boolean; auto: AutoLease | null };
 const toConnection = (r: IntegrationRow): Connection => ({
   id: r.id, kind: r.kind, name: r.name, instance: r.instance, config: r.config ?? {},
   ...(r.secret_ref ? { secretRef: r.secret_ref } : {}), enabled: r.enabled,
+  ...(r.auto && typeof r.auto.holder === "string" ? { auto: { holder: r.auto.holder, until: Number(r.auto.until) } } : {}),
 });
 
 export async function addIntegration(c: Connection): Promise<void> {
@@ -27,19 +28,19 @@ export async function addIntegration(c: Connection): Promise<void> {
   });
 }
 
-/** Every integration, or only those an instance runs. */
+/** Every integration, or only those an instance may run: its own and the Automatic ones. */
 export async function integrations(instance?: string): Promise<Connection[]> {
   return db.withRetry(async (sql) => {
     const rows = instance === undefined
-      ? await sql`SELECT id, kind, name, instance, config, secret_ref, enabled FROM integration WHERE user_id = ${user()} ORDER BY id`
-      : await sql`SELECT id, kind, name, instance, config, secret_ref, enabled FROM integration WHERE user_id = ${user()} AND instance = ${instance} ORDER BY id`;
+      ? await sql`SELECT id, kind, name, instance, config, secret_ref, enabled, status->'auto' AS auto FROM integration WHERE user_id = ${user()} ORDER BY id`
+      : await sql`SELECT id, kind, name, instance, config, secret_ref, enabled, status->'auto' AS auto FROM integration WHERE user_id = ${user()} AND instance IN (${instance}, ${AUTO_INSTANCE}) ORDER BY id`;
     return (rows as IntegrationRow[]).map(toConnection);
   });
 }
 
 export async function integration(id: string): Promise<Connection | undefined> {
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT id, kind, name, instance, config, secret_ref, enabled FROM integration WHERE user_id = ${user()} AND id = ${id}`;
+    const rows = await sql`SELECT id, kind, name, instance, config, secret_ref, enabled, status->'auto' AS auto FROM integration WHERE user_id = ${user()} AND id = ${id}`;
     const r = (rows as IntegrationRow[])[0];
     return r ? toConnection(r) : undefined;
   });
@@ -48,6 +49,43 @@ export async function integration(id: string): Promise<Connection | undefined> {
 export async function setIntegrationStatus(id: string, status: Record<string, unknown>): Promise<void> {
   return db.withRetry(async (sql) => {
     await sql`UPDATE integration SET status = COALESCE(status, '{}'::jsonb) || ${status}::jsonb WHERE user_id = ${user()} AND id = ${id}`;
+  });
+}
+
+/** Take or renew an Automatic row's lease for `here`: only when no lease is live or it is already
+ *  `here`'s (`shared/integrations.ts` mayClaim, done in one UPDATE so two primaries cannot both win).
+ *  Answers the lease that stands after the attempt — `here`'s, or the other holder's. */
+export async function claimAuto(id: string, here: string, now: number, ttlMs: number): Promise<AutoLease | undefined> {
+  return db.withRetry(async (sql) => {
+    const lease = { holder: here, until: now + ttlMs };
+    const won = await sql`UPDATE integration SET status = COALESCE(status, '{}'::jsonb) || jsonb_build_object('auto', ${lease}::jsonb)
+      WHERE user_id = ${user()} AND id = ${id} AND instance = ${AUTO_INSTANCE} AND enabled
+        AND (status->'auto' IS NULL OR status->'auto'->>'holder' = ${here} OR (status->'auto'->>'until')::bigint <= ${now})
+      RETURNING id`;
+    if (won.length) return lease;
+    const [r] = await sql`SELECT status->'auto' AS auto FROM integration WHERE user_id = ${user()} AND id = ${id}`;
+    const auto = (r as { auto: AutoLease | null } | undefined)?.auto;
+    return auto && typeof auto.holder === "string" ? { holder: auto.holder, until: Number(auto.until) } : undefined;
+  });
+}
+
+/** Give the lease up (shutdown, the row disabled or pinned): the next primary takes it at once. */
+export async function releaseAuto(id: string, here: string): Promise<void> {
+  return db.withRetry(async (sql) => {
+    await sql`UPDATE integration SET status = status - 'auto' WHERE user_id = ${user()} AND id = ${id} AND status->'auto'->>'holder' = ${here}`;
+  });
+}
+
+/** Record whether the secret of an Automatic row is missing on `here` (`status.secretMissing`, one
+ *  key per instance), so the page names every instance that lacks it. */
+export async function markSecretMissing(id: string, here: string, missing: boolean, now: number): Promise<void> {
+  return db.withRetry(async (sql) => {
+    await (missing
+      ? sql`UPDATE integration SET status = jsonb_set(COALESCE(status, '{}'::jsonb), '{secretMissing}',
+          COALESCE(status->'secretMissing', '{}'::jsonb) || jsonb_build_object(${here}::text, ${now}::bigint))
+          WHERE user_id = ${user()} AND id = ${id}`
+      : sql`UPDATE integration SET status = status #- ARRAY['secretMissing', ${here}::text]
+          WHERE user_id = ${user()} AND id = ${id} AND status->'secretMissing'->>${here}::text IS NOT NULL`);
   });
 }
 

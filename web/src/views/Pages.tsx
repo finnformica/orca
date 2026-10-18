@@ -4,7 +4,7 @@
 // instance cards' Cost · this month), and the configuration this bridge runs with (read-only — it
 // is edited in orca.config.ts / the config table, not here). Notifications: do not
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { Check, ChevronDown, ChevronRight, FolderGit2, GitBranch, Server, SquareTerminal } from "lucide-react";
 import { api, type GithubAccount } from "../api";
@@ -24,11 +24,11 @@ import { instanceChoices, setInstanceRate, setInstanceTerminal, staleHours, term
 import { terminalMachines, useOpenTerminal } from "@/components/InstanceTerminal";
 import { ago, repoSummaries, terminalBlocked } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
-import { FindBox, NAV, OrcaMark, THEMES } from "@/components/Shell";
+import { BrandName, FindBox, NAV, OrcaMark, THEMES } from "@/components/Shell";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
-import { IDENTITY_COLORS, IDENTITY_NAME_MAX, colorFromName, markColor, normalizeColor } from "../../../shared/serverIdentity";
+import { IDENTITY_NAME_MAX, NEUTRAL, colorFromName, colorGrid, isNeutral, markBg, markColor, normalizeColor, normalizeTheme, swatchBackground, type GridCell } from "../../../shared/serverIdentity";
 import { InstanceCard, RefreshVitals, UsageCard } from "./Vitals";
 import { RunningPreviews, TestMaster } from "./PreviewControl";
 
@@ -39,7 +39,7 @@ export function Repos() {
   const summaries = repoSummaries(rows, repos.map((r) => r.name));
   return (
     <div className="space-y-5">
-      <h1 className="text-2xl font-semibold tracking-tight">Repos</h1>
+      <h1 className="text-heading text-2xl font-semibold tracking-tight">Repos</h1>
       <VCard slot="repos-list">
         {summaries.length === 0 ? <Empty>No repos configured.</Empty> : (
           <ul className="divide-y">
@@ -86,7 +86,7 @@ export function UsagePage() {
   const machines = instances.length ? instances : here ? [here] : [];
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Usage</h1>
+      <h1 className="text-heading text-2xl font-semibold tracking-tight">Usage</h1>
       <UsageCard />
       <div>
         <SectionTitle aside={<RefreshVitals />}>Machines</SectionTitle>
@@ -104,7 +104,7 @@ export function Settings() {
   const here = thisInstance();
   return (
     <div className="max-w-4xl space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+      <h1 className="text-heading text-2xl font-semibold tracking-tight">Settings</h1>
       <MobileNav />
       <VCard slot="settings-appearance" title="Appearance" bodyClass="divide-y">
         <Setting label="Theme" hint="Light, dark, or follow the system.">
@@ -327,90 +327,139 @@ function MachineRate({ instance, saved }: { instance: string; saved: number | un
 
 /** Settings → Server identity: the ACTIVE server's display name and theme colour (Slack's workspace
  *  name and theme). Saved to that server's app config (`serverIdentity`); empty fields fall back to
- *  the Tailscale host name and the colour derived from the name. */
+ *  the Tailscale host name and the colour derived from the name. There is no Save button: a colour
+ *  saves when picked, the name `IDENTITY_SAVE_DELAY_MS` after the last keystroke or on blur. A failed
+ *  save puts the stored values back and raises the action-failed toast. */
+export const IDENTITY_SAVE_DELAY_MS = 500;
 function ServerIdentitySettings() {
   const identity = useServerIdentity();
   const [name, setName] = useState("");
   const [color, setColor] = useState(""); // "" = derived from the name
-  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const typing = useRef(false); // the name field has focus: a save's reload must not overwrite it
+  const chain = useRef<Promise<void>>(Promise.resolve()); // saves go out in order
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const stored = identity?.stored;
-  useEffect(() => { setName(stored?.name ?? ""); setColor(stored?.color ?? ""); }, [stored?.name, stored?.color]);
+  const storedRef = useRef(stored);
+  storedRef.current = stored;
+  useEffect(() => { if (!typing.current) setName(stored?.name ?? ""); setColor(stored?.color ?? ""); }, [stored?.name, stored?.color]);
+  useEffect(() => () => { clearTimeout(timer.current); clearTimeout(savedTimer.current); }, []);
   if (!identity) return null;
   const label = name.trim() || identity.host;
-  const shown = normalizeColor(color) ?? colorFromName(label);
-  const dirty = name.trim() !== (stored?.name ?? "") || (normalizeColor(color) ?? "") !== (stored?.color ?? "");
-  const save = async () => {
-    setBusy(true);
-    try { await api.setServerIdentity(name.trim(), normalizeColor(color) ?? ""); await loadIdentity(); }
-    catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
-      notifyLocal({
-        kind: "action_failed", repo: "", title: "Server identity", label: "Save identity failed", body: error,
-        copy: `Action: Save server identity\nError:\n${error}`,
-        ask: `Saving the server identity failed: ${error}. Please investigate and fix.`,
-      });
-    }
-    finally { setBusy(false); }
+  const shown = normalizeTheme(color) ?? colorFromName(label);
+  const save = (nextName: string, nextColor: string) => {
+    clearTimeout(timer.current); timer.current = undefined;
+    const n = nextName.trim(), c = normalizeTheme(nextColor) ?? "";
+    const was = storedRef.current;
+    if (n === (was?.name ?? "") && c === (was?.color ?? "")) return;
+    setStatus("saving"); clearTimeout(savedTimer.current);
+    chain.current = chain.current.then(async () => {
+      try {
+        await api.setServerIdentity(n, c); await loadIdentity();
+        setStatus("saved"); savedTimer.current = setTimeout(() => setStatus("idle"), 2000);
+      } catch (e) {
+        setStatus("idle");
+        const back = storedRef.current;
+        setName(back?.name ?? ""); setColor(back?.color ?? "");
+        const error = e instanceof Error ? e.message : String(e);
+        notifyLocal({
+          kind: "action_failed", repo: "", title: "Server identity", label: "Save identity failed", body: error,
+          copy: `Action: Save server identity\nError:\n${error}`,
+          ask: `Saving the server identity failed: ${error}. Please investigate and fix.`,
+        });
+      }
+    });
   };
+  const typeName = (v: string) => {
+    setName(v); clearTimeout(timer.current);
+    timer.current = setTimeout(() => save(v, color), IDENTITY_SAVE_DELAY_MS);
+  };
+  const pickColor = (c: string) => { setColor(c); save(name, c); };
   return (
     <VCard slot="settings-identity" title="Server identity" bodyClass="divide-y"
-      aside={<span data-slot="identity-preview" className="flex items-center gap-2 text-sm font-medium">
-        <span className="inline-flex size-5 items-center justify-center rounded-full bg-black" style={{ color: markColor(shown) }}><OrcaMark className="size-3.5" /></span>
-        Orca <span>{label}</span>
+      aside={<span className="flex items-center gap-3">
+        <span data-slot="identity-status" aria-live="polite" className="text-muted-foreground flex items-center gap-1 text-xs">
+          {status === "saving" ? "Saving…" : status === "saved" ? <><Check className="size-3.5" /> Saved</> : null}
+        </span>
+        <span data-slot="identity-preview" className="flex items-center gap-2 text-sm font-medium">
+          <span className="inline-flex size-5 items-center justify-center rounded-full" style={{ color: markColor(shown), background: markBg(shown) }}><OrcaMark className="size-3.5" /></span>
+          <BrandName label={label} labelSlot="identity-preview-name" />
+        </span>
       </span>}>
       <Setting label="Display name" htmlFor="identity-name" hint={`The title, the sidebar and the server menu show it. Empty: ${identity.host}.`}>
         <Input id="identity-name" data-slot="identity-name" value={name} maxLength={IDENTITY_NAME_MAX} placeholder={identity.host}
-          onChange={(e) => setName(e.target.value)} className="bg-background w-44" />
+          onFocus={() => { typing.current = true; }}
+          onBlur={() => { typing.current = false; if (timer.current) save(name, color); }}
+          onChange={(e) => typeName(e.target.value)} className="bg-background w-44" />
       </Setting>
-      <Setting label="Theme colour" hint={color ? "The sidebar, buttons, links, focus rings and the mark take it." : "Auto: from the name. The sidebar, buttons, links, focus rings and the mark take it."}>
-        <ColorPicker value={shown} auto={!color} onChange={setColor} />
+      <Setting label="Theme colour" hint={isNeutral(color) ? "Neutral: no theme. The sidebar is grey and the mark is black and white." : color ? "The sidebar, buttons, links, focus rings and the mark take it." : "Auto: from the name. The sidebar, buttons, links, focus rings and the mark take it."}>
+        <ColorPicker value={shown} auto={!color} onChange={pickColor} />
       </Setting>
-      <div className="flex items-center justify-end gap-2 px-4 py-3">
-        <Button type="button" variant="secondary" size="sm" data-slot="identity-save" disabled={!dirty || busy} onClick={() => void save()}>Save</Button>
-      </div>
     </VCard>
   );
 }
 
-/** The theme colour picker (shadcn's colour picker pattern): a trigger with the swatch and the
- *  colour's name, a popover of the 8 presets, a hex field for a custom colour and Auto (from the
- *  name). `onChange("")` is Auto. */
+/** The colour grid as rows: the base hues, then each tint and shade level across every hue. */
+const GRID = ((cols: GridCell[][]) => cols[0]!.map((_, r) => cols.map((col) => col[r]!)))(colorGrid());
+const NEUTRAL_CELL: GridCell = { value: NEUTRAL, label: "Neutral" };
+/** One grid cell's look, shared by Neutral and every colour so they match: size, corners, the
+ *  selected ring's offset, and an inset hairline (an outer border made Neutral 2px larger and let its
+ *  gradient show at the edge; the hairline also keeps Neutral's white half visible on a light popover). */
+const SWATCH = "block size-5 shrink-0 rounded-[4px] inset-ring inset-ring-border ring-offset-1 ring-offset-popover";
+
+/** The theme colour picker (a shadcn Popover; shadcn has no colour picker of its own): a trigger with
+ *  the swatch and the colour's name, a Word-style grid (`colorGrid`: the presets and two more hues,
+ *  each with its tints and shades), a hex field for a custom colour and Auto (from the name).
+ *  Neutral (no theme) is the first cell, a labelled row above the grid. `onChange("")` is Auto. */
 function ColorPicker({ value, auto, onChange }: { value: string; auto: boolean; onChange: (color: string) => void }) {
   const [hex, setHex] = useState(value);
-  useEffect(() => setHex(value), [value]);
-  const preset = IDENTITY_COLORS.find((c) => c.value === value);
+  useEffect(() => setHex(isNeutral(value) ? "" : value), [value]);
+  const preset = [NEUTRAL_CELL, ...GRID.flat()].find((c) => c.value === value);
   // Only a whole #rrggbb applies: a 3-digit prefix would expand and jump the field mid-typing.
   const asHex = (v: string) => (/^#?[0-9a-f]{6}$/i.test(v) ? normalizeColor(v.startsWith("#") ? v : `#${v}`) : undefined);
   const typed = (v: string) => { setHex(v); const c = asHex(v); if (c) onChange(c); };
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button type="button" variant="secondary" size="sm" data-slot="identity-color-trigger" aria-label={`Theme colour: ${preset?.name ?? value}${auto ? " (auto)" : ""}`}>
-          <span aria-hidden="true" className="size-4 rounded-[4px]" style={{ background: value }} />
-          <span className={cn(!preset && "font-mono")}>{preset?.name ?? value}</span>
+        <Button type="button" variant="secondary" size="sm" data-slot="identity-color-trigger" aria-label={`Theme colour: ${preset?.label ?? value}${auto ? " (auto)" : ""}`}>
+          <span aria-hidden="true" className="size-4 rounded-[4px] border" style={{ background: swatchBackground(value) }} />
+          <span className={cn("max-w-[9rem] truncate", !preset && "font-mono")}>{preset?.label ?? value}</span>
           {auto && <span className="text-muted-foreground font-normal">Auto</span>}
           <ChevronDown className="text-muted-foreground size-3.5" />
         </Button>
       </PopoverTrigger>
       {/* The hex field takes the first focus: on a swatch, its tooltip opened over the caption. */}
-      <PopoverContent align="end" className="w-64" data-slot="identity-picker"
+      <PopoverContent align="end" className="w-[17rem]" data-slot="identity-picker"
         onOpenAutoFocus={(e) => { e.preventDefault(); (e.currentTarget as HTMLElement).querySelector<HTMLInputElement>('[data-slot="identity-hex"]')?.focus(); }}>
-        <div className="text-muted-foreground mb-2 text-xs font-medium">Presets</div>
-        <div role="radiogroup" aria-label="Theme colour" className="grid grid-cols-8 gap-1.5">
-          {IDENTITY_COLORS.map((c) => (
-            <Tip key={c.value} label={c.name}>
-              <button type="button" role="radio" aria-checked={value === c.value} aria-label={c.name} data-slot="identity-color" data-color={c.value}
-                onClick={() => onChange(c.value)}
-                className={cn("focus-visible:ring-ring/40 inline-flex size-6 items-center justify-center rounded-md text-white outline-none ring-offset-2 ring-offset-popover focus-visible:ring-2", value === c.value && "ring-2 ring-(--swatch)")}
-                style={{ background: c.value, ["--swatch" as string]: c.value }}>
-                {value === c.value && <Check className="size-3.5" />}
-              </button>
-            </Tip>
+        <div className="text-muted-foreground mb-2 text-xs font-medium">Theme colours</div>
+        {/* Word's grid: the base hues in one row, then each hue's tints and shades in its column. */}
+        <div role="radiogroup" aria-label="Theme colour" data-slot="identity-grid" className="flex flex-col gap-1">
+          {/* Neutral: the first cell, with its name beside it, so "no theme" is never a guess. */}
+          <button type="button" role="radio" aria-checked={isNeutral(value)} aria-label="Neutral"
+            data-slot="identity-color" data-row="neutral" data-color={NEUTRAL} onClick={() => onChange(NEUTRAL)}
+            className="hover:bg-accent focus-visible:ring-ring/40 mb-1.5 flex items-center gap-2 self-start rounded-md pr-2 text-xs font-medium outline-none focus-visible:ring-2">
+            <span aria-hidden="true" data-slot="identity-swatch" className={cn(SWATCH, isNeutral(value) && "ring-foreground ring-2")}
+              style={{ background: swatchBackground(NEUTRAL) }} />
+            Neutral
+          </button>
+          {GRID.map((row, r) => (
+            <div key={r} className={cn("grid grid-cols-10 gap-1", r === 1 && "mt-1.5")}>
+              {row.map((c) => (
+                <Tip key={c.value} label={c.label}>
+                  <button type="button" role="radio" aria-checked={value === c.value} aria-label={c.label}
+                    data-slot="identity-color" data-row={r === 0 ? "base" : "tone"} data-color={c.value}
+                    onClick={() => onChange(c.value)}
+                    className={cn(SWATCH, "focus-visible:ring-ring/40 outline-none focus-visible:ring-2", value === c.value && "ring-foreground ring-2")}
+                    style={{ background: c.value }} />
+                </Tip>
+              ))}
+            </div>
           ))}
         </div>
         <div className="text-muted-foreground mt-3 mb-2 text-xs font-medium">Custom</div>
         <div className="flex items-center gap-2">
-          <span aria-hidden="true" data-slot="identity-custom-swatch" className="size-8 shrink-0 rounded-md border" style={{ background: asHex(hex) ?? value }} />
+          <span aria-hidden="true" data-slot="identity-custom-swatch" className="size-8 shrink-0 rounded-md border" style={{ background: asHex(hex) ?? swatchBackground(value) }} />
           <Input data-slot="identity-hex" aria-label="Hex colour" value={hex} maxLength={7} spellCheck={false} placeholder="#2f6feb"
             onChange={(e) => typed(e.target.value.trim())} className="bg-background h-8 font-mono" />
         </div>
@@ -444,7 +493,7 @@ export function GitHubPage() {
   useEffect(() => { void api.githubAccounts().then((r) => setAccounts(r.accounts)).catch(() => setAccounts([])); }, []);
   return (
     <div className="space-y-5">
-      <h1 className="text-2xl font-semibold tracking-tight">GitHub</h1>
+      <h1 className="text-heading text-2xl font-semibold tracking-tight">GitHub</h1>
       <VCard slot="github-accounts" bodyClass="divide-y">
         {accounts === null ? <Empty>Loading…</Empty>
           : accounts.length === 0 ? <Empty>No gh account is signed in on this machine.</Empty>
@@ -513,7 +562,7 @@ function AccountRowView({ account: a, onSaved }: { account: GithubAccount; onSav
 export function PreviewsPage() {
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Previews</h1>
+      <h1 className="text-heading text-2xl font-semibold tracking-tight">Previews</h1>
       <div><SectionTitle>Running</SectionTitle><VCard slot="running-previews"><RunningPreviews /></VCard></div>
       <div><SectionTitle>Test master</SectionTitle><VCard slot="test-master"><TestMaster /></VCard></div>
     </div>

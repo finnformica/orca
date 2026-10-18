@@ -46,7 +46,9 @@ import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
 import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
-import { checkCaller, listServers, selfServer, serverGate, withIdentity } from "./servers";
+import { checkCaller, instanceHosts, listServers, selfServer, serverGate, withIdentity } from "./servers";
+import { isAutomatic, leaseHolder } from "../shared/integrations";
+import { instanceOptions } from "../shared/integrationSettings";
 import { identityUpdate, serverIdentityProblems } from "../shared/serverIdentity";
 import * as handoff from "./handoff";
 
@@ -664,14 +666,19 @@ async function api(req: Request, url: URL): Promise<Response> {
     // Settings > Integrations in one read (server/integrations/admin.ts): the kinds the registry
     // knows, every integration with its health and last event, links, people, pending pairing codes,
     // subscriptions and the dead deliveries. `running` keeps the diagnostics' map of this bridge.
-    return json({ ...(await integrationAdmin.overview()), running: await integrations.health() });
+    // `instanceOptions`: each instance by the server's display name or its Tailscale host, not its id.
+    const ids = [...Object.keys(cfg.instances ?? {}), db.instanceName()];
+    const hosts = await instanceHosts(cfg.instances ?? {}, cfg.serverSwitcher ?? {}).catch(() => ({}));
+    const options = instanceOptions(ids, hosts, cfg.serverIdentity?.name, cfg.orchestratorOn ?? db.instanceName());
+    return json({ ...(await integrationAdmin.overview()), instanceOptions: options, running: await integrations.health() });
   }
   if (req.method === "POST" && p === "/api/integrations/test") {
     // The card's Test: the adapter's own health check, on the instance that runs it.
     const row = await integrationStore.integration(String(body.id ?? ""));
     if (!row) return json({ error: `no integration ${String(body.id ?? "")}` }, 404);
-    if (row.instance !== db.instanceName()) {
-      try { return json(await orchestrator.viaInstance(cfg, row.instance, "/api/integrations/test", { id: row.id })); }
+    const on = isAutomatic(row.instance) ? leaseHolder(row.auto, Date.now()) : row.instance; // Automatic: its lease holder
+    if (on && on !== db.instanceName()) {
+      try { return json(await orchestrator.viaInstance(cfg, on, "/api/integrations/test", { id: row.id })); }
       catch (e) { return json({ ok: false, detail: e instanceof Error ? e.message : String(e) }); }
     }
     return json(await integrationAdmin.testIntegration(row.id));
@@ -1285,8 +1292,17 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/prs/auto-merge") {
     if (!featuresOf(repo).autoMerge) return notEnabled(repo, "Auto-merge");
-    await gh.enableAutoMerge(repo.repoPath, body.pr); // GitHub merges once checks + reviews pass
-    return json({ ok: true });
+    try {
+      await gh.enableAutoMerge(repo.repoPath, body.pr); // GitHub merges once checks + reviews pass
+      return json({ ok: true });
+    } catch (e) {
+      // The repo disallows GitHub's own auto-merge and the PR isn't safe to merge now: queue it in
+      // Orca's own merge-when-green queue instead. This is Finn's own click, so the mergePolicy that
+      // limits what the orchestrator may merge on its own does not apply (bypassPolicy).
+      if (!(e instanceof gh.AutoMergeNotAllowed)) throw e;
+      const text = await mergeQueue.request(cfg, repo, { pr: body.pr }, { by: "user", bypassPolicy: true });
+      return json({ ok: true, queued: true, text });
+    }
   }
   if (req.method === "POST" && p === "/api/prs/disable-auto-merge") {
     await gh.disableAutoMerge(repo.repoPath, body.pr); // cancel the queued auto-merge

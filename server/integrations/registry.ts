@@ -1,16 +1,19 @@
 // The adapter registry (docs/research/integrations.md §3.3, phase 1). A factory per kind; one running
-// adapter per `integration` row. Adapters start ONLY on the primary bridge (primary.held()) of the
-// instance the row names (`integration.instance`), so a socket is opened by exactly one process —
-// Discord stays on the personal box, Slack on the work box, with the same code on both.
+// adapter per `integration` row. Adapters start ONLY on a primary bridge (primary.held()), so a socket
+// is opened by exactly one process. A row is pinned to the instance it names (`integration.instance`),
+// or Automatic (`AUTO_INSTANCE`): then the primary that holds its lease runs it (`status.auto`). Each
+// primary with the row's secret tries the lease on every sync; when the holder stops renewing (down,
+// asleep, no longer primary), the lease ends and another primary takes it — the failover.
 import * as db from "../db";
 import * as primary from "../primary";
 import { ORCA_SECRETS } from "../env";
-import { secretRefRefusal, type AdapterKind, type AdapterMeta, type InboundEnvelope } from "../../shared/integrations";
+import { AUTO_LEASE_MS, isAutomatic, leaseHolder, runsOn, secretRefRefusal, type AdapterKind, type AdapterMeta, type InboundEnvelope } from "../../shared/integrations";
 import type { Adapter, AdapterContext, AdapterFactory, Connection } from "./adapter";
 import * as router from "./router";
 import * as store from "./store";
 import { SLACK_CAPS, slackAdapter } from "./adapters/slack";
 import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
+import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
 const metas = new Map<AdapterKind, AdapterMeta>();
@@ -24,6 +27,11 @@ export function register(kind: AdapterKind, factory: AdapterFactory, meta?: Omit
 }
 register("slack", slackAdapter, { label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "ORCA_SECRET_SLACK_BOT", help: "A bot token (xoxb-…). Invite the bot to each linked channel." });
 register("webhook", webhookAdapter, { label: "Webhook", caps: WEBHOOK_CAPS, place: "hook", secretExample: "ORCA_SECRET_WEBHOOK", help: "Signed POSTs to /api/integrations/<id>/inbound (HMAC sha256 of the body)." });
+register("discord", discordAdapter, {
+  label: "Discord", caps: DISCORD_CAPS, place: "channel", secretExample: "ORCA_SECRET_DISCORD_BOT",
+  config: [{ key: "dmLink", label: "DM link id (optional)", placeholder: "the link DMs go to; empty = the * link" }],
+  help: "A bot token with the Message Content intent. Only one bridge runs it, also on Automatic. Setup: docs/integrations/discord.md.",
+});
 
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */
 export function kinds(): AdapterMeta[] {
@@ -32,9 +40,14 @@ export function kinds(): AdapterMeta[] {
   });
 }
 
-/** Whether this process may run `c` now: enabled, on this instance, this process primary. */
-export const runsHere = (c: Pick<Connection, "instance" | "enabled">, here = db.instanceName(), isPrimary = primary.held()): boolean =>
-  isPrimary && c.enabled && c.instance === here;
+/** Whether this process may run `c` now: enabled, this process primary, and the row pinned to this
+ *  instance or Automatic with this instance's live lease. */
+export const runsHere = (c: Pick<Connection, "instance" | "enabled" | "auto">, here = db.instanceName(), isPrimary = primary.held(), now = Date.now()): boolean =>
+  runsOn(c, here, isPrimary, now);
+
+/** Whether the variable a row names is set in this process's environment (no secret: true). */
+export const secretHere = (c: Pick<Connection, "secretRef">, env: Record<string, string | undefined> = process.env): boolean =>
+  !c.secretRef || !!env[c.secretRef];
 
 export function context(connection: Connection, abort: AbortController): AdapterContext {
   return {
@@ -74,8 +87,18 @@ export async function startOne(connection: Connection): Promise<boolean> {
 /** Start every enabled integration this instance runs, and stop any that no longer should (a row
  *  disabled, moved to another instance, or deleted). Idempotent: run it at startup and after a
  *  config change. A secondary bridge starts nothing. */
-export async function sync(): Promise<string[]> {
-  const mine = primary.held() ? (await store.integrations(db.instanceName())).filter((c) => runsHere(c)) : [];
+export async function sync(now = Date.now()): Promise<string[]> {
+  const here = db.instanceName();
+  const rows = primary.held() ? await store.integrations(here) : [];
+  for (const c of rows) {
+    if (!isAutomatic(c.instance) || !c.enabled) continue;
+    // Only a primary with the secret contends, so the lease goes where the connection can start.
+    const has = secretHere(c);
+    await store.markSecretMissing(c.id, here, !has, now);
+    if (has) { const lease = await store.claimAuto(c.id, here, now, AUTO_LEASE_MS); if (lease) c.auto = lease; else delete c.auto; }
+    else if (leaseHolder(c.auto, now) === here) { await store.releaseAuto(c.id, here); delete c.auto; }
+  }
+  const mine = rows.filter((c) => runsHere(c, here, true, now));
   const want = new Set(mine.map((c) => c.id));
   for (const id of [...running.keys()]) if (!want.has(id)) await stopOne(id);
   for (const c of mine) await startOne(c);
@@ -88,6 +111,8 @@ export async function stopOne(id: string): Promise<void> {
   running.delete(id);
   r.abort.abort();
   await r.adapter.stop().catch((e) => console.error(`orca: integration ${id} stop failed`, e));
+  // An Automatic row: let its lease go, so another primary starts it now, not when the lease ends.
+  if (isAutomatic(r.connection.instance)) await store.releaseAuto(id, db.instanceName()).catch(() => {});
 }
 
 export async function stopAll(): Promise<void> {
@@ -103,7 +128,8 @@ export async function handle(id: string, req: Request, body: string): Promise<Re
   const r = running.get(id);
   if (!r) {
     const row = await store.integration(id).catch(() => undefined);
-    const where = row ? (row.instance !== db.instanceName() ? `it runs on ${row.instance}` : !row.enabled ? "it is disabled" : "it is not running on this bridge") : "no such integration";
+    const elsewhere = row && (isAutomatic(row.instance) ? leaseHolder(row.auto, Date.now()) : row.instance);
+    const where = row ? (!row.enabled ? "it is disabled" : elsewhere && elsewhere !== db.instanceName() ? `it runs on ${elsewhere}` : "it is not running on this bridge") : "no such integration";
     return Response.json({ error: `integration ${id}: ${where}` }, { status: 404 });
   }
   if (!r.adapter.handle) return Response.json({ error: `integration ${id} (${r.connection.kind}) takes no HTTP requests` }, { status: 405 });

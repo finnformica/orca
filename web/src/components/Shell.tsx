@@ -84,7 +84,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
       {/* Desktop only: a phone's nav is the bottom bar + Settings (see MobileNav in views/Pages.tsx) —
           there is no off-canvas drawer any more. */}
       <aside
-        data-slot="sidebar" data-collapsed={collapsed}
+        data-slot="sidebar" data-chrome="" data-collapsed={collapsed}
         className={cn(
           "bg-sidebar z-50 max-md:hidden md:sticky md:top-0 md:flex md:h-screen md:flex-col md:border-r",
           collapsed ? "md:w-14" : "md:w-60",
@@ -97,7 +97,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
         {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it.
             The notch inset goes to whichever is topmost: the banner when it's shown, else the header. */}
         <header
-          data-slot="topbar"
+          data-slot="topbar" data-chrome=""
           className={cn(
             "bg-background sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 md:px-6 max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))]",
             !updateAvailable && "max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:pt-[env(safe-area-inset-top)]",
@@ -215,11 +215,24 @@ export function OrcaMark({ className }: { className?: string }) {
   );
 }
 
-/** The mark inside a circle — Vercel's round avatar logo: the circle always black, the orca in the
- *  active server's theme colour (`--server-mark`, lifted to read on black); the favicon matches it. */
+/** The mark inside a circle — Vercel's round avatar logo: the circle a very dark shade of the active
+ *  server's theme colour (`--server-mark-bg`), the orca the colour (`--server-mark`); the favicon
+ *  matches it. Neutral: a black circle and a white orca. */
 export const RoundMark = ({ className }: { className?: string }) => (
-  <span data-slot="round-mark" className={cn("text-server-mark inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-black", className)}>
+  <span data-slot="round-mark" className={cn("text-server-mark inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-server-mark-bg", className)}>
     <OrcaMark className="size-4" />
+  </span>
+);
+
+/** "Orca | <name>" beside the mark, as the page title reads: a thin muted pipe with even space on each
+ *  side. The sidebar and Settings' identity preview both use it, so they cannot differ. */
+export const BrandName = ({ label, labelClass, labelSlot = "server-identity", className }: { label?: string; labelClass?: string; labelSlot?: string; className?: string }) => (
+  <span data-slot="brand-name" className={cn("flex min-w-0 items-baseline gap-1.5", className)}>
+    <span className="shrink-0">Orca</span>
+    {label && <>
+      <span aria-hidden="true" data-slot="brand-sep" className="text-muted-foreground/60 shrink-0 font-light">|</span>
+      <span data-slot={labelSlot} className={cn("truncate", labelClass)}>{label}</span>
+    </>}
   </span>
 );
 
@@ -282,10 +295,7 @@ function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
     <>
       {mark}
       <span className={cn("min-w-0 flex-1 text-left", collapsed && "md:hidden")}>
-        <span className="flex min-w-0 items-baseline gap-1.5 text-sm font-medium">
-          <span className="shrink-0">Orca</span>
-          {identity && <span data-slot="server-identity" className="text-server-fg truncate">{identity.label}</span>}
-        </span>
+        <BrandName label={identity?.label} labelClass="text-server-fg" className="text-sm font-medium" />
         <span data-slot="instance-scope" className="text-muted-foreground block truncate text-xs">{label}</span>
       </span>
     </>

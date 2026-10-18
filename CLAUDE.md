@@ -188,8 +188,9 @@ adapter: `docs/integrations/ADAPTERS.md`). Every event is a keyed envelope in `e
 writes one beside each NEW notification, same key). `subscription` rows plan `delivery` rows in the
 same transaction; the dispatcher (primary only) claims them `FOR UPDATE SKIP LOCKED`, backs off 5 s →
 1 h and marks a row dead after 6 attempts (`orca.integration.failed`, an `integration_failed`
-notification). Adapters (`web`, `webhook`, `slack` outbound so far) start only on the primary bridge
-of `integration.instance`. Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents); a
+notification). Adapters (`web`, `webhook`, `slack` outbound so far) start only on a primary bridge:
+the one of `integration.instance`, or for Automatic (`*`, the default) the primary with the secret
+that holds the row's lease (`status.auto`, 150 s, renewed each sync — the failover when it lapses). Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents); a
 row holds only the name. An outside sender's message gets a grant (min of link level and person) that
 rides `queued_message.grant_scope`: one grant per orchestrator wake, `orchestrator.tool` refuses
 verbs outside it (`grantRefusal`), and such a wake has no shell; a workstream it spawns or steers

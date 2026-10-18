@@ -18,7 +18,8 @@ import {
 } from "@/lib/server";
 import { _resetServerList } from "@/components/ServerMenu";
 import { _resetIdentity } from "@/lib/identity";
-import { IDENTITY_COLORS, colorFromName, markColor, themeCss } from "../shared/serverIdentity";
+import { IDENTITY_SAVE_DELAY_MS } from "@/views/Pages";
+import { IDENTITY_COLORS, colorFromName, markBg, markColor, themeCss } from "../shared/serverIdentity";
 import { getDefaultStore } from "jotai";
 import { paletteOpenAtom } from "@/lib/atoms";
 import { apiFake } from "./apiFake";
@@ -277,9 +278,14 @@ test("S6e: the ACTIVE server's identity — title, accent, favicon and sidebar n
   expect(document.documentElement.style.getPropertyValue("--server")).toBe("#1f9d55");
   expect(document.documentElement.style.getPropertyValue("--server-mark")).toBe(markColor("#1f9d55"));
   expect(decodeURIComponent(icon.href)).toContain(`<path fill="${markColor("#1f9d55")}"`); // the orca in the colour
-  expect(decodeURIComponent(icon.href)).toContain('fill="#000000"'); // on the black circle
+  expect(decodeURIComponent(icon.href)).toContain(`fill="${markBg("#1f9d55")}"`); // on a very dark green circle
+  expect(document.documentElement.style.getPropertyValue("--server-mark-bg")).toBe(markBg("#1f9d55"));
   expect(document.getElementById("orca-server-theme")!.textContent).toBe(themeCss("#1f9d55")); // the theme's tones
   expect(q('[data-slot="server-identity"]')!.textContent).toBe("Personal"); // beside the mark, top left
+  // It reads like the page title: "Orca | Personal", with the pipe hidden from a screen reader.
+  const brand = q('[data-slot="brand-name"]')!;
+  expect(brand.textContent).toBe("Orca|Personal");
+  expect(brand.querySelector('[data-slot="brand-sep"]')!.getAttribute("aria-hidden")).toBe("true");
   expect(q('[data-slot="server-label"]')!.textContent).toBe("Personal");
   const items = await openMenu();
   expect(items.map((i) => i.getAttribute("aria-label"))).toEqual(["Work, online", "Personal, online"]);
@@ -292,7 +298,7 @@ test("S6e: the ACTIVE server's identity — title, accent, favicon and sidebar n
   icon.remove();
 });
 
-test("S6g: Settings' theme colour is a popover — the 8 presets, a hex field for a custom colour, Auto — and Save stores the pick", async () => {
+test("S6g: Settings' theme colour is a popover — the 8 presets, a hex field for a custom colour, Auto — and each pick saves at once, with no Save button", async () => {
   setup();
   apiFake.setServerIdentityCalls = [];
   network((u) => (u === "/api/servers" ? json({ ...HOME, self: { ...HOME.self, label: "cloud", color: colorFromName("cloud"), identity: {} } }) : undefined));
@@ -305,8 +311,20 @@ test("S6g: Settings' theme colour is a popover — the 8 presets, a hex field fo
   const open = async () => act(async () => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" })); trigger.click(); await flush(); await flush(); });
   await open();
   const picker = document.querySelector<HTMLElement>('[data-slot="identity-picker"]')!;
+  // Word's grid: the base row is the presets plus 2 hues, then 5 rows of tints and shades.
   const swatches = [...picker.querySelectorAll<HTMLElement>('[data-slot="identity-color"]')];
-  expect(swatches.map((b) => b.getAttribute("data-color"))).toEqual(IDENTITY_COLORS.map((c) => c.value));
+  expect(swatches.length).toBe(61);
+  // Neutral (no theme) is the first cell, with its name on it.
+  expect(swatches[0]!.dataset.row).toBe("neutral");
+  expect(swatches[0]!.textContent).toBe("Neutral");
+  const base = swatches.filter((b) => b.dataset.row === "base").map((b) => b.getAttribute("data-color"));
+  expect(base.slice(0, 8)).toEqual(IDENTITY_COLORS.map((c) => c.value));
+  expect(base.length).toBe(10);
+  const tint = swatches.find((b) => b.getAttribute("aria-label") === "Green, lighter 2")!;
+  await act(async () => { tint.click(); await flush(); });
+  expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Green, lighter 2");
+  expect(tint.getAttribute("aria-checked")).toBe("true"); // the selected cell has the ring
+  expect(tint.className).toContain("ring-2");
   expect(picker.querySelector("[title]")).toBeNull(); // tooltips, never native title boxes
   await act(async () => { swatches.find((b) => b.getAttribute("aria-label") === "Purple")!.click(); await flush(); });
   expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Purple");
@@ -322,8 +340,81 @@ test("S6g: Settings' theme colour is a popover — the 8 presets, a hex field fo
   expect(trigger.getAttribute("aria-label")).toBe("Theme colour: #12ab34");
   await act(async () => { hex.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
   expect(document.querySelector('[data-slot="identity-picker"]')).toBeNull();
-  await act(async () => { q('[data-slot="identity-save"]')!.click(); await flush(); await flush(); });
-  expect(apiFake.setServerIdentityCalls).toEqual([{ name: "", color: "#12ab34" }]);
+  expect(q('[data-slot="identity-save"]')).toBeNull();
+  // Every pick saved when it was made; a half-typed hex saved nothing.
+  expect(apiFake.setServerIdentityCalls).toEqual([
+    { name: "", color: tint.getAttribute("data-color")! }, { name: "", color: IDENTITY_COLORS.find((c) => c.name === "Purple")!.value }, { name: "", color: "#12ab34" },
+  ]);
+  // Neutral: picked from the grid, saved as "neutral"; the hex field empties.
+  await open();
+  const neutral = document.querySelector<HTMLElement>('[data-slot="identity-picker"] [data-row="neutral"]')!;
+  await act(async () => { neutral.click(); await flush(); });
+  expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Neutral");
+  expect(neutral.getAttribute("aria-checked")).toBe("true");
+  expect(document.querySelector<HTMLInputElement>('[data-slot="identity-hex"]')!.value).toBe("");
+  await act(async () => { await flush(); });
+  expect(apiFake.setServerIdentityCalls.at(-1)).toEqual({ name: "", color: "neutral" });
+  // Neutral's swatch has the colour cells' look exactly: the same classes, no outer border.
+  const neutralSwatch = neutral.querySelector<HTMLElement>('[data-slot="identity-swatch"]')!;
+  const purple = document.querySelector<HTMLElement>('[data-slot="identity-picker"] [aria-label="Purple"]')!;
+  for (const k of ["size-5", "rounded-[4px]", "inset-ring", "ring-offset-1"]) { expect(neutralSwatch.classList).toContain(k); expect(purple.classList).toContain(k); }
+  expect(neutralSwatch.classList).not.toContain("border");
+  expect(neutralSwatch.className).toContain("ring-2"); // selected: the same ring as a colour
+});
+
+test("S6i: the display name saves after a pause in typing and on blur, shows Saved, and a failed save puts the old name back", async () => {
+  setup();
+  apiFake.setServerIdentityCalls = [];
+  network((u) => (u === "/api/servers" ? json({ ...HOME, self: { ...HOME.self, label: "cloud", color: colorFromName("cloud"), identity: {} } }) : undefined));
+  await mount();
+  await act(async () => { navigate("/settings"); await flush(); await flush(); await flush(); });
+  const input = q('[data-slot="identity-name"]') as HTMLInputElement;
+  // The preview beside the mark has the sidebar's separator: "Orca | <name>".
+  expect(q('[data-slot="identity-preview"] [data-slot="brand-name"]')!.textContent).toBe("Orca|cloud");
+  const type = async (v: string) => act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, v);
+    input.dispatchEvent(new Event("input", { bubbles: true })); await flush();
+  });
+  const wait = (ms: number) => act(async () => { await new Promise((r) => setTimeout(r, ms)); await flush(); await flush(); });
+  input.focus();
+  await type("Wo");
+  await type("Work");
+  expect(apiFake.setServerIdentityCalls).toEqual([]); // still typing
+  await wait(IDENTITY_SAVE_DELAY_MS + 100);
+  expect(apiFake.setServerIdentityCalls).toEqual([{ name: "Work", color: "" }]); // one save, the last value
+  expect(q('[data-slot="identity-preview-name"]')!.textContent).toBe("Work");
+  expect(q('[data-slot="identity-status"]')!.textContent).toContain("Saved");
+  // Blur saves at once, with no wait.
+  await type("Work box");
+  await act(async () => { input.blur(); input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); await flush(); await flush(); });
+  expect(apiFake.setServerIdentityCalls.at(-1)).toEqual({ name: "Work box", color: "" });
+  // A failed save: the stored name comes back and the action-failed toast tells why.
+  apiFake.setServerIdentityError = "config is read-only";
+  input.focus();
+  await type("Broken");
+  await act(async () => { input.blur(); input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); await flush(); await flush(); await flush(); });
+  expect(apiFake.setServerIdentityCalls.at(-1)).toEqual({ name: "Broken", color: "" });
+  expect(input.value).toBe(""); // the stored name (none), not the failed one
+  expect(document.body.textContent).toContain("Save identity failed");
+});
+
+test("S6h: a Neutral server has the old look — no theme sheet, no accent, the black-and-white favicon", async () => {
+  const NEUTRAL_HOME = { ...HOME, self: { ...HOME.self, label: "Work", color: "neutral", identity: { name: "Work", color: "neutral" } } };
+  const icon = document.createElement("link");
+  icon.rel = "icon"; icon.href = "/favicon.svg";
+  document.head.appendChild(icon);
+  setup();
+  network((u) => (u === "/api/servers" ? json(NEUTRAL_HOME) : undefined));
+  await mount();
+  await act(async () => { await flush(); await flush(); await flush(); });
+  expect(document.title).toBe("Orca | Work");
+  expect(document.documentElement.style.getPropertyValue("--server")).toBe("");
+  expect(document.documentElement.style.getPropertyValue("--server-mark-bg")).toBe("");
+  expect(document.getElementById("orca-server-theme")).toBeNull();
+  expect(decodeURIComponent(icon.href)).toContain('fill="#000000"');
+  expect(decodeURIComponent(icon.href)).toContain('<path fill="#ffffff"');
+  expect(q('[data-slot="server-menu"] [data-slot="server-swatch"]')!.getAttribute("style")).toContain("linear-gradient");
+  icon.remove();
 });
 
 test("S6f: after a switch the menu shows the active server's cached identity before its health check answers", async () => {

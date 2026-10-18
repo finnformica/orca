@@ -6,12 +6,13 @@
 //
 // Applied to the document in one place (`applyIdentity`): `--server` and `--server-mark` on <html>,
 // one style sheet with every theme tone for both modes (`themeCss`: the sidebar, primary buttons,
-// links, focus rings, the selection), the page title (`Orca | Personal`) and the favicon (the black
-// circle with the orca in the theme colour).
+// links, focus rings, the selection, and the tinted surfaces, text and borders every shadcn
+// component reads), the page title (`Orca | Personal`) and the favicon (the black
+// circle a very dark shade of the theme colour, the orca the colour). Neutral sets no theme at all.
 import { useSyncExternalStore } from "react";
 import { apiBase, apiFetch, identityOf, type ServersAnswer } from "./server";
 import { persistedKey, readPersisted, writePersisted } from "./persisted";
-import { faviconSvg, markColor, pageTitle, themeCss, type ServerIdentityConfig } from "../../../shared/serverIdentity";
+import { faviconSvg, isNeutral, markBg, markColor, pageTitle, themeCss, type ServerIdentityConfig } from "../../../shared/serverIdentity";
 
 export type ActiveIdentity = {
   /** The display name. */
@@ -44,12 +45,17 @@ const THEME_ID = "orca-server-theme";
 export function applyIdentity(id: ActiveIdentity | null): void {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
-  if (id) { root.style.setProperty("--server", id.color); root.style.setProperty("--server-mark", markColor(id.color)); }
-  else { root.style.removeProperty("--server"); root.style.removeProperty("--server-mark"); }
+  // Neutral sets nothing: styles.css's defaults are the neutral look.
+  const themed = id && !isNeutral(id.color) ? id : null;
+  if (themed) {
+    root.style.setProperty("--server", themed.color);
+    root.style.setProperty("--server-mark", markColor(themed.color));
+    root.style.setProperty("--server-mark-bg", markBg(themed.color));
+  } else for (const v of ["--server", "--server-mark", "--server-mark-bg"]) root.style.removeProperty(v);
   let sheet = document.getElementById(THEME_ID);
-  if (id) {
+  if (themed) {
     if (!sheet) { sheet = document.createElement("style"); sheet.id = THEME_ID; document.head.appendChild(sheet); }
-    sheet.textContent = themeCss(id.color);
+    sheet.textContent = themeCss(themed.color);
   } else sheet?.remove();
   document.title = pageTitle(id?.label);
   const icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');

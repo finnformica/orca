@@ -49,14 +49,20 @@ async function mount(node: React.ReactNode = <LocalDetail repo="r" branch="stick
 // under a busy CI runner (PR #298: one query right after mount() hit the trigger before it rendered,
 // "null is not an object" at the getBoundingClientRect assignment, then passed on rerun). Poll for
 // the trigger itself — the thing the test actually needs — rather than a text proxy for it.
-async function waitForTrigger(): Promise<HTMLElement> {
-  let trigger: HTMLElement | null = null;
-  for (let i = 0; i < 20 && !(trigger = container!.querySelector("[data-slot=accordion-trigger]")); i++) {
+// The same holds for the page itself: mount()'s loop ends at once when "Loading diff…" is not shown
+// YET (the row has not rendered), so the first query for the tab list could still find nothing.
+// The bound is TIME, not a tick count: 20 setTimeout(0) ticks (~50 ms) still ran out on loaded CI
+// runners (PR #307 and four other branches' runs, 2026-10-18), while a healthy run returns at once.
+const WAIT_MS = 2_000;
+async function waitFor(selector: string): Promise<HTMLElement> {
+  let el: HTMLElement | null = null;
+  for (const until = Date.now() + WAIT_MS; !(el = container!.querySelector<HTMLElement>(selector)) && Date.now() < until;) {
     await act(async () => { await flush(); });
   }
-  expect(trigger).not.toBeNull();
-  return trigger!;
+  expect(el).not.toBeNull();
+  return el!;
 }
+const waitForTrigger = () => waitFor("[data-slot=accordion-trigger]");
 
 afterEach(() => {
   act(() => root?.unmount());
@@ -74,7 +80,7 @@ describe("sticky worktree-detail header", () => {
 
     // The title and the tab bar live inside ONE sticky, opaque, full-bleed wrapper, pinned just under
     // the console's top bar (h-14) — the breadcrumb there replaced the old "Back to board" button.
-    const sticky = container!.querySelector('[role="tablist"]')!.closest(".sticky");
+    const sticky = (await waitFor('[role="tablist"]')).closest(".sticky");
     expect(sticky).not.toBeNull();
     expect(sticky!.className).toMatch(/\btop-14\b/);
     expect(sticky!.className).toMatch(/\bbg-background\b/);
@@ -128,7 +134,7 @@ describe("sticky worktree-detail header", () => {
     apiFake.diffText = DIFF;
     await mount(<PrDetail repo="r" number={66} sub="files" />);
 
-    const sticky = container!.querySelector('[role="tablist"]')!.closest(".sticky");
+    const sticky = (await waitFor('[role="tablist"]')).closest(".sticky");
     expect(sticky).not.toBeNull();
     expect(sticky!.className).toMatch(/\btop-14\b/);
     expect(sticky!.className).toMatch(/\bbg-background\b/);
