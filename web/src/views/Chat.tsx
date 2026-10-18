@@ -7,7 +7,7 @@
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, startTransition, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Loader2, Paperclip, Quote as QuoteIcon, X } from "lucide-react";
 import { cn, PipContext } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
@@ -15,12 +15,15 @@ import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
-import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight } from "../workstream";
+import { integrationMessage, type IntegrationMessage } from "../../../shared/integrations";
+import { BrandIcon, brandTitle } from "@/components/BrandIcon";
 import { activityCounts, closeOpenMarkdown, createHold, runLabel, stepDuration, stepInFlight, stepKey, stepRow, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepStatus } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { ShotThumbs } from "@/components/Screenshots";
+import { snippetPre } from "@/components/Snippet";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { subscribeTurns } from "@/lib/events";
@@ -69,12 +72,16 @@ const markdownTable = ({ children }: { children?: ReactNode }) => (
 const markdownCell = (Tag: "th" | "td") => ({ children }: { children?: ReactNode }) =>
   <Tag className="min-w-32">{children}</Tag>;
 const tableComponents = { table: markdownTable, th: markdownCell("th"), td: markdownCell("td") };
+/** Every fenced code block is a snippet card with a Copy button (components/Snippet.tsx). */
+const chatComponents = { img: markdownImg, ...tableComponents, pre: snippetPre({ img: markdownImg, ...tableComponents }) };
 
 /** Markdown inside the terminal-styled log: prose spacing and readable lists, but sized and coloured
  *  to sit in the chat's window rather than looking like a pasted document. `tone` overrides the body
  *  text colour (a worker report's folded body reads dimmer than a turn's own reply) without forking
- *  the renderer, its table handling, or its prose setup. */
-const ChatMarkdown = ({ children, tone = "text-neutral-300" }: { children: string; tone?: string }) => (
+ *  the renderer, its table handling, or its prose setup. `memo`: parsing markdown is the costliest
+ *  thing a chat render does (measured: ~300ms commits re-parsing a long orchestrator thread on every
+ *  open and close of its panel), and the text of a finished turn never changes. */
+const ChatMarkdown = memo(({ children, tone = "text-neutral-300" }: { children: string; tone?: string }) => (
   // wrap-anywhere: the agent's prose is full of unbreakable tokens (`branch/names-with-hashes`,
   // paths, run ids) that are wider than a narrow window, and one of them made the whole log scroll
   // sideways. Code BLOCKS are exempt — they keep their lines and scroll inside themselves.
@@ -90,9 +97,9 @@ const ChatMarkdown = ({ children, tone = "text-neutral-300" }: { children: strin
     "prose-strong:text-neutral-200",
     "prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none",
     "prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400", tone)}>
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: markdownImg, ...tableComponents }}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={chatComponents}>{children}</ReactMarkdown>
   </div>
-);
+));
 
 /** Markdown for a single Facet item (Remaining / Decisions / Verification / Commits): same renderer
  *  and prose palette as ChatMarkdown, but a paragraph renders inline rather than as its own <p> — the
@@ -100,16 +107,16 @@ const ChatMarkdown = ({ children, tone = "text-neutral-300" }: { children: strin
  *  nested sub-bullet or a stray `##` sub-heading the parser kept verbatim (see shared/agent.ts
  *  sectionValue) still renders as its own block — a real nested list, or a heading — beneath the
  *  item's text. */
-const FacetMarkdown = ({ children }: { children: string }) => (
+const FacetMarkdown = memo(({ children }: { children: string }) => (
   <div className="prose prose-invert prose-sm max-w-none wrap-anywhere text-neutral-300
     prose-headings:mt-1 prose-headings:mb-0.5 prose-headings:text-xs prose-headings:text-neutral-200
     prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1
     prose-strong:text-neutral-200
     prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none
     prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400">
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ p: ({ children: c }) => <>{c}</>, img: markdownImg, ...tableComponents }}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ ...chatComponents, p: ({ children: c }) => <>{c}</> }}>{children}</ReactMarkdown>
   </div>
-);
+));
 
 /** Open/closed with the height animated: a grid row going 1fr ↔ 0fr animates to the content's own
  *  height with nothing measured, and the opacity rides along (~200ms; none under reduced motion).
@@ -378,6 +385,15 @@ function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () =>
       </div>
     );
   }
+  // An outside message waiting for its wake: its activity row, never your bubble.
+  const outside = integrationMessage(message.instruction);
+  if (outside) {
+    return (
+      <div data-slot="integration-queued" className="border-geist-blue/20 bg-geist-blue/5 text-muted-foreground mb-4 flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[12px] opacity-70">
+        <IntegrationHead m={outside} more={0} time="" state="queued" />
+      </div>
+    );
+  }
   return (
     <div className="mb-4 flex justify-end opacity-60" data-slot="chat-queued">
       <div className="max-w-[85%]">
@@ -477,14 +493,21 @@ function Reply({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () =
   );
 }
 
-const clockOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "");
+// ONE formatter: `toLocaleTimeString` builds a new one on every call, and a chat render calls this per
+// turn (it showed in the panel's open / close profile).
+const CLOCK = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+const clockOf = (ms?: number) => (ms ? CLOCK.format(ms) : "");
 
 /** One exchange, as a modern assistant chat rather than a terminal log. What you said is a tinted
  *  bubble on the right; the agent (`author`: the orchestrator, else the turn's provider) answers on
  *  the left under its name, in readable prose; its tool steps and worker reports stay folded; the time shows on hover
  *  (and days are grouped by the divider ChatPanel draws). Colours are the theme's tokens, so it
  *  follows light and dark like the rest of the console. */
-function ChatTurn({ turn, loadSteps, compact, newestSaid, onQuote, author }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote: (text: string) => void; author?: string }) {
+// Memoized, with only stable props (the turn, flags, two stable callbacks): a re-render of the panel —
+// every open sets a new composer prefill — must not render the whole thread again (measured: ~60ms per
+// open with a long orchestrator thread at 4× CPU in production, ~250ms in dev).
+const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSaid, onQuote, author }: { turn: AgentTurn; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote: (text: string) => void; author?: string }) {
+  const loadSteps = loadStepsFor && (() => loadStepsFor(turn));
   const parts = splitMessages(turn.instruction ?? promptInstruction(turn.prompt));
   // A wake that carried your messages AND worker reports: your words in bubbles — one per message you
   // sent, however many one wake drained — and the reports folded.
@@ -538,7 +561,7 @@ function ChatTurn({ turn, loadSteps, compact, newestSaid, onQuote, author }: { t
       </div>
     </div>
   );
-}
+});
 
 /** An old turn's reply, cut to its first lines with a Show more — the history reads as a list of
  *  exchanges, not a wall of past answers. The newest RECENT_FULL turns always render in full. */
@@ -590,6 +613,161 @@ function AgentsMarker({ turns, render }: { turns: AgentTurn[]; render: (t: Agent
   );
 }
 
+// ---- lazy mount: only the items near the viewport render (workstream.ts: estimateItemHeight) ----
+// One IntersectionObserver (rooted on the scroller) mounts an item as it comes within LAZY_MARGIN; one
+// ResizeObserver records every item's height, so an item the window unmounts comes back as a box of
+// its real height. Items that come near are mounted together, LAZY_BATCH_MS after the first, in ONE
+// transition: each commit makes Chromium walk the whole chat again (pre-paint), and one commit per
+// item made a scroll up through a cold thread drop a frame in five. An item already in view mounts
+// at once. Chrome and Firefox hold the scroll position natively when an item above the
+// viewport grows on mount (overflow-anchor); where that is missing (Safari) anchorShift does it.
+// Find in page sees only the mounted items.
+const LAZY_MARGIN = "1200px 0px";
+const LAZY_BATCH_MS = 60;
+type Lazy = {
+  heights: Map<string, number>;
+  /** Watch an item's height; and, with `show`, call it once the item is near the viewport. */
+  observe: (el: Element, id: string, show?: () => void) => () => void;
+  disconnect: () => void;
+};
+const LazyContext = createContext<Lazy | null>(null);
+function createLazy(root: () => HTMLElement | null): Lazy | null {
+  if (typeof IntersectionObserver === "undefined") return null;
+  const heights = new Map<string, number>(), ids = new Map<Element, string>(), shows = new Map<Element, () => void>();
+  const native = typeof CSS !== "undefined" && Boolean(CSS.supports?.("overflow-anchor", "auto"));
+  let io: IntersectionObserver | null = null, ro: ResizeObserver | null = null;
+  const due = new Set<() => void>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = () => {
+    clearTimeout(timer);
+    timer = undefined;
+    const now = [...due];
+    due.clear();
+    // A transition: React renders the markdown in time slices, so the scroll stays smooth meanwhile.
+    startTransition(() => { for (const show of now) show(); });
+  };
+  const setup = () => {
+    if (io) return;
+    io = new IntersectionObserver((entries) => {
+      const view = root()?.getBoundingClientRect();
+      let inView = false;
+      for (const e of entries) {
+        const show = e.isIntersecting ? shows.get(e.target) : undefined;
+        if (!show) continue;
+        due.add(show);
+        const r = e.boundingClientRect; // no layout (no rect, a 0-high root): nothing to wait for
+        if (!view?.height || !r || (r.bottom > view.top && r.top < view.bottom)) inView = true;
+      }
+      if (!due.size) return;
+      if (inView) flush();
+      else timer ??= setTimeout(flush, LAZY_BATCH_MS);
+    }, { root: root(), rootMargin: LAZY_MARGIN });
+    if (typeof ResizeObserver === "undefined") return;
+    ro = new ResizeObserver((entries) => {
+      const el = root();
+      const changes: { bottom: number; delta: number }[] = [];
+      for (const e of entries) {
+        const id = ids.get(e.target), h = (e.target as HTMLElement).offsetHeight;
+        if (id === undefined || !h) continue; // 0: not laid out (a hidden panel) — keep the last height
+        const was = heights.get(id);
+        heights.set(id, h);
+        if (!native && was !== undefined && was !== h) changes.push({ bottom: e.target.getBoundingClientRect().bottom, delta: h - was });
+      }
+      const shift = el && changes.length ? anchorShift(changes, el.getBoundingClientRect().top) : 0;
+      if (el && shift) el.scrollTop += shift;
+    });
+  };
+  return {
+    heights,
+    observe(el, id, show) {
+      setup();
+      ids.set(el, id);
+      ro?.observe(el);
+      if (show) { shows.set(el, show); io!.observe(el); }
+      return () => {
+        ro?.unobserve(el);
+        ids.delete(el);
+        if (show) { shows.delete(el); due.delete(show); io?.unobserve(el); }
+      };
+    },
+    disconnect() { clearTimeout(timer); io?.disconnect(); ro?.disconnect(); },
+  };
+}
+/** One item of the list: its content once near the viewport (or `eager`, the newest ones), before
+ *  that an empty box of its last height or `estimate`. Once mounted it stays mounted. */
+function LazyItem({ id, eager, estimate, children }: { id: string; eager: boolean; estimate: number; children: ReactNode }) {
+  const lazy = useContext(LazyContext);
+  const [shown, setShown] = useState(eager || !lazy);
+  if (eager && !shown) setShown(true); // became one of the newest (the window moved back to the tail)
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!lazy || !ref.current) return;
+    return lazy.observe(ref.current, id, shown ? undefined : () => setShown(true));
+  }, [lazy, id, shown]);
+  return shown ? <div ref={ref} data-slot="chat-item">{children}</div>
+    : <div ref={ref} data-slot="chat-item" data-pending="" style={{ height: lazy?.heights.get(id) ?? estimate }} />;
+}
+
+const STATE_TONE = { answered: "text-geist-green", "in progress": "text-geist-blue", failed: "text-red-400", stopped: "text-amber-400" } as const;
+
+/** The collapsed line of an outside message: logo, sender, place, one line of what they wrote, the
+ *  time and the state. The same tinted card as worker traffic, with the service's logo for the ⚙. */
+function IntegrationHead({ m, more, time, state }: { m: IntegrationMessage; more: number; time: string; state: keyof typeof STATE_TONE | "queued" }) {
+  return (
+    <>
+      <BrandIcon kind={m.adapter} className="size-3.5" />
+      <span className="text-foreground shrink-0 font-medium" data-slot="integration-sender">{m.sender ?? brandTitle(m.adapter)}</span>
+      {m.place && <span className="shrink-0" data-slot="integration-place">{m.place}</span>}
+      <span className="min-w-0 flex-1 truncate" data-slot="integration-preview">{integrationPreview(m.text)}{more > 0 ? ` · +${more} more` : ""}</span>
+      {time && <span className="shrink-0 text-[11px]">{time}</span>}
+      <span data-slot="integration-state" className={cn("flex shrink-0 items-center gap-1 text-[11px]", state === "queued" ? "" : STATE_TONE[state])}>
+        {state === "in progress" && <Loader2 className="size-3 animate-spin" />}{state}
+      </span>
+    </>
+  );
+}
+
+/** A wake an outside message caused (Discord, Slack, email…): ONE collapsed activity row, never your
+ *  bubble. Open, it shows each message in full with a link to it, then the orchestrator's answer —
+ *  its folded steps (the `orca post --reply` among them) and its reply — so the bulk stays out of
+ *  your conversation, like worker reports. */
+const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadStepsFor }: { turn: AgentTurn; messages: IntegrationMessage[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]> }) {
+  const [open, setOpen] = useState(false);
+  const state = integrationState(turn);
+  return (
+    <div data-slot="integration-activity" data-adapter={messages[0]!.adapter} data-state={state} data-open={open || undefined}
+      className="border-geist-blue/20 bg-geist-blue/5 mb-4 rounded-md border text-[12px]">
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        className="text-muted-foreground hover:text-foreground flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left">
+        <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+        <IntegrationHead m={messages[0]!} more={messages.length - 1} time={clockOf(turn.startedAt)} state={state} />
+      </button>
+      {open && (
+        <div className="border-geist-blue/20 space-y-3 border-t px-2.5 py-2" data-slot="integration-body">
+          {messages.map((m, i) => (
+            <div key={i} data-slot="integration-message">
+              <div className="text-muted-foreground mb-0.5 flex items-center gap-1.5 text-[11px]">
+                <BrandIcon kind={m.adapter} className="size-3" />
+                <span className="text-foreground font-medium">{m.sender ?? brandTitle(m.adapter)}</span>
+                <span>{[m.place, brandTitle(m.adapter)].filter(Boolean).join(" · ")}</span>
+                {m.url && <a href={m.url} target="_blank" rel="noreferrer" className="hover:text-foreground underline-offset-2 hover:underline">Open in {brandTitle(m.adapter)}</a>}
+              </div>
+              <div className="text-foreground whitespace-pre-wrap break-words">{m.text}</div>
+            </div>
+          ))}
+          <div className="flex gap-2" data-slot="integration-reply">
+            <span className="bg-accent text-foreground inline-flex size-5 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3" /></span>
+            <div className="min-w-0 flex-1">
+              <div className="text-foreground mb-0.5 text-[11px] font-medium">Orchestrator</div>
+              <Reply turn={turn} loadSteps={loadStepsFor && (() => loadStepsFor(turn))} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
+
 /** `send` replaces the follow-up launch for a conversation that isn't a branch's agent — the
  *  orchestrator's, which goes to its own route. The composer's toolbar always carries the model
  *  picker and the context ring (ChatControls); `controls` supplies their values when they don't come
@@ -627,7 +805,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   // twice in a row.
   const [insert, setInsert] = useState<{ text: string; seq: number } | null>(null);
   const insertSeq = useRef(0);
-  const onQuote = (text: string) => setInsert({ text: quoteMarkdown(text), seq: ++insertSeq.current });
+  const onQuote = useCallback((text: string) => setInsert({ text: quoteMarkdown(text), seq: ++insertSeq.current }), []);
   const submit = async (text: string, images: File[]) => {
     const id = ++sendSeq.current;
     follow.current = true; // you just spoke: jump to it, wherever you had scrolled
@@ -664,6 +842,10 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   const winRef = useRef(win);
   winRef.current = win;
   const toTail = useRef(false); // jump-to-latest: scroll down once the window is back at the tail
+  // Inside the window, only the items near the viewport mount (LazyItem). Made once per panel.
+  const [lazy] = useState(() => createLazy(() => scroller.current));
+  useEffect(() => () => lazy?.disconnect(), [lazy]);
+  const seek = useRef(0); // jump-to-latest's smooth scroll in flight (its ticket); a wheel or touch cancels it
   const cursors = useRef(new Map<string, number>()); // per-run high-water mark, for reconnect catch-up
   const latestAsked = useRef(0), latestApplied = useRef(0); // loadLatest's request order (see there)
   // Reply text streaming in for a running turn (claude's partial messages), by run id — shown under
@@ -812,7 +994,19 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     setAtTail(true);
     setUnseen(false);
     if (winRef.current.last !== null) { toTail.current = true; setWin(TAIL_WINDOW); return; } // remount the tail, then go there
-    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
+    const el = scroller.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    // Items that mount below the viewport on the way down make the end move: when the smooth scroll
+    // stops short of it, finish the jump at once.
+    const ticket = ++seek.current;
+    const land = () => {
+      if (seek.current !== ticket) return;
+      seek.current++;
+      if (!atBottom(el.scrollTop, el.scrollHeight, el.clientHeight, FOLLOW_SLACK)) el.scrollTo({ top: el.scrollHeight });
+    };
+    if ("onscrollend" in el) el.addEventListener("scrollend", land, { once: true });
+    setTimeout(land, 1000); // no scrollend (Safari), or nothing to scroll
   };
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
   // Only the NEWEST read applies: a slow read from before a dispatch must not restore the entry.
@@ -908,24 +1102,32 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   const compactBefore = (turns?.length ?? 0) - RECENT_FULL;
   // Your newest message and the newest answer are never clamped or folded, at any age.
   const newest = newestMessages(turns ?? []);
-  const stepsOf = (turn: AgentTurn) => () => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response));
-  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadSteps={stepsOf(turn)} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} />;
+  const loadStepsFor = useCallback((turn: AgentTurn) => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response)), [row.repo, row.branch]);
+  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadStepsFor={loadStepsFor} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} />;
   const renderTurns = (list: AgentTurn[]) => {
     const items = chatItems(list, newest.answer);
+    // The newest items that fill about one and a half screens mount at once; the rest as they near
+    // the viewport. Your newest message and the newest answer are full height (never compact).
+    const estimates = items.map((item) => item.kind !== "turn" ? estimateItemHeight(0, { folded: true }) // a collapsed row: worker reports, an outside message
+      : estimateItemHeight((item.turn.instruction?.length ?? 0) + (item.turn.response?.length ?? 0),
+        { compact: (position.get(item.turn.id) ?? 0) < compactBefore && item.turn !== newest.answer }));
+    const eager = eagerFrom(estimates, 1.5 * (scroller.current?.clientHeight || (typeof window === "undefined" ? 900 : window.innerHeight)));
     let prev: number | undefined;
-    return items.map((item) => {
-      const first = item.kind === "turn" ? item.turn : item.turns[0]!;
+    return items.map((item, i) => {
+      const first = item.kind === "agents" ? item.turns[0]! : item.turn;
       const divider = first.startedAt && (prev === undefined || !sameDay(prev, first.startedAt));
-      prev = (item.kind === "turn" ? item.turn : item.turns[item.turns.length - 1]!).startedAt ?? prev;
+      prev = (item.kind === "agents" ? item.turns[item.turns.length - 1]! : item.turn).startedAt ?? prev;
       return (
-        <div key={first.id}>
+        <LazyItem key={first.id} id={first.id} eager={i >= eager} estimate={estimates[i]! + (divider ? 40 : 0)}>
           {divider && (
             <div className="text-muted-foreground my-3 flex items-center gap-3 text-[10px] tracking-widest uppercase" data-slot="chat-day">
               <span className="h-px flex-1 bg-border" /><span>{dayLabel(first.startedAt!)}</span><span className="h-px flex-1 bg-border" />
             </div>
           )}
-          {item.kind === "turn" ? chatTurn(item.turn) : <AgentsMarker turns={item.turns} render={chatTurn} />}
-        </div>
+          {item.kind === "turn" ? chatTurn(item.turn)
+            : item.kind === "integration" ? <IntegrationBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} />
+            : <AgentsMarker turns={item.turns} render={chatTurn} />}
+        </LazyItem>
       );
     });
   };
@@ -935,6 +1137,8 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
       <div
         ref={scroller}
         onScroll={onScroll}
+        onWheel={() => { seek.current++; }}
+        onTouchStart={() => { seek.current++; }}
         // overscroll-contain: hitting the chat's top or bottom must not hand the gesture to the page —
         // it did, and the page then kept scrolling when you turned back to scroll the chat up.
         className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain bg-neutral-950 leading-relaxed ${size === "page" ? "px-4 py-3 md:px-6" : "p-3"} font-sans text-[13px] text-neutral-200 [&_.prose]:text-[13px]`}
@@ -971,7 +1175,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
         )}
         {turns === null ? <ChatSkeleton rows={4} />
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
-          : <DraftContext.Provider value={drafts}>{renderTurns(shownTurns!)}</DraftContext.Provider>}
+          : <LazyContext.Provider value={lazy}><DraftContext.Provider value={drafts}>{renderTurns(shownTurns!)}</DraftContext.Provider></LazyContext.Provider>}
         {hiddenBelow > 0 && (
           <div className="mb-3 flex justify-center" data-slot="chat-newer">
             <button type="button" onClick={() => setWin(revealBelow(turns ?? [], win))} className="rounded-md border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200">
@@ -999,7 +1203,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
         {!atTail && (
           <div className="sticky bottom-0 flex justify-center pointer-events-none">
             <button type="button" onClick={jumpToLatest} data-slot="chat-jump" data-unseen={unseen || undefined}
-              className={`pointer-events-auto flex items-center gap-1 rounded-full border border-neutral-800 bg-neutral-900 px-2.5 py-1 font-sans text-[11px] shadow-menu hover:text-neutral-100 ${unseen ? "text-sky-400" : "text-neutral-400"}`}>
+              className={`pointer-events-auto flex items-center gap-1 rounded-full border border-neutral-800 bg-neutral-900 px-2.5 py-1 font-sans text-[11px] shadow-menu hover:text-foreground ${unseen ? "text-sky-400" : "text-neutral-400"}`}>
               <ArrowDown className="size-3" />{unseen ? "New messages" : "Jump to latest"}
             </button>
           </div>

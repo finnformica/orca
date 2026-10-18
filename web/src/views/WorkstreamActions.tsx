@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowRightLeft, ArrowUpRight, BellRing, Bot, Check, CheckCheck, ChevronDown, Copy, ExternalLink, FolderOpen, GitMerge, GitPullRequestArrow, GitPullRequestDraft, Globe,
@@ -325,9 +326,11 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
             </DropdownMenuContent>
           </DropdownMenu>
         )}
-        {menuOnly && contextAt && !narrow && (
+        {menuOnly && contextAt && !narrow && createPortal(
           // Right-click: the same items, anchored to a zero-size trigger at the pointer. Radix gives it
-          // the menu's keyboard handling (arrows, Enter, Esc) and closes it on an outside click.
+          // the menu's keyboard handling (arrows, Enter, Esc) and closes it on an outside click. In
+          // <body>, because the page column has `contain: layout paint`, which would place a `fixed`
+          // anchor against the column instead of the window.
           <DropdownMenu key={`${contextAt.x},${contextAt.y}`} open onOpenChange={(o) => { if (!o) onContextClose?.(); }}>
             <DropdownMenuTrigger asChild>
               <span data-slot="context-anchor" aria-hidden="true" tabIndex={-1} style={{ position: "fixed", left: contextAt.x, top: contextAt.y, width: 0, height: 0 }} />
@@ -336,7 +339,8 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
               onCloseAutoFocus={(e) => e.preventDefault()}>
               {items}
             </DropdownMenuContent>
-          </DropdownMenu>
+          </DropdownMenu>,
+          document.body,
         )}
       </div>
       <RenameDialog row={row} open={renaming} onClose={() => setRenaming(false)} />

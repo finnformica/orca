@@ -8,20 +8,22 @@
 // centred); every inset clears the notch and the home indicator. What the sidebar alone carried
 // (Previews, Repos, Usage, Find, the instance switcher) is reachable from Settings on a phone — see
 // MobileNav in views/Pages.tsx.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
-  Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderGit2, FolderSync, Gauge, LayoutGrid, Loader2,
+  Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderSync, LayoutGrid, Loader2,
   Bot, Command, Keyboard, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
-  Package, Users,
+  Package, Plug,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
-import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
+import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom } from "@/lib/atoms";
 import { pageShortcut, shortcutKeys } from "@/lib/shortcuts";
 import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPalette";
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
+import { SLIDE_MS } from "@/components/SidePanel";
+import { dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
 import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
@@ -31,12 +33,12 @@ import { useSwipeToDismiss } from "@/lib/gestures";
 import { isMobile, useNarrow } from "@/lib/viewport";
 import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
-import { repoLabel, summarizeSync } from "../workstream";
+import { NAV_RAIL_W, NAV_W, SHELL_GAP, frozenPageWidth, repoLabel, summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
 import { AddServerDialog, ServerMenu, ServerOffline, useServerProblem, useServers } from "@/components/ServerMenu";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
 import { poll } from "@/lib/poll";
-import { NotificationBell } from "@/components/Notifications";
+import { NotificationBell, footIcon } from "@/components/Notifications";
 import { notifyLocal } from "@/lib/notificationStore";
 import { Button } from "@/components/ui/button";
 import { MenuShortcut, Shortcut } from "@/components/ui/kbd";
@@ -47,25 +49,117 @@ import {
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+/** One row of the nav: the same height, padding, icon size and hover, ghost on the lower surface
+ *  (branch-demo's sidebar). Collapsed, an icon centred in the rail. */
+export const navRow = (collapsed: boolean, active = false) => cn(
+  "relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors",
+  active ? "bg-sidebar-active text-sidebar-active-foreground font-medium" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+  collapsed && "md:justify-center md:px-0",
+);
 export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (r: Route) => boolean; badge?: (compact: boolean) => ReactNode }[] = [
   { to: "/", label: "Overview", Icon: LayoutGrid, match: (r) => r.name === "board" },
   // An agent's own page (PR or local detail) is "inside" Agents, as a deployment is inside Deployments.
   { to: "/agents", label: "Agents", Icon: Boxes, match: (r) => r.name === "agents" || r.name === "pr" || r.name === "local" },
   // The previews (and Test master) page; its badges are what the two header buttons used to carry.
   { to: "/previews", label: "Previews", Icon: MonitorPlay, match: (r) => r.name === "previews", badge: (compact) => <PreviewsBadge compact={compact} /> },
-  { to: "/repos", label: "Repos", Icon: FolderGit2, match: (r) => r.name === "repos" },
-  { to: "/github", label: "GitHub", Icon: Users, match: (r) => r.name === "github" },
+  { to: "/integrations", label: "Integrations", Icon: Plug, match: (r) => r.name === "integrations" },
   { to: "/handoffs", label: "Handoffs", Icon: Package, match: (r) => r.name === "handoffs" },
-  { to: "/usage", label: "Usage", Icon: Gauge, match: (r) => r.name === "usage" },
-  { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" || r.name === "integrations" },
+  // Repos and GitHub are sections of Settings.
+  { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
 ];
+
+/** The docked right column (desktop): its OWN card beside the page card, as branch-demo's right panel
+ *  — the shell's gutter between them, no shared hairline. The open side panel renders INTO it
+ *  (SidePanel's portal) at its full width; only the width and the start margin animate (branch-demo's
+ *  150ms, Tailwind's default ease) and the card clips the panel, so the panel slides and never
+ *  reflows. Closed, a negative start margin cancels the gutter (a 0-wide flex item still takes the gap). The card's
+ *  surface stays until the close has finished (`painted`), so its edge does not vanish mid-slide. */
+export function Dock() {
+  const dock = useAtomValue(dockWidthAtom);
+  const setDockElement = useSetAtom(dockElementAtom);
+  const [painted, setPainted] = useState(dock > 0);
+  if (dock > 0 && !painted) setPainted(true);
+  useEffect(() => {
+    if (dock > 0 || !painted) return;
+    const t = setTimeout(() => setPainted(false), SLIDE_MS + 150); // no transition ran (reduced motion)
+    return () => clearTimeout(t);
+  }, [dock, painted]);
+  return (
+    <div data-slot="dock" ref={setDockElement}
+      onTransitionEnd={(e) => { if (e.target === e.currentTarget && e.propertyName === "width" && dock === 0) setPainted(false); }}
+      // Its `class` NEVER changes: Tailwind Typography's prose rules end in
+      // `:not(:where([class~="not-prose"], [class~="not-prose"] *))`, so a class change on ANY ancestor
+      // of the chat restyles its whole subtree (measured: ~4000 elements, 100–150ms each at 4× CPU, twice
+      // per open / close). The margin is an inline style; the card's surface rides `data-painted`.
+      data-painted={painted ? "" : undefined}
+      className="relative shrink-0 overflow-hidden transition-[width,margin-inline-start] data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden md:data-[painted]:rounded-[10px] md:data-[painted]:bg-card md:data-[painted]:shadow-shell"
+      style={{ width: dock, marginInlineStart: dock > 0 ? 0 : -SHELL_GAP, transitionDuration: `${SLIDE_MS}ms` }} />
+  );
+}
+
+/** Holds the page content at its END width while the dock or the nav animates (`frozenPageWidth`):
+ *  the content lays out once at the start, and only the page card's edge moves over it. Cleared once
+ *  the slide is over, so the page follows a window resize again. It READS NO LAYOUT in the commit
+ *  (measured: a getBoundingClientRect / clientWidth here forced a ~100ms style + layout pass at 4×
+ *  CPU): the column's width at rest comes from a ResizeObserver, and the rest is the widths the
+ *  previous and the new state ASK for — exact for a reversal mid-slide too. No React state: the
+ *  frame's style is written directly. */
+function useFrozenPage(els: { col: HTMLElement | null; frame: HTMLElement | null },
+  dock: number, rail: boolean, narrow: boolean) {
+  const was = useRef({ dock, rail });
+  const restCol = useRef<number | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+  const { col, frame } = els;
+  useEffect(() => {
+    if (!col || typeof ResizeObserver === "undefined") return;
+    // At rest only: the frame is not held, and nothing animates.
+    const ro = new ResizeObserver(([e]) => { if (e && !dockMoving() && !frame?.style.width) restCol.current = e.contentRect.width; });
+    ro.observe(col);
+    return () => ro.disconnect();
+  }, [col, frame]);
+  useLayoutEffect(() => {
+    const prev = was.current;
+    was.current = { dock, rail };
+    if (!frame) return;
+    const release = () => { clearTimeout(timer.current); frame.style.width = ""; };
+    if (narrow) return release();
+    if (prev.dock === dock && prev.rail === rail) return;
+    // Before the observer's first report (it reports on observe, so in practice never): read it once.
+    if (restCol.current === null) restCol.current = col?.clientWidth ?? null;
+    if (restCol.current === null) return release();
+    const asked = (s: { dock: number; rail: boolean }) => ({ nav: s.rail ? NAV_RAIL_W : NAV_W, dock: s.dock, dockMargin: s.dock > 0 ? 0 : -SHELL_GAP });
+    const end = frozenPageWidth({ col: restCol.current, ...asked(prev) }, asked({ dock, rail }));
+    restCol.current = end; // the column's width at rest once this slide is over
+    clearTimeout(timer.current);
+    frame.style.width = `${end}px`;
+    timer.current = setTimeout(release, SLIDE_MS + 60);
+  }, [dock, rail, narrow, frame, col]);
+  useEffect(() => () => clearTimeout(timer.current), []);
+}
+
+/** Feeds lib/dock's motion flag from the shell's own width transitions (the dock, the nav's rail). */
+function useDockMotion(shell: HTMLElement | null) {
+  useEffect(() => {
+    if (!shell) return;
+    const ours = (e: TransitionEvent) => e.propertyName === "width" && e.target instanceof HTMLElement
+      && (e.target.dataset.slot === "dock" || e.target.dataset.slot === "sidebar");
+    const run = (e: TransitionEvent) => { if (ours(e)) noteDockMotion(1); };
+    const end = (e: TransitionEvent) => { if (ours(e)) noteDockMotion(-1); };
+    shell.addEventListener("transitionrun", run);
+    shell.addEventListener("transitionend", end);
+    shell.addEventListener("transitioncancel", end);
+    return () => { shell.removeEventListener("transitionrun", run); shell.removeEventListener("transitionend", end); shell.removeEventListener("transitioncancel", end); };
+  }, [shell]);
+}
 
 /** `sidebarActions` renders the last of the sidebar's actions (Add New), above the divider and you;
  *  it is told whether the sidebar is collapsed, so it can drop to an icon. */
 export function Shell({ crumbs, sidebarActions, children }: {
   crumbs: ReactNode; sidebarActions?: (collapsed: boolean) => ReactNode; children: ReactNode;
 }) {
-  const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
+  // The nav renders as its icon rail by your choice OR while the docked right column needs the room
+  // (lib/dock.ts); either way the page column keeps at least DOCK_PAGE_MIN_W.
+  const { rail: collapsed, setRail } = useNavToggle();
   const [updateAvailable, setUpdateAvailable] = useState(false); // the banner, when shown, is topmost and clears the notch itself
   const offline = useConfigFailed();
   const serverProblem = useServerProblem(offline); // another server chosen, and it is offline or refuses us
@@ -74,26 +168,53 @@ export function Shell({ crumbs, sidebarActions, children }: {
   const route = useRoute();
   const identity = useServerIdentity(); // the ACTIVE server's name and colour (lib/identity.ts applies them)
   const { visible: serverMenu } = useServers();
+  const narrow = useNarrow();
+  const [shellEl, setShellEl] = useState<HTMLElement | null>(null);
+  useDockMotion(shellEl);
+  const [colEl, setColEl] = useState<HTMLElement | null>(null);
+  const [frameEl, setFrameEl] = useState<HTMLElement | null>(null);
+  useFrozenPage({ col: colEl, frame: frameEl }, useAtomValue(dockWidthAtom), collapsed, narrow);
   useEffect(() => poll(loadIdentity, 60_000), []);
   return (
-    <div className="flex min-h-screen w-full">
+    // Desktop: branch-demo's app shell. The nav sits on the LOWER surface — the canvas, in the
+    // server's theme colour — and the page and the docked panel float together in ONE rounded card
+    // (`data-slot="shell-card"`, a 6px gutter, a 10px corner, `shadow-shell`), so the nav reads as
+    // behind the content. A phone has no card: the page is the whole screen.
+    <div data-slot="shell" ref={setShellEl} className="md:bg-sidebar flex min-h-screen w-full flex-col md:h-screen md:overflow-hidden">
+      {/* The update banner: on the lower surface, above the nav and the card (branch-demo's app-level banner). */}
+      <UpdateBanner onStaleChange={setUpdateAvailable} />
+      {/* The row on the canvas: the nav, then the page card and the panel card, the shell's gutter
+          between the cards and round them (branch-demo's p-shell / gap-shell). */}
+      <div data-slot="shell-row" className="flex min-h-0 w-full flex-1 md:gap-1.5 md:py-1.5 md:pr-1.5">
       {/* Desktop only: a phone's nav is the bottom bar + Settings (see MobileNav in views/Pages.tsx) —
           there is no off-canvas drawer any more. */}
       <aside
         data-slot="sidebar" data-chrome="" data-collapsed={collapsed}
         className={cn(
-          "bg-sidebar z-50 max-md:hidden md:sticky md:top-0 md:flex md:h-screen md:flex-col md:border-r",
+          "z-50 max-md:hidden md:flex md:shrink-0 md:flex-col md:overflow-hidden md:transition-[width] md:duration-150 motion-reduce:transition-none",
           collapsed ? "md:w-14" : "md:w-60",
         )}
       >
-        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} actions={sidebarActions} />
+        <Sidebar collapsed={collapsed} onToggle={() => setRail(!collapsed)} actions={sidebarActions} />
       </aside>
-      <div className="flex min-w-0 flex-1 flex-col">
-        <UpdateBanner onStaleChange={setUpdateAvailable} />
+      <div data-slot="shell-card" className="flex min-w-0 flex-1 md:overflow-hidden md:rounded-[10px] md:bg-background md:shadow-shell">
+      {/* The page column scrolls on its own on a desktop (md:h-screen + overflow), as each column of an
+          app shell does: the docked panel then sits flush against the window's edge, with no page
+          scrollbar outside it (the gutter is reserved here, not on <html>; its children never shrink to
+          fit the column's height — the top bar did). A phone keeps the window's own scroll (its keyboard and pull-to-refresh
+          code read window.scrollY). Inside it, the page FRAME is the `@container/page` the pages'
+          layouts query, so they respond to the room the dock leaves, not to the window; while the dock
+          or the nav animates, the frame is held at its end width (useFrozenPage). */}
+      {/* `contain: layout paint` on a desktop: while the dock or the nav animates, the page's reflow and
+          repaint stay inside this column. (A `fixed` descendant would now be placed against this box —
+          the page has none; the Agents row's right-click anchor is portaled to <body>.) */}
+      <div data-slot="page-scroll" ref={setColEl} className="flex min-w-0 flex-1 flex-col md:h-full md:overflow-x-hidden md:overflow-y-auto md:[scrollbar-gutter:stable] md:[contain:layout_paint]">
+      <div data-slot="page-frame" ref={setFrameEl} className="@container/page flex min-w-0 flex-1 shrink-0 flex-col md:*:shrink-0">
         {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it.
             The notch inset goes to whichever is topmost: the banner when it's shown, else the header. */}
+        {/* On a desktop the top bar is part of the card (neutral); on a phone it is the themed frame. */}
         <header
-          data-slot="topbar" data-chrome=""
+          data-slot="topbar" data-chrome={narrow ? "" : undefined}
           className={cn(
             "bg-background sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 md:px-6 max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))]",
             !updateAvailable && "max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:pt-[env(safe-area-inset-top)]",
@@ -120,6 +241,10 @@ export function Shell({ crumbs, sidebarActions, children }: {
           {serverProblem && <ServerOffline configFailed={offline} />}
           {offline ? (serverProblem ? null : <OfflineScreen />) : children}
         </main>
+      </div>
+      </div>
+      </div>
+      <Dock />
       </div>
       <BottomBar activity={activity} />
       {/* The quick-ask pill, bottom centre of every page but an agent's Chat tab (desktop; the phone's bottom bar has the orchestrator). */}
@@ -163,7 +288,7 @@ function Sidebar({ collapsed, onToggle, actions }: {
           const item = (
             <button key={to} type="button" onClick={() => navigate(to)} aria-current={active ? "page" : undefined}
               aria-keyshortcuts={shortcut ? shortcutKeys(shortcut).join(" ") : undefined}
-              className={cn("relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-sidebar-active text-sidebar-active-foreground font-medium" : "text-muted-foreground hover:bg-accent hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
+              className={navRow(collapsed, active)}>
               <Icon className="size-4 shrink-0" />
               <span data-slot="nav-label" className={cn(collapsed && "md:hidden")}>{label}</span>
               {badge?.(collapsed)}
@@ -178,18 +303,20 @@ function Sidebar({ collapsed, onToggle, actions }: {
           return collapsed && !narrow ? <Tip key={to} label={label} shortcut={shortcut} side="right" className="flex">{item}</Tip> : item;
         })}
       </nav>
-      {/* Add New is the last of the actions — pushed to the bottom, just above the divider and you.
-          Collapsed, it is an icon in the same column. */}
-      <div data-slot="sidebar-actions" className={cn("mt-auto px-2 pb-2", collapsed && "flex flex-col md:items-center")}>
+      {/* Add New is the last of the actions — pushed to the bottom, just above you. An outline button,
+          full width, on the lower surface: it stands apart from the nav rows above it. */}
+      <div data-slot="sidebar-actions" className="mt-auto px-2 pb-2">
         {actions?.(collapsed)}
       </div>
-      {/* The foot: you, with the collapse toggle — above you when collapsed, so nothing overlaps. */}
-      <div data-slot="sidebar-foot" className={cn("flex flex-col border-t p-2", collapsed && "items-stretch md:items-center")}>
-        <div data-slot="sidebar-you" className={cn("flex items-center gap-1", collapsed && "md:flex-col-reverse")}>
+      {/* The foot, like branch-demo's: you (a ghost row with a chevron, it opens a menu) and the bell and
+          the collapse toggle as ghost icons — no divider above it. Collapsed, one centred column with
+          the toggle on top, so nothing overlaps. */}
+      <div data-slot="sidebar-foot" className="px-2 pb-2">
+        <div data-slot="sidebar-you" className={cn("flex items-center gap-0.5", collapsed && "md:flex-col-reverse md:gap-1")}>
           <ProfileMenu collapsed={collapsed} />
           <NotificationBell collapsed={collapsed} />
-          <Tip label={collapsed ? "Expand sidebar" : "Collapse sidebar"} shortcut="sidebar" className={cn("hidden md:inline-flex", !collapsed && "ml-auto")}>
-            <button type="button" onClick={onToggle} className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-8 shrink-0 items-center justify-center rounded-md"
+          <Tip label={collapsed ? "Expand sidebar" : "Collapse sidebar"} shortcut="sidebar" className="hidden md:inline-flex">
+            <button type="button" onClick={onToggle} className={footIcon}
               aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
               {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
             </button>
@@ -217,6 +344,18 @@ export function OrcaMark({ className }: { className?: string }) {
 export const RoundMark = ({ className }: { className?: string }) => (
   <span data-slot="round-mark" className={cn("text-server-mark inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-server-mark-bg", className)}>
     <OrcaMark className="size-4" />
+  </span>
+);
+
+/** "Orca | <name>" beside the mark, as the page title reads: a thin muted pipe with even space on each
+ *  side. The sidebar and Settings' identity preview both use it, so they cannot differ. */
+export const BrandName = ({ label, labelClass, labelSlot = "server-identity", className }: { label?: string; labelClass?: string; labelSlot?: string; className?: string }) => (
+  <span data-slot="brand-name" className={cn("flex min-w-0 items-baseline gap-1.5", className)}>
+    <span className="shrink-0">Orca</span>
+    {label && <>
+      <span aria-hidden="true" data-slot="brand-sep" className="text-muted-foreground/60 shrink-0 font-light">|</span>
+      <span data-slot={labelSlot} className={cn("truncate", labelClass)}>{label}</span>
+    </>}
   </span>
 );
 
@@ -279,10 +418,7 @@ function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
     <>
       {mark}
       <span className={cn("min-w-0 flex-1 text-left", collapsed && "md:hidden")}>
-        <span className="flex min-w-0 items-baseline gap-1.5 text-sm font-medium">
-          <span className="shrink-0">Orca</span>
-          {identity && <span data-slot="server-identity" className="text-server-fg truncate">{identity.label}</span>}
-        </span>
+        <BrandName label={identity?.label} labelClass="text-server-fg" className="text-sm font-medium" />
         <span data-slot="instance-scope" className="text-muted-foreground block truncate text-xs">{label}</span>
       </span>
     </>
@@ -382,10 +518,11 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
   const swipe = useSwipeToDismiss("bottom", () => dialog, () => setOpen(false), { enabled: useNarrow(), body: dialog });
   return (
     <>
-      <Tip label="Add New" shortcut="new" side="right" className={cn("w-full", collapsed && "md:w-auto")}>
-        <Button variant="secondary" size="sm" data-slot="add-new" aria-label="Add New" onClick={() => setOpen(true)} className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
-          <Plus className="size-4" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
-          <Shortcut id="new" className={cn("ml-auto max-md:hidden", collapsed && "md:hidden")} />
+      <Tip label="Add New" shortcut="new" side="right" className="flex w-full">
+        <Button variant="outline" data-slot="add-new" aria-label="Add New" onClick={() => setOpen(true)}
+          className={cn("h-9 w-full justify-start gap-3 px-2.5 has-[>svg]:px-2.5 text-sm font-normal", collapsed && "md:justify-center md:px-0 md:has-[>svg]:px-0")}>
+          <Plus className="size-4 shrink-0" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
+          <Shortcut id="new" className={cn("ml-auto max-md:hidden [@media(pointer:coarse)]:hidden", collapsed && "md:hidden")} />
         </Button>
       </Tip>
       {createPortal(
@@ -460,13 +597,15 @@ export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" data-slot="profile" className={cn("hover:bg-accent/60 flex h-8 min-w-0 items-center gap-2 rounded-md px-1.5 text-sm", collapsed ? "md:size-8 md:justify-center md:p-0" : "flex-1")} aria-label="Profile menu">
-          <CircleUser className="text-muted-foreground size-5 shrink-0" />
+        <button type="button" data-slot="profile" className={cn("hover:bg-accent flex h-9 min-w-0 items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors", collapsed ? "md:size-9 md:justify-center md:p-0" : "flex-1")} aria-label="Profile menu">
+          <CircleUser className="text-muted-foreground size-4 shrink-0" />
           {/* One line: who, then which machine — "You · local". */}
           <span className={cn("flex min-w-0 items-center gap-1.5 whitespace-nowrap", collapsed && "md:hidden")}>
             <span className="truncate">You</span>
             {thisInstance() && <><span className="bg-muted-foreground/60 size-1 shrink-0 rounded-full" aria-hidden="true" /><span data-slot="profile-instance" className="text-muted-foreground truncate">{thisInstance()}</span></>}
           </span>
+          {/* It opens a menu: the chevron at the far right, as branch-demo's user row. */}
+          <ChevronsUpDown className={cn("text-muted-foreground ml-auto size-3.5 shrink-0", collapsed && "md:hidden")} aria-hidden="true" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top">
