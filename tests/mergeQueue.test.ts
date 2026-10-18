@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as agent from "../server/agent";
 import * as db from "../server/db";
+import * as gh from "../server/gh";
 import * as git from "../server/git";
 import * as mergeQueue from "../server/mergeQueue";
 import * as orchestrator from "../server/orchestrator";
@@ -135,6 +136,39 @@ test("M3: the repo's policy — denylisted paths are refused and unmarked; never
   expect(await orchestrator.tool(cfg(small), "merge", { repo: "r", pr: "7", "when-green": "", small: "" })).toBe("Merged r PR #7: it was already green and clean.");
   // It only ever queues.
   await expect(orchestrator.tool(cfg(small), "merge", { repo: "r", pr: "7" })).rejects.toThrow("add --when-green");
+});
+
+test("M3b: the Enable-auto-merge fallback (GitHub refused it) queues the PR regardless of the repo's mergePolicy — the user's own click, not the orchestrator's — and the existing disable action cancels it", async () => {
+  const r = repo(); // no mergePolicy configured: defaults to "never" — the orchestrator may not merge anything on its own
+  process.env.ORCA_GH_NO_AUTO = "1";
+  try {
+    await pr({ ci: "IN_PROGRESS" }); // not safe to merge right now
+    const refused = await gh.enableAutoMerge(repoPath, 7).catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(gh.AutoMergeNotAllowed);
+
+    // The orchestrator's own `orca merge --when-green` is still refused by the (default) policy.
+    await expect(orchestrator.tool(cfg(r), "merge", { repo: "r", pr: "7", "when-green": "" })).rejects.toThrow('mergePolicy.whenGreen is "never"');
+    expect(await mark()).toBeUndefined();
+
+    // The /api/prs/auto-merge route queues it anyway on GitHub's refusal: this is Finn's own click,
+    // so the mergePolicy that limits the orchestrator does not apply (bypassPolicy).
+    const said = await mergeQueue.request(cfg(r), r, { pr: 7 }, { by: "user", bypassPolicy: true });
+    expect(said).toContain("Queued r PR #7 to merge when green");
+    expect((await mark())?.pr).toBe(7);
+
+    // It survives a poll under the very policy that just refused the orchestrator.
+    await mergeQueue.tick(cfg(r));
+    expect((await mark())?.pr).toBe(7);
+    expect(await merges()).toEqual([]); // still not green
+
+    // The existing disable action (store.disableAutoMerge → mergeQueue.cancel) cancels it.
+    await mergeQueue.cancel(r, "feat");
+    expect(await mark()).toBeUndefined();
+    await mergeQueue.tick(cfg(r));
+    expect(await merges()).toEqual([]);
+  } finally {
+    delete process.env.ORCA_GH_NO_AUTO;
+  }
 });
 
 test("M4: a branch marked before its PR exists is merged once the PR is open and green", async () => {

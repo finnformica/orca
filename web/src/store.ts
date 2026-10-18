@@ -1145,9 +1145,12 @@ export async function mergeWhenGreen(row: Row) {
   await refresh();
 }
 
+/** Turns auto-merge back off — GitHub's own, or Orca's merge-when-green queue mark left by the
+ *  Enable-auto-merge fallback (the repo disallowed GitHub's), whichever is actually active. */
 export async function disableAutoMerge(row: Row) {
   if (!row.prNumber) return;
-  await api.disableAutoMerge(row.repo, row.prNumber);
+  if (row.mergeWhenGreen && !row.autoMergeEnabled) await api.cancelMergeWhenGreen(row.repo, row.prNumber, row.branch);
+  else await api.disableAutoMerge(row.repo, row.prNumber);
   await refresh();
 }
 

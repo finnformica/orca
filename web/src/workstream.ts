@@ -1308,6 +1308,10 @@ export type MergeMark = {
   small?: boolean; by?: "orchestrator" | "user"; at: number;
   /** The head commit a red/conflict was last reported for — once per push, not once per poll. */
   reportedSha?: string;
+  /** Set only by the Enable-auto-merge fallback (GitHub refused it): this mark is the user's own
+   *  direct click, so the repo's mergePolicy — which limits what the ORCHESTRATOR may merge on its
+   *  own — never refuses it, on this poll or any later one. */
+  exempt?: boolean;
 };
 /** What the queue reads about the PR (gh.prMergeGate's shape, minus what it doesn't need). */
 export type MergeGateLike = {
@@ -1322,8 +1326,11 @@ export type MergeVerdict =
   | { action: "gone"; why: string };
 
 /** Why the policy refuses to merge this PR on its own, or undefined when it may. The files are
- *  re-read on every poll, since a push can add a denied path after the mark. Pure. */
-export function mergeRefusal(policy: MergePolicy | undefined, mark: Pick<MergeMark, "small">, pr?: Pick<MergeGateLike, "files" | "changedFiles">): string | undefined {
+ *  re-read on every poll, since a push can add a denied path after the mark. An `exempt` mark (the
+ *  Enable-auto-merge fallback) is never refused: the policy limits the orchestrator, not the user's
+ *  own click. Pure. */
+export function mergeRefusal(policy: MergePolicy | undefined, mark: Pick<MergeMark, "small" | "exempt">, pr?: Pick<MergeGateLike, "files" | "changedFiles">): string | undefined {
+  if (mark.exempt) return undefined;
   const when = policy?.whenGreen ?? "never";
   if (when === "never") return "this repo's mergePolicy.whenGreen is \"never\": merging is the user's";
   if (when === "small" && !mark.small) return "this repo only merges PRs marked small on green (--small); merging this one is the user's";
