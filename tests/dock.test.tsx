@@ -10,7 +10,7 @@ import { getDefaultStore } from "jotai";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { App } from "@/App";
-import { afterDockMotion, dockMoving, noteDockMotion } from "@/lib/dock";
+import { afterDockMotion, dockMoving, noteDockMotion, resetAppStartingForTests } from "@/lib/dock";
 import { SHELL_GAP, frozenPageWidth } from "@/workstream";
 import { SLIDE_MS } from "@/components/SidePanel";
 import { orchestratorOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
@@ -90,7 +90,14 @@ test("open, the panel is a docked column: the page reflows, the button and O tog
   const panel = $('[data-slot="orchestrator-panel"]')!;
   expect(panel.dataset.state).toBe("open");
   expect(panel.hasAttribute("data-docked")).toBe(true);
-  expect(panel.parentElement).toBe(dock()); // in the dock: its width slides the panel, no transform
+  // In the dock's inner clip (a boolean check: a failed toBe on two DOM nodes prints both trees).
+  expect(panel.parentElement!.dataset.slot === "dock-clip" && panel.parentElement!.parentElement === dock()).toBe(true);
+  expect(dock().className).not.toContain("overflow-hidden"); // the clip is inside, so the handle hangs in the gutter
+  // branch-demo's gutter handle: a child of the dock, outside the clip, the line centred in the 6px gap.
+  const handle = $('[data-slot="orchestrator-resize"]')!;
+  expect(handle.parentElement === dock()).toBe(true);
+  expect(handle.style.left).toBe("-3.5px");
+  expect(handle.className).toContain("top-[10px]"); // short of the cards' 10px corners
   expect(panel.className).not.toContain("shadow-modal"); // not an overlay
   expect(panel.className).not.toContain("border-l"); // no shared hairline: the dock card is the edge
   expect(dock().style.width).toBe("460px"); // the page's row reserves the panel's width
@@ -102,6 +109,7 @@ test("open, the panel is a docked column: the page reflows, the button and O tog
   await click(askButton()); // the same button closes it
   expect(panel.dataset.state).toBe("closed");
   expect(dock().style.width).toBe("0px");
+  expect($('[data-slot="orchestrator-resize"]')).toBeNull(); // nothing to grab in the gap while it closes
   await key("o"); // O opens…
   expect(panel.dataset.state).toBe("open");
   (document.activeElement as HTMLElement | null)?.blur(); // the composer took focus; O in a field is a letter
@@ -146,6 +154,52 @@ test("the edge resizes from the keyboard too: ← widens, → narrows, and the d
   expect(dock().style.width).toBe(`${PANEL_MIN_W}px`);
 });
 
+test("a resize is not a slide: an arrow key or a drag moves the dock with no width transition and never holds the page frame", async () => {
+  await mount(1440);
+  await click(askButton());
+  await act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 120)); }); // the open slide is over
+  const frame = $('[data-slot="page-frame"]')!;
+  const edge = $('[data-slot="orchestrator-resize"]')!;
+  expect(frame.style.width).toBe("");
+  // Every write to the dock's and the frame's width, seen as it happens: the dock's width may change
+  // only while `data-resizing` turns its transition off, and the frame's width is never written.
+  const writes: { el: string; from: string; to: string; resizing: boolean }[] = [];
+  const spy = (el: HTMLElement) => {
+    const proto = Object.getPrototypeOf(el.style);
+    const d = (function find(o: object | null): PropertyDescriptor | undefined { return o ? Object.getOwnPropertyDescriptor(o, "width") ?? find(Object.getPrototypeOf(o)) : undefined; })(proto)!;
+    Object.defineProperty(el.style, "width", { configurable: true, get() { return d.get!.call(this); },
+      set(v: string) { writes.push({ el: el.dataset.slot!, from: d.get!.call(this), to: v, resizing: el.hasAttribute("data-resizing") }); d.set!.call(this, v); } });
+    return () => { delete (el.style as unknown as Record<string, unknown>).width; };
+  };
+  const unspy = [spy(dock()), spy(frame)];
+  const press = async (k: string) => { await act(async () => { edge.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })); await flush(); }); };
+  await press("ArrowLeft");
+  await press("ArrowRight");
+  await press("ArrowRight");
+  // A drag, then its release (the release saves the width, which once held the frame at width + delta).
+  await act(async () => {
+    edge.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: 900 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 860 }));
+    window.dispatchEvent(new PointerEvent("pointerup", { clientX: 860 }));
+    await flush();
+  });
+  unspy.forEach((f) => f());
+  let dockChanges = 0;
+  for (const w of writes) {
+    if (w.el === "page-frame" && w.to) throw new Error(`the page frame was held at ${w.to} by a resize`);
+    if (w.el !== "dock" || w.from === w.to) continue;
+    expect(w.resizing).toBe(true); // a dock width change with the transition on slides 150ms behind the handle
+    dockChanges++;
+  }
+  expect(dockChanges).toBe(4);
+  expect(dock().style.width).toBe(`${460 - RESIZE_STEP + 40}px`);
+  expect(dock().hasAttribute("data-resizing")).toBe(false); // the transition is back for the next open / close
+  expect(frame.style.width).toBe("");
+  // An open or a close still holds the frame (the slide), so the resize mark did not leak into it.
+  await click(askButton());
+  expect(frame.style.width).toMatch(/^\d+px$/);
+});
+
 test("the motion flag: work that measures the page waits while the dock or the nav animates its width, then runs once", () => {
   const calls: string[] = [];
   const measure = () => calls.push("measure");
@@ -175,6 +229,20 @@ test("opening: the panel shows in the commit that opens it at dock width 0, and 
   expect(dock().className).toContain("transition-[width,margin-inline-start]");
   expect(dock().className).toContain("data-[resizing]:transition-none");
   expect($('[data-slot="page-scroll"]')!.className).toContain("md:[contain:layout_paint]");
+});
+
+test("a reload with the panel's open state persisted true shows it at its full width at once — no 0 → width slide to replay", async () => {
+  localStorage.setItem("orca.ui.v1.orchestratorOpen", "true");
+  resetAppStartingForTests(); // a real reload re-arms the page-load window; this test process shares it across files
+  Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  act(() => { root = createRoot(container!); root.render(<App />); }); // the commit a reload's first paint is
+  expect($('[data-slot="orchestrator-panel"]')!.dataset.state).toBe("open");
+  expect(dock().style.width).toBe("460px"); // never 0px first: `appStarting` skipped the slide
+  await act(async () => { await flush(); await flush(); });
+  expect(dock().style.width).toBe("460px"); // settles unchanged
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true })); // end the page-load window, as a real keystroke would
 });
 
 test("frozenPageWidth: the page content's end width, so the content lays out once and only the card edge moves", () => {

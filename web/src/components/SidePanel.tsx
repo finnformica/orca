@@ -14,17 +14,22 @@ import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as Reac
 import { createPortal } from "react-dom";
 import { useAtom, useAtomValue, useSetAtom, type WritableAtom } from "jotai";
 import { ArrowLeft } from "lucide-react";
-import { PANEL_MIN_W, clampPanelWidth } from "../workstream";
+import { PANEL_MIN_W, SHELL_GAP, clampPanelWidth } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { useSwipeToDismiss } from "@/lib/gestures";
 import { cn } from "@/lib/utils";
 import { useNarrow } from "@/lib/viewport";
-import { appStarting, dockElementAtom, dockWidthsAtom } from "@/lib/dock";
+import { appStarting, dockClipElementAtom, dockElementAtom, dockWidthsAtom, noteDockResize } from "@/lib/dock";
 
 /** The dock's open / close: branch-demo's `transition-all` (150ms, Tailwind's default ease). */
 export const SLIDE_MS = 150;
 /** One arrow key on the focused resize edge (Shift: three times as far). */
 export const RESIZE_STEP = 40;
+/** The resize handle: branch-demo's `ResizableHandle` (ui/src/components/resizable.tsx). A 1px line
+ *  with a 17px hit area (`before:-inset-2`); on hover the line darkens with a faint ring, and while
+ *  it drags (`data-resizing`) or has keyboard focus it is the accent. */
+export const RESIZE_HANDLE_CLASS =
+  "group absolute z-50 flex w-px cursor-ew-resize justify-center outline-none before:absolute before:-inset-2 hover:bg-border-dark hover:ring-2 hover:ring-foreground/5 data-[resizing]:bg-geist-blue data-[resizing]:ring-2 data-[resizing]:ring-geist-blue/5 focus-visible:bg-geist-blue focus-visible:ring-2 focus-visible:ring-geist-blue/5";
 
 type WidthAtom = WritableAtom<number, [number], void>;
 
@@ -71,6 +76,7 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
   // Docked: a desktop width. Below md (a desktop window resized down, or a phone) it stays an overlay.
   const docked = !fullScreen && !useNarrow();
   const dockEl = useAtomValue(dockElementAtom);
+  const dockClip = useAtomValue(dockClipElementAtom);
   const setDock = useSetAtom(dockWidthsAtom);
   // branch-demo's right panel, step by step. `expanded` drives the dock's width; it starts from
   // `open` only during the page load (`appStarting`: a panel open from the URL shows at once, with
@@ -115,7 +121,8 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
   // re-rendered the whole panel and lagged; state (and storage) is updated once, when the pointer lets go.
   const onResizeStart = (e: ReactPointerEvent) => {
     if (e.button !== 0) return;
-    (e.currentTarget as HTMLElement).focus(); // the arrow keys resize from here on (preventDefault below blocks the default focus)
+    const handle = e.currentTarget as HTMLElement;
+    handle.focus(); // the arrow keys resize from here on (preventDefault below blocks the default focus)
     const el = panelRef.current;
     if (!el) return;
     const x0 = e.clientX, w0 = width;
@@ -123,6 +130,7 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
     // The shell's dock column follows the drag at once (no transition), so the page reflows with it.
     const dock = docked ? dockEl : null;
     dock?.setAttribute("data-resizing", "");
+    handle.setAttribute("data-resizing", "");
     const move = (ev: PointerEvent) => {
       last = clampPanelWidth(w0 + (x0 - ev.clientX), window.innerWidth); // the edge is on the LEFT: dragging left widens
       el.style.width = `${last}px`;
@@ -132,6 +140,8 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
       window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
       document.body.style.cursor = "";
       dock?.removeAttribute("data-resizing");
+      handle.removeAttribute("data-resizing");
+      if (dock) noteDockResize(last); // the dock already has this width: no page-frame hold for it
       setSavedWidth(last);
     };
     document.body.style.cursor = "ew-resize";
@@ -146,16 +156,43 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
       : e.key === "Home" ? PANEL_MIN_W : e.key === "End" ? Number.MAX_SAFE_INTEGER : null;
     if (next === null) return;
     e.preventDefault();
-    setSavedWidth(clampPanelWidth(next, window.innerWidth));
+    const w = clampPanelWidth(next, window.innerWidth);
+    if (w === width) return;
+    // As a drag does: the panel and the dock take the width at once, with the dock's width transition
+    // off, so the page edge moves with the handle in this frame — no 150ms slide, no held page frame.
+    // The computed-style read applies the new width while `data-resizing` turns the transition off;
+    // after that, turning it back on starts nothing (the width does not change again).
+    const el = panelRef.current;
+    if (el) el.style.width = `${w}px`;
+    const dock = docked ? dockEl : null;
+    if (dock) {
+      dock.setAttribute("data-resizing", "");
+      dock.style.width = `${w}px`;
+      void getComputedStyle(dock).transitionProperty;
+      dock.removeAttribute("data-resizing");
+      noteDockResize(w);
+    }
+    setSavedWidth(w);
   };
   // Docked, it waits for the shell's dock to exist rather than flash as an overlay first.
-  if (docked && !dockEl) return null;
-  const resize = !fullScreen && (
-    // The resize handle: the panel's left edge. Dragging left widens; the width is remembered.
+  if (docked && (!dockEl || !dockClip)) return null;
+  // The resize handle. Dragging left widens; the width is remembered. Docked, it sits in the CENTRE of
+  // the gutter between the page card and the dock card (branch-demo's `placement="gutter"`): a portal
+  // into the dock, outside its clip, and only while the panel is open — a closing panel leaves nothing
+  // to grab in the gap. Its line spans the cards' straight edges, short of their 10px corners. As an
+  // overlay it is the panel's left edge. The portal keeps it in this React tree, so its keys still
+  // reach the panel's `onKeyDown` (Esc).
+  const handle = (gutter: boolean) => (
     <div data-slot={`${slot}-resize`} role="separator" aria-orientation="vertical" aria-label="Resize panel" onPointerDown={onResizeStart}
       tabIndex={open ? 0 : -1} aria-valuenow={width} aria-valuemin={PANEL_MIN_W} onKeyDown={onResizeKey}
-      className="hover:bg-geist-blue/40 active:bg-geist-blue/60 focus-visible:bg-geist-blue/60 outline-none absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize transition-colors" />
+      data-resize-handle=""
+      className={cn(RESIZE_HANDLE_CLASS, gutter ? "top-[10px] h-[calc(100%-20px)]" : "top-0 h-full")}
+      // Half the gap, less half the 1px line, puts the line on the gutter's centre.
+      style={{ left: gutter ? -(SHELL_GAP + 1) / 2 : 0 }} />
   );
+  const resize = fullScreen ? null
+    : docked ? (open && expanded ? createPortal(handle(true), dockEl!) : null)
+    : handle(false);
   const common = {
     ref: panelRef, role: "dialog", "aria-modal": false, "aria-label": label, "aria-labelledby": labelledBy, "aria-hidden": !open,
     "data-slot": `${slot}-panel`, "data-state": open ? "open" : "closed", onKeyDown,
@@ -170,14 +207,14 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
         onFocusCapture={(e) => { if (idle) (e.target as HTMLElement).blur(); }}
         // A constant `class` (see Dock in Shell.tsx: a class change here restyles the whole chat): the
         // stacking order is an inline style.
-        className="bg-card text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden"
+        className="bg-background text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden"
         style={{ width, zIndex: open ? 1 : 0 }}
       >
         {resize}
         {header(swipe)}
         {children}
       </div>,
-      dockEl!,
+      dockClip!,
     );
   }
   return (
@@ -187,7 +224,7 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
     // ONCE, so a field inside can take focus in the same commit. Closing, visibility waits for the slide.
     <div
       {...common} data-full={fullScreen ? "" : undefined}
-      className={cn("bg-card text-foreground flex flex-col overflow-hidden",
+      className={cn("bg-background text-foreground flex flex-col overflow-hidden",
         fullScreen ? "fixed top-0 right-0 h-[var(--vvh,100dvh)] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]" : "fixed inset-y-0 right-0 border-l shadow-modal",
         "z-40 ease-out motion-reduce:transition-none",
         open ? "visible translate-x-0 transition-transform" : "invisible translate-x-full transition-[transform,visibility]")}

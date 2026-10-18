@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from "react";
+import { ThreadChips } from "@/components/SourceChip";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { densityAtom, draftRepoAtom, openTerminalAtom, repoFilterAtom } from "@/lib/atoms";
 import type { ChangeSummary } from "../../../server/git";
@@ -19,7 +20,7 @@ import { ChatComposer } from "@/components/ChatComposer";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
 import { CiChip } from "./PrPanels";
-import { OrchStatusNote, Skeleton, UpkeepNote } from "@/components/console";
+import { GrantNote, OrchStatusNote, Skeleton, UpkeepNote } from "@/components/console";
 import { PreviewControl } from "./PreviewControl";
 import { StatusHoverCard } from "./StatusCard";
 import { TerminalDialog } from "@/components/Terminal";
@@ -110,11 +111,12 @@ function WorkstreamCardSkeleton() {
 // since `cards` is already filtered). Handy for standups / status posts.
 export function CopyDone({ cards }: { cards: Row[] }) {
   const [copied, setCopied] = useState(false);
-  const copy = () => {
+  const copy = async () => {
     const text = cards.map((c) => `- ${c.title}${c.prNumber ? ` (#${c.prNumber})` : ""}${c.prUrl ? ` — ${c.prUrl}` : ""}`).join("\n");
-    void navigator.clipboard.writeText(`Completed today:\n${text}`);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    if (await copyText(`Completed today:\n${text}`, "completed work")) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
   };
   return (
     <Tip label="Copy completed work (respects the repo filter)">
@@ -514,6 +516,8 @@ export function WorkstreamCard({ row }: { row: Row }) {
               </span>
             </Tip>
           )}
+          {/* One chip per integration this workstream has a thread on (Slack, Discord, email…). */}
+          <ThreadChips repo={row.repo} branch={row.branch} />
           {/* Where the worktree lives, once there is more than one place it could. */}
           {instanceChoices().length > 1 && row.worktreePath && (
             <span data-slot="instance-chip" className="text-muted-foreground rounded border px-1 text-[9px] leading-4 tracking-wider uppercase">
@@ -539,6 +543,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
         )}
         {!dense && row.prompt && <p className="text-muted-foreground line-clamp-2 text-xs">{row.prompt}</p>}
         <OrchStatusNote status={row.orchStatus} />
+        <GrantNote grant={row.grantScope} />
         <UpkeepNote upkeep={row.upkeep} running={row.agentStatus === "running"} />
       </div>
 

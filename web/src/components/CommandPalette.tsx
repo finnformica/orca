@@ -23,7 +23,7 @@ import { Input } from "@/components/ui/input";
 
 type Command = PaletteItem & { run: () => void; shortcut?: ShortcutId };
 
-const PAGES: [string, string][] = [["/", "Overview"], ["/agents", "Agents"], ["/previews", "Previews"], ["/integrations", "Integrations"], ["/settings", "Settings"], ["/settings#repos", "Repos"], ["/settings#github", "GitHub"]];
+const PAGES: [string, string][] = [["/", "Overview"], ["/agents", "Agents"], ["/inbox", "Inbox"], ["/previews", "Previews"], ["/integrations", "Integrations"], ["/settings", "Settings"], ["/settings#repos", "Repos"], ["/settings#github", "GitHub"]];
 
 /** F: focus the sidebar's Find box — which only exists in the expanded sidebar. */
 function focusFind(collapsed: boolean, setCollapsed: (v: boolean) => void) {
@@ -164,7 +164,7 @@ export function CommandPalette() {
               <div
                 id={`${listId}-${i}`} role="option" aria-selected={i === index} data-id={cmd.id}
                 onMouseMove={() => { if (i !== index) setSel(i); }} onClick={() => run(cmd)}
-                className={cn("flex h-9 cursor-pointer items-center gap-2 rounded-md px-2 text-sm", i === index && "bg-selected text-selected-foreground")}
+                className={cn("flex h-9 cursor-pointer items-center gap-2 rounded-md px-2 text-sm", i === index && "bg-accent text-accent-foreground")}
               >
                 <span className="min-w-0 truncate">{cmd.label}</span>
                 {cmd.shortcut ? <MenuShortcut id={cmd.shortcut} />

@@ -166,7 +166,7 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   enrichment still render (incl. PRs not made by Orca). **There is no enrichment GC** — it existed to
   bound a 5MB localStorage bucket, and pruning is now the opposite of the goal. `localStorage` keeps
   only per-browser UI state (theme, density, composer drafts; the shell's repo, instance scope,
-  sidebar collapse and palette recents, like the Agents list's view, density, sort and filters, go
+  sidebar collapse and palette recents, like the Agents list's density, sort and filters, go
   through `lib/persisted.ts` — `persistedAtom` / `usePersisted`, versioned `orca.ui.v1.<name>` keys
   (`persistedKey(name, repo)` for a per-repo value), a safe parse that falls back to the default, and
   a restored repo/instance the config no longer has reads as "all" (`validChoice`); reuse it for new
@@ -194,7 +194,10 @@ that holds the row's lease (`status.auto`, 150 s, renewed each sync — the fail
 row holds only the name. An outside sender's message gets a grant (min of link level and person) that
 rides `queued_message.grant_scope`: one grant per orchestrator wake, `orchestrator.tool` refuses
 verbs outside it (`grantRefusal`), and such a wake has no shell; a workstream it spawns or steers
-gets `grantScope` and runs with `agentPermissionMode: "ask"`. An unknown sender gets a one-time
+gets `grantScope` and runs in SCOPED mode (`agent.scopedRules`: `claude -p --permission-mode dontAsk`
+plus allow and deny rules — files in the worktree, git and the toolchain, no secrets, no
+`--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).
+Only a wake whose every message is yours clears it on a steer; `orca status --clear-grant` clears it. An unknown sender gets a one-time
 pairing code (`pairing_code`; approve with `POST /api/integrations/pairing/approve`). The orchestrator
 has `orca channels`, `post`, `thread link` and `ask-user`. A subscription's `digest_seconds` batches
 its deliveries per fixed window (`delivery.digest_key`). `/api/slack` still posts at once as
@@ -308,8 +311,10 @@ to a middle ground between Geist's flat grays and a first, too-soft pass after r
 `#f9f9f8`/`#fff` light and `#111111`/`#161616` dark, translucent hairline borders rather than flat
 gray, the Geist grays elsewhere, 1px hairlines, no card shadows, `#0070f3` as the one accent,
 status dots and pills as `--geist-*` tokens — all CSS variables in `styles.css`, so every component
-inherits it. **Surface rules** (Finn found the first pass heavy-handed; `tests/console.test.tsx`
-asserts them on every page): 1px hairlines only, never 2px; rows use dividers, never a box inside a
+inherits it. **Surface rules — read `docs/design/surfaces.md` before you touch a fill, border or
+shadow** (four levels: frame, page, raised, overlay; a header shares its body's surface; the composer
+is raised; `tests/surfaces.test.tsx` guards it). In short (Finn found the first pass heavy-handed;
+`tests/console.test.tsx` asserts them on every page): 1px hairlines only, never 2px; rows use dividers, never a box inside a
 card's border; 8px cards (`rounded-lg`), 6px controls (`rounded-md`); 13px body / 12px meta; icons at
 1.5 stroke (a global `svg.lucide` rule); NO shadows except Geist's menu / modal tokens
 (`shadow-menu`, `shadow-modal`) and the orchestrator's side panel (`shadow-modal`); badges are tinted fills
@@ -410,7 +415,9 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   search, sort; one ~56px row per workstream (repo
   icon + title, latest instruction, status dot + duration, state pill, CI/conflict badges + the
   review cluster, PR, branch, instance, updated, the model as avatar); every action in the trailing
-  ⋯ (`WorkstreamActions menuOnly`). The swimlanes stay behind a persisted List | Board toggle.
+  ⋯ (`WorkstreamActions menuOnly`). There is no List | Board toggle any more: the list only. As the
+  page (`@container/page`) narrows, Status folds under the title, then Checks & review into the PR
+  cell (`listColumns(tier)`, `LIST_TIER_MIN_REM`); the subline clips, never overlaps.
 - **Agent page** (the existing `/{repo}/prs/:n` and `/{repo}/local/:branch` routes,
   `views/AgentPage.tsx`): ONE compact sticky header row (`AgentHeader`: repo / title, status, branch
   or PR link, the actions) with the tabs Overview | Chat | Files | Preview directly under it, flush
@@ -689,8 +696,10 @@ popovers/selects portal into it through `PortalContainer` (`lib/utils.ts`). Retu
 close brings it back (an ask while popped out lands in the PiP composer), and its size is remembered.
 (History: a floating round launcher in the corner opened it; the top-bar entry replaced it — two
 ways to do one thing, and the launcher covered the corner the window sat in. The quick-ask pill is
-not that launcher: it sends a line without opening the conversation.) Browsers without the API get no
-button (a plain popup can't stay on top, so it was not worth having).
+not that launcher: it sends a line without opening the conversation.) Without the API (Firefox,
+Safari, or a page that is not a secure context: plain http on the tailnet) Pop out opens a normal
+popup window (`openOrchestratorWindow`: `/orchestrator?window`, named so a second click focuses it,
+PiP-sized), where App renders only the header and chat (`OrchestratorWindow`). It is not on top.
 It is one conversation you talk to; it starts and steers
 workstreams itself. Anthropic's orchestrator-workers pattern, kept to **two layers** — it, and the
 workstreams the board already shows (each worker is a Claude Code session that can spawn its own
@@ -962,6 +971,12 @@ choice is remembered (`orca.ui.v1.notificationFilter`). The per-kind chips and t
 do-not-disturb toggle were dropped as noise (DND lives in Settings; the bell shows it). Settings: do not disturb, per-kind toasts, and browser
 notifications (urgent kinds only, while the tab is hidden; the permission is asked for when switched
 on). Preferences are per browser (`orca.notifications.*` in localStorage); the rows are not.
+**The Inbox is the one place for what needs you** (`/inbox`, `views/Inbox.tsx`): the bell's rows are
+Inbox rows too (source Orca, `shared/inbox.ts` `notificationRows`; a bell row that copies an inbox
+event by key is left out), with ONE read state (a notification row reads the notification; an event
+and the bell's copy of it read together, by key) and ONE unread count for the bell and the Inbox nav
+item (`lib/inboxUnread.ts`). Mute on a notification row mutes its kind. The bell is the quick view,
+with See all.
 
 ## Deploying (a cloud box + the laptop, one database)
 

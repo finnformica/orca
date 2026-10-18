@@ -345,6 +345,9 @@ test("a live turn shows ONE compact activity block, and on finish it folds into 
   expect(slot("activity-counts")?.textContent).toBe("1 command, 3 files read");
   // The trail: consecutive reads grouped, the interim message as one line of text.
   expect([...slot("activity-trail")!.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Read 3 files", "Now the suite."]); // markdown stripped on a faded line
+  // The reserved height matches these two rows, not a fixed three-row box that would leave a
+  // gap under a shorter trail (the bug: it always reserved room for three).
+  expect((slot("activity-trail") as HTMLElement).style.minHeight).toBe("34px");
   // Nothing opens by itself: no command input, no output, no code block.
   expect(container!.querySelector("pre")).toBeNull();
   expect(text()).not.toContain("SECRET_FILE_BODY");
@@ -377,6 +380,52 @@ test("a live turn shows ONE compact activity block, and on finish it folds into 
   // Once the fold has played, the live block's content leaves the DOM.
   await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
   expect(slot("activity-current")).toBeNull();
+});
+
+test("the live header's label swaps in two layers — the old line fades out as the new one fades in, never overlapping", async () => {
+  // Finn: the old and new lines clashed mid-swap. Both now run together in one fixed-height,
+  // clipped box; the old one carries `-out`, the new one the plain slot, so neither is ever the
+  // only thing on screen at once and the box never grows a second line.
+  const now = Date.now();
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", prompt: "run the tests", response: "", startedAt: now,
+    steps: [{ at: 1, kind: "tool", id: "a", name: "Bash", input: { command: "bun test" } }],
+  }]);
+  await mount({ ...base, agentStatus: "running" });
+  const slot = (name: string) => container!.querySelector(`[data-slot="${name}"]`);
+  expect(slot("activity-current")?.textContent).toBe("Running: bun test…");
+  expect(slot("activity-current-out")).toBeNull(); // nothing to fade from yet
+
+  // Past the hold window, switch to a second in-flight call.
+  await act(async () => { await new Promise((r) => setTimeout(r, 450)); });
+  apiFake.turnsData.set("r::feat", [{
+    ...apiFake.turnsData.get("r::feat")![0]!,
+    steps: [
+      { at: 1, kind: "tool", id: "a", name: "Bash", input: { command: "bun test" } },
+      { at: 2, kind: "result", id: "a", output: "x" },
+      { at: 3, kind: "tool", id: "b", name: "Bash", input: { command: "bun run check" } },
+    ],
+  }]);
+  const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
+  await act(async () => {
+    stream.dispatchEvent(Object.assign(new Event("turn"), { data: JSON.stringify({ repo: "r", branch: "feat", runId: "run-1" }) }));
+    await flush(); await flush();
+  });
+
+  // Both layers sit together: the old line fading out, the new one fading in — same box.
+  const out = slot("activity-current-out");
+  const incoming = slot("activity-current");
+  expect(out?.textContent).toBe("Running: bun test…");
+  expect(out?.className).toContain("label-out");
+  expect(incoming?.textContent).toBe("Running: bun run check…");
+  expect(incoming?.className).toContain("label-in");
+  // One fixed-height, clipped box holds both — never a second line, never spilling out.
+  expect(out?.closest("[class*='overflow-hidden']")).toBe(incoming?.closest("[class*='overflow-hidden']"));
+
+  // Once the fade has played, only the new line is left.
+  await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
+  expect(slot("activity-current-out")).toBeNull();
+  expect(slot("activity-current")?.textContent).toBe("Running: bun run check…");
 });
 
 test("the live header names the newest call with no result, not the last step; the trail leaves it out", async () => {
@@ -685,7 +734,7 @@ test("the log never scrolls sideways: prose wraps unbreakable tokens, code block
   // pins the rules that fixed it.
   apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "p", response: "See `orca/surface-branch-review-checks-to-activity-27f26a`.", finishedAt: 2 }]);
   await mount(base);
-  const log = container!.querySelector<HTMLElement>(".bg-neutral-950")!;
+  const log = container!.querySelector<HTMLElement>('[data-slot="chat-log"]')!;
   expect(log.className).toContain("overflow-x-hidden");
   const prose = log.querySelector<HTMLElement>(".prose")!;
   expect(prose.className).toContain("wrap-anywhere");

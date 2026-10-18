@@ -3,7 +3,7 @@
 // of the console is assembled from these, so the look is decided in one place.
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { niceMax, orchStatusText, sparklineSegments, timeTicks, upkeepLabel, usageZone, type OrchStatus, type UpkeepRecord } from "../workstream";
+import { grantScopeLabel, niceMax, orchStatusText, sparklineSegments, timeTicks, upkeepLabel, usageZone, type GrantScopeNote, type OrchStatus, type UpkeepRecord } from "../workstream";
 
 /** A card: hairline border, no shadow, a 48px header row with the title left and controls right. */
 export function VCard({ title, aside, children, className, slot, bodyClass, onHeaderClick, expanded }: {
@@ -100,6 +100,18 @@ export function OrchStatusNote({ status, chipOnly, className }: { status?: OrchS
   return (
     <div data-slot="orch-status" className={cn("text-muted-foreground flex min-w-0 items-center gap-1 text-xs", className)}>
       <span className="min-w-0 truncate">{line}</span>
+    </div>
+  );
+}
+
+/** An outside sender's grant on the card: "started from Discord by Saajan, scoped mode". Nothing
+ *  for your own work. */
+export function GrantNote({ grant, className }: { grant?: GrantScopeNote; className?: string }) {
+  const text = grantScopeLabel(grant);
+  if (!text) return null;
+  return (
+    <div data-slot="grant-scope" className={cn("text-muted-foreground flex min-w-0 items-center gap-1 text-xs", className)}>
+      <span className="min-w-0 truncate">{text}</span>
     </div>
   );
 }
