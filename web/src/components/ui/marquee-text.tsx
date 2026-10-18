@@ -4,6 +4,7 @@
 // its box moves (lib/marquee.ts isTruncated, off the real scrollWidth/clientWidth); a short title just
 // sits there, unchanged. The moving text is an inline-block (CSS transform needs one), so a real
 // ellipsis can't land partway into it — a right-edge fade stands in for it instead.
+import { afterDockMotion } from "@/lib/dock";
 import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { isTruncated, marqueeDuration } from "@/lib/marquee";
@@ -18,7 +19,7 @@ export function MarqueeText({ children, className }: { children: ReactNode; clas
     const measure = () => setOverflow(isTruncated(el.scrollWidth, el.clientWidth) ? el.scrollWidth - el.clientWidth : 0);
     measure();
     if (typeof ResizeObserver === "undefined") return;
-    const ro = new ResizeObserver(measure);
+    const ro = new ResizeObserver(() => afterDockMotion(measure)); // settled widths only: no state per animation frame
     ro.observe(el);
     return () => ro.disconnect();
   }, [children]);

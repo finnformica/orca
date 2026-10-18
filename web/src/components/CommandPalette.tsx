@@ -7,11 +7,12 @@ import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboard
 import { useAtom, useSetAtom } from "jotai";
 import { Search } from "lucide-react";
 import {
-  addNewOpenAtom, instanceScopeAtom, notificationsOpenAtom, paletteOpenAtom, paletteRecentAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom, quickAskOpenAtom } from "@/lib/atoms";
+  addNewOpenAtom, instanceScopeAtom, notificationsOpenAtom, paletteOpenAtom, paletteRecentAtom, repoFilterAtom, shortcutsHelpOpenAtom, quickAskOpenAtom } from "@/lib/atoms";
 import { moveSelection, pushRecent, rankPalette, type PaletteItem } from "@/lib/palette";
 import { CHORD_TIMEOUT_MS, SHORTCUTS, escapeBlurTarget, isTypingTarget, matchShortcut, pageShortcut, type ShortcutId } from "@/lib/shortcuts";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { cn } from "@/lib/utils";
+import { useNavToggle } from "@/lib/dock";
 import { Kbd, MenuShortcut, Shortcut } from "@/components/ui/kbd";
 import { instanceChoices, testLocally, useRepos, useWorkstreams, type Row } from "../store";
 import { detailPath } from "@/views/Agents";
@@ -22,7 +23,7 @@ import { Input } from "@/components/ui/input";
 
 type Command = PaletteItem & { run: () => void; shortcut?: ShortcutId };
 
-const PAGES: [string, string][] = [["/", "Overview"], ["/agents", "Agents"], ["/previews", "Previews"], ["/repos", "Repos"], ["/github", "GitHub"], ["/usage", "Usage"], ["/settings", "Settings"]];
+const PAGES: [string, string][] = [["/", "Overview"], ["/agents", "Agents"], ["/previews", "Previews"], ["/integrations", "Integrations"], ["/settings", "Settings"], ["/settings#repos", "Repos"], ["/settings#github", "GitHub"]];
 
 /** F: focus the sidebar's Find box — which only exists in the expanded sidebar. */
 function focusFind(collapsed: boolean, setCollapsed: (v: boolean) => void) {
@@ -45,7 +46,7 @@ function useCommands(): Command[] {
   const setHelp = useSetAtom(shortcutsHelpOpenAtom);
   const setQuickAsk = useSetAtom(quickAskOpenAtom);
   const setNotifications = useSetAtom(notificationsOpenAtom);
-  const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
+  const { rail: collapsed, setRail: setCollapsed } = useNavToggle();
   const setRepo = useSetAtom(repoFilterAtom);
   const setScope = useSetAtom(instanceScopeAtom);
   const { ask } = useOrchestrator();
@@ -219,7 +220,7 @@ export function Shortcuts() {
   const [palette, setPalette] = useAtom(paletteOpenAtom);
   const setAddNew = useSetAtom(addNewOpenAtom);
   const setHelp = useSetAtom(shortcutsHelpOpenAtom);
-  const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
+  const { rail: collapsed, setRail: setCollapsed } = useNavToggle();
   const { open: orchestrator, ask, close } = useOrchestrator();
   const [quickAsk, setQuickAsk] = useAtom(quickAskOpenAtom);
   const [notifications, setNotifications] = useAtom(notificationsOpenAtom);
@@ -257,7 +258,7 @@ export function Shortcuts() {
       if (page !== undefined) navigate(page);
       else if (id === "palette") setPalette(!s.palette);
       else if (id === "new") setAddNew(true);
-      else if (id === "orchestrator") actions.current.ask();
+      else if (id === "orchestrator") { if (s.orchestrator) actions.current.close(); else actions.current.ask(); } // O toggles the docked panel
       else if (id === "quickAsk") setQuickAsk(true);
       else if (id === "notifications") setNotifications(!s.notifications);
       else if (id === "help") setHelp(true);
