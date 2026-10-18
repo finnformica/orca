@@ -91,7 +91,7 @@ function useCommands(): Command[] {
     const here = currentServer(servers);
     for (const s of servers) {
       if (s.url === here.url || s.health === "offline" || s.health === "refused") continue;
-      action(`server:${s.url}`, `Switch server: ${s.name}`, () => switchServer(s.self ? null : s), undefined, `server ${s.url}`);
+      action(`server:${s.url}`, `Switch server: ${s.label}`, () => switchServer(s.self ? null : s), undefined, `server ${s.name} ${s.url}`);
     }
     action("server:add", "Add server", () => setAddServer(true), undefined, "server switch url");
   }

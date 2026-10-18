@@ -1,5 +1,5 @@
 import {
-  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, modelFor, parseConfigDocument,
+  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
@@ -43,7 +43,8 @@ import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
 import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
-import { checkCaller, listServers, selfServer, serverGate } from "./servers";
+import { checkCaller, listServers, selfServer, serverGate, withIdentity } from "./servers";
+import { identityUpdate, serverIdentityProblems } from "../shared/serverIdentity";
 import * as handoff from "./handoff";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
@@ -360,7 +361,7 @@ const DATABASE_ONLY = new Set([
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history", "/api/config/instance-rate", "/api/config/terminal",
+  "/api/health/history", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity",
   // A workstream's reported screenshots, read off its turns (the files are served per shot).
   "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -537,7 +538,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   // The server switcher (server/servers.ts): the Orca servers a browser may switch to. Answered here,
   // never forwarded — each server names itself and its own discovery.
-  if (req.method === "GET" && p === "/api/servers") return json(await listServers(cfg.serverSwitcher));
+  if (req.method === "GET" && p === "/api/servers") return json(withIdentity(await listServers(cfg.serverSwitcher), cfg.serverIdentity));
   // Handoff packs (server/handoff.ts): context for another Orca server, carried by the browser. Never
   // forwarded: the packs are this database's, and the import queues to THIS side's orchestrator.
   if (p === "/api/handoffs" || p.startsWith("/api/handoffs/") || p === "/api/handoff/import") {
@@ -850,7 +851,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     const { config, errors } = parseConfigDocument(body.config ?? body);
     if (!config) return json({ errors }, 400);
     // The web terminal's flag is NOT part of a pasted document: only Settings' own route sets it.
-    await saveConfigDocument({ ...config, ...(cfg.terminal ? { terminal: cfg.terminal } : {}) });
+    // Nor is the server identity: a document copied from another server must not rename this one.
+    const { serverIdentity: _pasted, ...pasted } = config;
+    await saveConfigDocument({ ...pasted, ...(cfg.terminal ? { terminal: cfg.terminal } : {}), ...(cfg.serverIdentity ? { serverIdentity: cfg.serverIdentity } : {}) });
     return json({ ok: true, repos: config.repos.map((r) => r.name) });
   }
   if (req.method === "POST" && p === "/api/config/instance-rate") {
@@ -860,6 +863,13 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!instance || (usd !== null && !(Number.isFinite(usd) && usd >= 0))) return json({ error: "instance and a non-negative hourlyUsd (or null) are required" }, 400);
     await db.setInstanceHourlyUsd(instance, usd);
     invalidateConfig();
+    return json({ ok: true });
+  }
+  if (req.method === "POST" && p === "/api/config/identity") {
+    // Settings' Server identity: this server's display name and theme colour. Empty fields clear.
+    const problems = serverIdentityProblems({ name: body.name || undefined, color: body.color || undefined });
+    if (problems.length) return json({ error: problems.join("; ") }, 400);
+    await setServerIdentity(identityUpdate(body.name, body.color));
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/config/terminal") {

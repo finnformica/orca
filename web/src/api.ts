@@ -94,6 +94,7 @@ export const api = {
   /** Settings' Machine cost: one instance's USD/hour; null clears it (back to the EC2 estimate / 0). */
   setInstanceRate: (instance: string, hourlyUsd: number | null): Promise<{ ok: true }> => post("/api/config/instance-rate", { instance, hourlyUsd }),
   setInstanceTerminal: (instance: string, on: boolean): Promise<{ ok: true }> => post("/api/config/terminal", { instance, on }),
+  setServerIdentity: (name: string, color: string): Promise<{ ok: true }> => post("/api/config/identity", { name, color }),
   usage: (): Promise<Usage | null> => get("/api/usage").then(res),
   /** The GitHub page: this host's signed-in gh accounts, the identity each commits as, the repos on each. */
   githubAccounts: (): Promise<{ accounts: GithubAccount[] }> => get("/api/github/accounts").then(res),

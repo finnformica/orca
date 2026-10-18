@@ -6,7 +6,7 @@
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
 import { useEffect, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { ChevronRight, FolderGit2, GitBranch, Server, SquareTerminal } from "lucide-react";
+import { Check, ChevronRight, FolderGit2, GitBranch, Pipette, Server, SquareTerminal } from "lucide-react";
 import { api, type GithubAccount } from "../api";
 import { refreshVitals } from "@/lib/vitals";
 import { notifyLocal, setBrowserNotify } from "@/lib/notificationStore";
@@ -23,7 +23,11 @@ import { instanceChoices, setInstanceRate, setInstanceTerminal, staleHours, term
 import { terminalMachines, useOpenTerminal } from "@/components/InstanceTerminal";
 import { ago, repoSummaries, terminalBlocked } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
-import { FindBox, NAV, THEMES } from "@/components/Shell";
+import { FindBox, NAV, OrcaMark, THEMES } from "@/components/Shell";
+import { Tip } from "@/components/ui/tip";
+import { cn } from "@/lib/utils";
+import { loadIdentity, useServerIdentity } from "@/lib/identity";
+import { IDENTITY_COLORS, IDENTITY_NAME_MAX, colorFromName, normalizeColor } from "../../../shared/serverIdentity";
 import { InstanceCard, RefreshVitals, UsageCard } from "./Vitals";
 import { RunningPreviews, TestMaster } from "./PreviewControl";
 
@@ -118,6 +122,7 @@ export function Settings() {
           <ChevronRight className="text-muted-foreground size-4 shrink-0" />
         </button>
       </VCard>
+      <ServerIdentitySettings />
       <NotificationSettings />
       <MachineCostSettings />
       <InstancesSettings />
@@ -316,6 +321,73 @@ function MachineRate({ instance, saved }: { instance: string; saved: number | un
         <Button type="submit" variant="secondary" size="sm" disabled={!valid || !dirty || busy}>Save</Button>
       </form>
     </Setting>
+  );
+}
+
+/** Settings → Server identity: the ACTIVE server's display name and theme colour (Slack's workspace
+ *  name and theme). Saved to that server's app config (`serverIdentity`); empty fields fall back to
+ *  the Tailscale host name and the colour derived from the name. */
+function ServerIdentitySettings() {
+  const identity = useServerIdentity();
+  const [name, setName] = useState("");
+  const [color, setColor] = useState(""); // "" = derived from the name
+  const [busy, setBusy] = useState(false);
+  const stored = identity?.stored;
+  useEffect(() => { setName(stored?.name ?? ""); setColor(stored?.color ?? ""); }, [stored?.name, stored?.color]);
+  if (!identity) return null;
+  const label = name.trim() || identity.host;
+  const shown = normalizeColor(color) ?? colorFromName(label);
+  const preset = IDENTITY_COLORS.some((c) => c.value === shown);
+  const dirty = name.trim() !== (stored?.name ?? "") || (normalizeColor(color) ?? "") !== (stored?.color ?? "");
+  const save = async () => {
+    setBusy(true);
+    try { await api.setServerIdentity(name.trim(), normalizeColor(color) ?? ""); await loadIdentity(); }
+    catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      notifyLocal({
+        kind: "action_failed", repo: "", title: "Server identity", label: "Save identity failed", body: error,
+        copy: `Action: Save server identity\nError:\n${error}`,
+        ask: `Saving the server identity failed: ${error}. Please investigate and fix.`,
+      });
+    }
+    finally { setBusy(false); }
+  };
+  return (
+    <VCard slot="settings-identity" title="Server identity" bodyClass="divide-y"
+      aside={<span data-slot="identity-preview" className="flex items-center gap-2 text-sm font-medium">
+        <span className="inline-flex size-5 items-center justify-center rounded-full text-white" style={{ background: shown }}><OrcaMark className="size-3.5" /></span>
+        Orca <span style={{ color: shown }}>{label}</span>
+      </span>}>
+      <Setting label="Display name" htmlFor="identity-name" hint={`The title, the sidebar and the server menu show it. Empty: ${identity.host}.`}>
+        <Input id="identity-name" data-slot="identity-name" value={name} maxLength={IDENTITY_NAME_MAX} placeholder={identity.host}
+          onChange={(e) => setName(e.target.value)} className="bg-background w-44" />
+      </Setting>
+      <Setting label="Theme colour" hint={color ? "Tints the sidebar, the active page, the mark and focus rings." : "Auto: from the name. Tints the sidebar, the active page, the mark and focus rings."}>
+        <div role="radiogroup" aria-label="Theme colour" className="flex flex-wrap items-center justify-end gap-1.5">
+          {IDENTITY_COLORS.map((c) => (
+            <Tip key={c.value} label={c.name}>
+              <button type="button" role="radio" aria-checked={shown === c.value} aria-label={c.name} data-slot="identity-color" data-color={c.value}
+                onClick={() => setColor(c.value)}
+                className={cn("inline-flex size-6 items-center justify-center rounded-md text-white ring-offset-2 ring-offset-card", shown === c.value && "ring-2 ring-(--swatch)")}
+                style={{ background: c.value, ["--swatch" as string]: c.value }}>
+                {shown === c.value && <Check className="size-3.5" />}
+              </button>
+            </Tip>
+          ))}
+          <Tip label="Custom colour">
+            <label data-slot="identity-custom" className={cn("relative inline-flex size-6 cursor-pointer items-center justify-center rounded-md border", !preset && "text-white ring-2 ring-offset-2 ring-offset-card ring-(--swatch) border-transparent")}
+              style={preset ? undefined : { background: shown, ["--swatch" as string]: shown }}>
+              <Pipette className="size-3.5" />
+              <input type="color" aria-label="Custom colour" value={shown} onChange={(e) => setColor(e.target.value)} className="absolute inset-0 size-full cursor-pointer opacity-0" />
+            </label>
+          </Tip>
+        </div>
+      </Setting>
+      <div className="flex items-center justify-end gap-2 px-4 py-3">
+        {color && <Button type="button" variant="ghost" size="sm" onClick={() => setColor("")}>Auto colour</Button>}
+        <Button type="button" variant="secondary" size="sm" data-slot="identity-save" disabled={!dirty || busy} onClick={() => void save()}>Save</Button>
+      </div>
+    </VCard>
   );
 }
 
