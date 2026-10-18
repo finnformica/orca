@@ -61,6 +61,19 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
   { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
 ];
 
+/** The docked right column (desktop), inside the card beside the page: the open side panel renders
+ *  INTO it (SidePanel's portal) at its full width. Only this width animates, 0 ↔ the panel's width,
+ *  and it clips the panel — so the page reflows in the same frame, with no overlay. */
+export function Dock() {
+  const dock = useAtomValue(dockWidthAtom);
+  const setDockElement = useSetAtom(dockElementAtom);
+  return (
+    <div data-slot="dock" ref={setDockElement}
+      className="relative shrink-0 overflow-hidden transition-[width] ease-out data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden"
+      style={{ width: dock, transitionDuration: `${SLIDE_MS}ms` }} />
+  );
+}
+
 /** `sidebarActions` renders the last of the sidebar's actions (Add New), above the divider and you;
  *  it is told whether the sidebar is collapsed, so it can drop to an icon. */
 export function Shell({ crumbs, sidebarActions, children }: {
@@ -69,7 +82,6 @@ export function Shell({ crumbs, sidebarActions, children }: {
   // The nav renders as its icon rail by your choice OR while the docked right column needs the room
   // (lib/dock.ts); either way the page column keeps at least DOCK_PAGE_MIN_W.
   const { rail: collapsed, setRail } = useNavToggle();
-  const dock = useAtomValue(dockWidthAtom);
   const [updateAvailable, setUpdateAvailable] = useState(false); // the banner, when shown, is topmost and clears the notch itself
   const offline = useConfigFailed();
   const serverProblem = useServerProblem(offline); // another server chosen, and it is offline or refuses us
@@ -79,7 +91,6 @@ export function Shell({ crumbs, sidebarActions, children }: {
   const identity = useServerIdentity(); // the ACTIVE server's name and colour (lib/identity.ts applies them)
   const { visible: serverMenu } = useServers();
   const narrow = useNarrow();
-  const setDockElement = useSetAtom(dockElementAtom);
   useEffect(() => poll(loadIdentity, 60_000), []);
   return (
     // Desktop: branch-demo's app shell. The nav sits on the LOWER surface — the canvas, in the
@@ -139,12 +150,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
           {offline ? (serverProblem ? null : <OfflineScreen />) : children}
         </main>
       </div>
-      {/* The docked right column (desktop), inside the card beside the page: the open side panel renders
-          INTO it (SidePanel's portal) at its full width. Only this width animates, 0 ↔ the panel's
-          width, and it clips the panel — so the page reflows in the same frame, with no overlay. */}
-      <div data-slot="dock" ref={setDockElement}
-        className="relative shrink-0 overflow-hidden transition-[width] ease-out data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden"
-        style={{ width: dock, transitionDuration: `${SLIDE_MS}ms` }} />
+      <Dock />
       </div>
       <BottomBar activity={activity} />
       {/* The quick-ask pill, bottom centre of every page but an agent's Chat tab (desktop; the phone's bottom bar has the orchestrator). */}

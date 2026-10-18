@@ -10,6 +10,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { getDefaultStore } from "jotai";
 import { AskOrchestrator, OrchestratorPage, OrchestratorPanel } from "@/components/Terminal";
+import { Dock } from "@/components/Shell";
 import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
 import { WorkstreamCard } from "@/views/Board";
 import { DOCK_PAGE_MIN_W, NAV_RAIL_W, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, dayLabel } from "@/workstream";
@@ -39,7 +40,8 @@ afterEach(async () => {
   getDefaultStore().set(orchestratorPrefillAtom, null);
   getDefaultStore().set(orchestratorActivityAtom, { running: false, unread: false });
 });
-const Entry = () => <><AskOrchestrator /><OrchestratorPanel /></>;
+// The shell's dock is where a docked panel renders (a portal), so the entry carries one.
+const Entry = () => <><AskOrchestrator /><Dock /><OrchestratorPanel /></>;
 
 const panelEl = () => container!.querySelector<HTMLElement>('[data-slot="orchestrator-panel"]');
 /** The open panel, or null: it stays mounted (slid out) once it has been opened. */
@@ -64,12 +66,17 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   launcher().focus(); // a real click focuses the button first
   await click(launcher());
   const p = panel()!;
-  expect(p.className).toContain("fixed inset-y-0 right-0"); // a right-hand rail…
-  expect(p.className).toContain("translate-x-0"); // …slid in (a transform; the shell's dock column reflows the page)
-  expect(p.hasAttribute("data-docked")).toBe(true); // a desktop: docked, so no overlay shadow
+  // A desktop: docked INTO the shell's dock column (no overlay, no transform, no shadow) — the
+  // dock's width animates and clips it, so the page reflows in the same frame.
+  expect(p.parentElement!.dataset.slot).toBe("dock");
+  expect(p.hasAttribute("data-docked")).toBe(true);
+  expect(p.className).toContain("absolute inset-y-0 left-0");
+  expect(p.className).not.toContain("fixed");
+  expect(p.className).not.toContain("translate-x");
   expect(p.className).not.toContain("shadow-modal");
   // Opening, visibility flips at once (only the transform animates): a hidden element can't take focus.
-  expect(p.className).toContain("visible translate-x-0 transition-transform");
+  expect(p.className).toContain("visible z-10");
+  expect(p.className).not.toContain("transition-[visibility]");
   expect(p.getAttribute("role")).toBe("dialog");
   expect(p.getAttribute("aria-modal")).toBe("false");
   expect(p.getAttribute("aria-hidden")).toBe("false");
@@ -120,8 +127,8 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   expect(panel()).toBeNull();
   expect(panelEl()!.dataset.state).toBe("closed");
   expect(panelEl()!.getAttribute("aria-hidden")).toBe("true");
-  expect(panelEl()!.className).toContain("translate-x-full");
-  expect(panelEl()!.className).toContain("transition-[transform,visibility]"); // closing, hidden only after the slide
+  expect(panelEl()!.className).toContain("invisible");
+  expect(panelEl()!.className).toContain("transition-[visibility]"); // closing, hidden only once the dock has shut
   expect(document.activeElement).toBe(launcher());
   const pagesBefore = apiFake.turnPageCalls.length;
   await click(launcher());

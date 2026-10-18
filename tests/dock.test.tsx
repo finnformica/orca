@@ -65,12 +65,21 @@ test("open, the panel is a docked column: the page reflows, the button and O tog
   // The page column scrolls on its own on a desktop (no page scrollbar outside the dock) and is the
   // container the pages' layouts query; a phone keeps the window's scroll.
   const page = $('[data-slot="page-scroll"]')!.className.split(/\s+/);
-  expect(page).toEqual(expect.arrayContaining(["@container/page", "md:h-screen", "md:overflow-y-auto"]));
+  expect(page).toEqual(expect.arrayContaining(["@container/page", "md:h-full", "md:overflow-y-auto"]));
+  // branch-demo's app shell: the nav on the themed canvas, the page and the dock in ONE raised card.
+  expect($('[data-slot="shell"]')!.className).toContain("md:bg-sidebar");
+  expect(sidebar().className).not.toContain("border-r");
+  const card = $('[data-slot="shell-card"]')!;
+  expect(card.className).toEqual(expect.stringContaining("md:rounded-[10px]"));
+  expect(card.className).toContain("md:shadow-shell");
+  expect(page.length && $('[data-slot="page-scroll"]')!.parentElement).toBe(card);
+  expect(dock().parentElement).toBe(card);
   expect(page.some((c) => c.startsWith("max-md:") && c.includes("overflow"))).toBe(false);
   await click(askButton());
   const panel = $('[data-slot="orchestrator-panel"]')!;
   expect(panel.dataset.state).toBe("open");
   expect(panel.hasAttribute("data-docked")).toBe(true);
+  expect(panel.parentElement).toBe(dock()); // in the dock: its width slides the panel, no transform
   expect(panel.className).not.toContain("shadow-modal"); // a column with a hairline, not an overlay
   expect(dock().style.width).toBe("460px"); // the page's row reserves the panel's width
   expect(askButton().getAttribute("aria-expanded")).toBe("true");
