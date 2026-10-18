@@ -699,16 +699,21 @@ export async function mergePr(cwd: string, pr: number): Promise<void> {
 // not allowed for this repository (enablePullRequestAutoMerge)".
 const AUTO_NOT_ALLOWED = /auto merge is not allowed/i;
 
+/** Thrown when GitHub refuses to arm auto-merge (the repo disallows it) and the PR isn't safe to
+ *  merge right now either. The caller — the `/api/prs/auto-merge` route — catches this and queues
+ *  the PR in Orca's own merge-when-green queue instead of failing the click. */
+export class AutoMergeNotAllowed extends Error {}
+
 /** Enable auto-merge: GitHub squash-merges the PR once its required checks + reviews pass. A stacked
  *  PR has no auto-merge toggle; it goes through the asynchronous merge API instead. On a repo that
  *  doesn't allow auto-merge, a PR that is safe to merge now is merged directly (`mergePr`, which keeps
- *  the stacked fallback); otherwise the refusal surfaces with what to do about it. */
+ *  the stacked fallback); otherwise this throws `AutoMergeNotAllowed` for the caller to queue. */
 export const enableAutoMerge = (cwd: string, pr: number) =>
   mutatePr(cwd, pr, "enablePullRequestAutoMerge", ",mergeMethod:SQUASH").catch(async (e: Error) => {
     if (STACKED.test(e.message)) return mergeAsync(cwd, pr, true);
     if (!AUTO_NOT_ALLOWED.test(e.message)) throw e;
     if (mergeSafe(await prStatus(cwd, pr))) return mergePr(cwd, pr);
-    throw new Error(`${e.message}\nEnable auto-merge in the repo settings, or merge when green.`);
+    throw new AutoMergeNotAllowed(e.message);
   });
 
 /** Disable auto-merge: GitHub cancels the queued auto-merge on the PR. */

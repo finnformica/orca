@@ -11,6 +11,7 @@ import * as router from "./router";
 import * as store from "./store";
 import { SLACK_CAPS, slackAdapter } from "./adapters/slack";
 import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
+import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
 import { emailAdapter, emailCaps } from "./adapters/email";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
@@ -25,6 +26,11 @@ export function register(kind: AdapterKind, factory: AdapterFactory, meta?: Omit
 }
 register("slack", slackAdapter, { label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "ORCA_SECRET_SLACK_BOT", help: "A bot token (xoxb-…). Invite the bot to each linked channel." });
 register("webhook", webhookAdapter, { label: "Webhook", caps: WEBHOOK_CAPS, place: "hook", secretExample: "ORCA_SECRET_WEBHOOK", help: "Signed POSTs to /api/integrations/<id>/inbound (HMAC sha256 of the body)." });
+register("discord", discordAdapter, {
+  label: "Discord", caps: DISCORD_CAPS, place: "channel", secretExample: "ORCA_SECRET_DISCORD_BOT",
+  config: [{ key: "dmLink", label: "DM link id (optional)", placeholder: "the link DMs go to; empty = the * link" }],
+  help: "A bot token with the Message Content intent. Run it on one instance only. Setup: docs/integrations/discord.md.",
+});
 register("email", emailAdapter, {
   label: "Email", caps: emailCaps({ imap: { host: "" }, outbound: "smtp" }), place: "address", secretExample: "ORCA_SECRET_EMAIL_IMAP",
   help: "One mailbox only Orca reads. The secret is the IMAP password. Link each person's address. Setup: docs/integrations/email.md.",
