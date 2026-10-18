@@ -18,6 +18,8 @@ import { useNarrow } from "@/lib/viewport";
 import { DOCK_SELECTOR, dockWidthsAtom } from "@/lib/dock";
 
 export const SLIDE_MS = 200;
+/** One arrow key on the focused resize edge (Shift: three times as far). */
+export const RESIZE_STEP = 40;
 
 type WidthAtom = WritableAtom<number, [number], void>;
 
@@ -88,6 +90,15 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
     window.addEventListener("pointerup", up);
     e.preventDefault();
   };
+  // The keyboard's resize: focus the edge, then ← widens and → narrows (Home / End: the limits).
+  const onResizeKey = (e: React.KeyboardEvent) => {
+    const step = e.shiftKey ? 120 : RESIZE_STEP;
+    const next = e.key === "ArrowLeft" ? width + step : e.key === "ArrowRight" ? width - step
+      : e.key === "Home" ? PANEL_MIN_W : e.key === "End" ? Number.MAX_SAFE_INTEGER : null;
+    if (next === null) return;
+    e.preventDefault();
+    setSavedWidth(clampPanelWidth(next, window.innerWidth));
+  };
   return (
     // z-40: above the page and its sticky top bar (z-30), below menus and popovers (z-50), which must
     // still open over it. Slid out, it is hidden (visibility, after the transform finishes) and inert
@@ -109,7 +120,8 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
       {/* The resize handle: the panel's left edge. Dragging left widens; the width is remembered. */}
       {!fullScreen && (
         <div data-slot={`${slot}-resize`} role="separator" aria-orientation="vertical" aria-label="Resize panel" onPointerDown={onResizeStart}
-          className="hover:bg-geist-blue/40 active:bg-geist-blue/60 absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize transition-colors" />
+          tabIndex={open ? 0 : -1} aria-valuenow={width} aria-valuemin={PANEL_MIN_W} onKeyDown={onResizeKey}
+          className="hover:bg-geist-blue/40 active:bg-geist-blue/60 focus-visible:bg-geist-blue/60 outline-none absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize transition-colors" />
       )}
       {header(swipe)}
       {children}

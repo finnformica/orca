@@ -12,7 +12,8 @@ import * as store from "@/store";
 import { App } from "@/App";
 import { orchestratorOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { navExpandedOverrideAtom } from "@/lib/dock";
-import { DOCK_PAGE_MIN_W, NAV_W, navRail } from "@/workstream";
+import { DOCK_PAGE_MIN_W, NAV_W, PANEL_MIN_W, clampPanelWidth, navRail } from "@/workstream";
+import { RESIZE_STEP } from "@/components/SidePanel";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -98,4 +99,21 @@ test("a narrow desktop: the open dock turns the nav into its rail, your saved ch
   await setViewport(1440); // wide again with the panel open: the full nav
   await click(askButton());
   expect(sidebar().dataset.collapsed).toBe("false");
+});
+
+test("the edge resizes from the keyboard too: ← widens, → narrows, and the dock follows", async () => {
+  await mount(1440);
+  await click(askButton());
+  const edge = $('[data-slot="orchestrator-resize"]')!;
+  expect(edge.tabIndex).toBe(0);
+  const press = async (k: string) => { await act(async () => { edge.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })); await flush(); }); };
+  await press("ArrowLeft");
+  expect(dock().style.width).toBe(`${460 + RESIZE_STEP}px`);
+  expect(JSON.parse(localStorage.getItem("orca.ui.v1.orchestratorWidth")!)).toBe(460 + RESIZE_STEP);
+  await press("End"); // as wide as the page's floor allows
+  expect(dock().style.width).toBe(`${clampPanelWidth(Number.MAX_SAFE_INTEGER, 1440)}px`);
+  await press("ArrowRight");
+  expect(dock().style.width).toBe(`${clampPanelWidth(Number.MAX_SAFE_INTEGER, 1440) - RESIZE_STEP}px`);
+  await press("Home");
+  expect(dock().style.width).toBe(`${PANEL_MIN_W}px`);
 });
