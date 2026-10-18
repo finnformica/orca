@@ -219,7 +219,7 @@ export const RoundMark = ({ className }: { className?: string }) => (
   </span>
 );
 
-/** The phone's bottom bar (below md only): what a thumb needs — Overview, Agents, New agent, the
+/** The phone's bottom bar (below md only; the active page and New agent in the server's theme): what a thumb needs — Overview, Agents, New agent, the
  *  orchestrator and Settings, New agent centred — at the foot of the screen, above the home indicator.
  *  Everything else the old hamburger drawer exposed (Previews, Repos, Usage, Find, the instance
  *  switcher) now lives in Settings — see MobileNav in views/Pages.tsx. */
@@ -235,17 +235,17 @@ function BottomBar({ activity }: { activity: { running: boolean; unread: boolean
   return (
     <nav aria-label="Quick actions" data-slot="bottom-bar"
       className="bg-background/95 fixed inset-x-0 bottom-0 z-30 flex items-stretch gap-1 border-t px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] backdrop-blur md:hidden">
-      <button type="button" className={cn(item, overview.match(route) && "text-foreground")} aria-current={overview.match(route) ? "page" : undefined} onClick={() => navigate(overview.to)}><overview.Icon className="size-5" /><span className={label}>{overview.label}</span></button>
-      <button type="button" className={cn(item, agents.match(route) && "text-foreground")} aria-current={agents.match(route) ? "page" : undefined} onClick={() => navigate("/agents")}><Boxes className="size-5" /><span className={label}>Agents</span></button>
+      <button type="button" className={cn(item, overview.match(route) && "text-server-fg")} aria-current={overview.match(route) ? "page" : undefined} onClick={() => navigate(overview.to)}><overview.Icon className="size-5" /><span className={label}>{overview.label}</span></button>
+      <button type="button" className={cn(item, agents.match(route) && "text-server-fg")} aria-current={agents.match(route) ? "page" : undefined} onClick={() => navigate("/agents")}><Boxes className="size-5" /><span className={label}>Agents</span></button>
       <button type="button" className={cn(item, "text-foreground")} onClick={() => setAddNew(true)}>
-        <span className="bg-foreground text-background inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span><span className={label}>New agent</span>
+        <span className="bg-primary text-primary-foreground inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span><span className={label}>New agent</span>
       </button>
       {/* The orchestrator, carrying the activity dot the desktop's quick-ask pill shows (there is no pill below md).
           `ask()` routes here to /orchestrator on a narrow screen rather than opening the side panel. */}
-      <button type="button" className={cn(item, "relative", route.name === "orchestrator" && "text-foreground")} aria-current={route.name === "orchestrator" ? "page" : undefined} onClick={() => ask()}>
+      <button type="button" className={cn(item, "relative", route.name === "orchestrator" && "text-server-fg")} aria-current={route.name === "orchestrator" ? "page" : undefined} onClick={() => ask()}>
         <Bot className="size-5" /><ActivityDot activity={activity} className="absolute top-1.5 right-[calc(50%-0.9rem)]" /><span className={label}>Orchestrator</span>
       </button>
-      <button type="button" className={cn(item, settings.match(route) && "text-foreground")} aria-current={settings.match(route) ? "page" : undefined} onClick={() => navigate("/settings")}><Settings className="size-5" /><span className={label}>Settings</span></button>
+      <button type="button" className={cn(item, settings.match(route) && "text-server-fg")} aria-current={settings.match(route) ? "page" : undefined} onClick={() => navigate("/settings")}><Settings className="size-5" /><span className={label}>Settings</span></button>
     </nav>
   );
 }

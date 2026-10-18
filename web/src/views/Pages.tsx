@@ -383,7 +383,9 @@ function ColorPicker({ value, auto, onChange }: { value: string; auto: boolean; 
           <ChevronDown className="text-muted-foreground size-3.5" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="end" className="w-64" data-slot="identity-picker">
+      {/* The hex field takes the first focus: on a swatch, its tooltip opened over the caption. */}
+      <PopoverContent align="end" className="w-64" data-slot="identity-picker"
+        onOpenAutoFocus={(e) => { e.preventDefault(); (e.currentTarget as HTMLElement).querySelector<HTMLInputElement>('[data-slot="identity-hex"]')?.focus(); }}>
         <div className="text-muted-foreground mb-2 text-xs font-medium">Presets</div>
         <div role="radiogroup" aria-label="Theme colour" className="grid grid-cols-8 gap-1.5">
           {IDENTITY_COLORS.map((c) => (
