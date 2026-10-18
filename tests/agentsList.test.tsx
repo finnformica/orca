@@ -150,7 +150,9 @@ describe("agents list view", () => {
     // hidden by the same container query that shows its own column. The subline clips, never overlaps.
     const ci = rowOf("feat-ci");
     expect(ci.querySelector('[data-slot="folded-status"] [data-slot="run-status"]')).not.toBeNull();
-    expect(ci.querySelector('[data-slot="folded-signals"]')!.textContent).toBe(ci.querySelector('[data-slot="row-signals"]')!.textContent);
+    const folded = [...ci.querySelectorAll<HTMLElement>('[data-slot="row-pr-line"] > [data-subline-item]')].filter((i) => ["checks", "review"].includes(i.dataset.sublineItem!));
+    expect(folded.map((i) => i.textContent).join("")).toBe(ci.querySelector('[data-slot="row-signals"]')!.textContent);
+    for (const i of folded) expect(i.className).toContain(LIST_FOLDED.signals);
     expect(ci.querySelector('[data-slot="row-subline"]')!.className).toContain("overflow-hidden");
     expect(rowOf("feat-ci").querySelectorAll('[role="cell"]')).toHaveLength(5); // one per header, the last holding preview + ⋯
     expect(rowOf("feat-ci").querySelector(".lucide-folder-git2")).toBeNull();
@@ -415,10 +417,11 @@ describe("agents list by its own width", () => {
   // happy-dom lays out nothing: give the list, each subline and each subline item a width.
   const proto = HTMLElement.prototype;
   const real = { client: Object.getOwnPropertyDescriptor(proto, "clientWidth")!, offset: Object.getOwnPropertyDescriptor(proto, "offsetWidth")! };
-  function fakeLayout(listPx: number) {
+  function fakeLayout(listPx: number, prLinePx = 200) {
     Object.defineProperty(proto, "clientWidth", { configurable: true, get(this: HTMLElement) {
       if (this.dataset.slot === "workstream-list") return listPx;
-      if (this.dataset.slot === "row-subline") return 200;
+      if (this.dataset.slot === "row-pr-line") return prLinePx;
+      if (this.hasAttribute("data-overflow-line")) return 200; // the subline, the PR cell and the checks cell
       return 0;
     } });
     Object.defineProperty(proto, "offsetWidth", { configurable: true, get(this: HTMLElement) {
@@ -428,10 +431,11 @@ describe("agents list by its own width", () => {
   }
   afterEach(() => { Object.defineProperty(proto, "clientWidth", real.client); Object.defineProperty(proto, "offsetWidth", real.offset); });
 
-  test("a narrow list stacks its rows on a wide viewport (the docked panel open); no instruction line there", async () => {
+  test("a narrow list stacks its rows on a wide viewport (the docked panel open); no instruction, plan or grant line there", async () => {
     expect(window.matchMedia?.("(max-width: 767px)").matches ?? false).toBe(false); // a desktop viewport
     fakeLayout(500);
     seed();
+    apiFake.enrichmentData.set("r::feat-ci", { orchestrated: true, orchStatus: { plan: "Tiers by list width", waitingOn: "CI", at: "2026-10-13T00:00:00Z" }, grantScope: { via: "slack", by: "Saajan", level: "scoped" } });
     await mount();
     const list = container!.querySelector<HTMLElement>('[data-slot="workstream-list"]')!;
     expect(list.className).toContain("@container/list");
@@ -439,6 +443,22 @@ describe("agents list by its own width", () => {
     expect(container!.querySelector('[data-slot="workstream-list-header"]')).toBeNull();
     expect(rowOf("feat-ci").dataset.layout).toBe("stacked");
     expect(container!.querySelector('[data-slot="row-instruction"]')).toBeNull();
+    expect(container!.querySelector('[data-slot="orch-status"]')).toBeNull();
+    expect(container!.querySelector('[data-slot="grant-scope"]')).toBeNull();
+    expect(rowOf("feat-ci").textContent).not.toContain("Tiers by list width");
+    expect(rowOf("feat-ci").textContent).not.toContain("started from Slack");
+  });
+
+  test("the PR cell never clips a chip: what does not fit goes behind its own +N", async () => {
+    fakeLayout(1200, 160); // state + PR + the chip fit (152px); the folded checks do not
+    seed();
+    await mount();
+    const line = rowOf("feat-ci").querySelector<HTMLElement>('[data-slot="row-pr-line"]')!;
+    const items = [...line.querySelectorAll<HTMLElement>(":scope > [data-subline-item]")].filter((i) => i.textContent);
+    expect(items.slice(0, 2).map((i) => i.dataset.sublineItem)).toEqual(["state", "pr"]);
+    expect(items.length).toBeGreaterThan(2); // the folded checks follow the PR number
+    for (const i of items) expect(i.getAttribute("aria-hidden") === "true").toBe(items.indexOf(i) >= 2);
+    expect(line.querySelector<HTMLElement>(':scope > [data-slot="subline-more"]')!.textContent).toBe(`+${items.length - 2}`);
   });
 
   test("a wide list keeps the grid; a subline that does not fit hides its tail behind +N, listed in full", async () => {
@@ -448,7 +468,7 @@ describe("agents list by its own width", () => {
     expect(container!.querySelector<HTMLElement>('[data-slot="workstream-list"]')!.dataset.layout).toBe("grid");
     const ci = rowOf("feat-ci");
     expect(ci.dataset.layout).toBeUndefined();
-    const items = [...ci.querySelectorAll<HTMLElement>("[data-subline-item]")].filter((i) => i.textContent);
+    const items = [...ci.querySelectorAll<HTMLElement>('[data-slot="row-subline"] > [data-subline-item]')].filter((i) => i.textContent);
     const hidden = items.slice(2).map((i) => i.dataset.sublineItem); // 60 + 4 + 60 fits in 200 with the chip; the third does not
     expect(hidden).toContain("diffstat");
     for (const i of items) expect(i.getAttribute("aria-hidden") === "true").toBe(hidden.includes(i.dataset.sublineItem));
