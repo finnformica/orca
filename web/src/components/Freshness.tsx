@@ -12,6 +12,7 @@ import { useBridge, useLastSync } from "../store";
 import { ago, bridgeLabel, databaseBannerText, newerBuild, staleAge } from "../workstream";
 import { Tip } from "@/components/ui/tip";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 const RUNNING_BUILD = typeof __ORCA_BUILD__ === "undefined" ? undefined : __ORCA_BUILD__;
 const PREVIEW_PAGE = typeof __ORCA_PREVIEW__ === "undefined" ? false : __ORCA_PREVIEW__;
@@ -52,34 +53,38 @@ export function StaleIndicator() {
 }
 
 /** Checks `/version.json` once a minute (paused while hidden, like every poll) and, when a newer build
- *  is being served, shows a bar with Refresh. A dev server has no build id and never asks. On a narrow
- *  layout it is the topmost element, so it (not the header below it) clears the status bar; `onStaleChange`
- *  lets the shell drop the header's own inset while the banner is shown, so the gap isn't reserved twice.
- *  The look is branch-demo's app-level `LicenseBanner`: an alert card (a hairline border, 8px corners,
- *  the icon, a title over one line of text) with the action at the right. It sits on the shell's
- *  lower surface, above the nav and the page card, the full width of the window with the shell's 6px
- *  gutter — in the flow, not over the top bar, because it stays until you refresh.
+ *  is being served, shows a bar with Refresh. A dev server has no build id and never asks.
+ *  The look is branch-demo's floating bars: `FloatingSelectionActions` (a hairline border, `h-12 p-1`,
+ *  the content on one line) with `LicenseBanner`'s translucent, blurred surface and icon — and the house
+ *  `shadow-menu` for branch-demo's `shadow-xl`. It FLOATS: the Shell mounts it in the page column, in a
+ *  zero-height sticky slot, so it sits at the top centre of the page (never over the nav or the docked
+ *  panel) and nothing in the layout moves when it shows or hides. It slides down and fades in, and on
+ *  Refresh it slides up and fades out while the new build loads (none under reduced motion).
  *  `?update-banner` in the URL shows it at once (screenshots, a check of the layout). */
-export function UpdateBanner({ build = RUNNING_BUILD, every = 60_000, onStaleChange, forced = forceUpdateBanner() }: { build?: string; every?: number; onStaleChange?: (stale: boolean) => void; forced?: boolean }) {
+export function UpdateBanner({ build = RUNNING_BUILD, every = 60_000, forced = forceUpdateBanner() }: { build?: string; every?: number; forced?: boolean }) {
   const [stale, setStale] = useState(forced);
+  const [leaving, setLeaving] = useState(false);
+  const [gone, setGone] = useState(false);
   useEffect(() => {
     if (!build || build === "dev" || stale) return;
     return poll(() => fetch("/version.json", { cache: "no-store" }).then((r) => r.json()).then((v: unknown) => { if (newerBuild(build, v)) setStale(true); }), every);
   }, [build, stale, every]);
-  useEffect(() => { onStaleChange?.(stale); }, [stale, onStaleChange]);
-  if (!stale) return null;
+  if (!stale || gone) return null;
   return (
-    <div data-slot="update-banner-frame" className="shrink-0 px-2 pt-2 md:px-1.5 md:pt-1.5 max-md:pt-[max(0.5rem,env(safe-area-inset-top))]">
-      <div role="status" data-slot="update-banner"
-        className="bg-background text-foreground flex min-w-0 items-center gap-3 rounded-lg border px-4 py-3">
-        <CircleArrowUp className="text-server-fg size-4 shrink-0" aria-hidden="true" />
-        <div className="min-w-0 flex-1">
-          <div className="text-sm leading-none font-medium">A new version of Orca is available</div>
-          <div className="text-muted-foreground mt-1 truncate text-sm">Refresh the page to load the new build.</div>
+    <div data-slot="update-banner-frame" className="pointer-events-none sticky top-0 z-40 h-0 overflow-visible">
+      <div className="flex justify-center px-2 pt-2 max-md:pt-[max(0.5rem,env(safe-area-inset-top))]">
+        <div role="status" data-slot="update-banner" data-state={leaving ? "closed" : "open"}
+          onAnimationEnd={() => { if (leaving) setGone(true); }}
+          className={cn(
+            "bg-background/95 text-foreground pointer-events-auto flex h-12 max-w-full min-w-0 items-center gap-3 rounded-lg border p-1 pl-3 shadow-menu backdrop-blur",
+            "animate-in fade-in slide-in-from-top-4 duration-200 ease-out data-[state=closed]:animate-out data-[state=closed]:fade-out data-[state=closed]:slide-out-to-top-4 data-[state=closed]:fill-mode-forwards data-[state=closed]:ease-in motion-reduce:animate-none",
+          )}>
+          <CircleArrowUp className="text-server-fg size-4 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 truncate text-sm font-medium">A new version of Orca is ready.</span>
+          <Button variant="secondary" size="sm" disabled={leaving} onClick={() => { setLeaving(true); void applyUpdate(); }} className="shrink-0 max-md:h-9">
+            <RefreshCw className="size-3.5" aria-hidden="true" />Refresh
+          </Button>
         </div>
-        <Button variant="secondary" size="sm" onClick={() => void applyUpdate()} className="shrink-0 max-md:h-9">
-          <RefreshCw className="size-3.5" aria-hidden="true" />Refresh
-        </Button>
       </div>
     </div>
   );
