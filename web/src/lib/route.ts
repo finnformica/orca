@@ -4,7 +4,7 @@ import { useSyncExternalStore } from "react";
 
 export type PrTab = "overview" | "chat" | "files" | "checks" | "preview";
 export type LocalTab = "overview" | "chat" | "files" | "preview";
-/** The console's top-level pages, in the sidebar's order. "board" is the Overview at "/". */
+/** The console's top-level pages, in the sidebar's order. "overview" is the Overview at "/". */
 export const PAGES = [
   "agents",
   "inbox",
@@ -25,7 +25,7 @@ export const REDIRECTS: Record<string, string> = {
 };
 export const redirectFor = (pathname: string): string | undefined => REDIRECTS[pathname.replace(/\/+$/, "") || "/"];
 export type Route =
-  | { name: "board" }
+  | { name: "overview" }
   | { name: Page }
   | { name: "orchestrator" }
   | { name: "pr"; repo: string; number: number; sub: PrTab }
@@ -46,7 +46,7 @@ function parse(): Route {
   }
   if (parts[0] === "orchestrator" && parts.length === 1) return { name: "orchestrator" };
   if ((PAGES as readonly string[]).includes(parts[0] ?? "") && parts.length === 1) return { name: parts[0] as Page };
-  return { name: "board" };
+  return { name: "overview" };
 }
 
 const listeners = new Set<() => void>();

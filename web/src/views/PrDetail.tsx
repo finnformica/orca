@@ -23,7 +23,7 @@ import { AGENT_TABS, AgentHeader, ChatCard, DetailsCard, HeaderSource, RowStatus
 import { useNarrow } from "@/lib/viewport";
 import { ChecksCard, CiChip, ConversationCard } from "./PrPanels";
 import { Detail, VCard } from "@/components/console";
-import { useSummary } from "./Board";
+import { useSummary } from "@/lib/workstreamHooks";
 
 /** Both detail pages pin their header — title / status / actions / tabs stay reachable while a long
  *  diff scrolls under them. Opaque + full-bleed (negative margins) so nothing peeks past the page

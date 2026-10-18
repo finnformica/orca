@@ -8,7 +8,6 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { Agents, LIST_CELL_SHOWN, LIST_FOLDED } from "@/views/Agents";
-import { Board } from "@/views/Board";
 import { navigate } from "@/lib/route";
 import { createTicker, ticker } from "@/lib/ticker";
 import { LIST_CHROME_PX, LIST_TIER_MIN_REM, LIST_TIERS, formatElapsed, listColumnTiers, listColumns, listFits, listGridTemplate, listMinWidth, listTier, modelBadge } from "@/workstream";
@@ -376,24 +375,5 @@ describe("agents loading skeleton", () => {
     expect(container!.querySelector('[data-slot="workstream-row-skeleton"]')).toBeNull();
     expect(container!.textContent).toContain("No agents match");
     expect(container!.querySelector('[data-slot="agents-count"]')!.textContent).toBe("0 of 0");
-  });
-
-  test("board view: lane counts hold a placeholder (not 0) and cards are skeletons while loading", async () => {
-    store._resetWorkstreamsLoaded();
-    seed();
-    apiFake.holdPrs = true;
-    container = document.createElement("div");
-    document.body.appendChild(container);
-    await act(async () => { root = createRoot(container!); root.render(<Board />); await flush(); });
-    void store.refresh();
-    await flush();
-    const laneHeader = (title: string) => [...container!.querySelectorAll("h3")].find((h) => h.textContent?.startsWith(title))!;
-    const local = laneHeader("Local");
-    expect(local.querySelector('[data-slot="skeleton"]')).not.toBeNull(); // the count placeholder
-    expect(local.textContent?.trim()).toBe("Local"); // no "0" appended yet
-    expect(container!.querySelectorAll('[data-slot="workstream-card-skeleton"]').length).toBeGreaterThan(0);
-    await act(async () => { apiFake.releasePrs!(); await flush(); await flush(); });
-    expect(container!.querySelectorAll('[data-slot="workstream-card-skeleton"]').length).toBe(0);
-    expect(laneHeader("Local").textContent?.trim()).toBe("Local 2"); // seed()'s two local agents, no PR
   });
 });
