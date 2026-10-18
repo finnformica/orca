@@ -155,7 +155,7 @@ test("CPU and memory stay one line each, as on main; Agents and Disk used are ch
     expect(chart(slot).lastElementChild!.className).toBe(chart("chart-cpu").lastElementChild!.className);
   }
   expect(chart("chart-agents").querySelector("figcaption")!.textContent).toBe("Agents3"); // the live count
-  expect([...chart("chart-agents").querySelectorAll(".text-muted-foreground.flex.w-8 span")].map((e) => e.textContent)).toEqual(["4", "2", "0"]); // whole ticks
+  expect([...chart("chart-agents").querySelectorAll(".text-muted-foreground.flex.w-8 span")].map((e) => e.textContent)).toEqual(["8", "4", "0"]); // fixed top of 8 until the data outgrows it
   expect(chart("chart-agents").querySelector("polyline")!.getAttribute("stroke")).toBe("var(--geist-pink)");
   // Disk used: the recorded samples ending on the live reading, on an axis up to the disk's size.
   expect(chart("chart-disk").querySelector("figcaption")!.textContent).toBe("Disk used35.7 GB");
