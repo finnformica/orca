@@ -179,3 +179,33 @@ test("L6: a claude reply types out live from `delta` events, and its whole messa
   expect(draft()).toBeUndefined();
   expect(container!.textContent).toContain("Hello, world. More.");
 });
+
+test("L7: a live message renders as markdown while it streams — no raw glyphs, no flip when a span closes — and the faded line strips them", async () => {
+  // Finn: while it worked, the interim message showed asterisks, backticks and list dashes.
+  apiFake.turnsData.set("r::md", [{ ...pending("run-1", "go"), steps: [
+    { at: 1, kind: "text", text: "## Plan\n- **Read** `notes.md` first" },
+    { at: 2, kind: "tool", id: "t1", name: "Bash", input: { command: "ls" } },
+    { at: 3, kind: "result", id: "t1", output: "x" },
+  ] }]);
+  await mountOne("md");
+  const stream = opened().at(-1)!;
+  await act(async () => { emit(stream, "ready", {}); await flush(); });
+  // The faded line: one plain line, the glyphs stripped.
+  const trail = [...container!.querySelectorAll('[data-slot="activity-trail"] li')].map((li) => li.textContent);
+  expect(trail).toContain("Plan Read notes.md first");
+  const draft = () => container!.querySelector<HTMLElement>('[data-slot="turn-draft"]')!;
+  const say = (text: string) => act(async () => { emit(stream, "delta", { repo: "r", branch: "md", runId: "run-1", text }); await flush(); });
+  // Half a bold run and half a code span: already bold and code, never `**` or a backtick on screen.
+  await say("I **fix");
+  expect(draft().querySelector("strong")?.textContent).toBe("fix");
+  expect(draft().textContent).not.toContain("*");
+  await say("ed** it with `bun te");
+  expect(draft().querySelector("strong")?.textContent).toBe("fixed"); // the same element kind: no flip
+  expect(draft().querySelector("code")?.textContent).toBe("bun te");
+  expect(draft().textContent).not.toMatch(/[*`]/);
+  // A list, and an open code fence: list items and a code block, not dashes and backticks.
+  await say("st`:\n\n- one\n- two\n\n```sh\nbun test");
+  expect([...draft().querySelectorAll("li")].map((li) => li.textContent)).toEqual(["one", "two"]);
+  expect(draft().querySelector("pre code")?.textContent).toContain("bun test");
+  expect(draft().textContent).not.toMatch(/[*`]|^- /m);
+});

@@ -82,7 +82,7 @@ export function stepRuns(steps: AgentStep[]): StepRun[] {
  *  count (`Read 3 files`, `Ran 2 commands`). */
 export function runLabel(run: StepRun): string {
   const n = run.steps.length;
-  if (n === 1) return run.kind === "text" || run.kind === "thinking" ? oneLine(run.steps[0]!.text ?? "", 200) : toolLabel(run.steps[0]!);
+  if (n === 1) return run.kind === "text" || run.kind === "thinking" ? oneLine(plainText(run.steps[0]!.text ?? ""), 200) : toolLabel(run.steps[0]!);
   switch (run.kind) {
     case "command": return `Ran ${plural(n, "command")}`;
     case "read": return `Read ${plural(n, "file")}`;
@@ -136,4 +136,41 @@ export const workSteps = (steps: AgentStep[]) => steps.filter((s) => s.kind !== 
 export function workedLabel(ms: number | undefined, steps: number): string {
   const took = ms === undefined ? "Worked" : `Worked for ${formatDuration(ms)}`;
   return steps > 0 ? `${took} · ${steps} step${steps === 1 ? "" : "s"}` : took;
+}
+
+/** Streamed markdown, closed so it renders as it will once whole: an open code fence, inline code
+ *  span or bold run is closed at the end, and an opener with nothing after it yet is dropped. Without
+ *  this, `**bold` shows its asterisks until the closing pair arrives, then flips — a flicker per
+ *  delta. A fence keeps its content as code while it streams. Pure. */
+export function closeOpenMarkdown(md: string): string {
+  const fences = md.match(/^ {0,3}(```|~~~)/gm) ?? [];
+  if (fences.length % 2) return /^ {0,3}(```|~~~)[^\n]*$/.test(md.split("\n").at(-1)!) ? md : `${md}\n${fences.at(-1)!.trim()}`;
+  // Only the prose after the last closed fence can hold an open inline span.
+  const lastFence = md.search(/^ {0,3}(```|~~~)[^\n]*\n?(?![\s\S]*^ {0,3}(```|~~~))/m);
+  const head = lastFence >= 0 ? md.slice(0, md.indexOf("\n", lastFence) + 1 || md.length) : "";
+  let tail = md.slice(head.length);
+  if ((tail.match(/`/g) ?? []).length % 2) {
+    tail = tail.endsWith("`") ? tail.slice(0, -1) : `${tail}\``;
+  }
+  // Bold outside inline code: count `**` pairs with the code spans taken out.
+  const bold = (tail.replace(/`[^`]*`/g, "").match(/\*\*/g) ?? []).length;
+  if (bold % 2) tail = /\*\*\s*$/.test(tail) ? tail.replace(/\*\*\s*$/, "") : `${tail.trimEnd()}**`;
+  return head + tail;
+}
+
+/** Markdown as one plain line, for a faded row: headings, list markers, quotes, emphasis, code
+ *  marks and fences go; a link keeps its text. Pure. */
+export function plainText(md: string): string {
+  return md
+    .replace(/^ {0,3}(```|~~~).*$/gm, "")          // fence lines
+    .replace(/^ {0,3}#{1,6}\s+/gm, "")              // headings
+    .replace(/^\s*>\s?/gm, "")                      // quotes
+    .replace(/^\s*(?:[-*+]|\d+[.)])\s+/gm, "")      // list markers
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")      // links and images: the text
+    .replace(/(\*\*|__)(.+?)\1/g, "$2")             // bold
+    .replace(/(^|[^\w*])[*_]([^*_\n]+)[*_](?=[^\w*]|$)/g, "$1$2") // italic
+    .replace(/`+/g, "")                             // code marks
+    .replace(/\*\*|__/g, "")                        // an open bold
+    .replace(/\s+/g, " ")
+    .trim();
 }

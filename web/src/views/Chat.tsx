@@ -16,7 +16,7 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory } from "../workstream";
-import { activityCounts, currentActivity, runLabel, stepInFlight, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepRun } from "../steps";
+import { activityCounts, closeOpenMarkdown, currentActivity, runLabel, stepInFlight, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepRun } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { ExpandableImage } from "@/components/ExpandableImage";
@@ -421,7 +421,9 @@ function Reply({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () =
         <div className="space-y-1 text-neutral-500">
           {tail && <ChatMarkdown>{tail.text ?? ""}</ChatMarkdown>}
           {/* The message being written, as it streams — replaced by its step once it is whole. */}
-          {draft && <div className="text-neutral-200 whitespace-pre-wrap break-words" data-slot="turn-draft">{draft}</div>}
+          {/* Rendered as markdown like the finished answer, closed first so a half-sent `**` or fence
+              renders as it will once whole, not as glyphs that flip on the next delta. */}
+          {draft && <div data-slot="turn-draft"><ChatMarkdown>{closeOpenMarkdown(draft)}</ChatMarkdown></div>}
           {(!work.length || draft) && <span>▋ {draft || tail ? "" : "working…"}</span>}
         </div>
       ) : (

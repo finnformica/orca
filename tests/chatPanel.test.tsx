@@ -344,7 +344,7 @@ test("a live turn shows ONE compact activity block, and on finish it folds into 
   expect(slot("activity-elapsed")?.textContent).toBe("1m 12s");
   expect(slot("activity-counts")?.textContent).toBe("1 command, 3 files read");
   // The trail: consecutive reads grouped, the interim message as one line of text.
-  expect([...slot("activity-trail")!.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Read 3 files", "Now the **suite**."]);
+  expect([...slot("activity-trail")!.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Read 3 files", "Now the suite."]); // markdown stripped on a faded line
   // Nothing opens by itself: no command input, no output, no code block.
   expect(container!.querySelector("pre")).toBeNull();
   expect(text()).not.toContain("SECRET_FILE_BODY");
