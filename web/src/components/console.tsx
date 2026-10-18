@@ -66,6 +66,22 @@ export const StatusDot = ({ tone, className }: { tone: DotTone; className?: stri
   <span data-slot="status-dot" data-tone={tone} className={cn("inline-block size-2.5 shrink-0 rounded-full", DOT_CLASS[tone], className)} />
 );
 
+/** The one count-badge style (Inbox nav item, notification bell): a small geist-blue pill with a
+ *  white number, capped at "99+". `placement` "inline" sits at the end of a row (`ml-auto`);
+ *  "compact" pins it to the corner of an icon (`absolute -top-0.5 -right-0.5`). Renders nothing at 0. */
+export function CountBadge({ count, placement = "inline", slot = "count-badge", label = "unread", className }: {
+  count: number; placement?: "inline" | "compact"; slot?: string; label?: string; className?: string;
+}) {
+  if (!count) return null;
+  return (
+    <span data-slot={slot} aria-label={`${count} ${label}`}
+      className={cn("bg-geist-blue flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold text-white tabular-nums",
+        placement === "compact" ? "absolute -top-0.5 -right-0.5" : "ml-auto", className)}>
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
 /** An environment-style pill (Production / Preview): rounded, hairline, an optional leading icon. */
 export function Pill({ children, tone = "default", slot }: { children: ReactNode; tone?: "default" | "blue" | "green" | "amber" | "red" | "purple"; slot?: string }) {
   const tones = {
