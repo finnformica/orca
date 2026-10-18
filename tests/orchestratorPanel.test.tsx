@@ -1,5 +1,5 @@
 // The orchestrator's entry points in the UI: "Ask the orchestrator" in the top bar (a button), the O
-// key and the palette open a RIGHT-HAND SIDE PANEL that slides over the page — the same ChatPanel a
+// key and the palette open a RIGHT-HAND SIDE PANEL docked as a column beside the page — the same ChatPanel a
 // card's terminal uses, in its chat styling, over the orchestrator's own turns, with the composer
 // sending to its route (never the branch follow-up launch). Resizable from its left edge (width
 // remembered), Esc / ✕ to close, focus returned to the opener. Rendered into a real DOM against the fake api.
@@ -12,7 +12,7 @@ import { getDefaultStore } from "jotai";
 import { AskOrchestrator, OrchestratorPage, OrchestratorPanel } from "@/components/Terminal";
 import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
 import { WorkstreamCard } from "@/views/Board";
-import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, dayLabel } from "@/workstream";
+import { DOCK_PAGE_MIN_W, NAV_RAIL_W, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, dayLabel } from "@/workstream";
 import { openTip } from "./tip";
 import { NARROW_QUERY } from "@/lib/viewport";
 
@@ -65,7 +65,9 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   await click(launcher());
   const p = panel()!;
   expect(p.className).toContain("fixed inset-y-0 right-0"); // a right-hand rail…
-  expect(p.className).toContain("translate-x-0"); // …slid in (a transform, so the page never reflows)
+  expect(p.className).toContain("translate-x-0"); // …slid in (a transform; the shell's dock column reflows the page)
+  expect(p.hasAttribute("data-docked")).toBe(true); // a desktop: docked, so no overlay shadow
+  expect(p.className).not.toContain("shadow-modal");
   // Opening, visibility flips at once (only the transform animates): a hidden element can't take focus.
   expect(p.className).toContain("visible translate-x-0 transition-transform");
   expect(p.getAttribute("role")).toBe("dialog");
@@ -206,6 +208,10 @@ test("the header's live line — panel and page alike: working time, queued, wor
 });
 
 test("the panel is resized from its left edge and the width is remembered (clamped to the viewport)", async () => {
+  // A 1440 desktop: the docked panel may grow until the page column beside it is DOCK_PAGE_MIN_W.
+  const prevWidth = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
+  try {
   localStorage.setItem("orca.ui.v1.orchestratorWidth", "520");
   await mount(<Entry />);
   await click(launcher());
@@ -233,23 +239,31 @@ test("the panel is resized from its left edge and the width is remembered (clamp
   });
   expect(p.style.width).toBe(`${PANEL_MIN_W}px`);
   expect(JSON.parse(localStorage.getItem("orca.ui.v1.orchestratorWidth")!)).toBe(PANEL_MIN_W);
+  } finally { Object.defineProperty(window, "innerWidth", { value: prevWidth, configurable: true }); }
 });
 
 test("a remembered width from a bigger screen is pulled back in; garbage in storage reads as the default", async () => {
-  localStorage.setItem("orca.ui.v1.orchestratorWidth", "3000"); // happy-dom's viewport is 1024 wide
-  await mount(<Entry />);
-  await click(launcher());
-  expect(panel()!.style.width).toBe(`${clampPanelWidth(3000, 1024)}px`);
-  expect(clampPanelWidth(3000, 1024)).toBe(1024 - 240);
-  expect(clampPanelWidth(100, 1024)).toBe(PANEL_MIN_W);
-  expect(clampPanelWidth(Number.NaN, 1024)).toBe(460);
-  expect(clampPanelWidth(500, 320)).toBe(320); // a tiny window: the panel is the window
-  await click(closeButton());
-  localStorage.setItem("orca.ui.v1.orchestratorWidth", JSON.stringify("wide"));
-  await act(async () => { root?.unmount(); });
-  await mount(<Entry />);
-  await click(launcher());
-  expect(panel()!.style.width).toBe("460px");
+  const prevWidth = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true }); // a 1440 desktop
+  try {
+    localStorage.setItem("orca.ui.v1.orchestratorWidth", "3000");
+    await mount(<Entry />);
+    await click(launcher());
+    expect(panel()!.style.width).toBe(`${clampPanelWidth(3000, 1440)}px`);
+    // Docked, it never takes the page column below DOCK_PAGE_MIN_W beside the nav's rail.
+    expect(clampPanelWidth(3000, 1440)).toBe(1440 - NAV_RAIL_W - DOCK_PAGE_MIN_W);
+    expect(clampPanelWidth(3000, 2400)).toBe(960);
+    expect(clampPanelWidth(460, 1024)).toBe(PANEL_MIN_W); // 1024 − 56 − 640 is under the minimum
+    expect(clampPanelWidth(100, 1440)).toBe(PANEL_MIN_W);
+    expect(clampPanelWidth(Number.NaN, 1440)).toBe(460);
+    expect(clampPanelWidth(500, 320)).toBe(320); // a tiny window: the panel is the window
+    await click(closeButton());
+    localStorage.setItem("orca.ui.v1.orchestratorWidth", JSON.stringify("wide"));
+    await act(async () => { root?.unmount(); });
+    await mount(<Entry />);
+    await click(launcher());
+    expect(panel()!.style.width).toBe("460px");
+  } finally { Object.defineProperty(window, "innerWidth", { value: prevWidth, configurable: true }); }
 });
 
 test("dayLabel groups timestamps: Today, Yesterday, then the date", () => {
@@ -334,7 +348,7 @@ test("Pop out (kept: one button) moves the live chat into a Picture-in-Picture w
     });
     document.documentElement.classList.add("dark");
     await click(panel()!.querySelector('[aria-label="Pop out"]')!);
-    expect(pip.requests).toEqual([{ width: 460, height: 640 }]); // first time: the panel's width
+    expect(pip.requests).toEqual([{ width: PANEL_MIN_W, height: 640 }]); // first time: the panel's width (docked at 1024: the minimum)
     const doc = pip.win(0).document;
     const inPip = () => doc.querySelector<HTMLElement>('[data-slot="orchestrator-panel"]');
     expect(panelEl()).toBeNull(); // gone from the tab…

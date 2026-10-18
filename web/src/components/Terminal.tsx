@@ -127,10 +127,11 @@ export function ActivityDot({ activity, className }: { activity: { running: bool
  *  a text box whose keystrokes carried into the composer; a box in the chrome that isn't where the
  *  text ends up is one more thing to learn, and the quick-ask pill now covers "fire off a line".) */
 export function AskOrchestrator() {
-  const { ask } = useOrchestrator();
+  // A toggle: the panel is a docked column on a desktop, so the button that opens it also closes it.
+  const { ask, open, close } = useOrchestrator();
   const activity = useAtomValue(orchestratorActivityAtom);
   return (
-    <button type="button" data-slot="ask-orchestrator" onClick={() => ask()} aria-label="Ask the orchestrator"
+    <button type="button" data-slot="ask-orchestrator" onClick={() => (open ? close() : ask())} aria-label="Ask the orchestrator" aria-expanded={open}
       // Shell.tsx wraps this with the header's usage meter in one ml-auto slot, so this button stays
       // right-aligned whether or not the meter renders (it's absent while loading or signed out).
       // Below md the bottom bar's Orchestrator button takes its place.

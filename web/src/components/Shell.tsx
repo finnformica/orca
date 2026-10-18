@@ -10,18 +10,20 @@
 // MobileNav in views/Pages.tsx.
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderGit2, FolderSync, Gauge, LayoutGrid, Loader2,
   Bot, Command, Keyboard, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
   Package, Users,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
-import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
+import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom } from "@/lib/atoms";
 import { pageShortcut, shortcutKeys } from "@/lib/shortcuts";
 import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPalette";
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
+import { SLIDE_MS } from "@/components/SidePanel";
+import { dockWidthAtom, useNavToggle } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
 import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
@@ -65,7 +67,10 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
 export function Shell({ crumbs, sidebarActions, children }: {
   crumbs: ReactNode; sidebarActions?: (collapsed: boolean) => ReactNode; children: ReactNode;
 }) {
-  const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
+  // The nav renders as its icon rail by your choice OR while the docked right column needs the room
+  // (lib/dock.ts); either way the page column keeps at least DOCK_PAGE_MIN_W.
+  const { rail: collapsed, setRail } = useNavToggle();
+  const dock = useAtomValue(dockWidthAtom);
   const [updateAvailable, setUpdateAvailable] = useState(false); // the banner, when shown, is topmost and clears the notch itself
   const offline = useConfigFailed();
   const serverProblem = useServerProblem(offline); // another server chosen, and it is offline or refuses us
@@ -86,7 +91,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
           collapsed ? "md:w-14" : "md:w-60",
         )}
       >
-        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} actions={sidebarActions} />
+        <Sidebar collapsed={collapsed} onToggle={() => setRail(!collapsed)} actions={sidebarActions} />
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
         <UpdateBanner onStaleChange={setUpdateAvailable} />
@@ -121,6 +126,12 @@ export function Shell({ crumbs, sidebarActions, children }: {
           {offline ? (serverProblem ? null : <OfflineScreen />) : children}
         </main>
       </div>
+      {/* The docked right column (desktop): the open side panel's width, reserved in the row so the
+          page reflows beside the panel rather than under it. The panel itself (SidePanel) is fixed over
+          this column, and the two move together: the same width and the same SLIDE_MS ease-out. */}
+      <div data-slot="dock" aria-hidden="true"
+        className="shrink-0 transition-[width] ease-out data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden"
+        style={{ width: dock, transitionDuration: `${SLIDE_MS}ms` }} />
       <BottomBar activity={activity} />
       {/* The quick-ask pill, bottom centre of every page but an agent's Chat tab (desktop; the phone's bottom bar has the orchestrator). */}
       {!chatTab(route) && <QuickAsk />}

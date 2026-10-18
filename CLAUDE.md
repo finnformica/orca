@@ -615,8 +615,13 @@ the workstream's selected provider; Slack posting uses a lightweight model of th
 ## The orchestrator (one conversation that delegates)
 
 **Ask the orchestrator** in the top bar (every page), the `O` key, the palette, a failed action's
-toast and the quick-ask box's "Open chat" open a **right-hand side panel** that slides over the page
-(`OrchestratorPanel`, `components/Terminal.tsx`: a `transform`, so nothing reflows; `role=dialog`
+toast and the quick-ask box's "Open chat" open a **right-hand side panel**, DOCKED on a desktop
+(`OrchestratorPanel`, `components/Terminal.tsx`; Finn found the overlay annoying): the panel
+publishes its width (`lib/dock.ts`) and the shell reserves it as a `data-slot="dock"` column, so the
+page reflows beside it; no shadow, a hairline edge; the top-bar button and `O` toggle it. When the
+dock leaves the page under `DOCK_PAGE_MIN_W` (640) the nav renders as its icon rail (`navRail`,
+your saved collapse untouched; expanding it then is a session override), and `clampPanelWidth`
+keeps the page at that floor beside the rail. `role=dialog`
 `aria-modal=false` — no backdrop, the board it is moving stays visible and usable; Esc or ✕ closes
 and focus returns to the opener; resized from its LEFT edge, width remembered as
 `orca.ui.v1.orchestratorWidth` and clamped to the viewport by `clampPanelWidth`). Once opened it

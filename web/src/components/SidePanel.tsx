@@ -1,17 +1,21 @@
 // The right-hand side panel's frame, shared by the orchestrator (components/Terminal.tsx) and the
 // instance terminal (components/InstanceTerminal.tsx): a `fixed` surface that slides in from the right
-// edge over the page (a transform, so nothing reflows; `aria-modal=false`, so the page stays usable),
+// edge (a transform; `aria-modal=false`, so the page stays usable). On a desktop it is DOCKED: it
+// publishes its width (lib/dock.ts) and the shell reserves that width as a column, so the page
+// reflows beside it instead of under it, and it has no shadow — a hairline edge, like the nav. It is
 // resized from its LEFT edge with the width remembered per browser, and — on a touch screen — swiped
 // right to close (the edge it comes from, through the one `useSwipeToDismiss`). `fullScreen` is the
 // phone's form: the whole visual viewport, no resize edge. The header (`PanelHeader`) is one h-12 row:
 // an icon or a Back arrow, the title over a status line, then the actions.
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { useAtom, type WritableAtom } from "jotai";
+import { useAtom, useSetAtom, type WritableAtom } from "jotai";
 import { ArrowLeft } from "lucide-react";
 import { PANEL_MIN_W, clampPanelWidth } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { useSwipeToDismiss } from "@/lib/gestures";
 import { cn } from "@/lib/utils";
+import { useNarrow } from "@/lib/viewport";
+import { DOCK_SELECTOR, dockWidthsAtom } from "@/lib/dock";
 
 export const SLIDE_MS = 200;
 
@@ -45,6 +49,14 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
 }) {
   const { width, vw, setSavedWidth } = usePanelWidth(widthAtom);
   const panelRef = useRef<HTMLDivElement>(null);
+  // Docked: a desktop width. Below md (a desktop window resized down, or a phone) it stays an overlay.
+  const docked = !fullScreen && !useNarrow();
+  const setDock = useSetAtom(dockWidthsAtom);
+  useEffect(() => {
+    const w = open && docked ? width : 0;
+    setDock((d) => (d[slot] ?? 0) === w ? d : { ...d, [slot]: w });
+  }, [open, docked, width, slot]);
+  useEffect(() => () => setDock(({ [slot]: _, ...rest }) => rest), [slot]);
   // The panel's own class transition slides it the rest of the way, from where the finger let go,
   // once the inline drag style is cleared.
   const swipe = useSwipeToDismiss("right", () => panelRef.current, onClose, { enabled: swipeOn, hold: true });
@@ -57,13 +69,18 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
     if (!el) return;
     const x0 = e.clientX, w0 = width;
     let last = w0;
+    // The shell's dock column follows the drag at once (no transition), so the page reflows with it.
+    const dock = docked ? document.querySelector<HTMLElement>(DOCK_SELECTOR) : null;
+    dock?.setAttribute("data-resizing", "");
     const move = (ev: PointerEvent) => {
       last = clampPanelWidth(w0 + (x0 - ev.clientX), window.innerWidth); // the edge is on the LEFT: dragging left widens
       el.style.width = `${last}px`;
+      if (dock) dock.style.width = `${last}px`;
     };
     const up = () => {
       window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
       document.body.style.cursor = "";
+      dock?.removeAttribute("data-resizing");
       setSavedWidth(last);
     };
     document.body.style.cursor = "ew-resize";
@@ -79,10 +96,10 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
     <div
       ref={panelRef}
       role="dialog" aria-modal="false" aria-label={label} aria-labelledby={labelledBy} aria-hidden={!open}
-      data-slot={`${slot}-panel`} data-state={open ? "open" : "closed"} data-full={fullScreen ? "" : undefined}
+      data-slot={`${slot}-panel`} data-state={open ? "open" : "closed"} data-full={fullScreen ? "" : undefined} data-docked={docked ? "" : undefined}
       onKeyDown={onKeyDown}
       className={cn("bg-card text-foreground flex flex-col overflow-hidden",
-        fullScreen ? "fixed top-0 right-0 h-[var(--vvh,100dvh)] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]" : "fixed inset-y-0 right-0 border-l shadow-modal",
+        fullScreen ? "fixed top-0 right-0 h-[var(--vvh,100dvh)] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]" : cn("fixed inset-y-0 right-0 border-l", !docked && "shadow-modal"),
         "z-40 ease-out motion-reduce:transition-none",
         open ? "visible translate-x-0 transition-transform" : "invisible translate-x-full transition-[transform,visibility]")}
       style={fullScreen
@@ -92,7 +109,7 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
       {/* The resize handle: the panel's left edge. Dragging left widens; the width is remembered. */}
       {!fullScreen && (
         <div data-slot={`${slot}-resize`} role="separator" aria-orientation="vertical" aria-label="Resize panel" onPointerDown={onResizeStart}
-          className="hover:bg-geist-blue/40 absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize transition-colors" />
+          className="hover:bg-geist-blue/40 active:bg-geist-blue/60 absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize transition-colors" />
       )}
       {header(swipe)}
       {children}

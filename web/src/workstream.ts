@@ -1734,11 +1734,26 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
 
 /** The orchestrator's side panel: how wide it may be on a `vw`-wide viewport. Never narrower than a
  *  readable chat, never wider than leaves the page beside it usable — and a width remembered from a
- *  bigger screen is pulled back in. */
+ *  bigger screen is pulled back in. On a desktop the panel is a DOCKED column that pushes the page,
+ *  so "usable" is the page column's own floor (`DOCK_PAGE_MIN_W`) beside the nav's icon rail. */
 export const PANEL_MIN_W = 360, PANEL_DEFAULT_W = 460;
+/** The nav sidebar's two desktop widths (Shell: md:w-60 expanded, md:w-14 the icon rail). */
+export const NAV_W = 240, NAV_RAIL_W = 56;
+/** The narrowest the page column gets beside a docked panel before the nav gives way to its rail. */
+export const DOCK_PAGE_MIN_W = 640;
 export function clampPanelWidth(w: number, vw: number): number {
-  const max = Math.max(PANEL_MIN_W, Math.min(960, vw - 240));
+  const max = Math.max(PANEL_MIN_W, Math.min(960, vw - NAV_RAIL_W - DOCK_PAGE_MIN_W));
   return Math.round(Math.min(vw, Math.max(PANEL_MIN_W, Math.min(max, Number.isFinite(w) ? w : PANEL_DEFAULT_W))));
+}
+
+/** The nav sidebar as an icon rail: what you chose (`collapsed`), or — while a docked panel is open
+ *  (`dock` > 0 px) and the full nav would leave the page under `DOCK_PAGE_MIN_W` — the rail, unless
+ *  you expanded it again while that panel was open (`expandedOverride`). The choice you saved is
+ *  never changed by this: close the panel and the nav comes back as it was. */
+export function navRail(collapsed: boolean, vw: number, dock: number, expandedOverride = false): boolean {
+  if (collapsed) return true;
+  if (dock <= 0 || expandedOverride) return false;
+  return vw - NAV_W - dock < DOCK_PAGE_MIN_W;
 }
 
 /** Chat timestamps are grouped by day: a divider where the calendar day changes between two turns,
