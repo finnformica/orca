@@ -71,7 +71,8 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   const p = panel()!;
   // A desktop: docked INTO the shell's dock column (no overlay, no transform, no shadow) — the
   // dock's width animates and clips it, so the page reflows in the same frame.
-  expect(p.parentElement!.dataset.slot).toBe("dock");
+  expect(p.parentElement!.dataset.slot).toBe("dock-clip"); // the dock's inner clip: the resize handle hangs outside it
+  expect(p.parentElement!.parentElement!.dataset.slot).toBe("dock");
   expect(p.hasAttribute("data-docked")).toBe(true);
   expect(p.className).toContain("absolute inset-y-0 left-0");
   expect(p.className).not.toContain("fixed");
@@ -236,17 +237,30 @@ test("the panel is resized from its left edge and the width is remembered (clamp
   await click(launcher());
   const p = panel()!;
   expect(p.style.width).toBe("520px");
-  const handles = p.querySelectorAll<HTMLElement>('[data-slot="orchestrator-resize"]');
-  expect(handles).toHaveLength(1); // one edge: the inner one
+  const handles = document.querySelectorAll<HTMLElement>('[data-slot="orchestrator-resize"]');
+  expect(handles).toHaveLength(1); // one handle
   expect(handles[0]!.className).toContain("cursor-ew-resize");
+  // branch-demo's gutter handle: in the dock, outside the panel and its clip, centred in the 6px gap.
+  expect(p.contains(handles[0]!)).toBe(false);
+  expect(handles[0]!.parentElement!.dataset.slot).toBe("dock");
+  expect(handles[0]!.style.left).toBe("-3.5px"); // half the 6px gap, less half the 1px line
+  expect(handles[0]!.className).toContain("before:-inset-2"); // the 17px hit area around the 1px line
   expect(handles[0]!.getAttribute("role")).toBe("separator");
   // Dragging the edge LEFT widens; the width lands in storage when the pointer lets go.
   await act(async () => {
     handles[0]!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: 500, clientY: 0 }));
     window.dispatchEvent(new PointerEvent("pointermove", { clientX: 440, clientY: 0 }));
+  });
+  // Mid-drag: the handle shows its active look and the dock drops its width transition.
+  expect(handles[0]!.hasAttribute("data-resizing")).toBe(true);
+  expect(handles[0]!.parentElement!.hasAttribute("data-resizing")).toBe(true);
+  expect(handles[0]!.parentElement!.className).toContain("data-[resizing]:transition-none");
+  await act(async () => {
     window.dispatchEvent(new PointerEvent("pointerup", {}));
     await flush();
   });
+  expect(handles[0]!.hasAttribute("data-resizing")).toBe(false);
+  expect(handles[0]!.parentElement!.hasAttribute("data-resizing")).toBe(false);
   expect(p.style.width).toBe("580px");
   expect(JSON.parse(localStorage.getItem("orca.ui.v1.orchestratorWidth")!)).toBe(580);
   // Dragged far right: never narrower than the minimum.
