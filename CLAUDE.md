@@ -624,7 +624,13 @@ dock leaves the page under `DOCK_PAGE_MIN_W` (640) the nav renders as its icon r
 your saved collapse untouched; expanding it then is a session override), and `clampPanelWidth`
 keeps the page at that floor beside the rail. On a desktop the page column (`page-scroll`) scrolls on
 its own and is the `@container/page` a page's layout should query (the Overview grid does), not the
-window; a phone keeps the window's scroll. The edge resizes by drag or by arrow keys. `role=dialog`
+window; a phone keeps the window's scroll. The edge resizes by drag or by arrow keys. **Open / close
+is branch-demo's right panel**: the panel renders INTO the dock (a portal) at its full width, shows at
+dock width 0 in the commit that opens it, and the dock's width opens on the next frame (a real 150ms
+`width` transition, none while dragging); closing, it stays painted until the width's `transitionend`,
+then is hidden (still mounted). Nothing in the page may set React state per frame while the dock or
+the nav animates: measure through `afterDockMotion` (`lib/dock.ts`); the page column has `contain:
+layout paint`, so a `fixed` element in a page must portal to `<body>`. `role=dialog`
 `aria-modal=false` — no backdrop, the board it is moving stays visible and usable; Esc or ✕ closes
 and focus returns to the opener; resized from its LEFT edge, width remembered as
 `orca.ui.v1.orchestratorWidth` and clamped to the viewport by `clampPanelWidth`). Once opened it
