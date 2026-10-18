@@ -36,7 +36,7 @@ An adapter does only these tasks:
 | `server/integrations/dispatcher.ts` | The delivery loop. |
 | `server/integrations/inbox.ts` | The orchestrator and workstream targets. |
 | `server/integrations/store.ts` | All SQL. |
-| `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts`, `github.ts`. Put a new adapter here. |
+| `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts`, `email.ts` (setup: [email.md](email.md)), `github.ts`. Put a new adapter here. |
 
 ## 3. The interface
 
@@ -321,6 +321,8 @@ first (section 7).
 | `orca channels` | Lists every link (integration, place, level, repos), every subscription and the pending pairing codes. |
 | `orca post --link <id> [--thread <id> \| --repo r --branch b] "<text>"` | Publishes `orca.message` with a delivery to the link. With `--repo` and `--branch` it continues that workstream's thread on the link, or starts it. |
 | `orca post --reply "<text>"` | Answers the outside message that woke the orchestrator: its link, its place (the DM for a catch-all link) and its thread. The grant check runs on that link. A wake from your own chat or a worker report has nothing to answer, so `--reply` fails there. |
+| `orca post --reply --thread "<text>"` | Answers the same way, but opens a thread for the answer where the adapter can (Discord: on the mention). Use it for a long answer, a job with many steps, a workstream or a long conversation. The thread that the send returns is recorded as the workstream's thread on the link. |
+| `orca post --link <catch-all>` | Refused. A catch-all link (`external_id` `*`) only receives: it names no place to post to. |
 | `orca thread link <adapter> <thread-id> --repo r --branch b [--link <id>]` | Binds an external thread to a workstream. Replies in it then go to the workstream (with a `work` grant on its repo). |
 | `orca ask-user "<question>"` | Publishes `orca.question`. The bell shows it as `needs_input`. Subscriptions to `orca.question` also send it out (for example to your Slack DM). |
 
@@ -371,8 +373,11 @@ Config (`integration.config`):
 - The token is `secret_ref` (`ORCA_SECRET_GITHUB_*`) when it is set. Else it is the `gh` login of
   `githubUser`, else the active `gh` login.
 
-Links: the link's `external_id` is the slug (`owner/name`), or `*` for every repo. The link level
-must be `ask` or above. The gate drops an event on a `notify` link.
+Links: the link's `external_id` is the slug (`owner/name`), or `*` for every repo.
+
+- Use a link at `ask` or above, or set `"machineEventsOnNotify": true` in the config (section 6).
+- Without one of these, the gate drops each event on a `notify` link.
+- On a `notify` link the event gets the grant `notify`, so no agent acts on it.
 
 Topics. Each event has `source.channel` = the slug, `scope` = `{ repo, branch: <head branch> }`,
 `thread` = `{ adapter: "github", externalId: "owner/name#<n>" }`, `title` = `#<n> <PR title>`,

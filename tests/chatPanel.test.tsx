@@ -309,12 +309,12 @@ test("a tool's output stays inside its own accordion instead of spilling into th
   await act(async () => { fold!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
 
   expect(text()).toContain("Running the suite now."); // narration is the readable thread — visible
-  expect(text()).toContain("Running: bun test");      // the call's label, derived from its input — visible
+  expect(container!.querySelector('[data-slot="step-call"]')?.textContent).toBe("bun test"); // the real command, derived from its input — visible
   expect(text()).not.toContain("SECRET_TOOL_OUTPUT"); // its output — behind the toggle
   expect(text()).not.toContain("Tool result");        // and NOT a second row of its own
 
   // Opening that one call reveals the command AND its output together.
-  const toggle = [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("Running: bun test"));
+  const toggle = container!.querySelector('[data-slot="step-call"]')!.closest("button");
   await act(async () => { toggle!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
   expect(text()).toContain("SECRET_TOOL_OUTPUT 289 pass");
 });
@@ -348,9 +348,15 @@ test("a live turn shows ONE compact activity block, and on finish it folds into 
   // Nothing opens by itself: no command input, no output, no code block.
   expect(container!.querySelector("pre")).toBeNull();
   expect(text()).not.toContain("SECRET_FILE_BODY");
-  // The header opens the full list: one line per run, the interim text as prose, not code.
+  // The header opens the full list: every REAL call on its own row — never the trail's summary
+  // again — each with its status, and the interim text as prose, not code.
   await act(async () => { (slot("activity-head") as HTMLButtonElement).click(); });
-  expect(slot("activity-steps")?.textContent).toContain("Read 3 files");
+  const rows = [...container!.querySelectorAll('[data-slot="activity-list"] [data-slot="step-tool"]')];
+  expect(rows.map((r) => r.querySelector('[data-slot="step-call"]')?.textContent)).toEqual(["one.ts", "two.ts", "three.ts", "bun test"]);
+  expect(rows.map((r) => r.getAttribute("data-status"))).toEqual(["done", "done", "done", "running"]);
+  expect(rows[0]!.querySelector('[data-slot="step-duration"]')).toBeNull(); // result 1ms later: under 100ms, no `0.0s`
+  expect(rows[3]!.querySelector('[data-slot="step-call"]')?.className).toContain("font-mono");
+  expect(slot("activity-steps")?.textContent).not.toContain("Read 3 files");
   expect(slot("step-text")?.querySelector("strong")?.textContent).toBe("suite");
   await act(async () => { (slot("activity-head") as HTMLButtonElement).click(); });
 
@@ -371,6 +377,52 @@ test("a live turn shows ONE compact activity block, and on finish it folds into 
   // Once the fold has played, the live block's content leaves the DOM.
   await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
   expect(slot("activity-current")).toBeNull();
+});
+
+test("the live header's label swaps in two layers — the old line fades out as the new one fades in, never overlapping", async () => {
+  // Finn: the old and new lines clashed mid-swap. Both now run together in one fixed-height,
+  // clipped box; the old one carries `-out`, the new one the plain slot, so neither is ever the
+  // only thing on screen at once and the box never grows a second line.
+  const now = Date.now();
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", prompt: "run the tests", response: "", startedAt: now,
+    steps: [{ at: 1, kind: "tool", id: "a", name: "Bash", input: { command: "bun test" } }],
+  }]);
+  await mount({ ...base, agentStatus: "running" });
+  const slot = (name: string) => container!.querySelector(`[data-slot="${name}"]`);
+  expect(slot("activity-current")?.textContent).toBe("Running: bun test…");
+  expect(slot("activity-current-out")).toBeNull(); // nothing to fade from yet
+
+  // Past the hold window, switch to a second in-flight call.
+  await act(async () => { await new Promise((r) => setTimeout(r, 450)); });
+  apiFake.turnsData.set("r::feat", [{
+    ...apiFake.turnsData.get("r::feat")![0]!,
+    steps: [
+      { at: 1, kind: "tool", id: "a", name: "Bash", input: { command: "bun test" } },
+      { at: 2, kind: "result", id: "a", output: "x" },
+      { at: 3, kind: "tool", id: "b", name: "Bash", input: { command: "bun run check" } },
+    ],
+  }]);
+  const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
+  await act(async () => {
+    stream.dispatchEvent(Object.assign(new Event("turn"), { data: JSON.stringify({ repo: "r", branch: "feat", runId: "run-1" }) }));
+    await flush(); await flush();
+  });
+
+  // Both layers sit together: the old line fading out, the new one fading in — same box.
+  const out = slot("activity-current-out");
+  const incoming = slot("activity-current");
+  expect(out?.textContent).toBe("Running: bun test…");
+  expect(out?.className).toContain("label-out");
+  expect(incoming?.textContent).toBe("Running: bun run check…");
+  expect(incoming?.className).toContain("label-in");
+  // One fixed-height, clipped box holds both — never a second line, never spilling out.
+  expect(out?.closest("[class*='overflow-hidden']")).toBe(incoming?.closest("[class*='overflow-hidden']"));
+
+  // Once the fade has played, only the new line is left.
+  await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
+  expect(slot("activity-current-out")).toBeNull();
+  expect(slot("activity-current")?.textContent).toBe("Running: bun run check…");
 });
 
 test("the live header names the newest call with no result, not the last step; the trail leaves it out", async () => {

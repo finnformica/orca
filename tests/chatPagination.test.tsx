@@ -9,10 +9,11 @@ import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
+import { fenceExternal, integrationMessage, integrationMetaLine } from "../shared/integrations";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
-import { CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, MESSAGE_BREAK, capWindow, chatItems, longMessage, newestMessages, longReply, splitMessages, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, turnSource, windowRange, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
+import { integrationState, integrationTurn, composerHistory, CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, MESSAGE_BREAK, capWindow, chatItems, longMessage, newestMessages, longReply, splitMessages, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, anchorShift, eagerFrom, estimateItemHeight, turnSource, windowRange, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -39,11 +40,12 @@ const log = () => container!.querySelector<HTMLElement>(".overflow-y-auto")!;
 // Read off the instruction's own bubble: the turn's whole text runs it straight into the timestamp
 // ("ask 012:00 AM"), since a closed tooltip mounts nothing in between.
 const shown = () => [...container!.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].map((t) => t.querySelector('[data-slot="chat-user-text"]')!.textContent!.match(/^ask (\d+)$/)![1]).map(Number);
-/** happy-dom lays nothing out: give the scroller a height that grows with its turns (20px each) and a
- *  settable scrollTop, so anchoring can be checked arithmetically. */
+/** happy-dom lays nothing out: give the scroller a height that grows with its items (20px each — a
+ *  turn, or the box that stands in for one not mounted yet) and a settable scrollTop, so anchoring can
+ *  be checked arithmetically. */
 function layout(el: HTMLElement, clientHeight = 400) {
   let top = 0;
-  Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => el.querySelectorAll('[data-slot="chat-turn"]').length * 20 });
+  Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => el.querySelectorAll('[data-slot="chat-item"]').length * 20 });
   Object.defineProperty(el, "clientHeight", { configurable: true, get: () => clientHeight });
   Object.defineProperty(el, "scrollTop", { configurable: true, get: () => top, set: (v: number) => { top = v; } });
   el.scrollTo = ((opts: { top: number }) => { top = opts.top; }) as typeof el.scrollTo;
@@ -249,7 +251,7 @@ test("the pure pieces: the window, compact replies and the worker blocks", () =>
   expect(longMessage("x".repeat(601))).toBe(true);
   const w = (id: string, startedAt = 1) => ({ id, instruction: `${WORKER_EVENT_MARKER} x`, finishedAt: 1, startedAt });
   const u = (id: string) => ({ id, instruction: "hi", finishedAt: 1 });
-  const kinds = <T extends { id: string }>(items: ChatItem<T>[]) => items.map((i) => (i.kind === "turn" ? i.turn.id : `[${i.turns.map((t) => t.id).join(",")}]`));
+  const kinds = <T extends { id: string }>(items: ChatItem<T>[]) => items.map((i) => (i.kind === "turn" ? i.turn.id : i.kind === "integration" ? `@${i.turn.id}` : `[${i.turns.map((t) => t.id).join(",")}]`));
   // Your turns, each run of agent turns between them as one block — even a single one, even the newest.
   expect(kinds(chatItems([u("a"), w("b"), w("c"), u("d"), w("e"), w("f")]))).toEqual(["a", "[b,c]", "d", "[e,f]"]);
   expect(kinds(chatItems([w("a"), u("b")]))).toEqual(["[a]", "b"]);
@@ -267,6 +269,66 @@ test("the pure pieces: the window, compact replies and the worker blocks", () =>
   expect(turnSource(["[new draft] repo: r\n\nbuild it"])).toBe("human");
   expect(sourceOf({ instruction: `${WORKER_EVENT_MARKER} a\n\n${WORKER_EVENT_MARKER} b` })).toBe("agents");
   expect(agentsMarker([{ instruction: `${WORKER_EVENT_MARKER} a\n\n${WORKER_EVENT_MARKER} b`, finishedAt: 1 }, { instruction: `${WORKER_EVENT_MARKER} c` }])).toBe("3 worker reports · 1 reply · working");
+});
+
+// An outside message as the bridge queues it (server/integrations/inbox.ts withSource): fenced, then
+// the meta line. `meta: false` is a row from before the meta line.
+const outside = (text: string, sender = "Saajan", place = "#general", meta = true) => [
+  fenceExternal({ text, source: { adapter: "discord", linkId: "L1" }, actor: { external: { adapter: "discord", id: "U1", name: sender } }, grant: { level: "ask", repos: [] } }),
+  ...(meta ? [integrationMetaLine({ adapter: "discord", sender, place, url: "https://discord.com/channels/G/C/M" })] : []),
+].join("\n");
+
+test("the pure pieces: an outside message is read back with its source, and its wake is an activity row", () => {
+  expect(integrationMessage(outside("can you ship #12?\nthanks"))).toEqual({ adapter: "discord", sender: "Saajan", place: "#general", url: "https://discord.com/channels/G/C/M", text: "can you ship #12?\nthanks" });
+  // A row from before the meta line: the header still names the service and the sender.
+  expect(integrationMessage(outside("hi", "Saajan", "", false))).toEqual({ adapter: "discord", sender: "Saajan", text: "hi" });
+  // A name can't close the comment early.
+  expect(integrationMessage(outside("hi", "a --> b"))!.sender).toBe("a --> b");
+  expect(integrationMetaLine({ adapter: "discord", sender: "a --> b" })).not.toContain("-->\"");
+  expect(integrationMessage("hi")).toBeUndefined();
+  expect(integrationMessage(`${WORKER_EVENT_MARKER} r/x — done`)).toBeUndefined();
+  const u = (id: string) => ({ id, instruction: "hi", finishedAt: 1 });
+  const x = (id: string, finishedAt?: number) => ({ id, instruction: `${outside("one")}${MESSAGE_BREAK}${outside("two", "Ana", "DM")}`, finishedAt, source: "human" as const });
+  expect(integrationTurn(x("a"))!.map((m) => m.sender)).toEqual(["Saajan", "Ana"]);
+  expect(integrationTurn({ instruction: `${outside("one")}${MESSAGE_BREAK}carry on` })).toBeUndefined(); // your words: a normal turn
+  // Its own row, even when it holds the newest answer; never "your newest message".
+  const turns = [u("a"), x("b", 2), x("c", 3)];
+  expect(chatItems(turns, turns[2]).map((i) => i.kind === "turn" ? i.turn.id : i.kind === "integration" ? `@${i.turn.id}` : "?")).toEqual(["a", "@b", "@c"]);
+  expect(newestMessages(turns).said).toBe(turns[0]);
+  expect(integrationState({})).toBe("in progress");
+  expect(integrationState({ finishedAt: 1 })).toBe("answered");
+  expect(integrationState({ finishedAt: 1, failed: true })).toBe("failed");
+  // ↑ in the composer recalls only what you typed.
+  expect(composerHistory([u("a"), x("b", 2)], [{ instruction: outside("q") }])).toEqual(["hi"]);
+});
+
+test("P8: the orchestrator's chat shows an outside message and its answer as ONE collapsed activity row, never your bubble", async () => {
+  const reply = (id: string, text: string, sender: string, place: string, finished = true) => ({
+    id, provider: "claude", instruction: outside(text, sender, place), prompt: "", response: finished ? `answered ${sender}` : "", startedAt: 2000, source: "human" as const,
+    ...(finished ? { finishedAt: 2001 } : {}),
+  });
+  apiFake.turnsData.set("r::long", [turn(0), reply("d1", "can you ship #12?", "Saajan", "#general"), turn(1), reply("d2", "status of the deploy?", "Ana", "DM", false)]);
+  apiFake.queuedData.set("long", [{ id: 1, instruction: outside("one more", "Saajan", "#general"), attachments: [] }]);
+  await mount(<ChatPanel row={row} />);
+  const c = container!;
+  const rows = [...c.querySelectorAll<HTMLElement>('[data-slot="integration-activity"]')];
+  expect(rows).toHaveLength(2);
+  const field = (r: HTMLElement, slot: string) => r.querySelector(`[data-slot="${slot}"]`)!.textContent;
+  expect(rows.map((r) => [field(r, "integration-sender"), field(r, "integration-place"), field(r, "integration-preview"), field(r, "integration-state")])).toEqual([
+    ["Saajan", "#general", "can you ship #12?", "answered"], ["Ana", "DM", "status of the deploy?", "in progress"],
+  ]);
+  expect(rows[0]!.querySelector('[data-slot="brand-icon"]')!.getAttribute("data-kind")).toBe("discord");
+  expect(rows[0]!.className).toContain("bg-geist-blue/5"); // the worker blocks' tinted card
+  // Never your bubble, and the answer stays folded until opened.
+  expect([...c.querySelectorAll('[data-slot="chat-user-text"]')].map((b) => b.textContent)).toEqual(["ask 0", "ask 1"]);
+  expect(c.textContent).not.toContain("answered Saajan");
+  expect(c.textContent).not.toContain("external message");
+  await act(async () => { rows[0]!.querySelector("button")!.click(); await flush(); });
+  expect(field(rows[0]!, "integration-reply")).toContain("answered Saajan");
+  expect(rows[0]!.querySelector<HTMLAnchorElement>('[data-slot="integration-message"] a')!.href).toBe("https://discord.com/channels/G/C/M");
+  // A queued outside message is its row too, not a queued bubble of yours.
+  expect(field(c.querySelector<HTMLElement>('[data-slot="integration-queued"]')!, "integration-state")).toBe("queued");
+  expect(c.querySelector('[data-slot="chat-queued"]')).toBeNull();
 });
 
 test("the pure pieces: merging pages and anchoring", () => {
@@ -314,4 +376,97 @@ test("P6: a page from the database carries no banner", async () => {
   apiFake.turnsData.set("r::long", [turn(0)]);
   await mount();
   expect(container!.querySelector('[data-slot="chat-db-down"]')).toBeNull();
+});
+
+// ---- the lazy mount (views/Chat.tsx LazyItem): only the items near the viewport render ----
+// A cold open of a 50-turn, 142k-character thread rendered every turn in one ~540ms commit. Now the
+// newest items that fill about 1.5 screens mount at once and the rest are boxes of an estimated height
+// until an IntersectionObserver (rooted on the scroller) says they are near; then they stay mounted.
+
+/** An IntersectionObserver the test drives: `near(el)` reports an element as within the margin. */
+class ManualObserver {
+  static all: ManualObserver[] = [];
+  readonly targets = new Set<Element>();
+  constructor(private readonly cb: IntersectionObserverCallback, readonly options?: IntersectionObserverInit) { ManualObserver.all.push(this); }
+  observe(t: Element) { this.targets.add(t); }
+  unobserve(t: Element) { this.targets.delete(t); }
+  disconnect() { this.targets.clear(); }
+  takeRecords() { return []; }
+  near(target: Element, rect?: { top: number; bottom: number }) { this.cb([{ target, isIntersecting: true, boundingClientRect: rect } as unknown as IntersectionObserverEntry], this as unknown as IntersectionObserver); }
+}
+const items = () => [...container!.querySelectorAll<HTMLElement>('[data-slot="chat-item"]')];
+
+test("P8: the pure pieces — an item's height guess, the eager tail, and the scroll shift where native anchoring is missing", () => {
+  // One line per ~80 characters (21px) plus the bubble and header; compact turns cut at 8 lines.
+  expect(estimateItemHeight(0)).toBe(64 + 21);
+  expect(estimateItemHeight(800)).toBe(64 + 21 * 10);
+  expect(estimateItemHeight(8000, { compact: true })).toBe(64 + 21 * 8);
+  expect(estimateItemHeight(8000, { folded: true })).toBe(44);
+  // The newest items whose guesses fill the budget mount at once — always at least the last one.
+  expect(eagerFrom([100, 100, 100, 100], 250)).toBe(1);
+  expect(eagerFrom([100, 100, 100, 100], 50)).toBe(3);
+  expect(eagerFrom([100, 100], 1000)).toBe(0);
+  // Only items wholly above the viewport's top (here 0) move the scroller, by their growth: the first
+  // grew 300 and ends above the top; the second (its bottom moved down by that 300) straddles the top — you are reading it; the third is below.
+  expect(anchorShift([{ bottom: -50, delta: 300 }, { bottom: 400, delta: 40 }, { bottom: 900, delta: 500 }], 0)).toBe(300);
+  // Two above: both count, in any order given (the second's bottom already includes the first's growth).
+  expect(anchorShift([{ bottom: -10, delta: 100 }, { bottom: -200, delta: 200 }], 0)).toBe(300);
+  expect(anchorShift([], 0)).toBe(0);
+});
+
+test("P9: a cold open mounts only the newest items; older ones mount as they near the viewport and then stay", async () => {
+  const g = globalThis as unknown as { IntersectionObserver: unknown };
+  const visible = g.IntersectionObserver;
+  g.IntersectionObserver = ManualObserver;
+  ManualObserver.all = [];
+  try {
+    // 50 long turns: the newest 3 render in full (~590px each), the rest compact.
+    apiFake.turnsData.set("r::long", Array.from({ length: 50 }, (_, i) => ({ ...turn(i), response: `reply ${i} ${"word ".repeat(400)}` })));
+    await mount();
+    const io = ManualObserver.all.at(-1)!;
+    expect(io.options?.root).toBe(log()); // rooted on the chat's own scroller, not the page
+    // Only the tail is mounted; every older item is an empty box with a height, watched by the observer.
+    expect(shown()).toEqual([48, 49]);
+    expect(items()).toHaveLength(50);
+    const boxes = items().filter((el) => el.dataset.pending !== undefined);
+    expect(boxes).toHaveLength(48);
+    expect(boxes.every((el) => Number.parseFloat(el.style.height) > 0)).toBe(true);
+    expect(io.targets.size).toBe(48);
+    // Your newest message and the newest answer are in full.
+    expect(log().textContent).toContain("ask 49");
+    expect(log().textContent).toContain("reply 49");
+    // Scrolling up brings the first item near: it mounts, and is no longer watched.
+    await act(async () => { io.near(boxes[0]!); await flush(); });
+    expect(shown()).toEqual([0, 48, 49]);
+    expect(io.targets.has(items()[0]!)).toBe(false);
+    // With a layout: an item near but out of view waits for the batch (LAZY_BATCH_MS) so items mount
+    // together in one commit; one already in view mounts at once.
+    log().getBoundingClientRect = () => ({ top: 0, bottom: 400, height: 400 }) as DOMRect;
+    await act(async () => { io.near(items()[1]!, { top: -900, bottom: -700 }); await flush(); });
+    expect(shown()).toEqual([0, 48, 49]);
+    await act(async () => { io.near(items()[2]!, { top: -700, bottom: -500 }); await new Promise((r) => setTimeout(r, 120)); });
+    expect(shown()).toEqual([0, 1, 2, 48, 49]); // both, in one go
+    await act(async () => { io.near(items()[3]!, { top: 100, bottom: 300 }); await flush(); });
+    expect(shown()).toEqual([0, 1, 2, 3, 48, 49]);
+    // A new turn at the tail mounts at once; the items that were mounted stay mounted.
+    apiFake.turnsData.get("r::long")!.push(turn(50));
+    await act(async () => { emit(opened().at(-1)!, "turn", { repo: "r", branch: "long", runId: "run-50" }); await flush(); await flush(); });
+    expect(shown()).toEqual([0, 1, 2, 3, 48, 49, 50]);
+  } finally { g.IntersectionObserver = visible; }
+});
+
+test("P10: Jump to latest finishes the jump when items mounted on the way down moved the end", async () => {
+  apiFake.turnsData.set("r::long", Array.from({ length: 10 }, (_, i) => turn(i)));
+  await mount();
+  const el = log();
+  layout(el, 100);
+  await scrollTo(el, 0);
+  // A smooth scroll that stops at the end as it was when it started; meanwhile the content grows 300px.
+  let extra = 0;
+  el.scrollTo = ((opts: { top: number; behavior?: string }) => { el.scrollTop = opts.top; if (opts.behavior === "smooth") extra = 300; }) as typeof el.scrollTo;
+  Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 200 + extra });
+  await act(async () => { container!.querySelector<HTMLButtonElement>('[data-slot="chat-jump"]')!.click(); await flush(); });
+  expect(el.scrollTop).toBe(200); // where the smooth scroll stopped: short of the new end
+  await act(async () => { await new Promise((r) => setTimeout(r, 1050)); });
+  expect(el.scrollTop).toBe(500); // landed at the real end
 });

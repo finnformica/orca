@@ -8,10 +8,11 @@ import * as orchestrator from "../server/orchestrator";
 import * as router from "../server/integrations/router";
 import * as dispatcher from "../server/integrations/dispatcher";
 import * as store from "../server/integrations/store";
+import * as inbox from "../server/integrations/inbox";
 import { launchOptions, permissionFor } from "../server/verbs";
 import type { Adapter } from "../server/integrations/adapter";
 import {
-  PAIRING_ALPHABET, PAIRING_TTL_MS, digestEnvelope, digestWindow, fenceExternal, grantRefusal, inboundEnvelope, pairingCode, pairingReply, replyToOf,
+  PAIRING_ALPHABET, PAIRING_TTL_MS, digestEnvelope, digestWindow, fenceExternal, grantRefusal, inboundEnvelope, integrationMessage, pairingCode, pairingReply, replyToOf,
   type Envelope, type OutboundMessage, type Target,
 } from "../shared/integrations";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, wakeProgress } from "../web/src/workstream";
@@ -68,11 +69,14 @@ describe("decisions (pure)", () => {
     expect(text).not.toContain("orca channels");
   });
 
-  test("a workstream an outside sender's wake touched runs with permission prompts on", () => {
-    const repo = { name: "r", agentPermissionMode: "bypass" } as RepoConfig;
+  test("a workstream an outside sender's wake touched runs in scoped mode, with the repo's base and check", () => {
+    const repo = { name: "r", agentPermissionMode: "bypass", baseBranch: "trunk", checkCommand: "bun run check" } as RepoConfig;
     expect(permissionFor(repo)).toBe("bypass");
-    expect(permissionFor(repo, { grantScope: { level: "work", repos: ["r"] } })).toBe("ask");
-    expect(launchOptions({} as OrcaConfig, repo, "claude", undefined, { grantScope: { level: "work", repos: ["r"] } }).permissionMode).toBe("ask");
+    expect(launchOptions({} as OrcaConfig, repo, "claude").scope).toBeUndefined();
+    expect(permissionFor(repo, { grantScope: { level: "work", repos: ["r"] } })).toBe("scoped");
+    expect(launchOptions({} as OrcaConfig, repo, "claude", undefined, { grantScope: { level: "work", repos: ["r"] } })).toMatchObject({
+      permissionMode: "scoped", scope: { baseBranch: "trunk", checkCommand: "bun run check" },
+    });
   });
 });
 
@@ -233,6 +237,20 @@ describe("with Postgres", () => {
     await expect(orchestrator.tool(cfg, "post", { reply: "x" })).rejects.toThrow("only on its own link (L1)");
   });
 
+  test("an outside message reaches the orchestrator with its source, so the chat shows it as an activity row", async () => {
+    const grant = { level: "ask" as const, repos: [] };
+    const actor = { external: { adapter: "discord", id: "U1", name: "Saajan" } };
+    // A channel message: the link's label is the place; Discord's ids give the message's URL.
+    const inChannel = await inbox.withSource({ id: "e1", key: "discord:m1", topic: "ext.discord.message", at: 1, text: "ship it?", actor, grant,
+      source: { adapter: "discord", channel: "C1", linkId: "L1" }, raw: { id: "M1", channel_id: "C1", guild_id: "G1" } } as Envelope);
+    expect(inChannel).toStartWith("[external message] via discord"); // the fenced prompt is unchanged
+    expect(integrationMessage(inChannel)).toEqual({ adapter: "discord", sender: "Saajan", place: "#eng", url: "https://discord.com/channels/G1/C1/M1", text: "ship it?" });
+    // A DM (no guild): "DM", whatever the catch-all link is called.
+    const dm = await inbox.withSource({ id: "e2", key: "discord:m2", topic: "ext.discord.message", at: 1, text: "hi", actor, grant,
+      source: { adapter: "discord", channel: "D1", linkId: "nope" }, raw: { id: "M2", channel_id: "D1" } } as Envelope);
+    expect(integrationMessage(dm)).toMatchObject({ place: "DM", url: "https://discord.com/channels/@me/D1/M2" });
+  });
+
   test("orca channels, post, thread link and ask-user — and the grant on post", async () => {
     const cfg = { repos: [{ name: "r", repoPath: "/nope", worktreeRoot: "/nope", baseBranch: "main", previewServices: [] }] } as unknown as OrcaConfig;
     await store.addSubscription({ topicPattern: "orca.question", filter: {}, targetKind: "link", targetId: "L1", digestSeconds: 0 });
@@ -262,13 +280,37 @@ describe("with Postgres", () => {
     await expect(orchestrator.tool(cfg, "thread", { _: ["link", "slack", "C1:1.1"], repo: "r", branch: "b" })).rejects.toThrow('needs "work"');
   });
 
-  test("a restricted wake marks the workstream it steers with its grant (so its runs ask for permission)", async () => {
+  test("a restricted wake marks the workstream it steers with its grant (so its runs are scoped)", async () => {
     const cfg = { repos: [{ name: "r", repoPath: "/nope", worktreeRoot: "/nope", baseBranch: "main", previewServices: [] }] } as unknown as OrcaConfig;
-    const grant = { level: "work", repos: ["r"], linkId: "L1" };
+    await store.addPrincipal({ id: "saajan", name: "Saajan", maxLevel: "work" });
+    const grant = { level: "work", repos: ["r"], linkId: "L1", principalId: "saajan" };
     await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: grant as never });
     // The launch itself fails here (no repo on disk); the mark is written first, so every later run sees it.
     await expect(orchestrator.tool(cfg, "send", { repo: "r", branch: "feat", _: ["fix", "it"] })).rejects.toThrow();
-    expect((await db.enrichment("r"))["feat"]?.grantScope).toEqual(grant);
+    const scope = (await db.enrichment("r"))["feat"]?.grantScope as Record<string, unknown>;
+    expect(scope).toMatchObject({ ...grant, by: "Saajan" }); // who started it, for the card
+    // Lifting the scope is the owner's alone.
+    await expect(orchestrator.tool(cfg, "status", { repo: "r", branch: "feat", "clear-grant": "" })).rejects.toThrow("needs your own chat");
+  });
+
+  test("a steer clears grantScope only from a wake that is all the owner's; --clear-grant from the owner's chat", async () => {
+    const cfg = { repos: [{ name: "r", repoPath: "/nope", worktreeRoot: "/nope", baseBranch: "main", previewServices: [] }] } as unknown as OrcaConfig;
+    const grant = { level: "work", repos: ["r"], linkId: "L1" };
+    const scope = async () => (await db.enrichment("r"))["feat"]?.grantScope;
+    await db.patchEnrichment("r", "feat", { grantScope: grant as never });
+    // A wake of worker reports (no grant, not the owner's): the report may carry Discord text, so the scope stays.
+    await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: null, wakeFromUser: null });
+    await expect(orchestrator.tool(cfg, "send", { repo: "r", branch: "feat", _: ["go", "on"] })).rejects.toThrow();
+    expect(await scope()).toEqual(grant);
+    // The owner's own message steers it: the scope goes, written before the launch.
+    await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeFromUser: true as never });
+    await expect(orchestrator.tool(cfg, "address", { repo: "r", branch: "feat" })).rejects.toThrow();
+    expect(await scope()).toBeUndefined();
+    // `orca status --clear-grant` from the owner's chat.
+    await db.patchEnrichment("r", "feat", { grantScope: grant as never });
+    await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeFromUser: null });
+    expect(await orchestrator.tool(cfg, "status", { repo: "r", branch: "feat", "clear-grant": "" })).toContain("Cleared the outside grant of r/feat");
+    expect(await scope()).toBeUndefined();
   });
 
   test("a digest subscription sends one message per window, at the window's end", async () => {

@@ -6,7 +6,8 @@
 //
 // Applied to the document in one place (`applyIdentity`): `--server` and `--server-mark` on <html>,
 // one style sheet with every theme tone for both modes (`themeCss`: the sidebar, primary buttons,
-// links, focus rings, the selection), the page title (`Orca | Personal`) and the favicon (the black
+// links, focus rings, the selection, and the tinted surfaces, text and borders every shadcn
+// component reads), the page title (`Orca | Personal`) and the favicon (the black
 // circle a very dark shade of the theme colour, the orca the colour). Neutral sets no theme at all.
 import { useSyncExternalStore } from "react";
 import { apiBase, apiFetch, identityOf, type ServersAnswer } from "./server";

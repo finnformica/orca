@@ -3,16 +3,23 @@
 // outbound. The core owns everything else — the gate (link level, the person, the link's repos),
 // dedupe, retries, pacing and the thread → workstream map — so this file only speaks Discord.
 //
-// Inbound: a message that @-mentions the bot in a linked channel (or in a thread of one), or a DM —
+// Inbound: a message that @-mentions the bot (its user or its managed role) in a linked channel (or in a thread of one), or a DM —
 // under the link `config.dmLink` names, else the integration's catch-all link ("*"). A thread's messages carry
 // `thread` (its channel id) and its PARENT channel as `source.channel`, so the link is the parent's.
-// A top-level mention gets `thread` = its own message id: Discord gives a thread started from a
-// message that message's id, so once the core accepts the event the adapter opens that thread and
-// the conversation continues there — one request, one thread.
+// A top-level mention depends on `config.threads`:
+// - false (the default, reply in place): `thread` = `<channel id>:<root id>`, the root being the top
+//   of the message's Discord reply chain, so several conversations in one channel stay apart. A send
+//   to such a key posts in the channel as a Discord reply to the chain's newest message. No thread.
+// - true: `thread` = its own message id. Discord gives a thread started from a message that
+//   message's id, so once the core accepts the event the adapter opens that thread.
 // Outbound: a post to the link's channel, or into `target.threadId`; a first post for a workstream
-// (no thread yet) opens a thread on itself and returns its id, which the core keeps as that
-// workstream's thread on the link. Edits PATCH the message. A 429 is retryable with Discord's
-// `retry_after`. The bot token is `secretRef` (ORCA_SECRET_DISCORD_BOT) — never logged, never in `raw`.
+// (no thread yet) starts its conversation — a thread on itself (threads on) or its own reply chain
+// (threads off) — and returns its id, which the core keeps as that workstream's thread on the link.
+// `msg.thread` (`orca post --thread`) opens a thread for one post when the default is in place: on
+// the mention for a reply in a chain, on the post for a first post. In a thread or a DM it changes
+// nothing. The thread's id comes back, so the core moves the conversation (and its workstream) there.
+// Edits PATCH the message. A 429 is retryable with Discord's `retry_after`. The bot token is
+// `secretRef` (ORCA_SECRET_DISCORD_BOT) — never logged, never in `raw`.
 import type { Adapter, AdapterContext, Connection } from "../adapter";
 import { clip, inboundEnvelope, type Capabilities, type OutboundMessage, type SendResult, type Target, type Topic } from "../../../shared/integrations";
 
@@ -93,19 +100,48 @@ export type DiscordMessage = {
   id: string; channel_id: string; guild_id?: string; content?: string; timestamp?: string;
   author: { id: string; username?: string; global_name?: string | null; bot?: boolean };
   mentions?: { id: string }[]; attachments?: { url: string; filename?: string }[];
+  /** Role ids the message mentions: the bot's managed role is one way to @-mention it. */
+  mention_roles?: string[];
+  /** A reply: the message it answers (`type` 0 or absent; 1 is a forward). */
+  message_reference?: { type?: number; message_id?: string; channel_id?: string };
+  referenced_message?: { id: string; message_reference?: DiscordMessage["message_reference"] } | null;
 };
-export function toEnvelope(m: DiscordMessage, o: { integrationId: string; botId?: string; dmLink?: string; parent?: string }) {
+
+/** A reply chain's thread key, `<channel id>:<root message id>`. A Discord thread id has no colon. */
+export const chainKey = (channel: string, root: string): string => `${channel}:${root}`;
+/** The channel and root of a chain key, or undefined for a thread or DM channel id. Pure. */
+export function parseChain(threadId?: string): { channel: string; root: string } | undefined {
+  const m = threadId?.match(/^([^:]+):([^:]+)$/);
+  return m ? { channel: m[1]!, root: m[2]! } : undefined;
+}
+/** The id a reply answers, when it is a reply in the same channel (not a forward). Pure. */
+const replyOf = (ref: DiscordMessage["message_reference"] | undefined, channel: string): string | undefined =>
+  ref?.message_id && (ref.type ?? 0) === 0 && (!ref.channel_id || ref.channel_id === channel) ? ref.message_id : undefined;
+
+/** True when the message @-mentions the bot: its user, or its managed role (`botRole`, the role
+ *  Discord's autocomplete offers beside the user, with the same name). Pure. */
+export const mentionsBot = (m: Pick<DiscordMessage, "mentions" | "mention_roles" | "content">, botId?: string, botRole?: string): boolean =>
+  Boolean(botId && (m.mentions?.some((u) => u.id === botId) || m.content?.includes(`<@${botId}>`)))
+  || Boolean(botRole && (m.mention_roles?.includes(botRole) || m.content?.includes(`<@&${botRole}>`)));
+
+/** The bot's managed role in a guild's role list: the one whose `tags.bot_id` is the bot. Pure. */
+export const botRoleOf = (roles: unknown, botId?: string): string | undefined =>
+  !botId || !Array.isArray(roles) ? undefined
+    : (roles as { id?: unknown; tags?: { bot_id?: unknown } }[]).find((r) => r?.tags?.bot_id === botId && typeof r.id === "string")?.id as string | undefined;
+
+export function toEnvelope(m: DiscordMessage, o: { integrationId: string; botId?: string; botRole?: string; dmLink?: string; parent?: string; threads?: boolean; root?: string }) {
   if (m.author.bot || (o.botId && m.author.id === o.botId)) return undefined;
   const dm = !m.guild_id;
-  const mentioned = dm || Boolean(o.botId && (m.mentions?.some((u) => u.id === o.botId) || m.content?.includes(`<@${o.botId}>`)));
+  const mentioned = dm || mentionsBot(m, o.botId, o.botRole);
   const text = [
-    (m.content ?? "").replace(new RegExp(`<@!?${o.botId ?? "-"}>`, "g"), "").trim(),
+    (m.content ?? "").replace(new RegExp(`<@!?${o.botId ?? "-"}>`, "g"), "").replace(o.botRole ? new RegExp(`<@&${o.botRole}>`, "g") : /$^/, "").trim(),
     ...(m.attachments ?? []).map((a) => `(attachment ${a.filename ?? ""}: ${a.url})`),
   ].filter(Boolean).join("\n");
   if (!text) return undefined;
   // In a thread: the link is the parent's, the thread is this channel. Top level: the thread a reply
-  // opens on this message has this message's id.
+  // opens on this message has this message's id, or with threads off the reply chain's key.
   const inThread = !dm && Boolean(o.parent && o.parent !== m.channel_id);
+  const topLevel = !dm && !inThread;
   const e = inboundEnvelope({
     adapter: "discord", integrationId: o.integrationId, eventId: m.id,
     // A DM: the link `dmLink` names, else the DM channel itself, which the core matches to the
@@ -113,19 +149,32 @@ export function toEnvelope(m: DiscordMessage, o: { integrationId: string; botId?
     channel: dm ? (o.dmLink ? undefined : m.channel_id) : inThread ? o.parent : m.channel_id,
     from: { adapter: "discord", id: m.author.id, name: m.author.global_name || m.author.username },
     text, mentioned,
-    thread: { adapter: "discord", externalId: dm ? m.channel_id : inThread ? m.channel_id : m.id, messageId: m.id },
+    thread: { adapter: "discord", externalId: !topLevel ? m.channel_id : o.threads ? m.id : chainKey(m.channel_id, o.root ?? m.id), messageId: m.id },
     at: m.timestamp ? Date.parse(m.timestamp) : undefined,
     raw: { id: m.id, channel_id: m.channel_id, guild_id: m.guild_id }, // ids only: no content twice, never a token
   });
-  return { envelope: dm && o.dmLink ? { ...e, source: { ...e.source, linkId: o.dmLink } } : e, opensThread: !dm && !inThread };
+  return { envelope: dm && o.dmLink ? { ...e, source: { ...e.source, linkId: o.dmLink } } : e, opensThread: topLevel && Boolean(o.threads) };
 }
 
 /** The wait before reconnect number `attempt`: 1s, 2s, 4s … 60s. */
 export const backoffMs = (attempt: number): number => Math.min(60_000, gateway.baseBackoffMs * 2 ** attempt);
 
+/** How far up a reply chain the adapter reads (one REST call a hop) before it calls a message the root. */
+export const MAX_CHAIN_HOPS = 25;
+/** The size of each in-memory map (thread parents, chain roots, newest messages). */
+const MAP_CAP = 5_000;
+const remember = (map: Map<string, string>, k: string, v: string) => {
+  map.delete(k);
+  map.set(k, v);
+  if (map.size > MAP_CAP) map.delete(map.keys().next().value!);
+};
+
 export function discordAdapter(connection: Connection): Adapter {
   const token = () => (connection.secretRef ? process.env[connection.secretRef] : undefined) ?? "";
   const dmLink = typeof connection.config.dmLink === "string" && connection.config.dmLink ? connection.config.dmLink : undefined;
+  // Off unless `config.threads` is true (Settings stores the text "true"): Orca answers where it was
+  // mentioned (docs/integrations/discord.md).
+  const threads = connection.config.threads === true || connection.config.threads === "true";
   let ctx: AdapterContext | undefined;
   let ws: WebSocketLike | undefined;
   let beat: ReturnType<typeof setInterval> | undefined;
@@ -140,6 +189,18 @@ export function discordAdapter(connection: Connection): Adapter {
   let stopped = false;
   let state: { ok: boolean; detail?: string; lastEventAt?: number } = { ok: false, detail: "not started" };
   const parents = new Map<string, string>(); // thread id → parent channel id
+  const roots = new Map<string, string>(); // message id → the root of its reply chain
+  const newest = new Map<string, string>(); // chain key → the newest message in the chain
+  const botRoles = new Map<string, string>(); // guild id → the bot's managed role id ("" = none)
+
+  /** Open a thread on message `on` in `channel`, named after the post. True when it exists after
+   *  (Discord's 160004 = a thread already exists there). */
+  async function openThreadOn(channel: string, on: string, msg: OutboundMessage): Promise<boolean> {
+    const t = await discordApi(token(), "POST", `/channels/${channel}/messages/${on}/threads`, { name: clip(msg.title || msg.text.split("\n")[0] || "Orca", 90), auto_archive_duration: 1440 });
+    if (t.ok || t.data.code === 160004) { parents.set(on, channel); return true; }
+    ctx?.log(`could not open a thread on message ${on}: ${t.error}`);
+    return false;
+  }
 
   const setState = (s: typeof state) => { state = { ...state, ...s }; void ctx?.status(state).catch(() => {}); };
   const sendOp = (op: number, d: unknown) => { try { ws?.send(JSON.stringify({ op, d })); } catch { /* the close handler reconnects */ } };
@@ -156,11 +217,50 @@ export function discordAdapter(connection: Connection): Adapter {
     return parent;
   }
 
+  /** The root of a top-level message's reply chain: from the map (Orca's own replies are in it), else
+   *  read up the chain by REST, at most MAX_CHAIN_HOPS — only for a message to Orca (`read`), so
+   *  chatter costs no calls. A message that answers nothing is its own root. */
+  async function rootOf(m: DiscordMessage, read: boolean): Promise<string> {
+    const path = [m.id];
+    let ref = replyOf(m.message_reference, m.channel_id);
+    let root: string | undefined;
+    for (let hop = 0; ref && hop < MAX_CHAIN_HOPS; hop++) {
+      root = roots.get(ref);
+      if (root) break;
+      path.push(ref);
+      if (hop === 0 && m.referenced_message?.id === ref) ref = replyOf(m.referenced_message.message_reference ?? undefined, m.channel_id);
+      else if (!read) break;
+      else {
+        const r = await discordApi(token(), "GET", `/channels/${m.channel_id}/messages/${ref}`);
+        ref = r.ok ? replyOf(r.data.message_reference as DiscordMessage["message_reference"], m.channel_id) : undefined;
+      }
+    }
+    root ??= path.at(-1)!;
+    for (const id of path) remember(roots, id, root);
+    return root;
+  }
+
+  /** The bot's managed role in a guild: from GUILD_CREATE, else one REST read, kept (a guild with
+   *  none is kept as "", so it costs one call). Read only for a message that mentions a role. */
+  async function botRoleIn(guildId: string): Promise<string | undefined> {
+    if (!botRoles.has(guildId)) {
+      const r = await discordApi(token(), "GET", `/guilds/${guildId}/roles`);
+      if (!r.ok) return undefined; // not kept: the next role mention reads again
+      remember(botRoles, guildId, botRoleOf(r.data, botId) ?? "");
+    }
+    return botRoles.get(guildId) || undefined;
+  }
+
   async function onMessage(m: DiscordMessage): Promise<void> {
     if (!ctx || m.author.bot) return;
     const parent = m.guild_id ? await parentOf(m.channel_id) : undefined;
-    const made = toEnvelope(m, { integrationId: connection.id, botId, dmLink, parent });
+    const topLevel = Boolean(m.guild_id) && (!parent || parent === m.channel_id);
+    const botRole = m.guild_id && m.mention_roles?.length ? await botRoleIn(m.guild_id) : undefined;
+    const toOrca = mentionsBot(m, botId, botRole);
+    const root = topLevel && !threads ? await rootOf(m, toOrca) : undefined;
+    const made = toEnvelope(m, { integrationId: connection.id, botId, botRole, dmLink, parent, threads, root });
     if (!made) return;
+    if (root) remember(newest, chainKey(m.channel_id, root), m.id); // Orca's answer replies to this message
     const verdict = await ctx.ingest(made.envelope);
     if (verdict === "new" && made.opensThread) {
       // The request's thread, named after it. Its id is the message id the envelope already carries.
@@ -204,7 +304,12 @@ export function discordAdapter(connection: Connection): Adapter {
           attempt = 0;
           setState({ ok: true, detail: `connected as ${p.d.user?.username ?? "?"}` });
         } else if (p.t === "RESUMED") { attempt = 0; setState({ ok: true }); }
-        else if (p.t === "GUILD_CREATE") for (const t of p.d?.threads ?? []) parents.set(t.id, t.parent_id);
+        else if (p.t === "GUILD_CREATE") {
+          for (const t of p.d?.threads ?? []) parents.set(t.id, t.parent_id);
+          if (p.d?.id && Array.isArray(p.d.roles)) remember(botRoles, p.d.id, botRoleOf(p.d.roles, botId) ?? "");
+        } else if (p.t === "GUILD_ROLE_CREATE" || p.t === "GUILD_ROLE_UPDATE") {
+          if (p.d?.guild_id && botRoleOf([p.d.role], botId)) remember(botRoles, p.d.guild_id, p.d.role.id);
+        }
         else if (p.t === "THREAD_CREATE" || p.t === "THREAD_UPDATE") { if (p.d?.parent_id) parents.set(p.d.id, p.d.parent_id); }
         else if (p.t === "MESSAGE_CREATE") {
           setState({ ok: true, lastEventAt: at });
@@ -255,17 +360,47 @@ export function discordAdapter(connection: Connection): Adapter {
     async stop() { close(); },
     async send(target: Target, msg: OutboundMessage): Promise<SendResult> {
       if (!token()) return { ok: false, retryable: false, error: `${connection.secretRef ?? "the token variable"} is not set` };
-      const channel = target.threadId ?? target.externalId; // a Discord thread is a channel
+      const chain = parseChain(target.threadId);
+      // A Discord thread is a channel; a reply chain lives in its channel.
+      const channel = chain?.channel ?? target.threadId ?? target.externalId;
       const body = render(msg);
       if (msg.edit && target.messageId) {
         const r = await discordApi(token(), "PATCH", `/channels/${channel}/messages/${target.messageId}`, body);
         return r.ok ? { ok: true, externalMsgId: target.messageId, ...(target.threadId ? { threadId: target.threadId } : {}) } : failure(r);
       }
+      if (chain && msg.thread) {
+        // `orca post --reply --thread`: a thread on the mention (else the chain's newest message), and
+        // the answer in it. The thread's id is that message's id: the conversation moves there.
+        const on = msg.replyToExternalMsgId ?? newest.get(chainKey(chain.channel, chain.root)) ?? chain.root;
+        if (await openThreadOn(chain.channel, on, msg)) {
+          const r = await discordApi(token(), "POST", `/channels/${on}/messages`, body);
+          if (!r.ok) return failure(r);
+          return { ok: true, ...(typeof r.data.id === "string" ? { externalMsgId: r.data.id } : {}), threadId: on };
+        }
+        // No thread (no permission, a deleted message): the answer stays in place.
+      }
+      if (chain) {
+        // Reply in place: a Discord reply to the chain's newest message. A deleted one makes it a plain post.
+        const key = chainKey(chain.channel, chain.root);
+        const r = await discordApi(token(), "POST", `/channels/${chain.channel}/messages`, {
+          ...body, message_reference: { message_id: newest.get(key) ?? chain.root, fail_if_not_exists: false },
+        });
+        if (!r.ok) return failure(r);
+        const id = typeof r.data.id === "string" ? r.data.id : undefined;
+        if (id) { remember(roots, id, chain.root); remember(newest, key, id); }
+        return { ok: true, ...(id ? { externalMsgId: id } : {}), threadId: target.threadId! };
+      }
       let r = await discordApi(token(), "POST", `/channels/${channel}/messages`, body);
       // A thread id that is a message id in the link's channel names a thread nobody opened yet: the
       // core's pairing reply to a new sender, or `orca post --thread` after the open at ingest failed.
-      // Open it on that message, then post again. Discord's 160004 = a thread already exists there.
-      if (!r.ok && r.status === 404 && target.threadId && target.threadId !== target.externalId) {
+      // Threads on: open it on that message, then post again (Discord's 160004 = a thread already
+      // exists there). Threads off: reply to that message in the channel instead.
+      if (!r.ok && r.status === 404 && !threads && target.threadId && target.threadId !== target.externalId) {
+        r = await discordApi(token(), "POST", `/channels/${target.externalId}/messages`, { ...body, message_reference: { message_id: target.threadId, fail_if_not_exists: false } });
+        if (!r.ok) return failure(r);
+        return { ok: true, ...(typeof r.data.id === "string" ? { externalMsgId: r.data.id } : {}), threadId: target.threadId };
+      }
+      if (!r.ok && r.status === 404 && threads && target.threadId && target.threadId !== target.externalId) {
         const t = await discordApi(token(), "POST", `/channels/${target.externalId}/messages/${target.threadId}/threads`, { name: clip(msg.title || msg.text.split("\n")[0] || "Orca", 90), auto_archive_duration: 1440 });
         if (t.ok || t.data.code === 160004) {
           parents.set(target.threadId, target.externalId);
@@ -275,12 +410,19 @@ export function discordAdapter(connection: Connection): Adapter {
       if (!r.ok) return failure(r);
       const id = typeof r.data.id === "string" ? r.data.id : undefined;
       if (target.threadId || !id) return { ok: true, ...(id ? { externalMsgId: id } : {}), ...(target.threadId ? { threadId: target.threadId } : {}) };
-      // A first post for this workstream on the link: open its thread on the post, so the next posts
-      // and the replies stay together. The post itself stands if Discord refuses the thread.
-      const name = clip(msg.title || msg.text.split("\n")[0] || "Orca", 90);
-      const t = await discordApi(token(), "POST", `/channels/${target.externalId}/messages/${id}/threads`, { name, auto_archive_duration: 1440 });
-      if (t.ok) parents.set(id, target.externalId);
-      return { ok: true, externalMsgId: id, ...(t.ok ? { threadId: id } : {}) };
+      // A first post for this workstream on the link: the post starts its conversation, so the next
+      // posts and the replies stay together. Threads off: its reply chain. Threads on, or `--thread`:
+      // a thread on the post; the post itself stands if Discord refuses the thread.
+      if (!threads && !msg.thread) {
+        remember(roots, id, id);
+        remember(newest, chainKey(target.externalId, id), id);
+        return { ok: true, externalMsgId: id, threadId: chainKey(target.externalId, id) };
+      }
+      if (await openThreadOn(target.externalId, id, msg)) return { ok: true, externalMsgId: id, threadId: id };
+      if (threads) return { ok: true, externalMsgId: id };
+      remember(roots, id, id);
+      remember(newest, chainKey(target.externalId, id), id);
+      return { ok: true, externalMsgId: id, threadId: chainKey(target.externalId, id) };
     },
     async health() {
       if (!token()) return { ok: false, detail: `${connection.secretRef ?? "token"} is not set` };

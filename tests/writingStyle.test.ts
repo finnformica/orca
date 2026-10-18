@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { OUTCOME_CONTRACT, handoffPrompt } from "../shared/agent";
-import { WRITING_STYLE } from "../shared/writingStyle";
+import { SNIPPETS, WRITING_STYLE } from "../shared/writingStyle";
 import {
   addressPrPrompt, addressReviewPrompt, chatPrompt, followUpPrompt, investigateReportPrompt, launchPrompt,
   orchestratorPrompt, prDescriptionPrompt, promptInstruction, rerunFailedPrompt, resolveCiPrompt, resolveConflictsPrompt,
@@ -35,6 +35,16 @@ describe("STE writing standard", () => {
     expect(WRITING_STYLE).toContain("ASD-STE100 Simplified Technical English");
     expect(WRITING_STYLE).toContain("at most 20 words in a procedure, at most 25 words in a description");
     expect(WRITING_STYLE).toContain("Do not apply STE to code, identifiers, file paths, commands, hashes, quoted error text or quoted user words");
+  });
+
+  // The chat renders each fenced block as a card with a Copy button; workers and the orchestrator
+  // are told to use one for text the user will paste. The PR description is itself that text.
+  test("worker, chat and orchestrator prompts carry the snippet rule once; the PR description does not", () => {
+    for (const name of ["launch", "followUp", "chat", "addressPr", "orchestratorFresh", "orchestratorResumed"]) {
+      expect(prompts[name]!.split(SNIPPETS).length - 1).toBe(1);
+    }
+    expect(prompts.prDescription).not.toContain(SNIPPETS);
+    expect(SNIPPETS).toContain("```bash title=Deploy");
   });
 
   test("a handoff keeps the STE rules its wrapped prompt already carries", () => {

@@ -18,6 +18,7 @@ import {
 } from "@/lib/server";
 import { _resetServerList } from "@/components/ServerMenu";
 import { _resetIdentity } from "@/lib/identity";
+import { IDENTITY_SAVE_DELAY_MS } from "@/views/Pages";
 import { IDENTITY_COLORS, colorFromName, markBg, markColor, themeCss } from "../shared/serverIdentity";
 import { getDefaultStore } from "jotai";
 import { paletteOpenAtom } from "@/lib/atoms";
@@ -281,6 +282,10 @@ test("S6e: the ACTIVE server's identity — title, accent, favicon and sidebar n
   expect(document.documentElement.style.getPropertyValue("--server-mark-bg")).toBe(markBg("#1f9d55"));
   expect(document.getElementById("orca-server-theme")!.textContent).toBe(themeCss("#1f9d55")); // the theme's tones
   expect(q('[data-slot="server-identity"]')!.textContent).toBe("Personal"); // beside the mark, top left
+  // It reads like the page title: "Orca | Personal", with the pipe hidden from a screen reader.
+  const brand = q('[data-slot="brand-name"]')!;
+  expect(brand.textContent).toBe("Orca|Personal");
+  expect(brand.querySelector('[data-slot="brand-sep"]')!.getAttribute("aria-hidden")).toBe("true");
   expect(q('[data-slot="server-label"]')!.textContent).toBe("Personal");
   const items = await openMenu();
   expect(items.map((i) => i.getAttribute("aria-label"))).toEqual(["Work, online", "Personal, online"]);
@@ -293,7 +298,7 @@ test("S6e: the ACTIVE server's identity — title, accent, favicon and sidebar n
   icon.remove();
 });
 
-test("S6g: Settings' theme colour is a popover — the 8 presets, a hex field for a custom colour, Auto — and Save stores the pick", async () => {
+test("S6g: Settings' theme colour is a popover — the 8 presets, a hex field for a custom colour, Auto — and each pick saves at once, with no Save button", async () => {
   setup();
   apiFake.setServerIdentityCalls = [];
   network((u) => (u === "/api/servers" ? json({ ...HOME, self: { ...HOME.self, label: "cloud", color: colorFromName("cloud"), identity: {} } }) : undefined));
@@ -335,8 +340,11 @@ test("S6g: Settings' theme colour is a popover — the 8 presets, a hex field fo
   expect(trigger.getAttribute("aria-label")).toBe("Theme colour: #12ab34");
   await act(async () => { hex.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
   expect(document.querySelector('[data-slot="identity-picker"]')).toBeNull();
-  await act(async () => { q('[data-slot="identity-save"]')!.click(); await flush(); await flush(); });
-  expect(apiFake.setServerIdentityCalls).toEqual([{ name: "", color: "#12ab34" }]);
+  expect(q('[data-slot="identity-save"]')).toBeNull();
+  // Every pick saved when it was made; a half-typed hex saved nothing.
+  expect(apiFake.setServerIdentityCalls).toEqual([
+    { name: "", color: tint.getAttribute("data-color")! }, { name: "", color: IDENTITY_COLORS.find((c) => c.name === "Purple")!.value }, { name: "", color: "#12ab34" },
+  ]);
   // Neutral: picked from the grid, saved as "neutral"; the hex field empties.
   await open();
   const neutral = document.querySelector<HTMLElement>('[data-slot="identity-picker"] [data-row="neutral"]')!;
@@ -344,9 +352,50 @@ test("S6g: Settings' theme colour is a popover — the 8 presets, a hex field fo
   expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Neutral");
   expect(neutral.getAttribute("aria-checked")).toBe("true");
   expect(document.querySelector<HTMLInputElement>('[data-slot="identity-hex"]')!.value).toBe("");
-  await act(async () => { document.querySelector('[data-slot="identity-hex"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
-  await act(async () => { q('[data-slot="identity-save"]')!.click(); await flush(); await flush(); });
+  await act(async () => { await flush(); });
   expect(apiFake.setServerIdentityCalls.at(-1)).toEqual({ name: "", color: "neutral" });
+  // Neutral's swatch has the colour cells' look exactly: the same classes, no outer border.
+  const neutralSwatch = neutral.querySelector<HTMLElement>('[data-slot="identity-swatch"]')!;
+  const purple = document.querySelector<HTMLElement>('[data-slot="identity-picker"] [aria-label="Purple"]')!;
+  for (const k of ["size-5", "rounded-[4px]", "inset-ring", "ring-offset-1"]) { expect(neutralSwatch.classList).toContain(k); expect(purple.classList).toContain(k); }
+  expect(neutralSwatch.classList).not.toContain("border");
+  expect(neutralSwatch.className).toContain("ring-2"); // selected: the same ring as a colour
+});
+
+test("S6i: the display name saves after a pause in typing and on blur, shows Saved, and a failed save puts the old name back", async () => {
+  setup();
+  apiFake.setServerIdentityCalls = [];
+  network((u) => (u === "/api/servers" ? json({ ...HOME, self: { ...HOME.self, label: "cloud", color: colorFromName("cloud"), identity: {} } }) : undefined));
+  await mount();
+  await act(async () => { navigate("/settings"); await flush(); await flush(); await flush(); });
+  const input = q('[data-slot="identity-name"]') as HTMLInputElement;
+  // The preview beside the mark has the sidebar's separator: "Orca | <name>".
+  expect(q('[data-slot="identity-preview"] [data-slot="brand-name"]')!.textContent).toBe("Orca|cloud");
+  const type = async (v: string) => act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, v);
+    input.dispatchEvent(new Event("input", { bubbles: true })); await flush();
+  });
+  const wait = (ms: number) => act(async () => { await new Promise((r) => setTimeout(r, ms)); await flush(); await flush(); });
+  input.focus();
+  await type("Wo");
+  await type("Work");
+  expect(apiFake.setServerIdentityCalls).toEqual([]); // still typing
+  await wait(IDENTITY_SAVE_DELAY_MS + 100);
+  expect(apiFake.setServerIdentityCalls).toEqual([{ name: "Work", color: "" }]); // one save, the last value
+  expect(q('[data-slot="identity-preview-name"]')!.textContent).toBe("Work");
+  expect(q('[data-slot="identity-status"]')!.textContent).toContain("Saved");
+  // Blur saves at once, with no wait.
+  await type("Work box");
+  await act(async () => { input.blur(); input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); await flush(); await flush(); });
+  expect(apiFake.setServerIdentityCalls.at(-1)).toEqual({ name: "Work box", color: "" });
+  // A failed save: the stored name comes back and the action-failed toast tells why.
+  apiFake.setServerIdentityError = "config is read-only";
+  input.focus();
+  await type("Broken");
+  await act(async () => { input.blur(); input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); await flush(); await flush(); await flush(); });
+  expect(apiFake.setServerIdentityCalls.at(-1)).toEqual({ name: "Broken", color: "" });
+  expect(input.value).toBe(""); // the stored name (none), not the failed one
+  expect(document.body.textContent).toContain("Save identity failed");
 });
 
 test("S6h: a Neutral server has the old look — no theme sheet, no accent, the black-and-white favicon", async () => {

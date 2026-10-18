@@ -28,7 +28,7 @@ export function Overview() {
   const instances = instanceChoices();
   const machines = scope === "all" ? (instances.length ? instances : here ? [here] : []) : [scope];
   return (
-    <div data-slot="overview-grid" className="grid grid-cols-1 gap-6 xl:grid-cols-[minmax(22rem,26rem)_minmax(0,1fr)]">
+    <div data-slot="overview-grid" className="grid grid-cols-1 gap-6 @min-[62rem]/page:grid-cols-[minmax(22rem,26rem)_minmax(0,1fr)]">
       <div className="min-w-0 space-y-6">
         <div><SectionTitle>Usage</SectionTitle><UsageCard /></div>
         <div><SectionTitle>Agents</SectionTitle><AgentsSnapshot rows={rows} /></div>

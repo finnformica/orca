@@ -304,6 +304,15 @@ describe("through the router (Postgres)", () => {
     expect(web.length).toBe(2); // the two ci_failed events, by the subscription
   });
 
+  test("a notify link with machineEventsOnNotify takes the poller's events at grant notify", async () => {
+    await store.addIntegration({ id: "gh", kind: "github", name: "GitHub", instance: "local", config: { repos: [SLUG], machineEventsOnNotify: true }, enabled: true });
+    await store.addLink({ id: "acme", integrationId: "gh", externalId: SLUG, level: "notify", repos: [], requireMention: false });
+    await pollOnce(real(), [W], T0);
+    gh.pulls = [pull(1, { created_at: iso(1), updated_at: iso(1) })];
+    expect((await pollOnce(real(), [W], T0 + 60_000)).results[SLUG]!.ingested).toEqual({ new: 1, duplicate: 0, rejected: 0 });
+    expect((await store.event("pr-opened:app#1"))?.grant).toMatchObject({ level: "notify", linkId: "acme" });
+  });
+
   test("a notify link or no link rejects: the GitHub link must be ask or above", async () => {
     await pollOnce(real(), [W], T0);
     gh.pulls = [pull(1, { created_at: iso(1), updated_at: iso(1) })];

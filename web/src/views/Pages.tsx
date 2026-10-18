@@ -1,12 +1,11 @@
-// The sidebar's other pages. Repos: one row per configured repo with its agents' numbers (a click
-// opens Agents scoped to it). Usage: the Usage card with every login expanded, and every machine's
-// card. Settings: appearance, the board's density, each machine's hourly cost (editable: the
+// The sidebar's other pages. Settings: appearance, the Repos section (one row per configured repo
+// with its agents' numbers; a click opens Agents scoped to it), the GitHub section, the board's density, each machine's hourly cost (editable: the
 // instance cards' Cost · this month), and the configuration this bridge runs with (read-only — it
 // is edited in orca.config.ts / the config table, not here). Notifications: do not
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { Check, ChevronDown, ChevronRight, FolderGit2, GitBranch, Server, SquareTerminal } from "lucide-react";
+import { Check, ChevronDown, FolderGit2, GitBranch, Server, SquareTerminal } from "lucide-react";
 import { api, type GithubAccount } from "../api";
 import { refreshVitals } from "@/lib/vitals";
 import { notifyLocal, setBrowserNotify } from "@/lib/notificationStore";
@@ -18,28 +17,31 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Switch } from "@/components/ui/switch";
 import { browserNotifyAtom, densityAtom, instanceScopeAtom, notifyDndAtom, repoFilterAtom, toastPrefsAtom } from "@/lib/atoms";
 import { KIND_META, NOTIFICATION_KINDS, browserNotifyChecked, browserNotifyNote, browserPermission } from "../../../shared/notifications";
-import { navigate } from "@/lib/route";
+import { navigate, useRoute } from "@/lib/route";
 import { useTheme, type Theme } from "@/lib/theme";
 import { instanceChoices, setInstanceRate, setInstanceTerminal, staleHours, terminalContext, thisInstance, useAgentProviders, useInstanceRates, useInstanceTerminals, useRepos, useWorkstreams } from "../store";
 import { terminalMachines, useOpenTerminal } from "@/components/InstanceTerminal";
 import { ago, repoSummaries, terminalBlocked } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
-import { FindBox, NAV, OrcaMark, THEMES } from "@/components/Shell";
+import { BrandName, FindBox, NAV, OrcaMark, THEMES } from "@/components/Shell";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
 import { IDENTITY_NAME_MAX, NEUTRAL, colorFromName, colorGrid, isNeutral, markBg, markColor, normalizeColor, normalizeTheme, swatchBackground, type GridCell } from "../../../shared/serverIdentity";
-import { InstanceCard, RefreshVitals, UsageCard } from "./Vitals";
 import { RunningPreviews, TestMaster } from "./PreviewControl";
 
-export function Repos() {
+/** A section of Settings with an anchor: `/settings#repos` (the old /repos) scrolls to it. */
+function SettingsSection({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
+  return <div id={id} data-slot={`settings-${id}`} className="scroll-mt-20"><SectionTitle>{title}</SectionTitle>{children}</div>;
+}
+
+function ReposSection() {
   const repos = useRepos();
   const rows = useWorkstreams();
   const setRepo = useSetAtom(repoFilterAtom);
   const summaries = repoSummaries(rows, repos.map((r) => r.name));
   return (
-    <div className="space-y-5">
-      <h1 className="text-heading text-2xl font-semibold tracking-tight">Repos</h1>
+    <SettingsSection id="repos" title="Repos">
       <VCard slot="repos-list">
         {summaries.length === 0 ? <Empty>No repos configured.</Empty> : (
           <ul className="divide-y">
@@ -68,7 +70,7 @@ export function Repos() {
           </ul>
         )}
       </VCard>
-    </div>
+    </SettingsSection>
   );
 }
 
@@ -79,29 +81,15 @@ const Count = ({ label, n }: { label: string; n: number }) => (
   </span>
 );
 
-export function UsagePage() {
-  useRepos();
-  const here = thisInstance();
-  const instances = instanceChoices();
-  const machines = instances.length ? instances : here ? [here] : [];
-  return (
-    <div className="space-y-6">
-      <h1 className="text-heading text-2xl font-semibold tracking-tight">Usage</h1>
-      <UsageCard />
-      <div>
-        <SectionTitle aside={<RefreshVitals />}>Machines</SectionTitle>
-        <div className="space-y-4">{machines.map((m) => <InstanceCard key={m} instance={m} here={m === here || !instances.length} />)}</div>
-      </div>
-    </div>
-  );
-}
-
 export function Settings() {
   const [theme, setTheme] = useTheme();
   const [density, setDensity] = useAtom(densityAtom);
   const repos = useRepos();
   const providers = useAgentProviders();
   const here = thisInstance();
+  // The old /repos and /github land here with a #hash: scroll to that section, on each navigation.
+  const route = useRoute();
+  useEffect(() => { if (location.hash) document.getElementById(location.hash.slice(1))?.scrollIntoView(); }, [route]);
   return (
     <div className="max-w-4xl space-y-6">
       <h1 className="text-heading text-2xl font-semibold tracking-tight">Settings</h1>
@@ -114,19 +102,12 @@ export function Settings() {
           <Segmented label="Density" value={density} onChange={setDensity} options={[{ value: "comfortable", label: "Comfortable" }, { value: "dense", label: "Dense" }]} />
         </Setting>
       </VCard>
-      <VCard slot="settings-integrations" bodyClass="divide-y">
-        <button type="button" onClick={() => navigate("/settings/integrations")} className="hover:bg-accent/40 flex w-full items-center justify-between gap-4 px-4 py-3 text-left">
-          <span className="min-w-0">
-            <span className="block text-sm font-medium">Integrations</span>
-            <span className="text-muted-foreground block text-xs">Slack, webhooks and other channels: links, people, subscriptions and failed sends.</span>
-          </span>
-          <ChevronRight className="text-muted-foreground size-4 shrink-0" />
-        </button>
-      </VCard>
       <ServerIdentitySettings />
       <NotificationSettings />
       <MachineCostSettings />
       <InstancesSettings />
+      <ReposSection />
+      <GitHubSection />
       <VCard slot="settings-config" title="Configuration" aside={<span className="text-muted-foreground text-xs">read-only · orca.config.ts</span>}>
         <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-b p-4 sm:grid-cols-4">
           <Detail label="This instance"><StatusDot tone="ready" />{here ?? "—"}</Detail>
@@ -153,12 +134,12 @@ export function Settings() {
 
 /** Phone-only (there is no off-canvas drawer any more): everything the sidebar carried that isn't
  *  one of the bottom bar's five destinations (Overview, Agents, New agent, Orchestrator, Settings
- *  itself) — Find, the instance switcher, and links to Previews/Repos/Usage. Hidden on desktop,
+ *  itself) — Find, the instance switcher, and links to Previews, Integrations and Handoffs. Hidden on desktop,
  *  where the sidebar already has all of this. */
 function MobileNav() {
   const [scope, setScope] = useAtom(instanceScopeAtom);
   const choices = instanceChoices();
-  const links = NAV.filter((n) => ["Previews", "Repos", "GitHub", "Usage"].includes(n.label));
+  const links = NAV.filter((n) => ["Inbox", "Previews", "Integrations", "Handoffs"].includes(n.label));
   return (
     <VCard slot="settings-mobile-nav" title="Navigate" className="md:hidden" bodyClass="divide-y">
       <Setting label="Find agents" hint="Filters the Agents list.">
@@ -327,47 +308,75 @@ function MachineRate({ instance, saved }: { instance: string; saved: number | un
 
 /** Settings → Server identity: the ACTIVE server's display name and theme colour (Slack's workspace
  *  name and theme). Saved to that server's app config (`serverIdentity`); empty fields fall back to
- *  the Tailscale host name and the colour derived from the name. */
+ *  the Tailscale host name and the colour derived from the name. There is no Save button: a colour
+ *  saves when picked, the name `IDENTITY_SAVE_DELAY_MS` after the last keystroke or on blur. A failed
+ *  save puts the stored values back and raises the action-failed toast. */
+export const IDENTITY_SAVE_DELAY_MS = 500;
 function ServerIdentitySettings() {
   const identity = useServerIdentity();
   const [name, setName] = useState("");
   const [color, setColor] = useState(""); // "" = derived from the name
-  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const typing = useRef(false); // the name field has focus: a save's reload must not overwrite it
+  const chain = useRef<Promise<void>>(Promise.resolve()); // saves go out in order
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const stored = identity?.stored;
-  useEffect(() => { setName(stored?.name ?? ""); setColor(stored?.color ?? ""); }, [stored?.name, stored?.color]);
+  const storedRef = useRef(stored);
+  storedRef.current = stored;
+  useEffect(() => { if (!typing.current) setName(stored?.name ?? ""); setColor(stored?.color ?? ""); }, [stored?.name, stored?.color]);
+  useEffect(() => () => { clearTimeout(timer.current); clearTimeout(savedTimer.current); }, []);
   if (!identity) return null;
   const label = name.trim() || identity.host;
   const shown = normalizeTheme(color) ?? colorFromName(label);
-  const dirty = name.trim() !== (stored?.name ?? "") || (normalizeTheme(color) ?? "") !== (stored?.color ?? "");
-  const save = async () => {
-    setBusy(true);
-    try { await api.setServerIdentity(name.trim(), normalizeTheme(color) ?? ""); await loadIdentity(); }
-    catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
-      notifyLocal({
-        kind: "action_failed", repo: "", title: "Server identity", label: "Save identity failed", body: error,
-        copy: `Action: Save server identity\nError:\n${error}`,
-        ask: `Saving the server identity failed: ${error}. Please investigate and fix.`,
-      });
-    }
-    finally { setBusy(false); }
+  const save = (nextName: string, nextColor: string) => {
+    clearTimeout(timer.current); timer.current = undefined;
+    const n = nextName.trim(), c = normalizeTheme(nextColor) ?? "";
+    const was = storedRef.current;
+    if (n === (was?.name ?? "") && c === (was?.color ?? "")) return;
+    setStatus("saving"); clearTimeout(savedTimer.current);
+    chain.current = chain.current.then(async () => {
+      try {
+        await api.setServerIdentity(n, c); await loadIdentity();
+        setStatus("saved"); savedTimer.current = setTimeout(() => setStatus("idle"), 2000);
+      } catch (e) {
+        setStatus("idle");
+        const back = storedRef.current;
+        setName(back?.name ?? ""); setColor(back?.color ?? "");
+        const error = e instanceof Error ? e.message : String(e);
+        notifyLocal({
+          kind: "action_failed", repo: "", title: "Server identity", label: "Save identity failed", body: error,
+          copy: `Action: Save server identity\nError:\n${error}`,
+          ask: `Saving the server identity failed: ${error}. Please investigate and fix.`,
+        });
+      }
+    });
   };
+  const typeName = (v: string) => {
+    setName(v); clearTimeout(timer.current);
+    timer.current = setTimeout(() => save(v, color), IDENTITY_SAVE_DELAY_MS);
+  };
+  const pickColor = (c: string) => { setColor(c); save(name, c); };
   return (
     <VCard slot="settings-identity" title="Server identity" bodyClass="divide-y"
-      aside={<span data-slot="identity-preview" className="flex items-center gap-2 text-sm font-medium">
-        <span className="inline-flex size-5 items-center justify-center rounded-full" style={{ color: markColor(shown), background: markBg(shown) }}><OrcaMark className="size-3.5" /></span>
-        Orca <span>{label}</span>
+      aside={<span className="flex items-center gap-3">
+        <span data-slot="identity-status" aria-live="polite" className="text-muted-foreground flex items-center gap-1 text-xs">
+          {status === "saving" ? "Saving…" : status === "saved" ? <><Check className="size-3.5" /> Saved</> : null}
+        </span>
+        <span data-slot="identity-preview" className="flex items-center gap-2 text-sm font-medium">
+          <span className="inline-flex size-5 items-center justify-center rounded-full" style={{ color: markColor(shown), background: markBg(shown) }}><OrcaMark className="size-3.5" /></span>
+          <BrandName label={label} labelSlot="identity-preview-name" />
+        </span>
       </span>}>
       <Setting label="Display name" htmlFor="identity-name" hint={`The title, the sidebar and the server menu show it. Empty: ${identity.host}.`}>
         <Input id="identity-name" data-slot="identity-name" value={name} maxLength={IDENTITY_NAME_MAX} placeholder={identity.host}
-          onChange={(e) => setName(e.target.value)} className="bg-background w-44" />
+          onFocus={() => { typing.current = true; }}
+          onBlur={() => { typing.current = false; if (timer.current) save(name, color); }}
+          onChange={(e) => typeName(e.target.value)} className="bg-background w-44" />
       </Setting>
       <Setting label="Theme colour" hint={isNeutral(color) ? "Neutral: no theme. The sidebar is grey and the mark is black and white." : color ? "The sidebar, buttons, links, focus rings and the mark take it." : "Auto: from the name. The sidebar, buttons, links, focus rings and the mark take it."}>
-        <ColorPicker value={shown} auto={!color} onChange={setColor} />
+        <ColorPicker value={shown} auto={!color} onChange={pickColor} />
       </Setting>
-      <div className="flex items-center justify-end gap-2 px-4 py-3">
-        <Button type="button" variant="secondary" size="sm" data-slot="identity-save" disabled={!dirty || busy} onClick={() => void save()}>Save</Button>
-      </div>
     </VCard>
   );
 }
@@ -375,6 +384,10 @@ function ServerIdentitySettings() {
 /** The colour grid as rows: the base hues, then each tint and shade level across every hue. */
 const GRID = ((cols: GridCell[][]) => cols[0]!.map((_, r) => cols.map((col) => col[r]!)))(colorGrid());
 const NEUTRAL_CELL: GridCell = { value: NEUTRAL, label: "Neutral" };
+/** One grid cell's look, shared by Neutral and every colour so they match: size, corners, the
+ *  selected ring's offset, and an inset hairline (an outer border made Neutral 2px larger and let its
+ *  gradient show at the edge; the hairline also keeps Neutral's white half visible on a light popover). */
+const SWATCH = "block size-5 shrink-0 rounded-[4px] inset-ring inset-ring-border ring-offset-1 ring-offset-popover";
 
 /** The theme colour picker (a shadcn Popover; shadcn has no colour picker of its own): a trigger with
  *  the swatch and the colour's name, a Word-style grid (`colorGrid`: the presets and two more hues,
@@ -407,7 +420,7 @@ function ColorPicker({ value, auto, onChange }: { value: string; auto: boolean; 
           <button type="button" role="radio" aria-checked={isNeutral(value)} aria-label="Neutral"
             data-slot="identity-color" data-row="neutral" data-color={NEUTRAL} onClick={() => onChange(NEUTRAL)}
             className="hover:bg-accent focus-visible:ring-ring/40 mb-1.5 flex items-center gap-2 self-start rounded-md pr-2 text-xs font-medium outline-none focus-visible:ring-2">
-            <span aria-hidden="true" className={cn("size-5 rounded-[4px] border ring-offset-1 ring-offset-popover", isNeutral(value) && "ring-foreground ring-2")}
+            <span aria-hidden="true" data-slot="identity-swatch" className={cn(SWATCH, isNeutral(value) && "ring-foreground ring-2")}
               style={{ background: swatchBackground(NEUTRAL) }} />
             Neutral
           </button>
@@ -418,8 +431,7 @@ function ColorPicker({ value, auto, onChange }: { value: string; auto: boolean; 
                   <button type="button" role="radio" aria-checked={value === c.value} aria-label={c.label}
                     data-slot="identity-color" data-row={r === 0 ? "base" : "tone"} data-color={c.value}
                     onClick={() => onChange(c.value)}
-                    className={cn("focus-visible:ring-ring/40 size-5 rounded-[4px] outline-none ring-offset-1 ring-offset-popover focus-visible:ring-2",
-                      value === c.value && "ring-foreground ring-2")}
+                    className={cn(SWATCH, "focus-visible:ring-ring/40 outline-none focus-visible:ring-2", value === c.value && "ring-foreground ring-2")}
                     style={{ background: c.value }} />
                 </Tip>
               ))}
@@ -457,12 +469,11 @@ const Setting = ({ label, hint, htmlFor, note, children }: { label: string; hint
  *  use each, and the name + email their commits carry — the GitHub profile's unless set here; a save
  *  goes to the shared config (`githubAccounts`), so no clone needs its own `git config`. Signing in
  *  another account is `gh auth login` in a terminal — a device-code flow Orca does not wrap. */
-export function GitHubPage() {
+export function GitHubSection() {
   const [accounts, setAccounts] = useState<GithubAccount[] | null>(null);
   useEffect(() => { void api.githubAccounts().then((r) => setAccounts(r.accounts)).catch(() => setAccounts([])); }, []);
   return (
-    <div className="space-y-5">
-      <h1 className="text-heading text-2xl font-semibold tracking-tight">GitHub</h1>
+    <SettingsSection id="github" title="GitHub">
       <VCard slot="github-accounts" bodyClass="divide-y">
         {accounts === null ? <Empty>Loading…</Empty>
           : accounts.length === 0 ? <Empty>No gh account is signed in on this machine.</Empty>
@@ -471,7 +482,7 @@ export function GitHubPage() {
           Add an account on this machine: <code className="font-mono">gh auth login</code>. Pin a repo to one with <code className="font-mono">githubUser</code> in its config, or ask the orchestrator to add the repo — it picks the account that owns it.
         </div>
       </VCard>
-    </div>
+    </SettingsSection>
   );
 }
 
