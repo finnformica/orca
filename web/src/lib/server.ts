@@ -17,16 +17,20 @@
 // the other.
 import { useSyncExternalStore } from "react";
 import { persistedKey, readPersisted, writePersisted } from "./persisted";
+import { resolveIdentity, type ServerIdentity, type ServerIdentityConfig } from "../../../shared/serverIdentity";
 
 export type ServerRef = { name: string; url: string };
+/** A server's display name and theme colour, as its GET /api/servers `self` row gives them (absent on
+ *  an older server). `name` stays the Tailscale host name. */
+export type IdentityFields = { label?: string; color?: string; identity?: ServerIdentityConfig };
 /** What this browser found when it asked a server (`probeServer`): it answered, it answered 403
  *  (whois refused this device, or no CORS), or no answer inside the timeout. */
 export type ServerHealth = "checking" | "online" | "offline" | "refused";
 /** One row of the server menu. */
-export type ServerEntry = ServerRef & { health: ServerHealth; self?: boolean };
+export type ServerEntry = ServerRef & { health: ServerHealth; self?: boolean; label: string; color: string };
 /** GET /api/servers (server/servers.ts). `tailscaleApi` and `enabled` are absent on an older server. */
 export type ServersAnswer = {
-  self: ServerRef; servers: { name: string; url: string; online: boolean; self: boolean }[];
+  self: ServerRef & IdentityFields; servers: { name: string; url: string; online: boolean; self: boolean }[];
   enabled?: boolean; source?: string; tailscaleApi?: boolean;
 };
 export type Probe = { health: "online"; answer: ServersAnswer } | { health: "offline" | "refused" };
@@ -181,6 +185,14 @@ function isLocalOrigin(origin: string): boolean {
   try { return ["localhost", "127.0.0.1"].includes(new URL(origin).hostname); } catch { return false; }
 }
 
+/** The identity a server shows: its own answer's label and colour, else (an older server, or one
+ *  that has not answered) its name and the colour derived from it — what the server itself shows
+ *  with nothing set. Pure. */
+export function identityOf(self: { name: string } & IdentityFields): ServerIdentity {
+  const resolved = resolveIdentity(undefined, self.label || self.name);
+  return { label: resolved.label, color: self.color ?? resolved.color };
+}
+
 /**
  * The menu's rows, in order; each server once. Pure.
  * 1. The home server (the origin that served this page), under the name its answer gives it —
@@ -201,7 +213,7 @@ export function mergeServers(
   const homeLocal = isLocalOrigin(home);
   if (!homeLocal) {
     const homeName = answer?.self.name ?? "This server";
-    out.push({ name: homeName, url: home, self: true, health: "online" });
+    out.push({ name: homeName, url: home, self: true, health: "online", ...identityOf(answer?.self ?? { name: homeName }) });
     names.add(homeName.toLowerCase());
   }
   origins.add(home);
@@ -221,7 +233,7 @@ export function mergeServers(
     origins.add(url);
     names.add(name.toLowerCase());
     if (probe?.health === "online") { const own = serverOrigin(probe.answer.self.url); if (own) origins.add(own); }
-    out.push({ name, url, health: probe?.health ?? "checking" });
+    out.push({ name, url, health: probe?.health ?? "checking", ...identityOf(probe?.health === "online" ? probe.answer.self : { name }) });
   }
   return out;
 }
@@ -250,8 +262,8 @@ export async function fetchServers(): Promise<ServersAnswer | null> {
  *  (not an Orca box, so it is not in the list), the first server of the home answer's list. */
 export function currentServer(list: ServerEntry[]): ServerEntry {
   const c = chosenServer();
-  return (c && list.find((s) => s.url === c.url)) ?? (c ? { ...c, health: "checking" }
-    : list.find((s) => s.self) ?? list[0] ?? { name: "This server", url: homeOrigin(), self: true, health: "online" });
+  return (c && list.find((s) => s.url === c.url)) ?? (c ? { ...c, health: "checking", ...identityOf(c) }
+    : list.find((s) => s.self) ?? list[0] ?? { name: "This server", url: homeOrigin(), self: true, health: "online", ...identityOf({ name: "This server" }) });
 }
 
 /** Tests: re-read the stored choice and forget the status. */

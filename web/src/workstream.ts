@@ -1614,12 +1614,18 @@ const ORCA_COMMANDS = [
   "                                  (the one whose account owns it, else the default), add it to the config with its",
   "                                  default branch and no previews. Do this when the user names work on a repo the",
   "                                  board doesn't have, then spawn on it",
+  "  orca handoff create --to <server> --title \"…\" [--message \"…\"] [--file <path|attachment id>]… [--chat <id>]…",
+  "                                  pack context (docs, chat transcripts, files) for ANOTHER Orca server (its",
+  "                                  Tailscale hostname). It only prepares the pack: the user sends it with a click",
+  "                                  on the Handoffs page. A secret or a file over 10 MB blocks it. `orca handoff list`",
   "  orca notes                      print your notes",
   "  orca notes set \"<the whole new text>\"",
   "  orca channels                   the channel links (Slack, Discord, email…), subscriptions and pairing codes",
   "  orca post --link <id> [--thread <id> | --repo <repo> --branch <branch>] \"<text>\"   post through a channel",
   "                                  link (retried if it fails); with --repo/--branch, in that workstream's thread.",
   "                                  Answer an outside sender on the link their message came from",
+  "  orca post --reply \"<text>\"      answer the outside message that woke you, on its link and in its thread —",
+  "                                  never copy a thread id by hand",
   "  orca thread link <adapter> <thread-id> --repo <repo> --branch <branch> [--link <id>]   send replies in that",
   "                                  external thread to the workstream",
   "  orca ask-user \"<question>\"      ask the user in Orca and on every channel subscribed to questions",
@@ -2732,9 +2738,10 @@ export function monthCostLabel(month: MonthCostInfo | undefined, rate: { hourlyU
   return { value: `$${month.usd.toFixed(2)}${unknown >= 0.05 ? "*" : ""}`, detail: lines.join("\n") };
 }
 
-/** The agents axis's top: a small whole count, even so its midpoint tick is whole too (0 · 2 · 4). */
+/** The agents axis's top: fixed at 8 (there is no cap on agent count) until the data outgrows
+ *  it, then the next even whole count above it, so the midpoint tick stays whole too. */
 export function countMax(v: number): number {
-  return Math.max(2, Math.ceil(Math.max(0, v) / 2) * 2);
+  return Math.max(8, Math.ceil(Math.max(0, v) / 2) * 2);
 }
 
 /** A round axis maximum at or above `v`: 1, 2, 2.5 or 5 × 10^k. */
@@ -3282,16 +3289,23 @@ export const sourceOf = (t: Sourced): TurnSource =>
 
 export type ChatItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] };
 /** What the orchestrator's chat renders: your turns, with each run of agent turns between them as one
- *  collapsed block. */
-export function chatItems<T extends Sourced>(turns: T[]): ChatItem<T>[] {
+ *  collapsed block. `keepOut` is a turn that never folds into a block: the newest answer, which the
+ *  chat always shows (see newestMessages). */
+export function chatItems<T extends Sourced>(turns: T[], keepOut?: T): ChatItem<T>[] {
   const out: ChatItem<T>[] = [];
   for (const t of turns) {
     const last = out[out.length - 1];
-    if (sourceOf(t) === "human") out.push({ kind: "turn", turn: t });
+    if (sourceOf(t) === "human" || t === keepOut) out.push({ kind: "turn", turn: t });
     else if (last?.kind === "agents") last.turns.push(t);
     else out.push({ kind: "agents", turns: [t] });
   }
   return out;
+}
+
+/** The two messages a chat never clamps or folds: your newest message (the newest turn you spoke in)
+ *  and the newest answer (the newest finished turn). Older ones keep their clamp. */
+export function newestMessages<T extends Sourced>(turns: T[]): { said?: T; answer?: T } {
+  return { said: turns.findLast((t) => sourceOf(t) === "human"), answer: turns.findLast((t) => Boolean(t.finishedAt)) };
 }
 
 /** The collapsed block's line for a run of agent turns. */
@@ -3733,3 +3747,33 @@ export function terminalClosedText(code: number, reason: string): string {
   if (code === 1000) return "Session ended.";
   return "Could not connect — the terminal may be off, or this device is not allowed.";
 }
+
+// ---- handoff packs (server/handoff.ts; views/Handoffs.tsx) ----
+/** The servers a pack on `source` may go to: every switcher row but the source itself, known by the
+ *  name its own answer gives (any case) or by the API base the browser talks to. The URL alone is not
+ *  enough: on a localhost page the switcher's "current" row is just the list's first. Pure. */
+export function handoffTargets<T extends { name: string; url: string }>(servers: T[], source: { name: string; url?: string }): T[] {
+  return servers.filter((s) => s.name.toLowerCase() !== source.name.toLowerCase() && (!source.url || s.url !== source.url));
+}
+
+/** The server a pack goes to: the row named as the pack's target (any case), never the source. A
+ *  user's pick (`chosenUrl`) wins. Pure. */
+export function handoffTarget<T extends { name: string; url: string }>(servers: T[], target: string, source: { name: string; url?: string }, chosenUrl?: string): T | undefined {
+  const others = handoffTargets(servers, source);
+  if (chosenUrl) return others.find((s) => s.url === chosenUrl);
+  return others.find((s) => s.name.toLowerCase() === target.trim().toLowerCase());
+}
+
+/** The Handoffs page's link that opens a new pack of one workstream's chat (a card's Hand off). Pure. */
+export const handoffDraftPath = (row: { repo: string; branch: string; title?: string }): string =>
+  `/handoffs?${new URLSearchParams({ repo: row.repo, branch: row.branch, ...(row.title ? { title: row.title } : {}) })}`;
+
+/** The draft a `handoffDraftPath` link carries, or null. Pure. */
+export function parseHandoffDraft(search: string): { repo: string; branch: string; title: string } | null {
+  const q = new URLSearchParams(search);
+  const repo = q.get("repo"), branch = q.get("branch");
+  return repo && branch ? { repo, branch, title: q.get("title") ?? branch } : null;
+}
+
+/** A byte count for a file list ("812 B", "4.2 KB", "1.3 MB"). Pure. */
+export const byteSize = (n: number): string => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
