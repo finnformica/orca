@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Check, ChevronDown, Copy, ExternalLink, FlaskConical, Globe, Loader2, Plus, Square, TriangleAlert } from "lucide-react";
+import { Check, Copy, ExternalLink, FlaskConical, Globe, Loader2, Plus, Square, TriangleAlert } from "lucide-react";
 import { api, type PreviewSvc } from "../api";
-import { addPreviewLabel, baseBranch, instanceChoices, previewConfigured, previewKeyOf, previewsEnabled, previewStatus, startMaster, stopMaster, stopPreview, testLocally, thisInstance, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
+import { addPreviewLabel, baseBranch, previewConfigured, previewKeyOf, previewsEnabled, previewStatus, startMaster, stopMaster, stopPreview, testLocally, useMaster, useMasters, useRepos, useWorkstreams, type Row } from "../store";
 import { previewHref, previewLabel, prPreviewState } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -105,62 +104,6 @@ function ErrorLog({ error }: { error: string }) {
       </div>
     </details>
   );
-}
-
-/** "Test locally" action for the card footer: Test → Starting Ns → Open local (+Stop). `compact`
- *  renders it as an icon button (dense view) instead of a full-width labelled one. */
-export function PreviewControl({ row, compact = false }: { row: Row; compact?: boolean }) {
-  // Where to run it: the session's own instance unless you pick another (only offered with >1).
-  const [where, setWhere] = useState<string | undefined>(undefined);
-  const choices = instanceChoices();
-  // Keyed by the server-recorded placement when there is one, so a preview starting on another
-  // instance shows as Starting/Open the moment the page loads, not after a click.
-  const { svcs, busy, active, error, start, stop } = usePreview(previewKeyOf(row), () => testLocally(row, where), row);
-  const startOn = (instance: string) => { setWhere(instance); return testLocally(row, instance); };
-  // The picker is joined to the Test button as one split control (same radius trim as Open·Stop).
-  const split = choices.length > 1 ? "rounded-r-none" : "";
-  const placeMenu = choices.length > 1 && (
-    <DropdownMenu>
-      <Tip label="Choose where the preview runs">
-        <DropdownMenuTrigger asChild>
-          <Button size="icon" variant={compact ? "ghost" : "outline"} className={`rounded-l-none border-l-0 ${compact ? "size-7" : "h-8 w-8"}`} aria-label="Test on…"><ChevronDown className="size-3.5" /></Button>
-        </DropdownMenuTrigger>
-      </Tip>
-      <DropdownMenuContent align="end">
-        {choices.map((i) => <DropdownMenuItem key={i} onSelect={() => void start(() => startOn(i))}>Test on {i}{i === thisInstance() ? " (here)" : ""}</DropdownMenuItem>)}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-
-  // Idle (incl. after a failure — the crashed preview auto-stops, so there's no Stop button here,
-  // just Retry + the expandable log). Compact drops the label + log to a single icon (flip back to
-  // comfortable to read the failure log).
-  if (!active && !busy) {
-    if (compact) {
-      return (
-        <span className="inline-flex">
-          <Button size="icon" variant="ghost" className={`size-7 ${split}`} onClick={() => void start()} aria-label="Test locally">
-            {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
-          </Button>
-          {placeMenu}
-        </span>
-      );
-    }
-    return (
-      <div className="w-full space-y-1">
-        <div className="flex w-full">
-          <Button size="sm" variant="outline" className={`flex-1 justify-center ${split}`} onClick={() => void start()}>
-            {error ? <TriangleAlert className="text-destructive size-3.5" /> : <FlaskConical className="size-3.5" />}
-            {error ? "Retry test" : choices.length > 1 ? `Test on ${where ?? row.instance ?? thisInstance()}` : "Test locally"}
-          </Button>
-          {placeMenu}
-        </div>
-        {error && <ErrorLog error={error} />}
-      </div>
-    );
-  }
-  // Running/starting: the state button + Stop read as one connected control.
-  return <PreviewLiveControl svcs={svcs} busy={busy} onStop={() => void stop()} openLabel="Open preview" startingLabel="Starting…" compact={compact} />;
 }
 
 /** The Agents-list row's dedicated preview cell: a status dot + link once the preview is reachable,
