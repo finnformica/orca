@@ -2,7 +2,7 @@ import { useEffect } from "react";
 import { useSetAtom } from "jotai";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom } from "@/lib/atoms";
-import { useOrchestrator } from "@/components/Terminal";
+import { openOrchestrator } from "@/lib/orchestratorOpen";
 import { launchOverlay } from "./workstream";
 import { expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
 import { Shell, Crumb, AddNew } from "@/components/Shell";
@@ -31,7 +31,9 @@ export function App() {
   // A home-screen shortcut (manifest `shortcuts`) launches with ?open=new|orchestrator: open that
   // overlay once, and drop the parameter so a reload doesn't reopen it.
   const setAddNew = useSetAtom(addNewOpenAtom);
-  const { ask } = useOrchestrator();
+  // The plain function, NOT useOrchestrator(): that subscribes to the open atom, and App re-rendering
+  // re-renders the whole page (measured: the Overview's charts and feed in every panel open / close).
+  const ask = openOrchestrator;
   useEffect(() => {
     const open = launchOverlay(location.search);
     if (!open) return;

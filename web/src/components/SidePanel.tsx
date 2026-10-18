@@ -91,11 +91,12 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
     setDock((d) => (d[slot] ?? 0) === w ? d : { ...d, [slot]: w });
   }, [open, expanded, docked, width, slot]);
   useEffect(() => () => setDock(({ [slot]: _, ...rest }) => rest), [slot]);
-  // Closed and slid out: `inert` (no focus, no clicks) once the dock's width transition has ended,
-  // and off again in the commit that opens it. The panel is never `visibility: hidden` /
-  // `content-visibility: hidden`: either one restyles the whole chat subtree on every open and close
-  // (measured: 260–350ms of style recalc with a long thread) — the 0-wide dock clips it, so a closed
-  // panel paints nothing, and its draft and scroll position stay as they are.
+  // Closed and slid out (`idle`, once the dock's width transition has ended): focus may not enter it —
+  // a `focusin` there is blurred at once. NOT `inert`, and never `visibility: hidden` /
+  // `content-visibility: hidden`: each of those restyles the whole chat subtree when it flips
+  // (measured with a long thread: 260–350ms for visibility, ~130ms for inert, at 4× CPU). The 0-wide
+  // dock clips a closed panel, so it paints nothing and takes no clicks; `aria-hidden` hides it from
+  // assistive tech; its draft and scroll position stay as they are.
   const [idle, setIdle] = useState(!open);
   if (open && idle) setIdle(false);
   useEffect(() => {
@@ -162,10 +163,11 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
   if (docked) {
     // In the dock card: its full width from the card's left edge, so the dock's animated width slides
     // it in and out (clipped) and the content never reflows. No hairline: the card is the edge.
-    // Closed, the 0-wide dock clips it (nothing painted) and `inert` keeps focus out (see `idle`).
+    // Closed, the 0-wide dock clips it (nothing painted) and a focus guard keeps focus out (see `idle`).
     // The open one is on top while the other leaves.
     return createPortal(
-      <div {...common} data-docked="" {...(idle ? { inert: "" } : {})}
+      <div {...common} data-docked="" data-idle={idle ? "" : undefined}
+        onFocusCapture={(e) => { if (idle) (e.target as HTMLElement).blur(); }}
         // A constant `class` (see Dock in Shell.tsx: a class change here restyles the whole chat): the
         // stacking order is an inline style.
         className="bg-card text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden"
