@@ -51,6 +51,8 @@ const launcher = () => container!.querySelector<HTMLButtonElement>('button[data-
 const closeButton = (root: ParentNode = container!) => root.querySelector<HTMLButtonElement>('button[aria-label="Close orchestrator"]')!;
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
 const DAY = 86_400_000;
+/** The status poll starts once the slide is over (useSlideSettled), not in its frames. */
+const afterSlide = () => act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 60)); await flush(); await flush(); });
 
 test("Ask the orchestrator opens its conversation in a side panel over the page, and the composer sends to it", async () => {
   const now = Date.now();
@@ -106,7 +108,9 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   const picker = p.querySelector<HTMLElement>('[aria-label="Model"]')!;
   expect(picker.textContent).toBe("Claude · Opus 5.5");
   const ring = p.querySelector<HTMLButtonElement>('button[data-slot="context-ring"]')!;
-  expect(ring.getAttribute("aria-label")).toBe("Context 42% full");
+  expect(ring.getAttribute("aria-label")).toBe("Context: not measured yet"); // the status poll waits for the slide…
+  await afterSlide();
+  expect(ring.getAttribute("aria-label")).toBe("Context 42% full"); // …then reads it
   await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
   await act(async () => { document.body.querySelector<HTMLButtonElement>('button[data-slot="context-compact"]')!.click(); await flush(); await flush(); });
   expect(apiFake.calls).toContain(`compact:${ORCHESTRATOR_REPO}:${ORCHESTRATOR_BRANCH}`);
@@ -179,6 +183,7 @@ test("a paused orchestrator says so, and an orchestrated card is marked", async 
   await mount(<><Entry /><WorkstreamCard row={{ repo: "r", hasRemote: false, branch: "feat", title: "Feat", prompt: "", lane: "LOCAL", worktreePath: "/wt/feat", orchestrated: true }} /></>);
   expect(container!.querySelector('[aria-label="Orchestrated"]')).toBeTruthy();
   await click(launcher());
+  await afterSlide();
   expect(panel()!.textContent).toContain("Orchestrator · paused until you reply");
   const ring = panel()!.querySelector<HTMLElement>('[data-slot="context-ring"]')!;
   expect(ring.className).toContain("text-amber-400");
@@ -200,6 +205,7 @@ test("the header's live line — panel and page alike: working time, queued, wor
   await act(async () => { await store.refresh(); await flush(); await flush(); });
   getDefaultStore().set(orchestratorOpenAtom, true);
   await act(async () => { await flush(); await flush(); });
+  await afterSlide();
   const lines = [...container!.querySelectorAll<HTMLElement>('[data-slot="orchestrator-status"]')];
   expect(lines).toHaveLength(2); // the panel's header and the page's
   for (const line of lines) {
