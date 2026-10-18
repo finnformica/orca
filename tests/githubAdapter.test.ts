@@ -121,6 +121,7 @@ test("config: owner/name strings or objects; the repo name defaults to the slug'
   expect(watchesOf({ repos: ["acme/app", "bad", { slug: "me/site", repo: "web", githubUser: "me" }], githubUser: "work" })).toEqual([
     { slug: "acme/app", repo: "app", githubUser: "work" }, { slug: "me/site", repo: "web", githubUser: "me" },
   ]);
+  expect(watchesOf({ repos: " acme/app,  me/site " })).toEqual([{ slug: "acme/app", repo: "app" }, { slug: "me/site", repo: "site" }]); // the Settings form's string
   expect(parseCursor("not json")).toEqual({ v: 1, repos: {} });
 });
 

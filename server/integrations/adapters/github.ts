@@ -29,7 +29,7 @@ export type Watch = { slug: string; repo: string; githubUser?: string };
 
 /** The connection's non-secret settings. `repos` absent = every configured repo with a GitHub origin. */
 export type GithubConfig = {
-  repos?: (string | Watch)[];
+  repos?: string | (string | Watch)[]; // a string: "owner/name, owner/other" (the Settings form)
   intervalSeconds?: number;
   githubUser?: string;
 };
@@ -172,7 +172,9 @@ export function commentEvent(c: GhReviewComment, snap: Pick<PrSnap, "branch" | "
 
 /** The repos to watch, from the connection's config. */
 export function watchesOf(cfg: GithubConfig): Watch[] {
-  return (cfg.repos ?? []).flatMap((r): Watch[] => {
+  // The Settings form stores a string: "owner/name, owner/other".
+  const repos = typeof cfg.repos === "string" ? cfg.repos.split(/[\s,]+/).filter(Boolean) : cfg.repos ?? [];
+  return repos.flatMap((r): Watch[] => {
     if (typeof r === "string") return /^[\w.-]+\/[\w.-]+$/.test(r) ? [{ slug: r, repo: r.split("/")[1]!, ...(cfg.githubUser ? { githubUser: cfg.githubUser } : {}) }] : [];
     return r && typeof r.slug === "string" ? [{ slug: r.slug, repo: r.repo || r.slug.split("/")[1]!, ...(r.githubUser ?? cfg.githubUser ? { githubUser: r.githubUser ?? cfg.githubUser } : {}) }] : [];
   });
