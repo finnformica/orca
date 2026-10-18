@@ -5,9 +5,16 @@ People in a linked channel can @mention the bot to ask a question or to start wo
 results back to the channel. The integrations core does the permission checks. See
 [ADAPTERS.md](ADAPTERS.md).
 
-Run Discord only on the personal box (`orca-personal-box`). One bot token must have only one
-Gateway session, because two sessions give each event twice. The `integration.instance` column
-selects the box. Each other instance ignores the row.
+One bot token must have only one Gateway session, because two sessions give each event twice.
+Orca opens it on one primary bridge only:
+
+- **Automatic** (the default, `integration.instance = '*'`): the primary bridge that holds the
+  row's lease runs it. If that server stops, another server with the token takes over within
+  about three minutes. See [ADAPTERS.md section 6.1](ADAPTERS.md#61-where-it-runs-automatic-or-pinned).
+- **Pinned** (an instance name, for example the personal box): only that instance runs it.
+
+Put `ORCA_SECRET_DISCORD_BOT` in the `.env` of each server that can run it. If no primary bridge
+has it, the card says which servers do not have it.
 
 ## What the adapter does
 
@@ -74,9 +81,9 @@ Until the Settings page lands, add rows with SQL. `user_id` is `db.currentUser()
 `me`). Replace the ids with the ids that you copied.
 
 ```sql
--- The bot. It runs only on the personal box.
+-- The bot. '*' is Automatic: one primary bridge with the token runs it.
 INSERT INTO integration (id, user_id, kind, name, instance, config, secret_ref, created_at)
-VALUES ('discord', 'me', 'discord', 'Discord', 'orca-personal-box', '{}', 'ORCA_SECRET_DISCORD_BOT', 0);
+VALUES ('discord', 'me', 'discord', 'Discord', '*', '{}', 'ORCA_SECRET_DISCORD_BOT', 0);
 
 -- A channel. "work" lets the people start and steer work on the listed repos.
 INSERT INTO channel_link (id, user_id, integration_id, external_id, level, repos, require_mention)

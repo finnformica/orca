@@ -396,6 +396,38 @@ export function secretRefRefusal(ref: string | undefined | null, stripped: reado
   return `secret_ref ${ref} must start with ORCA_SECRET_ (or be one of ${stripped.join(", ")}) so agents never see it`;
 }
 
+// ── Placement: which bridge opens an integration's connection ───────────────────────────────────
+
+/** `integration.instance` for Automatic: no fixed instance. The primary bridge of any instance may
+ *  run it, but only the one that holds its lease (`AutoLease`), so a socket still opens ONCE. A
+ *  reserved value, not NULL: the column is NOT NULL, and no host name can be "*". */
+export const AUTO_INSTANCE = "*";
+export const isAutomatic = (instance: string | undefined | null): boolean => instance === AUTO_INSTANCE;
+
+/** Who runs an Automatic integration: kept on its status row (`status.auto`). A primary bridge
+ *  renews it on each sync; when the holder stops (down, asleep, no longer primary), the lease ends
+ *  and the next primary with the secret takes it. That is the failover. */
+export type AutoLease = { holder: string; until: number };
+/** How long a lease lasts without a renewal: about two and a half sync periods (60 s). */
+export const AUTO_LEASE_MS = 150_000;
+
+/** The instance that holds a live lease now, or undefined. */
+export const leaseHolder = (lease: AutoLease | undefined | null, now: number): string | undefined =>
+  lease && typeof lease.holder === "string" && Number(lease.until) > now ? lease.holder : undefined;
+
+/** Whether `here` may take (or renew) the lease: none is live, or it is its own. */
+export const mayClaim = (lease: AutoLease | undefined | null, here: string, now: number): boolean => {
+  const holder = leaseHolder(lease, now);
+  return holder === undefined || holder === here;
+};
+
+/** Whether the primary bridge of `here` runs the integration now. A pinned row runs on its
+ *  instance. An Automatic row runs where its live lease is. Never on a secondary bridge. */
+export function runsOn(c: { instance: string; enabled: boolean; auto?: AutoLease | null }, here: string, isPrimary: boolean, now: number): boolean {
+  if (!isPrimary || !c.enabled) return false;
+  return isAutomatic(c.instance) ? leaseHolder(c.auto, now) === here : c.instance === here;
+}
+
 // ── Pairing (§3.7: unknown senders get a code; you approve it in Orca) ──────────────────────────
 
 /** No 0/O, 1/I/L: a code is read off a phone and typed. */

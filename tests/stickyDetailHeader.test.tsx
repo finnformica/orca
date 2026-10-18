@@ -51,9 +51,12 @@ async function mount(node: React.ReactNode = <LocalDetail repo="r" branch="stick
 // the trigger itself — the thing the test actually needs — rather than a text proxy for it.
 // The same holds for the page itself: mount()'s loop ends at once when "Loading diff…" is not shown
 // YET (the row has not rendered), so the first query for the tab list could still find nothing.
+// The bound is TIME, not a tick count: 20 setTimeout(0) ticks (~50 ms) still ran out on loaded CI
+// runners (PR #307 and four other branches' runs, 2026-10-18), while a healthy run returns at once.
+const WAIT_MS = 2_000;
 async function waitFor(selector: string): Promise<HTMLElement> {
   let el: HTMLElement | null = null;
-  for (let i = 0; i < 20 && !(el = container!.querySelector<HTMLElement>(selector)); i++) {
+  for (const until = Date.now() + WAIT_MS; !(el = container!.querySelector<HTMLElement>(selector)) && Date.now() < until;) {
     await act(async () => { await flush(); });
   }
   expect(el).not.toBeNull();
