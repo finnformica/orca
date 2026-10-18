@@ -11,6 +11,7 @@ import { Tip } from "@/components/ui/tip";
 import { poll } from "@/lib/poll";
 import { sharedSource } from "@/lib/vitals";
 import { actionFailed } from "@/lib/notificationStore";
+import { copyText } from "@/lib/dialogs";
 
 // Shared preview lifecycle: start in the background, poll status, expose ready/failed/link. Driven
 // by a preview `key` (the worktree path) and a `starter` that spins it up — so the same hook powers
@@ -91,8 +92,7 @@ function usePreview(initialKey: string | undefined, starter: () => Promise<{ key
 function ErrorLog({ error }: { error: string }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
-    try { await navigator.clipboard.writeText(error); setCopied(true); setTimeout(() => setCopied(false), 1500); }
-    catch { /* clipboard unavailable */ }
+    if (await copyText(error, "log")) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
   };
   return (
     <details className="text-xs">
@@ -327,8 +327,7 @@ export function PrPreviewInline({ row }: { row: Row }) {
 function LogPopover({ error }: { error: string }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
-    try { await navigator.clipboard.writeText(error); setCopied(true); setTimeout(() => setCopied(false), 1500); }
-    catch { /* clipboard unavailable */ }
+    if (await copyText(error, "log")) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
   };
   return (
     <Popover>
