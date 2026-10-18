@@ -49,6 +49,7 @@ afterEach(async () => {
 const $ = <T extends Element = HTMLElement>(sel: string) => container!.querySelector<T>(sel);
 const dock = () => $('[data-slot="dock"]')!;
 const sidebar = () => $('[data-slot="sidebar"]')!;
+const dockVar = () => document.documentElement.style.getPropertyValue("--dock-w");
 const askButton = () => $<HTMLButtonElement>('button[data-slot="ask-orchestrator"]')!;
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
 const key = async (k: string) => { await act(async () => { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })); await flush(); }); };
@@ -104,7 +105,8 @@ test("open, the panel is a docked column: the page reflows, the button and O tog
   expect(["0", "0px"]).toContain(dock().style.marginInlineStart);
   expect(dock().hasAttribute("data-painted")).toBe(true); // its own raised card
   expect(askButton().getAttribute("aria-expanded")).toBe("true");
-  expect($('[data-slot="quick-ask"]')!.style.right).toBe("460px"); // the pill centres on the page column
+  expect($('[data-slot="quick-ask"]')!.style.right).toBe("var(--dock-w,0px)"); // the pill centres on the page column
+  expect(dockVar()).toBe("460px");
   expect(sidebar().dataset.collapsed).toBe("false"); // 1440: the full nav still fits
   await click(askButton()); // the same button closes it
   expect(panel.dataset.state).toBe("closed");
@@ -198,6 +200,46 @@ test("a resize is not a slide: an arrow key or a drag moves the dock with no wid
   // An open or a close still holds the frame (the slide), so the resize mark did not leak into it.
   await click(askButton());
   expect(frame.style.width).toMatch(/^\d+px$/);
+});
+
+test("the pill's strip follows the handle in the same frame: a drag writes its right edge before pointerup, an arrow key too, with no slide", async () => {
+  await mount(1440);
+  await click(askButton());
+  await act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 120)); });
+  const strip = $('[data-slot="quick-ask"]')!;
+  const edge = $('[data-slot="orchestrator-resize"]')!;
+  const root = document.documentElement;
+  expect(strip.style.right).toBe("var(--dock-w,0px)");
+  expect(dockVar()).toBe("460px");
+  // Under `data-dock-resizing` the strip's `right` transition is off; otherwise it slides (open / close).
+  expect(strip.className).toContain("[[data-dock-resizing]_&]:transition-none");
+  expect(strip.className).toContain("transition-[left,right]");
+  expect(root.hasAttribute("data-dock-resizing")).toBe(false);
+  await act(async () => {
+    edge.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: 900 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 860 }));
+  });
+  // Mid-drag, before pointerup: the dock atom still says 460, but the strip's edge is at the dock's.
+  expect(dock().style.width).toBe("500px");
+  expect(dockVar()).toBe("500px");
+  expect(root.hasAttribute("data-dock-resizing")).toBe(true);
+  act(() => { window.dispatchEvent(new PointerEvent("pointermove", { clientX: 880 })); });
+  expect(dockVar()).toBe("480px");
+  await act(async () => { window.dispatchEvent(new PointerEvent("pointerup", { clientX: 880 })); await flush(); });
+  expect(dockVar()).toBe("480px"); // the saved width matches: no jump on release
+  const frames = async (n: number) => { for (let i = 0; i < n; i++) await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(null))); }); };
+  await frames(3);
+  expect(root.hasAttribute("data-dock-resizing")).toBe(false); // the open / close slide is back
+  // An arrow key: the var moves in the key's own frame, under `data-dock-resizing`.
+  act(() => { edge.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })); });
+  expect(dockVar()).toBe(`${480 + RESIZE_STEP}px`);
+  expect(root.hasAttribute("data-dock-resizing")).toBe(true);
+  await frames(3);
+  expect(root.hasAttribute("data-dock-resizing")).toBe(false);
+  // A close still moves it through the atom, with the slide on.
+  await click(askButton());
+  expect(dockVar()).toBe("0px");
+  expect(root.hasAttribute("data-dock-resizing")).toBe(false);
 });
 
 test("the motion flag: work that measures the page waits while the dock or the nav animates its width, then runs once", () => {

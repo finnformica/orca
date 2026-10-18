@@ -23,7 +23,7 @@ import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPa
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
 import { SLIDE_MS } from "@/components/SidePanel";
-import { dockClipElementAtom, dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, takeDockResize, useNavToggle } from "@/lib/dock";
+import { dockClipElementAtom, dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, takeDockResize, useNavToggle, writeDockWidth } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
 import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
@@ -85,6 +85,7 @@ export function Dock() {
   const setDockClip = useSetAtom(dockClipElementAtom);
   const [painted, setPainted] = useState(dock > 0);
   if (dock > 0 && !painted) setPainted(true);
+  useLayoutEffect(() => writeDockWidth(dock), [dock]); // `--dock-w`, for the pill's strip (lib/dock.ts)
   useEffect(() => {
     if (dock > 0 || !painted) return;
     const t = setTimeout(() => setPainted(false), SLIDE_MS + 150); // no transition ran (reduced motion)

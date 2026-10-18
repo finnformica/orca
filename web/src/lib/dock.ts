@@ -124,3 +124,24 @@ export const appStarting = () => starting;
 /** Test support: a real reload re-arms this (fresh module state); a shared test process does not,
  *  since an earlier file's click can only flip it false once for the whole run. */
 export const resetAppStartingForTests = (): void => { if (typeof window !== "undefined") armPageLoadWindow(); };
+
+/** The dock's width as `--dock-w` on <html>, for what is positioned against it outside the shell's row
+ *  (the quick-ask pill's fixed strip). The Dock writes it from `dockWidthAtom` (so an open or a close
+ *  slides it); a resize writes it directly on every pointer move or key, in the same frame as the dock's
+ *  element — the atom changes only on pointerup. `data-dock-resizing` on <html> turns off the
+ *  followers' transitions meanwhile; it stays two frames past the last write, so that write is styled
+ *  with the transition still off and nothing slides behind the handle. */
+export const DOCK_VAR = "--dock-w";
+export const writeDockWidth = (w: number): void => { document.documentElement.style.setProperty(DOCK_VAR, `${w}px`); };
+let resizeEnd = 0;
+export function liveDockResize(w: number): void {
+  cancelAnimationFrame(resizeEnd);
+  document.documentElement.setAttribute("data-dock-resizing", "");
+  writeDockWidth(w);
+}
+export function endDockResize(): void {
+  cancelAnimationFrame(resizeEnd);
+  resizeEnd = requestAnimationFrame(() => {
+    resizeEnd = requestAnimationFrame(() => document.documentElement.removeAttribute("data-dock-resizing"));
+  });
+}
