@@ -7,7 +7,7 @@
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
-import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Loader2, Paperclip, Quote as QuoteIcon } from "lucide-react";
 import { cn, PipContext } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
@@ -449,7 +449,11 @@ const clockOf = (ms?: number) => (ms ? CLOCK.format(ms) : "");
  *  the left under its name, in readable prose; its tool steps and worker reports stay folded; the time shows on hover
  *  (and days are grouped by the divider ChatPanel draws). Colours are the theme's tokens, so it
  *  follows light and dark like the rest of the console. */
-function ChatTurn({ turn, loadSteps, compact, newestSaid, onQuote, author }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote: (text: string) => void; author?: string }) {
+// Memoized, with only stable props (the turn, flags, two stable callbacks): a re-render of the panel —
+// every open sets a new composer prefill — must not render the whole thread again (measured: ~60ms per
+// open with a long orchestrator thread at 4× CPU in production, ~250ms in dev).
+const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSaid, onQuote, author }: { turn: AgentTurn; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote: (text: string) => void; author?: string }) {
+  const loadSteps = loadStepsFor && (() => loadStepsFor(turn));
   const parts = splitMessages(turn.instruction ?? promptInstruction(turn.prompt));
   // A wake that carried your messages AND worker reports: your words in bubbles — one per message you
   // sent, however many one wake drained — and the reports folded.
@@ -503,7 +507,7 @@ function ChatTurn({ turn, loadSteps, compact, newestSaid, onQuote, author }: { t
       </div>
     </div>
   );
-}
+});
 
 /** An old turn's reply, cut to its first lines with a Show more — the history reads as a list of
  *  exchanges, not a wall of past answers. The newest RECENT_FULL turns always render in full. */
@@ -592,7 +596,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   // twice in a row.
   const [insert, setInsert] = useState<{ text: string; seq: number } | null>(null);
   const insertSeq = useRef(0);
-  const onQuote = (text: string) => setInsert({ text: quoteMarkdown(text), seq: ++insertSeq.current });
+  const onQuote = useCallback((text: string) => setInsert({ text: quoteMarkdown(text), seq: ++insertSeq.current }), []);
   const submit = async (text: string, images: File[]) => {
     const id = ++sendSeq.current;
     follow.current = true; // you just spoke: jump to it, wherever you had scrolled
@@ -873,8 +877,8 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   const compactBefore = (turns?.length ?? 0) - RECENT_FULL;
   // Your newest message and the newest answer are never clamped or folded, at any age.
   const newest = newestMessages(turns ?? []);
-  const stepsOf = (turn: AgentTurn) => () => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response));
-  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadSteps={stepsOf(turn)} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} />;
+  const loadStepsFor = useCallback((turn: AgentTurn) => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response)), [row.repo, row.branch]);
+  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadStepsFor={loadStepsFor} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} />;
   const renderTurns = (list: AgentTurn[]) => {
     const items = chatItems(list, newest.answer);
     let prev: number | undefined;
