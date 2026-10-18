@@ -12,6 +12,7 @@ import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PreviewPanel } from "./PreviewControl";
 import { ActionButton } from "@/components/ActionButton";
 import { ScreenshotsCard } from "@/components/Screenshots";
+import { snippetPre } from "@/components/Snippet";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -189,9 +190,10 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
 
 const Back = ({ to }: { to: string }) => <Button variant="ghost" size="sm" onClick={() => navigate(to)}><ArrowLeft /> Back to agents</Button>;
 
+const markdownComponents = { pre: snippetPre() };
 export const Markdown = ({ children }: { children: string }) => (
   <div className="prose prose-sm dark:prose-invert max-w-none">
-    <ReactMarkdown remarkPlugins={[remarkGfm]}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{children}</ReactMarkdown>
   </div>
 );
 
