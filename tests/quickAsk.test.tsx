@@ -111,12 +111,18 @@ test("Q4: one surface morphs pill ↔ box (width, height, radius; none under red
   const closed = surface();
   expect(closed.dataset.state).toBe("closed");
   const cls = () => surface().className.split(/\s+/);
-  expect(cls()).toEqual(expect.arrayContaining(["transition-[width,height,border-radius,box-shadow,background-color]", "motion-reduce:transition-none", "h-8", "rounded-[16px]", "bg-card", "hover:bg-accent"]));
-  expect(surface().className).not.toMatch(/hover:bg-[\w-]+\/\d+/); // no translucent hover: the page never shows through
+  expect(cls()).toEqual(expect.arrayContaining(["transition-[width,height,border-radius]", "motion-reduce:transition-none", "h-8", "rounded-[16px]", "bg-card"]));
+  expect($('[data-slot="quick-ask-pill"]')!.className).toContain("hover:bg-accent"); // solid hover on the pill itself
+  expect($('[data-slot="quick-ask-pill"]')!.className).not.toMatch(/hover:bg-[\w-]+\/\d+/); // no translucent hover: the page never shows through
   expect(cls()).toContain("[interpolate-size:allow-keywords]"); // height can animate to auto
-  expect(closed.hasAttribute("data-chrome")).toBe(true); // the closed pill is part of the server's themed frame
+  // ONE surface look open and closed (docs/design/surfaces.md): only size and radius change.
+  const look = (c: string) => c.split(/\s+/).filter((x) => /^(bg-|text-|border|shadow-)/.test(x)).sort();
+  const closedLook = look(surface().className);
+  expect(closedLook).toEqual(["bg-card", "border", "shadow-modal", "text-foreground"]);
+  expect(closed.hasAttribute("data-chrome")).toBe(false); // an overlay, not the themed frame
   await click($('[data-slot="quick-ask-pill"]')!);
-  expect(surface().hasAttribute("data-chrome")).toBe(false); // the open box is a neutral card
+  expect(look(surface().className)).toEqual(closedLook);
+  expect(surface().hasAttribute("data-chrome")).toBe(false);
   expect(surface()).toBe(closed); // the SAME element, so its box animates rather than being swapped
   expect(surface().dataset.state).toBe("open");
   expect(cls()).toEqual(expect.arrayContaining(["h-auto", "rounded-xl", "w-[min(560px,calc(100%-2rem))]"]));
@@ -161,7 +167,8 @@ test("Q4: one surface morphs pill ↔ box (width, height, radius; none under red
   await act(async () => { await new Promise((r) => setTimeout(r, MORPH_MS + 20)); });
   expect($('[data-slot="quick-ask-leaving"]')).toBeNull();
   expect($('[data-slot="quick-ask-pill"]')!.className).toContain("fade-in-0");
-  expect(cls()).toContain("hover:bg-accent");
+  expect($('[data-slot="quick-ask-pill"]')!.className).toContain("hover:bg-accent");
+  expect(look(surface().className)).toEqual(closedLook); // back to the same look
 });
 
 test("Q5: a send is optimistic — cleared, still open and focused at once; quick successive sends all arrive, in order", async () => {

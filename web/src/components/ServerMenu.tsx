@@ -115,7 +115,7 @@ export function ServerMenu() {
       <DropdownMenu onOpenChange={(open) => { if (open) checkServers(true); }}>
         <DropdownMenuTrigger asChild>
           <button type="button" data-slot="server-menu" aria-label={`Server: ${current.label}, ${healthText(current.health)}. Switch server`}
-            className="hover:bg-accent/60 flex h-8 max-w-[10rem] shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium md:max-w-[14rem]">
+            className="hover:bg-accent flex h-8 max-w-[10rem] shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium md:max-w-[14rem]">
             <Swatch color={current.color} />
             <span data-slot="server-label" className="truncate">{current.label}</span>
             <Dot health={current.health} />

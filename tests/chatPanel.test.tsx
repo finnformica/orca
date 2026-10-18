@@ -734,7 +734,7 @@ test("the log never scrolls sideways: prose wraps unbreakable tokens, code block
   // pins the rules that fixed it.
   apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "p", response: "See `orca/surface-branch-review-checks-to-activity-27f26a`.", finishedAt: 2 }]);
   await mount(base);
-  const log = container!.querySelector<HTMLElement>(".bg-neutral-950")!;
+  const log = container!.querySelector<HTMLElement>('[data-slot="chat-log"]')!;
   expect(log.className).toContain("overflow-x-hidden");
   const prose = log.querySelector<HTMLElement>(".prose")!;
   expect(prose.className).toContain("wrap-anywhere");
