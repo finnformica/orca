@@ -166,8 +166,10 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
     // The open one is on top while the other leaves.
     return createPortal(
       <div {...common} data-docked="" {...(idle ? { inert: "" } : {})}
-        className={cn("bg-card text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden", open ? "z-10" : "z-0")}
-        style={{ width }}
+        // A constant `class` (see Dock in Shell.tsx: a class change here restyles the whole chat): the
+        // stacking order is an inline style.
+        className="bg-card text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden"
+        style={{ width, zIndex: open ? 1 : 0 }}
       >
         {resize}
         {header(swipe)}
