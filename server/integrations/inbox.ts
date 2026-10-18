@@ -12,11 +12,12 @@ import { fenceExternal, integrationMetaLine, integrationPlace, integrationUrl, r
 export const agentText = (e: Envelope): string => (e.grant ? fenceExternal(e) : e.title ? `${e.title}: ${e.text}` : e.text);
 
 /** An outside message for the orchestrator, with its source as a meta line, so the chat shows it as
- *  an activity row (sender, place, link) and not as your message. The link's label names the place;
- *  a failed read of it costs only the place, never the message. */
+ *  an activity row (sender, place, link) and not as your message. The link's label names the place,
+ *  unless it is the catch-all link, which names no real channel; a failed read of it costs only the
+ *  place, never the message. */
 export async function withSource(e: Envelope): Promise<string> {
-  const label = e.source.linkId ? await store.link(e.source.linkId).then((l) => l?.label, () => undefined) : undefined;
-  const place = integrationPlace(e, label), url = integrationUrl(e), sender = e.actor?.external.name;
+  const link = e.source.linkId ? await store.link(e.source.linkId).then((l) => l, () => undefined) : undefined;
+  const place = integrationPlace(e, link), url = integrationUrl(e), sender = e.actor?.external.name;
   return `${agentText(e)}\n${integrationMetaLine({ adapter: e.source.adapter, ...(sender ? { sender } : {}), ...(place ? { place } : {}), ...(url ? { url } : {}) })}`;
 }
 
