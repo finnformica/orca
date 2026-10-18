@@ -166,7 +166,7 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   enrichment still render (incl. PRs not made by Orca). **There is no enrichment GC** — it existed to
   bound a 5MB localStorage bucket, and pruning is now the opposite of the goal. `localStorage` keeps
   only per-browser UI state (theme, density, composer drafts; the shell's repo, instance scope,
-  sidebar collapse and palette recents, like the Agents list's view, density, sort and filters, go
+  sidebar collapse and palette recents, like the Agents list's density, sort and filters, go
   through `lib/persisted.ts` — `persistedAtom` / `usePersisted`, versioned `orca.ui.v1.<name>` keys
   (`persistedKey(name, repo)` for a per-repo value), a safe parse that falls back to the default, and
   a restored repo/instance the config no longer has reads as "all" (`validChoice`); reuse it for new
@@ -410,7 +410,9 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   search, sort; one ~56px row per workstream (repo
   icon + title, latest instruction, status dot + duration, state pill, CI/conflict badges + the
   review cluster, PR, branch, instance, updated, the model as avatar); every action in the trailing
-  ⋯ (`WorkstreamActions menuOnly`). The swimlanes stay behind a persisted List | Board toggle.
+  ⋯ (`WorkstreamActions menuOnly`). There is no List | Board toggle any more: the list only. As the
+  page (`@container/page`) narrows, Status folds under the title, then Checks & review into the PR
+  cell (`listColumns(tier)`, `LIST_TIER_MIN_REM`); the subline clips, never overlaps.
 - **Agent page** (the existing `/{repo}/prs/:n` and `/{repo}/local/:branch` routes,
   `views/AgentPage.tsx`): ONE compact sticky header row (`AgentHeader`: repo / title, status, branch
   or PR link, the actions) with the tabs Overview | Chat | Files | Preview directly under it, flush
