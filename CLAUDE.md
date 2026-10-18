@@ -628,9 +628,13 @@ window; a phone keeps the window's scroll. The edge resizes by drag or by arrow 
 is branch-demo's right panel**: the panel renders INTO the dock (a portal) at its full width, shows at
 dock width 0 in the commit that opens it, and the dock's width opens on the next frame (a real 150ms
 `width` transition, none while dragging); closing, it stays painted until the width's `transitionend`,
-then is hidden (still mounted). Nothing in the page may set React state per frame while the dock or
-the nav animates: measure through `afterDockMotion` (`lib/dock.ts`); the page column has `contain:
-layout paint`, so a `fixed` element in a page must portal to `<body>`. `role=dialog`
+then is hidden (still mounted, `content-visibility: hidden`, so it does no layout work but keeps its
+draft and scroll). The page and the dock are TWO raised cards with the shell's 6px gutter between them
+(a closed dock's `-ms-1.5` cancels it); only `width` and `margin-inline-start` animate. While the dock
+or the nav animates, the page frame (`page-frame`, the `@container/page`) is held at its END width
+(`frozenPageWidth`), so the content lays out once and only the card edge moves. Nothing in the page
+may set React state per frame meanwhile: measure through `afterDockMotion` (`lib/dock.ts`); the page
+column has `contain: layout paint`, so a `fixed` element in a page must portal to `<body>`. `role=dialog`
 `aria-modal=false` — no backdrop, the board it is moving stays visible and usable; Esc or ✕ closes
 and focus returns to the opener; resized from its LEFT edge, width remembered as
 `orca.ui.v1.orchestratorWidth` and clamped to the viewport by `clampPanelWidth`). Once opened it
