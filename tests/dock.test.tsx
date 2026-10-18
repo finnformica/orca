@@ -10,8 +10,9 @@ import { getDefaultStore } from "jotai";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { App } from "@/App";
-import { afterDockMotion, afterDockSlide, dockMoving, noteDockMotion, resetAppStartingForTests } from "@/lib/dock";
-import { SHELL_GAP, frozenPageWidth } from "@/workstream";
+import { afterDockMotion, dockMoving, noteDockMotion, resetAppStartingForTests } from "@/lib/dock";
+import { summarizeSlide } from "@/lib/motionProbe";
+import { SHELL_GAP } from "@/workstream";
 import { SLIDE_MS } from "@/components/SidePanel";
 import { orchestratorOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { navExpandedOverrideAtom } from "@/lib/dock";
@@ -49,7 +50,6 @@ afterEach(async () => {
 const $ = <T extends Element = HTMLElement>(sel: string) => container!.querySelector<T>(sel);
 const dock = () => $('[data-slot="dock"]')!;
 const sidebar = () => $('[data-slot="sidebar"]')!;
-const dockVar = () => document.documentElement.style.getPropertyValue("--dock-w");
 const askButton = () => $<HTMLButtonElement>('button[data-slot="ask-orchestrator"]')!;
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
 /** The dock's width transition, as the browser reports it: transitionrun, then transitionend. */
@@ -92,7 +92,9 @@ test("open, the panel is a docked column: the page reflows, the button and O tog
   expect(dock().style.marginInlineStart).toBe(`-${SHELL_GAP}px`); // closed: cancels the gutter, no empty gap
   expect(dock().hasAttribute("data-painted")).toBe(false); // no card surface while closed
   expect(dock().className).toContain("md:data-[painted]:shadow-shell"); // the surface rides an attribute, not a class change
-  expect(dock().className).toContain("transition-[width,margin-inline-start]"); // width and margin only
+  expect(dock().className).toContain("transition-[width,min-width,margin-inline-start]"); // width, min-width and margin only
+  expect(dock().className).toContain("ease-out");
+  expect(parseFloat(dock().style.minWidth)).toBe(0); // closed: no floor, so the width really reaches 0
   expect(page.some((c) => c.startsWith("max-md:") && c.includes("overflow"))).toBe(false);
   await click(askButton());
   const panel = $('[data-slot="orchestrator-panel"]')!;
@@ -112,8 +114,7 @@ test("open, the panel is a docked column: the page reflows, the button and O tog
   expect(["0", "0px"]).toContain(dock().style.marginInlineStart);
   expect(dock().hasAttribute("data-painted")).toBe(true); // its own raised card
   expect(askButton().getAttribute("aria-expanded")).toBe("true");
-  expect($('[data-slot="quick-ask"]')!.style.right).toBe("var(--dock-w,0px)"); // the pill centres on the page column
-  expect(dockVar()).toBe("460px");
+  expect($('[data-slot="quick-ask"]')!.parentElement!.dataset.slot).toBe("shell-card"); // the pill centres on the page card
   expect(sidebar().dataset.collapsed).toBe("false"); // 1440: the full nav still fits
   await click(askButton()); // the same button closes it
   expect(panel.dataset.state).toBe("closed");
@@ -204,49 +205,45 @@ test("a resize is not a slide: an arrow key or a drag moves the dock with no wid
   expect(dock().style.width).toBe(`${460 - RESIZE_STEP + 40}px`);
   expect(dock().hasAttribute("data-resizing")).toBe(false); // the transition is back for the next open / close
   expect(frame.style.width).toBe("");
-  // An open or a close still holds the frame (the slide), so the resize mark did not leak into it.
-  await click(askButton());
-  expect(frame.style.width).toMatch(/^\d+px$/);
 });
 
-test("the pill's strip follows the handle in the same frame: a drag writes its right edge before pointerup, an arrow key too, with no slide", async () => {
+test("the pill's strip is placed by the page card: no transition or offset of its own, so it moves with the card edge in every frame of an open, a close and a resize", async () => {
   await mount(1440);
-  await click(askButton());
-  await act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 120)); });
-  const strip = $('[data-slot="quick-ask"]')!;
+  const strip = () => $('[data-slot="quick-ask"]')!;
+  const card = $('[data-slot="shell-card"]')!;
+  // Absolute in the card, full width, content centred: where the card's edge is, the strip's edge is.
+  // PR 328's fixed strip ran its own `right` transition off `--dock-w`, apart from the dock's — Finn
+  // saw the pill snap to its end place before the card had finished.
+  const placedByCard = () => {
+    const s = strip();
+    expect(s.parentElement === card).toBe(true);
+    expect(card.className.split(/\s+/)).toContain("relative");
+    expect(s.className.split(/\s+/)).toEqual(expect.arrayContaining(["absolute", "inset-x-0", "justify-center"]));
+    expect(s.className).not.toMatch(/\bfixed\b|transition|\bleft-|\bright-/);
+    expect(s.getAttribute("style")).toBeNull();
+  };
+  placedByCard();
+  await click(askButton()); // an open: the dock's width changes, the card shrinks, the strip with it
+  transition("transitionrun");
+  placedByCard();
+  await act(async () => { transition("transitionend"); await flush(); });
   const edge = $('[data-slot="orchestrator-resize"]')!;
-  const root = document.documentElement;
-  expect(strip.style.right).toBe("var(--dock-w,0px)");
-  expect(dockVar()).toBe("460px");
-  // Under `data-dock-resizing` the strip's `right` transition is off; otherwise it slides (open / close).
-  expect(strip.className).toContain("[[data-dock-resizing]_&]:transition-none");
-  expect(strip.className).toContain("transition-[left,right]");
-  expect(root.hasAttribute("data-dock-resizing")).toBe(false);
   await act(async () => {
     edge.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: 900 }));
     window.dispatchEvent(new PointerEvent("pointermove", { clientX: 860 }));
   });
-  // Mid-drag, before pointerup: the dock atom still says 460, but the strip's edge is at the dock's.
+  // Mid-drag, before pointerup: the dock already has the new width with its transition off, so the
+  // card (and the strip in it) reflows in the pointer move's own frame.
   expect(dock().style.width).toBe("500px");
-  expect(dockVar()).toBe("500px");
-  expect(root.hasAttribute("data-dock-resizing")).toBe(true);
-  act(() => { window.dispatchEvent(new PointerEvent("pointermove", { clientX: 880 })); });
-  expect(dockVar()).toBe("480px");
-  await act(async () => { window.dispatchEvent(new PointerEvent("pointerup", { clientX: 880 })); await flush(); });
-  expect(dockVar()).toBe("480px"); // the saved width matches: no jump on release
-  const frames = async (n: number) => { for (let i = 0; i < n; i++) await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(null))); }); };
-  await frames(3);
-  expect(root.hasAttribute("data-dock-resizing")).toBe(false); // the open / close slide is back
-  // An arrow key: the var moves in the key's own frame, under `data-dock-resizing`.
+  expect(dock().hasAttribute("data-resizing")).toBe(true);
+  placedByCard();
+  await act(async () => { window.dispatchEvent(new PointerEvent("pointerup", { clientX: 860 })); await flush(); });
   act(() => { edge.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true })); });
-  expect(dockVar()).toBe(`${480 + RESIZE_STEP}px`);
-  expect(root.hasAttribute("data-dock-resizing")).toBe(true);
-  await frames(3);
-  expect(root.hasAttribute("data-dock-resizing")).toBe(false);
-  // A close still moves it through the atom, with the slide on.
-  await click(askButton());
-  expect(dockVar()).toBe("0px");
-  expect(root.hasAttribute("data-dock-resizing")).toBe(false);
+  expect(dock().style.width).toBe(`${500 + RESIZE_STEP}px`);
+  placedByCard();
+  await click(askButton()); // a close
+  placedByCard();
+  expect(document.documentElement.style.getPropertyValue("--dock-w")).toBe(""); // no second source of truth
 });
 
 test("the motion flag: work that measures the page waits while the dock or the nav animates its width, then runs once", () => {
@@ -275,7 +272,7 @@ test("opening: the panel shows in the commit that opens it at dock width 0, and 
   expect(dock().style.width).toBe("0px"); // …but the width waits a frame, so 0 → 460 is a real transition
   await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(null))); await flush(); });
   expect(dock().style.width).toBe("460px");
-  expect(dock().className).toContain("transition-[width,margin-inline-start]");
+  expect(dock().style.minWidth).toBe("360px"); // open: the floor tweens with the width
   expect(dock().className).toContain("data-[resizing]:transition-none");
   expect($('[data-slot="page-scroll"]')!.className).toContain("md:[contain:layout_paint]");
 });
@@ -294,75 +291,40 @@ test("a reload with the panel's open state persisted true shows it at its full w
   window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true })); // end the page-load window, as a real keystroke would
 });
 
-test("frozenPageWidth: the page content's end width, so the content lays out once and only the card edge moves", () => {
-  // Opening a 460 panel beside the full nav: the column gives the dock its width and the gutter back.
-  expect(frozenPageWidth({ col: 1170, nav: 240, dock: 0, dockMargin: -SHELL_GAP }, { nav: 240, dock: 460, dockMargin: 0 })).toBe(1170 - 460 - SHELL_GAP);
-  // At 1280 the nav also turns into its rail: the 184 px it gives back are the page's.
-  expect(frozenPageWidth({ col: 1010, nav: 240, dock: 0, dockMargin: -SHELL_GAP }, { nav: 56, dock: 460, dockMargin: 0 })).toBe(1010 + 184 - 460 - SHELL_GAP);
-  // Closing reverses it exactly; a reversal mid-slide starts from the in-flight widths.
-  expect(frozenPageWidth({ col: 544, nav: 56, dock: 460, dockMargin: 0 }, { nav: 240, dock: 0, dockMargin: -SHELL_GAP })).toBe(544 - 184 + 460 + SHELL_GAP);
-  expect(frozenPageWidth({ col: 700, nav: 240, dock: 230, dockMargin: -3 }, { nav: 240, dock: 0, dockMargin: -SHELL_GAP })).toBe(700 + 230 + 3);
-});
-
-test("the page frame's width sequence: open and close each change it ONCE, one way, and release it only when the slide ends", async () => {
-  // The column's content width at rest, as a real ResizeObserver reports it (happy-dom lays out nothing).
-  const RO = globalThis.ResizeObserver;
-  const COL = 1170;
-  globalThis.ResizeObserver = class {
-    constructor(private cb: ResizeObserverCallback) {}
-    observe(el: Element) { this.cb([{ target: el, contentRect: { width: COL } } as unknown as ResizeObserverEntry], this as unknown as ResizeObserver); }
-    unobserve() {} disconnect() {}
-  } as unknown as typeof ResizeObserver;
+test("the page frame follows the card edge through an open and a close: nothing writes its width (PR 328 held it at the end width)", async () => {
+  await mount(1440);
+  const frame = $('[data-slot="page-frame"]')!;
+  expect(frame.className).toContain("md:[contain:layout_paint]"); // the reflow per frame stays inside it
+  expect(frame.parentElement!.className).toContain("md:[contain:layout_paint]"); // and inside the column
+  const writes: string[] = [];
+  const proto = Object.getPrototypeOf(frame.style);
+  const d = (function find(o: object | null): PropertyDescriptor | undefined { return o ? Object.getOwnPropertyDescriptor(o, "width") ?? find(Object.getPrototypeOf(o)) : undefined; })(proto)!;
+  Object.defineProperty(frame.style, "width", { configurable: true, get() { return d.get!.call(this); },
+    set(v: string) { writes.push(v); d.set!.call(this, v); } });
   try {
-    await mount(1440);
-    const frame = $('[data-slot="page-frame"]')!;
-    const writes: string[] = [];
-    const proto = Object.getPrototypeOf(frame.style);
-    const d = (function find(o: object | null): PropertyDescriptor | undefined { return o ? Object.getOwnPropertyDescriptor(o, "width") ?? find(Object.getPrototypeOf(o)) : undefined; })(proto)!;
-    Object.defineProperty(frame.style, "width", { configurable: true, get() { return d.get!.call(this); },
-      set(v: string) { writes.push(v); d.set!.call(this, v); } });
-    const OPEN = COL - 460 - SHELL_GAP; // the dock's width and the gutter go to the panel
-    expect(frame.style.width).toBe("");
-    // Open: held at once at its end width…
-    await click(askButton());
-    transition("transitionrun");
-    expect(writes).toEqual([`${OPEN}px`]);
-    // …and STILL held well past the slide's nominal length: on a heavy page the first frame lands
-    // late, and the old timer (SLIDE_MS + 60 from the commit) let go mid-slide — a snap back.
-    await act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 120)); });
-    expect(writes).toEqual([`${OPEN}px`]);
-    await act(async () => { transition("transitionend"); await flush(); });
-    expect(writes).toEqual([`${OPEN}px`, ""]); // released where the column now ends: no second width
-    // Close: one step back to the start width, then the same release.
-    writes.length = 0;
-    await click(askButton());
-    transition("transitionrun");
-    await act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 120)); });
-    expect(writes).toEqual([`${COL}px`]);
-    await act(async () => { transition("transitionend"); await flush(); });
-    expect(writes).toEqual([`${COL}px`, ""]);
-    delete (frame.style as unknown as Record<string, unknown>).width;
+    for (let i = 0; i < 2; i++) { // open, then close
+      await click(askButton());
+      transition("transitionrun");
+      expect(frame.style.width).toBe(""); // mid-slide: the frame is the column's width, which the card's edge sets
+      await act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 60)); });
+      await act(async () => { transition("transitionend"); await flush(); });
+    }
+    expect(dock().style.width).toBe("0px");
+    expect(writes).toEqual([]);
+    expect(frame.getAttribute("style")).toBeNull();
   } finally {
-    globalThis.ResizeObserver = RO;
+    delete (frame.style as unknown as Record<string, unknown>).width;
   }
 });
 
-test("afterDockSlide waits for the NEXT transition start, then its end; a reversal's cancel is not the end; no transition falls back", async () => {
-  const calls: string[] = [];
-  noteDockMotion(1); // a slide already running
-  afterDockSlide(() => calls.push("a"));
-  noteDockMotion(-1); // the reversal cancels it: a settle, but not of the slide we wait for
-  expect(calls).toEqual([]);
-  noteDockMotion(1); // the reversal's own transition starts…
-  noteDockMotion(-1); // …and ends
-  expect(calls).toEqual(["a"]);
-  afterDockSlide(() => calls.push("b"), 20); // reduced motion: no transition ever starts
-  await new Promise((r) => setTimeout(r, 40));
-  expect(calls).toEqual(["a", "b"]);
-  const cancel = afterDockSlide(() => calls.push("c"), 20);
-  cancel();
-  await new Promise((r) => setTimeout(r, 40));
-  expect(calls).toEqual(["a", "b"]);
+test("summarizeSlide: the motion probe's line — frames, the longest frame, and how far the page and the pill were from the card", () => {
+  const line = summarizeSlide([
+    { t: 0, dock: 0, frameGap: 0, pillGap: 0 },
+    { t: 16, dock: 200, frameGap: 0, pillGap: 0 },
+    { t: 50, dock: 460, frameGap: -2, pillGap: 1 },
+  ], 150);
+  expect(line).toBe("slide 0→460 150ms · 3 frames, 3 widths · frame max 34ms mean 25ms · page≠col max 2px · pill≠card max 1px");
+  expect(summarizeSlide([], 10)).toBe("slide 10ms, no frames");
 });
 
 test("open and close change NO class on the chat's ancestors (a class change there restyles the whole prose chat)", async () => {
