@@ -28,8 +28,14 @@
   --destructive: #e5484d;
   --border: rgba(0, 0, 0, 0.1);
   --input: rgba(0, 0, 0, 0.1);
-  --ring: #0070f3;
-  --sidebar: #f9f9f8;
+  /* The active server's theme colour (lib/identity.ts sets it on <html>; grey until known), like a
+     Slack workspace theme. It tints ONLY accent spots: the sidebar, the active nav item, the mark,
+     focus rings. --primary and every surface stay neutral. */
+  --server: #8f8f8f;
+  --server-soft: color-mix(in oklab, var(--server) 13%, transparent);
+  --server-fg: color-mix(in oklab, var(--server) 82%, black);
+  --ring: var(--server);
+  --sidebar: color-mix(in oklab, var(--server) 6%, #f9f9f8);
   --geist-blue: #0070f3;
   --geist-green: #45a557;
   --geist-teal: #50e3c2;
@@ -63,8 +69,10 @@
   --destructive: #e5484d;
   --border: rgba(255, 255, 255, 0.12);
   --input: rgba(255, 255, 255, 0.12);
-  --ring: #0070f3;
-  --sidebar: #111111;
+  --server-soft: color-mix(in oklab, var(--server) 22%, transparent);
+  --server-fg: color-mix(in oklab, var(--server) 62%, white);
+  --ring: var(--server);
+  --sidebar: color-mix(in oklab, var(--server) 7%, #111111);
   --geist-warning-bg: #2a1d03;
   --geist-warning-fg: #ffb224;
   --geist-error-bg: #2a0e0f;
@@ -83,6 +91,9 @@
   --shadow-menu: var(--geist-shadow-menu);
   --shadow-modal: var(--geist-shadow-modal);
   --color-sidebar: var(--sidebar);
+  --color-server: var(--server);
+  --color-server-soft: var(--server-soft);
+  --color-server-fg: var(--server-fg);
   --color-geist-blue: var(--geist-blue);
   --color-geist-green: var(--geist-green);
   --color-geist-teal: var(--geist-teal);
