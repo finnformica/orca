@@ -26,6 +26,8 @@ import * as integrations from "./integrations/registry";
 import * as dispatcher from "./integrations/dispatcher";
 import * as inbox from "./integrations/inbox";
 import * as integrationStore from "./integrations/store";
+import { filterInbox, inboundConversation, inboxFacets, inboxRows, inboxWindow, muteKey, notificationIdOf, notificationRows, notificationSender, OWN_EVENT, parseConversation, threadActions, threadItems, workstreamOf } from "../shared/inbox";
+import { replyToEvent } from "./integrations/router";
 import * as integrationAdmin from "./integrations/admin";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
@@ -33,6 +35,7 @@ import * as primary from "./primary";
 import * as mergeQueue from "./mergeQueue";
 import * as upkeep from "./upkeep";
 import * as notify from "./notify";
+import { KIND_META } from "../shared/notifications";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import * as repos from "./repos";
@@ -313,6 +316,7 @@ const degradedJson = (data: unknown, status = 200) => Response.json(
 const EMPTY_WHEN_DOWN: Record<string, () => unknown> = {
   "/api/queued": () => [],
   "/api/notifications": () => [],
+  "/api/inbox/unread": () => ({ others: 0, mutedKinds: [] }),
   "/api/health/history": () => [],
   "/api/config/document": () => ({}),
 };
@@ -354,6 +358,9 @@ async function foreignInventory(repo: string, exclude?: string): Promise<unknown
 const notEnabled = (repo: RepoConfig, feature: string) =>
   json({ error: `${feature} is not enabled for ${repo.name} — turn it on in the repo's config` }, 403);
 
+/** How many inbox events one /api/inbox answer reads (a window; `older` pages past it). */
+const INBOX_WINDOW = 300;
+
 // Routes served by ANY instance because they read only Postgres — history stays readable even when
 // the machine that produced it is asleep. Everything else touches a worktree or spawns a process and
 // must run where the repo lives.
@@ -375,6 +382,9 @@ const DATABASE_ONLY = new Set([
   "/api/previews",
   // The notification centre: one table, written once by the instance where each event happened.
   "/api/notifications", "/api/notifications/read",
+  // The unified inbox: the integrations' event, delivery and thread_link rows.
+  "/api/inbox", "/api/inbox/unread", "/api/inbox/thread", "/api/inbox/threads",
+  "/api/inbox/reply", "/api/inbox/read", "/api/inbox/mute", "/api/inbox/link",
 ]);
 
 // DATABASE_ONLY routes whose `?instance=` selects rows rather than a machine — never forwarded.
@@ -685,6 +695,101 @@ async function api(req: Request, url: URL): Promise<Response> {
   // Pairing (server/integrations/router.ts): an unknown sender got a code; you approve it here, which
   // binds their platform identity to a principal (new, or an existing id). The Settings page calls
   // the same routes later. Body: { code, principal?, name?, maxLevel? ("notify" | "ask" | "work") }.
+  // The unified inbox (shared/inbox.ts): the newest INBOX_WINDOW inbox events before `?before=`, as
+  // rows with their reply's delivery state, filtered by `?source=` / `?person=`; the facets are over
+  // the whole window, so a chip never hides its siblings. `older` is the cursor for the next window.
+  if (req.method === "GET" && p === "/api/inbox") {
+    // Two sources, one list: the integrations' events and Orca's own notifications (the bell's
+    // rows). The cursor is a time (ms), the same for both: a full source sets the cut, and only rows
+    // after it are kept, so the next window starts exactly where this one ended.
+    const beforeRaw = Number(url.searchParams.get("before"));
+    const beforeAt = Number.isFinite(beforeRaw) && beforeRaw > 0 ? beforeRaw : undefined;
+    const [events, notes, muted] = await Promise.all([
+      integrationStore.inboxEvents({ beforeAt, limit: INBOX_WINDOW }),
+      integrationStore.inboxNotifications({ before: beforeAt, limit: INBOX_WINDOW }),
+      integrationStore.mutedSenders(),
+    ]);
+    const since = events.length ? Math.min(...events.map((e) => e.at)) : Date.now();
+    const [outbound, links, principals, read] = await Promise.all([
+      integrationStore.linkDeliveries(since), integrationStore.threadLinks(), integrationStore.principalNames(),
+      integrationStore.readEvents(events.map((e) => e.id)),
+    ]);
+    const { rows: all, older } = inboxWindow([
+      { rows: inboxRows(events, outbound, links, principals, { read, muted }), full: events.length === INBOX_WINDOW },
+      { rows: notificationRows(notes, muted), full: notes.length === INBOX_WINDOW },
+    ]);
+    const flag = (k: string) => url.searchParams.get(k) === "1";
+    const rows = filterInbox(all, { source: url.searchParams.get("source") || undefined, person: url.searchParams.get("person") || undefined, unread: flag("unread"), muted: flag("muted") });
+    return json({ rows, facets: inboxFacets(all), older });
+  }
+  // The inbox's half of the one unread count (the bell adds its own rows), and the notification
+  // kinds you muted, which the bell leaves out of its count.
+  if (req.method === "GET" && p === "/api/inbox/unread") {
+    const [others, muted] = await Promise.all([integrationStore.unreadWithoutCopy(INBOX_WINDOW), integrationStore.mutedSenders()]);
+    const prefix = muteKey("orca", notificationSender(""));
+    return json({ others, mutedKinds: [...muted].filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length)) });
+  }
+  if (req.method === "GET" && p === "/api/inbox/thread") {
+    const c = parseConversation(url.searchParams.get("c"));
+    if (!c) return json({ error: "c=<adapter>|<id> required" }, 400);
+    const [conv, principals, allLinks] = await Promise.all([integrationStore.conversation(c), integrationStore.principalNames(), integrationStore.links()]);
+    const labels = new Map(allLinks.map((l) => [l.id, l.label ?? l.externalId]));
+    const workstream = conv.link ? { repo: conv.link.repo, branch: conv.link.branch } : conv.events.map((e) => workstreamOf(e, [])).find(Boolean);
+    const [read, muted] = await Promise.all([integrationStore.readEvents(conv.events.map((e) => e.id)), integrationStore.mutedSenders()]);
+    return json({ conversation: c, items: threadItems(conv.events, conv.outbound, principals, labels), ...(workstream ? { workstream } : {}), ...threadActions(conv.events, !!conv.link, { read, muted }, principals) });
+  }
+  // The inbox's actions, each on one inbound event: Reply where it came from (the `orca post` path,
+  // server/integrations/router.ts replyToEvent), read state and mute (per user), and Link its conversation to a
+  // workstream (a thread_link, so later replies there reach that workstream).
+  if (req.method === "POST" && p === "/api/inbox/reply") {
+    if (typeof body.eventId !== "string" || typeof body.text !== "string") return json({ error: "eventId and text required" }, 400);
+    try {
+      const r = await replyToEvent(body.eventId, body.text);
+      await integrationStore.setRead([body.eventId], true);
+      return json(r);
+    } catch (e) {
+      if (e instanceof db.DbUnavailable) throw e;
+      return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  }
+  if (req.method === "POST" && p === "/api/inbox/read") {
+    const ids: string[] = Array.isArray(body.ids) ? body.ids.filter((x: unknown): x is string => typeof x === "string") : [];
+    if (!ids.length) return json({ error: "ids required" }, 400);
+    // A notification row's read state is the notification's own (the bell's): one state, two views.
+    const notes = ids.map(notificationIdOf).filter((n): n is number => n !== undefined);
+    const events = ids.filter((id) => notificationIdOf(id) === undefined);
+    const read = body.read !== false;
+    await Promise.all([
+      integrationStore.setRead(events, read),
+      read ? db.markNotificationsRead(notes) : integrationStore.markNotificationsUnread(notes),
+    ]);
+    return json({ ok: true });
+  }
+  if (req.method === "POST" && p === "/api/inbox/mute" && typeof body.eventId === "string" && notificationIdOf(body.eventId) !== undefined) {
+    // A notification row mutes its kind (its "sender", shared/inbox.ts notificationSender).
+    const kind = await integrationStore.notificationKind(notificationIdOf(body.eventId)!);
+    if (!kind) return json({ error: "eventId must name a notification" }, 400);
+    await integrationStore.setMuted("orca", notificationSender(kind), body.muted !== false, KIND_META[kind as keyof typeof KIND_META]?.label ?? kind);
+    return json({ ok: true });
+  }
+  if (req.method === "POST" && (p === "/api/inbox/mute" || p === "/api/inbox/link")) {
+    const e = typeof body.eventId === "string" ? await integrationStore.eventById(body.eventId) : undefined;
+    if (!e) return json({ error: "eventId must name an event" }, 400);
+    if (p === "/api/inbox/mute") {
+      if (!e.actor) return json({ error: "this event has no sender to mute" }, 400);
+      await integrationStore.setMuted(e.actor.external.adapter, e.actor.external.id, body.muted !== false, e.actor.external.name);
+      return json({ ok: true });
+    }
+    const repo = typeof body.repo === "string" ? body.repo : "", branch = typeof body.branch === "string" ? body.branch : "";
+    if (!cfg.repos.some((r) => r.name === repo) || !branch) return json({ error: "repo (a configured repo) and branch required" }, 400);
+    const c = inboundConversation(e);
+    if (c.id.startsWith(OWN_EVENT)) return json({ error: "this event has no thread or place to link" }, 400);
+    await integrationStore.setThreadLink({ adapter: c.adapter, externalThreadId: c.id, repo, branch, ...(e.source.linkId ? { linkId: e.source.linkId } : {}) });
+    const linked = await integrationStore.threadLink(c.adapter, c.id);
+    return json({ link: linked });
+  }
+  // The workstream cards' source chips: every thread link (repo, branch, adapter).
+  if (req.method === "GET" && p === "/api/inbox/threads") return json({ links: await integrationStore.threadLinks() });
   if (req.method === "GET" && p === "/api/integrations/pairing") return json({ pairings: await integrationStore.pendingPairings() });
   if (req.method === "POST" && p === "/api/integrations/pairing/approve") {
     const level = body.maxLevel;

@@ -198,7 +198,10 @@ that holds the row's lease (`status.auto`, 150 s, renewed each sync — the fail
 row holds only the name. An outside sender's message gets a grant (min of link level and person) that
 rides `queued_message.grant_scope`: one grant per orchestrator wake, `orchestrator.tool` refuses
 verbs outside it (`grantRefusal`), and such a wake has no shell; a workstream it spawns or steers
-gets `grantScope` and runs with `agentPermissionMode: "ask"`. An unknown sender gets a one-time
+gets `grantScope` and runs in SCOPED mode (`agent.scopedRules`: `claude -p --permission-mode dontAsk`
+plus allow and deny rules — files in the worktree, git and the toolchain, no secrets, no
+`--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).
+Only a wake whose every message is yours clears it on a steer; `orca status --clear-grant` clears it. An unknown sender gets a one-time
 pairing code (`pairing_code`; approve with `POST /api/integrations/pairing/approve`). The orchestrator
 has `orca channels`, `post`, `thread link` and `ask-user`. A subscription's `digest_seconds` batches
 its deliveries per fixed window (`delivery.digest_key`). **The Slack adapter is receive-only by rule**
@@ -973,6 +976,12 @@ choice is remembered (`orca.ui.v1.notificationFilter`). The per-kind chips and t
 do-not-disturb toggle were dropped as noise (DND lives in Settings; the bell shows it). Settings: do not disturb, per-kind toasts, and browser
 notifications (urgent kinds only, while the tab is hidden; the permission is asked for when switched
 on). Preferences are per browser (`orca.notifications.*` in localStorage); the rows are not.
+**The Inbox is the one place for what needs you** (`/inbox`, `views/Inbox.tsx`): the bell's rows are
+Inbox rows too (source Orca, `shared/inbox.ts` `notificationRows`; a bell row that copies an inbox
+event by key is left out), with ONE read state (a notification row reads the notification; an event
+and the bell's copy of it read together, by key) and ONE unread count for the bell and the Inbox nav
+item (`lib/inboxUnread.ts`). Mute on a notification row mutes its kind. The bell is the quick view,
+with See all.
 
 ## Deploying (a cloud box + the laptop, one database)
 

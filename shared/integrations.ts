@@ -330,8 +330,10 @@ export const WORK_VERBS = ["spawn", "send", "address", "status", "pr-shots"] as 
 
 /** Why `verb` is refused under `grant`, or undefined when allowed. Server-side: the tool route calls
  *  it for the wake in flight, so a prompt cannot talk its way past it. */
-export function grantRefusal(g: Grant | undefined, verb: string, args: { repo?: unknown; _?: unknown[]; status?: unknown; link?: unknown } = {}): string | undefined {
+export function grantRefusal(g: Grant | undefined, verb: string, args: { repo?: unknown; _?: unknown[]; status?: unknown; link?: unknown; "clear-grant"?: unknown } = {}): string | undefined {
   if (!g || g.level === "full") return undefined;
+  // Lifting a grant's scope is the owner's alone, though `status` itself is a work verb.
+  if (verb === "status" && args["clear-grant"] !== undefined) return `refused: this wake came from an outside sender with an "${g.level}" grant; "status --clear-grant" needs your own chat (full grant)`;
   const sub = Array.isArray(args._) ? String(args._[0] ?? "") : "";
   const read = (READ_VERBS as readonly string[]).includes(verb)
     || (verb === "notes" && sub !== "set")
