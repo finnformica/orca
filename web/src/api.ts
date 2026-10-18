@@ -75,6 +75,9 @@ async function res(r: Response) {
   return data;
 }
 
+import type { IntegrationsOverview } from "../../shared/integrationSettings";
+export type { IntegrationsOverview } from "../../shared/integrationSettings";
+
 export type GithubAccount = { login: string; active: boolean; name?: string; email?: string; configured: { name?: string; email?: string }; repos: string[]; avatarUrl?: string };
 
 export type RepoInfo = {
@@ -95,6 +98,9 @@ export const api = {
   usage: (): Promise<Usage | null> => get("/api/usage").then(res),
   /** The GitHub page: this host's signed-in gh accounts, the identity each commits as, the repos on each. */
   githubAccounts: (): Promise<{ accounts: GithubAccount[] }> => get("/api/github/accounts").then(res),
+  /** Settings > Integrations: everything the page shows, in one read; each write is one POST. */
+  integrations: (): Promise<IntegrationsOverview> => get("/api/integrations").then(res),
+  integrationPost: (path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> => post(`/api/integrations/${path}`, body),
   // Handoff packs (server/handoff.ts) on the CURRENT server; the import goes to another server's
   // absolute URL from this browser — the boxes never call each other.
   handoffs: (): Promise<{ self: string; packs: PackView[] }> => get("/api/handoffs").then(res),
