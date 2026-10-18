@@ -584,11 +584,21 @@ function SublineMore({ items }: { items: SublineItem[] }) {
     else closing.current = setTimeout(() => setOpen(false), 150);
   };
   useEffect(() => () => clearTimeout(closing.current), []);
+  // A mouse click lands after the hover already opened the card: it keeps it open, never toggles it
+  // shut. A tap or a key toggles. preventDefault skips Radix's own toggle.
+  const pointer = useRef("");
+  const onClick = (e: MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    e.preventDefault();
+    clearTimeout(closing.current);
+    setOpen((o) => (pointer.current === "mouse" ? true : !o));
+    pointer.current = "";
+  };
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button type="button" data-slot="subline-more" aria-label={`${items.length} more: ${items.map((i) => i.key).join(", ")}`}
-          onClick={(e) => e.stopPropagation()} onPointerEnter={hover(true)} onPointerLeave={hover(false)}
+          onClick={onClick} onPointerDown={(e) => { pointer.current = e.pointerType; }} onPointerEnter={hover(true)} onPointerLeave={hover(false)}
           className="bg-muted text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 inline-flex h-4 shrink-0 items-center rounded-sm px-1.5 text-[11px] font-medium tabular-nums outline-none focus-visible:ring-2">
           +{items.length}
         </button>
