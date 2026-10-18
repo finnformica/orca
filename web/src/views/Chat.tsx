@@ -439,7 +439,10 @@ function Reply({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () =
   );
 }
 
-const clockOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "");
+// ONE formatter: `toLocaleTimeString` builds a new one on every call, and a chat render calls this per
+// turn (it showed in the panel's open / close profile).
+const CLOCK = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+const clockOf = (ms?: number) => (ms ? CLOCK.format(ms) : "");
 
 /** One exchange, as a modern assistant chat rather than a terminal log. What you said is a tinted
  *  bubble on the right; the agent (`author`: the orchestrator, else the turn's provider) answers on

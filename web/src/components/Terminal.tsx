@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { createPortal } from "react-dom";
 import { ArrowLeft, Bot, PictureInPicture2, PanelBottomClose, X } from "lucide-react";
@@ -181,15 +181,18 @@ function OrchestratorStatusLine({ state }: { state: { running: boolean; startedA
 export type OrchestratorState = { key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number };
 export function useOrchestratorState(active: boolean, win: Window = window) {
   const [state, setState] = useState<OrchestratorState | null>(null);
-  const load = () => api.orchestrator().then(setState).catch(() => {});
+  // Stable (useCallback / useMemo): the panel passes these to its chat, which is memoized — a new
+  // object each render re-rendered the whole long thread on every open and close of the panel.
+  const load = useCallback(() => api.orchestrator().then(setState).catch(() => {}), []);
   useEffect(() => {
     if (!active) return;
     return poll(load, 2000, win);
   }, [active, win]);
-  const controls: ChatControlsProps = {
-    model: state?.model ?? ORCHESTRATOR_DEFAULT_MODEL, only: "claude", contextPct: state?.contextPct,
-    onModel: (model) => { setState((s) => (s ? { ...s, model } : s)); void api.orchestratorModel(model).then(load); },
-  };
+  const model = state?.model ?? ORCHESTRATOR_DEFAULT_MODEL, contextPct = state?.contextPct;
+  const controls: ChatControlsProps = useMemo(() => ({
+    model, only: "claude", contextPct,
+    onModel: (m: string) => { setState((s) => (s ? { ...s, model: m } : s)); void api.orchestratorModel(m).then(load); },
+  }), [model, contextPct, load]);
   const [compacting, setCompacting] = useState<"sent" | "started" | null>(null);
   const [compactError, setCompactError] = useState<string>();
   useEffect(() => { if (compacting === "started" && state && !state.running) setCompacting(null); }, [compacting, state]);
@@ -271,10 +274,11 @@ export function OrchestratorPanel() {
     w.addEventListener("pagehide", () => { savePipSize(w); setPip(null); setTimeout(syncEvents); }, { once: true });
     setPip(w);
   };
-  const row: Row = {
+  const key = state?.key, running = !!state?.running;
+  const row: Row = useMemo(() => ({
     repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
-    worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
-  };
+    worktreePath: key, agentStatus: running ? "running" : "idle",
+  }), [key, running]);
   // Width: dragged from the panel's left edge (SidePanel), remembered per browser, clamped to the
   // viewport. Read here too for the Pop out window's first size.
   const { width } = usePanelWidth(orchestratorWidthAtom);
@@ -392,7 +396,8 @@ export function OrchestratorPage() {
 /** The orchestrator's conversation — the panel's and the page's — is the one ChatPanel every chat
  *  uses, with its replies under "Orchestrator", its messages through the shared outbox, and the
  *  composer's toolbar (Claude models only; changing the model keeps the session) fed its own values. */
-function OrchestratorChat({ row, prefill, controls, load }: { row: Row; prefill: OrchestratorPrefill | null; controls: ChatControlsProps; load: () => Promise<unknown> }) {
+/** Memoized: an open or close of the panel re-renders the panel, never this (its props are stable). */
+const OrchestratorChat = memo(function OrchestratorChat({ row, prefill, controls, load }: { row: Row; prefill: OrchestratorPrefill | null; controls: ChatControlsProps; load: () => Promise<unknown> }) {
   return (
     <ChatPanel
       row={row} author="Orchestrator" prefill={prefill} outbox controls={controls}
@@ -402,7 +407,7 @@ function OrchestratorChat({ row, prefill, controls, load }: { row: Row; prefill:
       }}
     />
   );
-}
+});
 
 type DocumentPip = { requestWindow(size: { width: number; height: number }): Promise<Window> };
 const pipApi = () => (window as unknown as { documentPictureInPicture?: DocumentPip }).documentPictureInPicture;
