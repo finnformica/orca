@@ -7,7 +7,8 @@ import * as db from "../server/db";
 import { configDocument, invalidateConfig, loadConfig, parseConfigDocument, saveConfigDocument, setInstanceTerminal, setServerIdentity } from "../server/config";
 import { withIdentity, type ServersAnswer } from "../server/servers";
 import {
-  IDENTITY_COLORS, colorFromName, faviconSvg, identityUpdate, normalizeColor, pageTitle, resolveIdentity, serverIdentityProblems,
+  IDENTITY_COLORS, colorFromName, contrast, faviconSvg, hexToOklch, identityUpdate, markColor, normalizeColor, oklchToHex, pageTitle,
+  resolveIdentity, serverIdentityProblems, themeCss, themeTones,
 } from "../shared/serverIdentity";
 import { freshSchema } from "./pg";
 
@@ -37,11 +38,13 @@ test("ID2: validation and the stored form of an edit", () => {
   expect(identityUpdate("Work", "")).toEqual({ name: "Work" });
 });
 
-test("ID3: the title keeps Orca first; the favicon is favicon.svg's mark on the theme colour", () => {
+test("ID3: the title keeps Orca first; the favicon keeps the black circle, the orca takes the theme colour", () => {
   expect(pageTitle("Personal")).toBe("Orca | Personal");
   expect(pageTitle(undefined)).toBe("Orca");
   const svg = faviconSvg("#1f9d55");
-  expect(svg).toContain('fill="#1f9d55"');
+  expect(svg).toContain('<circle cx="12" cy="12" r="12" fill="#000000"/>');
+  expect(svg).toContain(`<path fill="${markColor("#1f9d55")}"`);
+  for (const c of IDENTITY_COLORS) expect(contrast(markColor(c.value), "#000000")).toBeGreaterThanOrEqual(4.5); // the orca reads on black
   const file = readFileSync(new URL("../web/public/favicon.svg", import.meta.url), "utf8");
   const mark = (s: string) => s.match(/ d="([^"]+)"/)![1];
   expect(mark(svg)).toBe(mark(file)); // the same shape
@@ -88,4 +91,31 @@ test("ID5: Settings' setter stores it in the app config; the terminal switch and
     if (prev === undefined) delete process.env.ORCA_DATABASE_URL; else process.env.ORCA_DATABASE_URL = prev;
     invalidateConfig();
   }
+});
+
+test("ID6: every theme tone comes from the one colour, and its text keeps WCAG AA contrast in both modes", () => {
+  expect(oklchToHex(hexToOklch("#2f6feb"))).toBe("#2f6feb"); // the OKLCH round trip is exact
+  // Every preset, plus custom colours at the edges: pure yellow, black, white, grey.
+  for (const color of [...IDENTITY_COLORS.map((c) => c.value), "#ffff00", "#000000", "#ffffff", "#8f8f8f"]) {
+    for (const mode of ["light", "dark"] as const) {
+      const t = themeTones(color, mode);
+      const page = mode === "light" ? "#f9f9f8" : "#111111";
+      const at = `${color} ${mode}`;
+      expect([at, contrast(t["sb-fg"], t["sb-bg"]) >= 7]).toEqual([at, true]);
+      expect([at, contrast(t["sb-muted"], t["sb-bg"]) >= 4.5]).toEqual([at, true]);
+      expect([at, contrast(t["sb-muted"], t["sb-hover"]) >= 4.5]).toEqual([at, true]);
+      expect([at, contrast(t["sb-active-fg"], t["sb-active"]) >= 4.5]).toEqual([at, true]);
+      expect([at, contrast(t["primary-foreground"], t.primary) >= 4.5]).toEqual([at, true]);
+      expect([at, contrast(t.link, page) >= 4.5]).toEqual([at, true]);
+    }
+    // Dark mode's sidebar is darker and less saturated than light mode's.
+    const [light, dark] = [hexToOklch(themeTones(color, "light")["sb-bg"]), hexToOklch(themeTones(color, "dark")["sb-bg"])];
+    expect(dark.l).toBeLessThan(light.l);
+    expect(dark.c).toBeLessThanOrEqual(light.c + 1e-3);
+  }
+  // The hue is the server colour's: a green server gets a green sidebar.
+  expect(Math.abs(hexToOklch(themeTones("#1f9d55", "light")["sb-bg"]).h - hexToOklch("#1f9d55").h)).toBeLessThan(6);
+  const css = themeCss("#7c4ddb");
+  expect(css).toMatch(/^:root:root\{--primary:#[0-9a-f]{6};.*\}:root:root\.dark\{--primary:#[0-9a-f]{6};.*\}$/);
+  expect(css).toContain(`--sb-bg:${themeTones("#7c4ddb", "dark")["sb-bg"]};`);
 });

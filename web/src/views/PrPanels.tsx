@@ -145,7 +145,7 @@ function Body({ body, long }: { body: string; long: boolean }) {
       <div className={long && !more ? "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]" : undefined}>
         <Markdown>{body}</Markdown>
       </div>
-      {long && <button type="button" data-slot="show-more" onClick={() => setMore(!more)} className="text-geist-blue mt-1 text-xs hover:underline">{more ? "Show less" : "Show more"}</button>}
+      {long && <button type="button" data-slot="show-more" onClick={() => setMore(!more)} className="text-link mt-1 text-xs hover:underline">{more ? "Show less" : "Show more"}</button>}
     </div>
   );
 }

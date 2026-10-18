@@ -132,7 +132,7 @@ export function QuickAsk() {
                   <span role="status" aria-live="polite" data-slot="quick-ask-sent" className="text-muted-foreground flex min-w-0 items-center gap-1.5 pl-1 text-xs whitespace-nowrap">
                     {flash > 0 && <>
                       <Check className="text-geist-blue size-3.5" />Sent
-                      <button type="button" className="text-geist-blue hover:underline" onClick={() => { setOpen(false); ask(); }}>Open chat</button>
+                      <button type="button" className="text-link hover:underline" onClick={() => { setOpen(false); ask(); }}>Open chat</button>
                     </>}
                   </span>
                 </div>
