@@ -59,9 +59,11 @@ function SnippetCode({ lang, source }: { lang: string; source: string }) {
     <Highlight theme={dark ? themes.vsDark : themes.github} code={source} language={lang || "text"}>
       {({ tokens, getLineProps, getTokenProps }) => (
         <pre data-slot="snippet-code" className="not-prose m-0 min-w-max bg-transparent px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre">
-          {tokens.map((line, i) => (
-            <div key={i} {...getLineProps({ line })}>{line.map((token, k) => <span key={k} {...getTokenProps({ token })} />)}</div>
-          ))}
+          <code className="block">
+            {tokens.map((line, i) => (
+              <div key={i} {...getLineProps({ line })}>{line.map((token, k) => <span key={k} {...getTokenProps({ token })} />)}</div>
+            ))}
+          </code>
         </pre>
       )}
     </Highlight>

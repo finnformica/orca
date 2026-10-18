@@ -92,7 +92,7 @@ test("fenced blocks render as snippet cards whose Copy writes the raw source", a
   // The plan renders: bold text is a <strong>, not literal asterisks.
   expect(cards[0]!.querySelector("[data-slot=snippet-body] strong")!.textContent).toBe("Ship");
   expect(cards[1]!.querySelector("[data-slot=snippet-header]")!.textContent).toContain("bash");
-  expect([...cards[1]!.querySelector("[data-slot=snippet-code]")!.children].map((l) => l.textContent)).toEqual(code.split("\n"));
+  expect([...cards[1]!.querySelector("[data-slot=snippet-code] > code")!.children].map((l) => l.textContent)).toEqual(code.split("\n"));
 
   for (const card of cards) {
     await act(async () => { (card.querySelector("button[aria-label='Copy snippet']") as HTMLButtonElement).click(); await flush(); });
