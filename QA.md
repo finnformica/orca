@@ -117,9 +117,9 @@ Open **Agents** (List view) with a few workstreams, at least one running and one
 - Tab to a row, press the **menu key** (or Shift+F10). ✅ The same menu opens under the row; Enter on
   a focused row opens its agent page.
 
-- Pick a couple of chips, type a search, choose a sort, switch to Board and dense, then reload
-  `/agents` with no query. ✅ The same chips come back and are in the URL, the search, sort, view and
-  density too. Open a link like `/agents?pr=mergeable` instead: ✅ the link wins (and is what's
+- Pick a couple of chips, type a search, choose a sort, then reload
+  `/agents` with no query. ✅ The same chips come back and are in the URL, the search and sort
+  too. Open a link like `/agents?pr=mergeable` instead: ✅ the link wins (and is what's
   remembered next). **Clear** ✅ empties chips and search, and a reload stays clear. Switching the
   top bar's repo ✅ remembers filters per repo. (Keys: `orca.ui.v1.*` in DevTools → Local Storage.)
 

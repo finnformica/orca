@@ -11,7 +11,7 @@ import { apiFake } from "./apiFake";
 import { getDefaultStore } from "jotai";
 import * as store from "@/store";
 import { App } from "@/App";
-import { agentQueryAtom, densityAtom, instanceScopeAtom, sidebarCollapsedAtom } from "@/lib/atoms";
+import { agentQueryAtom, instanceScopeAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -34,10 +34,8 @@ afterEach(async () => {
   root = container = undefined;
   apiFake.reset();
   localStorage.clear();
-  // The atoms outlive localStorage within one run: a dense board left behind here once made later
-  // files' cards hide their prompt.
+  // The atoms outlive localStorage within one run: reset what this file changes for later files.
   const s = getDefaultStore();
-  s.set(densityAtom, "comfortable");
   s.set(sidebarCollapsedAtom, false);
   s.set(instanceScopeAtom, "all");
   s.set(agentQueryAtom, "");
@@ -206,7 +204,7 @@ describe("console shell", () => {
     expect(container!.querySelector('button[aria-label="Expand sidebar"]')).not.toBeNull();
   });
 
-  test("Agents: the list only — no List | Board toggle, no density toggle", async () => {
+  test("Agents: the list only — no List | Board toggle", async () => {
     navigate("/agents");
     await mount();
     expect(container!.querySelector('[data-slot="workstream-list"]')).not.toBeNull();

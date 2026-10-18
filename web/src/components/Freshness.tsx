@@ -4,7 +4,7 @@
 // than the one this tab runs (a deploy happened) — one tap hands over to the new build's service
 // worker (lib/sw.ts applyUpdate) and reloads.
 import { useEffect, useState } from "react";
-import { CloudOff, DatabaseZap, RefreshCw, Server, Sparkles, WifiOff } from "lucide-react";
+import { CloudOff, DatabaseZap, RefreshCw, Server, WifiOff } from "lucide-react";
 import { poll } from "@/lib/poll";
 import { refreshEverything, useDatabaseDown, useRefreshing } from "@/lib/refresh";
 import { applyUpdate } from "@/lib/sw";
@@ -60,8 +60,7 @@ export function StaleIndicator() {
  *  again"), not a translucent one: against the page's own background the bar read as part of the page,
  *  not an alert over it. `bg-primary` is also the server's theme colour (`lib/identity.ts`), so it
  *  still reads as Orca's own voice, and `shadow-modal` — the house's stronger of its two shadow tokens
- *  — gives it real lift. `Sparkles` says "something new arrived" without doubling the Refresh button's
- *  own `RefreshCw`. It FLOATS: the Shell mounts it in the page column, in a zero-height sticky slot, so
+ *  — gives it real lift. It FLOATS: the Shell mounts it in the page column, in a zero-height sticky slot, so
  *  it sits at the top centre of the page (never over the nav or the docked panel) and nothing in the
  *  layout moves when it shows or hides. It slides down and fades in, and on Refresh it slides up and
  *  fades out while the new build loads (none under reduced motion).
@@ -81,13 +80,12 @@ export function UpdateBanner({ build = RUNNING_BUILD, every = 60_000, forced = f
         <div role="status" data-slot="update-banner" data-state={leaving ? "closed" : "open"}
           onAnimationEnd={() => { if (leaving) setGone(true); }}
           className={cn(
-            "bg-primary text-primary-foreground pointer-events-auto flex max-w-full min-w-0 items-center gap-3 rounded-lg p-3 shadow-modal",
+            "bg-primary text-primary-foreground pointer-events-auto flex max-w-full min-w-0 items-center gap-3 rounded-lg p-1.5 pl-3 shadow-modal",
             "animate-in fade-in slide-in-from-top-4 duration-200 ease-out data-[state=closed]:animate-out data-[state=closed]:fade-out data-[state=closed]:slide-out-to-top-4 data-[state=closed]:fill-mode-forwards data-[state=closed]:ease-in motion-reduce:animate-none",
           )}>
-          <Sparkles className="size-4 shrink-0" aria-hidden="true" />
           <span className="min-w-0 truncate text-sm font-medium">A new version of Orca is ready.</span>
-          <Button variant="secondary" size="sm" disabled={leaving} onClick={() => { setLeaving(true); void applyUpdate(); }} className="text-card-foreground shrink-0 max-md:h-9">
-            <RefreshCw className="size-3.5" aria-hidden="true" />Refresh
+          <Button variant="secondary" size="xs" disabled={leaving} onClick={() => { setLeaving(true); void applyUpdate(); }} className="text-card-foreground shrink-0">
+            <RefreshCw aria-hidden="true" />Refresh
           </Button>
         </div>
       </div>

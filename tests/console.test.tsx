@@ -326,10 +326,10 @@ describe("the console's pages", () => {
     expect($("integrations-page")).not.toBeNull();
   });
 
-  test("Settings: theme and density, and the configuration this bridge runs with (read-only)", async () => {
+  test("Settings: theme (no density), and the configuration this bridge runs with (read-only)", async () => {
     await open("/settings");
     expect($("settings-appearance").querySelector('[role="group"][aria-label="Theme"]')).not.toBeNull();
-    expect($("settings-appearance").querySelector('[role="group"][aria-label="Density"]')).not.toBeNull();
+    expect($("settings-appearance").querySelector('[role="group"][aria-label="Density"]')).toBeNull();
     const cfg = $("settings-config");
     expect(cfg.textContent).toContain("laptop");
     expect(cfg.textContent).toContain("base main");

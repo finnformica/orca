@@ -107,7 +107,7 @@ const mergeConfirm = (row: Row): ConfirmOptions => ({
   confirmLabel: "Merge",
 });
 
-// `compact` renders the toolbar as icon-only buttons (dense view). The toolbar opens with the
+// `compact` renders the toolbar as icon-only buttons (the Agents row, a narrow agent-page header). The toolbar opens with the
 // state-aware quick actions (QuickActionButtons) and then `leading` — the Test / Preview control — so
 // the quick icons always sit immediately left of it; `quick={false}` leaves them to the caller (the
 // comfortable Board card puts them on its preview line). `menuOnly` is the Agents list's trailing ⋯:
@@ -178,7 +178,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   const prPreview = prPreviewState(row, previewConfigured(row.repo));
   const confirmMerge = async () => { if (await confirmDialog(mergeConfirm(row))) await run("Merge", () => merge(row))(); };
 
-  // Icon-only in compact (dense) view; labelled otherwise. `icon` keeps every toolbar button a
+  // Icon-only in compact view; labelled otherwise. `icon` keeps every toolbar button a
   // consistent square so the row lines up regardless of which verbs are present.
   const icon = compact ? "icon" : "sm";
   const iconClass = compact ? "size-7" : undefined;

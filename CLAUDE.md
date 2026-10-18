@@ -165,8 +165,8 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   PRs + worktrees, so enrichment with no branch behind it renders nothing; PRs/worktrees with no
   enrichment still render (incl. PRs not made by Orca). **There is no enrichment GC** — it existed to
   bound a 5MB localStorage bucket, and pruning is now the opposite of the goal. `localStorage` keeps
-  only per-browser UI state (theme, density, composer drafts; the shell's repo, instance scope,
-  sidebar collapse and palette recents, like the Agents list's density, sort and filters, go
+  only per-browser UI state (theme, composer drafts; the shell's repo, instance scope,
+  sidebar collapse and palette recents, like the Agents list's sort and filters, go
   through `lib/persisted.ts` — `persistedAtom` / `usePersisted`, versioned `orca.ui.v1.<name>` keys
   (`persistedKey(name, repo)` for a per-repo value), a safe parse that falls back to the default, and
   a restored repo/instance the config no longer has reads as "all" (`validChoice`); reuse it for new
@@ -334,8 +334,8 @@ toggles it, remembered) and a top bar (repo switcher, breadcrumb, and **Ask the 
 right on every page — Vercel's "Ask AI", as a BUTTON: it opens the orchestrator's side panel with its
 composer focused. It was a text box whose keystrokes carried into the composer; the quick-ask pill
 below now covers "fire off a line"). **The quick-ask pill** (`components/QuickAsk.tsx`, the `A` key):
-a small "Ask · A" pill fixed at the bottom centre of the main column (its strip starts where
-the sidebar ends, collapsed or expanded) on every page (desktop; below md the phone's bottom
+a small "Ask · A" pill at the bottom centre of the page card (its strip is absolute in
+`shell-card`, so it moves with the card edge in every frame of a dock slide, a nav change or a resize) on every page (desktop; below md the phone's bottom
 bar has the orchestrator instead) MORPHS (one surface: width, height, radius; instant under reduced
 motion) into a box for messages to the orchestrator with no history — "Ask the orchestrator...", a
 textarea three lines tall that grows to a cap (a JS fallback where `field-sizing` is unsupported), no ✕. Its input
@@ -416,8 +416,11 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   icon + title, latest instruction, status dot + duration, state pill, CI/conflict badges + the
   review cluster, PR, branch, instance, updated, the model as avatar); every action in the trailing
   ⋯ (`WorkstreamActions menuOnly`). There is no List | Board toggle any more: the list only. As the
-  page (`@container/page`) narrows, Status folds under the title, then Checks & review into the PR
-  cell (`listColumns(tier)`, `LIST_TIER_MIN_REM`); the subline clips, never overlaps.
+  LIST (`@container/list`, its own width, so the docked panel counts) narrows, Status folds under the
+  title, then Checks & review into the PR cell (`listColumns(tier)`, `LIST_TIER_MIN_REM`), and below
+  `LIST_STACK_BELOW_REM` rows stack as on a phone (measured via `afterDockMotion`). Subline items
+  that do not fit leave it behind a `+N` chip (`sublineOverflow`); its popover lists them (hover on
+  a mouse, tap on touch, never opens the row). A stacked row has no instruction line.
 - **Agent page** (the existing `/{repo}/prs/:n` and `/{repo}/local/:branch` routes,
   `views/AgentPage.tsx`): ONE compact sticky header row (`AgentHeader`: repo / title, status, branch
   or PR link, the actions) with the tabs Overview | Chat | Files | Preview directly under it, flush
@@ -432,7 +435,7 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   passing + skipped folded into one expandable line — `checkGroups`), Description and the
   **Conversation** (`prConversation`: chronological like GitHub, a counts line + Jump to unresolved,
   resolved / outdated threads on one line, long bodies behind Show more, bots in ONE folded row).
-- **Settings** (theme, density, the read-only config, then the **Repos** and **GitHub** sections,
+- **Settings** (theme, the read-only config, then the **Repos** and **GitHub** sections,
   `#repos` / `#github`) and **Integrations** (its own nav item). There is no Usage page: the
   Overview's `UsageCard` has every hydra login behind the one remembered chevron
   (`orca.ui.v1.usageExpanded`). Old URLs redirect (`REDIRECTS` in `lib/route.ts`): `/repos`,
@@ -477,8 +480,10 @@ when the board is stale ("Updated 3m ago" — a button: **Refresh everything**, 
 streams, usage, notifications, an open chat, cached review signals — re-runs at once, the icon spins until
 all settle, and past 15s it hard-reloads); an unreachable bridge shows the offline screen.
 
-The board (`web/src/views/Board.tsx`), lanes: **Local → Draft → In Review → Mergeable → Done·today**.
-A workstream is a branch; its lane (`store.laneFor`):
+There is no kanban Board view any more (its density setting went with it); the Agents list is the
+one view. A workstream still has a lane — **Local → Draft → In Review → Mergeable → Done·today** —
+which the Agents chips, `detailPath` and the bulk verbs (`views/BulkActions.tsx`) read. A workstream
+is a branch; its lane (`store.laneFor`):
 - **open PR, draft** → Draft. **open PR, approved** → Mergeable. **open PR, else** → In Review.
 - **no PR** → Local, until Promote (local repo: sets `promoted`; then Mergeable if `git merge-tree`
   is clean, else In Review). **merged today** (server-local calendar day) → Done (`gh pr list --state merged`).
@@ -607,7 +612,7 @@ Enter did nothing meanwhile.) A failed send comes back into the box if it is sti
 the error line (`<error> — not sent: “<text>”`), so neither message is lost. (History: this
 was briefly a detail-page "Chat" tab; the user asked for it as a terminal-style modal instead, and the
 tab was removed. The Vercel re-brief brought it back on the agent page — as its Chat tab and in
-Build Logs' place — alongside the modal, which the Board's cards and New chat still open.)
+Build Logs' place — alongside the modal, which an Agents row and New chat still open.)
 
 `web/src/workstream.ts` is the pure state machine (no React/IO — imported by store + tests):
 
@@ -635,7 +640,7 @@ its own and is the `@container/page` a page's layout should query (the Overview 
 window; a phone keeps the window's scroll. The edge resizes by drag or by arrow keys. **Open / close
 is branch-demo's right panel**: the panel renders INTO the dock (a portal) at its full width, shows at
 dock width 0 in the commit that opens it, and the dock's width opens on the next frame (a real 150ms
-`width` transition, none while dragging); closing moves the width in the click's OWN commit (the dock
+`width` + `min-width` transition, ease-out, min-width 0 when closed, none while dragging; the nav uses the same ease-out); closing moves the width in the click's OWN commit (the dock
 width is published from a layout effect keyed on `open && expanded`). A closed panel stays mounted —
 draft and scroll kept — clipped by the 0-wide dock, `aria-hidden`, and a focus guard once idle.
 **Measured rules (CDP traces of the production build, 4× CPU, a long orchestrator thread; method and
@@ -649,8 +654,11 @@ not subscribe to the orchestrator's open atom (it re-rendered the page). Measure
 build: dev-mode React is 3–5× slower, and an Orca preview runs dev mode.
 The page and the dock are TWO raised cards with the shell's 6px gutter between them
 (a closed dock's negative start margin cancels it); only `width` and `margin-inline-start` animate. While the dock
-or the nav animates, the page frame (`page-frame`, the `@container/page`) is held at its END width
-(`frozenPageWidth`), so the content lays out once and only the card edge moves. Nothing in the page
+or the nav animates, the page frame (`page-frame`, the `@container/page`) follows the card edge in
+EVERY frame (Finn: the content must move with the edge; PR 328's hold at the END width was wrong).
+It stays cheap with CSS only: `contain: layout paint` on the column and the frame, and
+`content-visibility: auto` on the Agents rows. `?probe=motion` (`lib/motionProbe.ts`) logs each
+slide's frames and the page / pill distance from the card edge. Nothing in the page
 may set React state per frame meanwhile: measure through `afterDockMotion` (`lib/dock.ts`); the page
 column has `contain: layout paint`, so a `fixed` element in a page must portal to `<body>`. `role=dialog`
 `aria-modal=false` — no backdrop, the board it is moving stays visible and usable; Esc or ✕ closes

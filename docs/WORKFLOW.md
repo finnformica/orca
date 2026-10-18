@@ -368,7 +368,7 @@ browser notifications in **Settings**.
 ## The UI, the keyboard and the phone
 
 - **Pages:** Overview, Agents, Previews, Repos, Usage (each Claude login through hydra, and Codex),
-  and Settings (theme, density, notifications, machine cost, and the config in read-only mode).
+  and Settings (theme, notifications, machine cost, and the config in read-only mode).
 - **Agent page:** Overview (details, failure box, PR review, checks, description, GitHub
   conversation) | Chat (the conversation and a composer) | Files | Preview.
 - **Keys:** `⌘K` palette, `C` new agent, `O` orchestrator, `A` quick ask, `F` find, `⌘B` sidebar,
