@@ -23,7 +23,7 @@ import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPa
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
 import { SLIDE_MS } from "@/components/SidePanel";
-import { dockClipElementAtom, dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, takeDockResize, useNavToggle } from "@/lib/dock";
+import { afterDockSlide, dockClipElementAtom, dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, takeDockResize, useNavToggle, writeDockWidth } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
 import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
@@ -85,6 +85,7 @@ export function Dock() {
   const setDockClip = useSetAtom(dockClipElementAtom);
   const [painted, setPainted] = useState(dock > 0);
   if (dock > 0 && !painted) setPainted(true);
+  useLayoutEffect(() => writeDockWidth(dock), [dock]); // `--dock-w`, for the pill's strip (lib/dock.ts)
   useEffect(() => {
     if (dock > 0 || !painted) return;
     const t = setTimeout(() => setPainted(false), SLIDE_MS + 150); // no transition ran (reduced motion)
@@ -107,7 +108,10 @@ export function Dock() {
 
 /** Holds the page content at its END width while the dock or the nav animates (`frozenPageWidth`):
  *  the content lays out once at the start, and only the page card's edge moves over it. Cleared once
- *  the slide is over, so the page follows a window resize again. It READS NO LAYOUT in the commit
+ *  the slide is over (`afterDockSlide`: its transitionend — a timer from the commit fired mid-slide on
+ *  a heavy page, and the content snapped back to the in-flight width), so the page follows a window
+ *  resize again. The sequence is one step each way: open C → C − dock − gutter, then released at that
+ *  width; close the reverse. It READS NO LAYOUT in the commit
  *  (measured: a getBoundingClientRect / clientWidth here forced a ~100ms style + layout pass at 4×
  *  CPU): the column's width at rest comes from a ResizeObserver, and the rest is the widths the
  *  previous and the new state ASK for — exact for a reversal mid-slide too. No React state: the
@@ -117,7 +121,7 @@ function useFrozenPage(els: { col: HTMLElement | null; frame: HTMLElement | null
   dock: number, rail: boolean, narrow: boolean) {
   const was = useRef({ dock, rail });
   const restCol = useRef<number | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout>>();
+  const wait = useRef<() => void>();
   const { col, frame } = els;
   useEffect(() => {
     if (!col || typeof ResizeObserver === "undefined") return;
@@ -130,7 +134,7 @@ function useFrozenPage(els: { col: HTMLElement | null; frame: HTMLElement | null
     const prev = was.current;
     was.current = { dock, rail };
     if (!frame) return;
-    const release = () => { clearTimeout(timer.current); frame.style.width = ""; };
+    const release = () => { wait.current?.(); frame.style.width = ""; };
     if (narrow) return release();
     if (prev.dock === dock && prev.rail === rail) return;
     // A resize is not a slide: the dock took its width with no transition, and the page followed it.
@@ -141,11 +145,12 @@ function useFrozenPage(els: { col: HTMLElement | null; frame: HTMLElement | null
     const asked = (s: { dock: number; rail: boolean }) => ({ nav: s.rail ? NAV_RAIL_W : NAV_W, dock: s.dock, dockMargin: s.dock > 0 ? 0 : -SHELL_GAP });
     const end = frozenPageWidth({ col: restCol.current, ...asked(prev) }, asked({ dock, rail }));
     restCol.current = end; // the column's width at rest once this slide is over
-    clearTimeout(timer.current);
+    wait.current?.();
     frame.style.width = `${end}px`;
-    timer.current = setTimeout(release, SLIDE_MS + 60);
+    // Let go when the slide has really ended (its transitionend), never on a timer from this commit.
+    wait.current = afterDockSlide(release);
   }, [dock, rail, narrow, frame, col]);
-  useEffect(() => () => clearTimeout(timer.current), []);
+  useEffect(() => () => wait.current?.(), []);
 }
 
 /** Feeds lib/dock's motion flag from the shell's own width transitions (the dock, the nav's rail). */

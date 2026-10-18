@@ -20,7 +20,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import { Bot, Check } from "lucide-react";
 import { quickAskOpenAtom } from "@/lib/atoms";
-import { dockWidthAtom, useNavRail } from "@/lib/dock";
+import { DOCK_VAR, useNavRail } from "@/lib/dock";
 import { SLIDE_MS } from "@/components/SidePanel";
 import { sendToOrchestrator } from "@/lib/orchestratorOutbox";
 import { useOrchestrator, useOrchestratorState } from "@/components/Terminal";
@@ -40,7 +40,6 @@ const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(pre
 export function QuickAsk() {
   const [open, setOpen] = useAtom(quickAskOpenAtom);
   const collapsed = useNavRail();
-  const dock = useAtomValue(dockWidthAtom);
   const { ask } = useOrchestrator();
   // The same toolbar as every other composer — the orchestrator's model and its context ring — fed
   // from the same status poll the side panel uses, running only while the box is open.
@@ -103,10 +102,11 @@ export function QuickAsk() {
     // Below the sticky top bar and menus (z-30 / z-50) but above the page; clear of the orchestrator's
     // panel on the right and the toasts in the corner. Centred on the MAIN column, not the viewport:
     // the fixed strip starts where the sidebar ends (Shell's md:w-14 rail / md:w-60 expanded) and
-    // ends where the docked right column starts (lib/dock.ts), moving with it.
+    // ends where the docked right column starts (`--dock-w`, lib/dock.ts), moving with it: sliding on an
+    // open or a close, in the same frame as the handle during a resize (no transition then).
     <div data-slot="quick-ask" data-collapsed={collapsed}
-      className={cn("pointer-events-none fixed bottom-5 z-30 flex justify-center transition-[left,right] motion-reduce:transition-none max-md:hidden", collapsed ? "left-14" : "left-60")}
-      style={{ right: dock, transitionDuration: `${SLIDE_MS}ms` }}>
+      className={cn("pointer-events-none fixed bottom-5 z-30 flex justify-center transition-[left,right] [[data-dock-resizing]_&]:transition-none motion-reduce:transition-none max-md:hidden", collapsed ? "left-14" : "left-60")}
+      style={{ right: `var(${DOCK_VAR},0px)`, transitionDuration: `${SLIDE_MS}ms` }}>
       {/* ONE surface for both states, so the pill grows into the box rather than being swapped for it.
           `interpolate-size` lets the height animate to `auto` (Chromium; elsewhere it snaps). Solid
           card / accent fills — never a translucent hover, which let the page show through. */}

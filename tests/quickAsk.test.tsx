@@ -283,7 +283,7 @@ test("Q7: the pill is centred on the main column — its strip starts where the 
   await mount("/");
   const strip = () => $('[data-slot="quick-ask"]')!.className.split(/\s+/);
   const sidebar = () => $('[data-slot="sidebar"]')!.className.split(/\s+/);
-  const right = () => $('[data-slot="quick-ask"]')!.style.right;
+  const right = () => $('[data-slot="quick-ask"]')!.style.right.startsWith("var(--dock-w") && document.documentElement.style.getPropertyValue("--dock-w");
   // Expanded: a 15rem sidebar, a strip from 15rem to the right edge, its content centred in it.
   expect(sidebar()).toContain("md:w-60");
   expect(strip()).toEqual(expect.arrayContaining(["fixed", "left-60", "justify-center"]));

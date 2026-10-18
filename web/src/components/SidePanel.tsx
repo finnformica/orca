@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { useSwipeToDismiss } from "@/lib/gestures";
 import { cn } from "@/lib/utils";
 import { useNarrow } from "@/lib/viewport";
-import { appStarting, dockClipElementAtom, dockElementAtom, dockWidthsAtom, noteDockResize } from "@/lib/dock";
+import { appStarting, dockClipElementAtom, dockElementAtom, dockWidthsAtom, endDockResize, liveDockResize, noteDockResize } from "@/lib/dock";
 
 /** The dock's open / close: branch-demo's `transition-all` (150ms, Tailwind's default ease). */
 export const SLIDE_MS = 150;
@@ -134,14 +134,14 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
     const move = (ev: PointerEvent) => {
       last = clampPanelWidth(w0 + (x0 - ev.clientX), window.innerWidth); // the edge is on the LEFT: dragging left widens
       el.style.width = `${last}px`;
-      if (dock) dock.style.width = `${last}px`;
+      if (dock) { dock.style.width = `${last}px`; liveDockResize(last); } // the pill's strip follows too
     };
     const up = () => {
       window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
       document.body.style.cursor = "";
       dock?.removeAttribute("data-resizing");
       handle.removeAttribute("data-resizing");
-      if (dock) noteDockResize(last); // the dock already has this width: no page-frame hold for it
+      if (dock) { noteDockResize(last); endDockResize(); } // the dock already has this width: no page-frame hold for it
       setSavedWidth(last);
     };
     document.body.style.cursor = "ew-resize";
@@ -171,6 +171,8 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
       void getComputedStyle(dock).transitionProperty;
       dock.removeAttribute("data-resizing");
       noteDockResize(w);
+      liveDockResize(w);
+      endDockResize();
     }
     setSavedWidth(w);
   };
