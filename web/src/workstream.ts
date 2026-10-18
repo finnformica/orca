@@ -3320,6 +3320,44 @@ export function revealBelow(turns: Keyed[], w: TurnWindow, step = TURN_PAGE_SIZE
   return { ...w, last: e >= turns.length ? null : turns[e - 1]!.id, dir: "down" };
 }
 
+// ---- the chat's lazy mount (ChatPanel's LazyItem) ----
+// The window bounds the DOM to CHAT_WINDOW turns; inside it, only the items near the viewport mount.
+// The others are empty boxes of a known (or estimated) height, and mount as they come within
+// LAZY_MARGIN of the viewport — then stay mounted, so a Show more or an open fold is not lost. A cold
+// open of a 50-turn, 142k-character thread rendered every turn in one ~540ms commit (#305).
+
+/** Rough height (px) of a chat item that has never mounted: a line per ~80 characters at the chat's
+ *  13px × 1.6 line height, plus the bubble and the reply's header. A compact (old) turn is cut to its
+ *  first lines; a folded block of worker reports is one line. Only a guess: the real height replaces
+ *  it on mount, with the scroll position held (native scroll anchoring, else anchorShift). */
+export function estimateItemHeight(chars: number, opts: { compact?: boolean; folded?: boolean } = {}): number {
+  if (opts.folded) return 44;
+  const lines = Math.max(1, Math.ceil(chars / 80));
+  return 64 + 21 * (opts.compact ? Math.min(lines, 8) : lines);
+}
+
+/** The first item to mount at once (it and every item after it): the newest items whose estimates
+ *  fill `budget` px, so the first paint shows the tail with no empty box in view. Always the last. */
+export function eagerFrom(heights: number[], budget: number): number {
+  let sum = 0;
+  for (let i = heights.length - 1; i >= 0; i--) {
+    sum += heights[i]!;
+    if (sum >= budget) return i;
+  }
+  return 0;
+}
+
+/** Where a browser with no native scroll anchoring (Safari) must move the scroller when items change
+ *  height: by the sum of the changes of the items that were wholly ABOVE the viewport's top (`top`).
+ *  `bottom` is each item's bottom edge after the change, in the same coordinates as `top`. */
+export function anchorShift(changes: { bottom: number; delta: number }[], top: number): number {
+  let shift = 0;
+  for (const c of [...changes].sort((a, b) => a.bottom - b.bottom)) {
+    if (c.bottom - shift - c.delta <= top + 1) shift += c.delta;
+  }
+  return shift;
+}
+
 /** How many of the newest turns render in full; older ones render compact (first lines + Show more). */
 export const RECENT_FULL = 3;
 /** A reply worth collapsing when old: more than a few lines, or a structured outcome. */

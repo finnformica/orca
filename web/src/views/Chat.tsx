@@ -7,7 +7,7 @@
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
-import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, startTransition, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Loader2, Paperclip, Quote as QuoteIcon, X } from "lucide-react";
 import { cn, PipContext } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
@@ -15,7 +15,7 @@ import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
-import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight } from "../workstream";
 import { integrationMessage, type IntegrationMessage } from "../../../shared/integrations";
 import { BrandIcon, brandTitle } from "@/components/BrandIcon";
 import { activityCounts, closeOpenMarkdown, createHold, runLabel, stepDuration, stepInFlight, stepKey, stepRow, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepStatus } from "../steps";
@@ -613,6 +613,101 @@ function AgentsMarker({ turns, render }: { turns: AgentTurn[]; render: (t: Agent
   );
 }
 
+// ---- lazy mount: only the items near the viewport render (workstream.ts: estimateItemHeight) ----
+// One IntersectionObserver (rooted on the scroller) mounts an item as it comes within LAZY_MARGIN; one
+// ResizeObserver records every item's height, so an item the window unmounts comes back as a box of
+// its real height. Items that come near are mounted together, LAZY_BATCH_MS after the first, in ONE
+// transition: each commit makes Chromium walk the whole chat again (pre-paint), and one commit per
+// item made a scroll up through a cold thread drop a frame in five. An item already in view mounts
+// at once. Chrome and Firefox hold the scroll position natively when an item above the
+// viewport grows on mount (overflow-anchor); where that is missing (Safari) anchorShift does it.
+// Find in page sees only the mounted items.
+const LAZY_MARGIN = "1200px 0px";
+const LAZY_BATCH_MS = 60;
+type Lazy = {
+  heights: Map<string, number>;
+  /** Watch an item's height; and, with `show`, call it once the item is near the viewport. */
+  observe: (el: Element, id: string, show?: () => void) => () => void;
+  disconnect: () => void;
+};
+const LazyContext = createContext<Lazy | null>(null);
+function createLazy(root: () => HTMLElement | null): Lazy | null {
+  if (typeof IntersectionObserver === "undefined") return null;
+  const heights = new Map<string, number>(), ids = new Map<Element, string>(), shows = new Map<Element, () => void>();
+  const native = typeof CSS !== "undefined" && Boolean(CSS.supports?.("overflow-anchor", "auto"));
+  let io: IntersectionObserver | null = null, ro: ResizeObserver | null = null;
+  const due = new Set<() => void>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = () => {
+    clearTimeout(timer);
+    timer = undefined;
+    const now = [...due];
+    due.clear();
+    // A transition: React renders the markdown in time slices, so the scroll stays smooth meanwhile.
+    startTransition(() => { for (const show of now) show(); });
+  };
+  const setup = () => {
+    if (io) return;
+    io = new IntersectionObserver((entries) => {
+      const view = root()?.getBoundingClientRect();
+      let inView = false;
+      for (const e of entries) {
+        const show = e.isIntersecting ? shows.get(e.target) : undefined;
+        if (!show) continue;
+        due.add(show);
+        const r = e.boundingClientRect; // no layout (no rect, a 0-high root): nothing to wait for
+        if (!view?.height || !r || (r.bottom > view.top && r.top < view.bottom)) inView = true;
+      }
+      if (!due.size) return;
+      if (inView) flush();
+      else timer ??= setTimeout(flush, LAZY_BATCH_MS);
+    }, { root: root(), rootMargin: LAZY_MARGIN });
+    if (typeof ResizeObserver === "undefined") return;
+    ro = new ResizeObserver((entries) => {
+      const el = root();
+      const changes: { bottom: number; delta: number }[] = [];
+      for (const e of entries) {
+        const id = ids.get(e.target), h = (e.target as HTMLElement).offsetHeight;
+        if (id === undefined || !h) continue; // 0: not laid out (a hidden panel) — keep the last height
+        const was = heights.get(id);
+        heights.set(id, h);
+        if (!native && was !== undefined && was !== h) changes.push({ bottom: e.target.getBoundingClientRect().bottom, delta: h - was });
+      }
+      const shift = el && changes.length ? anchorShift(changes, el.getBoundingClientRect().top) : 0;
+      if (el && shift) el.scrollTop += shift;
+    });
+  };
+  return {
+    heights,
+    observe(el, id, show) {
+      setup();
+      ids.set(el, id);
+      ro?.observe(el);
+      if (show) { shows.set(el, show); io!.observe(el); }
+      return () => {
+        ro?.unobserve(el);
+        ids.delete(el);
+        if (show) { shows.delete(el); due.delete(show); io?.unobserve(el); }
+      };
+    },
+    disconnect() { clearTimeout(timer); io?.disconnect(); ro?.disconnect(); },
+  };
+}
+/** One item of the list: its content once near the viewport (or `eager`, the newest ones), before
+ *  that an empty box of its last height or `estimate`. Once mounted it stays mounted. */
+function LazyItem({ id, eager, estimate, children }: { id: string; eager: boolean; estimate: number; children: ReactNode }) {
+  const lazy = useContext(LazyContext);
+  const [shown, setShown] = useState(eager || !lazy);
+  if (eager && !shown) setShown(true); // became one of the newest (the window moved back to the tail)
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!lazy || !ref.current) return;
+    return lazy.observe(ref.current, id, shown ? undefined : () => setShown(true));
+  }, [lazy, id, shown]);
+  return shown ? <div ref={ref} data-slot="chat-item">{children}</div>
+    : <div ref={ref} data-slot="chat-item" data-pending="" style={{ height: lazy?.heights.get(id) ?? estimate }} />;
+}
+
 const STATE_TONE = { answered: "text-geist-green", "in progress": "text-geist-blue", failed: "text-red-400", stopped: "text-amber-400" } as const;
 
 /** The collapsed line of an outside message: logo, sender, place, one line of what they wrote, the
@@ -747,6 +842,10 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   const winRef = useRef(win);
   winRef.current = win;
   const toTail = useRef(false); // jump-to-latest: scroll down once the window is back at the tail
+  // Inside the window, only the items near the viewport mount (LazyItem). Made once per panel.
+  const [lazy] = useState(() => createLazy(() => scroller.current));
+  useEffect(() => () => lazy?.disconnect(), [lazy]);
+  const seek = useRef(0); // jump-to-latest's smooth scroll in flight (its ticket); a wheel or touch cancels it
   const cursors = useRef(new Map<string, number>()); // per-run high-water mark, for reconnect catch-up
   const latestAsked = useRef(0), latestApplied = useRef(0); // loadLatest's request order (see there)
   // Reply text streaming in for a running turn (claude's partial messages), by run id — shown under
@@ -895,7 +994,19 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     setAtTail(true);
     setUnseen(false);
     if (winRef.current.last !== null) { toTail.current = true; setWin(TAIL_WINDOW); return; } // remount the tail, then go there
-    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
+    const el = scroller.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    // Items that mount below the viewport on the way down make the end move: when the smooth scroll
+    // stops short of it, finish the jump at once.
+    const ticket = ++seek.current;
+    const land = () => {
+      if (seek.current !== ticket) return;
+      seek.current++;
+      if (!atBottom(el.scrollTop, el.scrollHeight, el.clientHeight, FOLLOW_SLACK)) el.scrollTo({ top: el.scrollHeight });
+    };
+    if ("onscrollend" in el) el.addEventListener("scrollend", land, { once: true });
+    setTimeout(land, 1000); // no scrollend (Safari), or nothing to scroll
   };
   const [queued, setQueued] = useState<QueuedMessage[]>([]);
   // Only the NEWEST read applies: a slow read from before a dispatch must not restore the entry.
@@ -995,13 +1106,19 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadStepsFor={loadStepsFor} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} />;
   const renderTurns = (list: AgentTurn[]) => {
     const items = chatItems(list, newest.answer);
+    // The newest items that fill about one and a half screens mount at once; the rest as they near
+    // the viewport. Your newest message and the newest answer are full height (never compact).
+    const estimates = items.map((item) => item.kind !== "turn" ? estimateItemHeight(0, { folded: true }) // a collapsed row: worker reports, an outside message
+      : estimateItemHeight((item.turn.instruction?.length ?? 0) + (item.turn.response?.length ?? 0),
+        { compact: (position.get(item.turn.id) ?? 0) < compactBefore && item.turn !== newest.answer }));
+    const eager = eagerFrom(estimates, 1.5 * (scroller.current?.clientHeight || (typeof window === "undefined" ? 900 : window.innerHeight)));
     let prev: number | undefined;
-    return items.map((item) => {
+    return items.map((item, i) => {
       const first = item.kind === "agents" ? item.turns[0]! : item.turn;
       const divider = first.startedAt && (prev === undefined || !sameDay(prev, first.startedAt));
       prev = (item.kind === "agents" ? item.turns[item.turns.length - 1]! : item.turn).startedAt ?? prev;
       return (
-        <div key={first.id}>
+        <LazyItem key={first.id} id={first.id} eager={i >= eager} estimate={estimates[i]! + (divider ? 40 : 0)}>
           {divider && (
             <div className="text-muted-foreground my-3 flex items-center gap-3 text-[10px] tracking-widest uppercase" data-slot="chat-day">
               <span className="h-px flex-1 bg-border" /><span>{dayLabel(first.startedAt!)}</span><span className="h-px flex-1 bg-border" />
@@ -1010,7 +1127,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
           {item.kind === "turn" ? chatTurn(item.turn)
             : item.kind === "integration" ? <IntegrationBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} />
             : <AgentsMarker turns={item.turns} render={chatTurn} />}
-        </div>
+        </LazyItem>
       );
     });
   };
@@ -1020,6 +1137,8 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
       <div
         ref={scroller}
         onScroll={onScroll}
+        onWheel={() => { seek.current++; }}
+        onTouchStart={() => { seek.current++; }}
         // overscroll-contain: hitting the chat's top or bottom must not hand the gesture to the page —
         // it did, and the page then kept scrolling when you turned back to scroll the chat up.
         className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain bg-neutral-950 leading-relaxed ${size === "page" ? "px-4 py-3 md:px-6" : "p-3"} font-sans text-[13px] text-neutral-200 [&_.prose]:text-[13px]`}
@@ -1056,7 +1175,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
         )}
         {turns === null ? <ChatSkeleton rows={4} />
           : turns.length === 0 ? <p className="text-neutral-500">No history yet for <span className="text-neutral-300">{row.branch}</span>. Send a message below to start.</p>
-          : <DraftContext.Provider value={drafts}>{renderTurns(shownTurns!)}</DraftContext.Provider>}
+          : <LazyContext.Provider value={lazy}><DraftContext.Provider value={drafts}>{renderTurns(shownTurns!)}</DraftContext.Provider></LazyContext.Provider>}
         {hiddenBelow > 0 && (
           <div className="mb-3 flex justify-center" data-slot="chat-newer">
             <button type="button" onClick={() => setWin(revealBelow(turns ?? [], win))} className="rounded-md border border-neutral-800 px-2 py-0.5 text-[11px] text-neutral-400 hover:text-neutral-200">
