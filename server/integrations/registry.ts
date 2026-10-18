@@ -11,6 +11,7 @@ import * as router from "./router";
 import * as store from "./store";
 import { SLACK_CAPS, slackAdapter } from "./adapters/slack";
 import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
+import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
 const metas = new Map<AdapterKind, AdapterMeta>();
@@ -24,6 +25,11 @@ export function register(kind: AdapterKind, factory: AdapterFactory, meta?: Omit
 }
 register("slack", slackAdapter, { label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "ORCA_SECRET_SLACK_BOT", help: "A bot token (xoxb-…). Invite the bot to each linked channel." });
 register("webhook", webhookAdapter, { label: "Webhook", caps: WEBHOOK_CAPS, place: "hook", secretExample: "ORCA_SECRET_WEBHOOK", help: "Signed POSTs to /api/integrations/<id>/inbound (HMAC sha256 of the body)." });
+register("discord", discordAdapter, {
+  label: "Discord", caps: DISCORD_CAPS, place: "channel", secretExample: "ORCA_SECRET_DISCORD_BOT",
+  config: [{ key: "dmLink", label: "DM link id (optional)", placeholder: "the link DMs go to; empty = the * link" }],
+  help: "A bot token with the Message Content intent. Run it on one instance only. Setup: docs/integrations/discord.md.",
+});
 
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */
 export function kinds(): AdapterMeta[] {
