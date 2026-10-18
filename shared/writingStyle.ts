@@ -15,3 +15,13 @@ export const WRITING_STYLE = [
   "- Keep paragraphs short. Use a numbered list for steps and a bulleted list for other sequences.",
   "- Do not apply STE to code, identifiers, file paths, commands, hashes, quoted error text or quoted user words. Keep those exactly as they are.",
 ].join("\n");
+
+/** When to emit a snippet block: the chat renders each fenced block as a card with one Copy button
+ *  (web/src/components/Snippet.tsx). Worker prompts and every orchestrator wake carry it — NOT the PR
+ *  description prompt, whose whole output is the text to paste. */
+export const SNIPPETS = [
+  "## Snippets",
+  "Put text that the user will paste in a fenced code block: commands, PR text, plans and config. The chat shows each block with a Copy button.",
+  "- Give the language after the fence. Add a title when it helps: ```bash title=Deploy",
+  "- Use ```plan or ```md for a plan or PR text. The chat shows it as formatted text, and Copy gives the markdown.",
+].join("\n");

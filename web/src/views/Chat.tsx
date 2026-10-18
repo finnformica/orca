@@ -21,6 +21,7 @@ import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent"
 import { ChatComposer } from "@/components/ChatComposer";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { ShotThumbs } from "@/components/Screenshots";
+import { snippetPre } from "@/components/Snippet";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { subscribeTurns } from "@/lib/events";
@@ -69,6 +70,8 @@ const markdownTable = ({ children }: { children?: ReactNode }) => (
 const markdownCell = (Tag: "th" | "td") => ({ children }: { children?: ReactNode }) =>
   <Tag className="min-w-32">{children}</Tag>;
 const tableComponents = { table: markdownTable, th: markdownCell("th"), td: markdownCell("td") };
+/** Every fenced code block is a snippet card with a Copy button (components/Snippet.tsx). */
+const chatComponents = { img: markdownImg, ...tableComponents, pre: snippetPre({ img: markdownImg, ...tableComponents }) };
 
 /** Markdown inside the terminal-styled log: prose spacing and readable lists, but sized and coloured
  *  to sit in the chat's window rather than looking like a pasted document. `tone` overrides the body
@@ -90,7 +93,7 @@ const ChatMarkdown = ({ children, tone = "text-neutral-300" }: { children: strin
     "prose-strong:text-neutral-200",
     "prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none",
     "prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400", tone)}>
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: markdownImg, ...tableComponents }}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={chatComponents}>{children}</ReactMarkdown>
   </div>
 );
 
@@ -107,7 +110,7 @@ const FacetMarkdown = ({ children }: { children: string }) => (
     prose-strong:text-neutral-200
     prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none
     prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400">
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ p: ({ children: c }) => <>{c}</>, img: markdownImg, ...tableComponents }}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ ...chatComponents, p: ({ children: c }) => <>{c}</> }}>{children}</ReactMarkdown>
   </div>
 );
 
