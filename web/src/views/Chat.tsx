@@ -7,7 +7,7 @@
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Loader2, Paperclip, Quote as QuoteIcon, X } from "lucide-react";
 import { cn, PipContext } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
@@ -76,8 +76,10 @@ const chatComponents = { img: markdownImg, ...tableComponents, pre: snippetPre({
 /** Markdown inside the terminal-styled log: prose spacing and readable lists, but sized and coloured
  *  to sit in the chat's window rather than looking like a pasted document. `tone` overrides the body
  *  text colour (a worker report's folded body reads dimmer than a turn's own reply) without forking
- *  the renderer, its table handling, or its prose setup. */
-const ChatMarkdown = ({ children, tone = "text-neutral-300" }: { children: string; tone?: string }) => (
+ *  the renderer, its table handling, or its prose setup. `memo`: parsing markdown is the costliest
+ *  thing a chat render does (measured: ~300ms commits re-parsing a long orchestrator thread on every
+ *  open and close of its panel), and the text of a finished turn never changes. */
+const ChatMarkdown = memo(({ children, tone = "text-neutral-300" }: { children: string; tone?: string }) => (
   // wrap-anywhere: the agent's prose is full of unbreakable tokens (`branch/names-with-hashes`,
   // paths, run ids) that are wider than a narrow window, and one of them made the whole log scroll
   // sideways. Code BLOCKS are exempt — they keep their lines and scroll inside themselves.
@@ -95,7 +97,7 @@ const ChatMarkdown = ({ children, tone = "text-neutral-300" }: { children: strin
     "prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400", tone)}>
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={chatComponents}>{children}</ReactMarkdown>
   </div>
-);
+));
 
 /** Markdown for a single Facet item (Remaining / Decisions / Verification / Commits): same renderer
  *  and prose palette as ChatMarkdown, but a paragraph renders inline rather than as its own <p> — the
@@ -103,7 +105,7 @@ const ChatMarkdown = ({ children, tone = "text-neutral-300" }: { children: strin
  *  nested sub-bullet or a stray `##` sub-heading the parser kept verbatim (see shared/agent.ts
  *  sectionValue) still renders as its own block — a real nested list, or a heading — beneath the
  *  item's text. */
-const FacetMarkdown = ({ children }: { children: string }) => (
+const FacetMarkdown = memo(({ children }: { children: string }) => (
   <div className="prose prose-invert prose-sm max-w-none wrap-anywhere text-neutral-300
     prose-headings:mt-1 prose-headings:mb-0.5 prose-headings:text-xs prose-headings:text-neutral-200
     prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1
@@ -112,7 +114,7 @@ const FacetMarkdown = ({ children }: { children: string }) => (
     prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400">
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ ...chatComponents, p: ({ children: c }) => <>{c}</> }}>{children}</ReactMarkdown>
   </div>
-);
+));
 
 /** Open/closed with the height animated: a grid row going 1fr ↔ 0fr animates to the content's own
  *  height with nothing measured, and the opacity rides along (~200ms; none under reduced motion).
@@ -480,14 +482,21 @@ function Reply({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () =
   );
 }
 
-const clockOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "");
+// ONE formatter: `toLocaleTimeString` builds a new one on every call, and a chat render calls this per
+// turn (it showed in the panel's open / close profile).
+const CLOCK = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+const clockOf = (ms?: number) => (ms ? CLOCK.format(ms) : "");
 
 /** One exchange, as a modern assistant chat rather than a terminal log. What you said is a tinted
  *  bubble on the right; the agent (`author`: the orchestrator, else the turn's provider) answers on
  *  the left under its name, in readable prose; its tool steps and worker reports stay folded; the time shows on hover
  *  (and days are grouped by the divider ChatPanel draws). Colours are the theme's tokens, so it
  *  follows light and dark like the rest of the console. */
-function ChatTurn({ turn, loadSteps, compact, newestSaid, onQuote, author }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote: (text: string) => void; author?: string }) {
+// Memoized, with only stable props (the turn, flags, two stable callbacks): a re-render of the panel —
+// every open sets a new composer prefill — must not render the whole thread again (measured: ~60ms per
+// open with a long orchestrator thread at 4× CPU in production, ~250ms in dev).
+const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSaid, onQuote, author }: { turn: AgentTurn; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote: (text: string) => void; author?: string }) {
+  const loadSteps = loadStepsFor && (() => loadStepsFor(turn));
   const parts = splitMessages(turn.instruction ?? promptInstruction(turn.prompt));
   // A wake that carried your messages AND worker reports: your words in bubbles — one per message you
   // sent, however many one wake drained — and the reports folded.
@@ -541,7 +550,7 @@ function ChatTurn({ turn, loadSteps, compact, newestSaid, onQuote, author }: { t
       </div>
     </div>
   );
-}
+});
 
 /** An old turn's reply, cut to its first lines with a Show more — the history reads as a list of
  *  exchanges, not a wall of past answers. The newest RECENT_FULL turns always render in full. */
@@ -630,7 +639,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   // twice in a row.
   const [insert, setInsert] = useState<{ text: string; seq: number } | null>(null);
   const insertSeq = useRef(0);
-  const onQuote = (text: string) => setInsert({ text: quoteMarkdown(text), seq: ++insertSeq.current });
+  const onQuote = useCallback((text: string) => setInsert({ text: quoteMarkdown(text), seq: ++insertSeq.current }), []);
   const submit = async (text: string, images: File[]) => {
     const id = ++sendSeq.current;
     follow.current = true; // you just spoke: jump to it, wherever you had scrolled
@@ -911,8 +920,8 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   const compactBefore = (turns?.length ?? 0) - RECENT_FULL;
   // Your newest message and the newest answer are never clamped or folded, at any age.
   const newest = newestMessages(turns ?? []);
-  const stepsOf = (turn: AgentTurn) => () => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response));
-  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadSteps={stepsOf(turn)} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} />;
+  const loadStepsFor = useCallback((turn: AgentTurn) => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response)), [row.repo, row.branch]);
+  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadStepsFor={loadStepsFor} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} />;
   const renderTurns = (list: AgentTurn[]) => {
     const items = chatItems(list, newest.answer);
     let prev: number | undefined;

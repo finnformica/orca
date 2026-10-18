@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { createPortal } from "react-dom";
 import { ArrowLeft, Bot, PictureInPicture2, PanelBottomClose, X } from "lucide-react";
@@ -8,7 +8,7 @@ import type { ChatControlsProps, CompactControl } from "@/components/ChatControl
 import { api } from "../api";
 import { useWorkstreams, type Row } from "../store";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, orchestratorStatus } from "../workstream";
-import { PanelHeader, SidePanel, usePanelWidth, type SwipeProps } from "@/components/SidePanel";
+import { PanelHeader, SidePanel, usePanelWidth, useSlideSettled, type SwipeProps } from "@/components/SidePanel";
 import { PipContext, PortalContainer, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
@@ -127,10 +127,11 @@ export function ActivityDot({ activity, className }: { activity: { running: bool
  *  a text box whose keystrokes carried into the composer; a box in the chrome that isn't where the
  *  text ends up is one more thing to learn, and the quick-ask pill now covers "fire off a line".) */
 export function AskOrchestrator() {
-  const { ask } = useOrchestrator();
+  // A toggle: the panel is a docked column on a desktop, so the button that opens it also closes it.
+  const { ask, open, close } = useOrchestrator();
   const activity = useAtomValue(orchestratorActivityAtom);
   return (
-    <button type="button" data-slot="ask-orchestrator" onClick={() => ask()} aria-label="Ask the orchestrator"
+    <button type="button" data-slot="ask-orchestrator" onClick={() => (open ? close() : ask())} aria-label="Ask the orchestrator" aria-expanded={open}
       // Shell.tsx wraps this with the header's usage meter in one ml-auto slot, so this button stays
       // right-aligned whether or not the meter renders (it's absent while loading or signed out).
       // Below md the bottom bar's Orchestrator button takes its place.
@@ -180,15 +181,18 @@ function OrchestratorStatusLine({ state }: { state: { running: boolean; startedA
 export type OrchestratorState = { key: string; running: boolean; paused: boolean; model: string; contextPct?: number; lastWakeUsd?: number; hint?: string; startedAt?: number; queued?: number };
 export function useOrchestratorState(active: boolean, win: Window = window) {
   const [state, setState] = useState<OrchestratorState | null>(null);
-  const load = () => api.orchestrator().then(setState).catch(() => {});
+  // Stable (useCallback / useMemo): the panel passes these to its chat, which is memoized — a new
+  // object each render re-rendered the whole long thread on every open and close of the panel.
+  const load = useCallback(() => api.orchestrator().then(setState).catch(() => {}), []);
   useEffect(() => {
     if (!active) return;
     return poll(load, 2000, win);
   }, [active, win]);
-  const controls: ChatControlsProps = {
-    model: state?.model ?? ORCHESTRATOR_DEFAULT_MODEL, only: "claude", contextPct: state?.contextPct,
-    onModel: (model) => { setState((s) => (s ? { ...s, model } : s)); void api.orchestratorModel(model).then(load); },
-  };
+  const model = state?.model ?? ORCHESTRATOR_DEFAULT_MODEL, contextPct = state?.contextPct;
+  const controls: ChatControlsProps = useMemo(() => ({
+    model, only: "claude", contextPct,
+    onModel: (m: string) => { setState((s) => (s ? { ...s, model: m } : s)); void api.orchestratorModel(m).then(load); },
+  }), [model, contextPct, load]);
   const [compacting, setCompacting] = useState<"sent" | "started" | null>(null);
   const [compactError, setCompactError] = useState<string>();
   useEffect(() => { if (compacting === "started" && state && !state.running) setCompacting(null); }, [compacting, state]);
@@ -226,7 +230,9 @@ export function OrchestratorPanel() {
   const [pip, setPip] = useState<Window | null>(null);
   // The poll runs on the PiP window's timers while popped out: that window is the visible one, and
   // a hidden tab's timers get throttled (to once a minute after a while).
-  const { state, load, controls } = useOrchestratorState(open, pip ?? window);
+  // It starts after the slide: its first answer re-renders the header, which must not land in the
+  // slide's frames.
+  const { state, load, controls } = useOrchestratorState(useSlideSettled(open), pip ?? window);
   // Closing drops the pending ask, so a later open can't re-apply it to a freshly mounted composer.
   useEffect(() => { if (!open) { pip?.close(); setPrefill(null); } }, [open]);
   // An ask while popped out lands in the PiP window's composer; bring that window forward.
@@ -268,10 +274,11 @@ export function OrchestratorPanel() {
     w.addEventListener("pagehide", () => { savePipSize(w); setPip(null); setTimeout(syncEvents); }, { once: true });
     setPip(w);
   };
-  const row: Row = {
+  const key = state?.key, running = !!state?.running;
+  const row: Row = useMemo(() => ({
     repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
-    worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
-  };
+    worktreePath: key, agentStatus: running ? "running" : "idle",
+  }), [key, running]);
   // Width: dragged from the panel's left edge (SidePanel), remembered per browser, clamped to the
   // viewport. Read here too for the Pop out window's first size.
   const { width } = usePanelWidth(orchestratorWidthAtom);
@@ -389,7 +396,8 @@ export function OrchestratorPage() {
 /** The orchestrator's conversation — the panel's and the page's — is the one ChatPanel every chat
  *  uses, with its replies under "Orchestrator", its messages through the shared outbox, and the
  *  composer's toolbar (Claude models only; changing the model keeps the session) fed its own values. */
-function OrchestratorChat({ row, prefill, controls, load }: { row: Row; prefill: OrchestratorPrefill | null; controls: ChatControlsProps; load: () => Promise<unknown> }) {
+/** Memoized: an open or close of the panel re-renders the panel, never this (its props are stable). */
+const OrchestratorChat = memo(function OrchestratorChat({ row, prefill, controls, load }: { row: Row; prefill: OrchestratorPrefill | null; controls: ChatControlsProps; load: () => Promise<unknown> }) {
   return (
     <ChatPanel
       row={row} author="Orchestrator" prefill={prefill} outbox controls={controls}
@@ -399,7 +407,7 @@ function OrchestratorChat({ row, prefill, controls, load }: { row: Row; prefill:
       }}
     />
   );
-}
+});
 
 type DocumentPip = { requestWindow(size: { width: number; height: number }): Promise<Window> };
 const pipApi = () => (window as unknown as { documentPictureInPicture?: DocumentPip }).documentPictureInPicture;

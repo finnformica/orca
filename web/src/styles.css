@@ -74,6 +74,9 @@
   /* Geist's menu / popover and modal shadows — the only shadows in the app. */
   --geist-shadow-menu: 0px 1px 1px rgba(0, 0, 0, 0.02), 0px 4px 8px -4px rgba(0, 0, 0, 0.04), 0px 16px 24px -8px rgba(0, 0, 0, 0.06);
   --geist-shadow-modal: 0px 1px 1px rgba(0, 0, 0, 0.02), 0px 8px 16px -4px rgba(0, 0, 0, 0.04), 0px 24px 32px -8px rgba(0, 0, 0, 0.06);
+  /* The shell card's raised edge (branch-demo's shadow-ring-xs): a hairline ring plus a soft lift. The
+     ONE shadow outside menus and modals — the page and the docked panel float on the themed canvas. */
+  --shell-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 2px 4px 0 rgba(0, 0, 0, 0.04), 0 1px 1px 0 rgba(0, 0, 0, 0.02), 0 0 4px 0 rgba(0, 0, 0, 0.04);
 }
 
 .dark {
@@ -118,6 +121,7 @@
   --geist-error-bg: #2a0e0f;
   --geist-shadow-menu: 0px 1px 1px rgba(0, 0, 0, 0.4), 0px 4px 8px -4px rgba(0, 0, 0, 0.5), 0px 16px 24px -8px rgba(0, 0, 0, 0.6);
   --geist-shadow-modal: 0px 1px 1px rgba(0, 0, 0, 0.4), 0px 8px 16px -4px rgba(0, 0, 0, 0.5), 0px 24px 32px -8px rgba(0, 0, 0, 0.6);
+  --shell-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 2px 8px 0 rgba(0, 0, 0, 0.3), 0 1px 2px 0 rgba(0, 0, 0, 0.4);
 }
 
 @theme inline {
@@ -130,6 +134,7 @@
   --text-xs--line-height: 1rem;
   --shadow-menu: var(--geist-shadow-menu);
   --shadow-modal: var(--geist-shadow-modal);
+  --shadow-shell: var(--shell-shadow);
   --color-sidebar: var(--sidebar);
   --color-server: var(--server);
   --color-server-soft: var(--server-soft);
@@ -287,10 +292,10 @@
   /* Reserve the scrollbar's gutter from first paint. Without it the page is short until the first
      poll lands, then a classic (non-overlay) scrollbar appears and the whole top bar's right side,
      "Ask the orchestrator" included, jumps ~15px left. Overlay scrollbars (phones, most Macs) take
-     no gutter, so nothing changes there. */
-  html {
-    scrollbar-gutter: stable;
-  }
+     no gutter, so nothing changes there. On a desktop the page column scrolls on its own (Shell's
+     `page-scroll`) and reserves the gutter itself, so <html> does it only on a phone — a gutter on
+     <html> was an empty strip beside the docked panel. */
+  /* (the rule itself: in the phone block below) */
   /* Radix's scroll lock (react-remove-scroll-bar) adds margin-right = innerWidth - clientWidth to the
      body while a menu or dialog is open. With the gutter reserved that is the gutter itself, and the
      page jumped left on every open. The gutter already holds the space, so no margin is needed. */
@@ -369,6 +374,10 @@ dialog[data-bottom-sheet][data-closing]::backdrop {
 }
 
 @media (max-width: 767px) {
+  /* The scrollbar gutter, reserved on <html> (see the note in the base layer). */
+  html {
+    scrollbar-gutter: stable;
+  }
   /* Nothing scrolls sideways: wide content wraps or scrolls inside its own box. */
   html,
   body {
