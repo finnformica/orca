@@ -572,33 +572,35 @@ function Subline({ items }: { items: (SublineItem | false | null | undefined | "
   );
 }
 
-/** The `+N` chip: hover opens its card on a mouse, a tap or click toggles it (a hover card ignores
- *  touch, so this is a popover), and neither the tap nor a click in the card opens the row. */
+/** The `+N` chip: hover opens its card on a mouse, a click or tap pins it open until a second one
+ *  (or Esc, or a click outside) closes it — a hover card ignores touch, so this is a popover. Neither
+ *  the tap nor a click in the card opens the row. */
 function SublineMore({ items }: { items: SublineItem[] }) {
   const [open, setOpen] = useState(false);
+  const pinned = useRef(false); // opened by a click or tap: leaving with the pointer keeps it open
   const closing = useRef<ReturnType<typeof setTimeout>>(undefined);
   const hover = (on: boolean) => (e: { pointerType: string }) => {
-    if (e.pointerType !== "mouse") return;
+    if (e.pointerType !== "mouse" || pinned.current) return;
     clearTimeout(closing.current);
     if (on) setOpen(true);
     else closing.current = setTimeout(() => setOpen(false), 150);
   };
   useEffect(() => () => clearTimeout(closing.current), []);
-  // A mouse click lands after the hover already opened the card: it keeps it open, never toggles it
-  // shut. A tap or a key toggles. preventDefault skips Radix's own toggle.
-  const pointer = useRef("");
+  // preventDefault skips Radix's own toggle: the hover may already have opened the card, so a click
+  // pins it rather than toggling it shut.
   const onClick = (e: MouseEvent<HTMLButtonElement>) => {
     e.stopPropagation();
     e.preventDefault();
     clearTimeout(closing.current);
-    setOpen((o) => (pointer.current === "mouse" ? true : !o));
-    pointer.current = "";
+    pinned.current = !pinned.current;
+    setOpen(pinned.current);
   };
+  const onOpenChange = (o: boolean) => { if (!o) pinned.current = false; setOpen(o); };
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={onOpenChange}>
       <PopoverTrigger asChild>
         <button type="button" data-slot="subline-more" aria-label={`${items.length} more: ${items.map((i) => i.key).join(", ")}`}
-          onClick={onClick} onPointerDown={(e) => { pointer.current = e.pointerType; }} onPointerEnter={hover(true)} onPointerLeave={hover(false)}
+          onClick={onClick} onPointerEnter={hover(true)} onPointerLeave={hover(false)}
           className="bg-muted text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 inline-flex h-4 shrink-0 items-center rounded-sm px-1.5 text-[11px] font-medium tabular-nums outline-none focus-visible:ring-2">
           +{items.length}
         </button>
@@ -606,9 +608,9 @@ function SublineMore({ items }: { items: SublineItem[] }) {
       <PopoverContent align="start" side="bottom" data-slot="subline-more-card" className="w-auto max-w-80 p-0 text-xs"
         onOpenAutoFocus={(e) => e.preventDefault()} onClick={(e) => e.stopPropagation()}
         onPointerEnter={hover(true)} onPointerLeave={hover(false)}>
-        {/* One item a line; an item's own leading "·" (the PR preview link draws one) is dropped here. */}
+        {/* One item a line; an item's own leading "·" (the PR preview link draws one) is hidden here. */}
         <ul className="divide-y">
-          {items.map((i) => <li key={i.key} data-subline-hidden={i.key} className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-1 px-3 py-2 break-words [&>span>[aria-hidden=true]:first-child]:hidden">{i.node}</li>)}
+          {items.map((i) => <li key={i.key} data-subline-hidden={i.key} className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-1 px-3 py-2 break-words [&>[aria-hidden=true]:first-child]:hidden">{i.node}</li>)}
         </ul>
       </PopoverContent>
     </Popover>

@@ -467,7 +467,7 @@ describe("agents list by its own width", () => {
     expect(card).not.toBeNull();
     expect([...card.querySelectorAll<HTMLElement>("[data-subline-hidden]")].map((li) => li.dataset.sublineHidden)).toEqual(hidden);
     expect(card.querySelector('[data-slot="diffstat"]')!.textContent).toBe("+120 −34"); // in full, not clipped
-    // A second tap closes it; on a mouse, the hover opens it and the click keeps it open.
+    // A second tap closes it; on a mouse, the hover opens it and the click pins it: leaving keeps it.
     const cardOpen = () => document.body.querySelector('[data-slot="subline-more-card"]') !== null;
     await act(async () => { chip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" })); chip.click(); await flush(); await flush(); });
     expect(cardOpen()).toBe(false);
@@ -478,6 +478,12 @@ describe("agents list by its own width", () => {
     });
     expect(cardOpen()).toBe(true);
     await act(async () => { chip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" })); chip.click(); await flush(); await flush(); });
+    expect(cardOpen()).toBe(true);
+    await act(async () => {
+      chip.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, pointerType: "mouse" }));
+      chip.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" }));
+      await new Promise((r) => setTimeout(r, 200)); await flush();
+    });
     expect(cardOpen()).toBe(true);
     expect(location.pathname).toBe(path);
     // A click inside the card does not open the row either.
