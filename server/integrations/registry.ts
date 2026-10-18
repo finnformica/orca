@@ -29,7 +29,10 @@ register("slack", slackAdapter, { label: "Slack", caps: SLACK_CAPS, place: "chan
 register("webhook", webhookAdapter, { label: "Webhook", caps: WEBHOOK_CAPS, place: "hook", secretExample: "ORCA_SECRET_WEBHOOK", help: "Signed POSTs to /api/integrations/<id>/inbound (HMAC sha256 of the body)." });
 register("discord", discordAdapter, {
   label: "Discord", caps: DISCORD_CAPS, place: "channel", secretExample: "ORCA_SECRET_DISCORD_BOT",
-  config: [{ key: "dmLink", label: "DM link id (optional)", placeholder: "the link DMs go to; empty = the * link" }],
+  config: [
+    { key: "dmLink", label: "DM link id (optional)", placeholder: "the link DMs go to; empty = the * link" },
+    { key: "threads", label: "Threads (optional)", placeholder: "true = a thread for each request; empty = reply in place" },
+  ],
   help: "A bot token with the Message Content intent. Only one bridge runs it, also on Automatic. Setup: docs/integrations/discord.md.",
 });
 
