@@ -23,7 +23,7 @@ import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPa
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
 import { SLIDE_MS } from "@/components/SidePanel";
-import { dockElementAtom, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
+import { dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
 import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
@@ -95,32 +95,41 @@ export function Dock() {
 
 /** Holds the page content at its END width while the dock or the nav animates (`frozenPageWidth`):
  *  the content lays out once at the start, and only the page card's edge moves over it. Cleared once
- *  the slide is over, so the page follows a window resize again. No React state: the frame's style
- *  is written directly. */
-function useFrozenPage(els: { col: HTMLElement | null; frame: HTMLElement | null; nav: HTMLElement | null; dock: HTMLElement | null },
+ *  the slide is over, so the page follows a window resize again. It READS NO LAYOUT in the commit
+ *  (measured: a getBoundingClientRect / clientWidth here forced a ~100ms style + layout pass at 4×
+ *  CPU): the column's width at rest comes from a ResizeObserver, and the rest is the widths the
+ *  previous and the new state ASK for — exact for a reversal mid-slide too. No React state: the
+ *  frame's style is written directly. */
+function useFrozenPage(els: { col: HTMLElement | null; frame: HTMLElement | null },
   dock: number, rail: boolean, narrow: boolean) {
   const was = useRef({ dock, rail });
+  const restCol = useRef<number | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>();
+  const { col, frame } = els;
+  useEffect(() => {
+    if (!col || typeof ResizeObserver === "undefined") return;
+    // At rest only: the frame is not held, and nothing animates.
+    const ro = new ResizeObserver(([e]) => { if (e && !dockMoving() && !frame?.style.width) restCol.current = e.contentRect.width; });
+    ro.observe(col);
+    return () => ro.disconnect();
+  }, [col, frame]);
   useLayoutEffect(() => {
     const prev = was.current;
     was.current = { dock, rail };
-    const { col, frame, nav, dock: dockEl } = els;
     if (!frame) return;
     const release = () => { clearTimeout(timer.current); frame.style.width = ""; };
-    if (narrow || !col || !nav || !dockEl || dockEl.hasAttribute("data-resizing")) return release();
+    if (narrow) return release();
     if (prev.dock === dock && prev.rail === rail) return;
-    // Read BEFORE the transitions advance: the in-flight (start) widths.
-    const now = {
-      col: col.clientWidth,
-      nav: nav.getBoundingClientRect().width,
-      dock: dockEl.getBoundingClientRect().width,
-      dockMargin: parseFloat(getComputedStyle(dockEl).marginInlineStart) || 0,
-    };
-    const end = { nav: rail ? NAV_RAIL_W : NAV_W, dock, dockMargin: dock > 0 ? 0 : -SHELL_GAP };
+    // Before the observer's first report (it reports on observe, so in practice never): read it once.
+    if (restCol.current === null) restCol.current = col?.clientWidth ?? null;
+    if (restCol.current === null) return release();
+    const asked = (s: { dock: number; rail: boolean }) => ({ nav: s.rail ? NAV_RAIL_W : NAV_W, dock: s.dock, dockMargin: s.dock > 0 ? 0 : -SHELL_GAP });
+    const end = frozenPageWidth({ col: restCol.current, ...asked(prev) }, asked({ dock, rail }));
+    restCol.current = end; // the column's width at rest once this slide is over
     clearTimeout(timer.current);
-    frame.style.width = `${frozenPageWidth(now, end)}px`;
+    frame.style.width = `${end}px`;
     timer.current = setTimeout(release, SLIDE_MS + 60);
-  }, [dock, rail, narrow, els.col, els.frame, els.nav, els.dock]);
+  }, [dock, rail, narrow, frame, col]);
   useEffect(() => () => clearTimeout(timer.current), []);
 }
 
@@ -160,9 +169,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
   useDockMotion(shellEl);
   const [colEl, setColEl] = useState<HTMLElement | null>(null);
   const [frameEl, setFrameEl] = useState<HTMLElement | null>(null);
-  const [navEl, setNavEl] = useState<HTMLElement | null>(null);
-  const dockEl = useAtomValue(dockElementAtom);
-  useFrozenPage({ col: colEl, frame: frameEl, nav: navEl, dock: dockEl }, useAtomValue(dockWidthAtom), collapsed, narrow);
+  useFrozenPage({ col: colEl, frame: frameEl }, useAtomValue(dockWidthAtom), collapsed, narrow);
   useEffect(() => poll(loadIdentity, 60_000), []);
   return (
     // Desktop: branch-demo's app shell. The nav sits on the LOWER surface — the canvas, in the
@@ -178,7 +185,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
       {/* Desktop only: a phone's nav is the bottom bar + Settings (see MobileNav in views/Pages.tsx) —
           there is no off-canvas drawer any more. */}
       <aside
-        data-slot="sidebar" data-chrome="" data-collapsed={collapsed} ref={setNavEl}
+        data-slot="sidebar" data-chrome="" data-collapsed={collapsed}
         className={cn(
           "z-50 max-md:hidden md:flex md:shrink-0 md:flex-col md:overflow-hidden md:transition-[width] md:duration-150 motion-reduce:transition-none",
           collapsed ? "md:w-14" : "md:w-60",

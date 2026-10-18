@@ -10,7 +10,7 @@
 // on a desktop, the top bar's height, so the two headers and their hairlines read as one row across
 // the shell card (h-12 on a phone):
 // an icon or a Back arrow, the title over a status line, then the actions.
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useAtom, useAtomValue, useSetAtom, type WritableAtom } from "jotai";
 import { ArrowLeft } from "lucide-react";
@@ -74,34 +74,38 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
   const setDock = useSetAtom(dockWidthsAtom);
   // branch-demo's right panel, step by step. `expanded` drives the dock's width; it starts from
   // `open` only during the page load (`appStarting`: a panel open from the URL shows at once, with
-  // no slide to replay) — a panel first mounted by a later open still slides. Opening: the
-  // panel is shown (and can take focus) in the commit that opens it, at dock width 0, and the width
-  // flips to the target on the NEXT frame — so 0 → width is a real CSS transition, and the work of
-  // a first mount (the chat's first render) lands before it, not inside it. Closing: the width goes
-  // to 0 now; the panel stays painted (`shown`) until the dock's `width` transition ends.
+  // no slide to replay) — a panel first mounted by a later open still slides. Opening: the panel
+  // can take focus in the commit that opens it, at dock width 0, and the width flips to the target
+  // on the NEXT frame — so 0 → width is a real CSS transition, and the work of a first mount lands
+  // before it. Closing: the width goes to 0 in the SAME commit as the click — the dock's width is
+  // published from a layout effect keyed on `open && expanded`, with no passive-effect round trip
+  // (measured: that chain started the close ~450ms after the click at 4× CPU).
   const [expanded, setExpanded] = useState(() => open && appStarting());
-  const [shown, setShown] = useState(open);
   useEffect(() => {
-    if (open) {
-      setShown(true);
-      const id = requestAnimationFrame(() => setExpanded(true));
-      return () => cancelAnimationFrame(id);
-    }
-    setExpanded(false);
+    if (!open) { setExpanded(false); return; }
+    const id = requestAnimationFrame(() => setExpanded(true));
+    return () => cancelAnimationFrame(id);
   }, [open]);
-  useEffect(() => {
-    if (open || expanded || !shown) return;
-    const hide = () => setShown(false);
-    const end = (e: TransitionEvent) => { if (e.target === dockEl && e.propertyName === "width") hide(); };
-    dockEl?.addEventListener("transitionend", end);
-    const t = setTimeout(hide, SLIDE_MS + 150); // no transition ran (reduced motion, the dock stayed open for the other panel)
-    return () => { dockEl?.removeEventListener("transitionend", end); clearTimeout(t); };
-  }, [open, expanded, shown, dockEl]);
-  useEffect(() => {
-    const w = expanded && docked ? width : 0;
+  useLayoutEffect(() => {
+    const w = open && expanded && docked ? width : 0;
     setDock((d) => (d[slot] ?? 0) === w ? d : { ...d, [slot]: w });
-  }, [expanded, docked, width, slot]);
+  }, [open, expanded, docked, width, slot]);
   useEffect(() => () => setDock(({ [slot]: _, ...rest }) => rest), [slot]);
+  // Closed and slid out: `inert` (no focus, no clicks) once the dock's width transition has ended,
+  // and off again in the commit that opens it. The panel is never `visibility: hidden` /
+  // `content-visibility: hidden`: either one restyles the whole chat subtree on every open and close
+  // (measured: 260–350ms of style recalc with a long thread) — the 0-wide dock clips it, so a closed
+  // panel paints nothing, and its draft and scroll position stay as they are.
+  const [idle, setIdle] = useState(!open);
+  if (open && idle) setIdle(false);
+  useEffect(() => {
+    if (open || idle || !dockEl) return;
+    const done = () => setIdle(true);
+    const end = (e: TransitionEvent) => { if (e.target === dockEl && e.propertyName === "width") done(); };
+    dockEl.addEventListener("transitionend", end);
+    const t = setTimeout(done, SLIDE_MS + 150); // no transition ran (reduced motion, the dock stayed open for the other panel)
+    return () => { dockEl.removeEventListener("transitionend", end); clearTimeout(t); };
+  }, [open, idle, dockEl]);
   // The panel's own class transition slides it the rest of the way, from where the finger let go,
   // once the inline drag style is cleared.
   const swipe = useSwipeToDismiss("right", () => panelRef.current, onClose, { enabled: swipeOn, hold: true });
@@ -158,14 +162,11 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
   if (docked) {
     // In the dock card: its full width from the card's left edge, so the dock's animated width slides
     // it in and out (clipped) and the content never reflows. No hairline: the card is the edge.
-    // Closed, it stays painted until the dock's width transition has ended, then it does NO work —
-    // `content-visibility: hidden` skips its layout and paint but keeps its state (the draft and the
-    // scroll position, which `display: none` would lose; branch-demo unmounts, which loses them too).
+    // Closed, the 0-wide dock clips it (nothing painted) and `inert` keeps focus out (see `idle`).
     // The open one is on top while the other leaves.
     return createPortal(
-      <div {...common} data-docked="" data-shown={open || shown ? "" : undefined}
-        className={cn("bg-card text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden",
-          open || shown ? "visible" : "invisible [content-visibility:hidden]", open ? "z-10" : "z-0")}
+      <div {...common} data-docked="" {...(idle ? { inert: "" } : {})}
+        className={cn("bg-card text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden", open ? "z-10" : "z-0")}
         style={{ width }}
       >
         {resize}
