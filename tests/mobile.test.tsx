@@ -860,6 +860,25 @@ describe("a newer build", () => {
     // It is now the topmost element on a narrow layout, so it — not the header below it — clears the notch.
     expect(banner.className).toContain("max-md:pt-[env(safe-area-inset-top)]");
     expect(staleChanges).toEqual([false, true]);
+    // branch-demo's banner strip in the server's theme: tinted, a hairline edge, one line, the button at the right.
+    expect(banner.className).toContain("bg-server-soft");
+    expect(banner.className).toContain("text-server-fg");
+    expect(banner.className).toContain("h-12");
+    expect(banner.className).toContain("border-b");
+    expect(banner.querySelector("span")!.className).toContain("truncate");
+    expect(banner.lastElementChild!.tagName).toBe("BUTTON");
+    globalThis.fetch = realFetch;
+  });
+
+  test("`forced` (the ?update-banner URL hook) shows it at once, with no poll", async () => {
+    const realFetch = globalThis.fetch;
+    let asked = 0;
+    globalThis.fetch = (async () => { asked++; return { json: async () => ({}) }; }) as unknown as typeof fetch;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    await act(async () => { root = createRoot(container!); root.render(<UpdateBanner build="dev" forced />); await flush(); });
+    expect(container.querySelector('[data-slot="update-banner"]')!.textContent).toContain("A new version of Orca is available.");
+    expect(asked).toBe(0);
     globalThis.fetch = realFetch;
   });
 });

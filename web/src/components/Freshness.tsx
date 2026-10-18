@@ -4,7 +4,7 @@
 // than the one this tab runs (a deploy happened) — one tap hands over to the new build's service
 // worker (lib/sw.ts applyUpdate) and reloads.
 import { useEffect, useState } from "react";
-import { CloudOff, DatabaseZap, RefreshCw, Server, WifiOff } from "lucide-react";
+import { CircleArrowUp, CloudOff, DatabaseZap, RefreshCw, Server, WifiOff } from "lucide-react";
 import { poll } from "@/lib/poll";
 import { refreshEverything, useDatabaseDown, useRefreshing } from "@/lib/refresh";
 import { applyUpdate } from "@/lib/sw";
@@ -53,9 +53,13 @@ export function StaleIndicator() {
 /** Checks `/version.json` once a minute (paused while hidden, like every poll) and, when a newer build
  *  is being served, shows a bar with Refresh. A dev server has no build id and never asks. On a narrow
  *  layout it is the topmost element, so it (not the header below it) clears the status bar; `onStaleChange`
- *  lets the shell drop the header's own inset while the banner is shown, so the gap isn't reserved twice. */
-export function UpdateBanner({ build = RUNNING_BUILD, every = 60_000, onStaleChange }: { build?: string; every?: number; onStaleChange?: (stale: boolean) => void }) {
-  const [stale, setStale] = useState(false);
+ *  lets the shell drop the header's own inset while the banner is shown, so the gap isn't reserved twice.
+ *  The look is branch-demo's `DetailsBanner`: a 48px full-width strip of the page column with a hairline
+ *  edge, the icon, the message (one line, cut short) and a small raised button at the right; the tint is
+ *  the server's theme (`--server-soft` / `--server-fg`), so it sits with the themed top bar below it.
+ *  `?update-banner` in the URL shows it at once (screenshots, a check of the layout). */
+export function UpdateBanner({ build = RUNNING_BUILD, every = 60_000, onStaleChange, forced = forceUpdateBanner() }: { build?: string; every?: number; onStaleChange?: (stale: boolean) => void; forced?: boolean }) {
+  const [stale, setStale] = useState(forced);
   useEffect(() => {
     if (!build || build === "dev" || stale) return;
     return poll(() => fetch("/version.json", { cache: "no-store" }).then((r) => r.json()).then((v: unknown) => { if (newerBuild(build, v)) setStale(true); }), every);
@@ -63,13 +67,20 @@ export function UpdateBanner({ build = RUNNING_BUILD, every = 60_000, onStaleCha
   useEffect(() => { onStaleChange?.(stale); }, [stale, onStaleChange]);
   if (!stale) return null;
   return (
-    <div role="status" data-slot="update-banner" className="bg-geist-blue flex items-center justify-center gap-3 px-4 py-2 text-sm text-white max-md:pt-[env(safe-area-inset-top)]">
-      <span>A new version of Orca is available.</span>
-      <button type="button" onClick={() => void applyUpdate()} className="inline-flex min-h-8 items-center gap-1 rounded-md bg-white/15 px-2.5 font-medium hover:bg-white/25">
+    <div role="status" data-slot="update-banner"
+      className="bg-server-soft text-server-fg flex h-12 min-w-0 items-center gap-2 border-b px-4 text-sm md:px-6 max-md:h-[calc(3rem+env(safe-area-inset-top))] max-md:px-[max(1rem,env(safe-area-inset-left))] max-md:pt-[env(safe-area-inset-top)]">
+      <CircleArrowUp className="size-3.5 shrink-0" aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate">A new version of Orca is available.</span>
+      <button type="button" onClick={() => void applyUpdate()}
+        className="bg-background text-foreground hover:bg-accent inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium max-md:h-9">
         <RefreshCw className="size-3.5" aria-hidden="true" />Refresh
       </button>
     </div>
   );
+}
+
+function forceUpdateBanner(): boolean {
+  return typeof location !== "undefined" && new URLSearchParams(location.search).has("update-banner");
 }
 
 /** ONE bar while the bridge's database is unreachable (it keeps serving the cached config, this
