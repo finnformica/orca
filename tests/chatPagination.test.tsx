@@ -12,7 +12,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
-import { CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, MESSAGE_BREAK, capWindow, chatItems, longMessage, newestMessages, longReply, splitMessages, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, turnSource, windowRange, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
+import { CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, MESSAGE_BREAK, capWindow, chatItems, longMessage, newestMessages, longReply, splitMessages, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, anchorShift, eagerFrom, estimateItemHeight, turnSource, windowRange, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -39,11 +39,12 @@ const log = () => container!.querySelector<HTMLElement>(".overflow-y-auto")!;
 // Read off the instruction's own bubble: the turn's whole text runs it straight into the timestamp
 // ("ask 012:00 AM"), since a closed tooltip mounts nothing in between.
 const shown = () => [...container!.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].map((t) => t.querySelector('[data-slot="chat-user-text"]')!.textContent!.match(/^ask (\d+)$/)![1]).map(Number);
-/** happy-dom lays nothing out: give the scroller a height that grows with its turns (20px each) and a
- *  settable scrollTop, so anchoring can be checked arithmetically. */
+/** happy-dom lays nothing out: give the scroller a height that grows with its items (20px each — a
+ *  turn, or the box that stands in for one not mounted yet) and a settable scrollTop, so anchoring can
+ *  be checked arithmetically. */
 function layout(el: HTMLElement, clientHeight = 400) {
   let top = 0;
-  Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => el.querySelectorAll('[data-slot="chat-turn"]').length * 20 });
+  Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => el.querySelectorAll('[data-slot="chat-item"]').length * 20 });
   Object.defineProperty(el, "clientHeight", { configurable: true, get: () => clientHeight });
   Object.defineProperty(el, "scrollTop", { configurable: true, get: () => top, set: (v: number) => { top = v; } });
   el.scrollTo = ((opts: { top: number }) => { top = opts.top; }) as typeof el.scrollTo;
@@ -314,4 +315,88 @@ test("P6: a page from the database carries no banner", async () => {
   apiFake.turnsData.set("r::long", [turn(0)]);
   await mount();
   expect(container!.querySelector('[data-slot="chat-db-down"]')).toBeNull();
+});
+
+// ---- the lazy mount (views/Chat.tsx LazyItem): only the items near the viewport render ----
+// A cold open of a 50-turn, 142k-character thread rendered every turn in one ~540ms commit. Now the
+// newest items that fill about 1.5 screens mount at once and the rest are boxes of an estimated height
+// until an IntersectionObserver (rooted on the scroller) says they are near; then they stay mounted.
+
+/** An IntersectionObserver the test drives: `near(el)` reports an element as within the margin. */
+class ManualObserver {
+  static all: ManualObserver[] = [];
+  readonly targets = new Set<Element>();
+  constructor(private readonly cb: IntersectionObserverCallback, readonly options?: IntersectionObserverInit) { ManualObserver.all.push(this); }
+  observe(t: Element) { this.targets.add(t); }
+  unobserve(t: Element) { this.targets.delete(t); }
+  disconnect() { this.targets.clear(); }
+  takeRecords() { return []; }
+  near(target: Element) { this.cb([{ target, isIntersecting: true } as unknown as IntersectionObserverEntry], this as unknown as IntersectionObserver); }
+}
+const items = () => [...container!.querySelectorAll<HTMLElement>('[data-slot="chat-item"]')];
+
+test("P8: the pure pieces — an item's height guess, the eager tail, and the scroll shift where native anchoring is missing", () => {
+  // One line per ~80 characters (21px) plus the bubble and header; compact turns cut at 8 lines.
+  expect(estimateItemHeight(0)).toBe(64 + 21);
+  expect(estimateItemHeight(800)).toBe(64 + 21 * 10);
+  expect(estimateItemHeight(8000, { compact: true })).toBe(64 + 21 * 8);
+  expect(estimateItemHeight(8000, { folded: true })).toBe(44);
+  // The newest items whose guesses fill the budget mount at once — always at least the last one.
+  expect(eagerFrom([100, 100, 100, 100], 250)).toBe(1);
+  expect(eagerFrom([100, 100, 100, 100], 50)).toBe(3);
+  expect(eagerFrom([100, 100], 1000)).toBe(0);
+  // Only items wholly above the viewport's top (here 0) move the scroller, by their growth: the first
+  // grew 300 and ends above the top; the second (its bottom moved down by that 300) straddles the top — you are reading it; the third is below.
+  expect(anchorShift([{ bottom: -50, delta: 300 }, { bottom: 400, delta: 40 }, { bottom: 900, delta: 500 }], 0)).toBe(300);
+  // Two above: both count, in any order given (the second's bottom already includes the first's growth).
+  expect(anchorShift([{ bottom: -10, delta: 100 }, { bottom: -200, delta: 200 }], 0)).toBe(300);
+  expect(anchorShift([], 0)).toBe(0);
+});
+
+test("P9: a cold open mounts only the newest items; older ones mount as they near the viewport and then stay", async () => {
+  const g = globalThis as unknown as { IntersectionObserver: unknown };
+  const visible = g.IntersectionObserver;
+  g.IntersectionObserver = ManualObserver;
+  ManualObserver.all = [];
+  try {
+    // 50 long turns: the newest 3 render in full (~590px each), the rest compact.
+    apiFake.turnsData.set("r::long", Array.from({ length: 50 }, (_, i) => ({ ...turn(i), response: `reply ${i} ${"word ".repeat(400)}` })));
+    await mount();
+    const io = ManualObserver.all.at(-1)!;
+    expect(io.options?.root).toBe(log()); // rooted on the chat's own scroller, not the page
+    // Only the tail is mounted; every older item is an empty box with a height, watched by the observer.
+    expect(shown()).toEqual([48, 49]);
+    expect(items()).toHaveLength(50);
+    const boxes = items().filter((el) => el.dataset.pending !== undefined);
+    expect(boxes).toHaveLength(48);
+    expect(boxes.every((el) => Number.parseFloat(el.style.height) > 0)).toBe(true);
+    expect(io.targets.size).toBe(48);
+    // Your newest message and the newest answer are in full.
+    expect(log().textContent).toContain("ask 49");
+    expect(log().textContent).toContain("reply 49");
+    // Scrolling up brings the first item near: it mounts, and is no longer watched.
+    await act(async () => { io.near(boxes[0]!); await flush(); });
+    expect(shown()).toEqual([0, 48, 49]);
+    expect(io.targets.has(items()[0]!)).toBe(false);
+    // A new turn at the tail mounts at once; the item that was mounted stays mounted.
+    apiFake.turnsData.get("r::long")!.push(turn(50));
+    await act(async () => { emit(opened().at(-1)!, "turn", { repo: "r", branch: "long", runId: "run-50" }); await flush(); await flush(); });
+    expect(shown()).toEqual([0, 48, 49, 50]);
+  } finally { g.IntersectionObserver = visible; }
+});
+
+test("P10: Jump to latest finishes the jump when items mounted on the way down moved the end", async () => {
+  apiFake.turnsData.set("r::long", Array.from({ length: 10 }, (_, i) => turn(i)));
+  await mount();
+  const el = log();
+  layout(el, 100);
+  await scrollTo(el, 0);
+  // A smooth scroll that stops at the end as it was when it started; meanwhile the content grows 300px.
+  let extra = 0;
+  el.scrollTo = ((opts: { top: number; behavior?: string }) => { el.scrollTop = opts.top; if (opts.behavior === "smooth") extra = 300; }) as typeof el.scrollTo;
+  Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => 200 + extra });
+  await act(async () => { container!.querySelector<HTMLButtonElement>('[data-slot="chat-jump"]')!.click(); await flush(); });
+  expect(el.scrollTop).toBe(200); // where the smooth scroll stopped: short of the new end
+  await act(async () => { await new Promise((r) => setTimeout(r, 1050)); });
+  expect(el.scrollTop).toBe(500); // landed at the real end
 });
