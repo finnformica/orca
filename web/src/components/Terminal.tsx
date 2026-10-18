@@ -225,8 +225,10 @@ export function OrchestratorPanel() {
   if (open && !mounted) setMounted(true);
   // Popped out: the chat lives in an always-on-top Document Picture-in-Picture window (Chrome/Edge
   // 116+), rendered there by a PORTAL — the same React tree, so its state, composer draft, SSE and
-  // popovers carry over rather than being copied. Browsers without the API get no Pop out button.
-  // Kept from the window days because it costs one button: the portal is what makes it work.
+  // popovers carry over rather than being copied. Kept from the window days because it costs one
+  // button: the portal is what makes it work. Without the API (Firefox, Safari, or any page that is
+  // not a secure context — plain http on the tailnet) Pop out opens a normal popup window instead
+  // (`openOrchestratorWindow`): its own page, not on top, but the chat beside your other windows.
   const [pip, setPip] = useState<Window | null>(null);
   // The poll runs on the PiP window's timers while popped out: that window is the visible one, and
   // a hidden tab's timers get throttled (to once a minute after a while).
@@ -240,16 +242,21 @@ export function OrchestratorPanel() {
   // Focus: the composer takes it on open (ChatComposer's prefill layout effect); on close it goes back
   // to where it was — the button or key that opened the panel — so a keyboard user isn't dropped on
   // <body>. The opener is read DURING the render that opens it: the composer focuses itself in a
-  // layout effect, which runs before any effect of this parent's.
+  // layout effect, which runs before any effect of this parent's. Opened by a key (O), the opener is
+  // <body>, which can't take focus: the composer is blurred instead, or the closed panel's textarea
+  // kept focus and every global shortcut after it read as typing (O, Esc, then O did nothing).
   const opener = useRef<Element | null>(null);
   const wasOpen = useRef(false);
   if (open && !wasOpen.current) opener.current = document.activeElement;
+  const closing = !open && wasOpen.current;
   wasOpen.current = open;
   useLayoutEffect(() => {
-    if (open) return;
+    if (open || !closing) return;
     const el = opener.current as HTMLElement | null;
     opener.current = null;
-    if (el && document.contains(el) && typeof el.focus === "function") el.focus();
+    if (el && el !== document.body && document.contains(el) && typeof el.focus === "function") el.focus();
+    const active = document.activeElement as HTMLElement | null;
+    if (active && active !== document.body && active.closest('[data-slot="orchestrator-panel"]')) active.blur();
   }, [open]);
   useEffect(() => {
     if (!pip) return;
@@ -266,6 +273,8 @@ export function OrchestratorPanel() {
     return () => { observer.disconnect(); pip.close(); };
   }, [pip]);
   const popOut = async () => {
+    // No Document PiP: a popup window of the chat; the tab's panel closes, as the chat moved there.
+    if (!pipApi()) { openOrchestratorWindow(loadPipSize(width)); setOpen(false); return; }
     const w = await pipApi()!.requestWindow(loadPipSize(width)).catch(() => null);
     if (!w) return;
     copyStyles(document, w.document);
@@ -297,8 +306,8 @@ export function OrchestratorPanel() {
           <Button size="icon" variant="ghost" className="size-7" aria-label="Return to tab" onClick={() => pip.close()}>
             <PanelBottomClose className="size-4" />
           </Button>
-        ) : pipApi() && !narrow && (
-          <Tip label="Pop out: keep it on top of every window">
+        ) : !narrow && (
+          <Tip label={pipApi() ? "Pop out: keep it on top of every window" : "Pop out: open it in its own window"}>
             <Button size="icon" variant="ghost" className="size-7" aria-label="Pop out" onClick={() => void popOut()}>
               <PictureInPicture2 className="size-4" />
             </Button>
@@ -408,6 +417,52 @@ const OrchestratorChat = memo(function OrchestratorChat({ row, prefill, controls
     />
   );
 });
+
+/** The popup's name: a second Pop out finds the same window instead of opening another. */
+export const ORCHESTRATOR_WINDOW_NAME = "orca-orchestrator";
+/** The popup's URL: the orchestrator's route, flagged so App renders only the chat (`OrchestratorWindow`). */
+export const ORCHESTRATOR_WINDOW_URL = "/orchestrator?window";
+let popup: Window | null = null;
+/** Pop out without Document PiP: open the orchestrator in a popup window sized like the PiP one, or
+ *  bring forward the one already open (opening it again by name would reload it). */
+export function openOrchestratorWindow(size: { width: number; height: number }): void {
+  if (popup && !popup.closed) { popup.focus(); return; }
+  popup = window.open(ORCHESTRATOR_WINDOW_URL, ORCHESTRATOR_WINDOW_NAME, `popup,width=${Math.round(size.width)},height=${Math.round(size.height)}`);
+  popup?.focus();
+}
+/** Is this page the Pop out popup (`ORCHESTRATOR_WINDOW_URL`)? */
+export const isOrchestratorWindow = (path = location.pathname, search = location.search) =>
+  path === "/orchestrator" && new URLSearchParams(search).has("window");
+
+/** The Pop out popup's whole page: the panel's header and chat, filling the window — the same layout
+ *  as the PiP window. PipContext: the window is narrow, but it is not a phone. */
+export function OrchestratorWindow() {
+  const prefill = useAtomValue(orchestratorPrefillAtom);
+  const { state, load, controls } = useOrchestratorState(true);
+  const key = state?.key, running = !!state?.running;
+  const row: Row = useMemo(() => ({
+    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
+    worktreePath: key, agentStatus: running ? "running" : "idle",
+  }), [key, running]);
+  // The size you leave it at is the next Pop out's size, as for the PiP window.
+  useEffect(() => {
+    const save = () => savePipSize(window);
+    window.addEventListener("pagehide", save);
+    return () => window.removeEventListener("pagehide", save);
+  }, []);
+  return (
+    <PipContext.Provider value={true}>
+      <div role="main" aria-label="Orchestrator" data-slot="orchestrator-window" className="bg-card text-foreground flex h-[100dvh] w-screen flex-col overflow-hidden">
+        <PanelHeader slot="orchestrator-handle" icon={<Bot className="size-3.5" />}
+          title={state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}
+          status={<OrchestratorStatusLine state={state} />} />
+        <div className="min-h-0 flex-1">
+          <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} />
+        </div>
+      </div>
+    </PipContext.Provider>
+  );
+}
 
 type DocumentPip = { requestWindow(size: { width: number; height: number }): Promise<Window> };
 const pipApi = () => (window as unknown as { documentPictureInPicture?: DocumentPip }).documentPictureInPicture;

@@ -6,7 +6,7 @@ import { openOrchestrator } from "@/lib/orchestratorOpen";
 import { launchOverlay } from "./workstream";
 import { expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
 import { Shell, Crumb, AddNew } from "@/components/Shell";
-import { OrchestratorPanel, OrchestratorPage } from "@/components/Terminal";
+import { OrchestratorPanel, OrchestratorPage, OrchestratorWindow, isOrchestratorWindow } from "@/components/Terminal";
 import { TerminalPanel } from "@/components/InstanceTerminal";
 import { ToastHost } from "@/components/Notifications";
 import { useWorkstreams } from "./store";
@@ -40,6 +40,8 @@ export function App() {
     navigate(location.pathname, true);
     if (open === "new") setAddNew(true); else ask();
   }, []);
+  // Pop out's popup window (no Document PiP in this browser): the chat alone, no shell around it.
+  if (route.name === "orchestrator" && isOrchestratorWindow()) return <TooltipProvider><OrchestratorWindow /></TooltipProvider>;
   return (
     <TooltipProvider>
       <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarAction collapsed={collapsed} />}>
