@@ -9,7 +9,8 @@ import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
-import { fenceExternal, integrationMessage, integrationMetaLine } from "../shared/integrations";
+import { catchAllLabels, fenceExternal, integrationMessage, integrationMetaLine, shownPlace } from "../shared/integrations";
+import { reloadCatchAllLabels } from "@/lib/catchAllLabels";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
@@ -329,6 +330,35 @@ test("P8: the orchestrator's chat shows an outside message and its answer as ONE
   // A queued outside message is its row too, not a queued bubble of yours.
   expect(field(c.querySelector<HTMLElement>('[data-slot="integration-queued"]')!, "integration-state")).toBe("queued");
   expect(c.querySelector('[data-slot="chat-queued"]')).toBeNull();
+});
+
+test("P9: a row stored with a catch-all link's label as its place shows no place, in the row and opened", async () => {
+  // Stored before the ingest check (#329): the meta line carries "All channels and DMs" for ever.
+  // The chat reads the catch-all links' labels from /api/integrations and drops that place.
+  apiFake.integrationLinks = [{ id: "Lstar", externalId: "*", label: "All channels and DMs" }, { id: "L1", externalId: "C1", label: "#general" }];
+  await reloadCatchAllLabels();
+  const reply = (id: string, text: string, place: string) => ({
+    id, provider: "claude", instruction: outside(text, "Saajan", place), prompt: "", response: "ok", startedAt: 2000, finishedAt: 2001, source: "human" as const,
+  });
+  apiFake.turnsData.set("r::long", [turn(0), reply("old", "knob", "All channels and DMs"), reply("chan", "ship it", "#general")]);
+  apiFake.queuedData.set("long", [{ id: 1, instruction: outside("Lumino", "Saajan", "All channels and DMs"), attachments: [] }]);
+  await mount(<ChatPanel row={row} />);
+  const c = container!;
+  const rows = [...c.querySelectorAll<HTMLElement>('[data-slot="integration-activity"]')];
+  expect(rows.map((r) => r.querySelector('[data-slot="integration-place"]')?.textContent ?? null)).toEqual([null, "#general"]);
+  expect(c.querySelector('[data-slot="integration-queued"] [data-slot="integration-place"]')).toBeNull();
+  await act(async () => { rows[0]!.querySelector("button")!.click(); await flush(); });
+  expect(rows[0]!.querySelector('[data-slot="integration-message-place"]')!.textContent).toBe("Discord");
+  expect(c.textContent).not.toContain("All channels and DMs");
+  apiFake.integrationLinks = [];
+  await reloadCatchAllLabels();
+  // The pure piece: a label is dropped only when a catch-all link has it.
+  const labels = catchAllLabels([{ externalId: "*", label: " All channels and DMs " }, { externalId: "", label: "Everything" }, { externalId: "C1", label: "#general" }]);
+  expect([...labels]).toEqual(["All channels and DMs", "Everything"]);
+  expect(shownPlace("All channels and DMs", labels)).toBeUndefined();
+  expect(shownPlace("#general", labels)).toBe("#general");
+  expect(shownPlace("DM", labels)).toBe("DM");
+  expect(shownPlace(undefined, labels)).toBeUndefined();
 });
 
 test("the pure pieces: merging pages and anchoring", () => {
