@@ -259,7 +259,12 @@ mock.module("@/api", () => ({
       return { profiles };
     },
     notifications: async (since?: number) => { apiFake.notificationFetches.push(since); return apiFake.notificationsData.filter((n) => !since || Number(n.createdAt) > since); },
-    notificationsRead: async (ids: number[] | "all") => { apiFake.notificationCalls.push({ verb: "read", ids }); return { ok: true, changed: 0 }; },
+    notificationsRead: async (ids: number[] | "all") => {
+      apiFake.notificationCalls.push({ verb: "read", ids });
+      // As the bridge does: a later load sees them read.
+      apiFake.notificationsData = apiFake.notificationsData.map((n) => (ids === "all" || ids.includes(n.id as number)) && !n.readAt ? { ...n, readAt: Date.now() } : n);
+      return { ok: true, changed: 0 };
+    },
     agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
     prs: async () => {
       if (apiFake.holdPrs) await new Promise<void>((resolve) => { apiFake.releasePrs = () => { apiFake.holdPrs = false; resolve(); }; });

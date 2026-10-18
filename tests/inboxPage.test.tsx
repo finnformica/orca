@@ -9,7 +9,9 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { App } from "@/App";
 import { navigate } from "@/lib/route";
-import { inboxFacets, type InboxRow } from "../shared/inbox";
+import * as notificationStore from "@/lib/notificationStore";
+import { inboxFacets, notificationRows, type InboxRow } from "../shared/inbox";
+import type { Notification } from "../shared/notifications";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -36,6 +38,7 @@ describe("the Inbox page", () => {
   beforeAll(() => store.configReady);
   afterEach(async () => {
     apiFake.reset();
+    notificationStore.reset();
     await act(async () => { await store.refresh(); });
     act(() => root?.unmount());
     container?.remove();
@@ -141,5 +144,51 @@ describe("the Inbox page", () => {
     expect(apiFake.inboxActions.filter((a) => a[0] === "reply")).toHaveLength(2);
     expect(all("reply-box")).toHaveLength(0); // closed after a send
     expect(all("thread-reply-open")).toHaveLength(1);
+  });
+
+  test("Orca's notifications are rows too: one count with the bell, Open goes where the bell's goes and reads it, See all", async () => {
+    seed();
+    const ci: Notification = { id: 41, instance: "local", repo: "r", branch: "feat-login", kind: "pr_ci_failed", title: "Login form", body: "test failed", link: { pr: 7 }, createdAt: now - 120_000 };
+    apiFake.notificationsData = [ci];
+    const mixed = [...rows, ...notificationRows([ci])].sort((a, b) => b.at - a.at);
+    apiFake.inboxData = { rows: mixed, facets: inboxFacets(mixed), older: null };
+    apiFake.inboxUnreadData = { others: 2, mutedKinds: [] }; // Ada and Saajan's messages: no bell copy
+    await open("/inbox");
+    await act(async () => { await flush(); await flush(); });
+    const list = all("inbox-row");
+    expect(list.map((r) => r.querySelector('[data-slot="source-chip"]')!.getAttribute("data-source"))).toEqual(["orca", "orca", "email", "slack"]);
+    const note = list[1]!;
+    expect(note.querySelector('[data-slot="inbox-sender"]')!.textContent).toBe("Login form");
+    expect(note.querySelector('[data-slot="inbox-badge"]')!.textContent).toBe("CI failing");
+    expect(note.querySelector('[data-slot="unread-dot"]')).not.toBeNull();
+    // One count: the bell's unread row plus the two messages, on the bell and the Inbox nav item.
+    expect(all("notifications-unread")[0]!.textContent).toBe("3");
+    expect(all("inbox-unread-count")[0]!.textContent).toBe("3");
+    // Open: the PR's Chat tab with the composer focused (the bell's Open), and the bell's row is read.
+    await click(note);
+    expect(location.pathname + location.search).toBe("/r/prs/7/chat?reply=1");
+    expect(apiFake.notificationCalls).toContainEqual({ verb: "read", ids: [41] });
+    expect(all("notifications-unread")[0]!.textContent).toBe("2");
+    expect(all("inbox-unread-count")[0]!.textContent).toBe("2");
+    // The bell keeps a quick view, and See all opens the Inbox.
+    await click(all("notifications-bell")[0]!);
+    const seeAll = document.querySelector<HTMLElement>('[data-slot="notification-see-all"]')!;
+    expect(seeAll.textContent).toContain("See all");
+    expect(document.querySelector('[aria-label="Mark all as read"]')).not.toBeNull();
+    await click(seeAll);
+    expect(location.pathname).toBe("/inbox");
+  });
+
+  test("a kind muted in the Inbox leaves the bell's count and its quick view", async () => {
+    seed();
+    const ci: Notification = { id: 42, instance: "local", repo: "r", branch: "feat-login", kind: "pr_ci_failed", title: "Login form", body: "test failed", createdAt: now - 120_000 };
+    const done: Notification = { id: 43, instance: "local", repo: "r", branch: "feat-login", kind: "finished", title: "Login form", body: "done", createdAt: now - 100_000 };
+    apiFake.notificationsData = [ci, done];
+    apiFake.inboxUnreadData = { others: 0, mutedKinds: ["pr_ci_failed"] };
+    await open("/inbox");
+    await act(async () => { await flush(); await flush(); });
+    expect(all("notifications-unread")[0]!.textContent).toBe("1");
+    await click(all("notifications-bell")[0]!);
+    expect([...document.querySelectorAll('[data-slot="notification-row"]')].map((r) => r.getAttribute("data-kind"))).toEqual(["finished"]);
   });
 });
