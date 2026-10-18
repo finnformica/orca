@@ -1,7 +1,7 @@
 // The live activity block's pure decisions (web/src/steps.ts): how steps group, count and label.
 import { expect, test } from "bun:test";
 import type { AgentStep } from "../shared/agent";
-import { activityCounts, currentActivity, runLabel, stepInFlight, stepRuns, workSteps } from "@/steps";
+import { activityCounts, closeOpenMarkdown, currentActivity, plainText, runLabel, stepInFlight, stepRuns, workedLabel, workSteps } from "@/steps";
 
 const tool = (name: string, input: Record<string, unknown> = {}, done = true): AgentStep => ({ at: 0, kind: "tool", name, input, done });
 const text = (t: string): AgentStep => ({ at: 0, kind: "text", text: t });
@@ -35,4 +35,29 @@ test("the live verb is the NEWEST call with no result, even when later steps lan
   // Two calls in progress: the newer one.
   expect(stepInFlight([run("first"), run("second")])?.id).toBe("second");
   expect(stepInFlight([tool("Bash")])).toBeUndefined();
+});
+
+test("the summary chip shows a step count only when there is one", () => {
+  expect(workedLabel(10_000, 0)).toBe("Worked for 10s");     // unknown (not loaded) or none: no steps part
+  expect(workedLabel(10_000, 1)).toBe("Worked for 10s · 1 step");
+  expect(workedLabel(72_000, 9)).toBe("Worked for 1m 12s · 9 steps");
+  expect(workedLabel(undefined, 0)).toBe("Worked");
+  expect(workedLabel(undefined, 2)).toBe("Worked · 2 steps");
+});
+
+test("closeOpenMarkdown closes what a stream left open, and drops an opener with no text yet", () => {
+  expect(closeOpenMarkdown("I **fix")).toBe("I **fix**");
+  expect(closeOpenMarkdown("I **fix** it")).toBe("I **fix** it");
+  expect(closeOpenMarkdown("a **")).toBe("a ");
+  expect(closeOpenMarkdown("Run `bun te")).toBe("Run `bun te`");
+  expect(closeOpenMarkdown("Run `")).toBe("Run ");
+  expect(closeOpenMarkdown("x `**` y")).toBe("x `**` y"); // ** inside code is not bold
+  expect(closeOpenMarkdown("```ts\nconst x")).toBe("```ts\nconst x\n```");
+  expect(closeOpenMarkdown("```\nx\n```\nthen **b")).toBe("```\nx\n```\nthen **b**");
+});
+
+test("plainText strips markdown to one line for a faded row", () => {
+  expect(plainText("## Plan\n- **Read** `notes.md`\n- see [docs](http://x)\n1. _then_ go")).toBe("Plan Read notes.md see docs then go");
+  expect(plainText("```sh\nls\n```\nDone *now*")).toBe("ls Done now");
+  expect(runLabel({ kind: "text", steps: [{ at: 0, kind: "text", text: "I **fixed** `a.ts`" }] })).toBe("I fixed a.ts");
 });

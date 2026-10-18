@@ -344,7 +344,7 @@ test("a live turn shows ONE compact activity block, and on finish it folds into 
   expect(slot("activity-elapsed")?.textContent).toBe("1m 12s");
   expect(slot("activity-counts")?.textContent).toBe("1 command, 3 files read");
   // The trail: consecutive reads grouped, the interim message as one line of text.
-  expect([...slot("activity-trail")!.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Read 3 files", "Now the **suite**."]);
+  expect([...slot("activity-trail")!.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Read 3 files", "Now the suite."]); // markdown stripped on a faded line
   // Nothing opens by itself: no command input, no output, no code block.
   expect(container!.querySelector("pre")).toBeNull();
   expect(text()).not.toContain("SECRET_FILE_BODY");
@@ -686,6 +686,37 @@ test("the log never scrolls sideways: prose wraps unbreakable tokens, code block
   expect(prose.className).toContain("prose-pre:wrap-normal");
 });
 
+test("your newest message and the newest answer are never clamped or folded; older ones keep their clamp", async () => {
+  // Finn: the latest message from the user and from the orchestrator should never be hidden.
+  const long = (tag: string) => `${tag}\n${Array.from({ length: 12 }, (_, i) => `line ${i}`).join("\n")}`;
+  const report = '[worker finished] r/a "A" — done\nOutcome: Added it.';
+  apiFake.turnsData.set("r::feat", [
+    { id: "run-1", provider: "claude", instruction: long("OLD_ASK"), prompt: "p", response: long("OLD_REPLY"), finishedAt: 1 },
+    ...[2, 3, 4].map((n) => ({ id: `run-${n}`, provider: "claude", instruction: `q${n}`, prompt: "p", response: `a${n}`, finishedAt: n })),
+    { id: "run-5", provider: "claude", instruction: long("NEW_ASK"), prompt: "p", response: "short", finishedAt: 5 },
+    // The newest answer came from a wake of worker reports alone — it must not fold into the ⚙ block.
+    { id: "run-6", provider: "claude", instruction: report, prompt: "p", response: long("NEW_REPLY"), finishedAt: 6 },
+  ]);
+  await mount(base);
+  const clamped = () => [...container!.querySelectorAll('[data-slot="turn-clamp"]')].map((c) => c.textContent!.match(/OLD_ASK|OLD_REPLY|NEW_ASK|NEW_REPLY/)?.[0]);
+  // Only the old ask and the old reply are clamped.
+  expect(clamped()).toEqual(["OLD_ASK", "OLD_REPLY"]);
+  expect(text()).toContain("NEW_ASK");
+  expect(text()).toContain("NEW_REPLY");
+  expect(container!.querySelector('[data-slot="agents-marker"]')).toBeNull();
+  expect(container!.querySelector('[data-slot="turn-reports"]')).not.toBeNull(); // its reports still fold
+
+  // A newer message arrives: the previous newest stays in full while it is on screen (no shrink).
+  apiFake.turnsData.set("r::feat", [...apiFake.turnsData.get("r::feat")!, { id: "run-7", provider: "claude", instruction: "thanks", prompt: "p", response: "ok", finishedAt: 7 }]);
+  const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
+  await act(async () => {
+    stream.dispatchEvent(Object.assign(new Event("turn"), { data: JSON.stringify({ repo: "r", branch: "feat", runId: "run-7" }) }));
+    await flush(); await flush();
+  });
+  expect(text()).toContain("thanks");
+  expect(clamped()).toEqual(["OLD_ASK", "OLD_REPLY"]);
+});
+
 test("the orchestrator's worker reports fold into one ⚙ block, not shown as something you typed", async () => {
   apiFake.turnsData.set("r::feat", [
     { id: "run-1", provider: "claude", instruction: '[worker finished] r/a "A" — done\nOutcome: Added it.\nFull turn: orca read --run x\n\n[worker finished] r/b "B" — error\nResponse: boom', prompt: "p", response: "A is done; B failed, I've resent it.", finishedAt: 2 },
@@ -774,7 +805,7 @@ test("an older turn that arrived without its steps loads them on unfold", async 
   apiFake.turnStepsData.set("run-old", [{ seq: 0, step: { kind: "tool", name: "Bash", input: { command: "bun test" }, at: 1 } }, { seq: 1, step: { kind: "result", output: "ok", at: 2 } }]);
   await mount(base);
   const unfold = container!.querySelector<HTMLButtonElement>('[data-slot="activity-chip"]')!;
-  expect(unfold.textContent).toBe("Worked · steps");
+  expect(unfold.textContent).toBe("Worked"); // the count is unknown until the steps load: no bare "steps"
   expect(unfold).toBeTruthy();
   await act(async () => { unfold.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
   expect(text()).toContain("1 step"); // fetched from /api/turns/steps from seq 0, then folded like any finished turn

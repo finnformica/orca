@@ -3276,16 +3276,23 @@ export const sourceOf = (t: Sourced): TurnSource =>
 
 export type ChatItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] };
 /** What the orchestrator's chat renders: your turns, with each run of agent turns between them as one
- *  collapsed block. */
-export function chatItems<T extends Sourced>(turns: T[]): ChatItem<T>[] {
+ *  collapsed block. `keepOut` is a turn that never folds into a block: the newest answer, which the
+ *  chat always shows (see newestMessages). */
+export function chatItems<T extends Sourced>(turns: T[], keepOut?: T): ChatItem<T>[] {
   const out: ChatItem<T>[] = [];
   for (const t of turns) {
     const last = out[out.length - 1];
-    if (sourceOf(t) === "human") out.push({ kind: "turn", turn: t });
+    if (sourceOf(t) === "human" || t === keepOut) out.push({ kind: "turn", turn: t });
     else if (last?.kind === "agents") last.turns.push(t);
     else out.push({ kind: "agents", turns: [t] });
   }
   return out;
+}
+
+/** The two messages a chat never clamps or folds: your newest message (the newest turn you spoke in)
+ *  and the newest answer (the newest finished turn). Older ones keep their clamp. */
+export function newestMessages<T extends Sourced>(turns: T[]): { said?: T; answer?: T } {
+  return { said: turns.findLast((t) => sourceOf(t) === "human"), answer: turns.findLast((t) => Boolean(t.finishedAt)) };
 }
 
 /** The collapsed block's line for a run of agent turns. */
