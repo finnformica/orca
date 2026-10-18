@@ -23,7 +23,7 @@ import { Input } from "@/components/ui/input";
 
 type Command = PaletteItem & { run: () => void; shortcut?: ShortcutId };
 
-const PAGES: [string, string][] = [["/", "Overview"], ["/agents", "Agents"], ["/previews", "Previews"], ["/repos", "Repos"], ["/github", "GitHub"], ["/usage", "Usage"], ["/settings", "Settings"]];
+const PAGES: [string, string][] = [["/", "Overview"], ["/agents", "Agents"], ["/previews", "Previews"], ["/integrations", "Integrations"], ["/settings", "Settings"], ["/settings#repos", "Repos"], ["/settings#github", "GitHub"]];
 
 /** F: focus the sidebar's Find box — which only exists in the expanded sidebar. */
 function focusFind(collapsed: boolean, setCollapsed: (v: boolean) => void) {

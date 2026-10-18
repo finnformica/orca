@@ -259,16 +259,19 @@ describe("the phone layout (390px, touch)", () => {
     expect(settings.getAttribute("aria-current")).toBe("page");
   });
 
-  test("Settings on a phone carries what the old hamburger drawer exposed that isn't in the bottom bar: Find, the instance switcher, and links to Previews/Repos/GitHub/Usage", async () => {
+  test("Settings on a phone carries what the old hamburger drawer exposed that isn't in the bottom bar: Find, the instance switcher, and links to Previews/Integrations/Handoffs (Repos and GitHub are sections of this page)", async () => {
     await mount("/settings", true);
     const nav = $('[data-slot="settings-mobile-nav"]')!;
     expect(nav.className).toContain("md:hidden");
     expect(nav.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     expect(nav.querySelector('[role="group"][aria-label="Instance"]')).not.toBeNull();
     const links = [...nav.querySelectorAll('nav[aria-label="More pages"] button')].map((b) => b.textContent);
-    expect(links).toEqual(["Previews", "Repos", "GitHub", "Usage"]);
-    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[1]!); // Repos
-    expect(location.pathname).toBe("/repos");
+    expect(links).toEqual(["Previews", "Integrations", "Handoffs"]);
+    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[1]!); // Integrations
+    expect(location.pathname).toBe("/integrations");
+    await mount("/settings", true);
+    expect($('[data-slot="settings-repos"]')).not.toBeNull();
+    expect($('[data-slot="settings-github"]')).not.toBeNull();
   });
 
   test("Agents: rows stack with the instruction, error and branch on screen; one ⋯ per row; filters in a sheet", async () => {

@@ -305,12 +305,25 @@ describe("the console's pages", () => {
   test("Repos: one row per repo with its numbers; a click opens Agents scoped to it", async () => {
     seedLocal();
     await open("/repos");
+    // Repos is a section of Settings now: the old URL lands there, on the section's anchor.
+    expect(location.pathname + location.hash).toBe("/settings#repos");
+    expect($("settings-repos")).not.toBeNull();
     const row = $("repo-row");
     expect(row.textContent).toContain("r");
     expect(row.textContent).toContain("Needs you1");
     await act(async () => { row.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
     expect(location.pathname).toBe("/agents");
     expect(getDefaultStore().get(repoFilterAtom)).toBe("r");
+  });
+
+  test("old page URLs redirect: /usage to the Overview (its usage card), /settings/integrations to the Integrations page", async () => {
+    await open("/usage");
+    expect(location.pathname).toBe("/");
+    expect($("usage-card")).not.toBeNull();
+    act(() => root?.unmount()); container?.remove();
+    await open("/settings/integrations");
+    expect(location.pathname).toBe("/integrations");
+    expect($("integrations-page")).not.toBeNull();
   });
 
   test("Settings: theme and density, and the configuration this bridge runs with (read-only)", async () => {
@@ -346,6 +359,7 @@ describe("the console's pages", () => {
       { login: "finn-personal", active: false, name: "Finn P", email: "4242+finn-personal@users.noreply.github.com", configured: {}, repos: [] },
     ];
     await open("/github");
+    expect(location.pathname + location.hash).toBe("/settings#github");
     const rows = [...$("github-accounts").querySelectorAll<HTMLElement>('[data-slot="github-account"]')];
     expect(rows.length).toBe(2);
     expect(rows[0]!.textContent).toContain("finnformica");
@@ -390,7 +404,7 @@ describe("surfaces: Vercel's hairlines, radii and shadows", () => {
     .map((el) => el.getAttribute("class")!);
   const offending = (re: RegExp) => classes().filter((c) => re.test(c));
 
-  for (const path of ["/", "/agents", "/previews", "/usage", "/repos", "/github", "/settings", "/r/local/feat-login"]) {
+  for (const path of ["/", "/agents", "/previews", "/integrations", "/settings", "/r/local/feat-login"]) {
     test(`${path}: 1px borders, no stray shadows, 8px cards`, async () => {
       apiFake.agentsData = [{ branch: "feat-login", worktreePath: "/wt/feat-login", agentStatus: "done" }];
       apiFake.turnsData.set("r::feat-login", [{ id: "t1", provider: "claude", prompt: "p", instruction: "go", response: "done", startedAt: NOW, finishedAt: NOW + 1 }]);

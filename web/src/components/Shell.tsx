@@ -12,9 +12,9 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
-  Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderGit2, FolderSync, Gauge, LayoutGrid, Loader2,
+  Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderSync, LayoutGrid, Loader2,
   Bot, Command, Keyboard, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
-  Package, Users,
+  Package, Plug,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom } from "@/lib/atoms";
@@ -55,11 +55,10 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
   { to: "/agents", label: "Agents", Icon: Boxes, match: (r) => r.name === "agents" || r.name === "pr" || r.name === "local" },
   // The previews (and Test master) page; its badges are what the two header buttons used to carry.
   { to: "/previews", label: "Previews", Icon: MonitorPlay, match: (r) => r.name === "previews", badge: (compact) => <PreviewsBadge compact={compact} /> },
-  { to: "/repos", label: "Repos", Icon: FolderGit2, match: (r) => r.name === "repos" },
-  { to: "/github", label: "GitHub", Icon: Users, match: (r) => r.name === "github" },
+  { to: "/integrations", label: "Integrations", Icon: Plug, match: (r) => r.name === "integrations" },
   { to: "/handoffs", label: "Handoffs", Icon: Package, match: (r) => r.name === "handoffs" },
-  { to: "/usage", label: "Usage", Icon: Gauge, match: (r) => r.name === "usage" },
-  { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" || r.name === "integrations" },
+  // Repos and GitHub are sections of Settings.
+  { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
 ];
 
 /** `sidebarActions` renders the last of the sidebar's actions (Add New), above the divider and you;

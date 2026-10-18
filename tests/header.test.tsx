@@ -123,7 +123,7 @@ describe("console shell", () => {
     expect(cls.filter((c) => /^bg-background\/|^backdrop-blur/.test(c))).toEqual([]);
   });
 
-  test("the sidebar: Orca mark + instance switcher, Find, the five pages, and the active one marked", async () => {
+  test("the sidebar: Orca mark + instance switcher, Find, the pages, and the active one marked", async () => {
     await mount();
     const sidebar = container!.querySelector('[data-slot="sidebar"]')!;
     expect(sidebar.querySelector("svg")).not.toBeNull(); // the orca mark
@@ -131,9 +131,9 @@ describe("console shell", () => {
     expect(sidebar.querySelector('[data-slot="instance-scope"]')!.textContent).toBe("All instances"); // two instances in the fake config
     expect(sidebar.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     const items = [...sidebar.querySelectorAll('nav[aria-label="Main"] button')].map(navLabel);
-    expect(items).toEqual(["Overview", "Agents", "Previews", "Repos", "GitHub", "Handoffs", "Usage", "Settings"]);
+    expect(items).toEqual(["Overview", "Agents", "Previews", "Integrations", "Handoffs", "Settings"]);
     expect(navItem("Overview").getAttribute("aria-current")).toBe("page");
-    for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Repos", "/repos", "repos-list"], ["GitHub", "/github", "github-accounts"], ["Usage", "/usage", "usage-card"], ["Settings", "/settings", "settings-appearance"]] as const) {
+    for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Integrations", "/integrations", "integrations-page"], ["Settings", "/settings", "settings-appearance"]] as const) {
       await click(navItem(label));
       expect(location.pathname).toBe(path);
       expect(navItem(label).getAttribute("aria-current")).toBe("page");

@@ -13,7 +13,7 @@ import { useWorkstreams } from "./store";
 import { NewDraft } from "./views/Board";
 import { Overview } from "./views/Overview";
 import { Agents } from "./views/Agents";
-import { GitHubPage, PreviewsPage, Repos, Settings, UsagePage } from "./views/Pages";
+import { PreviewsPage, Settings } from "./views/Pages";
 import { HandoffsPage } from "./views/Handoffs";
 import { PrDetail } from "./views/PrDetail";
 import { IntegrationsPage } from "./views/Integrations";
@@ -56,10 +56,7 @@ function Page({ route }: { route: Route }) {
     case "local": return <LocalDetail repo={route.repo} branch={route.branch} sub={route.sub} />;
     case "agents": return <Agents />;
     case "previews": return <PreviewsPage />;
-    case "repos": return <Repos />;
-    case "github": return <GitHubPage />;
     case "handoffs": return <HandoffsPage />;
-    case "usage": return <UsagePage />;
     case "settings": return <Settings />;
     case "integrations": return <IntegrationsPage />;
     // The orchestrator's routed page (narrow screens; see useOrchestrator). It works if visited
@@ -69,7 +66,7 @@ function Page({ route }: { route: Route }) {
   }
 }
 
-const TITLES = { board: "Overview", agents: "Agents", previews: "Previews", repos: "Repos", github: "GitHub", handoffs: "Handoffs", usage: "Usage", settings: "Settings", orchestrator: "Orchestrator", integrations: "Integrations" } as const;
+const TITLES = { board: "Overview", agents: "Agents", previews: "Previews", handoffs: "Handoffs", settings: "Settings", orchestrator: "Orchestrator", integrations: "Integrations" } as const;
 
 function Crumbs({ route }: { route: Route }) {
   const rows = useWorkstreams();
@@ -80,7 +77,6 @@ function Crumbs({ route }: { route: Route }) {
     const label = row?.title ?? (route.name === "pr" ? `#${route.number}` : route.branch);
     return <><Crumb to="/agents">Agents</Crumb><Crumb>{label}</Crumb></>;
   }
-  if (route.name === "integrations") return <><Crumb to="/settings">Settings</Crumb><Crumb>Integrations</Crumb></>;
   return <Crumb>{TITLES[route.name]}</Crumb>;
 }
 
