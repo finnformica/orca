@@ -277,9 +277,13 @@
   /* Reserve the scrollbar's gutter from first paint. Without it the page is short until the first
      poll lands, then a classic (non-overlay) scrollbar appears and the whole top bar's right side,
      "Ask the orchestrator" included, jumps ~15px left. Overlay scrollbars (phones, most Macs) take
-     no gutter, so nothing changes there. */
-  html {
-    scrollbar-gutter: stable;
+     no gutter, so nothing changes there. On a desktop the page column scrolls on its own (Shell's
+     `page-scroll`) and reserves the gutter itself, so <html> does it only on a phone — a gutter on
+     <html> was an empty strip beside the docked panel. */
+  @media (max-width: 767px) {
+    html {
+      scrollbar-gutter: stable;
+    }
   }
   /* Radix's scroll lock (react-remove-scroll-bar) adds margin-right = innerWidth - clientWidth to the
      body while a menu or dialog is open. With the gutter reserved that is the gutter itself, and the
