@@ -4,6 +4,7 @@ import { readJsonSync, statePath, writeJsonSync } from "./state";
 import { AGENT_PROVIDERS, type AgentProvider } from "../shared/agent";
 import { MERGE_WHEN_GREEN, type MergePolicy } from "../web/src/workstream";
 import { serverSwitcherProblems, type ServerSwitcherConfig } from "./servers";
+import { serverIdentityProblems, type ServerIdentityConfig } from "../shared/serverIdentity";
 
 /** Preview service: `{port}` = this service's assigned port; `{svc:name}` = another's. */
 export type PreviewService = {
@@ -199,6 +200,10 @@ export type OrcaConfig = {
   /** The server switcher (server/servers.ts): other Orca servers a browser may switch to, and the
    *  CORS + Tailscale whois gate for their pages' calls. Off unless `enabled` is true. */
   serverSwitcher?: ServerSwitcherConfig;
+  /** This server's display name and theme colour (shared/serverIdentity.ts), e.g. `{ name: "Work",
+   *  color: "#2f6feb" }`. Absent: the Tailscale host name and a colour from it. Settings' Server
+   *  identity sets it (`/api/config/identity`); a pasted config document keeps the stored value. */
+  serverIdentity?: ServerIdentityConfig;
 };
 
 /** The model a repo's Claude runs use: its own pin, else the global default, else the CLI's. Pure. */
@@ -368,6 +373,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
     errors.push("agentCpuWeight must be a positive number (systemd CPUWeight, 1-10000)");
   }
   errors.push(...serverSwitcherProblems(d.serverSwitcher));
+  errors.push(...serverIdentityProblems(d.serverIdentity));
   if (errors.length) return { errors };
   return {
     errors: [],
@@ -387,6 +393,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       agentCpuWeight: d.agentCpuWeight as number | undefined,
       githubAccounts: d.githubAccounts as OrcaConfig["githubAccounts"],
       serverSwitcher: d.serverSwitcher as ServerSwitcherConfig | undefined,
+      serverIdentity: d.serverIdentity as ServerIdentityConfig | undefined,
     },
   };
 }
@@ -523,6 +530,7 @@ async function loadFromDb(): Promise<OrcaConfig> {
     agentCpuWeight: app.agentCpuWeight as number | undefined,
     githubAccounts: app.githubAccounts as OrcaConfig["githubAccounts"],
     serverSwitcher: app.serverSwitcher as ServerSwitcherConfig | undefined,
+    serverIdentity: app.serverIdentity as ServerIdentityConfig | undefined,
   };
   cached = config;
   cachedAt = Date.now();
@@ -562,6 +570,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.agentCpuWeight === undefined ? {} : { agentCpuWeight: config.agentCpuWeight }),
       ...(config.githubAccounts === undefined ? {} : { githubAccounts: config.githubAccounts }),
       ...(config.serverSwitcher === undefined ? {} : { serverSwitcher: config.serverSwitcher as unknown as db.Fields }),
+      ...(config.serverIdentity === undefined ? {} : { serverIdentity: config.serverIdentity as unknown as db.Fields }),
     },
   });
   invalidateConfig();
@@ -578,6 +587,17 @@ export async function setInstanceTerminal(instance: string, on: boolean): Promis
   const next = { ...(current.terminal ?? {}) };
   if (on) next[instance] = true; else delete next[instance];
   await saveConfigDocument({ ...config, ...(Object.keys(next).length ? { terminal: next } : {}) });
+}
+
+/** Set (or, with null, clear) this server's identity — Settings' Server identity, the ONLY writer of
+ *  `serverIdentity`. Same path as `setInstanceTerminal`, so nothing else in the document changes. */
+export async function setServerIdentity(identity: ServerIdentityConfig | null): Promise<void> {
+  invalidateConfig();
+  const current = await loadConfig();
+  const { config, errors } = parseConfigDocument(await configDocument());
+  if (!config) throw new Error(`the stored config does not parse: ${errors.join("; ")}`);
+  const { serverIdentity: _old, ...rest } = config;
+  await saveConfigDocument({ ...rest, ...(current.terminal ? { terminal: current.terminal } : {}), ...(identity ? { serverIdentity: identity } : {}) });
 }
 
 /** The document as stored (paths still templated) — what the settings UI shows you to edit. */

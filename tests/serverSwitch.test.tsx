@@ -17,6 +17,7 @@ import {
   mergeServers, probeServer, rememberServer, serverOrigin, serverStatus, showServerMenu, switchServer, type Probe, type ServersAnswer,
 } from "@/lib/server";
 import { _resetServerList } from "@/components/ServerMenu";
+import { _resetIdentity } from "@/lib/identity";
 import { getDefaultStore } from "jotai";
 import { paletteOpenAtom } from "@/lib/atoms";
 
@@ -72,6 +73,7 @@ afterEach(async () => {
   localStorage.clear();
   _resetServer();
   _resetServerList();
+  _resetIdentity();
   await act(async () => navigate("/"));
 });
 
@@ -143,7 +145,7 @@ test("S5: discovery merge without the Tailscale API — home, its list, known se
   const probes: Record<string, Probe> = {
     "http://100.101.1.2:8787": online(withSmf), "http://orca-personal-box:8787": online(PERSONAL), "http://lab-box:8787": { health: "offline" },
   };
-  expect(mergeServers(home, HOME, known, probes)).toEqual([
+  expect(mergeServers(home, HOME, known, probes)).toMatchObject([
     { name: "cloud", url: home, self: true, health: "online" }, // the page's own origin, under its own name
     { name: "personal", url: "http://100.101.1.2:8787", health: "online" }, // its own name, once
     { name: "lab", url: "http://lab-box:8787", health: "offline" },
@@ -153,7 +155,7 @@ test("S5: discovery merge without the Tailscale API — home, its list, known se
   const listed: ServersAnswer = { ...HOME, servers: [...HOME.servers, { name: "personal", url: "http://orca-personal-box.tail1.ts.net:8787", online: true, self: false }] };
   expect(mergeServers(home, listed, [{ name: "cloud", url: "http://orca-flow-box.tail1.ts.net:8787" }], {}).map((s) => s.name)).toEqual(["cloud", "personal"]);
   // No answer (an older home server): it is still listed, as "This server".
-  expect(mergeServers(home, null, [], {})).toEqual([{ name: "This server", url: home, self: true, health: "online" }]);
+  expect(mergeServers(home, null, [], {})).toMatchObject([{ name: "This server", url: home, self: true, health: "online" }]);
 });
 
 test("S5b: with the Tailscale API the home server's list is the whole list; the chosen server is always listed (pure)", () => {
@@ -181,7 +183,7 @@ const PERSONAL_BOX: ServersAnswer = { enabled: true, source: "config", tailscale
 test("S5c: a server's name is the Tailscale host from its own answer's self name, for the home row and a probed server alike (pure)", () => {
   const home = "http://orca-flow-box.tail1.ts.net:8787";
   const probes: Record<string, Probe> = { "http://orca-personal-box.tail1.ts.net:8787": online(PERSONAL_BOX) };
-  expect(mergeServers(home, FLOW, [], probes)).toEqual([
+  expect(mergeServers(home, FLOW, [], probes)).toMatchObject([
     { name: "orca-flow-box", url: home, self: true, health: "online" }, // the home row, under its own answer's self name
     { name: "orca-personal-box", url: "http://orca-personal-box.tail1.ts.net:8787", health: "online" }, // a probed box, under its own self name
   ]);
@@ -191,7 +193,7 @@ test("S5d: a localhost home is not listed (not an Orca box); the default selecti
   setup();
   for (const home of ["http://localhost:8788", "http://127.0.0.1:8788"]) {
     const list = mergeServers(home, FLOW, [], {});
-    expect(list).toEqual([{ name: "orca-personal-box", url: "http://orca-personal-box.tail1.ts.net:8787", health: "checking" }]);
+    expect(list).toMatchObject([{ name: "orca-personal-box", url: "http://orca-personal-box.tail1.ts.net:8787", health: "checking" }]);
     expect(currentServer(list)).toEqual(list[0]!); // no choice made: defaults to the first box, not a phantom self row
   }
   // A localhost URL learned any other way (known, a probe's own answer) is never listed either,
@@ -204,7 +206,7 @@ test("S5d: a localhost home is not listed (not an Orca box); the default selecti
 test("S5e: a box home (not localhost) is listed as the self row (pure)", () => {
   const home = "http://orca-flow-box.tail1.ts.net:8787";
   const list = mergeServers(home, FLOW, [], {});
-  expect(list[0]).toEqual({ name: "orca-flow-box", url: home, self: true, health: "online" });
+  expect(list[0]).toMatchObject({ name: "orca-flow-box", url: home, self: true, health: "online" });
   setup();
   expect(currentServer(list)).toEqual(list[0]!); // no choice made: defaults to the home (self) row
 });
@@ -255,6 +257,34 @@ test("S6: the top bar menu — repos-selector look, current checked, status dot 
   await act(async () => { items[1]!.click(); await flush(); });
   expect(JSON.parse(localStorage.getItem(CHOICE_KEY)!)).toEqual({ name: "personal", url: "http://orca-personal-box:8787" });
   expect(reloads).toBe(1);
+});
+
+test("S6e: the ACTIVE server's identity — title, accent, favicon and sidebar name — and each menu row's name and colour", async () => {
+  const WORK = { ...HOME, self: { ...HOME.self, label: "Work", color: "#2f6feb", identity: { name: "Work", color: "#2f6feb" } } };
+  const PERSONAL_ID = { ...PERSONAL, self: { ...PERSONAL.self, label: "Personal", color: "#1f9d55", identity: { name: "Personal" } } };
+  const icon = document.createElement("link");
+  icon.rel = "icon"; icon.href = "/favicon.svg";
+  document.head.appendChild(icon);
+  // The page came from the work box, but the tab talks to the personal one.
+  setup({ choice: { name: "personal", url: "http://orca-personal-box:8787" } });
+  network((u) => (u === "/api/servers" ? json(WORK) : u === "http://orca-personal-box:8787/api/servers" ? json(PERSONAL_ID) : undefined));
+  await mount();
+  await act(async () => { await flush(); await flush(); await flush(); });
+  expect(calls).toContain("http://orca-personal-box:8787/api/servers"); // asked of the chosen server, cross-origin
+  expect(document.title).toBe("Orca | Personal");
+  expect(document.documentElement.style.getPropertyValue("--server")).toBe("#1f9d55");
+  expect(decodeURIComponent(icon.href)).toContain('fill="#1f9d55"');
+  expect(q('[data-slot="server-identity"]')!.textContent).toBe("Personal"); // beside the mark, top left
+  expect(q('[data-slot="server-label"]')!.textContent).toBe("Personal");
+  const items = await openMenu();
+  expect(items.map((i) => i.getAttribute("aria-label"))).toEqual(["Work, online", "Personal, online"]);
+  expect(items.map((i) => i.getAttribute("data-server"))).toEqual(["cloud", "personal"]); // still matched by host name
+  const swatches = items.map((i) => i.querySelector<HTMLElement>('[data-slot="server-swatch"]')!.getAttribute("style"));
+  expect(swatches[0]).toMatch(/#2f6feb|rgb\(47, 111, 235\)/);
+  expect(swatches[1]).toMatch(/#1f9d55|rgb\(31, 157, 85\)/);
+  // The same answer, cached per server, paints the next load before the fetch lands.
+  expect(localStorage.getItem("orca.ui.v1.server.identity:http://orca-personal-box:8787")).toContain("Personal");
+  icon.remove();
 });
 
 test("S6b: with the Tailscale API and one server there is no menu, and no hint when the API is set", async () => {

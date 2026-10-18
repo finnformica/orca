@@ -87,8 +87,13 @@ const Dot = ({ health }: { health: ServerHealth }) => (
   <span aria-hidden="true" data-health={health} className={cn("inline-block size-2 shrink-0 rounded-full", DOT[health])} />
 );
 
+/** A server's theme colour, as a small rounded square (Slack's workspace tile). */
+const Swatch = ({ color }: { color: string }) => (
+  <span aria-hidden="true" data-slot="server-swatch" className="inline-block size-3 shrink-0 rounded-[3px]" style={{ background: color }} />
+);
+
 /** The top bar's server menu, in front of the repo menu: the repos selector's look, the current
- *  server checked, each server's status dot and name. */
+ *  server checked, each server's colour, display name and status dot. */
 export function ServerMenu() {
   const { servers, answer, visible } = useServers();
   const [, setAdd] = useAtom(addServerOpenAtom);
@@ -102,10 +107,11 @@ export function ServerMenu() {
     <>
       <DropdownMenu onOpenChange={(open) => { if (open) checkServers(true); }}>
         <DropdownMenuTrigger asChild>
-          <button type="button" data-slot="server-menu" aria-label={`Server: ${current.name}, ${healthText(current.health)}. Switch server`}
+          <button type="button" data-slot="server-menu" aria-label={`Server: ${current.label}, ${healthText(current.health)}. Switch server`}
             className="hover:bg-accent/60 flex h-8 max-w-[10rem] shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium md:max-w-[14rem]">
+            <Swatch color={current.color} />
+            <span data-slot="server-label" className="truncate">{current.label}</span>
             <Dot health={current.health} />
-            <span data-slot="server-label" className="truncate">{current.name}</span>
             <ChevronsUpDown className="text-muted-foreground size-3.5 shrink-0" />
           </button>
         </DropdownMenuTrigger>
@@ -118,10 +124,11 @@ export function ServerMenu() {
             {servers.map((s) => {
               const down = s.health === "offline" || s.health === "refused";
               return (
-                <DropdownMenuRadioItem key={s.url} value={s.url} data-server={s.name} aria-label={`${s.name}, ${healthText(s.health)}`}
+                <DropdownMenuRadioItem key={s.url} value={s.url} data-server={s.name} aria-label={`${s.label}, ${healthText(s.health)}`}
                   disabled={down && s.url !== current.url} indicator={<Check className="size-3.5" />}>
+                  <Swatch color={s.color} />
+                  <span className="min-w-0 flex-1 truncate">{s.label}</span>
                   <Dot health={s.health} />
-                  <span className="min-w-0 flex-1 truncate">{s.name}</span>
                   {down && <span className="text-muted-foreground text-xs">{s.health === "refused" ? "refused" : "offline"}</span>}
                 </DropdownMenuRadioItem>
               );
@@ -211,7 +218,7 @@ export function ServerOffline({ configFailed }: { configFailed: boolean }) {
   const chosen = chosenServer();
   useEffect(() => (chosen ? poll(() => apiFetch("/api/config", { cache: "no-store" }).then((r) => { if (r.ok && configFailed) window.location.reload(); }), 5_000) : undefined), [chosen?.url, configFailed]);
   if (!chosen) return null;
-  const home = servers.find((s) => s.self)?.name ?? "Home";
+  const home = servers.find((s) => s.self)?.label ?? "Home";
   const refused = status === "refused";
   return (
     <div role="status" data-slot="server-offline" className="bg-card mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border px-4 py-3 text-sm">

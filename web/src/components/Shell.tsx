@@ -33,7 +33,9 @@ import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
 import { repoLabel, summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
-import { AddServerDialog, ServerMenu, ServerOffline, useServerProblem } from "@/components/ServerMenu";
+import { AddServerDialog, ServerMenu, ServerOffline, useServerProblem, useServers } from "@/components/ServerMenu";
+import { loadIdentity, useServerIdentity } from "@/lib/identity";
+import { poll } from "@/lib/poll";
 import { NotificationBell } from "@/components/Notifications";
 import { notifyLocal } from "@/lib/notificationStore";
 import { Button } from "@/components/ui/button";
@@ -69,6 +71,9 @@ export function Shell({ crumbs, sidebarActions, children }: {
   useShellFallbacks();
   const activity = useOrchestratorActivity(); // the ONE subscriber feeding every launcher's indicator
   const route = useRoute();
+  const identity = useServerIdentity(); // the ACTIVE server's name and colour (lib/identity.ts applies them)
+  const { visible: serverMenu } = useServers();
+  useEffect(() => poll(loadIdentity, 60_000), []);
   return (
     <div className="flex min-h-screen w-full">
       {/* Desktop only: a phone's nav is the bottom bar + Settings (see MobileNav in views/Pages.tsx) —
@@ -94,6 +99,9 @@ export function Shell({ crumbs, sidebarActions, children }: {
           )}
         >
           <button type="button" data-slot="topbar-mark" onClick={() => navigate("/")} aria-label="Orca — go to overview" className="shrink-0 md:hidden"><RoundMark /></button>
+          {/* The phone has no sidebar: the server's name goes beside the mark — the server menu
+              carries it when it shows. */}
+          {!serverMenu && identity && <span data-slot="topbar-identity" className="text-server-fg truncate text-sm font-medium md:hidden">{identity.label}</span>}
           <ServerMenu />
           <RepoSwitcher />
           <nav aria-label="Breadcrumb" className="text-muted-foreground flex min-w-0 items-center gap-2 text-sm">{crumbs}</nav>
@@ -154,8 +162,8 @@ function Sidebar({ collapsed, onToggle, actions }: {
           const item = (
             <button key={to} type="button" onClick={() => navigate(to)} aria-current={active ? "page" : undefined}
               aria-keyshortcuts={shortcut ? shortcutKeys(shortcut).join(" ") : undefined}
-              className={cn("relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-accent text-foreground font-medium" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
-              <Icon className="size-4 shrink-0" />
+              className={cn("relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-server-soft text-foreground font-medium" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
+              <Icon className={cn("size-4 shrink-0", active && "text-server-fg")} />
               <span data-slot="nav-label" className={cn(collapsed && "md:hidden")}>{label}</span>
               {badge?.(collapsed)}
               {/* G then a letter: always-visible muted keycaps, like Find / Add New. Never on a phone
@@ -202,9 +210,10 @@ export function OrcaMark({ className }: { className?: string }) {
   );
 }
 
-/** The mark inside a circle — Vercel's round avatar logo; the favicon and home-screen icon match it. */
+/** The mark inside a circle — Vercel's round avatar logo, in the active server's theme colour; the
+ *  favicon matches it (lib/identity.ts draws it in the same colour). */
 export const RoundMark = ({ className }: { className?: string }) => (
-  <span className={cn("bg-foreground text-background inline-flex size-6 shrink-0 items-center justify-center rounded-full", className)}>
+  <span data-slot="round-mark" className={cn("bg-server inline-flex text-white size-6 shrink-0 items-center justify-center rounded-full", className)}>
     <OrcaMark className="size-4" />
   </span>
 );
@@ -262,12 +271,16 @@ function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
   useRepos(); // config (and with it the instance list) lands after first paint
   const choices = instanceChoices();
   const label = scope === "all" ? (choices.length > 1 ? "All instances" : thisInstance() ?? "Orca") : scope;
+  const identity = useServerIdentity();
   const mark = <RoundMark />;
   const body = (
     <>
       {mark}
       <span className={cn("min-w-0 flex-1 text-left", collapsed && "md:hidden")}>
-        <span className="block truncate text-sm font-medium">Orca</span>
+        <span className="flex min-w-0 items-baseline gap-1.5 text-sm font-medium">
+          <span className="shrink-0">Orca</span>
+          {identity && <span data-slot="server-identity" className="text-server-fg truncate">{identity.label}</span>}
+        </span>
         <span data-slot="instance-scope" className="text-muted-foreground block truncate text-xs">{label}</span>
       </span>
     </>
