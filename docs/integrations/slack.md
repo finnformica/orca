@@ -1,18 +1,24 @@
-# Slack: set up the two-way adapter
+# Slack: set up the receive-only adapter
 
-This guide connects a Slack workspace to Orca in both directions:
+**Slack is receive-only, by rule.** Orca reads Slack. Orca never sends anything to Slack: no post,
+no thread reply, no edit, no reaction, no "post as me". Finn set this rule.
 
-- **Inbound.** A mention of the bot, a DM to the bot, or a reply in a thread that the bot started
-  becomes an `ext.slack.message` event. The core gates it and routes it to the orchestrator, or to
-  the workstream that owns the thread.
-- **Outbound.** Orca posts as the bot. A reply goes into the thread of the message that it answers.
-  Orca can also edit its own posts.
+- **In.** A mention of the bot or a DM to the bot becomes an `ext.slack.message` event. The core
+  gates it and routes it to the orchestrator, or to the workstream that owns the thread. The message
+  shows in Orca and in the inbox.
+- **Out.** Nothing. The orchestrator answers in Orca only. The sender does not see the answer in Slack.
+
+The rule has four guards:
+
+1. The core drops every delivery to a Slack link (`RECEIVE_ONLY` in `shared/integrations.ts`).
+2. Settings > Integrations refuses a subscription or a Test to a Slack link.
+3. `orca post --link` to Slack is refused. `orca post --reply` on a Slack event keeps the answer in Orca.
+4. The adapter's `send` refuses, and `slackApi` refuses every write method before a request.
+
+The card's Slack items (Actions > Slack) copy the message. Paste it in Slack yourself.
 
 The adapter uses [Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode/). The box
 opens a WebSocket to Slack. Slack does not need a public URL, so the box stays without ingress.
-
-The old path does not change. `POST /api/slack` (the card's Slack button) still posts as you with
-your user token (`SLACK_TOKEN`, `xoxp-`).
 
 The code is `server/integrations/adapters/slack.ts`. The contract is
 [ADAPTERS.md](ADAPTERS.md).
@@ -21,9 +27,10 @@ The code is `server/integrations/adapters/slack.ts`. The contract is
 
 | Token | Prefix | Variable | Use |
 |---|---|---|---|
-| Bot token | `xoxb-` | `ORCA_SECRET_SLACK_BOT` | Web API calls: `auth.test`, `chat.postMessage`, `chat.update`, `users.info`. |
+| Bot token | `xoxb-` | `ORCA_SECRET_SLACK_BOT` | Read calls only: `auth.test` and `users.info`. |
 | App-level token | `xapp-` | `ORCA_SECRET_SLACK_APP` | `apps.connections.open`, which gives the Socket Mode URL. Scope `connections:write`. |
-| User token (old) | `xoxp-` | `SLACK_TOKEN` | "Post as me" from the card. Not part of this adapter's connection. |
+
+Orca does not use a user token (`xoxp-`). Remove `SLACK_TOKEN` from the box if it is set.
 
 Every `ORCA_SECRET_*` variable is removed from the environment of agents, checks and previews
 (`server/env.ts`). A prompt injection cannot read these tokens.
@@ -39,7 +46,7 @@ Every `ORCA_SECRET_*` variable is removed from the environment of agents, checks
 ```yaml
 display_information:
   name: Orca
-  description: Orca's orchestrator. Mention it, or send it a DM.
+  description: Orca reads mentions and DMs. It never posts.
 features:
   app_home:
     home_tab_enabled: false
@@ -52,7 +59,6 @@ oauth_config:
   scopes:
     bot:
       - app_mentions:read
-      - chat:write
       - channels:history
       - groups:history
       - im:history
@@ -76,12 +82,12 @@ The scopes:
 | Scope | Why |
 |---|---|
 | `app_mentions:read` | Receive `app_mention` events. |
-| `chat:write` | Post and edit as the bot. |
-| `channels:history`, `groups:history` | Receive replies in a bot thread in public and private channels. The reply does not mention the bot. |
+| `channels:history`, `groups:history` | Receive channel messages in public and private channels. A link with `require_mention` keeps only mentions. |
 | `im:history` | Receive DMs to the bot. |
 | `users:read` | Find a person's display name for pairing (`resolveUser`). |
 
-`messages_tab_enabled` lets a person send a DM to the bot.
+`messages_tab_enabled` lets a person send a DM to the bot. Do not add `chat:write`. Without it,
+Slack itself refuses a post from the bot.
 
 ## 3. Get the two tokens
 
@@ -114,7 +120,7 @@ holds only the variable NAME.
 
 ## 5. Add the rows
 
-Until the Settings page lands, add the rows with SQL on the Orca database. Set `instance` to the
+Add the rows in Settings > Integrations, or with SQL on the Orca database. Set `instance` to the
 `ORCA_INSTANCE` of the box that holds the tokens. Only the primary bridge of that instance opens the
 socket. `user_id` is `db.currentUser()` (`ORCA_USER`, else `me`).
 
@@ -123,7 +129,7 @@ socket. `user_id` is `db.currentUser()` (`ORCA_USER`, else `me`).
 INSERT INTO integration (id, user_id, kind, name, instance, config, secret_ref, created_at)
 VALUES ('slack-work', 'me', 'slack', 'Work Slack', 'cloud', '{}', 'ORCA_SECRET_SLACK_BOT', 0);
 
--- A channel Orca reads and posts to. Find the id in the channel's details (C...).
+-- A channel Orca reads. Find the id in the channel's details (C...).
 INSERT INTO channel_link (id, user_id, integration_id, external_id, level, require_mention)
 VALUES ('eng', 'me', 'slack-work', 'C0123456789', 'ask', true);
 
@@ -139,10 +145,11 @@ INSERT INTO identity (user_id, principal_id, adapter, external_id) VALUES ('me',
 You can also skip the `principal` and `identity` rows and pair a person instead:
 
 1. The person mentions the bot or sends it a DM.
-2. Orca drops the message and replies in the same thread with a 6-character pairing code.
-3. Orca shows a "Pairing request" row in the bell.
-4. Approve the code: `curl -X POST localhost:8787/api/integrations/pairing/approve -d '{"code":"ABC234","maxLevel":"ask"}'`.
-5. Tell the person to send the message again.
+2. Orca drops the message. It does NOT reply in Slack (receive-only).
+3. Orca shows a "Pairing request" row with a 6-character code in the bell.
+4. Approve the code in Settings > Integrations, or with
+   `curl -X POST localhost:8787/api/integrations/pairing/approve -d '{"code":"ABC234","maxLevel":"ask"}'`.
+5. Tell the person yourself to send the message again.
 
 `GET /api/integrations/pairing` lists the codes that wait. A code expires after 60 minutes.
 
@@ -153,7 +160,7 @@ Optional `config` keys on the `integration` row:
 | Key | Default | Effect |
 |---|---|---|
 | `appTokenRef` | `"ORCA_SECRET_SLACK_APP"` | The app-level token's variable. It must start with `ORCA_SECRET_`. |
-| `socket` | `true` | `false` turns inbound off. The bot then posts only. |
+| `socket` | `true` | `false` turns inbound off. The adapter then does nothing. |
 
 ## 6. Check it
 
@@ -161,9 +168,8 @@ Optional `config` keys on the `integration` row:
    `ok: true` and `Socket Mode connected as U...`.
 2. In a linked channel, type `@Orca what is on the board?`.
 3. The orchestrator wakes with the message fenced as an outside message with the `ask` grant.
-4. The answer comes back in a thread under your message. The orchestrator answers with
-   `orca post --reply "<text>"`. Orca sends it to the link, channel and thread of that message.
-   A DM answer goes to the DM itself.
+4. The answer shows in Orca: in the orchestrator's chat and, from `orca post --reply`, in the
+   inbox. Nothing appears in Slack.
 
 If the adapter does not start, `integration.status.error` holds the reason. Some examples:
 
@@ -176,25 +182,22 @@ If the adapter does not start, `integration.status.error` holds the reason. Some
 | Slack | Orca |
 |---|---|
 | `app_mention`, or a `message` that contains `<@bot>` | `mentioned: true`. The bot tag is removed from the text. |
-| A `message` in a thread that the bot started (`parent_user_id` is the bot) | `mentioned: true`, so a reply to Orca needs no mention. |
 | A `message` with `channel_type: im` | Source channel `im` (the DM link), `mentioned: true`. |
 | Any other channel `message` | `mentioned: false`. A link with `require_mention` drops it. |
-| A bot's post, Orca's own post, an edit, a delete, a join | Ignored. |
+| A bot's post, an edit, a delete, a join | Ignored. |
 
 - **Key:** `slack:<team>:<channel>:<ts>`. Slack sends a mention twice (`app_mention` and `message`).
   Both have one key, so the core records one event. A resent envelope is also a duplicate.
-- **Thread:** `<channel>:<thread_ts>`, or `<channel>:<ts>` for a top-level message. The reply goes
-  into that thread. `messageId` is the message's own `ts`.
-- **Send:** when the target has a thread id, the adapter posts to the thread id's channel. A reply
-  to a DM therefore reaches the DM, not the `im` link.
+- **Thread:** `<channel>:<thread_ts>`, or `<channel>:<ts>` for a top-level message. Messages in one
+  Slack thread are one conversation in Orca. `messageId` is the message's own `ts`.
 
 ## 8. Limits
 
 - **Ack.** The adapter acks each envelope at once. Slack resends an envelope with no ack after 3 s.
 - **Reconnect.** On `disconnect` or a closed socket the adapter opens a new one: 1 s, doubling to
   30 s. A `Retry-After` from Slack wins when it is longer.
-- **Outbound pace.** One post per second per channel (`caps.rate`). A `429` returns `retryable: true`
-  with `retryAfterMs` from Slack's `Retry-After`. The core waits that long before the next attempt.
+- **Rate limits.** A `429` on `apps.connections.open` delays the next connect by Slack's `Retry-After`.
 - **One socket.** Only the primary bridge of `integration.instance` starts the adapter. Slack allows
   up to 10 Socket Mode connections for each app, but Orca opens one.
-- Files and reactions are not supported yet (`caps.attachments` and `caps.reactions` are `false`).
+- **No output.** `caps` say `outbound: false`, `threads: false`, `edits: false`, `reactions: false`.
+  This is the rule, not a missing feature. Do not add an outbound path.

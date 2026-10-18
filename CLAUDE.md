@@ -174,12 +174,11 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   hands any pre-DB blob (transcripts included) to the bridge on first load.
 - **GitHub = the REST and GraphQL API over `fetch` (`server/github.ts`: a token per repo account from `gh auth
   token`, ETag reuse, rate-limit backoff, typed errors; only the auth flows, the identity lookup and `repo
-  clone` still run `gh`); Slack = a direct `chat.postMessage`** from your identity using a user token
-  (`SLACK_TOKEN`) — the ONE Slack path for every provider: deterministic, verbatim, instant, no model,
-  no MCP (via `server/slack-api.ts`'s `postMessage`, reused by `/api/slack`). No OAuth app. A failed
-  post surfaces as an error (never silently degraded), and the client copies the exact message to the
-  clipboard so it can be pasted by hand. The message is the linked `#7 Title` (Slack mrkdwn for the
-  post, rich HTML for the copy).
+  clone` still run `gh`); Slack = RECEIVE-ONLY, by Finn's rule: Orca never sends anything to Slack**
+  (no post, reply, edit, reaction or "post as me"; `RECEIVE_ONLY` in `shared/integrations.ts`, see
+  Integrations). The card's Slack items copy the message — the linked `#7 Title` as rich HTML, plain
+  text as the fallback — and you paste it. (History: they once posted as you with `SLACK_TOKEN`
+  through `/api/slack`; that route now answers 410 and `server/slack-api.ts` is gone.)
 
 ## Integrations (one path in, one path out)
 
@@ -188,7 +187,7 @@ adapter: `docs/integrations/ADAPTERS.md`). Every event is a keyed envelope in `e
 writes one beside each NEW notification, same key). `subscription` rows plan `delivery` rows in the
 same transaction; the dispatcher (primary only) claims them `FOR UPDATE SKIP LOCKED`, backs off 5 s →
 1 h and marks a row dead after 6 attempts (`orca.integration.failed`, an `integration_failed`
-notification). Adapters (`web`, `webhook`, `slack` outbound so far) start only on the primary bridge
+notification). Adapters (`web`, `webhook`, `discord`, and `slack` receive-only) start only on the primary bridge
 of `integration.instance`. Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents); a
 row holds only the name. An outside sender's message gets a grant (min of link level and person) that
 rides `queued_message.grant_scope`: one grant per orchestrator wake, `orchestrator.tool` refuses
@@ -196,8 +195,11 @@ verbs outside it (`grantRefusal`), and such a wake has no shell; a workstream it
 gets `grantScope` and runs with `agentPermissionMode: "ask"`. An unknown sender gets a one-time
 pairing code (`pairing_code`; approve with `POST /api/integrations/pairing/approve`). The orchestrator
 has `orca channels`, `post`, `thread link` and `ask-user`. A subscription's `digest_seconds` batches
-its deliveries per fixed window (`delivery.digest_key`). `/api/slack` still posts at once as
-you (`postAsUser`), not through the queue; `/api/orchestrator/event` stays for instance-to-instance
+its deliveries per fixed window (`delivery.digest_key`). **Slack is receive-only by rule**
+(`RECEIVE_ONLY`): `router.publish` drops every delivery to a Slack link (subscriptions, digests, `orca
+post`, the pairing-code reply), Settings refuses a subscription or Test to one, `orca post --reply`
+on a Slack event stays in Orca (the inbox), and the adapter's `send` and `slackApi` refuse writes.
+`/api/slack` answers 410; `/api/orchestrator/event` stays for instance-to-instance
 reports, scripts use a signed webhook (`/api/integrations/<id>/inbound`).
 
 ## Multi-repo (aggregated)
@@ -1023,8 +1025,7 @@ appended to the brief / message as references, so the worker's instance material
 `tests/attachmentsRelay.test.ts` drives two real bridges (upload on one, run, the orchestratorOn
 proxy and spawn/send `--attach` on the other). (History: a laptop's `/var/folders` path reached the box's
 agents, which couldn't open it.)
-**Slack posts from the instance you click on** (`/api/slack` is in the answer-here set): it needs no
-worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box it failed with no token.
+**Slack is receive-only**: no instance posts to it (`/api/slack` answers 410 wherever it is asked).
 **Machine metrics history:** each instance samples ITSELF once a minute (`startMetricsSampler` in
 `server/health.ts`, started from `server/index.ts`, reusing `health()`) into `instance_metric`
 (migration 11: instance, `at`, cpu %, load1, memory used/total, disk used; migration 13 added

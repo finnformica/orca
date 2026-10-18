@@ -1,6 +1,6 @@
 # How to write an Orca adapter
 
-This guide is for the branches that stack on the integrations core: Slack two-way, Discord, email,
+This guide is for the branches that stack on the integrations core: Slack (receive-only), Discord, email,
 the Settings page, the GitHub poller and Linear. The design is
 [docs/research/integrations.md](../research/integrations.md) section 3. Read this guide first. Do not
 change the core to add an adapter. If an adapter needs a core change, change the core in its own
@@ -148,7 +148,7 @@ export type InboundMessage = {
   - Chat: return `externalMsgId`. The core stores it before the next attempt.
 - Post in `target.threadId` when it is set. Return `threadId` for a new post. The core stores it
   as the workstream's thread on that link. The thread id is yours: the core only stores it and
-  gives it back. Slack uses `channel:thread_ts`.
+  gives it back. Discord uses its thread channel id. Slack never gets a send (section 13).
 - Edit `target.messageId` when `msg.edit` is true and `caps.edits` is true.
 - The core cuts `msg.text` to `caps.maxTextLength`.
 - Never throw for a platform error. Return `{ ok: false, retryable, error }`.
@@ -198,15 +198,16 @@ Use Settings > Integrations (`/settings/integrations`): Connect, links, people, 
 The primary bridge syncs the rows each minute. You do not need a restart.
 `GET /api/integrations` shows the rows, what runs on this bridge, its health and the dead deliveries.
 
-Example: CI failures for repo `orca` go to the Slack channel `C123`.
+Example: CI failures for repo `orca` go to the Discord channel `123`. (Not Slack: Slack is
+receive-only, and Orca refuses a subscription to a Slack link. See section 13.)
 
 `user_id` is `db.currentUser()` (`ORCA_USER`, else `me`).
 
 ```sql
 INSERT INTO integration (id, user_id, kind, name, instance, config, secret_ref, created_at)
-VALUES ('slack-work', 'me', 'slack', 'Work Slack', 'cloud', '{}', 'ORCA_SECRET_SLACK_BOT', 0);
+VALUES ('discord-home', 'me', 'discord', 'Discord', 'cloud', '{}', 'ORCA_SECRET_DISCORD_BOT', 0);
 INSERT INTO channel_link (id, user_id, integration_id, external_id, level)
-VALUES ('eng', 'me', 'slack-work', 'C123', 'notify');
+VALUES ('eng', 'me', 'discord-home', '123', 'notify');
 INSERT INTO subscription (user_id, topic_pattern, filter, target_kind, target_id)
 VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 ```
@@ -239,8 +240,8 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 
 | Branch | Uses | Adds |
 |---|---|---|
-| Slack two-way | `ingest`, `inboundEnvelope`, `thread`, `mentioned`, thread links, `caps.edits`. | Socket Mode in `start` (`inbound: "socket"`), a bot token in `ORCA_SECRET_SLACK_BOT`, an app-level token in `ORCA_SECRET_SLACK_APP`. Keep `postAsUser` for "post as me". Setup: [slack.md](slack.md). |
-| Discord | The same as Slack. | Gateway in `start`. Run it on the personal box: set `integration.instance`. |
+| Slack (receive-only) | `ingest`, `inboundEnvelope`, `thread`, `mentioned`. | Socket Mode in `start` (`inbound: "socket"`), a bot token in `ORCA_SECRET_SLACK_BOT`, an app-level token in `ORCA_SECRET_SLACK_APP`. No outbound path at all (section 13). Setup: [slack.md](slack.md). |
+| Discord | The same as Slack, plus `send`, thread links and `caps.edits`. | Gateway in `start`. Run it on the personal box: set `integration.instance`. |
 | Email | `OutboundMessage.replyToExternalMsgId` and `references`, `idempotencyKey` as the Message-ID, `ConversationRef.messageId`, `cursor` for an IMAP UID. | IMAP IDLE in `start`. A DKIM check before `ingest`. |
 | Settings UI | `store.ts` (every table), `registry.health()`, `store.retryDead()`, `GET /api/integrations`, the pairing routes (section 10). | Routes to write rows. A Test button that calls `publish` with a test key. An Approve / Deny list over `GET /api/integrations/pairing`. |
 | GitHub poller | `cursor` (an ETag or a timestamp), `ingest` without `actor`, topics `orca.pr.*` or `ext.github.*`. | A poll loop in `start` (`inbound: "poll"`). |
@@ -249,9 +250,8 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 
 ## 9. Behaviour that stays as before
 
-- `POST /api/slack` posts `{channel, text}` with `SLACK_TOKEN` as you. It goes through the Slack
-  adapter's `send` (`postAsUser`) and answers at once. It does not use the delivery queue, so the
-  card still shows a failed post at once.
+- `POST /api/slack` is gone: it answers 410. There is no "post as me" any more (section 13). The
+  card's Slack items copy the message, and you paste it in Slack yourself.
 - `POST /api/orchestrator/event` stays. Instances use it to send worker reports to the
   orchestrator's instance. Scripts use a webhook integration in its place.
 - `notify.emit` writes the notification row as before. For a new row it also writes the event with
@@ -295,7 +295,7 @@ first (section 7).
 | `orca post --link <id> [--thread <id> \| --repo r --branch b] "<text>"` | Publishes `orca.message` with a delivery to the link. With `--repo` and `--branch` it continues that workstream's thread on the link, or starts it. |
 | `orca post --reply "<text>"` | Answers the outside message that woke the orchestrator: its link, its place (the DM for a catch-all link) and its thread. The grant check runs on that link. A wake from your own chat or a worker report has nothing to answer, so `--reply` fails there. |
 | `orca thread link <adapter> <thread-id> --repo r --branch b [--link <id>]` | Binds an external thread to a workstream. Replies in it then go to the workstream (with a `work` grant on its repo). |
-| `orca ask-user "<question>"` | Publishes `orca.question`. The bell shows it as `needs_input`. Subscriptions to `orca.question` also send it out (for example to your Slack DM). |
+| `orca ask-user "<question>"` | Publishes `orca.question`. The bell shows it as `needs_input`. Subscriptions to `orca.question` also send it out (for example to a Discord channel; never to Slack). |
 
 The wake knows its source event. `inbox.toOrchestrator` passes the event's `ReplyTo` (`replyToOf`:
 link, place, thread, event key) with the message. The queue keeps it in `queued_message.reply_to`,
@@ -315,3 +315,22 @@ seconds. At the window's end, the dispatcher sends ONE message for the window.
   retry time and dead state.
 - A digest does not apply to `web` targets. The web already shows each event.
 - A digest over more than one workstream starts no thread.
+
+## 13. Receive-only platforms (Slack)
+
+Slack is receive-only, by rule. Orca never sends anything to Slack. The rule is a list in the core,
+`RECEIVE_ONLY` in `shared/integrations.ts`, not a setting.
+
+- `router.publish` drops every delivery to a link on a receive-only kind (`sendable`). This covers
+  subscriptions, digests, `orca post` and the pairing-code reply.
+- An unknown sender gets no pairing reply. The code shows only in the bell. Tell the person yourself.
+- Settings > Integrations refuses a subscription or a Test to such a link. The page shows the kind
+  as receive-only and leaves its links out of the subscription targets (`postableLinks`).
+- `orca post --link` to such a link is refused. `orca post --reply` on its event keeps the answer in
+  Orca: a `web` delivery (the inbox), and a reply that says the platform is receive-only.
+- The fenced outside message tells the orchestrator to answer in Orca, not with `orca post`.
+- The Slack adapter's `caps.outbound` is `false`. Its `send` refuses. Its `slackApi` refuses every
+  method except `auth.test`, `apps.connections.open` and `users.info`, before any request.
+
+Do not add an outbound path to a receive-only adapter. To change the rule, change `RECEIVE_ONLY`,
+and only when Finn asks for it.
