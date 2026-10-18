@@ -161,9 +161,12 @@ function useHeld<T>(want: T): T {
   return shown;
 }
 
-/** One line of text that cross-fades when it changes: the old text fades up and out over the new
- *  one, which fades up and in, in ONE grid cell — so the line never changes height. The `label-*`
- *  classes are in styles.css (none under reduced motion). */
+/** One line of text that cross-fades when it changes: the old line and the new line run their
+ *  animations TOGETHER, same duration and easing (LABEL_FADE_MS) — the old one translates up and
+ *  OUT while it fades, the new one translates up and IN while it fades, so neither sits fully
+ *  opaque over the other and the text never overlaps. Both sit in ONE grid cell with a fixed line
+ *  height and `overflow-hidden`, so the line never changes height and nothing sliding leaks outside
+ *  it. The `label-*` classes are in styles.css (a plain opacity cross-fade under reduced motion). */
 function CrossFade({ text, slot }: { text: string; slot?: string }) {
   const [s, setS] = useState<{ text: string; n: number; gone: string | null }>({ text, n: 0, gone: null });
   if (s.text !== text) setS({ text, n: s.n + 1, gone: s.text });
@@ -173,13 +176,13 @@ function CrossFade({ text, slot }: { text: string; slot?: string }) {
     return () => clearTimeout(t);
   }, [s.n, s.gone]);
   return (
-    <span className="grid min-w-0 flex-1">
-      {s.gone !== null && <span key={`out-${s.n}`} aria-hidden="true" className="label-out truncate [grid-area:1/1]">{s.gone}</span>}
+    <span className="grid h-[1.2em] min-w-0 flex-1 overflow-hidden">
+      {s.gone !== null && <span key={`out-${s.n}`} aria-hidden="true" data-slot={slot && `${slot}-out`} className="label-out truncate [grid-area:1/1]">{s.gone}</span>}
       <span key={`in-${s.n}`} data-slot={slot} className={cn("truncate [grid-area:1/1]", s.n > 0 && "label-in")}>{text}</span>
     </span>
   );
 }
-const LABEL_FADE_MS = 200;
+const LABEL_FADE_MS = 220;
 
 const STATUS_ICON: Record<StepStatus, ReactNode> = {
   running: <Loader2 className="size-3 shrink-0 animate-spin motion-reduce:animate-none" />,
