@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { baseWorktree, changeSummary, copyToWorktree, createWorktree, linkToWorktree, listWorktrees, removeWorktree, resolveBase, resolvePrBody, syncWorktrees } from "../server/git";
-import { addLabel, ciEvidence, convertToDraft, countExternalFeedback, createPr, disableAutoMerge, enableAutoMerge, listMerged, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus, reviewEvidence } from "../server/gh";
+import { AutoMergeNotAllowed, addLabel, ciEvidence, convertToDraft, countExternalFeedback, createPr, disableAutoMerge, enableAutoMerge, listMerged, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus, reviewEvidence } from "../server/gh";
 import { freePort, killTree, orphanPreviewDbs, previewDbName, previewHost } from "../server/preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
@@ -544,7 +544,7 @@ test("W9 auto-merge: enableAutoMerge shells out to `gh pr merge --auto` (queues 
   await expect(enableAutoMerge(repo, 1)).resolves.toBeDefined();
 });
 
-test("W9c auto-merge not allowed: a repo without auto-merge enabled gets a direct squash merge when the PR is mergeable, else the refusal with a hint", async () => {
+test("W9c auto-merge not allowed: a repo without auto-merge enabled gets a direct squash merge when the PR is mergeable, else AutoMergeNotAllowed for the caller to queue", async () => {
   process.env.ORCA_GH_NO_AUTO = "1";
   try {
     await fixture({ mergeable: "MERGEABLE", statusCheckRollup: [{ conclusion: "SUCCESS" }] });
@@ -555,11 +555,12 @@ test("W9c auto-merge not allowed: a repo without auto-merge enabled gets a direc
     expect(log).toMatch(/^graphql enablePullRequestAutoMerge \{"id":"PR_77"\} .*mergeMethod:SQUASH/m); // tried auto-merge first
     expect(log).toMatch(/^graphql mergePullRequest \{"id":"PR_77"\} .*mergeMethod:SQUASH/m);           // then merged directly
 
-    // CI still running → no direct merge; the original error plus what to do about it.
+    // CI still running → not safe to merge now: the typed error, so the route (server/index.ts) can
+    // tell this refusal apart from any other and queue the PR instead of failing the click.
     await fixture({ mergeable: "MERGEABLE", statusCheckRollup: [{ state: "PENDING" }] });
     const err = await enableAutoMerge(repo, 77).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(AutoMergeNotAllowed);
     expect(String(err)).toContain("Auto merge is not allowed for this repository");
-    expect(String(err)).toContain("Enable auto-merge in the repo settings, or merge when green.");
   } finally {
     delete process.env.ORCA_GH_NO_AUTO;
   }

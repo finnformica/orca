@@ -12,6 +12,7 @@ import * as store from "./store";
 import { SLACK_CAPS, slackAdapter } from "./adapters/slack";
 import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
 import { GITHUB_CAPS, githubAdapter } from "./adapters/github";
+import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
 const metas = new Map<AdapterKind, AdapterMeta>();
@@ -26,6 +27,11 @@ export function register(kind: AdapterKind, factory: AdapterFactory, meta?: Omit
 register("slack", slackAdapter, { label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "ORCA_SECRET_SLACK_BOT", help: "A bot token (xoxb-…). Invite the bot to each linked channel." });
 register("webhook", webhookAdapter, { label: "Webhook", caps: WEBHOOK_CAPS, place: "hook", secretExample: "ORCA_SECRET_WEBHOOK", help: "Signed POSTs to /api/integrations/<id>/inbound (HMAC sha256 of the body)." });
 register("github", githubAdapter, { label: "GitHub", caps: GITHUB_CAPS, place: "repo (owner/name, or *)", secretExample: "ORCA_SECRET_GITHUB", config: [{ key: "repos", label: "Repos", placeholder: "owner/name, owner/other (empty: every configured repo)" }, { key: "intervalSeconds", label: "Poll interval (s)", placeholder: "60" }], help: "Polls PRs, CI and review comments. Without a secret it uses the gh login. Link each repo at ask or above." });
+register("discord", discordAdapter, {
+  label: "Discord", caps: DISCORD_CAPS, place: "channel", secretExample: "ORCA_SECRET_DISCORD_BOT",
+  config: [{ key: "dmLink", label: "DM link id (optional)", placeholder: "the link DMs go to; empty = the * link" }],
+  help: "A bot token with the Message Content intent. Run it on one instance only. Setup: docs/integrations/discord.md.",
+});
 
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */
 export function kinds(): AdapterMeta[] {

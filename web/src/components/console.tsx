@@ -69,7 +69,7 @@ export const StatusDot = ({ tone, className }: { tone: DotTone; className?: stri
 /** An environment-style pill (Production / Preview): rounded, hairline, an optional leading icon. */
 export function Pill({ children, tone = "default", slot }: { children: ReactNode; tone?: "default" | "blue" | "green" | "amber" | "red" | "purple"; slot?: string }) {
   const tones = {
-    default: "text-foreground border",
+    default: "border-transparent bg-selected text-selected-foreground", // the server's theme: not a status
     blue: "border-transparent bg-geist-blue/15 text-geist-blue",
     green: "border-transparent bg-geist-green/15 text-geist-green",
     amber: "border-transparent bg-geist-amber/15 text-geist-warning-fg",
@@ -130,7 +130,7 @@ export function Segmented<T extends string>({ value, options, onChange, label, s
     <div role="group" aria-label={label} className={cn("inline-flex items-center rounded-md border p-0.5", size === "sm" ? "h-6" : "h-7")}>
       {options.map((o) => (
         <button key={o.value} type="button" aria-pressed={value === o.value} onClick={() => onChange(o.value)}
-          className={cn("inline-flex h-full items-center rounded-[5px] text-xs font-medium transition-colors", size === "sm" ? "px-1.5" : "px-2", value === o.value ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground")}>
+          className={cn("inline-flex h-full items-center rounded-[5px] text-xs font-medium transition-colors", size === "sm" ? "px-1.5" : "px-2", value === o.value ? "bg-selected text-selected-foreground" : "text-muted-foreground hover:text-foreground")}>
           {o.label}
         </button>
       ))}

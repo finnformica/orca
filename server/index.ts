@@ -1180,8 +1180,17 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/prs/auto-merge") {
     if (!featuresOf(repo).autoMerge) return notEnabled(repo, "Auto-merge");
-    await gh.enableAutoMerge(repo.repoPath, body.pr); // GitHub merges once checks + reviews pass
-    return json({ ok: true });
+    try {
+      await gh.enableAutoMerge(repo.repoPath, body.pr); // GitHub merges once checks + reviews pass
+      return json({ ok: true });
+    } catch (e) {
+      // The repo disallows GitHub's own auto-merge and the PR isn't safe to merge now: queue it in
+      // Orca's own merge-when-green queue instead. This is Finn's own click, so the mergePolicy that
+      // limits what the orchestrator may merge on its own does not apply (bypassPolicy).
+      if (!(e instanceof gh.AutoMergeNotAllowed)) throw e;
+      const text = await mergeQueue.request(cfg, repo, { pr: body.pr }, { by: "user", bypassPolicy: true });
+      return json({ ok: true, queued: true, text });
+    }
   }
   if (req.method === "POST" && p === "/api/prs/disable-auto-merge") {
     await gh.disableAutoMerge(repo.repoPath, body.pr); // cancel the queued auto-merge
