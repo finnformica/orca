@@ -41,7 +41,9 @@ function mount(): HTMLElement {
 }
 const items = () => [...container!.querySelectorAll("li")];
 
+const SPAWN_POLL_MS = store.spawnPoll.ms;
 afterEach(async () => {
+  store.spawnPoll.ms = SPAWN_POLL_MS; // a module singleton: the next file's spawn waits poll at the real rate
   // Drain any still-pending create so the store's optimistic list empties, then reset the fake
   // backend and re-sync live state to empty before the next test.
   if (apiFake.pending) { const p = apiFake.pending; apiFake.pending = null; await act(async () => { p({ branch: "drain", worktreePath: "/x", title: "x" }); await flush(); await flush(); }); }
