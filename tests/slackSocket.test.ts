@@ -13,7 +13,8 @@ import * as orchestrator from "../server/orchestrator";
 import * as store from "../server/integrations/store";
 import { DM_LINK, reconnectDelay, slackAdapter, slackInbound, threadChannel, USER_CONNECTION, type SlackEvent } from "../server/integrations/adapters/slack";
 import type { AdapterContext, Connection } from "../server/integrations/adapter";
-import { pairingReply, type InboundEnvelope } from "../shared/integrations";
+import { pairingReply, replyToOf, type InboundEnvelope } from "../shared/integrations";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../web/src/workstream";
 import type { OrcaConfig } from "../server/config";
 import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
@@ -343,6 +344,18 @@ describe("through the core (real router, fresh schema)", () => {
       expect(await orchestrator.tool({ repos: [] } as unknown as OrcaConfig, "post", { link: "L1", thread, _: ["Yes,", "at", "10:02."] })).toContain("(thread C1:5.1)");
       await dispatcher.dispatchOnce(t0 + 3_000);
       expect(posts().at(-1)).toEqual({ channel: "C1", text: "Yes, at 10:02.", thread_ts: "5.1" });
+
+      // (3) A paired person's DM, answered with `orca post --reply` under the wake's own grant: the
+      // core targets the "im" link's place; the adapter posts into the real DM's thread.
+      slack.event({ type: "message", user: "U1", text: "and #13?", ts: "6.1", channel: "D6", channel_type: "im" });
+      await waitFor(() => results.length === 4);
+      expect(results[3]).toBe("new");
+      const dm = (await store.event("slack:T1:D6:6.1"))!;
+      await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: dm.grant as never, wakeReplyTo: replyToOf(dm) as never });
+      expect(await orchestrator.tool({ repos: [] } as unknown as OrcaConfig, "post", { reply: "Not yet." })).toContain("(thread D6:6.1)");
+      await dispatcher.dispatchOnce(t0 + 4_500);
+      expect(posts().at(-1)).toEqual({ channel: "D6", text: "Not yet.", thread_ts: "6.1" });
+      await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: null as never, wakeReplyTo: null as never });
       expect((await store.deliveries()).every((d) => d.state === "sent" || d.target.kind !== "link")).toBe(true);
     } finally {
       abort.abort(); await a.stop(); api.restore(); slack.stop();
