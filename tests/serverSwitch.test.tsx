@@ -282,6 +282,10 @@ test("S6e: the ACTIVE server's identity — title, accent, favicon and sidebar n
   expect(document.documentElement.style.getPropertyValue("--server-mark-bg")).toBe(markBg("#1f9d55"));
   expect(document.getElementById("orca-server-theme")!.textContent).toBe(themeCss("#1f9d55")); // the theme's tones
   expect(q('[data-slot="server-identity"]')!.textContent).toBe("Personal"); // beside the mark, top left
+  // It reads like the page title: "Orca | Personal", with the pipe hidden from a screen reader.
+  const brand = q('[data-slot="brand-name"]')!;
+  expect(brand.textContent).toBe("Orca|Personal");
+  expect(brand.querySelector('[data-slot="brand-sep"]')!.getAttribute("aria-hidden")).toBe("true");
   expect(q('[data-slot="server-label"]')!.textContent).toBe("Personal");
   const items = await openMenu();
   expect(items.map((i) => i.getAttribute("aria-label"))).toEqual(["Work, online", "Personal, online"]);
@@ -365,6 +369,8 @@ test("S6i: the display name saves after a pause in typing and on blur, shows Sav
   await mount();
   await act(async () => { navigate("/settings"); await flush(); await flush(); await flush(); });
   const input = q('[data-slot="identity-name"]') as HTMLInputElement;
+  // The preview beside the mark has the sidebar's separator: "Orca | <name>".
+  expect(q('[data-slot="identity-preview"] [data-slot="brand-name"]')!.textContent).toBe("Orca|cloud");
   const type = async (v: string) => act(async () => {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, v);
     input.dispatchEvent(new Event("input", { bubbles: true })); await flush();
@@ -376,6 +382,7 @@ test("S6i: the display name saves after a pause in typing and on blur, shows Sav
   expect(apiFake.setServerIdentityCalls).toEqual([]); // still typing
   await wait(IDENTITY_SAVE_DELAY_MS + 100);
   expect(apiFake.setServerIdentityCalls).toEqual([{ name: "Work", color: "" }]); // one save, the last value
+  expect(q('[data-slot="identity-preview-name"]')!.textContent).toBe("Work");
   expect(q('[data-slot="identity-status"]')!.textContent).toContain("Saved");
   // Blur saves at once, with no wait.
   await type("Work box");

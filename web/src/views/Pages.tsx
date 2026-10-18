@@ -24,7 +24,7 @@ import { instanceChoices, setInstanceRate, setInstanceTerminal, staleHours, term
 import { terminalMachines, useOpenTerminal } from "@/components/InstanceTerminal";
 import { ago, repoSummaries, terminalBlocked } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
-import { FindBox, NAV, OrcaMark, THEMES } from "@/components/Shell";
+import { BrandName, FindBox, NAV, OrcaMark, THEMES } from "@/components/Shell";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
@@ -384,7 +384,7 @@ function ServerIdentitySettings() {
         </span>
         <span data-slot="identity-preview" className="flex items-center gap-2 text-sm font-medium">
           <span className="inline-flex size-5 items-center justify-center rounded-full" style={{ color: markColor(shown), background: markBg(shown) }}><OrcaMark className="size-3.5" /></span>
-          Orca <span>{label}</span>
+          <BrandName label={label} labelSlot="identity-preview-name" />
         </span>
       </span>}>
       <Setting label="Display name" htmlFor="identity-name" hint={`The title, the sidebar and the server menu show it. Empty: ${identity.host}.`}>
