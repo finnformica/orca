@@ -106,14 +106,17 @@ test("Q2: the confirmation fades on its own and the box stays open; Esc closes; 
   expect(panelOpen()).toBe(false);
 });
 
-test("Q4: one surface morphs pill ↔ box (width, height, radius; none under reduced motion), solid on hover, no ✕, no footer", async () => {
+test("Q4: one surface morphs pill ↔ box (width, height, radius; none under reduced motion), one fill on hover, no ✕, no footer", async () => {
   await mount("/");
   const closed = surface();
   expect(closed.dataset.state).toBe("closed");
   const cls = () => surface().className.split(/\s+/);
-  expect(cls()).toEqual(expect.arrayContaining(["transition-[width,height,border-radius]", "motion-reduce:transition-none", "h-8", "rounded-[16px]", "bg-card"]));
-  expect($('[data-slot="quick-ask-pill"]')!.className).toContain("hover:bg-accent"); // solid hover on the pill itself
-  expect($('[data-slot="quick-ask-pill"]')!.className).not.toMatch(/hover:bg-[\w-]+\/\d+/); // no translucent hover: the page never shows through
+  expect(cls()).toEqual(expect.arrayContaining(["transition-[width,height,border-radius,border-color]", "motion-reduce:transition-none", "h-8", "rounded-[16px]", "bg-card"]));
+  // Finn: the closed pill must show the open box's fill. A hover fill changed it under the pointer, so
+  // hover shows on the hairline and the icon instead — never as a fill, on the pill or the surface.
+  expect($('[data-slot="quick-ask-pill"]')!.className).not.toMatch(/hover:bg-/);
+  expect(surface().className).not.toMatch(/hover:bg-/);
+  expect(cls()).toContain("has-[[data-slot=quick-ask-pill]:hover]:border-border-dark");
   expect(cls()).toContain("[interpolate-size:allow-keywords]"); // height can animate to auto
   // ONE surface look open and closed (docs/design/surfaces.md): only size and radius change.
   const look = (c: string) => c.split(/\s+/).filter((x) => /^(bg-|text-|border|shadow-)/.test(x)).sort();
@@ -167,7 +170,7 @@ test("Q4: one surface morphs pill ↔ box (width, height, radius; none under red
   await act(async () => { await new Promise((r) => setTimeout(r, MORPH_MS + 20)); });
   expect($('[data-slot="quick-ask-leaving"]')).toBeNull();
   expect($('[data-slot="quick-ask-pill"]')!.className).toContain("fade-in-0");
-  expect($('[data-slot="quick-ask-pill"]')!.className).toContain("hover:bg-accent");
+  expect($('[data-slot="quick-ask-pill"]')!.className).not.toMatch(/hover:bg-/);
   expect(look(surface().className)).toEqual(closedLook); // back to the same look
 });
 
