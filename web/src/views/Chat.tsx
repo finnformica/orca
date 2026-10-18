@@ -7,7 +7,7 @@
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Loader2, Paperclip, Quote as QuoteIcon } from "lucide-react";
 import { cn, PipContext } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
@@ -73,8 +73,10 @@ const tableComponents = { table: markdownTable, th: markdownCell("th"), td: mark
 /** Markdown inside the terminal-styled log: prose spacing and readable lists, but sized and coloured
  *  to sit in the chat's window rather than looking like a pasted document. `tone` overrides the body
  *  text colour (a worker report's folded body reads dimmer than a turn's own reply) without forking
- *  the renderer, its table handling, or its prose setup. */
-const ChatMarkdown = ({ children, tone = "text-neutral-300" }: { children: string; tone?: string }) => (
+ *  the renderer, its table handling, or its prose setup. `memo`: parsing markdown is the costliest
+ *  thing a chat render does (measured: ~300ms commits re-parsing a long orchestrator thread on every
+ *  open and close of its panel), and the text of a finished turn never changes. */
+const ChatMarkdown = memo(({ children, tone = "text-neutral-300" }: { children: string; tone?: string }) => (
   // wrap-anywhere: the agent's prose is full of unbreakable tokens (`branch/names-with-hashes`,
   // paths, run ids) that are wider than a narrow window, and one of them made the whole log scroll
   // sideways. Code BLOCKS are exempt — they keep their lines and scroll inside themselves.
@@ -92,7 +94,7 @@ const ChatMarkdown = ({ children, tone = "text-neutral-300" }: { children: strin
     "prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400", tone)}>
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ img: markdownImg, ...tableComponents }}>{children}</ReactMarkdown>
   </div>
-);
+));
 
 /** Markdown for a single Facet item (Remaining / Decisions / Verification / Commits): same renderer
  *  and prose palette as ChatMarkdown, but a paragraph renders inline rather than as its own <p> — the
@@ -100,7 +102,7 @@ const ChatMarkdown = ({ children, tone = "text-neutral-300" }: { children: strin
  *  nested sub-bullet or a stray `##` sub-heading the parser kept verbatim (see shared/agent.ts
  *  sectionValue) still renders as its own block — a real nested list, or a heading — beneath the
  *  item's text. */
-const FacetMarkdown = ({ children }: { children: string }) => (
+const FacetMarkdown = memo(({ children }: { children: string }) => (
   <div className="prose prose-invert prose-sm max-w-none wrap-anywhere text-neutral-300
     prose-headings:mt-1 prose-headings:mb-0.5 prose-headings:text-xs prose-headings:text-neutral-200
     prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1
@@ -109,7 +111,7 @@ const FacetMarkdown = ({ children }: { children: string }) => (
     prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400">
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ p: ({ children: c }) => <>{c}</>, img: markdownImg, ...tableComponents }}>{children}</ReactMarkdown>
   </div>
-);
+));
 
 /** Open/closed with the height animated: a grid row going 1fr ↔ 0fr animates to the content's own
  *  height with nothing measured, and the opacity rides along (~200ms; none under reduced motion).
