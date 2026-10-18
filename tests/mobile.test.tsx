@@ -877,11 +877,11 @@ describe("a newer build", () => {
     expect(banner.parentElement!.className).toContain("justify-center");
     expect(banner.parentElement!.className).toContain("max-md:pt-[max(0.5rem,env(safe-area-inset-top))]");
     // The house's one inverted surface (bg-primary, Merge's button), server-themed, with the stronger
-    // shadow-modal for lift; equal padding on all sides, one line, no fixed height.
+    // shadow-modal for lift; equal top/bottom padding, one line, no fixed height.
     expect(banner.className).toEqual(expect.stringContaining("bg-primary text-primary-foreground"));
     expect(banner.className).not.toContain("h-12");
     expect(banner.className).toEqual(expect.stringContaining("rounded-lg"));
-    expect(banner.className).toEqual(expect.stringContaining("p-3"));
+    expect(banner.className).toEqual(expect.stringContaining("p-1.5 pl-3"));
     expect(banner.className).toEqual(expect.stringContaining("shadow-modal"));
     // Slides down and fades in; slides up and fades out.
     expect(banner.dataset.state).toBe("open");
@@ -891,6 +891,7 @@ describe("a newer build", () => {
     expect(banner.querySelectorAll("button")).toHaveLength(1);
     const refresh = banner.lastElementChild as HTMLButtonElement;
     expect(refresh.tagName).toBe("BUTTON");
+    expect(refresh.className).toEqual(expect.stringContaining("h-7")); // smaller than size="sm"
     await act(async () => { refresh.click(); await flush(); });
     expect(banner.dataset.state).toBe("closed");
     expect(refresh.disabled).toBe(true);
