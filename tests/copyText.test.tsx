@@ -28,6 +28,11 @@ beforeEach(() => {
 afterEach(async () => {
   delete (document as unknown as { execCommand?: unknown }).execCommand;
   setClipboard(undefined);
+  // happy-dom's Selection does not clear itself when its range's nodes are removed by an innerHTML
+  // reassignment — document/window are ONE global for the whole bun test process (tests/happydom.ts),
+  // so a leftover range here read as a live text selection in every later file (notificationCentre's
+  // swipe test treats a selection as "the user is selecting text, not swiping" and bailed out).
+  document.getSelection()?.removeAllRanges();
   document.body.innerHTML = "";
   await wait(0);
 });
