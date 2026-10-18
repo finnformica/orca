@@ -110,12 +110,12 @@ export function QuickAsk() {
       {/* ONE surface for both states, so the pill grows into the box rather than being swapped for it.
           `interpolate-size` lets the height animate to `auto` (Chromium; elsewhere it snaps). Solid
           card / accent fills — never a translucent hover, which let the page show through. */}
-      {/* Closed, the pill is part of the themed frame (`data-chrome`): the server's deep shade. */}
-      <div data-slot="quick-ask-surface" data-state={open ? "open" : "closed"} data-chrome={mounted ? undefined : ""}
+      {/* One look open and closed (Finn: the open box stands out more): an overlay surface — card fill,
+          hairline, modal shadow. Only the size and radius change (docs/design/surfaces.md). */}
+      <div data-slot="quick-ask-surface" data-state={open ? "open" : "closed"}
         className={cn(
-          "[interpolate-size:allow-keywords] bg-card text-foreground pointer-events-auto overflow-hidden border transition-[width,height,border-radius,box-shadow,background-color] duration-200 ease-out motion-reduce:transition-none",
-          open ? "h-auto w-[min(560px,calc(100%-2rem))] rounded-xl shadow-modal" : "h-8 w-[6.5rem] rounded-[16px] shadow-menu",
-          !mounted && "hover:bg-accent",
+          "[interpolate-size:allow-keywords] bg-card text-foreground pointer-events-auto overflow-hidden border shadow-modal transition-[width,height,border-radius] duration-200 ease-out motion-reduce:transition-none",
+          open ? "h-auto w-[min(560px,calc(100%-2rem))] rounded-xl" : "h-8 w-[6.5rem] rounded-[16px]",
         )}>
         {mounted ? (
           // While leaving it is the same tree, faded, inert and out of the accessibility tree — no
@@ -146,7 +146,7 @@ export function QuickAsk() {
           </div>
         ) : (
           <button type="button" data-slot="quick-ask-pill" onClick={() => setOpen(true)} aria-label="Ask the orchestrator (quick)"
-            className="animate-in fade-in-0 flex size-full items-center justify-center gap-2 px-3 text-sm whitespace-nowrap duration-150 motion-reduce:animate-none">
+            className="animate-in fade-in-0 hover:bg-accent flex size-full items-center justify-center gap-2 px-3 text-sm whitespace-nowrap transition-colors duration-150 motion-reduce:animate-none">
             <Bot className="text-muted-foreground size-3.5" />
             <span>Ask</span>
             <Shortcut id="quickAsk" />

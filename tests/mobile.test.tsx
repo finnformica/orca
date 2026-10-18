@@ -876,11 +876,13 @@ describe("a newer build", () => {
     expect(frame.className).toEqual(expect.stringContaining("pointer-events-none sticky top-0 z-40 h-0"));
     expect(banner.parentElement!.className).toContain("justify-center");
     expect(banner.parentElement!.className).toContain("max-md:pt-[max(0.5rem,env(safe-area-inset-top))]");
-    // branch-demo's floating bar: hairline border, h-12 p-1, a translucent blurred surface, one line.
-    expect(banner.className).toEqual(expect.stringContaining("bg-background/95"));
-    expect(banner.className).toEqual(expect.stringContaining("h-12"));
-    expect(banner.className).toEqual(expect.stringContaining("rounded-lg border p-1"));
-    expect(banner.className).toEqual(expect.stringContaining("shadow-menu backdrop-blur"));
+    // The house's one inverted surface (bg-primary, Merge's button), server-themed, with the stronger
+    // shadow-modal for lift; equal padding on all sides, one line, no fixed height.
+    expect(banner.className).toEqual(expect.stringContaining("bg-primary text-primary-foreground"));
+    expect(banner.className).not.toContain("h-12");
+    expect(banner.className).toEqual(expect.stringContaining("rounded-lg"));
+    expect(banner.className).toEqual(expect.stringContaining("p-3"));
+    expect(banner.className).toEqual(expect.stringContaining("shadow-modal"));
     // Slides down and fades in; slides up and fades out.
     expect(banner.dataset.state).toBe("open");
     expect(banner.className).toEqual(expect.stringContaining("animate-in fade-in slide-in-from-top-4"));

@@ -23,7 +23,7 @@ import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPa
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
 import { SLIDE_MS } from "@/components/SidePanel";
-import { dockClipElementAtom, dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
+import { dockClipElementAtom, dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, takeDockResize, useNavToggle } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
 import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
@@ -98,7 +98,7 @@ export function Dock() {
       // of the chat restyles its whole subtree (measured: ~4000 elements, 100–150ms each at 4× CPU, twice
       // per open / close). The margin is an inline style; the card's surface rides `data-painted`.
       data-painted={painted ? "" : undefined}
-      className="relative shrink-0 transition-[width,margin-inline-start] data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden md:data-[painted]:rounded-[10px] md:data-[painted]:bg-card md:data-[painted]:shadow-shell"
+      className="relative shrink-0 transition-[width,margin-inline-start] data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden md:data-[painted]:rounded-[10px] md:data-[painted]:bg-background md:data-[painted]:shadow-shell"
       style={{ width: dock, marginInlineStart: dock > 0 ? 0 : -SHELL_GAP, transitionDuration: `${SLIDE_MS}ms` }}>
       <div data-slot="dock-clip" ref={setDockClip} className="absolute inset-0 overflow-hidden rounded-[inherit]" />
     </div>
@@ -111,7 +111,8 @@ export function Dock() {
  *  (measured: a getBoundingClientRect / clientWidth here forced a ~100ms style + layout pass at 4×
  *  CPU): the column's width at rest comes from a ResizeObserver, and the rest is the widths the
  *  previous and the new state ASK for — exact for a reversal mid-slide too. No React state: the
- *  frame's style is written directly. */
+ *  frame's style is written directly. Only an open, a close or the nav's rail holds it: a resize of the
+ *  panel moves the dock with no transition, so the page follows the edge in the same frame. */
 function useFrozenPage(els: { col: HTMLElement | null; frame: HTMLElement | null },
   dock: number, rail: boolean, narrow: boolean) {
   const was = useRef({ dock, rail });
@@ -132,6 +133,8 @@ function useFrozenPage(els: { col: HTMLElement | null; frame: HTMLElement | null
     const release = () => { clearTimeout(timer.current); frame.style.width = ""; };
     if (narrow) return release();
     if (prev.dock === dock && prev.rail === rail) return;
+    // A resize is not a slide: the dock took its width with no transition, and the page followed it.
+    if (prev.dock !== dock && takeDockResize(dock)) return release();
     // Before the observer's first report (it reports on observe, so in practice never): read it once.
     if (restCol.current === null) restCol.current = col?.clientWidth ?? null;
     if (restCol.current === null) return release();
@@ -435,7 +438,7 @@ function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" className="hover:bg-accent/60 flex min-w-0 flex-1 items-center gap-2 rounded-md p-1" aria-label="Switch instance">
+        <button type="button" className="hover:bg-accent flex min-w-0 flex-1 items-center gap-2 rounded-md p-1" aria-label="Switch instance">
           {body}
           <ChevronsUpDown className={cn("text-muted-foreground size-3.5 shrink-0", collapsed && "md:hidden")} />
         </button>
@@ -475,7 +478,7 @@ function RepoSwitcher() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" data-slot="repo-switcher" className="hover:bg-accent/60 flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium">
+        <button type="button" data-slot="repo-switcher" className="hover:bg-accent flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium">
           {repo === "all" ? "All repos" : repoLabel(repos, repo)} <ChevronsUpDown className="text-muted-foreground size-3.5" />
         </button>
       </DropdownMenuTrigger>

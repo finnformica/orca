@@ -19,11 +19,12 @@ import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MAR
 import { integrationMessage, type IntegrationMessage } from "../../../shared/integrations";
 import { BrandIcon, brandTitle } from "@/components/BrandIcon";
 import { activityCounts, closeOpenMarkdown, createHold, runLabel, stepDuration, stepInFlight, stepKey, stepRow, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepStatus } from "../steps";
-import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
+import { agentLabel, groupSteps, outcomeLead, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { ShotThumbs } from "@/components/Screenshots";
 import { snippetPre } from "@/components/Snippet";
+import { copyText } from "@/lib/dialogs";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { subscribeTurns } from "@/lib/events";
@@ -302,8 +303,12 @@ function Output({ turn }: { turn: AgentTurn }) {
   if (turn.stopped) return <pre className="whitespace-pre-wrap break-words text-amber-400">{turn.response || "Stopped."}</pre>;
   const s = turn.structured;
   if (!s) return <ChatMarkdown>{turn.response || "_(no output)_"}</ChatMarkdown>;
+  // What the reply says before its sections (a snippet to paste, often): `structured` has only the
+  // sections. Without it, a snippet shown while the turn ran vanished when it finished.
+  const lead = outcomeLead(turn.response ?? "");
   return (
     <div className="space-y-1.5 text-neutral-300">
+      {lead && <div data-slot="turn-lead"><ChatMarkdown>{lead}</ChatMarkdown></div>}
       {s.outcome && <ChatMarkdown>{s.outcome}</ChatMarkdown>}
       {s.remaining.length > 0 && <Facet title="Remaining" items={s.remaining} tone="text-amber-400" />}
       {s.decisions.length > 0 && <Facet title="Decisions" items={s.decisions} tone="text-neutral-400" />}
@@ -356,8 +361,7 @@ export function Attachments({ files, className = "" }: { files: AttachmentRef[];
 function MessageActions({ text, onQuote, className }: { text: string; onQuote: () => void; className?: string }) {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
-    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }
-    catch { /* clipboard unavailable */ }
+    if (await copyText(text, "message")) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
   };
   const btn = "text-muted-foreground hover:text-foreground";
   return (
@@ -1142,12 +1146,14 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     <div className="log-themed flex h-full flex-col" data-slot="chat-panel" data-size={size}>
       <div
         ref={scroller}
+        data-slot="chat-log"
         onScroll={onScroll}
         onWheel={() => { seek.current++; }}
         onTouchStart={() => { seek.current++; }}
         // overscroll-contain: hitting the chat's top or bottom must not hand the gesture to the page —
         // it did, and the page then kept scrolling when you turned back to scroll the chat up.
-        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain bg-neutral-950 leading-relaxed ${size === "page" ? "px-4 py-3 md:px-6" : "p-3"} font-sans text-[13px] text-neutral-200 [&_.prose]:text-[13px]`}
+        // No fill of its own: the log takes the surface of what holds it (docs/design/surfaces.md).
+        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain leading-relaxed ${size === "page" ? "px-4 py-3 md:px-6" : "p-3"} font-sans text-[13px] text-neutral-200 [&_.prose]:text-[13px]`}
       >
         {running && (
           <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-end">

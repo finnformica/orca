@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { useSwipeToDismiss } from "@/lib/gestures";
 import { cn } from "@/lib/utils";
 import { useNarrow } from "@/lib/viewport";
-import { appStarting, dockClipElementAtom, dockElementAtom, dockWidthsAtom } from "@/lib/dock";
+import { appStarting, dockClipElementAtom, dockElementAtom, dockWidthsAtom, noteDockResize } from "@/lib/dock";
 
 /** The dock's open / close: branch-demo's `transition-all` (150ms, Tailwind's default ease). */
 export const SLIDE_MS = 150;
@@ -141,6 +141,7 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
       document.body.style.cursor = "";
       dock?.removeAttribute("data-resizing");
       handle.removeAttribute("data-resizing");
+      if (dock) noteDockResize(last); // the dock already has this width: no page-frame hold for it
       setSavedWidth(last);
     };
     document.body.style.cursor = "ew-resize";
@@ -155,7 +156,23 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
       : e.key === "Home" ? PANEL_MIN_W : e.key === "End" ? Number.MAX_SAFE_INTEGER : null;
     if (next === null) return;
     e.preventDefault();
-    setSavedWidth(clampPanelWidth(next, window.innerWidth));
+    const w = clampPanelWidth(next, window.innerWidth);
+    if (w === width) return;
+    // As a drag does: the panel and the dock take the width at once, with the dock's width transition
+    // off, so the page edge moves with the handle in this frame — no 150ms slide, no held page frame.
+    // The computed-style read applies the new width while `data-resizing` turns the transition off;
+    // after that, turning it back on starts nothing (the width does not change again).
+    const el = panelRef.current;
+    if (el) el.style.width = `${w}px`;
+    const dock = docked ? dockEl : null;
+    if (dock) {
+      dock.setAttribute("data-resizing", "");
+      dock.style.width = `${w}px`;
+      void getComputedStyle(dock).transitionProperty;
+      dock.removeAttribute("data-resizing");
+      noteDockResize(w);
+    }
+    setSavedWidth(w);
   };
   // Docked, it waits for the shell's dock to exist rather than flash as an overlay first.
   if (docked && (!dockEl || !dockClip)) return null;
@@ -190,7 +207,7 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
         onFocusCapture={(e) => { if (idle) (e.target as HTMLElement).blur(); }}
         // A constant `class` (see Dock in Shell.tsx: a class change here restyles the whole chat): the
         // stacking order is an inline style.
-        className="bg-card text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden"
+        className="bg-background text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden"
         style={{ width, zIndex: open ? 1 : 0 }}
       >
         {resize}
@@ -207,7 +224,7 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
     // ONCE, so a field inside can take focus in the same commit. Closing, visibility waits for the slide.
     <div
       {...common} data-full={fullScreen ? "" : undefined}
-      className={cn("bg-card text-foreground flex flex-col overflow-hidden",
+      className={cn("bg-background text-foreground flex flex-col overflow-hidden",
         fullScreen ? "fixed top-0 right-0 h-[var(--vvh,100dvh)] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]" : "fixed inset-y-0 right-0 border-l shadow-modal",
         "z-40 ease-out motion-reduce:transition-none",
         open ? "visible translate-x-0 transition-transform" : "invisible translate-x-full transition-[transform,visibility]")}
