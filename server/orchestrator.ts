@@ -612,22 +612,15 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const link = typeof args.link === "string" && args.link ? await integrationStore.link(args.link) : undefined;
       if (!link) throw new Error(`--link must name a channel link (orca channels lists them)${args.link ? `: no link "${args.link}"` : ""}`);
       if (!text) throw new Error('the message is required: orca post --link <id> "<text>"');
-      const conn = await integrationStore.integration(link.integrationId);
       const repo = typeof args.repo === "string" && args.repo ? args.repo : undefined;
       const branch = typeof args.branch === "string" && args.branch ? args.branch : undefined;
-      const threadId = reply ? reply.threadId
-        : !openThread && typeof args.thread === "string" && args.thread ? args.thread
+      const threadId = !openThread && typeof args.thread === "string" && args.thread ? args.thread
         : repo && branch ? (await integrationStore.threadsForWorkstream(repo, branch)).get(link.id) : undefined;
-      // A reply goes to the place it came from: a catch-all link's DM, not "*".
-      const externalId = reply?.channel ?? link.externalId;
-      const r = await integrationRouter.publish({
-        key: `post:${crypto.randomUUID()}`, topic: "orca.message", at: Date.now(), source: { adapter: "orca", linkId: link.id },
-        ...(repo ? { scope: { repo, ...(branch ? { branch } : {}) } } : {}), text,
-        ...(openThread ? { openThread: reply?.messageId ? { messageId: reply.messageId } : {} } : {}),
-      }, Date.now(), [{ subscriptionId: null, target: {
-        kind: "link", integrationId: link.integrationId, adapter: conn?.kind ?? "?", linkId: link.id, externalId, ...(threadId ? { threadId } : {}),
-      } }]);
-      return `Queued for ${link.label ?? link.id}${externalId !== link.externalId ? ` ${externalId}` : ""}${threadId ? ` (thread ${threadId})` : ""}${openThread ? " in a new thread" : ""} as delivery ${r.deliveries[0] ?? "?"}; Orca retries it if the send fails.`;
+      const r = await integrationRouter.post(link, text, {
+        ...(reply ? { reply } : threadId ? { threadId } : {}), ...(repo ? { scope: { repo, ...(branch ? { branch } : {}) } } : {}),
+        ...(openThread ? { openThread } : {}),
+      });
+      return `Queued for ${link.label ?? link.id}${r.externalId !== link.externalId ? ` ${r.externalId}` : ""}${r.threadId ? ` (thread ${r.threadId})` : ""}${openThread ? " in a new thread" : ""} as delivery ${r.delivery ?? "?"}; Orca retries it if the send fails.`;
     }
     case "thread": {
       // `orca thread link <adapter> <thread-id> --repo r --branch b [--link <id>]`: replies in that

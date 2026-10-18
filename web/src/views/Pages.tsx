@@ -139,7 +139,7 @@ export function Settings() {
 function MobileNav() {
   const [scope, setScope] = useAtom(instanceScopeAtom);
   const choices = instanceChoices();
-  const links = NAV.filter((n) => ["Previews", "Integrations", "Handoffs"].includes(n.label));
+  const links = NAV.filter((n) => ["Inbox", "Previews", "Integrations", "Handoffs"].includes(n.label));
   return (
     <VCard slot="settings-mobile-nav" title="Navigate" className="md:hidden" bodyClass="divide-y">
       <Setting label="Find agents" hint="Filters the Agents list.">

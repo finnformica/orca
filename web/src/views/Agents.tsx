@@ -12,6 +12,7 @@
 // with every action in its one ⋯ menu, and the chips and sort move into a Filters bottom sheet
 // beside the search box.
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { ThreadChips } from "@/components/SourceChip";
 import { useAtom, useAtomValue } from "jotai";
 import { ArrowDown, GitPullRequest, ListFilter, Loader2, Search, X } from "lucide-react";
 import { agentQueryAtom, instanceScopeAtom, repoFilterAtom } from "@/lib/atoms";
@@ -435,6 +436,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
         </div>
         <div role="cell" className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
           <span className="shrink-0">{row.repo}</span>
+          <ThreadChips repo={row.repo} branch={row.branch} />
           <span aria-hidden="true">·</span><span className="min-w-0 font-mono break-all">{row.branch}</span>
           {model && <><span aria-hidden="true">·</span><span data-slot="model-label">{model.label}</span></>}
           {prLink}
@@ -477,6 +479,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
             <RunStatus row={row} tone={tone} reasons={reasons} /><span aria-hidden="true">·</span>
           </span>
           <span className="shrink-0">{row.repo}</span>
+          <ThreadChips repo={row.repo} branch={row.branch} iconOnly />
           {model && <><span aria-hidden="true">·</span><Tip label={model.title}><span data-slot="model-label" className="shrink-0">{model.label}</span></Tip></>}
           {!isDone && <PrPreviewInline row={row} />}
           {diffstat && <><span aria-hidden="true">·</span>{diffstat}</>}
