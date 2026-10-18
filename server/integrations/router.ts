@@ -2,7 +2,8 @@
 // gate the sender against its link (§3.7), then `publish`. `publish` is everyone's: record the event
 // once by its key and plan its deliveries in the same transaction, then kick the dispatcher.
 import { randomUUID } from "crypto";
-import { effectiveGrant, INBOUND_LIMIT, paceWait, pairingCode, pairingReply, planDeliveries, PAIRING_CODE_LENGTH, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery } from "../../shared/integrations";
+import { CATCH_ALL, CATCH_ALL_SEND_ERROR, effectiveGrant, sendsToCatchAll, INBOUND_LIMIT, paceWait, pairingCode, pairingReply, planDeliveries, replyToOf, PAIRING_CODE_LENGTH, type ConversationRef, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery, type ReplyTo } from "../../shared/integrations";
+import { replyRefusal } from "../../shared/inbox";
 import * as store from "./store";
 
 /** Orca's own id: time-ordered, so `ORDER BY id` is arrival order. */
@@ -17,6 +18,8 @@ export const onPublished = (fn: Kick): void => { kick = fn; };
  *  Orca's own event, with the full grant. `extra` are deliveries to explicit targets beside the
  *  subscriptions' (`orca post`, `orca ask-user`, a pairing reply). */
 export async function publish(input: InboundEnvelope & { grant?: Grant }, now = Date.now(), extra: PlannedDelivery[] = []): Promise<{ status: "new" | "duplicate"; id: string; deliveries: number[] }> {
+  // A catch-all link names no place: refuse a post to it here, before a row exists to die.
+  if (extra.some((d) => sendsToCatchAll(d.target))) throw new Error(CATCH_ALL_SEND_ERROR);
   const e: Envelope = { ...input, id: newEventId(now) };
   const [subs, allLinks, conns, threads, inbound] = await Promise.all([
     store.subscriptions(),
@@ -33,6 +36,43 @@ export async function publish(input: InboundEnvelope & { grant?: Grant }, now = 
   return { ...r, id: e.id };
 }
 
+/** `orca post`: one `orca.message` with one explicit delivery to a link, so the dispatcher sends it
+ *  through the link's adapter and retries a failure. `reply` answers an inbound event where it came
+ *  from: its place (a catch-all link's DM, not "*") and its thread. `thread` rides the envelope, so an
+ *  email answer is an `In-Reply-To`. Used by `orca post [--reply]` and the inbox's Reply. */
+export async function post(link: store.Link, text: string, opts: {
+  reply?: ReplyTo; threadId?: string; scope?: { repo: string; branch?: string }; thread?: ConversationRef; key?: string;
+  /** Open a thread for the post (`orca post --thread`; Discord: on the message it answers). */
+  openThread?: boolean;
+} = {}, now = Date.now()): Promise<{ id: string; delivery?: number; externalId: string; threadId?: string }> {
+  const conn = await store.integration(link.integrationId);
+  const threadId = opts.reply ? opts.reply.threadId : opts.threadId;
+  const externalId = opts.reply?.channel ?? link.externalId;
+  const r = await publish({
+    key: opts.key ?? `post:${randomUUID()}`, topic: "orca.message", at: now, source: { adapter: "orca", linkId: link.id },
+    ...(opts.scope ? { scope: opts.scope } : {}), ...(opts.thread ? { thread: opts.thread } : {}), text,
+    ...(opts.openThread ? { openThread: opts.reply?.messageId ? { messageId: opts.reply.messageId } : {} } : {}),
+  }, now, [{ subscriptionId: null, target: {
+    kind: "link", integrationId: link.integrationId, adapter: conn?.kind ?? "?", linkId: link.id, externalId, ...(threadId ? { threadId } : {}),
+  } }]);
+  return { id: r.id, ...(r.deliveries[0] !== undefined ? { delivery: r.deliveries[0] } : {}), externalId, ...(threadId ? { threadId } : {}) };
+}
+
+/** The inbox's Reply (docs/research/integrations.md §6.2): `post` with the event's own `replyToOf`,
+ *  the place and thread `orca post --reply` uses. The refusals are pure (shared/inbox.ts). */
+export async function replyToEvent(eventId: string, text: string, now = Date.now()): Promise<{ eventId: string; delivery?: number }> {
+  const e = await store.eventById(eventId);
+  if (!e) throw new Error(`no event ${eventId}`);
+  const link = e.source.linkId ? await store.link(e.source.linkId) : undefined;
+  const refusal = replyRefusal(e, text, link);
+  if (refusal) throw new Error(refusal);
+  const r = await post(link!, text.trim(), {
+    reply: replyToOf(e), ...(e.scope?.repo ? { scope: { repo: e.scope.repo, ...(e.scope.branch ? { branch: e.scope.branch } : {}) } } : {}),
+    ...(e.thread ? { thread: e.thread } : {}), key: `reply:${eventId}:${randomUUID()}`,
+  }, now);
+  return { eventId: r.id, ...(r.delivery !== undefined ? { delivery: r.delivery } : {}) };
+}
+
 // Inbound pace per sender (§3.8): in memory, per process — one primary runs the adapters.
 const recent = new Map<string, number[]>();
 
@@ -46,7 +86,7 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
   // A link for the exact place, else for a wider place that holds it (`source.parents`), else the
   // integration's catch-all link (external_id "*": DMs, a bot's every channel). No link = nobody
   // said Orca may listen there.
-  const link = e.source.linkId ? await store.link(e.source.linkId) : e.source.channel ? await firstLink(integrationId, [e.source.channel, ...(e.source.parents ?? []), "*"]) : undefined;
+  const link = e.source.linkId ? await store.link(e.source.linkId) : e.source.channel ? await firstLink(integrationId, [e.source.channel, ...(e.source.parents ?? []), CATCH_ALL]) : undefined;
   if (!link || link.integrationId !== integrationId) return "rejected"; // no link = nobody said Orca may listen here
   if (link.requireMention && e.mentioned === false) return "rejected";
   const who = `${integrationId}:${e.actor?.external.id ?? link.id}`;

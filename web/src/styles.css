@@ -27,6 +27,8 @@
   --accent-foreground: #222222;
   --destructive: #e5484d;
   --border: rgba(0, 0, 0, 0.1);
+  /* branch-demo's border-dark (gray-alpha-300): the resize handle's line on hover. */
+  --border-dark: #0b0b0b3e;
   --input: rgba(0, 0, 0, 0.1);
   /* The chat log's text stops between the foreground and the muted text (styles below). */
   --text-soft: #4d4d4d;
@@ -74,6 +76,9 @@
   /* Geist's menu / popover and modal shadows — the only shadows in the app. */
   --geist-shadow-menu: 0px 1px 1px rgba(0, 0, 0, 0.02), 0px 4px 8px -4px rgba(0, 0, 0, 0.04), 0px 16px 24px -8px rgba(0, 0, 0, 0.06);
   --geist-shadow-modal: 0px 1px 1px rgba(0, 0, 0, 0.02), 0px 8px 16px -4px rgba(0, 0, 0, 0.04), 0px 24px 32px -8px rgba(0, 0, 0, 0.06);
+  /* The shell card's raised edge (branch-demo's shadow-ring-xs): a hairline ring plus a soft lift. The
+     ONE shadow outside menus and modals — the page and the docked panel float on the themed canvas. */
+  --shell-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 2px 4px 0 rgba(0, 0, 0, 0.04), 0 1px 1px 0 rgba(0, 0, 0, 0.02), 0 0 4px 0 rgba(0, 0, 0, 0.04);
 }
 
 .dark {
@@ -93,6 +98,7 @@
   --accent-foreground: #e8e8e8;
   --destructive: #e5484d;
   --border: rgba(255, 255, 255, 0.12);
+  --border-dark: #ffffff33;
   --input: rgba(255, 255, 255, 0.12);
   --text-soft: #d2d2d2;
   --text-faint: #848484;
@@ -118,6 +124,7 @@
   --geist-error-bg: #2a0e0f;
   --geist-shadow-menu: 0px 1px 1px rgba(0, 0, 0, 0.4), 0px 4px 8px -4px rgba(0, 0, 0, 0.5), 0px 16px 24px -8px rgba(0, 0, 0, 0.6);
   --geist-shadow-modal: 0px 1px 1px rgba(0, 0, 0, 0.4), 0px 8px 16px -4px rgba(0, 0, 0, 0.5), 0px 24px 32px -8px rgba(0, 0, 0, 0.6);
+  --shell-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 2px 8px 0 rgba(0, 0, 0, 0.3), 0 1px 2px 0 rgba(0, 0, 0, 0.4);
 }
 
 @theme inline {
@@ -130,6 +137,7 @@
   --text-xs--line-height: 1rem;
   --shadow-menu: var(--geist-shadow-menu);
   --shadow-modal: var(--geist-shadow-modal);
+  --shadow-shell: var(--shell-shadow);
   --color-sidebar: var(--sidebar);
   --color-server: var(--server);
   --color-server-soft: var(--server-soft);
@@ -173,6 +181,7 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-border: var(--border);
+  --color-border-dark: var(--border-dark);
   --color-input: var(--input);
   --color-ring: var(--ring);
 }
@@ -287,10 +296,10 @@
   /* Reserve the scrollbar's gutter from first paint. Without it the page is short until the first
      poll lands, then a classic (non-overlay) scrollbar appears and the whole top bar's right side,
      "Ask the orchestrator" included, jumps ~15px left. Overlay scrollbars (phones, most Macs) take
-     no gutter, so nothing changes there. */
-  html {
-    scrollbar-gutter: stable;
-  }
+     no gutter, so nothing changes there. On a desktop the page column scrolls on its own (Shell's
+     `page-scroll`) and reserves the gutter itself, so <html> does it only on a phone — a gutter on
+     <html> was an empty strip beside the docked panel. */
+  /* (the rule itself: in the phone block below) */
   /* Radix's scroll lock (react-remove-scroll-bar) adds margin-right = innerWidth - clientWidth to the
      body while a menu or dialog is open. With the gutter reserved that is the gutter itself, and the
      page jumped left on every open. The gutter already holds the space, so no margin is needed. */
@@ -369,6 +378,10 @@ dialog[data-bottom-sheet][data-closing]::backdrop {
 }
 
 @media (max-width: 767px) {
+  /* The scrollbar gutter, reserved on <html> (see the note in the base layer). */
+  html {
+    scrollbar-gutter: stable;
+  }
   /* Nothing scrolls sideways: wide content wraps or scrolls inside its own box. */
   html,
   body {
@@ -586,14 +599,22 @@ dialog[data-bottom-sheet][data-closing]::backdrop {
 }
 
 /* The live activity block (views/Chat.tsx): a trail row fades and slides in (180ms); the header
-   label cross-fades — the old one up and out, the new one up and in (200ms, LABEL_FADE_MS). */
+   label swaps in TWO layers that run together, same duration and easing (220ms, LABEL_FADE_MS) —
+   the old line translates up and out while it fades, the new line translates up and in while it
+   fades, so the two are never both near-opaque at once and the text never overlaps. Reduced motion
+   drops the translate for a plain opacity cross-fade, same timing. */
 @keyframes step-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-@keyframes label-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
-@keyframes label-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-3px); } }
+@keyframes label-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes label-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-6px); } }
+@keyframes label-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes label-fade-out { from { opacity: 1; } to { opacity: 0; } }
 .step-in { animation: step-in 180ms ease-out both; }
-.label-in { animation: label-in 200ms ease-out both; }
-.label-out { animation: label-out 200ms ease-in both; pointer-events: none; }
+.label-in, .label-out { animation-duration: 220ms; animation-timing-function: ease; animation-fill-mode: both; }
+.label-in { animation-name: label-in; }
+.label-out { animation-name: label-out; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) {
-  .step-in, .label-in, .label-out { animation: none; }
-  .label-out { visibility: hidden; }
+  .step-in { animation: none; }
+  .label-in, .label-out { animation-timing-function: linear; }
+  .label-in { animation-name: label-fade-in; }
+  .label-out { animation-name: label-fade-out; }
 }

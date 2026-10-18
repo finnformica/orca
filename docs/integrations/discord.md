@@ -22,24 +22,94 @@ has it, the card says which servers do not have it.
   `MESSAGE_CONTENT`.
   - A message in a linked channel goes to the core. A message with no mention of the bot has
     `mentioned: false`. A link with `require_mention` drops it.
+  - A mention of the bot's managed role is a mention too. Discord's autocomplete offers the bot
+    user and this role, with the same name. The adapter finds the role from `GUILD_CREATE` (the
+    role whose `tags.bot_id` is the bot), else from one `GET /guilds/<id>/roles`. It removes
+    `<@&role id>` from the text, as it removes `<@bot id>`.
   - A message in a thread uses the link of the thread's parent channel. The thread is its
     conversation.
-  - A new request (a mention at the top level of a channel) gets its own thread. The adapter opens
-    the thread on that message after the core accepts the message.
+  - A new request is a mention at the top level of a channel. By default Orca replies in place: a
+    Discord reply to the mention, in the same channel. It opens no thread. See
+    [Reply in place or threads](#reply-in-place-or-threads).
   - A direct message (DM) goes to the link that `config.dmLink` names. With no `dmLink`, it goes to
     the integration's catch-all link (`external_id` `*`). With neither link, the core drops it.
-  - An unknown person gets a pairing code from the core. The reply goes into the thread of their
-    message. The adapter opens that thread when it sends the reply.
+  - An unknown person gets a pairing code from the core. The code is a reply to their message.
   - The adapter ignores messages from bots.
 - Outbound: a post to the link's channel.
-  - The first post for a workstream opens a thread on that post. The core keeps the thread id.
-    Later posts for the workstream go into that thread.
+  - A catch-all link (`external_id` `*`) only receives. It names no channel, so nothing posts to
+    it. A reply to a message on it goes to the DM or channel that the message came from. Test, a
+    subscription and `orca post --link` refuse a catch-all link at once. The dispatcher ends an
+    old delivery to `*` with the same error, and does not call Discord.
+  - The first post for a workstream starts its conversation. The core keeps its thread id. Later
+    posts for the workstream continue there, and a reply there goes to the workstream.
   - A post with a title is an embed (a linked title and a colour). This matches the build posts in
     the same server. A reply with no title is plain text.
   - An edit replaces the message (`PATCH`).
   - Posts never ping `@everyone`, roles or users (`allowed_mentions` is empty).
   - Rate limits: the core sends at most 5 messages each 5 seconds to one channel. A `429` is retried
     after Discord's `retry_after`.
+
+## Reply in place or threads
+
+The integration's `config.threads` sets what Orca does with a mention at the top level of a channel.
+
+- `false` or absent (the default): Orca replies in place.
+  - The answer is a Discord reply (`message_reference`, `fail_if_not_exists: false`) in the channel.
+  - The conversation is the mention's reply chain. Its thread id is `<channel id>:<root message id>`.
+    The root is the top message of the chain.
+  - A person continues the conversation with a Discord reply to Orca's answer. A new mention with no
+    reply starts a new conversation. So several conversations in one channel stay apart.
+  - Each answer replies to the newest message in the chain.
+  - A first post for a workstream starts its own reply chain, `<channel id>:<post id>`.
+- `true`: the behaviour before reply in place. A mention gets its own thread, on that message. A
+  first post for a workstream opens a thread on that post.
+
+A mention inside a thread gets its answer in that thread. A DM gets its answer in the DM. The flag
+does not change these two. A thread that Orca opened before you change the flag stays a thread.
+
+### A thread for one answer
+
+With the default, the orchestrator can open a thread for one answer when a thread helps. Examples
+are a long answer, a job with many steps, a workstream, or a long conversation.
+
+```bash
+orca post --reply --thread "<text>"
+orca post --reply --thread --repo <repo> --branch <branch> "<text>"
+```
+
+- The adapter opens a thread on the mention. It posts the answer in that thread.
+- The thread is the conversation from then on. A message in the thread reaches the orchestrator,
+  or the workstream when the thread is linked to one.
+- With `--repo` and `--branch`, the thread becomes that workstream's thread on the link. A thread
+  opened from a reply chain that was linked to a workstream keeps that link.
+- If Discord refuses the thread (for example, no **Create Public Threads** permission), the answer
+  is a reply in place.
+- In a thread or a DM, `--thread` changes nothing.
+- `orca post --link <id> --thread "<text>"` opens a thread on the post itself.
+
+`config.threads` stays. It is for a server where each request must get a thread. `--thread` is
+for one answer when the default is in place.
+
+The adapter keeps the newest message of each chain in memory. After a restart it reads the chain
+up from the reply (at most 25 messages, `Read Message History`). The first answer after a restart
+replies to the root, because Orca does not know the newest message then.
+
+To set the flag on a box, use Settings or SQL. A running adapter keeps its config until it starts
+again, so restart it after the change.
+
+1. Open **Settings → Integrations** on the box. Edit the Discord integration.
+2. Type `true` in **Threads** for a thread for each request. Clear the field to reply in place.
+3. Click **Save**.
+4. Turn the integration off, then on. Or restart the bridge.
+
+With SQL, update the row, then do step 4:
+
+```sql
+-- Reply in place (the default): remove the key.
+UPDATE integration SET config = config::jsonb - 'threads' WHERE id = 'discord';
+-- A thread for each request.
+UPDATE integration SET config = config::jsonb || '{"threads": true}' WHERE id = 'discord';
+```
 
 ## Create the bot
 
@@ -52,7 +122,7 @@ has it, the card says which servers do not have it.
    - View Channels
    - Send Messages
    - Send Messages in Threads
-   - Create Public Threads
+   - Create Public Threads (for `config.threads` true, or `orca post --thread`)
    - Read Message History
 7. Open the URL that the page gives. Add the bot to the server.
 8. In Discord, open **User Settings → Advanced**. Turn on **Developer Mode**.
@@ -102,6 +172,7 @@ Check the columns against `server/integrations/store.ts` before you run this. Th
 schema.
 
 To accept DMs, add a catch-all link (`*`). It also covers each channel that has no link of its own.
+A catch-all link only receives: Settings shows no Test for it, and nothing posts to it.
 
 ```sql
 INSERT INTO channel_link (id, user_id, integration_id, external_id, level) VALUES ('discord-dm', 'me', 'discord', '*', 'ask');

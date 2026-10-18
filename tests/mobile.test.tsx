@@ -259,16 +259,18 @@ describe("the phone layout (390px, touch)", () => {
     expect(settings.getAttribute("aria-current")).toBe("page");
   });
 
-  test("Settings on a phone carries what the old hamburger drawer exposed that isn't in the bottom bar: Find, the instance switcher, and links to Previews/Repos/GitHub/Usage", async () => {
+  test("Settings on a phone carries what the old hamburger drawer exposed that isn't in the bottom bar: Find, the instance switcher, and links to Previews/Integrations/Handoffs (Repos and GitHub are sections of this page)", async () => {
     await mount("/settings", true);
     const nav = $('[data-slot="settings-mobile-nav"]')!;
     expect(nav.className).toContain("md:hidden");
     expect(nav.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     expect(nav.querySelector('[role="group"][aria-label="Instance"]')).not.toBeNull();
     const links = [...nav.querySelectorAll('nav[aria-label="More pages"] button')].map((b) => b.textContent);
-    expect(links).toEqual(["Previews", "Repos", "GitHub", "Usage"]);
-    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[1]!); // Repos
-    expect(location.pathname).toBe("/repos");
+    expect(links).toEqual(["Inbox", "Previews", "Integrations", "Handoffs"]);
+    expect($('[data-slot="settings-repos"]')).not.toBeNull();
+    expect($('[data-slot="settings-github"]')).not.toBeNull();
+    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[2]!); // Integrations
+    expect(location.pathname).toBe("/integrations");
   });
 
   test("Agents: rows stack with the instruction, error and branch on screen; one ⋯ per row; filters in a sheet", async () => {
@@ -814,6 +816,19 @@ describe("home-screen shortcuts", () => {
   });
 });
 
+describe("the orchestrator's persisted open state", () => {
+  test("a phone never auto-opens the dock from a persisted open state, and does not navigate to /orchestrator", async () => {
+    localStorage.setItem("orca.ui.v1.orchestratorOpen", "true"); // e.g. left open on a desktop session in the same browser
+    // A real reload reads storage on the atom's first access (`getOnInit`). This test process shares
+    // one jotai store across tests, so the atom already holds a value: give it the stored one first.
+    act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
+    await mount("/agents", true);
+    expect(location.pathname).toBe("/agents"); // no auto-navigation
+    expect($('[data-slot="orchestrator-panel"]') === null).toBe(true); // never mounted (a boolean: a failed toBeNull prints the whole panel)
+    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(true); // the stored preference itself is untouched, for a later desktop load
+  });
+});
+
 describe("the desktop layout is untouched", () => {
   test("columns and chips as before; the orchestrator is the right-hand side panel", async () => {
     await mount("/agents", false);
@@ -824,7 +839,7 @@ describe("the desktop layout is untouched", () => {
     act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
     await act(async () => { await flush(); await flush(); });
     expect($('[data-slot="orchestrator-panel"]')!.hasAttribute("data-sheet")).toBe(false);
-    expect($('[data-slot="orchestrator-panel"]')!.className).toContain("fixed inset-y-0 right-0");
+    expect($('[data-slot="orchestrator-panel"]')!.parentElement!.parentElement!.dataset.slot).toBe("dock"); // docked in the shell card (inside its clip)
     expect(document.querySelectorAll('[data-slot="orchestrator-resize"]').length).toBe(1); // its left edge
     expect($('[data-slot="orchestrator-handle"]')!.hasAttribute("data-swipe-handle")).toBe(false); // a mouse: no swipe
     expect($('[data-slot="quick-ask-pill"]')).not.toBeNull(); // the desktop has the quick-ask pill…
@@ -839,7 +854,7 @@ describe("the desktop layout is untouched", () => {
 });
 
 describe("a newer build", () => {
-  test("the banner appears when version.json names another build, and only then; it clears the status bar itself and reports its state up", async () => {
+  test("the bar appears when version.json names another build, and only then; it floats (zero height, sticky) so nothing moves, and slides out on Refresh", async () => {
     const realFetch = globalThis.fetch;
     let served = "build-1";
     globalThis.fetch = (async (url: string) => {
@@ -848,18 +863,49 @@ describe("a newer build", () => {
     }) as unknown as typeof fetch;
     container = document.createElement("div");
     document.body.appendChild(container);
-    const staleChanges: boolean[] = [];
-    await act(async () => { root = createRoot(container!); root.render(<UpdateBanner build="build-1" every={5} onStaleChange={(s) => staleChanges.push(s)} />); await flush(); });
+    await act(async () => { root = createRoot(container!); root.render(<UpdateBanner build="build-1" every={5} />); await flush(); });
     await act(async () => { await Bun.sleep(20); });
     expect(container.querySelector('[data-slot="update-banner"]')).toBeNull();
-    expect(staleChanges).toEqual([false]); // told up front it isn't shown, so a header can keep its own inset
     served = "build-2";
     await act(async () => { await Bun.sleep(30); });
     const banner = container.querySelector<HTMLElement>('[data-slot="update-banner"]')!;
-    expect(banner.textContent).toContain("Refresh");
-    // It is now the topmost element on a narrow layout, so it — not the header below it — clears the notch.
-    expect(banner.className).toContain("max-md:pt-[env(safe-area-inset-top)]");
-    expect(staleChanges).toEqual([false, true]);
+    // The frame takes no room: a zero-height sticky slot at the top of the page column, above the top bar,
+    // so the layout never shifts. It clears the notch itself on a phone.
+    const frame = container.querySelector<HTMLElement>('[data-slot="update-banner-frame"]')!;
+    expect(frame.contains(banner)).toBe(true);
+    expect(frame.className).toEqual(expect.stringContaining("pointer-events-none sticky top-0 z-40 h-0"));
+    expect(banner.parentElement!.className).toContain("justify-center");
+    expect(banner.parentElement!.className).toContain("max-md:pt-[max(0.5rem,env(safe-area-inset-top))]");
+    // branch-demo's floating bar: hairline border, h-12 p-1, a translucent blurred surface, one line.
+    expect(banner.className).toEqual(expect.stringContaining("bg-background/95"));
+    expect(banner.className).toEqual(expect.stringContaining("h-12"));
+    expect(banner.className).toEqual(expect.stringContaining("rounded-lg border p-1"));
+    expect(banner.className).toEqual(expect.stringContaining("shadow-menu backdrop-blur"));
+    // Slides down and fades in; slides up and fades out.
+    expect(banner.dataset.state).toBe("open");
+    expect(banner.className).toEqual(expect.stringContaining("animate-in fade-in slide-in-from-top-4"));
+    expect(banner.className).toEqual(expect.stringContaining("data-[state=closed]:slide-out-to-top-4"));
+    expect(banner.textContent).toBe("A new version of Orca is ready.Refresh");
+    expect(banner.querySelectorAll("button")).toHaveLength(1);
+    const refresh = banner.lastElementChild as HTMLButtonElement;
+    expect(refresh.tagName).toBe("BUTTON");
+    await act(async () => { refresh.click(); await flush(); });
+    expect(banner.dataset.state).toBe("closed");
+    expect(refresh.disabled).toBe(true);
+    await act(async () => { banner.dispatchEvent(new Event("animationend", { bubbles: true })); await flush(); });
+    expect(container.querySelector('[data-slot="update-banner"]')).toBeNull();
+    globalThis.fetch = realFetch;
+  });
+
+  test("`forced` (the ?update-banner URL hook) shows it at once, with no poll", async () => {
+    const realFetch = globalThis.fetch;
+    let asked = 0;
+    globalThis.fetch = (async () => { asked++; return { json: async () => ({}) }; }) as unknown as typeof fetch;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    await act(async () => { root = createRoot(container!); root.render(<UpdateBanner build="dev" forced />); await flush(); });
+    expect(container.querySelector('[data-slot="update-banner"]')!.textContent).toContain("A new version of Orca is ready.");
+    expect(asked).toBe(0);
     globalThis.fetch = realFetch;
   });
 });

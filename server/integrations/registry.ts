@@ -14,6 +14,7 @@ import * as store from "./store";
 import { SLACK_CAPS, slackAdapter } from "./adapters/slack";
 import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
 import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
+import { emailAdapter, emailCaps } from "./adapters/email";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
 const metas = new Map<AdapterKind, AdapterMeta>();
@@ -29,8 +30,27 @@ register("slack", slackAdapter, { label: "Slack", caps: SLACK_CAPS, place: "chan
 register("webhook", webhookAdapter, { label: "Webhook", caps: WEBHOOK_CAPS, place: "hook", secretExample: "ORCA_SECRET_WEBHOOK", help: "Signed POSTs to /api/integrations/<id>/inbound (HMAC sha256 of the body)." });
 register("discord", discordAdapter, {
   label: "Discord", caps: DISCORD_CAPS, place: "channel", secretExample: "ORCA_SECRET_DISCORD_BOT",
-  config: [{ key: "dmLink", label: "DM link id (optional)", placeholder: "the link DMs go to; empty = the * link" }],
+  config: [
+    { key: "dmLink", label: "DM link id (optional)", placeholder: "the link DMs go to; empty = the * link" },
+    { key: "threads", label: "Threads (optional)", placeholder: "true = a thread for each request; empty = reply in place" },
+  ],
   help: "A bot token with the Message Content intent. Only one bridge runs it, also on Automatic. Setup: docs/integrations/discord.md.",
+});
+register("email", emailAdapter, {
+  label: "Email", caps: emailCaps({ imap: { host: "" }, outbound: "smtp" }), place: "address", secretExample: "ORCA_SECRET_EMAIL_IMAP",
+  help: "One mailbox only Orca reads. The secret is the IMAP password. Link each person's address. Setup: docs/integrations/email.md.",
+  config: [
+    { key: "address", label: "Orca's address", placeholder: "orca@yourdomain.com" },
+    { key: "imapHost", label: "IMAP host", placeholder: "imap.gmail.com" },
+    { key: "imapPort", label: "IMAP port", placeholder: "993" },
+    { key: "outbound", label: "Outbound (smtp, resend or none)", placeholder: "smtp" },
+    { key: "smtpHost", label: "SMTP host", placeholder: "smtp.gmail.com" },
+    { key: "smtpPort", label: "SMTP port", placeholder: "465" },
+    { key: "smtpSecretRef", label: "SMTP password variable", placeholder: "ORCA_SECRET_EMAIL_SMTP" },
+    { key: "resendSecretRef", label: "Resend key variable", placeholder: "ORCA_SECRET_RESEND" },
+    { key: "allowedSenders", label: "Allowed senders (comma-separated; @domain for a domain)", placeholder: "finn@yourdomain.com" },
+    { key: "authservId", label: "Receiving server's authserv-id", placeholder: "mx.google.com" },
+  ],
 });
 
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */

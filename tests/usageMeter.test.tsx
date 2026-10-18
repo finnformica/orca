@@ -186,7 +186,7 @@ test("logins that can't be routed to are excluded from the fleet mean but still 
       { name: "old", state: "disabled", usage: null },
     ],
   };
-  await mount("/usage"); // the Usage page lists every login, once its own card is opened
+  await mount("/"); // the Overview's usage card lists every login, once it is opened
   const header = () => card().querySelector<HTMLElement>("[data-slot='card-header']")!;
   await act(async () => { header().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   expect(group("fleet")!.textContent).toContain("1 login in rotation · 1 exhausted"); // only `work` is in rotation…
@@ -210,7 +210,7 @@ test("a login merged across instances shows the freshest ok reading, with a stal
       },
     ],
   };
-  await mount("/usage");
+  await mount("/");
   const header = () => card().querySelector<HTMLElement>("[data-slot='card-header']")!;
   await act(async () => { header().dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   const row = group("login:finnformica")!;
@@ -287,7 +287,7 @@ test("the card collapses again: Vercel's chevron and the header row both toggle,
   // The Usage page renders the SAME card: the fleet rows show, the logins wait behind the same
   // chevron, and the one remembered toggle carries over between the pages.
   act(() => root?.unmount()); container?.remove();
-  await mount("/usage");
+  await mount("/");
   expect(group("login:work")).toBeNull();
   expect(toggle().getAttribute("aria-expanded")).toBe("false");
   await click(toggle());
@@ -300,7 +300,7 @@ test("the card collapses again: Vercel's chevron and the header row both toggle,
 
 test("the Usage page shows the high-level rows at once — with no hydra logins there is nothing to expand", async () => {
   apiFake.usageData = { claude: { fiveHour: { utilization: 38, resetsAt: null }, sevenDay: { utilization: 55, resetsAt: null }, extra: null }, codex: null };
-  await mount("/usage");
+  await mount("/");
   expect(rows("claude")).toEqual(["5-hour window 38% / 100%", "Weekly 55% / 100%"]);
   expect(card().querySelector("[data-slot='usage-toggle']")).toBeNull();
   expect(card().querySelector("[data-slot='card-header']")!.getAttribute("aria-expanded")).toBeNull();
@@ -338,7 +338,7 @@ test("on a narrow screen the reset timer shows as the bare countdown, not hidden
 test("a hydra login's row shows a switch on hover: flipping it disables/enables the rotation through POST /api/usage/profile", async () => {
   const login = (name: string, state: string) => ({ name, state, usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
   apiFake.usageData = { claude: null, codex: null, profiles: [login("work", "ok")] };
-  await mount("/usage");
+  await mount("/");
   const mouse = (el: Element, type: "mouseover" | "mouseout") => act(async () => { el.dispatchEvent(new MouseEvent(type, { bubbles: true, relatedTarget: null })); await flush(); });
   const click = (el: Element) => act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   await click(card().querySelector("[data-slot='usage-toggle']")!); // the logins wait behind the chevron
@@ -385,7 +385,7 @@ test("the switch flips optimistically, before POST /api/usage/profile has answer
   const login = (name: string, state: string) => ({ name, state, usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
   apiFake.usageData = { claude: null, codex: null, profiles: [login("work", "ok")] };
   apiFake.holdSetProfileEnabled = true;
-  await mount("/usage");
+  await mount("/");
   await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   const header = group("login:work")!.querySelector<HTMLElement>("[data-slot='usage-group-header']")!;
   await act(async () => { header.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: null })); await flush(); });
@@ -410,7 +410,7 @@ test("rapid repeat clicks end in the last chosen state — a slower, now-stale r
   const login = (name: string, state: string) => ({ name, state, usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
   apiFake.usageData = { claude: null, codex: null, profiles: [login("work", "ok")] };
   apiFake.holdSetProfileEnabled = true;
-  await mount("/usage");
+  await mount("/");
   await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   const header = group("login:work")!.querySelector<HTMLElement>("[data-slot='usage-group-header']")!;
   await act(async () => { header.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: null })); await flush(); });
@@ -439,7 +439,7 @@ test("rapid repeat clicks end in the last chosen state — a slower, now-stale r
 test("a Stale login's row carries a Refresh button that clears the stale state through POST /api/usage/refresh", async () => {
   const login = (name: string, state: string) => ({ name, state, usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } });
   apiFake.usageData = { claude: null, codex: null, profiles: [login("work", "token stale — refreshes on next launch")] };
-  await mount("/usage");
+  await mount("/");
   await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   expect(group("login:work")!.querySelector("[data-slot='usage-state']")!.textContent).toBe("Stale");
 
@@ -455,7 +455,7 @@ test("a Stale login's row carries a Refresh button that clears the stale state t
 test("a failed refresh is a failed-action notification toast", async () => {
   apiFake.usageData = { claude: null, codex: null, profiles: [{ name: "work", state: "token stale — refreshes on next launch", usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } }] };
   apiFake.refreshProfileError = "hydra: refresh failed";
-  await mount("/usage");
+  await mount("/");
   await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   const button = group("login:work")!.querySelector<HTMLElement>("[data-slot='login-refresh']")!;
   await act(async () => { button.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
@@ -468,7 +468,7 @@ test("a failed refresh is a failed-action notification toast", async () => {
 test("a refresh that exits clean but leaves the login stale (its own refresh token expired) is treated as a failure, not success", async () => {
   apiFake.usageData = { claude: null, codex: null, profiles: [{ name: "work", state: "token stale — refreshes on next launch", usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } }] };
   apiFake.refreshProfileStaysStale = true;
-  await mount("/usage");
+  await mount("/");
   await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   const button = group("login:work")!.querySelector<HTMLElement>("[data-slot='login-refresh']")!;
   await act(async () => { button.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
@@ -483,7 +483,7 @@ test("a refresh that exits clean but leaves the login stale (its own refresh tok
 test("a failed toggle is a failed-action notification toast and the switch reverts", async () => {
   apiFake.usageData = { claude: null, codex: null, profiles: [{ name: "work", state: "ok", usage: { fiveHour: { utilization: 10, resetsAt: null }, sevenDay: { utilization: 5, resetsAt: null }, extra: null, fable: null } }] };
   apiFake.setProfileEnabledError = "hydra: no such profile";
-  await mount("/usage");
+  await mount("/");
   await act(async () => { card().querySelector("[data-slot='usage-toggle']")!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
   const header = group("login:work")!.querySelector<HTMLElement>("[data-slot='usage-group-header']")!;
   await act(async () => { header.dispatchEvent(new MouseEvent("mouseover", { bubbles: true, relatedTarget: null })); await flush(); });
