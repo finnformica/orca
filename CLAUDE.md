@@ -222,8 +222,8 @@ one), append a RepoConfig (default branch, `.worktrees`, `runsOn` that instance,
 the owner is a non-active account, no previews), save. Previews and `checkCommand` remain a hand
 edit in Settings.
 
-**The GitHub page** (`/github`, `GitHubPage` in `views/Pages.tsx`, nav item between Repos and Usage,
-`G H`) shows one row per `gh` account signed in on THIS host (`GET /api/github/accounts`,
+**The GitHub section of Settings** (`/settings#github`, the old `/github` redirects; `GitHubSection` in
+`views/Pages.tsx`) shows one row per `gh` account signed in on THIS host (`GET /api/github/accounts`,
 `repos.accountsHere` — per host, like `/api/usage`): the login, an `active` pill, the identity its
 commits carry (`commits as Name <email>`) and the repos that use it (`repos.accountRows`: a repo
 with no `githubUser` uses the active login). Name and email are editable per row; Save writes
@@ -287,7 +287,7 @@ both, so it carries the pack (`server/handoff.ts`, `views/Handoffs.tsx`, table `
   `attachment`. Chats become markdown transcripts.
 - Make one with `orca handoff create --to <server> --title … [--message …] [--file <path|id>]…
   [--chat <id>]…`, or with Hand off… in a card's menu (it packs that chat). `orca handoff list`.
-- The Handoffs page (`/handoffs`, nav item after GitHub, `G K`) shows each pack in full: the exact message and every file.
+- The Handoffs page (`/handoffs`, nav item after Integrations, `G K`) shows each pack in full: the exact message and every file.
 - Send is the ONLY way out: a click, a confirm with the file list, GET `/api/handoffs/<id>/export`
   here, POST `/api/handoff/import` on the target, POST `/api/handoffs/<id>/sent` here.
 - The import stores the files as attachments and queues ONE message to the target's orchestrator:
@@ -319,7 +319,7 @@ light mode). Every conversation — the agent page's Chat tab, a card's modal, t
 and page — is ONE `ChatPanel` in ONE styling (bubbles; replies under the agent's name, `author`
 "Orchestrator" for it); only `size` (page | panel) and the composer's wiring differ. Shell (`components/Shell.tsx`): a collapsible left sidebar (instance switcher
 all/local/cloud scoping the pages, Find — the `F` key — which filters Agents, the nav Overview /
-Agents / Previews / Repos / Usage / Settings, then **Add New** as the last action, above the divider — a modal `<dialog>` holding the New-draft box
+Agents / Previews / Integrations (`G I`) / Handoffs / Settings, then **Add New** as the last action, above the divider — a modal `<dialog>` holding the New-draft box
 (`C` opens it; it is the portal container for the composer's selects, since a modal leaves the rest
 of the page inert; sending closes it and leaves "Sent to … · Undo" for 6s; the typed draft persists) — and
 below it you on one thin line — "You · local" — with the collapse toggle;
@@ -424,10 +424,11 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   passing + skipped folded into one expandable line — `checkGroups`), Description and the
   **Conversation** (`prConversation`: chronological like GitHub, a counts line + Jump to unresolved,
   resolved / outdated threads on one line, long bodies behind Show more, bots in ONE folded row).
-- **Repos**, **Usage** (every login, every machine) and **Settings** (theme, density, the
-  read-only config). The Usage page shows the SAME `UsageCard` as the Overview — the high-level rows,
-  with every hydra login behind the one remembered chevron (`orca.ui.v1.usageExpanded`, shared by
-  both pages).
+- **Settings** (theme, density, the read-only config, then the **Repos** and **GitHub** sections,
+  `#repos` / `#github`) and **Integrations** (its own nav item). There is no Usage page: the
+  Overview's `UsageCard` has every hydra login behind the one remembered chevron
+  (`orca.ui.v1.usageExpanded`). Old URLs redirect (`REDIRECTS` in `lib/route.ts`): `/repos`,
+  `/github` → Settings' sections, `/usage` → Overview, `/settings/integrations` → `/integrations`.
 Every number is a pure derivation over the assembled rows (`workstream.ts`: `overviewStats`,
 `attentionReasons`, `filterRows`, `sortRows`, `recentActivity`, `usageGroups`, `rowDuration`,
 `repoSummaries`, `agentFailure`) — no endpoint of its own, so the views can't
