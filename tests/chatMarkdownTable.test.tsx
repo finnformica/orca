@@ -67,8 +67,8 @@ test("a markdown table renders inside a horizontally scrollable wrapper with a m
 });
 
 test("a table in a worker report's folded body renders too, not as raw pipe text", async () => {
-  // A worker report's body is model prose rendered through a separate path (ReportBody, folded under
-  // the orchestrator's "N worker reports" marker) — it once used a plain <pre>, so a table in a
+  // A worker report's body is model prose rendered through a separate path (ReportBody, folded in
+  // the turn's own report block) — it once used a plain <pre>, so a table in a
   // report rendered as unrendered `| a | b |` text instead of a scrollable <table>.
   const report = [
     `${WORKER_EVENT_MARKER} app/feat "Fix" — done`,
@@ -79,7 +79,8 @@ test("a table in a worker report's folded body renders too, not as raw pipe text
 
   await mount(row);
 
-  await act(async () => { container!.querySelector<HTMLElement>('[data-slot="agents-marker"] button')!.click(); await flush(); });
+  // The only turn is the newest answer, never folded into the agents block: open its report block.
+  expect(container!.querySelector('[data-slot="agents-marker"]')).toBeNull();
   await act(async () => { container!.querySelector<HTMLElement>('[data-slot="turn-reports"] button')!.click(); await flush(); });
 
   const reports = container!.querySelector<HTMLElement>('[data-slot="worker-reports"]')!;
