@@ -107,7 +107,9 @@ describe("console shell", () => {
     const label = ask.querySelector<HTMLElement>('[data-slot="ask-orchestrator-label"]')!;
     expect(label.className.split(/\s+/)).toEqual(expect.arrayContaining(["truncate", "min-w-0"])); // a wider fallback font can't widen it
     const css = readFileSync(join(import.meta.dir, "..", "web", "src", "styles.css"), "utf8");
-    expect(css).toMatch(/html\s*\{\s*scrollbar-gutter:\s*stable;/);
+    // A phone reserves it on <html>; a desktop on the page column, which scrolls on its own there.
+    expect(css).toMatch(/@media \(max-width: 767px\)\s*\{\s*\/\*[^*]*\*\/\s*html\s*\{\s*scrollbar-gutter:\s*stable;/);
+    expect(container!.querySelector('[data-slot="page-scroll"]')!.className.split(/\s+/)).toContain("md:[scrollbar-gutter:stable]");
     // Radix's scroll lock would add the reserved gutter again as a body margin on every menu open.
     expect(css).toMatch(/html body\[data-scroll-locked\]\s*\{\s*margin-right:\s*0 !important;/);
   });
@@ -121,7 +123,7 @@ describe("console shell", () => {
     expect(cls.filter((c) => /^bg-background\/|^backdrop-blur/.test(c))).toEqual([]);
   });
 
-  test("the sidebar: Orca mark + instance switcher, Find, the five pages, and the active one marked", async () => {
+  test("the sidebar: Orca mark + instance switcher, Find, the pages, and the active one marked", async () => {
     await mount();
     const sidebar = container!.querySelector('[data-slot="sidebar"]')!;
     expect(sidebar.querySelector("svg")).not.toBeNull(); // the orca mark
@@ -129,9 +131,9 @@ describe("console shell", () => {
     expect(sidebar.querySelector('[data-slot="instance-scope"]')!.textContent).toBe("All instances"); // two instances in the fake config
     expect(sidebar.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     const items = [...sidebar.querySelectorAll('nav[aria-label="Main"] button')].map(navLabel);
-    expect(items).toEqual(["Overview", "Agents", "Inbox", "Previews", "Repos", "GitHub", "Handoffs", "Usage", "Settings"]);
+    expect(items).toEqual(["Overview", "Agents", "Inbox", "Previews", "Integrations", "Handoffs", "Settings"]);
     expect(navItem("Overview").getAttribute("aria-current")).toBe("page");
-    for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Inbox", "/inbox", "inbox-unread"], ["Repos", "/repos", "repos-list"], ["GitHub", "/github", "github-accounts"], ["Usage", "/usage", "usage-card"], ["Settings", "/settings", "settings-appearance"]] as const) {
+    for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Inbox", "/inbox", "inbox-unread"], ["Integrations", "/integrations", "integrations-page"], ["Settings", "/settings", "settings-appearance"]] as const) {
       await click(navItem(label));
       expect(location.pathname).toBe(path);
       expect(navItem(label).getAttribute("aria-current")).toBe("page");
@@ -168,16 +170,25 @@ describe("console shell", () => {
     expect(container!.querySelector<HTMLInputElement>('input[aria-label="Search workstreams"]')!.value).toBe("gauge"); // one query, shared
   });
 
-  test("the sidebar's foot: Add New is the last action, above the divider; you on ONE thin line below it; collapsed, the expand button sits above you", async () => {
+  test("the sidebar's foot: Add New is the last action, an outline button; you on ONE thin line below it, no divider; collapsed, the expand button sits above you", async () => {
     await mount();
     const profile = container!.querySelector<HTMLElement>('[data-slot="profile"]')!;
-    expect(profile.className).toContain("h-8"); // one line, not a two-line block
+    expect(profile.className).toContain("h-9"); // one line, a nav row's height
     expect(profile.textContent).toBe("Youlaptop"); // "You", a dot, then the machine
+    expect(profile.querySelector("svg.lucide-chevrons-up-down")).not.toBeNull(); // it opens a menu, as branch-demo's user row
+    // Add New is an outline button, full width on the lower surface, so it stands apart from the
+    // content below — the nav rows' height and icon column, so it still lines up with them.
+    const addNew = container!.querySelector<HTMLElement>('[data-slot="add-new"]')!;
+    const navItem = container!.querySelector<HTMLElement>('nav[aria-label="Main"] button:not([aria-current])')!;
+    for (const c of ["h-9", "px-2.5", "gap-3", "rounded-md"]) { expect(addNew.className).toContain(c); expect(navItem.className).toContain(c); }
+    expect(addNew.className).toContain("border bg-card"); // the outline variant
+    expect(addNew.className).toContain("w-full");
+    expect(container!.querySelector<HTMLElement>('[data-slot="notifications-bell"]')!.className).toContain("size-9");
     const actions = container!.querySelector<HTMLElement>('[data-slot="sidebar-actions"]')!;
     const foot = container!.querySelector<HTMLElement>('[data-slot="sidebar-foot"]')!;
     expect(actions.querySelector('[data-slot="add-new"]')).not.toBeNull();
-    expect(actions.nextElementSibling).toBe(foot); // straight above the divider (the foot's border-t) and you
-    expect(foot.className).toContain("border-t");
+    expect(actions.nextElementSibling).toBe(foot); // straight above you
+    expect(foot.className).not.toContain("border-t"); // no divider line above you any more
     expect(foot.querySelector('[data-slot="add-new"]')).toBeNull();
     await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
     const you = container!.querySelector<HTMLElement>('[data-slot="sidebar-you"]')!;

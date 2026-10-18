@@ -259,16 +259,18 @@ describe("the phone layout (390px, touch)", () => {
     expect(settings.getAttribute("aria-current")).toBe("page");
   });
 
-  test("Settings on a phone carries what the old hamburger drawer exposed that isn't in the bottom bar: Find, the instance switcher, and links to Previews/Repos/GitHub/Usage", async () => {
+  test("Settings on a phone carries what the old hamburger drawer exposed that isn't in the bottom bar: Find, the instance switcher, and links to Previews/Integrations/Handoffs (Repos and GitHub are sections of this page)", async () => {
     await mount("/settings", true);
     const nav = $('[data-slot="settings-mobile-nav"]')!;
     expect(nav.className).toContain("md:hidden");
     expect(nav.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     expect(nav.querySelector('[role="group"][aria-label="Instance"]')).not.toBeNull();
     const links = [...nav.querySelectorAll('nav[aria-label="More pages"] button')].map((b) => b.textContent);
-    expect(links).toEqual(["Inbox", "Previews", "Repos", "GitHub", "Usage"]);
-    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[2]!); // Repos
-    expect(location.pathname).toBe("/repos");
+    expect(links).toEqual(["Inbox", "Previews", "Integrations", "Handoffs"]);
+    expect($('[data-slot="settings-repos"]')).not.toBeNull();
+    expect($('[data-slot="settings-github"]')).not.toBeNull();
+    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[2]!); // Integrations
+    expect(location.pathname).toBe("/integrations");
   });
 
   test("Agents: rows stack with the instruction, error and branch on screen; one ⋯ per row; filters in a sheet", async () => {
@@ -824,7 +826,7 @@ describe("the desktop layout is untouched", () => {
     act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
     await act(async () => { await flush(); await flush(); });
     expect($('[data-slot="orchestrator-panel"]')!.hasAttribute("data-sheet")).toBe(false);
-    expect($('[data-slot="orchestrator-panel"]')!.className).toContain("fixed inset-y-0 right-0");
+    expect($('[data-slot="orchestrator-panel"]')!.parentElement!.dataset.slot).toBe("dock"); // docked in the shell card
     expect(document.querySelectorAll('[data-slot="orchestrator-resize"]').length).toBe(1); // its left edge
     expect($('[data-slot="orchestrator-handle"]')!.hasAttribute("data-swipe-handle")).toBe(false); // a mouse: no swipe
     expect($('[data-slot="quick-ask-pill"]')).not.toBeNull(); // the desktop has the quick-ask pill…
@@ -857,9 +859,29 @@ describe("a newer build", () => {
     await act(async () => { await Bun.sleep(30); });
     const banner = container.querySelector<HTMLElement>('[data-slot="update-banner"]')!;
     expect(banner.textContent).toContain("Refresh");
-    // It is now the topmost element on a narrow layout, so it — not the header below it — clears the notch.
-    expect(banner.className).toContain("max-md:pt-[env(safe-area-inset-top)]");
+    // It is now the topmost element on a narrow layout, so its frame — not the header below it — clears the notch.
+    const frame = banner.parentElement!;
+    expect(frame.dataset.slot).toBe("update-banner-frame");
+    expect(frame.className).toContain("max-md:pt-[max(0.5rem,env(safe-area-inset-top))]");
     expect(staleChanges).toEqual([false, true]);
+    // branch-demo's app-level alert card: a hairline border, 8px corners, a title over one line of text,
+    // the button at the right; on the shell's lower surface with its gutter.
+    expect(banner.className).toEqual(expect.stringContaining("rounded-lg border px-4 py-3"));
+    expect(frame.className).toContain("md:px-1.5 md:pt-1.5");
+    expect(banner.textContent).toContain("A new version of Orca is available");
+    expect(banner.lastElementChild!.tagName).toBe("BUTTON");
+    globalThis.fetch = realFetch;
+  });
+
+  test("`forced` (the ?update-banner URL hook) shows it at once, with no poll", async () => {
+    const realFetch = globalThis.fetch;
+    let asked = 0;
+    globalThis.fetch = (async () => { asked++; return { json: async () => ({}) }; }) as unknown as typeof fetch;
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    await act(async () => { root = createRoot(container!); root.render(<UpdateBanner build="dev" forced />); await flush(); });
+    expect(container.querySelector('[data-slot="update-banner"]')!.textContent).toContain("A new version of Orca is available");
+    expect(asked).toBe(0);
     globalThis.fetch = realFetch;
   });
 });

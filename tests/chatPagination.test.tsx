@@ -9,10 +9,11 @@ import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
+import { fenceExternal, integrationMessage, integrationMetaLine } from "../shared/integrations";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
-import { CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, MESSAGE_BREAK, capWindow, chatItems, longMessage, newestMessages, longReply, splitMessages, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, turnSource, windowRange, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
+import { integrationState, integrationTurn, composerHistory, CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, MESSAGE_BREAK, capWindow, chatItems, longMessage, newestMessages, longReply, splitMessages, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, turnSource, windowRange, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -249,7 +250,7 @@ test("the pure pieces: the window, compact replies and the worker blocks", () =>
   expect(longMessage("x".repeat(601))).toBe(true);
   const w = (id: string, startedAt = 1) => ({ id, instruction: `${WORKER_EVENT_MARKER} x`, finishedAt: 1, startedAt });
   const u = (id: string) => ({ id, instruction: "hi", finishedAt: 1 });
-  const kinds = <T extends { id: string }>(items: ChatItem<T>[]) => items.map((i) => (i.kind === "turn" ? i.turn.id : `[${i.turns.map((t) => t.id).join(",")}]`));
+  const kinds = <T extends { id: string }>(items: ChatItem<T>[]) => items.map((i) => (i.kind === "turn" ? i.turn.id : i.kind === "integration" ? `@${i.turn.id}` : `[${i.turns.map((t) => t.id).join(",")}]`));
   // Your turns, each run of agent turns between them as one block — even a single one, even the newest.
   expect(kinds(chatItems([u("a"), w("b"), w("c"), u("d"), w("e"), w("f")]))).toEqual(["a", "[b,c]", "d", "[e,f]"]);
   expect(kinds(chatItems([w("a"), u("b")]))).toEqual(["[a]", "b"]);
@@ -267,6 +268,66 @@ test("the pure pieces: the window, compact replies and the worker blocks", () =>
   expect(turnSource(["[new draft] repo: r\n\nbuild it"])).toBe("human");
   expect(sourceOf({ instruction: `${WORKER_EVENT_MARKER} a\n\n${WORKER_EVENT_MARKER} b` })).toBe("agents");
   expect(agentsMarker([{ instruction: `${WORKER_EVENT_MARKER} a\n\n${WORKER_EVENT_MARKER} b`, finishedAt: 1 }, { instruction: `${WORKER_EVENT_MARKER} c` }])).toBe("3 worker reports · 1 reply · working");
+});
+
+// An outside message as the bridge queues it (server/integrations/inbox.ts withSource): fenced, then
+// the meta line. `meta: false` is a row from before the meta line.
+const outside = (text: string, sender = "Saajan", place = "#general", meta = true) => [
+  fenceExternal({ text, source: { adapter: "discord", linkId: "L1" }, actor: { external: { adapter: "discord", id: "U1", name: sender } }, grant: { level: "ask", repos: [] } }),
+  ...(meta ? [integrationMetaLine({ adapter: "discord", sender, place, url: "https://discord.com/channels/G/C/M" })] : []),
+].join("\n");
+
+test("the pure pieces: an outside message is read back with its source, and its wake is an activity row", () => {
+  expect(integrationMessage(outside("can you ship #12?\nthanks"))).toEqual({ adapter: "discord", sender: "Saajan", place: "#general", url: "https://discord.com/channels/G/C/M", text: "can you ship #12?\nthanks" });
+  // A row from before the meta line: the header still names the service and the sender.
+  expect(integrationMessage(outside("hi", "Saajan", "", false))).toEqual({ adapter: "discord", sender: "Saajan", text: "hi" });
+  // A name can't close the comment early.
+  expect(integrationMessage(outside("hi", "a --> b"))!.sender).toBe("a --> b");
+  expect(integrationMetaLine({ adapter: "discord", sender: "a --> b" })).not.toContain("-->\"");
+  expect(integrationMessage("hi")).toBeUndefined();
+  expect(integrationMessage(`${WORKER_EVENT_MARKER} r/x — done`)).toBeUndefined();
+  const u = (id: string) => ({ id, instruction: "hi", finishedAt: 1 });
+  const x = (id: string, finishedAt?: number) => ({ id, instruction: `${outside("one")}${MESSAGE_BREAK}${outside("two", "Ana", "DM")}`, finishedAt, source: "human" as const });
+  expect(integrationTurn(x("a"))!.map((m) => m.sender)).toEqual(["Saajan", "Ana"]);
+  expect(integrationTurn({ instruction: `${outside("one")}${MESSAGE_BREAK}carry on` })).toBeUndefined(); // your words: a normal turn
+  // Its own row, even when it holds the newest answer; never "your newest message".
+  const turns = [u("a"), x("b", 2), x("c", 3)];
+  expect(chatItems(turns, turns[2]).map((i) => i.kind === "turn" ? i.turn.id : i.kind === "integration" ? `@${i.turn.id}` : "?")).toEqual(["a", "@b", "@c"]);
+  expect(newestMessages(turns).said).toBe(turns[0]);
+  expect(integrationState({})).toBe("in progress");
+  expect(integrationState({ finishedAt: 1 })).toBe("answered");
+  expect(integrationState({ finishedAt: 1, failed: true })).toBe("failed");
+  // ↑ in the composer recalls only what you typed.
+  expect(composerHistory([u("a"), x("b", 2)], [{ instruction: outside("q") }])).toEqual(["hi"]);
+});
+
+test("P8: the orchestrator's chat shows an outside message and its answer as ONE collapsed activity row, never your bubble", async () => {
+  const reply = (id: string, text: string, sender: string, place: string, finished = true) => ({
+    id, provider: "claude", instruction: outside(text, sender, place), prompt: "", response: finished ? `answered ${sender}` : "", startedAt: 2000, source: "human" as const,
+    ...(finished ? { finishedAt: 2001 } : {}),
+  });
+  apiFake.turnsData.set("r::long", [turn(0), reply("d1", "can you ship #12?", "Saajan", "#general"), turn(1), reply("d2", "status of the deploy?", "Ana", "DM", false)]);
+  apiFake.queuedData.set("long", [{ id: 1, instruction: outside("one more", "Saajan", "#general"), attachments: [] }]);
+  await mount(<ChatPanel row={row} />);
+  const c = container!;
+  const rows = [...c.querySelectorAll<HTMLElement>('[data-slot="integration-activity"]')];
+  expect(rows).toHaveLength(2);
+  const field = (r: HTMLElement, slot: string) => r.querySelector(`[data-slot="${slot}"]`)!.textContent;
+  expect(rows.map((r) => [field(r, "integration-sender"), field(r, "integration-place"), field(r, "integration-preview"), field(r, "integration-state")])).toEqual([
+    ["Saajan", "#general", "can you ship #12?", "answered"], ["Ana", "DM", "status of the deploy?", "in progress"],
+  ]);
+  expect(rows[0]!.querySelector('[data-slot="brand-icon"]')!.getAttribute("data-kind")).toBe("discord");
+  expect(rows[0]!.className).toContain("bg-geist-blue/5"); // the worker blocks' tinted card
+  // Never your bubble, and the answer stays folded until opened.
+  expect([...c.querySelectorAll('[data-slot="chat-user-text"]')].map((b) => b.textContent)).toEqual(["ask 0", "ask 1"]);
+  expect(c.textContent).not.toContain("answered Saajan");
+  expect(c.textContent).not.toContain("external message");
+  await act(async () => { rows[0]!.querySelector("button")!.click(); await flush(); });
+  expect(field(rows[0]!, "integration-reply")).toContain("answered Saajan");
+  expect(rows[0]!.querySelector<HTMLAnchorElement>('[data-slot="integration-message"] a')!.href).toBe("https://discord.com/channels/G/C/M");
+  // A queued outside message is its row too, not a queued bubble of yours.
+  expect(field(c.querySelector<HTMLElement>('[data-slot="integration-queued"]')!, "integration-state")).toBe("queued");
+  expect(c.querySelector('[data-slot="chat-queued"]')).toBeNull();
 });
 
 test("the pure pieces: merging pages and anchoring", () => {

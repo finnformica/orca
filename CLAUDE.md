@@ -223,8 +223,8 @@ one), append a RepoConfig (default branch, `.worktrees`, `runsOn` that instance,
 the owner is a non-active account, no previews), save. Previews and `checkCommand` remain a hand
 edit in Settings.
 
-**The GitHub page** (`/github`, `GitHubPage` in `views/Pages.tsx`, nav item between Repos and Usage,
-`G H`) shows one row per `gh` account signed in on THIS host (`GET /api/github/accounts`,
+**The GitHub section of Settings** (`/settings#github`, the old `/github` redirects; `GitHubSection` in
+`views/Pages.tsx`) shows one row per `gh` account signed in on THIS host (`GET /api/github/accounts`,
 `repos.accountsHere` — per host, like `/api/usage`): the login, an `active` pill, the identity its
 commits carry (`commits as Name <email>`) and the repos that use it (`repos.accountRows`: a repo
 with no `githubUser` uses the active login). Name and email are editable per row; Save writes
@@ -288,7 +288,7 @@ both, so it carries the pack (`server/handoff.ts`, `views/Handoffs.tsx`, table `
   `attachment`. Chats become markdown transcripts.
 - Make one with `orca handoff create --to <server> --title … [--message …] [--file <path|id>]…
   [--chat <id>]…`, or with Hand off… in a card's menu (it packs that chat). `orca handoff list`.
-- The Handoffs page (`/handoffs`, nav item after GitHub, `G K`) shows each pack in full: the exact message and every file.
+- The Handoffs page (`/handoffs`, nav item after Integrations, `G K`) shows each pack in full: the exact message and every file.
 - Send is the ONLY way out: a click, a confirm with the file list, GET `/api/handoffs/<id>/export`
   here, POST `/api/handoff/import` on the target, POST `/api/handoffs/<id>/sent` here.
 - The import stores the files as attachments and queues ONE message to the target's orchestrator:
@@ -320,7 +320,7 @@ light mode). Every conversation — the agent page's Chat tab, a card's modal, t
 and page — is ONE `ChatPanel` in ONE styling (bubbles; replies under the agent's name, `author`
 "Orchestrator" for it); only `size` (page | panel) and the composer's wiring differ. Shell (`components/Shell.tsx`): a collapsible left sidebar (instance switcher
 all/local/cloud scoping the pages, Find — the `F` key — which filters Agents, the nav Overview /
-Agents / Previews / Repos / Usage / Settings, then **Add New** as the last action, above the divider — a modal `<dialog>` holding the New-draft box
+Agents / Previews / Integrations (`G I`) / Handoffs / Settings, then **Add New** as the last action, above the divider — a modal `<dialog>` holding the New-draft box
 (`C` opens it; it is the portal container for the composer's selects, since a modal leaves the rest
 of the page inert; sending closes it and leaves "Sent to … · Undo" for 6s; the typed draft persists) — and
 below it you on one thin line — "You · local" — with the collapse toggle;
@@ -425,10 +425,11 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   passing + skipped folded into one expandable line — `checkGroups`), Description and the
   **Conversation** (`prConversation`: chronological like GitHub, a counts line + Jump to unresolved,
   resolved / outdated threads on one line, long bodies behind Show more, bots in ONE folded row).
-- **Repos**, **Usage** (every login, every machine) and **Settings** (theme, density, the
-  read-only config). The Usage page shows the SAME `UsageCard` as the Overview — the high-level rows,
-  with every hydra login behind the one remembered chevron (`orca.ui.v1.usageExpanded`, shared by
-  both pages).
+- **Settings** (theme, density, the read-only config, then the **Repos** and **GitHub** sections,
+  `#repos` / `#github`) and **Integrations** (its own nav item). There is no Usage page: the
+  Overview's `UsageCard` has every hydra login behind the one remembered chevron
+  (`orca.ui.v1.usageExpanded`). Old URLs redirect (`REDIRECTS` in `lib/route.ts`): `/repos`,
+  `/github` → Settings' sections, `/usage` → Overview, `/settings/integrations` → `/integrations`.
 Every number is a pure derivation over the assembled rows (`workstream.ts`: `overviewStats`,
 `attentionReasons`, `filterRows`, `sortRows`, `recentActivity`, `usageGroups`, `rowDuration`,
 `repoSummaries`, `agentFailure`) — no endpoint of its own, so the views can't
@@ -616,8 +617,35 @@ the workstream's selected provider; Slack posting uses a lightweight model of th
 ## The orchestrator (one conversation that delegates)
 
 **Ask the orchestrator** in the top bar (every page), the `O` key, the palette, a failed action's
-toast and the quick-ask box's "Open chat" open a **right-hand side panel** that slides over the page
-(`OrchestratorPanel`, `components/Terminal.tsx`: a `transform`, so nothing reflows; `role=dialog`
+toast and the quick-ask box's "Open chat" open a **right-hand side panel**, DOCKED on a desktop
+(`OrchestratorPanel`, `components/Terminal.tsx`; Finn found the overlay annoying): the panel
+publishes its width (`lib/dock.ts`) and the shell reserves it as a `data-slot="dock"` column, so the
+page reflows beside it; no shadow, a hairline edge; the top-bar button and `O` toggle it. When the
+dock leaves the page under `DOCK_PAGE_MIN_W` (640) the nav renders as its icon rail (`navRail`,
+your saved collapse untouched; expanding it then is a session override), and `clampPanelWidth`
+keeps the page at that floor beside the rail. On a desktop the page column (`page-scroll`) scrolls on
+its own and is the `@container/page` a page's layout should query (the Overview grid does), not the
+window; a phone keeps the window's scroll. The edge resizes by drag or by arrow keys. **Open / close
+is branch-demo's right panel**: the panel renders INTO the dock (a portal) at its full width, shows at
+dock width 0 in the commit that opens it, and the dock's width opens on the next frame (a real 150ms
+`width` transition, none while dragging); closing moves the width in the click's OWN commit (the dock
+width is published from a layout effect keyed on `open && expanded`). A closed panel stays mounted —
+draft and scroll kept — clipped by the 0-wide dock, `aria-hidden`, and a focus guard once idle.
+**Measured rules (CDP traces of the production build, 4× CPU, a long orchestrator thread; method and
+numbers in PR #305):** never change a `class` on an ancestor of the chat during open / close —
+Tailwind Typography's `:not(:where([class~="not-prose"] *))` makes that restyle the whole prose
+subtree (~4000 elements, 100–150ms each) — so the dock's margin and the panel's z-index are inline
+styles and the card's surface rides `data-painted`; never flip `visibility`, `content-visibility` or
+`inert` on the panel (each restyles the subtree too); keep the chat out of the panel's renders
+(`OrchestratorChat`, `ChatTurn`, the markdown renderers are memoized with stable props); `App` must
+not subscribe to the orchestrator's open atom (it re-rendered the page). Measure in a production
+build: dev-mode React is 3–5× slower, and an Orca preview runs dev mode.
+The page and the dock are TWO raised cards with the shell's 6px gutter between them
+(a closed dock's negative start margin cancels it); only `width` and `margin-inline-start` animate. While the dock
+or the nav animates, the page frame (`page-frame`, the `@container/page`) is held at its END width
+(`frozenPageWidth`), so the content lays out once and only the card edge moves. Nothing in the page
+may set React state per frame meanwhile: measure through `afterDockMotion` (`lib/dock.ts`); the page
+column has `contain: layout paint`, so a `fixed` element in a page must portal to `<body>`. `role=dialog`
 `aria-modal=false` — no backdrop, the board it is moving stays visible and usable; Esc or ✕ closes
 and focus returns to the opener; resized from its LEFT edge, width remembered as
 `orca.ui.v1.orchestratorWidth` and clamped to the viewport by `clampPanelWidth`). Once opened it

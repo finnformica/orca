@@ -4,8 +4,9 @@
 import type { CiFailureEvidence, CiStatus, ConversationComment, Mergeable, ReviewSignal, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import { AUTOFIX_MARKER, OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn, type TurnCheck, type TurnSource } from "../../shared/agent";
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
-import { WRITING_STYLE } from "../../shared/writingStyle";
+import { SNIPPETS, WRITING_STYLE } from "../../shared/writingStyle";
 import { asksForInput } from "../../shared/notifications";
+import { integrationMessage, type IntegrationMessage } from "../../shared/integrations";
 export { attachCommand } from "../../shared/agent";
 
 // Kanban lanes are driven by the REVIEW lifecycle only. Conflict / CI / mergeability
@@ -415,6 +416,8 @@ export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean
     "",
     WRITING_STYLE,
     "",
+    SNIPPETS,
+    "",
     "If (and only if) you changed something, finish with the usual sections:",
     OUTCOME_CONTRACT,
   ].join("\n");
@@ -608,6 +611,25 @@ export function withoutAttachmentList(text: string): string {
  *  blockquote), followed by a blank line so typing continues as ordinary text below it. */
 export function quoteMarkdown(text: string): string {
   return `${text.split("\n").map((line) => `> ${line}`).join("\n")}\n\n`;
+}
+
+/** A fenced code block's header, read off its info string (```plan title=Rollout steps): the
+ *  language (the first word, from the `language-*` class) and an optional `title=` from the rest
+ *  (quoted, or the remainder of the line). `markdown` is true for plan / md / markdown, which the
+ *  snippet card shows rendered but still copies as source. */
+export interface SnippetInfo { lang: string; title: string | null; markdown: boolean }
+const MARKDOWN_SNIPPETS = new Set(["plan", "md", "markdown"]);
+export function snippetInfo(className: string | undefined, meta: string | null | undefined): SnippetInfo {
+  const lang = (className ?? "").split(/\s+/).find((c) => c.startsWith("language-"))?.slice("language-".length).toLowerCase() ?? "";
+  const m = (meta ?? "").match(/(?:^|\s)title=(?:"([^"]*)"|'([^']*)'|(.*))/);
+  const title = (m ? (m[1] ?? m[2] ?? m[3] ?? "") : "").trim() || null;
+  return { lang, title, markdown: MARKDOWN_SNIPPETS.has(lang) };
+}
+
+/** What a snippet's Copy button writes: the block's raw source exactly. The markdown → HTML step
+ *  ends a fenced block's text with one added newline; that one is dropped, nothing else is. */
+export function snippetCopyText(text: string): string {
+  return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
 
 /** Append a Quote block after whatever draft is already in the composer, keeping it intact: a
@@ -1716,6 +1738,7 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
     `A message opening with \`${NEW_DRAFT_MARKER}\` is the user's New-draft box: spawn exactly ONE workstream for it, in the repo it names, with a brief you write from it and a model you choose. Reply with one line: branch and model.`,
     // Every wake as well: a resumed session sees the role once, and the user wants STE ALWAYS.
     "", WRITING_STYLE,
+    "", SNIPPETS,
     "", "## Your notes", input.notes?.trim() || "(empty)",
     "", "## Board", input.board,
     // The wake before this one died mid-turn: say so, or the user has to ask why it went quiet.
@@ -1734,11 +1757,38 @@ export function orchestratorPrompt(input: { fresh: boolean; notes?: string; boar
 
 /** The orchestrator's side panel: how wide it may be on a `vw`-wide viewport. Never narrower than a
  *  readable chat, never wider than leaves the page beside it usable — and a width remembered from a
- *  bigger screen is pulled back in. */
+ *  bigger screen is pulled back in. On a desktop the panel is a DOCKED column that pushes the page,
+ *  so "usable" is the page column's own floor (`DOCK_PAGE_MIN_W`) beside the nav's icon rail. */
 export const PANEL_MIN_W = 360, PANEL_DEFAULT_W = 460;
+/** The nav sidebar's two desktop widths (Shell: md:w-60 expanded, md:w-14 the icon rail). */
+export const NAV_W = 240, NAV_RAIL_W = 56;
+/** The shell's gutter (branch-demo's `gap-shell`): between the nav, the page card and the panel card. */
+export const SHELL_GAP = 6;
+
+/** The page content's END width for a dock / nav width change that is about to animate: the page
+ *  column's content width now, plus every px the nav, the dock and the dock's start margin (−the
+ *  gutter while closed) give back or take. The page frame is set to it at once, so the content lays
+ *  out ONCE — a container-query grid snaps to its end layout instead of flipping mid-slide — and only
+ *  the card's edge animates over it. Widths "now" are the in-flight values (a reversal mid-slide). */
+export function frozenPageWidth(now: { col: number; nav: number; dock: number; dockMargin: number },
+  end: { nav: number; dock: number; dockMargin: number }): number {
+  return Math.max(0, Math.round(now.col + (now.nav - end.nav) + (now.dock - end.dock) + (now.dockMargin - end.dockMargin)));
+}
+/** The narrowest the page column gets beside a docked panel before the nav gives way to its rail. */
+export const DOCK_PAGE_MIN_W = 640;
 export function clampPanelWidth(w: number, vw: number): number {
-  const max = Math.max(PANEL_MIN_W, Math.min(960, vw - 240));
+  const max = Math.max(PANEL_MIN_W, Math.min(960, vw - NAV_RAIL_W - DOCK_PAGE_MIN_W));
   return Math.round(Math.min(vw, Math.max(PANEL_MIN_W, Math.min(max, Number.isFinite(w) ? w : PANEL_DEFAULT_W))));
+}
+
+/** The nav sidebar as an icon rail: what you chose (`collapsed`), or — while a docked panel is open
+ *  (`dock` > 0 px) and the full nav would leave the page under `DOCK_PAGE_MIN_W` — the rail, unless
+ *  you expanded it again while that panel was open (`expandedOverride`). The choice you saved is
+ *  never changed by this: close the panel and the nav comes back as it was. */
+export function navRail(collapsed: boolean, vw: number, dock: number, expandedOverride = false): boolean {
+  if (collapsed) return true;
+  if (dock <= 0 || expandedOverride) return false;
+  return vw - NAV_W - dock < DOCK_PAGE_MIN_W;
 }
 
 /** Chat timestamps are grouped by day: a divider where the calendar day changes between two turns,
@@ -3166,7 +3216,7 @@ export function composerHistory(
     ...queued.map((m) => m.instruction),
     ...sending.map((m) => m.text),
   ].map((m) => withoutAttachmentList(m).trim())
-    .filter((m) => m && !isWorkerEvent(m) && !m.startsWith(AUTOFIX_MARKER));
+    .filter((m) => m && !isWorkerEvent(m) && !m.startsWith(AUTOFIX_MARKER) && !integrationMessage(m));
   return [...new Set(sent.reverse())];
 }
 
@@ -3294,15 +3344,32 @@ type Sourced = { source?: TurnSource; instruction?: string; prompt?: string; fin
 export const sourceOf = (t: Sourced): TurnSource =>
   t.source ?? turnSource(splitMessages(t.instruction ?? promptInstruction(t.prompt ?? "")));
 
-export type ChatItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] };
+/** The outside messages (Discord, Slack, email…) a wake carried, when it carried nothing else — such a
+ *  wake is its own grant (server/orchestrator.ts), so it never holds your words. Undefined otherwise. */
+export function integrationTurn(t: Sourced): IntegrationMessage[] | undefined {
+  const messages = splitMessages(t.instruction ?? promptInstruction(t.prompt ?? "")).map(integrationMessage);
+  return messages.length > 0 && messages.every(Boolean) ? messages as IntegrationMessage[] : undefined;
+}
+
+/** An outside message's row state: the orchestrator is on it, answered it, or its wake failed. */
+export const integrationState = (t: { finishedAt?: number; failed?: boolean; stopped?: boolean }): "in progress" | "answered" | "failed" | "stopped" =>
+  !t.finishedAt ? "in progress" : t.failed ? "failed" : t.stopped ? "stopped" : "answered";
+
+/** An outside message's row, in one line: its first non-empty line, cut to `max`. */
+export const integrationPreview = (text: string, max = 120): string => clip((text.split("\n").find((l) => l.trim()) ?? "").trim(), max);
+
+export type ChatItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] } | { kind: "integration"; turn: T; messages: IntegrationMessage[] };
 /** What the orchestrator's chat renders: your turns, with each run of agent turns between them as one
- *  collapsed block. `keepOut` is a turn that never folds into a block: the newest answer, which the
- *  chat always shows (see newestMessages). */
+ *  collapsed block, and each wake an outside message caused as its own activity row (never your
+ *  bubble, even when it holds the newest answer). `keepOut` is a turn that never folds into a block:
+ *  the newest answer, which the chat always shows (see newestMessages). */
 export function chatItems<T extends Sourced>(turns: T[], keepOut?: T): ChatItem<T>[] {
   const out: ChatItem<T>[] = [];
   for (const t of turns) {
     const last = out[out.length - 1];
-    if (sourceOf(t) === "human" || t === keepOut) out.push({ kind: "turn", turn: t });
+    const outside = integrationTurn(t);
+    if (outside) out.push({ kind: "integration", turn: t, messages: outside });
+    else if (sourceOf(t) === "human" || t === keepOut) out.push({ kind: "turn", turn: t });
     else if (last?.kind === "agents") last.turns.push(t);
     else out.push({ kind: "agents", turns: [t] });
   }
@@ -3312,7 +3379,7 @@ export function chatItems<T extends Sourced>(turns: T[], keepOut?: T): ChatItem<
 /** The two messages a chat never clamps or folds: your newest message (the newest turn you spoke in)
  *  and the newest answer (the newest finished turn). Older ones keep their clamp. */
 export function newestMessages<T extends Sourced>(turns: T[]): { said?: T; answer?: T } {
-  return { said: turns.findLast((t) => sourceOf(t) === "human"), answer: turns.findLast((t) => Boolean(t.finishedAt)) };
+  return { said: turns.findLast((t) => sourceOf(t) === "human" && !integrationTurn(t)), answer: turns.findLast((t) => Boolean(t.finishedAt)) };
 }
 
 /** The collapsed block's line for a run of agent turns. */
