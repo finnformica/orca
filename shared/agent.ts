@@ -35,6 +35,8 @@ export type AgentStep = {
   isError?: boolean;
   /** Set by groupSteps once a call's result has landed — the chat auto-folds the call on it. */
   done?: boolean;
+  /** When that result landed (its step's `at`), so the expanded list can show how long the call took. */
+  doneAt?: number;
 };
 
 // Rows written before `kind: "result"` existed recorded a result as a tool step named "result".
@@ -56,6 +58,7 @@ export function groupSteps(steps: AgentStep[]): AgentStep[] {
         call.output = step.output;
         call.isError = step.isError;
         call.done = true;
+        call.doneAt = step.at;
       } else {
         grouped.push({ ...step, kind: "tool", name: "result", text: "Tool result", done: true }); // orphan — still collapsible, never bare
       }

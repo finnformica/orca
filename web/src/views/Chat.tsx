@@ -8,7 +8,7 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Loader2, Paperclip, Quote as QuoteIcon } from "lucide-react";
+import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Loader2, Paperclip, Quote as QuoteIcon, X } from "lucide-react";
 import { cn, PipContext } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -16,7 +16,7 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory } from "../workstream";
-import { activityCounts, closeOpenMarkdown, currentActivity, runLabel, stepInFlight, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepRun } from "../steps";
+import { activityCounts, closeOpenMarkdown, createHold, runLabel, stepDuration, stepInFlight, stepKey, stepRow, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepStatus } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { ExpandableImage } from "@/components/ExpandableImage";
@@ -143,39 +143,67 @@ function useNow(on: boolean) {
   return now;
 }
 
-/** One tool call in the full step list: one line, truncated; its input and output only on a click.
- *  Text reads as the agent talking (prose, never code); thinking is dimmed and italic. Nothing opens
- *  by itself — a call in flight shows `…`, not its input. */
+/** What the live header shows, held for at least HOLD_MS before it switches (`createHold`), so a
+ *  run of fast commands doesn't flick the label between a command and `Thinking`. */
+function useHeld<T>(want: T): T {
+  const [shown, setShown] = useState(want);
+  const hold = useRef<ReturnType<typeof createHold<T>> | null>(null);
+  hold.current ??= createHold(want, setShown);
+  useEffect(() => { hold.current!.want(want); }, [want]);
+  useEffect(() => () => hold.current?.stop(), []);
+  return shown;
+}
+
+/** One line of text that cross-fades when it changes: the old text fades up and out over the new
+ *  one, which fades up and in, in ONE grid cell — so the line never changes height. The `label-*`
+ *  classes are in styles.css (none under reduced motion). */
+function CrossFade({ text, slot }: { text: string; slot?: string }) {
+  const [s, setS] = useState<{ text: string; n: number; gone: string | null }>({ text, n: 0, gone: null });
+  if (s.text !== text) setS({ text, n: s.n + 1, gone: s.text });
+  useEffect(() => {
+    if (s.gone === null) return;
+    const t = setTimeout(() => setS((v) => ({ ...v, gone: null })), LABEL_FADE_MS);
+    return () => clearTimeout(t);
+  }, [s.n, s.gone]);
+  return (
+    <span className="grid min-w-0 flex-1">
+      {s.gone !== null && <span key={`out-${s.n}`} aria-hidden="true" className="label-out truncate [grid-area:1/1]">{s.gone}</span>}
+      <span key={`in-${s.n}`} data-slot={slot} className={cn("truncate [grid-area:1/1]", s.n > 0 && "label-in")}>{text}</span>
+    </span>
+  );
+}
+const LABEL_FADE_MS = 200;
+
+const STATUS_ICON: Record<StepStatus, ReactNode> = {
+  running: <Loader2 className="size-3 shrink-0 animate-spin motion-reduce:animate-none" />,
+  done: <Check className="size-3 shrink-0 opacity-60" />,
+  failed: <X className="size-3 shrink-0 text-red-400" />,
+};
+
+/** One step in the full (expanded) list. A tool call is its REAL call on one line — the command
+ *  itself in monospace, or a read / edit by its file name — with its status (running, done, failed)
+ *  and how long it took; its input and output open on a click. Text reads as the agent talking
+ *  (markdown, never code); thinking is dimmed and italic. Nothing opens by itself. */
 function StepRow({ step, live }: { step: AgentStep; live: boolean }) {
   const [open, setOpen] = useState(false);
   if (step.kind === "text") return <div data-slot="step-text"><ChatMarkdown>{step.text ?? ""}</ChatMarkdown></div>;
   if (step.kind === "thinking") return <div className="italic opacity-70"><ChatMarkdown>{step.text ?? ""}</ChatMarkdown></div>;
   const body = [toolDetail(step), step.output].filter(Boolean).join("\n\n");
+  const row = stepRow(step, live);
   return (
-    <div data-slot="step-tool">
-      <button type="button" onClick={() => setOpen((v) => !v)} disabled={!body}
-        className={cn("flex w-full min-w-0 items-center gap-1.5 text-left", step.isError ? "text-red-400" : "text-muted-foreground", body ? "hover:text-foreground" : "cursor-default")}>
+    <div data-slot="step-tool" data-status={row.status}>
+      <button type="button" onClick={() => setOpen((v) => !v)} disabled={!body} title={row.verb ? `${row.verb} ${row.text}` : row.text}
+        className={cn("flex w-full min-w-0 items-center gap-1.5 text-left", row.status === "failed" ? "text-red-400" : "text-muted-foreground", body ? "hover:text-foreground" : "cursor-default")}>
         <ChevronRight className={cn("size-3 shrink-0 transition-transform motion-reduce:transition-none", open && "rotate-90", !body && "invisible")} />
-        <span className="min-w-0 truncate">{toolLabel(step)}{live && !step.done ? "…" : ""}</span>
+        <span className="sr-only">{row.status}</span>
+        {STATUS_ICON[row.status]}
+        {row.verb && <span className="shrink-0">{row.verb}</span>}
+        <span className={cn("min-w-0 flex-1 truncate", row.mono && "font-mono text-[11px]")} data-slot="step-call">{row.text}</span>
+        {row.ms !== undefined && <span className="shrink-0 tabular-nums opacity-70" data-slot="step-duration">{stepDuration(row.ms)}</span>}
       </button>
       {open && body && (
         <pre className="text-muted-foreground mt-0.5 ml-4.5 max-h-64 overflow-auto rounded border-l pl-2 text-[11px] whitespace-pre-wrap break-words">{body}</pre>
       )}
-    </div>
-  );
-}
-
-/** A run of same-kind calls (`Read 3 files`) as one line that opens to its calls. */
-function RunRow({ run, live }: { run: StepRun; live: boolean }) {
-  const [open, setOpen] = useState(false);
-  if (run.steps.length === 1) return <StepRow step={run.steps[0]!} live={live} />;
-  return (
-    <div data-slot="step-run">
-      <button type="button" onClick={() => setOpen((v) => !v)} className="text-muted-foreground hover:text-foreground flex w-full min-w-0 items-center gap-1.5 text-left">
-        <ChevronRight className={cn("size-3 shrink-0 transition-transform motion-reduce:transition-none", open && "rotate-90")} />
-        <span className="min-w-0 truncate">{runLabel(run)}</span>
-      </button>
-      {open && <div className="mt-0.5 ml-1.5 space-y-0.5 border-l pl-2">{run.steps.map((s, i) => <StepRow key={i} step={s} live={live} />)}</div>}
     </div>
   );
 }
@@ -196,11 +224,16 @@ function Activity({ steps: given, live, startedAt, finishedAt, load }: {
   const [fetched, setFetched] = useState<AgentStep[] | null>(null);
   const steps = fetched ? groupSteps(fetched) : given;
   const now = useNow(live);
+  // The header names the call in progress — held a moment before it switches (useHeld), so fast
+  // commands don't flick it to `Thinking` and back. The trail leaves out what the header names.
+  const inFlight = stepInFlight(steps);
+  const heldKey = useHeld(inFlight ? stepKey(inFlight) : "");
   if (!steps.length && !(load && !live)) return null;
 
-  // The header names the call in progress, so the trail leaves that one out.
-  const inFlight = stepInFlight(steps);
-  const trail = stepRuns(steps.filter((s) => s !== inFlight && s.kind !== "thinking")).slice(-3);
+  const heldStep = heldKey ? steps.find((s) => s.kind === "tool" && stepKey(s) === heldKey) : undefined;
+  const current = heldStep ? toolLabel(heldStep) : "Thinking";
+  const header = new Set([heldKey, inFlight ? stepKey(inFlight) : ""]);
+  const trail = stepRuns(steps.filter((s) => !(s.kind === "tool" && header.has(stepKey(s))) && s.kind !== "thinking")).slice(-3);
   const counts = activityCounts(steps);
   const toggle = () => {
     if (!steps.length && load && !fetched) void load().then((s) => { setFetched(s); setOpen(true); });
@@ -213,18 +246,22 @@ function Activity({ steps: given, live, startedAt, finishedAt, load }: {
         <div className="bg-accent/50 rounded-md px-2.5 py-1.5">
           <button type="button" onClick={toggle} className="flex w-full min-w-0 items-center gap-2 text-left" data-slot="activity-head">
             <Loader2 className="text-muted-foreground size-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
-            <span className="text-foreground min-w-0 flex-1 truncate" data-slot="activity-current">{currentActivity(steps)}…</span>
+            <span className="text-foreground flex min-w-0 flex-1"><CrossFade text={`${current}…`} slot="activity-current" /></span>
             {startedAt ? <span className="text-muted-foreground shrink-0 tabular-nums" data-slot="activity-elapsed">{formatDuration(now - startedAt)}</span> : null}
             <span className="text-muted-foreground">{chevron}</span>
           </button>
-          {counts && <div className="text-muted-foreground mt-0.5 truncate pl-5.5 text-[11px]" data-slot="activity-counts">{counts}</div>}
-          {trail.length > 0 && !open && (
-            <ul className="mt-1 space-y-0.5 pl-5.5 text-[11px] opacity-60" data-slot="activity-trail">
-              {trail.map((run, i) => (
-                <li key={i} className={cn("truncate", run.kind === "text" ? "text-foreground" : "text-muted-foreground")}>{runLabel(run)}</li>
-              ))}
-            </ul>
-          )}
+          {/* The count line and the trail open together on the first step, and the trail keeps room
+              for its three rows, so a row that lands slides in without pushing the chat down. */}
+          <Fold open={Boolean(counts || trail.length)}>
+            <div className="text-muted-foreground mt-0.5 truncate pl-5.5 text-[11px] leading-4" data-slot="activity-counts">{counts || "\u00a0"}</div>
+            {!open && (
+              <ul className="mt-1 min-h-[52px] space-y-0.5 pl-5.5 text-[11px] leading-4 opacity-60" data-slot="activity-trail">
+                {trail.map((run) => (
+                  <li key={stepKey(run.steps[0]!)} className={cn("step-in truncate", run.kind === "text" ? "text-foreground" : "text-muted-foreground")}>{runLabel(run)}</li>
+                ))}
+              </ul>
+            )}
+          </Fold>
         </div>
       </Fold>
       <Fold open={!live} slot="activity-summary">
@@ -234,7 +271,10 @@ function Activity({ steps: given, live, startedAt, finishedAt, load }: {
         </button>
       </Fold>
       <Fold open={open} slot="activity-steps">
-        <div className="mt-1 space-y-0.5 border-l pl-2">{stepRuns(steps).map((run, i) => <RunRow key={i} run={run} live={live} />)}</div>
+        {/* Every step on its own row — the real calls, not the trail's `Ran 3 commands` again. */}
+        <div className="mt-1 space-y-0.5 border-l pl-2" data-slot="activity-list">
+          {steps.map((s, i) => <div key={`${stepKey(s)}-${i}`} className={cn(live && "step-in")}><StepRow step={s} live={live} /></div>)}
+        </div>
       </Fold>
     </div>
   );

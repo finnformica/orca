@@ -128,6 +128,72 @@ export function currentActivity(steps: AgentStep[]): string {
   return step ? toolLabel(step) : "Thinking";
 }
 
+/** A stable key for one call across renders (groupSteps copies its steps each time): its id, else
+ *  when it started and what it is. */
+export const stepKey = (step: AgentStep) => step.id ?? `${step.at}:${step.name ?? step.kind}`;
+
+/** One tool call as a row of the EXPANDED list — the real call, never a run's summary: a command as
+ *  its own text (shown monospace), a read or an edit by its file name, anything else by its label.
+ *  `status` is `running` only while the turn is live; `ms` only once its result landed. */
+export type StepStatus = "running" | "done" | "failed";
+export type StepRowView = { verb?: string; text: string; mono: boolean; status: StepStatus; ms?: number };
+export function stepRow(step: AgentStep, live: boolean): StepRowView {
+  const i = (step.input ?? {}) as Record<string, unknown>;
+  const s = (k: string) => (typeof i[k] === "string" && (i[k] as string).trim() ? (i[k] as string) : undefined);
+  const status: StepStatus = step.isError ? "failed" : !step.done && live ? "running" : "done";
+  const ms = step.done && step.doneAt !== undefined && step.doneAt >= step.at ? step.doneAt - step.at : undefined;
+  const file = (s("file_path") ?? s("path") ?? s("filePath"))?.split("/").pop();
+  const kind = step.text ? undefined : stepKind(step); // a pre-rendered label row keeps its label
+  if (kind === "command" && s("command")) return { text: oneLine(s("command")!, 500), mono: true, status, ms };
+  if ((kind === "read" || kind === "edit") && file) return { verb: kind === "read" ? "Read" : "Edit", text: file, mono: true, status, ms };
+  return { text: toolLabel(step), mono: false, status, ms };
+}
+
+/** A call's duration on its row: tenths under a second (a fast command is not `0s`), else as the
+ *  timer reads. */
+export const stepDuration = (ms: number) => (ms < 1000 ? `${(ms / 1000).toFixed(1)}s` : formatDuration(ms));
+
+/** How long the live header holds what it shows before it may switch (ms). Fast commands made the
+ *  label flick between `Running: …` and `Thinking` several times a second. */
+export const HOLD_MS = 400;
+
+/** What the header shows and since when. */
+export type Held<T> = { shown: T; since: number };
+
+/** The hold-before-switch decision. A new value replaces the shown one only once the shown one has
+ *  been up for `minMs`; before that the shown one stays and `wakeIn` says when to ask again — with
+ *  the NEWEST wanted value then, so a value that came and went inside the hold never shows. Pure. */
+export function holdNext<T>(state: Held<T>, want: T, now: number, minMs = HOLD_MS): { state: Held<T>; wakeIn?: number } {
+  if (Object.is(want, state.shown)) return { state };
+  const up = now - state.since;
+  if (up >= minMs) return { state: { shown: want, since: now } };
+  return { state, wakeIn: minMs - up };
+}
+
+export type HoldClock = { now: () => number; set: (f: () => void, ms: number) => unknown; clear: (t: unknown) => void };
+const realClock: HoldClock = { now: () => Date.now(), set: (f, ms) => setTimeout(f, ms), clear: (t) => clearTimeout(t as ReturnType<typeof setTimeout>) };
+
+/** `holdNext` with its one timer: `want(v)` on every change, `onShow` when the shown value switches.
+ *  The clock is injected so a test drives it with fake time. */
+export function createHold<T>(initial: T, onShow: (v: T) => void, minMs = HOLD_MS, clock: HoldClock = realClock) {
+  let state: Held<T> = { shown: initial, since: clock.now() };
+  let wanted = initial;
+  let timer: unknown;
+  const step = () => {
+    timer = undefined;
+    const next = holdNext(state, wanted, clock.now(), minMs);
+    const changed = !Object.is(next.state.shown, state.shown);
+    state = next.state;
+    if (next.wakeIn !== undefined) timer = clock.set(step, next.wakeIn);
+    if (changed) onShow(state.shown);
+  };
+  return {
+    want(v: T) { wanted = v; if (timer === undefined) step(); }, // a pending wake reads the newest `wanted`
+    stop() { if (timer !== undefined) clock.clear(timer); timer = undefined; },
+    get shown() { return state.shown; },
+  };
+}
+
 /** The step count a finished turn's summary chip shows: the tool calls and messages, not thinking. */
 export const workSteps = (steps: AgentStep[]) => steps.filter((s) => s.kind !== "thinking").length;
 
