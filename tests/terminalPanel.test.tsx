@@ -122,7 +122,7 @@ test("Settings → Instances: off by default with the reason inline; the Switch 
   expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false);
   expect(panel()!.dataset.state).toBe("open");
   expect(panel()!.getAttribute("aria-modal")).toBe("false");
-  expect(panel()!.querySelector('[data-slot="terminal-resize"]')).not.toBeNull(); // the orchestrator's resize edge
+  expect(document.querySelector('[data-slot="terminal-resize"]')).not.toBeNull(); // the orchestrator's resize handle, in the dock's gutter
   expect(tabs().map((t) => t.textContent)).toEqual(["cloud"]);
   expect(q('[data-slot="terminal-title"], #terminal-title')!.textContent).toBe("Terminal · cloud");
 

@@ -171,7 +171,7 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
       data-resize-handle=""
       className={cn(RESIZE_HANDLE_CLASS, gutter ? "top-[10px] h-[calc(100%-20px)]" : "top-0 h-full")}
       // Half the gap, less half the 1px line, puts the line on the gutter's centre.
-      style={{ left: gutter ? `calc((${SHELL_GAP}px + 1px) / -2)` : 0 }} />
+      style={{ left: gutter ? -(SHELL_GAP + 1) / 2 : 0 }} />
   );
   const resize = fullScreen ? null
     : docked ? (open && expanded ? createPortal(handle(true), dockEl!) : null)

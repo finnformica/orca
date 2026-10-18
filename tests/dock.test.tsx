@@ -90,7 +90,14 @@ test("open, the panel is a docked column: the page reflows, the button and O tog
   const panel = $('[data-slot="orchestrator-panel"]')!;
   expect(panel.dataset.state).toBe("open");
   expect(panel.hasAttribute("data-docked")).toBe(true);
-  expect(panel.parentElement).toBe(dock()); // in the dock: its width slides the panel, no transform
+  // In the dock's inner clip (a boolean check: a failed toBe on two DOM nodes prints both trees).
+  expect(panel.parentElement!.dataset.slot === "dock-clip" && panel.parentElement!.parentElement === dock()).toBe(true);
+  expect(dock().className).not.toContain("overflow-hidden"); // the clip is inside, so the handle hangs in the gutter
+  // branch-demo's gutter handle: a child of the dock, outside the clip, the line centred in the 6px gap.
+  const handle = $('[data-slot="orchestrator-resize"]')!;
+  expect(handle.parentElement === dock()).toBe(true);
+  expect(handle.style.left).toBe("-3.5px");
+  expect(handle.className).toContain("top-[10px]"); // short of the cards' 10px corners
   expect(panel.className).not.toContain("shadow-modal"); // not an overlay
   expect(panel.className).not.toContain("border-l"); // no shared hairline: the dock card is the edge
   expect(dock().style.width).toBe("460px"); // the page's row reserves the panel's width
@@ -102,6 +109,7 @@ test("open, the panel is a docked column: the page reflows, the button and O tog
   await click(askButton()); // the same button closes it
   expect(panel.dataset.state).toBe("closed");
   expect(dock().style.width).toBe("0px");
+  expect($('[data-slot="orchestrator-resize"]')).toBeNull(); // nothing to grab in the gap while it closes
   await key("o"); // O opens…
   expect(panel.dataset.state).toBe("open");
   (document.activeElement as HTMLElement | null)?.blur(); // the composer took focus; O in a field is a letter

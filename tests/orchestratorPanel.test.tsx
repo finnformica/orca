@@ -71,7 +71,8 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   const p = panel()!;
   // A desktop: docked INTO the shell's dock column (no overlay, no transform, no shadow) — the
   // dock's width animates and clips it, so the page reflows in the same frame.
-  expect(p.parentElement!.dataset.slot).toBe("dock");
+  expect(p.parentElement!.dataset.slot).toBe("dock-clip"); // the dock's inner clip: the resize handle hangs outside it
+  expect(p.parentElement!.parentElement!.dataset.slot).toBe("dock");
   expect(p.hasAttribute("data-docked")).toBe(true);
   expect(p.className).toContain("absolute inset-y-0 left-0");
   expect(p.className).not.toContain("fixed");
@@ -242,7 +243,7 @@ test("the panel is resized from its left edge and the width is remembered (clamp
   // branch-demo's gutter handle: in the dock, outside the panel and its clip, centred in the 6px gap.
   expect(p.contains(handles[0]!)).toBe(false);
   expect(handles[0]!.parentElement!.dataset.slot).toBe("dock");
-  expect(handles[0]!.style.left).toBe("calc((6px + 1px) / -2)");
+  expect(handles[0]!.style.left).toBe("-3.5px"); // half the 6px gap, less half the 1px line
   expect(handles[0]!.className).toContain("before:-inset-2"); // the 17px hit area around the 1px line
   expect(handles[0]!.getAttribute("role")).toBe("separator");
   // Dragging the edge LEFT widens; the width lands in storage when the pointer lets go.
