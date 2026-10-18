@@ -1,7 +1,7 @@
 // The live activity block's pure decisions (web/src/steps.ts): how steps group, count and label.
 import { expect, test } from "bun:test";
 import type { AgentStep } from "../shared/agent";
-import { activityCounts, currentActivity, runLabel, stepInFlight, stepRuns, workSteps } from "@/steps";
+import { activityCounts, currentActivity, runLabel, stepInFlight, stepRuns, workedLabel, workSteps } from "@/steps";
 
 const tool = (name: string, input: Record<string, unknown> = {}, done = true): AgentStep => ({ at: 0, kind: "tool", name, input, done });
 const text = (t: string): AgentStep => ({ at: 0, kind: "text", text: t });
@@ -35,4 +35,12 @@ test("the live verb is the NEWEST call with no result, even when later steps lan
   // Two calls in progress: the newer one.
   expect(stepInFlight([run("first"), run("second")])?.id).toBe("second");
   expect(stepInFlight([tool("Bash")])).toBeUndefined();
+});
+
+test("the summary chip shows a step count only when there is one", () => {
+  expect(workedLabel(10_000, 0)).toBe("Worked for 10s");     // unknown (not loaded) or none: no steps part
+  expect(workedLabel(10_000, 1)).toBe("Worked for 10s · 1 step");
+  expect(workedLabel(72_000, 9)).toBe("Worked for 1m 12s · 9 steps");
+  expect(workedLabel(undefined, 0)).toBe("Worked");
+  expect(workedLabel(undefined, 2)).toBe("Worked · 2 steps");
 });

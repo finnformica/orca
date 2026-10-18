@@ -16,7 +16,7 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory } from "../workstream";
-import { activityCounts, currentActivity, runLabel, stepInFlight, stepRuns, toolDetail, toolLabel, workSteps, type StepRun } from "../steps";
+import { activityCounts, currentActivity, runLabel, stepInFlight, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepRun } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { ExpandableImage } from "@/components/ExpandableImage";
@@ -202,8 +202,6 @@ function Activity({ steps: given, live, startedAt, finishedAt, load }: {
   const inFlight = stepInFlight(steps);
   const trail = stepRuns(steps.filter((s) => s !== inFlight && s.kind !== "thinking")).slice(-3);
   const counts = activityCounts(steps);
-  const took = startedAt && finishedAt ? `Worked for ${formatDuration(finishedAt - startedAt)}` : "Worked";
-  const n = workSteps(steps);
   const toggle = () => {
     if (!steps.length && load && !fetched) void load().then((s) => { setFetched(s); setOpen(true); });
     else setOpen((v) => !v);
@@ -232,7 +230,7 @@ function Activity({ steps: given, live, startedAt, finishedAt, load }: {
       <Fold open={!live} slot="activity-summary">
         <button type="button" onClick={toggle} className="text-muted-foreground hover:text-foreground inline-flex max-w-full items-center gap-1 text-[11px]" data-slot="activity-chip">
           {chevron}
-          <span className="truncate">{took} · {steps.length ? `${n} step${n === 1 ? "" : "s"}` : "steps"}</span>
+          <span className="truncate">{workedLabel(startedAt && finishedAt ? finishedAt - startedAt : undefined, workSteps(steps))}</span>
         </button>
       </Fold>
       <Fold open={open} slot="activity-steps">

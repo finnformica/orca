@@ -2,6 +2,7 @@
 // whole input — and never a label, so what a tool LOOKS like is decided here, at render time: a new
 // tool renders without touching the database, and the same row can be relabelled later. Pure.
 import type { AgentStep } from "../../shared/agent";
+import { formatDuration } from "./workstream";
 
 const oneLine = (s: string, n: number) => s.replace(/\s+/g, " ").trim().slice(0, n);
 
@@ -129,3 +130,10 @@ export function currentActivity(steps: AgentStep[]): string {
 
 /** The step count a finished turn's summary chip shows: the tool calls and messages, not thinking. */
 export const workSteps = (steps: AgentStep[]) => steps.filter((s) => s.kind !== "thinking").length;
+
+/** A finished turn's summary chip: `Worked for 1m 12s · 9 steps`. The steps part only when there is a
+ *  count — an older turn arrives without its steps, and `0 steps` or a bare `steps` says nothing. */
+export function workedLabel(ms: number | undefined, steps: number): string {
+  const took = ms === undefined ? "Worked" : `Worked for ${formatDuration(ms)}`;
+  return steps > 0 ? `${took} · ${steps} step${steps === 1 ? "" : "s"}` : took;
+}

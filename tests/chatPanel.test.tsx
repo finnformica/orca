@@ -805,7 +805,7 @@ test("an older turn that arrived without its steps loads them on unfold", async 
   apiFake.turnStepsData.set("run-old", [{ seq: 0, step: { kind: "tool", name: "Bash", input: { command: "bun test" }, at: 1 } }, { seq: 1, step: { kind: "result", output: "ok", at: 2 } }]);
   await mount(base);
   const unfold = container!.querySelector<HTMLButtonElement>('[data-slot="activity-chip"]')!;
-  expect(unfold.textContent).toBe("Worked · steps");
+  expect(unfold.textContent).toBe("Worked"); // the count is unknown until the steps load: no bare "steps"
   expect(unfold).toBeTruthy();
   await act(async () => { unfold.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
   expect(text()).toContain("1 step"); // fetched from /api/turns/steps from seq 0, then folded like any finished turn
