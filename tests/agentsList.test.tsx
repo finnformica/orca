@@ -39,7 +39,7 @@ describe("agents list layout (pure)", () => {
     expect(listColumns("wide").map((c) => c.key)).toEqual(["workstream", "status", "pr", "signals", "actions"]);
     expect(listColumns("mid").map((c) => c.key)).toEqual(["workstream", "pr", "signals", "actions"]);
     expect(listColumns("narrow").map((c) => c.key)).toEqual(["workstream", "pr", "actions"]);
-    expect(listColumns("narrow").find((c) => c.key === "pr")!.grow).toBe(1); // the PR cell holds the checks too
+    expect(listColumns("narrow").find((c) => c.key === "pr")!.grow).toBe(2); // the PR cell holds the checks too: as much room as the title
     // The page widths Finn checks: 1440 with the panel open (~1100), ~900, ~700.
     expect(listTier(1100)).toBe("wide");
     expect(listTier(900)).toBe("mid");

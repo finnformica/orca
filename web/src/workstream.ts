@@ -2993,8 +2993,8 @@ export function listColumns(tier: ListTier = "wide"): ListColumn[] {
   const all: ListColumn[] = [
     { key: "workstream", label: "Workstream", minRem: 10, grow: 2 },
     { key: "status", label: "Status", minRem: 8.5 },
-    // Narrow, the PR cell also holds the checks and review: it grows with the title.
-    { key: "pr", label: "PR", minRem: 8.5, grow: tier === "narrow" ? 1 : undefined },
+    // Narrow, the PR cell also holds the checks and review: it takes the same share as the title.
+    { key: "pr", label: "PR", minRem: 8.5, grow: tier === "narrow" ? 2 : undefined },
     { key: "signals", label: "Checks & review", minRem: 6, grow: 1 },
     // Fixed, wide enough for the row's quick-action icons (two at most — quickActions never applies
     // more to one state), the local preview link + its Stop and the ⋯ menu, all size-7 at gap-1, so
