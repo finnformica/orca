@@ -18,7 +18,7 @@ import {
 } from "@/lib/server";
 import { _resetServerList } from "@/components/ServerMenu";
 import { _resetIdentity } from "@/lib/identity";
-import { IDENTITY_COLORS, colorFromName, markColor, themeCss } from "../shared/serverIdentity";
+import { IDENTITY_COLORS, colorFromName, markBg, markColor, themeCss } from "../shared/serverIdentity";
 import { getDefaultStore } from "jotai";
 import { paletteOpenAtom } from "@/lib/atoms";
 import { apiFake } from "./apiFake";
@@ -277,7 +277,8 @@ test("S6e: the ACTIVE server's identity — title, accent, favicon and sidebar n
   expect(document.documentElement.style.getPropertyValue("--server")).toBe("#1f9d55");
   expect(document.documentElement.style.getPropertyValue("--server-mark")).toBe(markColor("#1f9d55"));
   expect(decodeURIComponent(icon.href)).toContain(`<path fill="${markColor("#1f9d55")}"`); // the orca in the colour
-  expect(decodeURIComponent(icon.href)).toContain('fill="#000000"'); // on the black circle
+  expect(decodeURIComponent(icon.href)).toContain(`fill="${markBg("#1f9d55")}"`); // on a very dark green circle
+  expect(document.documentElement.style.getPropertyValue("--server-mark-bg")).toBe(markBg("#1f9d55"));
   expect(document.getElementById("orca-server-theme")!.textContent).toBe(themeCss("#1f9d55")); // the theme's tones
   expect(q('[data-slot="server-identity"]')!.textContent).toBe("Personal"); // beside the mark, top left
   expect(q('[data-slot="server-label"]')!.textContent).toBe("Personal");
@@ -307,7 +308,10 @@ test("S6g: Settings' theme colour is a popover — the 8 presets, a hex field fo
   const picker = document.querySelector<HTMLElement>('[data-slot="identity-picker"]')!;
   // Word's grid: the base row is the presets plus 2 hues, then 5 rows of tints and shades.
   const swatches = [...picker.querySelectorAll<HTMLElement>('[data-slot="identity-color"]')];
-  expect(swatches.length).toBe(60);
+  expect(swatches.length).toBe(61);
+  // Neutral (no theme) is the first cell, with its name on it.
+  expect(swatches[0]!.dataset.row).toBe("neutral");
+  expect(swatches[0]!.textContent).toBe("Neutral");
   const base = swatches.filter((b) => b.dataset.row === "base").map((b) => b.getAttribute("data-color"));
   expect(base.slice(0, 8)).toEqual(IDENTITY_COLORS.map((c) => c.value));
   expect(base.length).toBe(10);
@@ -333,6 +337,35 @@ test("S6g: Settings' theme colour is a popover — the 8 presets, a hex field fo
   expect(document.querySelector('[data-slot="identity-picker"]')).toBeNull();
   await act(async () => { q('[data-slot="identity-save"]')!.click(); await flush(); await flush(); });
   expect(apiFake.setServerIdentityCalls).toEqual([{ name: "", color: "#12ab34" }]);
+  // Neutral: picked from the grid, saved as "neutral"; the hex field empties.
+  await open();
+  const neutral = document.querySelector<HTMLElement>('[data-slot="identity-picker"] [data-row="neutral"]')!;
+  await act(async () => { neutral.click(); await flush(); });
+  expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Neutral");
+  expect(neutral.getAttribute("aria-checked")).toBe("true");
+  expect(document.querySelector<HTMLInputElement>('[data-slot="identity-hex"]')!.value).toBe("");
+  await act(async () => { document.querySelector('[data-slot="identity-hex"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
+  await act(async () => { q('[data-slot="identity-save"]')!.click(); await flush(); await flush(); });
+  expect(apiFake.setServerIdentityCalls.at(-1)).toEqual({ name: "", color: "neutral" });
+});
+
+test("S6h: a Neutral server has the old look — no theme sheet, no accent, the black-and-white favicon", async () => {
+  const NEUTRAL_HOME = { ...HOME, self: { ...HOME.self, label: "Work", color: "neutral", identity: { name: "Work", color: "neutral" } } };
+  const icon = document.createElement("link");
+  icon.rel = "icon"; icon.href = "/favicon.svg";
+  document.head.appendChild(icon);
+  setup();
+  network((u) => (u === "/api/servers" ? json(NEUTRAL_HOME) : undefined));
+  await mount();
+  await act(async () => { await flush(); await flush(); await flush(); });
+  expect(document.title).toBe("Orca | Work");
+  expect(document.documentElement.style.getPropertyValue("--server")).toBe("");
+  expect(document.documentElement.style.getPropertyValue("--server-mark-bg")).toBe("");
+  expect(document.getElementById("orca-server-theme")).toBeNull();
+  expect(decodeURIComponent(icon.href)).toContain('fill="#000000"');
+  expect(decodeURIComponent(icon.href)).toContain('<path fill="#ffffff"');
+  expect(q('[data-slot="server-menu"] [data-slot="server-swatch"]')!.getAttribute("style")).toContain("linear-gradient");
+  icon.remove();
 });
 
 test("S6f: after a switch the menu shows the active server's cached identity before its health check answers", async () => {

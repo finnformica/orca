@@ -13,6 +13,7 @@ import {
 } from "@/lib/server";
 import { cn } from "@/lib/utils";
 import { useServerIdentity } from "@/lib/identity";
+import { swatchBackground } from "../../../shared/serverIdentity";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -90,7 +91,7 @@ const Dot = ({ health }: { health: ServerHealth }) => (
 
 /** A server's theme colour, as a small rounded square (Slack's workspace tile). */
 const Swatch = ({ color }: { color: string }) => (
-  <span aria-hidden="true" data-slot="server-swatch" className="inline-block size-3 shrink-0 rounded-[3px]" style={{ background: color }} />
+  <span aria-hidden="true" data-slot="server-swatch" className="inline-block size-3 shrink-0 rounded-[3px]" style={{ background: swatchBackground(color) }} />
 );
 
 /** The top bar's server menu, in front of the repo menu: the repos selector's look, the current

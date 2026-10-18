@@ -211,10 +211,11 @@ export function OrcaMark({ className }: { className?: string }) {
   );
 }
 
-/** The mark inside a circle — Vercel's round avatar logo: the circle always black, the orca in the
- *  active server's theme colour (`--server-mark`, lifted to read on black); the favicon matches it. */
+/** The mark inside a circle — Vercel's round avatar logo: the circle a very dark shade of the active
+ *  server's theme colour (`--server-mark-bg`), the orca the colour (`--server-mark`); the favicon
+ *  matches it. Neutral: a black circle and a white orca. */
 export const RoundMark = ({ className }: { className?: string }) => (
-  <span data-slot="round-mark" className={cn("text-server-mark inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-black", className)}>
+  <span data-slot="round-mark" className={cn("text-server-mark inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-server-mark-bg", className)}>
     <OrcaMark className="size-4" />
   </span>
 );

@@ -36,6 +36,7 @@
      selection, the active page and the server menu. Cards, tables, charts and chat stay neutral. */
   --server: #8f8f8f;
   --server-mark: #ffffff;
+  --server-mark-bg: #000000;
   --server-soft: color-mix(in oklab, var(--server) 13%, transparent);
   --server-fg: color-mix(in oklab, var(--server) 82%, black);
   --link: #0068d6;
@@ -124,6 +125,7 @@
   --color-server-soft: var(--server-soft);
   --color-server-fg: var(--server-fg);
   --color-server-mark: var(--server-mark);
+  --color-server-mark-bg: var(--server-mark-bg);
   --color-link: var(--link);
   --color-sidebar-active: var(--sb-active);
   --color-sidebar-active-foreground: var(--sb-active-fg);

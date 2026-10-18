@@ -31,6 +31,19 @@ export function normalizeColor(v: unknown): string | undefined {
   return undefined;
 }
 
+/** The stored colour that means "no theme": the old neutral look — the grey sidebar, the black
+ *  mark with a white orca, no tint anywhere. */
+export const NEUTRAL = "neutral";
+export const isNeutral = (color: string | undefined): boolean => color === NEUTRAL;
+
+/** A stored theme: `NEUTRAL`, or a colour as `normalizeColor` reads it. */
+export const normalizeTheme = (v: unknown): string | undefined =>
+  typeof v === "string" && v.trim().toLowerCase() === NEUTRAL ? NEUTRAL : normalizeColor(v);
+
+/** A CSS background for a swatch of the theme: Neutral is half white, half black. */
+export const swatchBackground = (color: string): string =>
+  isNeutral(color) ? "linear-gradient(135deg, #ffffff 50%, #111111 50%)" : color;
+
 /** The preset colour a name maps to (FNV-1a over the lower-case name), so the default is stable. */
 export function colorFromName(name: string): string {
   let h = 0x811c9dc5;
@@ -42,7 +55,7 @@ export function colorFromName(name: string): string {
  *  colour, else the colour of the shown name. */
 export function resolveIdentity(stored: ServerIdentityConfig | undefined, fallbackName: string): ServerIdentity {
   const label = stored?.name?.trim() || fallbackName;
-  return { label, color: normalizeColor(stored?.color) ?? colorFromName(label) };
+  return { label, color: normalizeTheme(stored?.color) ?? colorFromName(label) };
 }
 
 /** Validation for the app config's `serverIdentity`. */
@@ -54,7 +67,7 @@ export function serverIdentityProblems(v: unknown): string[] {
   if (s.name !== undefined && !(typeof s.name === "string" && s.name.trim().length <= IDENTITY_NAME_MAX)) {
     errors.push(`serverIdentity.name must be text of at most ${IDENTITY_NAME_MAX} characters`);
   }
-  if (s.color !== undefined && !normalizeColor(s.color)) errors.push("serverIdentity.color must be a colour such as #2f6feb");
+  if (s.color !== undefined && !normalizeTheme(s.color)) errors.push(`serverIdentity.color must be a colour such as #2f6feb, or "${NEUTRAL}"`);
   return errors;
 }
 
@@ -63,7 +76,7 @@ export function identityUpdate(name: unknown, color: unknown): ServerIdentityCon
   const out: ServerIdentityConfig = {};
   const n = typeof name === "string" ? name.trim() : "";
   if (n) out.name = n.slice(0, IDENTITY_NAME_MAX);
-  const c = normalizeColor(color);
+  const c = normalizeTheme(color);
   if (c) out.color = c;
   return Object.keys(out).length ? out : null;
 }
@@ -148,10 +161,20 @@ export function colorGrid(): GridCell[][] {
   });
 }
 
-/** The orca's colour on the mark's black circle: the server colour, lifted until it reads on black. */
+/** The orca's colour on the mark's circle: the server colour, lifted until it reads on the circle's
+ *  very dark shade. Neutral: white. */
 export function markColor(color: string): string {
+  if (isNeutral(color)) return "#ffffff";
   const o = hexToOklch(normalizeColor(color) ?? "#8f8f8f");
   return o.l >= 0.68 ? normalizeColor(color) ?? "#8f8f8f" : oklchToHex({ ...o, l: 0.68 });
+}
+
+/** The mark's circle: a very dark, low-chroma shade of the server colour, so the circle and the
+ *  orca read as one colour. Neutral: black. */
+export function markBg(color: string): string {
+  if (isNeutral(color)) return "#000000";
+  const o = hexToOklch(normalizeColor(color) ?? "#8f8f8f");
+  return oklchToHex({ l: 0.2, c: Math.min(o.c * 0.35, 0.045), h: o.h });
 }
 
 /** The CSS variables for one mode. The `sb-*` tones are the frame's: the sidebar, the top bar and
@@ -201,15 +224,16 @@ export function themeTones(color: string, mode: "light" | "dark"): ThemeTones {
 /** The style sheet `applyIdentity` puts in the page: both modes' tones. `:root:root` outranks
  *  styles.css's `:root` / `.dark` defaults whatever order the two sheets load in. */
 export function themeCss(color: string): string {
+  if (isNeutral(color)) return ""; // styles.css's defaults are the neutral look
   const block = (t: ThemeTones) => Object.entries(t).map(([k, v]) => `--${k}:${v};`).join("");
   return `:root:root{${block(themeTones(color, "light"))}}:root:root.dark{${block(themeTones(color, "dark"))}}`;
 }
 
-/** web/public/favicon.svg's look in the server's theme: the black circle stays, the orca takes the
- *  colour (lifted to read on black, `markColor`). */
+/** web/public/favicon.svg's look in the server's theme: the circle a very dark shade of the colour
+ *  (`markBg`), the orca the colour (lifted to read on it, `markColor`). Neutral: black and white. */
 export function faviconSvg(color: string): string {
   const fill = markColor(color);
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="12" fill="#000000"/>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="12" fill="${markBg(color)}"/>`
     + `<path fill="${fill}" stroke="${fill}" stroke-width="0.9" stroke-linejoin="round" fill-rule="evenodd" transform="translate(3.48 4.25) scale(0.7)" d="${ORCA_PATH}"/></svg>`;
 }
 

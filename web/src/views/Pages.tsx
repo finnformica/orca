@@ -28,7 +28,7 @@ import { FindBox, NAV, OrcaMark, THEMES } from "@/components/Shell";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
-import { IDENTITY_NAME_MAX, colorFromName, colorGrid, markColor, normalizeColor, type GridCell } from "../../../shared/serverIdentity";
+import { IDENTITY_NAME_MAX, NEUTRAL, colorFromName, colorGrid, isNeutral, markBg, markColor, normalizeColor, normalizeTheme, swatchBackground, type GridCell } from "../../../shared/serverIdentity";
 import { InstanceCard, RefreshVitals, UsageCard } from "./Vitals";
 import { RunningPreviews, TestMaster } from "./PreviewControl";
 
@@ -328,11 +328,11 @@ function ServerIdentitySettings() {
   useEffect(() => { setName(stored?.name ?? ""); setColor(stored?.color ?? ""); }, [stored?.name, stored?.color]);
   if (!identity) return null;
   const label = name.trim() || identity.host;
-  const shown = normalizeColor(color) ?? colorFromName(label);
-  const dirty = name.trim() !== (stored?.name ?? "") || (normalizeColor(color) ?? "") !== (stored?.color ?? "");
+  const shown = normalizeTheme(color) ?? colorFromName(label);
+  const dirty = name.trim() !== (stored?.name ?? "") || (normalizeTheme(color) ?? "") !== (stored?.color ?? "");
   const save = async () => {
     setBusy(true);
-    try { await api.setServerIdentity(name.trim(), normalizeColor(color) ?? ""); await loadIdentity(); }
+    try { await api.setServerIdentity(name.trim(), normalizeTheme(color) ?? ""); await loadIdentity(); }
     catch (e) {
       const error = e instanceof Error ? e.message : String(e);
       notifyLocal({
@@ -346,14 +346,14 @@ function ServerIdentitySettings() {
   return (
     <VCard slot="settings-identity" title="Server identity" bodyClass="divide-y"
       aside={<span data-slot="identity-preview" className="flex items-center gap-2 text-sm font-medium">
-        <span className="inline-flex size-5 items-center justify-center rounded-full bg-black" style={{ color: markColor(shown) }}><OrcaMark className="size-3.5" /></span>
+        <span className="inline-flex size-5 items-center justify-center rounded-full" style={{ color: markColor(shown), background: markBg(shown) }}><OrcaMark className="size-3.5" /></span>
         Orca <span>{label}</span>
       </span>}>
       <Setting label="Display name" htmlFor="identity-name" hint={`The title, the sidebar and the server menu show it. Empty: ${identity.host}.`}>
         <Input id="identity-name" data-slot="identity-name" value={name} maxLength={IDENTITY_NAME_MAX} placeholder={identity.host}
           onChange={(e) => setName(e.target.value)} className="bg-background w-44" />
       </Setting>
-      <Setting label="Theme colour" hint={color ? "The sidebar, buttons, links, focus rings and the mark take it." : "Auto: from the name. The sidebar, buttons, links, focus rings and the mark take it."}>
+      <Setting label="Theme colour" hint={isNeutral(color) ? "Neutral: no theme. The sidebar is grey and the mark is black and white." : color ? "The sidebar, buttons, links, focus rings and the mark take it." : "Auto: from the name. The sidebar, buttons, links, focus rings and the mark take it."}>
         <ColorPicker value={shown} auto={!color} onChange={setColor} />
       </Setting>
       <div className="flex items-center justify-end gap-2 px-4 py-3">
@@ -365,15 +365,16 @@ function ServerIdentitySettings() {
 
 /** The colour grid as rows: the base hues, then each tint and shade level across every hue. */
 const GRID = ((cols: GridCell[][]) => cols[0]!.map((_, r) => cols.map((col) => col[r]!)))(colorGrid());
+const NEUTRAL_CELL: GridCell = { value: NEUTRAL, label: "Neutral" };
 
 /** The theme colour picker (a shadcn Popover; shadcn has no colour picker of its own): a trigger with
  *  the swatch and the colour's name, a Word-style grid (`colorGrid`: the presets and two more hues,
  *  each with its tints and shades), a hex field for a custom colour and Auto (from the name).
- *  `onChange("")` is Auto. */
+ *  Neutral (no theme) is the first cell, a labelled row above the grid. `onChange("")` is Auto. */
 function ColorPicker({ value, auto, onChange }: { value: string; auto: boolean; onChange: (color: string) => void }) {
   const [hex, setHex] = useState(value);
-  useEffect(() => setHex(value), [value]);
-  const preset = GRID.flat().find((c) => c.value === value);
+  useEffect(() => setHex(isNeutral(value) ? "" : value), [value]);
+  const preset = [NEUTRAL_CELL, ...GRID.flat()].find((c) => c.value === value);
   // Only a whole #rrggbb applies: a 3-digit prefix would expand and jump the field mid-typing.
   const asHex = (v: string) => (/^#?[0-9a-f]{6}$/i.test(v) ? normalizeColor(v.startsWith("#") ? v : `#${v}`) : undefined);
   const typed = (v: string) => { setHex(v); const c = asHex(v); if (c) onChange(c); };
@@ -381,7 +382,7 @@ function ColorPicker({ value, auto, onChange }: { value: string; auto: boolean; 
     <Popover>
       <PopoverTrigger asChild>
         <Button type="button" variant="secondary" size="sm" data-slot="identity-color-trigger" aria-label={`Theme colour: ${preset?.label ?? value}${auto ? " (auto)" : ""}`}>
-          <span aria-hidden="true" className="size-4 rounded-[4px]" style={{ background: value }} />
+          <span aria-hidden="true" className="size-4 rounded-[4px] border" style={{ background: swatchBackground(value) }} />
           <span className={cn("max-w-[9rem] truncate", !preset && "font-mono")}>{preset?.label ?? value}</span>
           {auto && <span className="text-muted-foreground font-normal">Auto</span>}
           <ChevronDown className="text-muted-foreground size-3.5" />
@@ -393,6 +394,14 @@ function ColorPicker({ value, auto, onChange }: { value: string; auto: boolean; 
         <div className="text-muted-foreground mb-2 text-xs font-medium">Theme colours</div>
         {/* Word's grid: the base hues in one row, then each hue's tints and shades in its column. */}
         <div role="radiogroup" aria-label="Theme colour" data-slot="identity-grid" className="flex flex-col gap-1">
+          {/* Neutral: the first cell, with its name beside it, so "no theme" is never a guess. */}
+          <button type="button" role="radio" aria-checked={isNeutral(value)} aria-label="Neutral"
+            data-slot="identity-color" data-row="neutral" data-color={NEUTRAL} onClick={() => onChange(NEUTRAL)}
+            className="hover:bg-accent focus-visible:ring-ring/40 mb-1.5 flex items-center gap-2 self-start rounded-md pr-2 text-xs font-medium outline-none focus-visible:ring-2">
+            <span aria-hidden="true" className={cn("size-5 rounded-[4px] border ring-offset-1 ring-offset-popover", isNeutral(value) && "ring-foreground ring-2")}
+              style={{ background: swatchBackground(NEUTRAL) }} />
+            Neutral
+          </button>
           {GRID.map((row, r) => (
             <div key={r} className={cn("grid grid-cols-10 gap-1", r === 1 && "mt-1.5")}>
               {row.map((c) => (
@@ -410,7 +419,7 @@ function ColorPicker({ value, auto, onChange }: { value: string; auto: boolean; 
         </div>
         <div className="text-muted-foreground mt-3 mb-2 text-xs font-medium">Custom</div>
         <div className="flex items-center gap-2">
-          <span aria-hidden="true" data-slot="identity-custom-swatch" className="size-8 shrink-0 rounded-md border" style={{ background: asHex(hex) ?? value }} />
+          <span aria-hidden="true" data-slot="identity-custom-swatch" className="size-8 shrink-0 rounded-md border" style={{ background: asHex(hex) ?? swatchBackground(value) }} />
           <Input data-slot="identity-hex" aria-label="Hex colour" value={hex} maxLength={7} spellCheck={false} placeholder="#2f6feb"
             onChange={(e) => typed(e.target.value.trim())} className="bg-background h-8 font-mono" />
         </div>
