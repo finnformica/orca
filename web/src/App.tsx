@@ -14,6 +14,7 @@ import { NewDraft } from "./views/Board";
 import { Overview } from "./views/Overview";
 import { Agents } from "./views/Agents";
 import { GitHubPage, PreviewsPage, Repos, Settings, UsagePage } from "./views/Pages";
+import { HandoffsPage } from "./views/Handoffs";
 import { PrDetail } from "./views/PrDetail";
 import { IntegrationsPage } from "./views/Integrations";
 import { LocalDetail } from "./views/LocalDetail";
@@ -57,6 +58,7 @@ function Page({ route }: { route: Route }) {
     case "previews": return <PreviewsPage />;
     case "repos": return <Repos />;
     case "github": return <GitHubPage />;
+    case "handoffs": return <HandoffsPage />;
     case "usage": return <UsagePage />;
     case "settings": return <Settings />;
     case "integrations": return <IntegrationsPage />;
@@ -67,7 +69,7 @@ function Page({ route }: { route: Route }) {
   }
 }
 
-const TITLES = { board: "Overview", agents: "Agents", previews: "Previews", repos: "Repos", github: "GitHub", usage: "Usage", settings: "Settings", orchestrator: "Orchestrator", integrations: "Integrations" } as const;
+const TITLES = { board: "Overview", agents: "Agents", previews: "Previews", repos: "Repos", github: "GitHub", handoffs: "Handoffs", usage: "Usage", settings: "Settings", orchestrator: "Orchestrator", integrations: "Integrations" } as const;
 
 function Crumbs({ route }: { route: Route }) {
   const rows = useWorkstreams();

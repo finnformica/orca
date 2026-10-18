@@ -25,7 +25,7 @@
 //
 // Contains prompts and responses in plaintext: keep the database off the public internet (it is
 // reached over the tailnet) and never inside a worktree, so it can't leak into a diff or PR.
-import { grantKey, type Grant } from "../shared/integrations";
+import { grantKey, type Grant, type ReplyTo } from "../shared/integrations";
 import { statSync } from "fs";
 import { hostname } from "os";
 import { join } from "path";
@@ -802,6 +802,30 @@ export const MIGRATIONS: MigrationStep[] = [
     `,
   },
   {
+    name: "20261017-handoff",
+    idempotent: true,
+    // Handoff packs (server/handoff.ts): context one Orca server hands to another through the user's
+    // browser. `out` is a pack made here and waiting for a click; `in` records a pack imported here,
+    // by the source's id, so a second click of Send does not queue the message twice. The file
+    // bytes are rows of `attachment`; `files` lists them.
+    sql: `
+      CREATE TABLE IF NOT EXISTS handoff (
+        user_id TEXT NOT NULL,
+        id TEXT NOT NULL,
+        direction TEXT NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        target TEXT NOT NULL,
+        source TEXT NOT NULL,
+        files JSONB NOT NULL DEFAULT '[]'::jsonb,
+        created_at BIGINT NOT NULL,
+        sent_at BIGINT,
+        sent_to TEXT,
+        PRIMARY KEY (user_id, direction, id)
+      );
+    `,
+  },
+  {
     name: "20261017-integrations",
     idempotent: true,
     // The integrations layer (docs/research/integrations.md §3.4, server/integrations/). Credentials
@@ -893,6 +917,13 @@ export const MIGRATIONS: MigrationStep[] = [
       ALTER TABLE delivery ADD COLUMN IF NOT EXISTS digest_key TEXT;
       CREATE INDEX IF NOT EXISTS delivery_digest ON delivery (digest_key) WHERE digest_key IS NOT NULL AND state IN ('pending','sending','failed');
     `,
+  },
+  {
+    name: "20261017-integrations-reply-to",
+    idempotent: true,
+    // Where an outside sender's queued message came from (shared/integrations.ts ReplyTo: link,
+    // place, thread, event key), so the wake that takes it can answer with `orca post --reply`.
+    sql: `ALTER TABLE queued_message ADD COLUMN IF NOT EXISTS reply_to JSONB`,
   },
 ];
 
@@ -1777,6 +1808,8 @@ export type QueuedMessage = {
   instruction: string; attachments: string[]; provider?: string; createdAt: number;
   /** The permission grant of an outside sender's message (shared/integrations.ts); absent = full. */
   grant?: Grant;
+  /** Where an answer goes (`orca post --reply`): the link and thread the message came from. */
+  replyTo?: ReplyTo;
 };
 
 const grantScope = (g?: Grant) => (g && g.level !== "full" ? { ...g, key: grantKey(g) } : null);
@@ -1790,9 +1823,9 @@ const grantOf = (v: unknown): Grant | undefined => {
 export async function queueMessage(input: Omit<QueuedMessage, "id" | "createdAt">): Promise<QueuedMessage> {
   return withRetry(async (sql) => {
     const rows = await sql`
-      INSERT INTO queued_message (user_id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope)
+      INSERT INTO queued_message (user_id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope, reply_to)
       VALUES (${currentUser()}, ${input.repo}, ${input.branch}, ${input.worktreePath}, ${input.instruction},
-              ${input.attachments}, ${input.provider ?? null}, ${Date.now()}, ${grantScope(input.grant)})
+              ${input.attachments}, ${input.provider ?? null}, ${Date.now()}, ${grantScope(input.grant)}, ${input.replyTo ?? null})
       RETURNING id, created_at`;
     return { ...input, id: Number(rows[0].id), createdAt: Number(rows[0].created_at) };
   });
@@ -1803,7 +1836,7 @@ export async function queueMessage(input: Omit<QueuedMessage, "id" | "createdAt"
 export async function queuedMessages(repo: string, branch: string): Promise<QueuedMessage[]> {
   return withRetry(async (sql) => {
     const rows = await sql`
-      SELECT id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope
+      SELECT id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope, reply_to
       FROM queued_message
       WHERE user_id = ${currentUser()} AND repo = ${repo} AND branch = ${branch} AND dispatched_at IS NULL
       ORDER BY id`;
@@ -1812,6 +1845,7 @@ export async function queuedMessages(repo: string, branch: string): Promise<Queu
       instruction: String(r.instruction), attachments: (r.attachments as string[]) ?? [],
       provider: (r.provider as string) ?? undefined, createdAt: Number(r.created_at),
       ...(grantOf(r.grant_scope) ? { grant: grantOf(r.grant_scope) } : {}),
+      ...(r.reply_to ? { replyTo: r.reply_to as ReplyTo } : {}),
     }));
   });
 }
@@ -1843,13 +1877,14 @@ export async function claimQueuedMessage(repo: string, branch: string, onlyGrant
         ORDER BY id LIMIT 1
         FOR UPDATE SKIP LOCKED
       )
-      RETURNING id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope`;
+      RETURNING id, repo, branch, worktree_path, instruction, attachments, provider, created_at, grant_scope, reply_to`;
     const r = rows[0] as Record<string, unknown> | undefined;
     return r && {
       id: Number(r.id), repo: String(r.repo), branch: String(r.branch), worktreePath: String(r.worktree_path),
       instruction: String(r.instruction), attachments: (r.attachments as string[]) ?? [],
       provider: (r.provider as string) ?? undefined, createdAt: Number(r.created_at),
       ...(grantOf(r.grant_scope) ? { grant: grantOf(r.grant_scope) } : {}),
+      ...(r.reply_to ? { replyTo: r.reply_to as ReplyTo } : {}),
     };
   });
 }
@@ -1949,5 +1984,57 @@ export async function attachment(id: string): Promise<{ filename: string; mimeTy
     const rows = await sql`SELECT filename, mime_type, bytes FROM attachment WHERE user_id = ${currentUser()} AND id = ${id}`;
     const r = (rows as { filename: string; mime_type: string; bytes: Uint8Array }[])[0];
     return r ? { filename: r.filename, mimeType: r.mime_type, bytes: new Uint8Array(r.bytes) } : undefined;
+  });
+}
+
+// ---- handoff packs (server/handoff.ts) ----
+export type HandoffFile = { name: string; kind: "file" | "chat" | "attachment"; attachmentId: string; size: number; mimeType: string };
+export type HandoffRow = {
+  id: string; direction: "out" | "in"; title: string; message: string; target: string; source: string;
+  files: HandoffFile[]; createdAt: number; sentAt?: number; sentTo?: string;
+};
+
+const toHandoff = (r: Record<string, unknown>): HandoffRow => ({
+  id: String(r.id), direction: r.direction === "in" ? "in" : "out", title: String(r.title), message: String(r.message),
+  target: String(r.target), source: String(r.source), files: (typeof r.files === "string" ? JSON.parse(r.files) : r.files) as HandoffFile[] ?? [],
+  createdAt: Number(r.created_at), sentAt: r.sent_at === null ? undefined : Number(r.sent_at), sentTo: (r.sent_to as string | null) ?? undefined,
+});
+
+/** Insert a pack. False when a row with this id and direction exists (an import sent twice). */
+export async function addHandoff(h: HandoffRow): Promise<boolean> {
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      INSERT INTO handoff (user_id, id, direction, title, message, target, source, files, created_at, sent_at, sent_to)
+      VALUES (${currentUser()}, ${h.id}, ${h.direction}, ${h.title}, ${h.message}, ${h.target}, ${h.source}, ${JSON.stringify(h.files)}::jsonb, ${h.createdAt}, ${h.sentAt ?? null}, ${h.sentTo ?? null})
+      ON CONFLICT DO NOTHING RETURNING id`;
+    return (rows as unknown[]).length > 0;
+  });
+}
+
+/** Every pack, newest first. */
+export async function handoffs(limit = 100): Promise<HandoffRow[]> {
+  return withRetry(async (sql) => {
+    const rows = await sql`SELECT * FROM handoff WHERE user_id = ${currentUser()} ORDER BY created_at DESC LIMIT ${limit}`;
+    return (rows as Record<string, unknown>[]).map(toHandoff);
+  });
+}
+
+export async function handoff(id: string, direction: "out" | "in" = "out"): Promise<HandoffRow | undefined> {
+  return withRetry(async (sql) => {
+    const rows = await sql`SELECT * FROM handoff WHERE user_id = ${currentUser()} AND direction = ${direction} AND id = ${id}`;
+    const r = (rows as Record<string, unknown>[])[0];
+    return r ? toHandoff(r) : undefined;
+  });
+}
+
+export async function markHandoffSent(id: string, to: string, at = Date.now()): Promise<void> {
+  return withRetry(async (sql) => {
+    await sql`UPDATE handoff SET sent_at = ${at}, sent_to = ${to} WHERE user_id = ${currentUser()} AND direction = 'out' AND id = ${id}`;
+  });
+}
+
+export async function deleteHandoff(id: string): Promise<void> {
+  return withRetry(async (sql) => {
+    await sql`DELETE FROM handoff WHERE user_id = ${currentUser()} AND direction = 'out' AND id = ${id}`;
   });
 }
