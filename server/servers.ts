@@ -125,6 +125,39 @@ async function selfInfo(sw: ServerSwitcherConfig): Promise<{ entry: ServerEntry;
 }
 export const selfServer = async (sw: ServerSwitcherConfig): Promise<ServerEntry> => (await selfInfo(sw)).entry;
 
+type TsNode = { HostName?: string; DNSName?: string; TailscaleIPs?: string[] };
+/** The Tailscale host name of each instance, from its `instances` address and this node's
+ *  `tailscale status --json`: an address that is a peer's tailnet IP reads as that peer's MagicDNS
+ *  label (a laptop is often listed by IP); a name reads as its first label. `self` is this instance
+ *  (its own host name, from `selfServer`). An address nobody knows gets no entry. Pure. */
+export function hostsFromStatus(instances: Record<string, string>, status: { Self?: TsNode; Peer?: Record<string, TsNode> } | undefined, self?: { id: string; host: string }): Record<string, string> {
+  const nodes = [status?.Self, ...Object.values(status?.Peer ?? {})].filter((n): n is TsNode => !!n);
+  const label = (n: TsNode) => n.DNSName?.replace(/\.$/, "").split(".")[0] || n.HostName || undefined;
+  const out: Record<string, string> = {};
+  for (const [id, url] of Object.entries(instances)) {
+    let host: string;
+    try { host = new URL(url).hostname.toLowerCase(); } catch { continue; }
+    const byIp = nodes.find((n) => n.TailscaleIPs?.includes(host));
+    const name = byIp ? label(byIp) : /^[\d.]+$|:/.test(host) ? undefined : host.split(".")[0];
+    if (name) out[id] = name;
+  }
+  if (self) out[self.id] = self.host;
+  return out;
+}
+
+let hostsCache: { key: string; at: number; hosts: Record<string, string> } | undefined;
+/** `hostsFromStatus` on this node, cached for five minutes. No tailscale: the names in the addresses. */
+export async function instanceHosts(instances: Record<string, string>, sw: ServerSwitcherConfig = {}, now = Date.now()): Promise<Record<string, string>> {
+  const key = JSON.stringify(instances);
+  if (hostsCache?.key === key && now - hostsCache.at < 5 * 60_000) return hostsCache.hosts;
+  let status: { Self?: TsNode; Peer?: Record<string, TsNode> } | undefined;
+  try { status = await runTailscale(["status", "--json"]) as typeof status; } catch { /* no tailscale here */ }
+  const me = await selfServer(sw);
+  const hosts = hostsFromStatus(instances, status, me.name !== instanceName() ? { id: instanceName(), host: me.name } : undefined);
+  hostsCache = { key, at: now, hosts };
+  return hosts;
+}
+
 /** May a page from `origin` call this server cross-origin (subject to whois)? Yes when the
  *  discovery lists it, or when it is an Orca page on this tailnet: a host under this node's MagicDNS
  *  suffix, a MagicDNS short name or a Tailscale address (100.64.0.0/10) — on the Orca port, or on
