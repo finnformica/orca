@@ -146,7 +146,7 @@ export function hostsFromStatus(instances: Record<string, string>, status: { Sel
 }
 
 let hostsCache: { key: string; at: number; hosts: Record<string, string> } | undefined;
-/** `hostsFromStatus` on this node, cached for five minutes. No tailscale: the names in the addresses. */
+/** `hostsFromStatus` on this node, cached for five minutes. No tailscale: the names in the addresses, not cached. */
 export async function instanceHosts(instances: Record<string, string>, sw: ServerSwitcherConfig = {}, now = Date.now()): Promise<Record<string, string>> {
   const key = JSON.stringify(instances);
   if (hostsCache?.key === key && now - hostsCache.at < 5 * 60_000) return hostsCache.hosts;
@@ -154,7 +154,7 @@ export async function instanceHosts(instances: Record<string, string>, sw: Serve
   try { status = await runTailscale(["status", "--json"]) as typeof status; } catch { /* no tailscale here */ }
   const me = await selfServer(sw);
   const hosts = hostsFromStatus(instances, status, me.name !== instanceName() ? { id: instanceName(), host: me.name } : undefined);
-  hostsCache = { key, at: now, hosts };
+  if (status) hostsCache = { key, at: now, hosts }; // a failed call is tried again next time
   return hosts;
 }
 
