@@ -421,10 +421,11 @@ test("the live header's label swaps in two layers — the old line fades out as 
   expect(incoming?.className).toContain("label-in");
   // One fixed-height, clipped box holds both — never a second line, never spilling out.
   expect(out?.closest("[class*='overflow-hidden']")).toBe(incoming?.closest("[class*='overflow-hidden']"));
-  // The clip edge sits below the line (padding cancelled by a negative margin), so a descender
-  // such as the g of `Thinking` is never cut off, and the box still takes only 1.2em of layout.
+  // The box takes 1.2em of layout, but its row (and so each line's own truncate clip) is 1.7em and
+  // runs into padding that a negative margin cancels: a descender such as the g of `Thinking` is
+  // never cut off (the bug: the row shrank to 1.2em under a 1.625em line), and no space is added.
   const clip = incoming!.closest("[class*='overflow-hidden']")!.classList;
-  expect(["box-content", "h-[1.2em]", "pb-[0.3em]", "-mb-[0.3em]"].every((c) => clip.contains(c))).toBe(true);
+  expect(["box-content", "h-[1.2em]", "grid-rows-[1.7em]", "pb-[0.5em]", "-mb-[0.5em]"].every((c) => clip.contains(c))).toBe(true);
 
   // Once the fade has played, only the new line is left.
   await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
