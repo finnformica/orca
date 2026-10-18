@@ -627,10 +627,20 @@ its own and is the `@container/page` a page's layout should query (the Overview 
 window; a phone keeps the window's scroll. The edge resizes by drag or by arrow keys. **Open / close
 is branch-demo's right panel**: the panel renders INTO the dock (a portal) at its full width, shows at
 dock width 0 in the commit that opens it, and the dock's width opens on the next frame (a real 150ms
-`width` transition, none while dragging); closing, it stays painted until the width's `transitionend`,
-then is hidden (still mounted, `content-visibility: hidden`, so it does no layout work but keeps its
-draft and scroll). The page and the dock are TWO raised cards with the shell's 6px gutter between them
-(a closed dock's `-ms-1.5` cancels it); only `width` and `margin-inline-start` animate. While the dock
+`width` transition, none while dragging); closing moves the width in the click's OWN commit (the dock
+width is published from a layout effect keyed on `open && expanded`). A closed panel stays mounted —
+draft and scroll kept — clipped by the 0-wide dock, `aria-hidden`, and a focus guard once idle.
+**Measured rules (CDP traces of the production build, 4× CPU, a long orchestrator thread; method and
+numbers in PR #305):** never change a `class` on an ancestor of the chat during open / close —
+Tailwind Typography's `:not(:where([class~="not-prose"] *))` makes that restyle the whole prose
+subtree (~4000 elements, 100–150ms each) — so the dock's margin and the panel's z-index are inline
+styles and the card's surface rides `data-painted`; never flip `visibility`, `content-visibility` or
+`inert` on the panel (each restyles the subtree too); keep the chat out of the panel's renders
+(`OrchestratorChat`, `ChatTurn`, the markdown renderers are memoized with stable props); `App` must
+not subscribe to the orchestrator's open atom (it re-rendered the page). Measure in a production
+build: dev-mode React is 3–5× slower, and an Orca preview runs dev mode.
+The page and the dock are TWO raised cards with the shell's 6px gutter between them
+(a closed dock's negative start margin cancels it); only `width` and `margin-inline-start` animate. While the dock
 or the nav animates, the page frame (`page-frame`, the `@container/page`) is held at its END width
 (`frozenPageWidth`), so the content lays out once and only the card edge moves. Nothing in the page
 may set React state per frame meanwhile: measure through `afterDockMotion` (`lib/dock.ts`); the page
