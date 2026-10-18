@@ -969,6 +969,12 @@ choice is remembered (`orca.ui.v1.notificationFilter`). The per-kind chips and t
 do-not-disturb toggle were dropped as noise (DND lives in Settings; the bell shows it). Settings: do not disturb, per-kind toasts, and browser
 notifications (urgent kinds only, while the tab is hidden; the permission is asked for when switched
 on). Preferences are per browser (`orca.notifications.*` in localStorage); the rows are not.
+**The Inbox is the one place for what needs you** (`/inbox`, `views/Inbox.tsx`): the bell's rows are
+Inbox rows too (source Orca, `shared/inbox.ts` `notificationRows`; a bell row that copies an inbox
+event by key is left out), with ONE read state (a notification row reads the notification; an event
+and the bell's copy of it read together, by key) and ONE unread count for the bell and the Inbox nav
+item (`lib/inboxUnread.ts`). Mute on a notification row mutes its kind. The bell is the quick view,
+with See all.
 
 ## Deploying (a cloud box + the laptop, one database)
 
