@@ -11,7 +11,7 @@ import { Agents, LIST_CELL_SHOWN, LIST_FOLDED } from "@/views/Agents";
 import { Board } from "@/views/Board";
 import { navigate } from "@/lib/route";
 import { createTicker, ticker } from "@/lib/ticker";
-import { LIST_CHROME_PX, LIST_TIER_MIN_REM, LIST_TIERS, formatElapsed, listColumnTiers, listColumns, listFits, listGridTemplate, listMinWidth, listTier, modelBadge } from "@/workstream";
+import { LIST_CHROME_PX, LIST_TIER_MIN_REM, LIST_TIERS, formatElapsed, listColumnTiers, listColumns, listFits, listGridTemplate, listMinWidth, listStacked, listTier, modelBadge, sublineOverflow } from "@/workstream";
 import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -52,10 +52,10 @@ describe("agents list layout (pure)", () => {
     // The CSS classes use the same breakpoints as the logic.
     expect(listColumnTiers("status")).toEqual(["wide"]);
     expect(listColumnTiers("signals")).toEqual(["mid", "wide"]);
-    expect(LIST_CELL_SHOWN.status).toContain(`@min-[${LIST_TIER_MIN_REM.wide}rem]/page:block`);
-    expect(LIST_FOLDED.status).toBe(`@min-[${LIST_TIER_MIN_REM.wide}rem]/page:hidden`);
-    expect(LIST_CELL_SHOWN.signals).toContain(`@min-[${LIST_TIER_MIN_REM.mid}rem]/page:flex`);
-    expect(LIST_FOLDED.signals).toBe(`@min-[${LIST_TIER_MIN_REM.mid}rem]/page:hidden`);
+    expect(LIST_CELL_SHOWN.status).toContain(`@min-[${LIST_TIER_MIN_REM.wide}rem]/list:block`);
+    expect(LIST_FOLDED.status).toBe(`@min-[${LIST_TIER_MIN_REM.wide}rem]/list:hidden`);
+    expect(LIST_CELL_SHOWN.signals).toContain(`@min-[${LIST_TIER_MIN_REM.mid}rem]/list:flex`);
+    expect(LIST_FOLDED.signals).toBe(`@min-[${LIST_TIER_MIN_REM.mid}rem]/list:hidden`);
   });
 
   test("elapsed: clock-style, stable width as it ticks", () => {
@@ -173,9 +173,9 @@ describe("agents list view", () => {
     const inline = rowOf("feat-ci").querySelector<HTMLElement>('[data-slot="pr-preview-inline"]')!;
     expect(inline.dataset.state).toBe("add");
     expect(inline.textContent).toContain("Add preview");
-    // (its own leading "·" separator sits between the two)
+    // (each is its own subline item; the model's item comes right before the preview's)
     const modelLabel = rowOf("feat-ci").querySelector('[data-slot="model-label"]')!;
-    expect(inline.previousElementSibling?.previousElementSibling).toBe(modelLabel.closest('[data-slot="tip"]') ?? modelLabel);
+    expect(inline.closest("[data-subline-item]")!.previousElementSibling).toBe(modelLabel.closest("[data-subline-item]"));
     // Readable models: the run's reported model, else the pinned one — no initials avatar.
     expect(rowOf("local-idle").querySelector('[data-slot="model-label"]')!.textContent).toBe("Opus 5.5");
     expect(container!.querySelector('[data-slot="model-avatar"]')).toBeNull();
@@ -395,5 +395,80 @@ describe("agents loading skeleton", () => {
     await act(async () => { apiFake.releasePrs!(); await flush(); await flush(); });
     expect(container!.querySelectorAll('[data-slot="workstream-card-skeleton"]').length).toBe(0);
     expect(laneHeader("Local").textContent?.trim()).toBe("Local 2"); // seed()'s two local agents, no PR
+  });
+});
+
+// ---- narrow lists: the layout follows the LIST's width, and a subline that does not fit ends in +N ----
+
+describe("agents list by its own width", () => {
+  test("pure: stacked below LIST_STACK_BELOW_REM of list (0 = not measured keeps the grid); overflow keeps order and skips empty items", () => {
+    expect(listStacked(0)).toBe(false);
+    expect(listStacked(500)).toBe(true);
+    expect(listStacked(639)).toBe(true);
+    expect(listStacked(640)).toBe(false);
+    expect(sublineOverflow([50, 50, 50], 200, 4, 24)).toEqual([]); // 158 fits: no chip
+    expect(sublineOverflow([60, 60, 60, 60], 200, 4, 24)).toEqual([2, 3]); // 124 + 4 + 24 fits; the third does not
+    expect(sublineOverflow([60, 0, 60, 60, 60], 200, 4, 24)).toEqual([3, 4]); // a zero-width item is never hidden or counted
+    expect(sublineOverflow([300, 10], 200, 4, 24)).toEqual([0, 1]); // even the first can go
+  });
+
+  // happy-dom lays out nothing: give the list, each subline and each subline item a width.
+  const proto = HTMLElement.prototype;
+  const real = { client: Object.getOwnPropertyDescriptor(proto, "clientWidth")!, offset: Object.getOwnPropertyDescriptor(proto, "offsetWidth")! };
+  function fakeLayout(listPx: number) {
+    Object.defineProperty(proto, "clientWidth", { configurable: true, get(this: HTMLElement) {
+      if (this.dataset.slot === "workstream-list") return listPx;
+      if (this.dataset.slot === "row-subline") return 200;
+      return 0;
+    } });
+    Object.defineProperty(proto, "offsetWidth", { configurable: true, get(this: HTMLElement) {
+      if (this.dataset.slot === "subline-more") return 24;
+      return this.hasAttribute("data-subline-item") && this.textContent ? 60 : 0;
+    } });
+  }
+  afterEach(() => { Object.defineProperty(proto, "clientWidth", real.client); Object.defineProperty(proto, "offsetWidth", real.offset); });
+
+  test("a narrow list stacks its rows on a wide viewport (the docked panel open); no instruction line there", async () => {
+    expect(window.matchMedia?.("(max-width: 767px)").matches ?? false).toBe(false); // a desktop viewport
+    fakeLayout(500);
+    seed();
+    await mount();
+    const list = container!.querySelector<HTMLElement>('[data-slot="workstream-list"]')!;
+    expect(list.className).toContain("@container/list");
+    expect(list.dataset.layout).toBe("stacked");
+    expect(container!.querySelector('[data-slot="workstream-list-header"]')).toBeNull();
+    expect(rowOf("feat-ci").dataset.layout).toBe("stacked");
+    expect(container!.querySelector('[data-slot="row-instruction"]')).toBeNull();
+  });
+
+  test("a wide list keeps the grid; a subline that does not fit hides its tail behind +N, listed in full", async () => {
+    fakeLayout(1200);
+    seed();
+    await mount();
+    expect(container!.querySelector<HTMLElement>('[data-slot="workstream-list"]')!.dataset.layout).toBe("grid");
+    const ci = rowOf("feat-ci");
+    expect(ci.dataset.layout).toBeUndefined();
+    const items = [...ci.querySelectorAll<HTMLElement>("[data-subline-item]")].filter((i) => i.textContent);
+    const hidden = items.slice(2).map((i) => i.dataset.sublineItem); // 60 + 4 + 60 fits in 200 with the chip; the third does not
+    expect(hidden).toContain("diffstat");
+    for (const i of items) expect(i.getAttribute("aria-hidden") === "true").toBe(hidden.includes(i.dataset.sublineItem));
+    const chip = ci.querySelector<HTMLElement>('[data-slot="subline-more"]')!;
+    expect(chip.textContent).toBe(`+${hidden.length}`);
+    // A tap opens the card and does NOT open the row.
+    const path = location.pathname;
+    await act(async () => {
+      chip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" }));
+      chip.dispatchEvent(new PointerEvent("pointerenter", { pointerType: "touch" }));
+      chip.click();
+      await flush(); await flush();
+    });
+    expect(location.pathname).toBe(path);
+    const card = document.body.querySelector<HTMLElement>('[data-slot="subline-more-card"]')!;
+    expect(card).not.toBeNull();
+    expect([...card.querySelectorAll<HTMLElement>("[data-subline-hidden]")].map((li) => li.dataset.sublineHidden)).toEqual(hidden);
+    expect(card.querySelector('[data-slot="diffstat"]')!.textContent).toBe("+120 −34"); // in full, not clipped
+    // A click inside the card does not open the row either.
+    await act(async () => { card.querySelector("li")!.click(); await flush(); });
+    expect(location.pathname).toBe(path);
   });
 });
