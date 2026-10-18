@@ -273,11 +273,12 @@ describe("the phone layout (390px, touch)", () => {
     expect(location.pathname).toBe("/integrations");
   });
 
-  test("Agents: rows stack with the instruction, error and branch on screen; one ⋯ per row; filters in a sheet", async () => {
+  test("Agents: rows stack with the error and branch on screen, no instruction line; one ⋯ per row; filters in a sheet", async () => {
     await mount("/agents", true);
     expect($('[data-slot="workstream-list-header"]')).toBeNull();
     const row = $('[data-branch="feat-phone"]')!;
     expect(row.dataset.layout).toBe("stacked");
+    expect(row.querySelector('[data-slot="row-instruction"]')).toBeNull(); // Finn: clutter on a phone
     expect(row.style.gridTemplateColumns).toBe("");
     expect(row.querySelector('[data-slot="row-error"]')!.textContent).toBe("rate limited");
     expect(row.textContent).toContain("feat-phone"); // the branch, which desktop keeps in a hover title
@@ -661,7 +662,7 @@ describe("gestures", () => {
     expect(row.className).toContain("[&_a]:[-webkit-touch-callout:default]"); // links keep theirs
     expect(row.hasAttribute("aria-haspopup")).toBe(false); // only the ⋯ opens a menu
     let e!: MouseEvent;
-    await act(async () => { e = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 120, clientY: 40 }); row.querySelector('[data-slot="row-instruction"], span')!.dispatchEvent(e); await flush(); await flush(); });
+    await act(async () => { e = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 120, clientY: 40 }); row.querySelector("span")!.dispatchEvent(e); await flush(); await flush(); });
     expect(e.defaultPrevented).toBe(true); // nor the browser's own menu
     expect($('[role="menu"]')).toBeNull();
     expect($('[data-slot="row-context-menu"]')).toBeNull();
