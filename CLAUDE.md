@@ -174,13 +174,16 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   hands any pre-DB blob (transcripts included) to the bridge on first load.
 - **GitHub = the REST and GraphQL API over `fetch` (`server/github.ts`: a token per repo account from `gh auth
   token`, ETag reuse, rate-limit backoff, typed errors; only the auth flows, the identity lookup and `repo
-  clone` still run `gh`); Slack = RECEIVE-ONLY, by Finn's rule: Orca never sends anything to Slack**
-  (no post, reply, edit, reaction or "post as me"; `RECEIVE_ONLY` in `shared/integrations.ts`, see
-  Integrations). The card's Slack items copy the message — the linked `#7 Title` as rich HTML, plain
-  text as the fallback — and you paste it. (History: they once posted as you with `SLACK_TOKEN`
-  through `/api/slack`; that route now answers 410 and `server/slack-api.ts` is gone.) **The rule is
-  for Orca only:** a repo Orca manages keeps its own Slack features (branch-demo still sends to Slack).
-  Do not change a managed repo's Slack code for this rule.
+  clone` still run `gh`); Slack = two separate paths.** (1) **The card's Slack button** is a direct
+  `chat.postMessage` from your identity using a user token (`SLACK_TOKEN`) to the repo's `slackChannel`
+  — deterministic, verbatim, instant, no model, no MCP (`server/slack-api.ts`'s `postMessage`, used
+  by `/api/slack`; branch-demo's PRs announce through it). A failed post surfaces as an error (never
+  silently degraded), and the client copies the exact message to the clipboard so it can be pasted by
+  hand. The message is the linked `#7 Title` (Slack mrkdwn for the post, rich HTML for the copy).
+  (2) **The Slack adapter (a bot over Socket Mode) is RECEIVE-ONLY, by Finn's rule**: no
+  `chat.postMessage` / `chat.update`, no thread reply, no reaction, no `chat:write` scope, no
+  subscription or reply to a Slack link (`RECEIVE_ONLY` in `shared/integrations.ts`, see
+  Integrations). The rule never covers (1), nor a managed repo's own Slack code.
 
 ## Integrations (one path in, one path out)
 
@@ -197,11 +200,11 @@ verbs outside it (`grantRefusal`), and such a wake has no shell; a workstream it
 gets `grantScope` and runs with `agentPermissionMode: "ask"`. An unknown sender gets a one-time
 pairing code (`pairing_code`; approve with `POST /api/integrations/pairing/approve`). The orchestrator
 has `orca channels`, `post`, `thread link` and `ask-user`. A subscription's `digest_seconds` batches
-its deliveries per fixed window (`delivery.digest_key`). **Slack is receive-only by rule**
+its deliveries per fixed window (`delivery.digest_key`). **The Slack adapter is receive-only by rule**
 (`RECEIVE_ONLY`): `router.publish` drops every delivery to a Slack link (subscriptions, digests, `orca
 post`, the pairing-code reply), Settings refuses a subscription or Test to one, `orca post --reply`
 on a Slack event stays in Orca (the inbox), and the adapter's `send` and `slackApi` refuse writes.
-`/api/slack` answers 410; `/api/orchestrator/event` stays for instance-to-instance
+`/api/slack` (the card's post-as-you button) is not an adapter and still posts; `/api/orchestrator/event` stays for instance-to-instance
 reports, scripts use a signed webhook (`/api/integrations/<id>/inbound`).
 
 ## Multi-repo (aggregated)
@@ -1027,7 +1030,8 @@ appended to the brief / message as references, so the worker's instance material
 `tests/attachmentsRelay.test.ts` drives two real bridges (upload on one, run, the orchestratorOn
 proxy and spawn/send `--attach` on the other). (History: a laptop's `/var/folders` path reached the box's
 agents, which couldn't open it.)
-**Slack is receive-only**: no instance posts to it (`/api/slack` answers 410 wherever it is asked).
+**Slack posts from the instance you click on** (`/api/slack` is in the answer-here set): it needs no
+worktree, only `SLACK_TOKEN`, which lives on the laptop — forwarded to the box it failed with no token.
 **Machine metrics history:** each instance samples ITSELF once a minute (`startMetricsSampler` in
 `server/health.ts`, started from `server/index.ts`, reusing `health()`) into `instance_metric`
 (migration 11: instance, `at`, cpu %, load1, memory used/total, disk used; migration 13 added

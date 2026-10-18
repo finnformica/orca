@@ -1,15 +1,22 @@
 # Slack: set up the receive-only adapter
 
-**Slack is receive-only, by rule.** Orca reads Slack. Orca never sends anything to Slack: no post,
-no thread reply, no edit, no reaction, no "post as me". Finn set this rule.
+**The Slack adapter is receive-only, by rule.** The adapter reads Slack. It never sends anything
+to Slack: no `chat.postMessage`, no `chat.update`, no thread reply, no reaction. Finn set this rule.
 
-The rule is for Orca only. A repo that Orca manages keeps its own Slack features. For example,
-branch-demo still sends to Slack. Do not change a managed repo's Slack code for this rule.
+The rule is for the adapter only (the bot over Socket Mode). Two things keep their Slack features:
+
+- **The card's Slack button.** Actions > Slack > Send message (or Send bump) calls `POST /api/slack`.
+  The bridge posts the message as you, with your user token (`SLACK_TOKEN`), to the repo's
+  `slackChannel` (`server/slack-api.ts`). branch-demo PRs use this. See section 9.
+- **A managed repo.** A repo that Orca manages keeps its own Slack code. Do not change it for this rule.
+
+The adapter:
 
 - **In.** A mention of the bot or a DM to the bot becomes an `ext.slack.message` event. The core
   gates it and routes it to the orchestrator, or to the workstream that owns the thread. The message
   shows in Orca and in the inbox.
-- **Out.** Nothing. The orchestrator answers in Orca only. The sender does not see the answer in Slack.
+- **Out.** Nothing from the adapter. The orchestrator answers in Orca only. The sender does not see
+  the answer in Slack.
 
 The rule has four guards:
 
@@ -18,7 +25,7 @@ The rule has four guards:
 3. `orca post --link` to Slack is refused. `orca post --reply` on a Slack event keeps the answer in Orca.
 4. The adapter's `send` refuses, and `slackApi` refuses every write method before a request.
 
-The card's Slack items (Actions > Slack) copy the message. Paste it in Slack yourself.
+These guards stop the adapter and the core. They do not touch the card's Slack button (section 9).
 
 The adapter uses [Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode/). The box
 opens a WebSocket to Slack. Slack does not need a public URL, so the box stays without ingress.
@@ -33,9 +40,10 @@ The code is `server/integrations/adapters/slack.ts`. The contract is
 | Bot token | `xoxb-` | `ORCA_SECRET_SLACK_BOT` | Read calls only: `auth.test` and `users.info`. |
 | App-level token | `xapp-` | `ORCA_SECRET_SLACK_APP` | `apps.connections.open`, which gives the Socket Mode URL. Scope `connections:write`. |
 
-Orca does not use a user token (`xoxp-`). Remove `SLACK_TOKEN` from the box if it is set.
+The adapter does not use a user token (`xoxp-`). The card's Slack button uses one: `SLACK_TOKEN`
+(section 9). The adapter never reads it.
 
-Every `ORCA_SECRET_*` variable is removed from the environment of agents, checks and previews
+Every `ORCA_SECRET_*` variable and `SLACK_TOKEN` is removed from the environment of agents, checks and previews
 (`server/env.ts`). A prompt injection cannot read these tokens.
 
 ## 2. Create the Slack app
@@ -203,4 +211,19 @@ If the adapter does not start, `integration.status.error` holds the reason. Some
 - **One socket.** Only the primary bridge of `integration.instance` starts the adapter. Slack allows
   up to 10 Socket Mode connections for each app, but Orca opens one.
 - **No output.** `caps` say `outbound: false`, `threads: false`, `edits: false`, `reactions: false`.
-  This is the rule, not a missing feature. Do not add an outbound path.
+  This is the rule, not a missing feature. Do not add an outbound path to the adapter.
+
+## 9. The card's Slack button (post as you)
+
+This path is not the adapter. It posts one message, as you, when you click.
+
+1. Set `slackChannel` on the repo in `orca.config.ts` (for example `#eng`).
+2. Turn on `features.slack` for the repo.
+3. Put your user token in the `.env` of the instance that you click from: `SLACK_TOKEN=xoxp-...`.
+   The token needs the user scope `chat:write`.
+4. Open a PR card. Click Actions > Slack > Send message. Later, click Send bump.
+
+- The bridge sends the text with no changes to `chat.postMessage` (`server/slack-api.ts`).
+- If the post fails, the card shows the error and copies the message to your clipboard.
+- A failed post does not mark the PR as announced.
+- The orchestrator cannot use this path. `orca post` refuses a Slack link.

@@ -11,7 +11,7 @@ import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import {
   addressNeedsAgent, addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, mergedPrIsHistory, followUpPrompt, instanceOrder, launchPrompt,
-  mergeSettled, newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, rowTitle, slackClipboard, titleFromPrompt, withAttachments,
+  mergeSettled, newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, rowTitle, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
 } from "./workstream";
 import type { MergeMark } from "./workstream";
 import type { BridgeInfo, ReviewDigest, TerminalTargetContext } from "./workstream";
@@ -1173,16 +1173,26 @@ export async function closePr(row: Row) {
 
 export async function sendSlack(row: Row, kind: "notify" | "bump") {
   const ws = { title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl, previewUrl: row.previewUrl };
-  // Slack is receive-only by rule: Orca never posts there. Copy the message so YOU paste it — rich
-  // text/html, so Slack pastes a real hyperlink; plain text on browsers without ClipboardItem.
-  const { text, html } = slackClipboard(ws, kind);
-  if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
-    await navigator.clipboard.write([new ClipboardItem({
-      "text/html": new Blob([html], { type: "text/html" }),
-      "text/plain": new Blob([text], { type: "text/plain" }),
-    })]);
-  } else {
-    await navigator.clipboard.writeText(text);
+  // One path for every provider: post the message VERBATIM from your identity via chat.postMessage
+  // (server-side). On failure, copy the message so it isn't lost, then rethrow so the UI shows the
+  // error — a post that didn't land must never be stamped as notified.
+  try {
+    await api.slack(row.repo, slackApiText(ws, kind));
+  } catch (e) {
+    const { text, html } = slackClipboard(ws, kind);
+    // Prefer a rich write (text/html) so Slack pastes a real hyperlink; fall back to plain text on
+    // browsers without ClipboardItem or when the write is blocked.
+    try {
+      if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+        await navigator.clipboard.write([new ClipboardItem({
+          "text/html": new Blob([html], { type: "text/html" }),
+          "text/plain": new Blob([text], { type: "text/plain" }),
+        })]);
+      } else {
+        await navigator.clipboard.writeText(text);
+      }
+    } catch { /* clipboard unavailable — the error below is still surfaced */ }
+    throw e instanceof Error ? e : new Error(String(e));
   }
   patchEnrich(row.repo, row.branch, kind === "notify" ? { slackNotifiedAt: now() } : { slackLastBumpedAt: now() });
 }

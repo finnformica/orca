@@ -262,11 +262,11 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
           <Item icon={FolderOpen} onSelect={run("Copy worktree", copyWorktree)}>Copy worktree</Item>
         </Sub>
 
-      {/* Slack — only once there's a PR to link. Receive-only by rule: these copy the message for you to paste. */}
+      {/* Slack — only meaningful once there's a PR to link */}
       {isPr && (
         <Sub label="Slack">
-            <Item icon={Send} onSelect={run("Slack message", () => sendSlack(row, "notify"))}>Copy message{notified ? " again" : ""}</Item>
-            <Item icon={BellRing} disabled={!notified} onSelect={run("Slack bump", () => sendSlack(row, "bump"))}>Copy bump{bumpDue ? " (due)" : ""}</Item>
+            <Item icon={Send} onSelect={run("Slack message", () => sendSlack(row, "notify"))}>Send message{notified ? " again" : ""}</Item>
+            <Item icon={BellRing} disabled={!notified} onSelect={run("Slack bump", () => sendSlack(row, "bump"))}>Send bump{bumpDue ? " (due)" : ""}</Item>
           </Sub>
       )}
 

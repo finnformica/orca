@@ -250,8 +250,9 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 
 ## 9. Behaviour that stays as before
 
-- `POST /api/slack` is gone: it answers 410. There is no "post as me" any more (section 13). The
-  card's Slack items copy the message, and you paste it in Slack yourself.
+- `POST /api/slack` stays: the card's Slack button posts as you with `SLACK_TOKEN` to the repo's
+  `slackChannel` (`server/slack-api.ts`). It is not an adapter and the receive-only rule does not
+  cover it (section 13).
 - `POST /api/orchestrator/event` stays. Instances use it to send worker reports to the
   orchestrator's instance. Scripts use a webhook integration in its place.
 - `notify.emit` writes the notification row as before. For a new row it also writes the event with
@@ -318,7 +319,7 @@ seconds. At the window's end, the dispatcher sends ONE message for the window.
 
 ## 13. Receive-only platforms (Slack)
 
-Slack is receive-only, by rule. Orca never sends anything to Slack. The rule is a list in the core,
+The Slack adapter is receive-only, by rule. It never sends anything to Slack. The rule is a list in the core,
 `RECEIVE_ONLY` in `shared/integrations.ts`, not a setting.
 
 - `router.publish` drops every delivery to a link on a receive-only kind (`sendable`). This covers
@@ -331,6 +332,9 @@ Slack is receive-only, by rule. Orca never sends anything to Slack. The rule is 
 - The fenced outside message tells the orchestrator to answer in Orca, not with `orca post`.
 - The Slack adapter's `caps.outbound` is `false`. Its `send` refuses. Its `slackApi` refuses every
   method except `auth.test`, `apps.connections.open` and `users.info`, before any request.
+
+The rule covers the adapter and the core only. The card's Slack button (`POST /api/slack`, a user
+token) is a separate path, and it still posts.
 
 Do not add an outbound path to a receive-only adapter. To change the rule, change `RECEIVE_ONLY`,
 and only when Finn asks for it.

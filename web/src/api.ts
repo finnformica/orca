@@ -189,6 +189,7 @@ export const api = {
   orchestratorModel: (model: string): Promise<{ ok: true }> => post("/api/orchestrator/model", { model }),
   orchestratorMessage: (text: string, attachments: string[] = []): Promise<{ status: "running" | "queued" }> =>
     post("/api/orchestrator/message", { text, attachments }),
+  slack: (repo: string, text: string): Promise<{ ok: true }> => post("/api/slack", { repo, text }),
   // The notification centre (one table, any instance answers). `since` (ms) is the catch-up cursor
   // after the live stream was dropped; the live rows themselves arrive on /api/events.
   notifications: (since?: number): Promise<Notification[]> => get(`/api/notifications${since ? `?since=${since}` : ""}`).then(res),

@@ -21,6 +21,7 @@ import * as lease from "./lease";
 import { writeHandoffFile } from "./state";
 import { metrics, countAgentPoll } from "./metrics";
 import { renderText, summarize } from "./diagnostics";
+import { postMessage as slackPost } from "./slack-api";
 import * as integrations from "./integrations/registry";
 import * as dispatcher from "./integrations/dispatcher";
 import * as inbox from "./integrations/inbox";
@@ -44,7 +45,6 @@ import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
 import { checkCaller, listServers, selfServer, serverGate, withIdentity } from "./servers";
 import { identityUpdate, serverIdentityProblems } from "../shared/serverIdentity";
-import { receiveOnlyRefusal } from "../shared/integrations";
 import * as handoff from "./handoff";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
@@ -1135,9 +1135,15 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/slack") {
-    // Gone by rule: Slack is receive-only, and Orca never posts there (not even as you). The card's
-    // Slack items copy the message for you to paste. An old client gets this refusal, never a post.
-    return json({ error: `${receiveOnlyRefusal("slack")}. Copy the message and paste it yourself.` }, 410);
+    // The one Slack path for every provider: post the message VERBATIM from your identity via
+    // chat.postMessage (SLACK_TOKEN). No model, no per-agent branching — deterministic and instant.
+    // A failure surfaces as an error rather than silently degrading, so a post that didn't land is
+    // never mistaken for one that did.
+    if (!featuresOf(repo).slack) return notEnabled(repo, "Slack posting");
+    if (!repo.slackChannel) return json({ error: "no Slack channel configured for this repo" }, 400);
+    const r = await slackPost(repo.slackChannel, String(body.text ?? ""));
+    if (!r.ok) return json({ error: `Slack post failed: ${r.error ?? "unknown error"}` }, 502);
+    return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/handoff") {
     // Write the portable-transcript seed for an interactive cross-provider handoff; Copy CLI `cat`s it.

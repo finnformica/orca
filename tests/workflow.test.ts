@@ -926,7 +926,7 @@ describe("A2 swimlane bulk actions (bulkActions)", () => {
 
   // The two Slack counts partition the lane: announce what nobody's been told about, bump what's
   // been announced and has since gone quiet for staleHours. Neither re-pings a just-posted PR.
-  test("Slack splits into Copy message (never announced) and Copy bump (announced + stale)", () => {
+  test("Slack splits into Send message (never announced) and Send bump (announced + stale)", () => {
     const rows = [
       { prNumber: 1 },                                                                 // never announced
       { prNumber: 2, slackNotifiedAt: "2025-01-01T00:00:00Z" },                        // announced 24h ago → due
