@@ -19,11 +19,12 @@ import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MAR
 import { integrationMessage, type IntegrationMessage } from "../../../shared/integrations";
 import { BrandIcon, brandTitle } from "@/components/BrandIcon";
 import { activityCounts, closeOpenMarkdown, createHold, runLabel, stepDuration, stepInFlight, stepKey, stepRow, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepStatus } from "../steps";
-import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
+import { agentLabel, groupSteps, outcomeLead, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { ShotThumbs } from "@/components/Screenshots";
 import { snippetPre } from "@/components/Snippet";
+import { copyText } from "@/lib/dialogs";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { subscribeTurns } from "@/lib/events";
@@ -260,12 +261,15 @@ function Activity({ steps: given, live, startedAt, finishedAt, load }: {
             {startedAt ? <span className="text-muted-foreground shrink-0 tabular-nums" data-slot="activity-elapsed">{formatDuration(now - startedAt)}</span> : null}
             <span className="text-muted-foreground">{chevron}</span>
           </button>
-          {/* The count line and the trail open together on the first step, and the trail keeps room
-              for its three rows, so a row that lands slides in without pushing the chat down. */}
+          {/* The count line and the trail open together on the first step. The trail's height
+              grows with its rows (never shrinks within a live turn, since steps only accumulate)
+              and the growth itself is what animates \u2014 no space is reserved ahead of what is
+              actually shown, so a short run leaves no gap below its last row. */}
           <Fold open={Boolean(counts || trail.length)}>
             <div className="text-muted-foreground mt-0.5 truncate pl-5.5 text-[11px] leading-4" data-slot="activity-counts">{counts || "\u00a0"}</div>
             {!open && (
-              <ul className="mt-1 min-h-[52px] space-y-0.5 pl-5.5 text-[11px] leading-4 opacity-60" data-slot="activity-trail">
+              <ul className="mt-1 space-y-0.5 pl-5.5 text-[11px] leading-4 opacity-60 transition-[min-height] duration-200 ease-out motion-reduce:transition-none"
+                style={trail.length ? { minHeight: `${trail.length * 18 - 2}px` } : undefined} data-slot="activity-trail">
                 {trail.map((run) => (
                   <li key={stepKey(run.steps[0]!)} className={cn("step-in truncate", run.kind === "text" ? "text-foreground" : "text-muted-foreground")}>{runLabel(run)}</li>
                 ))}
@@ -299,8 +303,12 @@ function Output({ turn }: { turn: AgentTurn }) {
   if (turn.stopped) return <pre className="whitespace-pre-wrap break-words text-amber-400">{turn.response || "Stopped."}</pre>;
   const s = turn.structured;
   if (!s) return <ChatMarkdown>{turn.response || "_(no output)_"}</ChatMarkdown>;
+  // What the reply says before its sections (a snippet to paste, often): `structured` has only the
+  // sections. Without it, a snippet shown while the turn ran vanished when it finished.
+  const lead = outcomeLead(turn.response ?? "");
   return (
     <div className="space-y-1.5 text-neutral-300">
+      {lead && <div data-slot="turn-lead"><ChatMarkdown>{lead}</ChatMarkdown></div>}
       {s.outcome && <ChatMarkdown>{s.outcome}</ChatMarkdown>}
       {s.remaining.length > 0 && <Facet title="Remaining" items={s.remaining} tone="text-amber-400" />}
       {s.decisions.length > 0 && <Facet title="Decisions" items={s.decisions} tone="text-neutral-400" />}
@@ -353,8 +361,7 @@ export function Attachments({ files, className = "" }: { files: AttachmentRef[];
 function MessageActions({ text, onQuote, className }: { text: string; onQuote: () => void; className?: string }) {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
-    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }
-    catch { /* clipboard unavailable */ }
+    if (await copyText(text, "message")) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
   };
   const btn = "text-muted-foreground hover:text-foreground";
   return (
