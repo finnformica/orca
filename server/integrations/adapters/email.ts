@@ -53,9 +53,36 @@ export const emailCaps = (c: Partial<EmailConfig>): Capabilities => ({
   rate: { perTarget: c.perHour ?? 20, windowMs: 3_600_000 },
 });
 
+/** The flat keys the Settings page writes (every value a string) → the nested, typed config. The
+ *  page's form has one text box per key, and saves every config value as a string, so a nested
+ *  `imap` object or an `allowedSenders` list cannot survive an edit there. A nested key wins. */
+export const EMAIL_FORM_KEYS = ["address", "fromName", "imapHost", "imapPort", "imapUser", "imapMailbox", "outbound", "smtpHost", "smtpPort", "smtpSecurity", "smtpUser", "smtpSecretRef", "resendSecretRef", "allowedSenders", "authservId", "requireDkim", "idle", "pollSeconds", "keepQuoted", "perHour"] as const;
+
+export function normaliseEmailConfig(raw: Record<string, unknown>): Record<string, unknown> {
+  const str = (k: string) => (typeof raw[k] === "string" && (raw[k] as string).trim() ? (raw[k] as string).trim() : undefined);
+  const num = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" && v.trim() && Number.isFinite(Number(v)) ? Number(v) : undefined);
+  const bool = (v: unknown) => (typeof v === "boolean" ? v : typeof v === "string" && /^(true|false)$/i.test(v.trim()) ? v.trim().toLowerCase() === "true" : undefined);
+  const defined = (o: Record<string, unknown>) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined && v !== ""));
+  const imap = defined({ host: str("imapHost"), port: num(raw.imapPort), user: str("imapUser"), mailbox: str("imapMailbox") });
+  const smtp = defined({ host: str("smtpHost"), port: num(raw.smtpPort), security: str("smtpSecurity"), user: str("smtpUser"), secretRef: str("smtpSecretRef") });
+  const resend = defined({ secretRef: str("resendSecretRef") });
+  const out: Record<string, unknown> = { ...raw };
+  for (const k of EMAIL_FORM_KEYS) if (k !== "address" && k !== "fromName" && k !== "outbound" && k !== "authservId") delete out[k];
+  for (const k of ["address", "fromName", "outbound", "authservId"]) { if (str(k)) out[k] = str(k); else if (typeof raw[k] === "string") delete out[k]; }
+  for (const k of ["imap", "smtp", "resend"]) if (typeof raw[k] !== "object" || !raw[k]) delete out[k]; // e.g. "[object Object]" from a form save
+  if (typeof raw.imap === "object" && raw.imap) out.imap = raw.imap; else if (Object.keys(imap).length) out.imap = imap;
+  if (typeof raw.smtp === "object" && raw.smtp) out.smtp = raw.smtp; else if (Object.keys(smtp).length) out.smtp = smtp;
+  if (typeof raw.resend === "object" && raw.resend) out.resend = raw.resend; else if (Object.keys(resend).length) out.resend = resend;
+  if (typeof raw.allowedSenders === "string") out.allowedSenders = raw.allowedSenders.split(/[\s,;]+/).filter(Boolean);
+  else if (raw.allowedSenders !== undefined) out.allowedSenders = raw.allowedSenders;
+  for (const k of ["requireDkim", "idle", "keepQuoted"]) if (bool(raw[k]) !== undefined) out[k] = bool(raw[k]);
+  for (const k of ["pollSeconds", "perHour"]) if (num(raw[k]) !== undefined) out[k] = num(raw[k]);
+  return out;
+}
+
 /** The config with defaults, or why it is unusable. */
 export function emailConfig(raw: Record<string, unknown>): { config: EmailConfig } | { error: string } {
-  const c = raw as Partial<EmailConfig>;
+  const c = normaliseEmailConfig(raw) as Partial<EmailConfig>;
   if (typeof c.address !== "string" || !/^[^@\s]+@[^@\s]+$/.test(c.address)) return { error: "config.address must be Orca's email address" };
   if (c.imap && typeof c.imap.host !== "string") return { error: "config.imap.host is required for inbound mail" };
   const outbound = c.outbound ?? "none";

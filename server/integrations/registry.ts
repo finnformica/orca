@@ -5,22 +5,49 @@
 import * as db from "../db";
 import * as primary from "../primary";
 import { ORCA_SECRETS } from "../env";
-import { secretRefRefusal, type AdapterKind, type InboundEnvelope } from "../../shared/integrations";
+import { secretRefRefusal, type AdapterKind, type AdapterMeta, type InboundEnvelope } from "../../shared/integrations";
 import type { Adapter, AdapterContext, AdapterFactory, Connection } from "./adapter";
 import * as router from "./router";
 import * as store from "./store";
-import { slackAdapter } from "./adapters/slack";
-import { webhookAdapter } from "./adapters/webhook";
-import { emailAdapter } from "./adapters/email";
+import { SLACK_CAPS, slackAdapter } from "./adapters/slack";
+import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
+import { emailAdapter, emailCaps } from "./adapters/email";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
+const metas = new Map<AdapterKind, AdapterMeta>();
 const running = new Map<string, { adapter: Adapter; connection: Connection; abort: AbortController }>();
 
-/** Register a kind. A later adapter (Discord, email, GitHub, Linear) adds one line here. */
-export function register(kind: AdapterKind, factory: AdapterFactory): void { factories.set(kind, factory); }
-register("slack", slackAdapter);
-register("webhook", webhookAdapter);
-register("email", emailAdapter);
+/** Register a kind. A later adapter (Discord, email, GitHub, Linear) adds one line here. `meta` is
+ *  what Settings > Integrations shows for the kind (its card, its Connect form). */
+export function register(kind: AdapterKind, factory: AdapterFactory, meta?: Omit<AdapterMeta, "kind">): void {
+  factories.set(kind, factory);
+  if (meta) metas.set(kind, { kind, ...meta });
+}
+register("slack", slackAdapter, { label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "ORCA_SECRET_SLACK_BOT", help: "A bot token (xoxb-…). Invite the bot to each linked channel." });
+register("webhook", webhookAdapter, { label: "Webhook", caps: WEBHOOK_CAPS, place: "hook", secretExample: "ORCA_SECRET_WEBHOOK", help: "Signed POSTs to /api/integrations/<id>/inbound (HMAC sha256 of the body)." });
+register("email", emailAdapter, {
+  label: "Email", caps: emailCaps({ imap: { host: "" }, outbound: "smtp" }), place: "address", secretExample: "ORCA_SECRET_EMAIL_IMAP",
+  help: "One mailbox only Orca reads. The secret is the IMAP password. Link each person's address. Setup: docs/integrations/email.md.",
+  config: [
+    { key: "address", label: "Orca's address", placeholder: "orca@yourdomain.com" },
+    { key: "imapHost", label: "IMAP host", placeholder: "imap.gmail.com" },
+    { key: "imapPort", label: "IMAP port", placeholder: "993" },
+    { key: "outbound", label: "Outbound (smtp, resend or none)", placeholder: "smtp" },
+    { key: "smtpHost", label: "SMTP host", placeholder: "smtp.gmail.com" },
+    { key: "smtpPort", label: "SMTP port", placeholder: "465" },
+    { key: "smtpSecretRef", label: "SMTP password variable", placeholder: "ORCA_SECRET_EMAIL_SMTP" },
+    { key: "resendSecretRef", label: "Resend key variable", placeholder: "ORCA_SECRET_RESEND" },
+    { key: "allowedSenders", label: "Allowed senders (comma-separated; @domain for a domain)", placeholder: "finn@yourdomain.com" },
+    { key: "authservId", label: "Receiving server's authserv-id", placeholder: "mx.google.com" },
+  ],
+});
+
+/** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */
+export function kinds(): AdapterMeta[] {
+  return [...factories.keys()].map((kind) => metas.get(kind) ?? {
+    kind, label: kind, caps: { inbound: "none", outbound: true, threads: false, edits: false, reactions: false, attachments: false, maxTextLength: 4000 },
+  });
+}
 
 /** Whether this process may run `c` now: enabled, on this instance, this process primary. */
 export const runsHere = (c: Pick<Connection, "instance" | "enabled">, here = db.instanceName(), isPrimary = primary.held()): boolean =>

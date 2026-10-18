@@ -261,6 +261,24 @@ describe("mime (pure)", () => {
     expect(dotStuff(".a\n.b")).toBe("..a\r\n..b");
   });
 
+  test("the Settings form's flat string keys become the nested config; a form save of an old nested config is repaired", () => {
+    const form = { address: "Orca@Example.com", imapHost: "imap.example.com", imapPort: "993", outbound: "smtp", smtpHost: "smtp.example.com", smtpPort: "587",
+      smtpSecretRef: "ORCA_SECRET_EMAIL_SMTP", allowedSenders: "finn@example.com, @team.test", authservId: "mx.example.com", requireDkim: "true", pollSeconds: "30", resendSecretRef: "" };
+    expect(emailConfig(form)).toEqual({ config: {
+      address: "orca@example.com", outbound: "smtp", authservId: "mx.example.com", requireDkim: true, pollSeconds: 30,
+      imap: { host: "imap.example.com", port: 993 }, smtp: { host: "smtp.example.com", port: 587, secretRef: "ORCA_SECRET_EMAIL_SMTP" },
+      allowedSenders: ["finn@example.com", "@team.test"],
+    } });
+    // The page saves every value with String(): a nested object reads "[object Object]", a list "a,b".
+    const saved = { address: "o@x.test", imap: "[object Object]", allowedSenders: "a@x.test,b@x.test", imapHost: "imap.x.test" };
+    expect(emailConfig(saved)).toMatchObject({ config: { imap: { host: "imap.x.test" }, allowedSenders: ["a@x.test", "b@x.test"] } });
+    // A nested config (the SQL in email.md's history) still works as is.
+    expect(emailConfig({ address: "o@x.test", imap: { host: "h", port: 143, tls: false } })).toMatchObject({ config: { imap: { host: "h", port: 143, tls: false } } });
+    const meta = registry.kinds().find((k) => k.kind === "email");
+    expect(meta).toMatchObject({ label: "Email", secretExample: "ORCA_SECRET_EMAIL_IMAP", caps: { inbound: "socket", outbound: true, threads: true } });
+    expect(meta!.config!.map((f) => f.key)).toEqual(["address", "imapHost", "imapPort", "outbound", "smtpHost", "smtpPort", "smtpSecretRef", "resendSecretRef", "allowedSenders", "authservId"]);
+  });
+
   test("config, subject and inbound text", () => {
     expect(emailConfig({})).toMatchObject({ error: expect.stringContaining("address") });
     expect(emailConfig({ address: "o@x", outbound: "resend", resend: { secretRef: "RESEND_KEY" } })).toMatchObject({ error: expect.stringContaining("ORCA_SECRET_") });

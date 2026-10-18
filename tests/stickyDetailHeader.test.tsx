@@ -37,11 +37,10 @@ async function mount(node: React.ReactNode = <LocalDetail repo="r" branch="stick
   // The diff loads async (api.localDiff/api.prDiff → setDiff): a fixed number of ticks raced that
   // promise under a busier CI runner and left the accordion unrendered ("Loading diff…" still
   // showing) when a test went looking for its trigger. Poll the actual condition instead of
-  // guessing a bigger constant.
-  // The page itself can also land after these ticks (PR #293's CI: no tablist yet, and no "Loading
-  // diff…" text to wait on either), so wait for the tab bar as well.
-  const pending = () => !container!.querySelector('[role="tablist"]') || container!.textContent?.includes("Loading diff…");
-  for (let i = 0; i < 40 && pending(); i++) {
+  // guessing a bigger constant. Wait for the header's tab list too: before the store has the row, the
+  // page shows "No local session…" (no tabs, no "Loading diff…"), and a busy CI runner can mount there.
+  const ready = () => !!container!.querySelector('[role="tablist"]') && !container!.textContent?.includes("Loading diff…");
+  for (let i = 0; i < 20 && !ready(); i++) {
     await act(async () => { await flush(); });
   }
 }

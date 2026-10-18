@@ -58,8 +58,9 @@ You can use other names. Each name must start with `ORCA_SECRET_`.
 
 ## 4. Add the rows
 
-Add the rows with SQL until the Settings page lands. `user_id` is `db.currentUser()` (`ORCA_USER`,
-else `me`).
+Use Settings > Integrations for the integration, the links, the people and the subscriptions. The
+Connect form for Email has one box for each flat key in section 5. The SQL below makes the same rows.
+`user_id` is `db.currentUser()` (`ORCA_USER`, else `me`).
 
 1. Add the integration. `instance` is the instance that runs the IMAP connection.
 
@@ -68,10 +69,10 @@ else `me`).
    VALUES ('mail', 'me', 'email', 'Orca mail', 'cloud', '{
      "address": "orca@yourdomain.com",
      "fromName": "Orca",
-     "imap": { "host": "imap.gmail.com", "port": 993 },
+     "imapHost": "imap.gmail.com", "imapPort": "993",
      "outbound": "smtp",
-     "smtp": { "host": "smtp.gmail.com", "port": 465, "secretRef": "ORCA_SECRET_EMAIL_SMTP" },
-     "allowedSenders": ["finn@yourdomain.com"],
+     "smtpHost": "smtp.gmail.com", "smtpPort": "465", "smtpSecretRef": "ORCA_SECRET_EMAIL_SMTP",
+     "allowedSenders": "finn@yourdomain.com",
      "authservId": "mx.google.com"
    }', 'ORCA_SECRET_EMAIL_IMAP', 0);
    ```
@@ -108,17 +109,21 @@ adapter, for example `idle on INBOX` or `polling every 60s`.
 
 ## 5. The config
 
+Each value can be a string, as the Settings form saves it. Numbers and `true` / `false` are read from
+the string. The nested keys (`imap.host`, `smtp.port`, `resend.apiUrl`) also work. A nested key wins
+over a flat key. Do not edit a nested config in the Settings form: the form keeps only flat keys.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `address` | (required) | Orca's address. It is the From of each mail and the IMAP user. |
 | `fromName` | none | The display name in From. |
-| `imap.host`, `imap.port`, `imap.tls`, `imap.user`, `imap.mailbox` | port 993, TLS on, user = `address`, `INBOX` | The IMAP server. Without `imap`, the adapter only sends. |
+| `imapHost`, `imapPort`, `imapUser`, `imapMailbox` | port 993, TLS on, user = `address`, `INBOX` | The IMAP server. Without `imapHost`, the adapter only sends. Plain IMAP (no TLS) needs the nested `imap.tls: false`. |
 | `idle` | `true` | Use IDLE when the server has it. |
 | `pollSeconds` | 60 | The poll interval when there is no IDLE. |
 | `outbound` | `none` | `smtp`, `resend` or `none`. |
-| `smtp.host`, `smtp.port`, `smtp.security`, `smtp.user`, `smtp.secretRef` | port 465, `implicit` (port 587: `starttls`), user = `address` | The SMTP server. `security` is `implicit`, `starttls` or `none`. |
-| `resend.secretRef`, `resend.apiUrl` | `https://api.resend.com/emails` | The Resend key variable. |
-| `allowedSenders` | `[]` | Addresses, or `@domain` for a domain. An empty list lets no mail in. |
+| `smtpHost`, `smtpPort`, `smtpSecurity`, `smtpUser`, `smtpSecretRef` | port 465, `implicit` (port 587: `starttls`), user = `address` | The SMTP server. `smtpSecurity` is `implicit`, `starttls` or `none`. |
+| `resendSecretRef` | none | The Resend key variable. The API URL is `https://api.resend.com/emails`. |
+| `allowedSenders` | none | Addresses, or `@domain` for a domain, separated by commas. An empty value lets no mail in. |
 | `authservId` | none | The authserv-id of your receiving server. |
 | `requireDkim` | `false` | Refuse a mail that has only an SPF or DMARC pass. |
 | `keepQuoted` | `false` | Keep the quoted history of a reply in the text. |
