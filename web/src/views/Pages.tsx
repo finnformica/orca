@@ -28,7 +28,7 @@ import { FindBox, NAV, OrcaMark, THEMES } from "@/components/Shell";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
-import { IDENTITY_COLORS, IDENTITY_NAME_MAX, colorFromName, markColor, normalizeColor } from "../../../shared/serverIdentity";
+import { IDENTITY_NAME_MAX, colorFromName, colorGrid, markColor, normalizeColor, type GridCell } from "../../../shared/serverIdentity";
 import { InstanceCard, RefreshVitals, UsageCard } from "./Vitals";
 import { RunningPreviews, TestMaster } from "./PreviewControl";
 
@@ -39,7 +39,7 @@ export function Repos() {
   const summaries = repoSummaries(rows, repos.map((r) => r.name));
   return (
     <div className="space-y-5">
-      <h1 className="text-2xl font-semibold tracking-tight">Repos</h1>
+      <h1 className="text-heading text-2xl font-semibold tracking-tight">Repos</h1>
       <VCard slot="repos-list">
         {summaries.length === 0 ? <Empty>No repos configured.</Empty> : (
           <ul className="divide-y">
@@ -86,7 +86,7 @@ export function UsagePage() {
   const machines = instances.length ? instances : here ? [here] : [];
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Usage</h1>
+      <h1 className="text-heading text-2xl font-semibold tracking-tight">Usage</h1>
       <UsageCard />
       <div>
         <SectionTitle aside={<RefreshVitals />}>Machines</SectionTitle>
@@ -104,7 +104,7 @@ export function Settings() {
   const here = thisInstance();
   return (
     <div className="max-w-4xl space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
+      <h1 className="text-heading text-2xl font-semibold tracking-tight">Settings</h1>
       <MobileNav />
       <VCard slot="settings-appearance" title="Appearance" bodyClass="divide-y">
         <Setting label="Theme" hint="Light, dark, or follow the system.">
@@ -363,40 +363,49 @@ function ServerIdentitySettings() {
   );
 }
 
-/** The theme colour picker (shadcn's colour picker pattern): a trigger with the swatch and the
- *  colour's name, a popover of the 8 presets, a hex field for a custom colour and Auto (from the
- *  name). `onChange("")` is Auto. */
+/** The colour grid as rows: the base hues, then each tint and shade level across every hue. */
+const GRID = ((cols: GridCell[][]) => cols[0]!.map((_, r) => cols.map((col) => col[r]!)))(colorGrid());
+
+/** The theme colour picker (a shadcn Popover; shadcn has no colour picker of its own): a trigger with
+ *  the swatch and the colour's name, a Word-style grid (`colorGrid`: the presets and two more hues,
+ *  each with its tints and shades), a hex field for a custom colour and Auto (from the name).
+ *  `onChange("")` is Auto. */
 function ColorPicker({ value, auto, onChange }: { value: string; auto: boolean; onChange: (color: string) => void }) {
   const [hex, setHex] = useState(value);
   useEffect(() => setHex(value), [value]);
-  const preset = IDENTITY_COLORS.find((c) => c.value === value);
+  const preset = GRID.flat().find((c) => c.value === value);
   // Only a whole #rrggbb applies: a 3-digit prefix would expand and jump the field mid-typing.
   const asHex = (v: string) => (/^#?[0-9a-f]{6}$/i.test(v) ? normalizeColor(v.startsWith("#") ? v : `#${v}`) : undefined);
   const typed = (v: string) => { setHex(v); const c = asHex(v); if (c) onChange(c); };
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button type="button" variant="secondary" size="sm" data-slot="identity-color-trigger" aria-label={`Theme colour: ${preset?.name ?? value}${auto ? " (auto)" : ""}`}>
+        <Button type="button" variant="secondary" size="sm" data-slot="identity-color-trigger" aria-label={`Theme colour: ${preset?.label ?? value}${auto ? " (auto)" : ""}`}>
           <span aria-hidden="true" className="size-4 rounded-[4px]" style={{ background: value }} />
-          <span className={cn(!preset && "font-mono")}>{preset?.name ?? value}</span>
+          <span className={cn("max-w-[9rem] truncate", !preset && "font-mono")}>{preset?.label ?? value}</span>
           {auto && <span className="text-muted-foreground font-normal">Auto</span>}
           <ChevronDown className="text-muted-foreground size-3.5" />
         </Button>
       </PopoverTrigger>
       {/* The hex field takes the first focus: on a swatch, its tooltip opened over the caption. */}
-      <PopoverContent align="end" className="w-64" data-slot="identity-picker"
+      <PopoverContent align="end" className="w-[17rem]" data-slot="identity-picker"
         onOpenAutoFocus={(e) => { e.preventDefault(); (e.currentTarget as HTMLElement).querySelector<HTMLInputElement>('[data-slot="identity-hex"]')?.focus(); }}>
-        <div className="text-muted-foreground mb-2 text-xs font-medium">Presets</div>
-        <div role="radiogroup" aria-label="Theme colour" className="grid grid-cols-8 gap-1.5">
-          {IDENTITY_COLORS.map((c) => (
-            <Tip key={c.value} label={c.name}>
-              <button type="button" role="radio" aria-checked={value === c.value} aria-label={c.name} data-slot="identity-color" data-color={c.value}
-                onClick={() => onChange(c.value)}
-                className={cn("focus-visible:ring-ring/40 inline-flex size-6 items-center justify-center rounded-md text-white outline-none ring-offset-2 ring-offset-popover focus-visible:ring-2", value === c.value && "ring-2 ring-(--swatch)")}
-                style={{ background: c.value, ["--swatch" as string]: c.value }}>
-                {value === c.value && <Check className="size-3.5" />}
-              </button>
-            </Tip>
+        <div className="text-muted-foreground mb-2 text-xs font-medium">Theme colours</div>
+        {/* Word's grid: the base hues in one row, then each hue's tints and shades in its column. */}
+        <div role="radiogroup" aria-label="Theme colour" data-slot="identity-grid" className="flex flex-col gap-1">
+          {GRID.map((row, r) => (
+            <div key={r} className={cn("grid grid-cols-10 gap-1", r === 1 && "mt-1.5")}>
+              {row.map((c) => (
+                <Tip key={c.value} label={c.label}>
+                  <button type="button" role="radio" aria-checked={value === c.value} aria-label={c.label}
+                    data-slot="identity-color" data-row={r === 0 ? "base" : "tone"} data-color={c.value}
+                    onClick={() => onChange(c.value)}
+                    className={cn("focus-visible:ring-ring/40 size-5 rounded-[4px] outline-none ring-offset-1 ring-offset-popover focus-visible:ring-2",
+                      value === c.value && "ring-foreground ring-2")}
+                    style={{ background: c.value }} />
+                </Tip>
+              ))}
+            </div>
           ))}
         </div>
         <div className="text-muted-foreground mt-3 mb-2 text-xs font-medium">Custom</div>
@@ -435,7 +444,7 @@ export function GitHubPage() {
   useEffect(() => { void api.githubAccounts().then((r) => setAccounts(r.accounts)).catch(() => setAccounts([])); }, []);
   return (
     <div className="space-y-5">
-      <h1 className="text-2xl font-semibold tracking-tight">GitHub</h1>
+      <h1 className="text-heading text-2xl font-semibold tracking-tight">GitHub</h1>
       <VCard slot="github-accounts" bodyClass="divide-y">
         {accounts === null ? <Empty>Loading…</Empty>
           : accounts.length === 0 ? <Empty>No gh account is signed in on this machine.</Empty>
@@ -504,7 +513,7 @@ function AccountRowView({ account: a, onSaved }: { account: GithubAccount; onSav
 export function PreviewsPage() {
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold tracking-tight">Previews</h1>
+      <h1 className="text-heading text-2xl font-semibold tracking-tight">Previews</h1>
       <div><SectionTitle>Running</SectionTitle><VCard slot="running-previews"><RunningPreviews /></VCard></div>
       <div><SectionTitle>Test master</SectionTitle><VCard slot="test-master"><TestMaster /></VCard></div>
     </div>

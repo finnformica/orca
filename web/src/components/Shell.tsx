@@ -80,7 +80,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
       {/* Desktop only: a phone's nav is the bottom bar + Settings (see MobileNav in views/Pages.tsx) —
           there is no off-canvas drawer any more. */}
       <aside
-        data-slot="sidebar" data-collapsed={collapsed}
+        data-slot="sidebar" data-chrome="" data-collapsed={collapsed}
         className={cn(
           "bg-sidebar z-50 max-md:hidden md:sticky md:top-0 md:flex md:h-screen md:flex-col md:border-r",
           collapsed ? "md:w-14" : "md:w-60",
@@ -93,7 +93,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
         {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it.
             The notch inset goes to whichever is topmost: the banner when it's shown, else the header. */}
         <header
-          data-slot="topbar"
+          data-slot="topbar" data-chrome=""
           className={cn(
             "bg-background sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 md:px-6 max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))]",
             !updateAvailable && "max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:pt-[env(safe-area-inset-top)]",

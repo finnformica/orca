@@ -163,7 +163,7 @@ export function CommandPalette() {
               <div
                 id={`${listId}-${i}`} role="option" aria-selected={i === index} data-id={cmd.id}
                 onMouseMove={() => { if (i !== index) setSel(i); }} onClick={() => run(cmd)}
-                className={cn("flex h-9 cursor-pointer items-center gap-2 rounded-md px-2 text-sm", i === index && "bg-accent")}
+                className={cn("flex h-9 cursor-pointer items-center gap-2 rounded-md px-2 text-sm", i === index && "bg-selected text-selected-foreground")}
               >
                 <span className="min-w-0 truncate">{cmd.label}</span>
                 {cmd.shortcut ? <MenuShortcut id={cmd.shortcut} />

@@ -129,17 +129,39 @@ export const contrast = (a: string, b: string): number => {
 const tone = (o: Oklch, l: number, k: number, max: number) => oklchToHex({ l, c: Math.min(o.c * k, max), h: o.h });
 const alpha = (hex: string, a: number) => `rgb(${channels(hex).map((v) => Math.round(v * 255)).join(" ")} / ${a})`;
 
+/** The colour picker's grid (Word's theme colours): the base row is the 8 presets plus two more
+ *  hues, and each column holds 3 tints and 2 shades of its hue, made in OKLCH. `IDENTITY_COLORS`
+ *  stays 8 long: `colorFromName` indexes it, so a new preset would move every Auto colour. */
+export const GRID_HUES = [...IDENTITY_COLORS, { name: "Gold", value: "#c28a00" }, { name: "Slate", value: "#5b6b7f" }] as const;
+export type GridCell = { value: string; label: string };
+const TINTS = [{ k: 0.75, c: 0.3, word: "lighter 3" }, { k: 0.5, c: 0.55, word: "lighter 2" }, { k: 0.25, c: 0.8, word: "lighter 1" }];
+const SHADES = [{ k: 0.78, word: "darker 1" }, { k: 0.58, word: "darker 2" }];
+/** One column per base hue: the base first, then lightest to darkest. */
+export function colorGrid(): GridCell[][] {
+  return GRID_HUES.map(({ name, value }) => {
+    const o = hexToOklch(value);
+    return [
+      { value, label: name },
+      ...TINTS.map((t) => ({ value: oklchToHex({ l: o.l + (0.97 - o.l) * t.k, c: o.c * t.c, h: o.h }), label: `${name}, ${t.word}` })),
+      ...SHADES.map((t) => ({ value: oklchToHex({ l: o.l * t.k, c: o.c * (0.6 + 0.4 * t.k), h: o.h }), label: `${name}, ${t.word}` })),
+    ];
+  });
+}
+
 /** The orca's colour on the mark's black circle: the server colour, lifted until it reads on black. */
 export function markColor(color: string): string {
   const o = hexToOklch(normalizeColor(color) ?? "#8f8f8f");
   return o.l >= 0.68 ? normalizeColor(color) ?? "#8f8f8f" : oklchToHex({ ...o, l: 0.68 });
 }
 
-/** The CSS variables for one mode. The `sb-*` tones are the sidebar's (styles.css maps them onto
- *  the neutral tokens inside it); the others tint the app's accents: primary buttons, links, focus
- *  rings, the selection, the active page. Cards, tables, charts and chat keep the neutral tokens. */
+/** The CSS variables for one mode. The `sb-*` tones are the frame's: the sidebar, the top bar and
+ *  the closed Ask pill (styles.css maps them onto the neutral tokens inside `[data-chrome]`). The
+ *  others tint the rest of the app: a faint wash behind the content (`background`), selected
+ *  controls and rows (`selected`), page headings, primary buttons, links, focus rings and the text
+ *  selection. Cards keep the neutral surfaces, and status and chart colours never change. */
 export type ThemeTones = Record<
   "primary" | "primary-foreground" | "link" | "ring" | "selection" | "server-soft" | "server-fg"
+  | "background" | "selected" | "selected-fg" | "heading"
   | "sb-bg" | "sb-fg" | "sb-muted" | "sb-hover" | "sb-field" | "sb-border" | "sb-active" | "sb-active-fg",
   string
 >;
@@ -152,6 +174,9 @@ export function themeTones(color: string, mode: "light" | "dark"): ThemeTones {
       primary: tone(o, 0.5, 1, 0.17), "primary-foreground": "#ffffff",
       link: tone(o, 0.48, 1, 0.16), "server-fg": tone(o, 0.48, 1, 0.16), ring: tone(o, 0.6, 1, 0.17),
       selection: alpha(tone(o, 0.7, 1, 0.14), 0.35), "server-soft": alpha(tone(o, 0.6, 1, 0.15), 0.14),
+      // A very light wash behind the white cards; selected controls a soft fill with deep text.
+      background: tone(o, 0.968, 0.2, 0.016), selected: tone(o, 0.92, 0.45, 0.055),
+      "selected-fg": tone(o, 0.4, 1, 0.15), heading: tone(o, 0.3, 0.7, 0.09),
       // A deep shade, like Slack's aubergine: white text on it, the active page a brighter pill.
       "sb-bg": tone(o, 0.33, 0.8, 0.1), "sb-fg": fg, "sb-muted": tone(o, 0.83, 0.3, 0.035),
       "sb-hover": tone(o, 0.4, 0.8, 0.1), "sb-field": tone(o, 0.28, 0.8, 0.09), "sb-border": alpha("#ffffff", 0.14),
@@ -163,6 +188,9 @@ export function themeTones(color: string, mode: "light" | "dark"): ThemeTones {
     primary: tone(o, 0.52, 0.85, 0.13), "primary-foreground": "#ffffff",
     link: tone(o, 0.8, 0.8, 0.11), "server-fg": tone(o, 0.8, 0.8, 0.11), ring: tone(o, 0.68, 0.85, 0.13),
     selection: alpha(tone(o, 0.55, 0.8, 0.12), 0.45), "server-soft": alpha(tone(o, 0.6, 0.8, 0.1), 0.2),
+    // A dark tinted surface behind the neutral cards; selected controls a muted fill with light text.
+    background: tone(o, 0.185, 0.3, 0.022), selected: tone(o, 0.31, 0.5, 0.06),
+    "selected-fg": tone(o, 0.9, 0.3, 0.04), heading: tone(o, 0.95, 0.2, 0.025),
     // Darker and greyer than light mode's: a tint on near-black, never a bright block beside the page.
     "sb-bg": tone(o, 0.215, 0.4, 0.04), "sb-fg": fg, "sb-muted": tone(o, 0.74, 0.2, 0.02),
     "sb-hover": tone(o, 0.27, 0.45, 0.045), "sb-field": tone(o, 0.18, 0.4, 0.035), "sb-border": alpha("#ffffff", 0.09),

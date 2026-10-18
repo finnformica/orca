@@ -305,8 +305,17 @@ test("S6g: Settings' theme colour is a popover — the 8 presets, a hex field fo
   const open = async () => act(async () => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" })); trigger.click(); await flush(); await flush(); });
   await open();
   const picker = document.querySelector<HTMLElement>('[data-slot="identity-picker"]')!;
+  // Word's grid: the base row is the presets plus 2 hues, then 5 rows of tints and shades.
   const swatches = [...picker.querySelectorAll<HTMLElement>('[data-slot="identity-color"]')];
-  expect(swatches.map((b) => b.getAttribute("data-color"))).toEqual(IDENTITY_COLORS.map((c) => c.value));
+  expect(swatches.length).toBe(60);
+  const base = swatches.filter((b) => b.dataset.row === "base").map((b) => b.getAttribute("data-color"));
+  expect(base.slice(0, 8)).toEqual(IDENTITY_COLORS.map((c) => c.value));
+  expect(base.length).toBe(10);
+  const tint = swatches.find((b) => b.getAttribute("aria-label") === "Green, lighter 2")!;
+  await act(async () => { tint.click(); await flush(); });
+  expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Green, lighter 2");
+  expect(tint.getAttribute("aria-checked")).toBe("true"); // the selected cell has the ring
+  expect(tint.className).toContain("ring-2");
   expect(picker.querySelector("[title]")).toBeNull(); // tooltips, never native title boxes
   await act(async () => { swatches.find((b) => b.getAttribute("aria-label") === "Purple")!.click(); await flush(); });
   expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Purple");

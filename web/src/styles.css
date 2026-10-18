@@ -50,6 +50,9 @@
   --sb-active: #ececeb;
   --sb-active-fg: #222222;
   --sidebar: var(--sb-bg);
+  --selected: var(--accent);
+  --selected-fg: var(--foreground);
+  --heading: var(--foreground);
   --geist-blue: #0070f3;
   --geist-green: #45a557;
   --geist-teal: #50e3c2;
@@ -96,6 +99,9 @@
   --sb-border: rgba(255, 255, 255, 0.12);
   --sb-active: #222222;
   --sb-active-fg: #e8e8e8;
+  --selected: var(--accent);
+  --selected-fg: var(--foreground);
+  --heading: var(--foreground);
   --geist-warning-bg: #2a1d03;
   --geist-warning-fg: #ffb224;
   --geist-error-bg: #2a0e0f;
@@ -121,6 +127,10 @@
   --color-link: var(--link);
   --color-sidebar-active: var(--sb-active);
   --color-sidebar-active-foreground: var(--sb-active-fg);
+  --color-sidebar-foreground: var(--sb-fg);
+  --color-selected: var(--selected);
+  --color-selected-foreground: var(--selected-fg);
+  --color-heading: var(--heading);
   --color-geist-blue: var(--geist-blue);
   --color-geist-green: var(--geist-green);
   --color-geist-teal: var(--geist-teal);
@@ -166,17 +176,21 @@
   }
 }
 
-/* The sidebar is the themed chrome (Slack's workspace sidebar): inside it the neutral tokens become
-   the sidebar's tones, so the Find box, the keycaps, the badges and the profile row follow with no
-   class of their own. Menus portal out of it and stay neutral. */
-[data-slot="sidebar"] {
+/* The themed frame (Slack's workspace sidebar plus top bar): the sidebar, the top bar and the closed
+   Ask pill carry `data-chrome`. Inside it the neutral tokens become the frame's tones, so the Find
+   box, the keycaps, the badges, the menus' triggers and the Ask button follow with no class of
+   their own. Menus portal out of it and stay neutral. */
+[data-chrome] {
+  --background: var(--sb-bg);
+  --selected: var(--sb-active);
+  --selected-fg: var(--sb-active-fg);
+  --heading: var(--sb-fg);
   --foreground: var(--sb-fg);
   --muted-foreground: var(--sb-muted);
   --accent: var(--sb-hover);
   --accent-foreground: var(--sb-fg);
   --muted: var(--sb-hover);
   --card: var(--sb-field);
-  --background: var(--sb-field);
   --border: var(--sb-border);
   --input: var(--sb-border);
   --primary: var(--sb-fg);

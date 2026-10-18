@@ -7,7 +7,7 @@ import * as db from "../server/db";
 import { configDocument, invalidateConfig, loadConfig, parseConfigDocument, saveConfigDocument, setInstanceTerminal, setServerIdentity } from "../server/config";
 import { withIdentity, type ServersAnswer } from "../server/servers";
 import {
-  IDENTITY_COLORS, colorFromName, contrast, faviconSvg, hexToOklch, identityUpdate, markColor, normalizeColor, oklchToHex, pageTitle,
+  GRID_HUES, IDENTITY_COLORS, colorFromName, colorGrid, contrast, faviconSvg, hexToOklch, identityUpdate, markColor, normalizeColor, oklchToHex, pageTitle,
   resolveIdentity, serverIdentityProblems, themeCss, themeTones,
 } from "../shared/serverIdentity";
 import { freshSchema } from "./pg";
@@ -107,6 +107,15 @@ test("ID6: every theme tone comes from the one colour, and its text keeps WCAG A
       expect([at, contrast(t["sb-active-fg"], t["sb-active"]) >= 4.5]).toEqual([at, true]);
       expect([at, contrast(t["primary-foreground"], t.primary) >= 4.5]).toEqual([at, true]);
       expect([at, contrast(t.link, page) >= 4.5]).toEqual([at, true]);
+      // The content wash keeps the page's text readable; selected controls and headings too.
+      const [text, muted] = mode === "light" ? ["#222222", "#666666"] : ["#e8e8e8", "#9e9e9e"];
+      expect([at, contrast(text, t.background) >= 12]).toEqual([at, true]);
+      expect([at, contrast(muted, t.background) >= 4.5]).toEqual([at, true]);
+      expect([at, contrast(t.heading, t.background) >= 7]).toEqual([at, true]);
+      expect([at, contrast(t["selected-fg"], t.selected) >= 4.5]).toEqual([at, true]);
+      expect([at, contrast(text, t.selected) >= 4.5]).toEqual([at, true]); // a selected row's own text
+      // The wash is faint: the page is still near white / near black.
+      expect([at, Math.abs(hexToOklch(t.background).l - hexToOklch(page).l) < 0.03]).toEqual([at, true]);
     }
     // Dark mode's sidebar is darker and less saturated than light mode's.
     const [light, dark] = [hexToOklch(themeTones(color, "light")["sb-bg"]), hexToOklch(themeTones(color, "dark")["sb-bg"])];
@@ -118,4 +127,19 @@ test("ID6: every theme tone comes from the one colour, and its text keeps WCAG A
   const css = themeCss("#7c4ddb");
   expect(css).toMatch(/^:root:root\{--primary:#[0-9a-f]{6};.*\}:root:root\.dark\{--primary:#[0-9a-f]{6};.*\}$/);
   expect(css).toContain(`--sb-bg:${themeTones("#7c4ddb", "dark")["sb-bg"]};`);
+});
+
+test("ID7: the picker's grid — the 8 presets plus 2 hues as the base row, each with 3 tints and 2 shades", () => {
+  const grid = colorGrid();
+  expect(grid.map((col) => col[0]!.value)).toEqual(GRID_HUES.map((h) => h.value));
+  expect(grid.slice(0, 8).map((col) => col[0]!.value)).toEqual(IDENTITY_COLORS.map((c) => c.value)); // the presets lead
+  expect(IDENTITY_COLORS.length).toBe(8); // colorFromName indexes it: a new preset moves every Auto colour
+  expect(grid.every((col) => col.length === 6)).toBe(true);
+  expect(new Set(grid.flat().map((c) => c.value)).size).toBe(60);
+  for (const col of grid) {
+    const l = col.map((c) => hexToOklch(c.value).l);
+    expect(l[1]! > l[2]! && l[2]! > l[3]! && l[3]! > l[0]! && l[0]! > l[4]! && l[4]! > l[5]!).toBe(true); // tints lighter, shades darker
+    expect(col.every((c) => normalizeColor(c.value) === c.value)).toBe(true);
+  }
+  expect(grid[0]![1]!.label).toBe("Blue, lighter 3");
 });
