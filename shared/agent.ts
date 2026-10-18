@@ -1,4 +1,4 @@
-import { WRITING_STYLE } from "./writingStyle";
+import { SNIPPETS, WRITING_STYLE } from "./writingStyle";
 
 export const AGENT_PROVIDERS = ["claude", "codex", "cursor"] as const;
 export type AgentProvider = typeof AGENT_PROVIDERS[number];
@@ -200,7 +200,7 @@ export const OUTCOME_CONTRACT = [
 /** Add the readable outcome contract once while preserving the caller's instruction verbatim. */
 export function withOutcomeContract(instruction: string): string {
   if (/^\s*##\s+Outcome\s*$/im.test(instruction) && /^\s*##\s+Commits\s*$/im.test(instruction)) return instruction;
-  return `${instruction}\n\nAvoid unrelated cleanup.\n\n${WRITING_STYLE}\n\n${OUTCOME_CONTRACT}`;
+  return `${instruction}\n\nAvoid unrelated cleanup.\n\n${WRITING_STYLE}\n\n${SNIPPETS}\n\n${OUTCOME_CONTRACT}`;
 }
 
 export const agentLabel = (provider: AgentProvider): string => provider === "codex" ? "Codex" : provider === "cursor" ? "Cursor" : "Claude";
