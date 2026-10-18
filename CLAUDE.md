@@ -621,7 +621,9 @@ publishes its width (`lib/dock.ts`) and the shell reserves it as a `data-slot="d
 page reflows beside it; no shadow, a hairline edge; the top-bar button and `O` toggle it. When the
 dock leaves the page under `DOCK_PAGE_MIN_W` (640) the nav renders as its icon rail (`navRail`,
 your saved collapse untouched; expanding it then is a session override), and `clampPanelWidth`
-keeps the page at that floor beside the rail. `role=dialog`
+keeps the page at that floor beside the rail. On a desktop the page column (`page-scroll`) scrolls on
+its own and is the `@container/page` a page's layout should query (the Overview grid does), not the
+window; a phone keeps the window's scroll. The edge resizes by drag or by arrow keys. `role=dialog`
 `aria-modal=false` — no backdrop, the board it is moving stays visible and usable; Esc or ✕ closes
 and focus returns to the opener; resized from its LEFT edge, width remembered as
 `orca.ui.v1.orchestratorWidth` and clamped to the viewport by `clampPanelWidth`). Once opened it
