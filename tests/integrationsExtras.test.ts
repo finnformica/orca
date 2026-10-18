@@ -246,6 +246,12 @@ describe("with Postgres", () => {
     const dm = await inbox.withSource({ id: "e2", key: "discord:m2", topic: "ext.discord.message", at: 1, text: "hi", actor, grant,
       source: { adapter: "discord", channel: "D1", linkId: "nope" }, raw: { id: "M2", channel_id: "D1" } } as Envelope);
     expect(integrationMessage(dm)).toMatchObject({ place: "DM", url: "https://discord.com/channels/@me/D1/M2" });
+    // A channel message under the catch-all link: its label ("All channels and DMs") names no real
+    // channel, so it never reads as the place — only the sender and the message.
+    await store.addLink({ id: "Lstar2", integrationId: "discord-work", externalId: "*", label: "All channels and DMs", level: "ask", repos: [], requireMention: false });
+    const viaStar = await inbox.withSource({ id: "e3", key: "discord:m3", topic: "ext.discord.message", at: 1, text: "ship it?", actor, grant,
+      source: { adapter: "discord", channel: "C2", linkId: "Lstar2" }, raw: { id: "M3", channel_id: "C2", guild_id: "G1" } } as Envelope);
+    expect(integrationMessage(viaStar)).toEqual({ adapter: "discord", sender: "Saajan", url: "https://discord.com/channels/G1/C2/M3", text: "ship it?" });
   });
 
   test("orca channels, post, thread link and ask-user — and the grant on post", async () => {

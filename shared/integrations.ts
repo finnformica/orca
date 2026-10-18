@@ -378,11 +378,13 @@ const META_RE = /<!-- orca:integration (\{.*?\}) -->/;
 export const integrationMetaLine = (s: IntegrationSource): string =>
   `${INTEGRATION_META}${JSON.stringify(s).replace(/>/g, "\\u003e")} -->`;
 
-/** The place an event came from, for a person: a DM, else the link's label ("#general"). */
-export function integrationPlace(e: Pick<Envelope, "source" | "raw">, linkLabel?: string): string | undefined {
+/** The place an event came from, for a person: a DM, else the link's label ("#general") — but
+ *  never the catch-all link's own label (`externalId === "*"`, e.g. "All channels and DMs"), which
+ *  names no real channel and would wrongly read as the event's place. */
+export function integrationPlace(e: Pick<Envelope, "source" | "raw">, link?: { label?: string; externalId: string }): string | undefined {
   const raw = (e.raw ?? {}) as Record<string, unknown>;
   if (e.source.adapter === "discord" && "channel_id" in raw && !raw.guild_id) return "DM";
-  return linkLabel && linkLabel !== "*" ? linkLabel : undefined;
+  return link && link.externalId !== "*" ? link.label : undefined;
 }
 
 /** A link that opens the message on its platform: the envelope's own, else Discord's message URL. */
