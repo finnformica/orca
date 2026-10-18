@@ -387,14 +387,30 @@ const META_RE = /<!-- orca:integration (\{.*?\}) -->/;
 export const integrationMetaLine = (s: IntegrationSource): string =>
   `${INTEGRATION_META}${JSON.stringify(s).replace(/>/g, "\\u003e")} -->`;
 
+/** True for a link that names no place: the catch-all external id `*`, padded or not, or a row with
+ *  no external id at all (Settings refuses one, a hand SQL insert does not). Neither names a channel. Pure. */
+export const isCatchAll = (externalId: string | null | undefined): boolean => {
+  const id = (externalId ?? "").trim();
+  return id === "" || id === "*";
+};
+
 /** The place an event came from, for a person: a DM, else the link's label ("#general") — but
- *  never the catch-all link's own label (`externalId === "*"`, e.g. "All channels and DMs"), which
- *  names no real channel and would wrongly read as the event's place. */
-export function integrationPlace(e: Pick<Envelope, "source" | "raw">, link?: { label?: string; externalId: string }): string | undefined {
+ *  never a catch-all link's own label (`isCatchAll`, e.g. "All channels and DMs"), which names no
+ *  real channel and would wrongly read as the event's place. */
+export function integrationPlace(e: Pick<Envelope, "source" | "raw">, link?: { label?: string; externalId?: string | null }): string | undefined {
   const raw = (e.raw ?? {}) as Record<string, unknown>;
   if (e.source.adapter === "discord" && "channel_id" in raw && !raw.guild_id) return "DM";
-  return link && link.externalId !== "*" ? link.label : undefined;
+  return link && !isCatchAll(link.externalId) ? link.label : undefined;
 }
+
+/** The labels of the catch-all links, trimmed, for `shownPlace`. Pure. */
+export const catchAllLabels = (links: { label?: string; externalId?: string | null }[]): Set<string> =>
+  new Set(links.filter((l) => isCatchAll(l.externalId) && l.label?.trim()).map((l) => l.label!.trim()));
+
+/** The place to show for a stored message. A message stored before the ingest check carries its
+ *  catch-all link's label as its place, for ever; the chat drops it here, so no row needs a rewrite. Pure. */
+export const shownPlace = (place: string | undefined, labels: ReadonlySet<string>): string | undefined =>
+  place && !labels.has(place.trim()) ? place : undefined;
 
 /** A link that opens the message on its platform: the envelope's own, else Discord's message URL. */
 export function integrationUrl(e: Pick<Envelope, "source" | "raw" | "link">): string | undefined {
