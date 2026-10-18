@@ -1,4 +1,5 @@
-// The unified inbox and timeline (docs/research/integrations.md §6.2): every inbound message and
+// The unified inbox and timeline (docs/research/integrations.md §6.2): the one place for what needs
+// you. Orca's own notifications (the bell's rows, source Orca) and every inbound message and
 // event from every integration, newest first — its source, its sender, the workstream it belongs to
 // and the state of Orca's reply — filtered by source, person, unread and muted, with the whole
 // conversation (in and out) in a thread view. The rows are built on the server (shared/inbox.ts over
@@ -6,14 +7,18 @@
 // thread view act on it: Reply where it came from (the `orca post` path), Link its conversation to a
 // workstream, Mute its sender, mark it read. Opening a thread marks it read. The filters and the open
 // thread live in the URL (?source= &person= &unread=1 &muted=1 &thread=), so a view is a link. On a
-// desktop the thread opens beside the list; on a phone it replaces the list, with Back.
+// desktop the thread opens beside the list; on a phone it replaces the list, with Back. A row with no
+// conversation (a notification) opens where it leads (`row.open`), as the bell's Open does. Its read
+// state is the bell's: one state, one count (lib/inboxUnread.ts).
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowLeft, BellOff, Bell, CheckCheck, Inbox as InboxIcon, Link2, Mail, MailOpen, MoreHorizontal, Reply, Send, X } from "lucide-react";
 import { navigate, useSearch } from "@/lib/route";
 import { poll } from "@/lib/poll";
 import { cn } from "@/lib/utils";
 import { useCoarse, useNarrow } from "@/lib/viewport";
-import { actionFailed } from "@/lib/notificationStore";
+import { actionFailed, markRead as markNotificationsRead, restoreUnread } from "@/lib/notificationStore";
+import { refreshInboxUnread } from "@/lib/inboxUnread";
+import { openOrchestrator } from "@/lib/orchestratorOpen";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tip";
@@ -27,7 +32,8 @@ import { api, type InboxPage, type InboxQuery, type InboxThread } from "../api";
 import { useWorkstreams } from "../store";
 import { ago } from "../workstream";
 import { detailPath } from "./Agents";
-import { deliveryLabel, parseConversation, sourceLabel, type InboxRow, type ReplyState, type ThreadItem } from "../../../shared/inbox";
+import { deliveryLabel, notificationIdOf, parseConversation, sourceLabel, type InboxRow, type ReplyState, type ThreadItem } from "../../../shared/inbox";
+import { notificationPath } from "../../../shared/notifications";
 import type { DeliveryState } from "../../../shared/integrations";
 
 const EVERYONE = "*";
@@ -73,14 +79,34 @@ export function InboxPage() {
     setPage((p) => p && { ...p, rows: p.rows.map(patch) });
     setOlder((o) => o.map(patch));
   };
+  // One read state: a notification row is the bell's row, so the bell's store marks it (and its
+  // count drops at once); the bridge keeps the rest, and the bell's copy of an event, in step.
   const markRead = (ids: string[], read = true) => {
     if (!ids.length) return;
     markLocal(ids, read);
-    api.inboxRead(ids, read).then(refetch, (e) => failed(read ? "Mark as read" : "Mark as unread", e));
+    const notes = ids.map(notificationIdOf).filter((n): n is number => n !== undefined);
+    const rest = read ? ids.filter((id) => notificationIdOf(id) === undefined) : ids;
+    if (read && notes.length) void markNotificationsRead(notes);
+    if (!read && notes.length) restoreUnread(notes);
+    if (rest.length) api.inboxRead(rest, read).then(() => { refreshInboxUnread(); return refetch(); }, (e) => failed(read ? "Mark as read" : "Mark as unread", e));
+  };
+  const rowsOf = useWorkstreams();
+  /** A row with no conversation goes where it leads (shared/inbox.ts InboxOpen), and is read. */
+  const go = (r: InboxRow) => {
+    const o = r.open!;
+    if (!r.read) markRead([r.id]);
+    if (o.orchestrator) return openOrchestrator();
+    const ws = r.workstream;
+    if (ws) {
+      const live = rowsOf.find((w) => w.repo === ws.repo && w.branch === ws.branch);
+      const path = notificationPath({ repo: ws.repo, branch: ws.branch, ...(o.pr ? { link: { pr: o.pr } } : {}) }, live ? detailPath(live) : undefined);
+      if (path) return navigate(path + (o.tail ?? ""));
+    }
+    if (o.url) window.open(o.url, "_blank", "noopener");
   };
   const narrow = useNarrow();
   const open = parseConversation(thread) ? thread : "";
-  const openRow = (r: InboxRow) => { set({ thread: r.conversation }); };
+  const openRow = (r: InboxRow) => { if (r.open && !r.conversation) go(r); else set({ thread: r.conversation }); };
   const filtered = !!(source || person || unread || muted);
   const list = (
     <div className="space-y-3">
@@ -91,10 +117,10 @@ export function InboxPage() {
           : rows === null ? <><RowSkeleton /><RowSkeleton /><RowSkeleton /></>
           : rows.length === 0 ? (
             <Empty icon={<InboxIcon />}>
-              {filtered ? "No messages match these filters." : "No messages yet. Messages and events from linked integrations show here."}
+              {filtered ? "No messages match these filters." : "Nothing yet. Orca's notifications and the messages from linked integrations show here."}
             </Empty>
           )
-          : rows.map((r) => <InboxRowView key={r.id} row={r} selected={open === r.conversation} onOpen={() => openRow(r)} onMarkRead={markRead} onChanged={refetch} />)}
+          : rows.map((r) => <InboxRowView key={r.id} row={r} selected={!!r.conversation && open === r.conversation} onOpen={() => openRow(r)} onMarkRead={markRead} onChanged={() => { refreshInboxUnread(); void refetch(); }} />)}
         {cursor && rows && (
           <div className="flex justify-center px-4 py-2">
             <Button variant="ghost" size="sm" onClick={() => void loadOlder()}>Load older</Button>
@@ -210,6 +236,11 @@ const When = ({ at }: { at: number }) => (
   <Tip label={new Date(at).toLocaleString()}><span className="text-muted-foreground shrink-0 text-xs tabular-nums">{ago(at)}</span></Tip>
 );
 
+const BADGE_TONE: Record<NonNullable<InboxRow["badge"]>["tone"], string> = {
+  ready: "bg-geist-green/10 text-geist-green", error: "bg-geist-red/10 text-geist-red", warning: "bg-geist-amber/10 text-geist-amber",
+  queued: "bg-geist-blue/10 text-geist-blue", neutral: "bg-muted text-muted-foreground",
+};
+
 const KIND_LABEL: Record<InboxRow["kind"], string | undefined> = { message: undefined, question: "Question", event: "Event" };
 
 /** The actions one event offers: in a row's ⋯ and in the thread view's ⋯. Reply only opens the
@@ -292,8 +323,10 @@ function ReplyBox({ eventId, to, onSent, onCancel, autoFocus, ws }: { eventId: s
 function InboxRowView({ row, selected, onOpen, onMarkRead, onChanged }: {
   row: InboxRow; selected: boolean; onOpen: () => void; onMarkRead: (ids: string[], read: boolean) => void; onChanged: () => void;
 }) {
-  const who = row.sender?.name ?? (row.kind === "question" ? "Orchestrator" : sourceLabel(row.adapter));
-  const kind = KIND_LABEL[row.kind];
+  const sender = row.sender?.name ?? (row.kind === "question" ? "Orchestrator" : sourceLabel(row.adapter));
+  // A row with its own badge (an Orca notification: the kind is its "sender") leads with its title.
+  const who = row.badge && row.title ? row.title : sender;
+  const kind = row.badge ? undefined : KIND_LABEL[row.kind];
   const [replying, setReplying] = useState(false);
   return (
     <div role="button" tabIndex={0} data-slot="inbox-row" data-kind={row.kind} data-read={row.read} aria-current={selected || undefined}
@@ -307,13 +340,14 @@ function InboxRowView({ row, selected, onOpen, onMarkRead, onChanged }: {
         <div className="flex min-w-0 items-center gap-2">
           <span data-slot="inbox-sender" className={cn("min-w-0 truncate", row.read ? "font-medium" : "font-semibold")}>{who}</span>
           {kind && <span className="bg-muted text-muted-foreground shrink-0 rounded px-1 text-[10px] leading-4 font-medium uppercase">{kind}</span>}
+          {row.badge && <span data-slot="inbox-badge" data-tone={row.badge.tone} className={cn("shrink-0 rounded px-1 text-[10px] leading-4 font-medium uppercase", BADGE_TONE[row.badge.tone])}>{row.badge.label}</span>}
           <span className="ml-auto" />
           <When at={row.at} />
           <ActionsMenu slot="row-actions" eventId={row.id} canReply={row.canReply} canLink={row.canLink} read={row.read} ws={row.workstream}
             sender={row.sender ? { name: row.sender.name, muted: row.muted } : undefined}
             onReply={() => setReplying(true)} onMarkRead={(read) => onMarkRead([row.id], read)} onChanged={onChanged} />
         </div>
-        {row.title && <div className="truncate text-[13px]">{row.title}</div>}
+        {row.title && who !== row.title && <div className="truncate text-[13px]">{row.title}</div>}
         <div data-slot="inbox-text" className="text-muted-foreground line-clamp-2 text-[13px] break-words">{row.text}</div>
         {(row.workstream || row.reply) && (
           <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">

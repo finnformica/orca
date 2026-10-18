@@ -14,7 +14,7 @@
 // what persists, the stack's layout and motion) are pure in shared/notifications.ts; the state is
 // lib/notificationStore.ts.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   AlertTriangle, ArrowUpRight, Bell, BellOff, Bot, Check, CheckCheck, CircleAlert, CircleX, Copy, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, GitMerge, Hammer, MessageCircleQuestion,
   MessagesSquare, MonitorCheck, MonitorX, OctagonPause, Reply, RotateCcw, ScrollText, Send, ShieldX, Square, Undo2, UserPlus, Wrench, X,
@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
 import { notificationsOpenAtom, notifyDndAtom } from "@/lib/atoms";
 import { markRead, pauseToasts, resumeToasts, restoreUnread, start, useNotifications } from "@/lib/notificationStore";
+import { useInboxSide, useInboxUnread } from "@/lib/inboxUnread";
 import { oneOf, persistedKey, usePersisted } from "@/lib/persisted";
 import { useCoarse, useIsMobile, useNarrow } from "@/lib/viewport";
 import {
@@ -430,11 +431,11 @@ function focusMarkAllRead(e: Event) {
  *  action can open/toggle it too; its hint is the hover tooltip (it's icon-only either way, collapsed
  *  or not — there's no row to carry an inline keycap next to it). */
 export function NotificationBell({ collapsed = false }: { collapsed?: boolean }) {
-  const { list } = useNotifications();
   const dnd = useAtomValue(notifyDndAtom);
   const [open, setOpen] = useAtom(notificationsOpenAtom);
   useEffect(() => { start(); }, []);
-  const unread = unreadCount(list);
+  // The one unread count, the same as the Inbox nav item's (lib/inboxUnread.ts).
+  const unread = useInboxUnread();
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <Tip label="Notifications" shortcut="notifications">
@@ -467,8 +468,12 @@ export function NotificationPanel() {
   const dnd = useAtomValue(notifyDndAtom);
   const [filter, setFilter] = usePersisted<NotificationFilter>(persistedKey("notificationFilter"), "unread", isFilter);
   const { open } = useNotificationActions();
-  const unread = unreadCount(list);
-  const groups = groupByDay(filterNotifications(list, filter));
+  const { mutedKinds } = useInboxSide();
+  const setOpen = useSetAtom(notificationsOpenAtom);
+  // A quick view: the kinds muted in the Inbox stay out of it. The Inbox (See all) has everything.
+  const shown = mutedKinds.length ? list.filter((n) => !mutedKinds.includes(n.kind)) : list;
+  const unread = unreadCount(shown);
+  const groups = groupByDay(filterNotifications(shown, filter));
   return (
     <div data-slot="notification-centre" className="flex max-h-[70vh] flex-col">
       {/* No fixed/min height, and no taller than the day strip under it needs to be: py-2 (≤ the px-3)
@@ -509,6 +514,12 @@ export function NotificationPanel() {
           </section>
         ))}
       </div>
+      <footer data-slot="notification-centre-footer" className="order-last flex shrink-0 justify-center border-t px-3 py-1.5">
+        <a href="/inbox" data-slot="notification-see-all" onClick={(e) => { e.preventDefault(); setOpen(false); navigate("/inbox"); }}
+          className="text-muted-foreground hover:text-foreground inline-flex h-6 items-center gap-1 text-xs font-medium">
+          See all in Inbox<ArrowUpRight className="size-3.5" />
+        </a>
+      </footer>
     </div>
   );
 }

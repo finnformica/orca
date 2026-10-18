@@ -33,6 +33,7 @@ import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
 import { repoLabel, summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
+import { useInboxUnread } from "@/lib/inboxUnread";
 import { AddServerDialog, ServerMenu, ServerOffline, useServerProblem } from "@/components/ServerMenu";
 import { NotificationBell } from "@/components/Notifications";
 import { notifyLocal } from "@/lib/notificationStore";
@@ -51,7 +52,8 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
   { to: "/agents", label: "Agents", Icon: Boxes, match: (r) => r.name === "agents" || r.name === "pr" || r.name === "local" },
   // The previews (and Test master) page; its badges are what the two header buttons used to carry.
   // Every integration's inbound messages and events, one timeline (views/Inbox.tsx).
-  { to: "/inbox", label: "Inbox", Icon: Inbox, match: (r) => r.name === "inbox" },
+  // Orca's own notifications are rows here too; its count is the bell's (lib/inboxUnread.ts).
+  { to: "/inbox", label: "Inbox", Icon: Inbox, match: (r) => r.name === "inbox", badge: (compact) => <InboxBadge compact={compact} /> },
   { to: "/previews", label: "Previews", Icon: MonitorPlay, match: (r) => r.name === "previews", badge: (compact) => <PreviewsBadge compact={compact} /> },
   { to: "/repos", label: "Repos", Icon: FolderGit2, match: (r) => r.name === "repos" },
   { to: "/github", label: "GitHub", Icon: Users, match: (r) => r.name === "github" },
@@ -483,5 +485,18 @@ export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
         </DropdownMenuSub>
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/** The Inbox nav item's unread count: the one count the bell shows too. */
+function InboxBadge({ compact = false }: { compact?: boolean }) {
+  const unread = useInboxUnread();
+  // At zero it still holds the row's right edge, so the keycap after it stays where it was.
+  if (!unread) return compact ? null : <span className="ml-auto" />;
+  return (
+    <span data-slot="inbox-unread-count" aria-label={`${unread} unread`}
+      className={cn("bg-geist-blue flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold text-white tabular-nums", compact ? "absolute -top-0.5 -right-0.5" : "ml-auto")}>
+      {unread > 99 ? "99+" : unread}
+    </span>
   );
 }

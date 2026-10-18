@@ -26,7 +26,7 @@ import * as integrations from "./integrations/registry";
 import * as dispatcher from "./integrations/dispatcher";
 import * as inbox from "./integrations/inbox";
 import * as integrationStore from "./integrations/store";
-import { filterInbox, inboundConversation, inboxFacets, inboxRows, OWN_EVENT, parseConversation, threadActions, threadItems, workstreamOf } from "../shared/inbox";
+import { filterInbox, inboundConversation, inboxFacets, inboxRows, inboxWindow, muteKey, notificationIdOf, notificationRows, notificationSender, OWN_EVENT, parseConversation, threadActions, threadItems, workstreamOf } from "../shared/inbox";
 import { replyToEvent } from "./integrations/router";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
@@ -34,6 +34,7 @@ import * as primary from "./primary";
 import * as mergeQueue from "./mergeQueue";
 import * as upkeep from "./upkeep";
 import * as notify from "./notify";
+import { KIND_META } from "../shared/notifications";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import * as repos from "./repos";
@@ -310,6 +311,7 @@ const degradedJson = (data: unknown, status = 200) => Response.json(
 const EMPTY_WHEN_DOWN: Record<string, () => unknown> = {
   "/api/queued": () => [],
   "/api/notifications": () => [],
+  "/api/inbox/unread": () => ({ others: 0, mutedKinds: [] }),
   "/api/health/history": () => [],
   "/api/config/document": () => ({}),
 };
@@ -376,7 +378,7 @@ const DATABASE_ONLY = new Set([
   // The notification centre: one table, written once by the instance where each event happened.
   "/api/notifications", "/api/notifications/read",
   // The unified inbox: the integrations' event, delivery and thread_link rows.
-  "/api/inbox", "/api/inbox/thread", "/api/inbox/threads",
+  "/api/inbox", "/api/inbox/unread", "/api/inbox/thread", "/api/inbox/threads",
   "/api/inbox/reply", "/api/inbox/read", "/api/inbox/mute", "/api/inbox/link",
 ]);
 
@@ -623,17 +625,35 @@ async function api(req: Request, url: URL): Promise<Response> {
   // rows with their reply's delivery state, filtered by `?source=` / `?person=`; the facets are over
   // the whole window, so a chip never hides its siblings. `older` is the cursor for the next window.
   if (req.method === "GET" && p === "/api/inbox") {
-    const before = url.searchParams.get("before") || undefined;
-    const events = await integrationStore.inboxEvents({ before, limit: INBOX_WINDOW });
-    const since = events.length ? Math.min(...events.map((e) => e.at)) : Date.now();
-    const [outbound, links, principals, read, muted] = await Promise.all([
-      integrationStore.linkDeliveries(since), integrationStore.threadLinks(), integrationStore.principalNames(),
-      integrationStore.readEvents(events.map((e) => e.id)), integrationStore.mutedSenders(),
+    // Two sources, one list: the integrations' events and Orca's own notifications (the bell's
+    // rows). The cursor is a time (ms), the same for both: a full source sets the cut, and only rows
+    // after it are kept, so the next window starts exactly where this one ended.
+    const beforeRaw = Number(url.searchParams.get("before"));
+    const beforeAt = Number.isFinite(beforeRaw) && beforeRaw > 0 ? beforeRaw : undefined;
+    const [events, notes, muted] = await Promise.all([
+      integrationStore.inboxEvents({ beforeAt, limit: INBOX_WINDOW }),
+      integrationStore.inboxNotifications({ before: beforeAt, limit: INBOX_WINDOW }),
+      integrationStore.mutedSenders(),
     ]);
-    const all = inboxRows(events, outbound, links, principals, { read, muted });
+    const since = events.length ? Math.min(...events.map((e) => e.at)) : Date.now();
+    const [outbound, links, principals, read] = await Promise.all([
+      integrationStore.linkDeliveries(since), integrationStore.threadLinks(), integrationStore.principalNames(),
+      integrationStore.readEvents(events.map((e) => e.id)),
+    ]);
+    const { rows: all, older } = inboxWindow([
+      { rows: inboxRows(events, outbound, links, principals, { read, muted }), full: events.length === INBOX_WINDOW },
+      { rows: notificationRows(notes, muted), full: notes.length === INBOX_WINDOW },
+    ]);
     const flag = (k: string) => url.searchParams.get(k) === "1";
     const rows = filterInbox(all, { source: url.searchParams.get("source") || undefined, person: url.searchParams.get("person") || undefined, unread: flag("unread"), muted: flag("muted") });
-    return json({ rows, facets: inboxFacets(all), older: events.length === INBOX_WINDOW ? events[events.length - 1]!.id : null });
+    return json({ rows, facets: inboxFacets(all), older });
+  }
+  // The inbox's half of the one unread count (the bell adds its own rows), and the notification
+  // kinds you muted, which the bell leaves out of its count.
+  if (req.method === "GET" && p === "/api/inbox/unread") {
+    const [others, muted] = await Promise.all([integrationStore.unreadWithoutCopy(INBOX_WINDOW), integrationStore.mutedSenders()]);
+    const prefix = muteKey("orca", notificationSender(""));
+    return json({ others, mutedKinds: [...muted].filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length)) });
   }
   if (req.method === "GET" && p === "/api/inbox/thread") {
     const c = parseConversation(url.searchParams.get("c"));
@@ -659,9 +679,23 @@ async function api(req: Request, url: URL): Promise<Response> {
     }
   }
   if (req.method === "POST" && p === "/api/inbox/read") {
-    const ids = Array.isArray(body.ids) ? body.ids.filter((x: unknown): x is string => typeof x === "string") : [];
+    const ids: string[] = Array.isArray(body.ids) ? body.ids.filter((x: unknown): x is string => typeof x === "string") : [];
     if (!ids.length) return json({ error: "ids required" }, 400);
-    await integrationStore.setRead(ids, body.read !== false);
+    // A notification row's read state is the notification's own (the bell's): one state, two views.
+    const notes = ids.map(notificationIdOf).filter((n): n is number => n !== undefined);
+    const events = ids.filter((id) => notificationIdOf(id) === undefined);
+    const read = body.read !== false;
+    await Promise.all([
+      integrationStore.setRead(events, read),
+      read ? db.markNotificationsRead(notes) : integrationStore.markNotificationsUnread(notes),
+    ]);
+    return json({ ok: true });
+  }
+  if (req.method === "POST" && p === "/api/inbox/mute" && typeof body.eventId === "string" && notificationIdOf(body.eventId) !== undefined) {
+    // A notification row mutes its kind (its "sender", shared/inbox.ts notificationSender).
+    const kind = await integrationStore.notificationKind(notificationIdOf(body.eventId)!);
+    if (!kind) return json({ error: "eventId must name a notification" }, 400);
+    await integrationStore.setMuted("orca", notificationSender(kind), body.muted !== false, KIND_META[kind as keyof typeof KIND_META]?.label ?? kind);
     return json({ ok: true });
   }
   if (req.method === "POST" && (p === "/api/inbox/mute" || p === "/api/inbox/link")) {

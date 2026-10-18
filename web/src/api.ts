@@ -100,6 +100,8 @@ export const api = {
   inbox: (q: InboxQuery = {}): Promise<InboxPage> =>
     get(`/api/inbox?${new URLSearchParams(Object.entries(q).filter(([, v]) => v).map(([k, v]) => [k, v === true ? "1" : String(v)]))}`).then(res),
   /** Reply where the event came from (the orca post path); the reply is a durable delivery. */
+  /** The inbox's half of the one unread count, and the notification kinds muted there. */
+  inboxUnread: (): Promise<{ others: number; mutedKinds: string[] }> => get("/api/inbox/unread").then(res),
   inboxReply: (eventId: string, text: string): Promise<{ eventId: string; delivery?: number }> => post("/api/inbox/reply", { eventId, text }),
   inboxRead: (ids: string[], read = true): Promise<{ ok: true }> => post("/api/inbox/read", { ids, read }),
   inboxMute: (eventId: string, muted: boolean): Promise<{ ok: true }> => post("/api/inbox/mute", { eventId, muted }),

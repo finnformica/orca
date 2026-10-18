@@ -4,6 +4,7 @@
 import * as db from "../db";
 import { digestWindow, PAIRING_TTL_MS, type DeliveryState, type DeliveryTarget, type Envelope, type Level, type PlannedDelivery, type Subscription, type TargetKind } from "../../shared/integrations";
 import type { Connection } from "./adapter";
+import type { Notification } from "../../shared/notifications";
 import { muteKey, OWN_EVENT, type Conversation, type OutboundRecord, type ThreadLinkRecord } from "../../shared/inbox";
 
 const user = () => db.currentUser();
@@ -411,10 +412,14 @@ export async function denyPairing(code: string, now = Date.now()): Promise<boole
 // ── the unified inbox (shared/inbox.ts) ─────────────────────────────────────────────────────────
 // Read-only. The inbox topics are `ext.*` and `orca.question` (shared/inbox.ts `isInboxTopic`).
 
-/** The newest inbox events, before an event id (ids are time-ordered), newest first. */
-export async function inboxEvents(opts: { before?: string; limit: number }): Promise<Envelope[]> {
+/** The newest inbox events, before an event id (ids are time-ordered) or a time (`beforeAt`, ms —
+ *  the inbox's cursor, shared with the notifications), newest first. */
+export async function inboxEvents(opts: { before?: string; beforeAt?: number; limit: number }): Promise<Envelope[]> {
   return db.withRetry(async (sql) => {
-    const rows = opts.before
+    const rows = opts.beforeAt !== undefined
+      ? await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question') AND created_at < ${opts.beforeAt}
+          ORDER BY id DESC LIMIT ${opts.limit}`
+      : opts.before
       ? await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question') AND id < ${opts.before}
           ORDER BY id DESC LIMIT ${opts.limit}`
       : await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question')
@@ -506,16 +511,19 @@ export async function eventById(id: string): Promise<Envelope | undefined> {
   });
 }
 
-/** Which of these events you have read. */
+/** Which of these events you have read: opened in the inbox, or read as the bell's copy of it (a
+ *  notification with the same key — the web adapter writes one per event it shows). One read state. */
 export async function readEvents(ids: string[]): Promise<Set<string>> {
   if (!ids.length) return new Set();
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT event_id FROM inbox_read WHERE user_id = ${user()} AND event_id = ANY(${sql.array(ids, "TEXT")})`;
-    return new Set((rows as { event_id: string }[]).map((r) => r.event_id));
+    const rows = await sql`SELECT e.id FROM event e WHERE e.user_id = ${user()} AND e.id = ANY(${sql.array(ids, "TEXT")}) AND (
+        EXISTS (SELECT 1 FROM inbox_read r WHERE r.user_id = e.user_id AND r.event_id = e.id)
+        OR EXISTS (SELECT 1 FROM notification n WHERE n.user_id = e.user_id AND n.key = e.key AND n.read_at IS NOT NULL))`;
+    return new Set((rows as { id: string }[]).map((r) => r.id));
   });
 }
 
-/** Mark events read (or unread again). An id with no event is skipped. */
+/** Mark events read (or unread again), and the bell's copy of each with them. An id with no event is skipped. */
 export async function setRead(ids: string[], read: boolean, now = Date.now()): Promise<void> {
   if (!ids.length) return;
   return db.withRetry(async (sql) => {
@@ -523,9 +531,61 @@ export async function setRead(ids: string[], read: boolean, now = Date.now()): P
       await sql`INSERT INTO inbox_read (user_id, event_id, read_at)
         SELECT ${user()}, id, ${now} FROM event WHERE user_id = ${user()} AND id = ANY(${sql.array(ids, "TEXT")})
         ON CONFLICT (user_id, event_id) DO NOTHING`;
+      await sql`UPDATE notification n SET read_at = ${now} FROM event e
+        WHERE n.user_id = ${user()} AND n.read_at IS NULL AND e.user_id = n.user_id AND e.key = n.key AND e.id = ANY(${sql.array(ids, "TEXT")})`;
     } else {
       await sql`DELETE FROM inbox_read WHERE user_id = ${user()} AND event_id = ANY(${sql.array(ids, "TEXT")})`;
+      await sql`UPDATE notification n SET read_at = NULL FROM event e
+        WHERE n.user_id = ${user()} AND e.user_id = n.user_id AND e.key = n.key AND e.id = ANY(${sql.array(ids, "TEXT")})`;
     }
+  });
+}
+
+/** Orca's own notifications for the inbox, newest first, created before `before` (ms). A row that is
+ *  the bell's copy of an inbox event (same key: an outside message, a question) is left out: the
+ *  event's own row shows it. */
+export async function inboxNotifications(opts: { before?: number; limit: number }): Promise<Notification[]> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT n.id, n.repo, n.branch, n.kind, n.title, n.body, n.link, n.created_at, n.read_at, n.instance FROM notification n
+      WHERE n.user_id = ${user()} AND n.kind <> 'external_message' AND n.created_at < ${opts.before ?? Number.MAX_SAFE_INTEGER}
+        AND NOT EXISTS (SELECT 1 FROM event e WHERE e.user_id = n.user_id AND e.key = n.key AND (e.topic LIKE 'ext.%' OR e.topic = 'orca.question'))
+      ORDER BY n.created_at DESC, n.id DESC LIMIT ${opts.limit}`;
+    return (rows as { id: string; repo: string; branch: string | null; kind: Notification["kind"]; title: string; body: string; link: Notification["link"] | null; created_at: string; read_at: string | null; instance: string }[])
+      .map((r) => ({
+        id: Number(r.id), instance: r.instance, repo: r.repo, ...(r.branch ? { branch: r.branch } : {}), kind: r.kind, title: r.title, body: r.body,
+        ...(r.link ? { link: r.link } : {}), createdAt: Number(r.created_at), ...(r.read_at ? { readAt: Number(r.read_at) } : {}),
+      }));
+  });
+}
+
+/** One notification's kind (the inbox mutes a notification row by its kind). */
+export async function notificationKind(id: number): Promise<string | undefined> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT kind FROM notification WHERE user_id = ${user()} AND id = ${id}`;
+    return (rows as { kind: string }[])[0]?.kind;
+  });
+}
+
+/** Mark notifications unread again (the bell's own write, db.markNotificationsRead, only reads). */
+export async function markNotificationsUnread(ids: number[]): Promise<void> {
+  if (!ids.length) return;
+  return db.withRetry(async (sql) => {
+    await sql`UPDATE notification SET read_at = NULL WHERE user_id = ${user()} AND id = ANY(${sql.array(ids, "INT8")})`;
+  });
+}
+
+/** The unread inbox events the bell has no copy of, in the newest `limit`, minus muted senders: the
+ *  inbox's half of the one unread count (shared/inbox.ts `unreadTotal`). */
+export async function unreadWithoutCopy(limit: number): Promise<number> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT count(*)::int AS n FROM (
+        SELECT e.id, e.key, e.envelope FROM event e WHERE e.user_id = ${user()} AND (e.topic LIKE 'ext.%' OR e.topic = 'orca.question')
+        ORDER BY e.id DESC LIMIT ${limit}) e
+      WHERE NOT EXISTS (SELECT 1 FROM notification n WHERE n.user_id = ${user()} AND n.key = e.key)
+        AND NOT EXISTS (SELECT 1 FROM inbox_read r WHERE r.user_id = ${user()} AND r.event_id = e.id)
+        AND NOT EXISTS (SELECT 1 FROM inbox_mute m WHERE m.user_id = ${user()}
+          AND m.adapter = e.envelope->'actor'->'external'->>'adapter' AND m.external_id = e.envelope->'actor'->'external'->>'id')`;
+    return Number((rows as { n: number }[])[0]?.n ?? 0);
   });
 }
 

@@ -3,6 +3,7 @@
 // Generic over adapter kinds: it reads only the core's envelope, delivery target and thread link.
 // Pure: the server builds the rows with it, the web renders them, the tests import it as is.
 import { replyToOf, type DeliveryState, type DeliveryTarget, type Envelope } from "./integrations";
+import { KIND_META, type Notification } from "./notifications";
 
 /** An inbox topic: every external event (`ext.*`) and every question the orchestrator asks you. */
 export const isInboxTopic = (topic: string): boolean => topic.startsWith("ext.") || topic === "orca.question";
@@ -61,6 +62,11 @@ export type Sender = { name: string; principalId?: string; principalName?: strin
  *  after it (or, for a question, the newest delivery of the question itself). */
 export type ReplyState = { state: DeliveryState; at: number; attempts: number; error?: string };
 
+/** What a row with no conversation does when you open it: the place it leads to. `orchestrator`
+ *  opens its panel, `url` a page outside Orca, else the workstream's page (a PR's when `pr` names
+ *  one) plus `tail`. The page knows only this shape, so a new source needs no page change. */
+export type InboxOpen = { orchestrator?: boolean; url?: string; pr?: number; tail?: string };
+
 export type InboxRow = {
   id: string; at: number; topic: string;
   /** `message` is a chat or email message, `question` the orchestrator's ask, `event` anything else
@@ -69,7 +75,12 @@ export type InboxRow = {
   adapter: string; integrationId?: string; linkId?: string;
   sender?: Sender;
   title?: string; text: string; url?: string;
-  conversation: string; // conversationParam
+  /** conversationParam; empty for a row that is not part of a conversation (it has `open`). */
+  conversation: string;
+  /** The row's own badge (a notification's kind), in place of the kind's. */
+  badge?: { label: string; tone: "ready" | "error" | "warning" | "queued" | "neutral" };
+  /** Opening it goes here, not to a thread view. */
+  open?: InboxOpen;
   workstream?: { repo: string; branch: string };
   reply?: ReplyState;
   /** You opened it (per user, `inbox_read`). */
@@ -162,6 +173,63 @@ export function inboxRows(events: readonly Envelope[], outbound: readonly Outbou
       canLink: kind !== "question" && !conv.id.startsWith(OWN_EVENT) && !links.some((l) => l.adapter === conv.adapter && l.externalThreadId === conv.id),
     };
   }).sort((a, b) => b.at - a.at || (a.id < b.id ? 1 : -1));
+}
+
+/** A row id for an Orca notification. Event ids never start with it. */
+export const NOTIFICATION_ROW = "n:";
+export const notificationRowId = (id: number): string => `${NOTIFICATION_ROW}${id}`;
+export const notificationIdOf = (rowId: string): number | undefined => {
+  if (!rowId.startsWith(NOTIFICATION_ROW)) return undefined;
+  const n = Number(rowId.slice(NOTIFICATION_ROW.length));
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+};
+/** A notification's "sender": its kind, so Mute on the row mutes that kind (`muteKey("orca", …)`). */
+export const notificationSender = (kind: string): string => `kind:${kind}`;
+
+/** Orca's own notifications (the bell's rows) as inbox rows, source `orca`. Their read state is the
+ *  notification's own `readAt`. Open does what the bell's Open does: the orchestrator's panel for
+ *  its own wake, else the workstream's Chat tab with the composer focused. */
+export function notificationRows(list: readonly Pick<Notification, "id" | "repo" | "branch" | "kind" | "title" | "body" | "link" | "createdAt" | "readAt">[], muted: ReadonlySet<string> = new Set()): InboxRow[] {
+  return list.map((n) => {
+    const meta = KIND_META[n.kind];
+    const workstream = !n.link?.orchestrator && n.repo && n.branch ? { repo: n.repo, branch: n.branch } : undefined;
+    const open: InboxOpen = n.link?.orchestrator ? { orchestrator: true }
+      : workstream ? { ...(n.link?.pr ? { pr: n.link.pr } : {}), tail: "/chat?reply=1" }
+      : n.link?.url ? { url: n.link.url } : {};
+    return {
+      id: notificationRowId(n.id), at: n.createdAt, topic: `orca.notification.${n.kind}`, kind: "event" as const, adapter: "orca",
+      sender: { name: meta.label, externalId: notificationSender(n.kind) },
+      title: n.title, text: clip(n.body, INBOX_TEXT_MAX),
+      ...(n.link?.url ? { url: n.link.url } : {}),
+      conversation: "", badge: { label: meta.label, tone: meta.tone }, open,
+      ...(workstream ? { workstream } : {}),
+      read: !!n.readAt, muted: muted.has(muteKey("orca", notificationSender(n.kind))), canReply: false, canLink: false,
+    };
+  });
+}
+
+/** Both kinds of rows in one list, newest first. */
+export const mergeRows = (a: readonly InboxRow[], b: readonly InboxRow[]): InboxRow[] =>
+  [...a, ...b].sort((x, y) => y.at - x.at || (x.id < y.id ? 1 : -1));
+
+/** One window of the inbox over two sources (events and notifications), each read newest first up
+ *  to `limit` rows before the same time cursor. A full source has more rows past its oldest, so the
+ *  window keeps only rows after the newest such edge; `older` (ms) is the cursor for the next window,
+ *  which then starts exactly there. Null when neither source was full. */
+export function inboxWindow(sources: { rows: InboxRow[]; full: boolean }[]): { rows: InboxRow[]; older: string | null } {
+  const merged = sources.reduce<InboxRow[]>((all, s) => mergeRows(all, s.rows), []);
+  const edges = sources.filter((s) => s.full && s.rows.length).map((s) => Math.min(...s.rows.map((r) => r.at)));
+  if (!edges.length) return { rows: merged, older: null };
+  const cut = Math.max(...edges);
+  const kept = merged.filter((r) => r.at > cut);
+  // Every row at one instant: keep them all and step past it (a tie this wide does not happen).
+  return kept.length ? { rows: kept, older: String(cut + 1) } : { rows: merged, older: String(cut) };
+}
+
+/** The one unread count (the bell and the Inbox nav item): the bell's own unread rows, minus the
+ *  kinds you muted, plus the unread inbox rows the bell has no copy of (`others`, from the bridge). */
+export function unreadTotal(list: readonly Pick<Notification, "kind" | "readAt">[], others: number, mutedKinds: readonly string[] = []): number {
+  return list.filter((n) => !n.readAt && !mutedKinds.includes(n.kind)).length + others;
 }
 
 /** `unread` keeps the rows you have not opened; `muted` shows ONLY muted senders' rows (they are

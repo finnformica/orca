@@ -13,7 +13,7 @@ import type { Adapter } from "../server/integrations/adapter";
 import { inboundEnvelope } from "../shared/integrations";
 import { replyToEvent as replyTo } from "../server/integrations/router";
 import {
-  conversationParam, replyRefusal, threadActions, muteKey, filterInbox, inboundConversation, inboxFacets, inboxRows, parseConversation, personId, sourceLabel, threadItems, threadSources,
+  conversationParam, replyRefusal, inboxWindow, notificationRowId, notificationRows, notificationSender, unreadTotal, threadActions, muteKey, filterInbox, inboundConversation, inboxFacets, inboxRows, parseConversation, personId, sourceLabel, threadItems, threadSources,
 } from "../shared/inbox";
 import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
@@ -222,5 +222,69 @@ describe("with Postgres", () => {
       replyTo: slack!.id, canLink: false, sender: { eventId: slack!.id, name: "Saajan", muted: false }, unread: [slack!.id], // the paired name, not the handle
     });
     expect(threadItems(conv.events, conv.outbound, new Map()).map((i) => i.dir)).toEqual(["in", "out"]);
+  });
+
+  test("Orca's notifications are inbox rows: one read state with the bell, mute by kind, one unread count, one window", async () => {
+    await store.addIntegration({ id: "slack-work", kind: "slack", name: "Work Slack", instance: "local", config: {}, secretRef: "ORCA_SECRET_SLACK_BOT", enabled: true });
+    await store.addLink({ id: "eng", integrationId: "slack-work", externalId: "C1", level: "ask", repos: [], requireMention: false });
+    await store.addPrincipal({ id: "saajan", name: "Saajan", maxLevel: "ask" }, [{ adapter: "slack", externalId: "U1" }]);
+    await store.addPrincipal({ id: "ada", name: "Ada", maxLevel: "ask" }, [{ adapter: "slack", externalId: "U2" }]);
+    await router.ingest("slack-work", inboundEnvelope({ adapter: "slack", channel: "C1", eventId: "Ev1", from: { adapter: "slack", id: "U1" }, text: "Status?", at: 1_000 }), 1_000);
+    await router.ingest("slack-work", inboundEnvelope({ adapter: "slack", channel: "C1", eventId: "Ev2", from: { adapter: "slack", id: "U2" }, text: "Any news?", at: 1_500 }), 1_500);
+    const [second, first] = await store.inboxEvents({ limit: 10 });
+
+    // The bell's own rows, plus its copy of the first message (the web adapter's, same key).
+    const ci = (await db.addNotification({ key: "pr-ci:r#7@abc", kind: "pr_ci_failed", repo: "r", branch: "feat", title: "Fix login", body: "test failed", link: { pr: 7 } }, 2_000))!;
+    const ask = (await db.addNotification({ key: "run:x:needs_input", kind: "needs_input", repo: "@orca", branch: "orchestrator", title: "Orchestrator", body: "Which one?", link: { orchestrator: true } }, 3_000))!;
+    const copy = (await db.addNotification({ key: first!.key, kind: "needs_input", repo: "", title: "U1 via slack", body: "Status?" }, 1_000))!;
+    await db.addNotification({ key: "web:Ev9", kind: "external_message", repo: "", title: "x", body: "y" }, 1_200);
+
+    // Only Orca's own rows: the copy and an outside message's bell row are the events' rows already.
+    const notes = await store.inboxNotifications({ limit: 10 });
+    expect(notes.map((n) => n.id)).toEqual([ask.id, ci.id]);
+    const rows = notificationRows(notes);
+    expect(rows.map((r) => [r.id, r.adapter, r.badge?.label, r.title, r.open, r.workstream, r.read, r.canReply, r.conversation])).toEqual([
+      [notificationRowId(ask.id), "orca", "Needs input", "Orchestrator", { orchestrator: true }, undefined, false, false, ""],
+      [notificationRowId(ci.id), "orca", "CI failing", "Fix login", { pr: 7, tail: "/chat?reply=1" }, { repo: "r", branch: "feat" }, false, false, ""],
+    ]);
+
+    // One read state: the event read in the inbox reads the bell's copy, and the reverse.
+    await store.setRead([first!.id], true, 5_000);
+    expect((await db.notifications()).find((n) => n.id === copy.id)?.readAt).toBe(5_000);
+    await store.setRead([first!.id], false);
+    expect((await db.notifications()).find((n) => n.id === copy.id)?.readAt).toBeUndefined();
+    await db.markNotificationsRead([copy.id]);
+    expect(await store.readEvents([first!.id, second!.id])).toEqual(new Set([first!.id]));
+    // A notification row read, then unread again from the inbox.
+    await db.markNotificationsRead([ci.id]);
+    expect(notificationRows(await store.inboxNotifications({ limit: 10 })).find((r) => r.id === notificationRowId(ci.id))?.read).toBe(true);
+    await store.markNotificationsUnread([ci.id]);
+    expect(notificationRows(await store.inboxNotifications({ limit: 10 })).every((r) => !r.read)).toBe(true);
+
+    // Mute on a notification row mutes its kind.
+    expect(await store.notificationKind(ci.id)).toBe("pr_ci_failed");
+    await store.setMuted("orca", notificationSender("pr_ci_failed"), true, "CI failing");
+    const muted = await store.mutedSenders();
+    expect(notificationRows(await store.inboxNotifications({ limit: 10 }), muted).map((r) => [r.badge?.label, r.muted])).toEqual([["Needs input", false], ["CI failing", true]]);
+
+    // One count: the bell's unread rows (less muted kinds) plus the unread events with no bell copy.
+    expect(await store.unreadWithoutCopy(300)).toBe(1); // the second message; the first has a copy
+    await store.setMuted("slack", "U2", true);
+    expect(await store.unreadWithoutCopy(300)).toBe(0);
+    const bell = await db.notifications();
+    expect(unreadTotal(bell, 1, ["pr_ci_failed"])).toBe(bell.filter((n) => !n.readAt && n.kind !== "pr_ci_failed").length + 1);
+
+    // A time cursor shared by both sources.
+    expect((await store.inboxEvents({ beforeAt: 1_500, limit: 10 })).map((e) => e.id)).toEqual([first!.id]);
+    expect((await store.inboxNotifications({ before: 3_000, limit: 10 })).map((n) => n.id)).toEqual([ci.id]);
+  });
+
+  test("one inbox window over two sources keeps only rows after a full source's edge", () => {
+    const row = (id: string, at: number) => ({ id, at } as any);
+    // Events full at 50 (more past it); notifications not full and older: rows past 50 wait.
+    const w = inboxWindow([{ rows: [row("e1", 100), row("e2", 50)], full: true }, { rows: [row("n1", 70), row("n2", 10)], full: false }]);
+    expect(w.rows.map((r) => r.id)).toEqual(["e1", "n1"]);
+    expect(w.older).toBe("51"); // the next window is before 51: e2 and n2 come then
+    expect(inboxWindow([{ rows: [row("e1", 100)], full: false }, { rows: [row("n1", 70)], full: false }])).toEqual({ rows: [row("e1", 100), row("n1", 70)], older: null });
   });
 });
