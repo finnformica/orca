@@ -596,8 +596,9 @@ function SublineMore({ items }: { items: SublineItem[] }) {
       <PopoverContent align="start" side="bottom" data-slot="subline-more-card" className="w-auto max-w-80 p-0 text-xs"
         onOpenAutoFocus={(e) => e.preventDefault()} onClick={(e) => e.stopPropagation()}
         onPointerEnter={hover(true)} onPointerLeave={hover(false)}>
+        {/* One item a line; an item's own leading "·" (the PR preview link draws one) is dropped here. */}
         <ul className="divide-y">
-          {items.map((i) => <li key={i.key} data-subline-hidden={i.key} className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-1 px-3 py-2 break-words">{i.node}</li>)}
+          {items.map((i) => <li key={i.key} data-subline-hidden={i.key} className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-1 px-3 py-2 break-words [&>span>[aria-hidden=true]:first-child]:hidden">{i.node}</li>)}
         </ul>
       </PopoverContent>
     </Popover>
