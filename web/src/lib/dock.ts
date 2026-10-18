@@ -88,6 +88,20 @@ export function noteDockMotion(delta: 1 | -1) {
 
 export const dockMoving = () => moving > 0;
 
+/** A resize (a drag or an arrow key on the edge) writes the dock's width straight to its element, with
+ *  no transition, before it saves the width. The dock width change that save then causes is NOT a
+ *  slide: the page already follows the edge in the same frame, so the shell must not hold the page
+ *  frame at an "end width" (that double-counted the change). `noteDockResize(w)` marks the next dock
+ *  change to `w` as a resize; `takeDockResize` reads and clears the mark on every dock change, so a
+ *  stale mark (the width clamped to where it was) never reaches a later open or close. */
+let resizeTo: number | null = null;
+export const noteDockResize = (w: number): void => { resizeTo = w; };
+export function takeDockResize(w: number): boolean {
+  const hit = resizeTo === w;
+  resizeTo = null;
+  return hit;
+}
+
 /** Run `fn` now — or, while the dock or the nav is animating its width, once, when it has settled.
  *  Pass a stable function: a repeated call while moving queues it once. */
 export function afterDockMotion(fn: () => void) {

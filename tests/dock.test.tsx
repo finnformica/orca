@@ -154,6 +154,52 @@ test("the edge resizes from the keyboard too: ← widens, → narrows, and the d
   expect(dock().style.width).toBe(`${PANEL_MIN_W}px`);
 });
 
+test("a resize is not a slide: an arrow key or a drag moves the dock with no width transition and never holds the page frame", async () => {
+  await mount(1440);
+  await click(askButton());
+  await act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 120)); }); // the open slide is over
+  const frame = $('[data-slot="page-frame"]')!;
+  const edge = $('[data-slot="orchestrator-resize"]')!;
+  expect(frame.style.width).toBe("");
+  // Every write to the dock's and the frame's width, seen as it happens: the dock's width may change
+  // only while `data-resizing` turns its transition off, and the frame's width is never written.
+  const writes: { el: string; from: string; to: string; resizing: boolean }[] = [];
+  const spy = (el: HTMLElement) => {
+    const proto = Object.getPrototypeOf(el.style);
+    const d = (function find(o: object | null): PropertyDescriptor | undefined { return o ? Object.getOwnPropertyDescriptor(o, "width") ?? find(Object.getPrototypeOf(o)) : undefined; })(proto)!;
+    Object.defineProperty(el.style, "width", { configurable: true, get() { return d.get!.call(this); },
+      set(v: string) { writes.push({ el: el.dataset.slot!, from: d.get!.call(this), to: v, resizing: el.hasAttribute("data-resizing") }); d.set!.call(this, v); } });
+    return () => { delete (el.style as unknown as Record<string, unknown>).width; };
+  };
+  const unspy = [spy(dock()), spy(frame)];
+  const press = async (k: string) => { await act(async () => { edge.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })); await flush(); }); };
+  await press("ArrowLeft");
+  await press("ArrowRight");
+  await press("ArrowRight");
+  // A drag, then its release (the release saves the width, which once held the frame at width + delta).
+  await act(async () => {
+    edge.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: 900 }));
+    window.dispatchEvent(new PointerEvent("pointermove", { clientX: 860 }));
+    window.dispatchEvent(new PointerEvent("pointerup", { clientX: 860 }));
+    await flush();
+  });
+  unspy.forEach((f) => f());
+  let dockChanges = 0;
+  for (const w of writes) {
+    if (w.el === "page-frame" && w.to) throw new Error(`the page frame was held at ${w.to} by a resize`);
+    if (w.el !== "dock" || w.from === w.to) continue;
+    expect(w.resizing).toBe(true); // a dock width change with the transition on slides 150ms behind the handle
+    dockChanges++;
+  }
+  expect(dockChanges).toBe(4);
+  expect(dock().style.width).toBe(`${460 - RESIZE_STEP + 40}px`);
+  expect(dock().hasAttribute("data-resizing")).toBe(false); // the transition is back for the next open / close
+  expect(frame.style.width).toBe("");
+  // An open or a close still holds the frame (the slide), so the resize mark did not leak into it.
+  await click(askButton());
+  expect(frame.style.width).toMatch(/^\d+px$/);
+});
+
 test("the motion flag: work that measures the page waits while the dock or the nav animates its width, then runs once", () => {
   const calls: string[] = [];
   const measure = () => calls.push("measure");

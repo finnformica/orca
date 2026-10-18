@@ -23,7 +23,7 @@ import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPa
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
 import { SLIDE_MS } from "@/components/SidePanel";
-import { dockClipElementAtom, dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
+import { dockClipElementAtom, dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, takeDockResize, useNavToggle } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
 import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
@@ -111,7 +111,8 @@ export function Dock() {
  *  (measured: a getBoundingClientRect / clientWidth here forced a ~100ms style + layout pass at 4×
  *  CPU): the column's width at rest comes from a ResizeObserver, and the rest is the widths the
  *  previous and the new state ASK for — exact for a reversal mid-slide too. No React state: the
- *  frame's style is written directly. */
+ *  frame's style is written directly. Only an open, a close or the nav's rail holds it: a resize of the
+ *  panel moves the dock with no transition, so the page follows the edge in the same frame. */
 function useFrozenPage(els: { col: HTMLElement | null; frame: HTMLElement | null },
   dock: number, rail: boolean, narrow: boolean) {
   const was = useRef({ dock, rail });
@@ -132,6 +133,8 @@ function useFrozenPage(els: { col: HTMLElement | null; frame: HTMLElement | null
     const release = () => { clearTimeout(timer.current); frame.style.width = ""; };
     if (narrow) return release();
     if (prev.dock === dock && prev.rail === rail) return;
+    // A resize is not a slide: the dock took its width with no transition, and the page followed it.
+    if (prev.dock !== dock && takeDockResize(dock)) return release();
     // Before the observer's first report (it reports on observe, so in practice never): read it once.
     if (restCol.current === null) restCol.current = col?.clientWidth ?? null;
     if (restCol.current === null) return release();
