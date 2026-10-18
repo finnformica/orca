@@ -17,6 +17,7 @@ import { InboxPage } from "./views/Inbox";
 import { GitHubPage, PreviewsPage, Repos, Settings, UsagePage } from "./views/Pages";
 import { HandoffsPage } from "./views/Handoffs";
 import { PrDetail } from "./views/PrDetail";
+import { IntegrationsPage } from "./views/Integrations";
 import { LocalDetail } from "./views/LocalDetail";
 import { TooltipProvider } from "./components/ui/tooltip";
 
@@ -62,6 +63,7 @@ function Page({ route }: { route: Route }) {
     case "handoffs": return <HandoffsPage />;
     case "usage": return <UsagePage />;
     case "settings": return <Settings />;
+    case "integrations": return <IntegrationsPage />;
     // The orchestrator's routed page (narrow screens; see useOrchestrator). It works if visited
     // directly on a desktop width too — nothing about the route itself is phone-only.
     case "orchestrator": return <OrchestratorPage />;
@@ -69,7 +71,7 @@ function Page({ route }: { route: Route }) {
   }
 }
 
-const TITLES = { board: "Overview", agents: "Agents", inbox: "Inbox", previews: "Previews", repos: "Repos", github: "GitHub", handoffs: "Handoffs", usage: "Usage", settings: "Settings", orchestrator: "Orchestrator" } as const;
+const TITLES = { board: "Overview", agents: "Agents", inbox: "Inbox", previews: "Previews", repos: "Repos", github: "GitHub", handoffs: "Handoffs", usage: "Usage", settings: "Settings", orchestrator: "Orchestrator", integrations: "Integrations" } as const;
 
 function Crumbs({ route }: { route: Route }) {
   const rows = useWorkstreams();
@@ -80,6 +82,7 @@ function Crumbs({ route }: { route: Route }) {
     const label = row?.title ?? (route.name === "pr" ? `#${route.number}` : route.branch);
     return <><Crumb to="/agents">Agents</Crumb><Crumb>{label}</Crumb></>;
   }
+  if (route.name === "integrations") return <><Crumb to="/settings">Settings</Crumb><Crumb>Integrations</Crumb></>;
   return <Crumb>{TITLES[route.name]}</Crumb>;
 }
 
