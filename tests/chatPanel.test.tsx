@@ -303,7 +303,7 @@ test("a tool's output stays inside its own accordion instead of spilling into th
   await mount(base);
 
   // A finished turn folds its whole trail behind one line; the answer is what's on screen.
-  expect(text()).toContain("⏵ 2 steps");
+  expect(container!.querySelector('[data-slot="activity-chip"]')?.textContent).toBe("Worked · 2 steps");
   expect(text()).not.toContain("Running the suite now.");
   const fold = [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("2 steps"));
   await act(async () => { fold!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
@@ -319,25 +319,76 @@ test("a tool's output stays inside its own accordion instead of spilling into th
   expect(text()).toContain("SECRET_TOOL_OUTPUT 289 pass");
 });
 
-test("a tool call on a live run is open while it works and folds itself when its result lands", async () => {
+test("a live turn shows ONE compact activity block, and on finish it folds into a summary chip above the answer", async () => {
+  // Finn: a wall of blue commands filled the chat while it worked, then vanished at once when the
+  // answer came. Now: one block (the call in flight, a timer, counts, the last few runs faded), and
+  // the block folds in place into `Worked for … · N steps` — nothing disappears.
+  const now = Date.now();
   apiFake.turnsData.set("r::feat", [{
-    id: "run-1", provider: "claude", prompt: "run the tests", response: "",
-    steps: [{ at: 2, kind: "tool", id: "tu_1", name: "Bash", input: { command: "bun test" } }],
+    id: "run-1", provider: "claude", prompt: "run the tests", response: "", startedAt: now - 72_000,
+    steps: [
+      { at: 1, kind: "tool", id: "r1", name: "Read", input: { file_path: "/a/one.ts" } },
+      { at: 2, kind: "result", id: "r1", output: "SECRET_FILE_BODY" },
+      { at: 3, kind: "tool", id: "r2", name: "Read", input: { file_path: "/a/two.ts" } },
+      { at: 4, kind: "result", id: "r2", output: "x" },
+      { at: 5, kind: "tool", id: "r3", name: "Read", input: { file_path: "/a/three.ts" } },
+      { at: 6, kind: "result", id: "r3", output: "x" },
+      { at: 7, kind: "text", text: "Now the **suite**." },
+      { at: 8, kind: "tool", id: "tu_1", name: "Bash", input: { command: "bun test" } },
+    ],
   }]);
   await mount({ ...base, agentStatus: "running" });
-  // In flight: the input is what there is to watch, so it's open without a click.
-  expect(text()).toContain("Running: bun test…");
-  expect(container!.querySelector("pre")?.textContent).toBe("bun test");
+  const slot = (name: string) => container!.querySelector(`[data-slot="${name}"]`);
+  // The header: the call in flight and the elapsed time.
+  expect(slot("activity-current")?.textContent).toBe("Running: bun test…");
+  expect(slot("activity-elapsed")?.textContent).toBe("1m 12s");
+  expect(slot("activity-counts")?.textContent).toBe("1 command, 3 files read");
+  // The trail: consecutive reads grouped, the interim message as one line of text.
+  expect([...slot("activity-trail")!.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Read 3 files", "Now the **suite**."]);
+  // Nothing opens by itself: no command input, no output, no code block.
+  expect(container!.querySelector("pre")).toBeNull();
+  expect(text()).not.toContain("SECRET_FILE_BODY");
+  // The header opens the full list: one line per run, the interim text as prose, not code.
+  await act(async () => { (slot("activity-head") as HTMLButtonElement).click(); });
+  expect(slot("activity-steps")?.textContent).toContain("Read 3 files");
+  expect(slot("step-text")?.querySelector("strong")?.textContent).toBe("suite");
+  await act(async () => { (slot("activity-head") as HTMLButtonElement).click(); });
+
+  // The answer lands: the block is still there, folded to its chip, with the answer below it.
+  apiFake.turnsData.set("r::feat", [{ ...apiFake.turnsData.get("r::feat")![0]!, response: "All green.", finishedAt: now }]);
   const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
   await act(async () => {
-    stream.dispatchEvent(Object.assign(new Event("step"), {
-      data: JSON.stringify({ repo: "r", branch: "feat", runId: "run-1", steps: [{ at: 3, kind: "result", id: "tu_1", output: "SECRET_TOOL_OUTPUT 289 pass" }] }),
-    }));
-    await flush();
+    stream.dispatchEvent(Object.assign(new Event("turn"), { data: JSON.stringify({ repo: "r", branch: "feat", runId: "run-1" }) }));
+    await flush(); await flush();
   });
-  // Done: it collapses on its own, output tucked behind the toggle like any finished call.
-  expect(text()).not.toContain("Running: bun test…");
-  expect(text()).not.toContain("SECRET_TOOL_OUTPUT");
+  expect(text()).toContain("All green.");
+  expect(slot("activity-live")?.hasAttribute("data-open")).toBe(false); // folding (height + opacity)
+  expect(slot("activity-summary")?.hasAttribute("data-open")).toBe(true);
+  expect(slot("activity-chip")?.textContent).toBe("Worked for 1m 12s · 5 steps");
+  // The chip sits above the answer, in the place the block was.
+  const order = slot("turn-activity")!.compareDocumentPosition([...container!.querySelectorAll("p")].find((p) => p.textContent === "All green.")!);
+  expect(order & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // Once the fold has played, the live block's content leaves the DOM.
+  await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
+  expect(slot("activity-current")).toBeNull();
+});
+
+test("the live header names the newest call with no result, not the last step; the trail leaves it out", async () => {
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", prompt: "why the restart", response: "", startedAt: Date.now(),
+    steps: [
+      { at: 1, kind: "tool", id: "a", name: "Bash", input: { command: "orca board" } },
+      { at: 2, kind: "result", id: "a", output: "x" },
+      { at: 3, kind: "tool", id: "b", name: "Bash", input: { command: "git -C /opt/orca log" } }, // still running
+      { at: 4, kind: "tool", id: "c", name: "Read", input: { file_path: "/a/notes.md" } },        // parallel, returned
+      { at: 5, kind: "result", id: "c", output: "x" },
+      { at: 6, kind: "thinking", text: "hm" },
+    ],
+  }]);
+  await mount({ ...base, agentStatus: "running" });
+  expect(container!.querySelector('[data-slot="activity-current"]')?.textContent).toBe("Running: git -C /opt/orca log…");
+  const trail = [...container!.querySelectorAll('[data-slot="activity-trail"] li')].map((li) => li.textContent);
+  expect(trail).toEqual(["Running: orca board", "Reading notes.md"]);
 });
 
 test("a finished turn does not repeat its final message as the last step", async () => {
@@ -722,7 +773,8 @@ test("an older turn that arrived without its steps loads them on unfold", async 
   apiFake.turnsData.set("r::feat", [{ id: "run-old", provider: "claude", prompt: "p", instruction: "old work", response: "Did it.", finishedAt: 2 }]); // no `steps`
   apiFake.turnStepsData.set("run-old", [{ seq: 0, step: { kind: "tool", name: "Bash", input: { command: "bun test" }, at: 1 } }, { seq: 1, step: { kind: "result", output: "ok", at: 2 } }]);
   await mount(base);
-  const unfold = [...container!.querySelectorAll("button")].find((b) => b.textContent?.trim() === "⏵ steps")!;
+  const unfold = container!.querySelector<HTMLButtonElement>('[data-slot="activity-chip"]')!;
+  expect(unfold.textContent).toBe("Worked · steps");
   expect(unfold).toBeTruthy();
   await act(async () => { unfold.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
   expect(text()).toContain("1 step"); // fetched from /api/turns/steps from seq 0, then folded like any finished turn
