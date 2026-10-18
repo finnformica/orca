@@ -2973,11 +2973,28 @@ export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) =>
 // flexible tracks (workstream, signals) via their own `grow`. Each column has a floor in rem; the
 // flexible ones share what is left, so the row never needs a horizontal scroll.
 export type ListColumn = { key: "workstream" | "status" | "pr" | "signals" | "actions"; label: string; minRem: number; grow?: number };
-export function listColumns(): ListColumn[] {
-  return [
+/** The list's layouts by the PAGE's width (the shell's `@container/page`, so the docked orchestrator
+ *  panel counts): `wide` has every column; `mid` folds Status under the title; `narrow` also folds
+ *  Checks & review into the PR cell. A phone (below md) stacks each row instead. */
+export type ListTier = "narrow" | "mid" | "wide";
+/** The page width (rem) from which each tier applies — the Agents row's `@min-[…]/page:` classes. */
+export const LIST_TIER_MIN_REM: Record<ListTier, number> = { narrow: 0, mid: 52, wide: 68 };
+export const LIST_TIERS: ListTier[] = ["narrow", "mid", "wide"];
+/** Which tier a page width (px) gets. */
+export function listTier(pagePx: number, remPx = 16): ListTier {
+  return pagePx >= LIST_TIER_MIN_REM.wide * remPx ? "wide" : pagePx >= LIST_TIER_MIN_REM.mid * remPx ? "mid" : "narrow";
+}
+const TIER_COLUMNS: Record<ListTier, ListColumn["key"][]> = {
+  narrow: ["workstream", "pr", "actions"],
+  mid: ["workstream", "pr", "signals", "actions"],
+  wide: ["workstream", "status", "pr", "signals", "actions"],
+};
+export function listColumns(tier: ListTier = "wide"): ListColumn[] {
+  const all: ListColumn[] = [
     { key: "workstream", label: "Workstream", minRem: 10, grow: 2 },
     { key: "status", label: "Status", minRem: 8.5 },
-    { key: "pr", label: "PR", minRem: 8.5 },
+    // Narrow, the PR cell also holds the checks and review: it takes the same share as the title.
+    { key: "pr", label: "PR", minRem: 8.5, grow: tier === "narrow" ? 2 : undefined },
     { key: "signals", label: "Checks & review", minRem: 6, grow: 1 },
     // Fixed, wide enough for the row's quick-action icons (two at most — quickActions never applies
     // more to one state), the local preview link + its Stop and the ⋯ menu, all size-7 at gap-1, so
@@ -2986,7 +3003,10 @@ export function listColumns(): ListColumn[] {
     // submenu still carries Open/Add PR preview.
     { key: "actions", label: "Actions", minRem: 10 },
   ];
+  return all.filter((c) => TIER_COLUMNS[tier].includes(c.key));
 }
+/** Which tiers show a column as its own cell (the rest fold it into another cell). */
+export const listColumnTiers = (key: ListColumn["key"]): ListTier[] => LIST_TIERS.filter((t) => TIER_COLUMNS[t].includes(key));
 /** The CSS grid-template-columns for a column set: fixed floors, `minmax(floor, Nfr)` for the flexible. */
 export const listGridTemplate = (cols: ListColumn[]): string =>
   cols.map((c) => (c.grow ? `minmax(${c.minRem}rem,${c.grow}fr)` : `${c.minRem}rem`)).join(" ");

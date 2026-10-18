@@ -9,7 +9,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { getDefaultStore } from "jotai";
-import { AskOrchestrator, OrchestratorPage, OrchestratorPanel } from "@/components/Terminal";
+import { AskOrchestrator, ORCHESTRATOR_WINDOW_NAME, ORCHESTRATOR_WINDOW_URL, OrchestratorPage, OrchestratorPanel, OrchestratorWindow, isOrchestratorWindow } from "@/components/Terminal";
 import { Dock } from "@/components/Shell";
 import { SLIDE_MS } from "@/components/SidePanel";
 import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
@@ -292,10 +292,47 @@ test("dayLabel groups timestamps: Today, Yesterday, then the date", () => {
   expect(dayLabel(now - 3 * DAY, now)).toMatch(/10 Oct|Oct 10/);
 });
 
-test("Pop out is hidden without the Document Picture-in-Picture API", async () => {
-  await mount(<Entry />);
-  await click(launcher());
-  expect(panel()!.querySelector('[aria-label="Pop out"]')).toBeNull();
+test("without the Document Picture-in-Picture API (plain http, Firefox), Pop out opens the chat in a named popup window; a second click focuses it", async () => {
+  const realOpen = window.open;
+  const opened: { url?: string | URL; name?: string; features?: string }[] = [];
+  let focused = 0;
+  const fakeWin = { closed: false, focus() { focused++; } } as unknown as Window;
+  window.open = ((url?: string | URL, name?: string, features?: string) => { opened.push({ url, name, features }); return fakeWin; }) as typeof window.open;
+  try {
+    await mount(<Entry />);
+    await click(launcher());
+    const popOut = panel()!.querySelector<HTMLButtonElement>('[aria-label="Pop out"]')!;
+    expect(popOut).not.toBeNull();
+    await click(popOut);
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.url).toBe(ORCHESTRATOR_WINDOW_URL);
+    expect(opened[0]!.name).toBe(ORCHESTRATOR_WINDOW_NAME);
+    expect(opened[0]!.features).toMatch(/^popup,width=\d+,height=\d+$/);
+    expect(panel()).toBeNull(); // the chat moved to the window; the tab's panel closed
+    // Again: the open window comes forward, no second window and no reload.
+    await click(launcher());
+    await click(panel()!.querySelector('[aria-label="Pop out"]')!);
+    expect(opened).toHaveLength(1);
+    expect(focused).toBe(2);
+    // Closed by the user: the next click opens a new one.
+    (fakeWin as { closed: boolean }).closed = true;
+    await click(launcher());
+    await click(panel()!.querySelector('[aria-label="Pop out"]')!);
+    expect(opened).toHaveLength(2);
+  } finally {
+    window.open = realOpen;
+  }
+});
+
+test("the popup window's page is the orchestrator's header and chat alone", async () => {
+  expect(isOrchestratorWindow("/orchestrator", "?window")).toBe(true);
+  expect(isOrchestratorWindow("/orchestrator", "")).toBe(false);
+  expect(isOrchestratorWindow("/agents", "?window")).toBe(false);
+  await mount(<OrchestratorWindow />);
+  const win = container!.querySelector('[data-slot="orchestrator-window"]')!;
+  expect(win.textContent).toContain("Orchestrator");
+  expect(win.querySelector("textarea")).not.toBeNull();
+  expect(win.querySelector('[aria-label="Close orchestrator"]')).toBeNull();
 });
 
 test("Pop out shows at tablet width and up; it hides only below the app's own phone breakpoint (not lg)", async () => {
