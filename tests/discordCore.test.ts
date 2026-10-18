@@ -2,7 +2,8 @@
 // pairing, the dispatcher and the orchestrator's `orca post`. Discord itself is a fake: a Gateway
 // socket the test drives and a REST stub that keeps channels like Discord does — a thread opened on
 // a message is a new channel with that message's id, and a post to an unknown channel is a 404.
-// It runs twice: `threads: true` (a thread per request) and the default, reply in place.
+// It runs twice: `threads: true` (a thread per request) and the default, reply in place. Reply in
+// place also covers `orca post --reply --thread` (a thread for one answer) and the catch-all link.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import * as db from "../server/db";
 import * as orchestrator from "../server/orchestrator";
@@ -12,7 +13,8 @@ import * as store from "../server/integrations/store";
 import { context } from "../server/integrations/registry";
 import { discordAdapter, gateway, type WebSocketLike } from "../server/integrations/adapters/discord";
 import type { Connection } from "../server/integrations/adapter";
-import { pairingReply } from "../shared/integrations";
+import { CATCH_ALL_SEND_ERROR, pairingReply, replyToOf } from "../shared/integrations";
+import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../web/src/workstream";
 import type { OrcaConfig } from "../server/config";
 import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
@@ -206,5 +208,54 @@ for (const threads of [true, false]) describe(`Discord on the integrations core 
     await dispatcher.dispatchOnce();
     expect(toWorkstream).toEqual(["r/b: please also fix the header"]);
     expect(discord.calls.some((c) => c.endsWith("/threads"))).toBe(false);
+  });
+
+  offTest("orca post --reply --thread opens a thread on the mention, answers in it and moves the workstream there", async () => {
+    const toWorkstream: string[] = [];
+    dispatcher.configure({ adapter: (id) => (id === "discord" ? running : undefined), web: async () => ({ ok: true }), workstream: async (repo, branch, e) => { toWorkstream.push(`${repo}/${branch}: ${e.text}`); return { ok: true }; } });
+    await store.addPrincipal({ id: "saajan", name: "Saajan", maxLevel: "work" }, [{ adapter: "discord", externalId: "U-saajan" }]);
+    FakeSocket.last!.push(msg("M20", "U-saajan", "<@BOT> fix the footer on r"));
+    await settle();
+    const e = await store.event("discord:M20");
+    const replyTo = replyToOf(e!)!;
+    expect(replyTo).toMatchObject({ linkId: "L1", threadId: "C1:M20", messageId: "M20" });
+    await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: { level: "work", repos: ["r"], linkId: "L1" } as never, wakeReplyTo: replyTo as never });
+    const cfg = { repos: [] } as unknown as OrcaConfig;
+    // bin/orca gives `--reply --thread "<text>"` the text as --thread's value.
+    expect(await orchestrator.tool(cfg, "post", { reply: "", thread: "Started a workstream for it.", repo: "r", branch: "b" })).toContain("in a new thread");
+    await dispatcher.dispatchOnce();
+    expect(discord.channels.get("M20")).toMatchObject({ parent: "C1", posts: ["Started a workstream for it."] });
+    expect(discord.channels.get("C1")!.posts).toEqual([]); // nothing in place
+    // The thread is the workstream's conversation on the link now: a message in it reaches the workstream.
+    expect(await store.threadLink("discord", "M20")).toMatchObject({ repo: "r", branch: "b", linkId: "L1" });
+    expect((await store.threadsForWorkstream("r", "b")).get("L1")).toBe("M20");
+    FakeSocket.last!.push(msg("M41", "U-saajan", "<@BOT> also the header", "M20"));
+    await settle();
+    await dispatcher.dispatchOnce();
+    expect(toWorkstream).toEqual(["r/b: also the header"]);
+    // Without --thread the next answer stays in place.
+    FakeSocket.last!.push(msg("M50", "U-saajan", "<@BOT> what is on the board?"));
+    await settle();
+    await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeReplyTo: replyToOf((await store.event("discord:M50"))!) as never });
+    await orchestrator.tool(cfg, "post", { reply: "Two PRs." });
+    await dispatcher.dispatchOnce(Date.now() + 6_000);
+    expect(discord.channels.get("C1")).toMatchObject({ posts: ["Two PRs."], replyTo: ["M50"] });
+    expect(discord.channels.has("M50")).toBe(false);
+  });
+
+  offTest("nothing posts to a catch-all link: orca post and a subscription refuse it, an old row never reaches Discord", async () => {
+    await store.addLink({ id: "Lstar", integrationId: "discord", externalId: "*", label: "All channels and DMs", level: "ask", repos: [], requireMention: true });
+    const cfg = { repos: [] } as unknown as OrcaConfig;
+    await expect(orchestrator.tool(cfg, "post", { link: "Lstar", _: ["hi"] })).rejects.toThrow(CATCH_ALL_SEND_ERROR);
+    // A subscription to it (made before the form refused one) plans no delivery.
+    await store.addSubscription({ topicPattern: "orca.pr.*", filter: {}, targetKind: "link", targetId: "Lstar" });
+    expect((await router.publish({ key: "pr:r#8", topic: "orca.pr.opened", at: 1, source: { adapter: "orca" }, text: "Opened PR #8" })).deliveries).toEqual([]);
+    // A row planned before the refusal: the dispatcher ends it with a clear error, with no Discord call.
+    const before = discord.calls.length;
+    const r = await store.recordEvent({ id: router.newEventId(), key: "old", topic: "orca.message", at: 1, source: { adapter: "orca" }, text: "x" },
+      [{ subscriptionId: null, target: { kind: "link", integrationId: "discord", adapter: "discord", linkId: "Lstar", externalId: "*" } }], Date.now());
+    await dispatcher.dispatchOnce();
+    expect(discord.calls.length).toBe(before);
+    expect(await store.deliveries({ state: "dead" })).toEqual([expect.objectContaining({ id: r.deliveries[0], lastError: CATCH_ALL_SEND_ERROR, attempts: 1 })]);
   });
 });
