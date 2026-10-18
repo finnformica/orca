@@ -181,19 +181,53 @@ export function markBg(color: string): string {
  *  the closed Ask pill (styles.css maps them onto the neutral tokens inside `[data-chrome]`). The
  *  others tint the rest of the app: a faint wash behind the content (`background`), selected
  *  controls and rows (`selected`), page headings, primary buttons, links, focus rings and the text
- *  selection. Cards keep the neutral surfaces, and status and chart colours never change. */
+ *  selection. The surface, text and border tokens (`card`, `popover`, `muted`, `accent`, `border`,
+ *  the `text-*` stops of the chat log…) are tinted neutrals: each one keeps the lightness of its
+ *  neutral default in styles.css and takes a low chroma of the server hue, so every shadcn
+ *  component (menus, popovers, dialogs, cards, chart frames) follows the theme with no class of its
+ *  own. Status and chart series colours never change. */
 export type ThemeTones = Record<
   "primary" | "primary-foreground" | "link" | "ring" | "selection" | "server-soft" | "server-fg"
   | "background" | "selected" | "selected-fg" | "heading"
+  | "foreground" | "card" | "card-foreground" | "popover" | "popover-foreground"
+  | "secondary" | "secondary-foreground" | "muted" | "muted-foreground" | "accent" | "accent-foreground"
+  | "border" | "input" | "text-soft" | "text-faint" | "text-fainter"
   | "sb-bg" | "sb-fg" | "sb-muted" | "sb-hover" | "sb-field" | "sb-border" | "sb-active" | "sb-active-fg",
   string
 >;
+
+/** The tinted neutrals of one mode: the text, surface and border tokens. */
+function neutrals(o: Oklch, mode: "light" | "dark") {
+  if (mode === "light") {
+    const fg = tone(o, 0.25, 0.3, 0.02), muted = tone(o, 0.955, 0.3, 0.012);
+    return {
+      foreground: fg, "card-foreground": fg, "popover-foreground": fg, "secondary-foreground": fg, "accent-foreground": fg,
+      // Cards and menus stay near white on the wash; fills a step down from it.
+      card: tone(o, 0.997, 0.1, 0.004), popover: tone(o, 0.997, 0.1, 0.004),
+      secondary: muted, muted, accent: tone(o, 0.932, 0.4, 0.022),
+      "muted-foreground": tone(o, 0.5, 0.4, 0.03),
+      border: alpha(tone(o, 0.35, 0.8, 0.08), 0.14), input: alpha(tone(o, 0.35, 0.8, 0.08), 0.14),
+      "text-soft": tone(o, 0.42, 0.35, 0.025), "text-faint": tone(o, 0.63, 0.3, 0.025), "text-fainter": tone(o, 0.63, 0.3, 0.025),
+    };
+  }
+  const fg = tone(o, 0.931, 0.1, 0.01), muted = tone(o, 0.255, 0.35, 0.026);
+  return {
+    foreground: fg, "card-foreground": fg, "popover-foreground": fg, "secondary-foreground": fg, "accent-foreground": fg,
+    // Each surface a step lighter than the one under it, as the neutral #111 / #161616 / #1c1c1c.
+    card: tone(o, 0.205, 0.3, 0.022), popover: tone(o, 0.23, 0.3, 0.024),
+    secondary: muted, muted, accent: muted,
+    "muted-foreground": tone(o, 0.72, 0.2, 0.02),
+    border: alpha(tone(o, 0.85, 0.4, 0.04), 0.13), input: alpha(tone(o, 0.85, 0.4, 0.04), 0.13),
+    "text-soft": tone(o, 0.864, 0.15, 0.015), "text-faint": tone(o, 0.62, 0.2, 0.02), "text-fainter": tone(o, 0.535, 0.25, 0.022),
+  };
+}
 
 export function themeTones(color: string, mode: "light" | "dark"): ThemeTones {
   const o = hexToOklch(normalizeColor(color) ?? "#8f8f8f");
   if (mode === "light") {
     const fg = tone(o, 0.97, 0.1, 0.012);
     return {
+      ...neutrals(o, mode),
       primary: tone(o, 0.5, 1, 0.17), "primary-foreground": "#ffffff",
       link: tone(o, 0.48, 1, 0.16), "server-fg": tone(o, 0.48, 1, 0.16), ring: tone(o, 0.6, 1, 0.17),
       selection: alpha(tone(o, 0.7, 1, 0.14), 0.35), "server-soft": alpha(tone(o, 0.6, 1, 0.15), 0.14),
@@ -208,10 +242,11 @@ export function themeTones(color: string, mode: "light" | "dark"): ThemeTones {
   }
   const fg = tone(o, 0.93, 0.1, 0.01);
   return {
+    ...neutrals(o, mode),
     primary: tone(o, 0.52, 0.85, 0.13), "primary-foreground": "#ffffff",
     link: tone(o, 0.8, 0.8, 0.11), "server-fg": tone(o, 0.8, 0.8, 0.11), ring: tone(o, 0.68, 0.85, 0.13),
     selection: alpha(tone(o, 0.55, 0.8, 0.12), 0.45), "server-soft": alpha(tone(o, 0.6, 0.8, 0.1), 0.2),
-    // A dark tinted surface behind the neutral cards; selected controls a muted fill with light text.
+    // A dark tinted surface behind the tinted cards; selected controls a muted fill with light text.
     background: tone(o, 0.185, 0.3, 0.022), selected: tone(o, 0.31, 0.5, 0.06),
     "selected-fg": tone(o, 0.9, 0.3, 0.04), heading: tone(o, 0.95, 0.2, 0.025),
     // Darker and greyer than light mode's: a tint on near-black, never a bright block beside the page.
