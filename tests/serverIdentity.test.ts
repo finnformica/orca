@@ -7,7 +7,7 @@ import * as db from "../server/db";
 import { configDocument, invalidateConfig, loadConfig, parseConfigDocument, saveConfigDocument, setInstanceTerminal, setServerIdentity } from "../server/config";
 import { withIdentity, type ServersAnswer } from "../server/servers";
 import {
-  IDENTITY_COLORS, colorFromName, contrast, faviconSvg, hexToOklch, identityUpdate, markColor, normalizeColor, oklchToHex, pageTitle,
+  GRID_HUES, IDENTITY_COLORS, NEUTRAL, markBg, swatchBackground, colorFromName, colorGrid, contrast, faviconSvg, hexToOklch, identityUpdate, markColor, normalizeColor, oklchToHex, pageTitle,
   resolveIdentity, serverIdentityProblems, themeCss, themeTones,
 } from "../shared/serverIdentity";
 import { freshSchema } from "./pg";
@@ -30,7 +30,7 @@ test("ID2: validation and the stored form of an edit", () => {
   expect(normalizeColor("blue")).toBeUndefined();
   expect(serverIdentityProblems(undefined)).toEqual([]);
   expect(serverIdentityProblems({ name: "Work", color: "#2f6feb" })).toEqual([]);
-  expect(serverIdentityProblems({ color: "red" })).toEqual(["serverIdentity.color must be a colour such as #2f6feb"]);
+  expect(serverIdentityProblems({ color: "red" })).toEqual(['serverIdentity.color must be a colour such as #2f6feb, or "neutral"']);
   expect(serverIdentityProblems({ name: "x".repeat(41) })).toHaveLength(1);
   expect(serverIdentityProblems([])).toHaveLength(1);
   expect(identityUpdate("  Personal ", "#1F9D55")).toEqual({ name: "Personal", color: "#1f9d55" });
@@ -38,13 +38,13 @@ test("ID2: validation and the stored form of an edit", () => {
   expect(identityUpdate("Work", "")).toEqual({ name: "Work" });
 });
 
-test("ID3: the title keeps Orca first; the favicon keeps the black circle, the orca takes the theme colour", () => {
+test("ID3: the title keeps Orca first; the favicon's circle is a very dark shade, the orca takes the theme colour", () => {
   expect(pageTitle("Personal")).toBe("Orca | Personal");
   expect(pageTitle(undefined)).toBe("Orca");
   const svg = faviconSvg("#1f9d55");
-  expect(svg).toContain('<circle cx="12" cy="12" r="12" fill="#000000"/>');
+  expect(svg).toContain(`<circle cx="12" cy="12" r="12" fill="${markBg("#1f9d55")}"/>`);
   expect(svg).toContain(`<path fill="${markColor("#1f9d55")}"`);
-  for (const c of IDENTITY_COLORS) expect(contrast(markColor(c.value), "#000000")).toBeGreaterThanOrEqual(4.5); // the orca reads on black
+  for (const c of IDENTITY_COLORS) expect(contrast(markColor(c.value), markBg(c.value))).toBeGreaterThanOrEqual(4.5); // the orca reads on its circle
   const file = readFileSync(new URL("../web/public/favicon.svg", import.meta.url), "utf8");
   const mark = (s: string) => s.match(/ d="([^"]+)"/)![1];
   expect(mark(svg)).toBe(mark(file)); // the same shape
@@ -81,7 +81,7 @@ test("ID5: Settings' setter stores it in the app config; the terminal switch and
     const parsed = parseConfigDocument(await configDocument());
     expect(parsed.errors).toEqual([]);
     expect(parsed.config!.serverIdentity).toEqual({ name: "Personal", color: "#1f9d55" });
-    expect(parseConfigDocument({ ...doc, serverIdentity: { color: "nope" } }).errors).toEqual(["serverIdentity.color must be a colour such as #2f6feb"]);
+    expect(parseConfigDocument({ ...doc, serverIdentity: { color: "nope" } }).errors).toEqual(['serverIdentity.color must be a colour such as #2f6feb, or "neutral"']);
     await setServerIdentity(null);
     invalidateConfig();
     expect((await loadConfig()).serverIdentity).toBeUndefined();
@@ -107,6 +107,15 @@ test("ID6: every theme tone comes from the one colour, and its text keeps WCAG A
       expect([at, contrast(t["sb-active-fg"], t["sb-active"]) >= 4.5]).toEqual([at, true]);
       expect([at, contrast(t["primary-foreground"], t.primary) >= 4.5]).toEqual([at, true]);
       expect([at, contrast(t.link, page) >= 4.5]).toEqual([at, true]);
+      // The content wash keeps the page's text readable; selected controls and headings too.
+      const [text, muted] = mode === "light" ? ["#222222", "#666666"] : ["#e8e8e8", "#9e9e9e"];
+      expect([at, contrast(text, t.background) >= 12]).toEqual([at, true]);
+      expect([at, contrast(muted, t.background) >= 4.5]).toEqual([at, true]);
+      expect([at, contrast(t.heading, t.background) >= 7]).toEqual([at, true]);
+      expect([at, contrast(t["selected-fg"], t.selected) >= 4.5]).toEqual([at, true]);
+      expect([at, contrast(text, t.selected) >= 4.5]).toEqual([at, true]); // a selected row's own text
+      // The wash is faint: the page is still near white / near black.
+      expect([at, Math.abs(hexToOklch(t.background).l - hexToOklch(page).l) < 0.03]).toEqual([at, true]);
     }
     // Dark mode's sidebar is darker and less saturated than light mode's.
     const [light, dark] = [hexToOklch(themeTones(color, "light")["sb-bg"]), hexToOklch(themeTones(color, "dark")["sb-bg"])];
@@ -118,4 +127,43 @@ test("ID6: every theme tone comes from the one colour, and its text keeps WCAG A
   const css = themeCss("#7c4ddb");
   expect(css).toMatch(/^:root:root\{--primary:#[0-9a-f]{6};.*\}:root:root\.dark\{--primary:#[0-9a-f]{6};.*\}$/);
   expect(css).toContain(`--sb-bg:${themeTones("#7c4ddb", "dark")["sb-bg"]};`);
+});
+
+test("ID7: the picker's grid — the 8 presets plus 2 hues as the base row, each with 3 tints and 2 shades", () => {
+  const grid = colorGrid();
+  expect(grid.map((col) => col[0]!.value)).toEqual(GRID_HUES.map((h) => h.value));
+  expect(grid.slice(0, 8).map((col) => col[0]!.value)).toEqual(IDENTITY_COLORS.map((c) => c.value)); // the presets lead
+  expect(IDENTITY_COLORS.length).toBe(8); // colorFromName indexes it: a new preset moves every Auto colour
+  expect(grid.every((col) => col.length === 6)).toBe(true);
+  expect(new Set(grid.flat().map((c) => c.value)).size).toBe(60);
+  for (const col of grid) {
+    const l = col.map((c) => hexToOklch(c.value).l);
+    expect(l[1]! > l[2]! && l[2]! > l[3]! && l[3]! > l[0]! && l[0]! > l[4]! && l[4]! > l[5]!).toBe(true); // tints lighter, shades darker
+    expect(col.every((c) => normalizeColor(c.value) === c.value)).toBe(true);
+  }
+  expect(grid[0]![1]!.label).toBe("Blue, lighter 3");
+});
+
+test("ID8: Neutral is no theme — the old look: no tones, a black mark with a white orca", () => {
+  expect(identityUpdate("", " Neutral ")).toEqual({ color: NEUTRAL });
+  expect(serverIdentityProblems({ color: "neutral" })).toEqual([]);
+  expect(resolveIdentity({ color: "neutral" }, "box")).toEqual({ label: "box", color: NEUTRAL });
+  expect(themeCss(NEUTRAL)).toBe(""); // styles.css's neutral defaults stay
+  expect(markColor(NEUTRAL)).toBe("#ffffff");
+  expect(markBg(NEUTRAL)).toBe("#000000");
+  expect(faviconSvg(NEUTRAL)).toContain('<circle cx="12" cy="12" r="12" fill="#000000"/>');
+  expect(faviconSvg(NEUTRAL)).toContain('<path fill="#ffffff"');
+  expect(swatchBackground(NEUTRAL)).toContain("linear-gradient");
+  expect(swatchBackground("#2f6feb")).toBe("#2f6feb");
+});
+
+test("ID9: the mark's circle is a very dark shade of the colour, and the orca reads on it", () => {
+  for (const { value } of GRID_HUES) {
+    const bg = markBg(value), o = hexToOklch(bg);
+    expect(Math.abs(o.l - 0.2)).toBeLessThan(0.01);
+    expect(o.c).toBeLessThanOrEqual(0.05); // low chroma (8-bit hex rounding moves it a little)
+    if (hexToOklch(value).c > 0.05) expect(Math.min(Math.abs(o.h - hexToOklch(value).h), 360 - Math.abs(o.h - hexToOklch(value).h))).toBeLessThan(8); // the colour's hue
+    expect(contrast(markColor(value), bg)).toBeGreaterThan(3);
+    expect(faviconSvg(value)).toContain(`<circle cx="12" cy="12" r="12" fill="${bg}"/>`);
+  }
 });
