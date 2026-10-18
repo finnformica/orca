@@ -2979,16 +2979,35 @@ export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) =>
 // flexible tracks (workstream, signals) via their own `grow`. Each column has a floor in rem; the
 // flexible ones share what is left, so the row never needs a horizontal scroll.
 export type ListColumn = { key: "workstream" | "status" | "pr" | "signals" | "actions"; label: string; minRem: number; grow?: number };
-/** The list's layouts by the PAGE's width (the shell's `@container/page`, so the docked orchestrator
+/** The list's layouts by the LIST's own width (its `@container/list`, so the docked orchestrator
  *  panel counts): `wide` has every column; `mid` folds Status under the title; `narrow` also folds
- *  Checks & review into the PR cell. A phone (below md) stacks each row instead. */
+ *  Checks & review into the PR cell. Below `LIST_STACK_BELOW_REM` (and on a phone) each row stacks. */
 export type ListTier = "narrow" | "mid" | "wide";
-/** The page width (rem) from which each tier applies — the Agents row's `@min-[…]/page:` classes. */
+/** The list width (rem) from which each tier applies — the Agents row's `@min-[…]/list:` classes. */
 export const LIST_TIER_MIN_REM: Record<ListTier, number> = { narrow: 0, mid: 52, wide: 68 };
 export const LIST_TIERS: ListTier[] = ["narrow", "mid", "wide"];
 /** Which tier a page width (px) gets. */
 export function listTier(pagePx: number, remPx = 16): ListTier {
   return pagePx >= LIST_TIER_MIN_REM.wide * remPx ? "wide" : pagePx >= LIST_TIER_MIN_REM.mid * remPx ? "mid" : "narrow";
+}
+/** Below this list width (rem) a grid row cannot hold its text, so each row stacks like a phone's. */
+export const LIST_STACK_BELOW_REM = 40;
+/** The stacked layout for a measured list width (px); 0 is "not measured yet", which keeps the grid. */
+export const listStacked = (listPx: number, remPx = 16): boolean => listPx > 0 && listPx < LIST_STACK_BELOW_REM * remPx;
+/** Which subline items (by index) do not fit in `available` px, when the row ends with a `+N` chip
+ *  of `chipPx`. Items keep their order: the first one that does not fit and all after it are hidden.
+ *  A zero-width item (hidden by CSS, or empty) is never counted. Nothing hidden when all fit. */
+export function sublineOverflow(widths: number[], available: number, gapPx: number, chipPx: number): number[] {
+  const shown = widths.map((w, i) => [w, i] as const).filter(([w]) => w > 0);
+  const total = shown.reduce((n, [w], k) => n + w + (k ? gapPx : 0), 0);
+  if (total <= available) return [];
+  let used = 0;
+  for (const [k, [w]] of shown.entries()) {
+    const next = used + (k ? gapPx : 0) + w;
+    if (next + gapPx + chipPx > available) return shown.slice(k).map(([, i]) => i);
+    used = next;
+  }
+  return [];
 }
 const TIER_COLUMNS: Record<ListTier, ListColumn["key"][]> = {
   narrow: ["workstream", "pr", "actions"],
