@@ -816,6 +816,16 @@ describe("home-screen shortcuts", () => {
   });
 });
 
+describe("the orchestrator's persisted open state", () => {
+  test("a phone never auto-opens the dock from a persisted open state, and does not navigate to /orchestrator", async () => {
+    localStorage.setItem("orca.ui.v1.orchestratorOpen", "true"); // e.g. left open on a desktop session in the same browser
+    await mount("/agents", true);
+    expect(location.pathname).toBe("/agents"); // no auto-navigation
+    expect($('[data-slot="orchestrator-panel"]')).toBeNull(); // never mounted
+    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(true); // the stored preference itself is untouched, for a later desktop load
+  });
+});
+
 describe("the desktop layout is untouched", () => {
   test("columns and chips as before; the orchestrator is the right-hand side panel", async () => {
     await mount("/agents", false);

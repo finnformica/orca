@@ -10,7 +10,7 @@ import { getDefaultStore } from "jotai";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { App } from "@/App";
-import { afterDockMotion, dockMoving, noteDockMotion } from "@/lib/dock";
+import { afterDockMotion, dockMoving, noteDockMotion, resetAppStartingForTests } from "@/lib/dock";
 import { SHELL_GAP, frozenPageWidth } from "@/workstream";
 import { SLIDE_MS } from "@/components/SidePanel";
 import { orchestratorOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
@@ -175,6 +175,20 @@ test("opening: the panel shows in the commit that opens it at dock width 0, and 
   expect(dock().className).toContain("transition-[width,margin-inline-start]");
   expect(dock().className).toContain("data-[resizing]:transition-none");
   expect($('[data-slot="page-scroll"]')!.className).toContain("md:[contain:layout_paint]");
+});
+
+test("a reload with the panel's open state persisted true shows it at its full width at once — no 0 → width slide to replay", async () => {
+  localStorage.setItem("orca.ui.v1.orchestratorOpen", "true");
+  resetAppStartingForTests(); // a real reload re-arms the page-load window; this test process shares it across files
+  Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  act(() => { root = createRoot(container!); root.render(<App />); }); // the commit a reload's first paint is
+  expect($('[data-slot="orchestrator-panel"]')!.dataset.state).toBe("open");
+  expect(dock().style.width).toBe("460px"); // never 0px first: `appStarting` skipped the slide
+  await act(async () => { await flush(); await flush(); });
+  expect(dock().style.width).toBe("460px"); // settles unchanged
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true })); // end the page-load window, as a real keystroke would
 });
 
 test("frozenPageWidth: the page content's end width, so the content lays out once and only the card edge moves", () => {

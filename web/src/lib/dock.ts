@@ -93,12 +93,17 @@ export function afterDockMotion(fn: () => void) {
 }
 
 /** True during the page load — until the first input, or one second: a panel open from the start
- *  (`?open=orchestrator`) shows at its width at once, with no slide to replay. Any open you cause
- *  (a click, a key) slides from 0. */
+ *  (`?open=orchestrator`, or the orchestrator panel's own persisted open state) shows at its width
+ *  at once, with no slide to replay. Any open you cause (a click, a key) slides from 0. */
 let starting = true;
-if (typeof window !== "undefined") {
+function armPageLoadWindow() {
+  starting = true;
   const done = () => { starting = false; for (const t of ["pointerdown", "keydown", "click"]) window.removeEventListener(t, done, true); };
   for (const t of ["pointerdown", "keydown", "click"]) window.addEventListener(t, done, true);
   setTimeout(done, 1000);
 }
+if (typeof window !== "undefined") armPageLoadWindow();
 export const appStarting = () => starting;
+/** Test support: a real reload re-arms this (fresh module state); a shared test process does not,
+ *  since an earlier file's click can only flip it false once for the whole run. */
+export const resetAppStartingForTests = (): void => { if (typeof window !== "undefined") armPageLoadWindow(); };
