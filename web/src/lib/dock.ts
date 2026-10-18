@@ -1,9 +1,11 @@
 // The desktop's docked right column. A side panel (components/SidePanel.tsx — the orchestrator, the
-// instance terminal) is a column of the shell, not an overlay: while it is open, the shell reserves
-// its width in the flex row (`data-slot="dock"` in components/Shell.tsx), so the page reflows beside
-// it. Each panel publishes its open width here by slot; the dock is the widest one (only one is open
-// at a time, but one closing and one opening land in the same commit). While a drag resizes a panel,
-// the dock's element is written directly (`DOCK_SELECTOR`), as the panel's own width is.
+// instance terminal) is a column of the shell, not an overlay: it renders INTO the shell's dock
+// (`data-slot="dock"` in components/Shell.tsx, a portal into `dockElementAtom`), beside the page in
+// the one shell card. Only the dock's width animates, between 0 and the open width, and it clips the
+// panel, which keeps its full width — so the page reflows in the same frame and nothing jumps
+// (branch-demo's docked AI chat). Each panel publishes its open width here by slot; the dock is the
+// widest one (only one is open at a time, but one closing and one opening land in the same commit).
+// While a drag resizes a panel, the dock's element is written directly, as the panel's own width is.
 import { atom, useAtom, useAtomValue } from "jotai";
 import { useEffect, useState } from "react";
 import { sidebarCollapsedAtom } from "./atoms";
@@ -14,7 +16,8 @@ export const dockWidthAtom = atom((get) => Math.max(0, ...Object.values(get(dock
 /** You expanded the nav while a docked panel had made it a rail; cleared when the dock closes. */
 export const navExpandedOverrideAtom = atom(false);
 
-export const DOCK_SELECTOR = '[data-slot="dock"]';
+/** The shell's dock element, the portal target of a docked panel (null on a phone, before the shell mounts). */
+export const dockElementAtom = atom<HTMLElement | null>(null);
 
 export function useViewportWidth(): number {
   const [vw, setVw] = useState(() => window.innerWidth);

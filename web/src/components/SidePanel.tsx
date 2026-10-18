@@ -1,21 +1,23 @@
 // The right-hand side panel's frame, shared by the orchestrator (components/Terminal.tsx) and the
-// instance terminal (components/InstanceTerminal.tsx): a `fixed` surface that slides in from the right
-// edge (a transform; `aria-modal=false`, so the page stays usable). On a desktop it is DOCKED: it
-// publishes its width (lib/dock.ts) and the shell reserves that width as a column, so the page
-// reflows beside it instead of under it, and it has no shadow — a hairline edge, like the nav. It is
+// instance terminal (components/InstanceTerminal.tsx); `aria-modal=false`, so the page stays usable.
+// On a desktop it is DOCKED: it renders into the shell's dock column (a portal, lib/dock.ts) at its
+// full width, and the dock's width animates 0 ↔ that width and clips it — the page reflows in the
+// same frame, as branch-demo's docked chat does. No shadow: a hairline edge. Below md it is a `fixed`
+// overlay that slides in from the right edge (a transform). It is
 // resized from its LEFT edge with the width remembered per browser, and — on a touch screen — swiped
 // right to close (the edge it comes from, through the one `useSwipeToDismiss`). `fullScreen` is the
 // phone's form: the whole visual viewport, no resize edge. The header (`PanelHeader`) is one h-12 row:
 // an icon or a Back arrow, the title over a status line, then the actions.
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { useAtom, useSetAtom, type WritableAtom } from "jotai";
+import { createPortal } from "react-dom";
+import { useAtom, useAtomValue, useSetAtom, type WritableAtom } from "jotai";
 import { ArrowLeft } from "lucide-react";
 import { PANEL_MIN_W, clampPanelWidth } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { useSwipeToDismiss } from "@/lib/gestures";
 import { cn } from "@/lib/utils";
 import { useNarrow } from "@/lib/viewport";
-import { DOCK_SELECTOR, dockWidthsAtom } from "@/lib/dock";
+import { dockElementAtom, dockWidthsAtom } from "@/lib/dock";
 
 export const SLIDE_MS = 200;
 /** One arrow key on the focused resize edge (Shift: three times as far). */
@@ -53,6 +55,7 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
   const panelRef = useRef<HTMLDivElement>(null);
   // Docked: a desktop width. Below md (a desktop window resized down, or a phone) it stays an overlay.
   const docked = !fullScreen && !useNarrow();
+  const dockEl = useAtomValue(dockElementAtom);
   const setDock = useSetAtom(dockWidthsAtom);
   useEffect(() => {
     const w = open && docked ? width : 0;
@@ -73,7 +76,7 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
     const x0 = e.clientX, w0 = width;
     let last = w0;
     // The shell's dock column follows the drag at once (no transition), so the page reflows with it.
-    const dock = docked ? document.querySelector<HTMLElement>(DOCK_SELECTOR) : null;
+    const dock = docked ? dockEl : null;
     dock?.setAttribute("data-resizing", "");
     const move = (ev: PointerEvent) => {
       last = clampPanelWidth(w0 + (x0 - ev.clientX), window.innerWidth); // the edge is on the LEFT: dragging left widens
@@ -100,30 +103,51 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
     e.preventDefault();
     setSavedWidth(clampPanelWidth(next, window.innerWidth));
   };
+  // Docked, it waits for the shell's dock to exist rather than flash as an overlay first.
+  if (docked && !dockEl) return null;
+  const resize = !fullScreen && (
+    // The resize handle: the panel's left edge. Dragging left widens; the width is remembered.
+    <div data-slot={`${slot}-resize`} role="separator" aria-orientation="vertical" aria-label="Resize panel" onPointerDown={onResizeStart}
+      tabIndex={open ? 0 : -1} aria-valuenow={width} aria-valuemin={PANEL_MIN_W} onKeyDown={onResizeKey}
+      className="hover:bg-geist-blue/40 active:bg-geist-blue/60 focus-visible:bg-geist-blue/60 outline-none absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize transition-colors" />
+  );
+  const common = {
+    ref: panelRef, role: "dialog", "aria-modal": false, "aria-label": label, "aria-labelledby": labelledBy, "aria-hidden": !open,
+    "data-slot": `${slot}-panel`, "data-state": open ? "open" : "closed", onKeyDown,
+  } as const;
+  if (docked) {
+    // In the dock: its full width from the dock's left edge, so the dock's animated width slides it
+    // in and out (clipped) with no transform. Closed, it stays visible until the dock has shut
+    // (`visibility` waits SLIDE_MS); the open one is on top while the other leaves.
+    return createPortal(
+      <div {...common} data-docked=""
+        className={cn("bg-card text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden border-l motion-reduce:transition-none",
+          open ? "visible z-10" : "invisible z-0 transition-[visibility]")}
+        style={{ width, transitionDuration: `${SLIDE_MS}ms` }}
+      >
+        {resize}
+        {header(swipe)}
+        {children}
+      </div>,
+      dockEl!,
+    );
+  }
   return (
     // z-40: above the page and its sticky top bar (z-30), below menus and popovers (z-50), which must
     // still open over it. Slid out, it is hidden (visibility, after the transform finishes) and inert
     // to assistive tech. Opening, only the transform transitions — `visibility` flips to visible AT
     // ONCE, so a field inside can take focus in the same commit. Closing, visibility waits for the slide.
     <div
-      ref={panelRef}
-      role="dialog" aria-modal="false" aria-label={label} aria-labelledby={labelledBy} aria-hidden={!open}
-      data-slot={`${slot}-panel`} data-state={open ? "open" : "closed"} data-full={fullScreen ? "" : undefined} data-docked={docked ? "" : undefined}
-      onKeyDown={onKeyDown}
+      {...common} data-full={fullScreen ? "" : undefined}
       className={cn("bg-card text-foreground flex flex-col overflow-hidden",
-        fullScreen ? "fixed top-0 right-0 h-[var(--vvh,100dvh)] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]" : cn("fixed inset-y-0 right-0 border-l", !docked && "shadow-modal"),
+        fullScreen ? "fixed top-0 right-0 h-[var(--vvh,100dvh)] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]" : "fixed inset-y-0 right-0 border-l shadow-modal",
         "z-40 ease-out motion-reduce:transition-none",
         open ? "visible translate-x-0 transition-transform" : "invisible translate-x-full transition-[transform,visibility]")}
       style={fullScreen
         ? { width: "100vw", transitionDuration: `${SLIDE_MS}ms` }
         : { width, maxWidth: "100vw", minWidth: Math.min(PANEL_MIN_W, vw), transitionDuration: `${SLIDE_MS}ms` }}
     >
-      {/* The resize handle: the panel's left edge. Dragging left widens; the width is remembered. */}
-      {!fullScreen && (
-        <div data-slot={`${slot}-resize`} role="separator" aria-orientation="vertical" aria-label="Resize panel" onPointerDown={onResizeStart}
-          tabIndex={open ? 0 : -1} aria-valuenow={width} aria-valuemin={PANEL_MIN_W} onKeyDown={onResizeKey}
-          className="hover:bg-geist-blue/40 active:bg-geist-blue/60 focus-visible:bg-geist-blue/60 outline-none absolute inset-y-0 left-0 z-10 w-1.5 cursor-ew-resize transition-colors" />
-      )}
+      {resize}
       {header(swipe)}
       {children}
     </div>

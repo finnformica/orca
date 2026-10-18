@@ -23,7 +23,7 @@ import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPa
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
 import { SLIDE_MS } from "@/components/SidePanel";
-import { dockWidthAtom, useNavToggle } from "@/lib/dock";
+import { dockElementAtom, dockWidthAtom, useNavToggle } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
 import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
@@ -78,32 +78,40 @@ export function Shell({ crumbs, sidebarActions, children }: {
   const route = useRoute();
   const identity = useServerIdentity(); // the ACTIVE server's name and colour (lib/identity.ts applies them)
   const { visible: serverMenu } = useServers();
+  const narrow = useNarrow();
+  const setDockElement = useSetAtom(dockElementAtom);
   useEffect(() => poll(loadIdentity, 60_000), []);
   return (
-    <div className="flex min-h-screen w-full">
+    // Desktop: branch-demo's app shell. The nav sits on the LOWER surface — the canvas, in the
+    // server's theme colour — and the page and the docked panel float together in ONE rounded card
+    // (`data-slot="shell-card"`, a 6px gutter, a 10px corner, `shadow-shell`), so the nav reads as
+    // behind the content. A phone has no card: the page is the whole screen.
+    <div data-slot="shell" className="md:bg-sidebar flex min-h-screen w-full md:h-screen md:overflow-hidden">
       {/* Desktop only: a phone's nav is the bottom bar + Settings (see MobileNav in views/Pages.tsx) —
           there is no off-canvas drawer any more. */}
       <aside
         data-slot="sidebar" data-chrome="" data-collapsed={collapsed}
         className={cn(
-          "bg-sidebar z-50 max-md:hidden md:sticky md:top-0 md:flex md:h-screen md:flex-col md:border-r",
+          "z-50 max-md:hidden md:flex md:h-screen md:shrink-0 md:flex-col md:overflow-hidden md:transition-[width] md:duration-200 md:ease-out motion-reduce:transition-none",
           collapsed ? "md:w-14" : "md:w-60",
         )}
       >
         <Sidebar collapsed={collapsed} onToggle={() => setRail(!collapsed)} actions={sidebarActions} />
       </aside>
+      <div data-slot="shell-card" className="flex min-w-0 flex-1 md:my-1.5 md:mr-1.5 md:overflow-hidden md:rounded-[10px] md:bg-background md:shadow-shell">
       {/* The page column scrolls on its own on a desktop (md:h-screen + overflow), as each column of an
           app shell does: the docked panel then sits flush against the window's edge, with no page
           scrollbar outside it (the gutter is reserved here, not on <html>; its children never shrink to
           fit the column's height — the top bar did). A phone keeps the window's own scroll (its keyboard and pull-to-refresh
           code read window.scrollY). The column is the `@container/page` the pages' layouts query, so
           they respond to the room the dock leaves, not to the window. */}
-      <div data-slot="page-scroll" className="@container/page flex min-w-0 flex-1 flex-col md:h-screen md:overflow-y-auto md:[scrollbar-gutter:stable] md:*:shrink-0">
+      <div data-slot="page-scroll" className="@container/page flex min-w-0 flex-1 flex-col md:h-full md:overflow-y-auto md:[scrollbar-gutter:stable] md:*:shrink-0">
         <UpdateBanner onStaleChange={setUpdateAvailable} />
         {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it.
             The notch inset goes to whichever is topmost: the banner when it's shown, else the header. */}
+        {/* On a desktop the top bar is part of the card (neutral); on a phone it is the themed frame. */}
         <header
-          data-slot="topbar" data-chrome=""
+          data-slot="topbar" data-chrome={narrow ? "" : undefined}
           className={cn(
             "bg-background sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 md:px-6 max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))]",
             !updateAvailable && "max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:pt-[env(safe-area-inset-top)]",
@@ -131,12 +139,13 @@ export function Shell({ crumbs, sidebarActions, children }: {
           {offline ? (serverProblem ? null : <OfflineScreen />) : children}
         </main>
       </div>
-      {/* The docked right column (desktop): the open side panel's width, reserved in the row so the
-          page reflows beside the panel rather than under it. The panel itself (SidePanel) is fixed over
-          this column, and the two move together: the same width and the same SLIDE_MS ease-out. */}
-      <div data-slot="dock" aria-hidden="true"
-        className="shrink-0 transition-[width] ease-out data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden"
+      {/* The docked right column (desktop), inside the card beside the page: the open side panel renders
+          INTO it (SidePanel's portal) at its full width. Only this width animates, 0 ↔ the panel's
+          width, and it clips the panel — so the page reflows in the same frame, with no overlay. */}
+      <div data-slot="dock" ref={setDockElement}
+        className="relative shrink-0 overflow-hidden transition-[width] ease-out data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden"
         style={{ width: dock, transitionDuration: `${SLIDE_MS}ms` }} />
+      </div>
       <BottomBar activity={activity} />
       {/* The quick-ask pill, bottom centre of every page but an agent's Chat tab (desktop; the phone's bottom bar has the orchestrator). */}
       {!chatTab(route) && <QuickAsk />}
