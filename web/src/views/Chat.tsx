@@ -16,7 +16,8 @@ import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
 import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight } from "../workstream";
-import { integrationMessage, type IntegrationMessage } from "../../../shared/integrations";
+import { integrationMessage, shownPlace, type IntegrationMessage } from "../../../shared/integrations";
+import { useCatchAllLabels } from "@/lib/catchAllLabels";
 import { BrandIcon, brandTitle } from "@/components/BrandIcon";
 import { activityCounts, closeOpenMarkdown, createHold, runLabel, stepDuration, stepInFlight, stepKey, stepRow, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepStatus } from "../steps";
 import { agentLabel, groupSteps, outcomeLead, withoutFinalEcho } from "../../../shared/agent";
@@ -726,11 +727,12 @@ const STATE_TONE = { answered: "text-geist-green", "in progress": "text-geist-bl
 /** The collapsed line of an outside message: logo, sender, place, one line of what they wrote, the
  *  time and the state. The same tinted card as worker traffic, with the service's logo for the ⚙. */
 function IntegrationHead({ m, more, time, state }: { m: IntegrationMessage; more: number; time: string; state: keyof typeof STATE_TONE | "queued" }) {
+  const place = shownPlace(m.place, useCatchAllLabels());
   return (
     <>
       <BrandIcon kind={m.adapter} className="size-3.5" />
       <span className="text-foreground shrink-0 font-medium" data-slot="integration-sender">{m.sender ?? brandTitle(m.adapter)}</span>
-      {m.place && <span className="shrink-0" data-slot="integration-place">{m.place}</span>}
+      {place && <span className="shrink-0" data-slot="integration-place">{place}</span>}
       <span className="min-w-0 flex-1 truncate" data-slot="integration-preview">{integrationPreview(m.text)}{more > 0 ? ` · +${more} more` : ""}</span>
       {time && <span className="shrink-0 text-[11px]">{time}</span>}
       <span data-slot="integration-state" className={cn("flex shrink-0 items-center gap-1 text-[11px]", state === "queued" ? "" : STATE_TONE[state])}>
@@ -746,6 +748,7 @@ function IntegrationHead({ m, more, time, state }: { m: IntegrationMessage; more
  *  your conversation, like worker reports. */
 const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadStepsFor }: { turn: AgentTurn; messages: IntegrationMessage[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]> }) {
   const [open, setOpen] = useState(false);
+  const labels = useCatchAllLabels();
   const state = integrationState(turn);
   return (
     <div data-slot="integration-activity" data-adapter={messages[0]!.adapter} data-state={state} data-open={open || undefined}
@@ -762,7 +765,7 @@ const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadSt
               <div className="text-muted-foreground mb-0.5 flex items-center gap-1.5 text-[11px]">
                 <BrandIcon kind={m.adapter} className="size-3" />
                 <span className="text-foreground font-medium">{m.sender ?? brandTitle(m.adapter)}</span>
-                <span>{[m.place, brandTitle(m.adapter)].filter(Boolean).join(" · ")}</span>
+                <span data-slot="integration-message-place">{[shownPlace(m.place, labels), brandTitle(m.adapter)].filter(Boolean).join(" · ")}</span>
                 {m.url && <a href={m.url} target="_blank" rel="noreferrer" className="hover:text-foreground underline-offset-2 hover:underline">Open in {brandTitle(m.adapter)}</a>}
               </div>
               <div className="text-foreground whitespace-pre-wrap break-words">{m.text}</div>
