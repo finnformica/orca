@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { afterDockMotion } from "@/lib/dock";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Highlight, themes } from "prism-react-renderer";
@@ -43,7 +44,9 @@ export function useStickyHeader(ready: boolean) {
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setHeight(el.offsetHeight));
+    // Not per frame while the dock or the nav animates the page's width: once, when it has settled.
+    const update = () => setHeight(el.offsetHeight);
+    const ro = new ResizeObserver(() => afterDockMotion(update));
     ro.observe(el);
     return () => ro.disconnect();
   }, [ready]);

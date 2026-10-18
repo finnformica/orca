@@ -13,6 +13,7 @@
 // local row the store raises in this browser), so it shares the stack, the card and the centre. The decisions (what pops,
 // what persists, the stack's layout and motion) are pure in shared/notifications.ts; the state is
 // lib/notificationStore.ts.
+import { afterDockMotion } from "@/lib/dock";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { useAtom, useAtomValue } from "jotai";
 import {
@@ -209,11 +210,13 @@ function useStackAnchor(active: boolean): StackAnchor {
       return next.left === prev.left && next.bottom === prev.bottom && next.right === prev.right ? prev : next;
     });
     update();
-    window.addEventListener("resize", update);
+    // The nav's width animates when it turns into its rail: re-anchor once it has settled.
+    const later = () => afterDockMotion(update);
+    window.addEventListener("resize", later);
     const foot = document.querySelector('[data-slot="sidebar-foot"]');
-    const ro = foot && typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : undefined;
+    const ro = foot && typeof ResizeObserver !== "undefined" ? new ResizeObserver(later) : undefined;
     if (foot) ro?.observe(foot);
-    return () => { window.removeEventListener("resize", update); ro?.disconnect(); };
+    return () => { window.removeEventListener("resize", later); ro?.disconnect(); };
   }, [active, measure]);
   return anchor;
 }

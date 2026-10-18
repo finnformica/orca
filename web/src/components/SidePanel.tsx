@@ -21,7 +21,8 @@ import { cn } from "@/lib/utils";
 import { useNarrow } from "@/lib/viewport";
 import { dockElementAtom, dockWidthsAtom } from "@/lib/dock";
 
-export const SLIDE_MS = 200;
+/** The dock's open / close: branch-demo's `transition-all` (150ms, Tailwind's default ease). */
+export const SLIDE_MS = 150;
 /** One arrow key on the focused resize edge (Shift: three times as far). */
 export const RESIZE_STEP = 40;
 
@@ -59,10 +60,34 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
   const docked = !fullScreen && !useNarrow();
   const dockEl = useAtomValue(dockElementAtom);
   const setDock = useSetAtom(dockWidthsAtom);
+  // branch-demo's right panel, step by step. `expanded` drives the dock's width; it starts from
+  // `open`, so a panel open at mount (a persisted flag) shows at once with no slide. Opening: the
+  // panel is shown (and can take focus) in the commit that opens it, at dock width 0, and the width
+  // flips to the target on the NEXT frame — so 0 → width is a real CSS transition, and the work of
+  // a first mount (the chat's first render) lands before it, not inside it. Closing: the width goes
+  // to 0 now; the panel stays painted (`shown`) until the dock's `width` transition ends.
+  const [expanded, setExpanded] = useState(open);
+  const [shown, setShown] = useState(open);
   useEffect(() => {
-    const w = open && docked ? width : 0;
+    if (open) {
+      setShown(true);
+      const id = requestAnimationFrame(() => setExpanded(true));
+      return () => cancelAnimationFrame(id);
+    }
+    setExpanded(false);
+  }, [open]);
+  useEffect(() => {
+    if (open || expanded || !shown) return;
+    const hide = () => setShown(false);
+    const end = (e: TransitionEvent) => { if (e.target === dockEl && e.propertyName === "width") hide(); };
+    dockEl?.addEventListener("transitionend", end);
+    const t = setTimeout(hide, SLIDE_MS + 150); // no transition ran (reduced motion, the dock stayed open for the other panel)
+    return () => { dockEl?.removeEventListener("transitionend", end); clearTimeout(t); };
+  }, [open, expanded, shown, dockEl]);
+  useEffect(() => {
+    const w = expanded && docked ? width : 0;
     setDock((d) => (d[slot] ?? 0) === w ? d : { ...d, [slot]: w });
-  }, [open, docked, width, slot]);
+  }, [expanded, docked, width, slot]);
   useEffect(() => () => setDock(({ [slot]: _, ...rest }) => rest), [slot]);
   // The panel's own class transition slides it the rest of the way, from where the finger let go,
   // once the inline drag style is cleared.
@@ -119,13 +144,14 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
   } as const;
   if (docked) {
     // In the dock: its full width from the dock's left edge, so the dock's animated width slides it
-    // in and out (clipped) with no transform. Closed, it stays visible until the dock has shut
-    // (`visibility` waits SLIDE_MS); the open one is on top while the other leaves.
+    // in and out (clipped) and the content never reflows. Closed, it stays painted until the dock's
+    // width transition has ended, then `invisible` (still mounted: the draft and the scroll stay).
+    // The open one is on top while the other leaves.
     return createPortal(
-      <div {...common} data-docked=""
-        className={cn("bg-card text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden border-l motion-reduce:transition-none",
-          open ? "visible z-10" : "invisible z-0 transition-[visibility]")}
-        style={{ width, transitionDuration: `${SLIDE_MS}ms` }}
+      <div {...common} data-docked="" data-shown={open || shown ? "" : undefined}
+        className={cn("bg-card text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden border-l",
+          open || shown ? "visible" : "invisible", open ? "z-10" : "z-0")}
+        style={{ width }}
       >
         {resize}
         {header(swipe)}

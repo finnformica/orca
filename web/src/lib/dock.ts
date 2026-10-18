@@ -55,3 +55,39 @@ export function useNavToggle(): { rail: boolean; setRail: (rail: boolean) => voi
     },
   };
 }
+
+// ── motion ──────────────────────────────────────────────────────────────────────────────────────────
+// While the dock (or the nav, as it turns into its rail) animates its width, the page column changes
+// width on EVERY frame. Work that measures the page and sets React state (a sticky header's height, a
+// marquee's overflow, the toast stack's anchor) waits until the width has settled, so no React state
+// changes per animation frame — the page only reflows in CSS. The flag is set by the shell's
+// `transitionrun` / `transitionend` events on a `width` transition (Shell's `useDockMotion`).
+let moving = 0;
+let fallback: ReturnType<typeof setTimeout> | undefined;
+const settled = new Set<() => void>();
+
+const settle = () => {
+  moving = 0;
+  clearTimeout(fallback);
+  const fns = [...settled];
+  settled.clear();
+  for (const fn of fns) fn();
+};
+
+/** A width transition of the dock or the nav started (+1) or ended (−1). A missed end (the element
+ *  left the page mid-motion) settles after a short fallback, so deferred work always runs. */
+export function noteDockMotion(delta: 1 | -1) {
+  moving = Math.max(0, moving + delta);
+  clearTimeout(fallback);
+  if (moving === 0) settle();
+  else fallback = setTimeout(settle, 600);
+}
+
+export const dockMoving = () => moving > 0;
+
+/** Run `fn` now — or, while the dock or the nav is animating its width, once, when it has settled.
+ *  Pass a stable function: a repeated call while moving queues it once. */
+export function afterDockMotion(fn: () => void) {
+  if (moving > 0) settled.add(fn);
+  else fn();
+}

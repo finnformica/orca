@@ -23,7 +23,7 @@ import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPa
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
 import { SLIDE_MS } from "@/components/SidePanel";
-import { dockElementAtom, dockWidthAtom, useNavToggle } from "@/lib/dock";
+import { dockElementAtom, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
 import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
@@ -49,8 +49,8 @@ import {
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-/** One row of the nav: the pages, and Add New below them — the same height, padding, icon size and
- *  hover, ghost on the lower surface (branch-demo's sidebar). Collapsed, an icon centred in the rail. */
+/** One row of the nav: the same height, padding, icon size and hover, ghost on the lower surface
+ *  (branch-demo's sidebar). Collapsed, an icon centred in the rail. */
 export const navRow = (collapsed: boolean, active = false) => cn(
   "relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors",
   active ? "bg-sidebar-active text-sidebar-active-foreground font-medium" : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -76,9 +76,24 @@ export function Dock() {
   const setDockElement = useSetAtom(dockElementAtom);
   return (
     <div data-slot="dock" ref={setDockElement}
-      className="relative shrink-0 overflow-hidden transition-[width] ease-out data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden"
+      className="relative shrink-0 overflow-hidden transition-[width] data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden"
       style={{ width: dock, transitionDuration: `${SLIDE_MS}ms` }} />
   );
+}
+
+/** Feeds lib/dock's motion flag from the shell's own width transitions (the dock, the nav's rail). */
+function useDockMotion(shell: HTMLElement | null) {
+  useEffect(() => {
+    if (!shell) return;
+    const ours = (e: TransitionEvent) => e.propertyName === "width" && e.target instanceof HTMLElement
+      && (e.target.dataset.slot === "dock" || e.target.dataset.slot === "sidebar");
+    const run = (e: TransitionEvent) => { if (ours(e)) noteDockMotion(1); };
+    const end = (e: TransitionEvent) => { if (ours(e)) noteDockMotion(-1); };
+    shell.addEventListener("transitionrun", run);
+    shell.addEventListener("transitionend", end);
+    shell.addEventListener("transitioncancel", end);
+    return () => { shell.removeEventListener("transitionrun", run); shell.removeEventListener("transitionend", end); shell.removeEventListener("transitioncancel", end); };
+  }, [shell]);
 }
 
 /** `sidebarActions` renders the last of the sidebar's actions (Add New), above the divider and you;
@@ -98,13 +113,15 @@ export function Shell({ crumbs, sidebarActions, children }: {
   const identity = useServerIdentity(); // the ACTIVE server's name and colour (lib/identity.ts applies them)
   const { visible: serverMenu } = useServers();
   const narrow = useNarrow();
+  const [shellEl, setShellEl] = useState<HTMLElement | null>(null);
+  useDockMotion(shellEl);
   useEffect(() => poll(loadIdentity, 60_000), []);
   return (
     // Desktop: branch-demo's app shell. The nav sits on the LOWER surface — the canvas, in the
     // server's theme colour — and the page and the docked panel float together in ONE rounded card
     // (`data-slot="shell-card"`, a 6px gutter, a 10px corner, `shadow-shell`), so the nav reads as
     // behind the content. A phone has no card: the page is the whole screen.
-    <div data-slot="shell" className="md:bg-sidebar flex min-h-screen w-full flex-col md:h-screen md:overflow-hidden">
+    <div data-slot="shell" ref={setShellEl} className="md:bg-sidebar flex min-h-screen w-full flex-col md:h-screen md:overflow-hidden">
       {/* The update banner: on the lower surface, above the nav and the card (branch-demo's app-level banner). */}
       <UpdateBanner onStaleChange={setUpdateAvailable} />
       <div data-slot="shell-row" className="flex min-h-0 w-full flex-1">
@@ -113,7 +130,7 @@ export function Shell({ crumbs, sidebarActions, children }: {
       <aside
         data-slot="sidebar" data-chrome="" data-collapsed={collapsed}
         className={cn(
-          "z-50 max-md:hidden md:flex md:shrink-0 md:flex-col md:overflow-hidden md:transition-[width] md:duration-200 md:ease-out motion-reduce:transition-none",
+          "z-50 max-md:hidden md:flex md:shrink-0 md:flex-col md:overflow-hidden md:transition-[width] md:duration-150 motion-reduce:transition-none",
           collapsed ? "md:w-14" : "md:w-60",
         )}
       >
@@ -126,7 +143,10 @@ export function Shell({ crumbs, sidebarActions, children }: {
           fit the column's height — the top bar did). A phone keeps the window's own scroll (its keyboard and pull-to-refresh
           code read window.scrollY). The column is the `@container/page` the pages' layouts query, so
           they respond to the room the dock leaves, not to the window. */}
-      <div data-slot="page-scroll" className="@container/page flex min-w-0 flex-1 flex-col md:h-full md:overflow-y-auto md:[scrollbar-gutter:stable] md:*:shrink-0">
+      {/* `contain: layout paint` on a desktop: while the dock or the nav animates, the page's reflow and
+          repaint stay inside this column. (A `fixed` descendant would now be placed against this box —
+          the page has none; the Agents row's right-click anchor is portaled to <body>.) */}
+      <div data-slot="page-scroll" className="@container/page flex min-w-0 flex-1 flex-col md:h-full md:overflow-y-auto md:[scrollbar-gutter:stable] md:[contain:layout_paint] md:*:shrink-0">
         {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it.
             The notch inset goes to whichever is topmost: the banner when it's shown, else the header. */}
         {/* On a desktop the top bar is part of the card (neutral); on a phone it is the themed frame. */}
@@ -219,15 +239,15 @@ function Sidebar({ collapsed, onToggle, actions }: {
           return collapsed && !narrow ? <Tip key={to} label={label} shortcut={shortcut} side="right" className="flex">{item}</Tip> : item;
         })}
       </nav>
-      {/* Add New is the last of the actions — pushed to the bottom, just above the divider and you. It
-          is a nav row (navRow), not a boxed button, so the lower surface reads as one column. */}
+      {/* Add New is the last of the actions — pushed to the bottom, just above you. An outline button,
+          full width, on the lower surface: it stands apart from the nav rows above it. */}
       <div data-slot="sidebar-actions" className="mt-auto px-2 pb-2">
         {actions?.(collapsed)}
       </div>
-      {/* The foot, like branch-demo's: a hairline, then you (a ghost row with a chevron, it opens a
-          menu) and the bell and the collapse toggle as ghost icons. Collapsed, one centred column with
+      {/* The foot, like branch-demo's: you (a ghost row with a chevron, it opens a menu) and the bell and
+          the collapse toggle as ghost icons — no divider above it. Collapsed, one centred column with
           the toggle on top, so nothing overlaps. */}
-      <div data-slot="sidebar-foot" className="border-t px-2 py-2">
+      <div data-slot="sidebar-foot" className="px-2 pb-2">
         <div data-slot="sidebar-you" className={cn("flex items-center gap-0.5", collapsed && "md:flex-col-reverse md:gap-1")}>
           <ProfileMenu collapsed={collapsed} />
           <NotificationBell collapsed={collapsed} />
@@ -426,10 +446,11 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
   return (
     <>
       <Tip label="Add New" shortcut="new" side="right" className="flex w-full">
-        <button type="button" data-slot="add-new" aria-label="Add New" onClick={() => setOpen(true)} className={navRow(collapsed)}>
+        <Button variant="outline" data-slot="add-new" aria-label="Add New" onClick={() => setOpen(true)}
+          className={cn("h-9 w-full justify-start gap-3 px-2.5 has-[>svg]:px-2.5 text-sm font-normal", collapsed && "md:justify-center md:px-0 md:has-[>svg]:px-0")}>
           <Plus className="size-4 shrink-0" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
           <Shortcut id="new" className={cn("ml-auto max-md:hidden [@media(pointer:coarse)]:hidden", collapsed && "md:hidden")} />
-        </button>
+        </Button>
       </Tip>
       {createPortal(
         <dialog
