@@ -58,7 +58,7 @@ export const navRow = (collapsed: boolean, active = false) => cn(
   collapsed && "md:justify-center md:px-0",
 );
 export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (r: Route) => boolean; badge?: (compact: boolean) => ReactNode }[] = [
-  { to: "/", label: "Overview", Icon: LayoutGrid, match: (r) => r.name === "board" },
+  { to: "/", label: "Overview", Icon: LayoutGrid, match: (r) => r.name === "overview" },
   // An agent's own page (PR or local detail) is "inside" Agents, as a deployment is inside Deployments.
   { to: "/agents", label: "Agents", Icon: Boxes, match: (r) => r.name === "agents" || r.name === "pr" || r.name === "local" },
   // Every integration's inbound messages and events, one timeline (views/Inbox.tsx).
@@ -428,7 +428,7 @@ export function FindBox() {
 }
 
 // The top bar's context switcher (Vercel's "All Projects ▾"): the repo scope, shared with the
-// Board view and the Agents filters. Hidden with a single repo.
+// Overview and the Agents filters. Hidden with a single repo.
 function RepoSwitcher() {
   const repos = useRepos();
   const [repo, setRepo] = useAtom(repoFilterAtom);

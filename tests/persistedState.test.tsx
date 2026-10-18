@@ -1,5 +1,5 @@
 // E2E for persisted UI state (lib/persisted): the helper's safe read / versioned keys first, then the
-// Agents page's chips, search, sort and density surviving a reload — with the URL still
+// Agents page's chips, search and sort surviving a reload — with the URL still
 // the source of truth when it has a query, and Clear resetting both the URL and what's remembered.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
@@ -8,7 +8,7 @@ import { createStore, getDefaultStore } from "jotai";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { Agents } from "@/views/Agents";
-import { agentQueryAtom, densityAtom, repoFilterAtom } from "@/lib/atoms";
+import { agentQueryAtom, repoFilterAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
 import { oneOf, persistedKey, readPersisted, writePersisted } from "@/lib/persisted";
 import { openTip } from "./tip";
@@ -36,23 +36,23 @@ describe("persisted helper (pure)", () => {
     localStorage.setItem(k, "{not json");
     expect(readPersisted(k, "dflt")).toBe("dflt");
     localStorage.setItem(k, JSON.stringify("sideways"));
-    expect(readPersisted(k, "list", oneOf("list", "board"))).toBe("list");
+    expect(readPersisted(k, "asc", oneOf("asc", "desc"))).toBe("asc");
     localStorage.setItem(k, JSON.stringify(42));
-    expect(readPersisted(k, "list", oneOf("list", "board"))).toBe("list");
+    expect(readPersisted(k, "asc", oneOf("asc", "desc"))).toBe("asc");
   });
 
   test("a legacy unversioned key is read when the new one is absent, and the new one wins once written", () => {
-    localStorage.setItem("orca.density", JSON.stringify("dense"));
-    expect(readPersisted(persistedKey("density"), "comfortable", oneOf("comfortable", "dense"), "orca.density")).toBe("dense");
-    writePersisted(persistedKey("density"), "comfortable");
-    expect(readPersisted(persistedKey("density"), "comfortable", oneOf("comfortable", "dense"), "orca.density")).toBe("comfortable");
+    localStorage.setItem("orca.sort", JSON.stringify("desc"));
+    expect(readPersisted(persistedKey("sort"), "asc", oneOf("asc", "desc"), "orca.sort")).toBe("desc");
+    writePersisted(persistedKey("sort"), "asc");
+    expect(readPersisted(persistedKey("sort"), "asc", oneOf("asc", "desc"), "orca.sort")).toBe("asc");
   });
 
-  test("the density atom falls back on a bad value after a reload", () => {
-    localStorage.setItem(persistedKey("density"), "]]");
+  test("a persisted atom falls back on a bad value after a reload", () => {
+    localStorage.setItem(persistedKey("repoFilter"), "]]");
     const reloaded = createStore(); // a reload: mounting the atoms reads storage
-    reloaded.sub(densityAtom, () => {});
-    expect(reloaded.get(densityAtom)).toBe("comfortable");
+    reloaded.sub(repoFilterAtom, () => {});
+    expect(reloaded.get(repoFilterAtom)).toBe("all");
   });
 });
 

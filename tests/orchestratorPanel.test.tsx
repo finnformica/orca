@@ -13,7 +13,6 @@ import { AskOrchestrator, ORCHESTRATOR_WINDOW_NAME, ORCHESTRATOR_WINDOW_URL, Orc
 import { Dock } from "@/components/Shell";
 import { SLIDE_MS } from "@/components/SidePanel";
 import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
-import { WorkstreamCard } from "@/views/Board";
 import { DOCK_PAGE_MIN_W, NAV_RAIL_W, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, dayLabel } from "@/workstream";
 import { openTip } from "./tip";
 import { NARROW_QUERY } from "@/lib/viewport";
@@ -179,10 +178,9 @@ test("a message with an attachment shows it on the outbox's \"sending…\" bubbl
   expect(apiFake.orchestratorMessages).toEqual([{ text: "look at this", attachments: [`orca-attachment://${img}/bug.png`] }]);
 });
 
-test("a paused orchestrator says so, and an orchestrated card is marked", async () => {
+test("a paused orchestrator says so", async () => {
   apiFake.orchestratorState = { ...apiFake.orchestratorState, paused: true, contextPct: 85 };
-  await mount(<><Entry /><WorkstreamCard row={{ repo: "r", hasRemote: false, branch: "feat", title: "Feat", prompt: "", lane: "LOCAL", worktreePath: "/wt/feat", orchestrated: true }} /></>);
-  expect(container!.querySelector('[aria-label="Orchestrated"]')).toBeTruthy();
+  await mount(<Entry />);
   await click(launcher());
   await afterSlide();
   expect(panel()!.textContent).toContain("Orchestrator · paused until you reply");

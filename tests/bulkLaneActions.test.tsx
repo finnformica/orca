@@ -1,13 +1,14 @@
-// E2E for the swimlane ⋯ bulk-actions menu: one action applied to every card in a lane that can take
-// it. The menu is state-gated (workstream.bulkActions) — items only appear when some card is eligible
+// E2E for the Agents list's ⋯ bulk-actions menu: with the chips narrowed to one lane, one action
+// applied to every row in it that can take it. The menu is state-gated (workstream.bulkActions) — items only appear when some card is eligible
 // and each says how many it will hit — and running one fires the SAME per-card action per card.
-// Driven against the fake api (tests/apiFake.ts), rendered into a real DOM. See Board.LaneActions.
+// Driven against the fake api (tests/apiFake.ts), rendered into a real DOM. See views/BulkActions.tsx.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
-import { Board } from "@/views/Board";
+import { Agents } from "@/views/Agents";
+import { navigate } from "@/lib/route";
 import { answer } from "./dialogs";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -25,10 +26,11 @@ const pr = (over: Record<string, unknown>) => ({
 
 let root: Root | undefined;
 let container: HTMLElement | undefined;
-async function mount() {
+async function mount(path: string) {
+  navigate(path);
   container = document.createElement("div");
   document.body.appendChild(container);
-  await act(async () => { root = createRoot(container!); root.render(<Board />); await flush(); });
+  await act(async () => { root = createRoot(container!); root.render(<Agents />); await flush(); });
   await act(async () => { await store.refresh(); await flush(); });
 }
 
@@ -48,68 +50,24 @@ afterEach(async () => {
   confirmed.length = 0;
   copied.length = 0;
   localStorage.clear();
+  navigate("/");
 });
 
-// The lane header's ⋯ trigger, by lane title.
-const laneMenu = (title: string) =>
-  [...container!.querySelectorAll("h3")].find((h) => h.textContent?.startsWith(title))!.querySelector<HTMLElement>('button[aria-label="Bulk actions"]');
-const items = () => [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].map((i) => i.textContent?.trim());
+// The list's ⋯ bulk trigger, shown once the chips narrow to one lane.
+const laneMenu = () => container!.querySelector<HTMLElement>('button[aria-label="Bulk actions"]');
 const item = (text: string) => [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim().startsWith(text))!;
 
-// A submenu trigger, drilled into the way a pointer would (Radix opens on pointerdown, then click).
-const openSub = async (label: string) => { const t = item(label); await pointerdown(t); await click(t); };
-
-describe("swimlane bulk actions", () => {
-  test("In Review groups the verbs (Slack / PR / Agent) and each item carries only the eligible cards", async () => {
-    apiFake.prsData = [pr({}), pr({ number: 8, branch: "feat-y", title: "feat y", url: "https://x/8", ciStatus: "failing" })];
-    // #8 was announced long ago and never bumped → it needs a bump, #7 has never been announced.
-    // Seed through the bridge store (enrichment lives in the DB since #50, not localStorage); mount()
-    // runs store.refresh(), which hydrates the mirror from it.
-    apiFake.enrichmentData.set("r::feat-y", { slackNotifiedAt: "2020-01-01T00:00:00Z" });
-    await mount();
-    await pointerdown(laneMenu("In Review")!);
-    // Grouped verbs collapse into their submenu; the lane-shaping ones (Merge, Close PR) stay flat.
-    expect(items()).toEqual(["Slack", "PR", "Agent", "Merge 1", "Close PR 2"]);
-
-    await openSub("Slack");
-    expect(items().slice(5)).toEqual(["Send message 1", "Send bump 1"]); // counts: eligible cards per action
-    await click(item("Send message"));
-    await confirmIt();
-    expect(confirmed).toEqual(["Send message on 1 card? — Run send message on 1 card in in review."]);
-    expect(apiFake.slackSends).toEqual([{ repo: "r", text: "<https://x/7|#7 feat>" }]); // only the un-announced PR
-  });
-
-  test("the PR submenu runs a PR verb across the lane, and Copy PR links is one aggregate copy", async () => {
-    apiFake.prsData = [pr({}), pr({ number: 8, branch: "feat-y", title: "feat y", url: "https://x/8" })];
-    await mount();
-    await pointerdown(laneMenu("In Review")!);
-    await openSub("PR");
-    await click(item("Add preview"));
-    await confirmIt();
-    expect(confirmed).toEqual(["Add preview on 2 cards? — Run add preview on 2 cards in in review."]);
-    expect(apiFake.calls.filter((c) => c.startsWith("addPreviewLabel:"))).toEqual(["addPreviewLabel:7", "addPreviewLabel:8"]);
-
-    await pointerdown(laneMenu("In Review")!);
-    await openSub("PR");
-    await click(item("Copy PR links"));
-    expect(copied).toEqual(["https://x/7\nhttps://x/8"]); // no confirm — nothing is mutated
-    expect(confirmed).toHaveLength(1);
-  });
-
-  test("Address PR fires the agent on every open PR (not only changes-requested ones)", async () => {
-    apiFake.prsData = [pr({}), pr({ number: 8, branch: "feat-y", title: "feat y", url: "https://x/8" })];
-    await mount();
-    await pointerdown(laneMenu("In Review")!);
-    await openSub("Agent");
-    await click(item("Address PR"));
-    await confirmIt();
-    expect(apiFake.agentLaunches).toHaveLength(2);
+describe("Agents list bulk actions", () => {
+  test("no bulk menu until the chips narrow to one lane", async () => {
+    apiFake.prsData = [pr({ reviewStatus: "approved" })];
+    await mount("/agents");
+    expect(laneMenu()).toBeNull();
   });
 
   test("Mergeable's Merge runs the per-card merge on every approved PR, behind an it-can't-be-undone confirm", async () => {
     apiFake.prsData = [pr({ reviewStatus: "approved" }), pr({ number: 8, branch: "feat-y", reviewStatus: "approved" })];
-    await mount();
-    await pointerdown(laneMenu("Mergeable")!);
+    await mount("/agents?pr=mergeable");
+    await pointerdown(laneMenu()!);
     await click(item("Merge"));
     await confirmIt();
     expect(confirmed).toEqual(["Merge on 2 cards? — Run merge on 2 cards in mergeable. You cannot undo this."]);

@@ -4,7 +4,7 @@
 // local-promote flag, Slack timestamps) with what git/gh can't recover, keyed by repo+branch.
 // Enrichment and the chat transcript now live in the bridge's SQLite store (server/db.ts); this
 // module keeps a synchronous in-memory mirror of it. localStorage holds only per-browser UI state
-// (theme, density, composer drafts) — see the migration below for the one-shot handover.
+// (theme, composer drafts) — see the migration below for the one-shot handover.
 import { useEffect, useSyncExternalStore } from "react";
 import { onRefresh } from "@/lib/refresh";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";

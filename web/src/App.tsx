@@ -10,7 +10,7 @@ import { OrchestratorPanel, OrchestratorPage, OrchestratorWindow, isOrchestrator
 import { TerminalPanel } from "@/components/InstanceTerminal";
 import { ToastHost } from "@/components/Notifications";
 import { useWorkstreams } from "./store";
-import { NewDraft } from "./views/Board";
+import { NewDraft } from "./views/NewDraft";
 import { Overview } from "./views/Overview";
 import { Agents } from "./views/Agents";
 import { InboxPage } from "./views/Inbox";
@@ -72,7 +72,7 @@ function Page({ route }: { route: Route }) {
   }
 }
 
-const TITLES = { board: "Overview", agents: "Agents", inbox: "Inbox", previews: "Previews", handoffs: "Handoffs", settings: "Settings", orchestrator: "Orchestrator", integrations: "Integrations" } as const;
+const TITLES = { overview: "Overview", agents: "Agents", inbox: "Inbox", previews: "Previews", handoffs: "Handoffs", settings: "Settings", orchestrator: "Orchestrator", integrations: "Integrations" } as const;
 
 function Crumbs({ route }: { route: Route }) {
   const rows = useWorkstreams();

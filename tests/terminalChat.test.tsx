@@ -6,7 +6,11 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
-import { Board, WorkstreamCard } from "@/views/Board";
+import { getDefaultStore } from "jotai";
+import { NewDraft } from "@/views/NewDraft";
+import { AgentRow } from "@/views/Agents";
+import { openTerminalAtom } from "@/lib/atoms";
+import { listColumns } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -37,25 +41,24 @@ afterEach(async () => {
 });
 
 describe("card terminal (conversation modal)", () => {
-  test("the terminal button opens a modal showing the branch's conversation", async () => {
+  test("the row's terminal opens as a modal showing the branch's conversation", async () => {
     apiFake.turnsData.set("r::feat", [
       { id: "run-1", provider: "claude", prompt: "add the cache", response: "Added it.", finishedAt: 2 },
     ]);
-    await mount(<WorkstreamCard row={row} />);
+    await mount(<AgentRow row={row} cols={listColumns()} />);
 
-    // The card has more than one <dialog> now (terminal + rename) — pick the terminal one by its header.
+    // The row has more than one <dialog> (terminal + rename) — pick the terminal one by its header.
     const dialog = [...container!.querySelectorAll("dialog")].find((d) => /Terminal/.test(d.textContent ?? ""))!;
     expect(dialog.open).toBe(false); // closed until opened — ChatPanel isn't mounted yet
     // The <dialog> must carry NO display utility, or an author `display` rule overrides the UA
-    // `dialog:not([open]){display:none}` and the closed dialog renders inline in the swimlane,
-    // wrecking the card layout. Layout lives on an inner wrapper instead.
+    // `dialog:not([open]){display:none}` and the closed dialog renders inline in the list,
+    // wrecking the row layout. Layout lives on an inner wrapper instead.
     for (const cls of ["flex", "grid", "block", "inline-flex", "inline-block", "table"]) {
       expect(dialog.classList.contains(cls)).toBe(false);
     }
 
-    const button = [...container!.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label") === "Open terminal")!;
-    expect(button).toBeTruthy();
-    await click(button);
+    // "New chat" asks for the new row's terminal through openTerminalAtom; the row opens it.
+    await act(async () => { getDefaultStore().set(openTerminalAtom, "r::feat"); await flush(); await flush(); });
 
     expect(dialog.open).toBe(true);
     // The durable conversation renders inside — the whole point of the rework.
@@ -72,13 +75,13 @@ describe("card terminal (conversation modal)", () => {
   });
 
   test("the New-draft chatbox carries no interactive terminal toggle", async () => {
-    await mount(<Board />);
+    await mount(<NewDraft />);
     const toggle = [...document.body.querySelectorAll("button")].find((b) => /Headless|drive it by hand/.test(b.getAttribute("title") ?? ""));
     expect(toggle).toBeUndefined();
   });
 
   test("the agent page routes a Chat tab too: the conversation sits where Vercel puts Build Logs", async () => {
-    // The card's terminal modal stays (above); the agent page also carries the conversation, as its
+    // The row's terminal modal stays (above); the agent page also carries the conversation, as its
     // Chat tab and under the Details card. /…/chat parses to that tab on both detail pages.
     const { navigate, useRoute } = await import("@/lib/route");
     let seen: unknown;
