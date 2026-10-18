@@ -241,6 +241,8 @@ test("instanceSeries: the newest sample (live when newer) is every series' raw l
   expect(instanceSeries([], null, 0, 100)).toEqual({ cpu: [], mem: [], agents: [], disk: [], ooms: [], latest: null });
 });
 
-test("countMax: an even whole top for the agents axis, so the middle tick is whole", () => {
-  expect([0, 1, 2, 3, 4, 7].map(countMax)).toEqual([2, 2, 2, 4, 4, 8]);
+test("countMax: a fixed top of 8 for the agents axis, growing only past it", () => {
+  expect([0, 1, 2, 7, 8].map(countMax)).toEqual([8, 8, 8, 8, 8]);
+  expect(countMax(9)).toBe(10);
+  expect(countMax(13)).toBe(14);
 });
