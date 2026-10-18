@@ -7,7 +7,7 @@
 //
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
-import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, memo, startTransition, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Loader2, Paperclip, Quote as QuoteIcon, X } from "lucide-react";
 import { cn, PipContext } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
@@ -605,10 +605,14 @@ function AgentsMarker({ turns, render }: { turns: AgentTurn[]; render: (t: Agent
 // ---- lazy mount: only the items near the viewport render (workstream.ts: estimateItemHeight) ----
 // One IntersectionObserver (rooted on the scroller) mounts an item as it comes within LAZY_MARGIN; one
 // ResizeObserver records every item's height, so an item the window unmounts comes back as a box of
-// its real height. Chrome and Firefox hold the scroll position natively when an item above the
+// its real height. Items that come near are mounted together, LAZY_BATCH_MS after the first, in ONE
+// transition: each commit makes Chromium walk the whole chat again (pre-paint), and one commit per
+// item made a scroll up through a cold thread drop a frame in five. An item already in view mounts
+// at once. Chrome and Firefox hold the scroll position natively when an item above the
 // viewport grows on mount (overflow-anchor); where that is missing (Safari) anchorShift does it.
 // Find in page sees only the mounted items.
-const LAZY_MARGIN = "800px 0px";
+const LAZY_MARGIN = "1200px 0px";
+const LAZY_BATCH_MS = 60;
 type Lazy = {
   heights: Map<string, number>;
   /** Watch an item's height; and, with `show`, call it once the item is near the viewport. */
@@ -621,10 +625,31 @@ function createLazy(root: () => HTMLElement | null): Lazy | null {
   const heights = new Map<string, number>(), ids = new Map<Element, string>(), shows = new Map<Element, () => void>();
   const native = typeof CSS !== "undefined" && Boolean(CSS.supports?.("overflow-anchor", "auto"));
   let io: IntersectionObserver | null = null, ro: ResizeObserver | null = null;
+  const due = new Set<() => void>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = () => {
+    clearTimeout(timer);
+    timer = undefined;
+    const now = [...due];
+    due.clear();
+    // A transition: React renders the markdown in time slices, so the scroll stays smooth meanwhile.
+    startTransition(() => { for (const show of now) show(); });
+  };
   const setup = () => {
     if (io) return;
     io = new IntersectionObserver((entries) => {
-      for (const e of entries) if (e.isIntersecting) shows.get(e.target)?.();
+      const view = root()?.getBoundingClientRect();
+      let inView = false;
+      for (const e of entries) {
+        const show = e.isIntersecting ? shows.get(e.target) : undefined;
+        if (!show) continue;
+        due.add(show);
+        const r = e.boundingClientRect; // no layout (no rect, a 0-high root): nothing to wait for
+        if (!view?.height || !r || (r.bottom > view.top && r.top < view.bottom)) inView = true;
+      }
+      if (!due.size) return;
+      if (inView) flush();
+      else timer ??= setTimeout(flush, LAZY_BATCH_MS);
     }, { root: root(), rootMargin: LAZY_MARGIN });
     if (typeof ResizeObserver === "undefined") return;
     ro = new ResizeObserver((entries) => {
@@ -651,10 +676,10 @@ function createLazy(root: () => HTMLElement | null): Lazy | null {
       return () => {
         ro?.unobserve(el);
         ids.delete(el);
-        if (show) { shows.delete(el); io?.unobserve(el); }
+        if (show) { shows.delete(el); due.delete(show); io?.unobserve(el); }
       };
     },
-    disconnect() { io?.disconnect(); ro?.disconnect(); },
+    disconnect() { clearTimeout(timer); io?.disconnect(); ro?.disconnect(); },
   };
 }
 /** One item of the list: its content once near the viewport (or `eager`, the newest ones), before

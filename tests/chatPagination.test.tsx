@@ -331,7 +331,7 @@ class ManualObserver {
   unobserve(t: Element) { this.targets.delete(t); }
   disconnect() { this.targets.clear(); }
   takeRecords() { return []; }
-  near(target: Element) { this.cb([{ target, isIntersecting: true } as unknown as IntersectionObserverEntry], this as unknown as IntersectionObserver); }
+  near(target: Element, rect?: { top: number; bottom: number }) { this.cb([{ target, isIntersecting: true, boundingClientRect: rect } as unknown as IntersectionObserverEntry], this as unknown as IntersectionObserver); }
 }
 const items = () => [...container!.querySelectorAll<HTMLElement>('[data-slot="chat-item"]')];
 
@@ -378,10 +378,19 @@ test("P9: a cold open mounts only the newest items; older ones mount as they nea
     await act(async () => { io.near(boxes[0]!); await flush(); });
     expect(shown()).toEqual([0, 48, 49]);
     expect(io.targets.has(items()[0]!)).toBe(false);
-    // A new turn at the tail mounts at once; the item that was mounted stays mounted.
+    // With a layout: an item near but out of view waits for the batch (LAZY_BATCH_MS) so items mount
+    // together in one commit; one already in view mounts at once.
+    log().getBoundingClientRect = () => ({ top: 0, bottom: 400, height: 400 }) as DOMRect;
+    await act(async () => { io.near(items()[1]!, { top: -900, bottom: -700 }); await flush(); });
+    expect(shown()).toEqual([0, 48, 49]);
+    await act(async () => { io.near(items()[2]!, { top: -700, bottom: -500 }); await new Promise((r) => setTimeout(r, 120)); });
+    expect(shown()).toEqual([0, 1, 2, 48, 49]); // both, in one go
+    await act(async () => { io.near(items()[3]!, { top: 100, bottom: 300 }); await flush(); });
+    expect(shown()).toEqual([0, 1, 2, 3, 48, 49]);
+    // A new turn at the tail mounts at once; the items that were mounted stay mounted.
     apiFake.turnsData.get("r::long")!.push(turn(50));
     await act(async () => { emit(opened().at(-1)!, "turn", { repo: "r", branch: "long", runId: "run-50" }); await flush(); await flush(); });
-    expect(shown()).toEqual([0, 48, 49, 50]);
+    expect(shown()).toEqual([0, 1, 2, 3, 48, 49, 50]);
   } finally { g.IntersectionObserver = visible; }
 });
 
