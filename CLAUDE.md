@@ -416,8 +416,11 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   icon + title, latest instruction, status dot + duration, state pill, CI/conflict badges + the
   review cluster, PR, branch, instance, updated, the model as avatar); every action in the trailing
   ⋯ (`WorkstreamActions menuOnly`). There is no List | Board toggle any more: the list only. As the
-  page (`@container/page`) narrows, Status folds under the title, then Checks & review into the PR
-  cell (`listColumns(tier)`, `LIST_TIER_MIN_REM`); the subline clips, never overlaps.
+  LIST (`@container/list`, its own width, so the docked panel counts) narrows, Status folds under the
+  title, then Checks & review into the PR cell (`listColumns(tier)`, `LIST_TIER_MIN_REM`), and below
+  `LIST_STACK_BELOW_REM` rows stack as on a phone (measured via `afterDockMotion`). Subline items
+  that do not fit leave it behind a `+N` chip (`sublineOverflow`); its popover lists them (hover on
+  a mouse, tap on touch, never opens the row). A stacked row has no instruction line.
 - **Agent page** (the existing `/{repo}/prs/:n` and `/{repo}/local/:branch` routes,
   `views/AgentPage.tsx`): ONE compact sticky header row (`AgentHeader`: repo / title, status, branch
   or PR link, the actions) with the tabs Overview | Chat | Files | Preview directly under it, flush

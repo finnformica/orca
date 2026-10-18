@@ -10,7 +10,7 @@ import * as store from "@/store";
 import { Agents, LIST_CELL_SHOWN, LIST_FOLDED } from "@/views/Agents";
 import { navigate } from "@/lib/route";
 import { createTicker, ticker } from "@/lib/ticker";
-import { LIST_CHROME_PX, LIST_TIER_MIN_REM, LIST_TIERS, formatElapsed, listColumnTiers, listColumns, listFits, listGridTemplate, listMinWidth, listTier, modelBadge } from "@/workstream";
+import { LIST_CHROME_PX, LIST_TIER_MIN_REM, LIST_TIERS, formatElapsed, listColumnTiers, listColumns, listFits, listGridTemplate, listMinWidth, listStacked, listTier, modelBadge, sublineOverflow } from "@/workstream";
 import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -51,10 +51,10 @@ describe("agents list layout (pure)", () => {
     // The CSS classes use the same breakpoints as the logic.
     expect(listColumnTiers("status")).toEqual(["wide"]);
     expect(listColumnTiers("signals")).toEqual(["mid", "wide"]);
-    expect(LIST_CELL_SHOWN.status).toContain(`@min-[${LIST_TIER_MIN_REM.wide}rem]/page:block`);
-    expect(LIST_FOLDED.status).toBe(`@min-[${LIST_TIER_MIN_REM.wide}rem]/page:hidden`);
-    expect(LIST_CELL_SHOWN.signals).toContain(`@min-[${LIST_TIER_MIN_REM.mid}rem]/page:flex`);
-    expect(LIST_FOLDED.signals).toBe(`@min-[${LIST_TIER_MIN_REM.mid}rem]/page:hidden`);
+    expect(LIST_CELL_SHOWN.status).toContain(`@min-[${LIST_TIER_MIN_REM.wide}rem]/list:block`);
+    expect(LIST_FOLDED.status).toBe(`@min-[${LIST_TIER_MIN_REM.wide}rem]/list:hidden`);
+    expect(LIST_CELL_SHOWN.signals).toContain(`@min-[${LIST_TIER_MIN_REM.mid}rem]/list:flex`);
+    expect(LIST_FOLDED.signals).toBe(`@min-[${LIST_TIER_MIN_REM.mid}rem]/list:hidden`);
   });
 
   test("elapsed: clock-style, stable width as it ticks", () => {
@@ -149,7 +149,9 @@ describe("agents list view", () => {
     // hidden by the same container query that shows its own column. The subline clips, never overlaps.
     const ci = rowOf("feat-ci");
     expect(ci.querySelector('[data-slot="folded-status"] [data-slot="run-status"]')).not.toBeNull();
-    expect(ci.querySelector('[data-slot="folded-signals"]')!.textContent).toBe(ci.querySelector('[data-slot="row-signals"]')!.textContent);
+    const folded = [...ci.querySelectorAll<HTMLElement>('[data-slot="row-pr-line"] > [data-subline-item]')].filter((i) => ["checks", "review"].includes(i.dataset.sublineItem!));
+    expect(folded.map((i) => i.textContent).join("")).toBe(ci.querySelector('[data-slot="row-signals"]')!.textContent);
+    for (const i of folded) expect(i.className).toContain(LIST_FOLDED.signals);
     expect(ci.querySelector('[data-slot="row-subline"]')!.className).toContain("overflow-hidden");
     expect(rowOf("feat-ci").querySelectorAll('[role="cell"]')).toHaveLength(5); // one per header, the last holding preview + ⋯
     expect(rowOf("feat-ci").querySelector(".lucide-folder-git2")).toBeNull();
@@ -172,9 +174,9 @@ describe("agents list view", () => {
     const inline = rowOf("feat-ci").querySelector<HTMLElement>('[data-slot="pr-preview-inline"]')!;
     expect(inline.dataset.state).toBe("add");
     expect(inline.textContent).toContain("Add preview");
-    // (its own leading "·" separator sits between the two)
+    // (each is its own subline item; the model's item comes right before the preview's)
     const modelLabel = rowOf("feat-ci").querySelector('[data-slot="model-label"]')!;
-    expect(inline.previousElementSibling?.previousElementSibling).toBe(modelLabel.closest('[data-slot="tip"]') ?? modelLabel);
+    expect(inline.closest("[data-subline-item]")!.previousElementSibling).toBe(modelLabel.closest("[data-subline-item]"));
     // Readable models: the run's reported model, else the pinned one — no initials avatar.
     expect(rowOf("local-idle").querySelector('[data-slot="model-label"]')!.textContent).toBe("Opus 5.5");
     expect(container!.querySelector('[data-slot="model-avatar"]')).toBeNull();
@@ -337,10 +339,10 @@ describe("agents list view", () => {
   });
 });
 
-// ---- loading skeleton (list + board) ----
+// ---- loading skeleton (the list) ----
 // Before the first agents+PRs refresh settles, useWorkstreams() reads [] — indistinguishable from a
-// genuinely empty board — so both views must read useWorkstreamsLoaded() to tell "still loading" from
-// "loaded, nothing here" and show row/card skeletons (not the empty state) meanwhile. Counts and chip
+// genuinely empty list — so the view must read useWorkstreamsLoaded() to tell "still loading" from
+// "loaded, nothing here" and show row skeletons (not the empty state) meanwhile. Counts and chip
 // badges must hold a placeholder rather than flash 0.
 describe("agents loading skeleton", () => {
   test("list view: row skeletons while loading, never the empty state; count and chip badges hold a placeholder, not 0", async () => {
@@ -375,5 +377,118 @@ describe("agents loading skeleton", () => {
     expect(container!.querySelector('[data-slot="workstream-row-skeleton"]')).toBeNull();
     expect(container!.textContent).toContain("No agents match");
     expect(container!.querySelector('[data-slot="agents-count"]')!.textContent).toBe("0 of 0");
+  });
+});
+
+// ---- narrow lists: the layout follows the LIST's width, and a subline that does not fit ends in +N ----
+
+describe("agents list by its own width", () => {
+  test("pure: stacked below LIST_STACK_BELOW_REM of list (0 = not measured keeps the grid); overflow keeps order and skips empty items", () => {
+    expect(listStacked(0)).toBe(false);
+    expect(listStacked(500)).toBe(true);
+    expect(listStacked(639)).toBe(true);
+    expect(listStacked(640)).toBe(false);
+    expect(sublineOverflow([50, 50, 50], 200, 4, 24)).toEqual([]); // 158 fits: no chip
+    expect(sublineOverflow([60, 60, 60, 60], 200, 4, 24)).toEqual([2, 3]); // 124 + 4 + 24 fits; the third does not
+    expect(sublineOverflow([60, 0, 60, 60, 60], 200, 4, 24)).toEqual([3, 4]); // a zero-width item is never hidden or counted
+    expect(sublineOverflow([300, 10], 200, 4, 24)).toEqual([0, 1]); // even the first can go
+  });
+
+  // happy-dom lays out nothing: give the list, each subline and each subline item a width.
+  const proto = HTMLElement.prototype;
+  const real = { client: Object.getOwnPropertyDescriptor(proto, "clientWidth")!, offset: Object.getOwnPropertyDescriptor(proto, "offsetWidth")! };
+  function fakeLayout(listPx: number, prLinePx = 200) {
+    Object.defineProperty(proto, "clientWidth", { configurable: true, get(this: HTMLElement) {
+      if (this.dataset.slot === "workstream-list") return listPx;
+      if (this.dataset.slot === "row-pr-line") return prLinePx;
+      if (this.hasAttribute("data-overflow-line")) return 200; // the subline, the PR cell and the checks cell
+      return 0;
+    } });
+    Object.defineProperty(proto, "offsetWidth", { configurable: true, get(this: HTMLElement) {
+      if (this.dataset.slot === "subline-more") return 24;
+      return this.hasAttribute("data-subline-item") && this.textContent ? 60 : 0;
+    } });
+  }
+  afterEach(() => { Object.defineProperty(proto, "clientWidth", real.client); Object.defineProperty(proto, "offsetWidth", real.offset); });
+
+  test("a narrow list stacks its rows on a wide viewport (the docked panel open); no instruction, plan or grant line there", async () => {
+    expect(window.matchMedia?.("(max-width: 767px)").matches ?? false).toBe(false); // a desktop viewport
+    fakeLayout(500);
+    seed();
+    apiFake.enrichmentData.set("r::feat-ci", { orchestrated: true, orchStatus: { plan: "Tiers by list width", waitingOn: "CI", at: "2026-10-13T00:00:00Z" }, grantScope: { via: "slack", by: "Saajan", level: "scoped" } });
+    await mount();
+    const list = container!.querySelector<HTMLElement>('[data-slot="workstream-list"]')!;
+    expect(list.className).toContain("@container/list");
+    expect(list.dataset.layout).toBe("stacked");
+    expect(container!.querySelector('[data-slot="workstream-list-header"]')).toBeNull();
+    expect(rowOf("feat-ci").dataset.layout).toBe("stacked");
+    expect(container!.querySelector('[data-slot="row-instruction"]')).toBeNull();
+    expect(container!.querySelector('[data-slot="orch-status"]')).toBeNull();
+    expect(container!.querySelector('[data-slot="grant-scope"]')).toBeNull();
+    expect(rowOf("feat-ci").textContent).not.toContain("Tiers by list width");
+    expect(rowOf("feat-ci").textContent).not.toContain("started from Slack");
+  });
+
+  test("the PR cell never clips a chip: what does not fit goes behind its own +N", async () => {
+    fakeLayout(1200, 160); // state + PR + the chip fit (152px); the folded checks do not
+    seed();
+    await mount();
+    const line = rowOf("feat-ci").querySelector<HTMLElement>('[data-slot="row-pr-line"]')!;
+    const items = [...line.querySelectorAll<HTMLElement>(":scope > [data-subline-item]")].filter((i) => i.textContent);
+    expect(items.slice(0, 2).map((i) => i.dataset.sublineItem)).toEqual(["state", "pr"]);
+    expect(items.length).toBeGreaterThan(2); // the folded checks follow the PR number
+    for (const i of items) expect(i.getAttribute("aria-hidden") === "true").toBe(items.indexOf(i) >= 2);
+    expect(line.querySelector<HTMLElement>(':scope > [data-slot="subline-more"]')!.textContent).toBe(`+${items.length - 2}`);
+  });
+
+  test("a wide list keeps the grid; a subline that does not fit hides its tail behind +N, listed in full", async () => {
+    fakeLayout(1200);
+    seed();
+    await mount();
+    expect(container!.querySelector<HTMLElement>('[data-slot="workstream-list"]')!.dataset.layout).toBe("grid");
+    const ci = rowOf("feat-ci");
+    expect(ci.dataset.layout).toBeUndefined();
+    const items = [...ci.querySelectorAll<HTMLElement>('[data-slot="row-subline"] > [data-subline-item]')].filter((i) => i.textContent);
+    const hidden = items.slice(2).map((i) => i.dataset.sublineItem); // 60 + 4 + 60 fits in 200 with the chip; the third does not
+    expect(hidden).toContain("diffstat");
+    for (const i of items) expect(i.getAttribute("aria-hidden") === "true").toBe(hidden.includes(i.dataset.sublineItem));
+    const chip = ci.querySelector<HTMLElement>('[data-slot="subline-more"]')!;
+    expect(chip.textContent).toBe(`+${hidden.length}`);
+    // A tap opens the card and does NOT open the row.
+    const path = location.pathname;
+    await act(async () => {
+      chip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" }));
+      chip.dispatchEvent(new PointerEvent("pointerenter", { pointerType: "touch" }));
+      chip.click();
+      await flush(); await flush();
+    });
+    expect(location.pathname).toBe(path);
+    let card = document.body.querySelector<HTMLElement>('[data-slot="subline-more-card"]')!;
+    expect(card).not.toBeNull();
+    expect([...card.querySelectorAll<HTMLElement>("[data-subline-hidden]")].map((li) => li.dataset.sublineHidden)).toEqual(hidden);
+    expect(card.querySelector('[data-slot="diffstat"]')!.textContent).toBe("+120 −34"); // in full, not clipped
+    // A second tap closes it; on a mouse, the hover opens it and the click pins it: leaving keeps it.
+    const cardOpen = () => document.body.querySelector('[data-slot="subline-more-card"]') !== null;
+    await act(async () => { chip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "touch" })); chip.click(); await flush(); await flush(); });
+    expect(cardOpen()).toBe(false);
+    await act(async () => {
+      chip.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+      chip.dispatchEvent(new PointerEvent("pointerenter", { pointerType: "mouse" }));
+      await flush();
+    });
+    expect(cardOpen()).toBe(true);
+    await act(async () => { chip.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" })); chip.click(); await flush(); await flush(); });
+    expect(cardOpen()).toBe(true);
+    await act(async () => {
+      chip.dispatchEvent(new PointerEvent("pointerout", { bubbles: true, pointerType: "mouse" }));
+      chip.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" }));
+      await new Promise((r) => setTimeout(r, 200)); await flush();
+    });
+    expect(cardOpen()).toBe(true);
+    expect(location.pathname).toBe(path);
+    // A click inside the card does not open the row either.
+    card = document.body.querySelector<HTMLElement>('[data-slot="subline-more-card"]')!;
+    await act(async () => { card.querySelector("li")!.click(); await flush(); });
+    expect(location.pathname).toBe(path);
   });
 });
