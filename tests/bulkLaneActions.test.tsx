@@ -72,11 +72,11 @@ describe("swimlane bulk actions", () => {
     expect(items()).toEqual(["Slack", "PR", "Agent", "Merge 1", "Close PR 2"]);
 
     await openSub("Slack");
-    expect(items().slice(5)).toEqual(["Send message 1", "Send bump 1"]); // counts: eligible cards per action
-    await click(item("Send message"));
+    expect(items().slice(5)).toEqual(["Copy message 1", "Copy bump 1"]); // counts: eligible cards per action
+    await click(item("Copy message"));
     await confirmIt();
-    expect(confirmed).toEqual(["Send message on 1 card? — Run send message on 1 card in in review."]);
-    expect(apiFake.slackSends).toEqual([{ repo: "r", text: "<https://x/7|#7 feat>" }]); // only the un-announced PR
+    expect(confirmed).toEqual(["Copy message on 1 card? — Run copy message on 1 card in in review."]);
+    expect(copied).toEqual(["#7 feat\nhttps://x/7"]); // only the un-announced PR, copied — Slack is receive-only
   });
 
   test("the PR submenu runs a PR verb across the lane, and Copy PR links is one aggregate copy", async () => {

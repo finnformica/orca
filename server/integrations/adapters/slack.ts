@@ -1,22 +1,27 @@
 // The Slack adapter (docs/research/integrations.md §5, setup: docs/integrations/slack.md).
-// OUTBOUND: `chat.postMessage` / `chat.update`. The old one Slack path stays as is: `postMessage` and
-// `postAsUser` post from YOUR identity with a user token (`xoxp`, SLACK_TOKEN) — dependency-free, no
-// model, so a post is deterministic and verbatim (/api/slack). A bot connection (an `integration`
-// row, its bot token `xoxb` in ORCA_SECRET_SLACK_BOT) adds threads (`thread_ts`, thread id
-// `channel:thread_ts`), edits, the retryable/fatal split and a 1-per-second pace per channel.
-// INBOUND (the bot connection only): Socket Mode. The app-level token (`xapp`, the variable
-// `config.appTokenRef` names, default ORCA_SECRET_SLACK_APP) opens a WebSocket through
-// `apps.connections.open`; each envelope is acked, and a mention, a DM or a reply in a thread the bot
-// started becomes one InboundMessage. No public URL, no dependency: Bun's own WebSocket.
+// RECEIVE-ONLY, BY RULE: Orca never sends anything to Slack — no chat.postMessage, no chat.update,
+// no thread reply, no reaction, no "post as me" user token. `caps.outbound` is false, the core drops
+// every delivery to a Slack link (shared/integrations.ts RECEIVE_ONLY), and `send` refuses if it is
+// ever called. The only Web API calls are reads: auth.test, apps.connections.open, users.info.
+// INBOUND: Socket Mode. The bot token (`xoxb`, the row's secret_ref, ORCA_SECRET_SLACK_BOT) names the
+// bot; the app-level token (`xapp`, the variable `config.appTokenRef` names, default
+// ORCA_SECRET_SLACK_APP) opens a WebSocket through `apps.connections.open`. Each envelope is acked,
+// and a mention, a DM or a reply in a thread the bot started becomes one InboundMessage. No public
+// URL, no dependency: Bun's own WebSocket.
 import type { Adapter, AdapterContext, Connection } from "../adapter";
-import { inboundEnvelope, secretRefRefusal, type Capabilities, type InboundMessage, type OutboundMessage, type SendResult, type Target } from "../../../shared/integrations";
+import { inboundEnvelope, receiveOnlyRefusal, secretRefRefusal, type Capabilities, type InboundMessage, type SendResult } from "../../../shared/integrations";
 import { ORCA_SECRETS } from "../../env";
 
 const API = "https://slack.com/api/";
 
+/** The only Web API methods this adapter may call: reads. A write method (chat.*, reactions.*) is
+ *  refused before any request, so no code path here can post to Slack. */
+export const SLACK_READ_METHODS = ["auth.test", "apps.connections.open", "users.info"] as const;
+
 /** One Web API call. Slack answers HTTP 200 with `{ok:false,error}` for a logical failure; a network
  *  error comes back in the same shape. Never throws. `retryAfterMs` is Slack's Retry-After on a 429. */
 export async function slackApi(token: string, method: string, body: Record<string, unknown>): Promise<{ ok: boolean; error?: string; retryAfterMs?: number; [k: string]: unknown }> {
+  if (!(SLACK_READ_METHODS as readonly string[]).includes(method.split("?")[0]!)) return { ok: false, error: `${receiveOnlyRefusal("slack")} (refused ${method.split("?")[0]})` };
   try {
     const res = await fetch(API + method, {
       method: "POST",
@@ -31,34 +36,13 @@ export async function slackApi(token: string, method: string, body: Record<strin
   }
 }
 
-const userToken = () => process.env.SLACK_TOKEN ?? "";
+/** Errors a reconnect cannot fix (a bad or revoked app token). */
+const FATAL = new Set(["not_authed", "invalid_auth", "account_inactive", "token_revoked", "token_expired", "no_permission", "missing_scope"]);
 
-/** Today's post, byte for byte: `{channel, text}` to chat.postMessage as the user. Pure I/O. */
-export async function postMessage(channel: string, text: string): Promise<{ ok: boolean; error?: string; channel?: string }> {
-  if (!userToken()) return { ok: false, error: "SLACK_TOKEN is not set" };
-  const { retryAfterMs: _r, ...data } = await slackApi(userToken(), "chat.postMessage", { channel, text });
-  return data as { ok: boolean; error?: string; channel?: string };
-}
-
-/** Errors a retry cannot fix (auth, a wrong channel, a bad message). */
-const FATAL = new Set([
-  "not_authed", "invalid_auth", "account_inactive", "token_revoked", "token_expired", "no_permission", "missing_scope",
-  "channel_not_found", "is_archived", "not_in_channel", "msg_too_long", "no_text", "cant_update_message", "message_not_found", "edit_window_closed",
-  "SLACK_TOKEN is not set", "no token",
-]);
-
-/** A thread id is `channel:thread_ts` (§3.6); the ts part is what Slack wants. */
-export const threadTs = (threadId?: string): string | undefined => threadId?.includes(":") ? threadId.slice(threadId.indexOf(":") + 1) : threadId || undefined;
-/** The channel part of a thread id: a reply goes where its thread is, even when the link names
- *  something else (the `im` link of every DM). */
-export const threadChannel = (threadId?: string): string | undefined => threadId?.includes(":") ? threadId.slice(0, threadId.indexOf(":")) : undefined;
-
+/** Receive-only: Socket Mode in, nothing out (no posts, threads, edits or reactions). */
 export const SLACK_CAPS: Capabilities = {
-  inbound: "none", outbound: true, threads: true, edits: true, reactions: false, attachments: false,
-  maxTextLength: 39_000, rate: { perTarget: 1, windowMs: 1_000 },
+  inbound: "socket", outbound: false, threads: false, edits: false, reactions: false, attachments: false, maxTextLength: 0,
 };
-/** A bot connection with Socket Mode on. */
-export const SLACK_SOCKET_CAPS: Capabilities = { ...SLACK_CAPS, inbound: "socket" };
 
 /** The external id of the link that takes every DM to the bot: one link, the person's own level caps it. */
 export const DM_LINK = "im";
@@ -79,10 +63,10 @@ const unescape = (t: string): string => t.replace(/&lt;/g, "<").replace(/&gt;/g,
 
 /** One Socket Mode event as an InboundMessage, or undefined when it is not for Orca (pure).
  *  - The event id is `team:channel:ts`: a mention comes as `app_mention` AND as `message`; both are one event.
- *  - The thread is `channel:thread_ts`, or `channel:ts` for a top-level message, so a reply starts a
- *    thread under it. `messageId` is the message's own ts.
+ *  - The thread is `channel:thread_ts`, or `channel:ts` for a top-level message: replies in one Slack
+ *    thread are one conversation in Orca. `messageId` is the message's own ts.
  *  - `mentioned`: an @-mention of the bot, a DM, or a reply in a thread the bot started.
- *  - A DM's channel is `im` (DM_LINK); its real channel rides in the thread id. */
+ *  - A DM's channel is `im` (DM_LINK); its real channel is in the thread id. */
 export function slackInbound(ev: SlackEvent, me: { team: string; botUserId: string; integrationId?: string }): InboundMessage | undefined {
   if (ev.type !== "message" && ev.type !== "app_mention") return undefined;
   if (!PERSON_SUBTYPES.has(ev.subtype ?? "") || ev.bot_id || !ev.user || ev.user === me.botUserId) return undefined;
@@ -109,16 +93,10 @@ export function slackInbound(ev: SlackEvent, me: { team: string; botUserId: stri
 /** Reconnect backoff: 1 s doubling to 30 s; a Retry-After wins when longer. */
 export const reconnectDelay = (failures: number, retryAfterMs = 0): number => Math.max(Math.min(1_000 * 2 ** Math.max(0, failures - 1), 30_000), retryAfterMs);
 
-/** The text a delivery posts: the title linked to its URL (Slack mrkdwn), then the text. */
-export function render(msg: OutboundMessage): string {
-  const head = msg.title ? (msg.url ? `<${msg.url}|${msg.title}>` : `*${msg.title}*`) : msg.url ? `<${msg.url}>` : "";
-  return head ? `${head}\n${msg.text}` : msg.text;
-}
-
 export function slackAdapter(connection: Connection): Adapter {
   const token = () => (connection.secretRef ? process.env[connection.secretRef] : undefined) ?? "";
-  // Socket Mode is on for a bot connection unless its config says `socket: false`; never for "post as me".
-  const socketOn = connection.secretRef !== "SLACK_TOKEN" && connection.config.socket !== false;
+  // Socket Mode is on unless the row's config says `socket: false` (then the adapter does nothing).
+  const socketOn = connection.config.socket !== false;
   const appRef = typeof connection.config.appTokenRef === "string" ? connection.config.appTokenRef : APP_TOKEN_REF;
   let ctx: AdapterContext | undefined;
   let ws: WebSocket | undefined;
@@ -186,7 +164,7 @@ export function slackAdapter(connection: Connection): Adapter {
 
   return {
     kind: "slack",
-    caps: socketOn ? SLACK_SOCKET_CAPS : SLACK_CAPS,
+    caps: SLACK_CAPS,
     async start(c: AdapterContext) {
       ctx = c;
       if (!socketOn) return;
@@ -209,17 +187,9 @@ export function slackAdapter(connection: Connection): Adapter {
       }
     },
     async stop() { close(); ctx = undefined; },
-    async send(target: Target, msg: OutboundMessage): Promise<SendResult> {
-      if (!token()) return { ok: false, retryable: false, error: `${connection.secretRef ?? "the token variable"} is not set` };
-      const text = msg.title || msg.url ? render(msg) : msg.text;
-      const channel = threadChannel(target.threadId) ?? target.externalId;
-      const r = msg.edit && target.messageId
-        ? await slackApi(token(), "chat.update", { channel, ts: target.messageId, text })
-        : await slackApi(token(), "chat.postMessage", { channel, text, ...(threadTs(target.threadId) ? { thread_ts: threadTs(target.threadId) } : {}) });
-      if (!r.ok) return { ok: false, retryable: !FATAL.has(r.error ?? ""), ...(r.retryAfterMs ? { retryAfterMs: r.retryAfterMs } : {}), error: r.error ?? "unknown error" };
-      const ts = typeof r.ts === "string" ? r.ts : undefined;
-      const posted = typeof r.channel === "string" ? r.channel : channel;
-      return { ok: true, ...(ts ? { externalMsgId: ts } : {}), ...(ts || target.threadId ? { threadId: target.threadId ?? `${posted}:${ts}` } : {}) };
+    /** Never posts. The core never routes a delivery here; this is the last guard. */
+    async send(): Promise<SendResult> {
+      return { ok: false, retryable: false, error: receiveOnlyRefusal("slack") };
     },
     async health() {
       if (!token()) return { ok: false, detail: `${connection.secretRef ?? "token"} is not set` };
@@ -235,14 +205,4 @@ export function slackAdapter(connection: Connection): Adapter {
       return r.ok && u?.id ? { id: u.id, name: u.profile?.display_name || u.real_name || u.name || u.id } : undefined;
     },
   };
-}
-
-/** The user-token connection behind /api/slack: "post as me". Not a row — it exists wherever SLACK_TOKEN is set. */
-export const USER_CONNECTION: Connection = { id: "slack-user", kind: "slack", name: "Slack (as you)", instance: "*", config: {}, secretRef: "SLACK_TOKEN", enabled: true };
-
-/** /api/slack's post through the adapter: the same body, the same token, the same error text. */
-export async function postAsUser(channel: string, text: string): Promise<{ ok: boolean; error?: string }> {
-  if (!userToken()) return { ok: false, error: "SLACK_TOKEN is not set" };
-  const r = await slackAdapter(USER_CONNECTION).send({ externalId: channel }, { text }, "");
-  return r.ok ? { ok: true } : { ok: false, error: r.error };
 }

@@ -5,7 +5,7 @@
 // the /api/integrations/pairing/approve|deny routes the page posts to).
 import * as db from "../db";
 import { ORCA_SECRETS } from "../env";
-import { secretRefRefusal, type Level, type Subscription, type TargetKind } from "../../shared/integrations";
+import { isReceiveOnly, receiveOnlyRefusal, secretRefRefusal, type Level, type Subscription, type TargetKind } from "../../shared/integrations";
 import {
   integrationProblem, linkProblem,
   type DeadRow, type IntegrationCard, type IntegrationsOverview, type PersonRow,
@@ -168,7 +168,10 @@ export async function addSubscription(b: Record<string, unknown>): Promise<numbe
   if (!/^[a-z*][a-z0-9_.*]*$/.test(topicPattern)) fail("topic pattern: dot segments, * for one, e.g. orca.pr.*");
   if (!["link", "orchestrator", "workstream", "web"].includes(targetKind)) fail("target: link, orchestrator, workstream or web");
   const targetId = typeof b.targetId === "string" && b.targetId ? b.targetId : undefined;
-  if (targetKind === "link" && !(targetId && (await store.link(targetId)))) fail("pick a link");
+  const link = targetKind === "link" && targetId ? await store.link(targetId) : undefined;
+  if (targetKind === "link" && !link) fail("pick a link");
+  const kind = link ? (await store.integration(link.integrationId))?.kind : undefined;
+  if (isReceiveOnly(kind)) fail(`${receiveOnlyRefusal(kind!)}, so a subscription cannot post to ${link!.label ?? link!.externalId}`);
   if (targetKind === "workstream" && !/^[^:]+::.+$/.test(targetId ?? "")) fail("workstream target: repo::branch");
   const filter = b.filter && typeof b.filter === "object" ? Object.fromEntries(Object.entries(b.filter as Record<string, unknown>).map(([k, v]) => [k, String(v)])) : {};
   const digestSeconds = Number(b.digestSeconds) > 0 ? Math.round(Number(b.digestSeconds)) : undefined;
@@ -209,6 +212,7 @@ export const TEST_WAIT_MS = 8_000;
 export async function testLink(linkId: string, opts: { waitMs?: number; now?: number } = {}): Promise<{ state: string; error?: string; deliveryId?: number }> {
   const l = (await store.link(linkId)) ?? fail(`no link ${linkId}`);
   const c = (await store.integration(l.integrationId)) ?? fail(`no integration ${l.integrationId}`);
+  if (isReceiveOnly(c.kind)) fail(`${receiveOnlyRefusal(c.kind)}: there is no test message for ${l.label ?? l.externalId}`);
   const now = opts.now ?? Date.now();
   const e = {
     id: router.newEventId(now), key: `test:${linkId}:${now}`, topic: "orca.integration.test" as const, at: now,

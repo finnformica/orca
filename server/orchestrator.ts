@@ -39,7 +39,7 @@ import {
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
-import { grantKey, grantRefusal, type Grant, type ReplyTo } from "../shared/integrations";
+import { grantKey, grantRefusal, isReceiveOnly, receiveOnlyRefusal, type Grant, type ReplyTo } from "../shared/integrations";
 import * as integrationStore from "./integrations/store";
 import * as integrationRouter from "./integrations/router";
 
@@ -593,6 +593,16 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       if (!link) throw new Error(`--link must name a channel link (orca channels lists them)${args.link ? `: no link "${args.link}"` : ""}`);
       if (!text) throw new Error('the message is required: orca post --link <id> "<text>"');
       const conn = await integrationStore.integration(link.integrationId);
+      if (isReceiveOnly(conn?.kind)) {
+        // Slack is receive-only by rule: nothing goes there. A --reply is kept in Orca (the inbox);
+        // a post to the link is refused outright.
+        if (!reply) throw new Error(`${receiveOnlyRefusal(conn!.kind)}. Answer in Orca: write it in your reply.`);
+        await integrationRouter.publish({
+          key: `post:${crypto.randomUUID()}`, topic: "orca.message", at: Date.now(), source: { adapter: "orca", linkId: link.id },
+          title: `Answer to ${link.label ?? link.externalId} (kept in Orca)`, text,
+        }, Date.now(), [{ subscriptionId: null, target: { kind: "web" } }]);
+        return `${receiveOnlyRefusal(conn!.kind)}. Nothing went to ${link.label ?? link.externalId}; the answer is in Orca's inbox only. Say it in your reply too.`;
+      }
       const repo = typeof args.repo === "string" && args.repo ? args.repo : undefined;
       const branch = typeof args.branch === "string" && args.branch ? args.branch : undefined;
       const threadId = reply ? reply.threadId

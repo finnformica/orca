@@ -1,9 +1,9 @@
-// The Slack adapter's two-way half (docs/integrations/slack.md): Socket Mode inbound with a bot
-// token and an app-level token. A fake Socket Mode server (a local Bun.serve WebSocket) stands in for
-// Slack's socket, and a stubbed fetch for its Web API (auth.test, apps.connections.open,
-// chat.postMessage) — nothing here talks to a real Slack. The last case runs the real router on a
-// fresh schema: a mention in a linked channel is one event with its thread, and the reply goes back
-// into that thread — a pairing code for an unknown sender, and `orca post --thread` for an answer.
+// The Slack adapter (docs/integrations/slack.md): RECEIVE-ONLY by rule. Socket Mode inbound with a bot
+// token and an app-level token; nothing ever goes out. A fake Socket Mode server (a local Bun.serve
+// WebSocket) stands in for Slack's socket, and a stubbed fetch for its Web API — nothing here talks to
+// a real Slack, and every case checks that no chat.* call was made. The core cases run the real router,
+// dispatcher, Settings routes and `orca post` on a fresh schema: a mention is one event with its thread;
+// a stranger's pairing code, a subscription, a Test, `orca post` and `--reply` never reach Slack.
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import type { Server, ServerWebSocket } from "bun";
 import * as db from "../server/db";
@@ -11,9 +11,11 @@ import * as router from "../server/integrations/router";
 import * as dispatcher from "../server/integrations/dispatcher";
 import * as orchestrator from "../server/orchestrator";
 import * as store from "../server/integrations/store";
-import { DM_LINK, reconnectDelay, slackAdapter, slackInbound, threadChannel, USER_CONNECTION, type SlackEvent } from "../server/integrations/adapters/slack";
+import { DM_LINK, SLACK_CAPS, reconnectDelay, slackAdapter, slackApi, slackInbound, type SlackEvent } from "../server/integrations/adapters/slack";
+import * as admin from "../server/integrations/admin";
+import { postableLinks } from "../shared/integrationSettings";
 import type { AdapterContext, Connection } from "../server/integrations/adapter";
-import { pairingReply, replyToOf, type InboundEnvelope } from "../shared/integrations";
+import { replyToOf, sendable, type InboundEnvelope } from "../shared/integrations";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../web/src/workstream";
 import type { OrcaConfig } from "../server/config";
 import { native } from "./happydom";
@@ -111,7 +113,6 @@ describe("slackInbound (pure)", () => {
   test("a DM goes to the im link; its real channel rides in the thread id", () => {
     const dm = slackInbound({ type: "message", user: "U1", text: "status?", ts: "5.5", channel: "D7", channel_type: "im" }, me)!;
     expect(dm).toMatchObject({ channel: DM_LINK, mentioned: true, thread: { externalId: "D7:5.5" } });
-    expect(threadChannel(dm.thread!.externalId)).toBe("D7");
   });
 
   test("not for Orca: bots, itself, edits and joins, other event types, an empty mention", () => {
@@ -172,10 +173,10 @@ describe("Socket Mode (a fake Slack socket)", () => {
       await waitFor(() => got.length === 4);
       expect(got[3]!.text).toBe("again");
 
-      // A reply goes back into the thread the message came from: the DM's channel, from the thread id.
-      const sent = await a.send({ externalId: DM_LINK, threadId: "D9:1.4" }, { text: "on it" }, "9");
-      expect(api.calls.at(-1)).toMatchObject({ method: "chat.postMessage", body: { channel: "D9", text: "on it", thread_ts: "1.4" }, auth: "Bearer xoxb-test" });
-      expect(sent).toEqual({ ok: true, externalMsgId: "77.7", threadId: "D9:1.4" });
+      // Receive-only: even called directly, send posts nothing.
+      expect(await a.send({ externalId: "C1", threadId: "C1:1.2" }, { text: "on it" }, "9"))
+        .toEqual({ ok: false, retryable: false, error: "Slack is receive-only: Orca never sends anything to Slack" });
+      expect(api.calls.some((c) => c.method.startsWith("chat."))).toBe(false);
       expect(await a.resolveUser!("U1")).toEqual({ id: "U1", name: "Saajan" });
       expect(api.calls.at(-1)!.method).toBe("users.info?user=U1");
 
@@ -236,16 +237,18 @@ describe("Socket Mode (a fake Slack socket)", () => {
     } finally { abort.abort(); await a.stop(); api.restore(); slack.stop(); }
   }, 10_000);
 
-  test("post as you (SLACK_TOKEN) and a bot row with socket: false stay outbound only", async () => {
+  test("receive-only by rule: caps send nothing, slackApi refuses every write method before a request, socket: false does nothing", async () => {
+    expect(SLACK_CAPS).toMatchObject({ inbound: "socket", outbound: false, threads: false, edits: false, reactions: false });
+    process.env.ORCA_SECRET_SLACK_BOT = "xoxb-test";
     const api = fakeWebApi(() => "ws://unused");
     try {
-      const user = slackAdapter(USER_CONNECTION);
-      expect(user.caps.inbound).toBe("none");
-      await user.start(fakeCtx().ctx);
+      for (const method of ["chat.postMessage", "chat.update", "chat.postEphemeral", "reactions.add", "files.upload"]) {
+        expect(await slackApi("xoxb-test", method, { channel: "C1", text: "hi" })).toEqual({ ok: false, error: `Slack is receive-only: Orca never sends anything to Slack (refused ${method})` });
+      }
       const off = slackAdapter({ ...BOT, config: { socket: false } });
-      expect(off.caps.inbound).toBe("none");
       await off.start(fakeCtx().ctx);
-      expect(api.calls).toEqual([]);
+      expect(await off.send({ externalId: "C1" }, { text: "x" }, "1")).toMatchObject({ ok: false, retryable: false });
+      expect(api.calls).toEqual([]); // not one request reached Slack
     } finally { api.restore(); }
   });
 });
@@ -298,65 +301,61 @@ describe("through the core (real router, fresh schema)", () => {
         actor: { principalId: "saajan", external: { adapter: "slack", id: "U1" } }, grant: { level: "ask" },
       });
       expect(await store.event("slack:T1:D3:1.5")).toMatchObject({ source: { linkId: "DM" }, thread: { externalId: "D3:1.5" } });
-      // The answer goes into the mention's thread.
-      const ev = (await store.event("slack:T1:C1:1.2"))!;
-      await a.send({ linkId: "L1", externalId: "C1", threadId: ev.thread!.externalId }, { text: "yes, at 10:02" }, "1");
-      expect(api.calls.at(-1)).toMatchObject({ method: "chat.postMessage", body: { channel: "C1", text: "yes, at 10:02", thread_ts: "1.2" } });
+      expect(api.calls.some((c) => c.method.startsWith("chat."))).toBe(false);
     } finally { abort.abort(); await a.stop(); api.restore(); slack.stop(); }
   }, 15_000);
 
-  test("an unknown sender's pairing code and orca post --thread both land in the sender's own thread", async () => {
+  test("nothing reaches Slack: no pairing reply, no subscription, no Test, no orca post; --reply stays in Orca", async () => {
     process.env.ORCA_SECRET_SLACK_BOT = "xoxb-test"; process.env.ORCA_SECRET_SLACK_APP = "xapp-test";
     const slack = fakeSocketMode();
     const api = fakeWebApi(() => slack.url);
     const results: string[] = [];
     const { ctx, abort } = fakeCtx(async (e) => { const r = await router.ingest("slack-work", e); results.push(r); return r; });
     const a = slackAdapter(BOT);
+    const web: string[] = [];
+    let sends = 0;
     dispatcher.resetPace();
-    dispatcher.configure({ adapter: (id) => (id === "slack-work" ? a : undefined), web: async () => ({ ok: true }) });
+    dispatcher.configure({ adapter: (id) => (id === "slack-work" ? { ...a, send: async (...x: Parameters<typeof a.send>) => { sends++; return a.send(...x); } } : undefined), web: async (e) => { web.push(`${e.topic}|${e.title ?? ""}|${e.text}`); return { ok: true }; } });
     dispatcher.setRunning(() => ["slack-work"]);
-    const posts = () => api.calls.filter((c) => c.method === "chat.postMessage").map((c) => c.body);
+    const cfg = { repos: [] } as unknown as OrcaConfig;
+    const linkDeliveries = async () => (await store.deliveries()).filter((d) => d.target.kind === "link");
     try {
       await a.start(ctx);
-      // (1) Strangers: a mention in a channel and a DM. Each gets its code in its own thread.
+      // (1) A stranger writes: rejected, a code in Orca's bell, and NO reply delivery to Slack.
       slack.event({ type: "app_mention", user: "U-new", text: "<@UBOT> hi", ts: "3.1", channel: "C1", channel_type: "channel" });
       await waitFor(() => results.length === 1);
-      slack.event({ type: "message", user: "U-dm", text: "hello?", ts: "4.1", channel: "D5", channel_type: "im" });
-      await waitFor(() => results.length === 2);
-      expect(results).toEqual(["rejected", "rejected"]);
-      const codes = new Map((await store.pendingPairings()).map((p) => [p.externalId, p.code]));
-      expect(codes.has("U-new") && codes.has("U-dm")).toBe(true); // (the first test's stranger has one too)
-      // Slack's pace is one post per second per channel: a second C1 reply waits for the next second.
-      const t0 = Date.now();
-      await dispatcher.dispatchOnce(t0);
-      await dispatcher.dispatchOnce(t0 + 1_500);
-      expect(posts().filter((b) => ["3.1", "4.1"].includes(b.thread_ts)).sort((x, y) => x.thread_ts.localeCompare(y.thread_ts))).toEqual([
-        { channel: "C1", text: pairingReply(codes.get("U-new")!), thread_ts: "3.1" },
-        { channel: "D5", text: pairingReply(codes.get("U-dm")!), thread_ts: "4.1" }, // the DM itself, not the "im" link
-      ]);
+      expect(results).toEqual(["rejected"]);
+      const code = (await store.pendingPairings()).find((p) => p.externalId === "U-new")!.code;
+      await dispatcher.dispatchOnce();
+      expect(web.find((w) => w.includes(`Approve code ${code}`))).toContain(`Approve code ${code} to pair. Slack is receive-only`);
+      expect(await linkDeliveries()).toEqual([]);
 
-      // (2) A paired person asks; the orchestrator answers with the thread id from the fenced message.
-      slack.event({ type: "app_mention", user: "U1", text: "<@UBOT> is #12 merged?", ts: "5.1", channel: "C1", channel_type: "channel" });
-      await waitFor(() => results.length === 3);
-      expect(results[2]).toBe("new");
-      const thread = (await store.event("slack:T1:C1:5.1"))!.thread!.externalId;
-      expect(thread).toBe("C1:5.1");
-      expect(await orchestrator.tool({ repos: [] } as unknown as OrcaConfig, "post", { link: "L1", thread, _: ["Yes,", "at", "10:02."] })).toContain("(thread C1:5.1)");
-      await dispatcher.dispatchOnce(t0 + 3_000);
-      expect(posts().at(-1)).toEqual({ channel: "C1", text: "Yes, at 10:02.", thread_ts: "5.1" });
+      // (2) A subscription to a Slack link: Settings refuses it, and so does Test.
+      await expect(admin.addSubscription({ topicPattern: "orca.pr.*", targetKind: "link", targetId: "L1" })).rejects.toThrow("Slack is receive-only");
+      await expect(admin.testLink("L1")).rejects.toThrow("Slack is receive-only");
+      // One written straight to the table (an old row) still sends nothing: the core drops it.
+      await store.addSubscription({ topicPattern: "orca.pr.*", filter: {}, targetKind: "link", targetId: "L1" });
+      await router.publish({ key: "pr-ci:r#1@a", topic: "orca.pr.ci_failed", at: Date.now(), source: { adapter: "orca" }, scope: { repo: "r" }, title: "#1", text: "CI is failing." });
+      expect(await linkDeliveries()).toEqual([]);
+      expect(postableLinks([{ id: "L1", integrationId: "slack-work", externalId: "C1", level: "ask", repos: [], requireMention: true }, { id: "D1", integrationId: "dc", externalId: "9", level: "ask", repos: [], requireMention: false }],
+        [{ id: "slack-work", kind: "slack" }, { id: "dc", kind: "discord" }]).map((l) => l.id)).toEqual(["D1"]);
+      expect(sendable([{ target: { kind: "link", integrationId: "slack-work", adapter: "slack", linkId: "L1", externalId: "C1" } }, { target: { kind: "web" } }])).toEqual([{ target: { kind: "web" } }]);
 
-      // (3) A paired person's DM, answered with `orca post --reply` under the wake's own grant: the
-      // core targets the "im" link's place; the adapter posts into the real DM's thread.
+      // (3) A paired person asks. `orca post --link` to Slack is refused; `--reply` answers in Orca only.
       slack.event({ type: "message", user: "U1", text: "and #13?", ts: "6.1", channel: "D6", channel_type: "im" });
-      await waitFor(() => results.length === 4);
-      expect(results[3]).toBe("new");
+      await waitFor(() => results.length === 2);
+      expect(results[1]).toBe("new");
       const dm = (await store.event("slack:T1:D6:6.1"))!;
       await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: dm.grant as never, wakeReplyTo: replyToOf(dm) as never });
-      expect(await orchestrator.tool({ repos: [] } as unknown as OrcaConfig, "post", { reply: "Not yet." })).toContain("(thread D6:6.1)");
-      await dispatcher.dispatchOnce(t0 + 4_500);
-      expect(posts().at(-1)).toEqual({ channel: "D6", text: "Not yet.", thread_ts: "6.1" });
+      await expect(orchestrator.tool(cfg, "post", { link: "DM", _: ["Not", "yet."] })).rejects.toThrow("Slack is receive-only");
+      expect(await orchestrator.tool(cfg, "post", { reply: "Not yet." })).toContain("Slack is receive-only: Orca never sends anything to Slack. Nothing went to im; the answer is in Orca's inbox only.");
+      await dispatcher.dispatchOnce();
+      expect(web.at(-1)).toBe("orca.message|Answer to im (kept in Orca)|Not yet.");
       await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: null as never, wakeReplyTo: null as never });
-      expect((await store.deliveries()).every((d) => d.state === "sent" || d.target.kind !== "link")).toBe(true);
+
+      expect(await linkDeliveries()).toEqual([]);
+      expect(sends).toBe(0); // the dispatcher never called the Slack adapter
+      expect(api.calls.some((c) => c.method.startsWith("chat.") || c.method.startsWith("reactions."))).toBe(false);
     } finally {
       abort.abort(); await a.stop(); api.restore(); slack.stop();
       dispatcher.configure({ adapter: () => undefined }); dispatcher.setRunning(() => []);

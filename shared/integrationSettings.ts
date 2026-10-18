@@ -2,7 +2,7 @@
 // decisions — a card's health tone, the subscription presets, what a row reads as, and the checks a
 // form runs before it posts. Pure: the server (server/integrations/admin.ts), the page
 // (web/src/views/Integrations.tsx) and the tests import it as is.
-import { secretRefRefusal, type AdapterMeta, type DeliveryTarget, type Level, type Subscription, type TargetKind } from "./integrations";
+import { isReceiveOnly, secretRefRefusal, type AdapterMeta, type DeliveryTarget, type Level, type Subscription, type TargetKind } from "./integrations";
 
 /** One integration as the page shows it: the row, its health and what it ran last. */
 export type IntegrationCard = {
@@ -26,6 +26,10 @@ export type Pairing = {
   code: string; integrationId: string; adapter: string; externalId: string; name?: string; linkId?: string;
   createdAt: number; expiresAt: number; state: "pending" | "approved" | "denied"; principalId?: string;
 };
+
+/** The links a subscription may post to: none on a receive-only platform (Slack, by rule). */
+export const postableLinks = (links: LinkRow[], integrations: Pick<IntegrationCard, "id" | "kind">[]): LinkRow[] =>
+  links.filter((l) => !isReceiveOnly(integrations.find((c) => c.id === l.integrationId)?.kind));
 
 export type DeadRow = { id: number; eventId: string; target: DeliveryTarget; attempts: number; lastError?: string; topic: string; key: string; title?: string; at?: number };
 

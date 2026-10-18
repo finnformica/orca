@@ -2,7 +2,7 @@
 // gate the sender against its link (§3.7), then `publish`. `publish` is everyone's: record the event
 // once by its key and plan its deliveries in the same transaction, then kick the dispatcher.
 import { randomUUID } from "crypto";
-import { effectiveGrant, INBOUND_LIMIT, paceWait, pairingCode, pairingReply, planDeliveries, PAIRING_CODE_LENGTH, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery } from "../../shared/integrations";
+import { isReceiveOnly, receiveOnlyRefusal, sendable, effectiveGrant, INBOUND_LIMIT, paceWait, pairingCode, pairingReply, planDeliveries, PAIRING_CODE_LENGTH, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery } from "../../shared/integrations";
 import * as store from "./store";
 
 /** Orca's own id: time-ordered, so `ORDER BY id` is arrival order. */
@@ -27,7 +27,8 @@ export async function publish(input: InboundEnvelope & { grant?: Grant }, now = 
   ]);
   const kinds = new Map(conns.map((c) => [c.id, c.kind]));
   const links = new Map(allLinks.map((l) => [l.id, { integrationId: l.integrationId, adapter: kinds.get(l.integrationId) ?? "?", externalId: l.externalId }]));
-  const planned = [...planDeliveries(e, subs, links, threads, inbound), ...extra];
+  // Never a delivery to a receive-only platform (Slack): not a subscription, a reply or a pairing code.
+  const planned = sendable([...planDeliveries(e, subs, links, threads, inbound), ...extra]);
   const r = await store.recordEvent(e, planned, now);
   if (r.status === "new" && r.deliveries.length) kick();
   return { ...r, id: e.id };
@@ -85,7 +86,8 @@ async function firstLink(integrationId: string, places: string[]): Promise<store
 }
 
 /** An unknown sender on a linked place: their pending code, or a new one. A NEW code is sent back to
- *  them on the same place (a durable delivery, so a send failure retries) and shown in the bell. The
+ *  them on the same place (a durable delivery, so a send failure retries; never on a receive-only
+ *  platform) and shown in the bell. The
  *  message itself is dropped: they send it again once you approve (POST /api/integrations/pairing/approve). */
 async function requestPairing(integrationId: string, linkId: string, e: InboundEnvelope, now: number): Promise<void> {
   const who = e.actor!.external;
@@ -95,7 +97,9 @@ async function requestPairing(integrationId: string, linkId: string, e: InboundE
   if (!fresh) return;
   const name = who.name ?? who.id;
   const source = { adapter: "orca", integrationId, linkId };
-  await publish({
+  // A receive-only platform (Slack) gets no reply: the code is only in Orca's bell.
+  const silent = isReceiveOnly(e.source.adapter);
+  if (!silent) await publish({
     key: `pairing:${pairing.code}:reply`, topic: "orca.message", at: now, source, text: pairingReply(pairing.code),
     ...(e.thread ? { thread: e.thread } : {}),
   }, now, [{ subscriptionId: null, target: {
@@ -104,6 +108,6 @@ async function requestPairing(integrationId: string, linkId: string, e: InboundE
   } }]);
   await publish({
     key: `pairing:${pairing.code}`, topic: "orca.pairing.requested", at: now, source, actor: e.actor,
-    title: `Pairing request from ${name}`, text: `${name} (${who.adapter}:${who.id}) wants to talk to Orca. Approve code ${pairing.code} to pair.`,
+    title: `Pairing request from ${name}`, text: `${name} (${who.adapter}:${who.id}) wants to talk to Orca. Approve code ${pairing.code} to pair.${silent ? ` ${receiveOnlyRefusal(who.adapter)}, so they did not get the code: tell them to send the message again once you approve.` : ""}`,
   }, now, [{ subscriptionId: null, target: { kind: "web" } }]);
 }

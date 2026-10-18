@@ -6,6 +6,7 @@ import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
+import { api } from "@/api";
 import * as store from "@/store";
 import * as centre from "@/lib/notificationStore";
 import { WorkstreamActions } from "@/views/WorkstreamActions";
@@ -85,21 +86,13 @@ describe("Copy worktree action", () => {
   };
   const pr = { ...row, hasRemote: true, lane: "IN_REVIEW" as const, prNumber: 7, prUrl: "https://github.com/acme/app/pull/7" };
 
-  test("Slack action lives only in Actions → Slack, not as a card button, and copies the message when the post fails", async () => {
-    apiFake.slackPosted = false; // chat.postMessage failed → the client copies so the message isn't lost
+  test("Slack lives only in Actions → Slack, and Copy message only copies: Slack is receive-only, Orca never posts", async () => {
     mount(pr);
     expect([...container!.querySelectorAll("button")].some((button) => button.textContent?.includes("Copy Slack"))).toBe(false);
-    await openSlackItem("Send message");
+    await openSlackItem("Copy message");
     // No ClipboardItem in the test DOM → the plain-text fallback: title + URL, NOT the Markdown link
     // that pasted literally into Slack. (The rich text/html flavour is unit-tested via slackClipboard.)
     expect(copied).toBe("#7 Feat\nhttps://github.com/acme/app/pull/7");
-  });
-
-  test("Slack notify posts the mrkdwn message via chat.postMessage without touching the clipboard", async () => {
-    apiFake.slackPosted = true; // posted verbatim from your identity → no copy
-    mount(pr);
-    await openSlackItem("Send message");
-    expect(apiFake.slackSends).toEqual([{ repo: "r", text: "<https://github.com/acme/app/pull/7|#7 Feat>" }]);
-    expect(copied).toBe(""); // posted → clipboard untouched
+    expect("slack" in api).toBe(false); // no client call that could post
   });
 });

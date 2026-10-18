@@ -81,7 +81,7 @@ describe("with Postgres", () => {
   let prev: Record<string, string | undefined> = {};
   const sent: { target: Target; msg: OutboundMessage; key: string }[] = [];
   const fake: Adapter = {
-    kind: "slack", caps: { inbound: "socket", outbound: true, threads: true, edits: false, reactions: false, attachments: false, maxTextLength: 10_000 },
+    kind: "discord", caps: { inbound: "socket", outbound: true, threads: true, edits: false, reactions: false, attachments: false, maxTextLength: 10_000 },
     start: async () => {}, stop: async () => {}, health: async () => ({ ok: true }),
     send: async (target, msg, key) => { sent.push({ target, msg, key }); return { ok: true, externalMsgId: `m${key}` }; },
   };
@@ -97,10 +97,10 @@ describe("with Postgres", () => {
     dispatcher.resetPace();
     sent.length = 0;
     web.length = 0;
-    dispatcher.configure({ adapter: (id) => (id === "slack-work" ? fake : undefined), web: async (e) => { web.push(e); return { ok: true }; } });
-    dispatcher.setRunning(() => ["slack-work"]);
-    await store.addIntegration({ id: "slack-work", kind: "slack", name: "Work Slack", instance: "local", config: {}, enabled: true });
-    await store.addLink({ id: "L1", integrationId: "slack-work", externalId: "C1", label: "#eng", level: "work", repos: ["r"], requireMention: false });
+    dispatcher.configure({ adapter: (id) => (id === "discord-work" ? fake : undefined), web: async (e) => { web.push(e); return { ok: true }; } });
+    dispatcher.setRunning(() => ["discord-work"]);
+    await store.addIntegration({ id: "discord-work", kind: "discord", name: "Work Discord", instance: "local", config: {}, enabled: true });
+    await store.addLink({ id: "L1", integrationId: "discord-work", externalId: "C1", label: "#eng", level: "work", repos: ["r"], requireMention: false });
   });
   afterEach(async () => {
     dispatcher.configure({ adapter: () => undefined });
@@ -111,16 +111,16 @@ describe("with Postgres", () => {
   });
 
   const msg = (eventId: string, from: string, channel = "C1", thread?: string) => inboundEnvelope({
-    adapter: "slack", channel, eventId, from: { adapter: "slack", id: from, name: "Saajan" }, text: "is #12 merged?",
-    ...(thread ? { thread: { adapter: "slack", externalId: thread } } : {}),
+    adapter: "discord", channel, eventId, from: { adapter: "discord", id: from, name: "Saajan" }, text: "is #12 merged?",
+    ...(thread ? { thread: { adapter: "discord", externalId: thread } } : {}),
   });
 
   test("pairing: an unknown sender gets ONE code on their own place and a bell row; approval binds them and the next message is accepted", async () => {
-    expect(await router.ingest("slack-work", msg("p1", "U9", "C1", "C1:5.5"), 1_000)).toBe("rejected");
-    expect(await router.ingest("slack-work", msg("p2", "U9"), 2_000)).toBe("rejected"); // same pending code: no second reply
+    expect(await router.ingest("discord-work", msg("p1", "U9", "C1", "C1:5.5"), 1_000)).toBe("rejected");
+    expect(await router.ingest("discord-work", msg("p2", "U9"), 2_000)).toBe("rejected"); // same pending code: no second reply
     const [pairing, ...more] = await store.pendingPairings(2_000);
     expect(more).toEqual([]);
-    expect(pairing).toMatchObject({ adapter: "slack", externalId: "U9", name: "Saajan", linkId: "L1", expiresAt: 1_000 + PAIRING_TTL_MS });
+    expect(pairing).toMatchObject({ adapter: "discord", externalId: "U9", name: "Saajan", linkId: "L1", expiresAt: 1_000 + PAIRING_TTL_MS });
     await dispatcher.dispatchOnce(3_000);
     expect(sent).toHaveLength(1);
     expect(sent[0]!.target).toMatchObject({ externalId: "C1", threadId: "C1:5.5" }); // answered where they wrote
@@ -132,32 +132,32 @@ describe("with Postgres", () => {
     const approved = await store.approvePairing(pairing!.code.toLowerCase(), { id: "saajan" }, 3_000);
     expect(approved).toMatchObject({ state: "approved", principalId: "saajan" });
     await expect(store.approvePairing(pairing!.code, { id: "saajan" }, 3_000)).rejects.toThrow("already approved");
-    expect(await store.principalFor("slack", "U9")).toEqual({ id: "saajan", name: "Saajan", maxLevel: "ask" }); // a new person defaults to ask
-    expect(await router.ingest("slack-work", msg("p3", "U9"), 4_000)).toBe("new");
-    expect((await store.event("slack:p3"))?.grant).toMatchObject({ level: "ask", principalId: "saajan" });
+    expect(await store.principalFor("discord", "U9")).toEqual({ id: "saajan", name: "Saajan", maxLevel: "ask" }); // a new person defaults to ask
+    expect(await router.ingest("discord-work", msg("p3", "U9"), 4_000)).toBe("new");
+    expect((await store.event("discord:p3"))?.grant).toMatchObject({ level: "ask", principalId: "saajan" });
 
     // A second identity bound to the SAME person keeps the person's name and level.
-    await store.approvePairing((await store.pairingFor({ integrationId: "slack-work", adapter: "discord", externalId: "D1" }, () => "DISC23", 5_000)).pairing.code, { id: "saajan" }, 5_000);
+    await store.approvePairing((await store.pairingFor({ integrationId: "discord-work", adapter: "discord", externalId: "D1" }, () => "DISC23", 5_000)).pairing.code, { id: "saajan" }, 5_000);
     expect(await store.principalFor("discord", "D1")).toEqual({ id: "saajan", name: "Saajan", maxLevel: "ask" });
   });
 
   test("pairing: an expired code is refused, a denied one is gone, a notify link gives no code, and a catch-all link covers DMs", async () => {
-    const { pairing } = await store.pairingFor({ integrationId: "slack-work", adapter: "slack", externalId: "U5" }, () => "OLDCDE", 0);
+    const { pairing } = await store.pairingFor({ integrationId: "discord-work", adapter: "discord", externalId: "U5" }, () => "OLDCDE", 0);
     await expect(store.approvePairing("OLDCDE", { id: "u5" }, PAIRING_TTL_MS + 1)).rejects.toThrow("has expired");
     expect(pairing.code).toBe("OLDCDE");
-    const fresh = await store.pairingFor({ integrationId: "slack-work", adapter: "slack", externalId: "U5" }, () => "NEWCDE", PAIRING_TTL_MS + 1);
+    const fresh = await store.pairingFor({ integrationId: "discord-work", adapter: "discord", externalId: "U5" }, () => "NEWCDE", PAIRING_TTL_MS + 1);
     expect(fresh).toMatchObject({ fresh: true, pairing: { code: "NEWCDE" } });
     expect(await store.denyPairing("NEWCDE")).toBe(true);
     expect(await store.pendingPairings(PAIRING_TTL_MS + 2)).toEqual([]);
 
-    await store.addLink({ id: "L2", integrationId: "slack-work", externalId: "C2", level: "notify", repos: [], requireMention: false });
-    expect(await router.ingest("slack-work", msg("n1", "U6", "C2"))).toBe("rejected");
+    await store.addLink({ id: "L2", integrationId: "discord-work", externalId: "C2", level: "notify", repos: [], requireMention: false });
+    expect(await router.ingest("discord-work", msg("n1", "U6", "C2"))).toBe("rejected");
     expect(await store.pendingPairings()).toEqual([]);
 
-    expect(await router.ingest("slack-work", msg("dm1", "U7", "D-dm"))).toBe("rejected"); // no link for the DM, no catch-all
+    expect(await router.ingest("discord-work", msg("dm1", "U7", "D-dm"))).toBe("rejected"); // no link for the DM, no catch-all
     expect(await store.pendingPairings()).toEqual([]);
-    await store.addLink({ id: "Lstar", integrationId: "slack-work", externalId: "*", level: "ask", repos: [], requireMention: false });
-    expect(await router.ingest("slack-work", msg("dm2", "U7", "D-dm"))).toBe("rejected");
+    await store.addLink({ id: "Lstar", integrationId: "discord-work", externalId: "*", level: "ask", repos: [], requireMention: false });
+    expect(await router.ingest("discord-work", msg("dm2", "U7", "D-dm"))).toBe("rejected");
     const [p] = await store.pendingPairings();
     expect(p).toMatchObject({ externalId: "U7", linkId: "Lstar" });
     await dispatcher.dispatchOnce();
@@ -171,43 +171,43 @@ describe("with Postgres", () => {
       ...inboundEnvelope({ adapter: "linear", channel, eventId: id, from: { adapter: "linear", id: "A1", name: "Ana" }, text: "hi" }),
       ...(parents ? { source: { adapter: "linear", channel, parents } } : {}),
     });
-    await store.addLink({ id: "Lstar", integrationId: "slack-work", externalId: "*", level: "ask", repos: [], requireMention: false });
-    await store.addLink({ id: "Lteam", integrationId: "slack-work", externalId: "team:ENG", level: "ask", repos: [], requireMention: false });
-    expect(await router.ingest("slack-work", ev("x1", "issue:1", ["project:p-1", "team:ENG"]))).toBe("new");
+    await store.addLink({ id: "Lstar", integrationId: "discord-work", externalId: "*", level: "ask", repos: [], requireMention: false });
+    await store.addLink({ id: "Lteam", integrationId: "discord-work", externalId: "team:ENG", level: "ask", repos: [], requireMention: false });
+    expect(await router.ingest("discord-work", ev("x1", "issue:1", ["project:p-1", "team:ENG"]))).toBe("new");
     expect((await store.event("linear:x1"))?.source.linkId).toBe("Lteam");
-    await store.addLink({ id: "Lproj", integrationId: "slack-work", externalId: "project:p-1", level: "ask", repos: [], requireMention: false });
-    expect(await router.ingest("slack-work", ev("x2", "issue:1", ["project:p-1", "team:ENG"]))).toBe("new");
+    await store.addLink({ id: "Lproj", integrationId: "discord-work", externalId: "project:p-1", level: "ask", repos: [], requireMention: false });
+    expect(await router.ingest("discord-work", ev("x2", "issue:1", ["project:p-1", "team:ENG"]))).toBe("new");
     expect((await store.event("linear:x2"))?.source.linkId).toBe("Lproj"); // the most specific parent wins
-    expect(await router.ingest("slack-work", ev("x3", "issue:2", ["project:other"]))).toBe("new");
+    expect(await router.ingest("discord-work", ev("x3", "issue:2", ["project:other"]))).toBe("new");
     expect((await store.event("linear:x3"))?.source.linkId).toBe("Lstar"); // no parent has a link: the catch-all
-    await store.addLink({ id: "Lissue", integrationId: "slack-work", externalId: "issue:1", level: "ask", repos: [], requireMention: false });
-    expect(await router.ingest("slack-work", ev("x4", "issue:1", ["project:p-1"]))).toBe("new");
+    await store.addLink({ id: "Lissue", integrationId: "discord-work", externalId: "issue:1", level: "ask", repos: [], requireMention: false });
+    expect(await router.ingest("discord-work", ev("x4", "issue:1", ["project:p-1"]))).toBe("new");
     expect((await store.event("linear:x4"))?.source.linkId).toBe("Lissue"); // the place's own link first
   });
 
   test("machine events on a notify link: off by default; with machineEventsOnNotify they fan out but no agent gets them", async () => {
-    await store.addLink({ id: "Lgh", integrationId: "slack-work", externalId: "repo:orca", level: "notify", repos: [], requireMention: false });
+    await store.addLink({ id: "Lgh", integrationId: "discord-work", externalId: "repo:orca", level: "notify", repos: [], requireMention: false });
     await store.addSubscription({ topicPattern: "ext.github.*", filter: {}, targetKind: "web" });
     await store.addSubscription({ topicPattern: "ext.github.*", filter: {}, targetKind: "orchestrator" });
     const machine = (id: string) => ({ key: `gh:${id}`, topic: "ext.github.message" as const, at: 0, source: { adapter: "github", channel: "repo:orca" }, text: "PR #12 merged" });
-    expect(await router.ingest("slack-work", machine("1"))).toBe("rejected"); // as today
-    await store.addIntegration({ id: "slack-work", kind: "slack", name: "Work Slack", instance: "local", config: { machineEventsOnNotify: true }, enabled: true });
-    expect(await router.ingest("slack-work", machine("2"))).toBe("new");
+    expect(await router.ingest("discord-work", machine("1"))).toBe("rejected"); // as today
+    await store.addIntegration({ id: "discord-work", kind: "discord", name: "Work Discord", instance: "local", config: { machineEventsOnNotify: true }, enabled: true });
+    expect(await router.ingest("discord-work", machine("2"))).toBe("new");
     const ev = await store.event("gh:2");
     expect(ev?.grant).toMatchObject({ level: "notify", linkId: "Lgh" });
     expect((await store.deliveries()).map((d) => d.target)).toEqual([{ kind: "web" }]); // not the orchestrator, not the inbound default
     await store.addPrincipal({ id: "ana", name: "Ana", maxLevel: "work" }, [{ adapter: "github", externalId: "ana" }]);
-    expect(await router.ingest("slack-work", { ...machine("3"), actor: { external: { adapter: "github", id: "ana" } } })).toBe("rejected"); // a person still gets nothing on notify
+    expect(await router.ingest("discord-work", { ...machine("3"), actor: { external: { adapter: "github", id: "ana" } } })).toBe("rejected"); // a person still gets nothing on notify
   });
 
   test("orca post --reply answers the outside message that woke the orchestrator, on its link, place and thread", async () => {
     const cfg = { repos: [] } as unknown as OrcaConfig;
     // What the inbox hands the wake: the event's link, place and thread (shared replyToOf).
-    const e = { key: "slack:e9", source: { adapter: "slack", linkId: "L1", channel: "C1" }, thread: { adapter: "slack", externalId: "C1:7.7" } };
+    const e = { key: "discord:e9", source: { adapter: "discord", linkId: "L1", channel: "C1" }, thread: { adapter: "discord", externalId: "C1:7.7" } };
     const replyTo = replyToOf(e)!;
-    expect(replyTo).toEqual({ linkId: "L1", channel: "C1", threadId: "C1:7.7", eventKey: "slack:e9" });
+    expect(replyTo).toEqual({ linkId: "L1", channel: "C1", threadId: "C1:7.7", eventKey: "discord:e9" });
     expect(replyToOf({ key: "x", source: { adapter: "orca" } })).toBeUndefined();
-    expect(fenceExternal({ text: "hi", source: { adapter: "slack" } })).toContain('orca post --reply "<text>"');
+    expect(fenceExternal({ text: "hi", source: { adapter: "discord" } })).toContain('orca post --reply "<text>"');
 
     // It rides the queue with the message, so a busy orchestrator still knows where to answer.
     await db.queueMessage({ repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH, worktreePath: "/tmp/o", instruction: "q", attachments: [], grant: { level: "ask", repos: [] }, replyTo });
@@ -222,7 +222,7 @@ describe("with Postgres", () => {
     expect(sent.map((x) => [x.target.externalId, x.target.threadId, x.msg.text])).toEqual([["C1", "C1:7.7", "Done."], ["C1", "C1:7.7", "Merged too."]]);
 
     // A catch-all link's reply goes to the DM it came from, never to "*".
-    await store.addLink({ id: "Lstar", integrationId: "slack-work", externalId: "*", level: "ask", repos: [], requireMention: false });
+    await store.addLink({ id: "Lstar", integrationId: "discord-work", externalId: "*", level: "ask", repos: [], requireMention: false });
     await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: { level: "ask", repos: [], linkId: "Lstar" } as never, wakeReplyTo: { linkId: "Lstar", channel: "D-dm" } as never });
     expect(await orchestrator.tool(cfg, "post", { reply: "Hi." })).toContain("D-dm");
     await dispatcher.dispatchOnce(Date.now() + 2_000);
@@ -236,15 +236,15 @@ describe("with Postgres", () => {
   test("orca channels, post, thread link and ask-user — and the grant on post", async () => {
     const cfg = { repos: [{ name: "r", repoPath: "/nope", worktreeRoot: "/nope", baseBranch: "main", previewServices: [] }] } as unknown as OrcaConfig;
     await store.addSubscription({ topicPattern: "orca.question", filter: {}, targetKind: "link", targetId: "L1", digestSeconds: 0 });
-    await store.pairingFor({ integrationId: "slack-work", adapter: "slack", externalId: "U3", name: "Ana" }, () => "WAIT23");
+    await store.pairingFor({ integrationId: "discord-work", adapter: "discord", externalId: "U3", name: "Ana" }, () => "WAIT23");
     const channels = await orchestrator.tool(cfg, "channels");
-    expect(channels).toContain("link L1 · slack Work Slack on local · C1 (#eng) · work on r");
+    expect(channels).toContain("link L1 · discord Work Discord on local · C1 (#eng) · work on r");
     expect(channels).toContain("sub 1 · orca.question → link L1");
-    expect(channels).toContain("pairing WAIT23 · slack:U3 (Ana) waits for the user's approval");
+    expect(channels).toContain("pairing WAIT23 · discord:U3 (Ana) waits for the user's approval");
 
     await expect(orchestrator.tool(cfg, "post", { link: "nope", _: ["hi"] })).rejects.toThrow('no link "nope"');
-    expect(await orchestrator.tool(cfg, "thread", { _: ["link", "slack", "C1:9.9"], repo: "r", branch: "feat", link: "L1" })).toContain("Linked slack thread C1:9.9 to r/feat");
-    expect(await store.threadLink("slack", "C1:9.9")).toMatchObject({ repo: "r", branch: "feat", linkId: "L1" });
+    expect(await orchestrator.tool(cfg, "thread", { _: ["link", "discord", "C1:9.9"], repo: "r", branch: "feat", link: "L1" })).toContain("Linked discord thread C1:9.9 to r/feat");
+    expect(await store.threadLink("discord", "C1:9.9")).toMatchObject({ repo: "r", branch: "feat", linkId: "L1" });
     expect(await orchestrator.tool(cfg, "post", { link: "L1", repo: "r", branch: "feat", _: ["Merged", "#12."] })).toContain("Queued for #eng (thread C1:9.9)");
     expect(await orchestrator.tool(cfg, "ask-user", { _: ["Merge", "#12", "now?"] })).toContain("Asked.");
     await dispatcher.dispatchOnce();
@@ -256,10 +256,10 @@ describe("with Postgres", () => {
 
     // Under an outside sender's "ask" grant from L1: post answers on L1 only; ask-user is allowed.
     await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: { level: "ask", repos: [], linkId: "L1" } as never });
-    await store.addLink({ id: "L2", integrationId: "slack-work", externalId: "C2", level: "ask", repos: [], requireMention: false });
+    await store.addLink({ id: "L2", integrationId: "discord-work", externalId: "C2", level: "ask", repos: [], requireMention: false });
     await expect(orchestrator.tool(cfg, "post", { link: "L2", _: ["hi"] })).rejects.toThrow("only on its own link (L1)");
     expect(await orchestrator.tool(cfg, "post", { link: "L1", _: ["It merged."] })).toContain("Queued for #eng");
-    await expect(orchestrator.tool(cfg, "thread", { _: ["link", "slack", "C1:1.1"], repo: "r", branch: "b" })).rejects.toThrow('needs "work"');
+    await expect(orchestrator.tool(cfg, "thread", { _: ["link", "discord", "C1:1.1"], repo: "r", branch: "b" })).rejects.toThrow('needs "work"');
   });
 
   test("a restricted wake marks the workstream it steers with its grant (so its runs ask for permission)", async () => {

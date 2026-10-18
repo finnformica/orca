@@ -22,10 +22,10 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Empty, Pill, SectionTitle, StatusDot, VCard } from "@/components/console";
 import {
-  SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, integrationProblem, linkProblem, parseFilter, targetLabel,
+  SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, integrationProblem, linkProblem, parseFilter, postableLinks, targetLabel,
   type IntegrationCard, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow,
 } from "../../../shared/integrationSettings";
-import type { AdapterMeta, Level } from "../../../shared/integrations";
+import { isReceiveOnly, type AdapterMeta, type Level } from "../../../shared/integrations";
 
 type Overview = IntegrationsOverview;
 type LinkLevel = Exclude<Level, "full">;
@@ -99,6 +99,8 @@ export function IntegrationsPage() {
 
 function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCard; data: Overview; onChange: () => void }) {
   const meta = data.kinds.find((k) => k.kind === c.kind);
+  // Slack, by rule: messages come in, nothing goes out (no Test message, no subscription target).
+  const receiveOnly = isReceiveOnly(c.kind) || meta?.caps.outbound === false;
   const links = data.links.filter((l) => l.integrationId === c.id);
   const [test, setTest] = useState<{ busy?: boolean; ok?: boolean; detail?: string }>({});
   const [linkOpen, setLinkOpen] = useState<LinkRow | "new" | null>(null);
@@ -116,6 +118,7 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
         <KindIcon kind={c.kind} />
         <span className="truncate">{c.name}</span>
         <Pill>{meta?.label ?? c.kind}</Pill>
+        {receiveOnly && <Pill slot="receive-only">Receive-only</Pill>}
         <span className="max-sm:hidden"><Pill>on {c.instance}</Pill></span>
       </span>
     } aside={
@@ -153,7 +156,8 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
       {links.length === 0
         ? <div className="text-muted-foreground flex items-center justify-between gap-2 px-4 py-3 text-xs">No {meta?.place ?? "link"}s linked. Orca listens only where a link says so.
             <Button variant="ghost" size="sm" onClick={() => setLinkOpen("new")}><Plus />Add</Button></div>
-        : <ul data-slot="integration-links" className="divide-y">{links.map((l) => <LinkRowView key={l.id} link={l} onEdit={() => setLinkOpen(l)} onChange={onChange} />)}</ul>}
+        : <ul data-slot="integration-links" className="divide-y">{links.map((l) => <LinkRowView key={l.id} link={l} receiveOnly={receiveOnly} onEdit={() => setLinkOpen(l)} onChange={onChange} />)}</ul>}
+      {receiveOnly && <div data-slot="receive-only-note" className="text-muted-foreground px-4 py-3 text-xs">Receive-only: messages here reach Orca and the inbox. Orca never posts to {meta?.label ?? c.kind}; answers stay in Orca.</div>}
       {linkOpen && <LinkDialog integration={c} meta={meta} link={linkOpen === "new" ? undefined : linkOpen} onClose={() => setLinkOpen(null)} onSaved={onChange} />}
       {editOpen && <IntegrationDialog kinds={data.kinds} existing={c} onClose={() => setEditOpen(false)} onSaved={onChange} />}
       {confirmNode}
@@ -161,7 +165,7 @@ function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCar
   );
 }
 
-function LinkRowView({ link: l, onEdit, onChange }: { link: LinkRow; onEdit: () => void; onChange: () => void }) {
+function LinkRowView({ link: l, receiveOnly, onEdit, onChange }: { link: LinkRow; receiveOnly?: boolean; onEdit: () => void; onChange: () => void }) {
   const [test, setTest] = useState<{ busy?: boolean; state?: string; error?: string }>({});
   const run = async () => {
     setTest({ busy: true });
@@ -186,10 +190,10 @@ function LinkRowView({ link: l, onEdit, onChange }: { link: LinkRow; onEdit: () 
         </div>}
       </div>
       <div className="flex items-center gap-1">
-        <Button variant="secondary" size="sm" disabled={test.busy} onClick={() => void run()} className="max-md:h-10 max-md:flex-1">Test</Button>
+        {!receiveOnly && <Button variant="secondary" size="sm" disabled={test.busy} onClick={() => void run()} className="max-md:h-10 max-md:flex-1">Test</Button>}
         <Button variant="ghost" size="sm" onClick={onEdit} className="max-md:h-10">Edit</Button>
         <Button variant="ghost" size="icon" className="size-8 max-md:size-10" aria-label={`Remove ${l.label ?? l.externalId}`}
-          onClick={() => ask(`Remove ${l.label ?? l.externalId}?`, "Orca stops listening and posting there. Its subscriptions go too.", () => void act("Remove link", "links/remove", { id: l.id }, onChange))}><Trash2 /></Button>
+          onClick={() => ask(`Remove ${l.label ?? l.externalId}?`, receiveOnly ? "Orca stops listening there." : "Orca stops listening and posting there. Its subscriptions go too.", () => void act("Remove link", "links/remove", { id: l.id }, onChange))}><Trash2 /></Button>
       </div>
       {confirmNode}
     </li>
@@ -463,8 +467,9 @@ function SubscriptionDialog({ data, onClose, onSaved }: { data: Overview; onClos
   const [topicPattern, setTopic] = useState(SUBSCRIPTION_PRESETS[0]!.topicPattern);
   const [digest, setDigest] = useState<number | undefined>();
   const [filter, setFilter] = useState("");
-  const [targetKind, setTargetKind] = useState<"link" | "orchestrator" | "workstream" | "web">(data.links.length ? "link" : "web");
-  const [targetId, setTargetId] = useState(data.links[0]?.id ?? "");
+  const links = postableLinks(data.links, data.integrations); // never a Slack link: it is receive-only
+  const [targetKind, setTargetKind] = useState<"link" | "orchestrator" | "workstream" | "web">(links.length ? "link" : "web");
+  const [targetId, setTargetId] = useState(links[0]?.id ?? "");
   const [busy, setBusy] = useState(false);
   const parsed = parseFilter(filter);
   const problem = !topicPattern.trim() ? "a topic pattern is required" : !parsed ? "filter: repo=…, branch=… or adapter=…, comma-separated"
@@ -489,10 +494,10 @@ function SubscriptionDialog({ data, onClose, onSaved }: { data: Overview; onClos
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <Field label="Target" htmlFor="sub-kind">
-          <Select value={targetKind} onValueChange={(v) => { setTargetKind(v as typeof targetKind); setTargetId(v === "link" ? data.links[0]?.id ?? "" : ""); }}>
+          <Select value={targetKind} onValueChange={(v) => { setTargetKind(v as typeof targetKind); setTargetId(v === "link" ? links[0]?.id ?? "" : ""); }}>
             <SelectTrigger id="sub-kind" className="w-full"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value="link" disabled={!data.links.length}>A link</SelectItem>
+              <SelectItem value="link" disabled={!links.length}>A link</SelectItem>
               <SelectItem value="orchestrator">The orchestrator</SelectItem>
               <SelectItem value="workstream">A workstream</SelectItem>
               <SelectItem value="web">The web app</SelectItem>
@@ -503,7 +508,7 @@ function SubscriptionDialog({ data, onClose, onSaved }: { data: Overview; onClos
           <Field label="Link" htmlFor="sub-link">
             <Select value={targetId} onValueChange={setTargetId}>
               <SelectTrigger id="sub-link" className="w-full"><SelectValue /></SelectTrigger>
-              <SelectContent>{data.links.map((l) => <SelectItem key={l.id} value={l.id}>{targetLabel({ targetKind: "link", targetId: l.id }, data.links, data.integrations)}</SelectItem>)}</SelectContent>
+              <SelectContent>{links.map((l) => <SelectItem key={l.id} value={l.id}>{targetLabel({ targetKind: "link", targetId: l.id }, data.links, data.integrations)}</SelectItem>)}</SelectContent>
             </Select>
           </Field>
         )}
