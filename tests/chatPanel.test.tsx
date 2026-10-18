@@ -354,7 +354,7 @@ test("a live turn shows ONE compact activity block, and on finish it folds into 
   const rows = [...container!.querySelectorAll('[data-slot="activity-list"] [data-slot="step-tool"]')];
   expect(rows.map((r) => r.querySelector('[data-slot="step-call"]')?.textContent)).toEqual(["one.ts", "two.ts", "three.ts", "bun test"]);
   expect(rows.map((r) => r.getAttribute("data-status"))).toEqual(["done", "done", "done", "running"]);
-  expect(rows[0]!.querySelector('[data-slot="step-duration"]')?.textContent).toBe("0.0s"); // result 1ms later
+  expect(rows[0]!.querySelector('[data-slot="step-duration"]')).toBeNull(); // result 1ms later: under 100ms, no `0.0s`
   expect(rows[3]!.querySelector('[data-slot="step-call"]')?.className).toContain("font-mono");
   expect(slot("activity-steps")?.textContent).not.toContain("Read 3 files");
   expect(slot("step-text")?.querySelector("strong")?.textContent).toBe("suite");

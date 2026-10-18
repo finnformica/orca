@@ -132,16 +132,21 @@ export function currentActivity(steps: AgentStep[]): string {
  *  when it started and what it is. */
 export const stepKey = (step: AgentStep) => step.id ?? `${step.at}:${step.name ?? step.kind}`;
 
+/** The shortest duration a row shows (ms). A result that lands in the same batch as its call
+ *  reads as near zero, which says nothing. */
+export const MIN_DURATION_MS = 100;
+
 /** One tool call as a row of the EXPANDED list — the real call, never a run's summary: a command as
  *  its own text (shown monospace), a read or an edit by its file name, anything else by its label.
- *  `status` is `running` only while the turn is live; `ms` only once its result landed. */
+ *  `status` is `running` only while the turn is live; `ms` only once its result landed, and only from MIN_DURATION_MS up. */
 export type StepStatus = "running" | "done" | "failed";
 export type StepRowView = { verb?: string; text: string; mono: boolean; status: StepStatus; ms?: number };
 export function stepRow(step: AgentStep, live: boolean): StepRowView {
   const i = (step.input ?? {}) as Record<string, unknown>;
   const s = (k: string) => (typeof i[k] === "string" && (i[k] as string).trim() ? (i[k] as string) : undefined);
   const status: StepStatus = step.isError ? "failed" : !step.done && live ? "running" : "done";
-  const ms = step.done && step.doneAt !== undefined && step.doneAt >= step.at ? step.doneAt - step.at : undefined;
+  const took = step.done && step.doneAt !== undefined ? step.doneAt - step.at : undefined;
+  const ms = took !== undefined && took >= MIN_DURATION_MS ? took : undefined; // under it the row read `0.0s`
   const file = (s("file_path") ?? s("path") ?? s("filePath"))?.split("/").pop();
   const kind = step.text ? undefined : stepKind(step); // a pre-rendered label row keeps its label
   if (kind === "command" && s("command")) return { text: oneLine(s("command")!, 500), mono: true, status, ms };

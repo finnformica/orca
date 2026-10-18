@@ -84,6 +84,9 @@ test("an expanded row is the real call: the command text, or a read / edit by fi
   ]);
   // Once the turn is over, a call with no result is no longer "running".
   expect(stepRow(steps[3]!, false).status).toBe("done");
+  // Under 100ms no duration shows (it read `0.0s`); 100ms itself shows.
+  const quick = (ms: number) => stepRow({ at: 0, kind: "tool", name: "Bash", input: { command: "ls" }, done: true, doneAt: ms }, false).ms;
+  expect([quick(0), quick(99), quick(100)]).toEqual([undefined, undefined, 100]);
   expect([stepDuration(300), stepDuration(2600), stepDuration(72_000)]).toEqual(["0.3s", "3s", "1m 12s"]);
 });
 
