@@ -12,6 +12,7 @@ import {
   type Probe, type ServerEntry, type ServerHealth, type ServersAnswer,
 } from "@/lib/server";
 import { cn } from "@/lib/utils";
+import { useServerIdentity } from "@/lib/identity";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -101,8 +102,13 @@ export function ServerMenu() {
   // back to its trigger: opened while the menu closed, the trigger took the focus back and the first
   // keystrokes went to the page (its shortcuts — the preview typed into "C" and "O").
   const adding = useRef(false);
+  const active = useServerIdentity();
   if (!visible) return null;
-  const current = currentServer(servers);
+  // The current server goes by the ACTIVE identity (asked of that server, kept per server), so
+  // after a switch it is right before the browser's own health check of it answers.
+  const withActive = (s: ServerEntry): ServerEntry => (active && s.url === currentServer(servers).url ? { ...s, label: active.label, color: active.color } : s);
+  const current = withActive(currentServer(servers));
+  const rows = servers.map(withActive);
   return (
     <>
       <DropdownMenu onOpenChange={(open) => { if (open) checkServers(true); }}>
@@ -118,10 +124,10 @@ export function ServerMenu() {
         <DropdownMenuContent align="start" className="min-w-[12rem] max-w-[18rem]"
           onCloseAutoFocus={(e) => { if (adding.current) { adding.current = false; e.preventDefault(); setAdd(true); } }}>
           <DropdownMenuRadioGroup value={current.url} onValueChange={(url) => {
-            const s = servers.find((x) => x.url === url);
+            const s = rows.find((x) => x.url === url);
             if (s && url !== current.url) switchServer(s.self ? null : s);
           }}>
-            {servers.map((s) => {
+            {rows.map((s) => {
               const down = s.health === "offline" || s.health === "refused";
               return (
                 <DropdownMenuRadioItem key={s.url} value={s.url} data-server={s.name} aria-label={`${s.label}, ${healthText(s.health)}`}

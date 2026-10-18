@@ -27,7 +27,8 @@ const isIdentity = (v: unknown): v is ActiveIdentity =>
   && typeof (v as ActiveIdentity).host === "string" && !!(v as ActiveIdentity).stored && typeof (v as ActiveIdentity).stored === "object";
 
 const key = () => persistedKey("server.identity", apiBase() || "home");
-let current: ActiveIdentity | null = readPersisted<ActiveIdentity | null>(key(), null, (v): v is ActiveIdentity | null => v === null || isIdentity(v));
+const stored = () => readPersisted<ActiveIdentity | null>(key(), null, (v): v is ActiveIdentity | null => v === null || isIdentity(v));
+let current: ActiveIdentity | null = stored();
 const subs = new Set<() => void>();
 
 /** The identity of a GET /api/servers answer. Pure. */
@@ -68,5 +69,5 @@ export async function loadIdentity(): Promise<void> {
 export const useServerIdentity = (): ActiveIdentity | null =>
   useSyncExternalStore((cb) => { subs.add(cb); return () => { subs.delete(cb); }; }, () => current);
 
-/** Tests: forget the identity. */
-export function _resetIdentity(): void { current = null; applyIdentity(null); }
+/** Tests: read the identity again from storage (none after localStorage.clear()). */
+export function _resetIdentity(): void { current = stored(); applyIdentity(current); }

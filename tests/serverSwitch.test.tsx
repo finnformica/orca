@@ -287,6 +287,19 @@ test("S6e: the ACTIVE server's identity — title, accent, favicon and sidebar n
   icon.remove();
 });
 
+test("S6f: after a switch the menu shows the active server's cached identity before its health check answers", async () => {
+  setup({ choice: { name: "orca-personal-box", url: "http://orca-personal-box:8787" } });
+  localStorage.setItem("orca.ui.v1.server.identity:http://orca-personal-box:8787",
+    JSON.stringify({ label: "Personal", color: "#1f9d55", host: "orca-personal-box", stored: { name: "Personal" } }));
+  _resetIdentity();
+  network((u) => { if (u.startsWith("http://orca-personal-box")) throw new TypeError("Failed to fetch"); return undefined; });
+  await mount();
+  await act(async () => { await flush(); await flush(); });
+  expect(q('[data-slot="server-label"]')!.textContent).toBe("Personal"); // not its host name
+  expect(q('[data-slot="server-menu"] [data-slot="server-swatch"]')!.getAttribute("style")).toMatch(/#1f9d55|rgb\(31, 157, 85\)/);
+  expect(document.title).toBe("Orca | Personal");
+});
+
 test("S6b: with the Tailscale API and one server there is no menu, and no hint when the API is set", async () => {
   setup();
   network((u) => (u === "/api/servers" ? json({ ...HOME, tailscaleApi: true, source: "tailscale" }) : undefined));
