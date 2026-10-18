@@ -67,6 +67,7 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
   // re-rendered the whole panel and lagged; state (and storage) is updated once, when the pointer lets go.
   const onResizeStart = (e: ReactPointerEvent) => {
     if (e.button !== 0) return;
+    (e.currentTarget as HTMLElement).focus(); // the arrow keys resize from here on (preventDefault below blocks the default focus)
     const el = panelRef.current;
     if (!el) return;
     const x0 = e.clientX, w0 = width;
