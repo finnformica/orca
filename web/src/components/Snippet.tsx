@@ -30,7 +30,7 @@ export function SnippetBlock({ lang, title, markdown, source, components }: {
   };
   return (
     <div data-slot="snippet" className="my-2 overflow-hidden rounded-md border bg-card text-card-foreground">
-      <div data-slot="snippet-header" className="not-prose flex h-8 items-center gap-2 border-b bg-muted/60 pr-1 pl-3">
+      <div data-slot="snippet-header" className="not-prose flex h-8 items-center gap-2 border-b pr-1 pl-3">
         <span className={cn("min-w-0 flex-1 truncate text-xs", title ? "font-medium text-foreground" : "font-mono text-muted-foreground")}>
           {title ?? (lang || "text")}
         </span>

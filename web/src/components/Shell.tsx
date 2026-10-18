@@ -98,7 +98,7 @@ export function Dock() {
       // of the chat restyles its whole subtree (measured: ~4000 elements, 100–150ms each at 4× CPU, twice
       // per open / close). The margin is an inline style; the card's surface rides `data-painted`.
       data-painted={painted ? "" : undefined}
-      className="relative shrink-0 transition-[width,margin-inline-start] data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden md:data-[painted]:rounded-[10px] md:data-[painted]:bg-card md:data-[painted]:shadow-shell"
+      className="relative shrink-0 transition-[width,margin-inline-start] data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden md:data-[painted]:rounded-[10px] md:data-[painted]:bg-background md:data-[painted]:shadow-shell"
       style={{ width: dock, marginInlineStart: dock > 0 ? 0 : -SHELL_GAP, transitionDuration: `${SLIDE_MS}ms` }}>
       <div data-slot="dock-clip" ref={setDockClip} className="absolute inset-0 overflow-hidden rounded-[inherit]" />
     </div>
@@ -435,7 +435,7 @@ function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" className="hover:bg-accent/60 flex min-w-0 flex-1 items-center gap-2 rounded-md p-1" aria-label="Switch instance">
+        <button type="button" className="hover:bg-accent flex min-w-0 flex-1 items-center gap-2 rounded-md p-1" aria-label="Switch instance">
           {body}
           <ChevronsUpDown className={cn("text-muted-foreground size-3.5 shrink-0", collapsed && "md:hidden")} />
         </button>
@@ -475,7 +475,7 @@ function RepoSwitcher() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" data-slot="repo-switcher" className="hover:bg-accent/60 flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium">
+        <button type="button" data-slot="repo-switcher" className="hover:bg-accent flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium">
           {repo === "all" ? "All repos" : repoLabel(repos, repo)} <ChevronsUpDown className="text-muted-foreground size-3.5" />
         </button>
       </DropdownMenuTrigger>

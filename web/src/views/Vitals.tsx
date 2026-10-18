@@ -81,7 +81,7 @@ export function HeaderUsageMeter() {
     <HoverCard>
       <HoverCardTrigger asChild>
         <button type="button" data-slot="header-usage" tabIndex={0} aria-label={`Claude usage — ${reading.tooltip}`}
-          className="text-muted-foreground hover:text-foreground hover:bg-accent/60 flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-xs max-md:hidden">
+          className="text-muted-foreground hover:text-foreground hover:bg-accent flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-xs max-md:hidden">
           <Ring pct={pct} size={14} />
           <span className="tabular-nums">{pct}%</span>
         </button>
@@ -129,7 +129,7 @@ function UsageGroupRows({ group: g }: { group: UsageGroup }) {
       </div>
       {g.rows.map((r) => (
         <div key={r.key} data-slot="usage-row"
-          className="hover:bg-accent/60 flex h-9 items-center gap-2.5 rounded-md px-2 text-sm">
+          className="hover:bg-accent flex h-9 items-center gap-2.5 rounded-md px-2 text-sm">
           <Ring pct={r.pct} />
           <span className="min-w-0 flex-1 truncate">{r.label}</span>
           {(r.resetsIn || r.resetNote) && (

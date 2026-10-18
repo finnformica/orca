@@ -190,7 +190,7 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
         onFocusCapture={(e) => { if (idle) (e.target as HTMLElement).blur(); }}
         // A constant `class` (see Dock in Shell.tsx: a class change here restyles the whole chat): the
         // stacking order is an inline style.
-        className="bg-card text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden"
+        className="bg-background text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden"
         style={{ width, zIndex: open ? 1 : 0 }}
       >
         {resize}
@@ -207,7 +207,7 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
     // ONCE, so a field inside can take focus in the same commit. Closing, visibility waits for the slide.
     <div
       {...common} data-full={fullScreen ? "" : undefined}
-      className={cn("bg-card text-foreground flex flex-col overflow-hidden",
+      className={cn("bg-background text-foreground flex flex-col overflow-hidden",
         fullScreen ? "fixed top-0 right-0 h-[var(--vvh,100dvh)] pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)]" : "fixed inset-y-0 right-0 border-l shadow-modal",
         "z-40 ease-out motion-reduce:transition-none",
         open ? "visible translate-x-0 transition-transform" : "invisible translate-x-full transition-[transform,visibility]")}

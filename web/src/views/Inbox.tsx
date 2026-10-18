@@ -148,7 +148,7 @@ export function InboxPage() {
 
 const chipClass = (on: boolean) => cn(
   "inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors",
-  on ? "border-foreground bg-foreground text-background" : "text-muted-foreground hover:text-foreground hover:border-foreground/30",
+  on ? "border-primary bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:border-foreground/30",
 );
 
 function Filters({ page, source, person, unread, muted, set, onMarkAll }: {
@@ -331,7 +331,7 @@ function InboxRowView({ row, selected, onOpen, onMarkRead, onChanged }: {
   return (
     <div role="button" tabIndex={0} data-slot="inbox-row" data-kind={row.kind} data-read={row.read} aria-current={selected || undefined}
       onClick={onOpen} onKeyDown={(e) => { if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onOpen(); } }}
-      className={cn("flex cursor-pointer gap-3 px-4 py-3 text-sm outline-none", selected ? "bg-accent" : "hover:bg-accent/40 focus-visible:bg-accent/40")}>
+      className={cn("flex cursor-pointer gap-3 px-4 py-3 text-sm outline-none", selected ? "bg-selected text-selected-foreground" : "hover:bg-accent/40 focus-visible:bg-accent/40")}>
       <div className="relative mt-0.5 shrink-0">
         <SourceChip adapter={row.adapter} iconOnly className="size-6 justify-center rounded-full p-0 [&>svg]:size-3.5" />
         {!row.read && <span data-slot="unread-dot" className="bg-geist-blue ring-card absolute -top-0.5 -left-0.5 size-2 rounded-full ring-2" />}
