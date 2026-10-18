@@ -5,7 +5,7 @@
 // the /api/integrations/pairing/approve|deny routes the page posts to).
 import * as db from "../db";
 import { ORCA_SECRETS } from "../env";
-import { isAutomatic, isReceiveOnly, leaseHolder, receiveOnlyRefusal, secretRefRefusal, type Level, type Subscription, type TargetKind } from "../../shared/integrations";
+import { CATCH_ALL, CATCH_ALL_SEND_ERROR, isAutomatic, isReceiveOnly, leaseHolder, receiveOnlyRefusal, secretRefRefusal, type Level, type Subscription, type TargetKind } from "../../shared/integrations";
 import {
   integrationProblem, linkProblem,
   type DeadRow, type IntegrationCard, type IntegrationsOverview, type PersonRow,
@@ -178,6 +178,7 @@ export async function addSubscription(b: Record<string, unknown>): Promise<numbe
   const targetId = typeof b.targetId === "string" && b.targetId ? b.targetId : undefined;
   const link = targetKind === "link" && targetId ? await store.link(targetId) : undefined;
   if (targetKind === "link" && !link) fail("pick a link");
+  if (link?.externalId === CATCH_ALL) fail(CATCH_ALL_SEND_ERROR);
   const kind = link ? (await store.integration(link.integrationId))?.kind : undefined;
   if (isReceiveOnly(kind)) fail(`${receiveOnlyRefusal(kind!)}, so a subscription cannot post to ${link!.label ?? link!.externalId}`);
   if (targetKind === "workstream" && !/^[^:]+::.+$/.test(targetId ?? "")) fail("workstream target: repo::branch");
@@ -220,6 +221,7 @@ export const TEST_WAIT_MS = 8_000;
  *  a slow one answers `pending` (the dead list shows it later if it fails for good). */
 export async function testLink(linkId: string, opts: { waitMs?: number; now?: number } = {}): Promise<{ state: string; error?: string; deliveryId?: number }> {
   const l = (await store.link(linkId)) ?? fail(`no link ${linkId}`);
+  if (l.externalId === CATCH_ALL) fail(CATCH_ALL_SEND_ERROR);
   const c = (await store.integration(l.integrationId)) ?? fail(`no integration ${l.integrationId}`);
   if (isReceiveOnly(c.kind)) fail(`${receiveOnlyRefusal(c.kind)}: there is no test message for ${l.label ?? l.externalId}`);
   const now = opts.now ?? Date.now();

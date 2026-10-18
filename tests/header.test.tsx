@@ -1,7 +1,6 @@
 // E2E for the console shell (App + components/Shell): Vercel's left sidebar — the Orca mark with the
 // instance switcher, Find, the nav (Overview, Agents, Repos, Usage, Settings), you at the foot and a
-// persisted collapse — and a top bar with the breadcrumb. "/" is the Overview; Agents keeps the
-// swimlanes behind a persisted List | Board toggle (with the density toggle beside it on Board).
+// persisted collapse — and a top bar with the breadcrumb. "/" is the Overview; Agents is the list.
 // Driven against the fake api (tests/apiFake.ts), rendered into a real DOM.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync } from "fs";
@@ -12,7 +11,7 @@ import { apiFake } from "./apiFake";
 import { getDefaultStore } from "jotai";
 import * as store from "@/store";
 import { App } from "@/App";
-import { agentQueryAtom, boardViewAtom, densityAtom, instanceScopeAtom, sidebarCollapsedAtom } from "@/lib/atoms";
+import { agentQueryAtom, densityAtom, instanceScopeAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -38,7 +37,6 @@ afterEach(async () => {
   // The atoms outlive localStorage within one run: a dense board left behind here once made later
   // files' cards hide their prompt.
   const s = getDefaultStore();
-  s.set(boardViewAtom, "list");
   s.set(densityAtom, "comfortable");
   s.set(sidebarCollapsedAtom, false);
   s.set(instanceScopeAtom, "all");
@@ -107,7 +105,9 @@ describe("console shell", () => {
     const label = ask.querySelector<HTMLElement>('[data-slot="ask-orchestrator-label"]')!;
     expect(label.className.split(/\s+/)).toEqual(expect.arrayContaining(["truncate", "min-w-0"])); // a wider fallback font can't widen it
     const css = readFileSync(join(import.meta.dir, "..", "web", "src", "styles.css"), "utf8");
-    expect(css).toMatch(/html\s*\{\s*scrollbar-gutter:\s*stable;/);
+    // A phone reserves it on <html>; a desktop on the page column, which scrolls on its own there.
+    expect(css).toMatch(/@media \(max-width: 767px\)\s*\{\s*\/\*[^*]*\*\/\s*html\s*\{\s*scrollbar-gutter:\s*stable;/);
+    expect(container!.querySelector('[data-slot="page-scroll"]')!.className.split(/\s+/)).toContain("md:[scrollbar-gutter:stable]");
     // Radix's scroll lock would add the reserved gutter again as a body margin on every menu open.
     expect(css).toMatch(/html body\[data-scroll-locked\]\s*\{\s*margin-right:\s*0 !important;/);
   });
@@ -121,7 +121,7 @@ describe("console shell", () => {
     expect(cls.filter((c) => /^bg-background\/|^backdrop-blur/.test(c))).toEqual([]);
   });
 
-  test("the sidebar: Orca mark + instance switcher, Find, the five pages, and the active one marked", async () => {
+  test("the sidebar: Orca mark + instance switcher, Find, the pages, and the active one marked", async () => {
     await mount();
     const sidebar = container!.querySelector('[data-slot="sidebar"]')!;
     expect(sidebar.querySelector("svg")).not.toBeNull(); // the orca mark
@@ -129,9 +129,9 @@ describe("console shell", () => {
     expect(sidebar.querySelector('[data-slot="instance-scope"]')!.textContent).toBe("All instances"); // two instances in the fake config
     expect(sidebar.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     const items = [...sidebar.querySelectorAll('nav[aria-label="Main"] button')].map(navLabel);
-    expect(items).toEqual(["Overview", "Agents", "Previews", "Repos", "GitHub", "Handoffs", "Usage", "Settings"]);
+    expect(items).toEqual(["Overview", "Agents", "Previews", "Integrations", "Handoffs", "Settings"]);
     expect(navItem("Overview").getAttribute("aria-current")).toBe("page");
-    for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Repos", "/repos", "repos-list"], ["GitHub", "/github", "github-accounts"], ["Usage", "/usage", "usage-card"], ["Settings", "/settings", "settings-appearance"]] as const) {
+    for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Integrations", "/integrations", "integrations-page"], ["Settings", "/settings", "settings-appearance"]] as const) {
       await click(navItem(label));
       expect(location.pathname).toBe(path);
       expect(navItem(label).getAttribute("aria-current")).toBe("page");
@@ -168,16 +168,25 @@ describe("console shell", () => {
     expect(container!.querySelector<HTMLInputElement>('input[aria-label="Search workstreams"]')!.value).toBe("gauge"); // one query, shared
   });
 
-  test("the sidebar's foot: Add New is the last action, above the divider; you on ONE thin line below it; collapsed, the expand button sits above you", async () => {
+  test("the sidebar's foot: Add New is the last action, an outline button; you on ONE thin line below it, no divider; collapsed, the expand button sits above you", async () => {
     await mount();
     const profile = container!.querySelector<HTMLElement>('[data-slot="profile"]')!;
-    expect(profile.className).toContain("h-8"); // one line, not a two-line block
+    expect(profile.className).toContain("h-9"); // one line, a nav row's height
     expect(profile.textContent).toBe("Youlaptop"); // "You", a dot, then the machine
+    expect(profile.querySelector("svg.lucide-chevrons-up-down")).not.toBeNull(); // it opens a menu, as branch-demo's user row
+    // Add New is an outline button, full width on the lower surface, so it stands apart from the
+    // content below — the nav rows' height and icon column, so it still lines up with them.
+    const addNew = container!.querySelector<HTMLElement>('[data-slot="add-new"]')!;
+    const navItem = container!.querySelector<HTMLElement>('nav[aria-label="Main"] button:not([aria-current])')!;
+    for (const c of ["h-9", "px-2.5", "gap-3", "rounded-md"]) { expect(addNew.className).toContain(c); expect(navItem.className).toContain(c); }
+    expect(addNew.className).toContain("border bg-card"); // the outline variant
+    expect(addNew.className).toContain("w-full");
+    expect(container!.querySelector<HTMLElement>('[data-slot="notifications-bell"]')!.className).toContain("size-9");
     const actions = container!.querySelector<HTMLElement>('[data-slot="sidebar-actions"]')!;
     const foot = container!.querySelector<HTMLElement>('[data-slot="sidebar-foot"]')!;
     expect(actions.querySelector('[data-slot="add-new"]')).not.toBeNull();
-    expect(actions.nextElementSibling).toBe(foot); // straight above the divider (the foot's border-t) and you
-    expect(foot.className).toContain("border-t");
+    expect(actions.nextElementSibling).toBe(foot); // straight above you
+    expect(foot.className).not.toContain("border-t"); // no divider line above you any more
     expect(foot.querySelector('[data-slot="add-new"]')).toBeNull();
     await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
     const you = container!.querySelector<HTMLElement>('[data-slot="sidebar-you"]')!;
@@ -197,35 +206,13 @@ describe("console shell", () => {
     expect(container!.querySelector('button[aria-label="Expand sidebar"]')).not.toBeNull();
   });
 
-  test("Agents: the List | Board toggle swaps the view and is remembered across a reload", async () => {
+  test("Agents: the list only — no List | Board toggle, no density toggle", async () => {
     navigate("/agents");
     await mount();
-    expect(btnByText("List")!.getAttribute("aria-pressed")).toBe("true");
-    await click(btnByText("Board")!);
-    expect(gridEl()).not.toBeNull(); // the swimlanes
-    expect(container!.querySelector('[data-slot="workstream-list"]')).toBeNull();
-    expect(localStorage.getItem("orca.ui.v1.agents.view")).toBe('"board"');
-    // A fresh mount (a reload) keeps the choice.
-    act(() => root?.unmount());
-    container?.remove();
-    await mount();
-    expect(btnByText("Board")!.getAttribute("aria-pressed")).toBe("true");
-    expect(gridEl()).not.toBeNull();
-    await click(btnByText("List")!);
-    expect(localStorage.getItem("orca.ui.v1.agents.view")).toBe('"list"');
+    expect(container!.querySelector('[data-slot="workstream-list"]')).not.toBeNull();
+    expect(container!.querySelector('[role="group"][aria-label="View"]')).toBeNull();
+    expect(btnByText("Board")).toBeUndefined();
     expect(gridEl()).toBeNull();
-  });
-
-  test("the density toggle (Board view only) flips comfortable ⇄ dense (aria-pressed + persisted)", async () => {
-    navigate("/agents");
-    await mount();
-    expect(container!.querySelector('button[aria-label^="Switch to"]')).toBeNull(); // the list has no cards to densify
-    await click(btnByText("Board")!);
-    const toggle = container!.querySelector<HTMLButtonElement>('button[aria-label^="Switch to"]')!;
-    expect(toggle).not.toBeNull();
-    expect(toggle.getAttribute("aria-pressed")).toBe("false"); // comfortable by default
-    await act(async () => { toggle.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
-    expect(toggle.getAttribute("aria-pressed")).toBe("true");
-    expect(localStorage.getItem("orca.ui.v1.density")).toBe('"dense"');
+    expect(container!.querySelector('button[aria-label^="Switch to"]')).toBeNull();
   });
 });

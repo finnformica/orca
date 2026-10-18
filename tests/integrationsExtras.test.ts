@@ -8,10 +8,11 @@ import * as orchestrator from "../server/orchestrator";
 import * as router from "../server/integrations/router";
 import * as dispatcher from "../server/integrations/dispatcher";
 import * as store from "../server/integrations/store";
+import * as inbox from "../server/integrations/inbox";
 import { launchOptions, permissionFor } from "../server/verbs";
 import type { Adapter } from "../server/integrations/adapter";
 import {
-  PAIRING_ALPHABET, PAIRING_TTL_MS, digestEnvelope, digestWindow, fenceExternal, grantRefusal, inboundEnvelope, pairingCode, pairingReply, replyToOf,
+  PAIRING_ALPHABET, PAIRING_TTL_MS, digestEnvelope, digestWindow, fenceExternal, grantRefusal, inboundEnvelope, integrationMessage, pairingCode, pairingReply, replyToOf,
   type Envelope, type OutboundMessage, type Target,
 } from "../shared/integrations";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, wakeProgress } from "../web/src/workstream";
@@ -231,6 +232,20 @@ describe("with Postgres", () => {
     // The grant check sees the resolved link: a reply target outside the wake's own link is refused.
     await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: { level: "ask", repos: [], linkId: "L1" } as never, wakeReplyTo: { linkId: "Lstar", channel: "D-dm" } as never });
     await expect(orchestrator.tool(cfg, "post", { reply: "x" })).rejects.toThrow("only on its own link (L1)");
+  });
+
+  test("an outside message reaches the orchestrator with its source, so the chat shows it as an activity row", async () => {
+    const grant = { level: "ask" as const, repos: [] };
+    const actor = { external: { adapter: "discord", id: "U1", name: "Saajan" } };
+    // A channel message: the link's label is the place; Discord's ids give the message's URL.
+    const inChannel = await inbox.withSource({ id: "e1", key: "discord:m1", topic: "ext.discord.message", at: 1, text: "ship it?", actor, grant,
+      source: { adapter: "discord", channel: "C1", linkId: "L1" }, raw: { id: "M1", channel_id: "C1", guild_id: "G1" } } as Envelope);
+    expect(inChannel).toStartWith("[external message] via discord"); // the fenced prompt is unchanged
+    expect(integrationMessage(inChannel)).toEqual({ adapter: "discord", sender: "Saajan", place: "#eng", url: "https://discord.com/channels/G1/C1/M1", text: "ship it?" });
+    // A DM (no guild): "DM", whatever the catch-all link is called.
+    const dm = await inbox.withSource({ id: "e2", key: "discord:m2", topic: "ext.discord.message", at: 1, text: "hi", actor, grant,
+      source: { adapter: "discord", channel: "D1", linkId: "nope" }, raw: { id: "M2", channel_id: "D1" } } as Envelope);
+    expect(integrationMessage(dm)).toMatchObject({ place: "DM", url: "https://discord.com/channels/@me/D1/M2" });
   });
 
   test("orca channels, post, thread link and ask-user — and the grant on post", async () => {

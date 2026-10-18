@@ -23,11 +23,6 @@ export const densityAtom = persistedAtom<Density>("density", "comfortable", oneO
 // The card clears it once opened, so a later re-render doesn't reopen it.
 export const openTerminalAtom = atom<string | null>(null);
 
-// Which view "/" shows, persisted: "list" is the overview (stat tiles, the workstreams table and
-// recent activity), "board" the original five swimlanes of cards. List is the default.
-export type BoardView = "list" | "board";
-// `orca.ui.v1.agents.view`; the pre-versioned `orca.boardView` is read once if present.
-export const boardViewAtom = persistedAtom<BoardView>("agents.view", "list", oneOf("list", "board"), "orca.boardView");
 
 // The console shell. The sidebar can be collapsed to icons (persisted); the instance switcher at its
 // top scopes the Overview and Agents pages to one machine ("all" or an instance name, persisted);

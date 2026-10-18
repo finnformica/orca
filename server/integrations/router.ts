@@ -2,7 +2,7 @@
 // gate the sender against its link (§3.7), then `publish`. `publish` is everyone's: record the event
 // once by its key and plan its deliveries in the same transaction, then kick the dispatcher.
 import { randomUUID } from "crypto";
-import { isReceiveOnly, receiveOnlyRefusal, sendable, effectiveGrant, INBOUND_LIMIT, paceWait, pairingCode, pairingReply, planDeliveries, PAIRING_CODE_LENGTH, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery } from "../../shared/integrations";
+import { CATCH_ALL, CATCH_ALL_SEND_ERROR, isReceiveOnly, receiveOnlyRefusal, sendable, effectiveGrant, sendsToCatchAll, INBOUND_LIMIT, paceWait, pairingCode, pairingReply, planDeliveries, PAIRING_CODE_LENGTH, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery } from "../../shared/integrations";
 import * as store from "./store";
 
 /** Orca's own id: time-ordered, so `ORDER BY id` is arrival order. */
@@ -17,6 +17,8 @@ export const onPublished = (fn: Kick): void => { kick = fn; };
  *  Orca's own event, with the full grant. `extra` are deliveries to explicit targets beside the
  *  subscriptions' (`orca post`, `orca ask-user`, a pairing reply). */
 export async function publish(input: InboundEnvelope & { grant?: Grant }, now = Date.now(), extra: PlannedDelivery[] = []): Promise<{ status: "new" | "duplicate"; id: string; deliveries: number[] }> {
+  // A catch-all link names no place: refuse a post to it here, before a row exists to die.
+  if (extra.some((d) => sendsToCatchAll(d.target))) throw new Error(CATCH_ALL_SEND_ERROR);
   const e: Envelope = { ...input, id: newEventId(now) };
   const [subs, allLinks, conns, threads, inbound] = await Promise.all([
     store.subscriptions(),
@@ -47,7 +49,7 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
   // A link for the exact place, else for a wider place that holds it (`source.parents`), else the
   // integration's catch-all link (external_id "*": DMs, a bot's every channel). No link = nobody
   // said Orca may listen there.
-  const link = e.source.linkId ? await store.link(e.source.linkId) : e.source.channel ? await firstLink(integrationId, [e.source.channel, ...(e.source.parents ?? []), "*"]) : undefined;
+  const link = e.source.linkId ? await store.link(e.source.linkId) : e.source.channel ? await firstLink(integrationId, [e.source.channel, ...(e.source.parents ?? []), CATCH_ALL]) : undefined;
   if (!link || link.integrationId !== integrationId) return "rejected"; // no link = nobody said Orca may listen here
   if (link.requireMention && e.mentioned === false) return "rejected";
   const who = `${integrationId}:${e.actor?.external.id ?? link.id}`;

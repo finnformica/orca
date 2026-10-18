@@ -11,7 +11,7 @@ import * as registry from "../server/integrations/registry";
 import * as router from "../server/integrations/router";
 import * as store from "../server/integrations/store";
 import type { Adapter } from "../server/integrations/adapter";
-import type { Capabilities, OutboundMessage, SendResult } from "../shared/integrations";
+import { CATCH_ALL_SEND_ERROR, type Capabilities, type OutboundMessage, type SendResult } from "../shared/integrations";
 import {
   healthLine, healthTone, integrationProblem, linkProblem, parseFilter, span, targetLabel,
   type IntegrationCard,
@@ -123,6 +123,15 @@ describe("with Postgres", () => {
     const off = await admin.overview("local");
     expect(off.integrations[0]!.enabled).toBe(false);
     expect(off.links).toHaveLength(1);
+  });
+
+  test("a catch-all link only receives: Test and a subscription to it fail at once, with no delivery row", async () => {
+    await connect();
+    await admin.route("/api/integrations/links/save", { id: "all", integrationId: "chat", externalId: "*", label: "All channels and DMs", level: "ask", repos: [], requireMention: true });
+    await expect(admin.route("/api/integrations/links/test", { id: "all" })).rejects.toThrow(CATCH_ALL_SEND_ERROR);
+    await expect(admin.route("/api/integrations/subscriptions/add", { topicPattern: "orca.pr.*", targetKind: "link", targetId: "all" })).rejects.toThrow(CATCH_ALL_SEND_ERROR);
+    expect(await store.deliveries()).toEqual([]);
+    expect(sends).toEqual([]);
   });
 
   test("Test: the card's health check is recorded; a link's test goes through the real delivery path", async () => {
