@@ -190,6 +190,11 @@ describe("Discord inbound", () => {
     await tick();
     expect(ingested[0]).toMatchObject({ thread: { externalId: "C1:M1", messageId: "M8" } });
     expect(calls.filter((c) => c.method === "GET" && c.path.includes("/messages/")).map((c) => c.path)).toEqual(["/channels/C1/messages/B1", "/channels/C1/messages/M1"]);
+    // A reply that does not mention Orca reads nothing by REST.
+    calls = [];
+    ws.push({ op: 0, s: 3, t: "MESSAGE_CREATE", d: msg({ id: "M9", content: "lunch?", mentions: [], message_reference: { message_id: "X2" } }) });
+    await tick();
+    expect(calls.filter((c) => c.path.includes("/messages/"))).toEqual([]);
     await a.stop();
   });
 

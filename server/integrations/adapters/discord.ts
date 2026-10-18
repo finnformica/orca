@@ -192,8 +192,9 @@ export function discordAdapter(connection: Connection): Adapter {
   }
 
   /** The root of a top-level message's reply chain: from the map (Orca's own replies are in it), else
-   *  read up the chain by REST, at most MAX_CHAIN_HOPS. A message that answers nothing is its own root. */
-  async function rootOf(m: DiscordMessage): Promise<string> {
+   *  read up the chain by REST, at most MAX_CHAIN_HOPS — only for a message to Orca (`read`), so
+   *  chatter costs no calls. A message that answers nothing is its own root. */
+  async function rootOf(m: DiscordMessage, read: boolean): Promise<string> {
     const path = [m.id];
     let ref = replyOf(m.message_reference, m.channel_id);
     let root: string | undefined;
@@ -202,6 +203,7 @@ export function discordAdapter(connection: Connection): Adapter {
       if (root) break;
       path.push(ref);
       if (hop === 0 && m.referenced_message?.id === ref) ref = replyOf(m.referenced_message.message_reference ?? undefined, m.channel_id);
+      else if (!read) break;
       else {
         const r = await discordApi(token(), "GET", `/channels/${m.channel_id}/messages/${ref}`);
         ref = r.ok ? replyOf(r.data.message_reference as DiscordMessage["message_reference"], m.channel_id) : undefined;
@@ -216,7 +218,8 @@ export function discordAdapter(connection: Connection): Adapter {
     if (!ctx || m.author.bot) return;
     const parent = m.guild_id ? await parentOf(m.channel_id) : undefined;
     const topLevel = Boolean(m.guild_id) && (!parent || parent === m.channel_id);
-    const root = topLevel && !threads ? await rootOf(m) : undefined;
+    const toOrca = Boolean(botId && (m.mentions?.some((u) => u.id === botId) || m.content?.includes(`<@${botId}>`)));
+    const root = topLevel && !threads ? await rootOf(m, toOrca) : undefined;
     const made = toEnvelope(m, { integrationId: connection.id, botId, dmLink, parent, threads, root });
     if (!made) return;
     if (root) remember(newest, chainKey(m.channel_id, root), m.id); // Orca's answer replies to this message
