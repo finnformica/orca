@@ -161,9 +161,9 @@ Optional `config` keys on the `integration` row:
    `ok: true` and `Socket Mode connected as U...`.
 2. In a linked channel, type `@Orca what is on the board?`.
 3. The orchestrator wakes with the message fenced as an outside message with the `ask` grant.
-4. The answer comes back in a thread under your message. The fenced message names its thread
-   (`thread C…:1234.5678`), and the orchestrator answers with
-   `orca post --link <link id> --thread <that id> "<text>"`.
+4. The answer comes back in a thread under your message. The orchestrator answers with
+   `orca post --reply "<text>"`. Orca sends it to the link, channel and thread of that message.
+   A DM answer goes to the DM itself.
 
 If the adapter does not start, `integration.status.error` holds the reason. Some examples:
 
