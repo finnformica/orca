@@ -4,7 +4,7 @@
 // instance cards' Cost · this month), and the configuration this bridge runs with (read-only — it
 // is edited in orca.config.ts / the config table, not here). Notifications: do not
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { Check, ChevronDown, ChevronRight, FolderGit2, GitBranch, Server, SquareTerminal } from "lucide-react";
 import { api, type GithubAccount } from "../api";
@@ -327,47 +327,75 @@ function MachineRate({ instance, saved }: { instance: string; saved: number | un
 
 /** Settings → Server identity: the ACTIVE server's display name and theme colour (Slack's workspace
  *  name and theme). Saved to that server's app config (`serverIdentity`); empty fields fall back to
- *  the Tailscale host name and the colour derived from the name. */
+ *  the Tailscale host name and the colour derived from the name. There is no Save button: a colour
+ *  saves when picked, the name `IDENTITY_SAVE_DELAY_MS` after the last keystroke or on blur. A failed
+ *  save puts the stored values back and raises the action-failed toast. */
+export const IDENTITY_SAVE_DELAY_MS = 500;
 function ServerIdentitySettings() {
   const identity = useServerIdentity();
   const [name, setName] = useState("");
   const [color, setColor] = useState(""); // "" = derived from the name
-  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<"idle" | "saving" | "saved">("idle");
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const typing = useRef(false); // the name field has focus: a save's reload must not overwrite it
+  const chain = useRef<Promise<void>>(Promise.resolve()); // saves go out in order
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const stored = identity?.stored;
-  useEffect(() => { setName(stored?.name ?? ""); setColor(stored?.color ?? ""); }, [stored?.name, stored?.color]);
+  const storedRef = useRef(stored);
+  storedRef.current = stored;
+  useEffect(() => { if (!typing.current) setName(stored?.name ?? ""); setColor(stored?.color ?? ""); }, [stored?.name, stored?.color]);
+  useEffect(() => () => { clearTimeout(timer.current); clearTimeout(savedTimer.current); }, []);
   if (!identity) return null;
   const label = name.trim() || identity.host;
   const shown = normalizeTheme(color) ?? colorFromName(label);
-  const dirty = name.trim() !== (stored?.name ?? "") || (normalizeTheme(color) ?? "") !== (stored?.color ?? "");
-  const save = async () => {
-    setBusy(true);
-    try { await api.setServerIdentity(name.trim(), normalizeTheme(color) ?? ""); await loadIdentity(); }
-    catch (e) {
-      const error = e instanceof Error ? e.message : String(e);
-      notifyLocal({
-        kind: "action_failed", repo: "", title: "Server identity", label: "Save identity failed", body: error,
-        copy: `Action: Save server identity\nError:\n${error}`,
-        ask: `Saving the server identity failed: ${error}. Please investigate and fix.`,
-      });
-    }
-    finally { setBusy(false); }
+  const save = (nextName: string, nextColor: string) => {
+    clearTimeout(timer.current); timer.current = undefined;
+    const n = nextName.trim(), c = normalizeTheme(nextColor) ?? "";
+    const was = storedRef.current;
+    if (n === (was?.name ?? "") && c === (was?.color ?? "")) return;
+    setStatus("saving"); clearTimeout(savedTimer.current);
+    chain.current = chain.current.then(async () => {
+      try {
+        await api.setServerIdentity(n, c); await loadIdentity();
+        setStatus("saved"); savedTimer.current = setTimeout(() => setStatus("idle"), 2000);
+      } catch (e) {
+        setStatus("idle");
+        const back = storedRef.current;
+        setName(back?.name ?? ""); setColor(back?.color ?? "");
+        const error = e instanceof Error ? e.message : String(e);
+        notifyLocal({
+          kind: "action_failed", repo: "", title: "Server identity", label: "Save identity failed", body: error,
+          copy: `Action: Save server identity\nError:\n${error}`,
+          ask: `Saving the server identity failed: ${error}. Please investigate and fix.`,
+        });
+      }
+    });
   };
+  const typeName = (v: string) => {
+    setName(v); clearTimeout(timer.current);
+    timer.current = setTimeout(() => save(v, color), IDENTITY_SAVE_DELAY_MS);
+  };
+  const pickColor = (c: string) => { setColor(c); save(name, c); };
   return (
     <VCard slot="settings-identity" title="Server identity" bodyClass="divide-y"
-      aside={<span data-slot="identity-preview" className="flex items-center gap-2 text-sm font-medium">
-        <span className="inline-flex size-5 items-center justify-center rounded-full" style={{ color: markColor(shown), background: markBg(shown) }}><OrcaMark className="size-3.5" /></span>
-        Orca <span>{label}</span>
+      aside={<span className="flex items-center gap-3">
+        <span data-slot="identity-status" aria-live="polite" className="text-muted-foreground flex items-center gap-1 text-xs">
+          {status === "saving" ? "Saving…" : status === "saved" ? <><Check className="size-3.5" /> Saved</> : null}
+        </span>
+        <span data-slot="identity-preview" className="flex items-center gap-2 text-sm font-medium">
+          <span className="inline-flex size-5 items-center justify-center rounded-full" style={{ color: markColor(shown), background: markBg(shown) }}><OrcaMark className="size-3.5" /></span>
+          Orca <span>{label}</span>
+        </span>
       </span>}>
       <Setting label="Display name" htmlFor="identity-name" hint={`The title, the sidebar and the server menu show it. Empty: ${identity.host}.`}>
         <Input id="identity-name" data-slot="identity-name" value={name} maxLength={IDENTITY_NAME_MAX} placeholder={identity.host}
-          onChange={(e) => setName(e.target.value)} className="bg-background w-44" />
+          onFocus={() => { typing.current = true; }}
+          onBlur={() => { typing.current = false; if (timer.current) save(name, color); }}
+          onChange={(e) => typeName(e.target.value)} className="bg-background w-44" />
       </Setting>
       <Setting label="Theme colour" hint={isNeutral(color) ? "Neutral: no theme. The sidebar is grey and the mark is black and white." : color ? "The sidebar, buttons, links, focus rings and the mark take it." : "Auto: from the name. The sidebar, buttons, links, focus rings and the mark take it."}>
-        <ColorPicker value={shown} auto={!color} onChange={setColor} />
+        <ColorPicker value={shown} auto={!color} onChange={pickColor} />
       </Setting>
-      <div className="flex items-center justify-end gap-2 px-4 py-3">
-        <Button type="button" variant="secondary" size="sm" data-slot="identity-save" disabled={!dirty || busy} onClick={() => void save()}>Save</Button>
-      </div>
     </VCard>
   );
 }
@@ -375,6 +403,10 @@ function ServerIdentitySettings() {
 /** The colour grid as rows: the base hues, then each tint and shade level across every hue. */
 const GRID = ((cols: GridCell[][]) => cols[0]!.map((_, r) => cols.map((col) => col[r]!)))(colorGrid());
 const NEUTRAL_CELL: GridCell = { value: NEUTRAL, label: "Neutral" };
+/** One grid cell's look, shared by Neutral and every colour so they match: size, corners, the
+ *  selected ring's offset, and an inset hairline (an outer border made Neutral 2px larger and let its
+ *  gradient show at the edge; the hairline also keeps Neutral's white half visible on a light popover). */
+const SWATCH = "block size-5 shrink-0 rounded-[4px] inset-ring inset-ring-border ring-offset-1 ring-offset-popover";
 
 /** The theme colour picker (a shadcn Popover; shadcn has no colour picker of its own): a trigger with
  *  the swatch and the colour's name, a Word-style grid (`colorGrid`: the presets and two more hues,
@@ -407,7 +439,7 @@ function ColorPicker({ value, auto, onChange }: { value: string; auto: boolean; 
           <button type="button" role="radio" aria-checked={isNeutral(value)} aria-label="Neutral"
             data-slot="identity-color" data-row="neutral" data-color={NEUTRAL} onClick={() => onChange(NEUTRAL)}
             className="hover:bg-accent focus-visible:ring-ring/40 mb-1.5 flex items-center gap-2 self-start rounded-md pr-2 text-xs font-medium outline-none focus-visible:ring-2">
-            <span aria-hidden="true" className={cn("size-5 rounded-[4px] border ring-offset-1 ring-offset-popover", isNeutral(value) && "ring-foreground ring-2")}
+            <span aria-hidden="true" data-slot="identity-swatch" className={cn(SWATCH, isNeutral(value) && "ring-foreground ring-2")}
               style={{ background: swatchBackground(NEUTRAL) }} />
             Neutral
           </button>
@@ -418,8 +450,7 @@ function ColorPicker({ value, auto, onChange }: { value: string; auto: boolean; 
                   <button type="button" role="radio" aria-checked={value === c.value} aria-label={c.label}
                     data-slot="identity-color" data-row={r === 0 ? "base" : "tone"} data-color={c.value}
                     onClick={() => onChange(c.value)}
-                    className={cn("focus-visible:ring-ring/40 size-5 rounded-[4px] outline-none ring-offset-1 ring-offset-popover focus-visible:ring-2",
-                      value === c.value && "ring-foreground ring-2")}
+                    className={cn(SWATCH, "focus-visible:ring-ring/40 outline-none focus-visible:ring-2", value === c.value && "ring-foreground ring-2")}
                     style={{ background: c.value }} />
                 </Tip>
               ))}

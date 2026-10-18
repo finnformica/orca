@@ -40,9 +40,11 @@ export const isNeutral = (color: string | undefined): boolean => color === NEUTR
 export const normalizeTheme = (v: unknown): string | undefined =>
   typeof v === "string" && v.trim().toLowerCase() === NEUTRAL ? NEUTRAL : normalizeColor(v);
 
-/** A CSS background for a swatch of the theme: Neutral is half white, half black. */
+/** A CSS background for a swatch of the theme: Neutral is half white, half black. The split has a
+ *  1px blend, so the diagonal is smooth, not stepped; `border-box` paints the gradient under a
+ *  border too, where the default tile repeated and showed a black line at the top and left. */
 export const swatchBackground = (color: string): string =>
-  isNeutral(color) ? "linear-gradient(135deg, #ffffff 50%, #111111 50%)" : color;
+  isNeutral(color) ? "linear-gradient(135deg, #ffffff calc(50% - 0.5px), #111111 calc(50% + 0.5px)) border-box" : color;
 
 /** The preset colour a name maps to (FNV-1a over the lower-case name), so the default is stable. */
 export function colorFromName(name: string): string {
