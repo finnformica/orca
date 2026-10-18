@@ -163,8 +163,8 @@ function Sidebar({ collapsed, onToggle, actions }: {
           const item = (
             <button key={to} type="button" onClick={() => navigate(to)} aria-current={active ? "page" : undefined}
               aria-keyshortcuts={shortcut ? shortcutKeys(shortcut).join(" ") : undefined}
-              className={cn("relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-server-soft text-foreground font-medium" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
-              <Icon className={cn("size-4 shrink-0", active && "text-server-fg")} />
+              className={cn("relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-sidebar-active text-sidebar-active-foreground font-medium" : "text-muted-foreground hover:bg-accent hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
+              <Icon className="size-4 shrink-0" />
               <span data-slot="nav-label" className={cn(collapsed && "md:hidden")}>{label}</span>
               {badge?.(collapsed)}
               {/* G then a letter: always-visible muted keycaps, like Find / Add New. Never on a phone
@@ -211,10 +211,10 @@ export function OrcaMark({ className }: { className?: string }) {
   );
 }
 
-/** The mark inside a circle — Vercel's round avatar logo, in the active server's theme colour; the
- *  favicon matches it (lib/identity.ts draws it in the same colour). */
+/** The mark inside a circle — Vercel's round avatar logo: the circle always black, the orca in the
+ *  active server's theme colour (`--server-mark`, lifted to read on black); the favicon matches it. */
 export const RoundMark = ({ className }: { className?: string }) => (
-  <span data-slot="round-mark" className={cn("bg-server inline-flex text-white size-6 shrink-0 items-center justify-center rounded-full", className)}>
+  <span data-slot="round-mark" className={cn("text-server-mark inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-black", className)}>
     <OrcaMark className="size-4" />
   </span>
 );

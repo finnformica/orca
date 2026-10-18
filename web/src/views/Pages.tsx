@@ -6,7 +6,7 @@
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
 import { useEffect, useState } from "react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
-import { Check, FolderGit2, GitBranch, Pipette, Server, SquareTerminal } from "lucide-react";
+import { Check, ChevronDown, FolderGit2, GitBranch, Server, SquareTerminal } from "lucide-react";
 import { api, type GithubAccount } from "../api";
 import { refreshVitals } from "@/lib/vitals";
 import { notifyLocal, setBrowserNotify } from "@/lib/notificationStore";
@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { browserNotifyAtom, densityAtom, instanceScopeAtom, notifyDndAtom, repoFilterAtom, toastPrefsAtom } from "@/lib/atoms";
 import { KIND_META, NOTIFICATION_KINDS, browserNotifyChecked, browserNotifyNote, browserPermission } from "../../../shared/notifications";
@@ -27,7 +28,7 @@ import { FindBox, NAV, OrcaMark, THEMES } from "@/components/Shell";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
-import { IDENTITY_COLORS, IDENTITY_NAME_MAX, colorFromName, normalizeColor } from "../../../shared/serverIdentity";
+import { IDENTITY_COLORS, IDENTITY_NAME_MAX, colorFromName, markColor, normalizeColor } from "../../../shared/serverIdentity";
 import { InstanceCard, RefreshVitals, UsageCard } from "./Vitals";
 import { RunningPreviews, TestMaster } from "./PreviewControl";
 
@@ -328,7 +329,6 @@ function ServerIdentitySettings() {
   if (!identity) return null;
   const label = name.trim() || identity.host;
   const shown = normalizeColor(color) ?? colorFromName(label);
-  const preset = IDENTITY_COLORS.some((c) => c.value === shown);
   const dirty = name.trim() !== (stored?.name ?? "") || (normalizeColor(color) ?? "") !== (stored?.color ?? "");
   const save = async () => {
     setBusy(true);
@@ -346,39 +346,68 @@ function ServerIdentitySettings() {
   return (
     <VCard slot="settings-identity" title="Server identity" bodyClass="divide-y"
       aside={<span data-slot="identity-preview" className="flex items-center gap-2 text-sm font-medium">
-        <span className="inline-flex size-5 items-center justify-center rounded-full text-white" style={{ background: shown }}><OrcaMark className="size-3.5" /></span>
-        Orca <span style={{ color: shown }}>{label}</span>
+        <span className="inline-flex size-5 items-center justify-center rounded-full bg-black" style={{ color: markColor(shown) }}><OrcaMark className="size-3.5" /></span>
+        Orca <span>{label}</span>
       </span>}>
       <Setting label="Display name" htmlFor="identity-name" hint={`The title, the sidebar and the server menu show it. Empty: ${identity.host}.`}>
         <Input id="identity-name" data-slot="identity-name" value={name} maxLength={IDENTITY_NAME_MAX} placeholder={identity.host}
           onChange={(e) => setName(e.target.value)} className="bg-background w-44" />
       </Setting>
-      <Setting label="Theme colour" hint={color ? "Tints the sidebar, the active page, the mark and focus rings." : "Auto: from the name. Tints the sidebar, the active page, the mark and focus rings."}>
-        <div role="radiogroup" aria-label="Theme colour" className="flex flex-wrap items-center justify-end gap-1.5">
-          {IDENTITY_COLORS.map((c) => (
-            <Tip key={c.value} label={c.name}>
-              <button type="button" role="radio" aria-checked={shown === c.value} aria-label={c.name} data-slot="identity-color" data-color={c.value}
-                onClick={() => setColor(c.value)}
-                className={cn("inline-flex size-6 items-center justify-center rounded-md text-white ring-offset-2 ring-offset-card", shown === c.value && "ring-2 ring-(--swatch)")}
-                style={{ background: c.value, ["--swatch" as string]: c.value }}>
-                {shown === c.value && <Check className="size-3.5" />}
-              </button>
-            </Tip>
-          ))}
-          <Tip label="Custom colour">
-            <label data-slot="identity-custom" className={cn("relative inline-flex size-6 cursor-pointer items-center justify-center rounded-md border", !preset && "text-white ring-2 ring-offset-2 ring-offset-card ring-(--swatch) border-transparent")}
-              style={preset ? undefined : { background: shown, ["--swatch" as string]: shown }}>
-              <Pipette className="size-3.5" />
-              <input type="color" aria-label="Custom colour" value={shown} onChange={(e) => setColor(e.target.value)} className="absolute inset-0 size-full cursor-pointer opacity-0" />
-            </label>
-          </Tip>
-        </div>
+      <Setting label="Theme colour" hint={color ? "The sidebar, buttons, links, focus rings and the mark take it." : "Auto: from the name. The sidebar, buttons, links, focus rings and the mark take it."}>
+        <ColorPicker value={shown} auto={!color} onChange={setColor} />
       </Setting>
       <div className="flex items-center justify-end gap-2 px-4 py-3">
-        {color && <Button type="button" variant="ghost" size="sm" onClick={() => setColor("")}>Auto colour</Button>}
         <Button type="button" variant="secondary" size="sm" data-slot="identity-save" disabled={!dirty || busy} onClick={() => void save()}>Save</Button>
       </div>
     </VCard>
+  );
+}
+
+/** The theme colour picker (shadcn's colour picker pattern): a trigger with the swatch and the
+ *  colour's name, a popover of the 8 presets, a hex field for a custom colour and Auto (from the
+ *  name). `onChange("")` is Auto. */
+function ColorPicker({ value, auto, onChange }: { value: string; auto: boolean; onChange: (color: string) => void }) {
+  const [hex, setHex] = useState(value);
+  useEffect(() => setHex(value), [value]);
+  const preset = IDENTITY_COLORS.find((c) => c.value === value);
+  // Only a whole #rrggbb applies: a 3-digit prefix would expand and jump the field mid-typing.
+  const asHex = (v: string) => (/^#?[0-9a-f]{6}$/i.test(v) ? normalizeColor(v.startsWith("#") ? v : `#${v}`) : undefined);
+  const typed = (v: string) => { setHex(v); const c = asHex(v); if (c) onChange(c); };
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button type="button" variant="secondary" size="sm" data-slot="identity-color-trigger" aria-label={`Theme colour: ${preset?.name ?? value}${auto ? " (auto)" : ""}`}>
+          <span aria-hidden="true" className="size-4 rounded-[4px]" style={{ background: value }} />
+          <span className={cn(!preset && "font-mono")}>{preset?.name ?? value}</span>
+          {auto && <span className="text-muted-foreground font-normal">Auto</span>}
+          <ChevronDown className="text-muted-foreground size-3.5" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="end" className="w-64" data-slot="identity-picker">
+        <div className="text-muted-foreground mb-2 text-xs font-medium">Presets</div>
+        <div role="radiogroup" aria-label="Theme colour" className="grid grid-cols-8 gap-1.5">
+          {IDENTITY_COLORS.map((c) => (
+            <Tip key={c.value} label={c.name}>
+              <button type="button" role="radio" aria-checked={value === c.value} aria-label={c.name} data-slot="identity-color" data-color={c.value}
+                onClick={() => onChange(c.value)}
+                className={cn("focus-visible:ring-ring/40 inline-flex size-6 items-center justify-center rounded-md text-white outline-none ring-offset-2 ring-offset-popover focus-visible:ring-2", value === c.value && "ring-2 ring-(--swatch)")}
+                style={{ background: c.value, ["--swatch" as string]: c.value }}>
+                {value === c.value && <Check className="size-3.5" />}
+              </button>
+            </Tip>
+          ))}
+        </div>
+        <div className="text-muted-foreground mt-3 mb-2 text-xs font-medium">Custom</div>
+        <div className="flex items-center gap-2">
+          <span aria-hidden="true" data-slot="identity-custom-swatch" className="size-8 shrink-0 rounded-md border" style={{ background: asHex(hex) ?? value }} />
+          <Input data-slot="identity-hex" aria-label="Hex colour" value={hex} maxLength={7} spellCheck={false} placeholder="#2f6feb"
+            onChange={(e) => typed(e.target.value.trim())} className="bg-background h-8 font-mono" />
+        </div>
+        <Button type="button" variant="ghost" size="sm" data-slot="identity-auto" disabled={auto} onClick={() => onChange("")} className="mt-3 w-full justify-start">
+          {auto && <Check className="size-3.5" />} Auto: from the name
+        </Button>
+      </PopoverContent>
+    </Popover>
   );
 }
 
