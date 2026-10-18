@@ -135,41 +135,70 @@ export type AgentTurn = {
 const OUTCOME_HEADINGS = ["outcome", "verification", "decisions", "remaining", "commits"] as const;
 const BULLET_MARKER = /^(?:[-*+]\s+|\d+[.)]\s+)/;
 
+// A fenced code block (``` or ~~~, three or more) is read as a whole: a `## Outcome` line inside
+// one is text, not a section (PR text in a ```md snippet has its own `## Outcome`), and its lines
+// keep their indentation and blank lines.
+const fenceOpen = (line: string): string | undefined => line.match(/^\s*(`{3,}|~{3,})/)?.[1];
+const fenceCloses = (line: string, marker: string): boolean => new RegExp(`^\\s*\\${marker[0]}{${marker.length},}\\s*$`).test(line);
+
 // One array entry per TOP-LEVEL bullet (indentation 0 in the raw section). A line indented under
 // one — a nested sub-bullet, or wrapped continuation prose — is appended to that item's text rather
 // than becoming its own flat sibling, so a markdown renderer sees a real nested list instead of
 // every depth flattened to one level. A line that isn't a bullet at all (most commonly a stray `##`
 // sub-heading a model emits inside a section) keeps its own markdown syntax verbatim as its own
-// item, rather than being stripped into bullet-less text with no way to tell it was a heading.
+// item, rather than being stripped into bullet-less text with no way to tell it was a heading. A
+// fenced block is one item (or part of the bullet it is indented under), verbatim.
 const sectionValue = (raw: string): string[] => {
   const items: string[] = [];
+  let fence: string | undefined;
   for (const rawLine of raw.split("\n")) {
+    if (fence) {
+      items[items.length - 1] += `\n${rawLine}`;
+      if (fenceCloses(rawLine, fence)) fence = undefined;
+      continue;
+    }
     if (!rawLine.trim()) continue;
     const indented = /^\s/.test(rawLine);
     const trimmed = rawLine.trim();
+    fence = fenceOpen(rawLine);
     if (indented && items.length > 0) {
-      items[items.length - 1] += `\n  ${trimmed}`;
+      items[items.length - 1] += fence ? `\n${rawLine}` : `\n  ${trimmed}`;
       continue;
     }
+    if (fence) { items.push(trimmed); continue; }
     const text = trimmed.replace(BULLET_MARKER, "").trim();
     if (text && text.toLowerCase() !== "none") items.push(text);
   }
   return items;
 };
 
-/** Tolerantly parse the compact Markdown contract without affecting run success. */
-export function parseAgentOutcome(raw: string): AgentOutcome | undefined {
+/** The reply split at its outcome headings (never one inside a fenced block): `lead` is the text
+ *  before the first, `sections` each heading's lines. The LAST of a repeated heading wins. */
+function outcomeSections(raw: string): { lead: string; sections: Map<string, string[]> } {
   const sections = new Map<string, string[]>();
-  let current: string | undefined;
+  const lead: string[] = [];
+  let current: string | undefined, fence: string | undefined;
   for (const line of raw.split(/\r?\n/)) {
-    const heading = line.match(/^\s*##\s+(Outcome|Verification|Decisions|Remaining|Commits)\s*#*\s*$/i)?.[1]?.toLowerCase();
+    const heading = fence ? undefined : line.match(/^\s*##\s+(Outcome|Verification|Decisions|Remaining|Commits)\s*#*\s*$/i)?.[1]?.toLowerCase();
     if (heading && OUTCOME_HEADINGS.includes(heading as typeof OUTCOME_HEADINGS[number])) {
       current = heading;
       sections.set(current, []);
-    } else if (current) {
-      sections.get(current)!.push(line);
-    }
+    } else (current ? sections.get(current)! : lead).push(line);
+    if (fence) { if (fenceCloses(line, fence)) fence = undefined; } else fence = fenceOpen(line);
   }
+  return { lead: lead.join("\n").trim(), sections };
+}
+
+/** What a reply says BEFORE its outcome sections — often a snippet to paste (PR text, a command).
+ *  `structured` holds only the sections, so the chat shows this above them. "" when it has none. */
+export function outcomeLead(raw: string): string {
+  const { lead, sections } = outcomeSections(raw);
+  return sections.size ? lead : "";
+}
+
+/** Tolerantly parse the compact Markdown contract without affecting run success. */
+export function parseAgentOutcome(raw: string): AgentOutcome | undefined {
+  const { sections } = outcomeSections(raw);
   const outcome = sectionValue((sections.get("outcome") ?? []).join("\n")).join("\n");
   const parsed: AgentOutcome = {
     outcome,
