@@ -45,7 +45,8 @@ Use only these four levels. Each level has one token.
 - Dialogs: `bg-card`, `border`, `rounded-lg`, `shadow-modal`, a `bg-black/50` backdrop.
 - Toasts: `bg-card`, `border`, `shadow-menu`.
 - The Ask pill: `bg-card`, `border`, `shadow-modal`. Use the same classes when it is open and when it is
-  closed. Change only its size and radius.
+  closed. Change only its size and radius. Show hover on the pill as a stronger hairline
+  (`border-border-dark`) and the icon colour. Do not give it a hover fill.
 - Tooltips: `bg-foreground`, `text-background`. Use the `Tip` component. Do not use a native `title=`.
 - The update bar floats over the page: `bg-primary`, `shadow-modal`. It is the only primary-filled overlay.
 
