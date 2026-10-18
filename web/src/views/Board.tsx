@@ -19,7 +19,7 @@ import { ChatComposer } from "@/components/ChatComposer";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
 import { CiChip } from "./PrPanels";
-import { OrchStatusNote, Skeleton, UpkeepNote } from "@/components/console";
+import { GrantNote, OrchStatusNote, Skeleton, UpkeepNote } from "@/components/console";
 import { PreviewControl } from "./PreviewControl";
 import { StatusHoverCard } from "./StatusCard";
 import { TerminalDialog } from "@/components/Terminal";
@@ -539,6 +539,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
         )}
         {!dense && row.prompt && <p className="text-muted-foreground line-clamp-2 text-xs">{row.prompt}</p>}
         <OrchStatusNote status={row.orchStatus} />
+        <GrantNote grant={row.grantScope} />
         <UpkeepNote upkeep={row.upkeep} running={row.agentStatus === "running"} />
       </div>
 

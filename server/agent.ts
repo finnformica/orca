@@ -18,7 +18,9 @@ import * as bus from "./bus";
 import { resolvePrompt } from "./attachments";
 import * as cgroup from "./cgroup";
 import { noteOomKill } from "./health";
-import { tmpdir } from "os";
+import { homedir, tmpdir } from "os";
+import { join, resolve } from "path";
+import { stateDir } from "./state";
 
 /** Persist a turn, but never let the history write break the run that produced it. Repo-level runs
  *  (Slack, keyed `slack:…`) carry no branch and so belong to no workstream — they're skipped.
@@ -78,6 +80,9 @@ export type RunMeta = {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheCreationTokens?: number;
+  /** The tool calls the CLI refused (its `permission_denials`), as `Tool: target` lines — what a
+   *  scoped run (`permissionMode: "scoped"`) was not allowed to do. */
+  permissionDenials?: string[];
 };
 export type RunState = {
   status: "idle" | "running" | "done" | "error";
@@ -105,7 +110,11 @@ export type LaunchOptions = {
   repo?: string; // with `branch`, identifies the workstream this run's turn is recorded against
   branch?: string; // recorded on the lease so restart recovery can match by branch
   model?: string; // the CLI's --model; unset means its own default
-  permissionMode?: "bypass" | "ask"; // repo's `agentPermissionMode`; `ask` (the default) is NOT bypass
+  /** The repo's `agentPermissionMode` (`ask`, the default, is NOT bypass), or `scoped` for a
+   *  workstream an outside sender's "work" grant started or steered (`scopedRules`). */
+  permissionMode?: PermissionMode;
+  /** `scoped` only: what the rules need from the repo. */
+  scope?: { baseBranch?: string; checkCommand?: string };
   action?: string; // ledger label: launch | followup | conflict | ci | review | rerun | agent
   evidenceChars?: number; // size of CI/review evidence sent with this run (ledger)
   instruction?: string; // what the user typed (or the action's label) — recorded on the turn, shown in the chat
@@ -185,8 +194,68 @@ export function parseRunMeta(j: any, compactedTokens?: number): RunMeta {
     outputTokens: num(j?.usage?.output_tokens),
     cacheReadTokens: num(j?.usage?.cache_read_input_tokens),
     cacheCreationTokens: num(j?.usage?.cache_creation_input_tokens),
+    ...(denials(j).length ? { permissionDenials: denials(j) } : {}),
   };
 }
+
+/** The result event's `permission_denials` as `Tool: target` lines (the command, else the path).
+ *  Pure. */
+export function denials(j: any): string[] {
+  const list = Array.isArray(j?.permission_denials) ? j.permission_denials : [];
+  return list.map((d: any) => {
+    const i = d?.tool_input ?? {};
+    const target = i.command ?? i.file_path ?? i.path ?? i.pattern ?? i.url;
+    return `${String(d?.tool_name ?? "?")}: ${typeof target === "string" ? target.slice(0, 200) : JSON.stringify(i).slice(0, 200)}`;
+  });
+}
+
+export type PermissionMode = "bypass" | "ask" | "scoped";
+export type ScopedRules = { allow: string[]; deny: string[]; addDirs: string[] };
+
+/** The tool rules of a scoped run: `claude -p --permission-mode dontAsk`, which denies every call
+ *  that would prompt (there is nobody to approve), plus these allow and deny rules. Deny wins over
+ *  allow. Not `bypassPermissions`: it approves everything, so an allow list under it restricts
+ *  nothing. The guard against Discord text (untrusted) is this list, not an approval prompt.
+ *  - Files: Read, Edit, Write in the worktree only (and reads of this instance's attachments);
+ *    `blockReadsOutsideWorkingDirectories` refuses every other path, other repos included.
+ *  - Bash: git, the toolchain, the repo's check command and orca-shot. No --no-verify, no
+ *    `git -c` / `git config` (a hooks path), no push to the base branch.
+ *  - Secrets: explicit Read and Edit denies, which also cover `cat` / redirects in Bash.
+ *  A Bash rule matches the command text, not the program: `node -e` can still open a file. The
+ *  agent's environment holds no secret (agentEnv); the OS sandbox is the next step. Pure. */
+export function scopedRules(cwd: string, o: { baseBranch?: string; checkCommand?: string; home?: string; stateDir?: string; orcaRoots?: string[] } = {}): ScopedRules {
+  const abs = (p: string) => `/${resolve(p)}`; // `//path` is absolute in a rule; a lone `/` is relative
+  const wt = abs(cwd);
+  const home = o.home ?? homedir();
+  const state = o.stateDir ?? join(home, ".orca");
+  const base = o.baseBranch ?? "main";
+  const tool = ["git", "bun", "bunx", "pnpm", "npm", "npx", "node", "orca-shot"];
+  const check = o.checkCommand?.trim() && !o.checkCommand.includes(",") ? [`Bash(${o.checkCommand.trim()})`, `Bash(${o.checkCommand.trim()} *)`] : [];
+  const secrets = [
+    ...(o.orcaRoots ?? []).map((r) => `${abs(r)}/.env`), "//opt/orca/.env",
+    "~/.ssh/**", "~/.config/gh/**", "~/.hydra/**", "~/.claude/**", "~/.claude.json", "~/.aws/**", "~/.netrc", "~/.git-credentials",
+    `${abs(state)}/secrets/**`, `${abs(state)}/outbox/**`, `${abs(state)}/config.cache.json`,
+  ];
+  return {
+    allow: [`Read(${wt}/**)`, `Edit(${wt}/**)`, `Write(${wt}/**)`, "Glob", "Grep", ...tool.map((t) => `Bash(${t} *)`), ...check],
+    deny: [
+      "Bash(git *--no-verify*)",
+      // Each git rule in both spellings: a model often writes `git -C <worktree> push …`, which a
+      // `git push` rule does not match (seen in the headless check).
+      ...["git", "git -C *"].flatMap((g) => [
+        `Bash(${g} commit -n*)`, `Bash(${g} commit * -n)`, `Bash(${g} commit * -n *)`, `Bash(${g} -c *)`, `Bash(${g} config *)`,
+        `Bash(${g} push * ${base})`, `Bash(${g} push * ${base} *)`, `Bash(${g} push *:${base})`, `Bash(${g} push *:${base} *)`,
+        `Bash(${g} push *:refs/heads/${base}*)`, `Bash(${g} push * +${base}*)`,
+      ]),
+      ...[...new Set(secrets)].flatMap((p) => [`Read(${p})`, `Edit(${p})`]),
+    ],
+    addDirs: [join(state, "attachments")],
+  };
+}
+
+/** The scoped rules for a run in `cwd`, from this host's paths. */
+const scopedRulesHere = (cwd: string, scope: LaunchOptions["scope"]): ScopedRules =>
+  scopedRules(cwd, { ...scope, stateDir: stateDir(), orcaRoots: [resolve(import.meta.dir, "..")] });
 
 const runs = new Map<string, Run>();
 
@@ -542,7 +611,7 @@ export function parseCursorOutput(raw: string): { sessionId?: string; result?: s
 // all three CLIs' arg parsers read that leading dash as an unknown option and the run dies before the
 // agent ever sees the prompt — e.g. claude `error: unknown option '- gather children…'`. Reproduced
 // and each `--` form verified against the real CLIs (see multiAgent.test's leading-dash case).
-export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string, permissionMode: "bypass" | "ask" = "ask", maxBudgetUsd?: number, allowedTools?: string[]): string[] {
+export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string, permissionMode: PermissionMode = "ask", maxBudgetUsd?: number, allowedTools?: string[], scoped?: ScopedRules): string[] {
   // `model` is the card's pinned model (shared/models.ts) or the config default; unset → each CLI's own.
   const m = model ? ["--model", model] : [];
   if (provider === "codex") {
@@ -569,7 +638,14 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
   // `maxBudgetUsd` is the repo's cost ceiling per run: the CLI stops issuing model requests once
   // the run's spend reaches it and reports a budget result, which the turn records as
   // `budget_reached` — the same stop reason Managed Agents uses for a session budget.
-  return ["claude", "-p", "--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...m, ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), ...(allowedTools?.length ? ["--allowedTools", allowedTools.join(",")] : []), "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--", prompt];
+  // `scoped` (a "work" grant): dontAsk + the rules of scopedRules, never bypassPermissions.
+  const perms = permissionMode === "scoped"
+    ? ["--permission-mode", "dontAsk", "--settings", JSON.stringify({ permissions: { blockReadsOutsideWorkingDirectories: true } }),
+      ...(scoped?.addDirs.length ? ["--add-dir", ...scoped.addDirs] : []),
+      "--allowedTools", [...(scoped?.allow ?? []), ...(allowedTools ?? [])].join(","),
+      ...(scoped?.deny.length ? ["--disallowedTools", scoped.deny.join(",")] : [])]
+    : ["--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...(allowedTools?.length ? ["--allowedTools", allowedTools.join(",")] : [])];
+  return ["claude", "-p", ...perms, ...m, ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--", prompt];
 }
 
 // Launches between their call and their return, by key: a Stop pressed while a run is still
@@ -600,6 +676,8 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   // two processes appending to one transcript, and both end with the same reply.
   if (options.resume && lease.sessionBusy(options.resume)) throw new Error("an agent is already running on this session");
   const provider = options.provider ?? "claude";
+  // Only Claude Code has the rules a scoped run needs; codex / cursor run with approvals bypassed.
+  if (options.permissionMode === "scoped" && provider !== "claude") throw new Error(`a scoped run (an outside sender's "work" grant) needs a Claude model; ${provider} has no tool rules`);
   const sessionId = options.resume ?? (provider === "claude" ? crypto.randomUUID() : undefined);
   // Attachment references become files on THIS instance (server/attachments.ts): the message may
   // have been uploaded on another machine.
@@ -620,7 +698,8 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   const scopedEnv = scoped ? cgroup.runtimeEnv() : {};
   const proc = Bun.spawn(
     cgroup.scopedCommand(
-      agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd, options.allowedTools),
+      agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd, options.allowedTools,
+        options.permissionMode === "scoped" ? scopedRulesHere(cwd, options.scope) : undefined),
       { available: scoped, memoryMaxGb, cpuWeight, unit: scopeUnit },
     ),
     { cwd, env: { ...agentEnv(githubEnv(cwd)), ...scopedEnv, ...options.env }, stdout: "pipe", stderr: "pipe" },

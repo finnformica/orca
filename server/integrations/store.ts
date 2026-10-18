@@ -157,6 +157,15 @@ export async function principalFor(adapter: string, externalId: string): Promise
   });
 }
 
+/** One paired person by Orca's id, or undefined. */
+export async function principal(id: string): Promise<Principal | undefined> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT id, name, max_level FROM principal WHERE user_id = ${user()} AND id = ${id}`;
+    const r = (rows as { id: string; name: string; max_level: Principal["maxLevel"] }[])[0];
+    return r ? { id: r.id, name: r.name, maxLevel: r.max_level } : undefined;
+  });
+}
+
 // ── subscription ─────────────────────────────────────────────────────────────────────────────────
 
 export async function addSubscription(s: Omit<Subscription, "id">): Promise<number> {
