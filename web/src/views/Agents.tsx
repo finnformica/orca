@@ -28,7 +28,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { OrchStatusNote, Pill, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
+import { GrantNote, OrchStatusNote, Pill, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
 import { Board, ConditionBadges, CopyDone, LaneActions, useSummary, useTerminalOpen } from "./Board";
 import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
@@ -454,6 +454,7 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
         </div>
         {instruction && <div data-slot="row-instruction" role="cell" className="text-muted-foreground line-clamp-2 text-xs break-words">{instruction}</div>}
         {!isDone && <OrchStatusNote status={row.orchStatus} />}
+        {!isDone && <GrantNote grant={row.grantScope} />}
         {!isDone && <UpkeepNote upkeep={row.upkeep} running={row.agentStatus === "running"} />}
         <div role="cell" className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
           {pill.tooltip ? <Tip label={pill.tooltip}><Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill></Tip> : <Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill>}

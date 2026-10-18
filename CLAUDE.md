@@ -194,7 +194,10 @@ that holds the row's lease (`status.auto`, 150 s, renewed each sync — the fail
 row holds only the name. An outside sender's message gets a grant (min of link level and person) that
 rides `queued_message.grant_scope`: one grant per orchestrator wake, `orchestrator.tool` refuses
 verbs outside it (`grantRefusal`), and such a wake has no shell; a workstream it spawns or steers
-gets `grantScope` and runs with `agentPermissionMode: "ask"`. An unknown sender gets a one-time
+gets `grantScope` and runs in SCOPED mode (`agent.scopedRules`: `claude -p --permission-mode dontAsk`
+plus allow and deny rules — files in the worktree, git and the toolchain, no secrets, no
+`--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).
+Only a wake whose every message is yours clears it on a steer; `orca status --clear-grant` clears it. An unknown sender gets a one-time
 pairing code (`pairing_code`; approve with `POST /api/integrations/pairing/approve`). The orchestrator
 has `orca channels`, `post`, `thread link` and `ask-user`. A subscription's `digest_seconds` batches
 its deliveries per fixed window (`delivery.digest_key`). `/api/slack` still posts at once as

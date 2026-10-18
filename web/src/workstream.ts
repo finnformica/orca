@@ -1279,6 +1279,8 @@ export function withScreenshotsSection(body: string, section: string): string {
 export function workerEvent(input: {
   repo: string; branch: string; title?: string; runId: string; status: string;
   outcome?: AgentOutcome; response?: string; check?: TurnCheck;
+  /** Tool calls the CLI refused (RunMeta.permissionDenials) — a scoped run's rules said no. */
+  denied?: string[];
 }): string {
   const { outcome: o, check } = input;
   const list = (label: string, items: string[] | undefined) => (items?.length ? [`${label}:`, ...items.map((i) => `- ${i}`)] : []);
@@ -1287,6 +1289,7 @@ export function workerEvent(input: {
     ...(check ? [`Orca's check \`${check.command}\` ${check.ok ? "passed" : `FAILED (exit ${check.exitCode}):\n${clip(check.output, 600)}`}`] : []),
     ...(o ? [`Outcome: ${clip(o.outcome, 1500)}`, ...list("Remaining", o.remaining), ...list("Decisions", o.decisions), ...list("Commits", o.commits)]
       : [`Response: ${clip(input.response ?? "(none)", 1500)}`]),
+    ...list("Denied tool calls (scoped mode — tell the user if the work needs them)", input.denied?.slice(0, 10)),
     ...list("Screenshots (Read to view)", reportedShots([input.response ?? "", ...(o?.verification ?? [])].join("\n"))),
     `Full turn: orca read --run ${input.runId}`,
   ].join("\n");
@@ -1499,6 +1502,15 @@ export const upkeepReasonText = (reasons: UpkeepReason[]): string => reasons.map
 
 /** The card's line for the upkeep record: what it is auto-addressing while that run goes, or that it
  *  gave up. Nothing once the run is over and it has not given up. Pure. */
+/** An outside grant on a workstream (`grantScope`, set by the orchestrator's tool route), as the
+ *  card says it: who started it, from where, and that its runs are in scoped mode. Pure. */
+export type GrantScopeNote = { level?: string; by?: string; via?: string };
+export function grantScopeLabel(g: GrantScopeNote | undefined): string | undefined {
+  if (!g || typeof g !== "object") return undefined;
+  const via = g.via ? g.via.charAt(0).toUpperCase() + g.via.slice(1) : "outside Orca";
+  return `started from ${via}${g.by ? ` by ${g.by}` : ""}, scoped mode`;
+}
+
 export function upkeepLabel(rec: UpkeepRecord | undefined, running: boolean): string | undefined {
   if (!rec) return undefined;
   if (rec.gaveUp) return `auto-upkeep gave up: ${rec.gaveUp}`;
@@ -1638,6 +1650,9 @@ const ORCA_COMMANDS = [
   "                                  cards: your plan for it, what it waits on, its merge class (small: fine to",
   "                                  merge on green; needs-finn: the user merges). An empty flag clears that",
   "                                  field; no flags prints it",
+  "  orca status --repo <repo> --branch <branch> --clear-grant   lift an outside sender's grant from a workstream:",
+  "                                  its runs leave scoped mode for the repo's own permission mode. Only from the",
+  "                                  user's own chat, and only when the user asks",
   "  orca repo list [--user <login>]  every GitHub repo each signed-in gh account can see, newest first; ✓ = already in Orca",
   "  orca repo add <owner/name> [--on <instance>] [--name <slug>]   set a repo up in Orca: clone it on that instance",
   "                                  (the one whose account owns it, else the default), add it to the config with its",
