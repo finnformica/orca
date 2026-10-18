@@ -443,7 +443,7 @@ export function NotificationBell({ collapsed = false }: { collapsed?: boolean })
             className={cn("text-muted-foreground hover:text-foreground hover:bg-accent relative inline-flex size-8 shrink-0 items-center justify-center rounded-md", collapsed && "md:mx-auto")}>
             {dnd ? <BellOff className="size-4" /> : <Bell className="size-4" />}
             {unread > 0 && (
-              <span data-slot="notifications-unread" className="bg-geist-blue absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold text-white tabular-nums">
+              <span data-slot="notifications-unread" className="bg-foreground text-background absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold tabular-nums">
                 {unread > 99 ? "99+" : unread}
               </span>
             )}

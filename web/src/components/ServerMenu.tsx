@@ -131,7 +131,8 @@ export function ServerMenu() {
               const down = s.health === "offline" || s.health === "refused";
               return (
                 <DropdownMenuRadioItem key={s.url} value={s.url} data-server={s.name} aria-label={`${s.label}, ${healthText(s.health)}`}
-                  disabled={down && s.url !== current.url} indicator={<Check className="size-3.5" />}>
+                  disabled={down && s.url !== current.url} indicator={<Check className="text-server-fg size-3.5" />}
+                  className="data-[state=checked]:bg-server-soft data-[state=checked]:focus:bg-server-soft">
                   <Swatch color={s.color} />
                   <span className="min-w-0 flex-1 truncate">{s.label}</span>
                   <Dot health={s.health} />
