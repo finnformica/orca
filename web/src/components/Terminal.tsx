@@ -221,8 +221,16 @@ export function OrchestratorPanel() {
   // assistant rail behaves — instead of refetching and re-rendering the conversation every time.
   // Set DURING render, not in an effect: the panel and its composer must mount in the commit that
   // opens it, so the composer's layout effect can focus it before the first keystroke.
+  // `open` is now persisted (lib/atoms `orchestratorOpenAtom`), so a reload can restore it true on a
+  // device that reads narrow — which must never auto-open the dock (useOrchestrator routes a phone
+  // to /orchestrator instead). `initialOpen` (captured once, this component's first render only)
+  // tells the restore apart from any later transition to `open`: blocked only while BOTH the restore
+  // was true-on-narrow AND the device is still narrow right now — so a later resize past the
+  // breakpoint lifts it, and nothing about a deliberate later open (there is none in the app itself;
+  // only a test sets the atom directly) is touched.
+  const [initialOpen] = useState(open);
   const [mounted, setMounted] = useState(false);
-  if (open && !mounted) setMounted(true);
+  if (open && !mounted && !(initialOpen && narrow)) setMounted(true);
   // Popped out: the chat lives in an always-on-top Document Picture-in-Picture window (Chrome/Edge
   // 116+), rendered there by a PORTAL — the same React tree, so its state, composer draft, SSE and
   // popovers carry over rather than being copied. Kept from the window days because it costs one

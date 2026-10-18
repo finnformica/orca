@@ -10,7 +10,7 @@ import { getDefaultStore } from "jotai";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { App } from "@/App";
-import { afterDockMotion, dockMoving, noteDockMotion } from "@/lib/dock";
+import { afterDockMotion, dockMoving, noteDockMotion, resetAppStartingForTests } from "@/lib/dock";
 import { SHELL_GAP, frozenPageWidth } from "@/workstream";
 import { SLIDE_MS } from "@/components/SidePanel";
 import { orchestratorOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
@@ -90,7 +90,14 @@ test("open, the panel is a docked column: the page reflows, the button and O tog
   const panel = $('[data-slot="orchestrator-panel"]')!;
   expect(panel.dataset.state).toBe("open");
   expect(panel.hasAttribute("data-docked")).toBe(true);
-  expect(panel.parentElement).toBe(dock()); // in the dock: its width slides the panel, no transform
+  // In the dock's inner clip (a boolean check: a failed toBe on two DOM nodes prints both trees).
+  expect(panel.parentElement!.dataset.slot === "dock-clip" && panel.parentElement!.parentElement === dock()).toBe(true);
+  expect(dock().className).not.toContain("overflow-hidden"); // the clip is inside, so the handle hangs in the gutter
+  // branch-demo's gutter handle: a child of the dock, outside the clip, the line centred in the 6px gap.
+  const handle = $('[data-slot="orchestrator-resize"]')!;
+  expect(handle.parentElement === dock()).toBe(true);
+  expect(handle.style.left).toBe("-3.5px");
+  expect(handle.className).toContain("top-[10px]"); // short of the cards' 10px corners
   expect(panel.className).not.toContain("shadow-modal"); // not an overlay
   expect(panel.className).not.toContain("border-l"); // no shared hairline: the dock card is the edge
   expect(dock().style.width).toBe("460px"); // the page's row reserves the panel's width
@@ -102,6 +109,7 @@ test("open, the panel is a docked column: the page reflows, the button and O tog
   await click(askButton()); // the same button closes it
   expect(panel.dataset.state).toBe("closed");
   expect(dock().style.width).toBe("0px");
+  expect($('[data-slot="orchestrator-resize"]')).toBeNull(); // nothing to grab in the gap while it closes
   await key("o"); // O opens…
   expect(panel.dataset.state).toBe("open");
   (document.activeElement as HTMLElement | null)?.blur(); // the composer took focus; O in a field is a letter
@@ -175,6 +183,20 @@ test("opening: the panel shows in the commit that opens it at dock width 0, and 
   expect(dock().className).toContain("transition-[width,margin-inline-start]");
   expect(dock().className).toContain("data-[resizing]:transition-none");
   expect($('[data-slot="page-scroll"]')!.className).toContain("md:[contain:layout_paint]");
+});
+
+test("a reload with the panel's open state persisted true shows it at its full width at once — no 0 → width slide to replay", async () => {
+  localStorage.setItem("orca.ui.v1.orchestratorOpen", "true");
+  resetAppStartingForTests(); // a real reload re-arms the page-load window; this test process shares it across files
+  Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  act(() => { root = createRoot(container!); root.render(<App />); }); // the commit a reload's first paint is
+  expect($('[data-slot="orchestrator-panel"]')!.dataset.state).toBe("open");
+  expect(dock().style.width).toBe("460px"); // never 0px first: `appStarting` skipped the slide
+  await act(async () => { await flush(); await flush(); });
+  expect(dock().style.width).toBe("460px"); // settles unchanged
+  window.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true })); // end the page-load window, as a real keystroke would
 });
 
 test("frozenPageWidth: the page content's end width, so the content lays out once and only the card edge moves", () => {

@@ -23,7 +23,7 @@ import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPa
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
 import { SLIDE_MS } from "@/components/SidePanel";
-import { dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
+import { dockClipElementAtom, dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
 import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
@@ -77,10 +77,12 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
  *  (SidePanel's portal) at its full width; only the width and the start margin animate (branch-demo's
  *  150ms, Tailwind's default ease) and the card clips the panel, so the panel slides and never
  *  reflows. Closed, a negative start margin cancels the gutter (a 0-wide flex item still takes the gap). The card's
- *  surface stays until the close has finished (`painted`), so its edge does not vanish mid-slide. */
+ *  surface stays until the close has finished (`painted`), so its edge does not vanish mid-slide.
+ *  The clip is an inner element, not the dock: the resize handle hangs in the gutter, outside the card. */
 export function Dock() {
   const dock = useAtomValue(dockWidthAtom);
   const setDockElement = useSetAtom(dockElementAtom);
+  const setDockClip = useSetAtom(dockClipElementAtom);
   const [painted, setPainted] = useState(dock > 0);
   if (dock > 0 && !painted) setPainted(true);
   useEffect(() => {
@@ -96,8 +98,10 @@ export function Dock() {
       // of the chat restyles its whole subtree (measured: ~4000 elements, 100–150ms each at 4× CPU, twice
       // per open / close). The margin is an inline style; the card's surface rides `data-painted`.
       data-painted={painted ? "" : undefined}
-      className="relative shrink-0 overflow-hidden transition-[width,margin-inline-start] data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden md:data-[painted]:rounded-[10px] md:data-[painted]:bg-card md:data-[painted]:shadow-shell"
-      style={{ width: dock, marginInlineStart: dock > 0 ? 0 : -SHELL_GAP, transitionDuration: `${SLIDE_MS}ms` }} />
+      className="relative shrink-0 transition-[width,margin-inline-start] data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden md:data-[painted]:rounded-[10px] md:data-[painted]:bg-card md:data-[painted]:shadow-shell"
+      style={{ width: dock, marginInlineStart: dock > 0 ? 0 : -SHELL_GAP, transitionDuration: `${SLIDE_MS}ms` }}>
+      <div data-slot="dock-clip" ref={setDockClip} className="absolute inset-0 overflow-hidden rounded-[inherit]" />
+    </div>
   );
 }
 
