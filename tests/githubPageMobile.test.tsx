@@ -8,7 +8,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
-import { GitHubPage } from "@/views/Pages";
+import { GitHubSection } from "@/views/Pages";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -20,7 +20,7 @@ let container: HTMLElement | undefined;
 async function mount() {
   container = document.createElement("div");
   document.body.appendChild(container);
-  await act(async () => { root = createRoot(container!); root.render(<GitHubPage />); await flush(); await flush(); });
+  await act(async () => { root = createRoot(container!); root.render(<GitHubSection />); await flush(); await flush(); });
 }
 
 afterEach(() => {
