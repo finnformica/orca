@@ -689,8 +689,10 @@ popovers/selects portal into it through `PortalContainer` (`lib/utils.ts`). Retu
 close brings it back (an ask while popped out lands in the PiP composer), and its size is remembered.
 (History: a floating round launcher in the corner opened it; the top-bar entry replaced it — two
 ways to do one thing, and the launcher covered the corner the window sat in. The quick-ask pill is
-not that launcher: it sends a line without opening the conversation.) Browsers without the API get no
-button (a plain popup can't stay on top, so it was not worth having).
+not that launcher: it sends a line without opening the conversation.) Without the API (Firefox,
+Safari, or a page that is not a secure context: plain http on the tailnet) Pop out opens a normal
+popup window (`openOrchestratorWindow`: `/orchestrator?window`, named so a second click focuses it,
+PiP-sized), where App renders only the header and chat (`OrchestratorWindow`). It is not on top.
 It is one conversation you talk to; it starts and steers
 workstreams itself. Anthropic's orchestrator-workers pattern, kept to **two layers** — it, and the
 workstreams the board already shows (each worker is a Claude Code session that can spawn its own
