@@ -18,6 +18,9 @@ export const navExpandedOverrideAtom = atom(false);
 
 /** The shell's dock element, the portal target of a docked panel (null on a phone, before the shell mounts). */
 export const dockElementAtom = atom<HTMLElement | null>(null);
+/** The clip inside the dock: a docked panel renders here. The dock itself does not clip, so the
+ *  resize handle can hang in the gutter outside it (branch-demo's gutter handle). */
+export const dockClipElementAtom = atom<HTMLElement | null>(null);
 
 export function useViewportWidth(): number {
   const [vw, setVw] = useState(() => window.innerWidth);
