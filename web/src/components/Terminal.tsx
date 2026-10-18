@@ -8,7 +8,7 @@ import type { ChatControlsProps, CompactControl } from "@/components/ChatControl
 import { api } from "../api";
 import { useWorkstreams, type Row } from "../store";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, orchestratorStatus } from "../workstream";
-import { PanelHeader, SidePanel, usePanelWidth, type SwipeProps } from "@/components/SidePanel";
+import { PanelHeader, SidePanel, usePanelWidth, useSlideSettled, type SwipeProps } from "@/components/SidePanel";
 import { PipContext, PortalContainer, cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Shortcut } from "@/components/ui/kbd";
@@ -227,7 +227,9 @@ export function OrchestratorPanel() {
   const [pip, setPip] = useState<Window | null>(null);
   // The poll runs on the PiP window's timers while popped out: that window is the visible one, and
   // a hidden tab's timers get throttled (to once a minute after a while).
-  const { state, load, controls } = useOrchestratorState(open, pip ?? window);
+  // It starts after the slide: its first answer re-renders the header, which must not land in the
+  // slide's frames.
+  const { state, load, controls } = useOrchestratorState(useSlideSettled(open), pip ?? window);
   // Closing drops the pending ask, so a later open can't re-apply it to a freshly mounted composer.
   useEffect(() => { if (!open) { pip?.close(); setPrefill(null); } }, [open]);
   // An ask while popped out lands in the PiP window's composer; bring that window forward.

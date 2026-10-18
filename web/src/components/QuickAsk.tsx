@@ -105,7 +105,7 @@ export function QuickAsk() {
     // the fixed strip starts where the sidebar ends (Shell's md:w-14 rail / md:w-60 expanded) and
     // ends where the docked right column starts (lib/dock.ts), moving with it.
     <div data-slot="quick-ask" data-collapsed={collapsed}
-      className={cn("pointer-events-none fixed bottom-5 z-30 flex justify-center transition-[right] ease-out max-md:hidden", collapsed ? "left-14" : "left-60")}
+      className={cn("pointer-events-none fixed bottom-5 z-30 flex justify-center transition-[left,right] motion-reduce:transition-none max-md:hidden", collapsed ? "left-14" : "left-60")}
       style={{ right: dock, transitionDuration: `${SLIDE_MS}ms` }}>
       {/* ONE surface for both states, so the pill grows into the box rather than being swapped for it.
           `interpolate-size` lets the height animate to `auto` (Chromium; elsewhere it snaps). Solid

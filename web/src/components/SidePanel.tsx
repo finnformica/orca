@@ -42,6 +42,18 @@ export function usePanelWidth(widthAtom: WidthAtom) {
 
 export type SwipeProps = ReturnType<typeof useSwipeToDismiss>;
 
+/** `open`, but true only once the slide has finished: work an open panel starts (a status poll, a
+ *  fetch) lands after the slide, not in its frames. Closing is at once. */
+export function useSlideSettled(open: boolean): boolean {
+  const [settled, setSettled] = useState(open);
+  useEffect(() => {
+    if (!open) { setSettled(false); return; }
+    const t = setTimeout(() => setSettled(true), SLIDE_MS + 30);
+    return () => clearTimeout(t);
+  }, [open]);
+  return open && settled;
+}
+
 export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, swipe: swipeOn, fullScreen = false, header, children, onKeyDown }: {
   open: boolean; onClose: () => void;
   /** `data-slot` prefix: `<slot>-panel` on the surface, `<slot>-resize` on its edge. */
@@ -144,14 +156,16 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
     "data-slot": `${slot}-panel`, "data-state": open ? "open" : "closed", onKeyDown,
   } as const;
   if (docked) {
-    // In the dock: its full width from the dock's left edge, so the dock's animated width slides it
-    // in and out (clipped) and the content never reflows. Closed, it stays painted until the dock's
-    // width transition has ended, then `invisible` (still mounted: the draft and the scroll stay).
+    // In the dock card: its full width from the card's left edge, so the dock's animated width slides
+    // it in and out (clipped) and the content never reflows. No hairline: the card is the edge.
+    // Closed, it stays painted until the dock's width transition has ended, then it does NO work —
+    // `content-visibility: hidden` skips its layout and paint but keeps its state (the draft and the
+    // scroll position, which `display: none` would lose; branch-demo unmounts, which loses them too).
     // The open one is on top while the other leaves.
     return createPortal(
       <div {...common} data-docked="" data-shown={open || shown ? "" : undefined}
-        className={cn("bg-card text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden border-l",
-          open || shown ? "visible" : "invisible", open ? "z-10" : "z-0")}
+        className={cn("bg-card text-foreground absolute inset-y-0 left-0 flex flex-col overflow-hidden",
+          open || shown ? "visible" : "invisible [content-visibility:hidden]", open ? "z-10" : "z-0")}
         style={{ width }}
       >
         {resize}

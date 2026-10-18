@@ -411,8 +411,9 @@ describe("surfaces: Vercel's hairlines, radii and shadows", () => {
       await open(path);
       expect(offending(/(^|\s)border(-[lrtbxy])?-(2|4|8)(\s|$)/)).toEqual([]);
       expect(offending(/(^|\s)(hover:|focus:)?shadow-(xs|sm|md|lg|xl|2xl)(\s|$)/)).toEqual([]);
-      // The ONE exception, on purpose: the shell card (branch-demo's app shell — the page and the
-      // docked panel float on the themed canvas) has its raised edge. Nothing else may use it.
+      // The ONE exception, on purpose: the shell's cards (branch-demo's app shell — the page card, and
+      // the docked panel's own card while it is open, float on the themed canvas) have their raised
+      // edge. Nothing else may use it. (No panel is open here, so only the page card.)
       const shell = [...container!.querySelectorAll<HTMLElement>("[class]")].filter((el) => /(^|\s)(md:)?shadow-shell(\s|$)/.test(el.getAttribute("class")!));
       expect(shell.map((el) => el.dataset.slot)).toEqual(["shell-card"]);
       for (const card of container!.querySelectorAll<HTMLElement>("section[data-slot]")) {

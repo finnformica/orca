@@ -8,7 +8,7 @@
 // centred); every inset clears the notch and the home indicator. What the sidebar alone carried
 // (Previews, Repos, Usage, Find, the instance switcher) is reachable from Settings on a phone — see
 // MobileNav in views/Pages.tsx.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
@@ -33,7 +33,7 @@ import { useSwipeToDismiss } from "@/lib/gestures";
 import { isMobile, useNarrow } from "@/lib/viewport";
 import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
-import { repoLabel, summarizeSync } from "../workstream";
+import { NAV_RAIL_W, NAV_W, SHELL_GAP, frozenPageWidth, repoLabel, summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
 import { AddServerDialog, ServerMenu, ServerOffline, useServerProblem, useServers } from "@/components/ServerMenu";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
@@ -68,17 +68,60 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
   { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
 ];
 
-/** The docked right column (desktop), inside the card beside the page: the open side panel renders
- *  INTO it (SidePanel's portal) at its full width. Only this width animates, 0 ↔ the panel's width,
- *  and it clips the panel — so the page reflows in the same frame, with no overlay. */
+/** The docked right column (desktop): its OWN card beside the page card, as branch-demo's right panel
+ *  — the shell's gutter between them, no shared hairline. The open side panel renders INTO it
+ *  (SidePanel's portal) at its full width; only the width and the start margin animate (branch-demo's
+ *  150ms, Tailwind's default ease) and the card clips the panel, so the panel slides and never
+ *  reflows. Closed, `-ms` cancels the gutter (a 0-wide flex item still takes the gap). The card's
+ *  surface stays until the close has finished (`painted`), so its edge does not vanish mid-slide. */
 export function Dock() {
   const dock = useAtomValue(dockWidthAtom);
   const setDockElement = useSetAtom(dockElementAtom);
+  const [painted, setPainted] = useState(dock > 0);
+  if (dock > 0 && !painted) setPainted(true);
+  useEffect(() => {
+    if (dock > 0 || !painted) return;
+    const t = setTimeout(() => setPainted(false), SLIDE_MS + 150); // no transition ran (reduced motion)
+    return () => clearTimeout(t);
+  }, [dock, painted]);
   return (
     <div data-slot="dock" ref={setDockElement}
-      className="relative shrink-0 overflow-hidden transition-[width] data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden"
+      onTransitionEnd={(e) => { if (e.target === e.currentTarget && e.propertyName === "width" && dock === 0) setPainted(false); }}
+      className={cn("relative shrink-0 overflow-hidden transition-[width,margin-inline-start] data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden",
+        dock > 0 ? "ms-0" : "-ms-1.5", painted && "md:rounded-[10px] md:bg-card md:shadow-shell")}
       style={{ width: dock, transitionDuration: `${SLIDE_MS}ms` }} />
   );
+}
+
+/** Holds the page content at its END width while the dock or the nav animates (`frozenPageWidth`):
+ *  the content lays out once at the start, and only the page card's edge moves over it. Cleared once
+ *  the slide is over, so the page follows a window resize again. No React state: the frame's style
+ *  is written directly. */
+function useFrozenPage(els: { col: HTMLElement | null; frame: HTMLElement | null; nav: HTMLElement | null; dock: HTMLElement | null },
+  dock: number, rail: boolean, narrow: boolean) {
+  const was = useRef({ dock, rail });
+  const timer = useRef<ReturnType<typeof setTimeout>>();
+  useLayoutEffect(() => {
+    const prev = was.current;
+    was.current = { dock, rail };
+    const { col, frame, nav, dock: dockEl } = els;
+    if (!frame) return;
+    const release = () => { clearTimeout(timer.current); frame.style.width = ""; };
+    if (narrow || !col || !nav || !dockEl || dockEl.hasAttribute("data-resizing")) return release();
+    if (prev.dock === dock && prev.rail === rail) return;
+    // Read BEFORE the transitions advance: the in-flight (start) widths.
+    const now = {
+      col: col.clientWidth,
+      nav: nav.getBoundingClientRect().width,
+      dock: dockEl.getBoundingClientRect().width,
+      dockMargin: parseFloat(getComputedStyle(dockEl).marginInlineStart) || 0,
+    };
+    const end = { nav: rail ? NAV_RAIL_W : NAV_W, dock, dockMargin: dock > 0 ? 0 : -SHELL_GAP };
+    clearTimeout(timer.current);
+    frame.style.width = `${frozenPageWidth(now, end)}px`;
+    timer.current = setTimeout(release, SLIDE_MS + 60);
+  }, [dock, rail, narrow, els.col, els.frame, els.nav, els.dock]);
+  useEffect(() => () => clearTimeout(timer.current), []);
 }
 
 /** Feeds lib/dock's motion flag from the shell's own width transitions (the dock, the nav's rail). */
@@ -115,6 +158,11 @@ export function Shell({ crumbs, sidebarActions, children }: {
   const narrow = useNarrow();
   const [shellEl, setShellEl] = useState<HTMLElement | null>(null);
   useDockMotion(shellEl);
+  const [colEl, setColEl] = useState<HTMLElement | null>(null);
+  const [frameEl, setFrameEl] = useState<HTMLElement | null>(null);
+  const [navEl, setNavEl] = useState<HTMLElement | null>(null);
+  const dockEl = useAtomValue(dockElementAtom);
+  useFrozenPage({ col: colEl, frame: frameEl, nav: navEl, dock: dockEl }, useAtomValue(dockWidthAtom), collapsed, narrow);
   useEffect(() => poll(loadIdentity, 60_000), []);
   return (
     // Desktop: branch-demo's app shell. The nav sits on the LOWER surface — the canvas, in the
@@ -124,11 +172,13 @@ export function Shell({ crumbs, sidebarActions, children }: {
     <div data-slot="shell" ref={setShellEl} className="md:bg-sidebar flex min-h-screen w-full flex-col md:h-screen md:overflow-hidden">
       {/* The update banner: on the lower surface, above the nav and the card (branch-demo's app-level banner). */}
       <UpdateBanner onStaleChange={setUpdateAvailable} />
-      <div data-slot="shell-row" className="flex min-h-0 w-full flex-1">
+      {/* The row on the canvas: the nav, then the page card and the panel card, the shell's gutter
+          between the cards and round them (branch-demo's p-shell / gap-shell). */}
+      <div data-slot="shell-row" className="flex min-h-0 w-full flex-1 md:gap-1.5 md:py-1.5 md:pr-1.5">
       {/* Desktop only: a phone's nav is the bottom bar + Settings (see MobileNav in views/Pages.tsx) —
           there is no off-canvas drawer any more. */}
       <aside
-        data-slot="sidebar" data-chrome="" data-collapsed={collapsed}
+        data-slot="sidebar" data-chrome="" data-collapsed={collapsed} ref={setNavEl}
         className={cn(
           "z-50 max-md:hidden md:flex md:shrink-0 md:flex-col md:overflow-hidden md:transition-[width] md:duration-150 motion-reduce:transition-none",
           collapsed ? "md:w-14" : "md:w-60",
@@ -136,17 +186,19 @@ export function Shell({ crumbs, sidebarActions, children }: {
       >
         <Sidebar collapsed={collapsed} onToggle={() => setRail(!collapsed)} actions={sidebarActions} />
       </aside>
-      <div data-slot="shell-card" className="flex min-w-0 flex-1 md:my-1.5 md:mr-1.5 md:overflow-hidden md:rounded-[10px] md:bg-background md:shadow-shell">
+      <div data-slot="shell-card" className="flex min-w-0 flex-1 md:overflow-hidden md:rounded-[10px] md:bg-background md:shadow-shell">
       {/* The page column scrolls on its own on a desktop (md:h-screen + overflow), as each column of an
           app shell does: the docked panel then sits flush against the window's edge, with no page
           scrollbar outside it (the gutter is reserved here, not on <html>; its children never shrink to
           fit the column's height — the top bar did). A phone keeps the window's own scroll (its keyboard and pull-to-refresh
-          code read window.scrollY). The column is the `@container/page` the pages' layouts query, so
-          they respond to the room the dock leaves, not to the window. */}
+          code read window.scrollY). Inside it, the page FRAME is the `@container/page` the pages'
+          layouts query, so they respond to the room the dock leaves, not to the window; while the dock
+          or the nav animates, the frame is held at its end width (useFrozenPage). */}
       {/* `contain: layout paint` on a desktop: while the dock or the nav animates, the page's reflow and
           repaint stay inside this column. (A `fixed` descendant would now be placed against this box —
           the page has none; the Agents row's right-click anchor is portaled to <body>.) */}
-      <div data-slot="page-scroll" className="@container/page flex min-w-0 flex-1 flex-col md:h-full md:overflow-y-auto md:[scrollbar-gutter:stable] md:[contain:layout_paint] md:*:shrink-0">
+      <div data-slot="page-scroll" ref={setColEl} className="flex min-w-0 flex-1 flex-col md:h-full md:overflow-x-hidden md:overflow-y-auto md:[scrollbar-gutter:stable] md:[contain:layout_paint]">
+      <div data-slot="page-frame" ref={setFrameEl} className="@container/page flex min-w-0 flex-1 shrink-0 flex-col md:*:shrink-0">
         {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it.
             The notch inset goes to whichever is topmost: the banner when it's shown, else the header. */}
         {/* On a desktop the top bar is part of the card (neutral); on a phone it is the themed frame. */}
@@ -179,8 +231,9 @@ export function Shell({ crumbs, sidebarActions, children }: {
           {offline ? (serverProblem ? null : <OfflineScreen />) : children}
         </main>
       </div>
-      <Dock />
       </div>
+      </div>
+      <Dock />
       </div>
       <BottomBar activity={activity} />
       {/* The quick-ask pill, bottom centre of every page but an agent's Chat tab (desktop; the phone's bottom bar has the orchestrator). */}
