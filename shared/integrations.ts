@@ -364,6 +364,58 @@ export function fenceExternal(e: Pick<Envelope, "text" | "source" | "actor" | "g
   ].join("\n");
 }
 
+// ── An outside message in the orchestrator's chat ────────────────────────────────────────────────
+// The chat shows an outside message as a compact activity row, never as your bubble. Its source rides
+// in the message text itself (a comment line after the fence), so no column is needed: the queue and
+// the turn already store the text.
+
+/** Where an outside message came from, for its row in the chat. */
+export type IntegrationSource = { adapter: string; sender?: string; place?: string; url?: string };
+export const INTEGRATION_META = "<!-- orca:integration ";
+const META_RE = /<!-- orca:integration (\{.*?\}) -->/;
+
+/** The meta line for a message: JSON in an HTML comment, `>` escaped so a name can't close it. */
+export const integrationMetaLine = (s: IntegrationSource): string =>
+  `${INTEGRATION_META}${JSON.stringify(s).replace(/>/g, "\\u003e")} -->`;
+
+/** The place an event came from, for a person: a DM, else the link's label ("#general"). */
+export function integrationPlace(e: Pick<Envelope, "source" | "raw">, linkLabel?: string): string | undefined {
+  const raw = (e.raw ?? {}) as Record<string, unknown>;
+  if (e.source.adapter === "discord" && "channel_id" in raw && !raw.guild_id) return "DM";
+  return linkLabel && linkLabel !== "*" ? linkLabel : undefined;
+}
+
+/** A link that opens the message on its platform: the envelope's own, else Discord's message URL. */
+export function integrationUrl(e: Pick<Envelope, "source" | "raw" | "link">): string | undefined {
+  if (e.link?.url) return e.link.url;
+  const raw = (e.raw ?? {}) as Record<string, unknown>;
+  if (e.source.adapter === "discord" && typeof raw.id === "string" && typeof raw.channel_id === "string")
+    return `https://discord.com/channels/${typeof raw.guild_id === "string" ? raw.guild_id : "@me"}/${raw.channel_id}/${raw.id}`;
+  return undefined;
+}
+
+/** One outside message read back from a wake's text: its source and the sender's own words. */
+export type IntegrationMessage = IntegrationSource & { text: string };
+
+/** An outside message (fenced by `fenceExternal`) back into its source and text; undefined for any
+ *  other message. A row from before the meta line reads its adapter and sender off the header. Pure. */
+export function integrationMessage(message: string): IntegrationMessage | undefined {
+  const head = message.match(/^\[external message\] via (\S+)[^\n]*?· from ([^\n]*?) · grant:/);
+  if (!head) return undefined;
+  const body = message.match(/\n~~~external\n([\s\S]*?)\n~~~(?:\n|$)/)?.[1] ?? "";
+  let meta: Partial<IntegrationSource> = {};
+  const m = message.match(META_RE);
+  if (m) try { meta = JSON.parse(m[1]!) as Partial<IntegrationSource>; } catch { /* the header is enough */ }
+  const fromHeader = head[2]!.match(/\(([^)]*)\)$/)?.[1];
+  return {
+    adapter: meta.adapter ?? head[1]!,
+    ...(meta.sender ?? fromHeader ? { sender: meta.sender ?? fromHeader } : {}),
+    ...(meta.place ? { place: meta.place } : {}),
+    ...(meta.url ? { url: meta.url } : {}),
+    text: body,
+  };
+}
+
 // ── Orca's own events (phase 0) ──────────────────────────────────────────────────────────────────
 
 /** The topic of a notification kind; undefined for a browser-only kind (never stored). */

@@ -15,7 +15,9 @@ import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
-import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState } from "../workstream";
+import { integrationMessage, type IntegrationMessage } from "../../../shared/integrations";
+import { BrandIcon, brandTitle } from "@/components/BrandIcon";
 import { activityCounts, closeOpenMarkdown, createHold, runLabel, stepDuration, stepInFlight, stepKey, stepRow, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepStatus } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
@@ -383,6 +385,15 @@ function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () =>
       </div>
     );
   }
+  // An outside message waiting for its wake: its activity row, never your bubble.
+  const outside = integrationMessage(message.instruction);
+  if (outside) {
+    return (
+      <div data-slot="integration-queued" className="border-geist-blue/20 bg-geist-blue/5 text-muted-foreground mb-4 flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[12px] opacity-70">
+        <IntegrationHead m={outside} more={0} time="" state="queued" />
+      </div>
+    );
+  }
   return (
     <div className="mb-4 flex justify-end opacity-60" data-slot="chat-queued">
       <div className="max-w-[85%]">
@@ -601,6 +612,66 @@ function AgentsMarker({ turns, render }: { turns: AgentTurn[]; render: (t: Agent
     </WorkerBlock>
   );
 }
+
+const STATE_TONE = { answered: "text-geist-green", "in progress": "text-geist-blue", failed: "text-red-400", stopped: "text-amber-400" } as const;
+
+/** The collapsed line of an outside message: logo, sender, place, one line of what they wrote, the
+ *  time and the state. The same tinted card as worker traffic, with the service's logo for the ⚙. */
+function IntegrationHead({ m, more, time, state }: { m: IntegrationMessage; more: number; time: string; state: keyof typeof STATE_TONE | "queued" }) {
+  return (
+    <>
+      <BrandIcon kind={m.adapter} className="size-3.5" />
+      <span className="text-foreground shrink-0 font-medium" data-slot="integration-sender">{m.sender ?? brandTitle(m.adapter)}</span>
+      {m.place && <span className="shrink-0" data-slot="integration-place">{m.place}</span>}
+      <span className="min-w-0 flex-1 truncate" data-slot="integration-preview">{integrationPreview(m.text)}{more > 0 ? ` · +${more} more` : ""}</span>
+      {time && <span className="shrink-0 text-[11px]">{time}</span>}
+      <span data-slot="integration-state" className={cn("flex shrink-0 items-center gap-1 text-[11px]", state === "queued" ? "" : STATE_TONE[state])}>
+        {state === "in progress" && <Loader2 className="size-3 animate-spin" />}{state}
+      </span>
+    </>
+  );
+}
+
+/** A wake an outside message caused (Discord, Slack, email…): ONE collapsed activity row, never your
+ *  bubble. Open, it shows each message in full with a link to it, then the orchestrator's answer —
+ *  its folded steps (the `orca post --reply` among them) and its reply — so the bulk stays out of
+ *  your conversation, like worker reports. */
+const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadStepsFor }: { turn: AgentTurn; messages: IntegrationMessage[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]> }) {
+  const [open, setOpen] = useState(false);
+  const state = integrationState(turn);
+  return (
+    <div data-slot="integration-activity" data-adapter={messages[0]!.adapter} data-state={state} data-open={open || undefined}
+      className="border-geist-blue/20 bg-geist-blue/5 mb-4 rounded-md border text-[12px]">
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        className="text-muted-foreground hover:text-foreground flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left">
+        <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+        <IntegrationHead m={messages[0]!} more={messages.length - 1} time={clockOf(turn.startedAt)} state={state} />
+      </button>
+      {open && (
+        <div className="border-geist-blue/20 space-y-3 border-t px-2.5 py-2" data-slot="integration-body">
+          {messages.map((m, i) => (
+            <div key={i} data-slot="integration-message">
+              <div className="text-muted-foreground mb-0.5 flex items-center gap-1.5 text-[11px]">
+                <BrandIcon kind={m.adapter} className="size-3" />
+                <span className="text-foreground font-medium">{m.sender ?? brandTitle(m.adapter)}</span>
+                <span>{[m.place, brandTitle(m.adapter)].filter(Boolean).join(" · ")}</span>
+                {m.url && <a href={m.url} target="_blank" rel="noreferrer" className="hover:text-foreground underline-offset-2 hover:underline">Open in {brandTitle(m.adapter)}</a>}
+              </div>
+              <div className="text-foreground whitespace-pre-wrap break-words">{m.text}</div>
+            </div>
+          ))}
+          <div className="flex gap-2" data-slot="integration-reply">
+            <span className="bg-accent text-foreground inline-flex size-5 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3" /></span>
+            <div className="min-w-0 flex-1">
+              <div className="text-foreground mb-0.5 text-[11px] font-medium">Orchestrator</div>
+              <Reply turn={turn} loadSteps={loadStepsFor && (() => loadStepsFor(turn))} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+});
 
 /** `send` replaces the follow-up launch for a conversation that isn't a branch's agent — the
  *  orchestrator's, which goes to its own route. The composer's toolbar always carries the model
@@ -926,9 +997,9 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     const items = chatItems(list, newest.answer);
     let prev: number | undefined;
     return items.map((item) => {
-      const first = item.kind === "turn" ? item.turn : item.turns[0]!;
+      const first = item.kind === "agents" ? item.turns[0]! : item.turn;
       const divider = first.startedAt && (prev === undefined || !sameDay(prev, first.startedAt));
-      prev = (item.kind === "turn" ? item.turn : item.turns[item.turns.length - 1]!).startedAt ?? prev;
+      prev = (item.kind === "agents" ? item.turns[item.turns.length - 1]! : item.turn).startedAt ?? prev;
       return (
         <div key={first.id}>
           {divider && (
@@ -936,7 +1007,9 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
               <span className="h-px flex-1 bg-border" /><span>{dayLabel(first.startedAt!)}</span><span className="h-px flex-1 bg-border" />
             </div>
           )}
-          {item.kind === "turn" ? chatTurn(item.turn) : <AgentsMarker turns={item.turns} render={chatTurn} />}
+          {item.kind === "turn" ? chatTurn(item.turn)
+            : item.kind === "integration" ? <IntegrationBlock turn={item.turn} messages={item.messages} loadStepsFor={loadStepsFor} />
+            : <AgentsMarker turns={item.turns} render={chatTurn} />}
         </div>
       );
     });
