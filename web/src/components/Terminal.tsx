@@ -240,16 +240,21 @@ export function OrchestratorPanel() {
   // Focus: the composer takes it on open (ChatComposer's prefill layout effect); on close it goes back
   // to where it was — the button or key that opened the panel — so a keyboard user isn't dropped on
   // <body>. The opener is read DURING the render that opens it: the composer focuses itself in a
-  // layout effect, which runs before any effect of this parent's.
+  // layout effect, which runs before any effect of this parent's. Opened by a key (O), the opener is
+  // <body>, which can't take focus: the composer is blurred instead, or the closed panel's textarea
+  // kept focus and every global shortcut after it read as typing (O, Esc, then O did nothing).
   const opener = useRef<Element | null>(null);
   const wasOpen = useRef(false);
   if (open && !wasOpen.current) opener.current = document.activeElement;
+  const closing = !open && wasOpen.current;
   wasOpen.current = open;
   useLayoutEffect(() => {
-    if (open) return;
+    if (open || !closing) return;
     const el = opener.current as HTMLElement | null;
     opener.current = null;
-    if (el && document.contains(el) && typeof el.focus === "function") el.focus();
+    if (el && el !== document.body && document.contains(el) && typeof el.focus === "function") el.focus();
+    const active = document.activeElement as HTMLElement | null;
+    if (active && active !== document.body && active.closest('[data-slot="orchestrator-panel"]')) active.blur();
   }, [open]);
   useEffect(() => {
     if (!pip) return;
