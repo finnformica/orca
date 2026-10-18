@@ -93,7 +93,12 @@ export function Shell({ crumbs, sidebarActions, children }: {
       >
         <Sidebar collapsed={collapsed} onToggle={() => setRail(!collapsed)} actions={sidebarActions} />
       </aside>
-      <div className="flex min-w-0 flex-1 flex-col">
+      {/* The page column scrolls on its own on a desktop (md:h-screen + overflow), as each column of an
+          app shell does: the docked panel then sits flush against the window's edge, with no page
+          scrollbar outside it. A phone keeps the window's own scroll (its keyboard and pull-to-refresh
+          code read window.scrollY). The column is the `@container/page` the pages' layouts query, so
+          they respond to the room the dock leaves, not to the window. */}
+      <div data-slot="page-scroll" className="@container/page flex min-w-0 flex-1 flex-col md:h-screen md:overflow-y-auto">
         <UpdateBanner onStaleChange={setUpdateAvailable} />
         {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it.
             The notch inset goes to whichever is topmost: the banner when it's shown, else the header. */}

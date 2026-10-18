@@ -20,9 +20,9 @@ export function BridgeLabel({ previewPage = PREVIEW_PAGE }: { previewPage?: bool
   const label = bridgeLabel(useBridge(), previewPage);
   if (!label) return null;
   return (
-    <Tip label={label.title}>
-      <span role="status" data-slot="bridge-label" className={`${label.warn ? "bg-geist-warning-bg text-geist-warning-fg" : "bg-muted text-muted-foreground"} inline-flex h-6 shrink-0 items-center gap-1 truncate rounded-full px-2 text-xs font-medium`}>
-        <Server className="size-3.5" aria-hidden="true" />{label.text}
+    <Tip label={label.title} className="min-w-0">
+      <span role="status" data-slot="bridge-label" className={`${label.warn ? "bg-geist-warning-bg text-geist-warning-fg" : "bg-muted text-muted-foreground"} inline-flex h-6 min-w-0 items-center gap-1 rounded-full px-2 text-xs font-medium`}>
+        <Server className="size-3.5 shrink-0" aria-hidden="true" /><span className="truncate">{label.text}</span>
       </span>
     </Tip>
   );

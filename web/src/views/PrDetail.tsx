@@ -240,7 +240,10 @@ function parseDiff(text: string): FileDiff[] {
 export function keepInPlace(e: React.MouseEvent<HTMLElement>) {
   const el = e.currentTarget;
   const before = el.getBoundingClientRect().top;
-  requestAnimationFrame(() => window.scrollBy(0, el.getBoundingClientRect().top - before));
+  // The scroller is the shell's page column on a desktop (Shell's `page-scroll`), the window on a phone.
+  const box = el.closest<HTMLElement>('[data-slot="page-scroll"]');
+  const scroller = box && box.scrollHeight > box.clientHeight ? box : window;
+  requestAnimationFrame(() => scroller.scrollBy(0, el.getBoundingClientRect().top - before));
 }
 
 export function DiffView({ text }: { text: string }) {

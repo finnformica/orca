@@ -62,6 +62,11 @@ test("navRail: your choice, else the rail only while the dock leaves the page un
 test("open, the panel is a docked column: the page reflows, the button and O toggle it", async () => {
   await mount(1440);
   expect(dock().style.width).toBe("0px"); // closed: the column takes no room
+  // The page column scrolls on its own on a desktop (no page scrollbar outside the dock) and is the
+  // container the pages' layouts query; a phone keeps the window's scroll.
+  const page = $('[data-slot="page-scroll"]')!.className.split(/\s+/);
+  expect(page).toEqual(expect.arrayContaining(["@container/page", "md:h-screen", "md:overflow-y-auto"]));
+  expect(page.some((c) => c.startsWith("max-md:") && c.includes("overflow"))).toBe(false);
   await click(askButton());
   const panel = $('[data-slot="orchestrator-panel"]')!;
   expect(panel.dataset.state).toBe("open");
