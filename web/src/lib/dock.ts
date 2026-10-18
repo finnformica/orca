@@ -6,6 +6,8 @@
 // (branch-demo's docked AI chat). Each panel publishes its open width here by slot; the dock is the
 // widest one (only one is open at a time, but one closing and one opening land in the same commit).
 // While a drag resizes a panel, the dock's element is written directly, as the panel's own width is.
+// The page frame and the quick-ask pill are placed by the shell card's layout, so they follow the
+// dock's edge in every frame of an open, a close or a resize, with nothing to sync.
 import { atom, useAtom, useAtomValue } from "jotai";
 import { useEffect, useState } from "react";
 import { sidebarCollapsedAtom } from "./atoms";
@@ -68,8 +70,6 @@ export function useNavToggle(): { rail: boolean; setRail: (rail: boolean) => voi
 let moving = 0;
 let fallback: ReturnType<typeof setTimeout> | undefined;
 const settled = new Set<() => void>();
-/** Waiters for the NEXT width transition to start (`afterDockSlide`). */
-const started = new Set<() => void>();
 
 const settle = () => {
   moving = 0;
@@ -82,7 +82,6 @@ const settle = () => {
 /** A width transition of the dock or the nav started (+1) or ended (−1). A missed end (the element
  *  left the page mid-motion) settles after a short fallback, so deferred work always runs. */
 export function noteDockMotion(delta: 1 | -1) {
-  if (delta > 0) for (const arm of [...started]) arm();
   moving = Math.max(0, moving + delta);
   clearTimeout(fallback);
   if (moving === 0) settle();
@@ -91,43 +90,11 @@ export function noteDockMotion(delta: 1 | -1) {
 
 export const dockMoving = () => moving > 0;
 
-/** A resize (a drag or an arrow key on the edge) writes the dock's width straight to its element, with
- *  no transition, before it saves the width. The dock width change that save then causes is NOT a
- *  slide: the page already follows the edge in the same frame, so the shell must not hold the page
- *  frame at an "end width" (that double-counted the change). `noteDockResize(w)` marks the next dock
- *  change to `w` as a resize; `takeDockResize` reads and clears the mark on every dock change, so a
- *  stale mark (the width clamped to where it was) never reaches a later open or close. */
-let resizeTo: number | null = null;
-export const noteDockResize = (w: number): void => { resizeTo = w; };
-export function takeDockResize(w: number): boolean {
-  const hit = resizeTo === w;
-  resizeTo = null;
-  return hit;
-}
-
 /** Run `fn` now — or, while the dock or the nav is animating its width, once, when it has settled.
  *  Pass a stable function: a repeated call while moving queues it once. */
 export function afterDockMotion(fn: () => void) {
   if (moving > 0) settled.add(fn);
   else fn();
-}
-
-/** Run `fn` once the slide that a dock or nav width change just asked for is OVER: at the settle
- *  that follows the next transition start. Not a fixed timer from the commit: on a heavy page the
- *  first frame of the slide lands late (a full layout at the new width), and a timer then fired
- *  mid-slide, so the held page frame snapped back to the column's in-flight width. A motion that is
- *  already running when this is called is not "the next" one: a reversal cancels it (−1, a settle)
- *  before its new transition starts. If no transition starts within `fallbackMs` (reduced motion),
- *  `fn` runs then — late is harmless, since with no slide the column is already at its end width.
- *  Returns a cancel. */
-export function afterDockSlide(fn: () => void, fallbackMs = 1000): () => void {
-  let armed = false;
-  const run = () => { cancel(); fn(); };
-  const arm = () => { armed = true; started.delete(arm); settled.add(run); };
-  const t = setTimeout(() => { if (!armed) run(); }, fallbackMs);
-  const cancel = () => { clearTimeout(t); started.delete(arm); settled.delete(run); };
-  started.add(arm);
-  return cancel;
 }
 
 /** True during the page load — until the first input, or one second: a panel open from the start
@@ -145,24 +112,3 @@ export const appStarting = () => starting;
 /** Test support: a real reload re-arms this (fresh module state); a shared test process does not,
  *  since an earlier file's click can only flip it false once for the whole run. */
 export const resetAppStartingForTests = (): void => { if (typeof window !== "undefined") armPageLoadWindow(); };
-
-/** The dock's width as `--dock-w` on <html>, for what is positioned against it outside the shell's row
- *  (the quick-ask pill's fixed strip). The Dock writes it from `dockWidthAtom` (so an open or a close
- *  slides it); a resize writes it directly on every pointer move or key, in the same frame as the dock's
- *  element — the atom changes only on pointerup. `data-dock-resizing` on <html> turns off the
- *  followers' transitions meanwhile; it stays two frames past the last write, so that write is styled
- *  with the transition still off and nothing slides behind the handle. */
-export const DOCK_VAR = "--dock-w";
-export const writeDockWidth = (w: number): void => { document.documentElement.style.setProperty(DOCK_VAR, `${w}px`); };
-let resizeEnd = 0;
-export function liveDockResize(w: number): void {
-  cancelAnimationFrame(resizeEnd);
-  document.documentElement.setAttribute("data-dock-resizing", "");
-  writeDockWidth(w);
-}
-export function endDockResize(): void {
-  cancelAnimationFrame(resizeEnd);
-  resizeEnd = requestAnimationFrame(() => {
-    resizeEnd = requestAnimationFrame(() => document.documentElement.removeAttribute("data-dock-resizing"));
-  });
-}

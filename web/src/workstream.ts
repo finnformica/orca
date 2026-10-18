@@ -1780,15 +1780,6 @@ export const NAV_W = 240, NAV_RAIL_W = 56;
 /** The shell's gutter (branch-demo's `gap-shell`): between the nav, the page card and the panel card. */
 export const SHELL_GAP = 6;
 
-/** The page content's END width for a dock / nav width change that is about to animate: the page
- *  column's content width now, plus every px the nav, the dock and the dock's start margin (−the
- *  gutter while closed) give back or take. The page frame is set to it at once, so the content lays
- *  out ONCE — a container-query grid snaps to its end layout instead of flipping mid-slide — and only
- *  the card's edge animates over it. Widths "now" are the in-flight values (a reversal mid-slide). */
-export function frozenPageWidth(now: { col: number; nav: number; dock: number; dockMargin: number },
-  end: { nav: number; dock: number; dockMargin: number }): number {
-  return Math.max(0, Math.round(now.col + (now.nav - end.nav) + (now.dock - end.dock) + (now.dockMargin - end.dockMargin)));
-}
 /** The narrowest the page column gets beside a docked panel before the nav gives way to its rail. */
 export const DOCK_PAGE_MIN_W = 640;
 export function clampPanelWidth(w: number, vw: number): number {

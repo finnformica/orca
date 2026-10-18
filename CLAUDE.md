@@ -334,8 +334,8 @@ toggles it, remembered) and a top bar (repo switcher, breadcrumb, and **Ask the 
 right on every page — Vercel's "Ask AI", as a BUTTON: it opens the orchestrator's side panel with its
 composer focused. It was a text box whose keystrokes carried into the composer; the quick-ask pill
 below now covers "fire off a line"). **The quick-ask pill** (`components/QuickAsk.tsx`, the `A` key):
-a small "Ask · A" pill fixed at the bottom centre of the main column (its strip starts where
-the sidebar ends, collapsed or expanded) on every page (desktop; below md the phone's bottom
+a small "Ask · A" pill at the bottom centre of the page card (its strip is absolute in
+`shell-card`, so it moves with the card edge in every frame of a dock slide, a nav change or a resize) on every page (desktop; below md the phone's bottom
 bar has the orchestrator instead) MORPHS (one surface: width, height, radius; instant under reduced
 motion) into a box for messages to the orchestrator with no history — "Ask the orchestrator...", a
 textarea three lines tall that grows to a cap (a JS fallback where `field-sizing` is unsupported), no ✕. Its input
@@ -638,7 +638,7 @@ its own and is the `@container/page` a page's layout should query (the Overview 
 window; a phone keeps the window's scroll. The edge resizes by drag or by arrow keys. **Open / close
 is branch-demo's right panel**: the panel renders INTO the dock (a portal) at its full width, shows at
 dock width 0 in the commit that opens it, and the dock's width opens on the next frame (a real 150ms
-`width` transition, none while dragging); closing moves the width in the click's OWN commit (the dock
+`width` + `min-width` transition, ease-out, min-width 0 when closed, none while dragging; the nav uses the same ease-out); closing moves the width in the click's OWN commit (the dock
 width is published from a layout effect keyed on `open && expanded`). A closed panel stays mounted —
 draft and scroll kept — clipped by the 0-wide dock, `aria-hidden`, and a focus guard once idle.
 **Measured rules (CDP traces of the production build, 4× CPU, a long orchestrator thread; method and
@@ -652,8 +652,11 @@ not subscribe to the orchestrator's open atom (it re-rendered the page). Measure
 build: dev-mode React is 3–5× slower, and an Orca preview runs dev mode.
 The page and the dock are TWO raised cards with the shell's 6px gutter between them
 (a closed dock's negative start margin cancels it); only `width` and `margin-inline-start` animate. While the dock
-or the nav animates, the page frame (`page-frame`, the `@container/page`) is held at its END width
-(`frozenPageWidth`), so the content lays out once and only the card edge moves. Nothing in the page
+or the nav animates, the page frame (`page-frame`, the `@container/page`) follows the card edge in
+EVERY frame (Finn: the content must move with the edge; PR 328's hold at the END width was wrong).
+It stays cheap with CSS only: `contain: layout paint` on the column and the frame, and
+`content-visibility: auto` on the Agents rows. `?probe=motion` (`lib/motionProbe.ts`) logs each
+slide's frames and the page / pill distance from the card edge. Nothing in the page
 may set React state per frame meanwhile: measure through `afterDockMotion` (`lib/dock.ts`); the page
 column has `contain: layout paint`, so a `fixed` element in a page must portal to `<body>`. `role=dialog`
 `aria-modal=false` — no backdrop, the board it is moving stays visible and usable; Esc or ✕ closes
