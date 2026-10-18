@@ -339,10 +339,10 @@ describe("agents list view", () => {
   });
 });
 
-// ---- loading skeleton (list + board) ----
+// ---- loading skeleton (the list) ----
 // Before the first agents+PRs refresh settles, useWorkstreams() reads [] — indistinguishable from a
-// genuinely empty board — so both views must read useWorkstreamsLoaded() to tell "still loading" from
-// "loaded, nothing here" and show row/card skeletons (not the empty state) meanwhile. Counts and chip
+// genuinely empty list — so the view must read useWorkstreamsLoaded() to tell "still loading" from
+// "loaded, nothing here" and show row skeletons (not the empty state) meanwhile. Counts and chip
 // badges must hold a placeholder rather than flash 0.
 describe("agents loading skeleton", () => {
   test("list view: row skeletons while loading, never the empty state; count and chip badges hold a placeholder, not 0", async () => {
