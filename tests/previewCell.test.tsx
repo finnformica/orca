@@ -1,8 +1,8 @@
 // The Agents-list row's preview cell (views/PreviewControl.tsx PreviewCell): a link once a preview
 // is reachable, an "Add preview" button when there isn't one, a spinner while it boots, all in the
 // same fixed slot (no layout shift), disabled with a tooltip when the repo hasn't opted into
-// RepoFeatures.previews. Mounts the cell directly against a synthetic row, the way
-// previewPlacement.test.tsx drives PreviewControl, rather than the whole Agents page.
+// RepoFeatures.previews. Mounts the cell directly against a synthetic row, rather than the whole
+// Agents page (see previewPlacement.test.tsx for the store's own placement logic).
 import { afterEach, beforeAll, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
