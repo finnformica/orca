@@ -26,7 +26,7 @@ import {
   SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, instanceText, integrationProblem, linkProblem, parseFilter, targetLabel,
   type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow,
 } from "../../../shared/integrationSettings";
-import { AUTO_INSTANCE, isAutomatic, type AdapterMeta, type Level } from "../../../shared/integrations";
+import { AUTO_INSTANCE, CATCH_ALL, isAutomatic, type AdapterMeta, type Level } from "../../../shared/integrations";
 
 type Overview = IntegrationsOverview;
 type LinkLevel = Exclude<Level, "full">;
@@ -183,12 +183,13 @@ function LinkRowView({ link: l, onEdit, onChange }: { link: LinkRow; onEdit: () 
           {l.level === "work" && l.repos.map((r) => <Pill key={r}>{r}</Pill>)}
           {l.requireMention && <Pill>@mention</Pill>}
         </div>
+        {l.externalId === CATCH_ALL && <div data-slot="link-receive-only" className="text-muted-foreground mt-1 text-xs">A catch-all link only receives. Orca answers in the DM or channel the message came from.</div>}
         {test.state && <div data-slot="link-test-result" className={test.state === "sent" ? "text-geist-green mt-1 text-xs" : test.state === "pending" ? "text-muted-foreground mt-1 text-xs" : "text-geist-red mt-1 text-xs"}>
           {test.state === "sent" ? "Test message sent" : test.state === "pending" ? "Test queued — not sent yet" : `Test ${test.state}${test.error ? `: ${test.error}` : ""}`}
         </div>}
       </div>
       <div className="flex items-center gap-1">
-        <Button variant="secondary" size="sm" disabled={test.busy} onClick={() => void run()} className="max-md:h-10 max-md:flex-1">Test</Button>
+        {l.externalId !== CATCH_ALL && <Button variant="secondary" size="sm" disabled={test.busy} onClick={() => void run()} className="max-md:h-10 max-md:flex-1">Test</Button>}
         <Button variant="ghost" size="sm" onClick={onEdit} className="max-md:h-10">Edit</Button>
         <Button variant="ghost" size="icon" className="size-8 max-md:size-10" aria-label={`Remove ${l.label ?? l.externalId}`}
           onClick={() => ask(`Remove ${l.label ?? l.externalId}?`, "Orca stops listening and posting there. Its subscriptions go too.", () => void act("Remove link", "links/remove", { id: l.id }, onChange))}><Trash2 /></Button>
@@ -522,7 +523,7 @@ function SubscriptionDialog({ data, onClose, onSaved }: { data: Overview; onClos
           <Field label="Link" htmlFor="sub-link">
             <Select value={targetId} onValueChange={setTargetId}>
               <SelectTrigger id="sub-link" className="w-full"><SelectValue /></SelectTrigger>
-              <SelectContent>{data.links.map((l) => <SelectItem key={l.id} value={l.id}>{targetLabel({ targetKind: "link", targetId: l.id }, data.links, data.integrations)}</SelectItem>)}</SelectContent>
+              <SelectContent>{data.links.filter((l) => l.externalId !== CATCH_ALL).map((l) => <SelectItem key={l.id} value={l.id}>{targetLabel({ targetKind: "link", targetId: l.id }, data.links, data.integrations)}</SelectItem>)}</SelectContent>
             </Select>
           </Field>
         )}
