@@ -15,8 +15,8 @@ import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
-import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory } from "../workstream";
-import { activityCounts, currentActivity, runLabel, stepInFlight, stepRuns, toolDetail, toolLabel, workSteps, type StepRun } from "../steps";
+import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory } from "../workstream";
+import { activityCounts, closeOpenMarkdown, currentActivity, runLabel, stepInFlight, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepRun } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { ExpandableImage } from "@/components/ExpandableImage";
@@ -202,8 +202,6 @@ function Activity({ steps: given, live, startedAt, finishedAt, load }: {
   const inFlight = stepInFlight(steps);
   const trail = stepRuns(steps.filter((s) => s !== inFlight && s.kind !== "thinking")).slice(-3);
   const counts = activityCounts(steps);
-  const took = startedAt && finishedAt ? `Worked for ${formatDuration(finishedAt - startedAt)}` : "Worked";
-  const n = workSteps(steps);
   const toggle = () => {
     if (!steps.length && load && !fetched) void load().then((s) => { setFetched(s); setOpen(true); });
     else setOpen((v) => !v);
@@ -232,7 +230,7 @@ function Activity({ steps: given, live, startedAt, finishedAt, load }: {
       <Fold open={!live} slot="activity-summary">
         <button type="button" onClick={toggle} className="text-muted-foreground hover:text-foreground inline-flex max-w-full items-center gap-1 text-[11px]" data-slot="activity-chip">
           {chevron}
-          <span className="truncate">{took} · {steps.length ? `${n} step${n === 1 ? "" : "s"}` : "steps"}</span>
+          <span className="truncate">{workedLabel(startedAt && finishedAt ? finishedAt - startedAt : undefined, workSteps(steps))}</span>
         </button>
       </Fold>
       <Fold open={open} slot="activity-steps">
@@ -423,7 +421,9 @@ function Reply({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () =
         <div className="space-y-1 text-neutral-500">
           {tail && <ChatMarkdown>{tail.text ?? ""}</ChatMarkdown>}
           {/* The message being written, as it streams — replaced by its step once it is whole. */}
-          {draft && <div className="text-neutral-200 whitespace-pre-wrap break-words" data-slot="turn-draft">{draft}</div>}
+          {/* Rendered as markdown like the finished answer, closed first so a half-sent `**` or fence
+              renders as it will once whole, not as glyphs that flip on the next delta. */}
+          {draft && <div data-slot="turn-draft"><ChatMarkdown>{closeOpenMarkdown(draft)}</ChatMarkdown></div>}
           {(!work.length || draft) && <span>▋ {draft || tail ? "" : "working…"}</span>}
         </div>
       ) : (
@@ -444,7 +444,7 @@ const clockOf = (ms?: number) => (ms ? new Date(ms).toLocaleTimeString(undefined
  *  the left under its name, in readable prose; its tool steps and worker reports stay folded; the time shows on hover
  *  (and days are grouped by the divider ChatPanel draws). Colours are the theme's tokens, so it
  *  follows light and dark like the rest of the console. */
-function ChatTurn({ turn, loadSteps, compact, onQuote, author }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean; onQuote: (text: string) => void; author?: string }) {
+function ChatTurn({ turn, loadSteps, compact, newestSaid, onQuote, author }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean; newestSaid?: boolean; onQuote: (text: string) => void; author?: string }) {
   const parts = splitMessages(turn.instruction ?? promptInstruction(turn.prompt));
   // A wake that carried your messages AND worker reports: your words in bubbles — one per message you
   // sent, however many one wake drained — and the reports folded.
@@ -470,7 +470,8 @@ function ChatTurn({ turn, loadSteps, compact, onQuote, author }: { turn: AgentTu
             <div className="max-w-[85%]">
               {clean && <div data-slot="chat-user-text" className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">
                 {/* A long message is cut to its first lines, like an old reply. */}
-                <Clamp on={longMessage(clean)} cut="max-h-[9rem]">{clean}</Clamp>
+                {/* …except your newest message, which is always in full. */}
+                <Clamp on={!(newestSaid && i === said.length - 1) && longMessage(clean)} cut="max-h-[9rem]">{clean}</Clamp>
               </div>}
               <Attachments files={filesOf(text, i)} className="mt-1 justify-end" />
               <div className="mt-0.5 flex items-center justify-end gap-1.5">
@@ -503,7 +504,11 @@ function ChatTurn({ turn, loadSteps, compact, onQuote, author }: { turn: AgentTu
  *  exchanges, not a wall of past answers. The newest RECENT_FULL turns always render in full. */
 function Clamp({ on, children, cut = "max-h-[4.5rem]" }: { on: boolean; children: React.ReactNode; cut?: string }) {
   const [open, setOpen] = useState(false);
-  if (!on) return <>{children}</>;
+  // Once shown in full (it was the newest), it stays in full while mounted: when a newer message
+  // arrives it must not shrink under the reader. It clamps the next time it mounts.
+  const [held, setHeld] = useState(!on);
+  useEffect(() => { if (!on) setHeld(true); }, [on]);
+  if (!on || held) return <>{children}</>;
   return (
     <div data-slot="turn-clamp" data-open={open || undefined}>
       <div className={open ? "" : cn(cut, "overflow-hidden [mask-image:linear-gradient(to_bottom,black_55%,transparent)]")}>{children}</div>
@@ -861,10 +866,12 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
   // first lines; runs of automated wakes fold into one line.
   const position = new Map((turns ?? []).map((t, i) => [t.id, i]));
   const compactBefore = (turns?.length ?? 0) - RECENT_FULL;
+  // Your newest message and the newest answer are never clamped or folded, at any age.
+  const newest = newestMessages(turns ?? []);
   const stepsOf = (turn: AgentTurn) => () => api.turnSteps(row.repo, row.branch, turn.id, 0).then((r) => withoutFinalEcho(r.steps, turn.response));
-  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadSteps={stepsOf(turn)} compact={(position.get(turn.id) ?? 0) < compactBefore} onQuote={onQuote} author={author} />;
+  const chatTurn = (turn: AgentTurn) => <ChatTurn key={turn.id} turn={turn} loadSteps={stepsOf(turn)} compact={(position.get(turn.id) ?? 0) < compactBefore && turn !== newest.answer} newestSaid={turn === newest.said} onQuote={onQuote} author={author} />;
   const renderTurns = (list: AgentTurn[]) => {
-    const items = chatItems(list);
+    const items = chatItems(list, newest.answer);
     let prev: number | undefined;
     return items.map((item) => {
       const first = item.kind === "turn" ? item.turn : item.turns[0]!;

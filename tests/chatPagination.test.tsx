@@ -12,7 +12,7 @@ import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
-import { CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, MESSAGE_BREAK, capWindow, chatItems, longMessage, longReply, splitMessages, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, turnSource, windowRange, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
+import { CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, MESSAGE_BREAK, capWindow, chatItems, longMessage, newestMessages, longReply, splitMessages, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, turnSource, windowRange, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -162,7 +162,7 @@ test("P6: the orchestrator's chat is one stream — worker traffic split out as 
   const wake = (i: number, source?: "agents") => ({ id: `run-${i}`, provider: "claude", instruction: `${WORKER_EVENT_MARKER} r/feat-${i} — done\nOutcome: done`, prompt: "", response: `noted ${i}`, startedAt: 1000 + i, finishedAt: 1001 + i, source });
   const mixed = { ...turn(6), instruction: `${WORKER_EVENT_MARKER} r/feat-x — done\nOutcome: ok\n\nask 6`, response: long(6), source: "human" as const };
   apiFake.turnsData.set("r::long", [
-    { ...turn(0), response: long(0), source: "human" }, wake(1, "agents"), wake(2), wake(3, "agents"), { ...turn(4), instruction: `ask 4a${MESSAGE_BREAK}ask 4b\n\nwith a paragraph${MESSAGE_BREAK}ask 4c`, response: long(4) },
+    { ...turn(0), instruction: Array.from({ length: 12 }, (_, l) => `ask 0 line ${l}`).join("\n"), response: long(0), source: "human" }, wake(1, "agents"), wake(2), wake(3, "agents"), { ...turn(4), instruction: `ask 4a${MESSAGE_BREAK}ask 4b\n\nwith a paragraph${MESSAGE_BREAK}ask 4c`, response: long(4) },
     wake(5), mixed, { ...turn(7), instruction: Array.from({ length: 12 }, (_, l) => `ask 7 line ${l}`).join("\n"), response: long(7) }, wake(8, "agents"),
   ]);
   apiFake.queuedData.set("long", [
@@ -172,14 +172,16 @@ test("P6: the orchestrator's chat is one stream — worker traffic split out as 
   await mount(<ChatPanel row={row} />);
   const c = container!;
   // No channel toggle: your turns, and each run of agent turns between them as ONE collapsed block,
-  // its turns unmounted until opened — wakes 1–3, 5 and 8, the newest included.
+  // its turns unmounted until opened — wakes 1–3 and 5. Wake 8 holds the newest answer, which is
+  // never folded: it renders as its own turn, its report folded above the reply.
   const markers = () => [...c.querySelectorAll<HTMLElement>('[data-slot="agents-marker"]')];
-  expect(markers().map((m) => m.querySelector('[data-slot="worker-block-label"]')!.textContent!.replace(/ · \d\d:\d\d.*$/, ""))).toEqual(["3 worker reports · 3 replies", "1 worker report · 1 reply", "1 worker report · 1 reply"]);
+  expect(markers().map((m) => m.querySelector('[data-slot="worker-block-label"]')!.textContent!.replace(/ · \d\d:\d\d.*$/, ""))).toEqual(["3 worker reports · 3 replies", "1 worker report · 1 reply"]);
   for (const m of markers()) {
     expect(m.className).toContain("bg-geist-blue/5"); // a style of its own, apart from your bubbles
     expect(m.querySelector("button")!.getAttribute("aria-expanded")).toBe("false");
   }
-  for (const n of [1, 2, 3, 5, 8]) expect(c.textContent).not.toContain(`noted ${n}`);
+  for (const n of [1, 2, 3, 5]) expect(c.textContent).not.toContain(`noted ${n}`);
+  expect(c.textContent).toContain("noted 8");
   await act(async () => { markers()[0]!.querySelector("button")!.click(); await flush(); });
   expect(c.textContent).toContain("noted 2"); // expanded inline
   // A wake that carried your message AND a report: your words in the bubble, the report split out
@@ -210,13 +212,16 @@ test("P6: the orchestrator's chat is one stream — worker traffic split out as 
   await act(async () => { more.click(); await flush(); });
   expect(clampOf(0)!.dataset.open).toBe("true");
   expect(clampOf(0)!.querySelector("button")!.textContent).toBe("Show less");
-  // A long message of yours is cut too, at any age (the newest here), with its own Show more; a short one is not.
+  // An older long message of yours is cut too, with its own Show more; a short one is not, and your
+  // NEWEST message (7) is always in full however long.
   const bubble = (n: number) => [...c.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].find((t) => t.textContent!.includes(`reply ${n} line 0`))!.querySelector<HTMLElement>('[data-slot="chat-user"]')!;
   expect(bubble(6).querySelector('[data-slot="turn-clamp"]')).toBeNull();
-  const cut = bubble(7).querySelector<HTMLElement>('[data-slot="turn-clamp"]')!;
+  expect(bubble(7).querySelector('[data-slot="turn-clamp"]')).toBeNull();
+  expect(bubble(7).textContent).toContain("ask 7 line 11");
+  const cut = bubble(0).querySelector<HTMLElement>('[data-slot="turn-clamp"]')!;
   expect(cut.firstElementChild!.className).toContain("max-h-[9rem]");
   await act(async () => { cut.querySelector("button")!.click(); await flush(); });
-  expect(bubble(7).querySelector<HTMLElement>('[data-slot="turn-clamp"]')!.dataset.open).toBe("true");
+  expect(bubble(0).querySelector<HTMLElement>('[data-slot="turn-clamp"]')!.dataset.open).toBe("true");
 });
 
 test("the pure pieces: the window, compact replies and the worker blocks", () => {
@@ -248,6 +253,13 @@ test("the pure pieces: the window, compact replies and the worker blocks", () =>
   // Your turns, each run of agent turns between them as one block — even a single one, even the newest.
   expect(kinds(chatItems([u("a"), w("b"), w("c"), u("d"), w("e"), w("f")]))).toEqual(["a", "[b,c]", "d", "[e,f]"]);
   expect(kinds(chatItems([w("a"), u("b")]))).toEqual(["[a]", "b"]);
+  // The newest answer (keepOut) never folds; the agent turns around it still do.
+  const turns = [u("a"), w("b"), w("c"), w("d")];
+  expect(kinds(chatItems(turns, turns[2]))).toEqual(["a", "[b]", "c", "[d]"]);
+  // newestMessages: the newest turn you spoke in, and the newest finished turn — a live one is not an answer.
+  const live = { id: "e", instruction: "hi" };
+  expect(newestMessages([...turns, live])).toEqual({ said: live, answer: turns[3] });
+  expect(newestMessages([w("x")])).toEqual({ said: undefined, answer: expect.objectContaining({ id: "x" }) });
   // The recorded source wins over the text.
   expect(kinds(chatItems([u("a"), w("b"), { ...w("c"), source: "human" as const }, { ...u("d"), source: "agents" as const }]))).toEqual(["a", "[b]", "c", "[d]"]);
   expect(turnSource([`${WORKER_EVENT_MARKER} a`, `${WORKER_EVENT_MARKER} b`])).toBe("agents");
