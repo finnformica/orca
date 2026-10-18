@@ -8,15 +8,15 @@
 // Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every board
 // action uses.
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Paperclip, Quote as QuoteIcon } from "lucide-react";
+import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Loader2, Paperclip, Quote as QuoteIcon } from "lucide-react";
 import { cn, PipContext } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
-import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory } from "../workstream";
-import { toolDetail, toolLabel } from "../steps";
+import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory } from "../workstream";
+import { activityCounts, currentActivity, runLabel, stepRuns, toolDetail, toolLabel, workSteps, type StepRun } from "../steps";
 import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { ExpandableImage } from "@/components/ExpandableImage";
@@ -111,68 +111,133 @@ const FacetMarkdown = ({ children }: { children: string }) => (
   </div>
 );
 
-/** One recorded step of the agent's run. Text reads as the agent talking; thinking is dimmed and
- *  italic; a tool call is a collapsed `⏵ Running: bun test` that expands to its full input and
- *  output. Collapsed-by-default is what keeps a 200-step run readable — the CLI does the same. The
- *  one exception is a call still in flight on a live run: it's open while its input is what there is
- *  to watch, and folds itself the moment its result lands. A click overrides either way. */
-function Step({ step, live }: { step: AgentStep; live: boolean }) {
-  const [toggled, setToggled] = useState<boolean | null>(null);
-  const open = toggled ?? (live && !step.done);
-  // The agent's narration is prose — headings, lists, the occasional table — and reading a scoping
-  // report in a monospace block is miserable. Tool output below stays monospace, because that one
-  // genuinely is terminal output.
-  if (step.kind === "text") return <ChatMarkdown>{step.text ?? ""}</ChatMarkdown>;
+/** Open/closed with the height animated: a grid row going 1fr ↔ 0fr animates to the content's own
+ *  height with nothing measured, and the opacity rides along (~200ms; none under reduced motion).
+ *  Closed content stays mounted until the fold has played, then leaves the DOM. */
+function Fold({ open, slot, children }: { open: boolean; slot?: string; children: ReactNode }) {
+  const [mounted, setMounted] = useState(open);
+  useEffect(() => {
+    if (open) { setMounted(true); return; }
+    const t = setTimeout(() => setMounted(false), FOLD_MS + 50);
+    return () => clearTimeout(t);
+  }, [open]);
+  return (
+    <div data-slot={slot} data-open={open || undefined} aria-hidden={!open || undefined}
+      className={cn("grid transition-[grid-template-rows,opacity] duration-200 ease-out motion-reduce:transition-none",
+        open ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0")}>
+      <div className="min-h-0 overflow-hidden">{(open || mounted) && children}</div>
+    </div>
+  );
+}
+const FOLD_MS = 200;
+
+/** The current time, ticking each second while `on` — the live block's elapsed timer. */
+function useNow(on: boolean) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (!on) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [on]);
+  return now;
+}
+
+/** One tool call in the full step list: one line, truncated; its input and output only on a click.
+ *  Text reads as the agent talking (prose, never code); thinking is dimmed and italic. Nothing opens
+ *  by itself — a call in flight shows `…`, not its input. */
+function StepRow({ step, live }: { step: AgentStep; live: boolean }) {
+  const [open, setOpen] = useState(false);
+  if (step.kind === "text") return <div data-slot="step-text"><ChatMarkdown>{step.text ?? ""}</ChatMarkdown></div>;
   if (step.kind === "thinking") return <div className="italic opacity-70"><ChatMarkdown>{step.text ?? ""}</ChatMarkdown></div>;
-  // A tool call carries its own result (see groupSteps), so EVERYTHING it produced is behind this
-  // one toggle — input and output. Nothing spills into the log unopened; the narration above is the
-  // readable thread, and a tool's detail is there when you want it.
   const body = [toolDetail(step), step.output].filter(Boolean).join("\n\n");
   return (
-    <div>
-      <button
-        type="button"
-        onClick={() => setToggled(!open)}
-        disabled={!body}
-        className={`flex w-full gap-1.5 text-left ${step.isError ? "text-red-400" : "text-sky-400"} ${body ? "hover:text-sky-300" : "cursor-default"}`}
-      >
-        <span className="shrink-0 select-none">{body ? (open ? "⏷" : "⏵") : "·"}</span>
-        <span className="min-w-0 break-words">{toolLabel(step)}{live && !step.done ? "…" : ""}</span>
+    <div data-slot="step-tool">
+      <button type="button" onClick={() => setOpen((v) => !v)} disabled={!body}
+        className={cn("flex w-full min-w-0 items-center gap-1.5 text-left", step.isError ? "text-red-400" : "text-muted-foreground", body ? "hover:text-foreground" : "cursor-default")}>
+        <ChevronRight className={cn("size-3 shrink-0 transition-transform motion-reduce:transition-none", open && "rotate-90", !body && "invisible")} />
+        <span className="min-w-0 truncate">{toolLabel(step)}{live && !step.done ? "…" : ""}</span>
       </button>
       {open && body && (
-        <pre className="ml-4 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded border-l border-neutral-800 pl-2 text-[11px] text-neutral-500">{body}</pre>
+        <pre className="text-muted-foreground mt-0.5 ml-4.5 max-h-64 overflow-auto rounded border-l pl-2 text-[11px] whitespace-pre-wrap break-words">{body}</pre>
       )}
     </div>
   );
 }
 
-/** The agent's recorded steps for a turn. Shown in FULL while the run is live — that's the terminal
- *  feel, watching it work — and folded to a `⏵ 127 steps` line once it has answered: the answer is
- *  what a finished turn is about, and a long run's trail belongs behind a toggle until you go looking
- *  for how it got there. (It was open by default once; with a hundred-step run above every answer,
- *  the conversation was unreadable.) */
-function Steps({ steps: raw, live, load }: { steps: AgentStep[]; live: boolean; load?: () => Promise<AgentStep[]> }) {
+/** A run of same-kind calls (`Read 3 files`) as one line that opens to its calls. */
+function RunRow({ run, live }: { run: StepRun; live: boolean }) {
+  const [open, setOpen] = useState(false);
+  if (run.steps.length === 1) return <StepRow step={run.steps[0]!} live={live} />;
+  return (
+    <div data-slot="step-run">
+      <button type="button" onClick={() => setOpen((v) => !v)} className="text-muted-foreground hover:text-foreground flex w-full min-w-0 items-center gap-1.5 text-left">
+        <ChevronRight className={cn("size-3 shrink-0 transition-transform motion-reduce:transition-none", open && "rotate-90")} />
+        <span className="min-w-0 truncate">{runLabel(run)}</span>
+      </button>
+      {open && <div className="mt-0.5 ml-1.5 space-y-0.5 border-l pl-2">{run.steps.map((s, i) => <StepRow key={i} step={s} live={live} />)}</div>}
+    </div>
+  );
+}
+
+/** How a turn shows its work — ONE block, modelled on Claude Code's. While the run is live: a header
+ *  with the call in flight and an elapsed timer, a count line (`6 commands, 3 files read`) and the
+ *  last few runs of steps, faded, one line each. When the answer lands the block is NOT removed: it
+ *  folds (height + opacity) into a one-line `Worked for 1m 12s · 9 steps` chip in the same place, so
+ *  the answer arrives below it with no jump. The chip stays on past turns; its chevron (or the live
+ *  header) opens the full list. (It was a row per tool call, its input open while in flight — a wall
+ *  of blue commands that then vanished at once.) */
+function Activity({ steps: given, live, startedAt, finishedAt, load }: {
+  steps: AgentStep[]; live: boolean; startedAt?: number; finishedAt?: number; load?: () => Promise<AgentStep[]>;
+}) {
   const [open, setOpen] = useState(false);
   // An older turn arrives without its steps (the bridge sends them for the newest turns only);
   // they are fetched the first time it is unfolded.
   const [fetched, setFetched] = useState<AgentStep[] | null>(null);
-  const steps = groupSteps(fetched ?? raw); // fold each tool result into its call — one toggle per tool use
-  if (!steps.length && !load) return null;
-  if (!steps.length && load && !fetched) {
-    return (
-      <div className="mb-1.5">
-        <button type="button" onClick={() => { void load().then((s) => { setFetched(s); setOpen(true); }); }} className="text-[10px] tracking-widest text-neutral-500 uppercase hover:text-neutral-300">⏵ steps</button>
-      </div>
-    );
-  }
-  const body = <div className="space-y-1">{steps.map((s, i) => <Step key={i} step={s} live={live} />)}</div>;
-  if (live) return body;
+  const steps = fetched ? groupSteps(fetched) : given;
+  const now = useNow(live);
+  if (!steps.length && !(load && !live)) return null;
+
+  const last = steps.at(-1);
+  const inFlight = last?.kind === "tool" && !last.done;
+  const trail = stepRuns((inFlight ? steps.slice(0, -1) : steps).filter((s) => s.kind !== "thinking")).slice(-3);
+  const counts = activityCounts(steps);
+  const took = startedAt && finishedAt ? `Worked for ${formatDuration(finishedAt - startedAt)}` : "Worked";
+  const n = workSteps(steps);
+  const toggle = () => {
+    if (!steps.length && load && !fetched) void load().then((s) => { setFetched(s); setOpen(true); });
+    else setOpen((v) => !v);
+  };
+  const chevron = <ChevronRight className={cn("size-3 shrink-0 transition-transform motion-reduce:transition-none", open && "rotate-90")} />;
   return (
-    <div className="mb-1.5">
-      <button type="button" onClick={() => setOpen((v) => !v)} className="text-[10px] tracking-widest text-neutral-500 uppercase hover:text-neutral-300">
-        {open ? "⏷" : "⏵"} {steps.length} step{steps.length === 1 ? "" : "s"}
-      </button>
-      {open && <div className="mt-1 border-l border-neutral-800 pl-2">{body}</div>}
+    <div className="mb-1.5 text-[12px]" data-slot="turn-activity" data-live={live || undefined}>
+      <Fold open={live} slot="activity-live">
+        <div className="bg-accent/50 rounded-md px-2.5 py-1.5">
+          <button type="button" onClick={toggle} className="flex w-full min-w-0 items-center gap-2 text-left" data-slot="activity-head">
+            <Loader2 className="text-muted-foreground size-3.5 shrink-0 animate-spin motion-reduce:animate-none" />
+            <span className="text-foreground min-w-0 flex-1 truncate" data-slot="activity-current">{currentActivity(steps)}…</span>
+            {startedAt ? <span className="text-muted-foreground shrink-0 tabular-nums" data-slot="activity-elapsed">{formatDuration(now - startedAt)}</span> : null}
+            <span className="text-muted-foreground">{chevron}</span>
+          </button>
+          {counts && <div className="text-muted-foreground mt-0.5 truncate pl-5.5 text-[11px]" data-slot="activity-counts">{counts}</div>}
+          {trail.length > 0 && !open && (
+            <ul className="mt-1 space-y-0.5 pl-5.5 text-[11px] opacity-60" data-slot="activity-trail">
+              {trail.map((run, i) => (
+                <li key={i} className={cn("truncate", run.kind === "text" ? "text-foreground" : "text-muted-foreground")}>{runLabel(run)}</li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </Fold>
+      <Fold open={!live} slot="activity-summary">
+        <button type="button" onClick={toggle} className="text-muted-foreground hover:text-foreground inline-flex max-w-full items-center gap-1 text-[11px]" data-slot="activity-chip">
+          {chevron}
+          <span className="truncate">{took} · {steps.length ? `${n} step${n === 1 ? "" : "s"}` : "steps"}</span>
+        </button>
+      </Fold>
+      <Fold open={open} slot="activity-steps">
+        <div className="mt-1 space-y-0.5 border-l pl-2">{stepRuns(steps).map((run, i) => <RunRow key={i} run={run} live={live} />)}</div>
+      </Fold>
     </div>
   );
 }
@@ -338,31 +403,36 @@ const omit = (d: Record<string, string>, ...ids: string[]) => {
   return next;
 };
 
-/** The agent's side of a turn — live steps and the cursor while it runs; folded steps, the output and
- *  Orca's check once it has answered. Shared by both stylings. */
+/** The agent's side of a turn — the activity block, then the text: while it runs, the message being
+ *  written; once it has answered, the output and Orca's check. The block sits at ONE place in both
+ *  states, so it stays mounted and folds when the turn finishes. Shared by both stylings. */
 function Reply({ turn, loadSteps, compact }: { turn: AgentTurn; loadSteps?: () => Promise<AgentStep[]>; compact?: boolean }) {
   const draft = useContext(DraftContext)[turn.id];
   // A turn is written at launch, so an interrupted run (bridge restart, kill) stays visible as an
   // unfinished exchange rather than vanishing.
-  if (!turn.finishedAt) {
-    return (
-      <div className="space-y-1 text-neutral-500">
-        {/* The run's steps as they land — this is the live view. A turn with none yet (a non-claude
-            provider, or the first seconds) still shows the cursor. */}
-        <Steps steps={turn.steps ?? []} live />
-        {/* The message being written, as it streams — replaced by its step once it is whole. */}
-        {draft && <div className="text-neutral-200 whitespace-pre-wrap break-words" data-slot="turn-draft">{draft}</div>}
-        <span>▋ {draft ? "" : "working…"}</span>
-      </div>
-    );
-  }
+  const live = !turn.finishedAt;
+  const all = groupSteps(live ? turn.steps ?? [] : withoutFinalEcho(turn.steps ?? [], turn.response));
+  // Live, a message after the last call is the text being written — maybe the answer — so it reads
+  // below the block, where the answer lands, not inside it.
+  const tail = live && all.at(-1)?.kind === "text" ? all.at(-1) : undefined;
+  const work = tail ? all.slice(0, -1) : all;
   return (
     <>
-      {/* The final message is the turn's response, rendered by Output — not twice. */}
-      <Steps steps={withoutFinalEcho(turn.steps ?? [], turn.response)} live={false} load={turn.steps ? undefined : loadSteps} />
-      {/* An old turn (compact) shows its answer's first lines; the steps toggle above stays outside. */}
-      <Clamp on={Boolean(compact && longReply(turn))}><Output turn={turn} /></Clamp>
-      {turn.check && <CheckVerdict check={turn.check} />}
+      <Activity steps={work} live={live} startedAt={turn.startedAt} finishedAt={turn.finishedAt} load={turn.steps ? undefined : loadSteps} />
+      {live ? (
+        <div className="space-y-1 text-neutral-500">
+          {tail && <ChatMarkdown>{tail.text ?? ""}</ChatMarkdown>}
+          {/* The message being written, as it streams — replaced by its step once it is whole. */}
+          {draft && <div className="text-neutral-200 whitespace-pre-wrap break-words" data-slot="turn-draft">{draft}</div>}
+          {(!work.length || draft) && <span>▋ {draft || tail ? "" : "working…"}</span>}
+        </div>
+      ) : (
+        <>
+          {/* An old turn (compact) shows its answer's first lines; the activity chip above stays outside. */}
+          <Clamp on={Boolean(compact && longReply(turn))}><Output turn={turn} /></Clamp>
+          {turn.check && <CheckVerdict check={turn.check} />}
+        </>
+      )}
     </>
   );
 }
