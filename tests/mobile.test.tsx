@@ -859,15 +859,16 @@ describe("a newer build", () => {
     await act(async () => { await Bun.sleep(30); });
     const banner = container.querySelector<HTMLElement>('[data-slot="update-banner"]')!;
     expect(banner.textContent).toContain("Refresh");
-    // It is now the topmost element on a narrow layout, so it — not the header below it — clears the notch.
-    expect(banner.className).toContain("max-md:pt-[env(safe-area-inset-top)]");
+    // It is now the topmost element on a narrow layout, so its frame — not the header below it — clears the notch.
+    const frame = banner.parentElement!;
+    expect(frame.dataset.slot).toBe("update-banner-frame");
+    expect(frame.className).toContain("max-md:pt-[max(0.5rem,env(safe-area-inset-top))]");
     expect(staleChanges).toEqual([false, true]);
-    // branch-demo's banner strip in the server's theme: tinted, a hairline edge, one line, the button at the right.
-    expect(banner.className).toContain("bg-server-soft");
-    expect(banner.className).toContain("text-server-fg");
-    expect(banner.className).toContain("h-12");
-    expect(banner.className).toContain("border-b");
-    expect(banner.querySelector("span")!.className).toContain("truncate");
+    // branch-demo's app-level alert card: a hairline border, 8px corners, a title over one line of text,
+    // the button at the right; on the shell's lower surface with its gutter.
+    expect(banner.className).toEqual(expect.stringContaining("rounded-lg border px-4 py-3"));
+    expect(frame.className).toContain("md:px-1.5 md:pt-1.5");
+    expect(banner.textContent).toContain("A new version of Orca is available");
     expect(banner.lastElementChild!.tagName).toBe("BUTTON");
     globalThis.fetch = realFetch;
   });
@@ -879,7 +880,7 @@ describe("a newer build", () => {
     container = document.createElement("div");
     document.body.appendChild(container);
     await act(async () => { root = createRoot(container!); root.render(<UpdateBanner build="dev" forced />); await flush(); });
-    expect(container.querySelector('[data-slot="update-banner"]')!.textContent).toContain("A new version of Orca is available.");
+    expect(container.querySelector('[data-slot="update-banner"]')!.textContent).toContain("A new version of Orca is available");
     expect(asked).toBe(0);
     globalThis.fetch = realFetch;
   });
