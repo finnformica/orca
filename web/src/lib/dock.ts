@@ -91,3 +91,14 @@ export function afterDockMotion(fn: () => void) {
   if (moving > 0) settled.add(fn);
   else fn();
 }
+
+/** True during the page load — until the first input, or one second: a panel open from the start
+ *  (`?open=orchestrator`) shows at its width at once, with no slide to replay. Any open you cause
+ *  (a click, a key) slides from 0. */
+let starting = true;
+if (typeof window !== "undefined") {
+  const done = () => { starting = false; for (const t of ["pointerdown", "keydown", "click"]) window.removeEventListener(t, done, true); };
+  for (const t of ["pointerdown", "keydown", "click"]) window.addEventListener(t, done, true);
+  setTimeout(done, 1000);
+}
+export const appStarting = () => starting;

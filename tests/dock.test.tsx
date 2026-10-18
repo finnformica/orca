@@ -10,6 +10,7 @@ import { getDefaultStore } from "jotai";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { App } from "@/App";
+import { afterDockMotion, dockMoving, noteDockMotion } from "@/lib/dock";
 import { orchestratorOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { navExpandedOverrideAtom } from "@/lib/dock";
 import { DOCK_PAGE_MIN_W, NAV_W, PANEL_MIN_W, clampPanelWidth, navRail } from "@/workstream";
@@ -131,3 +132,35 @@ test("the edge resizes from the keyboard too: ← widens, → narrows, and the d
   await press("Home");
   expect(dock().style.width).toBe(`${PANEL_MIN_W}px`);
 });
+
+test("the motion flag: work that measures the page waits while the dock or the nav animates its width, then runs once", () => {
+  const calls: string[] = [];
+  const measure = () => calls.push("measure");
+  afterDockMotion(measure);
+  expect(calls).toEqual(["measure"]); // nothing moving: at once
+  noteDockMotion(1); // the dock's width transition started
+  expect(dockMoving()).toBe(true);
+  afterDockMotion(measure);
+  afterDockMotion(measure); // a ResizeObserver firing every frame queues it once
+  noteDockMotion(1); // the nav's rail transition too
+  noteDockMotion(-1);
+  expect(calls).toEqual(["measure"]); // still moving: no React state per frame
+  noteDockMotion(-1);
+  expect(dockMoving()).toBe(false);
+  expect(calls).toEqual(["measure", "measure"]); // settled: once
+});
+
+test("opening: the panel shows in the commit that opens it at dock width 0, and the width opens on the next frame", async () => {
+  await mount(1440);
+  act(() => { askButton().dispatchEvent(new MouseEvent("click", { bubbles: true })); }); // the commit, before any frame
+  const panel = $('[data-slot="orchestrator-panel"]')!;
+  expect(panel.dataset.state).toBe("open");
+  expect(panel.className).toContain("visible"); // it can take focus now
+  expect(dock().style.width).toBe("0px"); // …but the width waits a frame, so 0 → 460 is a real transition
+  await act(async () => { await new Promise((r) => requestAnimationFrame(() => r(null))); await flush(); });
+  expect(dock().style.width).toBe("460px");
+  expect(dock().className).toContain("transition-[width]");
+  expect(dock().className).toContain("data-[resizing]:transition-none");
+  expect($('[data-slot="page-scroll"]')!.className).toContain("md:[contain:layout_paint]");
+});
+

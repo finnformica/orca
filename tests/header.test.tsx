@@ -170,23 +170,25 @@ describe("console shell", () => {
     expect(container!.querySelector<HTMLInputElement>('input[aria-label="Search workstreams"]')!.value).toBe("gauge"); // one query, shared
   });
 
-  test("the sidebar's foot: Add New is the last action, above the divider; you on ONE thin line below it; collapsed, the expand button sits above you", async () => {
+  test("the sidebar's foot: Add New is the last action, an outline button; you on ONE thin line below it, no divider; collapsed, the expand button sits above you", async () => {
     await mount();
     const profile = container!.querySelector<HTMLElement>('[data-slot="profile"]')!;
     expect(profile.className).toContain("h-9"); // one line, a nav row's height
     expect(profile.textContent).toBe("Youlaptop"); // "You", a dot, then the machine
     expect(profile.querySelector("svg.lucide-chevrons-up-down")).not.toBeNull(); // it opens a menu, as branch-demo's user row
-    // Add New is a nav row (ghost, same height and icon size as the pages above), not a boxed button.
+    // Add New is an outline button, full width on the lower surface, so it stands apart from the
+    // content below — the nav rows' height and icon column, so it still lines up with them.
     const addNew = container!.querySelector<HTMLElement>('[data-slot="add-new"]')!;
     const navItem = container!.querySelector<HTMLElement>('nav[aria-label="Main"] button:not([aria-current])')!;
     for (const c of ["h-9", "px-2.5", "gap-3", "rounded-md"]) { expect(addNew.className).toContain(c); expect(navItem.className).toContain(c); }
-    expect(addNew.className).not.toContain("border");
+    expect(addNew.className).toContain("border bg-card"); // the outline variant
+    expect(addNew.className).toContain("w-full");
     expect(container!.querySelector<HTMLElement>('[data-slot="notifications-bell"]')!.className).toContain("size-9");
     const actions = container!.querySelector<HTMLElement>('[data-slot="sidebar-actions"]')!;
     const foot = container!.querySelector<HTMLElement>('[data-slot="sidebar-foot"]')!;
     expect(actions.querySelector('[data-slot="add-new"]')).not.toBeNull();
-    expect(actions.nextElementSibling).toBe(foot); // straight above the divider (the foot's border-t) and you
-    expect(foot.className).toContain("border-t");
+    expect(actions.nextElementSibling).toBe(foot); // straight above you
+    expect(foot.className).not.toContain("border-t"); // no divider line above you any more
     expect(foot.querySelector('[data-slot="add-new"]')).toBeNull();
     await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
     const you = container!.querySelector<HTMLElement>('[data-slot="sidebar-you"]')!;

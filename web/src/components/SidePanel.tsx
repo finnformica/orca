@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { useSwipeToDismiss } from "@/lib/gestures";
 import { cn } from "@/lib/utils";
 import { useNarrow } from "@/lib/viewport";
-import { dockElementAtom, dockWidthsAtom } from "@/lib/dock";
+import { appStarting, dockElementAtom, dockWidthsAtom } from "@/lib/dock";
 
 /** The dock's open / close: branch-demo's `transition-all` (150ms, Tailwind's default ease). */
 export const SLIDE_MS = 150;
@@ -61,12 +61,13 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
   const dockEl = useAtomValue(dockElementAtom);
   const setDock = useSetAtom(dockWidthsAtom);
   // branch-demo's right panel, step by step. `expanded` drives the dock's width; it starts from
-  // `open`, so a panel open at mount (a persisted flag) shows at once with no slide. Opening: the
+  // `open` only during the page load (`appStarting`: a panel open from the URL shows at once, with
+  // no slide to replay) — a panel first mounted by a later open still slides. Opening: the
   // panel is shown (and can take focus) in the commit that opens it, at dock width 0, and the width
   // flips to the target on the NEXT frame — so 0 → width is a real CSS transition, and the work of
   // a first mount (the chat's first render) lands before it, not inside it. Closing: the width goes
   // to 0 now; the panel stays painted (`shown`) until the dock's `width` transition ends.
-  const [expanded, setExpanded] = useState(open);
+  const [expanded, setExpanded] = useState(() => open && appStarting());
   const [shown, setShown] = useState(open);
   useEffect(() => {
     if (open) {

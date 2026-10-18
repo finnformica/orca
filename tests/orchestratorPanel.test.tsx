@@ -11,6 +11,7 @@ import * as store from "@/store";
 import { getDefaultStore } from "jotai";
 import { AskOrchestrator, OrchestratorPage, OrchestratorPanel } from "@/components/Terminal";
 import { Dock } from "@/components/Shell";
+import { SLIDE_MS } from "@/components/SidePanel";
 import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
 import { WorkstreamCard } from "@/views/Board";
 import { DOCK_PAGE_MIN_W, NAV_RAIL_W, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, dayLabel } from "@/workstream";
@@ -127,8 +128,13 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   expect(panel()).toBeNull();
   expect(panelEl()!.dataset.state).toBe("closed");
   expect(panelEl()!.getAttribute("aria-hidden")).toBe("true");
+  // Closing, it stays painted while the dock's width slides it out (branch-demo: unmount on the
+  // width's transitionend) — then it is hidden, still mounted. No transition runs here, so the
+  // fallback ends it.
+  expect(panelEl()!.className).toContain("visible");
+  expect(panelEl()!.className).not.toContain("invisible");
+  await act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 200)); });
   expect(panelEl()!.className).toContain("invisible");
-  expect(panelEl()!.className).toContain("transition-[visibility]"); // closing, hidden only once the dock has shut
   expect(document.activeElement).toBe(launcher());
   const pagesBefore = apiFake.turnPageCalls.length;
   await click(launcher());
