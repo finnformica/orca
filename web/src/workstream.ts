@@ -2725,9 +2725,10 @@ export function monthCostLabel(month: MonthCostInfo | undefined, rate: { hourlyU
   return { value: `$${month.usd.toFixed(2)}${unknown >= 0.05 ? "*" : ""}`, detail: lines.join("\n") };
 }
 
-/** The agents axis's top: a small whole count, even so its midpoint tick is whole too (0 · 2 · 4). */
+/** The agents axis's top: fixed at 8 (there is no cap on agent count) until the data outgrows
+ *  it, then the next even whole count above it, so the midpoint tick stays whole too. */
 export function countMax(v: number): number {
-  return Math.max(2, Math.ceil(Math.max(0, v) / 2) * 2);
+  return Math.max(8, Math.ceil(Math.max(0, v) / 2) * 2);
 }
 
 /** A round axis maximum at or above `v`: 1, 2, 2.5 or 5 × 10^k. */
