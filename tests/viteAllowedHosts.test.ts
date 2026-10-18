@@ -8,9 +8,11 @@ test("allowedHosts: no preview env set, nothing extra allowed (localhost/IPs are
   expect(allowedHosts({})).toEqual([]);
 });
 
-test("allowedHosts: ORCA_PREVIEW_HOST is allowed", () => {
+test("allowedHosts: ORCA_PREVIEW_HOST is allowed, plus its short MagicDNS name and any ts.net name", () => {
   expect(allowedHosts({ ORCA_PREVIEW_HOST: "orca-box.tail622bd5.ts.net" })).toEqual([
     "orca-box.tail622bd5.ts.net",
+    ".ts.net",
+    "orca-box",
   ]);
 });
 
@@ -26,5 +28,9 @@ test("allowedHosts: both sources combine, blank entries dropped", () => {
       ORCA_PREVIEW_HOST: "orca-box.tail622bd5.ts.net",
       __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: "",
     }),
-  ).toEqual(["orca-box.tail622bd5.ts.net"]);
+  ).toEqual(["orca-box.tail622bd5.ts.net", ".ts.net", "orca-box"]);
+});
+
+test("allowedHosts: a non-ts.net ORCA_PREVIEW_HOST gets no ts.net wildcard or short name", () => {
+  expect(allowedHosts({ ORCA_PREVIEW_HOST: "example.com" })).toEqual(["example.com"]);
 });
