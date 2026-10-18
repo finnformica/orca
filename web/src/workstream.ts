@@ -6,6 +6,7 @@ import { AUTOFIX_MARKER, OUTCOME_CONTRACT, withOutcomeContract, type AgentOutcom
 import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models";
 import { SNIPPETS, WRITING_STYLE } from "../../shared/writingStyle";
 import { asksForInput } from "../../shared/notifications";
+import { integrationMessage, type IntegrationMessage } from "../../shared/integrations";
 export { attachCommand } from "../../shared/agent";
 
 // Kanban lanes are driven by the REVIEW lifecycle only. Conflict / CI / mergeability
@@ -3215,7 +3216,7 @@ export function composerHistory(
     ...queued.map((m) => m.instruction),
     ...sending.map((m) => m.text),
   ].map((m) => withoutAttachmentList(m).trim())
-    .filter((m) => m && !isWorkerEvent(m) && !m.startsWith(AUTOFIX_MARKER));
+    .filter((m) => m && !isWorkerEvent(m) && !m.startsWith(AUTOFIX_MARKER) && !integrationMessage(m));
   return [...new Set(sent.reverse())];
 }
 
@@ -3343,15 +3344,32 @@ type Sourced = { source?: TurnSource; instruction?: string; prompt?: string; fin
 export const sourceOf = (t: Sourced): TurnSource =>
   t.source ?? turnSource(splitMessages(t.instruction ?? promptInstruction(t.prompt ?? "")));
 
-export type ChatItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] };
+/** The outside messages (Discord, Slack, email…) a wake carried, when it carried nothing else — such a
+ *  wake is its own grant (server/orchestrator.ts), so it never holds your words. Undefined otherwise. */
+export function integrationTurn(t: Sourced): IntegrationMessage[] | undefined {
+  const messages = splitMessages(t.instruction ?? promptInstruction(t.prompt ?? "")).map(integrationMessage);
+  return messages.length > 0 && messages.every(Boolean) ? messages as IntegrationMessage[] : undefined;
+}
+
+/** An outside message's row state: the orchestrator is on it, answered it, or its wake failed. */
+export const integrationState = (t: { finishedAt?: number; failed?: boolean; stopped?: boolean }): "in progress" | "answered" | "failed" | "stopped" =>
+  !t.finishedAt ? "in progress" : t.failed ? "failed" : t.stopped ? "stopped" : "answered";
+
+/** An outside message's row, in one line: its first non-empty line, cut to `max`. */
+export const integrationPreview = (text: string, max = 120): string => clip((text.split("\n").find((l) => l.trim()) ?? "").trim(), max);
+
+export type ChatItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] } | { kind: "integration"; turn: T; messages: IntegrationMessage[] };
 /** What the orchestrator's chat renders: your turns, with each run of agent turns between them as one
- *  collapsed block. `keepOut` is a turn that never folds into a block: the newest answer, which the
- *  chat always shows (see newestMessages). */
+ *  collapsed block, and each wake an outside message caused as its own activity row (never your
+ *  bubble, even when it holds the newest answer). `keepOut` is a turn that never folds into a block:
+ *  the newest answer, which the chat always shows (see newestMessages). */
 export function chatItems<T extends Sourced>(turns: T[], keepOut?: T): ChatItem<T>[] {
   const out: ChatItem<T>[] = [];
   for (const t of turns) {
     const last = out[out.length - 1];
-    if (sourceOf(t) === "human" || t === keepOut) out.push({ kind: "turn", turn: t });
+    const outside = integrationTurn(t);
+    if (outside) out.push({ kind: "integration", turn: t, messages: outside });
+    else if (sourceOf(t) === "human" || t === keepOut) out.push({ kind: "turn", turn: t });
     else if (last?.kind === "agents") last.turns.push(t);
     else out.push({ kind: "agents", turns: [t] });
   }
@@ -3361,7 +3379,7 @@ export function chatItems<T extends Sourced>(turns: T[], keepOut?: T): ChatItem<
 /** The two messages a chat never clamps or folds: your newest message (the newest turn you spoke in)
  *  and the newest answer (the newest finished turn). Older ones keep their clamp. */
 export function newestMessages<T extends Sourced>(turns: T[]): { said?: T; answer?: T } {
-  return { said: turns.findLast((t) => sourceOf(t) === "human"), answer: turns.findLast((t) => Boolean(t.finishedAt)) };
+  return { said: turns.findLast((t) => sourceOf(t) === "human" && !integrationTurn(t)), answer: turns.findLast((t) => Boolean(t.finishedAt)) };
 }
 
 /** The collapsed block's line for a run of agent turns. */
