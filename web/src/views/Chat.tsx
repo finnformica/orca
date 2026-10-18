@@ -999,7 +999,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
         {!atTail && (
           <div className="sticky bottom-0 flex justify-center pointer-events-none">
             <button type="button" onClick={jumpToLatest} data-slot="chat-jump" data-unseen={unseen || undefined}
-              className={`pointer-events-auto flex items-center gap-1 rounded-full border border-neutral-800 bg-neutral-900 px-2.5 py-1 font-sans text-[11px] shadow-menu hover:text-neutral-100 ${unseen ? "text-sky-400" : "text-neutral-400"}`}>
+              className={`pointer-events-auto flex items-center gap-1 rounded-full border border-neutral-800 bg-neutral-900 px-2.5 py-1 font-sans text-[11px] shadow-menu hover:text-foreground ${unseen ? "text-sky-400" : "text-neutral-400"}`}>
               <ArrowDown className="size-3" />{unseen ? "New messages" : "Jump to latest"}
             </button>
           </div>
