@@ -50,11 +50,49 @@ export function copyDialog(title: string, text: string): Promise<void> {
   return new Promise((resolve) => push({ kind: "copy", title, text, resolve }));
 }
 
-/** Write text to the clipboard; where that is refused (no secure context over the plain-http
- *  tailnet), show it in `copyDialog`. Resolves true when the clipboard took it. */
+/** Copy with a hidden textarea and `execCommand("copy")` — the path that works where the async
+ *  clipboard is missing (plain http on the tailnet: no secure context, so `navigator.clipboard` is
+ *  undefined) in Chromium, Firefox and Safari, inside a click. The textarea goes into the open modal
+ *  (a native <dialog> or a Radix one), since outside it the field is inert or its focus is pulled
+ *  back. Focus moves without a scroll, and the previous selection and focus come back after.
+ *  True when the browser reports the copy done. */
+export function execCopy(text: string, doc: Document = document): boolean {
+  if (typeof doc.execCommand !== "function") return false;
+  const active = doc.activeElement instanceof HTMLElement ? doc.activeElement : null;
+  const sel = doc.getSelection();
+  const ranges = sel ? Array.from({ length: sel.rangeCount }, (_, i) => sel.getRangeAt(i)) : [];
+  const field = doc.createElement("textarea");
+  field.value = text;
+  field.readOnly = true; // no on-screen keyboard on a phone
+  field.setAttribute("aria-hidden", "true");
+  field.tabIndex = -1;
+  // In the viewport (a field outside it can scroll the page on focus), 16px (no iOS zoom), unseen.
+  field.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;margin:0;opacity:0;pointer-events:none;font-size:16px;";
+  (active?.closest("dialog[open], [role=dialog], [role=alertdialog]") ?? doc.body).appendChild(field);
+  let ok = false;
+  try {
+    field.focus({ preventScroll: true });
+    field.select();
+    field.setSelectionRange(0, text.length); // iOS Safari selects nothing with select() alone
+    ok = doc.execCommand("copy");
+  } catch { ok = false; }
+  field.remove();
+  if (sel) { sel.removeAllRanges(); for (const r of ranges) sel.addRange(r); }
+  if (active && active !== doc.body && doc.contains(active)) active.focus({ preventScroll: true });
+  return ok;
+}
+
+/** Copy text: the async clipboard, else `execCopy`; only when both fail, show it in `copyDialog`.
+ *  With no async clipboard, execCopy runs before the first await, so it is still inside the click
+ *  (Safari allows execCommand only there). Resolves true when the text was copied. */
 export async function copyText(text: string, label: string): Promise<boolean> {
-  try { await navigator.clipboard.writeText(text); return true; }
-  catch { await copyDialog(`Copy the ${label}`, text); return false; }
+  const clipboard = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
+  if (clipboard?.writeText) {
+    try { await clipboard.writeText(text); return true; } catch { /* refused: try execCopy */ }
+  }
+  if (execCopy(text)) return true;
+  await copyDialog(`Copy the ${label}`, text);
+  return false;
 }
 
 /** True once nothing that would sit over or under a new dialog is still on screen: a phone's bottom
