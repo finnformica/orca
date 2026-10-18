@@ -59,7 +59,7 @@ test("Q1: the pill is on every page; it opens a box that sends on Enter without 
     expect(pill).not.toBeNull();
     expect(pill.textContent).toContain("Ask");
     expect(pill.textContent).toContain("A"); // the shortcut hint
-    expect($('[data-slot="quick-ask"]')!.className).toContain("fixed bottom-5"); // bottom centre (of the main column, Q7)
+    expect($('[data-slot="quick-ask"]')!.className).toContain("absolute inset-x-0 bottom-5"); // bottom centre (of the page card, Q7)
     await act(async () => { root?.unmount(); }); container?.remove();
   }
   await mount("/");
@@ -278,23 +278,22 @@ test("Q9: the box is the shared composer — @ opens the PR picker (# does not);
   expect(apiFake.orchestratorMessages).toEqual([{ text: "look at #6101 @fi", attachments: [] }]);
 });
 
-test("Q7: the pill is centred on the main column — its strip starts where the sidebar ends, collapsed or expanded, and ends where the docked panel starts", async () => {
+test("Q7: the pill is centred on the page card — its strip spans the card, collapsed or expanded nav, so it moves with the card's edges", async () => {
   const s = getDefaultStore();
   await mount("/");
-  const strip = () => $('[data-slot="quick-ask"]')!.className.split(/\s+/);
+  const stripEl = () => $('[data-slot="quick-ask"]')!;
+  const strip = () => stripEl().className.split(/\s+/);
   const sidebar = () => $('[data-slot="sidebar"]')!.className.split(/\s+/);
-  const right = () => $('[data-slot="quick-ask"]')!.style.right;
-  // Expanded: a 15rem sidebar, a strip from 15rem to the right edge, its content centred in it.
+  // Expanded: the strip is the card's full width, its content centred in it.
   expect(sidebar()).toContain("md:w-60");
-  expect(strip()).toEqual(expect.arrayContaining(["fixed", "left-60", "justify-center"]));
-  expect(right()).toBe("0px"); // nothing docked: to the window's edge
-  expect(strip()).not.toContain("inset-x-0");
-  // Collapsed: the icon column is 3.5rem, and the strip follows it.
+  expect(stripEl().parentElement!.dataset.slot).toBe("shell-card");
+  expect(strip()).toEqual(expect.arrayContaining(["absolute", "inset-x-0", "justify-center"]));
+  expect(strip()).not.toContain("fixed");
+  // Collapsed: the card grows to the rail, and the strip with it — nothing of its own changes.
+  const before = stripEl().className;
   await act(async () => { s.set(sidebarCollapsedAtom, true); await flush(); });
   expect(sidebar()).toContain("md:w-14");
-  expect(strip()).toEqual(expect.arrayContaining(["left-14", "justify-center"]));
-  expect(right()).toBe("0px");
-  expect(strip()).not.toContain("left-60");
+  expect(stripEl().className).toBe(before);
   // Below md there is no pill — the phone's bottom bar carries the orchestrator.
   expect(strip()).toContain("max-md:hidden");
   // The open box is sized to the strip, not the viewport.

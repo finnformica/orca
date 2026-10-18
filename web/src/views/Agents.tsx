@@ -468,7 +468,9 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
       onClick={openOnRowClick(row)} onContextMenu={onContextMenu} onKeyDown={onKeyDown}
       onPointerDown={(e) => { lastPointer.current = e.pointerType; }}
       style={rowGrid()}
-      className={`${GRID} hover:bg-accent/40 focus-visible:bg-accent/40 h-14 border-b text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
+      // `content-visibility: auto`: a row off screen skips its layout and paint, so a dock slide (the
+      // page frame changes width every frame) lays out only the rows you see. 56px is its fixed height.
+      className={`${GRID} hover:bg-accent/40 focus-visible:bg-accent/40 h-14 border-b md:[content-visibility:auto] md:[contain-intrinsic-size:auto_56px] text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
     >
       <div role="cell" className="min-w-0">
         <div className="truncate font-medium">{row.title}</div>

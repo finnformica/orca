@@ -21,7 +21,7 @@ import { cn } from "@/lib/utils";
 import { useNarrow } from "@/lib/viewport";
 import { appStarting, dockClipElementAtom, dockElementAtom, dockWidthsAtom } from "@/lib/dock";
 
-/** The dock's open / close: branch-demo's `transition-all` (150ms, Tailwind's default ease). */
+/** The dock's open / close: branch-demo's docked chat (150ms ease-out). */
 export const SLIDE_MS = 150;
 /** One arrow key on the focused resize edge (Shift: three times as far). */
 export const RESIZE_STEP = 40;
@@ -134,7 +134,7 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
     const move = (ev: PointerEvent) => {
       last = clampPanelWidth(w0 + (x0 - ev.clientX), window.innerWidth); // the edge is on the LEFT: dragging left widens
       el.style.width = `${last}px`;
-      if (dock) dock.style.width = `${last}px`;
+      if (dock) dock.style.width = `${last}px`; // the page card, its frame and the pill follow by layout
     };
     const up = () => {
       window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
@@ -155,7 +155,22 @@ export function SidePanel({ open, onClose, slot, label, labelledBy, widthAtom, s
       : e.key === "Home" ? PANEL_MIN_W : e.key === "End" ? Number.MAX_SAFE_INTEGER : null;
     if (next === null) return;
     e.preventDefault();
-    setSavedWidth(clampPanelWidth(next, window.innerWidth));
+    const w = clampPanelWidth(next, window.innerWidth);
+    if (w === width) return;
+    // As a drag does: the panel and the dock take the width at once, with the dock's width transition
+    // off, so the page edge moves with the handle in this frame — no 150ms slide.
+    // The computed-style read applies the new width while `data-resizing` turns the transition off;
+    // after that, turning it back on starts nothing (the width does not change again).
+    const el = panelRef.current;
+    if (el) el.style.width = `${w}px`;
+    const dock = docked ? dockEl : null;
+    if (dock) {
+      dock.setAttribute("data-resizing", "");
+      dock.style.width = `${w}px`;
+      void getComputedStyle(dock).transitionProperty;
+      dock.removeAttribute("data-resizing");
+    }
+    setSavedWidth(w);
   };
   // Docked, it waits for the shell's dock to exist rather than flash as an overlay first.
   if (docked && (!dockEl || !dockClip)) return null;

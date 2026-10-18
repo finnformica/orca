@@ -6,6 +6,8 @@
 // (branch-demo's docked AI chat). Each panel publishes its open width here by slot; the dock is the
 // widest one (only one is open at a time, but one closing and one opening land in the same commit).
 // While a drag resizes a panel, the dock's element is written directly, as the panel's own width is.
+// The page frame and the quick-ask pill are placed by the shell card's layout, so they follow the
+// dock's edge in every frame of an open, a close or a resize, with nothing to sync.
 import { atom, useAtom, useAtomValue } from "jotai";
 import { useEffect, useState } from "react";
 import { sidebarCollapsedAtom } from "./atoms";
