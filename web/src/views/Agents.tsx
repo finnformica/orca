@@ -42,7 +42,7 @@ export function Agents() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold tracking-tight">Agents</h1>
+        <h1 className="text-heading text-2xl font-semibold tracking-tight">Agents</h1>
         <div className="flex items-center gap-2">
           {view === "board" && <DensityToggle />}
           <ViewToggle view={view} setView={setView} />
@@ -74,7 +74,7 @@ function ViewToggle({ view, setView }: { view: BoardView; setView: (v: BoardView
     <div role="group" aria-label="View" className="inline-flex h-8 items-center rounded-md border p-0.5">
       {VIEWS.map(({ value, label, Icon }) => (
         <button key={value} type="button" aria-pressed={view === value} onClick={() => setView(value)}
-          className={`inline-flex h-full items-center gap-1.5 rounded-[5px] px-2 text-xs font-medium transition-colors ${view === value ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`}>
+          className={`inline-flex h-full items-center gap-1.5 rounded-[5px] px-2 text-xs font-medium transition-colors ${view === value ? "bg-selected text-selected-foreground" : "text-muted-foreground hover:text-foreground"}`}>
           <Icon className="size-3.5" /> {label}
         </button>
       ))}
@@ -230,7 +230,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
     return (
       <button key={`${c.group}:${c.value}`} type="button" data-slot="quick-filter" data-chip={`${c.group}:${c.value}`} aria-pressed={on}
         onClick={() => setQuick(toggleQuick(quick, c.group, c.value))}
-        className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors ${on ? "border-foreground bg-foreground text-background" : "text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
+        className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors ${on ? "border-primary bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
         {c.dot && <StatusDot tone={c.dot} className="size-2" />}
         {c.label}
         <span data-slot="quick-count" className={`tabular-nums ${on ? "opacity-70" : "opacity-60"}`}>
@@ -242,7 +242,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
   const notMergedChip = (
     <button key="notMerged" type="button" data-slot="quick-filter" data-chip="notMerged" aria-pressed={quick.notMerged}
       onClick={() => setQuick(toggleNotMerged(quick))}
-      className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors ${quick.notMerged ? "border-foreground bg-foreground text-background" : "text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
+      className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors ${quick.notMerged ? "border-primary bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
       Not merged
       <span data-slot="quick-count" className={`tabular-nums ${quick.notMerged ? "opacity-70" : "opacity-60"}`}>
         {loaded ? notMergedCount(scoped, quick, here) : <Skeleton className="h-3 w-3" />}
