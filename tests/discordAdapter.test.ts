@@ -1,9 +1,10 @@
 // The Discord adapter against a fake Gateway socket and a stubbed REST API — never a real Discord.
 // It covers what the adapter owns: the Gateway handshake (identify, heartbeat, resume), turning a
 // MESSAGE_CREATE into the core's envelope (mention, thread, DM link), reply in place (the default)
-// and the thread a request opens (`threads: true`), and outbound posts, threads, edits and the retry split. The gate itself is the core's (tests/integrations.test.ts).
+// and the thread a request opens (`threads: true`), a mention of the bot's managed role, and outbound
+// posts, threads (also one reply's `thread` flag), edits and the retry split. The gate itself is the core's (tests/integrations.test.ts).
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { discordAdapter, gateway, INTENTS, parseChain, render, toEnvelope, type WebSocketLike } from "../server/integrations/adapters/discord";
+import { botRoleOf, discordAdapter, gateway, INTENTS, parseChain, render, toEnvelope, type WebSocketLike } from "../server/integrations/adapters/discord";
 import type { AdapterContext, Connection, InboundEnvelope } from "../server/integrations/adapter";
 
 class FakeSocket implements WebSocketLike {
@@ -207,6 +208,35 @@ describe("Discord inbound", () => {
     await a.stop();
   });
 
+  test("a mention of the bot's managed role counts as a mention, and the role is cut from the text", async () => {
+    const { a, ws, ingested } = await connected();
+    // GUILD_CREATE names the role whose tags.bot_id is the bot.
+    ws.push({ op: 0, s: 2, t: "GUILD_CREATE", d: { id: "G1", threads: [], roles: [{ id: "R-mod" }, { id: "R-orca", tags: { bot_id: "BOT" } }] } });
+    ws.push({ op: 0, s: 3, t: "MESSAGE_CREATE", d: msg({ content: "<@&R-orca> what is on the board?", mentions: [], mention_roles: ["R-orca"] }) });
+    await tick();
+    expect(ingested[0]).toMatchObject({ mentioned: true, text: "what is on the board?" });
+    expect(calls.some((c) => c.path.includes("/roles"))).toBe(false);
+    // Another role is not a mention of Orca.
+    ws.push({ op: 0, s: 4, t: "MESSAGE_CREATE", d: msg({ id: "M2", content: "<@&R-mod> lunch?", mentions: [], mention_roles: ["R-mod"] }) });
+    await tick();
+    expect(ingested[1]).toMatchObject({ mentioned: false, text: "<@&R-mod> lunch?" });
+    await a.stop();
+  });
+
+  test("a role mention in a guild with no GUILD_CREATE reads the roles once by REST", async () => {
+    const { a, ws, ingested } = await connected();
+    const base = answer;
+    answer = (c) => c.path === "/guilds/G1/roles" ? { status: 200, body: [{ id: "R-orca", tags: { bot_id: "BOT" } }] } : base(c);
+    ws.push({ op: 0, s: 2, t: "MESSAGE_CREATE", d: msg({ content: "<@&R-orca> hi", mentions: [], mention_roles: ["R-orca"] }) });
+    await tick();
+    ws.push({ op: 0, s: 3, t: "MESSAGE_CREATE", d: msg({ id: "M2", content: "<@&R-orca> again", mentions: [], mention_roles: ["R-orca"] }) });
+    await tick();
+    expect(ingested.map((e) => [e.mentioned, e.text])).toEqual([[true, "hi"], [true, "again"]]);
+    expect(calls.filter((c) => c.path === "/guilds/G1/roles")).toHaveLength(1);
+    expect(botRoleOf([{ id: "R1", tags: { bot_id: "OTHER" } }], "BOT")).toBeUndefined();
+    await a.stop();
+  });
+
   test("parseChain: a chain key splits; a thread or DM channel id does not", () => {
     expect(parseChain("C1:M1")).toEqual({ channel: "C1", root: "M1" });
     expect(parseChain("T9")).toBeUndefined();
@@ -268,6 +298,29 @@ describe("Discord outbound", () => {
     expect(await discordAdapter(conn()).send({ externalId: "C1", threadId: "M30" }, { text: "Late answer." }, "d")).toEqual({ ok: true, externalMsgId: "M31", threadId: "M30" });
     expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /channels/M30/messages", "POST /channels/C1/messages"]);
     expect(calls[1]!.body.message_reference).toEqual({ message_id: "M30", fail_if_not_exists: false });
+  });
+
+  test("thread flag: a reply in a chain opens a thread on the mention and answers in it", async () => {
+    answer = (c) => ({ status: 200, body: { id: c.path.endsWith("/threads") ? "M1" : "M-new" } });
+    const a = discordAdapter(conn());
+    expect(await a.send({ externalId: "C1", threadId: "C1:M1" }, { text: "A long answer.", thread: true, replyToExternalMsgId: "M1" }, "d1")).toEqual({ ok: true, externalMsgId: "M-new", threadId: "M1" });
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /channels/C1/messages/M1/threads", "POST /channels/M1/messages"]);
+    expect(calls[0]!.body).toMatchObject({ name: "A long answer." });
+    // Discord refuses the thread (no permission): the answer stays in place.
+    calls = [];
+    answer = (c) => c.path.endsWith("/threads") ? { status: 403, body: { message: "Missing Permissions" } } : { status: 200, body: { id: "M-new" } };
+    expect(await a.send({ externalId: "C1", threadId: "C1:M1" }, { text: "Short.", thread: true, replyToExternalMsgId: "M1" }, "d2")).toEqual({ ok: true, externalMsgId: "M-new", threadId: "C1:M1" });
+    expect(calls[1]).toMatchObject({ path: "/channels/C1/messages", body: { message_reference: { message_id: "M1" } } });
+  });
+
+  test("thread flag: a first post opens a thread on itself; in a thread the flag changes nothing", async () => {
+    answer = () => ({ status: 200, body: { id: "M-new" } });
+    const a = discordAdapter(conn());
+    expect(await a.send({ externalId: "C1" }, { text: "Plan for PR #12", thread: true }, "d1")).toEqual({ ok: true, externalMsgId: "M-new", threadId: "M-new" });
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /channels/C1/messages", "POST /channels/C1/messages/M-new/threads"]);
+    calls = [];
+    expect(await a.send({ externalId: "C1", threadId: "T9" }, { text: "Step 2 done.", thread: true }, "d2")).toEqual({ ok: true, externalMsgId: "M-new", threadId: "T9" });
+    expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["POST /channels/T9/messages"]);
   });
 
   test("a reply posts into the thread; an edit patches the message", async () => {
