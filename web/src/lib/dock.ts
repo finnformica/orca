@@ -68,6 +68,8 @@ export function useNavToggle(): { rail: boolean; setRail: (rail: boolean) => voi
 let moving = 0;
 let fallback: ReturnType<typeof setTimeout> | undefined;
 const settled = new Set<() => void>();
+/** Waiters for the NEXT width transition to start (`afterDockSlide`). */
+const started = new Set<() => void>();
 
 const settle = () => {
   moving = 0;
@@ -80,6 +82,7 @@ const settle = () => {
 /** A width transition of the dock or the nav started (+1) or ended (−1). A missed end (the element
  *  left the page mid-motion) settles after a short fallback, so deferred work always runs. */
 export function noteDockMotion(delta: 1 | -1) {
+  if (delta > 0) for (const arm of [...started]) arm();
   moving = Math.max(0, moving + delta);
   clearTimeout(fallback);
   if (moving === 0) settle();
@@ -107,6 +110,24 @@ export function takeDockResize(w: number): boolean {
 export function afterDockMotion(fn: () => void) {
   if (moving > 0) settled.add(fn);
   else fn();
+}
+
+/** Run `fn` once the slide that a dock or nav width change just asked for is OVER: at the settle
+ *  that follows the next transition start. Not a fixed timer from the commit: on a heavy page the
+ *  first frame of the slide lands late (a full layout at the new width), and a timer then fired
+ *  mid-slide, so the held page frame snapped back to the column's in-flight width. A motion that is
+ *  already running when this is called is not "the next" one: a reversal cancels it (−1, a settle)
+ *  before its new transition starts. If no transition starts within `fallbackMs` (reduced motion),
+ *  `fn` runs then — late is harmless, since with no slide the column is already at its end width.
+ *  Returns a cancel. */
+export function afterDockSlide(fn: () => void, fallbackMs = 1000): () => void {
+  let armed = false;
+  const run = () => { cancel(); fn(); };
+  const arm = () => { armed = true; started.delete(arm); settled.add(run); };
+  const t = setTimeout(() => { if (!armed) run(); }, fallbackMs);
+  const cancel = () => { clearTimeout(t); started.delete(arm); settled.delete(run); };
+  started.add(arm);
+  return cancel;
 }
 
 /** True during the page load — until the first input, or one second: a panel open from the start
