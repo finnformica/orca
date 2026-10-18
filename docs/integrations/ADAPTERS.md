@@ -17,7 +17,7 @@ The core does these tasks. An adapter never does them:
 - It stores thread links and passes the thread back to the adapter.
 - It paces outbound sends per target (from `caps.rate`) and inbound messages per sender. Only a
   sender with an `actor` is paced. A poller or a webhook is not paced.
-- It starts the adapter only on the primary bridge of the instance in `integration.instance`.
+- It starts the adapter on one primary bridge only. Section 6.1 tells which one.
 
 An adapter does only these tasks:
 
@@ -47,7 +47,8 @@ export type Connection = {
   id: string;
   kind: AdapterKind;            // "slack" | "discord" | "email" | "github" | "linear" | "webhook" | "web" | string
   name: string;
-  instance: string;             // the ONE instance that runs it
+  instance: string;             // the ONE instance that runs it, or "*" (Automatic)
+  auto?: AutoLease;             // Automatic only: the lease holder and its end time
   config: Record<string, unknown>; // non-secret settings
   secretRef?: string;           // an environment variable NAME, never a value
   enabled: boolean;
@@ -118,7 +119,8 @@ export type InboundMessage = {
 
 ### `start(ctx)`
 
-- The registry calls it only on the primary bridge of `connection.instance`. Do not check this again.
+- The registry calls it only on the one primary bridge that runs the row (section 6.1). Do not
+  check this again.
 - Resolve when the adapter is ready. Do not hold the promise open for the life of a socket.
 - Keep a socket or a poll loop alive until `ctx.signal` aborts.
 - Reconnect on your own after a drop. Call `ctx.status({ ok: false, detail })` while you are down.
@@ -180,11 +182,11 @@ export type InboundMessage = {
 
 Use Settings > Integrations (`/settings/integrations`): Connect, links, people, subscriptions and Retry. A new kind shows there when it registers with `meta` (`register(kind, factory, meta)`). You can also use SQL or `store.ts` from a script:
 
-1. Put the token in the instance's environment (`.env` or the systemd unit). Name it
+1. Put the token in the environment (`.env` or the systemd unit) of each instance that can run it. Name it
    `ORCA_SECRET_<SOMETHING>`. The agent environment strips every `ORCA_SECRET_*` variable. The
    registry refuses any other name, except the names in `ORCA_SECRETS` (`server/env.ts`).
-2. Add an `integration` row: `id`, `kind`, `name`, `instance` (the instance that runs it),
-   `config`, `secret_ref` (the variable name).
+2. Add an `integration` row: `id`, `kind`, `name`, `instance` (`*` for Automatic, or the one
+   instance that runs it, section 6.1), `config`, `secret_ref` (the variable name).
 3. Add a `channel_link` row for each external place: `level` (`notify`, `ask` or `work`), `repos`
    (for `work`), `require_mention`.
 4. Add `principal` and `identity` rows for each person who may write to Orca. Or let them write
@@ -199,13 +201,37 @@ Use Settings > Integrations (`/settings/integrations`): Connect, links, people, 
 The primary bridge syncs the rows each minute. You do not need a restart.
 `GET /api/integrations` shows the rows, what runs on this bridge, its health and the dead deliveries.
 
+### 6.1 Where it runs: Automatic or pinned
+
+`integration.instance` selects the bridge that opens the connection. Only a primary bridge runs
+an adapter (`primary.held()`), so one row has one connection.
+
+- **Automatic** (`*`, `AUTO_INSTANCE` in `shared/integrations.ts`) is the default for a new row.
+  Each instance's primary bridge that has the secret tries to take the row's lease on each sync.
+  The lease is `status.auto` (`{ holder, until }`) on the row. One conditional `UPDATE` takes it,
+  so only one bridge wins. The holder renews it each minute. A lease lasts `AUTO_LEASE_MS` (150 s).
+- **Failover.** When the holder stops (down, asleep, no longer primary), it does not renew. When the
+  lease ends, the next primary with the secret takes it and starts the adapter. A bridge that stops
+  an adapter cleanly (shutdown, the row disabled) releases the lease, so the next one starts at once.
+  A holder that comes back finds another live lease, and on its next sync it stops its adapter.
+- **Secrets.** A primary without the secret does not take the lease. It records itself in
+  `status.secretMissing`. When no bridge runs the row, the card says
+  `ORCA_SECRET_X is not set on <server>`, with each server that lacks it.
+- **Pinned** (an instance name) runs only on that instance's primary bridge. Use it for an account
+  that must stay on one machine. Automatic also gives one session for Discord, so Discord does not
+  need a pin.
+
+`*` is a reserved value, not NULL: the column is `NOT NULL` and needs no migration. Settings shows
+each instance by the server's display name and its Tailscale host (`Flow / orca-flow-box`). The
+server's home is the `orchestratorOn` instance. Another instance shows its Tailscale host only.
+
 Example: CI failures for repo `orca` go to the Slack channel `C123`.
 
 `user_id` is `db.currentUser()` (`ORCA_USER`, else `me`).
 
 ```sql
 INSERT INTO integration (id, user_id, kind, name, instance, config, secret_ref, created_at)
-VALUES ('slack-work', 'me', 'slack', 'Work Slack', 'cloud', '{}', 'ORCA_SECRET_SLACK_BOT', 0);
+VALUES ('slack-work', 'me', 'slack', 'Work Slack', '*', '{}', 'ORCA_SECRET_SLACK_BOT', 0);
 INSERT INTO channel_link (id, user_id, integration_id, external_id, level)
 VALUES ('eng', 'me', 'slack-work', 'C123', 'notify');
 INSERT INTO subscription (user_id, topic_pattern, filter, target_kind, target_id)
@@ -241,7 +267,7 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 | Branch | Uses | Adds |
 |---|---|---|
 | Slack two-way | `ingest`, `inboundEnvelope`, `thread`, `mentioned`, thread links, `caps.edits`. | Socket Mode in `start` (`inbound: "socket"`), a bot token in `ORCA_SECRET_SLACK_BOT`. Keep `postAsUser` for "post as me". |
-| Discord | The same as Slack. | Gateway in `start`. Run it on the personal box: set `integration.instance`. |
+| Discord | The same as Slack. | Gateway in `start`. Automatic or pinned: only one bridge runs it (section 6.1). |
 | Email | `OutboundMessage.replyToExternalMsgId` and `references`, `idempotencyKey` as the Message-ID, `ConversationRef.messageId`, `cursor` for an IMAP UID. | IMAP IDLE in `start`. A DKIM check before `ingest`. |
 | Settings UI | `store.ts` (every table), `registry.health()`, `store.retryDead()`, `GET /api/integrations`, the pairing routes (section 10). | Routes to write rows. A Test button that calls `publish` with a test key. An Approve / Deny list over `GET /api/integrations/pairing`. |
 | GitHub poller | Done: `adapters/github.ts`, section 13. | |
@@ -339,7 +365,8 @@ Config (`integration.config`):
 { "repos": ["owner/name", { "slug": "me/site", "repo": "web", "githubUser": "me" }], "intervalSeconds": 60 }
 ```
 
-- `repos` absent: every configured repo with a GitHub origin.
+- `repos` absent: every configured repo with a GitHub origin on the bridge that runs the row. With
+  Automatic placement (section 6.1) that bridge can change. Set `repos`, or pin the row.
 - `repo` is Orca's repo name (the `scope.repo` of each event). The default is the name part of the slug.
 - The token is `secret_ref` (`ORCA_SECRET_GITHUB_*`) when it is set. Else it is the `gh` login of
   `githubUser`, else the active `gh` login.
