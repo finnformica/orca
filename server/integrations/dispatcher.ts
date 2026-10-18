@@ -3,7 +3,7 @@
 // orchestrator's inbox, a workstream follow-up, or the web. A failure backs off (5 s, 30 s, 2 min,
 // 10 min, 1 h, respecting retryAfterMs); after the sixth attempt the row is dead and
 // `orca.integration.failed` is published (the web hears it as an `integration_failed` notification).
-import { afterAttempt, clip, digestEnvelope, paceWait, type DeliveryTarget, type Envelope, type OutboundMessage, type SendResult, type TargetKind } from "../../shared/integrations";
+import { afterAttempt, CATCH_ALL_SEND_ERROR, clip, sendsToCatchAll, digestEnvelope, paceWait, type DeliveryTarget, type Envelope, type OutboundMessage, type SendResult, type TargetKind } from "../../shared/integrations";
 import type { Adapter } from "./adapter";
 import * as router from "./router";
 import * as store from "./store";
@@ -39,6 +39,7 @@ export const outbound = (e: Envelope): OutboundMessage => ({
   text: e.text, topic: e.topic,
   ...(e.title ? { title: e.title } : {}), ...(e.link?.url ? { url: e.link.url } : {}),
   ...(e.thread?.messageId ? { replyToExternalMsgId: e.thread.messageId } : {}),
+  ...(e.openThread ? { thread: true, ...(e.openThread.messageId ? { replyToExternalMsgId: e.openThread.messageId } : {}) } : {}),
   ...(e.attachments?.length ? { attachments: e.attachments } : {}),
 });
 
@@ -50,6 +51,8 @@ async function sendOne(d: store.Delivery, now: number): Promise<SendResult | { d
   const t: DeliveryTarget = d.target;
   try {
     if (t.kind === "link") {
+      // A row planned before the core refused catch-all targets: never hand "*" to an adapter.
+      if (sendsToCatchAll(t)) return { ok: false, retryable: false, error: CATCH_ALL_SEND_ERROR };
       const a = sinks.adapter(t.integrationId);
       if (!a) return { ok: false, retryable: true, error: `integration ${t.integrationId} is not running on this bridge` };
       if (a.caps.rate) {
@@ -60,11 +63,13 @@ async function sendOne(d: store.Delivery, now: number): Promise<SendResult | { d
       }
       const msg = outbound(d.envelope);
       const r = await a.send({ linkId: t.linkId, externalId: t.externalId, ...(t.threadId ? { threadId: t.threadId } : {}) }, { ...msg, text: clip(msg.text, a.caps.maxTextLength) }, String(d.id));
-      // The first post about a workstream starts its thread on this link (§3.6): store it, so the
-      // next post continues there and a reply in it reaches the workstream.
-      const scope = d.envelope.scope;
-      if (r.ok && r.threadId && !t.threadId && scope?.repo && scope.branch && a.caps.threads) {
-        await store.setThreadLink({ adapter: t.adapter, externalThreadId: r.threadId, linkId: t.linkId, repo: scope.repo, branch: scope.branch });
+      // A post that starts a thread — the first post about a workstream (§3.6), or `--thread` on a
+      // reply — stores it, so the next post continues there and a reply in it reaches the workstream.
+      // The workstream is the event's scope, else the one the old thread was linked to.
+      if (r.ok && r.threadId && r.threadId !== t.threadId && a.caps.threads) {
+        const scope = d.envelope.scope;
+        const ws = scope?.repo && scope.branch ? { repo: scope.repo, branch: scope.branch } : t.threadId ? await store.threadLink(t.adapter, t.threadId) : undefined;
+        if (ws) await store.setThreadLink({ adapter: t.adapter, externalThreadId: r.threadId, linkId: t.linkId, repo: ws.repo, branch: ws.branch });
       }
       return r;
     }

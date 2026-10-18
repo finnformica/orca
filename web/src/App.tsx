@@ -6,13 +6,14 @@ import { openOrchestrator } from "@/lib/orchestratorOpen";
 import { launchOverlay } from "./workstream";
 import { expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
 import { Shell, Crumb, AddNew } from "@/components/Shell";
-import { OrchestratorPanel, OrchestratorPage } from "@/components/Terminal";
+import { OrchestratorPanel, OrchestratorPage, OrchestratorWindow, isOrchestratorWindow } from "@/components/Terminal";
 import { TerminalPanel } from "@/components/InstanceTerminal";
 import { ToastHost } from "@/components/Notifications";
 import { useWorkstreams } from "./store";
 import { NewDraft } from "./views/Board";
 import { Overview } from "./views/Overview";
 import { Agents } from "./views/Agents";
+import { InboxPage } from "./views/Inbox";
 import { PreviewsPage, Settings } from "./views/Pages";
 import { HandoffsPage } from "./views/Handoffs";
 import { PrDetail } from "./views/PrDetail";
@@ -40,6 +41,8 @@ export function App() {
     navigate(location.pathname, true);
     if (open === "new") setAddNew(true); else ask();
   }, []);
+  // Pop out's popup window (no Document PiP in this browser): the chat alone, no shell around it.
+  if (route.name === "orchestrator" && isOrchestratorWindow()) return <TooltipProvider><OrchestratorWindow /></TooltipProvider>;
   return (
     <TooltipProvider>
       <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarAction collapsed={collapsed} />}>
@@ -57,6 +60,7 @@ function Page({ route }: { route: Route }) {
     case "pr": return <PrDetail repo={route.repo} number={route.number} sub={route.sub} />;
     case "local": return <LocalDetail repo={route.repo} branch={route.branch} sub={route.sub} />;
     case "agents": return <Agents />;
+    case "inbox": return <InboxPage />;
     case "previews": return <PreviewsPage />;
     case "handoffs": return <HandoffsPage />;
     case "settings": return <Settings />;
@@ -68,7 +72,7 @@ function Page({ route }: { route: Route }) {
   }
 }
 
-const TITLES = { board: "Overview", agents: "Agents", previews: "Previews", handoffs: "Handoffs", settings: "Settings", orchestrator: "Orchestrator", integrations: "Integrations" } as const;
+const TITLES = { board: "Overview", agents: "Agents", inbox: "Inbox", previews: "Previews", handoffs: "Handoffs", settings: "Settings", orchestrator: "Orchestrator", integrations: "Integrations" } as const;
 
 function Crumbs({ route }: { route: Route }) {
   const rows = useWorkstreams();

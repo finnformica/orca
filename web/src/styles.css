@@ -27,6 +27,8 @@
   --accent-foreground: #222222;
   --destructive: #e5484d;
   --border: rgba(0, 0, 0, 0.1);
+  /* branch-demo's border-dark (gray-alpha-300): the resize handle's line on hover. */
+  --border-dark: #0b0b0b3e;
   --input: rgba(0, 0, 0, 0.1);
   /* The chat log's text stops between the foreground and the muted text (styles below). */
   --text-soft: #4d4d4d;
@@ -96,6 +98,7 @@
   --accent-foreground: #e8e8e8;
   --destructive: #e5484d;
   --border: rgba(255, 255, 255, 0.12);
+  --border-dark: #ffffff33;
   --input: rgba(255, 255, 255, 0.12);
   --text-soft: #d2d2d2;
   --text-faint: #848484;
@@ -178,6 +181,7 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-border: var(--border);
+  --color-border-dark: var(--border-dark);
   --color-input: var(--input);
   --color-ring: var(--ring);
 }

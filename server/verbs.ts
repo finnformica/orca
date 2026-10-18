@@ -33,10 +33,12 @@ export const runModel = (cfg: OrcaConfig, repo: RepoConfig, provider: AgentProvi
 export const checkGate = (repo: RepoConfig): { command: string; autofix: boolean } | undefined =>
   repo.checkCommand ? { command: repo.checkCommand, autofix: featuresOf(repo).followAutomation } : undefined;
 
-/** The permission mode for a workstream's runs: the repo's, but always "ask" for one an outside
- *  sender's wake started or steered (`grantScope` on its enrichment, server/integrations §3.7). */
+/** The permission mode for a workstream's runs: the repo's, but always "scoped" for one an outside
+ *  sender's wake started or steered (`grantScope` on its enrichment, server/integrations §3.7). A
+ *  headless run has nobody to approve a prompt, so "ask" let a "work" grant start work that could
+ *  never edit a file; "scoped" (agent.scopedRules) lets it edit, commit and push its own branch. */
 export const permissionFor = (repo: RepoConfig, fields?: Record<string, unknown>): agent.LaunchOptions["permissionMode"] =>
-  fields?.grantScope ? "ask" : repo.agentPermissionMode ?? "ask";
+  fields?.grantScope ? "scoped" : repo.agentPermissionMode ?? "ask";
 
 /** What every run in a repo is launched with, whoever asked for it. `fields` is the branch's
  *  enrichment, when the run is for a branch. */
@@ -44,6 +46,7 @@ export const launchOptions = (cfg: OrcaConfig, repo: RepoConfig, provider: Agent
   provider, repo: repo.name,
   model: runModel(cfg, repo, provider, pinned),
   permissionMode: permissionFor(repo, fields),
+  ...(permissionFor(repo, fields) === "scoped" ? { scope: { baseBranch: repo.baseBranch, checkCommand: repo.checkCommand } } : {}),
   maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
   timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
   memoryMaxGb: repo.agentMemoryMaxGb, cpuWeight: cfg.agentCpuWeight,
@@ -205,7 +208,7 @@ export async function compact(cfg: OrcaConfig, repo: RepoConfig, branch: string)
   if (agent.isRunning(worktreePath)) throw new BusyError();
   const pinned = providerOfModel(e.preferredModel as string | undefined) === "claude" ? e.preferredModel as string : undefined;
   const { runId } = await agent.runAgent(worktreePath, "/compact", {
-    ...launchOptions(cfg, repo, "claude", pinned), check: undefined,
+    ...launchOptions(cfg, repo, "claude", pinned, e), check: undefined,
     resume: e.sessionId, branch, action: "compact", instruction: "/compact",
   });
   return { runId };

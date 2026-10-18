@@ -9,7 +9,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { getDefaultStore } from "jotai";
-import { AskOrchestrator, OrchestratorPage, OrchestratorPanel } from "@/components/Terminal";
+import { AskOrchestrator, ORCHESTRATOR_WINDOW_NAME, ORCHESTRATOR_WINDOW_URL, OrchestratorPage, OrchestratorPanel, OrchestratorWindow, isOrchestratorWindow } from "@/components/Terminal";
 import { Dock } from "@/components/Shell";
 import { SLIDE_MS } from "@/components/SidePanel";
 import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
@@ -71,7 +71,8 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   const p = panel()!;
   // A desktop: docked INTO the shell's dock column (no overlay, no transform, no shadow) — the
   // dock's width animates and clips it, so the page reflows in the same frame.
-  expect(p.parentElement!.dataset.slot).toBe("dock");
+  expect(p.parentElement!.dataset.slot).toBe("dock-clip"); // the dock's inner clip: the resize handle hangs outside it
+  expect(p.parentElement!.parentElement!.dataset.slot).toBe("dock");
   expect(p.hasAttribute("data-docked")).toBe(true);
   expect(p.className).toContain("absolute inset-y-0 left-0");
   expect(p.className).not.toContain("fixed");
@@ -236,17 +237,30 @@ test("the panel is resized from its left edge and the width is remembered (clamp
   await click(launcher());
   const p = panel()!;
   expect(p.style.width).toBe("520px");
-  const handles = p.querySelectorAll<HTMLElement>('[data-slot="orchestrator-resize"]');
-  expect(handles).toHaveLength(1); // one edge: the inner one
+  const handles = document.querySelectorAll<HTMLElement>('[data-slot="orchestrator-resize"]');
+  expect(handles).toHaveLength(1); // one handle
   expect(handles[0]!.className).toContain("cursor-ew-resize");
+  // branch-demo's gutter handle: in the dock, outside the panel and its clip, centred in the 6px gap.
+  expect(p.contains(handles[0]!)).toBe(false);
+  expect(handles[0]!.parentElement!.dataset.slot).toBe("dock");
+  expect(handles[0]!.style.left).toBe("-3.5px"); // half the 6px gap, less half the 1px line
+  expect(handles[0]!.className).toContain("before:-inset-2"); // the 17px hit area around the 1px line
   expect(handles[0]!.getAttribute("role")).toBe("separator");
   // Dragging the edge LEFT widens; the width lands in storage when the pointer lets go.
   await act(async () => {
     handles[0]!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: 500, clientY: 0 }));
     window.dispatchEvent(new PointerEvent("pointermove", { clientX: 440, clientY: 0 }));
+  });
+  // Mid-drag: the handle shows its active look and the dock drops its width transition.
+  expect(handles[0]!.hasAttribute("data-resizing")).toBe(true);
+  expect(handles[0]!.parentElement!.hasAttribute("data-resizing")).toBe(true);
+  expect(handles[0]!.parentElement!.className).toContain("data-[resizing]:transition-none");
+  await act(async () => {
     window.dispatchEvent(new PointerEvent("pointerup", {}));
     await flush();
   });
+  expect(handles[0]!.hasAttribute("data-resizing")).toBe(false);
+  expect(handles[0]!.parentElement!.hasAttribute("data-resizing")).toBe(false);
   expect(p.style.width).toBe("580px");
   expect(JSON.parse(localStorage.getItem("orca.ui.v1.orchestratorWidth")!)).toBe(580);
   // Dragged far right: never narrower than the minimum.
@@ -292,10 +306,47 @@ test("dayLabel groups timestamps: Today, Yesterday, then the date", () => {
   expect(dayLabel(now - 3 * DAY, now)).toMatch(/10 Oct|Oct 10/);
 });
 
-test("Pop out is hidden without the Document Picture-in-Picture API", async () => {
-  await mount(<Entry />);
-  await click(launcher());
-  expect(panel()!.querySelector('[aria-label="Pop out"]')).toBeNull();
+test("without the Document Picture-in-Picture API (plain http, Firefox), Pop out opens the chat in a named popup window; a second click focuses it", async () => {
+  const realOpen = window.open;
+  const opened: { url?: string | URL; name?: string; features?: string }[] = [];
+  let focused = 0;
+  const fakeWin = { closed: false, focus() { focused++; } } as unknown as Window;
+  window.open = ((url?: string | URL, name?: string, features?: string) => { opened.push({ url, name, features }); return fakeWin; }) as typeof window.open;
+  try {
+    await mount(<Entry />);
+    await click(launcher());
+    const popOut = panel()!.querySelector<HTMLButtonElement>('[aria-label="Pop out"]')!;
+    expect(popOut).not.toBeNull();
+    await click(popOut);
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.url).toBe(ORCHESTRATOR_WINDOW_URL);
+    expect(opened[0]!.name).toBe(ORCHESTRATOR_WINDOW_NAME);
+    expect(opened[0]!.features).toMatch(/^popup,width=\d+,height=\d+$/);
+    expect(panel()).toBeNull(); // the chat moved to the window; the tab's panel closed
+    // Again: the open window comes forward, no second window and no reload.
+    await click(launcher());
+    await click(panel()!.querySelector('[aria-label="Pop out"]')!);
+    expect(opened).toHaveLength(1);
+    expect(focused).toBe(2);
+    // Closed by the user: the next click opens a new one.
+    (fakeWin as { closed: boolean }).closed = true;
+    await click(launcher());
+    await click(panel()!.querySelector('[aria-label="Pop out"]')!);
+    expect(opened).toHaveLength(2);
+  } finally {
+    window.open = realOpen;
+  }
+});
+
+test("the popup window's page is the orchestrator's header and chat alone", async () => {
+  expect(isOrchestratorWindow("/orchestrator", "?window")).toBe(true);
+  expect(isOrchestratorWindow("/orchestrator", "")).toBe(false);
+  expect(isOrchestratorWindow("/agents", "?window")).toBe(false);
+  await mount(<OrchestratorWindow />);
+  const win = container!.querySelector('[data-slot="orchestrator-window"]')!;
+  expect(win.textContent).toContain("Orchestrator");
+  expect(win.querySelector("textarea")).not.toBeNull();
+  expect(win.querySelector('[aria-label="Close orchestrator"]')).toBeNull();
 });
 
 test("Pop out shows at tablet width and up; it hides only below the app's own phone breakpoint (not lg)", async () => {

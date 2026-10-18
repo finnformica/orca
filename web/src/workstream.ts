@@ -1279,6 +1279,8 @@ export function withScreenshotsSection(body: string, section: string): string {
 export function workerEvent(input: {
   repo: string; branch: string; title?: string; runId: string; status: string;
   outcome?: AgentOutcome; response?: string; check?: TurnCheck;
+  /** Tool calls the CLI refused (RunMeta.permissionDenials) — a scoped run's rules said no. */
+  denied?: string[];
 }): string {
   const { outcome: o, check } = input;
   const list = (label: string, items: string[] | undefined) => (items?.length ? [`${label}:`, ...items.map((i) => `- ${i}`)] : []);
@@ -1287,6 +1289,7 @@ export function workerEvent(input: {
     ...(check ? [`Orca's check \`${check.command}\` ${check.ok ? "passed" : `FAILED (exit ${check.exitCode}):\n${clip(check.output, 600)}`}`] : []),
     ...(o ? [`Outcome: ${clip(o.outcome, 1500)}`, ...list("Remaining", o.remaining), ...list("Decisions", o.decisions), ...list("Commits", o.commits)]
       : [`Response: ${clip(input.response ?? "(none)", 1500)}`]),
+    ...list("Denied tool calls (scoped mode — tell the user if the work needs them)", input.denied?.slice(0, 10)),
     ...list("Screenshots (Read to view)", reportedShots([input.response ?? "", ...(o?.verification ?? [])].join("\n"))),
     `Full turn: orca read --run ${input.runId}`,
   ].join("\n");
@@ -1499,6 +1502,15 @@ export const upkeepReasonText = (reasons: UpkeepReason[]): string => reasons.map
 
 /** The card's line for the upkeep record: what it is auto-addressing while that run goes, or that it
  *  gave up. Nothing once the run is over and it has not given up. Pure. */
+/** An outside grant on a workstream (`grantScope`, set by the orchestrator's tool route), as the
+ *  card says it: who started it, from where, and that its runs are in scoped mode. Pure. */
+export type GrantScopeNote = { level?: string; by?: string; via?: string };
+export function grantScopeLabel(g: GrantScopeNote | undefined): string | undefined {
+  if (!g || typeof g !== "object") return undefined;
+  const via = g.via ? g.via.charAt(0).toUpperCase() + g.via.slice(1) : "outside Orca";
+  return `started from ${via}${g.by ? ` by ${g.by}` : ""}, scoped mode`;
+}
+
 export function upkeepLabel(rec: UpkeepRecord | undefined, running: boolean): string | undefined {
   if (!rec) return undefined;
   if (rec.gaveUp) return `auto-upkeep gave up: ${rec.gaveUp}`;
@@ -1638,6 +1650,9 @@ const ORCA_COMMANDS = [
   "                                  cards: your plan for it, what it waits on, its merge class (small: fine to",
   "                                  merge on green; needs-finn: the user merges). An empty flag clears that",
   "                                  field; no flags prints it",
+  "  orca status --repo <repo> --branch <branch> --clear-grant   lift an outside sender's grant from a workstream:",
+  "                                  its runs leave scoped mode for the repo's own permission mode. Only from the",
+  "                                  user's own chat, and only when the user asks",
   "  orca repo list [--user <login>]  every GitHub repo each signed-in gh account can see, newest first; ✓ = already in Orca",
   "  orca repo add <owner/name> [--on <instance>] [--name <slug>]   set a repo up in Orca: clone it on that instance",
   "                                  (the one whose account owns it, else the default), add it to the config with its",
@@ -2973,11 +2988,28 @@ export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) =>
 // flexible tracks (workstream, signals) via their own `grow`. Each column has a floor in rem; the
 // flexible ones share what is left, so the row never needs a horizontal scroll.
 export type ListColumn = { key: "workstream" | "status" | "pr" | "signals" | "actions"; label: string; minRem: number; grow?: number };
-export function listColumns(): ListColumn[] {
-  return [
+/** The list's layouts by the PAGE's width (the shell's `@container/page`, so the docked orchestrator
+ *  panel counts): `wide` has every column; `mid` folds Status under the title; `narrow` also folds
+ *  Checks & review into the PR cell. A phone (below md) stacks each row instead. */
+export type ListTier = "narrow" | "mid" | "wide";
+/** The page width (rem) from which each tier applies — the Agents row's `@min-[…]/page:` classes. */
+export const LIST_TIER_MIN_REM: Record<ListTier, number> = { narrow: 0, mid: 52, wide: 68 };
+export const LIST_TIERS: ListTier[] = ["narrow", "mid", "wide"];
+/** Which tier a page width (px) gets. */
+export function listTier(pagePx: number, remPx = 16): ListTier {
+  return pagePx >= LIST_TIER_MIN_REM.wide * remPx ? "wide" : pagePx >= LIST_TIER_MIN_REM.mid * remPx ? "mid" : "narrow";
+}
+const TIER_COLUMNS: Record<ListTier, ListColumn["key"][]> = {
+  narrow: ["workstream", "pr", "actions"],
+  mid: ["workstream", "pr", "signals", "actions"],
+  wide: ["workstream", "status", "pr", "signals", "actions"],
+};
+export function listColumns(tier: ListTier = "wide"): ListColumn[] {
+  const all: ListColumn[] = [
     { key: "workstream", label: "Workstream", minRem: 10, grow: 2 },
     { key: "status", label: "Status", minRem: 8.5 },
-    { key: "pr", label: "PR", minRem: 8.5 },
+    // Narrow, the PR cell also holds the checks and review: it takes the same share as the title.
+    { key: "pr", label: "PR", minRem: 8.5, grow: tier === "narrow" ? 2 : undefined },
     { key: "signals", label: "Checks & review", minRem: 6, grow: 1 },
     // Fixed, wide enough for the row's quick-action icons (two at most — quickActions never applies
     // more to one state), the local preview link + its Stop and the ⋯ menu, all size-7 at gap-1, so
@@ -2986,7 +3018,10 @@ export function listColumns(): ListColumn[] {
     // submenu still carries Open/Add PR preview.
     { key: "actions", label: "Actions", minRem: 10 },
   ];
+  return all.filter((c) => TIER_COLUMNS[tier].includes(c.key));
 }
+/** Which tiers show a column as its own cell (the rest fold it into another cell). */
+export const listColumnTiers = (key: ListColumn["key"]): ListTier[] => LIST_TIERS.filter((t) => TIER_COLUMNS[t].includes(key));
 /** The CSS grid-template-columns for a column set: fixed floors, `minmax(floor, Nfr)` for the flexible. */
 export const listGridTemplate = (cols: ListColumn[]): string =>
   cols.map((c) => (c.grow ? `minmax(${c.minRem}rem,${c.grow}fr)` : `${c.minRem}rem`)).join(" ");

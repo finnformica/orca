@@ -50,6 +50,7 @@ describe("the shortcut matcher", () => {
     expect(after("a")).toBe("goAgents");
     expect(after("p")).toBe("goPreviews");
     expect(after("i")).toBe("goIntegrations");
+    expect(after("m")).toBe("goInbox"); // I is Integrations, so M (messages) is the Inbox
     expect(after("s")).toBe("goSettings");
     expect(after("O")).toBe("goOverview"); // caps lock
     for (const k of ["c", "f", "n", "x", "g", "r", "u", "h"]) expect(after(k)).toBeNull(); // a stray key ends the chord, firing nothing — N has no G chord either
@@ -64,7 +65,7 @@ describe("the shortcut matcher", () => {
     expect(matchShortcut({ key: "n" }, false, true, false)).toBe("notifications");
     // Every page chord is in the table with its destination, and labels as two keycaps.
     expect(SHORTCUTS.filter((s) => s.chord).map((s) => [s.id, s.to])).toEqual([
-      ["goOverview", "/"], ["goAgents", "/agents"], ["goPreviews", "/previews"], ["goIntegrations", "/integrations"], ["goHandoffs", "/handoffs"], ["goSettings", "/settings"],
+      ["goOverview", "/"], ["goAgents", "/agents"], ["goInbox", "/inbox"], ["goPreviews", "/previews"], ["goIntegrations", "/integrations"], ["goHandoffs", "/handoffs"], ["goSettings", "/settings"],
     ]);
     expect(shortcutKeys("goAgents", true)).toEqual(["G", "A"]);
     expect(shortcutLabel("goSettings")).toBe("G then S");
@@ -268,7 +269,7 @@ test("S1: C, O, ?, ⌘B and Esc work from the page — and never while typing in
   // The page chords under their own Navigation heading.
   const nav = help.querySelector('[data-group="Navigation"]')!;
   expect(nav.querySelector("h3")!.textContent).toBe("Navigation");
-  expect([...nav.querySelectorAll("li [data-shortcut]")].map((k) => k.getAttribute("data-shortcut"))).toEqual(["goOverview", "goAgents", "goPreviews", "goIntegrations", "goHandoffs", "goSettings"]);
+  expect([...nav.querySelectorAll("li [data-shortcut]")].map((k) => k.getAttribute("data-shortcut"))).toEqual(["goOverview", "goAgents", "goInbox", "goPreviews", "goIntegrations", "goHandoffs", "goSettings"]);
   expect(help.querySelector('[data-group="General"] [data-shortcut="goAgents"]')).toBeNull();
 
   // The tooltips carry the keys too.
@@ -498,7 +499,7 @@ test("S9: G then a letter goes to the page — and never also fires that letter'
 test("S10: every sidebar page shows its G chord — always-visible keycaps expanded, in the tooltip collapsed — and the palette's pages carry them", async () => {
   await mount("/");
   const items = () => [...document.querySelectorAll<HTMLElement>('nav[aria-label="Main"] button')];
-  const expected: [string, ShortcutId][] = [["Overview", "goOverview"], ["Agents", "goAgents"], ["Previews", "goPreviews"], ["Integrations", "goIntegrations"], ["Handoffs", "goHandoffs"], ["Settings", "goSettings"]];
+  const expected: [string, ShortcutId][] = [["Overview", "goOverview"], ["Agents", "goAgents"], ["Inbox", "goInbox"], ["Previews", "goPreviews"], ["Integrations", "goIntegrations"], ["Handoffs", "goHandoffs"], ["Settings", "goSettings"]];
   expect(items().map((b) => b.querySelector('[data-slot="nav-label"]')!.textContent)).toEqual(expected.map(([l]) => l));
   for (const [i, b] of items().entries()) {
     const id = expected[i]![1];
@@ -522,7 +523,7 @@ test("S10: every sidebar page shows its G chord — always-visible keycaps expan
   // The palette's Go-to pages: the chord in the row's shortcut slot.
   await press(document.body, "k", MOD);
   const pal = q('[data-slot="command-palette"]')!;
-  for (const [to, id] of [["/", "goOverview"], ["/agents", "goAgents"], ["/previews", "goPreviews"], ["/integrations", "goIntegrations"], ["/settings", "goSettings"]]) {
+  for (const [to, id] of [["/", "goOverview"], ["/agents", "goAgents"], ["/inbox", "goInbox"], ["/previews", "goPreviews"], ["/integrations", "goIntegrations"], ["/settings", "goSettings"]]) {
     expect(keycaps(pal.querySelector(`[role="option"][data-id="page:${to}"] [data-shortcut="${id}"]`))).toEqual(shortcutKeys(id as ShortcutId));
   }
 });
