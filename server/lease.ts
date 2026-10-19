@@ -7,7 +7,7 @@
 // worktree on a stale file. PID reuse is bounded by expiry: if the bridge dies without releasing and
 // the OS later recycles the pid, the lease self-heals at expiry rather than lingering forever.
 import { createHash } from "crypto";
-import { unlinkSync } from "fs";
+import { readdirSync, unlinkSync } from "fs";
 import { join } from "path";
 import { statePath, stateDir, writeJsonSync, readJsonSync, readJsonDir } from "./state";
 import { isZombie } from "./proc";
@@ -92,6 +92,24 @@ export const current = (key: string): Lease | undefined => readJsonSync<Lease>(l
  *  one whose process died with the previous bridge (see db.reconcileRunning). */
 export function liveRunIds(): Set<string> {
   return new Set(live().map((lease) => lease.runId));
+}
+
+/** Run ids of every lease file on this host, live or expired: a file goes only when its run ends.
+ *  The browser watchdog's orphan-scope rule kills a run scope that none of these names, so this is
+ *  conservative: `undefined` when the dir can't be read or any file in it can't be parsed. */
+export function knownRunIds(): Set<string> | undefined {
+  const dir = join(stateDir(), "leases");
+  let names: string[];
+  try { names = readdirSync(dir).filter((n) => n.endsWith(".json")); } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ENOENT" ? new Set() : undefined;
+  }
+  const ids = new Set<string>();
+  for (const n of names) {
+    const l = readJsonSync<Lease>(join(dir, n));
+    if (!l?.runId) return undefined;
+    ids.add(l.runId);
+  }
+  return ids;
 }
 
 /** Branches that currently hold a live lease — restart recovery that doesn't depend on the branch
