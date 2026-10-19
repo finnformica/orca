@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
-// `orca-run [--kind test|lint|build|e2e] [--timeout <minutes>] -- <command...>` — run a HEAVY command
-// (a test runner, a linter on a repo, tsc, a build, an e2e suite) in a slot of the box-wide queue
+// `orca-run [--kind test|lint|build|e2e|migrate|serve] [--timeout <minutes>] -- <command...>` — run a
+// HEAVY command (a test runner, a linter or formatter on a repo, tsc, a build, an e2e suite, a
+// database migration, a local backend or frontend for a test) in a slot of the box-wide queue
 // (server/heavy.ts). Several agents on one box ran these at once and OOM-killed each other.
 //
 // It asks the bridge for a slot and prints `queued: position N …` to stderr while it waits. When the
@@ -15,7 +16,7 @@
 // With no bridge to answer, the command runs at once with a warning: a queue must not stop all work.
 import { API_PORT } from "../../server/ports";
 
-const KINDS = ["test", "lint", "build", "e2e"];
+const KINDS = ["test", "lint", "build", "e2e", "migrate", "serve"];
 const argv = process.argv.slice(2);
 let kind = "test";
 let timeoutMin: number | undefined;
@@ -26,7 +27,7 @@ for (let i = 0; i < argv.length; i++) {
   if (a === "--kind") kind = argv[++i] ?? "";
   else if (a === "--timeout") timeoutMin = Number(argv[++i]);
   else if (a === "-h" || a === "--help") {
-    console.log("usage: orca-run [--kind test|lint|build|e2e] [--timeout minutes] -- <command...>\n  waits for a slot in the box-wide queue, then runs the command and exits with its code\n  ORCA_RUN_BYPASS=1 runs the command at once, with no slot");
+    console.log("usage: orca-run [--kind test|lint|build|e2e|migrate|serve] [--timeout minutes] -- <command...>\n  waits for a slot in the box-wide queue, then runs the command and exits with its code\n  ORCA_RUN_BYPASS=1 runs the command at once, with no slot");
     process.exit(0);
   } else if (a.startsWith("--")) { console.error(`orca-run: unknown flag ${a}`); process.exit(2); }
   else { cmd = argv.slice(i); break; }
@@ -88,7 +89,7 @@ if (!res.ok) {
 
 // One JSON object per line: `{queued: N}` while waiting, then `{granted, prefix, env, maxRunMs}`,
 // then heartbeats, and `{revoked: reason}` if the bridge takes the slot back.
-type Granted = { granted: string; prefix: string[]; env: Record<string, string>; maxRunMs: number };
+type Granted = { granted: string; prefix: string[]; env: Record<string, string>; maxRunMs: number; cpus?: number };
 const reader = res.body!.getReader();
 const decoder = new TextDecoder();
 let buf = "";
@@ -145,7 +146,7 @@ onRevoked = (reason) => {
   process.kill(process.pid, "SIGTERM");
 };
 
-const code = await run([...grant.prefix, ...cmd], { ...grant.env, ORCA_RUN_SLOT: grant.granted }, grant.maxRunMs);
+const code = await run([...grant.prefix, ...cmd], { ...grant.env, ORCA_RUN_SLOT: grant.granted, ...(grant.cpus ? { ORCA_RUN_CPUS: String(grant.cpus) } : {}) }, grant.maxRunMs);
 await fetch(`${base}/api/heavy/release`, {
   method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: grant.granted }),
 }).catch(() => { /* the connection drop below frees it too */ });

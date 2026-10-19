@@ -410,44 +410,74 @@ browser.
 <a id="heavy-commands"></a>
 **Heavy commands** go through a box-wide queue (`server/heavy.ts`). Agents on one box ran
 Playwright, Jest, `eslint` and builds at the same time. On a 4 vCPU, 15.7 GB box this caused OOM
-kills in `orca-agents.slice`.
+kills in `orca-agents.slice`. `orca-agents.slice` has no CPU quota, so this queue is the only CPU
+control. It must see every heavy task.
 
-- A worker runs `orca-run [--kind test|lint|build|e2e] [--timeout <minutes>] -- <command...>`. The
-  kind is `test` when you do not give one.
+- A worker runs `orca-run [--kind test|lint|build|e2e|migrate|serve] [--timeout <minutes>] --
+  <command...>`. The kind is `test` when you do not give one.
+- These are the kinds:
+  - `test`: jest, vitest, `bun test`, mocha, pytest.
+  - `lint`: eslint, prettier, tsc, biome, stylelint, knip.
+  - `build`: a frontend or backend build.
+  - `e2e`: Playwright, Cypress, an e2e test script.
+  - `migrate`: a database migration or seed.
+  - `serve`: a local backend or frontend that a test needs.
 - `orca-run` asks the bridge for a slot (`POST /api/heavy`). While it waits, it prints
   `queued: position N in line for a <kind> slot` to stderr.
 - When it gets the slot, it runs the command and streams its output. It exits with the exit code
-  of the command.
+  of the command. The command gets `ORCA_RUN_CPUS`, the CPU cost of its slot.
 - The slot always comes back. These events release it:
   - The command exits.
   - `orca-run` gets a signal. It stops the command first.
   - `orca-run` is killed with `kill -9`. The bridge sees the dropped connection.
   - The agent run that asked ends (`ORCA_RUN_ID`). The bridge also stops the command.
   - The `orca-run` process is gone (a sweep each 15 s).
-  - The command runs past the max run time. The bridge stops the command.
+  - The command runs past the max run time of its kind. The bridge stops the command.
 - On a box with a user bus, each command runs in its own scope in `orca-agents.slice`, with a
   memory limit and no swap. Thus one test run cannot take the whole slice.
 - With no bridge to answer, `orca-run` prints a warning and runs the command at once.
-- The Overview's machine card lists the running and queued commands, with their workstreams.
-  `GET /api/heavy` gives the same list.
+- The Overview's machine card lists the running and queued commands, with their workstreams, and
+  the CPU in use against the budget. `GET /api/heavy` gives the same data.
+
+Each kind has a CPU cost. The queue grants a slot only when the sum of the running costs stays in
+`cpuBudget`. The queue is first in, first out for the budget and the total. A job does not wait
+for a job of another kind whose own limit is full. A job that costs more than the budget runs when
+nothing else runs.
 
 The limits are in the app config, `heavyQueue`. Each field is optional. These are the defaults for
-a 4 vCPU box:
+a 4 vCPU box. They keep about 3 CPUs busy at most:
 
 ```json
-{ "heavyQueue": { "limits": { "e2e": 1, "test": 2, "lint": 2, "build": 1, "total": 3 },
-  "maxWaitMinutes": 20, "maxRunMinutes": 30, "memoryMaxGb": 3 } }
+{ "heavyQueue": {
+  "limits": { "e2e": 1, "test": 2, "lint": 2, "build": 1, "migrate": 1, "serve": 2, "total": 4 },
+  "cpu": { "e2e": 1.5, "test": 1, "lint": 1, "build": 1.5, "migrate": 0.5, "serve": 0.5 },
+  "cpuBudget": 3,
+  "maxWaitMinutes": 20,
+  "maxRunMinutes": { "e2e": 30, "test": 30, "lint": 30, "build": 30, "migrate": 30, "serve": 60 },
+  "memoryMaxGb": 3 } }
 ```
 
-`bin/worker` is first on a worker's `PATH`. It holds shims for `playwright`, `jest`, `vitest`,
-`eslint`, `tsc`, `npx` and `bunx`, which send heavy calls through `orca-run`:
+`maxRunMinutes` can also be one number for all kinds. On a larger box, increase `cpuBudget` and
+the limits.
 
-- Heavy: `playwright test`, `jest`, `vitest`, `eslint`, `tsc`, and the same tools through `npx` or
-  `bunx`. Also `vite build` and `next build` through `npx` or `bunx`.
-- Not heavy: `--version`, `--help`, `playwright install`, and all other `npx` or `bunx` tools.
+`bin/worker` is first on a worker's `PATH`. Its shims (`bin/worker/.heavy-shim`) send heavy calls
+through `orca-run`:
+
+- Tools: `playwright test`, `cypress run`, `jest`, `vitest`, `mocha`, `pytest`, `eslint`,
+  `prettier`, `tsc`, the build tools, `vite` and `next dev` servers, and migration CLIs
+  (`mikro-orm`, `prisma`, `knex`, `typeorm`, `sequelize`, `drizzle-kit`, `alembic`). Also through
+  `npx`, `bunx`, `npm exec` and `pnpm dlx`.
+- Package scripts: `npm test`, `npm start`, `npm run <script>`, `pnpm <script>`, `yarn <script>`,
+  `bun run <script>` and `bun test`. The script name gives the kind: `test`, `lint`, `type-check`,
+  `format`, `build`, `dev`, `start`, `setup-db`, `migrate`, `e2e` and similar names.
+- Test scripts: `bash <file>` when the file name looks heavy, for example
+  `bash scripts/run-e2e-tests.sh`.
+- Workers: jest and `playwright test` get one worker when the call sets none. Set
+  `ORCA_RUN_WORKERS` to change it. Jest otherwise starts one worker for each CPU but one.
+- Not heavy: `--version`, `--help`, installs, `bash -c …`, `bun <file>` and all other commands.
 - A call inside a granted command (`ORCA_RUN_SLOT` is set) does not queue again.
-- The shims do not see a tool that a `package.json` script starts from `node_modules/.bin`. Wrap
-  `npm test`, `bun test` or `bun run check` in `orca-run` yourself.
+- The shims do not see `python -m pytest`, `node ./node_modules/…` or a script started by its own
+  path. Wrap these in `orca-run` yourself.
 
 The escape hatch: set `ORCA_RUN_BYPASS=1` to run a command at once, with no slot. Use it only for a
 command that is not heavy and that a shim queued by mistake.

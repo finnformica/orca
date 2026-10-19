@@ -6,8 +6,8 @@ import { chmodSync, mkdtempSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
-  acquireResponse, createSlotManager, heavyQueueProblems, heavySettings, HeavyWaitTimeout, scopePrefix,
-  type Grant, type HeavyEntry, type HeavySettings, type ReleaseReason, type SlotManager,
+  acquireResponse, createSlotManager, HEAVY_KINDS, heavyQueueProblems, heavySettings, HeavyWaitTimeout, scopePrefix,
+  type Grant, type HeavyEntry, type HeavySettings, type PerKind, type ReleaseReason, type SlotManager,
 } from "../server/heavy";
 import { runIdentity } from "../server/agent";
 import { HEAVY_COMMANDS, followUpPrompt, heavyQueueRows } from "../web/src/workstream";
@@ -23,7 +23,7 @@ function manager(over: Partial<HeavySettings> = {}, deps: { now?: () => number; 
   return { m, stopped };
 }
 /** Ask for a slot and record when it is granted. */
-function ask(m: SlotManager, kind: "e2e" | "test" | "lint" | "build", extra: { runId?: string; pid?: number; signal?: AbortSignal; positions?: number[] } = {}) {
+function ask(m: SlotManager, kind: HeavyEntry["kind"], extra: { runId?: string; pid?: number; signal?: AbortSignal; positions?: number[] } = {}) {
   const r: { grant?: Grant; error?: Error } = {};
   void m.acquire({ kind, command: `${kind} cmd`, runId: extra.runId, pid: extra.pid }, { signal: extra.signal, onQueue: (n) => extra.positions?.push(n) })
     .then((g) => { r.grant = g; }, (e) => { r.error = e; });
@@ -31,27 +31,38 @@ function ask(m: SlotManager, kind: "e2e" | "test" | "lint" | "build", extra: { r
 }
 
 describe("slot manager", () => {
-  test("HQ1: per-kind and total limits (defaults for 4 vCPU: e2e 1, test 2, lint 2, build 1, total 3)", async () => {
+  test("HQ1: defaults keep the box under 3 busy CPUs — per-kind limits, the CPU budget, and strict FIFO across the budget", async () => {
     const { m } = manager();
+    expect(m.view().cpu).toEqual({ used: 0, budget: 3 });
     const e1 = ask(m, "e2e"), e2 = ask(m, "e2e");
-    await tick();
-    expect(e1.grant).toBeDefined();
-    expect(e2.grant).toBeUndefined(); // e2e is 1
     const t1 = ask(m, "test"), t2 = ask(m, "test");
+    const s1 = ask(m, "serve");
     await tick();
-    expect(t1.grant && t2.grant).toBeDefined();
-    const l1 = ask(m, "lint");
-    await tick();
-    expect(l1.grant).toBeUndefined(); // total is 3: e2e + 2 tests
-    expect(m.view().running).toHaveLength(3);
-    expect(m.view().queued.map((q) => q.kind)).toEqual(["e2e", "lint"]);
+    expect(e1.grant && t1.grant).toBeDefined(); // 1.5 + 1 = 2.5 CPUs
+    expect(e2.grant).toBeUndefined(); // e2e is 1: skipped, it does not block the rest
+    expect(t2.grant).toBeUndefined(); // 2.5 + 1 > 3
+    expect(s1.grant).toBeUndefined(); // 0.5 fits, but it never passes the test that waits for the budget
+    expect(m.view().cpu.used).toBe(2.5);
     t1.grant!.release();
     await tick();
-    expect(l1.grant).toBeDefined(); // the e2e head is still blocked by its own kind, so lint goes
+    expect(t2.grant && s1.grant).toBeDefined(); // 1.5 + 1 + 0.5 = 3
+    expect(m.view().cpu.used).toBe(3);
     expect(e2.grant).toBeUndefined();
     e1.grant!.release();
     await tick();
     expect(e2.grant).toBeDefined();
+    expect(e2.grant!.cpu).toBe(1.5);
+  });
+
+  test("HQ1b: a job that costs more than the whole budget runs alone; the limits and costs come from config", async () => {
+    const { m } = manager(heavySettings({ cpu: { build: 5 }, cpuBudget: 3, limits: { lint: 1 } }));
+    const big = ask(m, "build"), lint = ask(m, "lint");
+    await tick();
+    expect(big.grant).toBeDefined();
+    expect(lint.grant).toBeUndefined();
+    big.grant!.release();
+    await tick();
+    expect(lint.grant).toBeDefined();
   });
 
   test("HQ2: FIFO within a kind, and each waiter hears its position as it moves", async () => {
@@ -104,7 +115,8 @@ describe("slot manager", () => {
   test("HQ5: max run time and a dead client pid — the sweep takes the slot back", async () => {
     let now = 1_000;
     const dead = new Set<number>();
-    const { m, stopped } = manager({ maxRunMs: 60_000 }, { now: () => now, alive: (pid) => !dead.has(pid) });
+    const maxRunMs = Object.fromEntries(HEAVY_KINDS.map((k) => [k, 60_000])) as PerKind;
+    const { m, stopped } = manager({ maxRunMs }, { now: () => now, alive: (pid) => !dead.has(pid) });
     const slow = ask(m, "test", { pid: 11 });
     const gone = ask(m, "test", { pid: 22 });
     const next = ask(m, "test", { pid: 33 });
@@ -140,17 +152,26 @@ describe("slot manager", () => {
   });
 
   test("HQ7: config — defaults, overrides and validation", () => {
-    const s = heavySettings({ limits: { e2e: 2 }, maxWaitMinutes: 5, memoryMaxGb: 2 });
-    expect(s.limits).toEqual({ e2e: 2, test: 2, lint: 2, build: 1, total: 3 });
+    const s = heavySettings({ limits: { e2e: 2 }, cpu: { test: 2 }, cpuBudget: 2.5, maxWaitMinutes: 5, maxRunMinutes: { serve: 90 }, memoryMaxGb: 2 });
+    expect(s.limits).toEqual({ e2e: 2, test: 2, lint: 2, build: 1, migrate: 1, serve: 2, total: 4 });
+    expect(s.cpu).toEqual({ e2e: 1.5, test: 2, lint: 1, build: 1.5, migrate: 0.5, serve: 0.5 });
+    expect(s.cpuBudget).toBe(2.5);
     expect(s.maxWaitMs).toBe(300_000);
-    expect(s.maxRunMs).toBe(30 * 60_000);
+    expect(s.maxRunMs.serve).toBe(90 * 60_000);
+    expect(s.maxRunMs.test).toBe(30 * 60_000);
+    expect(heavySettings({ maxRunMinutes: 10 }).maxRunMs).toEqual(Object.fromEntries(HEAVY_KINDS.map((k) => [k, 600_000])) as PerKind);
+    expect(heavySettings(undefined).maxRunMs.serve).toBe(60 * 60_000);
     expect(s.memoryMaxGb).toBe(2);
     expect(heavyQueueProblems(undefined)).toEqual([]);
-    expect(heavyQueueProblems({ limits: { e2e: 0, unit: 1 }, maxRunMinutes: -1 })).toEqual([
+    expect(heavyQueueProblems({ limits: { e2e: 0, unit: 1 }, cpu: { lint: 0, x: 1 }, cpuBudget: 0, maxRunMinutes: -1 })).toEqual([
       "heavyQueue.limits.e2e must be a whole number of at least 1",
-      "heavyQueue.limits.unit is not a kind (e2e, test, lint, build, total)",
+      "heavyQueue.limits.unit is not a kind (e2e, test, lint, build, migrate, serve, total)",
+      "heavyQueue.cpu.lint must be a positive number",
+      "heavyQueue.cpu.x is not a kind (e2e, test, lint, build, migrate, serve)",
+      "heavyQueue.cpuBudget must be a positive number",
       "heavyQueue.maxRunMinutes must be a positive number",
     ]);
+    expect(heavyQueueProblems({ maxRunMinutes: { serve: "a" } })).toEqual(["heavyQueue.maxRunMinutes.serve must be a positive number"]);
   });
 
   test("HQ8: the scope prefix caps one command's memory in the agents' slice; none without systemd", () => {
@@ -178,7 +199,8 @@ describe("slot manager", () => {
 });
 
 test("HQ16: every worker prompt carries the rule: wrap heavy commands in orca-run, never a whole suite", () => {
-  expect(HEAVY_COMMANDS).toContain("orca-run --kind test|lint|build|e2e -- <command>");
+  expect(HEAVY_COMMANDS).toContain("orca-run --kind test|lint|build|e2e|migrate|serve -- <command>");
+  expect(HEAVY_COMMANDS).toMatch(/database migration/);
   expect(HEAVY_COMMANDS).toMatch(/Never run a whole suite/);
   expect(followUpPrompt("fix the header").split(HEAVY_COMMANDS)).toHaveLength(2);
 });
@@ -213,7 +235,7 @@ describe("orca-run and the shims", () => {
     });
     // Fake "real" tools: print who they are, their args and the slot they run under.
     fakeBin = mkdtempSync(join(tmpdir(), "orca-heavy-bin-"));
-    for (const name of ["playwright", "eslint", "npx", "tsc"]) {
+    for (const name of ["playwright", "eslint", "npx", "tsc", "jest", "npm", "prettier", "mikro-orm"]) {
       const f = join(fakeBin, name);
       writeFileSync(f, `#!/bin/sh\necho "${name} $* slot=\${ORCA_RUN_SLOT:-none}"\n[ -n "$SLEEP" ] && sleep "$SLEEP"\nexit \${EXIT_CODE:-0}\n`);
       chmodSync(f, 0o755);
@@ -247,7 +269,7 @@ describe("orca-run and the shims", () => {
     const second = await run(["playwright", "test", "b.spec.ts"]);
     expect(second.err).toContain("queued: position 1 in line for an e2e slot");
     expect(second.err).toContain("orca-run: slot granted (e2e)");
-    expect(second.out).toMatch(/playwright test b.spec.ts slot=heavy-/);
+    expect(second.out).toMatch(/playwright test b.spec.ts --workers=1 slot=heavy-/);
     expect(Date.now() - t0).toBeGreaterThan(300);
     expect(await first.exited).toBe(0);
   });
@@ -279,6 +301,44 @@ describe("orca-run and the shims", () => {
     const missing = await run(["vitest", "run"]);
     expect(missing.code).toBe(127);
     expect(missing.err).toContain("vitest: command not found");
+  });
+
+  test("HQ17: package scripts, test scripts, migrations and formatters queue; jest and playwright get one worker", async () => {
+    const slotted = /slot=heavy-/;
+    // A fake npm prints its args: the script name decides.
+    expect((await run(["npm", "test"])).out).toMatch(slotted);
+    expect((await run(["npm", "run", "type-check"])).out).toMatch(slotted);
+    expect((await run(["npm", "run", "setup-db"])).out).toMatch(slotted);
+    expect((await run(["npm", "run", "dev:local:test"])).out).toMatch(slotted);
+    expect((await run(["npm", "--prefix", "frontend", "run", "build"])).out).toMatch(slotted);
+    expect((await run(["npm", "install"])).out).toContain("slot=none");
+    expect((await run(["npm", "run", "generate-client"])).out).toContain("slot=none");
+    expect((await run(["prettier", "--write", "src"])).out).toMatch(slotted);
+    expect((await run(["mikro-orm", "migration:up"])).out).toMatch(slotted);
+    expect((await run(["mikro-orm", "cache:generate"])).out).toContain("slot=none");
+    // Worker caps: added only when the call sets none.
+    expect((await run(["jest", "src/a.test.ts"])).out).toMatch(/jest src\/a.test.ts --maxWorkers=1 slot=heavy-/);
+    expect((await run(["jest", "-w", "2"])).out).toMatch(/jest -w 2 slot=heavy-/);
+    expect((await run(["jest", "--runInBand"])).out).toMatch(/jest --runInBand slot=heavy-/);
+    expect((await run(["playwright", "test", "x.spec.ts"])).out).toMatch(/playwright test x.spec.ts --workers=1 slot=heavy-/);
+    expect((await run(["playwright", "test", "--workers=2"])).out).toMatch(/playwright test --workers=2 slot=heavy-/);
+    expect((await run(["npx", "jest", "a"], { ORCA_RUN_WORKERS: "2" })).out).toMatch(/npx jest a --maxWorkers=2 slot=heavy-/);
+    // The real bun and bash, through their shims.
+    const dir = mkdtempSync(join(tmpdir(), "orca-heavy-pkg-"));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { lint: "echo lint slot=${ORCA_RUN_SLOT:-none}", hello: "echo hello slot=${ORCA_RUN_SLOT:-none}" } }));
+    writeFileSync(join(dir, "run-e2e-tests.sh"), "echo e2e slot=${ORCA_RUN_SLOT:-none}\n");
+    writeFileSync(join(dir, "notes.sh"), "echo notes slot=${ORCA_RUN_SLOT:-none}\n");
+    const inDir = async (cmd: string[]) => {
+      const proc = Bun.spawn(cmd, { cwd: dir, env: env(), stdout: "pipe", stderr: "pipe" });
+      const [out] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+      return out;
+    };
+    expect(await inDir(["bun", "run", "lint"])).toMatch(/lint slot=heavy-/);
+    expect(await inDir(["bun", "run", "hello"])).toContain("hello slot=none");
+    expect(await inDir(["bash", "run-e2e-tests.sh"])).toMatch(/e2e slot=heavy-/);
+    expect(await inDir(["bash", "notes.sh"])).toContain("notes slot=none");
+    expect(await inDir(["bash", "-c", "echo c slot=${ORCA_RUN_SLOT:-none}"])).toContain("c slot=none");
+    expect(m.view().running).toHaveLength(0);
   });
 
   test("HQ15: with no bridge, orca-run warns and runs the command anyway", async () => {

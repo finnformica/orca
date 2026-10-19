@@ -675,7 +675,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const settings = heavy.heavySettings(cfg.heavyQueue);
     const scoped = cgroup.available();
     return heavy.acquireResponse(heavy.slots(), request, req.signal, {
-      maxRunMs: settings.maxRunMs, env: scoped ? cgroup.runtimeEnv() : {},
+      maxRunMs: settings.maxRunMs[request.kind], env: scoped ? cgroup.runtimeEnv() : {},
       prefix: (unit) => heavy.scopePrefix({ available: scoped, unit, memoryMaxGb: settings.memoryMaxGb, slice: cgroup.AGENTS_SLICE }),
     });
   }
