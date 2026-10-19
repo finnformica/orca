@@ -148,19 +148,40 @@ export function isTextAttachment(a: Pick<DiscordAttachment, "content_type" | "fi
 
 /** A text attachment past this size is truncated, with a note saying so. */
 export const MAX_ATTACHMENT_BYTES = 100 * 1024;
+/** A download gives up after this long: a slow CDN must not stall the message. */
+const ATTACHMENT_TIMEOUT_MS = 10_000;
 
 /** One attachment as inbound text: a text file's content in a fenced block — downloaded here,
  *  since Discord's CDN URLs are signed and expire, so the agent could not fetch one itself later —
- *  else the CDN URL, as before. Never throws: a failed download falls back to the URL line. */
+ *  else the CDN URL, as before. Reads the body as a stream and stops at MAX_ATTACHMENT_BYTES plus
+ *  one byte, cancelling the rest: Discord allows a large file, and loading one whole into the
+ *  bridge's memory just to cut it down after is wasteful. Never throws: a timeout, a network error
+ *  or a bad status all fall back to the URL line. */
 export async function attachmentText(a: DiscordAttachment): Promise<string> {
   const name = a.filename ?? "";
   if (!isTextAttachment(a)) return `(attachment ${name}: ${a.url})`;
   try {
-    const r = await fetch(a.url);
-    if (!r.ok) return `(attachment ${name}: ${a.url})`;
-    const bytes = new Uint8Array(await r.arrayBuffer());
-    const over = bytes.byteLength > MAX_ATTACHMENT_BYTES;
-    const text = new TextDecoder().decode(over ? bytes.subarray(0, MAX_ATTACHMENT_BYTES) : bytes);
+    const r = await fetch(a.url, { signal: AbortSignal.timeout(ATTACHMENT_TIMEOUT_MS) });
+    if (!r.ok || !r.body) return `(attachment ${name}: ${a.url})`;
+    const reader = r.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    let over = false;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      total += value.byteLength;
+      if (total > MAX_ATTACHMENT_BYTES) { over = true; break; }
+    }
+    if (over) await reader.cancel().catch(() => {});
+    const bytes = new Uint8Array(Math.min(total, MAX_ATTACHMENT_BYTES));
+    for (let offset = 0, i = 0; offset < bytes.length && i < chunks.length; i++) {
+      const take = Math.min(chunks[i]!.byteLength, bytes.length - offset);
+      bytes.set(chunks[i]!.subarray(0, take), offset);
+      offset += take;
+    }
+    const text = new TextDecoder().decode(bytes);
     return `${name}:\n\`\`\`\n${text}${over ? "\n… (truncated at 100 KB)" : ""}\n\`\`\``;
   } catch {
     return `(attachment ${name}: ${a.url})`;

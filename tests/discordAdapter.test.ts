@@ -27,8 +27,9 @@ type Call = { method: string; path: string; body?: any };
 let calls: Call[] = [];
 let answer: (c: Call) => { status: number; body: unknown; headers?: Record<string, string> } = () => ({ status: 200, body: {} });
 // A separate stub for the plain CDN downloads `attachmentText` makes: a GET with no Discord auth
-// header, keyed by the attachment's own URL (never `https://discord.com/...`).
-let cdn: (url: string) => { status: number; body: string } = () => ({ status: 200, body: "" });
+// header, keyed by the attachment's own URL (never `https://discord.com/...`). `stream` (instead of
+// `body`) answers with a hand-built body, for asserting the reader stops early.
+let cdn: (url: string) => { status: number; body?: string; stream?: ReadableStream<Uint8Array> } = () => ({ status: 200, body: "" });
 const realFetch = globalThis.fetch;
 const realWs = gateway.WebSocket;
 const tick = () => new Promise((r) => setTimeout(r, 5));
@@ -43,7 +44,7 @@ beforeEach(() => {
     const u = String(url);
     if (!u.startsWith("https://discord.com/api/v10")) {
       const a = cdn(u);
-      return new Response(a.body, { status: a.status });
+      return new Response(a.stream ?? a.body ?? "", { status: a.status });
     }
     const c: Call = { method: init?.method ?? "GET", path: u.replace("https://discord.com/api/v10", ""), body: init?.body ? JSON.parse(init.body) : undefined };
     expect(init?.headers?.authorization).toBe("Bot tok");
@@ -330,6 +331,32 @@ describe("Discord inbound", () => {
     expect(text).toContain("notes.txt:\n```\nline one\nline two\n```");
     expect(text).toContain("big.log:\n```\n" + "x".repeat(100 * 1024) + "\n… (truncated at 100 KB)\n```");
     expect(text).toContain("(attachment photo.png: https://cdn.discordapp.com/attachments/1/4/photo.png)");
+    await a.stop();
+  });
+
+  test("a large text attachment stops the reader at the limit instead of draining the whole body", async () => {
+    const { a, ws, ingested } = await connected();
+    const chunk = 20 * 1024; // 20 KB a chunk, 400 KB total: far past the 100 KB limit
+    const totalChunks = 20;
+    let pulled = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulled++;
+        if (pulled > totalChunks) { controller.close(); return; }
+        controller.enqueue(new TextEncoder().encode("y".repeat(chunk)));
+      },
+      cancel() { cancelled = true; },
+    });
+    cdn = (url) => url === "https://cdn.discordapp.com/attachments/1/5/huge.log" ? { status: 200, stream } : { status: 200, body: "" };
+    ws.push({ op: 0, s: 2, t: "MESSAGE_CREATE", d: msg({
+      id: "M21", content: "<@BOT> see attached",
+      attachments: [{ url: "https://cdn.discordapp.com/attachments/1/5/huge.log", filename: "huge.log" }],
+    }) });
+    await tick();
+    expect(cancelled).toBe(true);
+    expect(pulled).toBeLessThan(totalChunks); // stopped well short of the 400 KB the stream could give
+    expect(ingested[0]!.text).toContain("huge.log:\n```\n" + "y".repeat(100 * 1024) + "\n… (truncated at 100 KB)\n```");
     await a.stop();
   });
 });
