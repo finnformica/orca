@@ -147,6 +147,8 @@ export type RepoConfig = {
   autoUpkeep?: boolean;
 };
 
+export type UiOptions = { showBoard?: boolean };
+
 export type OrcaConfig = {
   /** Where each named instance can be reached, e.g. `{ cloud: "http://orca.tail1234.ts.net:8787" }`.
    *  A request for a repo this instance doesn't run is forwarded to its owner — that is how a board
@@ -165,6 +167,9 @@ export type OrcaConfig = {
    *  exactly `true`. ONLY Settings sets it (`/api/config/terminal`): a pasted config document keeps
    *  the stored value and the checked-in file never seeds it. */
   terminal?: Record<string, boolean>;
+  /** Console options shared by every browser. `showBoard`: the Board view's nav entry and route
+   *  (on unless false). Settings sets it (`/api/config/ui`). */
+  ui?: UiOptions;
   /** Repos Orca manages; the first is the default. */
   repos: RepoConfig[];
   /** Inclusive [min, max] port range for preview services (shared across repos). */
@@ -385,6 +390,11 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
   if (d.agentCpuWeight !== undefined && (typeof d.agentCpuWeight !== "number" || !(d.agentCpuWeight > 0))) {
     errors.push("agentCpuWeight must be a positive number (systemd CPUWeight, 1-10000)");
   }
+  if (d.ui !== undefined) {
+    const ui = d.ui as Record<string, unknown> | null;
+    const ok = ui && typeof ui === "object" && !Array.isArray(ui) && (ui.showBoard === undefined || typeof ui.showBoard === "boolean");
+    if (!ok) errors.push("ui must be { showBoard?: true | false }");
+  }
   errors.push(...heavyQueueProblems(d.heavyQueue));
   errors.push(...serverSwitcherProblems(d.serverSwitcher));
   errors.push(...serverIdentityProblems(d.serverIdentity));
@@ -409,6 +419,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       githubAccounts: d.githubAccounts as OrcaConfig["githubAccounts"],
       serverSwitcher: d.serverSwitcher as ServerSwitcherConfig | undefined,
       serverIdentity: d.serverIdentity as ServerIdentityConfig | undefined,
+      ui: d.ui as UiOptions | undefined,
     },
   };
 }
@@ -548,6 +559,7 @@ async function loadFromDb(): Promise<OrcaConfig> {
     githubAccounts: app.githubAccounts as OrcaConfig["githubAccounts"],
     serverSwitcher: app.serverSwitcher as ServerSwitcherConfig | undefined,
     serverIdentity: app.serverIdentity as ServerIdentityConfig | undefined,
+    ui: app.ui as UiOptions | undefined,
   };
   cached = config;
   cachedAt = Date.now();
@@ -589,6 +601,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.githubAccounts === undefined ? {} : { githubAccounts: config.githubAccounts }),
       ...(config.serverSwitcher === undefined ? {} : { serverSwitcher: config.serverSwitcher as unknown as db.Fields }),
       ...(config.serverIdentity === undefined ? {} : { serverIdentity: config.serverIdentity as unknown as db.Fields }),
+      ...(config.ui === undefined ? {} : { ui: config.ui as unknown as db.Fields }),
     },
   });
   invalidateConfig();
@@ -616,6 +629,16 @@ export async function setServerIdentity(identity: ServerIdentityConfig | null): 
   if (!config) throw new Error(`the stored config does not parse: ${errors.join("; ")}`);
   const { serverIdentity: _old, ...rest } = config;
   await saveConfigDocument({ ...rest, ...(current.terminal ? { terminal: current.terminal } : {}), ...(identity ? { serverIdentity: identity } : {}) });
+}
+
+/** Set the console options — Settings' Board view row. Same path as `setServerIdentity`, so nothing
+ *  else in the document changes. */
+export async function setUiOptions(ui: UiOptions): Promise<void> {
+  invalidateConfig();
+  const current = await loadConfig();
+  const { config, errors } = parseConfigDocument(await configDocument());
+  if (!config) throw new Error(`the stored config does not parse: ${errors.join("; ")}`);
+  await saveConfigDocument({ ...config, ...(current.terminal ? { terminal: current.terminal } : {}), ui: { ...config.ui, ...ui } });
 }
 
 /** The document as stored (paths still templated) — what the settings UI shows you to edit. */

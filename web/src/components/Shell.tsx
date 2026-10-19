@@ -14,7 +14,7 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderSync, LayoutGrid, Loader2,
   Bot, Command, Keyboard, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
-  Package, Plug, Inbox,
+  Package, Plug, Inbox, Columns3,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom } from "@/lib/atoms";
@@ -33,7 +33,7 @@ import { validChoice } from "@/lib/persisted";
 import { useSwipeToDismiss } from "@/lib/gestures";
 import { isMobile, useNarrow } from "@/lib/viewport";
 import { api } from "../api";
-import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
+import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, useShowBoard, type OptimisticDraft } from "../store";
 import { PANEL_MIN_W, SHELL_GAP, repoLabel, summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
 import { useInboxUnread } from "@/lib/inboxUnread";
@@ -62,6 +62,8 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
   { to: "/", label: "Overview", Icon: LayoutGrid, match: (r) => r.name === "overview" },
   // An agent's own page (PR or local detail) is "inside" Agents, as a deployment is inside Deployments.
   { to: "/agents", label: "Agents", Icon: Boxes, match: (r) => r.name === "agents" || r.name === "pr" || r.name === "local" },
+  // The five lanes of cards (views/Board.tsx). Settings can hide it (`ui.showBoard`, navShown).
+  { to: "/board", label: "Board", Icon: Columns3, match: (r) => r.name === "board" },
   // Every integration's inbound messages and events, one timeline (views/Inbox.tsx).
   // Orca's own notifications are rows here too; its count is the bell's (lib/inboxUnread.ts).
   { to: "/inbox", label: "Inbox", Icon: Inbox, match: (r) => r.name === "inbox", badge: (compact) => <InboxBadge compact={compact} /> },
@@ -72,6 +74,9 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
   // Repos and GitHub are sections of Settings.
   { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
 ];
+
+/** Whether a nav entry shows: the Board's only while the config's `ui.showBoard` is on. */
+export const navShown = (to: string, showBoard: boolean) => to !== "/board" || showBoard;
 
 /** The docked right column (desktop): its OWN card beside the page card, as branch-demo's right panel
  *  — the shell's gutter between them, no shared hairline. The open side panel renders INTO it
@@ -245,6 +250,7 @@ function Sidebar({ collapsed, onToggle, actions }: {
 }) {
   const route = useRoute();
   const narrow = useNarrow();
+  const showBoard = useShowBoard();
   return (
     <>
       <div className="flex h-14 items-center gap-2 px-3">
@@ -252,7 +258,7 @@ function Sidebar({ collapsed, onToggle, actions }: {
       </div>
       {!collapsed && <div className="px-3 pb-2"><FindBox /></div>}
       <nav aria-label="Main" className="flex flex-col gap-0.5 px-2 py-1">
-        {NAV.map(({ to, label, Icon, match, badge }) => {
+        {NAV.filter((n) => navShown(n.to, showBoard)).map(({ to, label, Icon, match, badge }) => {
           const active = match(route);
           const shortcut = pageShortcut(to);
           const item = (

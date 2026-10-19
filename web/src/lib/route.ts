@@ -7,6 +7,7 @@ export type LocalTab = "overview" | "chat" | "files" | "preview";
 /** The console's top-level pages, in the sidebar's order. "overview" is the Overview at "/". */
 export const PAGES = [
   "agents",
+  "board",
   "inbox",
   "previews",
   "integrations",
