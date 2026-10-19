@@ -845,6 +845,10 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       : undefined;
     const oomKilled = !ok && !wasStopped && code === 137 && oomCause !== undefined;
     if (oomKilled || (scopeOom && oomCause)) noteOomKill(); // the instance card's Memory chart marks it at the next sample
+    // The agent is gone, but a dev server or build it left in the background keeps its scope alive
+    // (17:55 on 2026-10-19: a finished worker's nest, vite and backend held 1.7 GB for 14 minutes).
+    // After the OOM read above, which needs the scope: stop it, and every process in it.
+    if (scoped) await stopRunScope(runId, { ...process.env, ...scopedEnv });
     const rawError = (err.trim() || result || `exit ${code}`).slice(0, 300);
     // A process of THIS run was OOM-killed (its scope says so) but the agent went on, or failed some
     // other way: a build, or a git push hook. Name it, so a push that never happened is not silent.
@@ -1081,6 +1085,12 @@ export function adoptLeases(
   return adopted.length;
 }
 
+/** Stop a finished run's scope (`orca-run-<runId>.scope`): every process still in it is killed. A
+ *  scope that is already gone is fine. Bounded, and never throws: the run is recorded either way. */
+export async function stopRunScope(runId: string, env: Record<string, string | undefined>): Promise<void> {
+  await runCmd(["systemctl", "--user", "stop", `orca-run-${runId}.scope`], { env, allowFail: true, timeoutMs: 10_000 }).catch(() => undefined);
+}
+
 async function finishAdopted(l: lease.Lease, recover: Parameters<typeof adoptLeases>[0]): Promise<void> {
   if (runs.get(l.key)?.runId !== l.runId) return; // a new run took the key meanwhile
   // The journal knows the owner when the turn never reached the database (it was down at launch).
@@ -1098,6 +1108,7 @@ async function finishAdopted(l: lease.Lease, recover: Parameters<typeof adoptLea
     await pending;
   }
   lease.release(l.key, l.runId);
+  if (cgroup.available()) await stopRunScope(l.runId, { ...process.env, ...cgroup.runtimeEnv() }); // what it left behind
   const handled = afterRunStarted();
   try {
     runs.set(l.key, { status, provider: l.provider, runId: l.runId, sessionId: l.sessionId, result, structured: found?.structured, startedAt: l.startedAt, finishedAt, error: ok ? undefined : result });
