@@ -37,6 +37,7 @@ import * as upkeep from "./upkeep";
 import * as browserWatch from "./browserWatch";
 import * as notify from "./notify";
 import * as cgroup from "./cgroup";
+import { heavySliceGb } from "./sliceLimit";
 import { KIND_META } from "../shared/notifications";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
 import { protectionsReport, withLiveState } from "./protections";
@@ -411,7 +412,7 @@ const INSTANCE_IS_A_FILTER = new Set(["/api/health/history"]);
 /** The heavy queue's settings for this box. The memory budget applies only when the commands run
  *  in capped scopes inside the agents' slice: without systemd there are no caps to add up. */
 function heavySettingsHere(cfg: OrcaConfig): heavy.HeavySettings {
-  return heavy.heavySettings(cfg.heavyQueue, cgroup.available() ? cgroup.agentsSliceMaxGb() : undefined);
+  return heavy.heavySettings(cfg.heavyQueue, cgroup.available() ? heavySliceGb() : undefined);
 }
 /** This box's heavy-command queue, for /api/heavy and the machine card (/api/health). */
 function heavyView(cfg: OrcaConfig): heavy.HeavyView {

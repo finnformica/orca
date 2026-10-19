@@ -2,15 +2,16 @@
 // shims beside it. The slot manager runs with a fake clock; the CLI and shims run for real against
 // a tiny bridge that serves the same `acquireResponse` the real route does.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, copyFileSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
-  acquireResponse, createSlotManager, HEAVY_KINDS, heavyQueueProblems, heavySettings, HeavyWaitTimeout, scopePrefix,
+  acquireResponse, createSlotManager, HEAVY_KINDS, heavyMemoryBudgetGb, heavyQueueProblems, heavySettings, HeavyWaitTimeout, scopePrefix,
   type Grant, type HeavyEntry, type HeavySettings, type PerKind, type ReleaseReason, type SlotManager,
 } from "../server/heavy";
 import { runIdentity } from "../server/agent";
-import { HEAVY_COMMANDS, followUpPrompt, heavyQueueRows } from "../web/src/workstream";
+import { HEAVY_COMMANDS, followUpPrompt, heavyHeader, heavyNumber, heavyQueueRows } from "../web/src/workstream";
+import { agentsSliceLimitGb, heavySliceGb, memoryMaxFileGb } from "../server/sliceLimit";
 import { native } from "./happydom";
 
 const WORKER = join(import.meta.dir, "..", "bin", "worker");
@@ -186,7 +187,7 @@ describe("slot manager", () => {
     expect(scopePrefix({ available: false, unit: "u", memoryMaxGb: 3 })).toEqual([]);
     expect(scopePrefix({ available: true, unit: "orca-heavy-1", memoryMaxGb: 3, slice: "orca-agents.slice" })).toEqual([
       "systemd-run", "--user", "--scope", "--quiet", "--unit=orca-heavy-1", "--slice=orca-agents.slice",
-      "-p", "MemoryMax=3G", "-p", "MemorySwapMax=0", "-p", "CPUWeight=50", "--",
+      "-p", "MemoryMax=3072M", "-p", "MemorySwapMax=0", "-p", "CPUWeight=50", "--",
     ]);
   });
 
@@ -228,7 +229,86 @@ describe("slot manager", () => {
     const line = JSON.parse(new TextDecoder().decode((await reader.read()).value).trim().split("\n").pop()!);
     await reader.cancel();
     expect(line.memoryGb).toBe(5);
-    expect(line.prefix).toContain("MemoryMax=5G");
+    expect(line.prefix).toContain("MemoryMax=5120M");
+  });
+
+  test("HQ19: the memory budget comes from the slice's real memory.max, to one decimal", () => {
+    // The box: `MemoryMax=11264M` on orca-agents.slice reads back as 11811160064 bytes = 11 GB.
+    expect(memoryMaxFileGb("11811160064\n")).toBe(11);
+    expect(memoryMaxFileGb("max\n")).toBe(0);
+    expect(memoryMaxFileGb("")).toBeUndefined();
+    expect(heavyMemoryBudgetGb(memoryMaxFileGb("11811160064"))).toBe(8);
+    // Read from the cgroup tree, by uid, under ORCA_CGROUP_ROOT.
+    const root = mkdtempSync(join(tmpdir(), "orca-cgroup-"));
+    const slice = join(root, "user.slice/user-1000.slice/user@1000.service/orca.slice/orca-agents.slice");
+    try {
+      const env = { ORCA_CGROUP_ROOT: root, ORCA_AGENTS_SLICE_MAX_GB: "4.1" };
+      // No slice yet: the value the bridge will set.
+      expect(agentsSliceLimitGb(env, 1000)).toBeUndefined();
+      expect(heavySliceGb(env, 1000)).toBe(4.1);
+      mkdirSync(slice, { recursive: true });
+      // The slice has no limit yet ("max"): the value the bridge will set.
+      writeFileSync(join(slice, "memory.max"), "max\n");
+      expect(heavySliceGb(env, 1000)).toBe(4.1);
+      // The kernel's limit wins over an env value that disagrees with it.
+      writeFileSync(join(slice, "memory.max"), "11811160064\n");
+      expect(agentsSliceLimitGb(env, 1000)).toBe(11);
+      expect(heavySettings(undefined, heavySliceGb(env, 1000)).memoryBudgetGb).toBe(8);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+    // A fractional slice never shows floating-point noise: 4.1 - 3 is 1.0999999999999996 in JS.
+    expect(heavyMemoryBudgetGb(4.1)).toBe(1.1);
+    const { m } = manager(heavySettings({ cpu: { lint: 1.25 }, cpuBudget: 2.25 }, 4.1));
+    ask(m, "lint");
+    expect(m.view().cpu).toEqual({ used: 1.3, budget: 2.3 });
+    expect(m.view().memory.budget).toBe(1.1);
+  });
+
+  test("HQ20: a budget below one command's cap neither deadlocks nor overruns silently", async () => {
+    // Budget 1.1 GB, lint cap 6 GB: the lint runs alone, flagged; the next job waits for it.
+    const { m } = manager(heavySettings(undefined, 4.1));
+    const lint = ask(m, "lint"), migrate = ask(m, "migrate");
+    await tick();
+    expect(lint.grant?.memoryGb).toBe(6);
+    expect(lint.grant?.overBudget).toBe(true);
+    expect(migrate.grant).toBeUndefined();
+    expect(m.view().running[0]!.overBudget).toBe(true);
+    expect(heavyHeader(m.view())).toEqual({ cpu: "CPU 1 / 3", memory: "Memory 6 / 1.1 GB", memoryOver: true });
+    expect(heavyQueueRows(m.view())[0]!.overBudget).toBe(true);
+    lint.grant!.release();
+    await tick();
+    // Each one still runs, one at a time: no deadlock.
+    expect(migrate.grant?.overBudget).toBe(true);
+    migrate.grant!.release();
+    // Budget 0 (a slice of 3 GB or less): every job still runs, alone.
+    const zero = manager(heavySettings(undefined, 3)).m;
+    expect(zero.view().memory.budget).toBe(0);
+    const a = ask(zero, "serve"), b = ask(zero, "serve");
+    await tick();
+    expect(a.grant).toBeDefined();
+    expect(b.grant).toBeUndefined();
+    a.grant!.release();
+    await tick();
+    expect(b.grant).toBeDefined();
+    b.grant!.release();
+    // Under budget: no flag.
+    const fine = manager(heavySettings(undefined, 11)).m;
+    const t = ask(fine, "test");
+    await tick();
+    expect(t.grant?.overBudget).toBeUndefined();
+    expect(heavyHeader(fine.view()).memoryOver).toBe(false);
+  });
+
+  test("HQ21: the heavy queue's figures show one decimal at most", () => {
+    expect(heavyNumber(1.0999999999999996)).toBe("1.1");
+    expect(heavyNumber(6)).toBe("6");
+    expect(heavyNumber(1.5)).toBe("1.5");
+    expect(heavyNumber(2.25)).toBe("2.3");
+    // An older bridge's raw view still reads cleanly.
+    expect(heavyHeader({ cpu: { used: 1.5, budget: 3 }, memory: { used: 6, budget: 1.0999999999999996 } }))
+      .toEqual({ cpu: "CPU 1.5 / 3", memory: "Memory 6 / 1.1 GB", memoryOver: true });
+    // No memory budget (no systemd): no memory figure.
+    expect(heavyHeader({ cpu: { used: 0, budget: 3 }, memory: { used: 0 } })).toEqual({ cpu: "CPU 0 / 3", memoryOver: false });
+    expect(heavyHeader(undefined)).toEqual({ memoryOver: false });
   });
 
   test("HQ9: a run's env names the run, so its slot is tied to it", () => {
@@ -243,7 +323,8 @@ describe("slot manager", () => {
       queued: [{ id: "c", kind: "e2e", command: "x".repeat(100), queuedAt: 3 }],
     });
     expect(rows.map((r) => [r.id, r.state, r.who, r.position])).toEqual([["a", "running", "demo", undefined], ["b", "running", "feat", undefined], ["c", "queued", "shell", 1]]);
-    expect(rows[2]!.command.length).toBe(80);
+    // The whole command: a phone row scrolls sideways to show it, a desktop row truncates by CSS.
+    expect(rows[2]!.command).toBe("x".repeat(100));
   });
 });
 
@@ -259,6 +340,8 @@ describe("orca-run and the shims", () => {
   let server: ReturnType<typeof Bun.serve>;
   let m: SlotManager;
   let fakeBin: string;
+  /** The agents' slice for the tiny bridge; undefined = no memory budget. */
+  let cliSliceGb: number | undefined;
   const env = () => {
     const e: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("ORCA_")) e[k] = v;
@@ -271,7 +354,7 @@ describe("orca-run and the shims", () => {
   beforeAll(() => {
     globalThis.Response = native.Response;
     globalThis.fetch = native.fetch;
-    m = createSlotManager({ settings: () => ({ ...heavySettings(undefined), maxWaitMs: 20_000 }) });
+    m = createSlotManager({ settings: () => ({ ...heavySettings(undefined, cliSliceGb), maxWaitMs: 20_000 }) });
     server = Bun.serve({
       port: 0,
       async fetch(req) {
@@ -423,6 +506,19 @@ describe("orca-run and the shims", () => {
     } finally {
       rmSync(copy, { recursive: true, force: true });
     }
+  });
+
+  test("HQ20b: orca-run says when its command's memory cap is above the whole budget, and runs it", async () => {
+    cliSliceGb = 4.1; // budget 1.1 GB; a lint cap is 6 GB
+    try {
+      const r = await run([join(WORKER, "orca-run"), "--kind", "lint", "--", "eslint", "src"]);
+      expect(r.code).toBe(0);
+      expect(r.out).toMatch(/^eslint src slot=heavy-\w+/);
+      expect(r.err).toContain("orca-run: the lint memory cap (6 GB) is above the queue's memory budget; it runs alone");
+      // Under the budget: no note.
+      cliSliceGb = 11;
+      expect((await run([join(WORKER, "orca-run"), "--kind", "lint", "--", "eslint", "src"])).err).not.toContain("memory budget");
+    } finally { cliSliceGb = undefined; }
   });
 
   test("HQ15: with no bridge, orca-run warns and runs the command anyway", async () => {

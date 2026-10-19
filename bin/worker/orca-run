@@ -89,7 +89,7 @@ if (!res.ok) {
 
 // One JSON object per line: `{queued: N}` while waiting, then `{granted, prefix, env, maxRunMs}`,
 // then heartbeats, and `{revoked: reason}` if the bridge takes the slot back.
-type Granted = { granted: string; prefix: string[]; env: Record<string, string>; maxRunMs: number; cpus?: number };
+type Granted = { granted: string; prefix: string[]; env: Record<string, string>; maxRunMs: number; cpus?: number; memoryGb?: number; overBudget?: boolean };
 const reader = res.body!.getReader();
 const decoder = new TextDecoder();
 let buf = "";
@@ -130,6 +130,8 @@ if (!grant) {
   process.exit(await run(cmd, { ORCA_RUN_SLOT: "none" }));
 }
 if (lastAhead >= 0) console.error(`orca-run: slot granted (${kind})`);
+// A cap above the whole memory budget runs alone; say so, so the overrun is never silent.
+if (grant.overBudget) console.error(`orca-run: the ${kind} memory cap (${grant.memoryGb} GB) is above the queue's memory budget; it runs alone`);
 
 // Watch the held connection while the command runs: a revoke stops the command.
 void (async () => {
