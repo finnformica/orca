@@ -35,8 +35,10 @@ import * as primary from "./primary";
 import * as mergeQueue from "./mergeQueue";
 import * as upkeep from "./upkeep";
 import * as notify from "./notify";
+import * as cgroup from "./cgroup";
 import { KIND_META } from "../shared/notifications";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
+import { protectionsReport, withLiveState } from "./protections";
 import * as verbs from "./verbs";
 import * as repos from "./repos";
 import { BusyError, checkGate, compact, launchOptions, launchQueued, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
@@ -169,6 +171,16 @@ agent.onQueuedMessage(async (message) => {
 // ending drains what queued up meanwhile. Config is read per event, like every request. The
 // notification centre hears the same event first (it swallows its own failures), so a toast never
 // waits on a wake.
+// A dead user manager (server/cgroup.ts) is news, never silent: agent runs start without a memory
+// scope until it is back. The health watchdog (deploy/health-check.sh) restarts it.
+cgroup.onUserManagerDown((down, run) => {
+  void notify.emit({
+    key: `user-manager-down:${db.instanceName()}:${down.since}`, kind: "box_alert",
+    repo: run.repo ?? "", branch: run.branch, title: `${db.instanceName()}: user manager down`,
+    body: `Agent runs start without a memory scope until it is back (${down.reason}). The health watchdog restarts it; else run sudo systemctl restart user@${process.getuid?.() ?? "<uid>"}.service.`,
+  });
+});
+
 agent.onRunFinished(async (run) => {
   if (!primary.held()) return; // a secondary reports nothing — the primary's hooks are the one voice
   await notify.onRunFinished(run);
@@ -874,10 +886,11 @@ async function api(req: Request, url: URL): Promise<Response> {
     // ledger, from its configured billing start, for the card's Cost cell (absent when the query
     // fails — vitals must still answer).
     const cfg = await loadConfig();
-    const [h, rate] = await Promise.all([health(), instanceRate(cfg.instanceHourlyUsd)]);
+    const [h, rate, protections] = await Promise.all([health(), instanceRate(cfg.instanceHourlyUsd), protectionsReport()]);
     const since = Date.parse(cfg.instanceBillingSince?.[db.instanceName()] ?? "");
     const month = rate.hourlyUsd > 0 ? await monthCost(rate.hourlyUsd, Number.isFinite(since) ? { billingSince: since } : {}).catch(() => undefined) : undefined;
-    return json({ ...h, rate, month, database: db.databaseStatus(), outbox: outbox.summary() });
+    // `protections`: which of deploy/harden.sh's protections this box is missing (server/protections.ts).
+    return json({ ...h, rate, month, protections: protections && withLiveState(protections, cgroup.userManagerDown()), database: db.databaseStatus(), outbox: outbox.summary() });
   }
   if (req.method === "GET" && p === "/api/notifications") {
     // The centre's rows (any instance answers: one table). `since` is the catch-up cursor after a

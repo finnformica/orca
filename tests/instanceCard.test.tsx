@@ -212,6 +212,24 @@ test("a bridge that sends no runningAgents, rate, month or disk (an older build)
   expect(detail(container!, "instance-cost")).toBe("Cost · this month—");
 });
 
+test("a box missing crash protections says which and how to fix it, with its last OOM kill; a hardened box shows nothing", async () => {
+  const now = Date.now();
+  const base = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 30, load1: 0.5, load5: 0.4, memUsedGb: 2, memTotalGb: 7.6, uptimeS: 9, at: now };
+  apiFake.healthData = { ...base, protections: { missing: [{ key: "swap", label: "no swap" }, { key: "watchdog", label: "no watchdog" }], lastOomKill: now - 3 * 3_600_000, at: now } };
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  const strip = container!.querySelector('[data-slot="protections-warning"]')!;
+  expect(strip.getAttribute("data-warn")).toBe("true");
+  expect(strip.textContent).toContain("Crash protection missing: no swap, no watchdog. Last OOM kill 3h ago");
+  expect(strip.textContent).toContain("sudo deploy/harden.sh");
+  await act(async () => { root?.unmount(); });
+  container?.remove();
+  apiFake.healthData = { ...base, protections: { missing: [], lastOomKill: null, at: now } };
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  expect(container!.querySelector('[data-slot="protections-warning"]')).toBeNull();
+});
+
 test("the Instances refresh button refetches health and history at once, spinning until they answer", async () => {
   await render(<><RefreshVitals /><InstanceCard instance="cloud" here={false} /></>);
   await ready();
