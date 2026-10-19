@@ -163,6 +163,7 @@ export function compact(cfg: OrcaConfig): Promise<{ runId: string }> {
     const { runId } = await agent.launch(dir(), dir(), "/compact", {
       provider: "claude", resume: b.sessionId, repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
       instruction: "/compact", action: "compact", queue: false, model: modelOf(cfg, b), source: "human", // your button
+      mcpAllow: "all", // its cwd's `.mcp.json` is yours (minus any browser server)
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return { runId };
@@ -429,6 +430,7 @@ async function wake(cfg: OrcaConfig, fresh: string[], grant?: Grant, freshReplyT
       // Anything you said makes it yours; worker reports alone are the agents' (folded in the chat).
       source: turnSource(messages),
       model: modelOf(cfg, b), maxBudgetUsd: budgetOf(cfg),
+      mcpAllow: "all", // its cwd's `.mcp.json` is yours (minus any browser server)
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
       // Everything Claude Code has in a terminal (bypassPermissions), as the user asked: a manager
       // who can find things out, run things and fix the machine. `orchestratorShell: false` keeps

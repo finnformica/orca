@@ -24,7 +24,7 @@ export const SHOT_CPU_WEIGHT = 50;
 export const SHOT_TIMEOUT_MS = 45_000;
 export const DEFAULT_VIEWPORT = { width: 1440, height: 900 };
 
-export type ShotStep = { click: string } | { hover: string } | { scroll: number | string } | { wait: number } | { waitFor: string } | { press: string };
+export type ShotStep = { click: string } | { hover: string } | { scroll: number | string } | { wait: number } | { waitFor: string } | { press: string } | { type: string };
 export type ShotRequest = {
   url: string;
   viewport?: { width: number; height: number };
@@ -89,7 +89,8 @@ export function parseShotRequest(body: any): ShotRequest {
   }
   const steps: ShotStep[] = Array.isArray(body.steps) ? body.steps : [];
   for (const s of steps) {
-    if (!s || typeof s !== "object" || !("click" in s || "hover" in s || "scroll" in s || "wait" in s || "waitFor" in s || "press" in s)) throw new Error(`unknown step: ${JSON.stringify(s)}`);
+    if (!s || typeof s !== "object" || !("click" in s || "hover" in s || "scroll" in s || "wait" in s || "waitFor" in s || "press" in s || "type" in s)) throw new Error(`unknown step: ${JSON.stringify(s)}`);
+    if ("type" in s && (typeof s.type !== "string" || s.type.length > 2000)) throw new Error("a type step needs text of at most 2000 characters");
   }
   return {
     url: u.toString(), viewport: viewport ?? DEFAULT_VIEWPORT, dark: !!body.dark,
@@ -415,6 +416,9 @@ async function capture(cdp: Cdp, req: ShotRequest, log: string[]): Promise<Uint8
       await clickSelector(s, evaluate, step.click);
     } else if ("press" in step) {
       await pressKey(s, step.press);
+    } else if ("type" in step) {
+      // Into the focused element (a --click first focuses it), as one paste-like input event.
+      await s("Input.insertText", { text: step.type });
     } else if ("hover" in step) {
       await waitFor(step.hover);
       const { x, y } = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(step.hover)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
