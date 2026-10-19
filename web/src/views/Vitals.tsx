@@ -16,6 +16,7 @@ import { applyProfileToggle, optimisticProfileToggle, refreshUsageNow, refreshVi
 import { Button } from "@/components/ui/button";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Tip } from "@/components/ui/tip";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
@@ -322,17 +323,21 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
       {heavyRows.length > 0 && (
         <div data-slot="heavy-queue" className="border-b px-4 py-3">
           <div className="text-muted-foreground mb-1.5 text-xs">Heavy commands · orca-run{h?.heavy?.cpu && <span data-slot="heavy-cpu" className="tabular-nums"> · CPU {h.heavy.cpu.used} / {h.heavy.cpu.budget}</span>}{h?.heavy?.memory?.budget !== undefined && <span data-slot="heavy-memory" className="tabular-nums"> · Memory {h.heavy.memory.used} / {h.heavy.memory.budget} GB</span>}</div>
-          <ul className="divide-y">
+          {/* Many rows (a busy queue) scroll inside the card, on a phone too, instead of growing it. */}
+          <ScrollArea viewportClassName="max-h-64">
+          <ul className="divide-y pr-2.5">
             {heavyRows.map((r) => (
               <li key={r.id} data-slot="heavy-row" data-state={r.state} className="flex items-center gap-2 py-1.5 text-[13px]">
                 <StatusDot tone={r.state === "running" ? "building" : "queued"} />
                 <span className="text-muted-foreground w-16 shrink-0 text-xs">{r.state === "running" ? "running" : `queued #${r.position}`}</span>
                 <span className="w-14 shrink-0 text-xs">{r.kind}</span>
-                <Tip label={r.command}><span className="min-w-0 flex-1 truncate font-mono text-xs">{r.command}</span></Tip>
+                {/* The Tip's own wrapper must shrink too, or a long command pushes the row past the card. */}
+                <Tip label={r.command} className="min-w-0 flex-1"><span data-slot="heavy-command" className="min-w-0 truncate font-mono text-xs">{r.command}</span></Tip>
                 <span className="text-muted-foreground max-w-[40%] shrink-0 truncate text-xs">{r.who}</span>
               </li>
             ))}
           </ul>
+          </ScrollArea>
         </div>
       )}
       {history === null ? (
