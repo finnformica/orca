@@ -7,14 +7,17 @@
 //
 // Two scopes are exempt: orca-shot's (`orca-shot-…`, the bridge's one capped browser — it runs
 // outside the agents' slice anyway) and the test queue's slots (`orca-heavy-…`, where Playwright
-// e2e runs). Each kill is recorded on the workstream that started it (enrichment `browserKilled`,
+// e2e runs). Until that queue is on this install (`bin/worker/orca-run`), a browser under a
+// `playwright test` runner is a test and is kept too: workers ran e2e suites in their own scope
+// before the queue, and the ban is on browsers outside tests. Each kill is recorded on the workstream that started it (enrichment `browserKilled`,
 // the card's warning) and as a step in that run's transcript.
-import { readdirSync, readFileSync } from "fs";
-import { basename } from "path";
+import { existsSync, readdirSync, readFileSync } from "fs";
+import { basename, join } from "path";
 import type { AgentStep } from "../shared/agent";
 import * as bus from "./bus";
 import { AGENTS_SLICE } from "./cgroup";
 import * as db from "./db";
+import { WORKER_BIN } from "./env";
 import * as outbox from "./outbox";
 import * as transcript from "./transcript";
 
@@ -42,14 +45,24 @@ export function browserProcess(argv: string[], comm = ""): string | undefined {
   return undefined;
 }
 
-export type ProcInfo = { pid: number; cgroup: string; argv: string[]; comm: string };
+export type ProcInfo = { pid: number; ppid?: number; cgroup: string; argv: string[]; comm: string };
+
+/** A Playwright test runner: `playwright test …` (the bin or its cli.js). Pure. */
+export function isTestRunner(argv: string[]): boolean {
+  const i = argv.findIndex((a) => /(^|\/)playwright(\.js)?$/.test(a) || /@playwright\/test\/cli\.js$/.test(a));
+  return i >= 0 && argv[i + 1] === "test";
+}
+
+/** Whether the test queue is on this install: then e2e runs go through its slots alone. */
+export const testQueuePresent = (): boolean => existsSync(join(WORKER_BIN, "orca-run"));
 export type Verdict = { kill: false } | { kill: true; name: string; runId?: string };
 
 /** Whether the watchdog kills this process. Only the agents' slice is looked at. Pure. */
-export function watchVerdict(p: ProcInfo, self = process.pid): Verdict {
+/** `underTest`: an ancestor is a Playwright test runner, and no test queue is here to run it. */
+export function watchVerdict(p: ProcInfo, self = process.pid, underTest = false): Verdict {
   if (p.pid === self || !p.cgroup.includes(`/${AGENTS_SLICE}/`) || EXEMPT_SCOPE.test(p.cgroup)) return { kill: false };
   const name = browserProcess(p.argv, p.comm);
-  if (!name) return { kill: false };
+  if (!name || underTest) return { kill: false };
   return { kill: true, name, runId: p.cgroup.match(RUN_SCOPE)?.[1] };
 }
 
@@ -64,7 +77,10 @@ export function readProcs(root = "/proc"): ProcInfo[] {
       const cgroup = readFileSync(`${root}/${e}/cgroup`, "utf8").split("\n").find((l) => l.startsWith("0::"))?.slice(3) ?? "";
       const argv = readFileSync(`${root}/${e}/cmdline`, "utf8").split("\0").filter(Boolean);
       const comm = readFileSync(`${root}/${e}/comm`, "utf8").trim();
-      out.push({ pid: Number(e), cgroup, argv, comm });
+      // `stat`: "pid (comm) state ppid …" — comm may hold spaces and parentheses, so cut at the last ")".
+      let ppid: number | undefined;
+      try { const stat = readFileSync(`${root}/${e}/stat`, "utf8"); ppid = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]); } catch { /* none */ }
+      out.push({ pid: Number(e), ...(Number.isFinite(ppid) ? { ppid } : {}), cgroup, argv, comm });
     } catch { /* gone, or not ours */ }
   }
   return out;
@@ -91,6 +107,8 @@ export function killStep(names: string[], at = Date.now()): AgentStep {
 
 export type WatchDeps = {
   procs?: () => ProcInfo[];
+  /** Whether the test queue is installed (default: `bin/worker/orca-run` exists). */
+  testQueue?: () => boolean;
   kill?: (pid: number) => void;
   /** Record the kills of one run: the card and the transcript. */
   record?: (runId: string | undefined, names: string[]) => Promise<void>;
@@ -100,8 +118,15 @@ export type WatchDeps = {
 export async function sweep(deps: WatchDeps = {}): Promise<{ pid: number; name: string; runId?: string }[]> {
   const kill = deps.kill ?? ((pid: number) => { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } });
   const killed: { pid: number; name: string; runId?: string }[] = [];
-  for (const p of (deps.procs ?? readProcs)()) {
-    const v = watchVerdict(p);
+  const procs = (deps.procs ?? readProcs)();
+  const byPid = new Map(procs.map((p) => [p.pid, p]));
+  const testQueue = (deps.testQueue ?? testQueuePresent)();
+  const underTest = (p: ProcInfo): boolean => {
+    for (let q = byPid.get(p.ppid ?? 0), n = 0; q && n < 64; q = byPid.get(q.ppid ?? 0), n++) if (isTestRunner(q.argv)) return true;
+    return false;
+  };
+  for (const p of procs) {
+    const v = watchVerdict(p, process.pid, !testQueue && underTest(p));
     if (!v.kill) continue;
     kill(p.pid);
     killed.push({ pid: p.pid, name: v.name, runId: v.runId });

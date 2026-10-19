@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as db from "../server/db";
 import * as transcript from "../server/transcript";
-import { browserProcess, killStep, nextKillRecord, readProcs, recordKills, sweep, watchVerdict, type ProcInfo } from "../server/browserWatch";
+import { browserProcess, isTestRunner, killStep, nextKillRecord, readProcs, recordKills, sweep, watchVerdict, type ProcInfo } from "../server/browserWatch";
 import { browserKillLabel, rowStatus, BROWSER_KILL_SHOW_MS } from "../web/src/workstream";
 import { freshSchema, type TestDb } from "./pg";
 
@@ -53,9 +53,10 @@ test("readProcs reads cgroup, cmdline and comm; a process that went away is skip
     writeFileSync(join(root, "101", "cgroup"), `0::${inRun}\n`);
     writeFileSync(join(root, "101", "cmdline"), "npm\0exec\0chrome-devtools-mcp@latest\0");
     writeFileSync(join(root, "101", "comm"), "npm exec chrome\n");
+    writeFileSync(join(root, "101", "stat"), "101 (npm exec (x) y) S 77 101 101 0 -1\n");
     mkdirSync(join(root, "102")); // gone mid-read: no files
     mkdirSync(join(root, "self"));
-    expect(readProcs(root)).toEqual([{ pid: 101, cgroup: inRun, argv: ["npm", "exec", "chrome-devtools-mcp@latest"], comm: "npm exec chrome" }]);
+    expect(readProcs(root)).toEqual([{ pid: 101, ppid: 77, cgroup: inRun, argv: ["npm", "exec", "chrome-devtools-mcp@latest"], comm: "npm exec chrome" }]);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -72,6 +73,23 @@ test("a sweep kills each browser once and records them per run", async () => {
   expect(killed).toEqual([1, 2]);
   expect(out.map((k) => k.name)).toEqual(["@playwright/mcp", "chrome"]);
   expect(recorded).toEqual([[RUN, ["@playwright/mcp", "chrome"]]]);
+});
+
+test("a browser under `playwright test` is a test: kept until the test queue is installed, then only its slots", async () => {
+  const procs: ProcInfo[] = [
+    { pid: 10, ppid: 9, cgroup: inRun, argv: ["node", "/w/e2e/node_modules/.bin/playwright", "test", "tests/a.spec.ts", "--workers=1"], comm: "node" },
+    { pid: 11, ppid: 10, cgroup: inRun, argv: ["/c/chrome-headless-shell", "--headless"], comm: "chrome-headless" },
+    { pid: 12, ppid: 11, cgroup: inRun, argv: ["/c/chrome-headless-shell", "--type=renderer"], comm: "chrome-headless" },
+    { pid: 20, ppid: 9, cgroup: inRun, argv: ["node", "shot.js"], comm: "node" },
+    { pid: 21, ppid: 20, cgroup: inRun, argv: ["/c/chrome", "--headless"], comm: "chrome" }, // a script's own browser
+  ];
+  const run = async (testQueue: boolean) => { const k: number[] = []; await sweep({ procs: () => procs, testQueue: () => testQueue, kill: (p) => k.push(p) }); return k; };
+  expect(await run(false)).toEqual([21]);
+  expect(await run(true)).toEqual([11, 12, 21]); // the queue is here: e2e goes through its e2e slot
+  expect(isTestRunner(["node", "/n/@playwright/test/cli.js", "test"])).toBe(true);
+  expect(isTestRunner(["npx", "playwright", "test"])).toBe(true);
+  expect(isTestRunner(["npx", "playwright", "install"])).toBe(false);
+  expect(isTestRunner(["node", "server.js", "test"])).toBe(false);
 });
 
 test("the card's record adds up within a run, starts again for a new run, and shows for a day", () => {
