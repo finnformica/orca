@@ -297,7 +297,7 @@ test("a long heavy-command queue scrolls inside the card (a ScrollArea with a he
   const viewport = queue.querySelector('[data-slot="scroll-area"] [data-slot="scroll-area-viewport"]')!;
   expect(viewport.className).toContain("max-h-64");
   expect(viewport.querySelectorAll('[data-slot="heavy-row"]')).toHaveLength(14);
-  // The command's tooltip wrapper shrinks with the row (it pushed the row past a phone's card).
+  // On a desktop the command's tooltip wrapper shrinks with the row, so a long command truncates.
   const tip = viewport.querySelector('[data-slot="heavy-command"]')!.parentElement!;
   expect(tip.getAttribute("data-slot")).toBe("tip");
   expect(tip.className).toContain("min-w-0");
@@ -305,4 +305,52 @@ test("a long heavy-command queue scrolls inside the card (a ScrollArea with a he
   // The full command is the shadcn tooltip, never a native title.
   expect(queue.querySelector("[title]")).toBeNull();
   expect(openTip(tip.querySelector('[data-slot="heavy-command"]') as HTMLElement).textContent).toMatch(/^npx jest src\/a-very-long-path\/\d+\/component.test.tsx --maxWorkers=1$/);
+});
+
+test("the heavy-queue header shows one decimal; on a phone the rows scroll sideways with their whole text", async () => {
+  const now = Date.now();
+  const long = "npx playwright test tests/a-very-long-spec-name/that-does-not-fit-on-a-phone.spec.ts --workers=1";
+  // A raw, unrounded view from an older bridge, with a lone command over the memory budget.
+  apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 30, load1: 0.5, load5: 0.4, memUsedGb: 2, memTotalGb: 15.3, uptimeS: 9, at: now,
+    heavy: { running: [{ id: "r1", kind: "e2e", command: long, branch: "orca/a-long-branch-name", queuedAt: now, startedAt: now, overBudget: true }], queued: [],
+      limits: {}, cpu: { used: 1.5, budget: 3 }, memory: { used: 6, budget: 1.0999999999999996 } } };
+  const realMatchMedia = window.matchMedia;
+  const phone = (on: boolean) => {
+    window.matchMedia = ((q: string) => ({ matches: on && q === "(max-width: 767px)", media: q, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  };
+  try {
+    // Desktop: one decimal, the overrun flagged, a long command truncates in its row.
+    phone(false);
+    await render(<InstanceCard instance="cloud" here={false} />);
+    await ready();
+    let queue = container!.querySelector('[data-slot="heavy-queue"]')!;
+    expect(queue.querySelector('[data-slot="heavy-cpu"]')!.textContent).toBe(" · CPU 1.5 / 3");
+    expect(queue.querySelector('[data-slot="heavy-memory"]')!.textContent).toBe(" · Memory 6 / 1.1 GB");
+    expect(queue.textContent).not.toContain("0999");
+    expect(queue.querySelector('[data-slot="heavy-memory"]')!.getAttribute("data-over")).toBe("true");
+    expect(queue.querySelector('[data-slot="heavy-over"]')!.textContent).toBe("over memory budget");
+    expect(queue.querySelector('[data-slot="heavy-command"]')!.className).toContain("truncate");
+    expect(queue.querySelector('[data-slot="heavy-who"]')!.className).toContain("truncate");
+    // The vertical-only viewport makes Radix's content wrapper a block, so truncation applies.
+    expect(queue.querySelector('[data-slot="scroll-area-viewport"]')!.className).toContain("[&>div]:!block");
+    await act(async () => { root?.unmount(); }); container?.remove();
+
+    // Phone: the same ScrollArea, now horizontal too; nothing truncates, the list is as wide as its widest row.
+    phone(true);
+    await render(<InstanceCard instance="cloud" here={false} />);
+    await ready();
+    queue = container!.querySelector('[data-slot="heavy-queue"]')!;
+    const viewport = queue.querySelector('[data-slot="scroll-area"] [data-slot="scroll-area-viewport"]')!;
+    expect(viewport.className).toContain("max-h-64");
+    expect(viewport.className).not.toContain("[&>div]:!block");
+    expect(queue.querySelector('[data-slot="heavy-list"]')!.className).toContain("w-max");
+    expect(queue.querySelector('[data-slot="heavy-list"]')!.className).toContain("min-w-full");
+    expect(queue.querySelector('[data-slot="heavy-row"]')!.className).toContain("whitespace-nowrap");
+    expect(queue.querySelector('[data-slot="heavy-command"]')!.className).not.toContain("truncate");
+    expect(queue.querySelector('[data-slot="heavy-who"]')!.className).not.toContain("truncate");
+    expect(queue.querySelector('[data-slot="heavy-command"]')!.textContent).toBe(long);
+    expect(queue.querySelector('[data-slot="heavy-command"]')!.parentElement!.className).not.toContain("min-w-0");
+  } finally {
+    window.matchMedia = realMatchMedia;
+  }
 });

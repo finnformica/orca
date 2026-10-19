@@ -67,7 +67,12 @@ function perKind(v: number | Partial<PerKind> | undefined, defaults: PerKind, sc
 /** The memory budget for the running caps: the agents' slice MemoryMax minus the reserve. No slice
  *  limit (0 or unknown) means no budget. Pure. */
 export function heavyMemoryBudgetGb(sliceMaxGb: number | undefined): number | undefined {
-  return sliceMaxGb && sliceMaxGb > 0 ? Math.max(0, sliceMaxGb - HEAVY_MEMORY_RESERVE_GB) : undefined;
+  return sliceMaxGb && sliceMaxGb > 0 ? oneDecimal(Math.max(0, sliceMaxGb - HEAVY_MEMORY_RESERVE_GB)) : undefined;
+}
+
+/** A CPU or GB figure to one decimal at most: 4.1 - 3 is 1.0999999999999996 in floating point. Pure. */
+export function oneDecimal(n: number): number {
+  return Math.round(n * 10) / 10;
 }
 
 /** Config → settings with every default filled in. `sliceMaxGb`: the agents' slice MemoryMax when
@@ -133,8 +138,9 @@ export type HeavyRequest = {
   pid?: number;
 };
 
-/** `cpu` and `memoryGb`: the kind's CPU cost and memory cap, set when the slot is granted. */
-export type HeavyEntry = HeavyRequest & { id: string; queuedAt: number; startedAt?: number; unit?: string; cpu?: number; memoryGb?: number };
+/** `cpu` and `memoryGb`: the kind's CPU cost and memory cap, set when the slot is granted.
+ *  `overBudget`: its cap alone passes the memory budget, so it was granted only with nothing else running. */
+export type HeavyEntry = HeavyRequest & { id: string; queuedAt: number; startedAt?: number; unit?: string; cpu?: number; memoryGb?: number; overBudget?: boolean };
 /** `memory.budget`: absent when there is no memory budget. */
 export type HeavyView = { running: HeavyEntry[]; queued: HeavyEntry[]; limits: HeavyLimits; cpu: { used: number; budget: number }; memory: { used: number; budget?: number } };
 
@@ -147,6 +153,8 @@ export type Grant = {
   cpu: number;
   /** The memory cap of the command's scope (GB); it counts for this in the memory budget. */
   memoryGb: number;
+  /** The cap alone passes the memory budget: it runs alone, and says so. */
+  overBudget?: boolean;
   /** The systemd unit the command may run in (the CLI wraps it when the scope is available). */
   unit: string;
   /** Set once the slot is back. Idempotent. */
@@ -224,12 +232,17 @@ export function createSlotManager(deps: {
       job.entry.startedAt = now();
       job.entry.cpu = cpu[kind];
       job.entry.memoryGb = memoryMaxGb[kind];
+      // Granted alone (running.size was 0) with a cap above the whole budget: it must not wait
+      // forever, but the overrun is shown on the card and printed by orca-run, never silent.
+      const overBudget = memoryBudgetGb !== undefined && memoryMaxGb[kind] > memoryBudgetGb + 1e-9;
+      if (overBudget) job.entry.overBudget = true;
       const slot: Slot = { entry: job.entry, released: false };
       running.set(job.entry.id, slot);
       job.grant({
         id: job.entry.id,
         cpu: cpu[kind],
         memoryGb: memoryMaxGb[kind],
+        ...(overBudget ? { overBudget } : {}),
         unit: job.entry.unit!,
         release: (reason = "done") => free(job.entry.id, reason),
         onRevoke: (fn) => { slot.revoke = fn; },
@@ -290,11 +303,10 @@ export function createSlotManager(deps: {
     },
     view() {
       const { limits, cpuBudget, memoryBudgetGb } = settings();
-      const round = (n: number) => Math.round(n * 100) / 100;
       return {
         running: [...running.values()].map((s) => ({ ...s.entry })), queued: queue.map((j) => ({ ...j.entry })), limits,
-        cpu: { used: round(cpuUsed()), budget: cpuBudget },
-        memory: { used: round(memoryUsed()), ...(memoryBudgetGb === undefined ? {} : { budget: memoryBudgetGb }) },
+        cpu: { used: oneDecimal(cpuUsed()), budget: oneDecimal(cpuBudget) },
+        memory: { used: oneDecimal(memoryUsed()), ...(memoryBudgetGb === undefined ? {} : { budget: oneDecimal(memoryBudgetGb) }) },
       };
     },
   };
@@ -310,7 +322,8 @@ export function scopePrefix(opts: { available: boolean; unit: string; memoryMaxG
   if (!opts.available) return [];
   return [
     "systemd-run", "--user", "--scope", "--quiet", `--unit=${opts.unit}`, ...(opts.slice ? [`--slice=${opts.slice}`] : []),
-    "-p", `MemoryMax=${opts.memoryMaxGb}G`, "-p", "MemorySwapMax=0", "-p", `CPUWeight=${HEAVY_CPU_WEIGHT}`, "--",
+    // Whole MB, as limitAgentsSlice writes it: a config's 1.1 never becomes "1.1000000000000001G".
+    "-p", `MemoryMax=${Math.floor(opts.memoryMaxGb * 1024)}M`, "-p", "MemorySwapMax=0", "-p", `CPUWeight=${HEAVY_CPU_WEIGHT}`, "--",
   ];
 }
 
@@ -341,7 +354,7 @@ export function acquireResponse(manager: SlotManager, request: HeavyRequest, sig
       }
       if (signal.aborted) return grant.release("client-gone");
       grant.onRevoke((reason) => { write({ revoked: reason }); close(); });
-      write({ granted: grant.id, unit: grant.unit, maxRunMs: grantInfo.maxRunMs, prefix: grantInfo.prefix(grant.unit, grant.memoryGb), env: grantInfo.env, cpus: grant.cpu, memoryGb: grant.memoryGb });
+      write({ granted: grant.id, unit: grant.unit, maxRunMs: grantInfo.maxRunMs, prefix: grantInfo.prefix(grant.unit, grant.memoryGb), env: grantInfo.env, cpus: grant.cpu, memoryGb: grant.memoryGb, ...(grant.overBudget ? { overBudget: true } : {}) });
     },
     cancel() { gone(); },
   });
