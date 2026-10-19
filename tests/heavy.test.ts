@@ -11,7 +11,7 @@ import {
 } from "../server/heavy";
 import { runIdentity } from "../server/agent";
 import { HEAVY_COMMANDS, followUpPrompt, heavyHeader, heavyNumber, heavyQueueRows } from "../web/src/workstream";
-import { agentsSliceLimitGb, heavySliceGb, memoryMaxFileGb } from "../server/cgroup";
+import { agentsSliceLimitGb, heavySliceGb, memoryMaxFileGb } from "../server/sliceLimit";
 import { native } from "./happydom";
 
 const WORKER = join(import.meta.dir, "..", "bin", "worker");

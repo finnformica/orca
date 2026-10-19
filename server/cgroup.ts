@@ -57,29 +57,6 @@ export function agentsSliceMaxGb(env: Env = process.env, totalBytes = totalmem()
   return Math.floor((totalBytes / 1024 ** 3) * AGENTS_SLICE_SHARE * 10) / 10;
 }
 
-/** A cgroup `memory.max` file → GB, floored to one decimal: `max` (no limit) → 0, anything else →
- *  undefined. 11811160064 (what `MemoryMax=11264M` writes) → 11. Pure. */
-export function memoryMaxFileGb(text: string): number | undefined {
-  const t = text.trim();
-  if (t === "max") return 0;
-  if (!/^\d+$/.test(t)) return undefined;
-  return Math.floor((Number(t) / 1024 ** 3) * 10 + 1e-9) / 10;
-}
-
-/** The agents' slice's REAL MemoryMax (GB), read from its cgroup: what the kernel enforces, which
- *  the env value only asks for (the bridge sets it before each launch). 0 = no limit, undefined =
- *  no slice yet (or not Linux). `ORCA_CGROUP_ROOT`: tests. */
-export function agentsSliceLimitGb(env: Env = process.env, uid = process.getuid?.() ?? 0): number | undefined {
-  const root = `${env.ORCA_CGROUP_ROOT ?? "/sys/fs/cgroup"}/user.slice/user-${uid}.slice/user@${uid}.service/orca.slice/${AGENTS_SLICE}`;
-  try { return memoryMaxFileGb(readFileSync(`${root}/memory.max`, "utf8")); } catch { return undefined; }
-}
-
-/** The slice limit the heavy queue's memory budget comes from: the real one when the slice has a
- *  limit, else the one the bridge will set (`agentsSliceMaxGb`). */
-export function heavySliceGb(env: Env = process.env, uid = process.getuid?.() ?? 0): number {
-  return agentsSliceLimitGb(env, uid) || agentsSliceMaxGb(env);
-}
-
 /** argv run with its OOM score set first: the agent must not keep the bridge's -500. Pure. */
 export function withOomScore(argv: string[], adj: number): string[] {
   return ["sh", "-c", `{ echo ${adj} > /proc/self/oom_score_adj; } 2>/dev/null; exec "$@"`, "orca-run", ...argv];
