@@ -94,12 +94,25 @@ test.skipIf(!linux)("a scoped run is in orca-agents.slice with OOM score 500, an
   expect(c.indexOf("set-property")).toBeLessThan(c.indexOf("systemd-run"));
 });
 
+test.skipIf(!linux)("a finished run's scope is stopped, so processes it left in the background die with it", async () => {
+  // The agent leaves a "dev server" behind, as the notion worker's nest + vite did (1.7 GB, 14 min).
+  await fakeClaude(`(sleep 300 >/dev/null 2>&1 & echo $! > "${dir}/leftover.pid") ; printf '{"type":"result","subtype":"success","result":"done","is_error":false}'`);
+  await run("leftover");
+  expect((await finished("leftover")).response).toBe("done");
+  const c = await calls();
+  const unit = c.match(/--unit=(orca-run-\S+)/)![1];
+  expect(c).toContain(`systemctl --user stop ${unit}.scope`);
+  expect(c.indexOf(`systemctl --user stop ${unit}.scope`)).toBeGreaterThan(c.indexOf("-p Result")); // after the OOM read
+  process.kill(Number((await readFile(join(dir, "leftover.pid"), "utf8")).trim())); // the fake systemctl kills nothing
+});
+
 test.skipIf(!linux)("unscoped (no user bus, lingering off: a laptop or CI): the agent still gets OOM score 500", async () => {
   await rm(join(runtime, "bus"));
   await run("plain");
   await finished("plain");
   expect((await readFile(join(dir, "adj"), "utf8")).trim()).toBe("500");
   expect(await calls()).not.toContain("systemd-run");
+  expect(await calls()).not.toContain("systemctl --user stop"); // no scope, nothing to stop
   expect(cgroup.userManagerDown()).toBeUndefined(); // no lingering: no user manager expected, nothing is down
 });
 
