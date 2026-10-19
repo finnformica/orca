@@ -123,7 +123,7 @@ describe("provider adapters", () => {
     // Claude pins sonnet like the one-shot: without it the resume inherits the implementation
     // model (opus) and Promote blocks on it for ~twice as long.
     expect(prDescriptionCommand("claude", "/wt/x", "body", "c-1")).toEqual([
-      "claude", "-p", "body", "--resume", "c-1", "--model", "sonnet", "--tools", "", "--disable-slash-commands", "--output-format", "json",
+      "claude", "-p", "body", "--resume", "c-1", "--model", "sonnet", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--output-format", "json",
     ]);
     expect(prDescriptionCommand("claude", "/wt/x", "body", "c-1")).not.toContain("opus");
     expect(prDescriptionCommand("codex", "/wt/x", "body", "x-1")).toEqual([

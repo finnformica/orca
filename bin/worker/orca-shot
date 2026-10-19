@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--press <key>]
+// `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--press <key>] [--type <text>]
 //  [--hover <sel>] [--scroll <y|sel>] [--wait <ms>] [--full-page] [--label before|after] [--out <file>]
 //  [--timeout <seconds>] [--console]` — the ONLY way a worker takes a screenshot. It asks the bridge's capped,
 // one-at-a-time browser (server/screenshot.ts) and prints the PNG's path as `shot: <path>`; never
@@ -40,10 +40,11 @@ for (let i = 0; i < argv.length; i++) {
   else if (a === "--timeout") timeoutS = Number(value(i++, a));
   else if (a === "--click") steps.push({ click: value(i++, a) });
   else if (a === "--press") steps.push({ press: value(i++, a) });
+  else if (a === "--type") steps.push({ type: value(i++, a) });
   else if (a === "--hover") steps.push({ hover: value(i++, a) });
   else if (a === "--scroll") { const v = value(i++, a); steps.push({ scroll: /^\d+$/.test(v) ? Number(v) : v }); }
   else if (a === "--wait") steps.push({ wait: Number(value(i++, a)) });
-  else if (a === "-h" || a === "--help") { console.log("usage: orca-shot <url> [--viewport WxH] [--dark] [--wait-for sel] [--click sel] [--press key] [--hover sel] [--scroll y|sel] [--wait ms] [--full-page] [--label name] [--out file] [--timeout seconds] [--console]\n  --console prints the page's exceptions, console errors and failed requests\n  --click is a real mouse click (opens Radix UI menus/triggers, which open on pointerdown)\n  --press sends a named key (Enter, Escape, ArrowDown, …), repeatable, ordered with --click"); process.exit(0); }
+  else if (a === "-h" || a === "--help") { console.log("usage: orca-shot <url> [--viewport WxH] [--dark] [--wait-for sel] [--click sel] [--press key] [--type text] [--hover sel] [--scroll y|sel] [--wait ms] [--full-page] [--label name] [--out file] [--timeout seconds] [--console]\n  --console prints the page's exceptions, console errors and failed requests\n  --click is a real mouse click (opens Radix UI menus/triggers, which open on pointerdown)\n  --press sends a named key (Enter, Escape, ArrowDown, …), repeatable, ordered with --click\n  --type types text into the focused element (--click the field first)"); process.exit(0); }
   else if (a.startsWith("--")) { console.error(`orca-shot: unknown flag ${a}`); process.exit(2); }
   else body.url = a;
 }

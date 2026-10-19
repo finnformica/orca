@@ -106,6 +106,10 @@ export type RepoConfig = {
    *  default (4GB). A run that hits it is killed by the kernel alone, not the box; the turn's
    *  response says so and its stop reason is `error`. */
   agentMemoryMaxGb?: number;
+  /** The servers of the repo's committed `.mcp.json` that its agents may start (server/mcp.ts).
+   *  Unset or empty = none: every claude run gets `--strict-mcp-config`. A browser server
+   *  (playwright, chrome-devtools, puppeteer) never starts, even when listed. */
+  mcpAllow?: string[];
   /** Which Orca instance executes this repo (`db.instanceName()`). Absent = whichever instance is
    *  reading, i.e. today's single-machine behaviour. An instance ignores repos assigned elsewhere,
    *  which is how a laptop and a cloud box divide the work without a queue between them. */
@@ -285,6 +289,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
     }
     if (r.agentMemoryMaxGb !== undefined && (typeof r.agentMemoryMaxGb !== "number" || !(r.agentMemoryMaxGb > 0))) {
       errors.push(`${where}.agentMemoryMaxGb must be a positive number of GB`);
+    }
+    if (r.mcpAllow !== undefined && (!Array.isArray(r.mcpAllow) || r.mcpAllow.some((n) => typeof n !== "string" || !n.trim()))) {
+      errors.push(`${where}.mcpAllow must be a list of MCP server names`);
     }
     if (r.features !== undefined) {
       if (!r.features || typeof r.features !== "object" || Array.isArray(r.features)) {

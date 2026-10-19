@@ -1240,7 +1240,9 @@ Orca does crowds them out of the 15% left over.
 bridge's `oom_score_adj` -500, so a memcg OOM killed the user manager instead. Every agent now
 starts at +500 through a `sh` wrapper (`withOomScore` — never `-p OOMScoreAdjust=` on a scope: systemd
 255 refuses it and every run fails) and runs in `orca-agents.slice`, whose `MemoryMax` the bridge sets
-before each launch. A user manager that does not answer (lingering on) starts the run unscoped.
+before each launch. A user manager that does not answer (lingering on) starts the run unscoped. When
+a run ends (an adopted one too), `agent.stopRunScope` stops its `orca-run-<runId>.scope`, after the
+OOM read: a dev server or build the worker left behind dies with it (2026-10-19: 1.7 GB for 14 min).
 **Screenshots** (`server/screenshot.ts`): workers can't run a browser (the OOM above), so the bridge
 runs ONE — `POST /api/screenshot` (url, viewport, dark, wait-for, click/scroll/wait steps) queues on a
 box-wide queue (one capture at a time), launches a fresh `chrome-headless-shell` over CDP inside its
@@ -1250,7 +1252,8 @@ own `systemd-run --user --scope` (`cgroup.scopedCommand`, `MemoryMax=1.5G`, no s
 serves it. Workers get `bin/worker/` on PATH (`agentEnv` — not `bin/`, whose `orca` is the
 orchestrator's) and `orca-shot <url> [--viewport 390x844] [--dark] …`, which prints `shot: <path>`;
 every worker prompt says it is the ONLY way to take a screenshot (`SCREENSHOTS`), and shot paths in a
-reply ride the worker report (`reportedShots` in `workerEvent`).
+reply ride the worker report (`reportedShots` in `workerEvent`). `--type <text>` types into the
+focused field.
 **Heavy commands** (`server/heavy.ts`): agents ran Playwright, Jest, eslint and builds at once and
 OOM-killed each other in `orca-agents.slice`. Finn removed the slice's CPUQuota: this queue is the
 ONLY CPU control, so it must see every heavy task. A box-wide slot queue, like `orca-shot`'s but with
@@ -1270,6 +1273,16 @@ jest and `playwright test` get one worker unless the call sets one. `ORCA_RUN_SL
 call from queueing again, and `ORCA_RUN_BYPASS=1` is the escape hatch. Every worker prompt carries
 `HEAVY_COMMANDS`. With no bridge, `orca-run` runs the command anyway. The machine card lists running
 and queued commands and the CPU in use (`heavy` on `/api/health`, `heavyQueueRows`).
+**No worker browsers** (2026-10-19: branch-demo's committed `.mcp.json` started playwright and
+chrome-devtools MCP servers in every worker; seven of each, with Chrome, pushed load to 29 on 4 cores).
+Two guards. (1) `server/mcp.ts`: every claude launch gets `--strict-mcp-config` and Orca's own
+`--mcp-config` — only the repo's `mcpAllow` servers from its `.mcp.json` (default none; the
+orchestrator: all of its cwd's), never a browser server — plus `--disallowedTools
+mcp__playwright,mcp__chrome-devtools`. (2) `server/browserWatch.ts`: every 30 s the primary kills a
+browser or browser MCP server in `orca-agents.slice` outside orca-shot's scope and the test queue's
+`orca-heavy-*` slots, and records it on the card (`browserKilled`, a "Browser killed" pill) and as
+a step in the run's transcript. Until `bin/worker/orca-run` exists, a browser under `playwright
+test` is kept as a test.
 **Screenshots in PRs and on the agent page** (`server/prShots.ts`): shots are not stored per turn —
 `workstreamShots` reads them off the branch's turns (reply + Verification). The newest
 `PR_SHOTS_MAX` (6) go into the PR body's `## Screenshots` section (`withScreenshotsSection`: replaced

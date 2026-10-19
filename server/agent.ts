@@ -23,6 +23,8 @@ import { existsSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { join, resolve } from "path";
 import { stateDir } from "./state";
+import { mcpArgs, mcpLockdown, type McpAllow } from "./mcp";
+type McpLockdown = ReturnType<typeof mcpLockdown>;
 
 /** Persist a turn, but never let the history write break the run that produced it. Repo-level runs
  *  (Slack, keyed `slack:…`) carry no branch and so belong to no workstream — they're skipped.
@@ -129,6 +131,9 @@ export type LaunchOptions = {
   /** claude only: `--allowedTools`, for a run that must act without `bypassPermissions` (the
    *  orchestrator, which may run the `orca` command and nothing else). */
   allowedTools?: string[];
+  /** claude only: the project MCP servers this run may start (server/mcp.ts). Unset: none. A
+   *  browser server never starts. */
+  mcpAllow?: McpAllow;
   /** Extra environment for the process, over agentEnv(). */
   env?: Record<string, string>;
   /** `false`: this run's queue is drained by whoever launched it, not by the exit handler (the
@@ -663,7 +668,7 @@ export function parseCursorOutput(raw: string): { sessionId?: string; result?: s
 // all three CLIs' arg parsers read that leading dash as an unknown option and the run dies before the
 // agent ever sees the prompt — e.g. claude `error: unknown option '- gather children…'`. Reproduced
 // and each `--` form verified against the real CLIs (see multiAgent.test's leading-dash case).
-export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string, permissionMode: PermissionMode = "ask", maxBudgetUsd?: number, allowedTools?: string[], scoped?: ScopedRules): string[] {
+export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string, permissionMode: PermissionMode = "ask", maxBudgetUsd?: number, allowedTools?: string[], scoped?: ScopedRules, mcp?: McpLockdown): string[] {
   // `model` is the card's pinned model (shared/models.ts) or the config default; unset → each CLI's own.
   const m = model ? ["--model", model] : [];
   if (provider === "codex") {
@@ -691,13 +696,15 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
   // the run's spend reaches it and reports a budget result, which the turn records as
   // `budget_reached` — the same stop reason Managed Agents uses for a session budget.
   // `scoped` (a "work" grant): dontAsk + the rules of scopedRules, never bypassPermissions.
+  // `mcp` (server/mcp.ts): only Orca's MCP config, never the repo's `.mcp.json`, and the browser
+  // servers' tools denied — a deny rule holds under bypassPermissions too.
+  const deny = [...(permissionMode === "scoped" ? scoped?.deny ?? [] : []), ...(mcp?.deny ?? [])];
   const perms = permissionMode === "scoped"
     ? ["--permission-mode", "dontAsk", "--settings", JSON.stringify({ permissions: { blockReadsOutsideWorkingDirectories: true } }),
       ...(scoped?.addDirs.length ? ["--add-dir", ...scoped.addDirs] : []),
-      "--allowedTools", [...(scoped?.allow ?? []), ...(allowedTools ?? [])].join(","),
-      ...(scoped?.deny.length ? ["--disallowedTools", scoped.deny.join(",")] : [])]
+      "--allowedTools", [...(scoped?.allow ?? []), ...(allowedTools ?? [])].join(",")]
     : ["--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...(allowedTools?.length ? ["--allowedTools", allowedTools.join(",")] : [])];
-  return ["claude", "-p", ...perms, ...m, ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--", prompt];
+  return ["claude", "-p", ...perms, ...(deny.length ? ["--disallowedTools", deny.join(",")] : []), ...(mcp ? mcpArgs(mcp) : []), ...m, ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--", prompt];
 }
 
 // Launches between their call and their return, by key: a Stop pressed while a run is still
@@ -766,7 +773,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   const proc = Bun.spawn(
     cgroup.scopedCommand(
       agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd, options.allowedTools,
-        options.permissionMode === "scoped" ? scopedRulesHere(cwd, options.scope) : undefined),
+        options.permissionMode === "scoped" ? scopedRulesHere(cwd, options.scope) : undefined, mcpLockdown(cwd, options.mcpAllow)),
       // A positive OOM score scoped or not: the bridge's -500 must not pass to its agents.
       { available: scoped, memoryMaxGb, cpuWeight, unit: scopeUnit, slice: cgroup.AGENTS_SLICE, oomScoreAdj: linux ? cgroup.oomScoreAdj() : undefined },
     ),
@@ -847,6 +854,10 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       : undefined;
     const oomKilled = !ok && !wasStopped && code === 137 && oomCause !== undefined;
     if (oomKilled || (scopeOom && oomCause)) noteOomKill(); // the instance card's Memory chart marks it at the next sample
+    // The agent is gone, but a dev server or build it left in the background keeps its scope alive
+    // (17:55 on 2026-10-19: a finished worker's nest, vite and backend held 1.7 GB for 14 minutes).
+    // After the OOM read above, which needs the scope: stop it, and every process in it.
+    if (scoped) await stopRunScope(runId, { ...process.env, ...scopedEnv });
     const rawError = (err.trim() || result || `exit ${code}`).slice(0, 300);
     // A process of THIS run was OOM-killed (its scope says so) but the agent went on, or failed some
     // other way: a build, or a git push hook. Name it, so a push that never happened is not silent.
@@ -941,7 +952,7 @@ export const runStartedAt = (key: string): number | undefined => {
 /** A provider-isolated one-shot: never falls through to a different provider. */
 export function oneShotCommand(provider: AgentProvider, cwd: string, prompt: string, purpose: "title" | "description"): string[] {
   if (provider === "claude") {
-    return ["claude", "-p", prompt, "--model", purpose === "title" ? "haiku" : "sonnet", "--tools", "", "--disable-slash-commands", "--no-session-persistence", "--output-format", "json"];
+    return ["claude", "-p", prompt, "--model", purpose === "title" ? "haiku" : "sonnet", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence", "--output-format", "json"];
   }
   if (provider === "codex") return ["codex", "exec", "--json", "--ephemeral", "--ignore-rules", "--sandbox", "read-only", "-C", cwd, prompt];
   return ["cursor-agent", "-p", prompt, "--output-format", "json", "--mode", "ask", "--trust"];
@@ -953,7 +964,7 @@ export function prDescriptionCommand(provider: AgentProvider, cwd: string, promp
     // Pin sonnet like the one-shot fallback: resuming otherwise inherits the implementation model
     // (opus), and writing a PR body from an already-loaded session doesn't need it — it's ~half the
     // wall clock of a Promote.
-    return ["claude", "-p", prompt, "--resume", resume, "--model", "sonnet", "--tools", "", "--disable-slash-commands", "--output-format", "json"];
+    return ["claude", "-p", prompt, "--resume", resume, "--model", "sonnet", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--output-format", "json"];
   }
   if (provider === "codex") {
     return ["codex", "exec", "resume", "--json", "-c", 'sandbox_mode="read-only"', resume, prompt];
@@ -1083,6 +1094,12 @@ export function adoptLeases(
   return adopted.length;
 }
 
+/** Stop a finished run's scope (`orca-run-<runId>.scope`): every process still in it is killed. A
+ *  scope that is already gone is fine. Bounded, and never throws: the run is recorded either way. */
+export async function stopRunScope(runId: string, env: Record<string, string | undefined>): Promise<void> {
+  await runCmd(["systemctl", "--user", "stop", `orca-run-${runId}.scope`], { env, allowFail: true, timeoutMs: 10_000 }).catch(() => undefined);
+}
+
 async function finishAdopted(l: lease.Lease, recover: Parameters<typeof adoptLeases>[0]): Promise<void> {
   if (runs.get(l.key)?.runId !== l.runId) return; // a new run took the key meanwhile
   // The journal knows the owner when the turn never reached the database (it was down at launch).
@@ -1100,6 +1117,7 @@ async function finishAdopted(l: lease.Lease, recover: Parameters<typeof adoptLea
     await pending;
   }
   lease.release(l.key, l.runId);
+  if (cgroup.available()) await stopRunScope(l.runId, { ...process.env, ...cgroup.runtimeEnv() }); // what it left behind
   const handled = afterRunStarted();
   try {
     runs.set(l.key, { status, provider: l.provider, runId: l.runId, sessionId: l.sessionId, result, structured: found?.structured, startedAt: l.startedAt, finishedAt, error: ok ? undefined : result });
