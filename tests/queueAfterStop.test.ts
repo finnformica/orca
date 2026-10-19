@@ -93,6 +93,10 @@ async function firstRun() {
   wt = await verbs.ensureWorktree(repoCfg(), "feat");
   const r = await verbs.followUp(cfg(), repoCfg(), "feat", { instruction: "build the cards" });
   expect(r.status).toBe("running");
+  // The fake records its argv as its first command: wait for that, or a Stop that lands before it
+  // (a slow CI runner) leaves the first launch with no record.
+  for (let i = 0; i < 400 && (await readdir(log)).length < 1; i++) await new Promise((res) => setTimeout(res, 10));
+  expect((await readdir(log)).length).toBe(1);
   return (await db.enrichment("r")).feat!.sessionId as string;
 }
 
