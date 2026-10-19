@@ -12,7 +12,9 @@
 #     and `bun test`, by the script's name (script_kind). npm puts node_modules/.bin first on the
 #     PATH, so a tool that a script starts never reaches the shims above; its script name does.
 #   - Test scripts: `bash <file>`, by the file's name (`bash scripts/run-e2e-tests.sh`).
-#   - Not heavy: --version and --help of a tool, installs, and every other command.
+#   - `npm ci` and `npm install` (build): they unpack a whole node_modules and run its install
+#     scripts.
+#   - Not heavy: --version and --help of a tool, other installs, and every other command.
 #   - Jest and `playwright test` get one worker (ORCA_RUN_WORKERS) when the call sets none. Jest
 #     otherwise starts one worker per CPU but one.
 #   - Nested calls (ORCA_RUN_SLOT is set under orca-run) never queue again.
@@ -133,7 +135,10 @@ pm_kind() {
       if [ "$pm" = "bun" ]; then case "$1" in */*|*.*) return 0 ;; esac; fi
       script_kind "$1" ;;
     *)
-      [ "$pm" = "npm" ] && return 0
+      if [ "$pm" = "npm" ]; then
+        case "$sub" in ci|clean-install|install|i|in|isntall) KIND=build ;; esac
+        return 0
+      fi
       if [ "$pm" = "bun" ]; then
         case "$sub" in build) KIND=build; return 0 ;; */*|*.*) return 0 ;; esac
       fi

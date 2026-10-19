@@ -161,7 +161,15 @@ describe("slot manager", () => {
     expect(s.maxRunMs.test).toBe(30 * 60_000);
     expect(heavySettings({ maxRunMinutes: 10 }).maxRunMs).toEqual(Object.fromEntries(HEAVY_KINDS.map((k) => [k, 600_000])) as PerKind);
     expect(heavySettings(undefined).maxRunMs.serve).toBe(60 * 60_000);
-    expect(s.memoryMaxGb).toBe(2);
+    expect(s.memoryMaxGb).toEqual(Object.fromEntries(HEAVY_KINDS.map((k) => [k, 2])) as PerKind);
+    expect(heavySettings(undefined).memoryMaxGb).toEqual({ e2e: 6, test: 4, lint: 6, build: 6, migrate: 2, serve: 2 });
+    expect(heavySettings({ memoryMaxGb: { test: 5 } }).memoryMaxGb.test).toBe(5);
+    expect(heavySettings({ memoryMaxGb: { test: 5 } }).memoryMaxGb.lint).toBe(6);
+    expect(heavyQueueProblems({ memoryMaxGb: { test: 0, x: 1 } })).toEqual([
+      "heavyQueue.memoryMaxGb.test must be a positive number",
+      "heavyQueue.memoryMaxGb.x is not a kind (e2e, test, lint, build, migrate, serve)",
+    ]);
+    expect(heavyQueueProblems({ memoryMaxGb: 0 })).toEqual(["heavyQueue.memoryMaxGb must be a positive number"]);
     expect(heavyQueueProblems(undefined)).toEqual([]);
     expect(heavyQueueProblems({ limits: { e2e: 0, unit: 1 }, cpu: { lint: 0, x: 1 }, cpuBudget: 0, maxRunMinutes: -1 })).toEqual([
       "heavyQueue.limits.e2e must be a whole number of at least 1",
@@ -180,6 +188,47 @@ describe("slot manager", () => {
       "systemd-run", "--user", "--scope", "--quiet", "--unit=orca-heavy-1", "--slice=orca-agents.slice",
       "-p", "MemoryMax=3G", "-p", "MemorySwapMax=0", "-p", "CPUWeight=50", "--",
     ]);
+  });
+
+  test("HQ18: memory — each kind has its own cap, and the running caps fit under the agents' slice minus 3 GB", async () => {
+    // No slice limit: no memory budget, only the CPU budget counts.
+    expect(heavySettings(undefined).memoryBudgetGb).toBeUndefined();
+    expect(heavySettings(undefined, 0).memoryBudgetGb).toBeUndefined();
+    expect(manager().m.view().memory).toEqual({ used: 0 });
+    // The box: an 11 GB slice leaves 8 GB for the caps.
+    const { m } = manager(heavySettings(undefined, 11));
+    expect(m.view().memory).toEqual({ used: 0, budget: 8 });
+    const build = ask(m, "build"), test1 = ask(m, "test"), serve = ask(m, "serve");
+    await tick();
+    expect(build.grant?.memoryGb).toBe(6);
+    expect(test1.grant).toBeUndefined(); // 6 + 4 > 8, though 1.5 + 1 CPUs fit
+    expect(serve.grant).toBeUndefined(); // 2 fits, but it never passes the test that waits
+    build.grant!.release();
+    await tick();
+    expect(test1.grant?.memoryGb).toBe(4);
+    expect(serve.grant?.memoryGb).toBe(2);
+    expect(m.view().memory).toEqual({ used: 6, budget: 8 });
+    expect(m.view().running.map((e) => e.memoryGb)).toEqual([4, 2]);
+    test1.grant!.release();
+    serve.grant!.release();
+    // A cap above the whole budget runs alone.
+    const small = manager(heavySettings(undefined, 8)).m; // budget 5
+    const big = ask(small, "lint"), after = ask(small, "migrate");
+    await tick();
+    expect(big.grant?.memoryGb).toBe(6);
+    expect(after.grant).toBeUndefined();
+    big.grant!.release();
+    await tick();
+    expect(after.grant).toBeDefined();
+    // The granted line carries the kind's own cap into the scope prefix.
+    const res = acquireResponse(createSlotManager({ settings: () => heavySettings({ memoryMaxGb: { test: 5 } }, 11) }), { kind: "test", command: "jest" }, new AbortController().signal, {
+      maxRunMs: 1, env: {}, prefix: (unit, gb) => scopePrefix({ available: true, unit, memoryMaxGb: gb }),
+    });
+    const reader = res.body!.getReader();
+    const line = JSON.parse(new TextDecoder().decode((await reader.read()).value).trim().split("\n").pop()!);
+    await reader.cancel();
+    expect(line.memoryGb).toBe(5);
+    expect(line.prefix).toContain("MemoryMax=5G");
   });
 
   test("HQ9: a run's env names the run, so its slot is tied to it", () => {
@@ -311,7 +360,11 @@ describe("orca-run and the shims", () => {
     expect((await run(["npm", "run", "setup-db"])).out).toMatch(slotted);
     expect((await run(["npm", "run", "dev:local:test"])).out).toMatch(slotted);
     expect((await run(["npm", "--prefix", "frontend", "run", "build"])).out).toMatch(slotted);
-    expect((await run(["npm", "install"])).out).toContain("slot=none");
+    // Installs unpack a whole node_modules: npm's queue as builds; another package manager's do not.
+    expect((await run(["npm", "install"])).out).toMatch(slotted);
+    expect((await run(["npm", "ci"])).out).toMatch(slotted);
+    expect((await run(["npm", "i", "left-pad"])).out).toMatch(slotted);
+    expect((await run(["npm", "audit"])).out).toContain("slot=none");
     expect((await run(["npm", "run", "generate-client"])).out).toContain("slot=none");
     expect((await run(["prettier", "--write", "src"])).out).toMatch(slotted);
     expect((await run(["mikro-orm", "migration:up"])).out).toMatch(slotted);

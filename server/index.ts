@@ -406,9 +406,14 @@ const INSTANCE_IS_A_FILTER = new Set(["/api/health/history"]);
 
 /** Forward a request to the instance that owns the repo. Returns undefined when the request should
  *  be handled locally. (The chat's live stream is not forwarded — /api/events relays instead.) */
+/** The heavy queue's settings for this box. The memory budget applies only when the commands run
+ *  in capped scopes inside the agents' slice: without systemd there are no caps to add up. */
+function heavySettingsHere(cfg: OrcaConfig): heavy.HeavySettings {
+  return heavy.heavySettings(cfg.heavyQueue, cgroup.available() ? cgroup.agentsSliceMaxGb() : undefined);
+}
 /** This box's heavy-command queue, for /api/heavy and the machine card (/api/health). */
 function heavyView(cfg: OrcaConfig): heavy.HeavyView {
-  heavy.setSettings(heavy.heavySettings(cfg.heavyQueue));
+  heavy.setSettings(heavySettingsHere(cfg));
   return heavy.slots().view();
 }
 
@@ -671,7 +676,8 @@ async function api(req: Request, url: URL): Promise<Response> {
   // as this request: a killed `orca-run` drops the connection, and that frees it.
   if (req.method === "POST" && p === "/api/heavy") {
     if (!heavy.isHeavyKind(body.kind)) return json({ error: `kind must be one of ${heavy.HEAVY_KINDS.join(", ")}` }, 400);
-    heavy.setSettings(heavy.heavySettings(cfg.heavyQueue));
+    const settings = heavySettingsHere(cfg);
+    heavy.setSettings(settings);
     const request: heavy.HeavyRequest = {
       kind: body.kind, command: String(body.command ?? "").slice(0, 500),
       ...(typeof body.runId === "string" && body.runId ? { runId: body.runId } : {}),
@@ -680,11 +686,10 @@ async function api(req: Request, url: URL): Promise<Response> {
       ...(typeof body.cwd === "string" && body.cwd ? { cwd: body.cwd } : {}),
       ...(Number.isInteger(body.pid) && body.pid > 0 ? { pid: body.pid } : {}),
     };
-    const settings = heavy.heavySettings(cfg.heavyQueue);
     const scoped = cgroup.available();
     return heavy.acquireResponse(heavy.slots(), request, req.signal, {
       maxRunMs: settings.maxRunMs[request.kind], env: scoped ? cgroup.runtimeEnv() : {},
-      prefix: (unit) => heavy.scopePrefix({ available: scoped, unit, memoryMaxGb: settings.memoryMaxGb, slice: cgroup.AGENTS_SLICE }),
+      prefix: (unit, memoryGb) => heavy.scopePrefix({ available: scoped, unit, memoryMaxGb: memoryGb, slice: cgroup.AGENTS_SLICE }),
     });
   }
   if (req.method === "POST" && p === "/api/heavy/release") {

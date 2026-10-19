@@ -190,7 +190,8 @@ export type OrcaConfig = {
   autoUpkeepConcurrency?: number;
   /** The box-wide queue for heavy commands (server/heavy.ts, `orca-run`): per-kind and total slot
    *  limits, the max wait and run time in minutes, and each command's memory cap. Unset: defaults
-   *  for a 4 vCPU box (e2e 1, test 2, lint 2, build 1, total 3; 20 min wait, 30 min run, 3 GB). */
+   *  for a 4 vCPU box (e2e 1, test 2, lint 2, build 1, total 4; 20 min wait, 30 min run; memory caps
+   *  e2e/lint/build 6 GB, test 4 GB, others 2 GB, their sum under the agents' slice minus 3 GB). */
   heavyQueue?: HeavyQueueConfig;
   /** Which instance the orchestrator lives on, when there are several sharing the database. Its
    *  routes are forwarded there and worker reports from other instances are posted there, so ONE
