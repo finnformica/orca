@@ -191,6 +191,22 @@ test("behind + busy (orchestrator mid-wake): deferred", async () => {
   expect(await readFile(trace, "utf8")).toBe("");
 });
 
+test.skipIf(!Bun.which("flock"))("behind + another deploy holds the deploy lock: deferred, no pull, no restart", async () => {
+  // The lock also keeps the health watchdog (deploy/health-check.sh) off the bridge under a deploy.
+  const { origin, box, state, trace } = await setup();
+  const before = await headOf(box);
+  await advanceOrigin(origin);
+  const shim = await makeShimDir({ trace });
+  await writeFile(join(state, "deploy.lock"), "");
+  const holder = Bun.spawn(["flock", join(state, "deploy.lock"), "sleep", "2"]);
+  await new Promise((r) => setTimeout(r, 200)); // let flock take the lock
+  const { log } = await runScript(baseEnv(box, state, shim));
+  await holder.exited;
+  expect(log).toContain("deferred: another deploy holds");
+  expect(await headOf(box)).toBe(before);
+  expect(await readFile(trace, "utf8")).toBe("");
+});
+
 test("behind + idle: pull, build, restart in that order", async () => {
   const { origin, box, state, trace } = await setup();
   const newHead = await advanceOrigin(origin);
