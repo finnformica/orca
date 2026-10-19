@@ -203,6 +203,13 @@ has `orca channels`, `post`, `thread link` and `ask-user`. A subscription's `dig
 its deliveries per fixed window (`delivery.digest_key`). `/api/slack` still posts at once as
 you (`postAsUser`), not through the queue; `/api/orchestrator/event` stays for instance-to-instance
 reports, scripts use a signed webhook (`/api/integrations/<id>/inbound`).
+**Linear** (`adapters/linear.ts`, `docs/integrations/linear.md`) polls GraphQL with an `updatedAt`
+cursor and your personal key (`ORCA_SECRET_LINEAR`), so it needs no public URL. An assignment, a
+mention or another person's comment on your issue is `ext.linear.message` in the issue's thread
+(`messageId` = the top-level comment); the place is `project:<id>`, then `team:<KEY>`, then `*`. It
+has no `actor` (the link's level is the grant, no pairing); `Envelope.display` gives the activity row
+its sender and the issue as the place. `orca post --reply` comments as you under that comment
+(`parentId`); a thread-linked issue gets PR state. The card shows `last poll` (`lastPollAt`).
 
 ## Multi-repo (aggregated)
 
