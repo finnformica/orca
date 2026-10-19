@@ -424,11 +424,14 @@ test("the live header's label swaps in two layers — the old line fades out as 
   // The box takes 1.2em of layout, but its row (and so each line's own truncate clip) is 2.2em and
   // runs into padding, split evenly above and below, that a negative margin cancels: a descender
   // such as the g of `Thinking` is never cut off (the bug: the row shrank to 1.2em under a 1.625em
-  // line), no space is added, and `items-center` centres the real line on the 1.2em box's own
-  // centre (the bug: a bottom-only pad hung the line off the box's top edge, so a flex sibling like
-  // the header's spinner — centred on its own box — read as higher than the label).
+  // line), no space is added. `content-center` centres the oversized row on the 1.2em box's own
+  // centre (a grid row bigger than its container anchors at the container's START by default, not
+  // its centre), and `items-center` then centres the real line within that row — together putting
+  // the line's own centre exactly on the box's centre (the bug: a bottom-only pad, and no content
+  // alignment, hung the line off the box's top edge, so a flex sibling like the header's spinner —
+  // centred on its own box — read as higher than the label).
   const clip = incoming!.closest("[class*='overflow-hidden']")!.classList;
-  expect(["box-content", "h-[1.2em]", "grid-rows-[2.2em]", "items-center", "py-[0.5em]", "-my-[0.5em]"].every((c) => clip.contains(c))).toBe(true);
+  expect(["box-content", "content-center", "h-[1.2em]", "grid-rows-[2.2em]", "items-center", "py-[0.5em]", "-my-[0.5em]"].every((c) => clip.contains(c))).toBe(true);
 
   // Once the fade has played, only the new line is left.
   await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
