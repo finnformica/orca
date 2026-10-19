@@ -66,16 +66,21 @@ export const StatusDot = ({ tone, className }: { tone: DotTone; className?: stri
   <span data-slot="status-dot" data-tone={tone} className={cn("inline-block size-2.5 shrink-0 rounded-full", DOT_CLASS[tone], className)} />
 );
 
-/** The one count-badge style (Inbox nav item, notification bell): a small geist-blue pill with a
- *  white number, capped at "99+". `placement` "inline" sits at the end of a row (`ml-auto`);
- *  "compact" pins it to the corner of an icon (`absolute -top-0.5 -right-0.5`). Renders nothing at 0. */
+/** The one count-badge style (Inbox nav item, notification bell): a small pill, capped at "99+",
+ *  NEUTRAL — the inverse of the surface it sits on, never the theme accent (a primary-coloured
+ *  badge would vanish on the sidebar, whose `--primary` is already the frame's own tone). `bg-foreground
+ *  text-background` reads this on its own: `[data-chrome]` (styles.css) remaps those two tokens to
+ *  the sidebar's foreground/background, so the same classes read white-on-dark in the sidebar and
+ *  black-on-light on the page, in light mode, dark mode and every server theme, with no extra class.
+ *  `placement` "inline" sits at the end of a row (`ml-auto`); "compact" pins it to the corner of an
+ *  icon (`absolute -top-0.5 -right-0.5`). Renders nothing at 0. */
 export function CountBadge({ count, placement = "inline", slot = "count-badge", label = "unread", className }: {
   count: number; placement?: "inline" | "compact"; slot?: string; label?: string; className?: string;
 }) {
   if (!count) return null;
   return (
     <span data-slot={slot} aria-label={`${count} ${label}`}
-      className={cn("bg-geist-blue flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold text-white tabular-nums",
+      className={cn("bg-foreground text-background flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold tabular-nums",
         placement === "compact" ? "absolute -top-0.5 -right-0.5" : "ml-auto", className)}>
       {count > 99 ? "99+" : count}
     </span>
