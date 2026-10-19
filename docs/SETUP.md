@@ -433,16 +433,26 @@ control. It must see every heavy task.
   - The agent run that asked ends (`ORCA_RUN_ID`). The bridge also stops the command.
   - The `orca-run` process is gone (a sweep each 15 s).
   - The command runs past the max run time of its kind. The bridge stops the command.
-- On a box with a user bus, each command runs in its own scope in `orca-agents.slice`, with a
-  memory limit and no swap. Thus one test run cannot take the whole slice.
+- On a box with a user bus, each command runs in its own scope in `orca-agents.slice`, with the
+  memory limit of its kind and no swap. Thus one test run cannot take the whole slice.
 - With no bridge to answer, `orca-run` prints a warning and runs the command at once.
-- The Overview's machine card lists the running and queued commands, with their workstreams, and
-  the CPU in use against the budget. `GET /api/heavy` gives the same data.
+- The Overview's machine card lists the running and queued commands, with their workstreams, the
+  CPU in use against the budget and the memory in use against the memory budget. `GET /api/heavy`
+  gives the same data.
 
 Each kind has a CPU cost. The queue grants a slot only when the sum of the running costs stays in
 `cpuBudget`. The queue is first in, first out for the budget and the total. A job does not wait
 for a job of another kind whose own limit is full. A job that costs more than the budget runs when
 nothing else runs.
+
+Each kind also has a memory limit (`memoryMaxGb`). On a box with a user bus, the queue grants a
+slot only when the sum of the running limits stays in the memory budget. The memory budget is the
+`MemoryMax` of `orca-agents.slice` minus 3 GB. The same first-in, first-out rule applies. A limit
+larger than the budget runs when nothing else runs.
+
+Do not set a memory limit below the working set of the command. At its limit, the kernel drops the
+file pages of the command. The command then reads `node_modules` from disk again and again. On EBS,
+this makes the whole box slow.
 
 The limits are in the app config, `heavyQueue`. Each field is optional. These are the defaults for
 a 4 vCPU box. They keep about 3 CPUs busy at most:
@@ -454,10 +464,10 @@ a 4 vCPU box. They keep about 3 CPUs busy at most:
   "cpuBudget": 3,
   "maxWaitMinutes": 20,
   "maxRunMinutes": { "e2e": 30, "test": 30, "lint": 30, "build": 30, "migrate": 30, "serve": 60 },
-  "memoryMaxGb": 3 } }
+  "memoryMaxGb": { "e2e": 6, "test": 4, "lint": 6, "build": 6, "migrate": 2, "serve": 2 } } }
 ```
 
-`maxRunMinutes` can also be one number for all kinds. On a larger box, increase `cpuBudget` and
+`maxRunMinutes` and `memoryMaxGb` can also be one number for all kinds. On a larger box, increase `cpuBudget` and
 the limits.
 
 `bin/worker` is first on a worker's `PATH`. Its shims (`bin/worker/.heavy-shim`) send heavy calls
@@ -470,11 +480,12 @@ through `orca-run`:
 - Package scripts: `npm test`, `npm start`, `npm run <script>`, `pnpm <script>`, `yarn <script>`,
   `bun run <script>` and `bun test`. The script name gives the kind: `test`, `lint`, `type-check`,
   `format`, `build`, `dev`, `start`, `setup-db`, `migrate`, `e2e` and similar names.
+- Installs: `npm ci` and `npm install` queue as `build`.
 - Test scripts: `bash <file>` when the file name looks heavy, for example
   `bash scripts/run-e2e-tests.sh`.
 - Workers: jest and `playwright test` get one worker when the call sets none. Set
   `ORCA_RUN_WORKERS` to change it. Jest otherwise starts one worker for each CPU but one.
-- Not heavy: `--version`, `--help`, installs, `bash -c …`, `bun <file>` and all other commands.
+- Not heavy: `--version`, `--help`, other installs, `bash -c …`, `bun <file>` and all other commands.
 - A call inside a granted command (`ORCA_RUN_SLOT` is set) does not queue again.
 - The shims do not see `python -m pytest`, `node ./node_modules/…` or a script started by its own
   path. Wrap these in `orca-run` yourself.

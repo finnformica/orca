@@ -282,3 +282,27 @@ test("the history poll waits for a slow call to settle, and stops when the card 
     window.setTimeout = realSet; window.clearTimeout = realClear;
   }
 });
+
+test("a long heavy-command queue scrolls inside the card (a ScrollArea with a height cap), and a long command shrinks in its row", async () => {
+  const now = Date.now();
+  const rows = (n: number, state: "run" | "q") => Array.from({ length: n }, (_, i) => ({ id: `${state}${i}`, kind: "test", command: `npx jest src/a-very-long-path/${i}/component.test.tsx --maxWorkers=1`, branch: `orca/branch-${i}`, queuedAt: now - i, ...(state === "run" ? { startedAt: now } : {}) }));
+  apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 30, load1: 0.5, load5: 0.4, memUsedGb: 2, memTotalGb: 15.3, uptimeS: 9, at: now,
+    heavy: { running: rows(3, "run"), queued: rows(11, "q"), limits: {}, cpu: { used: 3, budget: 3 }, memory: { used: 8, budget: 8 } } };
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  const queue = container!.querySelector('[data-slot="heavy-queue"]')!;
+  expect(queue.textContent).toContain("CPU 3 / 3");
+  expect(queue.textContent).toContain("Memory 8 / 8 GB");
+  // Every row sits in the ScrollArea's viewport, whose height is capped: the card does not grow.
+  const viewport = queue.querySelector('[data-slot="scroll-area"] [data-slot="scroll-area-viewport"]')!;
+  expect(viewport.className).toContain("max-h-64");
+  expect(viewport.querySelectorAll('[data-slot="heavy-row"]')).toHaveLength(14);
+  // The command's tooltip wrapper shrinks with the row (it pushed the row past a phone's card).
+  const tip = viewport.querySelector('[data-slot="heavy-command"]')!.parentElement!;
+  expect(tip.getAttribute("data-slot")).toBe("tip");
+  expect(tip.className).toContain("min-w-0");
+  expect(tip.className).toContain("flex-1");
+  // The full command is the shadcn tooltip, never a native title.
+  expect(queue.querySelector("[title]")).toBeNull();
+  expect(openTip(tip.querySelector('[data-slot="heavy-command"]') as HTMLElement).textContent).toMatch(/^npx jest src\/a-very-long-path\/\d+\/component.test.tsx --maxWorkers=1$/);
+});
