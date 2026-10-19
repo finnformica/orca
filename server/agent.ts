@@ -709,6 +709,8 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   if (scoped && !(await cgroup.limitAgentsSlice(sliceMaxGb, { ...process.env, ...scopedEnv }))) {
     console.error(`orca: could not set ${cgroup.AGENTS_SLICE} MemoryMax=${sliceMaxGb}G`);
   }
+  // The slices' `oom` counters before the run, so its exit can name the limit that killed it.
+  const oomBefore = scoped ? cgroup.oomCounters() : {};
   const proc = Bun.spawn(
     cgroup.scopedCommand(
       agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd, options.allowedTools,
@@ -779,15 +781,25 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     const finishedAt = Date.now();
     if (meta) meta.durationMs ??= finishedAt - startedAt;
     const structured = result ? parseAgentOutcome(result) : undefined;
-    const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, structured, meta, startedAt, finishedAt };
     const ok = code === 0 && !isError;
     const wasStopped = stoppedRuns.delete(runId);
     // 137 is plain SIGKILL from anything; ask the scope itself (its Result, read while it still has
-    // one — see cgroup.wasOomKilled) rather than assume, so a run you stopped or that died some other
-    // way at 137 isn't mislabelled.
-    const oomKilled = scoped && !ok && !wasStopped && code === 137 && await cgroup.wasOomKilled(scopeUnit, { ...process.env, ...scopedEnv });
-    if (oomKilled) noteOomKill(); // the instance card's Memory chart marks it at the next sample
-    const error = ok ? undefined : oomKilled ? `out of memory (${memoryMaxGb} GB ceiling)` : (err.trim() || result || `exit ${code}`).slice(0, 300);
+    // one — see cgroup.wasOomKilled) and the slices' `oom` counters (cgroup.oomCause) rather than
+    // assume, so a run you stopped or that died some other way at 137 isn't mislabelled.
+    const scopeOom = scoped && !wasStopped && await cgroup.wasOomKilled(scopeUnit, { ...process.env, ...scopedEnv });
+    const oomCause = scoped && !wasStopped
+      ? cgroup.oomCause({ scopeOom, before: oomBefore, after: cgroup.oomCounters(), memoryMaxGb, agentsSliceMaxGb: sliceMaxGb })
+      : undefined;
+    const oomKilled = !ok && !wasStopped && code === 137 && oomCause !== undefined;
+    if (oomKilled || (scopeOom && oomCause)) noteOomKill(); // the instance card's Memory chart marks it at the next sample
+    const rawError = (err.trim() || result || `exit ${code}`).slice(0, 300);
+    // A process of THIS run was OOM-killed (its scope says so) but the agent went on, or failed some
+    // other way: a build, or a git push hook. Name it, so a push that never happened is not silent.
+    const error = ok ? undefined : oomKilled ? oomCause : scopeOom && oomCause ? `${oomCause}: ${rawError}`.slice(0, 300) : rawError;
+    if (ok && scopeOom && oomCause) {
+      result = `${result ?? ""}\n\n> Orca: a process of this run was killed — ${oomCause}. A build or a git push hook may not have finished; check that the push happened.`;
+    }
+    const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, structured, meta, startedAt, finishedAt };
     const stopReason: StopReason = wasStopped ? "interrupted" : budgetReached ? "budget_reached" : ok ? "end_turn" : "error";
     await started; // finish can never overtake start, however fast the run was
     recordTurn(options, () => outbox.finishTurn(runId, {

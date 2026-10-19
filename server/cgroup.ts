@@ -18,7 +18,7 @@
 // enabled, so `available()`'s bus-socket check keeps this a no-op there rather than breaking every
 // run. `prlimit` was considered and rejected: it bounds one process's own address space, not a whole
 // process tree (a build's child processes, Chrome's many), so it would not have stopped the incident.
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { totalmem, userInfo } from "os";
 import { runCmd } from "./run";
 
@@ -172,6 +172,36 @@ export function noteUserManager(result: { ok: true } | { ok: false; reason: stri
 }
 /** The user manager as the last launch found it: down since when and why, or undefined. */
 export const userManagerDown = (): UserManagerDown | undefined => down;
+
+// ---- why a run was OOM-killed ----
+// A 137 can be a kill by the run's own scope, the agents' slice or a user-slice limit (one run of
+// the incident showed only "exit 137"). `memory.events.local` counts `oom` at the cgroup whose OWN
+// limit was hit, so a counter that rose during the run names the limit. `ORCA_CGROUP_ROOT`: tests.
+
+export type OomCounters = { agentsSlice?: number; userSlice?: number };
+function localOom(path: string): number | undefined {
+  try {
+    const m = readFileSync(path, "utf8").match(/^oom (\d+)$/m);
+    return m ? Number(m[1]) : undefined;
+  } catch { return undefined; }
+}
+/** The `oom` counters of the agents' slice and the user slice. Undefined where unreadable. */
+export function oomCounters(env: Env = process.env, uid = process.getuid?.() ?? 0): OomCounters {
+  const root = `${env.ORCA_CGROUP_ROOT ?? "/sys/fs/cgroup"}/user.slice/user-${uid}.slice`;
+  return {
+    agentsSlice: localOom(`${root}/user@${uid}.service/orca.slice/${AGENTS_SLICE}/memory.events.local`),
+    userSlice: localOom(`${root}/memory.events.local`),
+  };
+}
+
+/** The limit that killed a run, from its scope's Result and the counters before and after. Pure. */
+export function oomCause(o: { scopeOom: boolean; before: OomCounters; after: OomCounters; memoryMaxGb: number; agentsSliceMaxGb: number }): string | undefined {
+  const rose = (k: keyof OomCounters) => o.after[k] !== undefined && (o.after[k]! > (o.before[k] ?? 0));
+  if (rose("agentsSlice")) return `out of memory: agents slice limit (${o.agentsSliceMaxGb} GB, all agent runs together)`;
+  if (rose("userSlice")) return "out of memory: user slice limit (the orca user's processes together)";
+  if (o.scopeOom) return `out of memory (${o.memoryMaxGb} GB ceiling)`;
+  return undefined;
+}
 
 /** Was `unit` (the scope a run was wrapped in) killed by the kernel's cgroup-aware OOM killer?
  *  `systemctl --user show <unit>.scope -p Result` reports `oom-kill` for exactly that — briefly,
