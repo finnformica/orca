@@ -173,6 +173,8 @@ describe("SHOT3 requests and storage", () => {
     expect(() => parseShotRequest({})).toThrow(/url required/);
     expect(() => parseShotRequest({ url: "http://x", viewport: "big" })).toThrow(/WIDTHxHEIGHT/);
     expect(() => parseShotRequest({ url: "http://x", steps: [{ drag: "a" }] })).toThrow(/unknown step/);
+    expect(() => parseShotRequest({ url: "http://x", steps: [{ type: 3 }] })).toThrow(/type step/);
+    expect(parseShotRequest({ url: "http://x", steps: [{ type: "hi" }] }).steps).toEqual([{ type: "hi" }]);
     const r = parseShotRequest({ url: "http://x:1/a", viewport: "390x844", dark: true, steps: [{ click: "#go" }, { hover: "#menu" }], label: "after dark" });
     expect(r).toMatchObject({ viewport: { width: 390, height: 844 }, dark: true, steps: [{ click: "#go" }, { hover: "#menu" }], label: "after-dark" });
   });
@@ -230,11 +232,11 @@ describe("SHOT4 workers", () => {
     let got: any;
     const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(r) { got = await r.json(); return native.Response.json({ path: "/tmp/shot-h.png" }); } });
     try {
-      const proc = Bun.spawn([join(WORKER_BIN, "orca-shot"), "http://localhost:5173/agents", "--click", "#row", "--hover", "#menu"], {
+      const proc = Bun.spawn([join(WORKER_BIN, "orca-shot"), "http://localhost:5173/agents", "--click", "#row", "--hover", "#menu", "--click", "textarea", "--type", "hello world", "--press", "Enter"], {
         env: { ...process.env, ORCA_URL: `http://127.0.0.1:${server.port}` }, stdout: "pipe", stderr: "pipe",
       });
       expect(await proc.exited).toBe(0);
-      expect(got.steps).toEqual([{ click: "#row" }, { hover: "#menu" }]);
+      expect(got.steps).toEqual([{ click: "#row" }, { hover: "#menu" }, { click: "textarea" }, { type: "hello world" }, { press: "Enter" }]);
     } finally {
       server.stop(true);
     }
