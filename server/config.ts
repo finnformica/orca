@@ -1,3 +1,4 @@
+import { heavyQueueProblems, type HeavyQueueConfig } from "./heavy";
 import * as db from "./db";
 import { setGithubAccounts } from "./env";
 import { readJsonSync, statePath, writeJsonSync } from "./state";
@@ -183,6 +184,10 @@ export type OrcaConfig = {
   /** How many automatic PR-upkeep address runs (server/upkeep.ts) may go at once on one instance
    *  (default 2) — each is a full agent run, and the box's memory is shared. */
   autoUpkeepConcurrency?: number;
+  /** The box-wide queue for heavy commands (server/heavy.ts, `orca-run`): per-kind and total slot
+   *  limits, the max wait and run time in minutes, and each command's memory cap. Unset: defaults
+   *  for a 4 vCPU box (e2e 1, test 2, lint 2, build 1, total 3; 20 min wait, 30 min run, 3 GB). */
+  heavyQueue?: HeavyQueueConfig;
   /** Which instance the orchestrator lives on, when there are several sharing the database. Its
    *  routes are forwarded there and worker reports from other instances are posted there, so ONE
    *  process wakes it (two would resume one session at once). Unset: wherever it is spoken to. */
@@ -372,6 +377,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
   if (d.agentCpuWeight !== undefined && (typeof d.agentCpuWeight !== "number" || !(d.agentCpuWeight > 0))) {
     errors.push("agentCpuWeight must be a positive number (systemd CPUWeight, 1-10000)");
   }
+  errors.push(...heavyQueueProblems(d.heavyQueue));
   errors.push(...serverSwitcherProblems(d.serverSwitcher));
   errors.push(...serverIdentityProblems(d.serverIdentity));
   if (errors.length) return { errors };
@@ -389,6 +395,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       orchestratorShell: d.orchestratorShell as boolean | undefined,
       orchestratorWakeBudgetUsd: d.orchestratorWakeBudgetUsd as number | undefined,
       autoUpkeepConcurrency: d.autoUpkeepConcurrency as number | undefined,
+      heavyQueue: d.heavyQueue as HeavyQueueConfig | undefined,
       orchestratorOn: d.orchestratorOn as string | undefined,
       agentCpuWeight: d.agentCpuWeight as number | undefined,
       githubAccounts: d.githubAccounts as OrcaConfig["githubAccounts"],
@@ -455,6 +462,7 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
       ...(file.orchestratorShell === undefined ? {} : { orchestratorShell: file.orchestratorShell }),
       ...(file.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: file.orchestratorWakeBudgetUsd }),
       ...(file.autoUpkeepConcurrency === undefined ? {} : { autoUpkeepConcurrency: file.autoUpkeepConcurrency }),
+      ...(file.heavyQueue === undefined ? {} : { heavyQueue: file.heavyQueue as unknown as db.Fields }),
       ...(file.orchestratorOn === undefined ? {} : { orchestratorOn: file.orchestratorOn }),
       ...(file.agentCpuWeight === undefined ? {} : { agentCpuWeight: file.agentCpuWeight }),
       ...(file.githubAccounts === undefined ? {} : { githubAccounts: file.githubAccounts }),
@@ -526,6 +534,7 @@ async function loadFromDb(): Promise<OrcaConfig> {
     orchestratorShell: app.orchestratorShell !== false,
     orchestratorWakeBudgetUsd: app.orchestratorWakeBudgetUsd as number | undefined,
     autoUpkeepConcurrency: app.autoUpkeepConcurrency as number | undefined,
+    heavyQueue: app.heavyQueue as HeavyQueueConfig | undefined,
     orchestratorOn: app.orchestratorOn as string | undefined,
     agentCpuWeight: app.agentCpuWeight as number | undefined,
     githubAccounts: app.githubAccounts as OrcaConfig["githubAccounts"],
@@ -566,6 +575,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.orchestratorShell === undefined ? {} : { orchestratorShell: config.orchestratorShell }),
       ...(config.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: config.orchestratorWakeBudgetUsd }),
       ...(config.autoUpkeepConcurrency === undefined ? {} : { autoUpkeepConcurrency: config.autoUpkeepConcurrency }),
+      ...(config.heavyQueue === undefined ? {} : { heavyQueue: config.heavyQueue as unknown as db.Fields }),
       ...(config.orchestratorOn === undefined ? {} : { orchestratorOn: config.orchestratorOn }),
       ...(config.agentCpuWeight === undefined ? {} : { agentCpuWeight: config.agentCpuWeight }),
       ...(config.githubAccounts === undefined ? {} : { githubAccounts: config.githubAccounts }),

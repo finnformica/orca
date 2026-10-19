@@ -19,7 +19,7 @@ import { Tip } from "@/components/ui/tip";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
-import { HISTORY_RANGES, countMax, headerUsage, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { HISTORY_RANGES, countMax, headerUsage, heavyQueueRows, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
@@ -289,6 +289,7 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const memTotal = h?.memTotalGb ?? Math.max(1, ...(history ?? []).map((p) => p.memTotalGb));
   const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
   const guard = protectionsWarning(h?.protections);
+  const heavyRows = heavyQueueRows(h?.heavy);
   return (
     <VCard
       slot={`instance-${instance}`}
@@ -318,6 +319,22 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
           <Tip label={cost.detail}><span className="tabular-nums">{cost.value}{h?.rate?.source === "estimate" && <span className="text-muted-foreground ml-1 text-xs">est.</span>}</span></Tip>
         ) : "—"}</Detail>
       </div>
+      {heavyRows.length > 0 && (
+        <div data-slot="heavy-queue" className="border-b px-4 py-3">
+          <div className="text-muted-foreground mb-1.5 text-xs">Heavy commands · orca-run{h?.heavy?.cpu && <span data-slot="heavy-cpu" className="tabular-nums"> · CPU {h.heavy.cpu.used} / {h.heavy.cpu.budget}</span>}</div>
+          <ul className="divide-y">
+            {heavyRows.map((r) => (
+              <li key={r.id} data-slot="heavy-row" data-state={r.state} className="flex items-center gap-2 py-1.5 text-[13px]">
+                <StatusDot tone={r.state === "running" ? "building" : "queued"} />
+                <span className="text-muted-foreground w-16 shrink-0 text-xs">{r.state === "running" ? "running" : `queued #${r.position}`}</span>
+                <span className="w-14 shrink-0 text-xs">{r.kind}</span>
+                <Tip label={r.command}><span className="min-w-0 flex-1 truncate font-mono text-xs">{r.command}</span></Tip>
+                <span className="text-muted-foreground max-w-[40%] shrink-0 truncate text-xs">{r.who}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {history === null ? (
           <div className="grid gap-6 p-4 md:grid-cols-2">
             <ChartSkeleton slot="chart-cpu-skeleton" /><ChartSkeleton slot="chart-mem-skeleton" />
