@@ -942,6 +942,14 @@ export const MIGRATIONS: MigrationStep[] = [
       );
     `,
   },
+  {
+    name: "20261019-instance-metric-bridge-rss",
+    idempotent: true,
+    // The bridge process's own resident memory (MB) at each sample (server/health.ts) — the instance
+    // card's Bridge memory chart, so a leak in the bridge shows before systemd's MemoryMax does.
+    // Nullable: older rows and older bridges record none.
+    sql: `ALTER TABLE instance_metric ADD COLUMN IF NOT EXISTS bridge_rss_mb REAL`,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
@@ -1682,6 +1690,8 @@ export type MetricPoint = {
   at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; runningAgents: number;
   /** Agent runs OOM-killed in their own scope since the previous sample. */
   oomKills?: number;
+  /** The bridge process's resident memory, MB (absent on older rows). */
+  bridgeRssMb?: number;
 };
 
 /** How long a metric row is kept: 32 days, so the card's "this month" cost always has the whole of
@@ -1702,8 +1712,8 @@ export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()):
     // neither.
     await sql.begin(async (tx: Bun.SQL) => {
       await tx`
-        INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents, oom_kills)
-        VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null}, ${p.runningAgents}, ${p.oomKills ?? 0})`;
+        INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents, oom_kills, bridge_rss_mb)
+        VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null}, ${p.runningAgents}, ${p.oomKills ?? 0}, ${p.bridgeRssMb ?? null})`;
       await tx`DELETE FROM instance_metric WHERE instance = ${instance} AND at < ${new Date(at - METRIC_RETENTION_MS)}`;
     });
   });
@@ -1713,14 +1723,15 @@ export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()):
 export async function metricHistory(instance: string, hours: number, now = Date.now()): Promise<MetricPoint[]> {
   return withRetry(async (sql) => {
     const rows = await sql`
-      SELECT at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents, oom_kills FROM instance_metric
+      SELECT at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents, oom_kills, bridge_rss_mb FROM instance_metric
       WHERE user_id = ${currentUser()} AND instance = ${instance} AND at >= ${new Date(now - hours * 3_600_000)}
       ORDER BY at`;
-    return (rows as { at: Date; cpu_pct: number; load1: number; mem_used_gb: number; mem_total_gb: number; disk_used_gb: number | null; running_agents: number | null; oom_kills: number | null }[]).map((r) => ({
+    return (rows as { at: Date; cpu_pct: number; load1: number; mem_used_gb: number; mem_total_gb: number; disk_used_gb: number | null; running_agents: number | null; oom_kills: number | null; bridge_rss_mb: number | null }[]).map((r) => ({
       at: new Date(r.at).getTime(), cpuPct: Number(r.cpu_pct), load1: Number(r.load1), memUsedGb: Number(r.mem_used_gb), memTotalGb: Number(r.mem_total_gb),
       runningAgents: r.running_agents == null ? 0 : Number(r.running_agents),
       ...(r.disk_used_gb == null ? {} : { diskUsedGb: Number(r.disk_used_gb) }),
       ...(r.oom_kills ? { oomKills: Number(r.oom_kills) } : {}),
+      ...(r.bridge_rss_mb == null ? {} : { bridgeRssMb: Number(r.bridge_rss_mb) }),
     }));
   });
 }

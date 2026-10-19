@@ -243,6 +243,7 @@ if (!PREVIEW_BRIDGE) primary.onPrimary(() => {
 // thrown (see preview.reap).
 const REAP_INTERVAL_MS = 60 * 60 * 1000;
 function runReaper(): void {
+  agent.pruneRuns(); // finished runs of worktrees that are gone (bridge memory)
   if (!primary.held()) return;
   void loadConfig().then((cfg) => preview.reap(cfg.repos.filter(verbs.repoHere)))
     .catch(db.logUnlessDown("orca: preview/container reap failed"));

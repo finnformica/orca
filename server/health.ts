@@ -22,7 +22,13 @@ export type Health = {
   /** Live leases right now — the same count the sampler records, so the card's "Agents · N" and
    *  the agents line's newest point are one reading. */
   runningAgents: number;
+  /** The bridge process's own resident memory (MB) — what systemd's MemoryMax on orca.service
+   *  counts, minus its children. The sampler records it, so a slow leak shows on the card. */
+  bridgeRssMb: number;
 };
+
+/** This process's resident memory, in MB. */
+export const bridgeRssMb = (): number => Math.round(process.memoryUsage().rss / 1048576);
 
 // ---- darwin memory: os.freemem() is only the truly-free page count, and the kernel keeps nearly
 // all RAM occupied by design (inactive/file cache/speculative), so totalmem()-freemem() reads
@@ -110,6 +116,7 @@ export async function health(): Promise<Health> {
     disk, uptimeS: Math.round(os.uptime()),
     at: Date.now(),
     runningAgents: lease.live().length,
+    bridgeRssMb: bridgeRssMb(),
   };
 }
 
@@ -143,7 +150,7 @@ export async function sampleMetrics(): Promise<void> {
     const h = await health();
     await db.recordMetric({
       cpuPct: h.cpuPct, load1: h.load1, memUsedGb: h.memUsedGb, memTotalGb: h.memTotalGb, diskUsedGb: h.disk?.usedGb,
-      runningAgents: h.runningAgents, oomKills: kills,
+      runningAgents: h.runningAgents, oomKills: kills, bridgeRssMb: h.bridgeRssMb,
     }, h.at);
   } catch (e) {
     oomKills += kills; // not recorded — carry them to the next sample
