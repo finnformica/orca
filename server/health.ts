@@ -6,6 +6,7 @@ import * as os from "os";
 import * as db from "./db";
 import * as lease from "./lease";
 import { run } from "./run";
+import { noteLiveOom } from "./liveMetrics";
 import { billedUptime, bootKey, journalBoots } from "../web/src/workstream";
 
 export type Health = {
@@ -206,7 +207,7 @@ export function historyHours(raw: string | null | undefined): number {
 // Agent runs OOM-killed in their own scope (server/agent.ts) since the last sample. In memory: a
 // restart between samples loses at most a minute's count, which the chart can afford.
 let oomKills = 0;
-export function noteOomKill(): void { oomKills++; }
+export function noteOomKill(): void { oomKills++; noteLiveOom(); }
 
 /** Sample this machine and record it. Never throws: a metrics write must not touch anything else.
  *  Running agents come from the leases (durable, per-host) rather than agent.ts's in-memory `runs`
