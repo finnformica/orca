@@ -411,7 +411,7 @@ const INSTANCE_IS_A_FILTER = new Set(["/api/health/history"]);
 /** The heavy queue's settings for this box. The memory budget applies only when the commands run
  *  in capped scopes inside the agents' slice: without systemd there are no caps to add up. */
 function heavySettingsHere(cfg: OrcaConfig): heavy.HeavySettings {
-  return heavy.heavySettings(cfg.heavyQueue, cgroup.available() ? cgroup.agentsSliceMaxGb() : undefined);
+  return heavy.heavySettings(cfg.heavyQueue, cgroup.available() ? cgroup.heavySliceGb() : undefined);
 }
 /** This box's heavy-command queue, for /api/heavy and the machine card (/api/health). */
 function heavyView(cfg: OrcaConfig): heavy.HeavyView {
