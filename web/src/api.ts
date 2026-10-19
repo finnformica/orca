@@ -53,6 +53,9 @@ export type QueuedMessage = {
 
 export type InstanceHealth = {
   instance: string; hostname: string; cores: number; cpuPct: number; load1: number; load5: number;
+  /** The iowait share of the same interval cpuPct covers. Absent off Linux or on the bridge's first
+   *  sample after a restart. */
+  iowaitPct?: number;
   memUsedGb: number; memTotalGb: number; memPressurePct?: number; memPressure?: boolean;
   disk?: { usedGb: number; totalGb: number }; uptimeS: number;
   at: number;

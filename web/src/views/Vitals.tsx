@@ -307,7 +307,15 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
         <Detail label="Status" slot="instance-status">
           <StatusDot tone={tone} />{down ? "Unreachable" : h ? "Online" : "Loading…"}
         </Detail>
-        <Detail label="CPU" slot="instance-cpu">{now ? <><span className="tabular-nums">{pct(now.cpuPct)}</span>{h && <span className="text-muted-foreground text-xs">of {h.cores} cores</span>}</> : "—"}</Detail>
+        <Detail label="CPU" slot="instance-cpu">{now ? (
+          <>
+            <span className="tabular-nums">{pct(now.cpuPct)}</span>
+            {h && <span data-slot="instance-load" className="text-muted-foreground text-xs"> · load {h.load1.toFixed(1)} / {h.cores} cores</span>}
+            {h && h.iowaitPct !== undefined && h.iowaitPct > 10 && (
+              <span data-slot="instance-iowait" className="text-muted-foreground text-xs"> · iowait {pct(h.iowaitPct)}</span>
+            )}
+          </>
+        ) : "—"}</Detail>
         <Detail label="Memory" slot="instance-mem">
           {now ? (h?.memPressure ? (
             <Tip label={`pressure — ${h.memPressurePct}% used`}><span className="tabular-nums">{now.memUsedGb.toFixed(1)} / {memTotal} GB</span></Tip>
