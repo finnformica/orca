@@ -393,6 +393,11 @@ the orchestrator's notes or in a repo's `CLAUDE.md`.
 - **Do not use headless browsers in workers.** Use `orca-shot <url> [--viewport 390x844] [--dark] …`.
   It goes into the queue for the bridge's one browser, which has a memory limit. It prints
   `shot: <path>`.
+- **Run heavy commands through the box-wide queue.** Use `orca-run --kind test|lint|build|e2e --
+  <command>` for a test runner, Playwright, a linter or `tsc` on the repo, a build, or a local
+  backend for a test. It waits for a slot, prints `queued: position N …`, then runs the command and
+  returns its exit code. The `playwright`, `jest`, `vitest`, `eslint`, `tsc`, `npx` and `bunx`
+  commands on a worker's `PATH` already go through it. See [SETUP.md](SETUP.md#heavy-commands).
 - **Run only the test files that the change affects.** Do not run the full suite, or two suites at
   the same time. Each run has a memory limit for each worker (`agentMemoryMaxGb`, 4 GB by default). A
   type-check or test run of the full project can go above it. The run then ends as

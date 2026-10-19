@@ -1251,6 +1251,19 @@ serves it. Workers get `bin/worker/` on PATH (`agentEnv` — not `bin/`, whose `
 orchestrator's) and `orca-shot <url> [--viewport 390x844] [--dark] …`, which prints `shot: <path>`;
 every worker prompt says it is the ONLY way to take a screenshot (`SCREENSHOTS`), and shot paths in a
 reply ride the worker report (`reportedShots` in `workerEvent`).
+**Heavy commands** (`server/heavy.ts`): agents ran Playwright, Jest, eslint and builds at once and
+OOM-killed each other in `orca-agents.slice`. A box-wide slot queue, like `orca-shot`'s but with N
+slots: per-kind and total limits (`heavyQueue` in the app config; e2e 1, test 2, lint 2, build 1,
+total 3), a max wait and a max run time. Workers run `orca-run [--kind …] -- <cmd>`
+(`bin/worker/orca-run`, `POST /api/heavy`, NDJSON like `/api/screenshot`): the slot lives as long as
+the held request, so a killed CLI frees it; `agent.launch` puts `ORCA_RUN_ID` in the run's env and
+its exit calls `releaseRun`; a sweep frees a dead pid or a slot past its max run time and stops its
+command. Each granted command runs in its own capped scope in `orca-agents.slice` when the box has
+a user bus. `bin/worker/.heavy-shim`, symlinked as playwright, jest, vitest, eslint, tsc, npx and
+bunx, routes heavy calls through it; `ORCA_RUN_SLOT` stops a nested call from queueing again, and
+`ORCA_RUN_BYPASS=1` is the escape hatch. Every worker prompt carries `HEAVY_COMMANDS`. With no
+bridge, `orca-run` runs the command anyway. The machine card lists running and queued commands
+(`heavy` on `/api/health`, `heavyQueueRows`).
 **Screenshots in PRs and on the agent page** (`server/prShots.ts`): shots are not stored per turn —
 `workstreamShots` reads them off the branch's turns (reply + Verification). The newest
 `PR_SHOTS_MAX` (6) go into the PR body's `## Screenshots` section (`withScreenshotsSection`: replaced

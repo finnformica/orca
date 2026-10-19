@@ -268,6 +268,9 @@ const NO_PR = "Do NOT open a pull request or run `gh pr create` — stop after c
 // queued browser (server/screenshot.ts) and this is how a worker reaches it. Shot paths in the reply
 // ride into the orchestrator's report (`workerEvent`).
 export const SCREENSHOTS = "To see a UI, the ONLY allowed way to take a screenshot is `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--press <key>] [--hover <sel>] [--scroll <y|sel>] [--label before|after] [--console]` (it queues on Orca's one memory-capped browser and prints `shot: <path>`; Read the PNG to look at it). If a page shows blank or a spinner, add `--console` to print its exceptions and failed requests. `--click` is a real mouse click, so it opens a Radix UI dropdown/menu trigger (those open on pointerdown, not plain `click`); `--press <key>` sends a named key (Enter, Escape, ArrowDown, …), repeatable and ordered with `--click`, for navigating a menu once it's open. Never launch a browser, Playwright or Puppeteer yourself. Screenshots are optional: commit and push your work FIRST, then take one only if it helps; if it times out or the queue is busy, give up and move on rather than retrying. For a UI change, list each before/after `shot: <path>` line in your Verification. To run Orca itself for a screenshot, use `scripts/preview-orca.sh` (a read-only preview bridge) — never start `server/index.ts` or `bun run dev` directly: a full bridge left running from a worktree acts on the shared database with stale code.";
+/** The heavy-command rule (server/heavy.ts, bin/worker/orca-run), in every worker prompt beside
+ *  SCREENSHOTS: several agents share one box, and parallel test runs OOM-killed each other. */
+export const HEAVY_COMMANDS = "This box is shared with other agents. Run every heavy command (a test runner, Playwright, a linter or tsc on the repo, a build, a local backend for a test) through the box-wide queue: `orca-run --kind test|lint|build|e2e -- <command>`. It waits for a slot, prints its place in the line, then runs the command and returns its exit code. The playwright, jest, vitest, eslint, tsc, npx and bunx commands on your PATH already queue. Never run a whole suite: run only the test files your change touches. Do not set ORCA_RUN_BYPASS=1 for a heavy command.";
 
 // A headless run narrates almost nothing by default: one real run produced 11 text blocks against 97
 // tool calls, so the chat showed a list of commands and nothing about why. Claude's own reasoning is
@@ -310,6 +313,7 @@ export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">
     NARRATE,
     NO_PR,
     SCREENSHOTS,
+    HEAVY_COMMANDS,
   ].join("\n"));
 }
 
@@ -373,7 +377,7 @@ export function slackPrompt(
 /** Follow-up instruction for an agent already working a branch (resumes its session). */
 export function followUpPrompt(instruction: string, opts: { mergeWhenGreen?: boolean } = {}): string {
   const mergeNote = opts.mergeWhenGreen ? "\n\n(This PR is marked merge-when-green: Orca's merge queue holds the mark and waits for this run — and anything queued behind it — to finish, then merges once CI is green on your latest push. Commit and push as usual; no separate merge step needed.)" : "";
-  return withOutcomeContract(`${instruction}${mergeNote}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}\n${SCREENSHOTS}`);
+  return withOutcomeContract(`${instruction}${mergeNote}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}\n${SCREENSHOTS}\n${HEAVY_COMMANDS}`);
 }
 
 // Every session starts with no memory of the last one, so it starts by looking: the same three-line
@@ -413,6 +417,7 @@ export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean
     SESSION_START,
     NO_PR,
     SCREENSHOTS,
+    HEAVY_COMMANDS,
     "",
     WRITING_STYLE,
     "",
@@ -824,6 +829,7 @@ export function addressPrPrompt(ws: Pick<Workstream, "prNumber" | "branch">, par
     ...reviewLines(ws, parts.feedback, parts.threads, parts.followed, parts.comments),
     NO_PR,
     SCREENSHOTS,
+    HEAVY_COMMANDS,
   ].join(" "));
 }
 

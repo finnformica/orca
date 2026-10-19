@@ -3,7 +3,7 @@
 // (a test runner, a linter on a repo, tsc, a build, an e2e suite) in a slot of the box-wide queue
 // (server/heavy.ts). Several agents on one box ran these at once and OOM-killed each other.
 //
-// It asks the bridge for a slot and prints `queued: N ahead` to stderr while it waits. When the
+// It asks the bridge for a slot and prints `queued: position N …` to stderr while it waits. When the
 // slot is granted it runs the command (in its own memory-capped scope when the box has one), streams
 // its output, and exits with its exit code. The slot always comes back: on exit, on a signal (the
 // command is stopped first), and on a kill -9 of this process (the bridge sees the connection drop).
@@ -117,7 +117,7 @@ try {
     if (typeof msg.error === "string") { console.error(`orca-run: ${msg.error}`); process.exit(75); }
     if (typeof msg.granted === "string") { grant = msg as unknown as Granted; break; }
     if (typeof msg.queued === "number" && msg.queued !== lastAhead) {
-      if (msg.queued > 0) console.error(`queued: ${msg.queued} ahead (${kind})`);
+      console.error(`queued: position ${msg.queued + 1} in line for ${kind === "e2e" ? "an" : "a"} ${kind} slot`);
       lastAhead = msg.queued;
     }
   }
@@ -128,7 +128,7 @@ if (!grant) {
   if (lastAhead < 0) console.error("orca-run: the bridge sent no slot; running without one");
   process.exit(await run(cmd, { ORCA_RUN_SLOT: "none" }));
 }
-if (lastAhead > 0) console.error(`orca-run: slot granted (${kind})`);
+if (lastAhead >= 0) console.error(`orca-run: slot granted (${kind})`);
 
 // Watch the held connection while the command runs: a revoke stops the command.
 void (async () => {
