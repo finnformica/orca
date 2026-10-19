@@ -119,6 +119,15 @@ describe("sampler", () => {
     expect(liveAnswer(24, { now: 7 * H, sliceMaxGb: 8.8 })).toMatchObject({ stepMs: 15_000, sliceMaxGb: 8.8, diskCapMBs: 125 });
   });
 
+  test("/api/health's CPU is the ring's newest sample while it is under a minute old", () => {
+    const { withLiveCpu } = require("../server/liveMetrics") as typeof import("../server/liveMetrics");
+    const h = { cpuPct: 97, iowaitPct: 0, load1: 1 };
+    const s: LiveSample = { at: 100_000, work: 4.4, iowait: 12.6, load1: 1, memUsedGb: 2, memCacheGb: 4 };
+    expect(withLiveCpu(h, s, 130_000)).toEqual({ cpuPct: 4, iowaitPct: 13, load1: 1 });
+    expect(withLiveCpu(h, s, 200_000)).toBe(h); // stale: health()'s own reading
+    expect(withLiveCpu(h, undefined)).toBe(h);
+  });
+
   test("the disk cap is ORCA_DISK_CAP_MBS when set, else 125", () => {
     expect(diskCapMBs(undefined)).toBe(125);
     expect(diskCapMBs("250")).toBe(250);

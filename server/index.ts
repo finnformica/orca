@@ -39,7 +39,7 @@ import * as notify from "./notify";
 import * as cgroup from "./cgroup";
 import { KIND_META } from "../shared/notifications";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
-import { liveAnswer, machineReport, sliceMaxGbHere, startLiveSampler } from "./liveMetrics";
+import { liveAnswer, machineReport, newestLive, sliceMaxGbHere, startLiveSampler, withLiveCpu } from "./liveMetrics";
 import { protectionsReport, withLiveState } from "./protections";
 import * as verbs from "./verbs";
 import * as repos from "./repos";
@@ -948,7 +948,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const since = Date.parse(cfg.instanceBillingSince?.[db.instanceName()] ?? "");
     const month = rate.hourlyUsd > 0 ? await monthCost(rate.hourlyUsd, Number.isFinite(since) ? { billingSince: since } : {}).catch(() => undefined) : undefined;
     // `protections`: which of deploy/harden.sh's protections this box is missing (server/protections.ts).
-    return json({ ...h, rate, month, protections: protections && withLiveState(protections, cgroup.userManagerDown()), database: db.databaseStatus(), outbox: outbox.summary(), heavy: heavyView(cfg) });
+    return json({ ...withLiveCpu(h, newestLive()), rate, month, protections: protections && withLiveState(protections, cgroup.userManagerDown()), database: db.databaseStatus(), outbox: outbox.summary(), heavy: heavyView(cfg) });
   }
   if (req.method === "GET" && p === "/api/notifications") {
     // The centre's rows (any instance answers: one table). `since` is the catch-up cursor after a

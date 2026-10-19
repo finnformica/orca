@@ -222,5 +222,13 @@ export function machineReport(instance: string, o: { now?: number; sliceMaxGb?: 
   };
 }
 
+/** /api/health's CPU and iowait from the ring's newest sample when it is under `maxAgeMs` old, so the
+ *  card's header, its CPU chart and `orca machine` show ONE reading. (health()'s own delta is "since
+ *  any caller last read /proc/stat": two polls close together read noise, e.g. 97 % beside a 4 % chart.) */
+export function withLiveCpu<T extends { cpuPct: number; iowaitPct?: number }>(h: T, newest: LiveSample | undefined, now = Date.now(), maxAgeMs = 60_000): T {
+  return newest && now - newest.at <= maxAgeMs ? { ...h, cpuPct: Math.round(newest.work), iowaitPct: Math.round(newest.iowait) } : h;
+}
+export const newestLive = (): LiveSample | undefined => ring[ring.length - 1];
+
 /** Tests: empty the ring. */
 export function resetLive(): void { ring = []; ooms = 0; }
