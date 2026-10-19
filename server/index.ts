@@ -1,5 +1,5 @@
 import {
-  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, modelFor, parseConfigDocument,
+  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, setUiOptions, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
@@ -386,7 +386,7 @@ const DATABASE_ONLY = new Set([
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity",
+  "/api/health/history", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui",
   // A workstream's reported screenshots, read off its turns (the files are served per shot).
   "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -1042,6 +1042,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     await setServerIdentity(identityUpdate(body.name, body.color));
     return json({ ok: true });
   }
+  if (req.method === "POST" && p === "/api/config/ui") {
+    // Settings' Board view row: show or hide the Board view for every browser.
+    if (typeof body.showBoard !== "boolean") return json({ error: "showBoard (true or false) is required" }, 400);
+    await setUiOptions({ showBoard: body.showBoard });
+    return json({ ok: true });
+  }
   if (req.method === "POST" && p === "/api/config/terminal") {
     // Settings' Terminal row: one instance's web terminal on or off. It hands out a shell, so it is
     // gated like the terminal itself — the owner only, never a cross-origin page.
@@ -1078,6 +1084,8 @@ async function api(req: Request, url: URL): Promise<Response> {
       instance: db.instanceName(), instances: Object.keys(cfg.instances ?? {}),
       instanceHourlyUsd: cfg.instanceHourlyUsd ?? {},
       terminal: cfg.terminal ?? {},
+      // Console options for every browser: the Board view is on unless the document says false.
+      ui: { showBoard: cfg.ui?.showBoard !== false },
       // Each machine's address: the terminal panel connects to a machine's own bridge directly (a
       // bridge never relays another machine's shell). Tailnet addresses, no secret.
       instanceUrls: cfg.instances ?? {},
