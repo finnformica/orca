@@ -54,8 +54,12 @@ Use only these four levels. Each level has one token.
 
 - One count-badge style everywhere: the `CountBadge` component (`console.tsx`). Do not write a
   new one.
-- `bg-geist-blue`, `text-white`, `h-4 min-w-4`, `rounded-full`, `px-1`, `text-[10px]`,
-  `font-semibold`, `tabular-nums`. Same in light, dark and every server theme.
+- `bg-foreground`, `text-background`, `h-4 min-w-4`, `rounded-full`, `px-1`, `text-[10px]`,
+  `font-semibold`, `tabular-nums`. NEUTRAL: the inverse of the surface it sits on, never the theme
+  accent — a `bg-primary` badge would vanish on the sidebar, whose `--primary` is already the
+  frame's own tone. `[data-chrome]` remaps `--foreground`/`--background` to the sidebar's own
+  tones, so these same two classes read white-on-dark in the sidebar and black-on-light on the
+  page, with no extra class, in light mode, dark mode and every server theme.
 - This covers the Inbox nav item's unread count, the notification bell's unread count and the
   Previews nav item's running count — and any later count badge.
 - `placement="inline"` sits at the end of a row (`ml-auto`). `placement="compact"` pins to the
