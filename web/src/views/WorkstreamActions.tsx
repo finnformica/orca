@@ -1,13 +1,14 @@
+import { createPortal } from "react-dom";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   ArrowRightLeft, ArrowUpRight, BellRing, Bot, Check, CheckCheck, ChevronDown, Copy, ExternalLink, FolderOpen, GitMerge, GitPullRequestArrow, GitPullRequestDraft, Globe,
-  Link, Loader2, MessageSquarePlus, MoreVertical, Pencil, Send, Sparkles, SquareTerminal, Tag, Trash2, Wrench, X, XCircle, Zap, type LucideIcon,
+  Link, Loader2, MessageSquarePlus, MoreVertical, Package, Pencil, Send, Sparkles, SquareTerminal, Tag, Trash2, Wrench, X, XCircle, Zap, type LucideIcon,
 } from "lucide-react";
 import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, moveWorkstream, previewConfigured, thisInstance,
   cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, slackChannel, staleHours, suggestTitle, toggleFollow, useCachedReviewDigest, useRepos, useReviewDigest, type Row,
 } from "../store";
-import { firstLine, prMenuActions, prPreviewState, quickActions, reviewProblems, shouldBump, type QuickActionId } from "../workstream";
+import { firstLine, handoffDraftPath, prMenuActions, prPreviewState, quickActions, reviewProblems, shouldBump, type QuickActionId } from "../workstream";
 import { reviewSig } from "./Review";
 import { ActionButton } from "@/components/ActionButton";
 import { Tip } from "@/components/ui/tip";
@@ -20,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { ModelPicker } from "@/components/ModelPicker";
 import { BottomSheet } from "@/components/BottomSheet";
 import { useNarrow } from "@/lib/viewport";
+import { navigate } from "@/lib/route";
 import { Input } from "@/components/ui/input";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
@@ -105,7 +107,7 @@ const mergeConfirm = (row: Row): ConfirmOptions => ({
   confirmLabel: "Merge",
 });
 
-// `compact` renders the toolbar as icon-only buttons (dense view). The toolbar opens with the
+// `compact` renders the toolbar as icon-only buttons (the Agents row, a narrow agent-page header). The toolbar opens with the
 // state-aware quick actions (QuickActionButtons) and then `leading` — the Test / Preview control — so
 // the quick icons always sit immediately left of it; `quick={false}` leaves them to the caller (the
 // comfortable Board card puts them on its preview line). `menuOnly` is the Agents list's trailing ⋯:
@@ -176,7 +178,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   const prPreview = prPreviewState(row, previewConfigured(row.repo));
   const confirmMerge = async () => { if (await confirmDialog(mergeConfirm(row))) await run("Merge", () => merge(row))(); };
 
-  // Icon-only in compact (dense) view; labelled otherwise. `icon` keeps every toolbar button a
+  // Icon-only in compact view; labelled otherwise. `icon` keeps every toolbar button a
   // consistent square so the row lines up regardless of which verbs are present.
   const icon = compact ? "icon" : "sm";
   const iconClass = compact ? "size-7" : undefined;
@@ -224,6 +226,8 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
       )}
       {/* Rename — fix a broken/auto title. AI suggests a name (editable); a PR renames on GitHub. */}
       <Item icon={Pencil} onSelect={() => setRenaming(true)}>Rename…</Item>
+      {/* Pack this chat for another Orca server (the Handoffs page; nothing is sent until Send). */}
+      <Item icon={Package} onSelect={() => navigate(handoffDraftPath(row))}>Hand off…</Item>
       {/* Move the worktree to another instance (verbs.moveWorkstream). Not while its agent runs. */}
       {row.worktreePath && instanceChoices().filter((i) => i !== (row.instance ?? thisInstance())).map((to) => {
         const moveItem = <Item icon={ArrowRightLeft} key={to} disabled={row.agentStatus === "running"} onSelect={run(`Move to ${to}`, () => moveWorkstream(row, to))}>Move to {to}</Item>;
@@ -235,7 +239,9 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
         <Sub label="PR">
             {prActions.includes("markReady") && <Item icon={CheckCheck} onSelect={run("Mark ready", () => markReady(row))}>Mark ready for review</Item>}
             {prActions.includes("moveToDraft") && <Item icon={GitPullRequestDraft} onSelect={run("Move to draft", () => convertToDraft(row))}>Move to draft</Item>}
-            {prActions.includes("autoMerge") && (row.autoMergeEnabled
+            {/* A PR Orca queued itself (the repo refused GitHub's auto-merge) reads the same as GitHub's
+                own auto-merge here: Disable cancels whichever is actually active (store.disableAutoMerge). */}
+            {prActions.includes("autoMerge") && (row.autoMergeEnabled || row.mergeWhenGreen
               ? <Item icon={Zap} onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</Item>
               : <Item icon={Zap} onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</Item>)}
             {/* One agent verb: conflicts, CI and review in a single run (store.addressPr). */}
@@ -320,9 +326,11 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
             </DropdownMenuContent>
           </DropdownMenu>
         )}
-        {menuOnly && contextAt && !narrow && (
+        {menuOnly && contextAt && !narrow && createPortal(
           // Right-click: the same items, anchored to a zero-size trigger at the pointer. Radix gives it
-          // the menu's keyboard handling (arrows, Enter, Esc) and closes it on an outside click.
+          // the menu's keyboard handling (arrows, Enter, Esc) and closes it on an outside click. In
+          // <body>, because the page column has `contain: layout paint`, which would place a `fixed`
+          // anchor against the column instead of the window.
           <DropdownMenu key={`${contextAt.x},${contextAt.y}`} open onOpenChange={(o) => { if (!o) onContextClose?.(); }}>
             <DropdownMenuTrigger asChild>
               <span data-slot="context-anchor" aria-hidden="true" tabIndex={-1} style={{ position: "fixed", left: contextAt.x, top: contextAt.y, width: 0, height: 0 }} />
@@ -331,7 +339,8 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
               onCloseAutoFocus={(e) => e.preventDefault()}>
               {items}
             </DropdownMenuContent>
-          </DropdownMenu>
+          </DropdownMenu>,
+          document.body,
         )}
       </div>
       <RenameDialog row={row} open={renaming} onClose={() => setRenaming(false)} />

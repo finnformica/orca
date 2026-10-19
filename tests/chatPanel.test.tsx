@@ -303,41 +303,152 @@ test("a tool's output stays inside its own accordion instead of spilling into th
   await mount(base);
 
   // A finished turn folds its whole trail behind one line; the answer is what's on screen.
-  expect(text()).toContain("⏵ 2 steps");
+  expect(container!.querySelector('[data-slot="activity-chip"]')?.textContent).toBe("Worked · 2 steps");
   expect(text()).not.toContain("Running the suite now.");
   const fold = [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("2 steps"));
   await act(async () => { fold!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
 
   expect(text()).toContain("Running the suite now."); // narration is the readable thread — visible
-  expect(text()).toContain("Running: bun test");      // the call's label, derived from its input — visible
+  expect(container!.querySelector('[data-slot="step-call"]')?.textContent).toBe("bun test"); // the real command, derived from its input — visible
   expect(text()).not.toContain("SECRET_TOOL_OUTPUT"); // its output — behind the toggle
   expect(text()).not.toContain("Tool result");        // and NOT a second row of its own
 
   // Opening that one call reveals the command AND its output together.
-  const toggle = [...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("Running: bun test"));
+  const toggle = container!.querySelector('[data-slot="step-call"]')!.closest("button");
   await act(async () => { toggle!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
   expect(text()).toContain("SECRET_TOOL_OUTPUT 289 pass");
 });
 
-test("a tool call on a live run is open while it works and folds itself when its result lands", async () => {
+test("a live turn shows ONE compact activity block, and on finish it folds into a summary chip above the answer", async () => {
+  // Finn: a wall of blue commands filled the chat while it worked, then vanished at once when the
+  // answer came. Now: one block (the call in flight, a timer, counts, the last few runs faded), and
+  // the block folds in place into `Worked for … · N steps` — nothing disappears.
+  const now = Date.now();
   apiFake.turnsData.set("r::feat", [{
-    id: "run-1", provider: "claude", prompt: "run the tests", response: "",
-    steps: [{ at: 2, kind: "tool", id: "tu_1", name: "Bash", input: { command: "bun test" } }],
+    id: "run-1", provider: "claude", prompt: "run the tests", response: "", startedAt: now - 72_000,
+    steps: [
+      { at: 1, kind: "tool", id: "r1", name: "Read", input: { file_path: "/a/one.ts" } },
+      { at: 2, kind: "result", id: "r1", output: "SECRET_FILE_BODY" },
+      { at: 3, kind: "tool", id: "r2", name: "Read", input: { file_path: "/a/two.ts" } },
+      { at: 4, kind: "result", id: "r2", output: "x" },
+      { at: 5, kind: "tool", id: "r3", name: "Read", input: { file_path: "/a/three.ts" } },
+      { at: 6, kind: "result", id: "r3", output: "x" },
+      { at: 7, kind: "text", text: "Now the **suite**." },
+      { at: 8, kind: "tool", id: "tu_1", name: "Bash", input: { command: "bun test" } },
+    ],
   }]);
   await mount({ ...base, agentStatus: "running" });
-  // In flight: the input is what there is to watch, so it's open without a click.
-  expect(text()).toContain("Running: bun test…");
-  expect(container!.querySelector("pre")?.textContent).toBe("bun test");
+  const slot = (name: string) => container!.querySelector(`[data-slot="${name}"]`);
+  // The header: the call in flight and the elapsed time.
+  expect(slot("activity-current")?.textContent).toBe("Running: bun test…");
+  expect(slot("activity-elapsed")?.textContent).toBe("1m 12s");
+  expect(slot("activity-counts")?.textContent).toBe("1 command, 3 files read");
+  // The trail: consecutive reads grouped, the interim message as one line of text.
+  expect([...slot("activity-trail")!.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Read 3 files", "Now the suite."]); // markdown stripped on a faded line
+  // The reserved height matches these two rows, not a fixed three-row box that would leave a
+  // gap under a shorter trail (the bug: it always reserved room for three).
+  expect((slot("activity-trail") as HTMLElement).style.minHeight).toBe("34px");
+  // Nothing opens by itself: no command input, no output, no code block.
+  expect(container!.querySelector("pre")).toBeNull();
+  expect(text()).not.toContain("SECRET_FILE_BODY");
+  // The header opens the full list: every REAL call on its own row — never the trail's summary
+  // again — each with its status, and the interim text as prose, not code.
+  await act(async () => { (slot("activity-head") as HTMLButtonElement).click(); });
+  const rows = [...container!.querySelectorAll('[data-slot="activity-list"] [data-slot="step-tool"]')];
+  expect(rows.map((r) => r.querySelector('[data-slot="step-call"]')?.textContent)).toEqual(["one.ts", "two.ts", "three.ts", "bun test"]);
+  expect(rows.map((r) => r.getAttribute("data-status"))).toEqual(["done", "done", "done", "running"]);
+  expect(rows[0]!.querySelector('[data-slot="step-duration"]')).toBeNull(); // result 1ms later: under 100ms, no `0.0s`
+  expect(rows[3]!.querySelector('[data-slot="step-call"]')?.className).toContain("font-mono");
+  expect(slot("activity-steps")?.textContent).not.toContain("Read 3 files");
+  expect(slot("step-text")?.querySelector("strong")?.textContent).toBe("suite");
+  await act(async () => { (slot("activity-head") as HTMLButtonElement).click(); });
+
+  // The answer lands: the block is still there, folded to its chip, with the answer below it.
+  apiFake.turnsData.set("r::feat", [{ ...apiFake.turnsData.get("r::feat")![0]!, response: "All green.", finishedAt: now }]);
   const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
   await act(async () => {
-    stream.dispatchEvent(Object.assign(new Event("step"), {
-      data: JSON.stringify({ repo: "r", branch: "feat", runId: "run-1", steps: [{ at: 3, kind: "result", id: "tu_1", output: "SECRET_TOOL_OUTPUT 289 pass" }] }),
-    }));
-    await flush();
+    stream.dispatchEvent(Object.assign(new Event("turn"), { data: JSON.stringify({ repo: "r", branch: "feat", runId: "run-1" }) }));
+    await flush(); await flush();
   });
-  // Done: it collapses on its own, output tucked behind the toggle like any finished call.
-  expect(text()).not.toContain("Running: bun test…");
-  expect(text()).not.toContain("SECRET_TOOL_OUTPUT");
+  expect(text()).toContain("All green.");
+  expect(slot("activity-live")?.hasAttribute("data-open")).toBe(false); // folding (height + opacity)
+  expect(slot("activity-summary")?.hasAttribute("data-open")).toBe(true);
+  expect(slot("activity-chip")?.textContent).toBe("Worked for 1m 12s · 5 steps");
+  // The chip sits above the answer, in the place the block was.
+  const order = slot("turn-activity")!.compareDocumentPosition([...container!.querySelectorAll("p")].find((p) => p.textContent === "All green.")!);
+  expect(order & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  // Once the fold has played, the live block's content leaves the DOM.
+  await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
+  expect(slot("activity-current")).toBeNull();
+});
+
+test("the live header's label swaps in two layers — the old line fades out as the new one fades in, never overlapping", async () => {
+  // Finn: the old and new lines clashed mid-swap. Both now run together in one fixed-height,
+  // clipped box; the old one carries `-out`, the new one the plain slot, so neither is ever the
+  // only thing on screen at once and the box never grows a second line.
+  const now = Date.now();
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", prompt: "run the tests", response: "", startedAt: now,
+    steps: [{ at: 1, kind: "tool", id: "a", name: "Bash", input: { command: "bun test" } }],
+  }]);
+  await mount({ ...base, agentStatus: "running" });
+  const slot = (name: string) => container!.querySelector(`[data-slot="${name}"]`);
+  expect(slot("activity-current")?.textContent).toBe("Running: bun test…");
+  expect(slot("activity-current-out")).toBeNull(); // nothing to fade from yet
+
+  // Past the hold window, switch to a second in-flight call.
+  await act(async () => { await new Promise((r) => setTimeout(r, 450)); });
+  apiFake.turnsData.set("r::feat", [{
+    ...apiFake.turnsData.get("r::feat")![0]!,
+    steps: [
+      { at: 1, kind: "tool", id: "a", name: "Bash", input: { command: "bun test" } },
+      { at: 2, kind: "result", id: "a", output: "x" },
+      { at: 3, kind: "tool", id: "b", name: "Bash", input: { command: "bun run check" } },
+    ],
+  }]);
+  const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
+  await act(async () => {
+    stream.dispatchEvent(Object.assign(new Event("turn"), { data: JSON.stringify({ repo: "r", branch: "feat", runId: "run-1" }) }));
+    await flush(); await flush();
+  });
+
+  // Both layers sit together: the old line fading out, the new one fading in — same box.
+  const out = slot("activity-current-out");
+  const incoming = slot("activity-current");
+  expect(out?.textContent).toBe("Running: bun test…");
+  expect(out?.className).toContain("label-out");
+  expect(incoming?.textContent).toBe("Running: bun run check…");
+  expect(incoming?.className).toContain("label-in");
+  // One fixed-height, clipped box holds both — never a second line, never spilling out.
+  expect(out?.closest("[class*='overflow-hidden']")).toBe(incoming?.closest("[class*='overflow-hidden']"));
+  // The box takes 1.2em of layout, but its row (and so each line's own truncate clip) is 1.7em and
+  // runs into padding that a negative margin cancels: a descender such as the g of `Thinking` is
+  // never cut off (the bug: the row shrank to 1.2em under a 1.625em line), and no space is added.
+  const clip = incoming!.closest("[class*='overflow-hidden']")!.classList;
+  expect(["box-content", "h-[1.2em]", "grid-rows-[1.7em]", "pb-[0.5em]", "-mb-[0.5em]"].every((c) => clip.contains(c))).toBe(true);
+
+  // Once the fade has played, only the new line is left.
+  await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
+  expect(slot("activity-current-out")).toBeNull();
+  expect(slot("activity-current")?.textContent).toBe("Running: bun run check…");
+});
+
+test("the live header names the newest call with no result, not the last step; the trail leaves it out", async () => {
+  apiFake.turnsData.set("r::feat", [{
+    id: "run-1", provider: "claude", prompt: "why the restart", response: "", startedAt: Date.now(),
+    steps: [
+      { at: 1, kind: "tool", id: "a", name: "Bash", input: { command: "orca board" } },
+      { at: 2, kind: "result", id: "a", output: "x" },
+      { at: 3, kind: "tool", id: "b", name: "Bash", input: { command: "git -C /opt/orca log" } }, // still running
+      { at: 4, kind: "tool", id: "c", name: "Read", input: { file_path: "/a/notes.md" } },        // parallel, returned
+      { at: 5, kind: "result", id: "c", output: "x" },
+      { at: 6, kind: "thinking", text: "hm" },
+    ],
+  }]);
+  await mount({ ...base, agentStatus: "running" });
+  expect(container!.querySelector('[data-slot="activity-current"]')?.textContent).toBe("Running: git -C /opt/orca log…");
+  const trail = [...container!.querySelectorAll('[data-slot="activity-trail"] li')].map((li) => li.textContent);
+  expect(trail).toEqual(["Running: orca board", "Reading notes.md"]);
 });
 
 test("a finished turn does not repeat its final message as the last step", async () => {
@@ -628,11 +739,42 @@ test("the log never scrolls sideways: prose wraps unbreakable tokens, code block
   // pins the rules that fixed it.
   apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "p", response: "See `orca/surface-branch-review-checks-to-activity-27f26a`.", finishedAt: 2 }]);
   await mount(base);
-  const log = container!.querySelector<HTMLElement>(".bg-neutral-950")!;
+  const log = container!.querySelector<HTMLElement>('[data-slot="chat-log"]')!;
   expect(log.className).toContain("overflow-x-hidden");
   const prose = log.querySelector<HTMLElement>(".prose")!;
   expect(prose.className).toContain("wrap-anywhere");
   expect(prose.className).toContain("prose-pre:wrap-normal");
+});
+
+test("your newest message and the newest answer are never clamped or folded; older ones keep their clamp", async () => {
+  // Finn: the latest message from the user and from the orchestrator should never be hidden.
+  const long = (tag: string) => `${tag}\n${Array.from({ length: 12 }, (_, i) => `line ${i}`).join("\n")}`;
+  const report = '[worker finished] r/a "A" — done\nOutcome: Added it.';
+  apiFake.turnsData.set("r::feat", [
+    { id: "run-1", provider: "claude", instruction: long("OLD_ASK"), prompt: "p", response: long("OLD_REPLY"), finishedAt: 1 },
+    ...[2, 3, 4].map((n) => ({ id: `run-${n}`, provider: "claude", instruction: `q${n}`, prompt: "p", response: `a${n}`, finishedAt: n })),
+    { id: "run-5", provider: "claude", instruction: long("NEW_ASK"), prompt: "p", response: "short", finishedAt: 5 },
+    // The newest answer came from a wake of worker reports alone — it must not fold into the ⚙ block.
+    { id: "run-6", provider: "claude", instruction: report, prompt: "p", response: long("NEW_REPLY"), finishedAt: 6 },
+  ]);
+  await mount(base);
+  const clamped = () => [...container!.querySelectorAll('[data-slot="turn-clamp"]')].map((c) => c.textContent!.match(/OLD_ASK|OLD_REPLY|NEW_ASK|NEW_REPLY/)?.[0]);
+  // Only the old ask and the old reply are clamped.
+  expect(clamped()).toEqual(["OLD_ASK", "OLD_REPLY"]);
+  expect(text()).toContain("NEW_ASK");
+  expect(text()).toContain("NEW_REPLY");
+  expect(container!.querySelector('[data-slot="agents-marker"]')).toBeNull();
+  expect(container!.querySelector('[data-slot="turn-reports"]')).not.toBeNull(); // its reports still fold
+
+  // A newer message arrives: the previous newest stays in full while it is on screen (no shrink).
+  apiFake.turnsData.set("r::feat", [...apiFake.turnsData.get("r::feat")!, { id: "run-7", provider: "claude", instruction: "thanks", prompt: "p", response: "ok", finishedAt: 7 }]);
+  const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
+  await act(async () => {
+    stream.dispatchEvent(Object.assign(new Event("turn"), { data: JSON.stringify({ repo: "r", branch: "feat", runId: "run-7" }) }));
+    await flush(); await flush();
+  });
+  expect(text()).toContain("thanks");
+  expect(clamped()).toEqual(["OLD_ASK", "OLD_REPLY"]);
 });
 
 test("the orchestrator's worker reports fold into one ⚙ block, not shown as something you typed", async () => {
@@ -722,7 +864,8 @@ test("an older turn that arrived without its steps loads them on unfold", async 
   apiFake.turnsData.set("r::feat", [{ id: "run-old", provider: "claude", prompt: "p", instruction: "old work", response: "Did it.", finishedAt: 2 }]); // no `steps`
   apiFake.turnStepsData.set("run-old", [{ seq: 0, step: { kind: "tool", name: "Bash", input: { command: "bun test" }, at: 1 } }, { seq: 1, step: { kind: "result", output: "ok", at: 2 } }]);
   await mount(base);
-  const unfold = [...container!.querySelectorAll("button")].find((b) => b.textContent?.trim() === "⏵ steps")!;
+  const unfold = container!.querySelector<HTMLButtonElement>('[data-slot="activity-chip"]')!;
+  expect(unfold.textContent).toBe("Worked"); // the count is unknown until the steps load: no bare "steps"
   expect(unfold).toBeTruthy();
   await act(async () => { unfold.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
   expect(text()).toContain("1 step"); // fetched from /api/turns/steps from seq 0, then folded like any finished turn

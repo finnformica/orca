@@ -3,7 +3,7 @@
 // of the console is assembled from these, so the look is decided in one place.
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { niceMax, orchStatusText, sparklineSegments, timeTicks, upkeepLabel, usageZone, type OrchStatus, type UpkeepRecord } from "../workstream";
+import { grantScopeLabel, niceMax, orchStatusText, sparklineSegments, timeTicks, upkeepLabel, usageZone, type GrantScopeNote, type OrchStatus, type UpkeepRecord } from "../workstream";
 
 /** A card: hairline border, no shadow, a 48px header row with the title left and controls right. */
 export function VCard({ title, aside, children, className, slot, bodyClass, onHeaderClick, expanded }: {
@@ -66,10 +66,26 @@ export const StatusDot = ({ tone, className }: { tone: DotTone; className?: stri
   <span data-slot="status-dot" data-tone={tone} className={cn("inline-block size-2.5 shrink-0 rounded-full", DOT_CLASS[tone], className)} />
 );
 
+/** The one count-badge style (Inbox nav item, notification bell): a small geist-blue pill with a
+ *  white number, capped at "99+". `placement` "inline" sits at the end of a row (`ml-auto`);
+ *  "compact" pins it to the corner of an icon (`absolute -top-0.5 -right-0.5`). Renders nothing at 0. */
+export function CountBadge({ count, placement = "inline", slot = "count-badge", label = "unread", className }: {
+  count: number; placement?: "inline" | "compact"; slot?: string; label?: string; className?: string;
+}) {
+  if (!count) return null;
+  return (
+    <span data-slot={slot} aria-label={`${count} ${label}`}
+      className={cn("bg-geist-blue flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold text-white tabular-nums",
+        placement === "compact" ? "absolute -top-0.5 -right-0.5" : "ml-auto", className)}>
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
 /** An environment-style pill (Production / Preview): rounded, hairline, an optional leading icon. */
 export function Pill({ children, tone = "default", slot }: { children: ReactNode; tone?: "default" | "blue" | "green" | "amber" | "red" | "purple"; slot?: string }) {
   const tones = {
-    default: "text-foreground border",
+    default: "border-transparent bg-selected text-selected-foreground", // the server's theme: not a status
     blue: "border-transparent bg-geist-blue/15 text-geist-blue",
     green: "border-transparent bg-geist-green/15 text-geist-green",
     amber: "border-transparent bg-geist-amber/15 text-geist-warning-fg",
@@ -104,6 +120,18 @@ export function OrchStatusNote({ status, chipOnly, className }: { status?: OrchS
   );
 }
 
+/** An outside sender's grant on the card: "started from Discord by Saajan, scoped mode". Nothing
+ *  for your own work. */
+export function GrantNote({ grant, className }: { grant?: GrantScopeNote; className?: string }) {
+  const text = grantScopeLabel(grant);
+  if (!text) return null;
+  return (
+    <div data-slot="grant-scope" className={cn("text-muted-foreground flex min-w-0 items-center gap-1 text-xs", className)}>
+      <span className="min-w-0 truncate">{text}</span>
+    </div>
+  );
+}
+
 /** Automatic PR upkeep on the card: "auto-addressing: conflicts" while its run goes, or that it gave
  *  up (then the user's). Nothing otherwise. */
 export function UpkeepNote({ upkeep, running, className }: { upkeep?: UpkeepRecord; running: boolean; className?: string }) {
@@ -130,7 +158,7 @@ export function Segmented<T extends string>({ value, options, onChange, label, s
     <div role="group" aria-label={label} className={cn("inline-flex items-center rounded-md border p-0.5", size === "sm" ? "h-6" : "h-7")}>
       {options.map((o) => (
         <button key={o.value} type="button" aria-pressed={value === o.value} onClick={() => onChange(o.value)}
-          className={cn("inline-flex h-full items-center rounded-[5px] text-xs font-medium transition-colors", size === "sm" ? "px-1.5" : "px-2", value === o.value ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground")}>
+          className={cn("inline-flex h-full items-center rounded-[5px] text-xs font-medium transition-colors", size === "sm" ? "px-1.5" : "px-2", value === o.value ? "bg-selected text-selected-foreground" : "text-muted-foreground hover:text-foreground")}>
           {o.label}
         </button>
       ))}

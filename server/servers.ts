@@ -20,6 +20,7 @@
 // untouched, and so does everything when the feature is off.
 import { instanceName } from "./db";
 import { API_PORT } from "./ports";
+import { resolveIdentity, type ServerIdentity, type ServerIdentityConfig } from "../shared/serverIdentity";
 
 export type ServerEntry = { name: string; url: string };
 export type ServerSwitcherConfig = {
@@ -37,7 +38,7 @@ export type ServerSwitcherConfig = {
 /** One row of `GET /api/servers`. */
 export type ServerInfo = { name: string; url: string; online: boolean; self: boolean };
 export type ServersAnswer = {
-  enabled: boolean; self: ServerEntry; servers: ServerInfo[]; source: "tailscale" | "config" | "self";
+  enabled: boolean; self: ServerEntry & Partial<ServerIdentity> & { identity?: ServerIdentityConfig }; servers: ServerInfo[]; source: "tailscale" | "config" | "self";
   /** The Tailscale API is configured here (TS_OAUTH_CLIENT_ID and TS_OAUTH_CLIENT_SECRET are set). */
   tailscaleApi: boolean;
 };
@@ -123,6 +124,39 @@ async function selfInfo(sw: ServerSwitcherConfig): Promise<{ entry: ServerEntry;
   return selfCache;
 }
 export const selfServer = async (sw: ServerSwitcherConfig): Promise<ServerEntry> => (await selfInfo(sw)).entry;
+
+type TsNode = { HostName?: string; DNSName?: string; TailscaleIPs?: string[] };
+/** The Tailscale host name of each instance, from its `instances` address and this node's
+ *  `tailscale status --json`: an address that is a peer's tailnet IP reads as that peer's MagicDNS
+ *  label (a laptop is often listed by IP); a name reads as its first label. `self` is this instance
+ *  (its own host name, from `selfServer`). An address nobody knows gets no entry. Pure. */
+export function hostsFromStatus(instances: Record<string, string>, status: { Self?: TsNode; Peer?: Record<string, TsNode> } | undefined, self?: { id: string; host: string }): Record<string, string> {
+  const nodes = [status?.Self, ...Object.values(status?.Peer ?? {})].filter((n): n is TsNode => !!n);
+  const label = (n: TsNode) => n.DNSName?.replace(/\.$/, "").split(".")[0] || n.HostName || undefined;
+  const out: Record<string, string> = {};
+  for (const [id, url] of Object.entries(instances)) {
+    let host: string;
+    try { host = new URL(url).hostname.toLowerCase(); } catch { continue; }
+    const byIp = nodes.find((n) => n.TailscaleIPs?.includes(host));
+    const name = byIp ? label(byIp) : /^[\d.]+$|:/.test(host) ? undefined : host.split(".")[0];
+    if (name) out[id] = name;
+  }
+  if (self) out[self.id] = self.host;
+  return out;
+}
+
+let hostsCache: { key: string; at: number; hosts: Record<string, string> } | undefined;
+/** `hostsFromStatus` on this node, cached for five minutes. No tailscale: the names in the addresses, not cached. */
+export async function instanceHosts(instances: Record<string, string>, sw: ServerSwitcherConfig = {}, now = Date.now()): Promise<Record<string, string>> {
+  const key = JSON.stringify(instances);
+  if (hostsCache?.key === key && now - hostsCache.at < 5 * 60_000) return hostsCache.hosts;
+  let status: { Self?: TsNode; Peer?: Record<string, TsNode> } | undefined;
+  try { status = await runTailscale(["status", "--json"]) as typeof status; } catch { /* no tailscale here */ }
+  const me = await selfServer(sw);
+  const hosts = hostsFromStatus(instances, status, me.name !== instanceName() ? { id: instanceName(), host: me.name } : undefined);
+  if (status) hostsCache = { key, at: now, hosts }; // a failed call is tried again next time
+  return hosts;
+}
 
 /** May a page from `origin` call this server cross-origin (subject to whois)? Yes when the
  *  discovery lists it, or when it is an Orca page on this tailnet: a host under this node's MagicDNS
@@ -215,6 +249,14 @@ export async function listServers(sw: ServerSwitcherConfig | undefined, now = Da
   answer ??= { enabled: true, self, servers: withSelf((cfg.servers ?? []).map((s) => ({ name: s.name, url: s.url, online: true })), self), source: "config", tailscaleApi };
   discovery = { key, at: now, answer };
   return answer;
+}
+
+/** The answer with this server's identity on its `self` row: the display name (`label`) and theme
+ *  colour. Added per request, outside the discovery cache, so a saved identity shows at once. The
+ *  `name` stays the Tailscale host name: the browser matches servers by it. `identity` is what is
+ *  stored (Settings' form edits it). Pure. */
+export function withIdentity(answer: ServersAnswer, identity: ServerIdentityConfig | undefined): ServersAnswer {
+  return { ...answer, self: { ...answer.self, ...resolveIdentity(identity, answer.self.name), identity: identity ?? {} } };
 }
 
 export type WhoisVerdict = { ok: true; login: string } | { ok: false; reason: string };

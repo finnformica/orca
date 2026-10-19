@@ -3,8 +3,14 @@ import type { RepoFeatures } from "../../server/config";
 import type { ChangeSummary } from "../../server/git";
 import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSummary, ReviewSignal, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
+import type { PackView, WirePack } from "../../server/handoff";
 import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
 import type { Notification } from "../../shared/notifications";
+import type { Conversation, InboxFacets, InboxRow, ThreadActions, ThreadItem, ThreadLinkRecord } from "../../shared/inbox";
+
+export type InboxPage = { rows: InboxRow[]; facets: InboxFacets; older: string | null; dbUnavailable?: boolean };
+export type InboxQuery = { before?: string; source?: string; person?: string; unread?: boolean; muted?: boolean };
+export type InboxThread = ThreadActions & { conversation: Conversation; items: ThreadItem[]; workstream?: { repo: string; branch: string } };
 import type { BridgeInfo, MechanicalMerge, MergePolicy, SyncResult, TurnShots } from "./workstream";
 
 export type LiveAgent = {
@@ -74,6 +80,9 @@ async function res(r: Response) {
   return data;
 }
 
+import type { IntegrationsOverview } from "../../shared/integrationSettings";
+export type { IntegrationsOverview } from "../../shared/integrationSettings";
+
 export type GithubAccount = { login: string; active: boolean; name?: string; email?: string; configured: { name?: string; email?: string }; repos: string[]; avatarUrl?: string };
 
 export type RepoInfo = {
@@ -90,9 +99,37 @@ export const api = {
   /** Settings' Machine cost: one instance's USD/hour; null clears it (back to the EC2 estimate / 0). */
   setInstanceRate: (instance: string, hourlyUsd: number | null): Promise<{ ok: true }> => post("/api/config/instance-rate", { instance, hourlyUsd }),
   setInstanceTerminal: (instance: string, on: boolean): Promise<{ ok: true }> => post("/api/config/terminal", { instance, on }),
+  setServerIdentity: (name: string, color: string): Promise<{ ok: true }> => post("/api/config/identity", { name, color }),
   usage: (): Promise<Usage | null> => get("/api/usage").then(res),
+  /** The unified inbox (shared/inbox.ts): one window of rows, newest first, with the filter facets. */
+  inbox: (q: InboxQuery = {}): Promise<InboxPage> =>
+    get(`/api/inbox?${new URLSearchParams(Object.entries(q).filter(([, v]) => v).map(([k, v]) => [k, v === true ? "1" : String(v)]))}`).then(res),
+  /** Reply where the event came from (the orca post path); the reply is a durable delivery. */
+  /** The inbox's half of the one unread count, and the notification kinds muted there. */
+  inboxUnread: (): Promise<{ others: number; mutedKinds: string[] }> => get("/api/inbox/unread").then(res),
+  inboxReply: (eventId: string, text: string): Promise<{ eventId: string; delivery?: number }> => post("/api/inbox/reply", { eventId, text }),
+  inboxRead: (ids: string[], read = true): Promise<{ ok: true }> => post("/api/inbox/read", { ids, read }),
+  inboxMute: (eventId: string, muted: boolean): Promise<{ ok: true }> => post("/api/inbox/mute", { eventId, muted }),
+  /** Bind the event's conversation to a workstream: later replies there reach it. */
+  inboxLink: (eventId: string, repo: string, branch: string): Promise<{ link?: ThreadLinkRecord }> => post("/api/inbox/link", { eventId, repo, branch }),
+  /** One conversation across inbound and outbound (`c` is shared/inbox.ts `conversationParam`). */
+  inboxThread: (c: string): Promise<InboxThread> => get(`/api/inbox/thread?c=${encodeURIComponent(c)}`).then(res),
+  /** Every thread link: the source chips on workstream cards. */
+  threadLinks: (): Promise<{ links: ThreadLinkRecord[] }> => get("/api/inbox/threads").then(res),
   /** The GitHub page: this host's signed-in gh accounts, the identity each commits as, the repos on each. */
   githubAccounts: (): Promise<{ accounts: GithubAccount[] }> => get("/api/github/accounts").then(res),
+  /** Settings > Integrations: everything the page shows, in one read; each write is one POST. */
+  integrations: (): Promise<IntegrationsOverview> => get("/api/integrations").then(res),
+  integrationPost: (path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> => post(`/api/integrations/${path}`, body),
+  // Handoff packs (server/handoff.ts) on the CURRENT server; the import goes to another server's
+  // absolute URL from this browser — the boxes never call each other.
+  handoffs: (): Promise<{ self: string; packs: PackView[] }> => get("/api/handoffs").then(res),
+  createHandoff: (body: { to: string; title: string; message?: string; repo?: string; branch?: string; chats?: number[] }): Promise<{ pack: PackView }> => post("/api/handoffs", body),
+  exportHandoff: (id: string): Promise<WirePack> => apiFetch(`/api/handoffs/${encodeURIComponent(id)}/export`, { cache: "no-store" }).then(res),
+  markHandoffSent: (id: string, to: string): Promise<{ ok: boolean }> => post(`/api/handoffs/${encodeURIComponent(id)}/sent`, { to }),
+  deleteHandoff: (id: string): Promise<{ ok: boolean }> => apiFetch(`/api/handoffs/${encodeURIComponent(id)}`, { method: "DELETE" }).then(res),
+  importHandoff: (targetUrl: string, pack: WirePack): Promise<{ duplicate: boolean; files: number }> =>
+    fetch(`${targetUrl}/api/handoff/import`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(pack) }).then(res),
   setGithubAccount: (login: string, fields: { name?: string; email?: string }): Promise<{ accounts: GithubAccount[] }> => post("/api/github/accounts", { login, ...fields }),
   // Take a hydra login out of its rotation or put it back; `instance` names the host it's signed
   // in on (hydra state is per host) — the usage card's own, today.
@@ -119,8 +156,13 @@ export const api = {
     post("/api/suggest-title", { repo, ...b }),
   rename: (repo: string, b: { branch: string; title: string; pr?: number }): Promise<{ ok: true }> =>
     post("/api/rename", { repo, ...b }),
-  autoMerge: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/auto-merge", { repo, pr }),
+  // If the repo disallows GitHub auto-merge, the server queues the PR in Orca's own merge-when-green
+  // queue instead of failing (`queued: true`) — the UI picks this up from the next enrichment poll
+  // (`row.mergeWhenGreen`), which already reads as the purple "Auto-merge" state.
+  autoMerge: (repo: string, pr: number): Promise<{ ok: true; queued?: boolean; text?: string }> => post("/api/prs/auto-merge", { repo, pr }),
   mergeWhenGreen: (repo: string, pr: number, branch?: string): Promise<{ text: string }> => post("/api/prs/merge-when-green", { repo, pr, branch, by: "user" }),
+  cancelMergeWhenGreen: (repo: string, pr: number, branch?: string): Promise<{ text: string }> =>
+    post("/api/prs/merge-when-green", { repo, pr, branch, cancel: true }),
   disableAutoMerge: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/disable-auto-merge", { repo, pr }),
   convertToDraft: (repo: string, pr: number): Promise<{ ok: true }> => post("/api/prs/draft", { repo, pr }),
   // `instance` adopts the branch on THAT instance (a preview can run where the session doesn't).

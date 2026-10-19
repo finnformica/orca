@@ -8,21 +8,24 @@
 // centred); every inset clears the notch and the home indicator. What the sidebar alone carried
 // (Previews, Repos, Usage, Find, the instance switcher) is reachable from Settings on a phone — see
 // MobileNav in views/Pages.tsx.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { useAtom, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
-  Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderGit2, FolderSync, Gauge, LayoutGrid, Loader2,
+  Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderSync, LayoutGrid, Loader2,
   Bot, Command, Keyboard, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
-  Users,
+  Package, Plug, Inbox,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
-import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom, sidebarCollapsedAtom } from "@/lib/atoms";
+import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom } from "@/lib/atoms";
 import { pageShortcut, shortcutKeys } from "@/lib/shortcuts";
 import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPalette";
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
+import { SLIDE_MS } from "@/components/SidePanel";
+import { dockClipElementAtom, dockElementAtom, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
+import { CountBadge } from "@/components/console";
 import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
 import { cn, PortalContainer } from "@/lib/utils";
@@ -31,10 +34,13 @@ import { useSwipeToDismiss } from "@/lib/gestures";
 import { isMobile, useNarrow } from "@/lib/viewport";
 import { api } from "../api";
 import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
-import { repoLabel, summarizeSync } from "../workstream";
+import { PANEL_MIN_W, SHELL_GAP, repoLabel, summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
-import { AddServerDialog, ServerMenu, ServerOffline, useServerProblem } from "@/components/ServerMenu";
-import { NotificationBell } from "@/components/Notifications";
+import { useInboxUnread } from "@/lib/inboxUnread";
+import { AddServerDialog, ServerMenu, ServerOffline, useServerProblem, useServers } from "@/components/ServerMenu";
+import { loadIdentity, useServerIdentity } from "@/lib/identity";
+import { poll } from "@/lib/poll";
+import { NotificationBell, footIcon } from "@/components/Notifications";
 import { notifyLocal } from "@/lib/notificationStore";
 import { Button } from "@/components/ui/button";
 import { MenuShortcut, Shortcut } from "@/components/ui/kbd";
@@ -45,55 +51,146 @@ import {
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+/** One row of the nav: the same height, padding, icon size and hover, ghost on the lower surface
+ *  (branch-demo's sidebar). Collapsed, an icon centred in the rail. */
+export const navRow = (collapsed: boolean, active = false) => cn(
+  "relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors",
+  active ? "bg-sidebar-active text-sidebar-active-foreground font-medium" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+  collapsed && "md:justify-center md:px-0",
+);
 export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (r: Route) => boolean; badge?: (compact: boolean) => ReactNode }[] = [
-  { to: "/", label: "Overview", Icon: LayoutGrid, match: (r) => r.name === "board" },
+  { to: "/", label: "Overview", Icon: LayoutGrid, match: (r) => r.name === "overview" },
   // An agent's own page (PR or local detail) is "inside" Agents, as a deployment is inside Deployments.
   { to: "/agents", label: "Agents", Icon: Boxes, match: (r) => r.name === "agents" || r.name === "pr" || r.name === "local" },
+  // Every integration's inbound messages and events, one timeline (views/Inbox.tsx).
+  // Orca's own notifications are rows here too; its count is the bell's (lib/inboxUnread.ts).
+  { to: "/inbox", label: "Inbox", Icon: Inbox, match: (r) => r.name === "inbox", badge: (compact) => <InboxBadge compact={compact} /> },
   // The previews (and Test master) page; its badges are what the two header buttons used to carry.
   { to: "/previews", label: "Previews", Icon: MonitorPlay, match: (r) => r.name === "previews", badge: (compact) => <PreviewsBadge compact={compact} /> },
-  { to: "/repos", label: "Repos", Icon: FolderGit2, match: (r) => r.name === "repos" },
-  { to: "/github", label: "GitHub", Icon: Users, match: (r) => r.name === "github" },
-  { to: "/usage", label: "Usage", Icon: Gauge, match: (r) => r.name === "usage" },
+  { to: "/integrations", label: "Integrations", Icon: Plug, match: (r) => r.name === "integrations" },
+  { to: "/handoffs", label: "Handoffs", Icon: Package, match: (r) => r.name === "handoffs" },
+  // Repos and GitHub are sections of Settings.
   { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
 ];
+
+/** The docked right column (desktop): its OWN card beside the page card, as branch-demo's right panel
+ *  — the shell's gutter between them, no shared hairline. The open side panel renders INTO it
+ *  (SidePanel's portal) at its full width; only the width and the start margin animate (branch-demo's
+ *  150ms ease-out; the min-width tweens with the width, so an open never pops to it) and the card clips the panel, so the panel slides and never
+ *  reflows. Closed, a negative start margin cancels the gutter (a 0-wide flex item still takes the gap). The card's
+ *  surface stays until the close has finished (`painted`), so its edge does not vanish mid-slide.
+ *  The clip is an inner element, not the dock: the resize handle hangs in the gutter, outside the card. */
+export function Dock() {
+  const dock = useAtomValue(dockWidthAtom);
+  const setDockElement = useSetAtom(dockElementAtom);
+  const setDockClip = useSetAtom(dockClipElementAtom);
+  const [painted, setPainted] = useState(dock > 0);
+  if (dock > 0 && !painted) setPainted(true);
+  useEffect(() => {
+    if (dock > 0 || !painted) return;
+    const t = setTimeout(() => setPainted(false), SLIDE_MS + 150); // no transition ran (reduced motion)
+    return () => clearTimeout(t);
+  }, [dock, painted]);
+  return (
+    <div data-slot="dock" ref={setDockElement}
+      onTransitionEnd={(e) => { if (e.target === e.currentTarget && e.propertyName === "width" && dock === 0) setPainted(false); }}
+      // Its `class` NEVER changes: Tailwind Typography's prose rules end in
+      // `:not(:where([class~="not-prose"], [class~="not-prose"] *))`, so a class change on ANY ancestor
+      // of the chat restyles its whole subtree (measured: ~4000 elements, 100–150ms each at 4× CPU, twice
+      // per open / close). The margin is an inline style; the card's surface rides `data-painted`.
+      data-painted={painted ? "" : undefined}
+      className="relative shrink-0 transition-[width,min-width,margin-inline-start] ease-out data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden md:data-[painted]:rounded-[10px] md:data-[painted]:bg-background md:data-[painted]:shadow-shell"
+      style={{ width: dock, minWidth: dock > 0 ? Math.min(PANEL_MIN_W, dock) : 0, marginInlineStart: dock > 0 ? 0 : -SHELL_GAP, transitionDuration: `${SLIDE_MS}ms` }}>
+      <div data-slot="dock-clip" ref={setDockClip} className="absolute inset-0 overflow-hidden rounded-[inherit]" />
+    </div>
+  );
+}
+
+/** Feeds lib/dock's motion flag from the shell's own width transitions (the dock, the nav's rail). */
+function useDockMotion(shell: HTMLElement | null) {
+  useEffect(() => {
+    if (!shell) return;
+    const ours = (e: TransitionEvent) => e.propertyName === "width" && e.target instanceof HTMLElement
+      && (e.target.dataset.slot === "dock" || e.target.dataset.slot === "sidebar");
+    const run = (e: TransitionEvent) => { if (ours(e)) noteDockMotion(1); };
+    const end = (e: TransitionEvent) => { if (ours(e)) noteDockMotion(-1); };
+    shell.addEventListener("transitionrun", run);
+    shell.addEventListener("transitionend", end);
+    shell.addEventListener("transitioncancel", end);
+    return () => { shell.removeEventListener("transitionrun", run); shell.removeEventListener("transitionend", end); shell.removeEventListener("transitioncancel", end); };
+  }, [shell]);
+}
 
 /** `sidebarActions` renders the last of the sidebar's actions (Add New), above the divider and you;
  *  it is told whether the sidebar is collapsed, so it can drop to an icon. */
 export function Shell({ crumbs, sidebarActions, children }: {
   crumbs: ReactNode; sidebarActions?: (collapsed: boolean) => ReactNode; children: ReactNode;
 }) {
-  const [collapsed, setCollapsed] = useAtom(sidebarCollapsedAtom);
-  const [updateAvailable, setUpdateAvailable] = useState(false); // the banner, when shown, is topmost and clears the notch itself
+  // The nav renders as its icon rail by your choice OR while the docked right column needs the room
+  // (lib/dock.ts); either way the page column keeps at least DOCK_PAGE_MIN_W.
+  const { rail: collapsed, setRail } = useNavToggle();
   const offline = useConfigFailed();
   const serverProblem = useServerProblem(offline); // another server chosen, and it is offline or refuses us
   useShellFallbacks();
   const activity = useOrchestratorActivity(); // the ONE subscriber feeding every launcher's indicator
   const route = useRoute();
+  const identity = useServerIdentity(); // the ACTIVE server's name and colour (lib/identity.ts applies them)
+  const { visible: serverMenu } = useServers();
+  const narrow = useNarrow();
+  const [shellEl, setShellEl] = useState<HTMLElement | null>(null);
+  useDockMotion(shellEl);
+  useEffect(() => poll(loadIdentity, 60_000), []);
   return (
-    <div className="flex min-h-screen w-full">
+    // Desktop: branch-demo's app shell. The nav sits on the LOWER surface — the canvas, in the
+    // server's theme colour — and the page and the docked panel float together in ONE rounded card
+    // (`data-slot="shell-card"`, a 6px gutter, a 10px corner, `shadow-shell`), so the nav reads as
+    // behind the content. A phone has no card: the page is the whole screen.
+    <div data-slot="shell" ref={setShellEl} className="md:bg-sidebar flex min-h-screen w-full flex-col md:h-screen md:overflow-hidden">
+      {/* The row on the canvas: the nav, then the page card and the panel card, the shell's gutter
+          between the cards and round them (branch-demo's p-shell / gap-shell). */}
+      <div data-slot="shell-row" className="flex min-h-0 w-full flex-1 md:gap-1.5 md:py-1.5 md:pr-1.5">
       {/* Desktop only: a phone's nav is the bottom bar + Settings (see MobileNav in views/Pages.tsx) —
           there is no off-canvas drawer any more. */}
       <aside
-        data-slot="sidebar" data-collapsed={collapsed}
+        data-slot="sidebar" data-chrome="" data-collapsed={collapsed}
         className={cn(
-          "bg-sidebar z-50 max-md:hidden md:sticky md:top-0 md:flex md:h-screen md:flex-col md:border-r",
+          "z-50 max-md:hidden md:flex md:shrink-0 md:flex-col md:overflow-hidden md:transition-[width] md:duration-150 md:ease-out motion-reduce:transition-none",
           collapsed ? "md:w-14" : "md:w-60",
         )}
       >
-        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} actions={sidebarActions} />
+        <Sidebar collapsed={collapsed} onToggle={() => setRail(!collapsed)} actions={sidebarActions} />
       </aside>
-      <div className="flex min-w-0 flex-1 flex-col">
-        <UpdateBanner onStaleChange={setUpdateAvailable} />
+      <div data-slot="shell-card" className="relative flex min-w-0 flex-1 md:overflow-hidden md:rounded-[10px] md:bg-background md:shadow-shell">
+      {/* The page column scrolls on its own on a desktop (md:h-screen + overflow), as each column of an
+          app shell does: the docked panel then sits flush against the window's edge, with no page
+          scrollbar outside it (the gutter is reserved here, not on <html>; its children never shrink to
+          fit the column's height — the top bar did). A phone keeps the window's own scroll (its keyboard and pull-to-refresh
+          code read window.scrollY). Inside it, the page FRAME is the `@container/page` the pages'
+          layouts query, so they respond to the room the dock leaves, not to the window. While the dock
+          or the nav animates, the frame follows the card edge in every frame — no hold at an end width
+          (Finn: the content must move WITH the edge). Only CSS moves: no React state per frame. */}
+      {/* `contain: layout paint` on a desktop: while the dock or the nav animates, the page's reflow and
+          repaint stay inside this column. (A `fixed` descendant would now be placed against this box —
+          the page has none; the Agents row's right-click anchor is portaled to <body>.) */}
+      <div data-slot="page-scroll" className="flex min-w-0 flex-1 flex-col md:h-full md:overflow-x-hidden md:overflow-y-auto md:[scrollbar-gutter:stable] md:[contain:layout_paint]">
+      <div data-slot="page-frame" className="@container/page flex min-w-0 flex-1 shrink-0 flex-col md:*:shrink-0 md:[contain:layout_paint]">
+        {/* The update bar floats at the top centre of the page column (zero height, sticky), so it covers
+            neither the nav nor the docked panel and never moves the layout. */}
+        <UpdateBanner />
         {/* Opaque, not a translucent blur: scrolled content (a long diff, the PR comments) showed through it.
-            The notch inset goes to whichever is topmost: the banner when it's shown, else the header. */}
+            The header always clears the notch: the update bar floats over it. */}
+        {/* On a desktop the top bar is part of the card (neutral); on a phone it is the themed frame. */}
         <header
-          data-slot="topbar"
+          data-slot="topbar" data-chrome={narrow ? "" : undefined}
           className={cn(
             "bg-background sticky top-0 z-30 flex h-14 items-center gap-3 border-b px-4 md:px-6 max-md:gap-2 max-md:px-[max(1rem,env(safe-area-inset-left))]",
-            !updateAvailable && "max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:pt-[env(safe-area-inset-top)]",
+            "max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:pt-[env(safe-area-inset-top)]",
           )}
         >
           <button type="button" data-slot="topbar-mark" onClick={() => navigate("/")} aria-label="Orca — go to overview" className="shrink-0 md:hidden"><RoundMark /></button>
+          {/* The phone has no sidebar: the server's name goes beside the mark — the server menu
+              carries it when it shows. */}
+          {!serverMenu && identity && <span data-slot="topbar-identity" className="text-server-fg truncate text-sm font-medium md:hidden">{identity.label}</span>}
           <ServerMenu />
           <RepoSwitcher />
           <nav aria-label="Breadcrumb" className="text-muted-foreground flex min-w-0 items-center gap-2 text-sm">{crumbs}</nav>
@@ -112,9 +209,16 @@ export function Shell({ crumbs, sidebarActions, children }: {
           {offline ? (serverProblem ? null : <OfflineScreen />) : children}
         </main>
       </div>
-      <BottomBar activity={activity} />
-      {/* The quick-ask pill, bottom centre of every page but an agent's Chat tab (desktop; the phone's bottom bar has the orchestrator). */}
+      </div>
+      {/* The quick-ask pill, bottom centre of the page CARD on every page but an agent's Chat tab
+          (desktop; the phone's bottom bar has the orchestrator). Placed by the card, not by a copy of
+          the dock's transition: it moves with the card edge in the same frames — an open, a close, the
+          nav's rail, a resize drag or key. */}
       {!chatTab(route) && <QuickAsk />}
+      </div>
+      <Dock />
+      </div>
+      <BottomBar activity={activity} />
       <Shortcuts />
       <CommandPalette />
       <ShortcutsHelp />
@@ -154,7 +258,7 @@ function Sidebar({ collapsed, onToggle, actions }: {
           const item = (
             <button key={to} type="button" onClick={() => navigate(to)} aria-current={active ? "page" : undefined}
               aria-keyshortcuts={shortcut ? shortcutKeys(shortcut).join(" ") : undefined}
-              className={cn("relative flex h-9 w-full items-center gap-3 rounded-md px-2.5 text-sm transition-colors", active ? "bg-accent text-foreground font-medium" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground", collapsed && "md:justify-center md:px-0")}>
+              className={navRow(collapsed, active)}>
               <Icon className="size-4 shrink-0" />
               <span data-slot="nav-label" className={cn(collapsed && "md:hidden")}>{label}</span>
               {badge?.(collapsed)}
@@ -169,18 +273,20 @@ function Sidebar({ collapsed, onToggle, actions }: {
           return collapsed && !narrow ? <Tip key={to} label={label} shortcut={shortcut} side="right" className="flex">{item}</Tip> : item;
         })}
       </nav>
-      {/* Add New is the last of the actions — pushed to the bottom, just above the divider and you.
-          Collapsed, it is an icon in the same column. */}
-      <div data-slot="sidebar-actions" className={cn("mt-auto px-2 pb-2", collapsed && "flex flex-col md:items-center")}>
+      {/* Add New is the last of the actions — pushed to the bottom, just above you. An outline button,
+          full width, on the lower surface: it stands apart from the nav rows above it. */}
+      <div data-slot="sidebar-actions" className="mt-auto px-2 pb-2">
         {actions?.(collapsed)}
       </div>
-      {/* The foot: you, with the collapse toggle — above you when collapsed, so nothing overlaps. */}
-      <div data-slot="sidebar-foot" className={cn("flex flex-col border-t p-2", collapsed && "items-stretch md:items-center")}>
-        <div data-slot="sidebar-you" className={cn("flex items-center gap-1", collapsed && "md:flex-col-reverse")}>
+      {/* The foot, like branch-demo's: you (a ghost row with a chevron, it opens a menu) and the bell and
+          the collapse toggle as ghost icons — no divider above it. Collapsed, one centred column with
+          the toggle on top, so nothing overlaps. */}
+      <div data-slot="sidebar-foot" className="px-2 pb-2">
+        <div data-slot="sidebar-you" className={cn("flex items-center gap-0.5", collapsed && "md:flex-col-reverse md:gap-1")}>
           <ProfileMenu collapsed={collapsed} />
           <NotificationBell collapsed={collapsed} />
-          <Tip label={collapsed ? "Expand sidebar" : "Collapse sidebar"} shortcut="sidebar" className={cn("hidden md:inline-flex", !collapsed && "ml-auto")}>
-            <button type="button" onClick={onToggle} className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-8 shrink-0 items-center justify-center rounded-md"
+          <Tip label={collapsed ? "Expand sidebar" : "Collapse sidebar"} shortcut="sidebar" className="hidden md:inline-flex">
+            <button type="button" onClick={onToggle} className={footIcon}
               aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}>
               {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
             </button>
@@ -202,14 +308,28 @@ export function OrcaMark({ className }: { className?: string }) {
   );
 }
 
-/** The mark inside a circle — Vercel's round avatar logo; the favicon and home-screen icon match it. */
+/** The mark inside a circle — Vercel's round avatar logo: the circle a very dark shade of the active
+ *  server's theme colour (`--server-mark-bg`), the orca the colour (`--server-mark`); the favicon
+ *  matches it. Neutral: a black circle and a white orca. */
 export const RoundMark = ({ className }: { className?: string }) => (
-  <span className={cn("bg-foreground text-background inline-flex size-6 shrink-0 items-center justify-center rounded-full", className)}>
+  <span data-slot="round-mark" className={cn("text-server-mark inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-server-mark-bg", className)}>
     <OrcaMark className="size-4" />
   </span>
 );
 
-/** The phone's bottom bar (below md only): what a thumb needs — Overview, Agents, New agent, the
+/** "Orca | <name>" beside the mark, as the page title reads: a thin muted pipe with even space on each
+ *  side. The sidebar and Settings' identity preview both use it, so they cannot differ. */
+export const BrandName = ({ label, labelClass, labelSlot = "server-identity", className }: { label?: string; labelClass?: string; labelSlot?: string; className?: string }) => (
+  <span data-slot="brand-name" className={cn("flex min-w-0 items-baseline gap-1.5", className)}>
+    <span className="shrink-0">Orca</span>
+    {label && <>
+      <span aria-hidden="true" data-slot="brand-sep" className="text-muted-foreground/60 shrink-0 font-light">|</span>
+      <span data-slot={labelSlot} className={cn("truncate", labelClass)}>{label}</span>
+    </>}
+  </span>
+);
+
+/** The phone's bottom bar (below md only; the active page and New agent in the server's theme): what a thumb needs — Overview, Agents, New agent, the
  *  orchestrator and Settings, New agent centred — at the foot of the screen, above the home indicator.
  *  Everything else the old hamburger drawer exposed (Previews, Repos, Usage, Find, the instance
  *  switcher) now lives in Settings — see MobileNav in views/Pages.tsx. */
@@ -225,17 +345,17 @@ function BottomBar({ activity }: { activity: { running: boolean; unread: boolean
   return (
     <nav aria-label="Quick actions" data-slot="bottom-bar"
       className="bg-background/95 fixed inset-x-0 bottom-0 z-30 flex items-stretch gap-1 border-t px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))] backdrop-blur md:hidden">
-      <button type="button" className={cn(item, overview.match(route) && "text-foreground")} aria-current={overview.match(route) ? "page" : undefined} onClick={() => navigate(overview.to)}><overview.Icon className="size-5" /><span className={label}>{overview.label}</span></button>
-      <button type="button" className={cn(item, agents.match(route) && "text-foreground")} aria-current={agents.match(route) ? "page" : undefined} onClick={() => navigate("/agents")}><Boxes className="size-5" /><span className={label}>Agents</span></button>
+      <button type="button" className={cn(item, overview.match(route) && "text-server-fg")} aria-current={overview.match(route) ? "page" : undefined} onClick={() => navigate(overview.to)}><overview.Icon className="size-5" /><span className={label}>{overview.label}</span></button>
+      <button type="button" className={cn(item, agents.match(route) && "text-server-fg")} aria-current={agents.match(route) ? "page" : undefined} onClick={() => navigate("/agents")}><Boxes className="size-5" /><span className={label}>Agents</span></button>
       <button type="button" className={cn(item, "text-foreground")} onClick={() => setAddNew(true)}>
-        <span className="bg-foreground text-background inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span><span className={label}>New agent</span>
+        <span className="bg-primary text-primary-foreground inline-flex size-6 items-center justify-center rounded-full"><Plus className="size-4" /></span><span className={label}>New agent</span>
       </button>
       {/* The orchestrator, carrying the activity dot the desktop's quick-ask pill shows (there is no pill below md).
           `ask()` routes here to /orchestrator on a narrow screen rather than opening the side panel. */}
-      <button type="button" className={cn(item, "relative", route.name === "orchestrator" && "text-foreground")} aria-current={route.name === "orchestrator" ? "page" : undefined} onClick={() => ask()}>
+      <button type="button" className={cn(item, "relative", route.name === "orchestrator" && "text-server-fg")} aria-current={route.name === "orchestrator" ? "page" : undefined} onClick={() => ask()}>
         <Bot className="size-5" /><ActivityDot activity={activity} className="absolute top-1.5 right-[calc(50%-0.9rem)]" /><span className={label}>Orchestrator</span>
       </button>
-      <button type="button" className={cn(item, settings.match(route) && "text-foreground")} aria-current={settings.match(route) ? "page" : undefined} onClick={() => navigate("/settings")}><Settings className="size-5" /><span className={label}>Settings</span></button>
+      <button type="button" className={cn(item, settings.match(route) && "text-server-fg")} aria-current={settings.match(route) ? "page" : undefined} onClick={() => navigate("/settings")}><Settings className="size-5" /><span className={label}>Settings</span></button>
     </nav>
   );
 }
@@ -262,12 +382,13 @@ function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
   useRepos(); // config (and with it the instance list) lands after first paint
   const choices = instanceChoices();
   const label = scope === "all" ? (choices.length > 1 ? "All instances" : thisInstance() ?? "Orca") : scope;
+  const identity = useServerIdentity();
   const mark = <RoundMark />;
   const body = (
     <>
       {mark}
       <span className={cn("min-w-0 flex-1 text-left", collapsed && "md:hidden")}>
-        <span className="block truncate text-sm font-medium">Orca</span>
+        <BrandName label={identity?.label} labelClass="text-server-fg" className="text-sm font-medium" />
         <span data-slot="instance-scope" className="text-muted-foreground block truncate text-xs">{label}</span>
       </span>
     </>
@@ -276,7 +397,7 @@ function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" className="hover:bg-accent/60 flex min-w-0 flex-1 items-center gap-2 rounded-md p-1" aria-label="Switch instance">
+        <button type="button" className="hover:bg-accent flex min-w-0 flex-1 items-center gap-2 rounded-md p-1" aria-label="Switch instance">
           {body}
           <ChevronsUpDown className={cn("text-muted-foreground size-3.5 shrink-0", collapsed && "md:hidden")} />
         </button>
@@ -308,7 +429,7 @@ export function FindBox() {
 }
 
 // The top bar's context switcher (Vercel's "All Projects ▾"): the repo scope, shared with the
-// Board view and the Agents filters. Hidden with a single repo.
+// Overview and the Agents filters. Hidden with a single repo.
 function RepoSwitcher() {
   const repos = useRepos();
   const [repo, setRepo] = useAtom(repoFilterAtom);
@@ -316,7 +437,7 @@ function RepoSwitcher() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" data-slot="repo-switcher" className="hover:bg-accent/60 flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium">
+        <button type="button" data-slot="repo-switcher" className="hover:bg-accent flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium">
           {repo === "all" ? "All repos" : repoLabel(repos, repo)} <ChevronsUpDown className="text-muted-foreground size-3.5" />
         </button>
       </DropdownMenuTrigger>
@@ -367,10 +488,11 @@ export function AddNew({ children, collapsed = false }: { children: (onSent: (dr
   const swipe = useSwipeToDismiss("bottom", () => dialog, () => setOpen(false), { enabled: useNarrow(), body: dialog });
   return (
     <>
-      <Tip label="Add New" shortcut="new" side="right" className={cn("w-full", collapsed && "md:w-auto")}>
-        <Button variant="secondary" size="sm" data-slot="add-new" aria-label="Add New" onClick={() => setOpen(true)} className={cn("w-full", collapsed && "md:size-8 md:p-0")}>
-          <Plus className="size-4" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
-          <Shortcut id="new" className={cn("ml-auto max-md:hidden", collapsed && "md:hidden")} />
+      <Tip label="Add New" shortcut="new" side="right" className="flex w-full">
+        <Button variant="outline" data-slot="add-new" aria-label="Add New" onClick={() => setOpen(true)}
+          className={cn("h-9 w-full justify-start gap-3 px-2.5 has-[>svg]:px-2.5 text-sm font-normal", collapsed && "md:justify-center md:px-0 md:has-[>svg]:px-0")}>
+          <Plus className="size-4 shrink-0" /><span className={cn(collapsed && "md:hidden")}>Add New</span>
+          <Shortcut id="new" className={cn("ml-auto max-md:hidden [@media(pointer:coarse)]:hidden", collapsed && "md:hidden")} />
         </Button>
       </Tip>
       {createPortal(
@@ -445,13 +567,15 @@ export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" data-slot="profile" className={cn("hover:bg-accent/60 flex h-8 min-w-0 items-center gap-2 rounded-md px-1.5 text-sm", collapsed ? "md:size-8 md:justify-center md:p-0" : "flex-1")} aria-label="Profile menu">
-          <CircleUser className="text-muted-foreground size-5 shrink-0" />
+        <button type="button" data-slot="profile" className={cn("hover:bg-accent flex h-9 min-w-0 items-center gap-2.5 rounded-md px-2.5 text-sm transition-colors", collapsed ? "md:size-9 md:justify-center md:p-0" : "flex-1")} aria-label="Profile menu">
+          <CircleUser className="text-muted-foreground size-4 shrink-0" />
           {/* One line: who, then which machine — "You · local". */}
           <span className={cn("flex min-w-0 items-center gap-1.5 whitespace-nowrap", collapsed && "md:hidden")}>
             <span className="truncate">You</span>
             {thisInstance() && <><span className="bg-muted-foreground/60 size-1 shrink-0 rounded-full" aria-hidden="true" /><span data-slot="profile-instance" className="text-muted-foreground truncate">{thisInstance()}</span></>}
           </span>
+          {/* It opens a menu: the chevron at the far right, as branch-demo's user row. */}
+          <ChevronsUpDown className={cn("text-muted-foreground ml-auto size-3.5 shrink-0", collapsed && "md:hidden")} aria-hidden="true" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top">
@@ -482,4 +606,12 @@ export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
       </DropdownMenuContent>
     </DropdownMenu>
   );
+}
+
+/** The Inbox nav item's unread count: the one count the bell shows too. */
+function InboxBadge({ compact = false }: { compact?: boolean }) {
+  const unread = useInboxUnread();
+  // At zero it still holds the row's right edge, so the keycap after it stays where it was.
+  if (!unread) return compact ? null : <span className="ml-auto" />;
+  return <CountBadge count={unread} placement={compact ? "compact" : "inline"} slot="inbox-unread-count" />;
 }

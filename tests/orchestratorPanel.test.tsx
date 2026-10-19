@@ -1,5 +1,5 @@
 // The orchestrator's entry points in the UI: "Ask the orchestrator" in the top bar (a button), the O
-// key and the palette open a RIGHT-HAND SIDE PANEL that slides over the page — the same ChatPanel a
+// key and the palette open a RIGHT-HAND SIDE PANEL docked as a column beside the page — the same ChatPanel a
 // card's terminal uses, in its chat styling, over the orchestrator's own turns, with the composer
 // sending to its route (never the branch follow-up launch). Resizable from its left edge (width
 // remembered), Esc / ✕ to close, focus returned to the opener. Rendered into a real DOM against the fake api.
@@ -9,10 +9,11 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { getDefaultStore } from "jotai";
-import { AskOrchestrator, OrchestratorPage, OrchestratorPanel } from "@/components/Terminal";
+import { AskOrchestrator, ORCHESTRATOR_WINDOW_NAME, ORCHESTRATOR_WINDOW_URL, OrchestratorPage, OrchestratorPanel, OrchestratorWindow, isOrchestratorWindow } from "@/components/Terminal";
+import { Dock } from "@/components/Shell";
+import { SLIDE_MS } from "@/components/SidePanel";
 import { orchestratorActivityAtom, orchestratorOpenAtom, orchestratorPrefillAtom } from "@/lib/atoms";
-import { WorkstreamCard } from "@/views/Board";
-import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, dayLabel } from "@/workstream";
+import { DOCK_PAGE_MIN_W, NAV_RAIL_W, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, PANEL_MIN_W, clampPanelWidth, dayLabel } from "@/workstream";
 import { openTip } from "./tip";
 import { NARROW_QUERY } from "@/lib/viewport";
 
@@ -39,7 +40,8 @@ afterEach(async () => {
   getDefaultStore().set(orchestratorPrefillAtom, null);
   getDefaultStore().set(orchestratorActivityAtom, { running: false, unread: false });
 });
-const Entry = () => <><AskOrchestrator /><OrchestratorPanel /></>;
+// The shell's dock is where a docked panel renders (a portal), so the entry carries one.
+const Entry = () => <><AskOrchestrator /><Dock /><OrchestratorPanel /></>;
 
 const panelEl = () => container!.querySelector<HTMLElement>('[data-slot="orchestrator-panel"]');
 /** The open panel, or null: it stays mounted (slid out) once it has been opened. */
@@ -48,6 +50,8 @@ const launcher = () => container!.querySelector<HTMLButtonElement>('button[data-
 const closeButton = (root: ParentNode = container!) => root.querySelector<HTMLButtonElement>('button[aria-label="Close orchestrator"]')!;
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
 const DAY = 86_400_000;
+/** The status poll starts once the slide is over (useSlideSettled), not in its frames. */
+const afterSlide = () => act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 60)); await flush(); await flush(); });
 
 test("Ask the orchestrator opens its conversation in a side panel over the page, and the composer sends to it", async () => {
   const now = Date.now();
@@ -64,10 +68,19 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   launcher().focus(); // a real click focuses the button first
   await click(launcher());
   const p = panel()!;
-  expect(p.className).toContain("fixed inset-y-0 right-0"); // a right-hand rail…
-  expect(p.className).toContain("translate-x-0"); // …slid in (a transform, so the page never reflows)
-  // Opening, visibility flips at once (only the transform animates): a hidden element can't take focus.
-  expect(p.className).toContain("visible translate-x-0 transition-transform");
+  // A desktop: docked INTO the shell's dock column (no overlay, no transform, no shadow) — the
+  // dock's width animates and clips it, so the page reflows in the same frame.
+  expect(p.parentElement!.dataset.slot).toBe("dock-clip"); // the dock's inner clip: the resize handle hangs outside it
+  expect(p.parentElement!.parentElement!.dataset.slot).toBe("dock");
+  expect(p.hasAttribute("data-docked")).toBe(true);
+  expect(p.className).toContain("absolute inset-y-0 left-0");
+  expect(p.className).not.toContain("fixed");
+  expect(p.className).not.toContain("translate-x");
+  expect(p.className).not.toContain("shadow-modal");
+  // Never hidden by a style (a visibility / content-visibility / inert flip restyles the whole chat):
+  // open, it is on top by an inline z-index, and it can take focus at once.
+  expect(p.className).not.toMatch(/invisible|visibility|inert/);
+  expect(p.style.zIndex).toBe("1");
   expect(p.getAttribute("role")).toBe("dialog");
   expect(p.getAttribute("aria-modal")).toBe("false");
   expect(p.getAttribute("aria-hidden")).toBe("false");
@@ -96,7 +109,9 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   const picker = p.querySelector<HTMLElement>('[aria-label="Model"]')!;
   expect(picker.textContent).toBe("Claude · Opus 5.5");
   const ring = p.querySelector<HTMLButtonElement>('button[data-slot="context-ring"]')!;
-  expect(ring.getAttribute("aria-label")).toBe("Context 42% full");
+  expect(ring.getAttribute("aria-label")).toBe("Context: not measured yet"); // the status poll waits for the slide…
+  await afterSlide();
+  expect(ring.getAttribute("aria-label")).toBe("Context 42% full"); // …then reads it
   await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
   await act(async () => { document.body.querySelector<HTMLButtonElement>('button[data-slot="context-compact"]')!.click(); await flush(); await flush(); });
   expect(apiFake.calls).toContain(`compact:${ORCHESTRATOR_REPO}:${ORCHESTRATOR_BRANCH}`);
@@ -118,8 +133,12 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   expect(panel()).toBeNull();
   expect(panelEl()!.dataset.state).toBe("closed");
   expect(panelEl()!.getAttribute("aria-hidden")).toBe("true");
-  expect(panelEl()!.className).toContain("translate-x-full");
-  expect(panelEl()!.className).toContain("transition-[transform,visibility]"); // closing, hidden only after the slide
+  // Closing, the dock's width slides it out and clips it; once the slide is over (no transition runs
+  // here, so the fallback ends it) it is idle: focus may not enter it. Its class never changes.
+  expect(panelEl()!.hasAttribute("data-idle")).toBe(false);
+  await act(async () => { await new Promise((r) => setTimeout(r, SLIDE_MS + 200)); });
+  expect(panelEl()!.hasAttribute("data-idle")).toBe(true);
+  expect(panelEl()!.className).not.toMatch(/invisible|visibility/);
   expect(document.activeElement).toBe(launcher());
   const pagesBefore = apiFake.turnPageCalls.length;
   await click(launcher());
@@ -159,11 +178,11 @@ test("a message with an attachment shows it on the outbox's \"sending…\" bubbl
   expect(apiFake.orchestratorMessages).toEqual([{ text: "look at this", attachments: [`orca-attachment://${img}/bug.png`] }]);
 });
 
-test("a paused orchestrator says so, and an orchestrated card is marked", async () => {
+test("a paused orchestrator says so", async () => {
   apiFake.orchestratorState = { ...apiFake.orchestratorState, paused: true, contextPct: 85 };
-  await mount(<><Entry /><WorkstreamCard row={{ repo: "r", hasRemote: false, branch: "feat", title: "Feat", prompt: "", lane: "LOCAL", worktreePath: "/wt/feat", orchestrated: true }} /></>);
-  expect(container!.querySelector('[aria-label="Orchestrated"]')).toBeTruthy();
+  await mount(<Entry />);
   await click(launcher());
+  await afterSlide();
   expect(panel()!.textContent).toContain("Orchestrator · paused until you reply");
   const ring = panel()!.querySelector<HTMLElement>('[data-slot="context-ring"]')!;
   expect(ring.className).toContain("text-amber-400");
@@ -185,6 +204,7 @@ test("the header's live line — panel and page alike: working time, queued, wor
   await act(async () => { await store.refresh(); await flush(); await flush(); });
   getDefaultStore().set(orchestratorOpenAtom, true);
   await act(async () => { await flush(); await flush(); });
+  await afterSlide();
   const lines = [...container!.querySelectorAll<HTMLElement>('[data-slot="orchestrator-status"]')];
   expect(lines).toHaveLength(2); // the panel's header and the page's
   for (const line of lines) {
@@ -206,22 +226,39 @@ test("the header's live line — panel and page alike: working time, queued, wor
 });
 
 test("the panel is resized from its left edge and the width is remembered (clamped to the viewport)", async () => {
+  // A 1440 desktop: the docked panel may grow until the page column beside it is DOCK_PAGE_MIN_W.
+  const prevWidth = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
+  try {
   localStorage.setItem("orca.ui.v1.orchestratorWidth", "520");
   await mount(<Entry />);
   await click(launcher());
   const p = panel()!;
   expect(p.style.width).toBe("520px");
-  const handles = p.querySelectorAll<HTMLElement>('[data-slot="orchestrator-resize"]');
-  expect(handles).toHaveLength(1); // one edge: the inner one
+  const handles = document.querySelectorAll<HTMLElement>('[data-slot="orchestrator-resize"]');
+  expect(handles).toHaveLength(1); // one handle
   expect(handles[0]!.className).toContain("cursor-ew-resize");
+  // branch-demo's gutter handle: in the dock, outside the panel and its clip, centred in the 6px gap.
+  expect(p.contains(handles[0]!)).toBe(false);
+  expect(handles[0]!.parentElement!.dataset.slot).toBe("dock");
+  expect(handles[0]!.style.left).toBe("-3.5px"); // half the 6px gap, less half the 1px line
+  expect(handles[0]!.className).toContain("before:-inset-2"); // the 17px hit area around the 1px line
   expect(handles[0]!.getAttribute("role")).toBe("separator");
   // Dragging the edge LEFT widens; the width lands in storage when the pointer lets go.
   await act(async () => {
     handles[0]!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: 500, clientY: 0 }));
     window.dispatchEvent(new PointerEvent("pointermove", { clientX: 440, clientY: 0 }));
+  });
+  // Mid-drag: the handle shows its active look and the dock drops its width transition.
+  expect(handles[0]!.hasAttribute("data-resizing")).toBe(true);
+  expect(handles[0]!.parentElement!.hasAttribute("data-resizing")).toBe(true);
+  expect(handles[0]!.parentElement!.className).toContain("data-[resizing]:transition-none");
+  await act(async () => {
     window.dispatchEvent(new PointerEvent("pointerup", {}));
     await flush();
   });
+  expect(handles[0]!.hasAttribute("data-resizing")).toBe(false);
+  expect(handles[0]!.parentElement!.hasAttribute("data-resizing")).toBe(false);
   expect(p.style.width).toBe("580px");
   expect(JSON.parse(localStorage.getItem("orca.ui.v1.orchestratorWidth")!)).toBe(580);
   // Dragged far right: never narrower than the minimum.
@@ -233,23 +270,31 @@ test("the panel is resized from its left edge and the width is remembered (clamp
   });
   expect(p.style.width).toBe(`${PANEL_MIN_W}px`);
   expect(JSON.parse(localStorage.getItem("orca.ui.v1.orchestratorWidth")!)).toBe(PANEL_MIN_W);
+  } finally { Object.defineProperty(window, "innerWidth", { value: prevWidth, configurable: true }); }
 });
 
 test("a remembered width from a bigger screen is pulled back in; garbage in storage reads as the default", async () => {
-  localStorage.setItem("orca.ui.v1.orchestratorWidth", "3000"); // happy-dom's viewport is 1024 wide
-  await mount(<Entry />);
-  await click(launcher());
-  expect(panel()!.style.width).toBe(`${clampPanelWidth(3000, 1024)}px`);
-  expect(clampPanelWidth(3000, 1024)).toBe(1024 - 240);
-  expect(clampPanelWidth(100, 1024)).toBe(PANEL_MIN_W);
-  expect(clampPanelWidth(Number.NaN, 1024)).toBe(460);
-  expect(clampPanelWidth(500, 320)).toBe(320); // a tiny window: the panel is the window
-  await click(closeButton());
-  localStorage.setItem("orca.ui.v1.orchestratorWidth", JSON.stringify("wide"));
-  await act(async () => { root?.unmount(); });
-  await mount(<Entry />);
-  await click(launcher());
-  expect(panel()!.style.width).toBe("460px");
+  const prevWidth = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true }); // a 1440 desktop
+  try {
+    localStorage.setItem("orca.ui.v1.orchestratorWidth", "3000");
+    await mount(<Entry />);
+    await click(launcher());
+    expect(panel()!.style.width).toBe(`${clampPanelWidth(3000, 1440)}px`);
+    // Docked, it never takes the page column below DOCK_PAGE_MIN_W beside the nav's rail.
+    expect(clampPanelWidth(3000, 1440)).toBe(1440 - NAV_RAIL_W - DOCK_PAGE_MIN_W);
+    expect(clampPanelWidth(3000, 2400)).toBe(960);
+    expect(clampPanelWidth(460, 1024)).toBe(PANEL_MIN_W); // 1024 − 56 − 640 is under the minimum
+    expect(clampPanelWidth(100, 1440)).toBe(PANEL_MIN_W);
+    expect(clampPanelWidth(Number.NaN, 1440)).toBe(460);
+    expect(clampPanelWidth(500, 320)).toBe(320); // a tiny window: the panel is the window
+    await click(closeButton());
+    localStorage.setItem("orca.ui.v1.orchestratorWidth", JSON.stringify("wide"));
+    await act(async () => { root?.unmount(); });
+    await mount(<Entry />);
+    await click(launcher());
+    expect(panel()!.style.width).toBe("460px");
+  } finally { Object.defineProperty(window, "innerWidth", { value: prevWidth, configurable: true }); }
 });
 
 test("dayLabel groups timestamps: Today, Yesterday, then the date", () => {
@@ -259,10 +304,47 @@ test("dayLabel groups timestamps: Today, Yesterday, then the date", () => {
   expect(dayLabel(now - 3 * DAY, now)).toMatch(/10 Oct|Oct 10/);
 });
 
-test("Pop out is hidden without the Document Picture-in-Picture API", async () => {
-  await mount(<Entry />);
-  await click(launcher());
-  expect(panel()!.querySelector('[aria-label="Pop out"]')).toBeNull();
+test("without the Document Picture-in-Picture API (plain http, Firefox), Pop out opens the chat in a named popup window; a second click focuses it", async () => {
+  const realOpen = window.open;
+  const opened: { url?: string | URL; name?: string; features?: string }[] = [];
+  let focused = 0;
+  const fakeWin = { closed: false, focus() { focused++; } } as unknown as Window;
+  window.open = ((url?: string | URL, name?: string, features?: string) => { opened.push({ url, name, features }); return fakeWin; }) as typeof window.open;
+  try {
+    await mount(<Entry />);
+    await click(launcher());
+    const popOut = panel()!.querySelector<HTMLButtonElement>('[aria-label="Pop out"]')!;
+    expect(popOut).not.toBeNull();
+    await click(popOut);
+    expect(opened).toHaveLength(1);
+    expect(opened[0]!.url).toBe(ORCHESTRATOR_WINDOW_URL);
+    expect(opened[0]!.name).toBe(ORCHESTRATOR_WINDOW_NAME);
+    expect(opened[0]!.features).toMatch(/^popup,width=\d+,height=\d+$/);
+    expect(panel()).toBeNull(); // the chat moved to the window; the tab's panel closed
+    // Again: the open window comes forward, no second window and no reload.
+    await click(launcher());
+    await click(panel()!.querySelector('[aria-label="Pop out"]')!);
+    expect(opened).toHaveLength(1);
+    expect(focused).toBe(2);
+    // Closed by the user: the next click opens a new one.
+    (fakeWin as { closed: boolean }).closed = true;
+    await click(launcher());
+    await click(panel()!.querySelector('[aria-label="Pop out"]')!);
+    expect(opened).toHaveLength(2);
+  } finally {
+    window.open = realOpen;
+  }
+});
+
+test("the popup window's page is the orchestrator's header and chat alone", async () => {
+  expect(isOrchestratorWindow("/orchestrator", "?window")).toBe(true);
+  expect(isOrchestratorWindow("/orchestrator", "")).toBe(false);
+  expect(isOrchestratorWindow("/agents", "?window")).toBe(false);
+  await mount(<OrchestratorWindow />);
+  const win = container!.querySelector('[data-slot="orchestrator-window"]')!;
+  expect(win.textContent).toContain("Orchestrator");
+  expect(win.querySelector("textarea")).not.toBeNull();
+  expect(win.querySelector('[aria-label="Close orchestrator"]')).toBeNull();
 });
 
 test("Pop out shows at tablet width and up; it hides only below the app's own phone breakpoint (not lg)", async () => {
@@ -334,7 +416,7 @@ test("Pop out (kept: one button) moves the live chat into a Picture-in-Picture w
     });
     document.documentElement.classList.add("dark");
     await click(panel()!.querySelector('[aria-label="Pop out"]')!);
-    expect(pip.requests).toEqual([{ width: 460, height: 640 }]); // first time: the panel's width
+    expect(pip.requests).toEqual([{ width: PANEL_MIN_W, height: 640 }]); // first time: the panel's width (docked at 1024: the minimum)
     const doc = pip.win(0).document;
     const inPip = () => doc.querySelector<HTMLElement>('[data-slot="orchestrator-panel"]');
     expect(panelEl()).toBeNull(); // gone from the tab…

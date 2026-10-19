@@ -165,8 +165,8 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   PRs + worktrees, so enrichment with no branch behind it renders nothing; PRs/worktrees with no
   enrichment still render (incl. PRs not made by Orca). **There is no enrichment GC** — it existed to
   bound a 5MB localStorage bucket, and pruning is now the opposite of the goal. `localStorage` keeps
-  only per-browser UI state (theme, density, composer drafts; the shell's repo, instance scope,
-  sidebar collapse and palette recents, like the Agents list's view, density, sort and filters, go
+  only per-browser UI state (theme, composer drafts; the shell's repo, instance scope,
+  sidebar collapse and palette recents, like the Agents list's sort and filters, go
   through `lib/persisted.ts` — `persistedAtom` / `usePersisted`, versioned `orca.ui.v1.<name>` keys
   (`persistedKey(name, repo)` for a per-repo value), a safe parse that falls back to the default, and
   a restored repo/instance the config no longer has reads as "all" (`validChoice`); reuse it for new
@@ -188,22 +188,21 @@ adapter: `docs/integrations/ADAPTERS.md`). Every event is a keyed envelope in `e
 writes one beside each NEW notification, same key). `subscription` rows plan `delivery` rows in the
 same transaction; the dispatcher (primary only) claims them `FOR UPDATE SKIP LOCKED`, backs off 5 s →
 1 h and marks a row dead after 6 attempts (`orca.integration.failed`, an `integration_failed`
-notification). Adapters (`web`, `webhook`, `slack` outbound so far) start only on the primary bridge
-of `integration.instance`. Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents); a
+notification). Adapters (`web`, `webhook`, `slack` outbound so far) start only on a primary bridge:
+the one of `integration.instance`, or for Automatic (`*`, the default) the primary with the secret
+that holds the row's lease (`status.auto`, 150 s, renewed each sync — the failover when it lapses). Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents); a
 row holds only the name. An outside sender's message gets a grant (min of link level and person) that
 rides `queued_message.grant_scope`: one grant per orchestrator wake, `orchestrator.tool` refuses
 verbs outside it (`grantRefusal`), and such a wake has no shell; a workstream it spawns or steers
-gets `grantScope` and runs with `agentPermissionMode: "ask"`. An unknown sender gets a one-time
+gets `grantScope` and runs in SCOPED mode (`agent.scopedRules`: `claude -p --permission-mode dontAsk`
+plus allow and deny rules — files in the worktree, git and the toolchain, no secrets, no
+`--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).
+Only a wake whose every message is yours clears it on a steer; `orca status --clear-grant` clears it. An unknown sender gets a one-time
 pairing code (`pairing_code`; approve with `POST /api/integrations/pairing/approve`). The orchestrator
 has `orca channels`, `post`, `thread link` and `ask-user`. A subscription's `digest_seconds` batches
 its deliveries per fixed window (`delivery.digest_key`). `/api/slack` still posts at once as
 you (`postAsUser`), not through the queue; `/api/orchestrator/event` stays for instance-to-instance
-reports, scripts use a signed webhook (`/api/integrations/<id>/inbound`). **Linear** (`adapters/linear.ts`,
-`docs/integrations/linear.md`) polls GraphQL with an `updatedAt` cursor (`ORCA_SECRET_LINEAR`): issues
-assigned to or mentioning the key's user are `ext.linear.issue`, others' comments on them (or that
-mention the user) `ext.linear.message` in the issue's thread; the place is `project:<id>` then
-`team:<KEY>` (`source.parents`); PR events reach a linked issue (`orca thread link linear <issue id>
-… --link`) as a comment. Agent-app mode needs a relay and is not built.
+reports, scripts use a signed webhook (`/api/integrations/<id>/inbound`).
 
 ## Multi-repo (aggregated)
 
@@ -227,8 +226,8 @@ one), append a RepoConfig (default branch, `.worktrees`, `runsOn` that instance,
 the owner is a non-active account, no previews), save. Previews and `checkCommand` remain a hand
 edit in Settings.
 
-**The GitHub page** (`/github`, `GitHubPage` in `views/Pages.tsx`, nav item between Repos and Usage,
-`G H`) shows one row per `gh` account signed in on THIS host (`GET /api/github/accounts`,
+**The GitHub section of Settings** (`/settings#github`, the old `/github` redirects; `GitHubSection` in
+`views/Pages.tsx`) shows one row per `gh` account signed in on THIS host (`GET /api/github/accounts`,
 `repos.accountsHere` — per host, like `/api/usage`): the login, an `active` pill, the identity its
 commits carry (`commits as Name <email>`) and the repos that use it (`repos.accountRows`: a repo
 with no `githubUser` uses the active login). Name and email are editable per row; Save writes
@@ -283,6 +282,26 @@ Rules:
 - At most 2 shells per instance. No input for 30 minutes closes the shell. The PTY closes with its socket.
 - Start and end are logged (who, instance, time). Keystrokes and output are never logged.
 
+## Handoff packs (one Orca server to another, by the browser)
+
+The boxes cannot reach each other (the ACL blocks box-to-box traffic). The user's browser talks to
+both, so it carries the pack (`server/handoff.ts`, `views/Handoffs.tsx`, table `handoff`, named step
+`20261017-handoff`).
+- A pack is a title, a message for the target's orchestrator and files. The file bytes are rows of
+  `attachment`. Chats become markdown transcripts.
+- Make one with `orca handoff create --to <server> --title … [--message …] [--file <path|id>]…
+  [--chat <id>]…`, or with Hand off… in a card's menu (it packs that chat). `orca handoff list`.
+- The Handoffs page (`/handoffs`, nav item after Integrations, `G K`) shows each pack in full: the exact message and every file.
+- Send is the ONLY way out: a click, a confirm with the file list, GET `/api/handoffs/<id>/export`
+  here, POST `/api/handoff/import` on the target, POST `/api/handoffs/<id>/sent` here.
+- The import stores the files as attachments and queues ONE message to the target's orchestrator:
+  `[handoff from <source>] <title>`, the message, the file list. A pack id seen before is a no-op.
+- Safety: 10 MB a file, 25 MB a pack. The secret scan (`scanSecrets`: Slack, Anthropic, GitHub, AWS
+  keys, private key blocks, `PASSWORD=`) blocks the export AND the import, and names the line only.
+- The import route needs an Origin header, and loopback or a Tailscale user device (the switcher's
+  whois, `importCallerVerdict`). It runs that whois even for a same-origin call.
+- The word "handoff" also names the cross-provider seed file (`writeHandoffFile`). They are different things.
+
 ## The one board & model
 
 **The console is Vercel's, copied outright** (Finn's re-brief after the first, swimlane-ish
@@ -292,8 +311,10 @@ to a middle ground between Geist's flat grays and a first, too-soft pass after r
 `#f9f9f8`/`#fff` light and `#111111`/`#161616` dark, translucent hairline borders rather than flat
 gray, the Geist grays elsewhere, 1px hairlines, no card shadows, `#0070f3` as the one accent,
 status dots and pills as `--geist-*` tokens — all CSS variables in `styles.css`, so every component
-inherits it. **Surface rules** (Finn found the first pass heavy-handed; `tests/console.test.tsx`
-asserts them on every page): 1px hairlines only, never 2px; rows use dividers, never a box inside a
+inherits it. **Surface rules — read `docs/design/surfaces.md` before you touch a fill, border or
+shadow** (four levels: frame, page, raised, overlay; a header shares its body's surface; the composer
+is raised; `tests/surfaces.test.tsx` guards it). In short (Finn found the first pass heavy-handed;
+`tests/console.test.tsx` asserts them on every page): 1px hairlines only, never 2px; rows use dividers, never a box inside a
 card's border; 8px cards (`rounded-lg`), 6px controls (`rounded-md`); 13px body / 12px meta; icons at
 1.5 stroke (a global `svg.lucide` rule); NO shadows except Geist's menu / modal tokens
 (`shadow-menu`, `shadow-modal`) and the orchestrator's side panel (`shadow-modal`); badges are tinted fills
@@ -304,7 +325,7 @@ light mode). Every conversation — the agent page's Chat tab, a card's modal, t
 and page — is ONE `ChatPanel` in ONE styling (bubbles; replies under the agent's name, `author`
 "Orchestrator" for it); only `size` (page | panel) and the composer's wiring differ. Shell (`components/Shell.tsx`): a collapsible left sidebar (instance switcher
 all/local/cloud scoping the pages, Find — the `F` key — which filters Agents, the nav Overview /
-Agents / Previews / Repos / Usage / Settings, then **Add New** as the last action, above the divider — a modal `<dialog>` holding the New-draft box
+Agents / Previews / Integrations (`G I`) / Handoffs / Settings, then **Add New** as the last action, above the divider — a modal `<dialog>` holding the New-draft box
 (`C` opens it; it is the portal container for the composer's selects, since a modal leaves the rest
 of the page inert; sending closes it and leaves "Sent to … · Undo" for 6s; the typed draft persists) — and
 below it you on one thin line — "You · local" — with the collapse toggle;
@@ -313,8 +334,8 @@ toggles it, remembered) and a top bar (repo switcher, breadcrumb, and **Ask the 
 right on every page — Vercel's "Ask AI", as a BUTTON: it opens the orchestrator's side panel with its
 composer focused. It was a text box whose keystrokes carried into the composer; the quick-ask pill
 below now covers "fire off a line"). **The quick-ask pill** (`components/QuickAsk.tsx`, the `A` key):
-a small "Ask · A" pill fixed at the bottom centre of the main column (its strip starts where
-the sidebar ends, collapsed or expanded) on every page (desktop; below md the phone's bottom
+a small "Ask · A" pill at the bottom centre of the page card (its strip is absolute in
+`shell-card`, so it moves with the card edge in every frame of a dock slide, a nav change or a resize) on every page (desktop; below md the phone's bottom
 bar has the orchestrator instead) MORPHS (one surface: width, height, radius; instant under reduced
 motion) into a box for messages to the orchestrator with no history — "Ask the orchestrator...", a
 textarea three lines tall that grows to a cap (a JS fallback where `field-sizing` is unsupported), no ✕. Its input
@@ -394,7 +415,12 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   search, sort; one ~56px row per workstream (repo
   icon + title, latest instruction, status dot + duration, state pill, CI/conflict badges + the
   review cluster, PR, branch, instance, updated, the model as avatar); every action in the trailing
-  ⋯ (`WorkstreamActions menuOnly`). The swimlanes stay behind a persisted List | Board toggle.
+  ⋯ (`WorkstreamActions menuOnly`). There is no List | Board toggle any more: the list only. As the
+  LIST (`@container/list`, its own width, so the docked panel counts) narrows, Status folds under the
+  title, then Checks & review into the PR cell (`listColumns(tier)`, `LIST_TIER_MIN_REM`), and below
+  `LIST_STACK_BELOW_REM` rows stack as on a phone (measured via `afterDockMotion`). Subline items
+  that do not fit leave it behind a `+N` chip (`sublineOverflow`); its popover lists them (hover on
+  a mouse, tap on touch, never opens the row). A stacked row has no instruction line.
 - **Agent page** (the existing `/{repo}/prs/:n` and `/{repo}/local/:branch` routes,
   `views/AgentPage.tsx`): ONE compact sticky header row (`AgentHeader`: repo / title, status, branch
   or PR link, the actions) with the tabs Overview | Chat | Files | Preview directly under it, flush
@@ -409,10 +435,11 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   passing + skipped folded into one expandable line — `checkGroups`), Description and the
   **Conversation** (`prConversation`: chronological like GitHub, a counts line + Jump to unresolved,
   resolved / outdated threads on one line, long bodies behind Show more, bots in ONE folded row).
-- **Repos**, **Usage** (every login, every machine) and **Settings** (theme, density, the
-  read-only config). The Usage page shows the SAME `UsageCard` as the Overview — the high-level rows,
-  with every hydra login behind the one remembered chevron (`orca.ui.v1.usageExpanded`, shared by
-  both pages).
+- **Settings** (theme, the read-only config, then the **Repos** and **GitHub** sections,
+  `#repos` / `#github`) and **Integrations** (its own nav item). There is no Usage page: the
+  Overview's `UsageCard` has every hydra login behind the one remembered chevron
+  (`orca.ui.v1.usageExpanded`). Old URLs redirect (`REDIRECTS` in `lib/route.ts`): `/repos`,
+  `/github` → Settings' sections, `/usage` → Overview, `/settings/integrations` → `/integrations`.
 Every number is a pure derivation over the assembled rows (`workstream.ts`: `overviewStats`,
 `attentionReasons`, `filterRows`, `sortRows`, `recentActivity`, `usageGroups`, `rowDuration`,
 `repoSummaries`, `agentFailure`) — no endpoint of its own, so the views can't
@@ -453,8 +480,10 @@ when the board is stale ("Updated 3m ago" — a button: **Refresh everything**, 
 streams, usage, notifications, an open chat, cached review signals — re-runs at once, the icon spins until
 all settle, and past 15s it hard-reloads); an unreachable bridge shows the offline screen.
 
-The board (`web/src/views/Board.tsx`), lanes: **Local → Draft → In Review → Mergeable → Done·today**.
-A workstream is a branch; its lane (`store.laneFor`):
+There is no kanban Board view any more (its density setting went with it); the Agents list is the
+one view. A workstream still has a lane — **Local → Draft → In Review → Mergeable → Done·today** —
+which the Agents chips, `detailPath` and the bulk verbs (`views/BulkActions.tsx`) read. A workstream
+is a branch; its lane (`store.laneFor`):
 - **open PR, draft** → Draft. **open PR, approved** → Mergeable. **open PR, else** → In Review.
 - **no PR** → Local, until Promote (local repo: sets `promoted`; then Mergeable if `git merge-tree`
   is clean, else In Review). **merged today** (server-local calendar day) → Done (`gh pr list --state merged`).
@@ -583,7 +612,7 @@ Enter did nothing meanwhile.) A failed send comes back into the box if it is sti
 the error line (`<error> — not sent: “<text>”`), so neither message is lost. (History: this
 was briefly a detail-page "Chat" tab; the user asked for it as a terminal-style modal instead, and the
 tab was removed. The Vercel re-brief brought it back on the agent page — as its Chat tab and in
-Build Logs' place — alongside the modal, which the Board's cards and New chat still open.)
+Build Logs' place — alongside the modal, which an Agents row and New chat still open.)
 
 `web/src/workstream.ts` is the pure state machine (no React/IO — imported by store + tests):
 
@@ -600,8 +629,38 @@ the workstream's selected provider; Slack posting uses a lightweight model of th
 ## The orchestrator (one conversation that delegates)
 
 **Ask the orchestrator** in the top bar (every page), the `O` key, the palette, a failed action's
-toast and the quick-ask box's "Open chat" open a **right-hand side panel** that slides over the page
-(`OrchestratorPanel`, `components/Terminal.tsx`: a `transform`, so nothing reflows; `role=dialog`
+toast and the quick-ask box's "Open chat" open a **right-hand side panel**, DOCKED on a desktop
+(`OrchestratorPanel`, `components/Terminal.tsx`; Finn found the overlay annoying): the panel
+publishes its width (`lib/dock.ts`) and the shell reserves it as a `data-slot="dock"` column, so the
+page reflows beside it; no shadow, a hairline edge; the top-bar button and `O` toggle it. When the
+dock leaves the page under `DOCK_PAGE_MIN_W` (640) the nav renders as its icon rail (`navRail`,
+your saved collapse untouched; expanding it then is a session override), and `clampPanelWidth`
+keeps the page at that floor beside the rail. On a desktop the page column (`page-scroll`) scrolls on
+its own and is the `@container/page` a page's layout should query (the Overview grid does), not the
+window; a phone keeps the window's scroll. The edge resizes by drag or by arrow keys. **Open / close
+is branch-demo's right panel**: the panel renders INTO the dock (a portal) at its full width, shows at
+dock width 0 in the commit that opens it, and the dock's width opens on the next frame (a real 150ms
+`width` + `min-width` transition, ease-out, min-width 0 when closed, none while dragging; the nav uses the same ease-out); closing moves the width in the click's OWN commit (the dock
+width is published from a layout effect keyed on `open && expanded`). A closed panel stays mounted —
+draft and scroll kept — clipped by the 0-wide dock, `aria-hidden`, and a focus guard once idle.
+**Measured rules (CDP traces of the production build, 4× CPU, a long orchestrator thread; method and
+numbers in PR #305):** never change a `class` on an ancestor of the chat during open / close —
+Tailwind Typography's `:not(:where([class~="not-prose"] *))` makes that restyle the whole prose
+subtree (~4000 elements, 100–150ms each) — so the dock's margin and the panel's z-index are inline
+styles and the card's surface rides `data-painted`; never flip `visibility`, `content-visibility` or
+`inert` on the panel (each restyles the subtree too); keep the chat out of the panel's renders
+(`OrchestratorChat`, `ChatTurn`, the markdown renderers are memoized with stable props); `App` must
+not subscribe to the orchestrator's open atom (it re-rendered the page). Measure in a production
+build: dev-mode React is 3–5× slower, and an Orca preview runs dev mode.
+The page and the dock are TWO raised cards with the shell's 6px gutter between them
+(a closed dock's negative start margin cancels it); only `width` and `margin-inline-start` animate. While the dock
+or the nav animates, the page frame (`page-frame`, the `@container/page`) follows the card edge in
+EVERY frame (Finn: the content must move with the edge; PR 328's hold at the END width was wrong).
+It stays cheap with CSS only: `contain: layout paint` on the column and the frame, and
+`content-visibility: auto` on the Agents rows. `?probe=motion` (`lib/motionProbe.ts`) logs each
+slide's frames and the page / pill distance from the card edge. Nothing in the page
+may set React state per frame meanwhile: measure through `afterDockMotion` (`lib/dock.ts`); the page
+column has `contain: layout paint`, so a `fixed` element in a page must portal to `<body>`. `role=dialog`
 `aria-modal=false` — no backdrop, the board it is moving stays visible and usable; Esc or ✕ closes
 and focus returns to the opener; resized from its LEFT edge, width remembered as
 `orca.ui.v1.orchestratorWidth` and clamped to the viewport by `clampPanelWidth`). Once opened it
@@ -645,8 +704,10 @@ popovers/selects portal into it through `PortalContainer` (`lib/utils.ts`). Retu
 close brings it back (an ask while popped out lands in the PiP composer), and its size is remembered.
 (History: a floating round launcher in the corner opened it; the top-bar entry replaced it — two
 ways to do one thing, and the launcher covered the corner the window sat in. The quick-ask pill is
-not that launcher: it sends a line without opening the conversation.) Browsers without the API get no
-button (a plain popup can't stay on top, so it was not worth having).
+not that launcher: it sends a line without opening the conversation.) Without the API (Firefox,
+Safari, or a page that is not a secure context: plain http on the tailnet) Pop out opens a normal
+popup window (`openOrchestratorWindow`: `/orchestrator?window`, named so a second click focuses it,
+PiP-sized), where App renders only the header and chat (`OrchestratorWindow`). It is not on top.
 It is one conversation you talk to; it starts and steers
 workstreams itself. Anthropic's orchestrator-workers pattern, kept to **two layers** — it, and the
 workstreams the board already shows (each worker is a Claude Code session that can spawn its own
@@ -918,6 +979,12 @@ choice is remembered (`orca.ui.v1.notificationFilter`). The per-kind chips and t
 do-not-disturb toggle were dropped as noise (DND lives in Settings; the bell shows it). Settings: do not disturb, per-kind toasts, and browser
 notifications (urgent kinds only, while the tab is hidden; the permission is asked for when switched
 on). Preferences are per browser (`orca.notifications.*` in localStorage); the rows are not.
+**The Inbox is the one place for what needs you** (`/inbox`, `views/Inbox.tsx`): the bell's rows are
+Inbox rows too (source Orca, `shared/inbox.ts` `notificationRows`; a bell row that copies an inbox
+event by key is left out), with ONE read state (a notification row reads the notification; an event
+and the bell's copy of it read together, by key) and ONE unread count for the bell and the Inbox nav
+item (`lib/inboxUnread.ts`). Mute on a notification row mutes its kind. The bell is the quick view,
+with See all.
 
 ## Deploying (a cloud box + the laptop, one database)
 

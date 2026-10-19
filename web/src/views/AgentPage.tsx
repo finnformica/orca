@@ -79,7 +79,7 @@ export function DetailsCard({ row, summary, actions, extra }: { row: Row; summar
 export function AgentHeader({ repo, title, status, source, actions }: { repo: string; title: ReactNode; status?: ReactNode; source?: ReactNode; actions?: ReactNode }) {
   return (
     <div data-slot="agent-header" className="flex min-w-0 flex-col gap-1 md:min-h-9 md:flex-row md:items-center md:gap-x-3 md:gap-y-0">
-      <h1 className="flex min-w-0 items-center gap-1.5 text-base font-semibold tracking-tight">
+      <h1 className="text-heading flex min-w-0 items-center gap-1.5 text-base font-semibold tracking-tight">
         <span className="text-muted-foreground hidden shrink-0 font-normal sm:inline">{repo} /</span>
         <span className="min-w-0 truncate">{title}</span>
       </h1>

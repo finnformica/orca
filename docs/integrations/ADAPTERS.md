@@ -16,7 +16,7 @@ The core does these tasks. An adapter never does them:
 - It retries a failed send with backoff and marks the delivery dead after 6 attempts.
 - It stores thread links and passes the thread back to the adapter.
 - It paces outbound sends per target (from `caps.rate`) and inbound messages per sender.
-- It starts the adapter only on the primary bridge of the instance in `integration.instance`.
+- It starts the adapter on one primary bridge only. Section 6.1 tells which one.
 
 An adapter does only these tasks:
 
@@ -35,7 +35,7 @@ An adapter does only these tasks:
 | `server/integrations/dispatcher.ts` | The delivery loop. |
 | `server/integrations/inbox.ts` | The orchestrator and workstream targets. |
 | `server/integrations/store.ts` | All SQL. |
-| `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts`, `linear.ts` ([linear.md](linear.md)). Put a new adapter here. |
+| `server/integrations/adapters/` | `web.ts`, `webhook.ts`, `slack.ts`, `email.ts` (setup: [email.md](email.md)). Put a new adapter here. |
 
 ## 3. The interface
 
@@ -46,7 +46,8 @@ export type Connection = {
   id: string;
   kind: AdapterKind;            // "slack" | "discord" | "email" | "github" | "linear" | "webhook" | "web" | string
   name: string;
-  instance: string;             // the ONE instance that runs it
+  instance: string;             // the ONE instance that runs it, or "*" (Automatic)
+  auto?: AutoLease;             // Automatic only: the lease holder and its end time
   config: Record<string, unknown>; // non-secret settings
   secretRef?: string;           // an environment variable NAME, never a value
   enabled: boolean;
@@ -117,7 +118,8 @@ export type InboundMessage = {
 
 ### `start(ctx)`
 
-- The registry calls it only on the primary bridge of `connection.instance`. Do not check this again.
+- The registry calls it only on the one primary bridge that runs the row (section 6.1). Do not
+  check this again.
 - Resolve when the adapter is ready. Do not hold the promise open for the life of a socket.
 - Keep a socket or a poll loop alive until `ctx.signal` aborts.
 - Reconnect on your own after a drop. Call `ctx.status({ ok: false, detail })` while you are down.
@@ -177,13 +179,13 @@ export type InboundMessage = {
 
 ## 6. Configure an integration
 
-Until the Settings page lands, configure an integration with SQL or with `store.ts` from a script.
+Use Settings > Integrations (`/settings/integrations`): Connect, links, people, subscriptions and Retry. A new kind shows there when it registers with `meta` (`register(kind, factory, meta)`). You can also use SQL or `store.ts` from a script:
 
-1. Put the token in the instance's environment (`.env` or the systemd unit). Name it
+1. Put the token in the environment (`.env` or the systemd unit) of each instance that can run it. Name it
    `ORCA_SECRET_<SOMETHING>`. The agent environment strips every `ORCA_SECRET_*` variable. The
    registry refuses any other name, except the names in `ORCA_SECRETS` (`server/env.ts`).
-2. Add an `integration` row: `id`, `kind`, `name`, `instance` (the instance that runs it),
-   `config`, `secret_ref` (the variable name).
+2. Add an `integration` row: `id`, `kind`, `name`, `instance` (`*` for Automatic, or the one
+   instance that runs it, section 6.1), `config`, `secret_ref` (the variable name).
 3. Add a `channel_link` row for each external place: `level` (`notify`, `ask` or `work`), `repos`
    (for `work`), `require_mention`.
 4. Add `principal` and `identity` rows for each person who may write to Orca. Or let them write
@@ -198,13 +200,37 @@ Until the Settings page lands, configure an integration with SQL or with `store.
 The primary bridge syncs the rows each minute. You do not need a restart.
 `GET /api/integrations` shows the rows, what runs on this bridge, its health and the dead deliveries.
 
+### 6.1 Where it runs: Automatic or pinned
+
+`integration.instance` selects the bridge that opens the connection. Only a primary bridge runs
+an adapter (`primary.held()`), so one row has one connection.
+
+- **Automatic** (`*`, `AUTO_INSTANCE` in `shared/integrations.ts`) is the default for a new row.
+  Each instance's primary bridge that has the secret tries to take the row's lease on each sync.
+  The lease is `status.auto` (`{ holder, until }`) on the row. One conditional `UPDATE` takes it,
+  so only one bridge wins. The holder renews it each minute. A lease lasts `AUTO_LEASE_MS` (150 s).
+- **Failover.** When the holder stops (down, asleep, no longer primary), it does not renew. When the
+  lease ends, the next primary with the secret takes it and starts the adapter. A bridge that stops
+  an adapter cleanly (shutdown, the row disabled) releases the lease, so the next one starts at once.
+  A holder that comes back finds another live lease, and on its next sync it stops its adapter.
+- **Secrets.** A primary without the secret does not take the lease. It records itself in
+  `status.secretMissing`. When no bridge runs the row, the card says
+  `ORCA_SECRET_X is not set on <server>`, with each server that lacks it.
+- **Pinned** (an instance name) runs only on that instance's primary bridge. Use it for an account
+  that must stay on one machine. Automatic also gives one session for Discord, so Discord does not
+  need a pin.
+
+`*` is a reserved value, not NULL: the column is `NOT NULL` and needs no migration. Settings shows
+each instance by the server's display name and its Tailscale host (`Flow / orca-flow-box`). The
+server's home is the `orchestratorOn` instance. Another instance shows its Tailscale host only.
+
 Example: CI failures for repo `orca` go to the Slack channel `C123`.
 
 `user_id` is `db.currentUser()` (`ORCA_USER`, else `me`).
 
 ```sql
 INSERT INTO integration (id, user_id, kind, name, instance, config, secret_ref, created_at)
-VALUES ('slack-work', 'me', 'slack', 'Work Slack', 'cloud', '{}', 'ORCA_SECRET_SLACK_BOT', 0);
+VALUES ('slack-work', 'me', 'slack', 'Work Slack', '*', '{}', 'ORCA_SECRET_SLACK_BOT', 0);
 INSERT INTO channel_link (id, user_id, integration_id, external_id, level)
 VALUES ('eng', 'me', 'slack-work', 'C123', 'notify');
 INSERT INTO subscription (user_id, topic_pattern, filter, target_kind, target_id)
@@ -240,7 +266,7 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 | Branch | Uses | Adds |
 |---|---|---|
 | Slack two-way | `ingest`, `inboundEnvelope`, `thread`, `mentioned`, thread links, `caps.edits`. | Socket Mode in `start` (`inbound: "socket"`), a bot token in `ORCA_SECRET_SLACK_BOT`. Keep `postAsUser` for "post as me". |
-| Discord | The same as Slack. | Gateway in `start`. Run it on the personal box: set `integration.instance`. |
+| Discord | The same as Slack. | Gateway in `start`. Automatic or pinned: only one bridge runs it (section 6.1). |
 | Email | `OutboundMessage.replyToExternalMsgId` and `references`, `idempotencyKey` as the Message-ID, `ConversationRef.messageId`, `cursor` for an IMAP UID. | IMAP IDLE in `start`. A DKIM check before `ingest`. |
 | Settings UI | `store.ts` (every table), `registry.health()`, `store.retryDead()`, `GET /api/integrations`, the pairing routes (section 10). | Routes to write rows. A Test button that calls `publish` with a test key. An Approve / Deny list over `GET /api/integrations/pairing`. |
 | GitHub poller | `cursor` (an ETag or a timestamp), `ingest` without `actor`, topics `orca.pr.*` or `ext.github.*`. | A poll loop in `start` (`inbound: "poll"`). |
@@ -294,6 +320,8 @@ first (section 7).
 | `orca channels` | Lists every link (integration, place, level, repos), every subscription and the pending pairing codes. |
 | `orca post --link <id> [--thread <id> \| --repo r --branch b] "<text>"` | Publishes `orca.message` with a delivery to the link. With `--repo` and `--branch` it continues that workstream's thread on the link, or starts it. |
 | `orca post --reply "<text>"` | Answers the outside message that woke the orchestrator: its link, its place (the DM for a catch-all link) and its thread. The grant check runs on that link. A wake from your own chat or a worker report has nothing to answer, so `--reply` fails there. |
+| `orca post --reply --thread "<text>"` | Answers the same way, but opens a thread for the answer where the adapter can (Discord: on the mention). Use it for a long answer, a job with many steps, a workstream or a long conversation. The thread that the send returns is recorded as the workstream's thread on the link. |
+| `orca post --link <catch-all>` | Refused. A catch-all link (`external_id` `*`) only receives: it names no place to post to. |
 | `orca thread link <adapter> <thread-id> --repo r --branch b [--link <id>]` | Binds an external thread to a workstream. Replies in it then go to the workstream (with a `work` grant on its repo). |
 | `orca ask-user "<question>"` | Publishes `orca.question`. The bell shows it as `needs_input`. Subscriptions to `orca.question` also send it out (for example to your Slack DM). |
 

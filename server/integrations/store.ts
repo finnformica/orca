@@ -2,17 +2,20 @@
 // Through db.withRetry like every other query, so a dropped connection is retried and an outage is
 // db.DbUnavailable. Every row carries user_id (db.currentUser()).
 import * as db from "../db";
-import { digestWindow, PAIRING_TTL_MS, type DeliveryState, type DeliveryTarget, type Envelope, type Level, type PlannedDelivery, type Subscription, type TargetKind } from "../../shared/integrations";
+import { AUTO_INSTANCE, digestWindow, PAIRING_TTL_MS, type AutoLease, type DeliveryState, type DeliveryTarget, type Envelope, type Level, type PlannedDelivery, type Subscription, type TargetKind } from "../../shared/integrations";
 import type { Connection } from "./adapter";
+import type { Notification } from "../../shared/notifications";
+import { muteKey, OWN_EVENT, type Conversation, type OutboundRecord, type ThreadLinkRecord } from "../../shared/inbox";
 
 const user = () => db.currentUser();
 
 // ── integration (credentials: a variable NAME only) ─────────────────────────────────────────────
 
-type IntegrationRow = { id: string; kind: string; name: string; instance: string; config: Record<string, unknown> | null; secret_ref: string | null; enabled: boolean };
+type IntegrationRow = { id: string; kind: string; name: string; instance: string; config: Record<string, unknown> | null; secret_ref: string | null; enabled: boolean; auto: AutoLease | null };
 const toConnection = (r: IntegrationRow): Connection => ({
   id: r.id, kind: r.kind, name: r.name, instance: r.instance, config: r.config ?? {},
   ...(r.secret_ref ? { secretRef: r.secret_ref } : {}), enabled: r.enabled,
+  ...(r.auto && typeof r.auto.holder === "string" ? { auto: { holder: r.auto.holder, until: Number(r.auto.until) } } : {}),
 });
 
 export async function addIntegration(c: Connection): Promise<void> {
@@ -25,19 +28,19 @@ export async function addIntegration(c: Connection): Promise<void> {
   });
 }
 
-/** Every integration, or only those an instance runs. */
+/** Every integration, or only those an instance may run: its own and the Automatic ones. */
 export async function integrations(instance?: string): Promise<Connection[]> {
   return db.withRetry(async (sql) => {
     const rows = instance === undefined
-      ? await sql`SELECT id, kind, name, instance, config, secret_ref, enabled FROM integration WHERE user_id = ${user()} ORDER BY id`
-      : await sql`SELECT id, kind, name, instance, config, secret_ref, enabled FROM integration WHERE user_id = ${user()} AND instance = ${instance} ORDER BY id`;
+      ? await sql`SELECT id, kind, name, instance, config, secret_ref, enabled, status->'auto' AS auto FROM integration WHERE user_id = ${user()} ORDER BY id`
+      : await sql`SELECT id, kind, name, instance, config, secret_ref, enabled, status->'auto' AS auto FROM integration WHERE user_id = ${user()} AND instance IN (${instance}, ${AUTO_INSTANCE}) ORDER BY id`;
     return (rows as IntegrationRow[]).map(toConnection);
   });
 }
 
 export async function integration(id: string): Promise<Connection | undefined> {
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT id, kind, name, instance, config, secret_ref, enabled FROM integration WHERE user_id = ${user()} AND id = ${id}`;
+    const rows = await sql`SELECT id, kind, name, instance, config, secret_ref, enabled, status->'auto' AS auto FROM integration WHERE user_id = ${user()} AND id = ${id}`;
     const r = (rows as IntegrationRow[])[0];
     return r ? toConnection(r) : undefined;
   });
@@ -46,6 +49,43 @@ export async function integration(id: string): Promise<Connection | undefined> {
 export async function setIntegrationStatus(id: string, status: Record<string, unknown>): Promise<void> {
   return db.withRetry(async (sql) => {
     await sql`UPDATE integration SET status = COALESCE(status, '{}'::jsonb) || ${status}::jsonb WHERE user_id = ${user()} AND id = ${id}`;
+  });
+}
+
+/** Take or renew an Automatic row's lease for `here`: only when no lease is live or it is already
+ *  `here`'s (`shared/integrations.ts` mayClaim, done in one UPDATE so two primaries cannot both win).
+ *  Answers the lease that stands after the attempt — `here`'s, or the other holder's. */
+export async function claimAuto(id: string, here: string, now: number, ttlMs: number): Promise<AutoLease | undefined> {
+  return db.withRetry(async (sql) => {
+    const lease = { holder: here, until: now + ttlMs };
+    const won = await sql`UPDATE integration SET status = COALESCE(status, '{}'::jsonb) || jsonb_build_object('auto', ${lease}::jsonb)
+      WHERE user_id = ${user()} AND id = ${id} AND instance = ${AUTO_INSTANCE} AND enabled
+        AND (status->'auto' IS NULL OR status->'auto'->>'holder' = ${here} OR (status->'auto'->>'until')::bigint <= ${now})
+      RETURNING id`;
+    if (won.length) return lease;
+    const [r] = await sql`SELECT status->'auto' AS auto FROM integration WHERE user_id = ${user()} AND id = ${id}`;
+    const auto = (r as { auto: AutoLease | null } | undefined)?.auto;
+    return auto && typeof auto.holder === "string" ? { holder: auto.holder, until: Number(auto.until) } : undefined;
+  });
+}
+
+/** Give the lease up (shutdown, the row disabled or pinned): the next primary takes it at once. */
+export async function releaseAuto(id: string, here: string): Promise<void> {
+  return db.withRetry(async (sql) => {
+    await sql`UPDATE integration SET status = status - 'auto' WHERE user_id = ${user()} AND id = ${id} AND status->'auto'->>'holder' = ${here}`;
+  });
+}
+
+/** Record whether the secret of an Automatic row is missing on `here` (`status.secretMissing`, one
+ *  key per instance), so the page names every instance that lacks it. */
+export async function markSecretMissing(id: string, here: string, missing: boolean, now: number): Promise<void> {
+  return db.withRetry(async (sql) => {
+    await (missing
+      ? sql`UPDATE integration SET status = jsonb_set(COALESCE(status, '{}'::jsonb), '{secretMissing}',
+          COALESCE(status->'secretMissing', '{}'::jsonb) || jsonb_build_object(${here}::text, ${now}::bigint))
+          WHERE user_id = ${user()} AND id = ${id}`
+      : sql`UPDATE integration SET status = status #- ARRAY['secretMissing', ${here}::text]
+          WHERE user_id = ${user()} AND id = ${id} AND status->'secretMissing'->>${here}::text IS NOT NULL`);
   });
 }
 
@@ -114,6 +154,15 @@ export async function principalFor(adapter: string, externalId: string): Promise
     const rows = await sql`
       SELECT p.id, p.name, p.max_level FROM identity i JOIN principal p ON p.user_id = i.user_id AND p.id = i.principal_id
       WHERE i.user_id = ${user()} AND i.adapter = ${adapter} AND i.external_id = ${externalId}`;
+    const r = (rows as { id: string; name: string; max_level: Principal["maxLevel"] }[])[0];
+    return r ? { id: r.id, name: r.name, maxLevel: r.max_level } : undefined;
+  });
+}
+
+/** One paired person by Orca's id, or undefined. */
+export async function principal(id: string): Promise<Principal | undefined> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT id, name, max_level FROM principal WHERE user_id = ${user()} AND id = ${id}`;
     const r = (rows as { id: string; name: string; max_level: Principal["maxLevel"] }[])[0];
     return r ? { id: r.id, name: r.name, maxLevel: r.max_level } : undefined;
   });
@@ -404,5 +453,204 @@ export async function denyPairing(code: string, now = Date.now()): Promise<boole
     const rows = await sql`UPDATE pairing_code SET state = 'denied', decided_at = ${now}
       WHERE user_id = ${user()} AND code = ${code.trim().toUpperCase()} AND state = 'pending' RETURNING code`;
     return rows.length > 0;
+  });
+}
+
+// ── the unified inbox (shared/inbox.ts) ─────────────────────────────────────────────────────────
+// Read-only. The inbox topics are `ext.*` and `orca.question` (shared/inbox.ts `isInboxTopic`).
+
+/** The newest inbox events, before an event id (ids are time-ordered) or a time (`beforeAt`, ms —
+ *  the inbox's cursor, shared with the notifications), newest first. */
+export async function inboxEvents(opts: { before?: string; beforeAt?: number; limit: number }): Promise<Envelope[]> {
+  return db.withRetry(async (sql) => {
+    const rows = opts.beforeAt !== undefined
+      ? await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question') AND created_at < ${opts.beforeAt}
+          ORDER BY id DESC LIMIT ${opts.limit}`
+      : opts.before
+      ? await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question') AND id < ${opts.before}
+          ORDER BY id DESC LIMIT ${opts.limit}`
+      : await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question')
+          ORDER BY id DESC LIMIT ${opts.limit}`;
+    return (rows as { envelope: Envelope }[]).map((r) => r.envelope);
+  });
+}
+
+type OutboundRow = { id: number; event_id: string; subscription_id: number | null; created_at: number; state: DeliveryState; attempts: number; last_error: string | null; target: DeliveryTarget; envelope: Envelope };
+const toOutbound = (r: OutboundRow): OutboundRecord => ({
+  deliveryId: Number(r.id), eventId: r.event_id, ...(r.subscription_id != null ? { subscriptionId: Number(r.subscription_id) } : {}), at: Number(r.created_at), state: r.state, attempts: Number(r.attempts),
+  ...(r.last_error ? { lastError: r.last_error } : {}), target: r.target,
+  envelope: { key: r.envelope.key, topic: r.envelope.topic, text: r.envelope.text, ...(r.envelope.title ? { title: r.envelope.title } : {}), ...(r.envelope.scope ? { scope: r.envelope.scope } : {}) },
+});
+
+/** Every delivery to a link planned since `since`, newest first: the replies the inbox rows show. */
+export async function linkDeliveries(since: number, limit = 1000): Promise<OutboundRecord[]> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT d.id, d.event_id, d.subscription_id, d.created_at, d.state, d.attempts, d.last_error, d.target, e.envelope
+      FROM delivery d JOIN event e ON e.id = d.event_id
+      WHERE d.user_id = ${user()} AND d.target->>'kind' = 'link' AND d.created_at >= ${since}
+      ORDER BY d.id DESC LIMIT ${limit}`;
+    return (rows as OutboundRow[]).map(toOutbound);
+  });
+}
+
+/** Every thread link (a small table: one row per external thread bound to a workstream). */
+export async function threadLinks(): Promise<ThreadLinkRecord[]> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT adapter, external_thread_id, link_id, repo, branch FROM thread_link WHERE user_id = ${user()} ORDER BY created_at`;
+    return (rows as { adapter: string; external_thread_id: string; link_id: string | null; repo: string; branch: string }[])
+      .map((r) => ({ adapter: r.adapter, externalThreadId: r.external_thread_id, ...(r.link_id ? { linkId: r.link_id } : {}), repo: r.repo, branch: r.branch }));
+  });
+}
+
+/** principal id → name. */
+export async function principalNames(): Promise<Map<string, string>> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT id, name FROM principal WHERE user_id = ${user()}`;
+    return new Map((rows as { id: string; name: string }[]).map((r) => [r.id, r.name]));
+  });
+}
+
+/** One conversation (shared/inbox.ts `Conversation`): the inbox events in it, oldest first, and the
+ *  link deliveries that went to it (at the place itself, only explicit posts: a subscription's
+ *  broadcast to a channel is not part of one person's conversation there). A thread linked to a workstream also takes the post that started
+ *  it: the newest delivery to that link about that workstream, with no thread, before the bind. */
+export async function conversation(c: Conversation, limit = 500): Promise<{ events: Envelope[]; outbound: OutboundRecord[]; link?: ThreadLinkRecord }> {
+  return db.withRetry(async (sql) => {
+    const own = c.id.startsWith(OWN_EVENT) ? c.id.slice(OWN_EVENT.length) : null;
+    const evRows = own
+      ? await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND id = ${own}`
+      : await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question') AND (
+          (envelope->'thread'->>'adapter' = ${c.adapter} AND envelope->'thread'->>'externalId' = ${c.id})
+          OR (envelope->'thread' IS NULL AND envelope->'source'->>'adapter' = ${c.adapter} AND envelope->'source'->>'channel' = ${c.id}))
+          ORDER BY id LIMIT ${limit}`;
+    const events = (evRows as { envelope: Envelope }[]).map((r) => r.envelope);
+    const ids = events.map((e) => e.id);
+    const outRows = await sql`SELECT d.id, d.event_id, d.subscription_id, d.created_at, d.state, d.attempts, d.last_error, d.target, e.envelope
+      FROM delivery d JOIN event e ON e.id = d.event_id
+      WHERE d.user_id = ${user()} AND d.target->>'kind' = 'link' AND (
+        (d.target->>'adapter' = ${c.adapter} AND (d.target->>'threadId' = ${c.id} OR (d.target->>'threadId' IS NULL AND d.target->>'externalId' = ${c.id} AND d.subscription_id IS NULL AND e.key NOT LIKE 'pairing:%')))
+        OR d.event_id = ANY(${sql.array(ids, "TEXT")}))
+      ORDER BY d.id LIMIT ${limit}`;
+    const outbound = (outRows as OutboundRow[]).map(toOutbound);
+    const tlRows = await sql`SELECT adapter, external_thread_id, link_id, repo, branch, created_at FROM thread_link
+      WHERE user_id = ${user()} AND adapter = ${c.adapter} AND external_thread_id = ${c.id}`;
+    const tl = (tlRows as { adapter: string; external_thread_id: string; link_id: string | null; repo: string; branch: string; created_at: number }[])[0];
+    if (!tl) return { events, outbound };
+    const link: ThreadLinkRecord = { adapter: tl.adapter, externalThreadId: tl.external_thread_id, ...(tl.link_id ? { linkId: tl.link_id } : {}), repo: tl.repo, branch: tl.branch };
+    if (tl.link_id) {
+      const start = await sql`SELECT d.id, d.event_id, d.subscription_id, d.created_at, d.state, d.attempts, d.last_error, d.target, e.envelope
+        FROM delivery d JOIN event e ON e.id = d.event_id
+        WHERE d.user_id = ${user()} AND d.target->>'kind' = 'link' AND d.target->>'linkId' = ${tl.link_id} AND d.target->>'threadId' IS NULL
+          AND e.envelope->'scope'->>'repo' = ${tl.repo} AND e.envelope->'scope'->>'branch' = ${tl.branch} AND d.created_at <= ${Number(tl.created_at)}
+        ORDER BY d.id DESC LIMIT 1`;
+      const first = (start as OutboundRow[]).map(toOutbound)[0];
+      if (first && !outbound.some((d) => d.deliveryId === first.deliveryId)) outbound.unshift(first);
+    }
+    return { events, outbound, link };
+  });
+}
+
+/** One event by Orca's id. */
+export async function eventById(id: string): Promise<Envelope | undefined> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND id = ${id}`;
+    return (rows as { envelope: Envelope }[])[0]?.envelope;
+  });
+}
+
+/** Which of these events you have read: opened in the inbox, or read as the bell's copy of it (a
+ *  notification with the same key — the web adapter writes one per event it shows). One read state. */
+export async function readEvents(ids: string[]): Promise<Set<string>> {
+  if (!ids.length) return new Set();
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT e.id FROM event e WHERE e.user_id = ${user()} AND e.id = ANY(${sql.array(ids, "TEXT")}) AND (
+        EXISTS (SELECT 1 FROM inbox_read r WHERE r.user_id = e.user_id AND r.event_id = e.id)
+        OR EXISTS (SELECT 1 FROM notification n WHERE n.user_id = e.user_id AND n.key = e.key AND n.read_at IS NOT NULL))`;
+    return new Set((rows as { id: string }[]).map((r) => r.id));
+  });
+}
+
+/** Mark events read (or unread again), and the bell's copy of each with them. An id with no event is skipped. */
+export async function setRead(ids: string[], read: boolean, now = Date.now()): Promise<void> {
+  if (!ids.length) return;
+  return db.withRetry(async (sql) => {
+    if (read) {
+      await sql`INSERT INTO inbox_read (user_id, event_id, read_at)
+        SELECT ${user()}, id, ${now} FROM event WHERE user_id = ${user()} AND id = ANY(${sql.array(ids, "TEXT")})
+        ON CONFLICT (user_id, event_id) DO NOTHING`;
+      await sql`UPDATE notification n SET read_at = ${now} FROM event e
+        WHERE n.user_id = ${user()} AND n.read_at IS NULL AND e.user_id = n.user_id AND e.key = n.key AND e.id = ANY(${sql.array(ids, "TEXT")})`;
+    } else {
+      await sql`DELETE FROM inbox_read WHERE user_id = ${user()} AND event_id = ANY(${sql.array(ids, "TEXT")})`;
+      await sql`UPDATE notification n SET read_at = NULL FROM event e
+        WHERE n.user_id = ${user()} AND e.user_id = n.user_id AND e.key = n.key AND e.id = ANY(${sql.array(ids, "TEXT")})`;
+    }
+  });
+}
+
+/** Orca's own notifications for the inbox, newest first, created before `before` (ms). A row that is
+ *  the bell's copy of an inbox event (same key: an outside message, a question) is left out: the
+ *  event's own row shows it. */
+export async function inboxNotifications(opts: { before?: number; limit: number }): Promise<Notification[]> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT n.id, n.repo, n.branch, n.kind, n.title, n.body, n.link, n.created_at, n.read_at, n.instance FROM notification n
+      WHERE n.user_id = ${user()} AND n.kind <> 'external_message' AND n.created_at < ${opts.before ?? Number.MAX_SAFE_INTEGER}
+        AND NOT EXISTS (SELECT 1 FROM event e WHERE e.user_id = n.user_id AND e.key = n.key AND (e.topic LIKE 'ext.%' OR e.topic = 'orca.question'))
+      ORDER BY n.created_at DESC, n.id DESC LIMIT ${opts.limit}`;
+    return (rows as { id: string; repo: string; branch: string | null; kind: Notification["kind"]; title: string; body: string; link: Notification["link"] | null; created_at: string; read_at: string | null; instance: string }[])
+      .map((r) => ({
+        id: Number(r.id), instance: r.instance, repo: r.repo, ...(r.branch ? { branch: r.branch } : {}), kind: r.kind, title: r.title, body: r.body,
+        ...(r.link ? { link: r.link } : {}), createdAt: Number(r.created_at), ...(r.read_at ? { readAt: Number(r.read_at) } : {}),
+      }));
+  });
+}
+
+/** One notification's kind (the inbox mutes a notification row by its kind). */
+export async function notificationKind(id: number): Promise<string | undefined> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT kind FROM notification WHERE user_id = ${user()} AND id = ${id}`;
+    return (rows as { kind: string }[])[0]?.kind;
+  });
+}
+
+/** Mark notifications unread again (the bell's own write, db.markNotificationsRead, only reads). */
+export async function markNotificationsUnread(ids: number[]): Promise<void> {
+  if (!ids.length) return;
+  return db.withRetry(async (sql) => {
+    await sql`UPDATE notification SET read_at = NULL WHERE user_id = ${user()} AND id = ANY(${sql.array(ids, "INT8")})`;
+  });
+}
+
+/** The unread inbox events the bell has no copy of, in the newest `limit`, minus muted senders: the
+ *  inbox's half of the one unread count (shared/inbox.ts `unreadTotal`). */
+export async function unreadWithoutCopy(limit: number): Promise<number> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT count(*)::int AS n FROM (
+        SELECT e.id, e.key, e.envelope FROM event e WHERE e.user_id = ${user()} AND (e.topic LIKE 'ext.%' OR e.topic = 'orca.question')
+        ORDER BY e.id DESC LIMIT ${limit}) e
+      WHERE NOT EXISTS (SELECT 1 FROM notification n WHERE n.user_id = ${user()} AND n.key = e.key)
+        AND NOT EXISTS (SELECT 1 FROM inbox_read r WHERE r.user_id = ${user()} AND r.event_id = e.id)
+        AND NOT EXISTS (SELECT 1 FROM inbox_mute m WHERE m.user_id = ${user()}
+          AND m.adapter = e.envelope->'actor'->'external'->>'adapter' AND m.external_id = e.envelope->'actor'->'external'->>'id')`;
+    return Number((rows as { n: number }[])[0]?.n ?? 0);
+  });
+}
+
+/** Every muted sender, as shared/inbox.ts `muteKey`s. */
+export async function mutedSenders(): Promise<Set<string>> {
+  return db.withRetry(async (sql) => {
+    const rows = await sql`SELECT adapter, external_id FROM inbox_mute WHERE user_id = ${user()}`;
+    return new Set((rows as { adapter: string; external_id: string }[]).map((r) => muteKey(r.adapter, r.external_id)));
+  });
+}
+
+export async function setMuted(adapter: string, externalId: string, muted: boolean, name?: string, now = Date.now()): Promise<void> {
+  return db.withRetry(async (sql) => {
+    if (muted) {
+      await sql`INSERT INTO inbox_mute (user_id, adapter, external_id, name, created_at) VALUES (${user()}, ${adapter}, ${externalId}, ${name ?? null}, ${now})
+        ON CONFLICT (user_id, adapter, external_id) DO NOTHING`;
+    } else {
+      await sql`DELETE FROM inbox_mute WHERE user_id = ${user()} AND adapter = ${adapter} AND external_id = ${externalId}`;
+    }
   });
 }

@@ -135,3 +135,28 @@ test("F4: the typeahead only holds keys while nothing has focus, and lets go aft
   endTypeahead();
   expect(key("z", document.body)).toBe(true);
 });
+
+test("F5: O opens, Esc closes, and O opens again at once — focus leaves the closed panel, no click needed", async () => {
+  await mount("/");
+  // As in a browser: <body> has no tabindex, so focus() on it does nothing (happy-dom lets it focus).
+  document.body.focus = () => {};
+  const panel = () => $('[data-slot="orchestrator-panel"]')!;
+  await act(async () => { key("o", document.body); await flush(); await flush(); });
+  expect(panel().dataset.state).toBe("open");
+  expect(document.activeElement).toBe(composer());
+  // Esc in the composer closes the panel; focus must not stay in the closed panel's textarea.
+  await act(async () => { key("Escape", composer()!); await flush(); await flush(); });
+  expect(panel().dataset.state).toBe("closed");
+  expect(panel().contains(document.activeElement)).toBe(false);
+  await act(async () => { key("o"); await flush(); await flush(); });
+  expect(panel().dataset.state).toBe("open");
+  expect(document.activeElement).toBe(composer());
+  // A button opener still gets focus back.
+  await act(async () => { key("Escape", composer()!); await flush(); await flush(); });
+  const ask = $('[data-slot="ask-orchestrator"]')!;
+  ask.focus();
+  await click(ask);
+  await act(async () => { key("Escape", composer()!); await flush(); await flush(); });
+  expect(document.activeElement).toBe(ask);
+  delete (document.body as { focus?: unknown }).focus;
+});

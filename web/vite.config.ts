@@ -14,10 +14,26 @@ import { API_PORT } from "../server/ports";
 // server.allowedHosts. ORCA_PREVIEW_HOST is the name a preview command embeds in URLs; the
 // __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS env var covers any other host the preview command wants
 // to allow (comma-separated). Never `true` — that disables the check entirely.
-export const allowedHosts = (env: NodeJS.ProcessEnv): string[] =>
-  [env.ORCA_PREVIEW_HOST, ...(env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS?.split(",") ?? [])]
-    .map((h) => h?.trim())
+//
+// Vite's own list entries are exact-match, or a leading "." for a domain-plus-subdomains
+// wildcard — there is no function/predicate form. So when ORCA_PREVIEW_HOST is a tailnet FQDN:
+// - ".ts.net" allows the full ts.net name of ANY box, not just this one (Tailscale's MagicDNS
+//   domain, same shape for every tailnet, and Tailscale ACLs are the real gate on who can reach
+//   this port at all).
+// - its own first label (e.g. "orca-flow-box" off "orca-flow-box.pony-hawksbill.ts.net") allows
+//   the short MagicDNS name THIS box answers to, which a browser on the tailnet can use instead
+//   of the FQDN and otherwise 403s even though the FQDN and the 100.x IP both work.
+// This stays short of `true` (every host) — an arbitrary single-label host from the open
+// internet still 403s; only this box's own short name is allowed.
+export const allowedHosts = (env: NodeJS.ProcessEnv): string[] => {
+  const host = env.ORCA_PREVIEW_HOST?.trim();
+  const extra = (env.__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS?.split(",") ?? [])
+    .map((h) => h.trim())
     .filter((h): h is string => !!h);
+  const hosts = host ? [host, ...extra] : extra;
+  if (host && host.endsWith(".ts.net")) hosts.push(".ts.net", host.split(".")[0]!);
+  return [...new Set(hosts)];
+};
 
 // Every `vite build` gets an id, baked into the bundle (__ORCA_BUILD__) and written to
 // dist/version.json. An open tab polls that file (served uncached) and offers a refresh when it names

@@ -27,9 +27,42 @@
   --accent-foreground: #222222;
   --destructive: #e5484d;
   --border: rgba(0, 0, 0, 0.1);
+  /* branch-demo's border-dark (gray-alpha-300): the resize handle's line on hover. */
+  --border-dark: #0b0b0b3e;
   --input: rgba(0, 0, 0, 0.1);
-  --ring: #0070f3;
-  --sidebar: #f9f9f8;
+  /* The chat log's text stops between the foreground and the muted text (styles below). */
+  --text-soft: #4d4d4d;
+  --text-faint: #8f8f8f;
+  --text-fainter: #8f8f8f;
+  /* The active server's theme, like a Slack workspace theme. lib/identity.ts sets --server and
+     --server-mark on <html> and puts every tone below in a style sheet built from that one colour
+     (shared/serverIdentity.ts `themeTones`: OKLCH, fixed lightness per tone, so any colour gives
+     the same contrast). These are the neutral defaults until the identity is known, and Neutral
+     keeps them. The theme carries the chrome: the sidebar (the sb-* tones), primary buttons, links,
+     focus rings, the selection, the active page and the server menu. Every surface, text and border
+     token above (card, popover, muted, accent, border…) becomes a tinted neutral of the same
+     lightness, so cards, menus, dialogs, chart frames and chat follow too. Status colours (geist-*)
+     and chart series colours never change. */
+  --server: #8f8f8f;
+  --server-mark: #ffffff;
+  --server-mark-bg: #000000;
+  --server-soft: color-mix(in oklab, var(--server) 13%, transparent);
+  --server-fg: color-mix(in oklab, var(--server) 82%, black);
+  --link: #0068d6;
+  --selection: rgb(0 112 243 / 0.2);
+  --ring: var(--server);
+  --sb-bg: #f9f9f8;
+  --sb-fg: #222222;
+  --sb-muted: #666666;
+  --sb-hover: #ececeb;
+  --sb-field: #ffffff;
+  --sb-border: rgba(0, 0, 0, 0.1);
+  --sb-active: #ececeb;
+  --sb-active-fg: #222222;
+  --sidebar: var(--sb-bg);
+  --selected: var(--accent);
+  --selected-fg: var(--foreground);
+  --heading: var(--foreground);
   --geist-blue: #0070f3;
   --geist-green: #45a557;
   --geist-teal: #50e3c2;
@@ -43,6 +76,9 @@
   /* Geist's menu / popover and modal shadows — the only shadows in the app. */
   --geist-shadow-menu: 0px 1px 1px rgba(0, 0, 0, 0.02), 0px 4px 8px -4px rgba(0, 0, 0, 0.04), 0px 16px 24px -8px rgba(0, 0, 0, 0.06);
   --geist-shadow-modal: 0px 1px 1px rgba(0, 0, 0, 0.02), 0px 8px 16px -4px rgba(0, 0, 0, 0.04), 0px 24px 32px -8px rgba(0, 0, 0, 0.06);
+  /* The shell card's raised edge (branch-demo's shadow-ring-xs): a hairline ring plus a soft lift. The
+     ONE shadow outside menus and modals — the page and the docked panel float on the themed canvas. */
+  --shell-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06), 0 2px 4px 0 rgba(0, 0, 0, 0.04), 0 1px 1px 0 rgba(0, 0, 0, 0.02), 0 0 4px 0 rgba(0, 0, 0, 0.04);
 }
 
 .dark {
@@ -62,14 +98,33 @@
   --accent-foreground: #e8e8e8;
   --destructive: #e5484d;
   --border: rgba(255, 255, 255, 0.12);
+  --border-dark: #ffffff33;
   --input: rgba(255, 255, 255, 0.12);
-  --ring: #0070f3;
-  --sidebar: #111111;
+  --text-soft: #d2d2d2;
+  --text-faint: #848484;
+  --text-fainter: #6a6a6a;
+  --server-soft: color-mix(in oklab, var(--server) 22%, transparent);
+  --server-fg: color-mix(in oklab, var(--server) 62%, white);
+  --link: #52a8ff;
+  --selection: rgb(0 112 243 / 0.35);
+  --ring: var(--server);
+  --sb-bg: #111111;
+  --sb-fg: #e8e8e8;
+  --sb-muted: #9e9e9e;
+  --sb-hover: #222222;
+  --sb-field: #161616;
+  --sb-border: rgba(255, 255, 255, 0.12);
+  --sb-active: #222222;
+  --sb-active-fg: #e8e8e8;
+  --selected: var(--accent);
+  --selected-fg: var(--foreground);
+  --heading: var(--foreground);
   --geist-warning-bg: #2a1d03;
   --geist-warning-fg: #ffb224;
   --geist-error-bg: #2a0e0f;
   --geist-shadow-menu: 0px 1px 1px rgba(0, 0, 0, 0.4), 0px 4px 8px -4px rgba(0, 0, 0, 0.5), 0px 16px 24px -8px rgba(0, 0, 0, 0.6);
   --geist-shadow-modal: 0px 1px 1px rgba(0, 0, 0, 0.4), 0px 8px 16px -4px rgba(0, 0, 0, 0.5), 0px 24px 32px -8px rgba(0, 0, 0, 0.6);
+  --shell-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08), 0 2px 8px 0 rgba(0, 0, 0, 0.3), 0 1px 2px 0 rgba(0, 0, 0, 0.4);
 }
 
 @theme inline {
@@ -82,7 +137,20 @@
   --text-xs--line-height: 1rem;
   --shadow-menu: var(--geist-shadow-menu);
   --shadow-modal: var(--geist-shadow-modal);
+  --shadow-shell: var(--shell-shadow);
   --color-sidebar: var(--sidebar);
+  --color-server: var(--server);
+  --color-server-soft: var(--server-soft);
+  --color-server-fg: var(--server-fg);
+  --color-server-mark: var(--server-mark);
+  --color-server-mark-bg: var(--server-mark-bg);
+  --color-link: var(--link);
+  --color-sidebar-active: var(--sb-active);
+  --color-sidebar-active-foreground: var(--sb-active-fg);
+  --color-sidebar-foreground: var(--sb-fg);
+  --color-selected: var(--selected);
+  --color-selected-foreground: var(--selected-fg);
+  --color-heading: var(--heading);
   --color-geist-blue: var(--geist-blue);
   --color-geist-green: var(--geist-green);
   --color-geist-teal: var(--geist-teal);
@@ -113,6 +181,7 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-border: var(--border);
+  --color-border-dark: var(--border-dark);
   --color-input: var(--input);
   --color-ring: var(--ring);
 }
@@ -128,6 +197,40 @@
   }
 }
 
+/* The themed frame (Slack's workspace sidebar plus top bar): the sidebar and the phone's top bar
+   carry `data-chrome`. Inside it the neutral tokens become the frame's tones, so the Find box, the
+   keycaps, the badges and the menus' triggers follow with no class of their own. The Ask pill is an
+   overlay, not the frame (docs/design/surfaces.md). Menus portal out of it and take the page's tinted tokens. */
+[data-chrome] {
+  --background: var(--sb-bg);
+  --selected: var(--sb-active);
+  --selected-fg: var(--sb-active-fg);
+  --heading: var(--sb-fg);
+  --foreground: var(--sb-fg);
+  --muted-foreground: var(--sb-muted);
+  --accent: var(--sb-hover);
+  --accent-foreground: var(--sb-fg);
+  --muted: var(--sb-hover);
+  --card: var(--sb-field);
+  --border: var(--sb-border);
+  --input: var(--sb-border);
+  --primary: var(--sb-fg);
+  --primary-foreground: var(--sb-bg);
+  --secondary: var(--sb-hover);
+  --server-fg: var(--sb-fg);
+  --ring: var(--sb-fg);
+  color: var(--sb-fg);
+}
+
+::selection {
+  background: var(--selection);
+}
+:root:not(.dark) .prose:not(.prose-invert),
+.dark .prose {
+  --tw-prose-links: var(--link);
+  --tw-prose-invert-links: var(--link);
+}
+
 /* The agent page's conversation sits where Vercel's Build Logs do, so it follows the page's theme —
    light logs on the card in light mode — while the terminal modal and the orchestrator's window keep
    their dark terminal. Tailwind v4 resolves every colour utility through a variable, so the log's
@@ -136,10 +239,10 @@
   --color-neutral-950: var(--card);
   --color-neutral-900: var(--muted);
   --color-neutral-800: var(--border);
-  --color-neutral-600: #8f8f8f;
-  --color-neutral-500: #8f8f8f;
+  --color-neutral-600: var(--text-fainter);
+  --color-neutral-500: var(--text-faint);
   --color-neutral-400: var(--muted-foreground);
-  --color-neutral-300: #4d4d4d;
+  --color-neutral-300: var(--text-soft);
   --color-neutral-200: var(--foreground);
   --color-emerald-400: #297a3a;
   --color-red-400: #cb2a2f;
@@ -149,14 +252,14 @@
   --color-amber-800: #f5d48e;
   --color-sky-300: #0068d6;
   --color-sky-400: #0068d6;
-  --tw-prose-invert-body: #4d4d4d;
+  --tw-prose-invert-body: var(--text-soft);
   --tw-prose-invert-headings: var(--foreground);
   --tw-prose-invert-bold: var(--foreground);
-  --tw-prose-invert-links: #0068d6;
+  --tw-prose-invert-links: var(--link);
   --tw-prose-invert-code: #0068d6;
-  --tw-prose-invert-bullets: #8f8f8f;
-  --tw-prose-invert-counters: #8f8f8f;
-  --tw-prose-invert-quotes: #4d4d4d;
+  --tw-prose-invert-bullets: var(--text-faint);
+  --tw-prose-invert-counters: var(--text-faint);
+  --tw-prose-invert-quotes: var(--text-soft);
   --tw-prose-invert-quote-borders: var(--border);
   --tw-prose-invert-hr: var(--border);
   --tw-prose-invert-th-borders: var(--border);
@@ -169,15 +272,15 @@
    dark regardless of page theme, built on Tailwind's raw neutral-* palette. Softening the dark
    surface tokens above without updating these left the log a different shade of black than the
    cards around it — bind the stops it actually uses to the same tokens (so this can't drift out
-   of step again) and keep the text stops with no token of their own in the same family. */
+   of step again), the text stops included (the text-* tokens), so the server theme tints it too. */
 .dark {
   --color-neutral-950: var(--background);
   --color-neutral-900: var(--card);
   --color-neutral-800: var(--border);
-  --color-neutral-600: #6a6a6a;
-  --color-neutral-500: #848484;
+  --color-neutral-600: var(--text-fainter);
+  --color-neutral-500: var(--text-faint);
   --color-neutral-400: var(--muted-foreground);
-  --color-neutral-300: #d2d2d2;
+  --color-neutral-300: var(--text-soft);
   --color-neutral-200: var(--foreground);
 }
 
@@ -193,10 +296,10 @@
   /* Reserve the scrollbar's gutter from first paint. Without it the page is short until the first
      poll lands, then a classic (non-overlay) scrollbar appears and the whole top bar's right side,
      "Ask the orchestrator" included, jumps ~15px left. Overlay scrollbars (phones, most Macs) take
-     no gutter, so nothing changes there. */
-  html {
-    scrollbar-gutter: stable;
-  }
+     no gutter, so nothing changes there. On a desktop the page column scrolls on its own (Shell's
+     `page-scroll`) and reserves the gutter itself, so <html> does it only on a phone — a gutter on
+     <html> was an empty strip beside the docked panel. */
+  /* (the rule itself: in the phone block below) */
   /* Radix's scroll lock (react-remove-scroll-bar) adds margin-right = innerWidth - clientWidth to the
      body while a menu or dialog is open. With the gutter reserved that is the gutter itself, and the
      page jumped left on every open. The gutter already holds the space, so no margin is needed. */
@@ -275,6 +378,10 @@ dialog[data-bottom-sheet][data-closing]::backdrop {
 }
 
 @media (max-width: 767px) {
+  /* The scrollbar gutter, reserved on <html> (see the note in the base layer). */
+  html {
+    scrollbar-gutter: stable;
+  }
   /* Nothing scrolls sideways: wide content wraps or scrolls inside its own box. */
   html,
   body {
@@ -489,4 +596,25 @@ dialog[data-bottom-sheet][data-closing]::backdrop {
 }
 @media (prefers-reduced-motion: reduce) {
   [data-slot="marquee-text"] > [data-slot="marquee-text-inner"] { transition: none; }
+}
+
+/* The live activity block (views/Chat.tsx): a trail row fades and slides in (180ms); the header
+   label swaps in TWO layers that run together, same duration and easing (220ms, LABEL_FADE_MS) —
+   the old line translates up and out while it fades, the new line translates up and in while it
+   fades, so the two are never both near-opaque at once and the text never overlaps. Reduced motion
+   drops the translate for a plain opacity cross-fade, same timing. */
+@keyframes step-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@keyframes label-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes label-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(-6px); } }
+@keyframes label-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes label-fade-out { from { opacity: 1; } to { opacity: 0; } }
+.step-in { animation: step-in 180ms ease-out both; }
+.label-in, .label-out { animation-duration: 220ms; animation-timing-function: ease; animation-fill-mode: both; }
+.label-in { animation-name: label-in; }
+.label-out { animation-name: label-out; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .step-in { animation: none; }
+  .label-in, .label-out { animation-timing-function: linear; }
+  .label-in { animation-name: label-fade-in; }
+  .label-out { animation-name: label-fade-out; }
 }

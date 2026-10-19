@@ -13,8 +13,9 @@
 // local row the store raises in this browser), so it shares the stack, the card and the centre. The decisions (what pops,
 // what persists, the stack's layout and motion) are pure in shared/notifications.ts; the state is
 // lib/notificationStore.ts.
+import { afterDockMotion } from "@/lib/dock";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
-import { useAtom, useAtomValue } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   AlertTriangle, ArrowUpRight, Bell, BellOff, Bot, Check, CheckCheck, CircleAlert, CircleX, Copy, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, GitMerge, Hammer, MessageCircleQuestion,
   MessagesSquare, MonitorCheck, MonitorX, OctagonPause, Reply, RotateCcw, ScrollText, Send, ShieldX, Square, Undo2, UserPlus, Wrench, X,
@@ -23,6 +24,7 @@ import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
 import { notificationsOpenAtom, notifyDndAtom } from "@/lib/atoms";
 import { markRead, pauseToasts, resumeToasts, restoreUnread, start, useNotifications } from "@/lib/notificationStore";
+import { useInboxSide, useInboxUnread } from "@/lib/inboxUnread";
 import { oneOf, persistedKey, usePersisted } from "@/lib/persisted";
 import { useCoarse, useIsMobile, useNarrow } from "@/lib/viewport";
 import {
@@ -36,7 +38,7 @@ import { ActionButton } from "@/components/ActionButton";
 import { detailPath } from "@/views/Agents";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Segmented } from "@/components/console";
+import { CountBadge, Segmented } from "@/components/console";
 import { Kbd } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { MarqueeText } from "@/components/ui/marquee-text";
@@ -209,11 +211,13 @@ function useStackAnchor(active: boolean): StackAnchor {
       return next.left === prev.left && next.bottom === prev.bottom && next.right === prev.right ? prev : next;
     });
     update();
-    window.addEventListener("resize", update);
+    // The nav's width animates when it turns into its rail: re-anchor once it has settled.
+    const later = () => afterDockMotion(update);
+    window.addEventListener("resize", later);
     const foot = document.querySelector('[data-slot="sidebar-foot"]');
-    const ro = foot && typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : undefined;
+    const ro = foot && typeof ResizeObserver !== "undefined" ? new ResizeObserver(later) : undefined;
     if (foot) ro?.observe(foot);
-    return () => { window.removeEventListener("resize", update); ro?.disconnect(); };
+    return () => { window.removeEventListener("resize", later); ro?.disconnect(); };
   }, [active, measure]);
   return anchor;
 }
@@ -429,24 +433,24 @@ function focusMarkAllRead(e: Event) {
  *  `notificationsOpenAtom` (not just the trigger click) so the N key and the palette's Notifications
  *  action can open/toggle it too; its hint is the hover tooltip (it's icon-only either way, collapsed
  *  or not — there's no row to carry an inline keycap next to it). */
+/** A ghost icon button of the sidebar's foot (the bell, the collapse toggle in Shell): the nav rows'
+ *  height and icon size, no box — it sits on the lower surface. */
+export const footIcon = "text-muted-foreground hover:text-foreground hover:bg-accent relative inline-flex size-9 shrink-0 items-center justify-center rounded-md transition-colors";
+
 export function NotificationBell({ collapsed = false }: { collapsed?: boolean }) {
-  const { list } = useNotifications();
   const dnd = useAtomValue(notifyDndAtom);
   const [open, setOpen] = useAtom(notificationsOpenAtom);
   useEffect(() => { start(); }, []);
-  const unread = unreadCount(list);
+  // The one unread count, the same as the Inbox nav item's (lib/inboxUnread.ts).
+  const unread = useInboxUnread();
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <Tip label="Notifications" shortcut="notifications">
         <PopoverTrigger asChild>
           <button type="button" data-slot="notifications-bell" aria-label={`Notifications${unread ? ` (${unread} unread)` : ""}`}
-            className={cn("text-muted-foreground hover:text-foreground hover:bg-accent relative inline-flex size-8 shrink-0 items-center justify-center rounded-md", collapsed && "md:mx-auto")}>
+            className={footIcon}>
             {dnd ? <BellOff className="size-4" /> : <Bell className="size-4" />}
-            {unread > 0 && (
-              <span data-slot="notifications-unread" className="bg-geist-blue absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold text-white tabular-nums">
-                {unread > 99 ? "99+" : unread}
-              </span>
-            )}
+            <CountBadge count={unread} placement="compact" slot="notifications-unread" />
           </button>
         </PopoverTrigger>
       </Tip>
@@ -467,8 +471,12 @@ export function NotificationPanel() {
   const dnd = useAtomValue(notifyDndAtom);
   const [filter, setFilter] = usePersisted<NotificationFilter>(persistedKey("notificationFilter"), "unread", isFilter);
   const { open } = useNotificationActions();
-  const unread = unreadCount(list);
-  const groups = groupByDay(filterNotifications(list, filter));
+  const { mutedKinds } = useInboxSide();
+  const setOpen = useSetAtom(notificationsOpenAtom);
+  // A quick view: the kinds muted in the Inbox stay out of it. The Inbox (See all) has everything.
+  const shown = mutedKinds.length ? list.filter((n) => !mutedKinds.includes(n.kind)) : list;
+  const unread = unreadCount(shown);
+  const groups = groupByDay(filterNotifications(shown, filter));
   return (
     <div data-slot="notification-centre" className="flex max-h-[70vh] flex-col">
       {/* No fixed/min height, and no taller than the day strip under it needs to be: py-2 (≤ the px-3)
@@ -509,6 +517,12 @@ export function NotificationPanel() {
           </section>
         ))}
       </div>
+      <footer data-slot="notification-centre-footer" className="order-last flex shrink-0 justify-center border-t px-3 py-1.5">
+        <a href="/inbox" data-slot="notification-see-all" onClick={(e) => { e.preventDefault(); setOpen(false); navigate("/inbox"); }}
+          className="text-muted-foreground hover:text-foreground inline-flex h-6 items-center gap-1 text-xs font-medium">
+          See all in Inbox<ArrowUpRight className="size-3.5" />
+        </a>
+      </footer>
     </div>
   );
 }

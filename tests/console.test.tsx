@@ -305,6 +305,9 @@ describe("the console's pages", () => {
   test("Repos: one row per repo with its numbers; a click opens Agents scoped to it", async () => {
     seedLocal();
     await open("/repos");
+    // Repos is a section of Settings now: the old URL lands there, on the section's anchor.
+    expect(location.pathname + location.hash).toBe("/settings#repos");
+    expect($("settings-repos")).not.toBeNull();
     const row = $("repo-row");
     expect(row.textContent).toContain("r");
     expect(row.textContent).toContain("Needs you1");
@@ -313,10 +316,20 @@ describe("the console's pages", () => {
     expect(getDefaultStore().get(repoFilterAtom)).toBe("r");
   });
 
-  test("Settings: theme and density, and the configuration this bridge runs with (read-only)", async () => {
+  test("old page URLs redirect: /usage to the Overview (its usage card), /settings/integrations to the Integrations page", async () => {
+    await open("/usage");
+    expect(location.pathname).toBe("/");
+    expect($("usage-card")).not.toBeNull();
+    act(() => root?.unmount()); container?.remove();
+    await open("/settings/integrations");
+    expect(location.pathname).toBe("/integrations");
+    expect($("integrations-page")).not.toBeNull();
+  });
+
+  test("Settings: theme (no density), and the configuration this bridge runs with (read-only)", async () => {
     await open("/settings");
     expect($("settings-appearance").querySelector('[role="group"][aria-label="Theme"]')).not.toBeNull();
-    expect($("settings-appearance").querySelector('[role="group"][aria-label="Density"]')).not.toBeNull();
+    expect($("settings-appearance").querySelector('[role="group"][aria-label="Density"]')).toBeNull();
     const cfg = $("settings-config");
     expect(cfg.textContent).toContain("laptop");
     expect(cfg.textContent).toContain("base main");
@@ -346,6 +359,7 @@ describe("the console's pages", () => {
       { login: "finn-personal", active: false, name: "Finn P", email: "4242+finn-personal@users.noreply.github.com", configured: {}, repos: [] },
     ];
     await open("/github");
+    expect(location.pathname + location.hash).toBe("/settings#github");
     const rows = [...$("github-accounts").querySelectorAll<HTMLElement>('[data-slot="github-account"]')];
     expect(rows.length).toBe(2);
     expect(rows[0]!.textContent).toContain("finnformica");
@@ -390,13 +404,18 @@ describe("surfaces: Vercel's hairlines, radii and shadows", () => {
     .map((el) => el.getAttribute("class")!);
   const offending = (re: RegExp) => classes().filter((c) => re.test(c));
 
-  for (const path of ["/", "/agents", "/previews", "/usage", "/repos", "/github", "/settings", "/r/local/feat-login"]) {
+  for (const path of ["/", "/agents", "/previews", "/integrations", "/settings", "/r/local/feat-login"]) {
     test(`${path}: 1px borders, no stray shadows, 8px cards`, async () => {
       apiFake.agentsData = [{ branch: "feat-login", worktreePath: "/wt/feat-login", agentStatus: "done" }];
       apiFake.turnsData.set("r::feat-login", [{ id: "t1", provider: "claude", prompt: "p", instruction: "go", response: "done", startedAt: NOW, finishedAt: NOW + 1 }]);
       await open(path);
       expect(offending(/(^|\s)border(-[lrtbxy])?-(2|4|8)(\s|$)/)).toEqual([]);
       expect(offending(/(^|\s)(hover:|focus:)?shadow-(xs|sm|md|lg|xl|2xl)(\s|$)/)).toEqual([]);
+      // The ONE exception, on purpose: the shell's cards (branch-demo's app shell — the page card, and
+      // the docked panel's own card while it is open, float on the themed canvas) have their raised
+      // edge. Nothing else may use it. (No panel is open here, so only the page card.)
+      const shell = [...container!.querySelectorAll<HTMLElement>("[class]")].filter((el) => /(^|\s)(md:)?shadow-shell(\s|$)/.test(el.getAttribute("class")!));
+      expect(shell.map((el) => el.dataset.slot)).toEqual(["shell-card"]);
       for (const card of container!.querySelectorAll<HTMLElement>("section[data-slot]")) {
         expect(card.className).toContain("rounded-lg");
         expect(card.className).not.toContain("shadow");

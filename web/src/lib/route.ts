@@ -4,20 +4,39 @@ import { useSyncExternalStore } from "react";
 
 export type PrTab = "overview" | "chat" | "files" | "checks" | "preview";
 export type LocalTab = "overview" | "chat" | "files" | "preview";
-/** The console's top-level pages, in the sidebar's order. "board" is the Overview at "/". */
-export const PAGES = ["agents", "previews", "repos", "github", "usage", "settings"] as const;
+/** The console's top-level pages, in the sidebar's order. "overview" is the Overview at "/". */
+export const PAGES = [
+  "agents",
+  "inbox",
+  "previews",
+  "integrations",
+  "handoffs",
+  "settings",
+] as const;
 export type Page = (typeof PAGES)[number];
+
+/** Old page URLs and where they live now: Repos and GitHub are sections of Settings, Usage is the
+ *  Overview's usage card, and Integrations is its own page. The URL is replaced, so Back skips it. */
+export const REDIRECTS: Record<string, string> = {
+  "/repos": "/settings#repos",
+  "/github": "/settings#github",
+  "/usage": "/",
+  "/settings/integrations": "/integrations",
+};
+export const redirectFor = (pathname: string): string | undefined => REDIRECTS[pathname.replace(/\/+$/, "") || "/"];
 export type Route =
-  | { name: "board" }
+  | { name: "overview" }
   | { name: Page }
   | { name: "orchestrator" }
   | { name: "pr"; repo: string; number: number; sub: PrTab }
   | { name: "local"; repo: string; branch: string; sub: LocalTab };
 
 function parse(): Route {
-  // overview at "/"; the console pages at /agents, /repos, /usage, /settings; the orchestrator's own
+  // overview at "/"; the console pages at /agents, /integrations, /settings…; the orchestrator's own
   // routed page (narrow screens) at /orchestrator; PR detail at /{repo}/prs/{n}[/files|/checks];
   // local-session detail at /{repo}/local/{branch}[/files|/preview] (branch is URI-encoded — may contain "/")
+  const to = redirectFor(location.pathname);
+  if (to) history.replaceState(null, "", to);
   const parts = location.pathname.split("/").filter(Boolean);
   if (parts[1] === "prs" && parts[2]) {
     return { name: "pr", repo: parts[0]!, number: Number(parts[2]), sub: (parts[3] as PrTab) ?? "overview" };
@@ -27,7 +46,7 @@ function parse(): Route {
   }
   if (parts[0] === "orchestrator" && parts.length === 1) return { name: "orchestrator" };
   if ((PAGES as readonly string[]).includes(parts[0] ?? "") && parts.length === 1) return { name: parts[0] as Page };
-  return { name: "board" };
+  return { name: "overview" };
 }
 
 const listeners = new Set<() => void>();

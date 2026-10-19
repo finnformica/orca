@@ -1,13 +1,14 @@
 // "New chat": a conversation, not a task. The button opens a composer INSTANTLY (nothing is created
 // yet); submitting paints the optimistic card and, in the background, cuts the worktree and fires the
 // first message through the chat path (chatPrompt, not the launch work-order). The card's terminal
-// opens by itself once its branch exists. Against the fake api (tests/apiFake.ts) in a real DOM.
+// opens by itself once its branch exists (its Agents row). Against the fake api (tests/apiFake.ts) in a real DOM.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
-import { Board } from "@/views/Board";
+import { NewDraft } from "@/views/NewDraft";
+import { Agents } from "@/views/Agents";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -36,7 +37,7 @@ afterEach(async () => {
 
 describe("new chat", () => {
   test("opens a composer instantly, then creates the card + worktree optimistically on submit", async () => {
-    await mount(<Board />);
+    await mount(<><NewDraft /><Agents /></>);
     const button = [...container!.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.getAttribute("aria-label") === "New chat")!;
     expect(button).toBeTruthy();
     // It takes the attach button's slot beside send, so the repo/provider dropdowns aren't squeezed.
@@ -57,10 +58,10 @@ describe("new chat", () => {
     });
     await click(dialog.querySelector('button[aria-label="Send"]')!);
 
-    // Submitted: the dialog closes, the optimistic card is on the board while the worktree is cut.
+    // Submitted: the dialog closes, the optimistic row is in the Agents list while the worktree is cut.
     expect(dialog.open).toBe(false);
     expect(apiFake.pending).not.toBeNull();
-    expect(container!.textContent).toContain("what does the auth module do?");
+    expect(container!.textContent).toMatch(/what does the auth module do/i); // the row's title, from the prompt
 
     await act(async () => { apiFake.pending!({ branch: "auth-module-ab12", worktreePath: "/wt/auth-module-ab12", title: "Auth module" }); apiFake.pending = null; await flush(); await flush(); await flush(); });
 

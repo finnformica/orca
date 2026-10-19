@@ -2,19 +2,22 @@ import { useEffect } from "react";
 import { useSetAtom } from "jotai";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom } from "@/lib/atoms";
-import { useOrchestrator } from "@/components/Terminal";
+import { openOrchestrator } from "@/lib/orchestratorOpen";
 import { launchOverlay } from "./workstream";
 import { expandTruncatedOnTap, trackVisualViewport } from "@/lib/viewport";
 import { Shell, Crumb, AddNew } from "@/components/Shell";
-import { OrchestratorPanel, OrchestratorPage } from "@/components/Terminal";
+import { OrchestratorPanel, OrchestratorPage, OrchestratorWindow, isOrchestratorWindow } from "@/components/Terminal";
 import { TerminalPanel } from "@/components/InstanceTerminal";
 import { ToastHost } from "@/components/Notifications";
 import { useWorkstreams } from "./store";
-import { NewDraft } from "./views/Board";
+import { NewDraft } from "./views/NewDraft";
 import { Overview } from "./views/Overview";
 import { Agents } from "./views/Agents";
-import { GitHubPage, PreviewsPage, Repos, Settings, UsagePage } from "./views/Pages";
+import { InboxPage } from "./views/Inbox";
+import { PreviewsPage, Settings } from "./views/Pages";
+import { HandoffsPage } from "./views/Handoffs";
 import { PrDetail } from "./views/PrDetail";
+import { IntegrationsPage } from "./views/Integrations";
 import { LocalDetail } from "./views/LocalDetail";
 import { TooltipProvider } from "./components/ui/tooltip";
 
@@ -29,13 +32,17 @@ export function App() {
   // A home-screen shortcut (manifest `shortcuts`) launches with ?open=new|orchestrator: open that
   // overlay once, and drop the parameter so a reload doesn't reopen it.
   const setAddNew = useSetAtom(addNewOpenAtom);
-  const { ask } = useOrchestrator();
+  // The plain function, NOT useOrchestrator(): that subscribes to the open atom, and App re-rendering
+  // re-renders the whole page (measured: the Overview's charts and feed in every panel open / close).
+  const ask = openOrchestrator;
   useEffect(() => {
     const open = launchOverlay(location.search);
     if (!open) return;
     navigate(location.pathname, true);
     if (open === "new") setAddNew(true); else ask();
   }, []);
+  // Pop out's popup window (no Document PiP in this browser): the chat alone, no shell around it.
+  if (route.name === "orchestrator" && isOrchestratorWindow()) return <TooltipProvider><OrchestratorWindow /></TooltipProvider>;
   return (
     <TooltipProvider>
       <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarAction collapsed={collapsed} />}>
@@ -53,11 +60,11 @@ function Page({ route }: { route: Route }) {
     case "pr": return <PrDetail repo={route.repo} number={route.number} sub={route.sub} />;
     case "local": return <LocalDetail repo={route.repo} branch={route.branch} sub={route.sub} />;
     case "agents": return <Agents />;
+    case "inbox": return <InboxPage />;
     case "previews": return <PreviewsPage />;
-    case "repos": return <Repos />;
-    case "github": return <GitHubPage />;
-    case "usage": return <UsagePage />;
+    case "handoffs": return <HandoffsPage />;
     case "settings": return <Settings />;
+    case "integrations": return <IntegrationsPage />;
     // The orchestrator's routed page (narrow screens; see useOrchestrator). It works if visited
     // directly on a desktop width too — nothing about the route itself is phone-only.
     case "orchestrator": return <OrchestratorPage />;
@@ -65,7 +72,7 @@ function Page({ route }: { route: Route }) {
   }
 }
 
-const TITLES = { board: "Overview", agents: "Agents", previews: "Previews", repos: "Repos", github: "GitHub", usage: "Usage", settings: "Settings", orchestrator: "Orchestrator" } as const;
+const TITLES = { overview: "Overview", agents: "Agents", inbox: "Inbox", previews: "Previews", handoffs: "Handoffs", settings: "Settings", orchestrator: "Orchestrator", integrations: "Integrations" } as const;
 
 function Crumbs({ route }: { route: Route }) {
   const rows = useWorkstreams();

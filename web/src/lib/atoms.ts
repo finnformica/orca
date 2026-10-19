@@ -1,6 +1,6 @@
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
-import { isBoolean, isNumber, isString, isStringArray, oneOf, persistedAtom } from "./persisted";
+import { isBoolean, isNumber, isString, isStringArray, persistedAtom } from "./persisted";
 import { TERMINAL_PANEL_INITIAL, type TerminalPanelState } from "../workstream";
 
 // New-draft composer's selected repo, persisted. The prompt + attachments are persisted by
@@ -8,26 +8,14 @@ import { TERMINAL_PANEL_INITIAL, type TerminalPanelState } from "../workstream";
 export const draftRepoAtom = atomWithStorage("orca.draftRepo", "");
 
 // The top bar's repo switcher ("all" or a repo name), persisted (lib/persisted; a repo no longer in
-// the config reads as "all" — Shell's useShellFallbacks). Scopes the board + the Done-lane copy.
+// the config reads as "all" — Shell's useShellFallbacks). Scopes the Overview, Agents and the Done-lane copy.
 export const repoFilterAtom = persistedAtom("repoFilter", "all", isString, "orca.repoFilter");
-
-// Card density, persisted. "comfortable" is the full card; "dense" strips a card down to its
-// at-a-glance status (repo, title, status/condition badges) — dropping the prompt, diffstat, and
-// preview+actions footer — so many sessions fit on screen. Done cards ignore it (always compact).
-export type Density = "comfortable" | "dense";
-// `orca.ui.v1.density` (lib/persisted); the pre-versioned `orca.density` is read once if present.
-export const densityAtom = persistedAtom<Density>("density", "comfortable", oneOf("comfortable", "dense"), "orca.density");
 
 // `repo::branch` of a card whose terminal should open as soon as it renders — set by "New chat",
 // which creates the worktree in the background and drops you straight into its conversation.
 // The card clears it once opened, so a later re-render doesn't reopen it.
 export const openTerminalAtom = atom<string | null>(null);
 
-// Which view "/" shows, persisted: "list" is the overview (stat tiles, the workstreams table and
-// recent activity), "board" the original five swimlanes of cards. List is the default.
-export type BoardView = "list" | "board";
-// `orca.ui.v1.agents.view`; the pre-versioned `orca.boardView` is read once if present.
-export const boardViewAtom = persistedAtom<BoardView>("agents.view", "list", oneOf("list", "board"), "orca.boardView");
 
 // The console shell. The sidebar can be collapsed to icons (persisted); the instance switcher at its
 // top scopes the Overview and Agents pages to one machine ("all" or an instance name, persisted);
@@ -44,7 +32,11 @@ export const usageExpandedAtom = persistedAtom("usageExpanded", false, isBoolean
 // the one window; `orchestratorPrefillAtom` is text for its composer. `session` groups the keystrokes
 // of one ask (typed in the entry before the composer mounts) so they replace each other rather than
 // stacking; `seq` makes every ask an event, even with the same text (it also refocuses the composer).
-export const orchestratorOpenAtom = atom(false);
+// Persisted (a reversal of #305's "always closed on reload"): a reload with it open shows the
+// panel open at once, with no slide to replay (SidePanel's `appStarting`) — OrchestratorPanel still
+// never auto-opens the dock on a narrow screen (phones route to `/orchestrator` instead; see its
+// `mounted` guard), so a stored "open" from a desktop session stays dormant there.
+export const orchestratorOpenAtom = persistedAtom("orchestratorOpen", false, isBoolean);
 export type OrchestratorPrefill = { text: string; session: number; seq: number };
 export const orchestratorPrefillAtom = atom<OrchestratorPrefill | null>(null);
 // The side panel's width (px), remembered per browser; clamped to the viewport on use.

@@ -17,8 +17,12 @@ import {
   mergeServers, probeServer, rememberServer, serverOrigin, serverStatus, showServerMenu, switchServer, type Probe, type ServersAnswer,
 } from "@/lib/server";
 import { _resetServerList } from "@/components/ServerMenu";
+import { _resetIdentity } from "@/lib/identity";
+import { IDENTITY_SAVE_DELAY_MS } from "@/views/Pages";
+import { IDENTITY_COLORS, colorFromName, markBg, markColor, themeCss } from "../shared/serverIdentity";
 import { getDefaultStore } from "jotai";
 import { paletteOpenAtom } from "@/lib/atoms";
+import { apiFake } from "./apiFake";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 type FakeSource = { url: string; close(): void };
@@ -72,6 +76,7 @@ afterEach(async () => {
   localStorage.clear();
   _resetServer();
   _resetServerList();
+  _resetIdentity();
   await act(async () => navigate("/"));
 });
 
@@ -143,7 +148,7 @@ test("S5: discovery merge without the Tailscale API — home, its list, known se
   const probes: Record<string, Probe> = {
     "http://100.101.1.2:8787": online(withSmf), "http://orca-personal-box:8787": online(PERSONAL), "http://lab-box:8787": { health: "offline" },
   };
-  expect(mergeServers(home, HOME, known, probes)).toEqual([
+  expect(mergeServers(home, HOME, known, probes)).toMatchObject([
     { name: "cloud", url: home, self: true, health: "online" }, // the page's own origin, under its own name
     { name: "personal", url: "http://100.101.1.2:8787", health: "online" }, // its own name, once
     { name: "lab", url: "http://lab-box:8787", health: "offline" },
@@ -153,7 +158,7 @@ test("S5: discovery merge without the Tailscale API — home, its list, known se
   const listed: ServersAnswer = { ...HOME, servers: [...HOME.servers, { name: "personal", url: "http://orca-personal-box.tail1.ts.net:8787", online: true, self: false }] };
   expect(mergeServers(home, listed, [{ name: "cloud", url: "http://orca-flow-box.tail1.ts.net:8787" }], {}).map((s) => s.name)).toEqual(["cloud", "personal"]);
   // No answer (an older home server): it is still listed, as "This server".
-  expect(mergeServers(home, null, [], {})).toEqual([{ name: "This server", url: home, self: true, health: "online" }]);
+  expect(mergeServers(home, null, [], {})).toMatchObject([{ name: "This server", url: home, self: true, health: "online" }]);
 });
 
 test("S5b: with the Tailscale API the home server's list is the whole list; the chosen server is always listed (pure)", () => {
@@ -181,7 +186,7 @@ const PERSONAL_BOX: ServersAnswer = { enabled: true, source: "config", tailscale
 test("S5c: a server's name is the Tailscale host from its own answer's self name, for the home row and a probed server alike (pure)", () => {
   const home = "http://orca-flow-box.tail1.ts.net:8787";
   const probes: Record<string, Probe> = { "http://orca-personal-box.tail1.ts.net:8787": online(PERSONAL_BOX) };
-  expect(mergeServers(home, FLOW, [], probes)).toEqual([
+  expect(mergeServers(home, FLOW, [], probes)).toMatchObject([
     { name: "orca-flow-box", url: home, self: true, health: "online" }, // the home row, under its own answer's self name
     { name: "orca-personal-box", url: "http://orca-personal-box.tail1.ts.net:8787", health: "online" }, // a probed box, under its own self name
   ]);
@@ -191,7 +196,7 @@ test("S5d: a localhost home is not listed (not an Orca box); the default selecti
   setup();
   for (const home of ["http://localhost:8788", "http://127.0.0.1:8788"]) {
     const list = mergeServers(home, FLOW, [], {});
-    expect(list).toEqual([{ name: "orca-personal-box", url: "http://orca-personal-box.tail1.ts.net:8787", health: "checking" }]);
+    expect(list).toMatchObject([{ name: "orca-personal-box", url: "http://orca-personal-box.tail1.ts.net:8787", health: "checking" }]);
     expect(currentServer(list)).toEqual(list[0]!); // no choice made: defaults to the first box, not a phantom self row
   }
   // A localhost URL learned any other way (known, a probe's own answer) is never listed either,
@@ -204,7 +209,7 @@ test("S5d: a localhost home is not listed (not an Orca box); the default selecti
 test("S5e: a box home (not localhost) is listed as the self row (pure)", () => {
   const home = "http://orca-flow-box.tail1.ts.net:8787";
   const list = mergeServers(home, FLOW, [], {});
-  expect(list[0]).toEqual({ name: "orca-flow-box", url: home, self: true, health: "online" });
+  expect(list[0]).toMatchObject({ name: "orca-flow-box", url: home, self: true, health: "online" });
   setup();
   expect(currentServer(list)).toEqual(list[0]!); // no choice made: defaults to the home (self) row
 });
@@ -234,7 +239,7 @@ test("S6: the top bar menu — repos-selector look, current checked, status dot 
   await act(async () => { await flush(); await flush(); await flush(); });
   const trigger = q('[data-slot="server-menu"]')!;
   expect(trigger.textContent).toBe("cloud"); // the home server's own name
-  expect(trigger.className).toContain("hover:bg-accent/60"); // the repos selector's trigger, not a tinted pill
+  expect(trigger.className).toContain("hover:bg-accent"); // the repos selector's trigger, not a tinted pill
   const bar = q('[data-slot="topbar"]')!;
   const repo = bar.querySelector('[data-slot="repo-switcher"]');
   if (repo) expect(trigger.compareDocumentPosition(repo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -255,6 +260,174 @@ test("S6: the top bar menu — repos-selector look, current checked, status dot 
   await act(async () => { items[1]!.click(); await flush(); });
   expect(JSON.parse(localStorage.getItem(CHOICE_KEY)!)).toEqual({ name: "personal", url: "http://orca-personal-box:8787" });
   expect(reloads).toBe(1);
+});
+
+test("S6e: the ACTIVE server's identity — title, accent, favicon and sidebar name — and each menu row's name and colour", async () => {
+  const WORK = { ...HOME, self: { ...HOME.self, label: "Work", color: "#2f6feb", identity: { name: "Work", color: "#2f6feb" } } };
+  const PERSONAL_ID = { ...PERSONAL, self: { ...PERSONAL.self, label: "Personal", color: "#1f9d55", identity: { name: "Personal" } } };
+  const icon = document.createElement("link");
+  icon.rel = "icon"; icon.href = "/favicon.svg";
+  document.head.appendChild(icon);
+  // The page came from the work box, but the tab talks to the personal one.
+  setup({ choice: { name: "personal", url: "http://orca-personal-box:8787" } });
+  network((u) => (u === "/api/servers" ? json(WORK) : u === "http://orca-personal-box:8787/api/servers" ? json(PERSONAL_ID) : undefined));
+  await mount();
+  await act(async () => { await flush(); await flush(); await flush(); });
+  expect(calls).toContain("http://orca-personal-box:8787/api/servers"); // asked of the chosen server, cross-origin
+  expect(document.title).toBe("Orca | Personal");
+  expect(document.documentElement.style.getPropertyValue("--server")).toBe("#1f9d55");
+  expect(document.documentElement.style.getPropertyValue("--server-mark")).toBe(markColor("#1f9d55"));
+  expect(decodeURIComponent(icon.href)).toContain(`<path fill="${markColor("#1f9d55")}"`); // the orca in the colour
+  expect(decodeURIComponent(icon.href)).toContain(`fill="${markBg("#1f9d55")}"`); // on a very dark green circle
+  expect(document.documentElement.style.getPropertyValue("--server-mark-bg")).toBe(markBg("#1f9d55"));
+  expect(document.getElementById("orca-server-theme")!.textContent).toBe(themeCss("#1f9d55")); // the theme's tones
+  expect(q('[data-slot="server-identity"]')!.textContent).toBe("Personal"); // beside the mark, top left
+  // It reads like the page title: "Orca | Personal", with the pipe hidden from a screen reader.
+  const brand = q('[data-slot="brand-name"]')!;
+  expect(brand.textContent).toBe("Orca|Personal");
+  expect(brand.querySelector('[data-slot="brand-sep"]')!.getAttribute("aria-hidden")).toBe("true");
+  expect(q('[data-slot="server-label"]')!.textContent).toBe("Personal");
+  const items = await openMenu();
+  expect(items.map((i) => i.getAttribute("aria-label"))).toEqual(["Work, online", "Personal, online"]);
+  expect(items.map((i) => i.getAttribute("data-server"))).toEqual(["cloud", "personal"]); // still matched by host name
+  const swatches = items.map((i) => i.querySelector<HTMLElement>('[data-slot="server-swatch"]')!.getAttribute("style"));
+  expect(swatches[0]).toMatch(/#2f6feb|rgb\(47, 111, 235\)/);
+  expect(swatches[1]).toMatch(/#1f9d55|rgb\(31, 157, 85\)/);
+  // The same answer, cached per server, paints the next load before the fetch lands.
+  expect(localStorage.getItem("orca.ui.v1.server.identity:http://orca-personal-box:8787")).toContain("Personal");
+  icon.remove();
+});
+
+test("S6g: Settings' theme colour is a popover — the 8 presets, a hex field for a custom colour, Auto — and each pick saves at once, with no Save button", async () => {
+  setup();
+  apiFake.setServerIdentityCalls = [];
+  network((u) => (u === "/api/servers" ? json({ ...HOME, self: { ...HOME.self, label: "cloud", color: colorFromName("cloud"), identity: {} } }) : undefined));
+  await mount();
+  await act(async () => { navigate("/settings"); await flush(); await flush(); await flush(); });
+  const trigger = q('[data-slot="identity-color-trigger"]')!;
+  // Auto: the colour of the shown name.
+  expect(trigger.getAttribute("aria-label")).toBe(`Theme colour: ${IDENTITY_COLORS.find((c) => c.value === colorFromName("cloud"))!.name} (auto)`);
+  expect(q('[data-slot="identity-color"]')).toBeNull(); // no row of buttons: the presets live in the popover
+  const open = async () => act(async () => { trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" })); trigger.click(); await flush(); await flush(); });
+  await open();
+  const picker = document.querySelector<HTMLElement>('[data-slot="identity-picker"]')!;
+  // Word's grid: the base row is the presets plus 2 hues, then 5 rows of tints and shades.
+  const swatches = [...picker.querySelectorAll<HTMLElement>('[data-slot="identity-color"]')];
+  expect(swatches.length).toBe(61);
+  // Neutral (no theme) is the first cell, with its name on it.
+  expect(swatches[0]!.dataset.row).toBe("neutral");
+  expect(swatches[0]!.textContent).toBe("Neutral");
+  const base = swatches.filter((b) => b.dataset.row === "base").map((b) => b.getAttribute("data-color"));
+  expect(base.slice(0, 8)).toEqual(IDENTITY_COLORS.map((c) => c.value));
+  expect(base.length).toBe(10);
+  const tint = swatches.find((b) => b.getAttribute("aria-label") === "Green, lighter 2")!;
+  await act(async () => { tint.click(); await flush(); });
+  expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Green, lighter 2");
+  expect(tint.getAttribute("aria-checked")).toBe("true"); // the selected cell has the ring
+  expect(tint.className).toContain("ring-2");
+  expect(picker.querySelector("[title]")).toBeNull(); // tooltips, never native title boxes
+  await act(async () => { swatches.find((b) => b.getAttribute("aria-label") === "Purple")!.click(); await flush(); });
+  expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Purple");
+  // A custom colour: only a whole #rrggbb applies.
+  const hex = picker.querySelector<HTMLInputElement>('[data-slot="identity-hex"]')!;
+  const type = async (v: string) => act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(hex, v);
+    hex.dispatchEvent(new Event("input", { bubbles: true })); await flush();
+  });
+  await type("#12a");
+  expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Purple");
+  await type("#12ab34");
+  expect(trigger.getAttribute("aria-label")).toBe("Theme colour: #12ab34");
+  await act(async () => { hex.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
+  expect(document.querySelector('[data-slot="identity-picker"]')).toBeNull();
+  expect(q('[data-slot="identity-save"]')).toBeNull();
+  // Every pick saved when it was made; a half-typed hex saved nothing.
+  expect(apiFake.setServerIdentityCalls).toEqual([
+    { name: "", color: tint.getAttribute("data-color")! }, { name: "", color: IDENTITY_COLORS.find((c) => c.name === "Purple")!.value }, { name: "", color: "#12ab34" },
+  ]);
+  // Neutral: picked from the grid, saved as "neutral"; the hex field empties.
+  await open();
+  const neutral = document.querySelector<HTMLElement>('[data-slot="identity-picker"] [data-row="neutral"]')!;
+  await act(async () => { neutral.click(); await flush(); });
+  expect(trigger.getAttribute("aria-label")).toBe("Theme colour: Neutral");
+  expect(neutral.getAttribute("aria-checked")).toBe("true");
+  expect(document.querySelector<HTMLInputElement>('[data-slot="identity-hex"]')!.value).toBe("");
+  await act(async () => { await flush(); });
+  expect(apiFake.setServerIdentityCalls.at(-1)).toEqual({ name: "", color: "neutral" });
+  // Neutral's swatch has the colour cells' look exactly: the same classes, no outer border.
+  const neutralSwatch = neutral.querySelector<HTMLElement>('[data-slot="identity-swatch"]')!;
+  const purple = document.querySelector<HTMLElement>('[data-slot="identity-picker"] [aria-label="Purple"]')!;
+  for (const k of ["size-5", "rounded-[4px]", "inset-ring", "ring-offset-1"]) { expect(neutralSwatch.classList).toContain(k); expect(purple.classList).toContain(k); }
+  expect(neutralSwatch.classList).not.toContain("border");
+  expect(neutralSwatch.className).toContain("ring-2"); // selected: the same ring as a colour
+});
+
+test("S6i: the display name saves after a pause in typing and on blur, shows Saved, and a failed save puts the old name back", async () => {
+  setup();
+  apiFake.setServerIdentityCalls = [];
+  network((u) => (u === "/api/servers" ? json({ ...HOME, self: { ...HOME.self, label: "cloud", color: colorFromName("cloud"), identity: {} } }) : undefined));
+  await mount();
+  await act(async () => { navigate("/settings"); await flush(); await flush(); await flush(); });
+  const input = q('[data-slot="identity-name"]') as HTMLInputElement;
+  // The preview beside the mark has the sidebar's separator: "Orca | <name>".
+  expect(q('[data-slot="identity-preview"] [data-slot="brand-name"]')!.textContent).toBe("Orca|cloud");
+  const type = async (v: string) => act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, v);
+    input.dispatchEvent(new Event("input", { bubbles: true })); await flush();
+  });
+  const wait = (ms: number) => act(async () => { await new Promise((r) => setTimeout(r, ms)); await flush(); await flush(); });
+  input.focus();
+  await type("Wo");
+  await type("Work");
+  expect(apiFake.setServerIdentityCalls).toEqual([]); // still typing
+  await wait(IDENTITY_SAVE_DELAY_MS + 100);
+  expect(apiFake.setServerIdentityCalls).toEqual([{ name: "Work", color: "" }]); // one save, the last value
+  expect(q('[data-slot="identity-preview-name"]')!.textContent).toBe("Work");
+  expect(q('[data-slot="identity-status"]')!.textContent).toContain("Saved");
+  // Blur saves at once, with no wait.
+  await type("Work box");
+  await act(async () => { input.blur(); input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); await flush(); await flush(); });
+  expect(apiFake.setServerIdentityCalls.at(-1)).toEqual({ name: "Work box", color: "" });
+  // A failed save: the stored name comes back and the action-failed toast tells why.
+  apiFake.setServerIdentityError = "config is read-only";
+  input.focus();
+  await type("Broken");
+  await act(async () => { input.blur(); input.dispatchEvent(new FocusEvent("focusout", { bubbles: true })); await flush(); await flush(); await flush(); });
+  expect(apiFake.setServerIdentityCalls.at(-1)).toEqual({ name: "Broken", color: "" });
+  expect(input.value).toBe(""); // the stored name (none), not the failed one
+  expect(document.body.textContent).toContain("Save identity failed");
+});
+
+test("S6h: a Neutral server has the old look — no theme sheet, no accent, the black-and-white favicon", async () => {
+  const NEUTRAL_HOME = { ...HOME, self: { ...HOME.self, label: "Work", color: "neutral", identity: { name: "Work", color: "neutral" } } };
+  const icon = document.createElement("link");
+  icon.rel = "icon"; icon.href = "/favicon.svg";
+  document.head.appendChild(icon);
+  setup();
+  network((u) => (u === "/api/servers" ? json(NEUTRAL_HOME) : undefined));
+  await mount();
+  await act(async () => { await flush(); await flush(); await flush(); });
+  expect(document.title).toBe("Orca | Work");
+  expect(document.documentElement.style.getPropertyValue("--server")).toBe("");
+  expect(document.documentElement.style.getPropertyValue("--server-mark-bg")).toBe("");
+  expect(document.getElementById("orca-server-theme")).toBeNull();
+  expect(decodeURIComponent(icon.href)).toContain('fill="#000000"');
+  expect(decodeURIComponent(icon.href)).toContain('<path fill="#ffffff"');
+  expect(q('[data-slot="server-menu"] [data-slot="server-swatch"]')!.getAttribute("style")).toContain("linear-gradient");
+  icon.remove();
+});
+
+test("S6f: after a switch the menu shows the active server's cached identity before its health check answers", async () => {
+  setup({ choice: { name: "orca-personal-box", url: "http://orca-personal-box:8787" } });
+  localStorage.setItem("orca.ui.v1.server.identity:http://orca-personal-box:8787",
+    JSON.stringify({ label: "Personal", color: "#1f9d55", host: "orca-personal-box", stored: { name: "Personal" } }));
+  _resetIdentity();
+  network((u) => { if (u.startsWith("http://orca-personal-box")) throw new TypeError("Failed to fetch"); return undefined; });
+  await mount();
+  await act(async () => { await flush(); await flush(); });
+  expect(q('[data-slot="server-label"]')!.textContent).toBe("Personal"); // not its host name
+  expect(q('[data-slot="server-menu"] [data-slot="server-swatch"]')!.getAttribute("style")).toMatch(/#1f9d55|rgb\(31, 157, 85\)/);
+  expect(document.title).toBe("Orca | Personal");
 });
 
 test("S6b: with the Tailscale API and one server there is no menu, and no hint when the API is set", async () => {

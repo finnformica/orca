@@ -1,5 +1,5 @@
 import {
-  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, modelFor, parseConfigDocument,
+  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
@@ -26,12 +26,16 @@ import * as integrations from "./integrations/registry";
 import * as dispatcher from "./integrations/dispatcher";
 import * as inbox from "./integrations/inbox";
 import * as integrationStore from "./integrations/store";
+import { filterInbox, inboundConversation, inboxFacets, inboxRows, inboxWindow, muteKey, notificationIdOf, notificationRows, notificationSender, OWN_EVENT, parseConversation, threadActions, threadItems, workstreamOf } from "../shared/inbox";
+import { replyToEvent } from "./integrations/router";
+import * as integrationAdmin from "./integrations/admin";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
 import * as primary from "./primary";
 import * as mergeQueue from "./mergeQueue";
 import * as upkeep from "./upkeep";
 import * as notify from "./notify";
+import { KIND_META } from "../shared/notifications";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import * as repos from "./repos";
@@ -42,7 +46,11 @@ import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
 import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
-import { listServers, serverGate } from "./servers";
+import { checkCaller, instanceHosts, listServers, selfServer, serverGate, withIdentity } from "./servers";
+import { isAutomatic, leaseHolder } from "../shared/integrations";
+import { instanceOptions } from "../shared/integrationSettings";
+import { identityUpdate, serverIdentityProblems } from "../shared/serverIdentity";
+import * as handoff from "./handoff";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -308,6 +316,7 @@ const degradedJson = (data: unknown, status = 200) => Response.json(
 const EMPTY_WHEN_DOWN: Record<string, () => unknown> = {
   "/api/queued": () => [],
   "/api/notifications": () => [],
+  "/api/inbox/unread": () => ({ others: 0, mutedKinds: [] }),
   "/api/health/history": () => [],
   "/api/config/document": () => ({}),
 };
@@ -349,6 +358,9 @@ async function foreignInventory(repo: string, exclude?: string): Promise<unknown
 const notEnabled = (repo: RepoConfig, feature: string) =>
   json({ error: `${feature} is not enabled for ${repo.name} — turn it on in the repo's config` }, 403);
 
+/** How many inbox events one /api/inbox answer reads (a window; `older` pages past it). */
+const INBOX_WINDOW = 300;
+
 // Routes served by ANY instance because they read only Postgres — history stays readable even when
 // the machine that produced it is asleep. Everything else touches a worktree or spawns a process and
 // must run where the repo lives.
@@ -358,7 +370,7 @@ const DATABASE_ONLY = new Set([
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history", "/api/config/instance-rate", "/api/config/terminal",
+  "/api/health/history", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity",
   // A workstream's reported screenshots, read off its turns (the files are served per shot).
   "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -370,6 +382,9 @@ const DATABASE_ONLY = new Set([
   "/api/previews",
   // The notification centre: one table, written once by the instance where each event happened.
   "/api/notifications", "/api/notifications/read",
+  // The unified inbox: the integrations' event, delivery and thread_link rows.
+  "/api/inbox", "/api/inbox/unread", "/api/inbox/thread", "/api/inbox/threads",
+  "/api/inbox/reply", "/api/inbox/read", "/api/inbox/mute", "/api/inbox/link",
 ]);
 
 // DATABASE_ONLY routes whose `?instance=` selects rows rather than a machine — never forwarded.
@@ -535,7 +550,52 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   // The server switcher (server/servers.ts): the Orca servers a browser may switch to. Answered here,
   // never forwarded — each server names itself and its own discovery.
-  if (req.method === "GET" && p === "/api/servers") return json(await listServers(cfg.serverSwitcher));
+  if (req.method === "GET" && p === "/api/servers") return json(withIdentity(await listServers(cfg.serverSwitcher), cfg.serverIdentity));
+  // Handoff packs (server/handoff.ts): context for another Orca server, carried by the browser. Never
+  // forwarded: the packs are this database's, and the import queues to THIS side's orchestrator.
+  if (p === "/api/handoffs" || p.startsWith("/api/handoffs/") || p === "/api/handoff/import") {
+    try {
+      if (req.method === "GET" && p === "/api/handoffs") return json({ self: (await selfServer(cfg.serverSwitcher ?? {})).name, packs: await handoff.list() });
+      if (req.method === "POST" && p === "/api/handoffs") {
+        // The UI's Hand off on a card packs that workstream's chat.
+        const chats: number[] = Array.isArray(body.chats) ? body.chats.map(Number) : [];
+        if (typeof body.repo === "string" && typeof body.branch === "string") {
+          const id = await handoff.chatOf(body.repo, body.branch);
+          if (!id) return json({ error: `${body.repo}/${body.branch} has no chat yet` }, 400);
+          chats.push(id);
+        }
+        const r = await handoff.createPack({ to: String(body.to ?? ""), title: String(body.title ?? ""), message: typeof body.message === "string" ? body.message : "", chats, source: (await selfServer(cfg.serverSwitcher ?? {})).name });
+        return json({ pack: await handoff.one(r.pack.id) });
+      }
+      const m = p.match(/^\/api\/handoffs\/([\w-]+)(\/export|\/sent)?$/);
+      if (m && req.method === "GET" && m[2] === "/export") return json(await handoff.exportPack(m[1]!));
+      if (m && req.method === "POST" && m[2] === "/sent") {
+        if (typeof body.to !== "string" || !body.to.trim()) return json({ error: "to required" }, 400);
+        await db.markHandoffSent(m[1]!, body.to.trim());
+        return json({ ok: true });
+      }
+      if (m && req.method === "DELETE" && !m[2]) { await db.deleteHandoff(m[1]!); return json({ ok: true }); }
+      if (req.method === "POST" && p === "/api/handoff/import") {
+        // The switcher's gate (serverGate) already added CORS and ran whois for a foreign Origin; this
+        // runs the same whois for every caller, so a same-origin or Origin-less call can't skip it.
+        const verdict = await handoff.importCallerVerdict(req.headers.get("origin"), remoteAddr.get(req), (ip) => checkCaller(ip, cfg.serverSwitcher ?? {}));
+        if (!verdict.ok) return json({ error: `Import refused: ${verdict.reason}.` }, 403);
+        const elsewhere = cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName() ? cfg.orchestratorOn : undefined;
+        if (!elsewhere && !primary.held()) return json({ error: `this is a secondary bridge (${primary.state().reason}); send the pack to the instance's primary bridge` }, 503);
+        const queue = async (text: string, refs: string[]) => {
+          if (!elsewhere) return orchestrator.message(cfg, text, refs);
+          const base = cfg.instances?.[elsewhere];
+          if (!base) throw new handoff.HandoffError(`the orchestrator lives on "${elsewhere}", which has no address configured`, 502);
+          const r = await fetch(new URL("/api/orchestrator/message", base), { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, attachments: refs }) });
+          if (!r.ok) throw new handoff.HandoffError(`${elsewhere} refused the message: HTTP ${r.status}`, 502);
+        };
+        return json(await handoff.importPack(body, queue));
+      }
+    } catch (e) {
+      if (e instanceof handoff.HandoffError) return json({ error: e.message }, e.status);
+      throw e;
+    }
+  }
   // The server's off switch for the switcher (on unless false): sets `serverSwitcher.enabled` and keeps
   // the rest of the document. No web control calls it; the browser has no switch of its own.
   if (req.method === "POST" && p === "/api/config/server-switcher") {
@@ -603,14 +663,133 @@ async function api(req: Request, url: URL): Promise<Response> {
     return json({ error: `this is a secondary bridge (${primary.state().reason}); the orchestrator is driven by the instance's primary bridge` }, 503);
   }
   if (req.method === "GET" && p === "/api/integrations") {
-    // The integrations this database knows, what runs on this bridge and its health, and the outbox's
-    // dead letters — for diagnostics now and the Settings > Integrations page later.
-    const [rows, dead] = await Promise.all([integrationStore.integrations(), integrationStore.deliveries({ state: "dead", limit: 50 })]);
-    return json({ instance: db.instanceName(), integrations: rows, running: await integrations.health(), dead: dead.map(({ envelope, ...d }) => ({ ...d, topic: envelope.topic, key: envelope.key })) });
+    // Settings > Integrations in one read (server/integrations/admin.ts): the kinds the registry
+    // knows, every integration with its health and last event, links, people, pending pairing codes,
+    // subscriptions and the dead deliveries. `running` keeps the diagnostics' map of this bridge.
+    // `instanceOptions`: each instance by the server's display name or its Tailscale host, not its id.
+    const ids = [...Object.keys(cfg.instances ?? {}), db.instanceName()];
+    const hosts = await instanceHosts(cfg.instances ?? {}, cfg.serverSwitcher ?? {}).catch(() => ({}));
+    const options = instanceOptions(ids, hosts, cfg.serverIdentity?.name, cfg.orchestratorOn ?? db.instanceName());
+    return json({ ...(await integrationAdmin.overview()), instanceOptions: options, running: await integrations.health() });
+  }
+  if (req.method === "POST" && p === "/api/integrations/test") {
+    // The card's Test: the adapter's own health check, on the instance that runs it.
+    const row = await integrationStore.integration(String(body.id ?? ""));
+    if (!row) return json({ error: `no integration ${String(body.id ?? "")}` }, 404);
+    const on = isAutomatic(row.instance) ? leaseHolder(row.auto, Date.now()) : row.instance; // Automatic: its lease holder
+    if (on && on !== db.instanceName()) {
+      try { return json(await orchestrator.viaInstance(cfg, on, "/api/integrations/test", { id: row.id })); }
+      catch (e) { return json({ ok: false, detail: e instanceof Error ? e.message : String(e) }); }
+    }
+    return json(await integrationAdmin.testIntegration(row.id));
+  }
+  if (req.method === "POST" && p.startsWith("/api/integrations/")) {
+    try {
+      const out = await integrationAdmin.route(p, body);
+      if (out !== undefined) return json(out);
+    } catch (e) {
+      if (e instanceof integrationAdmin.AdminError) return json({ error: e.message }, 400);
+      throw e;
+    }
   }
   // Pairing (server/integrations/router.ts): an unknown sender got a code; you approve it here, which
   // binds their platform identity to a principal (new, or an existing id). The Settings page calls
   // the same routes later. Body: { code, principal?, name?, maxLevel? ("notify" | "ask" | "work") }.
+  // The unified inbox (shared/inbox.ts): the newest INBOX_WINDOW inbox events before `?before=`, as
+  // rows with their reply's delivery state, filtered by `?source=` / `?person=`; the facets are over
+  // the whole window, so a chip never hides its siblings. `older` is the cursor for the next window.
+  if (req.method === "GET" && p === "/api/inbox") {
+    // Two sources, one list: the integrations' events and Orca's own notifications (the bell's
+    // rows). The cursor is a time (ms), the same for both: a full source sets the cut, and only rows
+    // after it are kept, so the next window starts exactly where this one ended.
+    const beforeRaw = Number(url.searchParams.get("before"));
+    const beforeAt = Number.isFinite(beforeRaw) && beforeRaw > 0 ? beforeRaw : undefined;
+    const [events, notes, muted] = await Promise.all([
+      integrationStore.inboxEvents({ beforeAt, limit: INBOX_WINDOW }),
+      integrationStore.inboxNotifications({ before: beforeAt, limit: INBOX_WINDOW }),
+      integrationStore.mutedSenders(),
+    ]);
+    const since = events.length ? Math.min(...events.map((e) => e.at)) : Date.now();
+    const [outbound, links, principals, read] = await Promise.all([
+      integrationStore.linkDeliveries(since), integrationStore.threadLinks(), integrationStore.principalNames(),
+      integrationStore.readEvents(events.map((e) => e.id)),
+    ]);
+    const { rows: all, older } = inboxWindow([
+      { rows: inboxRows(events, outbound, links, principals, { read, muted }), full: events.length === INBOX_WINDOW },
+      { rows: notificationRows(notes, muted), full: notes.length === INBOX_WINDOW },
+    ]);
+    const flag = (k: string) => url.searchParams.get(k) === "1";
+    const rows = filterInbox(all, { source: url.searchParams.get("source") || undefined, person: url.searchParams.get("person") || undefined, unread: flag("unread"), muted: flag("muted") });
+    return json({ rows, facets: inboxFacets(all), older });
+  }
+  // The inbox's half of the one unread count (the bell adds its own rows), and the notification
+  // kinds you muted, which the bell leaves out of its count.
+  if (req.method === "GET" && p === "/api/inbox/unread") {
+    const [others, muted] = await Promise.all([integrationStore.unreadWithoutCopy(INBOX_WINDOW), integrationStore.mutedSenders()]);
+    const prefix = muteKey("orca", notificationSender(""));
+    return json({ others, mutedKinds: [...muted].filter((k) => k.startsWith(prefix)).map((k) => k.slice(prefix.length)) });
+  }
+  if (req.method === "GET" && p === "/api/inbox/thread") {
+    const c = parseConversation(url.searchParams.get("c"));
+    if (!c) return json({ error: "c=<adapter>|<id> required" }, 400);
+    const [conv, principals, allLinks] = await Promise.all([integrationStore.conversation(c), integrationStore.principalNames(), integrationStore.links()]);
+    const labels = new Map(allLinks.map((l) => [l.id, l.label ?? l.externalId]));
+    const workstream = conv.link ? { repo: conv.link.repo, branch: conv.link.branch } : conv.events.map((e) => workstreamOf(e, [])).find(Boolean);
+    const [read, muted] = await Promise.all([integrationStore.readEvents(conv.events.map((e) => e.id)), integrationStore.mutedSenders()]);
+    return json({ conversation: c, items: threadItems(conv.events, conv.outbound, principals, labels), ...(workstream ? { workstream } : {}), ...threadActions(conv.events, !!conv.link, { read, muted }, principals) });
+  }
+  // The inbox's actions, each on one inbound event: Reply where it came from (the `orca post` path,
+  // server/integrations/router.ts replyToEvent), read state and mute (per user), and Link its conversation to a
+  // workstream (a thread_link, so later replies there reach that workstream).
+  if (req.method === "POST" && p === "/api/inbox/reply") {
+    if (typeof body.eventId !== "string" || typeof body.text !== "string") return json({ error: "eventId and text required" }, 400);
+    try {
+      const r = await replyToEvent(body.eventId, body.text);
+      await integrationStore.setRead([body.eventId], true);
+      return json(r);
+    } catch (e) {
+      if (e instanceof db.DbUnavailable) throw e;
+      return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+    }
+  }
+  if (req.method === "POST" && p === "/api/inbox/read") {
+    const ids: string[] = Array.isArray(body.ids) ? body.ids.filter((x: unknown): x is string => typeof x === "string") : [];
+    if (!ids.length) return json({ error: "ids required" }, 400);
+    // A notification row's read state is the notification's own (the bell's): one state, two views.
+    const notes = ids.map(notificationIdOf).filter((n): n is number => n !== undefined);
+    const events = ids.filter((id) => notificationIdOf(id) === undefined);
+    const read = body.read !== false;
+    await Promise.all([
+      integrationStore.setRead(events, read),
+      read ? db.markNotificationsRead(notes) : integrationStore.markNotificationsUnread(notes),
+    ]);
+    return json({ ok: true });
+  }
+  if (req.method === "POST" && p === "/api/inbox/mute" && typeof body.eventId === "string" && notificationIdOf(body.eventId) !== undefined) {
+    // A notification row mutes its kind (its "sender", shared/inbox.ts notificationSender).
+    const kind = await integrationStore.notificationKind(notificationIdOf(body.eventId)!);
+    if (!kind) return json({ error: "eventId must name a notification" }, 400);
+    await integrationStore.setMuted("orca", notificationSender(kind), body.muted !== false, KIND_META[kind as keyof typeof KIND_META]?.label ?? kind);
+    return json({ ok: true });
+  }
+  if (req.method === "POST" && (p === "/api/inbox/mute" || p === "/api/inbox/link")) {
+    const e = typeof body.eventId === "string" ? await integrationStore.eventById(body.eventId) : undefined;
+    if (!e) return json({ error: "eventId must name an event" }, 400);
+    if (p === "/api/inbox/mute") {
+      if (!e.actor) return json({ error: "this event has no sender to mute" }, 400);
+      await integrationStore.setMuted(e.actor.external.adapter, e.actor.external.id, body.muted !== false, e.actor.external.name);
+      return json({ ok: true });
+    }
+    const repo = typeof body.repo === "string" ? body.repo : "", branch = typeof body.branch === "string" ? body.branch : "";
+    if (!cfg.repos.some((r) => r.name === repo) || !branch) return json({ error: "repo (a configured repo) and branch required" }, 400);
+    const c = inboundConversation(e);
+    if (c.id.startsWith(OWN_EVENT)) return json({ error: "this event has no thread or place to link" }, 400);
+    await integrationStore.setThreadLink({ adapter: c.adapter, externalThreadId: c.id, repo, branch, ...(e.source.linkId ? { linkId: e.source.linkId } : {}) });
+    const linked = await integrationStore.threadLink(c.adapter, c.id);
+    return json({ link: linked });
+  }
+  // The workstream cards' source chips: every thread link (repo, branch, adapter).
+  if (req.method === "GET" && p === "/api/inbox/threads") return json({ links: await integrationStore.threadLinks() });
   if (req.method === "GET" && p === "/api/integrations/pairing") return json({ pairings: await integrationStore.pendingPairings() });
   if (req.method === "POST" && p === "/api/integrations/pairing/approve") {
     const level = body.maxLevel;
@@ -784,7 +963,9 @@ async function api(req: Request, url: URL): Promise<Response> {
     const { config, errors } = parseConfigDocument(body.config ?? body);
     if (!config) return json({ errors }, 400);
     // The web terminal's flag is NOT part of a pasted document: only Settings' own route sets it.
-    await saveConfigDocument({ ...config, ...(cfg.terminal ? { terminal: cfg.terminal } : {}) });
+    // Nor is the server identity: a document copied from another server must not rename this one.
+    const { serverIdentity: _pasted, ...pasted } = config;
+    await saveConfigDocument({ ...pasted, ...(cfg.terminal ? { terminal: cfg.terminal } : {}), ...(cfg.serverIdentity ? { serverIdentity: cfg.serverIdentity } : {}) });
     return json({ ok: true, repos: config.repos.map((r) => r.name) });
   }
   if (req.method === "POST" && p === "/api/config/instance-rate") {
@@ -794,6 +975,13 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!instance || (usd !== null && !(Number.isFinite(usd) && usd >= 0))) return json({ error: "instance and a non-negative hourlyUsd (or null) are required" }, 400);
     await db.setInstanceHourlyUsd(instance, usd);
     invalidateConfig();
+    return json({ ok: true });
+  }
+  if (req.method === "POST" && p === "/api/config/identity") {
+    // Settings' Server identity: this server's display name and theme colour. Empty fields clear.
+    const problems = serverIdentityProblems({ name: body.name || undefined, color: body.color || undefined });
+    if (problems.length) return json({ error: problems.join("; ") }, 400);
+    await setServerIdentity(identityUpdate(body.name, body.color));
     return json({ ok: true });
   }
   if (req.method === "POST" && p === "/api/config/terminal") {
@@ -1104,8 +1292,17 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   if (req.method === "POST" && p === "/api/prs/auto-merge") {
     if (!featuresOf(repo).autoMerge) return notEnabled(repo, "Auto-merge");
-    await gh.enableAutoMerge(repo.repoPath, body.pr); // GitHub merges once checks + reviews pass
-    return json({ ok: true });
+    try {
+      await gh.enableAutoMerge(repo.repoPath, body.pr); // GitHub merges once checks + reviews pass
+      return json({ ok: true });
+    } catch (e) {
+      // The repo disallows GitHub's own auto-merge and the PR isn't safe to merge now: queue it in
+      // Orca's own merge-when-green queue instead. This is Finn's own click, so the mergePolicy that
+      // limits what the orchestrator may merge on its own does not apply (bypassPolicy).
+      if (!(e instanceof gh.AutoMergeNotAllowed)) throw e;
+      const text = await mergeQueue.request(cfg, repo, { pr: body.pr }, { by: "user", bypassPolicy: true });
+      return json({ ok: true, queued: true, text });
+    }
   }
   if (req.method === "POST" && p === "/api/prs/disable-auto-merge") {
     await gh.disableAutoMerge(repo.repoPath, body.pr); // cancel the queued auto-merge
