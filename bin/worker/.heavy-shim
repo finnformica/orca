@@ -20,20 +20,23 @@
 #   - Nested calls (ORCA_RUN_SLOT is set under orca-run) never queue again.
 #   - The escape hatch: ORCA_RUN_BYPASS=1 runs the real tool at once.
 name=${0##*/}
-self_dir=$(cd "$(dirname "$0")" && pwd -P)
+self_dir=$(cd "${0%/*}" && pwd -P)
 
-# The real tool: the first one on PATH that is not in this directory. `-ef` needs no subshell, so
-# the walk stays cheap for bash and bun, which agents start all the time.
+# The real tool: the first one on PATH that is not in a shim directory. A shim directory is any
+# directory with a `.heavy-shim` in it: this one, /opt/orca/bin/worker, and a worktree's copy.
+# Skipping only this directory let two copies on PATH exec each other forever (2026-10-19: six
+# such loops, 25% CPU each). A test that is a shell builtin needs no subshell, so the walk stays
+# cheap for bash and bun, which agents start all the time.
 real=""
 old_ifs=$IFS
 IFS=:
 for d in $PATH; do
   [ -n "$d" ] || continue
-  [ "$d/.heavy-shim" -ef "$self_dir/.heavy-shim" ] && continue
+  [ -e "$d/.heavy-shim" ] && continue
   if [ -x "$d/$name" ] && [ ! -d "$d/$name" ]; then real="$d/$name"; break; fi
 done
 IFS=$old_ifs
-if [ -z "$real" ]; then echo "$name: command not found" >&2; exit 127; fi
+if [ -z "$real" ]; then echo "$name: command not found (only Orca shims on PATH)" >&2; exit 127; fi
 
 if [ -n "$ORCA_RUN_SLOT" ] || [ "$ORCA_RUN_BYPASS" = "1" ]; then exec "$real" "$@"; fi
 

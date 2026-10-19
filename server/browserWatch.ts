@@ -11,6 +11,13 @@
 // `playwright test` runner is a test and is kept too: workers ran e2e suites in their own scope
 // before the queue, and the ban is on browsers outside tests. Each kill is recorded on the workstream that started it (enrichment `browserKilled`,
 // the card's warning) and as a step in that run's transcript.
+//
+// The same pass stops ORPHAN run scopes (`sweepOrphanScopes`): an `orca-run-<runId>.scope` whose
+// run no lease file on this host names. Every run this host's bridges start has one (they share
+// `~/.orca`), so an orphan is a run a test started with its own state dir, or one a dead bridge
+// forgot. 2026-10-19: six fake claudes of a test looped through the `bun` shims for minutes in real
+// run scopes. A scope is killed on the second pass in a row that sees it, so a launch between its
+// spawn and its lease write is safe.
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import type { AgentStep } from "../shared/agent";
@@ -18,6 +25,7 @@ import * as bus from "./bus";
 import { AGENTS_SLICE } from "./cgroup";
 import * as db from "./db";
 import { WORKER_BIN } from "./env";
+import * as lease from "./lease";
 import * as outbox from "./outbox";
 import * as transcript from "./transcript";
 
@@ -150,4 +158,49 @@ export async function recordKills(runId: string | undefined, names: string[]): P
   await outbox.patchEnrichment(owner.repo, owner.branch, { browserKilled: nextKillRecord(prev, runId, names, new Date()) });
   const written = await transcript.append(runId, [killStep(names)]);
   if (written.length) bus.publish({ kind: "step", runId, repo: owner.repo, branch: owner.branch, steps: written });
+}
+
+/** The run of a process in a run scope in the agents' slice that no lease names. Pure. */
+export function orphanRun(p: ProcInfo, known: Set<string>, self = process.pid): string | undefined {
+  if (p.pid === self || !p.cgroup.includes(`/${AGENTS_SLICE}/`)) return undefined;
+  const runId = p.cgroup.match(RUN_SCOPE)?.[1];
+  return runId && !known.has(runId) ? runId : undefined;
+}
+
+export type OrphanDeps = {
+  procs?: () => ProcInfo[];
+  /** Run ids with a lease file here; `undefined` (unreadable) kills nothing. */
+  known?: () => Set<string> | undefined;
+  kill?: (pid: number) => void;
+  /** The orphan runs the last pass saw: read, then replaced with this pass's. */
+  suspects?: Set<string>;
+};
+
+const suspects = new Set<string>();
+
+/** One pass: kill every process of a run scope seen as an orphan on this pass and the last one. */
+export function sweepOrphanScopes(deps: OrphanDeps = {}): { pid: number; runId: string }[] {
+  const kill = deps.kill ?? ((pid: number) => { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } });
+  const last = deps.suspects ?? suspects;
+  // The processes first, then the leases: a run that starts between the two reads is known.
+  const procs = (deps.procs ?? readProcs)();
+  const known = (deps.known ?? lease.knownRunIds)();
+  const seen = new Set<string>();
+  const killed: { pid: number; runId: string }[] = [];
+  if (known) {
+    for (const p of procs) {
+      const runId = orphanRun(p, known);
+      if (!runId) continue;
+      seen.add(runId);
+      if (!last.has(runId)) continue;
+      kill(p.pid);
+      killed.push({ pid: p.pid, runId });
+    }
+  }
+  last.clear();
+  for (const r of seen) last.add(r);
+  for (const runId of new Set(killed.map((k) => k.runId))) {
+    console.error(`orca: watchdog killed ${killed.filter((k) => k.runId === runId).length} process(es) of orphan scope orca-run-${runId}.scope (no lease on this host)`);
+  }
+  return killed;
 }

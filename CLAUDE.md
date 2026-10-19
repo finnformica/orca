@@ -1284,7 +1284,10 @@ orchestrator: all of its cwd's), never a browser server — plus `--disallowedTo
 mcp__playwright,mcp__chrome-devtools`. (2) `server/browserWatch.ts`: every 30 s the primary kills a
 browser or browser MCP server in `orca-agents.slice` outside orca-shot's scope and the test queue's
 `orca-heavy-*` slots, and records it on the card (`browserKilled`, a "Browser killed" pill) and as
-a step in the run's transcript. Until `bin/worker/orca-run` exists, a browser under `playwright
+a step in the run's transcript. The same pass kills an ORPHAN run scope: an `orca-run-<runId>.scope`
+that no lease file on this host names (a test's run with its own state dir), seen on two passes in a
+row. The `.heavy-shim` skips every directory with a `.heavy-shim` (two shim copies on PATH once
+exec'd each other forever) and exits 127 when only shims are left. Until `bin/worker/orca-run` exists, a browser under `playwright
 test` is kept as a test.
 **Screenshots in PRs and on the agent page** (`server/prShots.ts`): shots are not stored per turn —
 `workstreamShots` reads them off the branch's turns (reply + Verification). The newest
