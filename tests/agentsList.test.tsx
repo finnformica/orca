@@ -1,5 +1,5 @@
 // E2E for the condensed Agents list (views/Agents.tsx): the column set and the no-horizontal-scroll
-// layout (workstream.listColumns / listMinWidth), the right-click menu (the ⋯ menu's own items at
+// layout (workstream.listColumns / listLayout: content-sized columns that fold by priority), the right-click menu (the ⋯ menu's own items at
 // the pointer), the running row's spinner + live elapsed time on ONE shared ticker (lib/ticker), and
 // readable model labels instead of initials. Pure pieces first, then the view against the fake api.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
@@ -7,10 +7,12 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
-import { Agents, LIST_CELL_SHOWN, LIST_FOLDED } from "@/views/Agents";
+import { Agents } from "@/views/Agents";
 import { navigate } from "@/lib/route";
 import { createTicker, ticker } from "@/lib/ticker";
-import { LIST_CHROME_PX, LIST_TIER_MIN_REM, LIST_TIERS, formatElapsed, listColumnTiers, listColumns, listFits, listGridTemplate, listMinWidth, listStacked, listTier, modelBadge, sublineOverflow } from "@/workstream";
+import * as ws from "@/workstream";
+import { LIST_TITLE_MIN_PX, NO_FOLD, formatElapsed, listColumns, listLayout, modelBadge, sublineOverflow, type ListWidths } from "@/workstream";
+import { readFileSync } from "node:fs";
 import { openTip } from "./tip";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -24,37 +26,49 @@ describe("agents list layout (pure)", () => {
     for (const gone of ["instruction", "branch", "model", "prNumber", "updated", "instance"]) expect(keys).not.toContain(gone);
   });
 
-  test("no horizontal scroll from 1280px up: the floors fit beside the sidebar; flexible tracks take the rest", () => {
-    const cols = listColumns();
-    for (const vw of [1280, 1440, 1920, 2560]) expect(listFits(cols, vw)).toBe(true);
-    expect(listMinWidth(cols)).toBeLessThanOrEqual(1280 - LIST_CHROME_PX);
-    const t = listGridTemplate(cols);
-    expect(t).toBe("minmax(10rem,2fr) 8.5rem 8.5rem minmax(6rem,1fr) 10rem");
-    expect(cols.at(-1)).toMatchObject({ key: "actions", label: "Actions" });
-    expect(t).not.toContain("auto"); // a content-sized track could push the row wider than the card
+  // Natural widths close to the real list's: Idle 6m 13s, In review + #339, CI + review, 3 icons.
+  const W: ListWidths = { status: 110, pr: 120, signals: 100, actions: 110 };
+  const keys = (px: number, w = W) => { const f = listLayout(px, w).fold; return f.stacked ? "stacked" : listColumns(f).map((c) => c.key).join(" "); };
+
+  test("the Workstream column takes the rest; every other column is its content's width, packed on the right", () => {
+    expect(listLayout(1200, W)).toEqual({ fold: NO_FOLD, template: "minmax(0,1fr) 110px 120px 100px 110px" });
+    // Not measured yet (0): nothing folds, each column sized by its content.
+    expect(listLayout(0, W)).toEqual({ fold: NO_FOLD, template: "minmax(0,1fr) max-content max-content max-content max-content" });
+    expect(listLayout(1200, { ...W, signals: 61.2 }).template).toBe("minmax(0,1fr) 110px 120px 62px 110px"); // whole px, never clipped
   });
 
-  test("a narrower page folds the lower-value columns first: Status under the title, then Checks into the PR cell", () => {
-    expect(listColumns("wide").map((c) => c.key)).toEqual(["workstream", "status", "pr", "signals", "actions"]);
-    expect(listColumns("mid").map((c) => c.key)).toEqual(["workstream", "pr", "signals", "actions"]);
-    expect(listColumns("narrow").map((c) => c.key)).toEqual(["workstream", "pr", "actions"]);
-    expect(listColumns("narrow").find((c) => c.key === "pr")!.grow).toBe(2); // the PR cell holds the checks too: as much room as the title
-    // The page widths Finn checks: 1440 with the panel open (~1100), ~900, ~700.
-    expect(listTier(1100)).toBe("wide");
-    expect(listTier(900)).toBe("mid");
-    expect(listTier(700)).toBe("narrow");
-    // Each tier's floors fit its narrowest page: the page's px-6 and the card's border beside the row.
-    for (const t of LIST_TIERS) {
-      const page = Math.max(LIST_TIER_MIN_REM[t] * 16, 640); // the dock never leaves the page under 640 (DOCK_PAGE_MIN_W)
-      expect(listMinWidth(listColumns(t))).toBeLessThanOrEqual(page - 48 - 2);
+  test("fold order as the list narrows: Status, then Checks & review into the PR cell, then the PR; then rows stack", () => {
+    // The title keeps LIST_TITLE_MIN_PX: 32 padding, 12 per gap. All four fit from 800px.
+    expect(LIST_TITLE_MIN_PX).toBe(280);
+    expect(keys(1200)).toBe("workstream status pr signals actions");
+    expect(keys(800)).toBe("workstream status pr signals actions");
+    expect(keys(799)).toBe("workstream pr signals actions");
+    expect(keys(678)).toBe("workstream pr signals actions");
+    expect(keys(677)).toBe("workstream pr actions");
+    expect(keys(566)).toBe("workstream pr actions");
+    expect(keys(565)).toBe("workstream actions");
+    expect(keys(434)).toBe("workstream actions");
+    expect(keys(433)).toBe("stacked");
+    // Folded checks: the PR cell gets pill + number + checks when they fit, else what is left (+N).
+    expect(listLayout(675, W).template).toBe("minmax(0,1fr) 224px 110px");
+    expect(listLayout(600, W).template).toBe("minmax(0,1fr) 154px 110px");
+    // The widths decide, not a breakpoint: narrower content keeps every column at 700px.
+    expect(keys(700, { status: 70, pr: 90, signals: 50, actions: 90 })).toBe("workstream status pr signals actions");
+    // Space returns: the same width gives the same layout, whichever way you came.
+    expect(keys(500)).toBe("workstream actions");
+    expect(keys(1200)).toBe("workstream status pr signals actions");
+  });
+
+  test("no fixed breakpoint remains: no tiers, no container-query classes, no rem floors", () => {
+    for (const gone of ["LIST_TIER_MIN_REM", "LIST_TIERS", "listTier", "LIST_STACK_BELOW_REM", "listStacked", "listColumnTiers", "listGridTemplate", "listMinWidth", "listFits"]) {
+      expect(gone in ws).toBe(false);
     }
-    // The CSS classes use the same breakpoints as the logic.
-    expect(listColumnTiers("status")).toEqual(["wide"]);
-    expect(listColumnTiers("signals")).toEqual(["mid", "wide"]);
-    expect(LIST_CELL_SHOWN.status).toContain(`@min-[${LIST_TIER_MIN_REM.wide}rem]/list:block`);
-    expect(LIST_FOLDED.status).toBe(`@min-[${LIST_TIER_MIN_REM.wide}rem]/list:hidden`);
-    expect(LIST_CELL_SHOWN.signals).toContain(`@min-[${LIST_TIER_MIN_REM.mid}rem]/list:flex`);
-    expect(LIST_FOLDED.signals).toBe(`@min-[${LIST_TIER_MIN_REM.mid}rem]/list:hidden`);
+    const view = readFileSync(new URL("../web/src/views/Agents.tsx", import.meta.url), "utf8");
+    expect(view).not.toMatch(/@min-\[[^\]]*\]\/list/);
+    expect(view).not.toContain("@container/list");
+    expect(view).not.toContain("LIST_CELL_SHOWN");
+    expect(view).not.toContain("LIST_FOLDED");
+    expect(listColumns().some((c) => "minRem" in c || "grow" in c)).toBe(false);
   });
 
   test("elapsed: clock-style, stable width as it ticks", () => {
@@ -144,14 +158,16 @@ describe("agents list view", () => {
     expect(list.className).toContain("overflow-hidden");
     expect(list.className).not.toContain("overflow-x-auto");
     expect(list.querySelector('[class*="min-w-["]')).toBeNull(); // no fixed minimum forcing a scroll
-    for (const t of LIST_TIERS) expect(rowOf("feat-ci").style.getPropertyValue(`--list-${t}`)).toBe(listGridTemplate(listColumns(t)));
-    // The folded copies: the status leads the subline, the checks follow the PR number; each is
-    // hidden by the same container query that shows its own column. The subline clips, never overlaps.
+    // One template for every row, on the list (not measured here: each column sized by its content).
+    expect(list.style.getPropertyValue("--list-cols")).toBe(listLayout(0, { status: 0, pr: 0, signals: 0, actions: 0 }).template);
+    // Nothing folded: no status in the subline, no checks in the PR cell.
     const ci = rowOf("feat-ci");
-    expect(ci.querySelector('[data-slot="folded-status"] [data-slot="run-status"]')).not.toBeNull();
-    const folded = [...ci.querySelectorAll<HTMLElement>('[data-slot="row-pr-line"] > [data-subline-item]')].filter((i) => ["checks", "review"].includes(i.dataset.sublineItem!));
-    expect(folded.map((i) => i.textContent).join("")).toBe(ci.querySelector('[data-slot="row-signals"]')!.textContent);
-    for (const i of folded) expect(i.className).toContain(LIST_FOLDED.signals);
+    expect(ci.querySelector('[data-slot="folded-status"]')).toBeNull();
+    expect([...ci.querySelectorAll<HTMLElement>('[data-slot="row-pr-line"] > [data-subline-item]')].map((i) => i.dataset.sublineItem)).toEqual(["state", "pr"]);
+    // Each content-sized column marks what is measured.
+    expect(ci.querySelector('[data-col-part="status"]')).not.toBeNull();
+    expect(ci.querySelectorAll('[data-col-part="pr"]')).toHaveLength(2);
+    expect(ci.querySelector('[data-col-part="actions"]')!.className).toContain("w-max");
     expect(ci.querySelector('[data-slot="row-subline"]')!.className).toContain("overflow-hidden");
     expect(rowOf("feat-ci").querySelectorAll('[role="cell"]')).toHaveLength(5); // one per header, the last holding preview + ⋯
     expect(rowOf("feat-ci").querySelector(".lucide-folder-git2")).toBeNull();
@@ -220,7 +236,7 @@ describe("agents list view", () => {
     const elapsed = () => run.querySelector('[data-slot="elapsed"]')!.textContent!;
     expect(elapsed()).toMatch(/^1:0[56]$/);
     expect(rowOf("local-idle").querySelector('[data-slot="elapsed"]')).toBeNull();
-    expect(ticker.stats()).toEqual({ listeners: 2, running: true }); // only the running row subscribes: its Status cell and the copy folded under the title (one shows)
+    expect(ticker.stats()).toEqual({ listeners: 1, running: true }); // only the running row subscribes: its Status cell (the folded copy is drawn only when folded)
     const before = elapsed();
     await act(async () => { await new Promise((r) => setTimeout(r, 1100)); });
     expect(elapsed()).not.toBe(before);
@@ -383,11 +399,7 @@ describe("agents loading skeleton", () => {
 // ---- narrow lists: the layout follows the LIST's width, and a subline that does not fit ends in +N ----
 
 describe("agents list by its own width", () => {
-  test("pure: stacked below LIST_STACK_BELOW_REM of list (0 = not measured keeps the grid); overflow keeps order and skips empty items", () => {
-    expect(listStacked(0)).toBe(false);
-    expect(listStacked(500)).toBe(true);
-    expect(listStacked(639)).toBe(true);
-    expect(listStacked(640)).toBe(false);
+  test("pure: overflow keeps order and skips empty items", () => {
     expect(sublineOverflow([50, 50, 50], 200, 4, 24)).toEqual([]); // 158 fits: no chip
     expect(sublineOverflow([60, 60, 60, 60], 200, 4, 24)).toEqual([2, 3]); // 124 + 4 + 24 fits; the third does not
     expect(sublineOverflow([60, 0, 60, 60, 60], 200, 4, 24)).toEqual([3, 4]); // a zero-width item is never hidden or counted
@@ -396,8 +408,15 @@ describe("agents list by its own width", () => {
 
   // happy-dom lays out nothing: give the list, each subline and each subline item a width.
   const proto = HTMLElement.prototype;
-  const real = { client: Object.getOwnPropertyDescriptor(proto, "clientWidth")!, offset: Object.getOwnPropertyDescriptor(proto, "offsetWidth")! };
+  const real = { client: Object.getOwnPropertyDescriptor(proto, "clientWidth")!, offset: Object.getOwnPropertyDescriptor(proto, "offsetWidth")!, rect: Element.prototype.getBoundingClientRect };
+  // Each measured piece (data-col-part): the columns come out at W's widths — pr and signals are two
+  // pieces each (4px apart), the header labels narrower than their cells.
+  const PART_PX: Record<string, number> = { status: 110, pr: 58, signals: 48, actions: 110 };
   function fakeLayout(listPx: number, prLinePx = 200) {
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const w = PART_PX[(this as HTMLElement).dataset?.colPart ?? ""] ?? 0;
+      return { width: w, height: 0, x: 0, y: 0, top: 0, left: 0, right: w, bottom: 0, toJSON() {} } as DOMRect;
+    };
     Object.defineProperty(proto, "clientWidth", { configurable: true, get(this: HTMLElement) {
       if (this.dataset.slot === "workstream-list") return listPx;
       if (this.dataset.slot === "row-pr-line") return prLinePx;
@@ -409,16 +428,42 @@ describe("agents list by its own width", () => {
       return this.hasAttribute("data-subline-item") && this.textContent ? 60 : 0;
     } });
   }
-  afterEach(() => { Object.defineProperty(proto, "clientWidth", real.client); Object.defineProperty(proto, "offsetWidth", real.offset); });
+  afterEach(() => { Object.defineProperty(proto, "clientWidth", real.client); Object.defineProperty(proto, "offsetWidth", real.offset); Element.prototype.getBoundingClientRect = real.rect; });
+  const heads = () => [...container!.querySelectorAll('[data-slot="workstream-list-header"] [role="columnheader"]')].map((h) => h.textContent);
+
+  test("columns fold by priority at the measured widths, before paint, and unfold when space returns", async () => {
+    seed();
+    fakeLayout(1200);
+    await mount();
+    const list = container!.querySelector<HTMLElement>('[data-slot="workstream-list"]')!;
+    expect(heads()).toEqual(["Workstream", "Status", "PR", "Checks & review", "Actions"]);
+    expect(list.style.getPropertyValue("--list-cols")).toBe("minmax(0,1fr) 110px 120px 100px 110px");
+    const relayout = async (px: number) => { fakeLayout(px); await act(async () => { await store.refresh(); await flush(); await flush(); }); };
+    await relayout(700); // Status leads the subline
+    expect(heads()).toEqual(["Workstream", "PR", "Checks & review", "Actions"]);
+    expect(rowOf("feat-ci").querySelector('[data-slot="row-subline"] > [data-slot="folded-status"] [data-slot="run-status"]')).not.toBeNull();
+    await relayout(600); // the checks follow the PR number
+    expect(heads()).toEqual(["Workstream", "PR", "Actions"]);
+    expect([...rowOf("feat-ci").querySelectorAll<HTMLElement>('[data-slot="row-pr-line"] > [data-subline-item]')].map((i) => i.dataset.sublineItem)).toEqual(["state", "pr", "checks", "review"]);
+    expect(list.style.getPropertyValue("--list-cols")).toBe("minmax(0,1fr) 154px 110px");
+    await relayout(500); // the PR and its checks join the subline, after the status
+    expect(heads()).toEqual(["Workstream", "Actions"]);
+    const sub = [...rowOf("feat-ci").querySelectorAll<HTMLElement>('[data-slot="row-subline"] > [data-subline-item]')].map((i) => i.dataset.sublineItem);
+    expect(sub.slice(0, 5)).toEqual(["status", "state", "pr", "checks", "review"]);
+    expect(rowOf("feat-ci").querySelectorAll('[role="cell"]')).toHaveLength(2);
+    for (const r of container!.querySelectorAll<HTMLElement>('[data-slot="workstream-row"]')) expect(r.className).toContain("h-14"); // 56px at every fold
+    await relayout(1200); // space returns: every column back
+    expect(heads()).toEqual(["Workstream", "Status", "PR", "Checks & review", "Actions"]);
+    expect(rowOf("feat-ci").querySelector('[data-slot="folded-status"]')).toBeNull();
+  });
 
   test("a narrow list stacks its rows on a wide viewport (the docked panel open); no instruction, plan or grant line there", async () => {
     expect(window.matchMedia?.("(max-width: 767px)").matches ?? false).toBe(false); // a desktop viewport
-    fakeLayout(500);
+    fakeLayout(400); // under the title's minimum even with every column folded
     seed();
     apiFake.enrichmentData.set("r::feat-ci", { orchestrated: true, orchStatus: { plan: "Tiers by list width", waitingOn: "CI", at: "2026-10-13T00:00:00Z" }, grantScope: { via: "slack", by: "Saajan", level: "scoped" } });
     await mount();
     const list = container!.querySelector<HTMLElement>('[data-slot="workstream-list"]')!;
-    expect(list.className).toContain("@container/list");
     expect(list.dataset.layout).toBe("stacked");
     expect(container!.querySelector('[data-slot="workstream-list-header"]')).toBeNull();
     expect(rowOf("feat-ci").dataset.layout).toBe("stacked");
@@ -430,7 +475,7 @@ describe("agents list by its own width", () => {
   });
 
   test("the PR cell never clips a chip: what does not fit goes behind its own +N", async () => {
-    fakeLayout(1200, 160); // state + PR + the chip fit (152px); the folded checks do not
+    fakeLayout(600, 160); // checks folded into the PR cell; state + PR + the chip fit (152px), the checks do not
     seed();
     await mount();
     const line = rowOf("feat-ci").querySelector<HTMLElement>('[data-slot="row-pr-line"]')!;

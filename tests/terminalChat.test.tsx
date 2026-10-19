@@ -10,7 +10,6 @@ import { getDefaultStore } from "jotai";
 import { NewDraft } from "@/views/NewDraft";
 import { AgentRow } from "@/views/Agents";
 import { openTerminalAtom } from "@/lib/atoms";
-import { listColumns } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -45,7 +44,7 @@ describe("card terminal (conversation modal)", () => {
     apiFake.turnsData.set("r::feat", [
       { id: "run-1", provider: "claude", prompt: "add the cache", response: "Added it.", finishedAt: 2 },
     ]);
-    await mount(<AgentRow row={row} cols={listColumns()} />);
+    await mount(<AgentRow row={row} />);
 
     // The row has more than one <dialog> (terminal + rename) — pick the terminal one by its header.
     const dialog = [...container!.querySelectorAll("dialog")].find((d) => /Terminal/.test(d.textContent ?? ""))!;
