@@ -77,7 +77,7 @@ async function open(path: string) {
   await act(async () => { await store.refresh(); await flush(); await flush(); });
 }
 const click = async (el: Element) => { await act(async () => { (el as HTMLElement).click(); await flush(); await flush(); }); };
-const navBoard = () => [...document.querySelectorAll<HTMLButtonElement>('nav[aria-label="Main"] button')].find((b) => b.textContent?.trim() === "Board");
+const navBoard = () => [...document.querySelectorAll<HTMLButtonElement>('nav[aria-label="Main"] button')].find((b) => b.querySelector('[data-slot="nav-label"]')?.textContent?.trim() === "Board");
 const lanes = () => [...document.querySelectorAll("h3")].map((h) => h.firstChild?.textContent?.trim());
 
 test("BV2: on by default — the Board nav entry opens /board with the five lanes and the new-draft box", async () => {

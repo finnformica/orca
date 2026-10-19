@@ -232,7 +232,8 @@ describe("console shell", () => {
     expect(container!.querySelector('[data-slot="workstream-list"]')).not.toBeNull();
     expect(container!.querySelector('[role="group"][aria-label="View"]')).toBeNull();
     // The Board is its own page now (the sidebar's Board entry), never a toggle on this one.
-    expect(btnByText("Board")!.closest('nav[aria-label="Main"]') !== null).toBe(true);
+    expect(btnByText("Board")).toBeUndefined();
+    expect(navItem("Board").closest('nav[aria-label="Main"]') !== null).toBe(true);
     expect(gridEl()).toBeNull();
     expect(container!.querySelector('button[aria-label^="Switch to"]')).toBeNull();
   });
