@@ -26,6 +26,9 @@ class FakeSocket implements WebSocketLike {
 type Call = { method: string; path: string; body?: any };
 let calls: Call[] = [];
 let answer: (c: Call) => { status: number; body: unknown; headers?: Record<string, string> } = () => ({ status: 200, body: {} });
+// A separate stub for the plain CDN downloads `attachmentText` makes: a GET with no Discord auth
+// header, keyed by the attachment's own URL (never `https://discord.com/...`).
+let cdn: (url: string) => { status: number; body: string } = () => ({ status: 200, body: "" });
 const realFetch = globalThis.fetch;
 const realWs = gateway.WebSocket;
 const tick = () => new Promise((r) => setTimeout(r, 5));
@@ -37,7 +40,12 @@ beforeEach(() => {
   gateway.WebSocket = FakeSocket as never;
   gateway.baseBackoffMs = 5;
   globalThis.fetch = (async (url: any, init: any) => {
-    const c: Call = { method: init?.method ?? "GET", path: String(url).replace("https://discord.com/api/v10", ""), body: init?.body ? JSON.parse(init.body) : undefined };
+    const u = String(url);
+    if (!u.startsWith("https://discord.com/api/v10")) {
+      const a = cdn(u);
+      return new Response(a.body, { status: a.status });
+    }
+    const c: Call = { method: init?.method ?? "GET", path: u.replace("https://discord.com/api/v10", ""), body: init?.body ? JSON.parse(init.body) : undefined };
     expect(init?.headers?.authorization).toBe("Bot tok");
     calls.push(c);
     const a = answer(c);
@@ -48,6 +56,7 @@ afterEach(() => {
   globalThis.fetch = realFetch;
   gateway.WebSocket = realWs;
   gateway.baseBackoffMs = 1_000;
+  cdn = () => ({ status: 200, body: "" });
   delete process.env.ORCA_SECRET_DISCORD_TEST;
 });
 
@@ -261,12 +270,67 @@ describe("Discord inbound", () => {
     await a.stop();
   });
 
-  test("a DM goes to the configured DM link, else to the core's catch-all link by its channel", () => {
+  test("a DM goes to the configured DM link, else to the core's catch-all link by its channel", async () => {
     const dm = msg({ guild_id: undefined, channel_id: "D1", content: "hi", mentions: [] }) as never;
-    expect(toEnvelope(dm, { integrationId: "dc", botId: "BOT" })!.envelope).toMatchObject({ source: { channel: "D1" }, mentioned: true, thread: { externalId: "D1" } });
-    const made = toEnvelope(dm, { integrationId: "dc", botId: "BOT", dmLink: "dm-finn" })!;
+    expect((await toEnvelope(dm, { integrationId: "dc", botId: "BOT" }))!.envelope).toMatchObject({ source: { channel: "D1" }, mentioned: true, thread: { externalId: "D1" } });
+    const made = (await toEnvelope(dm, { integrationId: "dc", botId: "BOT", dmLink: "dm-finn" }))!;
     expect(made.envelope).toMatchObject({ source: { linkId: "dm-finn" }, mentioned: true, thread: { externalId: "D1" } });
     expect(made.opensThread).toBe(false);
+  });
+
+  test("a reply quotes the replied-to message: its author, text and attachments, before the new text", async () => {
+    const { a, ws, ingested } = await connected();
+    // Discord embeds the parent inline (the common case): no extra REST call needed.
+    ws.push({ op: 0, s: 2, t: "MESSAGE_CREATE", d: msg({
+      id: "M9", content: "<@BOT> what about this?",
+      message_reference: { type: 0, message_id: "P1", channel_id: "C1" },
+      referenced_message: { id: "P1", content: "the build is failing", author: { id: "U2", username: "ivy", global_name: "Ivy" } },
+    }) });
+    await tick();
+    expect(ingested[0]!.text).toBe("> Ivy wrote:\n> the build is failing\nwhat about this?");
+    expect(calls.filter((c) => c.path.includes("/messages/P1"))).toEqual([]); // no REST read: it was embedded
+
+    // An older parent Discord did not embed: one REST read, only because this message mentions Orca.
+    calls = [];
+    answer = (c) => c.path === "/channels/C1/messages/P2" ? { status: 200, body: { id: "P2", content: "see the log", author: { id: "U3", username: "max" } } } : { status: 200, body: {} };
+    ws.push({ op: 0, s: 3, t: "MESSAGE_CREATE", d: msg({
+      id: "M10", content: "<@BOT> fix it", message_reference: { type: 0, message_id: "P2", channel_id: "C1" },
+    }) });
+    await tick();
+    expect(ingested[1]!.text).toBe("> max wrote:\n> see the log\nfix it");
+    expect(calls.filter((c) => c.path === "/channels/C1/messages/P2")).toHaveLength(1);
+
+    // A reply that does not mention Orca quotes nothing, and reads nothing by REST.
+    calls = [];
+    ws.push({ op: 0, s: 4, t: "MESSAGE_CREATE", d: msg({
+      id: "M11", content: "lunch?", mentions: [], message_reference: { type: 0, message_id: "P3", channel_id: "C1" },
+    }) });
+    await tick();
+    expect(ingested[2]!.text).toBe("lunch?");
+    expect(calls.filter((c) => c.path.includes("/messages/P3"))).toEqual([]);
+    await a.stop();
+  });
+
+  test("a .txt attachment is downloaded and inlined in a fenced block, oversized truncated, a binary file kept as a URL", async () => {
+    const { a, ws, ingested } = await connected();
+    cdn = (url) => url === "https://cdn.discordapp.com/attachments/1/2/notes.txt" ? { status: 200, body: "line one\nline two" }
+      : url === "https://cdn.discordapp.com/attachments/1/3/big.log" ? { status: 200, body: "x".repeat(150 * 1024) }
+      : { status: 200, body: "" };
+    ws.push({ op: 0, s: 2, t: "MESSAGE_CREATE", d: msg({
+      id: "M20", content: "<@BOT> see attached",
+      attachments: [
+        { url: "https://cdn.discordapp.com/attachments/1/2/notes.txt", filename: "notes.txt" },
+        { url: "https://cdn.discordapp.com/attachments/1/3/big.log", filename: "big.log", content_type: "text/plain; charset=utf-8" },
+        { url: "https://cdn.discordapp.com/attachments/1/4/photo.png", filename: "photo.png", content_type: "image/png" },
+      ],
+    }) });
+    await tick();
+    const text = ingested[0]!.text;
+    expect(text).toContain("see attached");
+    expect(text).toContain("notes.txt:\n```\nline one\nline two\n```");
+    expect(text).toContain("big.log:\n```\n" + "x".repeat(100 * 1024) + "\n… (truncated at 100 KB)\n```");
+    expect(text).toContain("(attachment photo.png: https://cdn.discordapp.com/attachments/1/4/photo.png)");
+    await a.stop();
   });
 });
 

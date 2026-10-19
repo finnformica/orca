@@ -31,6 +31,9 @@ export const INTENTS = (1 << 0) | (1 << 9) | (1 << 12) | (1 << 15);
 /** Close codes no reconnect can fix: bad token, bad or disallowed intents, bad shard/version. */
 const FATAL_CLOSE = new Set([4004, 4010, 4011, 4012, 4013, 4014]);
 /** Discord's limits: content is cut at 2000 characters; about 5 messages per 5s per channel. */
+// `attachments: false` stays: the core's meaning of the flag is a real `orca-attachment://` ref
+// (server/attachments.ts), which this adapter does not produce. A text attachment's content goes
+// inline in `text` instead (see `attachmentText`); any other file stays a URL line.
 export const DISCORD_CAPS: Capabilities = {
   inbound: "socket", outbound: true, threads: true, edits: true, reactions: false, attachments: false,
   maxTextLength: 2000, rate: { perTarget: 5, windowMs: 5_000 },
@@ -95,16 +98,22 @@ export function render(msg: OutboundMessage): Record<string, unknown> {
 }
 
 /** A Gateway MESSAGE_CREATE as the core's envelope, or undefined when it is not for Orca (a bot, an
- *  empty message). `parent` is the channel's parent when it is a thread. Pure. */
+ *  empty message). `parent` is the channel's parent when it is a thread. Building the text can do
+ *  I/O: a download for a text attachment (see `toEnvelope`, `attachmentText`); the reply it quotes
+ *  is resolved by the caller (`immediateParent`) and handed in already read. */
+export type DiscordAuthor = { id: string; username?: string; global_name?: string | null; bot?: boolean };
+export type DiscordAttachment = { url: string; filename?: string; content_type?: string };
 export type DiscordMessage = {
   id: string; channel_id: string; guild_id?: string; content?: string; timestamp?: string;
-  author: { id: string; username?: string; global_name?: string | null; bot?: boolean };
-  mentions?: { id: string }[]; attachments?: { url: string; filename?: string }[];
+  author: DiscordAuthor;
+  mentions?: { id: string }[]; attachments?: DiscordAttachment[];
   /** Role ids the message mentions: the bot's managed role is one way to @-mention it. */
   mention_roles?: string[];
   /** A reply: the message it answers (`type` 0 or absent; 1 is a forward). */
   message_reference?: { type?: number; message_id?: string; channel_id?: string };
-  referenced_message?: { id: string; message_reference?: DiscordMessage["message_reference"] } | null;
+  /** The replied-to message, when Discord embedded it (it usually does; absent for an old one, or
+   *  one from before the bot joined). */
+  referenced_message?: { id: string; content?: string; author?: DiscordAuthor; attachments?: DiscordAttachment[]; message_reference?: DiscordMessage["message_reference"] } | null;
 };
 
 /** A reply chain's thread key, `<channel id>:<root message id>`. A Discord thread id has no colon. */
@@ -129,13 +138,73 @@ export const botRoleOf = (roles: unknown, botId?: string): string | undefined =>
   !botId || !Array.isArray(roles) ? undefined
     : (roles as { id?: unknown; tags?: { bot_id?: unknown } }[]).find((r) => r?.tags?.bot_id === botId && typeof r.id === "string")?.id as string | undefined;
 
-export function toEnvelope(m: DiscordMessage, o: { integrationId: string; botId?: string; botRole?: string; dmLink?: string; parent?: string; threads?: boolean; root?: string }) {
+/** Attachments whose content is read as text and inlined (point (b) of the reply-and-attachments
+ *  fix, docs/integrations/discord.md): Discord's own `content_type`, else a common text extension.
+ *  Pure. */
+const TEXT_ATTACHMENT_EXT = /\.(txt|md|json|log|csv|ya?ml)$/i;
+export function isTextAttachment(a: Pick<DiscordAttachment, "content_type" | "filename">): boolean {
+  return Boolean(a.content_type?.startsWith("text/")) || Boolean(a.filename && TEXT_ATTACHMENT_EXT.test(a.filename));
+}
+
+/** A text attachment past this size is truncated, with a note saying so. */
+export const MAX_ATTACHMENT_BYTES = 100 * 1024;
+
+/** One attachment as inbound text: a text file's content in a fenced block — downloaded here,
+ *  since Discord's CDN URLs are signed and expire, so the agent could not fetch one itself later —
+ *  else the CDN URL, as before. Never throws: a failed download falls back to the URL line. */
+export async function attachmentText(a: DiscordAttachment): Promise<string> {
+  const name = a.filename ?? "";
+  if (!isTextAttachment(a)) return `(attachment ${name}: ${a.url})`;
+  try {
+    const r = await fetch(a.url);
+    if (!r.ok) return `(attachment ${name}: ${a.url})`;
+    const bytes = new Uint8Array(await r.arrayBuffer());
+    const over = bytes.byteLength > MAX_ATTACHMENT_BYTES;
+    const text = new TextDecoder().decode(over ? bytes.subarray(0, MAX_ATTACHMENT_BYTES) : bytes);
+    return `${name}:\n\`\`\`\n${text}${over ? "\n… (truncated at 100 KB)" : ""}\n\`\`\``;
+  } catch {
+    return `(attachment ${name}: ${a.url})`;
+  }
+}
+
+/** The message `m` directly replies to: `m.referenced_message` when Discord embedded it (no extra
+ *  call, usable whether or not `m` mentions Orca), else one REST read by `message_reference` —
+ *  only for a message addressed to Orca (`read`), so chatter costs no call. Shared by the chain-root
+ *  walk (`rootOf`, which follows its `message_reference` on up) and the quote `m` adds before its
+ *  own text (`quoteText`, which reads its content and attachments) — so a reply resolves its parent
+ *  at most once. */
+async function immediateParent(m: DiscordMessage, token: string | undefined, read: boolean): Promise<{ content?: string; author?: DiscordAuthor; attachments?: DiscordAttachment[]; message_reference?: DiscordMessage["message_reference"] } | undefined> {
+  const ref = replyOf(m.message_reference, m.channel_id);
+  if (!ref) return undefined;
+  if (m.referenced_message?.id === ref) return m.referenced_message;
+  if (!read || !token) return undefined;
+  const r = await discordApi(token, "GET", `/channels/${m.channel_id}/messages/${ref}`);
+  return r.ok ? (r.data as { content?: string; author?: DiscordAuthor; attachments?: DiscordAttachment[]; message_reference?: DiscordMessage["message_reference"] }) : undefined;
+}
+
+/** The replied-to message as quoted text, before the new message's own (point (a) of the
+ *  reply-and-attachments fix): its author, text and attachments (inlined the same way as the new
+ *  message's, point (b)). `parent` is already resolved (`immediateParent`); undefined when there
+ *  is nothing to quote. */
+async function quoteText(parent: { content?: string; author?: DiscordAuthor; attachments?: DiscordAttachment[] } | undefined): Promise<string | undefined> {
+  if (!parent) return undefined;
+  const name = parent.author?.global_name || parent.author?.username || "someone";
+  const body = [
+    ...(parent.content?.trim() ? parent.content.trim().split("\n") : []),
+    ...(await Promise.all((parent.attachments ?? []).map(attachmentText))).flatMap((s) => s.split("\n")),
+  ];
+  return body.length ? [`> ${name} wrote:`, ...body.map((l) => `> ${l}`)].join("\n") : undefined;
+}
+
+export async function toEnvelope(m: DiscordMessage, o: { integrationId: string; botId?: string; botRole?: string; dmLink?: string; parent?: string; threads?: boolean; root?: string; immediate?: { content?: string; author?: DiscordAuthor; attachments?: DiscordAttachment[] } }) {
   if (m.author.bot || (o.botId && m.author.id === o.botId)) return undefined;
   const dm = !m.guild_id;
   const mentioned = dm || mentionsBot(m, o.botId, o.botRole);
+  const quote = await quoteText(o.immediate);
   const text = [
+    quote,
     (m.content ?? "").replace(new RegExp(`<@!?${o.botId ?? "-"}>`, "g"), "").replace(o.botRole ? new RegExp(`<@&${o.botRole}>`, "g") : /$^/, "").trim(),
-    ...(m.attachments ?? []).map((a) => `(attachment ${a.filename ?? ""}: ${a.url})`),
+    ...(mentioned ? await Promise.all((m.attachments ?? []).map(attachmentText)) : (m.attachments ?? []).map((a) => `(attachment ${a.filename ?? ""}: ${a.url})`)),
   ].filter(Boolean).join("\n");
   if (!text) return undefined;
   // In a thread: the link is the parent's, the thread is this channel. Top level: the thread a reply
@@ -217,10 +286,12 @@ export function discordAdapter(connection: Connection): Adapter {
     return parent;
   }
 
-  /** The root of a top-level message's reply chain: from the map (Orca's own replies are in it), else
-   *  read up the chain by REST, at most MAX_CHAIN_HOPS — only for a message to Orca (`read`), so
-   *  chatter costs no calls. A message that answers nothing is its own root. */
-  async function rootOf(m: DiscordMessage, read: boolean): Promise<string> {
+  /** The root of a top-level message's reply chain: from the map (Orca's own replies are in it),
+   *  else read up the chain by REST, at most MAX_CHAIN_HOPS — only for a message to Orca (`read`),
+   *  so chatter costs no calls. `immediate` is the first hop, already resolved by the caller
+   *  (`immediateParent`), so it costs no second call here. A message that answers nothing is its
+   *  own root. */
+  async function rootOf(m: DiscordMessage, read: boolean, immediate: { message_reference?: DiscordMessage["message_reference"] } | undefined): Promise<string> {
     const path = [m.id];
     let ref = replyOf(m.message_reference, m.channel_id);
     let root: string | undefined;
@@ -228,7 +299,7 @@ export function discordAdapter(connection: Connection): Adapter {
       root = roots.get(ref);
       if (root) break;
       path.push(ref);
-      if (hop === 0 && m.referenced_message?.id === ref) ref = replyOf(m.referenced_message.message_reference ?? undefined, m.channel_id);
+      if (hop === 0) ref = immediate ? replyOf(immediate.message_reference, m.channel_id) : undefined;
       else if (!read) break;
       else {
         const r = await discordApi(token(), "GET", `/channels/${m.channel_id}/messages/${ref}`);
@@ -256,9 +327,11 @@ export function discordAdapter(connection: Connection): Adapter {
     const parent = m.guild_id ? await parentOf(m.channel_id) : undefined;
     const topLevel = Boolean(m.guild_id) && (!parent || parent === m.channel_id);
     const botRole = m.guild_id && m.mention_roles?.length ? await botRoleIn(m.guild_id) : undefined;
-    const toOrca = mentionsBot(m, botId, botRole);
-    const root = topLevel && !threads ? await rootOf(m, toOrca) : undefined;
-    const made = toEnvelope(m, { integrationId: connection.id, botId, botRole, dmLink, parent, threads, root });
+    const mentioned = !m.guild_id || mentionsBot(m, botId, botRole);
+    // Resolved once: the chain-root walk and the quote this message adds both need it.
+    const immediate = await immediateParent(m, token(), mentioned);
+    const root = topLevel && !threads ? await rootOf(m, mentioned, immediate) : undefined;
+    const made = await toEnvelope(m, { integrationId: connection.id, botId, botRole, dmLink, parent, threads, root, immediate });
     if (!made) return;
     if (root) remember(newest, chainKey(m.channel_id, root), m.id); // Orca's answer replies to this message
     const verdict = await ctx.ingest(made.envelope);
