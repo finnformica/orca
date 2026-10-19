@@ -2975,25 +2975,56 @@ export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) =>
 // review signal, and the actions. The latest instruction, branch and model went into the title's
 // subline and tooltip, the PR # into the state cell, and the per-row repo icon was dropped (the
 // repo is in the subline). The instance column was dropped too — it's a row menu action ("Move to
-// …") and a tooltip, not something worth a whole column — and the width it held goes to the
-// flexible tracks (workstream, signals) via their own `grow`. Each column has a floor in rem; the
-// flexible ones share what is left, so the row never needs a horizontal scroll.
-export type ListColumn = { key: "workstream" | "status" | "pr" | "signals" | "actions"; label: string; minRem: number; grow?: number };
-/** The list's layouts by the LIST's own width (its `@container/list`, so the docked orchestrator
- *  panel counts): `wide` has every column; `mid` folds Status under the title; `narrow` also folds
- *  Checks & review into the PR cell. Below `LIST_STACK_BELOW_REM` (and on a phone) each row stacks. */
-export type ListTier = "narrow" | "mid" | "wide";
-/** The list width (rem) from which each tier applies — the Agents row's `@min-[…]/list:` classes. */
-export const LIST_TIER_MIN_REM: Record<ListTier, number> = { narrow: 0, mid: 52, wide: 68 };
-export const LIST_TIERS: ListTier[] = ["narrow", "mid", "wide"];
-/** Which tier a page width (px) gets. */
-export function listTier(pagePx: number, remPx = 16): ListTier {
-  return pagePx >= LIST_TIER_MIN_REM.wide * remPx ? "wide" : pagePx >= LIST_TIER_MIN_REM.mid * remPx ? "mid" : "narrow";
+// …") and a tooltip, not something worth a whole column.
+// The Workstream column takes all the room left (minmax(0,1fr)); every other column is as wide as
+// its widest cell (measured in the list, `ListWidths`), packed together on the right. There are no
+// fixed breakpoints: `listLayout` folds columns into the row only when they do not fit beside a
+// Workstream column of `LIST_TITLE_MIN_PX`.
+export type ListColumn = { key: "workstream" | "status" | "pr" | "signals" | "actions"; label: string };
+/** The content-sized columns' natural widths (px): the widest cell of each, its header included.
+ *  `pr` is the state pill + number alone, `signals` the checks and review chips. */
+export type ListWidths = Record<"status" | "pr" | "signals" | "actions", number>;
+/** Which columns are folded: `status` into the subline, `signals` into the PR cell, `pr` (with the
+ *  checks) into the subline; `stacked` when even that leaves the title too narrow — rows stack. */
+export type ListFold = { status: boolean; signals: boolean; pr: boolean; stacked: boolean };
+export const NO_FOLD: ListFold = { status: false, signals: false, pr: false, stacked: false };
+/** The narrowest the Workstream column may get before the next column folds. */
+export const LIST_TITLE_MIN_PX = 280;
+/** The row's column gap (gap-x-3), horizontal padding (px-4) and a cell's own item gap (gap-1), in px
+ *  — kept in step with the row's classes. */
+export const LIST_GAP_PX = 12, LIST_PAD_PX = 32, LIST_ITEM_GAP_PX = 4;
+/** The fold for a list `listPx` wide (its inner width, border excluded) and the columns' natural
+ *  widths, and the grid template for it. Folds by a fixed priority, each step only when the step
+ *  before leaves the title under `LIST_TITLE_MIN_PX`: Status, then Checks & review into the PR cell
+ *  (whose overflow goes behind +N — the PR cell keeps at least its pill and number), then the PR.
+ *  0 is "not measured yet": nothing folds, every column sized by its content. */
+export function listLayout(listPx: number, w: ListWidths): { fold: ListFold; template: string } {
+  const px = (n: number) => `${Math.ceil(n)}px`;
+  if (listPx <= 0) return { fold: NO_FOLD, template: "minmax(0,1fr) max-content max-content max-content max-content" };
+  const inner = listPx - LIST_PAD_PX;
+  const title = (cols: number[]) => inner - cols.reduce((n, c) => n + c + LIST_GAP_PX, 0);
+  const tpl = (cols: number[]) => ["minmax(0,1fr)", ...cols.map(px)].join(" ");
+  const full = [w.status, w.pr, w.signals, w.actions];
+  if (title(full) >= LIST_TITLE_MIN_PX) return { fold: NO_FOLD, template: tpl(full) };
+  const noStatus = [w.pr, w.signals, w.actions];
+  if (title(noStatus) >= LIST_TITLE_MIN_PX) return { fold: { ...NO_FOLD, status: true }, template: tpl(noStatus) };
+  const prRoom = title([w.actions]) - LIST_GAP_PX - LIST_TITLE_MIN_PX;
+  const prWith = w.signals > 0 ? w.pr + LIST_ITEM_GAP_PX + w.signals : w.pr;
+  if (prRoom >= w.pr) return { fold: { ...NO_FOLD, status: true, signals: true }, template: tpl([Math.min(prWith, prRoom), w.actions]) };
+  if (title([w.actions]) >= LIST_TITLE_MIN_PX) return { fold: { status: true, signals: true, pr: true, stacked: false }, template: tpl([w.actions]) };
+  return { fold: { status: true, signals: true, pr: true, stacked: true }, template: "" };
 }
-/** Below this list width (rem) a grid row cannot hold its text, so each row stacks like a phone's. */
-export const LIST_STACK_BELOW_REM = 40;
-/** The stacked layout for a measured list width (px); 0 is "not measured yet", which keeps the grid. */
-export const listStacked = (listPx: number, remPx = 16): boolean => listPx > 0 && listPx < LIST_STACK_BELOW_REM * remPx;
+/** The columns with their own cell (and header) under a fold, in order. */
+export function listColumns(fold: ListFold = NO_FOLD): ListColumn[] {
+  const all: ListColumn[] = [
+    { key: "workstream", label: "Workstream" },
+    { key: "status", label: "Status" },
+    { key: "pr", label: "PR" },
+    { key: "signals", label: "Checks & review" },
+    { key: "actions", label: "Actions" },
+  ];
+  return all.filter((c) => !(c.key === "status" && fold.status) && !(c.key === "signals" && fold.signals) && !(c.key === "pr" && fold.pr));
+}
 /** Which subline items (by index) do not fit in `available` px, when the row ends with a `+N` chip
  *  of `chipPx`. Items keep their order: the first one that does not fit and all after it are hidden.
  *  A zero-width item (hidden by CSS, or empty) is never counted. Nothing hidden when all fit. */
@@ -3009,41 +3040,6 @@ export function sublineOverflow(widths: number[], available: number, gapPx: numb
   }
   return [];
 }
-const TIER_COLUMNS: Record<ListTier, ListColumn["key"][]> = {
-  narrow: ["workstream", "pr", "actions"],
-  mid: ["workstream", "pr", "signals", "actions"],
-  wide: ["workstream", "status", "pr", "signals", "actions"],
-};
-export function listColumns(tier: ListTier = "wide"): ListColumn[] {
-  const all: ListColumn[] = [
-    { key: "workstream", label: "Workstream", minRem: 10, grow: 2 },
-    { key: "status", label: "Status", minRem: 8.5 },
-    // Narrow, the PR cell also holds the checks and review: it takes the same share as the title.
-    { key: "pr", label: "PR", minRem: 8.5, grow: tier === "narrow" ? 2 : undefined },
-    { key: "signals", label: "Checks & review", minRem: 6, grow: 1 },
-    // Fixed, wide enough for the row's quick-action icons (two at most — quickActions never applies
-    // more to one state), the local preview link + its Stop and the ⋯ menu, all size-7 at gap-1, so
-    // the column never shifts between states and nothing overflows into a sideways scroll. The PR-preview icon that used to
-    // sit here moved to a text link next to the model name (PrPreviewInline) — the ⋯ menu's PR
-    // submenu still carries Open/Add PR preview.
-    { key: "actions", label: "Actions", minRem: 10 },
-  ];
-  return all.filter((c) => TIER_COLUMNS[tier].includes(c.key));
-}
-/** Which tiers show a column as its own cell (the rest fold it into another cell). */
-export const listColumnTiers = (key: ListColumn["key"]): ListTier[] => LIST_TIERS.filter((t) => TIER_COLUMNS[t].includes(key));
-/** The CSS grid-template-columns for a column set: fixed floors, `minmax(floor, Nfr)` for the flexible. */
-export const listGridTemplate = (cols: ListColumn[]): string =>
-  cols.map((c) => (c.grow ? `minmax(${c.minRem}rem,${c.grow}fr)` : `${c.minRem}rem`)).join(" ");
-/** The row's gap (gap-x-3) and horizontal padding (px-4) in px — kept in step with the row's classes. */
-export const LIST_GAP_PX = 12, LIST_PAD_PX = 32;
-/** The narrowest a row can be before it would overflow: every floor, every gap, the padding. */
-export const listMinWidth = (cols: ListColumn[], remPx = 16): number =>
-  cols.reduce((n, c) => n + c.minRem * remPx, 0) + LIST_GAP_PX * (cols.length - 1) + LIST_PAD_PX;
-/** What the shell takes off the viewport beside the list: the expanded sidebar (w-60), main's px-6
- *  on both sides, the card's 1px border on both sides. */
-export const LIST_CHROME_PX = 240 + 48 + 2;
-export const listFits = (cols: ListColumn[], viewportPx: number): boolean => listMinWidth(cols) <= viewportPx - LIST_CHROME_PX;
 
 /** A running agent's live elapsed time, clock-style so the width holds still as it ticks:
  *  "0:07", "12:05", "1:02:03". */
