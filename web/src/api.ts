@@ -68,8 +68,6 @@ export type InstanceHealth = {
   month?: { usd: number; upHours: number; since: number; unknownHours?: number; usdMax?: number; assumedHours?: number; ledgerFrom?: number | null; billingSince?: number };
   /** Absent from an older bridge. */
   runningAgents?: number;
-  /** The bridge process's resident memory, MB. Absent from an older bridge. */
-  bridgeRssMb?: number;
   /** Which of deploy/harden.sh's protections the box is missing (server/protections.ts), and the
    *  newest OOM kill in its kernel log (null: none; absent: unreadable). Absent off Linux. */
   protections?: { missing: { key: string; label: string }[]; lastOomKill?: number | null; at: number };
@@ -84,9 +82,7 @@ export type HeavyQueueView = { running: HeavyEntry[]; queued: HeavyEntry[]; limi
 export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; /** Absent from a bridge older than migration 13 — unknown, not 0. */
   runningAgents?: number;
   /** Agent runs OOM-killed in their own scope since the previous sample (absent = none). */
-  oomKills?: number;
-  /** The bridge process's resident memory, MB (absent on older rows). */
-  bridgeRssMb?: number };
+  oomKills?: number };
 export type PreviewSvc = { name: string; port: number; url: string; localUrl?: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const post = (path: string, body: unknown) =>

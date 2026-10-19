@@ -370,7 +370,6 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
           <div className="grid gap-6 p-4 md:grid-cols-2">
             <ChartSkeleton slot="chart-cpu-skeleton" /><ChartSkeleton slot="chart-mem-skeleton" />
             <ChartSkeleton slot="chart-agents-skeleton" /><ChartSkeleton slot="chart-disk-skeleton" />
-            <ChartSkeleton slot="chart-bridge-skeleton" />
           </div>
         )
         : !history.length && !live?.cpu.length ? <Empty>No history recorded yet — the sampler writes once a minute.</Empty>
@@ -399,8 +398,6 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
             <LineChart slot="chart-agents" label="Agents" points={s.agents} from={from} to={to} max={countMax(Math.max(0, ...s.agents.map((p) => p.v)))} fmt={count} color="var(--geist-pink)" />
             <LineChart slot="chart-disk" label="Disk used" points={s.disk} from={from} to={to} max={h?.disk?.totalGb ?? niceMax(Math.max(1, ...s.disk.map((p) => p.v)) * 1.1)}
               fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-amber)" />
-            <LineChart slot="chart-bridge" label="Bridge memory" points={s.bridge} from={from} to={to} max={niceMax(Math.max(256, ...s.bridge.map((p) => p.v)) * 1.1)}
-              fmt={(v) => `${Math.round(v)} MB`} axis={(v) => `${Math.round(v)}M`} color="var(--geist-blue)" />
           </div>
         )}
     </VCard>
