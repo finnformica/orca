@@ -9,7 +9,15 @@ import { run } from "./run";
 import { billedUptime, bootKey, journalBoots } from "../web/src/workstream";
 
 export type Health = {
-  instance: string; hostname: string; cores: number; cpuPct: number; load1: number; load5: number;
+  instance: string; hostname: string; cores: number;
+  /** Real CPU busy % over the interval since the last health sample (`procStatDelta` over
+   *  /proc/stat), not load average — a process queue waiting on disk inflated load past what the
+   *  CPU itself was doing. See `load1`/`load5` for the queue length itself. */
+  cpuPct: number; load1: number; load5: number;
+  /** The iowait share of the same interval — processes ready to run but stalled on disk, which
+   *  shows up in load1 but not in cpuPct. Absent off Linux (no /proc/stat) or on the very first
+   *  sample of this process (nothing to delta against yet). */
+  iowaitPct?: number;
   memUsedGb: number; memTotalGb: number; memPressurePct?: number; memPressure?: boolean;
   disk?: { usedGb: number; totalGb: number }; uptimeS: number;
   at: number;
@@ -89,6 +97,68 @@ export async function darwinMemory(): Promise<{ memUsedGb?: number; memPressureP
   return { memUsedGb, memPressurePct, memPressure };
 }
 
+// ---- linux CPU use: /proc/stat, not load average ----
+// load1 counts the run queue PLUS processes blocked on disk (D state), so a box doing heavy I/O
+// read 100% busy while /proc/stat showed the CPU itself at 81%. /proc/stat's jiffy counters give
+// the real busy share as a delta between two reads — one read alone is a counter since boot, not a
+// rate.
+
+export type ProcStatTimes = {
+  user: number; nice: number; system: number; idle: number; iowait: number; irq: number; softirq: number; steal: number;
+  total: number;
+};
+
+/** Parses the leading `cpu ` summary line of /proc/stat into jiffy counters. Guest/guest_nice
+ *  (fields 9-10) are already folded into user/nice by the kernel, so they aren't read separately.
+ *  Undefined for a line that isn't in this shape — the caller should fall back, never report
+ *  nonsense. */
+export function parseProcStat(line: string): ProcStatTimes | undefined {
+  const m = line.trim().match(/^cpu\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)/);
+  if (!m) return undefined;
+  const [user, nice, system, idle, iowait, irq, softirq, steal] = m.slice(1, 9).map(Number);
+  return { user: user!, nice: nice!, system: system!, idle: idle!, iowait: iowait!, irq: irq!, softirq: softirq!, steal: steal!,
+    total: user! + nice! + system! + idle! + iowait! + irq! + softirq! + steal! };
+}
+
+/** The busy and iowait share of the tick delta between two /proc/stat samples — pure, so a test can
+ *  feed it two hand-written sample lines (parsed) with no real /proc/stat involved. Busy is
+ *  everything but idle and iowait (user+nice+system+irq+softirq+steal) over the total delta. A
+ *  non-positive total delta (clock oddity, or the same sample twice) reads as 0, never negative or
+ *  NaN. */
+export function procStatDelta(prev: ProcStatTimes, curr: ProcStatTimes): { cpuPct: number; iowaitPct: number } {
+  const totalD = curr.total - prev.total;
+  if (totalD <= 0) return { cpuPct: 0, iowaitPct: 0 };
+  const idleD = curr.idle - prev.idle, iowaitD = curr.iowait - prev.iowait;
+  const busyD = totalD - idleD - iowaitD;
+  const pct = (n: number) => Math.min(100, Math.max(0, Math.round((n / totalD) * 100)));
+  return { cpuPct: pct(busyD), iowaitPct: pct(iowaitD) };
+}
+
+async function readProcStat(): Promise<ProcStatTimes | undefined> {
+  try {
+    return parseProcStat((await Bun.file("/proc/stat").text()).split("\n", 1)[0] ?? "");
+  } catch {
+    return undefined; // no /proc/stat — not Linux
+  }
+}
+
+// The previous read, kept across calls so the delta is "between health samples" however far apart
+// they land — the metrics sampler's once a minute, or an on-demand /api/health poll. Module-level
+// by design: there is one CPU to read per process, same as `oomKills` above.
+let lastProcStat: ProcStatTimes | undefined;
+
+/** Real CPU busy % (and iowait %) since the last time ANY caller read this, from /proc/stat. Falls
+ *  back to the load-based estimate — inflated by disk-wait, but better than nothing — on the very
+ *  first read of this process (no prior sample to delta against) and off Linux. */
+async function cpuUsage(load1: number, cores: number): Promise<{ cpuPct: number; iowaitPct?: number }> {
+  const fallback = { cpuPct: Math.min(100, Math.round((load1 / cores) * 100)) };
+  const curr = await readProcStat();
+  if (!curr) return fallback;
+  const prev = lastProcStat;
+  lastProcStat = curr;
+  return prev ? procStatDelta(prev, curr) : fallback;
+}
+
 export async function health(): Promise<Health> {
   const cores = os.cpus().length || 1;
   const [load1 = 0, load5 = 0] = os.loadavg();
@@ -109,9 +179,11 @@ export async function health(): Promise<Health> {
     memPressure = darwin.memPressure;
   }
 
+  const cpu = await cpuUsage(load1, cores);
+
   return {
     instance: db.instanceName(), hostname: os.hostname(), cores,
-    cpuPct: Math.min(100, Math.round((load1 / cores) * 100)), load1, load5,
+    cpuPct: cpu.cpuPct, iowaitPct: cpu.iowaitPct, load1, load5,
     memUsedGb, memTotalGb: Math.round((os.totalmem() / 1073741824) * 10) / 10, memPressurePct, memPressure,
     disk, uptimeS: Math.round(os.uptime()),
     at: Date.now(),
