@@ -3,7 +3,8 @@
 // of the console is assembled from these, so the look is decided in one place.
 import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import { grantScopeLabel, niceMax, orchStatusText, sparklineSegments, timeTicks, upkeepLabel, usageZone, type GrantScopeNote, type OrchStatus, type UpkeepRecord } from "../workstream";
+import { Tip } from "@/components/ui/tip";
+import { browserKillLabel, grantScopeLabel, niceMax, orchStatusText, sparklineSegments, timeTicks, upkeepLabel, usageZone, type BrowserKillRecord, type GrantScopeNote, type OrchStatus, type UpkeepRecord } from "../workstream";
 
 /** A card: hairline border, no shadow, a 48px header row with the title left and controls right. */
 export function VCard({ title, aside, children, className, slot, bodyClass, onHeaderClick, expanded }: {
@@ -147,6 +148,14 @@ export function UpkeepNote({ upkeep, running, className }: { upkeep?: UpkeepReco
       <span className="min-w-0 truncate">{text}</span>
     </div>
   );
+}
+
+/** The browser watchdog's warning on a card: an amber pill, the full text on hover. Nothing when
+ *  no browser was killed in the last day. */
+export function BrowserKillBadge({ record }: { record?: BrowserKillRecord }) {
+  const text = browserKillLabel(record);
+  if (!text) return null;
+  return <Tip label={text}><Pill tone="amber" slot="browser-killed">Browser killed</Pill></Tip>;
 }
 
 /** A label over a value — the cells of Vercel's details grids ("Created", "Status", …). */

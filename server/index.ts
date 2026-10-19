@@ -34,6 +34,7 @@ import * as orchestrator from "./orchestrator";
 import * as primary from "./primary";
 import * as mergeQueue from "./mergeQueue";
 import * as upkeep from "./upkeep";
+import * as browserWatch from "./browserWatch";
 import * as notify from "./notify";
 import * as cgroup from "./cgroup";
 import { KIND_META } from "../shared/notifications";
@@ -214,6 +215,13 @@ if (!PREVIEW_BRIDGE) setInterval(() => {
   if (!primary.held()) return;
   void loadConfig().then((cfg) => upkeep.tick(cfg)).catch(db.logUnlessDown("orca: upkeep pass failed"));
 }, upkeep.UPKEEP_POLL_MS).unref();
+// The browser watchdog (server/browserWatch.ts): a browser or a browser MCP server in the agents'
+// slice is killed and flagged on the workstream that started it.
+if (!PREVIEW_BRIDGE && process.platform === "linux") setInterval(() => {
+  if (!primary.held()) return;
+  void browserWatch.sweep({ record: (runId, names) => browserWatch.recordKills(runId, names).catch(db.logUnlessDown("orca: browser watchdog record failed")) })
+    .catch((e) => console.error(`orca: browser watchdog failed: ${e instanceof Error ? e.message : e}`));
+}, browserWatch.WATCH_INTERVAL_MS).unref();
 // Warm the review queue (gh.listReviewPrs) so its slow cold fetch is paid here, not by a caller. A
 // local-only repo just fails quietly.
 void loadConfig().then((cfg) => cfg.repos.filter(verbs.repoHere)

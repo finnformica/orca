@@ -29,13 +29,13 @@ import { BottomSheet } from "@/components/BottomSheet";
 import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
 import {
   DEFAULT_LIST_FILTER, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed, prPill,
-  LIST_ITEM_GAP_PX, NO_FOLD, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, sublineOverflow, toggleNotMerged, toggleQuick,
+  LIST_ITEM_GAP_PX, NO_FOLD, browserKillLabel, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, sublineOverflow, toggleNotMerged, toggleQuick,
   type ListColumn, type ListFold, type ListSort, type ListWidths, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
 } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Pill, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
+import { BrowserKillBadge, Pill, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
 import { CopyDone, LaneActions } from "./BulkActions";
 import { ConditionBadges } from "./ConditionBadges";
@@ -472,6 +472,7 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
     row.prNumber && !isDone && { key: "checks", sep: "none", part: "signals", node: <ConditionBadges row={row} /> },
     row.prNumber && !isDone && { key: "review", sep: "none", part: "signals", node: <ReviewCluster row={row} /> },
     !row.prNumber && row.mergeClean === "conflict" && { key: "conflicts", sep: "none", part: "signals", node: <Pill tone="red">Conflicts</Pill> },
+    browserKillLabel(row.browserKilled) && { key: "browser", sep: "none", part: "signals", node: <BrowserKillBadge record={row.browserKilled} /> },
   ].filter(Boolean) as SublineItem[];
   // The PR cell's pill and number; the folded checks join them, or all of it joins the subline.
   const prItems: SublineItem[] = [];
@@ -518,6 +519,7 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
           {row.prNumber && !isDone && <ConditionBadges row={row} />}
           {row.prNumber && !isDone && <ReviewCluster row={row} />}
           {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
+          <BrowserKillBadge record={row.browserKilled} />
           {(quick || menu) && <div data-slot="row-actions" className="ml-auto flex shrink-0 items-center gap-1">{quick}{menu}</div>}
         </div>
         {reasons.length > 0 && <div role="cell" data-slot="row-reasons" className="text-geist-warning-fg text-xs">{reasons.join(" · ")}</div>}

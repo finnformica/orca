@@ -1518,6 +1518,19 @@ export function upkeepLabel(rec: UpkeepRecord | undefined, running: boolean): st
   return undefined;
 }
 
+/** The browser watchdog's record on a workstream (server/browserWatch.ts). */
+export type BrowserKillRecord = { at: string; runId?: string; names: string[]; count: number };
+/** How long the card shows a browser kill. */
+export const BROWSER_KILL_SHOW_MS = 24 * 60 * 60_000;
+
+/** The card's warning for a browser the watchdog killed: shown for a day after the last kill. Pure. */
+export function browserKillLabel(rec: BrowserKillRecord | undefined, now = Date.now()): string | undefined {
+  if (!rec?.count) return undefined;
+  const at = Date.parse(rec.at);
+  if (!Number.isFinite(at) || now - at > BROWSER_KILL_SHOW_MS) return undefined;
+  return `Orca killed ${rec.count} browser process${rec.count === 1 ? "" : "es"} this workstream started (${rec.names.join(", ")}). Use orca-shot.`;
+}
+
 /** The body Orca opens a finished worker's PR with: its outcome, decisions and verification, then
  *  the commits — what a reviewer needs, from what the worker already reported. Pure. */
 export function workerPrBody(input: { outcome?: AgentOutcome; response?: string; commits: string[] }): string {
@@ -1982,6 +1995,7 @@ export type OverviewRow = {
   agentCheck?: { ok: boolean; command?: string; exitCode?: number };
   prHead?: string; failingChecks?: string[];
   cleanupBlocked?: { why?: string; at?: string };
+  browserKilled?: BrowserKillRecord;
 };
 
 export type Attention = "check failed" | "agent error" | "run stopped" | "CI failing" | "conflicts" | "changes requested" | "message held";
@@ -2068,6 +2082,8 @@ export function rowStatus(row: OverviewRow, opts: { now?: number; unresolved?: n
   }
   if (unresolved > 0) reasons.push(`${plural(unresolved, "unresolved review thread")}.`);
   if (row.cleanupBlocked) reasons.push(`Cleanup blocked${row.cleanupBlocked.why ? `: ${row.cleanupBlocked.why}` : ""}.`);
+  const browser = browserKillLabel(row.browserKilled, now);
+  if (browser) reasons.push(browser);
   const addressable = row.prNumber !== undefined && row.lane !== "DONE" && row.agentStatus !== "running"
     && (row.ciStatus === "failing" || row.mergeable === "CONFLICTING" || row.mergeClean === "conflict" || row.reviewStatus === "changes_requested" || unresolved > 0);
   return { tone, reasons, ...(addressable ? { action: "address" as const } : {}) };
