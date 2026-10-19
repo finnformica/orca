@@ -1250,7 +1250,18 @@ own `systemd-run --user --scope` (`cgroup.scopedCommand`, `MemoryMax=1.5G`, no s
 serves it. Workers get `bin/worker/` on PATH (`agentEnv` — not `bin/`, whose `orca` is the
 orchestrator's) and `orca-shot <url> [--viewport 390x844] [--dark] …`, which prints `shot: <path>`;
 every worker prompt says it is the ONLY way to take a screenshot (`SCREENSHOTS`), and shot paths in a
-reply ride the worker report (`reportedShots` in `workerEvent`).
+reply ride the worker report (`reportedShots` in `workerEvent`). `--type <text>` types into the
+focused field.
+**No worker browsers** (2026-10-19: branch-demo's committed `.mcp.json` started playwright and
+chrome-devtools MCP servers in every worker; seven of each, with Chrome, pushed load to 29 on 4 cores).
+Two guards. (1) `server/mcp.ts`: every claude launch gets `--strict-mcp-config` and Orca's own
+`--mcp-config` — only the repo's `mcpAllow` servers from its `.mcp.json` (default none; the
+orchestrator: all of its cwd's), never a browser server — plus `--disallowedTools
+mcp__playwright,mcp__chrome-devtools`. (2) `server/browserWatch.ts`: every 30 s the primary kills a
+browser or browser MCP server in `orca-agents.slice` outside orca-shot's scope and the test queue's
+`orca-heavy-*` slots, and records it on the card (`browserKilled`, a "Browser killed" pill) and as
+a step in the run's transcript. Until `bin/worker/orca-run` exists, a browser under `playwright
+test` is kept as a test.
 **Screenshots in PRs and on the agent page** (`server/prShots.ts`): shots are not stored per turn —
 `workstreamShots` reads them off the branch's turns (reply + Verification). The newest
 `PR_SHOTS_MAX` (6) go into the PR body's `## Screenshots` section (`withScreenshotsSection`: replaced
