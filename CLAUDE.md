@@ -490,8 +490,12 @@ when the board is stale ("Updated 3m ago" — a button: **Refresh everything**, 
 streams, usage, notifications, an open chat, cached review signals — re-runs at once, the icon spins until
 all settle, and past 15s it hard-reloads); an unreachable bridge shows the offline screen.
 
-There is no kanban Board view any more (its density setting went with it); the Agents list is the
-one view. A workstream still has a lane — **Local → Draft → In Review → Mergeable → Done·today** —
+**The Board** (`/board`, `views/Board.tsx`, the nav entry after Agents): the five lanes of cards,
+with the New-draft box pinned at the top of Local and a density toggle (`densityAtom`). #333 removed
+it; it is back as it was, with the shared `BulkActions`, `NewDraft`, `ConditionBadges` and
+`lib/workstreamHooks`. Settings' **Show Board view** sets `ui.showBoard` in the config document
+(`POST /api/config/ui`, on unless false) for every browser. Off, the nav entry is hidden and
+`/board` is replaced by `/agents`. The Agents list stays the main view. A workstream still has a lane — **Local → Draft → In Review → Mergeable → Done·today** —
 which the Agents chips, `detailPath` and the bulk verbs (`views/BulkActions.tsx`) read. A workstream
 is a branch; its lane (`store.laneFor`):
 - **open PR, draft** → Draft. **open PR, approved** → Mergeable. **open PR, else** → In Review.
