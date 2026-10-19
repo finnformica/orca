@@ -7,6 +7,7 @@ import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models
 import { SNIPPETS, WRITING_STYLE } from "../../shared/writingStyle";
 import { asksForInput } from "../../shared/notifications";
 import { integrationMessage, type IntegrationMessage } from "../../shared/integrations";
+import type { LiveSample } from "../../server/liveMetrics";
 export { attachCommand } from "../../shared/agent";
 
 // Kanban lanes are driven by the REVIEW lifecycle only. Conflict / CI / mergeability
@@ -2720,7 +2721,57 @@ export function headerUsage(u: UsageReading | null, now = Date.now()): HeaderUsa
 export const usageZone = (pct: number): "ok" | "warn" | "danger" => (pct >= 90 ? "danger" : pct >= 75 ? "warn" : "ok");
 
 /** The instance card's range picker. */
-export const HISTORY_RANGES = [{ label: "6h", hours: 6 }, { label: "24h", hours: 24 }, { label: "7d", hours: 168 }] as const;
+export const HISTORY_RANGES = [{ label: "1h", hours: 1 }, { label: "6h", hours: 6 }, { label: "24h", hours: 24 }, { label: "7d", hours: 168 }] as const;
+
+/** Ranges up to this many hours read the bridge's 15 s ring (/api/health/live); longer ones the
+ *  1-minute history in Postgres. */
+export const LIVE_MAX_HOURS = 6;
+export const usesLiveSource = (hours: number): boolean => hours <= LIVE_MAX_HOURS;
+
+/** One point of a stacked chart: a value per band, bottom band first. */
+export type StackPoint = { at: number; v: number[] };
+export type LiveCharts = {
+  /** Work, iowait (% of all cores). */
+  cpu: StackPoint[];
+  /** Read, write (MB/s). Samples with no disk reading are skipped. */
+  io: StackPoint[];
+  /** Used, cache (GB). */
+  mem: StackPoint[];
+  /** load1 / cores, per sample — shown as a number, never on the % axis. */
+  loadPerCore: { at: number; v: number }[];
+  iowait: { at: number; v: number }[];
+  ooms: { at: number; n: number }[];
+};
+
+/** The live charts' points from /api/health/live's samples. Pure. */
+export function liveCharts(samples: LiveSample[], cores: number): LiveCharts {
+  const c = Math.max(1, cores);
+  return {
+    cpu: samples.map((s) => ({ at: s.at, v: [s.work, s.iowait] })),
+    io: samples.flatMap((s) => (s.readMBs === undefined && s.writeMBs === undefined ? [] : [{ at: s.at, v: [s.readMBs ?? 0, s.writeMBs ?? 0] }])),
+    mem: samples.map((s) => ({ at: s.at, v: [s.memUsedGb, s.memCacheGb] })),
+    loadPerCore: samples.map((s) => ({ at: s.at, v: Math.round((s.load1 / c) * 100) / 100 })),
+    iowait: samples.map((s) => ({ at: s.at, v: s.iowait })),
+    ooms: samples.flatMap((s) => (s.ooms ? [{ at: s.at, n: s.ooms }] : [])),
+  };
+}
+
+/** The point nearest `at` (the hover readout), or undefined for no points. Pure. */
+export function nearestAt<T extends { at: number }>(points: T[], at: number): T | undefined {
+  return points.reduce<T | undefined>((a, b) => (!a || Math.abs(b.at - at) < Math.abs(a.at - at) ? b : a), undefined);
+}
+
+/** The stacked polygons' runs: a new run after a gap longer than `gapMs` (a bridge restart empties the
+ *  ring; a stall skips samples), so an area never bridges missing time. Pure. */
+export function stackRuns(points: StackPoint[], gapMs: number): StackPoint[][] {
+  const runs: StackPoint[][] = [];
+  for (const p of points) {
+    const run = runs[runs.length - 1];
+    if (run && p.at - run[run.length - 1]!.at <= gapMs) run.push(p);
+    else runs.push([p]);
+  }
+  return runs;
+}
 
 /** At most `max` points, each the mean of its time bucket — a week of minute samples is 10k points,
  *  which no 600px line needs. Gaps survive: an empty bucket emits nothing. */

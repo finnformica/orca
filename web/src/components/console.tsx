@@ -1,10 +1,11 @@
 // Vercel's building blocks, in the Geist tokens (styles.css): a hairline card with a header row, a
 // usage ring, a status dot, an environment-style pill, a details grid and a line chart. Every page
 // of the console is assembled from these, so the look is decided in one place.
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { Tip } from "@/components/ui/tip";
-import { browserKillLabel, grantScopeLabel, niceMax, orchStatusText, sparklineSegments, timeTicks, upkeepLabel, usageZone, type BrowserKillRecord, type GrantScopeNote, type OrchStatus, type UpkeepRecord } from "../workstream";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { browserKillLabel, grantScopeLabel, nearestAt, niceMax, orchStatusText, sparklineSegments, stackRuns, timeTicks, type StackPoint, upkeepLabel, usageZone, type BrowserKillRecord, type GrantScopeNote, type OrchStatus, type UpkeepRecord } from "../workstream";
 
 /** A card: hairline border, no shadow, a 48px header row with the title left and controls right. */
 export function VCard({ title, aside, children, className, slot, bodyClass, onHeaderClick, expanded }: {
@@ -230,6 +231,128 @@ export function LineChart({ points, from, to, max, fmt, axis = fmt, label, slot,
       <div className="text-muted-foreground mt-1 flex justify-between pl-10 font-mono text-[10px]">
         {timeTicks(from, to, 4).map((t) => <span key={t.at}>{t.label}</span>)}
       </div>
+    </figure>
+  );
+}
+
+export type StackBand = { label: string; color: string; hatch?: boolean };
+
+const clock = (at: number) => new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+/** `LineChart`'s sibling for parts of one whole: bands stacked bottom first (the CPU's work and
+ *  iowait, the disk's read and write, memory's used and cache), dashed reference lines (a cap, a
+ *  limit) and red event marks. Hover, or tap on a touch screen, opens the shadcn tooltip with each
+ *  band's value at that time, the `extra` rows and any mark there. A hatched band is grey with a
+ *  45° texture, so it reads apart from its neighbour without colour. One y axis. */
+export function StackedChart({ points, bands, from, to, max, fmt, axis = fmt, label, slot, height = 120, refs = [], marks = [], extra, summary, gapMs }: {
+  points: StackPoint[]; bands: StackBand[]; from: number; to: number; max: number;
+  fmt: (v: number) => string; axis?: (v: number) => string; label: ReactNode; slot?: string; height?: number;
+  /** Dashed horizontal lines, named in the legend. */
+  refs?: { v: number; label: string }[];
+  /** Events drawn as red vertical lines; the tooltip names one within a sample of the hovered time. */
+  marks?: { at: number; label: string }[];
+  /** More tooltip rows at a time (load / cores, iowait). */
+  extra?: (at: number) => { label: string; value: string }[];
+  /** The caption's value for a point; the stack's total by default. */
+  summary?: (p: StackPoint) => string;
+  /** A longer step between two points breaks the area. */
+  gapMs: number;
+}) {
+  const W = 600, H = height;
+  const id = useId().replace(/:/g, "");
+  const [hover, setHover] = useState<StackPoint | null>(null);
+  const last = points[points.length - 1];
+  const shown = hover ?? last;
+  const total = (p: StackPoint) => p.v.reduce((a, b) => a + b, 0);
+  const x = (at: number) => ((at - from) / Math.max(1, to - from)) * W;
+  const y = (v: number) => H - (Math.min(v, max) / Math.max(1e-9, max)) * H;
+  const pick = (e: React.PointerEvent<SVGSVGElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const at = from + ((e.clientX - r.left) / (r.width || W)) * (to - from);
+    setHover(nearestAt(points, at) ?? null);
+  };
+  // Each band's polygon per run: its top edge left to right, then the band below's top right to left.
+  const areas = stackRuns(points, gapMs).map((run) => bands.map((_, k) => {
+    const top = run.map((p) => `${x(p.at)},${y(p.v.slice(0, k + 1).reduce((a, b) => a + b, 0))}`);
+    const base = run.map((p) => `${x(p.at)},${y(p.v.slice(0, k).reduce((a, b) => a + b, 0))}`).reverse();
+    return { poly: [...top, ...base].join(" "), line: top.join(" ") };
+  }));
+  const near = hover ? marks.filter((m) => Math.abs(m.at - hover.at) <= gapMs / 2) : [];
+  const fmtTotal = summary ?? ((p: StackPoint) => fmt(total(p)));
+  return (
+    <figure data-slot={slot} className="min-w-0">
+      <figcaption className="mb-2 flex items-baseline justify-between gap-2">
+        <span className="text-muted-foreground flex min-w-0 items-baseline gap-1.5 text-xs whitespace-nowrap">{label}</span>
+        <span data-slot="chart-value" className="text-sm font-medium whitespace-nowrap tabular-nums">
+          {shown ? fmtTotal(shown) : "—"}
+          {hover && <span className="text-muted-foreground ml-1 text-xs font-normal">at {clock(hover.at)}</span>}
+        </span>
+      </figcaption>
+      <div className="flex gap-2">
+        <div className="text-muted-foreground flex w-8 shrink-0 flex-col justify-between text-right font-mono text-[10px] whitespace-nowrap tabular-nums" style={{ height: H }}>
+          <span className="-translate-y-1/2">{axis(max)}</span><span>{axis(max / 2)}</span><span className="translate-y-1/2">{axis(0)}</span>
+        </div>
+        <div className="relative min-w-0 flex-1">
+          <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ height: H }} className="block w-full min-w-0 touch-pan-y overflow-visible" role="img"
+            aria-label={`${typeof label === "string" ? label : slot ?? "chart"}${last ? `, now ${fmtTotal(last)}` : ", no samples"}`}
+            onPointerMove={pick} onPointerDown={pick} onPointerLeave={(e) => { if (e.pointerType === "mouse") setHover(null); }}>
+            <defs>
+              <pattern id={`hatch-${id}`} patternUnits="userSpaceOnUse" width={6} height={6} patternTransform="rotate(45)">
+                <rect width={6} height={6} fill="var(--geist-gray)" opacity={0.25} />
+                <line x1={0} y1={0} x2={0} y2={6} stroke="var(--geist-gray)" strokeWidth={3} />
+              </pattern>
+            </defs>
+            {[0, 0.5, 1].map((f) => <line key={f} x1={0} x2={W} y1={H * f} y2={H * f} className="stroke-border" strokeWidth={1} strokeDasharray={f === 1 ? undefined : "3 3"} vectorEffect="non-scaling-stroke" />)}
+            {areas.map((run, i) => run.map((a, k) => (
+              <g key={`${i}-${k}`} data-slot="chart-band" data-band={bands[k]!.label}>
+                <polygon points={a.poly} fill={bands[k]!.hatch ? `url(#hatch-${id})` : bands[k]!.color} fillOpacity={bands[k]!.hatch ? 1 : 0.55} />
+                <polyline points={a.line} fill="none" stroke={bands[k]!.color} strokeWidth={1.5} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+              </g>
+            )))}
+            {refs.filter((r) => r.v <= max).map((r) => (
+              <line key={r.label} data-slot="chart-ref" x1={0} x2={W} y1={y(r.v)} y2={y(r.v)} className="stroke-foreground" strokeOpacity={0.6} strokeWidth={1} strokeDasharray="5 4" vectorEffect="non-scaling-stroke" />
+            ))}
+            {marks.filter((m) => m.at >= from && m.at <= to).map((m) => (
+              <line key={m.at} data-slot="chart-mark" x1={x(m.at)} x2={x(m.at)} y1={0} y2={H} stroke="var(--geist-red)" strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+            ))}
+            {hover && <line x1={x(hover.at)} x2={x(hover.at)} y1={0} y2={H} className="stroke-muted-foreground" strokeWidth={1} strokeDasharray="2 2" vectorEffect="non-scaling-stroke" />}
+          </svg>
+          {/* The tooltip's anchor: a zero-width line at the hovered time, so Radix keeps it on screen. */}
+          <Tooltip open={Boolean(hover)}>
+            <TooltipTrigger asChild>
+              <span aria-hidden="true" className="pointer-events-none absolute top-0 w-px" style={{ left: `${hover ? (x(hover.at) / W) * 100 : 0}%`, height: H }} />
+            </TooltipTrigger>
+            {hover && (
+              <TooltipContent data-slot="chart-tooltip" side="top" align="center" className="min-w-36">
+                <div className="mb-1 font-medium">{clock(hover.at)}</div>
+                {bands.map((b, k) => (
+                  <div key={b.label} className="flex items-center justify-between gap-3 tabular-nums">
+                    <span className="flex items-center gap-1.5"><span className="size-2 rounded-[2px]" style={{ background: b.hatch ? "var(--geist-gray)" : b.color }} />{b.label}</span>
+                    <span>{fmt(hover.v[k] ?? 0)}</span>
+                  </div>
+                ))}
+                {(extra?.(hover.at) ?? []).map((r) => (
+                  <div key={r.label} className="flex items-center justify-between gap-3 tabular-nums opacity-80"><span>{r.label}</span><span>{r.value}</span></div>
+                ))}
+                {near.map((m) => <div key={m.at} className="text-[var(--geist-red)]">{m.label}</div>)}
+              </TooltipContent>
+            )}
+          </Tooltip>
+        </div>
+      </div>
+      <div className="text-muted-foreground mt-1 flex justify-between pl-10 font-mono text-[10px]">
+        {timeTicks(from, to, 4).map((t) => <span key={t.at}>{t.label}</span>)}
+      </div>
+      <ul data-slot="chart-legend" className="text-muted-foreground mt-1.5 flex flex-wrap gap-x-3 gap-y-1 pl-10 text-[11px]">
+        {bands.map((b) => (
+          <li key={b.label} className="flex items-center gap-1.5">
+            <span className="size-2 rounded-[2px]" style={b.hatch ? { background: `repeating-linear-gradient(45deg, var(--geist-gray) 0 2px, transparent 2px 4px)` } : { background: b.color }} />{b.label}
+          </li>
+        ))}
+        {refs.map((r) => (
+          <li key={r.label} className="flex items-center gap-1.5"><span className="w-3 border-t border-dashed border-current" />{r.label}</li>
+        ))}
+      </ul>
     </figure>
   );
 }

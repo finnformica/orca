@@ -306,3 +306,96 @@ test("a long heavy-command queue scrolls inside the card (a ScrollArea with a he
   expect(queue.querySelector("[title]")).toBeNull();
   expect(openTip(tip.querySelector('[data-slot="heavy-command"]') as HTMLElement).textContent).toMatch(/^npx jest src\/a-very-long-path\/\d+\/component.test.tsx --maxWorkers=1$/);
 });
+
+// The 15 s ring (/api/health/live) for ranges up to 6 hours: the whole box, no split by workstream.
+const liveRing = (now: number) => ({
+  stepMs: 15_000, cores: 4, memTotalGb: 15.3, sliceMaxGb: 8.4, diskCapMBs: 125,
+  samples: [0, 1, 2].map((i) => ({
+    at: now - (2 - i) * 15_000, work: [20, 10, 15][i]!, iowait: [5, 80, 2][i]!, load1: [1, 6, 2][i]!,
+    readMBs: [3, 130, 1][i]!, writeMBs: [1, 2, 0.5][i]!, memUsedGb: [3, 3.5, 4][i]!, memCacheGb: 5, ...(i === 1 ? { ooms: 1 } : {}),
+  })),
+});
+const pickRange = async (label: string) => {
+  const b = [...container!.querySelectorAll('[role="group"][aria-label="Range"] button')].find((x) => x.textContent === label)!;
+  await act(async () => { b.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
+};
+const bands = (chart: Element) => [...chart.querySelectorAll('[data-slot="chart-band"]')].map((g) => g.getAttribute("data-band"));
+const legend = (chart: Element) => chart.querySelector('[data-slot="chart-legend"]')!.textContent;
+
+test("up to 6 hours the card reads the 15 s ring: CPU work + hatched iowait, memory used + cache under the agents limit, disk IO under its cap", async () => {
+  const now = Date.now();
+  apiFake.healthLiveData = liveRing(now);
+  apiFake.healthHistoryData = [{ at: now - 60_000, cpuPct: 50, load1: 2, memUsedGb: 12, memTotalGb: 15.3, runningAgents: 2 }];
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  expect(apiFake.healthLiveCalls).toEqual([]); // 24h: the 1-minute history only
+  await pickRange("1h");
+  expect(apiFake.healthLiveCalls.at(-1)).toEqual({ instance: "cloud", hours: 1 });
+
+  const cpu = container!.querySelector('[data-slot="chart-cpu"]')!;
+  expect(bands(cpu)).toEqual(["Work", "iowait"]);
+  expect(cpu.querySelector('[data-band="iowait"] polygon')!.getAttribute("fill")).toStartWith("url(#hatch-");
+  expect(lastValue(cpu)).toBe("15% + 2% iowait · load 0.50/core");
+  expect(legend(cpu)).toBe("Workiowait");
+  expect(cpu.querySelector("figcaption")!.textContent).toStartWith("CPU · % of all cores");
+
+  const mem = container!.querySelector('[data-slot="chart-mem"]')!;
+  expect(bands(mem)).toEqual(["Used", "Cache"]);
+  expect(lastValue(mem)).toBe("4.0 GB used");
+  expect(mem.querySelectorAll('[data-slot="chart-ref"]')).toHaveLength(1);
+  expect(legend(mem)).toBe("UsedCacheAgents limit 8.4 GB");
+  expect(mem.querySelectorAll('[data-slot="chart-mark"]')).toHaveLength(1);
+  expect(mem.querySelector('[data-slot="chart-oom"]')!.textContent).toBe(" · 1 OOM kill");
+
+  const io = container!.querySelector('[data-slot="chart-io"]')!;
+  expect(bands(io)).toEqual(["Read", "Write"]);
+  expect(lastValue(io)).toBe("1.5 MB/s");
+  expect(legend(io)).toBe("ReadWriteCap 125 MB/s");
+  // No native title tooltips on the live charts.
+  expect(container!.querySelectorAll('[data-slot="chart-cpu"] title, [data-slot="chart-mem"] title, [data-slot="chart-io"] title')).toHaveLength(0);
+  // The other charts stay on the history.
+  expect(container!.querySelector('[data-slot="chart-agents"]')).toBeTruthy();
+
+  await pickRange("24h");
+  expect(container!.querySelector('[data-slot="chart-io"]')).toBeNull();
+  expect(container!.querySelector('[data-slot="chart-cpu"] polyline')).toBeTruthy();
+});
+
+test("hover on a live chart opens its tooltip with the values at that time, iowait and load included", async () => {
+  const now = Date.now();
+  apiFake.healthLiveData = liveRing(now);
+  localStorage.setItem("orca.ui.v1.instanceRange:cloud", "1");
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  const svgOf = (slot: string) => container!.querySelector(`[data-slot="${slot}"] svg`)!;
+  // The sample 15 s ago (the IO stall): x = 600 × (1 − 15 s / 1 h) on the chart's 600-unit width.
+  const hover = async (slot: string) => {
+    await act(async () => { svgOf(slot).dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: 597.5, pointerType: "mouse" })); await flush(); });
+    return document.querySelector('[data-slot="chart-tooltip"]')!.textContent;
+  };
+  const cpuTip = await hover("chart-cpu");
+  expect(cpuTip).toContain("Work10%");
+  expect(cpuTip).toContain("iowait80%");
+  expect(cpuTip).toContain("Load / cores1.50");
+  expect(lastValue(container!.querySelector('[data-slot="chart-cpu"]')!)).toContain("10% + 80% iowait");
+  const leave = (slot: string) => act(async () => { svgOf(slot).dispatchEvent(new PointerEvent("pointerout", { bubbles: true, pointerType: "mouse", relatedTarget: document.body })); await flush(); });
+  await leave("chart-cpu");
+  expect(document.querySelector('[data-slot="chart-tooltip"]')).toBeNull();
+  const ioTip = await hover("chart-io");
+  expect(ioTip).toContain("Read130.0 MB/s");
+  expect(ioTip).toContain("iowait80%");
+  await leave("chart-io");
+  const memTip = await hover("chart-mem");
+  expect(memTip).toContain("Used3.5 GB");
+  expect(memTip).toContain("1 agent run out of memory");
+});
+
+test("a bridge without the ring (an older build) keeps the 6h line charts from the history", async () => {
+  apiFake.healthHistoryData = [{ at: Date.now() - 60_000, cpuPct: 50, load1: 2, memUsedGb: 12, memTotalGb: 15.3 }];
+  localStorage.setItem("orca.ui.v1.instanceRange:cloud", "6");
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  expect(apiFake.healthLiveCalls).toEqual([{ instance: "cloud", hours: 6 }]);
+  expect(container!.querySelector('[data-slot="chart-cpu"] polyline')).toBeTruthy();
+  expect(container!.querySelector('[data-slot="chart-io"]')).toBeNull();
+});

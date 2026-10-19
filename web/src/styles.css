@@ -68,6 +68,9 @@
   --geist-teal: #50e3c2;
   --geist-amber: #f5a623;
   --geist-red: #e5484d;
+  /* Two validated categorical chart slots (the Disk IO chart's read and write), stepped per mode. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
   --geist-gray: #8f8f8f;
   --geist-pink: #ff0080;
   --geist-warning-bg: #fff8e6;
@@ -119,6 +122,8 @@
   --selected: var(--accent);
   --selected-fg: var(--foreground);
   --heading: var(--foreground);
+  --series-1: #3987e5;
+  --series-2: #d95926;
   --geist-warning-bg: #2a1d03;
   --geist-warning-fg: #ffb224;
   --geist-error-bg: #2a0e0f;

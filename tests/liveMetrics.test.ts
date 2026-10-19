@@ -123,3 +123,28 @@ describe("sampler", () => {
     expect(diskCapMBs("nope")).toBe(125);
   });
 });
+
+describe("the card's live series (workstream.ts)", () => {
+  const { liveCharts, nearestAt, stackRuns, usesLiveSource } = require("../web/src/workstream") as typeof import("../web/src/workstream");
+  const s = (at: number, extra: Partial<LiveSample> = {}): LiveSample => ({ at, work: 30, iowait: 50, load1: 6, memUsedGb: 3, memCacheGb: 5, ...extra });
+
+  test("up to 6 hours reads the ring; longer ranges the history", () => {
+    expect([1, 6, 24, 168].map(usesLiveSource)).toEqual([true, true, false, false]);
+  });
+
+  test("liveCharts stacks work + iowait, read + write, used + cache; load is per core; samples with no disk are skipped from IO", () => {
+    const c = liveCharts([s(1, { readMBs: 130, writeMBs: 2, ooms: 2 }), s(2)], 4);
+    expect(c.cpu).toEqual([{ at: 1, v: [30, 50] }, { at: 2, v: [30, 50] }]);
+    expect(c.io).toEqual([{ at: 1, v: [130, 2] }]);
+    expect(c.mem[0]).toEqual({ at: 1, v: [3, 5] });
+    expect(c.loadPerCore[0]).toEqual({ at: 1, v: 1.5 });
+    expect(c.ooms).toEqual([{ at: 1, n: 2 }]);
+  });
+
+  test("stackRuns breaks the area at a gap; nearestAt picks the closest sample", () => {
+    const pts = [1, 2, 3, 20, 21].map((at) => ({ at, v: [1] }));
+    expect(stackRuns(pts, 5).map((r) => r.map((p) => p.at))).toEqual([[1, 2, 3], [20, 21]]);
+    expect(nearestAt(pts, 10)?.at).toBe(3);
+    expect(nearestAt([], 1)).toBeUndefined();
+  });
+});

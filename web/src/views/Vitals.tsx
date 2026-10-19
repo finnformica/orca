@@ -12,7 +12,7 @@ import { usageExpandedAtom } from "@/lib/atoms";
 import { notifyLocal } from "@/lib/notificationStore";
 import { persistedKey, usePersisted } from "@/lib/persisted";
 import { useCoarse, useNarrow } from "@/lib/viewport";
-import { applyProfileToggle, optimisticProfileToggle, refreshUsageNow, refreshVitals, revertProfileToggle, useHealth, useHealthHistory, useUsage, useUsageLoaded } from "@/lib/vitals";
+import { applyProfileToggle, optimisticProfileToggle, refreshUsageNow, refreshVitals, revertProfileToggle, useHealth, useHealthHistory, useHealthLive, useUsage, useUsageLoaded } from "@/lib/vitals";
 import { Button } from "@/components/ui/button";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { Tip } from "@/components/ui/tip";
@@ -20,8 +20,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
-import { HISTORY_RANGES, countMax, headerUsage, heavyQueueRows, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
-import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard } from "@/components/console";
+import { HISTORY_RANGES, countMax, liveCharts, nearestAt, usesLiveSource, headerUsage, heavyQueueRows, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StackedChart, StatusDot, UsageSkeleton, VCard, type StackBand } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
  *  fleet + Codex) always show, and Vercel's chevron (or the header row) expands the per-login breakdown.
@@ -269,6 +269,14 @@ export function RefreshVitals() {
 
 const pct = (v: number) => `${Math.round(v)}%`;
 const count = (v: number) => String(Math.round(v));
+const gb = (v: number) => `${v.toFixed(1)} GB`;
+const mbs = (v: number) => `${v.toFixed(1)} MB/s`;
+
+// The live charts' bands, bottom first. iowait is grey and hatched: time the CPU waited on the disk,
+// not work, so it must not read as a third kind of work.
+const CPU_BANDS: StackBand[] = [{ label: "Work", color: "var(--geist-blue)" }, { label: "iowait", color: "var(--geist-gray)", hatch: true }];
+const IO_BANDS: StackBand[] = [{ label: "Read", color: "var(--series-1)" }, { label: "Write", color: "var(--series-2)" }];
+const MEM_BANDS: StackBand[] = [{ label: "Used", color: "var(--geist-green)" }, { label: "Cache", color: "var(--geist-gray)" }];
 
 /** One machine. `here`: the instance answering this page (its health needs no `?instance=`). */
 export function InstanceCard({ instance, here }: { instance: string; here: boolean }) {
@@ -276,6 +284,8 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const [hours, setHours] = usePersisted<number>(persistedKey("instanceRange", instance), 24, isRange);
   const reading = useHealth(here ? undefined : instance);
   const history = useHealthHistory(instance, hours);
+  // Up to 6 hours: the bridge's own 15 s ring for CPU, memory and disk IO (false: an older bridge).
+  const liveAnswer = useHealthLive(usesLiveSource(hours) ? (here ? undefined : instance) : null, hours);
   const h = reading?.health;
   const down = Boolean(reading?.down);
   const to = Date.now(), from = to - hours * 3_600_000;
@@ -291,6 +301,14 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
   const guard = protectionsWarning(h?.protections);
   const heavyRows = heavyQueueRows(h?.heavy);
+  const live = liveAnswer ? liveCharts(liveAnswer.samples, liveAnswer.cores) : null;
+  const gapMs = Math.max(3 * (liveAnswer ? liveAnswer.stepMs : 15_000), ((to - from) / 360) * 3);
+  const ioMax = liveAnswer ? niceMax(Math.max(liveAnswer.diskCapMBs * 1.15, ...(live?.io ?? []).map((p) => (p.v[0] ?? 0) + (p.v[1] ?? 0)))) : 0;
+  const liveOoms = (live?.ooms ?? []).reduce((n, o) => n + o.n, 0);
+  const oomCaption = (n: number) => n > 0 && <span data-slot="chart-oom" className="text-[var(--geist-red)]"> · {n} OOM kill{n === 1 ? "" : "s"}</span>;
+  // Load is a NUMBER in the CPU caption and tooltip, never a line: it is a queue length (which counts
+  // tasks waiting on the disk too), so on the % axis it would read as part of the stack.
+  const loadAt = (at: number) => nearestAt(live?.loadPerCore ?? [], at)?.v;
   return (
     <VCard
       slot={`instance-${instance}`}
@@ -348,19 +366,36 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
           </ScrollArea>
         </div>
       )}
-      {history === null ? (
+      {(usesLiveSource(hours) && liveAnswer === null) || history === null ? (
           <div className="grid gap-6 p-4 md:grid-cols-2">
             <ChartSkeleton slot="chart-cpu-skeleton" /><ChartSkeleton slot="chart-mem-skeleton" />
             <ChartSkeleton slot="chart-agents-skeleton" /><ChartSkeleton slot="chart-disk-skeleton" />
             <ChartSkeleton slot="chart-bridge-skeleton" />
           </div>
         )
-        : !history.length ? <Empty>No history recorded yet — the sampler writes once a minute.</Empty>
+        : !history.length && !live?.cpu.length ? <Empty>No history recorded yet — the sampler writes once a minute.</Empty>
         : (
           <div className="grid gap-6 p-4 md:grid-cols-2">
-            <LineChart slot="chart-cpu" label="CPU" points={s.cpu} from={from} to={to} max={100} fmt={pct} />
-            <LineChart slot="chart-mem" label={<>Memory used{ooms > 0 && <span data-slot="chart-oom" className="text-[var(--geist-red)]"> · {ooms} OOM kill{ooms === 1 ? "" : "s"}</span>}</>} points={s.mem}
-              marks={s.ooms.map((o) => ({ at: o.at, title: `${o.n} agent run${o.n === 1 ? "" : "s"} out of memory` }))} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" />
+            {live && liveAnswer ? (
+              <>
+                <StackedChart slot="chart-cpu" label="CPU · % of all cores" points={live.cpu} bands={CPU_BANDS} from={from} to={to} max={100} fmt={pct} gapMs={gapMs}
+                  summary={(p) => `${pct(p.v[0] ?? 0)}${(p.v[1] ?? 0) >= 1 ? ` + ${pct(p.v[1] ?? 0)} iowait` : ""}${loadAt(p.at) !== undefined ? ` · load ${loadAt(p.at)!.toFixed(2)}/core` : ""}`}
+                  extra={(at) => { const l = loadAt(at); return l === undefined ? [] : [{ label: "Load / cores", value: l.toFixed(2) }]; }} />
+                <StackedChart slot="chart-mem" label={<>Memory{oomCaption(liveOoms)}</>} points={live.mem} bands={MEM_BANDS} from={from} to={to} max={liveAnswer.memTotalGb}
+                  fmt={gb} axis={(v) => `${Math.round(v)}G`} gapMs={gapMs} summary={(p) => `${gb(p.v[0] ?? 0)} used`}
+                  refs={liveAnswer.sliceMaxGb ? [{ v: liveAnswer.sliceMaxGb, label: `Agents limit ${liveAnswer.sliceMaxGb} GB` }] : []}
+                  marks={live.ooms.map((o) => ({ at: o.at, label: `${o.n} agent run${o.n === 1 ? "" : "s"} out of memory` }))} />
+                <StackedChart slot="chart-io" label="Disk IO" points={live.io} bands={IO_BANDS} from={from} to={to} max={ioMax} fmt={mbs} axis={(v) => String(Math.round(v))} gapMs={gapMs}
+                  refs={[{ v: liveAnswer.diskCapMBs, label: `Cap ${liveAnswer.diskCapMBs} MB/s` }]}
+                  extra={(at) => { const w = nearestAt(live.iowait, at)?.v; return w === undefined ? [] : [{ label: "iowait", value: pct(w) }]; }} />
+              </>
+            ) : (
+              <>
+                <LineChart slot="chart-cpu" label="CPU" points={s.cpu} from={from} to={to} max={100} fmt={pct} />
+                <LineChart slot="chart-mem" label={<>Memory used{oomCaption(ooms)}</>} points={s.mem}
+                  marks={s.ooms.map((o) => ({ at: o.at, title: `${o.n} agent run${o.n === 1 ? "" : "s"} out of memory` }))} from={from} to={to} max={memTotal} fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-green)" />
+              </>
+            )}
             <LineChart slot="chart-agents" label="Agents" points={s.agents} from={from} to={to} max={countMax(Math.max(0, ...s.agents.map((p) => p.v)))} fmt={count} color="var(--geist-pink)" />
             <LineChart slot="chart-disk" label="Disk used" points={s.disk} from={from} to={to} max={h?.disk?.totalGb ?? niceMax(Math.max(1, ...s.disk.map((p) => p.v)) * 1.1)}
               fmt={(v) => `${v.toFixed(1)} GB`} axis={(v) => `${Math.round(v)}G`} color="var(--geist-amber)" />

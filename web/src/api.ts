@@ -1,6 +1,8 @@
 import type { LaunchReceipt, RunMeta } from "../../server/agent";
 import type { RepoFeatures } from "../../server/config";
 import type { ChangeSummary } from "../../server/git";
+import type { LiveAnswer } from "../../server/liveMetrics";
+export type { LiveAnswer, LiveSample } from "../../server/liveMetrics";
 import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSummary, ReviewSignal, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
 import type { PackView, WirePack } from "../../server/handoff";
@@ -263,6 +265,7 @@ export const api = {
   // A machine's vitals (the header's instance chip); `instance` asks another instance for its own.
   health: (instance?: string): Promise<InstanceHealth> => get(`/api/health${instance ? `?instance=${encodeURIComponent(instance)}` : ""}`).then(res),
   // Its recorded vitals over the last `hours` (default 24), read from Postgres by whichever instance answers.
+  healthLive: (instance: string | undefined, hours: number): Promise<LiveAnswer> => get(`/api/health/live?hours=${hours}${instance ? `&instance=${encodeURIComponent(instance)}` : ""}`).then(res),
   healthHistory: (instance: string, hours = 24): Promise<MetricPoint[]> => get(`/api/health/history?instance=${encodeURIComponent(instance)}&hours=${hours}`).then(res),
   syncWorktrees: (repo: string): Promise<SyncResult[]> => post("/api/worktrees/sync", { repo }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>
