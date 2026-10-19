@@ -321,7 +321,7 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
       </div>
       {heavyRows.length > 0 && (
         <div data-slot="heavy-queue" className="border-b px-4 py-3">
-          <div className="text-muted-foreground mb-1.5 text-xs">Heavy commands · orca-run{h?.heavy?.cpu && <span data-slot="heavy-cpu" className="tabular-nums"> · CPU {h.heavy.cpu.used} / {h.heavy.cpu.budget}</span>}</div>
+          <div className="text-muted-foreground mb-1.5 text-xs">Heavy commands · orca-run{h?.heavy?.cpu && <span data-slot="heavy-cpu" className="tabular-nums"> · CPU {h.heavy.cpu.used} / {h.heavy.cpu.budget}</span>}{h?.heavy?.memory?.budget !== undefined && <span data-slot="heavy-memory" className="tabular-nums"> · Memory {h.heavy.memory.used} / {h.heavy.memory.budget} GB</span>}</div>
           <ul className="divide-y">
             {heavyRows.map((r) => (
               <li key={r.id} data-slot="heavy-row" data-state={r.state} className="flex items-center gap-2 py-1.5 text-[13px]">

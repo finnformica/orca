@@ -7,7 +7,9 @@
 //   2. A slot is tied to the run: to the CLI's held request (a killed `orca-run` drops it), to the
 //      agent run that asked (`releaseRun` at its exit), and to the CLI's pid (a sweep).
 //   3. A max wait in the queue and a max run time, after which the slot is taken back.
-//   4. Optional: each granted command runs in its own memory-capped systemd scope.
+//   4. Memory: each kind has a memory cap, and the running caps never pass the agents' slice
+//      MemoryMax minus `HEAVY_MEMORY_RESERVE_GB`. With systemd, each granted command runs in its own
+//      scope with its kind's cap.
 // The CLI is `bin/worker/orca-run`; the shims beside it (bin/worker/.heavy-shim) route the heavy
 // tools, package scripts and test scripts through it.
 
@@ -29,8 +31,12 @@ export const DEFAULT_CPU_BUDGET = 3;
 export const DEFAULT_MAX_WAIT_MS = 20 * 60_000;
 /** A server for a test runs as long as the tests; everything else gets 30 minutes. */
 export const DEFAULT_MAX_RUN_MS: PerKind = { e2e: 30 * 60_000, test: 30 * 60_000, lint: 30 * 60_000, build: 30 * 60_000, migrate: 30 * 60_000, serve: 60 * 60_000 };
-/** The memory cap of one granted command's own scope. */
-export const DEFAULT_HEAVY_MEMORY_MAX_GB = 3;
+/** The memory cap of one granted command's own scope, per kind. A cap below a command's working set
+ *  is worse than none: at 3 GB a frontend `tsc --noEmit` (about 3.5 GB anon) lost every file page and
+ *  re-read node_modules from EBS for minutes (2026-10-19 18:40: iowait 80 %, load 9 on 4 CPUs). */
+export const DEFAULT_HEAVY_MEMORY_GB: PerKind = { e2e: 6, test: 4, lint: 6, build: 6, migrate: 2, serve: 2 };
+/** The slice memory that the queue leaves for the agents themselves and everything else in it. */
+export const HEAVY_MEMORY_RESERVE_GB = 3;
 export const HEAVY_CPU_WEIGHT = 50;
 
 /** The app config's `heavyQueue`. Each field is optional; a missing one takes the default.
@@ -41,26 +47,41 @@ export type HeavyQueueConfig = {
   cpuBudget?: number;
   maxWaitMinutes?: number;
   maxRunMinutes?: number | Partial<PerKind>;
-  memoryMaxGb?: number;
+  /** One cap for every kind, or a cap per kind (GB). */
+  memoryMaxGb?: number | Partial<PerKind>;
 };
 
-export type HeavySettings = { limits: HeavyLimits; cpu: PerKind; cpuBudget: number; maxWaitMs: number; maxRunMs: PerKind; memoryMaxGb: number };
+/** `memoryBudgetGb`: the running caps never pass it; undefined = no memory budget. */
+export type HeavySettings = { limits: HeavyLimits; cpu: PerKind; cpuBudget: number; maxWaitMs: number; maxRunMs: PerKind; memoryMaxGb: PerKind; memoryBudgetGb?: number };
 
-/** Config → settings with every default filled in. Pure. */
-export function heavySettings(cfg: HeavyQueueConfig | undefined): HeavySettings {
-  const run = cfg?.maxRunMinutes;
-  const maxRunMs = { ...DEFAULT_MAX_RUN_MS };
+/** One number for every kind, or a number per kind, over the defaults. Pure. */
+function perKind(v: number | Partial<PerKind> | undefined, defaults: PerKind, scale = 1): PerKind {
+  const out = { ...defaults };
   for (const k of HEAVY_KINDS) {
-    const m = typeof run === "number" ? run : run?.[k];
-    if (m !== undefined) maxRunMs[k] = m * 60_000;
+    const n = typeof v === "number" ? v : v?.[k];
+    if (n !== undefined) out[k] = n * scale;
   }
+  return out;
+}
+
+/** The memory budget for the running caps: the agents' slice MemoryMax minus the reserve. No slice
+ *  limit (0 or unknown) means no budget. Pure. */
+export function heavyMemoryBudgetGb(sliceMaxGb: number | undefined): number | undefined {
+  return sliceMaxGb && sliceMaxGb > 0 ? Math.max(0, sliceMaxGb - HEAVY_MEMORY_RESERVE_GB) : undefined;
+}
+
+/** Config → settings with every default filled in. `sliceMaxGb`: the agents' slice MemoryMax when
+ *  the commands run in capped scopes inside it. Pure. */
+export function heavySettings(cfg: HeavyQueueConfig | undefined, sliceMaxGb?: number): HeavySettings {
+  const memoryBudgetGb = heavyMemoryBudgetGb(sliceMaxGb);
   return {
     limits: { ...DEFAULT_HEAVY_LIMITS, ...(cfg?.limits ?? {}) },
     cpu: { ...DEFAULT_HEAVY_CPU, ...(cfg?.cpu ?? {}) },
     cpuBudget: cfg?.cpuBudget ?? DEFAULT_CPU_BUDGET,
     maxWaitMs: cfg?.maxWaitMinutes !== undefined ? cfg.maxWaitMinutes * 60_000 : DEFAULT_MAX_WAIT_MS,
-    maxRunMs,
-    memoryMaxGb: cfg?.memoryMaxGb ?? DEFAULT_HEAVY_MEMORY_MAX_GB,
+    maxRunMs: perKind(cfg?.maxRunMinutes, DEFAULT_MAX_RUN_MS, 60_000),
+    memoryMaxGb: perKind(cfg?.memoryMaxGb, DEFAULT_HEAVY_MEMORY_GB),
+    ...(memoryBudgetGb === undefined ? {} : { memoryBudgetGb }),
   };
 }
 
@@ -79,7 +100,8 @@ export function heavyQueueProblems(v: unknown): string[] {
       else if (!(Number.isInteger(n) && (n as number) >= 1)) errors.push(`heavyQueue.limits.${k} must be a whole number of at least 1`);
     }
   }
-  for (const key of ["cpu", ...(isObj(o.maxRunMinutes) ? ["maxRunMinutes"] : [])]) {
+  const perKindKeys = ["maxRunMinutes", "memoryMaxGb"];
+  for (const key of ["cpu", ...perKindKeys.filter((k) => isObj(o[k]))]) {
     if (o[key] === undefined) continue;
     if (!isObj(o[key])) { errors.push(`heavyQueue.${key} must be an object`); continue; }
     for (const [k, n] of Object.entries(o[key] as object)) {
@@ -87,7 +109,7 @@ export function heavyQueueProblems(v: unknown): string[] {
       else if (!(typeof n === "number" && n > 0)) errors.push(`heavyQueue.${key}.${k} must be a positive number`);
     }
   }
-  for (const k of ["cpuBudget", "maxWaitMinutes", "memoryMaxGb", ...(isObj(o.maxRunMinutes) ? [] : ["maxRunMinutes"])]) {
+  for (const k of ["cpuBudget", "maxWaitMinutes", ...perKindKeys.filter((k) => !isObj(o[k]))]) {
     if (o[k] !== undefined && !(typeof o[k] === "number" && (o[k] as number) > 0)) errors.push(`heavyQueue.${k} must be a positive number`);
   }
   return errors;
@@ -111,9 +133,10 @@ export type HeavyRequest = {
   pid?: number;
 };
 
-/** `cpu`: the kind's CPU cost, set when the slot is granted. */
-export type HeavyEntry = HeavyRequest & { id: string; queuedAt: number; startedAt?: number; unit?: string; cpu?: number };
-export type HeavyView = { running: HeavyEntry[]; queued: HeavyEntry[]; limits: HeavyLimits; cpu: { used: number; budget: number } };
+/** `cpu` and `memoryGb`: the kind's CPU cost and memory cap, set when the slot is granted. */
+export type HeavyEntry = HeavyRequest & { id: string; queuedAt: number; startedAt?: number; unit?: string; cpu?: number; memoryGb?: number };
+/** `memory.budget`: absent when there is no memory budget. */
+export type HeavyView = { running: HeavyEntry[]; queued: HeavyEntry[]; limits: HeavyLimits; cpu: { used: number; budget: number }; memory: { used: number; budget?: number } };
 
 /** Why a slot came back. `done` and `client-gone` are ordinary; the others stop the command. */
 export type ReleaseReason = "done" | "client-gone" | "run-ended" | "max-run" | "pid-dead";
@@ -122,6 +145,8 @@ export type Grant = {
   id: string;
   /** The CPUs this slot counts for in the budget. */
   cpu: number;
+  /** The memory cap of the command's scope (GB); it counts for this in the memory budget. */
+  memoryGb: number;
   /** The systemd unit the command may run in (the CLI wraps it when the scope is available). */
   unit: string;
   /** Set once the slot is back. Idempotent. */
@@ -165,6 +190,7 @@ export function createSlotManager(deps: {
 
   const countKind = (k: HeavyKind) => [...running.values()].filter((s) => s.entry.kind === k).length;
   const cpuUsed = () => [...running.values()].reduce((n, s) => n + (s.entry.cpu ?? 0), 0);
+  const memoryUsed = () => [...running.values()].reduce((n, s) => n + (s.entry.memoryGb ?? 0), 0);
 
   function report() {
     queue.forEach((job, i) => {
@@ -183,24 +209,27 @@ export function createSlotManager(deps: {
 
   // FIFO, with one exception: a job whose own kind is full does not block a later job of another
   // kind (a queued e2e run must not hold back a lint run while the e2e slot is busy). The total and
-  // the CPU budget are shared, so a job that does not fit them stops the scan: a small job never
-  // passes a large one, which then never starves. A job that costs more than the whole budget runs
-  // when nothing else does.
+  // the CPU and memory budgets are shared, so a job that does not fit them stops the scan: a small
+  // job never passes a large one, which then never starves. A job that costs more than a whole
+  // budget runs when nothing else does.
   function pump() {
-    const { limits, cpu, cpuBudget } = settings();
+    const { limits, cpu, cpuBudget, memoryMaxGb, memoryBudgetGb } = settings();
     for (let i = 0; i < queue.length && running.size < limits.total;) {
       const job = queue[i]!;
       const kind = job.entry.kind;
       if (countKind(kind) >= limits[kind]) { i++; continue; }
       if (running.size > 0 && cpuUsed() + cpu[kind] > cpuBudget + 1e-9) break;
+      if (running.size > 0 && memoryBudgetGb !== undefined && memoryUsed() + memoryMaxGb[kind] > memoryBudgetGb + 1e-9) break;
       drop(job);
       job.entry.startedAt = now();
       job.entry.cpu = cpu[kind];
+      job.entry.memoryGb = memoryMaxGb[kind];
       const slot: Slot = { entry: job.entry, released: false };
       running.set(job.entry.id, slot);
       job.grant({
         id: job.entry.id,
         cpu: cpu[kind],
+        memoryGb: memoryMaxGb[kind],
         unit: job.entry.unit!,
         release: (reason = "done") => free(job.entry.id, reason),
         onRevoke: (fn) => { slot.revoke = fn; },
@@ -260,8 +289,13 @@ export function createSlotManager(deps: {
       }
     },
     view() {
-      const { limits, cpuBudget } = settings();
-      return { running: [...running.values()].map((s) => ({ ...s.entry })), queued: queue.map((j) => ({ ...j.entry })), limits, cpu: { used: Math.round(cpuUsed() * 100) / 100, budget: cpuBudget } };
+      const { limits, cpuBudget, memoryBudgetGb } = settings();
+      const round = (n: number) => Math.round(n * 100) / 100;
+      return {
+        running: [...running.values()].map((s) => ({ ...s.entry })), queued: queue.map((j) => ({ ...j.entry })), limits,
+        cpu: { used: round(cpuUsed()), budget: cpuBudget },
+        memory: { used: round(memoryUsed()), ...(memoryBudgetGb === undefined ? {} : { budget: memoryBudgetGb }) },
+      };
     },
   };
 }
@@ -285,7 +319,7 @@ export function scopePrefix(opts: { available: boolean; unit: string; memoryMaxG
  *  the bridge takes it back, `{error}` if it never comes. The slot lives as long as the request: a
  *  dropped connection (a killed `orca-run`) frees it. */
 export function acquireResponse(manager: SlotManager, request: HeavyRequest, signal: AbortSignal, grantInfo: {
-  maxRunMs: number; env: Record<string, string>; prefix: (unit: string) => string[]; beatMs?: number;
+  maxRunMs: number; env: Record<string, string>; prefix: (unit: string, memoryGb: number) => string[]; beatMs?: number;
 }): Response {
   const encoder = new TextEncoder();
   let grant: Grant | undefined;
@@ -307,7 +341,7 @@ export function acquireResponse(manager: SlotManager, request: HeavyRequest, sig
       }
       if (signal.aborted) return grant.release("client-gone");
       grant.onRevoke((reason) => { write({ revoked: reason }); close(); });
-      write({ granted: grant.id, unit: grant.unit, maxRunMs: grantInfo.maxRunMs, prefix: grantInfo.prefix(grant.unit), env: grantInfo.env, cpus: grant.cpu });
+      write({ granted: grant.id, unit: grant.unit, maxRunMs: grantInfo.maxRunMs, prefix: grantInfo.prefix(grant.unit, grant.memoryGb), env: grantInfo.env, cpus: grant.cpu, memoryGb: grant.memoryGb });
     },
     cancel() { gone(); },
   });

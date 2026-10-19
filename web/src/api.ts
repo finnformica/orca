@@ -71,9 +71,10 @@ export type InstanceHealth = {
   /** The box-wide heavy-command queue (server/heavy.ts). Absent from an older bridge. */
   heavy?: HeavyQueueView;
 };
-export type HeavyEntry = { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number; startedAt?: number; cpu?: number };
-/** `cpu`: the running commands' CPU costs against the budget. Absent from the first cut. */
-export type HeavyQueueView = { running: HeavyEntry[]; queued: HeavyEntry[]; limits: Record<string, number>; cpu?: { used: number; budget: number } };
+export type HeavyEntry = { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number; startedAt?: number; cpu?: number; memoryGb?: number };
+/** `cpu`: the running commands' CPU costs against the budget. Absent from the first cut. `memory`:
+ *  their memory caps (GB) against the budget; no `budget` when the box has none. Absent from older bridges. */
+export type HeavyQueueView = { running: HeavyEntry[]; queued: HeavyEntry[]; limits: Record<string, number>; cpu?: { used: number; budget: number }; memory?: { used: number; budget?: number } };
 /** One recorded sample of an instance's vitals (instance_metric), for the chip's history graphs. */
 export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; /** Absent from a bridge older than migration 13 — unknown, not 0. */
   runningAgents?: number;
