@@ -1224,6 +1224,11 @@ Postgres and Tailscale are untouched: they are separate systemd units, never chi
 `orca.service`, so they were never inside either limit — the two settings just make sure nothing
 Orca does crowds them out of the 15% left over.
 
+**Agent OOM score and slice** (`server/cgroup.ts`; the 2026-10-18 OOM): agents inherited the
+bridge's `oom_score_adj` -500, so a memcg OOM killed the user manager instead. Every agent now
+starts at +500 through a `sh` wrapper (`withOomScore` — never `-p OOMScoreAdjust=` on a scope: systemd
+255 refuses it and every run fails) and runs in `orca-agents.slice`, whose `MemoryMax` the bridge sets
+before each launch. A user manager that does not answer (lingering on) starts the run unscoped.
 **Screenshots** (`server/screenshot.ts`): workers can't run a browser (the OOM above), so the bridge
 runs ONE — `POST /api/screenshot` (url, viewport, dark, wait-for, click/scroll/wait steps) queues on a
 box-wide queue (one capture at a time), launches a fresh `chrome-headless-shell` over CDP inside its
