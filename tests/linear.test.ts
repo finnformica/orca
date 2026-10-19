@@ -9,8 +9,13 @@ import * as router from "../server/integrations/router";
 import * as dispatcher from "../server/integrations/dispatcher";
 import * as registry from "../server/integrations/registry";
 import * as store from "../server/integrations/store";
+import * as admin from "../server/integrations/admin";
+import { withSource } from "../server/integrations/inbox";
+import { integrationMessage, replyToOf } from "../shared/integrations";
+import { healthLine } from "../shared/integrationSettings";
+import { integrationPreview } from "../web/src/workstream";
 import {
-  commentFilter, commentId, commentWanted, issueReason, linearAdapter, linearRequest, mentions, places, render,
+  commentEnvelope, commentFilter, commentId, commentWanted, issueEnvelope, issueReason, linearAdapter, linearRequest, mentions, places, render,
   type LinearAdapter, type LinearComment, type LinearIssue, type LinearUser,
 } from "../server/integrations/adapters/linear";
 import { native } from "./happydom";
@@ -74,6 +79,19 @@ describe("decisions (pure)", () => {
     expect(places(issue("1", { project: { id: "p-1", name: "Launch" } }))).toEqual({ channel: "project:p-1", parents: ["team:ENG"] });
   });
 
+  test("an event names its person and issue for the activity row; its first line is the preview; a reply goes under the top-level comment", () => {
+    const mine = issue("1", { assignee: { id: "u-finn" } });
+    const a = issueEnvelope("lin", mine, "assigned", ME);
+    expect(a).toMatchObject({ topic: "ext.linear.message", mentioned: true, display: { sender: "Sam", place: "ENG-1 Issue 1" }, thread: { adapter: "linear", externalId: "1" } });
+    expect(a.text.split("\n")[0]).toBe("Assigned to Finn Formica: Issue 1");
+    expect(a.text).toContain("Issue id for orca thread link linear: 1");
+    const c = commentEnvelope("lin", comment("c2", mine, { body: "can you add a retry?\nthanks" }), ME);
+    expect(c).toMatchObject({ topic: "ext.linear.message", display: { sender: "sam", place: "ENG-1 Issue 1" }, thread: { externalId: "1", messageId: "c2" } });
+    expect(c.text.split("\n")[0]).toBe("can you add a retry?");
+    // Linear nests one level: a reply to a reply answers under its top-level comment.
+    expect(commentEnvelope("lin", comment("c3", mine, { parent: { id: "c2" } }), ME).thread).toEqual({ adapter: "linear", externalId: "1", messageId: "c2" });
+  });
+
   test("a comment id is a stable UUID v4 per delivery; the body is markdown", () => {
     expect(commentId("lin:7")).toBe(commentId("lin:7"));
     expect(commentId("lin:7")).not.toBe(commentId("lin:8"));
@@ -122,7 +140,6 @@ describe("with Postgres", () => {
     await store.addIntegration({ id: "linear", kind: "linear", name: "Linear", instance: "local", config: { pollSeconds: 3600 }, secretRef: "ORCA_SECRET_LINEAR", enabled: true });
     await store.addLink({ id: "eng", integrationId: "linear", externalId: "team:ENG", level: "work", repos: ["r"], requireMention: false });
     await store.addLink({ id: "launch", integrationId: "linear", externalId: "project:p-1", level: "ask", repos: [], requireMention: false });
-    await store.addSubscription({ topicPattern: "ext.linear.issue", filter: {}, targetKind: "orchestrator" });
     await store.setCursor("linear", "2026-10-17T00:00:00.000Z");
   };
 
@@ -151,9 +168,9 @@ describe("with Postgres", () => {
     expect(issuesCall.variables.filter.or).toContainEqual({ assignee: { id: { eq: "u-finn" } } });
 
     const e1 = await store.event("linear:linear:issue:1:assigned");
-    expect(e1).toMatchObject({ topic: "ext.linear.issue", source: { adapter: "linear", channel: "team:ENG", linkId: "eng" }, thread: { adapter: "linear", externalId: "1" }, grant: { level: "work", repos: ["r"] }, link: { url: assigned.url } });
+    expect(e1).toMatchObject({ topic: "ext.linear.message", source: { adapter: "linear", channel: "team:ENG", linkId: "eng" }, thread: { adapter: "linear", externalId: "1" }, grant: { level: "work", repos: ["r"] }, link: { url: assigned.url } });
     expect(e1!.actor).toBeUndefined(); // a poller is a machine sender: no pairing code is posted on Linear
-    expect(e1!.text).toContain("is assigned to Finn Formica");
+    expect(e1!.text).toStartWith("Assigned to Finn Formica: Issue 1");
     expect(await store.event("linear:linear:issue:2:mention")).toMatchObject({ source: { channel: "project:p-1", parents: ["team:ENG"], linkId: "launch" }, grant: { level: "ask" } });
     expect(await store.event("linear:linear:issue:3:assigned")).toBeUndefined();
     expect(await store.event("linear:linear:issue:3:mention")).toBeUndefined();
@@ -161,7 +178,7 @@ describe("with Postgres", () => {
     expect(await store.event("linear:linear:comment:c2")).toBeUndefined(); // my own (and Orca's) comment
     expect(await store.event("linear:linear:comment:c3")).toBeUndefined(); // OPS has no link: rejected
     expect(await store.cursor("linear")).toBe("2026-10-17T12:00:00.000Z");
-    // The issue went to the orchestrator by its subscription; the comment by the inbound default.
+    // Every Linear event is a message: the inbound default takes it to the orchestrator, no subscription.
     const targets = (await store.deliveries()).map((d) => `${d.envelope.key}>${d.target.kind}`).sort();
     expect(targets).toEqual(["linear:linear:comment:c1>orchestrator", "linear:linear:issue:1:assigned>orchestrator", "linear:linear:issue:2:mention>orchestrator"]);
     const next = calls.filter((c) => c.op === "OrcaIssues").at(-1)!;
@@ -232,5 +249,63 @@ describe("with Postgres", () => {
     expect((await store.integration("linear"))).toBeDefined();
     const a = linearAdapter({ id: "x", kind: "linear", name: "x", instance: "local", config: {}, secretRef: "ORCA_SECRET_LINEAR", enabled: true });
     expect(await a.health()).toMatchObject({ ok: false, detail: expect.stringContaining("authentication failed") });
+  });
+  test("the orchestrator's activity row: Linear, the sender, the issue as the place, a one-line preview, a link", async () => {
+    await setup();
+    const mine = issue("1", { assignee: { id: "u-finn" } });
+    fakeLinear({
+      OrcaViewer: () => ({ viewer: ME }),
+      OrcaIssues: () => ({ issues: page([]) }),
+      OrcaComments: () => ({ comments: page([comment("c1", mine, { body: "@finn can you fix the empty state?\nIt breaks on mobile." })]) }),
+    });
+    await registry.sync();
+    await (registry.adapterFor("linear") as LinearAdapter).poll();
+    const e = (await store.event("linear:linear:comment:c1"))!;
+    const text = await withSource(e);
+    expect(text).toContain("from an unpaired linear user (sam) · grant: work on r");
+    const m = integrationMessage(text)!;
+    expect(m).toMatchObject({ adapter: "linear", sender: "sam", place: "ENG-1 Issue 1", url: `${mine.url}#comment-c1` });
+    expect(integrationPreview(m.text)).toBe("@finn can you fix the empty state?");
+  });
+
+  test("orca post --reply answers on the same issue, under the comment that asked; an issue event gets a top-level comment", async () => {
+    await setup();
+    const mine = issue("1", { assignee: { id: "u-finn" } });
+    const created: any[] = [];
+    fakeLinear({
+      OrcaViewer: () => ({ viewer: ME }),
+      OrcaIssues: () => ({ issues: page([mine]) }),
+      OrcaComments: () => ({ comments: page([comment("c7", mine, { parent: { id: "c6" }, body: "and the tests?" })]) }),
+      OrcaCommentCreate: (v) => { created.push(v.input); return { commentCreate: { success: true, comment: { id: v.input.id } } }; },
+    });
+    await registry.sync();
+    await (registry.adapterFor("linear") as LinearAdapter).poll();
+    dispatcher.configure({ adapter: registry.adapterFor });
+    dispatcher.setRunning(registry.runningIds);
+    const eng = (await store.link("eng"))!;
+    for (const key of ["linear:linear:comment:c7", "linear:linear:issue:1:assigned"]) {
+      const e = (await store.event(key))!;
+      await router.post(eng, `on it (${key})`, { reply: replyToOf(e)! });
+    }
+    await dispatcher.dispatchOnce();
+    expect(created).toHaveLength(2);
+    expect(created.find((c) => c.body.includes("comment:c7"))).toMatchObject({ issueId: "1", parentId: "c6" });
+    const top = created.find((c) => c.body.includes("issue:1"));
+    expect(top).toMatchObject({ issueId: "1" });
+    expect(top.parentId).toBeUndefined();
+  });
+
+  test("Settings > Integrations: the Linear card shows the key, the last poll, and Test signs in", async () => {
+    await setup();
+    fakeLinear({ OrcaViewer: () => ({ viewer: ME }), OrcaIssues: () => ({ issues: page([]) }), OrcaComments: () => ({ comments: page([]) }) });
+    await registry.sync();
+    await (registry.adapterFor("linear") as LinearAdapter).poll();
+    const o = await admin.overview("local");
+    expect(o.kinds.find((k) => k.kind === "linear")).toMatchObject({ label: "Linear", secretExample: "ORCA_SECRET_LINEAR" });
+    const card = o.integrations.find((c) => c.id === "linear")!;
+    expect(card).toMatchObject({ kind: "linear", secretRef: "ORCA_SECRET_LINEAR", secretSet: true, running: true });
+    expect(card.lastPollAt).toBeGreaterThan(Date.now() - 60_000);
+    expect(healthLine(card, card.lastPollAt! + 120_000)).toContain("last poll 2m ago");
+    expect(await admin.testIntegration("linear", "local")).toEqual({ ok: true, detail: "signed in as Finn Formica" });
   });
 });

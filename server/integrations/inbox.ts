@@ -17,7 +17,7 @@ export const agentText = (e: Envelope): string => (e.grant ? fenceExternal(e) : 
  *  place, never the message. */
 export async function withSource(e: Envelope): Promise<string> {
   const link = e.source.linkId ? await store.link(e.source.linkId).then((l) => l, () => undefined) : undefined;
-  const place = integrationPlace(e, link), url = integrationUrl(e), sender = e.actor?.external.name;
+  const place = integrationPlace(e, link), url = integrationUrl(e), sender = e.actor?.external.name ?? e.display?.sender;
   return `${agentText(e)}\n${integrationMetaLine({ adapter: e.source.adapter, ...(sender ? { sender } : {}), ...(place ? { place } : {}), ...(url ? { url } : {}) })}`;
 }
 
@@ -29,7 +29,7 @@ export async function toOrchestrator(cfg: OrcaConfig, e: Envelope): Promise<Send
   if (e.grant) {
     if (e.grant.level === "notify") return { ok: false, retryable: false, error: "notify links send nothing inbound" };
     const replyTo = replyToOf(e);
-    await orchestrator.message(cfg, await withSource(e), e.attachments ?? [], { grant: e.grant, person: Boolean(e.actor), ...(replyTo ? { replyTo } : {}) });
+    await orchestrator.message(cfg, await withSource(e), e.attachments ?? [], { grant: e.grant, person: Boolean(e.actor ?? e.display?.sender), ...(replyTo ? { replyTo } : {}) });
   } else {
     await orchestrator.deliverReport(cfg, agentText(e));
   }

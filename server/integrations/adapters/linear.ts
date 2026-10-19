@@ -2,13 +2,16 @@
 // Inbound is a poll on the GraphQL API with the API key in the integration's secret (ORCA_SECRET_LINEAR):
 // every `pollSeconds` it reads the issues and comments updated since the cursor (an `updatedAt`, stored
 // in integration_cursor). An issue assigned to the configured user, or whose description mentions
-// them, is ONE `ext.linear.issue` event; a comment on such an issue, or one that mentions them, is an
-// `ext.linear.message` in the issue's thread. The place is the issue's project (`project:<id>`), then
-// its team (`team:<KEY>`), so a link maps either to repos. No actor: a poller is a machine sender, so
-// the link's level is the grant (ADAPTERS.md §4). The user's own comments are skipped — Orca posts
-// with the same key, so its own comments never come back in.
-// Outbound: a delivery whose target has a thread (an issue linked to a workstream, `orca thread link
-// linear <issue id>`) becomes a comment on that issue. A delivery with no linked issue is skipped.
+// them, is ONE event; a comment by someone else on such an issue, or one that mentions them, is one
+// more. All are `ext.linear.message` in the issue's thread (externalId = the issue id; messageId = the
+// top-level comment, so a reply lands under it), so the core routes them to the orchestrator. The
+// place is the issue's project (`project:<id>`), then its team (`team:<KEY>`), then the `*` link. No
+// actor: a poller is a machine sender, so the link's level is the grant (ADAPTERS.md §4) and nobody
+// is asked to pair; `display` names the person and the issue for the activity row. The user's own
+// comments are skipped — Orca posts with the same key, so its own comments never come back in.
+// Outbound: a delivery with a thread (the issue an event came from, or one linked to a workstream
+// with `orca thread link linear <issue id>`) becomes a comment on that issue, as the key's user;
+// `replyToExternalMsgId` makes it a reply under that comment. A delivery with no issue is skipped.
 // Agent-app mode (Linear's agent sessions, `actor=app`) needs a webhook through a relay: not here.
 import { createHash } from "crypto";
 import type { Adapter, AdapterContext, Connection } from "../adapter";
@@ -29,12 +32,12 @@ export const LINEAR_CAPS: Capabilities = {
 export type LinearUser = { id: string; name: string; displayName?: string };
 export type LinearIssue = {
   id: string; identifier: string; title: string; description?: string | null; url: string; updatedAt: string; createdAt?: string;
-  assignee?: { id: string; name?: string } | null; creator?: { id: string; name?: string } | null;
+  assignee?: { id: string; name?: string } | null; creator?: { id: string; name?: string; displayName?: string } | null;
   state?: { name: string } | null; team: { id: string; key: string }; project?: { id: string; name: string } | null;
 };
 export type LinearComment = {
   id: string; body: string; url?: string; createdAt: string; updatedAt: string;
-  user?: { id: string; name?: string; displayName?: string } | null; issue: LinearIssue;
+  user?: { id: string; name?: string; displayName?: string } | null; parent?: { id: string } | null; issue: LinearIssue;
 };
 
 type GqlResult<T> = { ok: true; data: T } | { ok: false; retryable: boolean; retryAfterMs?: number; error: string };
@@ -62,14 +65,14 @@ export async function linearRequest<T>(token: string, query: string, variables: 
 
 // ── Queries ──────────────────────────────────────────────────────────────────────────────────────
 
-const ISSUE_FIELDS = `id identifier title description url updatedAt createdAt assignee { id name } creator { id name } state { name } team { id key } project { id name }`;
+const ISSUE_FIELDS = `id identifier title description url updatedAt createdAt assignee { id name } creator { id name displayName } state { name } team { id key } project { id name }`;
 export const VIEWER_QUERY = `query OrcaViewer { viewer { id name displayName } }`;
 export const USER_QUERY = `query OrcaUser($id: String!) { user(id: $id) { id name displayName } }`;
 export const ISSUES_QUERY = `query OrcaIssues($filter: IssueFilter!, $after: String) {
   issues(first: ${PAGE}, after: $after, orderBy: updatedAt, filter: $filter) { nodes { ${ISSUE_FIELDS} } pageInfo { hasNextPage endCursor } }
 }`;
 export const COMMENTS_QUERY = `query OrcaComments($filter: CommentFilter!, $after: String) {
-  comments(first: ${PAGE}, after: $after, orderBy: updatedAt, filter: $filter) { nodes { id body url createdAt updatedAt user { id name displayName } issue { ${ISSUE_FIELDS} } } pageInfo { hasNextPage endCursor } }
+  comments(first: ${PAGE}, after: $after, orderBy: updatedAt, filter: $filter) { nodes { id body url createdAt updatedAt user { id name displayName } parent { id } issue { ${ISSUE_FIELDS} } } pageInfo { hasNextPage endCursor } }
 }`;
 export const COMMENT_CREATE = `mutation OrcaCommentCreate($input: CommentCreateInput!) { commentCreate(input: $input) { success comment { id url } } }`;
 export const COMMENT_UPDATE = `mutation OrcaCommentUpdate($id: String!, $input: CommentUpdateInput!) { commentUpdate(id: $id, input: $input) { success comment { id url } } }`;
@@ -122,22 +125,29 @@ export function places(i: Pick<LinearIssue, "team" | "project">): { channel: str
 const clipText = (t: string, max: number) => (t.length <= max ? t : `${t.slice(0, max - 1)}…`);
 const issueLine = (i: LinearIssue) => [`Team ${i.team.key}`, i.project ? `Project ${i.project.name}` : "", i.state ? `State ${i.state.name}` : ""].filter(Boolean).join(" · ");
 
+/** The issue as a place a person reads: "ENG-12 Fix the login page". */
+export const issuePlace = (i: Pick<LinearIssue, "identifier" | "title">): string => `${i.identifier} ${i.title}`;
+
 export function issueEnvelope(connectionId: string, i: LinearIssue, reason: "assigned" | "mention", me: LinearUser): InboundEnvelope {
   const where = places(i);
-  const what = reason === "assigned" ? `is assigned to ${me.name}` : `mentions ${me.name}`;
+  const sender = i.creator?.displayName ?? i.creator?.name;
   return {
     // One event per issue and reason: a later edit of the issue is not news.
     key: `linear:${connectionId}:issue:${i.id}:${reason}`,
-    topic: "ext.linear.issue",
+    topic: "ext.linear.message",
     at: Date.parse(i.updatedAt) || Date.now(),
     source: { adapter: "linear", integrationId: connectionId, channel: where.channel, ...(where.parents.length ? { parents: where.parents } : {}) },
     thread: { adapter: "linear", externalId: i.id },
-    title: `${i.identifier} ${i.title}`,
+    // Assigned to the user, or about them: as direct as a mention.
+    mentioned: true,
+    display: { ...(sender ? { sender } : {}), place: issuePlace(i) },
+    title: issuePlace(i),
     text: [
-      `Linear issue ${i.identifier} "${i.title}" ${what}.`,
-      `${issueLine(i)}${i.creator?.name ? ` · opened by ${i.creator.name}` : ""}`,
-      `Linear issue id (for orca thread link linear): ${i.id}`,
+      // The first line is the activity row's preview.
+      reason === "assigned" ? `Assigned to ${me.name}: ${i.title}` : `Mentioned ${me.name} in ${i.identifier}: ${i.title}`,
       ...(i.description?.trim() ? ["", clipText(i.description.trim(), DESCRIPTION_MAX)] : []),
+      "",
+      `Linear issue ${i.identifier} (${issueLine(i)}${sender ? ` · opened by ${sender}` : ""}). Issue id for orca thread link linear: ${i.id}`,
     ].join("\n"),
     link: { url: i.url },
     raw: { issue: i.id, identifier: i.identifier, reason },
@@ -152,12 +162,14 @@ export function commentEnvelope(connectionId: string, c: LinearComment, me: Line
     topic: "ext.linear.message",
     at: Date.parse(c.createdAt) || Date.now(),
     source: { adapter: "linear", integrationId: connectionId, channel: where.channel, ...(where.parents.length ? { parents: where.parents } : {}) },
-    thread: { adapter: "linear", externalId: i.id, messageId: c.id },
+    // Linear nests one level: a reply goes under the top-level comment, never under a reply.
+    thread: { adapter: "linear", externalId: i.id, messageId: c.parent?.id ?? c.id },
     mentioned: mentions(c.body, me),
-    title: `${author} on ${i.identifier} ${i.title}`,
-    text: `${author} commented on Linear issue ${i.identifier} "${i.title}" (${issueLine(i)}, issue id ${i.id}):\n\n${clipText(c.body.trim(), DESCRIPTION_MAX)}`,
+    display: { sender: author, place: issuePlace(i) },
+    title: `${author} on ${issuePlace(i)}`,
+    text: `${clipText(c.body.trim(), DESCRIPTION_MAX)}\n\n${author} commented on Linear issue ${i.identifier} "${i.title}" (${issueLine(i)}). Issue id for orca thread link linear: ${i.id}`,
     link: { url: c.url ?? i.url },
-    raw: { comment: c.id, issue: i.id, identifier: i.identifier },
+    raw: { comment: c.id, issue: i.id, identifier: i.identifier, reason: c.issue.assignee?.id === me.id ? "assigned" : "mention" },
   };
 }
 
@@ -182,12 +194,13 @@ const newest = (a: string, b: string) => (Date.parse(b) > Date.parse(a) ? b : a)
 // ── The adapter ──────────────────────────────────────────────────────────────────────────────────
 
 export type PollResult = { issues: number; comments: number; ingested: number; cursor?: string; error?: string; retryAfterMs?: number };
+type Health = { ok: boolean; detail?: string; lastEventAt?: number; lastPollAt?: number };
 export type LinearAdapter = Adapter & { poll(): Promise<PollResult> };
 
 export function linearAdapter(connection: Connection): LinearAdapter {
   let ctx: AdapterContext | undefined;
   let me: LinearUser | undefined;
-  let lastEventAt: number | undefined;
+  let lastEventAt: number | undefined, lastPollAt: number | undefined;
   let inFlight: Promise<PollResult> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const token = () => ctx?.secret() ?? (connection.secretRef ? process.env[connection.secretRef] : undefined) ?? "";
@@ -247,7 +260,8 @@ export function linearAdapter(connection: Connection): LinearAdapter {
       next = newest(next, it.at);
     }
     if (next !== since) await ctx.cursor.set(next);
-    await ctx.status({ ok: true, detail: `polled as ${me.name}`, ...(lastEventAt ? { lastEventAt } : {}) });
+    lastPollAt = Date.now();
+    await ctx.status({ ok: true, detail: `polled as ${me.name}`, lastPollAt, ...(lastEventAt ? { lastEventAt } : {}) });
     return { issues: iRows.length, comments: cRows.length, ingested, cursor: next };
   }
 
@@ -304,15 +318,18 @@ export function linearAdapter(connection: Connection): LinearAdapter {
         return r.data.commentUpdate?.success ? { ok: true, externalMsgId: target.messageId, threadId: issueId } : { ok: false, retryable: true, error: "commentUpdate was not a success" };
       }
       const id = commentId(`${connection.id}:${key}`);
-      const r = await linearRequest<{ commentCreate: { success: boolean; comment?: { id: string } } }>(token(), COMMENT_CREATE, { input: { id, issueId, body } });
+      // A reply (`orca post --reply`, the inbox's Reply) goes under the comment it answers.
+      const parentId = msg.replyToExternalMsgId;
+      const r = await linearRequest<{ commentCreate: { success: boolean; comment?: { id: string } } }>(token(), COMMENT_CREATE, { input: { id, issueId, body, ...(parentId ? { parentId } : {}) } });
       // A second send of one delivery reuses its id; Linear refuses the copy, so the first one stands.
       if (!r.ok) return /already exists|duplicate|unique constraint/i.test(r.error) ? { ok: true, externalMsgId: id, threadId: issueId } : r;
       return r.data.commentCreate?.success ? { ok: true, externalMsgId: r.data.commentCreate.comment?.id ?? id, threadId: issueId } : { ok: false, retryable: true, error: "commentCreate was not a success" };
     },
-    async health() {
-      if (!token()) return { ok: false, detail: `${connection.secretRef ?? "API key"} is not set` };
+    async health(): Promise<Health> {
+      const polled = { ...(lastEventAt ? { lastEventAt } : {}), ...(lastPollAt ? { lastPollAt } : {}) };
+      if (!token()) return { ok: false, detail: `${connection.secretRef ?? "API key"} is not set`, ...polled };
       const r = await whoAmI();
-      return r.ok ? { ok: true, detail: `signed in as ${r.data.name}`, ...(lastEventAt ? { lastEventAt } : {}) } : { ok: false, detail: r.error };
+      return r.ok ? { ok: true, detail: `signed in as ${r.data.name}`, ...polled } : { ok: false, detail: r.error, ...polled };
     },
     async resolveUser(externalId: string) {
       const r = await linearRequest<{ user: LinearUser | null }>(token(), USER_QUERY, { id: externalId });

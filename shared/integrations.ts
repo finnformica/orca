@@ -61,6 +61,10 @@ export type Envelope = {
   link?: { url?: string; pr?: number; orchestrator?: boolean };
   /** A chat message that @-mentions Orca. `false` on a link with require_mention is dropped. */
   mentioned?: boolean;
+  /** How a person sees a message with no `actor` (a poller reads names but gates on the link, not on
+   *  a person): the sender's name and a place narrower than the link (Linear: the issue's key and
+   *  title). Display only — the gate never reads it. */
+  display?: { sender?: string; place?: string };
   grant?: Grant; // set by the gate on ingest; never by an adapter
   /** `orca post --thread`: open a thread for this post where the place allows one (Discord: on the
    *  message `messageId` names, the mention it answers, else on the post). */
@@ -358,8 +362,9 @@ export function grantRefusal(g: Grant | undefined, verb: string, args: { repo?: 
 
 /** External text as it enters an orchestrator prompt: fenced, with source, sender and grant, and
  *  marked as data. The server's grant check is the real control; this lowers prompt injection. */
-export function fenceExternal(e: Pick<Envelope, "text" | "source" | "actor" | "grant" | "thread">): string {
-  const who = e.actor ? `${e.actor.external.adapter}:${e.actor.external.id}${e.actor.external.name ? ` (${e.actor.external.name})` : ""}` : "no sender";
+export function fenceExternal(e: Pick<Envelope, "text" | "source" | "actor" | "grant" | "thread" | "display">): string {
+  const who = e.actor ? `${e.actor.external.adapter}:${e.actor.external.id}${e.actor.external.name ? ` (${e.actor.external.name})` : ""}`
+    : e.display?.sender ? `an unpaired ${e.source.adapter} user (${e.display.sender})` : "no sender";
   const grant = e.grant ? `${e.grant.level}${e.grant.level === "work" ? ` on ${e.grant.repos.join(", ") || "no repos"}` : ""}` : "full";
   const body = e.text.replace(/~~~/g, "~ ~ ~");
   return [
@@ -394,10 +399,11 @@ export const isCatchAll = (externalId: string | null | undefined): boolean => {
   return id === "" || id === "*";
 };
 
-/** The place an event came from, for a person: a DM, else the link's label ("#general") — but
+/** The place an event came from, for a person: the adapter's own (`display.place`), a DM, else the link's label ("#general") — but
  *  never a catch-all link's own label (`isCatchAll`, e.g. "All channels and DMs"), which names no
  *  real channel and would wrongly read as the event's place. */
-export function integrationPlace(e: Pick<Envelope, "source" | "raw">, link?: { label?: string; externalId?: string | null }): string | undefined {
+export function integrationPlace(e: Pick<Envelope, "source" | "raw" | "display">, link?: { label?: string; externalId?: string | null }): string | undefined {
+  if (e.display?.place) return e.display.place;
   const raw = (e.raw ?? {}) as Record<string, unknown>;
   if (e.source.adapter === "discord" && "channel_id" in raw && !raw.guild_id) return "DM";
   return link && !isCatchAll(link.externalId) ? link.label : undefined;
