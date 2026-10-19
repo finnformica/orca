@@ -220,7 +220,7 @@ describe("console shell", () => {
     expect(bellBadge().textContent).toBe("1");
     // Expanded: the row's own badge sits inline, but still the same colour, size, radius, font and padding.
     await click(container!.querySelector('button[aria-label="Expand sidebar"]')!);
-    for (const c of ["bg-geist-blue", "text-white", "h-4", "min-w-4", "rounded-full", "text-[10px]", "font-semibold"]) {
+    for (const c of ["bg-foreground", "text-background", "h-4", "min-w-4", "rounded-full", "text-[10px]", "font-semibold"]) {
       expect(inboxBadge().className.split(" ")).toContain(c);
       expect(bellBadge().className.split(" ")).toContain(c);
     }

@@ -165,7 +165,7 @@ describe("the Inbox page", () => {
     expect(all("notifications-unread")[0]!.textContent).toBe("3");
     expect(all("inbox-unread-count")[0]!.textContent).toBe("3");
     // Both badges are the one shared CountBadge: same colour, size, radius, font and padding.
-    const sharedClasses = ["bg-geist-blue", "text-white", "h-4", "min-w-4", "rounded-full", "text-[10px]", "font-semibold"];
+    const sharedClasses = ["bg-foreground", "text-background", "h-4", "min-w-4", "rounded-full", "text-[10px]", "font-semibold"];
     for (const c of sharedClasses) {
       expect(all("notifications-unread")[0]!.className.split(" ")).toContain(c);
       expect(all("inbox-unread-count")[0]!.className.split(" ")).toContain(c);
