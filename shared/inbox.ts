@@ -120,8 +120,9 @@ export const INBOX_TEXT_MAX = 400;
 export const inboxKind = (topic: string): InboxRow["kind"] =>
   topic === "orca.question" ? "question" : /^ext\.[^.]+\.message$/.test(topic) ? "message" : "event";
 
-export function senderOf(e: Pick<Envelope, "actor">, principals: ReadonlyMap<string, string>): Sender | undefined {
-  if (!e.actor) return undefined;
+export function senderOf(e: Pick<Envelope, "actor" | "display">, principals: ReadonlyMap<string, string>): Sender | undefined {
+  // A machine sender (a poller) names a person for display only: no id, so nobody to pair or mute.
+  if (!e.actor) return e.display?.sender ? { name: e.display.sender } : undefined;
   const ext = e.actor.external;
   const principalName = e.actor.principalId ? principals.get(e.actor.principalId) : undefined;
   return {

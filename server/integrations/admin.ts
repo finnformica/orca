@@ -17,7 +17,7 @@ import * as dispatcher from "./dispatcher";
 import type { Connection } from "./adapter";
 
 const user = () => db.currentUser();
-type Status = { ok?: boolean; detail?: string; at?: number; startedAt?: number; error?: string | null; lastEventAt?: number; secretSet?: boolean; secretMissing?: Record<string, number> };
+type Status = { ok?: boolean; detail?: string; at?: number; startedAt?: number; error?: string | null; lastEventAt?: number; lastPollAt?: number; secretSet?: boolean; secretMissing?: Record<string, number> };
 
 async function statuses(): Promise<Map<string, Status>> {
   return db.withRetry(async (sql) => {
@@ -71,11 +71,12 @@ export async function overview(here = db.instanceName(), now = Date.now()): Prom
     const secretMissingOn = auto && !runsOn ? Object.keys(s.secretMissing ?? {}).sort() : [];
     const secretSet = secretSetHere(c, here, now) ?? (auto && !runsOn ? undefined : s.secretSet);
     const lastEventAt = Math.max(last.get(c.id) ?? 0, s.lastEventAt ?? 0) || undefined;
+    const lastPollAt = Math.max(live[c.id]?.lastPollAt ?? 0, s.lastPollAt ?? 0) || undefined;
     return {
       id: c.id, kind: c.kind, name: c.name, instance: c.instance, enabled: c.enabled, config: c.config,
       ...(c.secretRef ? { secretRef: c.secretRef } : {}), ...(secretSet !== undefined ? { secretSet } : {}),
       ...(auto && runsOn ? { runsOn } : {}), ...(secretMissingOn.length ? { secretMissingOn } : {}),
-      running, ...(h ? { health: h } : {}), ...(lastEventAt ? { lastEventAt } : {}),
+      running, ...(h ? { health: h } : {}), ...(lastEventAt ? { lastEventAt } : {}), ...(lastPollAt ? { lastPollAt } : {}),
     };
   });
   const deadRows: DeadRow[] = dead.map((d) => ({

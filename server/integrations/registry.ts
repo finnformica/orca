@@ -15,6 +15,7 @@ import { SLACK_CAPS, slackAdapter } from "./adapters/slack";
 import { WEBHOOK_CAPS, webhookAdapter } from "./adapters/webhook";
 import { DISCORD_CAPS, discordAdapter } from "./adapters/discord";
 import { emailAdapter, emailCaps } from "./adapters/email";
+import { LINEAR_CAPS, linearAdapter } from "./adapters/linear";
 
 const factories = new Map<AdapterKind, AdapterFactory>();
 const metas = new Map<AdapterKind, AdapterMeta>();
@@ -51,6 +52,16 @@ register("email", emailAdapter, {
     { key: "allowedSenders", label: "Allowed senders (comma-separated; @domain for a domain)", placeholder: "finn@yourdomain.com" },
     { key: "authservId", label: "Receiving server's authserv-id", placeholder: "mx.google.com" },
   ],
+});
+
+register("linear", linearAdapter, {
+  label: "Linear", caps: LINEAR_CAPS, place: "team or project", secretExample: "ORCA_SECRET_LINEAR",
+  config: [
+    { key: "pollSeconds", label: "Poll every (seconds)", placeholder: "60" },
+    { key: "userId", label: "Linear user id (optional)", placeholder: "empty = the key's own user" },
+    { key: "lookbackMinutes", label: "First poll reads back (minutes)", placeholder: "0" },
+  ],
+  help: "A personal API key. Orca polls; it needs no webhook. Link team:<KEY>, project:<id> or *. Setup: docs/integrations/linear.md.",
 });
 
 /** Every registered kind with what the Settings page shows for it. A kind with no meta gets a plain one. */
@@ -157,8 +168,8 @@ export async function handle(id: string, req: Request, body: string): Promise<Re
 }
 
 /** Health of every integration this process runs (diagnostics, the later settings card). */
-export async function health(): Promise<Record<string, { kind: string; ok: boolean; detail?: string; lastEventAt?: number }>> {
-  const out: Record<string, { kind: string; ok: boolean; detail?: string; lastEventAt?: number }> = {};
+export async function health(): Promise<Record<string, { kind: string; ok: boolean; detail?: string; lastEventAt?: number; lastPollAt?: number }>> {
+  const out: Record<string, { kind: string; ok: boolean; detail?: string; lastEventAt?: number; lastPollAt?: number }> = {};
   for (const [id, r] of running) {
     out[id] = { kind: r.connection.kind, ...(await r.adapter.health().catch((e) => ({ ok: false, detail: e instanceof Error ? e.message : String(e) }))) };
   }

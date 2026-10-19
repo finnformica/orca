@@ -27,8 +27,9 @@ export type AdapterContext = {
   ingest(e: InboundEnvelope): Promise<"new" | "duplicate" | "rejected">;
   /** A poller's position (a timestamp, an ETag, an IMAP UID). Stored per integration. */
   cursor: { get(): Promise<string | undefined>; set(v: string): Promise<void> };
-  /** Record health for the settings card (merged into `integration.status`). */
-  status(s: { ok: boolean; detail?: string; lastEventAt?: number }): Promise<void>;
+  /** Record health for the settings card (merged into `integration.status`). A poller sets
+   *  `lastPollAt` at the end of each poll, so the card says when it last read the platform. */
+  status(s: { ok: boolean; detail?: string; lastEventAt?: number; lastPollAt?: number }): Promise<void>;
   log(msg: string): void;
   /** Aborted at stop: a socket or a poll loop ends when it fires. */
   signal: AbortSignal;
@@ -46,7 +47,7 @@ export interface Adapter {
    *  core stores it before any retry. Never throw for a platform error: return `ok: false`. */
   send(target: Target, msg: OutboundMessage, idempotencyKey: string): Promise<SendResult>;
   /** A cheap live check for the settings card and its Test button. */
-  health(): Promise<{ ok: boolean; detail?: string; lastEventAt?: number }>;
+  health(): Promise<{ ok: boolean; detail?: string; lastEventAt?: number; lastPollAt?: number }>;
   /** A platform user's display name and stable id (pairing). */
   resolveUser?(externalId: string): Promise<{ id: string; name: string } | undefined>;
   /** An HTTP request routed to this integration (`/api/integrations/<id>/inbound`): webhooks, a
