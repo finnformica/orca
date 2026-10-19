@@ -2,7 +2,7 @@
 // shims beside it. The slot manager runs with a fake clock; the CLI and shims run for real against
 // a tiny bridge that serves the same `acquireResponse` the real route does.
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, writeFileSync } from "fs";
+import { chmodSync, copyFileSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
@@ -392,6 +392,37 @@ describe("orca-run and the shims", () => {
     expect(await inDir(["bash", "notes.sh"])).toContain("notes slot=none");
     expect(await inDir(["bash", "-c", "echo c slot=${ORCA_RUN_SLOT:-none}"])).toContain("c slot=none");
     expect(m.view().running).toHaveLength(0);
+  });
+
+  test("HQ18: two shim directories on PATH never exec each other; with no real tool the shim fails fast", async () => {
+    // A worktree's copy of bin/worker before the main one (2026-10-19: six `bun` shims looped for
+    // minutes at 25% CPU each, because each copy skipped only its own directory).
+    const copy = mkdtempSync(join(tmpdir(), "orca-heavy-copy-"));
+    copyFileSync(join(WORKER, ".heavy-shim"), join(copy, ".heavy-shim"));
+    chmodSync(join(copy, ".heavy-shim"), 0o755);
+    symlinkSync(".heavy-shim", join(copy, "bun"));
+    const timed = async (cmd: string[], PATH: string, extra: Record<string, string> = {}) => {
+      const t0 = Date.now();
+      const proc = Bun.spawn(cmd, { env: { ...env(), PATH, ...extra }, stdout: "pipe", stderr: "pipe" });
+      const kill = setTimeout(() => proc.kill("SIGKILL"), 5_000);
+      const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+      clearTimeout(kill);
+      return { out, err, code, ms: Date.now() - t0 };
+    };
+    try {
+      for (const extra of [{}, { ORCA_RUN_BYPASS: "1" }] as Record<string, string>[]) {
+        const r = await timed([join(copy, "bun"), "--version"], `${copy}:${WORKER}`, extra);
+        expect(r.code).toBe(127);
+        expect(r.err).toContain("bun: command not found");
+        expect(r.ms).toBeLessThan(2_000);
+      }
+      // With the real bun after both, the copy finds it, not the other shim.
+      const ok = await timed([join(copy, "bun"), "--version"], `${copy}:${WORKER}:${dirname(process.execPath)}:/usr/bin:/bin`);
+      expect(ok.code).toBe(0);
+      expect(ok.out.trim()).toBe(Bun.version);
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+    }
   });
 
   test("HQ15: with no bridge, orca-run warns and runs the command anyway", async () => {

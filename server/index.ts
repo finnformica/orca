@@ -220,9 +220,11 @@ if (!PREVIEW_BRIDGE) setInterval(() => {
   void loadConfig().then((cfg) => upkeep.tick(cfg)).catch(db.logUnlessDown("orca: upkeep pass failed"));
 }, upkeep.UPKEEP_POLL_MS).unref();
 // The browser watchdog (server/browserWatch.ts): a browser or a browser MCP server in the agents'
-// slice is killed and flagged on the workstream that started it.
+// slice is killed and flagged on the workstream that started it, and a run scope that no lease on
+// this host names (a test's leaked run) is killed.
 if (!PREVIEW_BRIDGE && process.platform === "linux") setInterval(() => {
   if (!primary.held()) return;
+  try { browserWatch.sweepOrphanScopes(); } catch (e) { console.error(`orca: orphan scope sweep failed: ${e instanceof Error ? e.message : e}`); }
   void browserWatch.sweep({ record: (runId, names) => browserWatch.recordKills(runId, names).catch(db.logUnlessDown("orca: browser watchdog record failed")) })
     .catch((e) => console.error(`orca: browser watchdog failed: ${e instanceof Error ? e.message : e}`));
 }, browserWatch.WATCH_INTERVAL_MS).unref();

@@ -9,7 +9,13 @@
 // It makes its own throwaway schema (tests/pg.ts, ORCA_TEST_DATABASE_URL) and ignores
 // ORCA_DATABASE_URL. NODE_ENV=test makes db.ts refuse any database that is not a test schema, so it
 // can never write to the shared one. tests/bridgeMemory.test.ts runs it at a small size.
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+//
+// It never touches the box's systemd or the bin/worker shims (2026-10-19: six fake claudes from this
+// harness looped through two `bun` shims for minutes, in real orca-run-<id>.scope units). The fake
+// claude runs this bun by its absolute path, and `systemd-run` / `systemctl` / the user bus are
+// fakes, as in tests/agentScope.test.ts. `--root <dir>` puts its temp dirs there, so a caller can
+// find (`<root>/orca-memh-bin-`) and kill any fake claude that outlives it.
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,22 +23,36 @@ const arg = (name: string, dflt: number) => {
   const i = process.argv.indexOf(`--${name}`);
   return i > 0 ? Number(process.argv[i + 1]) : dflt;
 };
+const root = process.argv.includes("--root") ? process.argv[process.argv.indexOf("--root") + 1]! : tmpdir();
 const RUNS = arg("runs", 12), CONCURRENCY = arg("concurrency", 3), MB = arg("mb", 40), STALLED = arg("stalled", 4);
 
 const { freshSchema } = await import("../tests/pg");
 const pg = await freshSchema("memh");
 process.env.ORCA_DATABASE_URL = pg.url;
 process.env.NODE_ENV = "test";
-const state = await mkdtemp(join(tmpdir(), "orca-memh-state-"));
-const shim = await mkdtemp(join(tmpdir(), "orca-memh-bin-"));
-const work = await mkdtemp(join(tmpdir(), "orca-memh-wt-"));
+const state = await mkdtemp(join(root, "orca-memh-state-"));
+const shim = await mkdtemp(join(root, "orca-memh-bin-"));
+const work = await mkdtemp(join(root, "orca-memh-wt-"));
+const runtime = await mkdtemp(join(root, "orca-memh-run-"));
 process.env.ORCA_STATE_DIR = state;
 process.env.PATH = `${shim}:${process.env.PATH}`;
 
+// Fake systemd: a user bus that "answers", `systemd-run … -- <cmd>` runs <cmd> unscoped, and
+// `systemctl --user` says yes to everything. No orca-run-<id>.scope is ever made.
+const sh = async (name: string, body: string) => {
+  await writeFile(join(shim, name), `#!/bin/sh\n${body}\n`);
+  await chmod(join(shim, name), 0o755);
+};
+await writeFile(join(runtime, "bus"), "");
+await mkdir(join(runtime, "linger"));
+await sh("systemd-run", `echo "$*" >> "${join(runtime, "systemd-run.log")}"\nfor a in "$@"; do shift; [ "$a" = "--" ] && break; done\nexec "$@"`);
+await sh("systemctl", `case "$*" in *"is-system-running") echo running ;; *"-p Result --value") echo success ;; *) exit 0 ;; esac`);
+Object.assign(process.env, { XDG_RUNTIME_DIR: runtime, ORCA_LINGER_DIR: join(runtime, "linger"), ORCA_CGROUP_ROOT: runtime, ORCA_TEST_FORCE_CGROUP_LINUX: "1" });
+
 // A fake claude: per MB of stdout, one tool call with a 64 KB result (a step) and ~1 MB of reply
 // deltas — what `--include-partial-messages` makes of a long, chatty run.
-await writeFile(join(shim, "claude"), `#!/usr/bin/env bun
-const mb = Number(process.env.ORCA_MEMH_MB);
+// Its script is claude.js, run by this bun's own path: `#!/usr/bin/env bun` found bin/worker's shim.
+await writeFile(join(shim, "claude.js"), `const mb = Number(process.env.ORCA_MEMH_MB);
 const out = Bun.stdout.writer();
 out.write(JSON.stringify({ type: "system", subtype: "init", session_id: crypto.randomUUID() }) + "\\n");
 const delta = JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "x".repeat(160) } } }) + "\\n";
@@ -43,7 +63,7 @@ for (let i = 0; i < mb; i++) { out.write(tool(i)); out.write(deltas); await out.
 out.write(JSON.stringify({ type: "result", subtype: "success", result: "## Outcome\\nDone.", is_error: false, session_id: "s" }) + "\\n");
 await out.flush();
 `);
-await chmod(join(shim, "claude"), 0o755);
+await sh("claude", `exec "${process.execPath}" "${join(shim, "claude.js")}" "$@"`);
 process.env.ORCA_MEMH_MB = String(MB);
 
 const agent = await import("../server/agent");
@@ -99,10 +119,11 @@ clearInterval(sampler);
 for (const ac of aborts) ac.abort();
 await db.close();
 await pg.drop();
-for (const d of [state, shim, work]) await rm(d, { recursive: true, force: true });
+const fakeScopes = (await Bun.file(join(runtime, "systemd-run.log")).text().catch(() => "")).split("\n").filter(Boolean).length;
+for (const d of [state, shim, work, runtime]) await rm(d, { recursive: true, force: true });
 console.log(JSON.stringify({
   runs: RUNS, concurrency: CONCURRENCY, stdoutMbPerRun: MB, stalledStreams: STALLED, elapsedMs,
   rssBeforeMb: mib(before), rssPeakMb: mib(peak), rssAfterMb: mib(after), retainedMb: mib(after - before), heapAfterMb: mib(heapAfter),
-  stalledStreamsOpen: live, statuses, runsBeforePrune, runsAfterPrune,
+  stalledStreamsOpen: live, statuses, fakeScopes, runsBeforePrune, runsAfterPrune,
 }));
 process.exit(0);
