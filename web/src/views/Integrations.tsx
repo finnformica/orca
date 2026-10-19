@@ -263,7 +263,7 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
       <Field label="Kind" htmlFor="int-kind">
         <Select value={kind} onValueChange={setKind} disabled={!!existing}>
           <SelectTrigger id="int-kind" className="w-full"><SelectValue /></SelectTrigger>
-          <SelectContent>{kinds.map((k) => <SelectItem key={k.kind} value={k.kind}><BrandIcon kind={k.kind} />{k.label}</SelectItem>)}</SelectContent>
+          <SelectContent>{kinds.map((k) => <SelectItem key={k.kind} value={k.kind}><BrandIcon kind={k.kind} className="mr-2" />{k.label}</SelectItem>)}</SelectContent>
         </Select>
       </Field>
       <div className="grid gap-4 sm:grid-cols-2">
