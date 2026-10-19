@@ -39,6 +39,8 @@ printf '{"type":"result","subtype":"success","result":"## Outcome\\\\nDone.","is
   process.env.ORCA_DATABASE_URL = pg.url;
   await db.close();
   launches = [];
+  // This fake ignores SIGTERM: Stop's wait for the stopped process to exit is cut short here.
+  agent.stopGrace.ms = 100;
   // The same relay index.ts installs: a queued message becomes the next run.
   agent.onQueuedMessage(async (m) => {
     launches.push(m.instruction);
@@ -51,6 +53,7 @@ afterEach(async () => {
   for (let i = 0; i < 400 && agent.isRunning(repo); i++) await new Promise((r) => setTimeout(r, 25));
   await agent.afterRunsSettled();
   agent.onQueuedMessage(async () => {});
+  agent.stopGrace.ms = 5_000;
   await agent.flushHistory();
   await db.close();
   await pg.drop();

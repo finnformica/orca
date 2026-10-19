@@ -1829,14 +1829,26 @@ export function prTrigger(text: string, caret: number): { start: number; query: 
   return { start: caret - line.length + at, query };
 }
 
+/** A word matches a haystack at a word boundary — the start, or just past a non-alphanumeric — so
+ *  `at-ref` finds `orca/at-reference-…` but `earch` does not find `search`. Shared by
+ *  `filterWorkstreamRefs` and `filterPrRefs`'s workstream join. */
+function atBoundary(hay: string, w: string): boolean {
+  for (let i = hay.indexOf(w); i >= 0; i = hay.indexOf(w, i + 1)) if (i === 0 || !/[a-z0-9]/.test(hay[i - 1]!)) return true;
+  return false;
+}
+
 /** Open PRs before merged ones; open newest-numbered first (gh's own list order, a proxy for recent
  *  activity), merged most-recently-merged first. Each word of the query must prefix the number, the
- *  repo name or a word of the title. */
-export function filterPrRefs(refs: PrRef[], query: string, limit = 8): PrRef[] {
+ *  repo name or a word of the title — or hit, at a word boundary, one of `joinHay`'s extra haystacks
+ *  (the PR's own workstream title and branch, from `filterMentions`'s join). */
+export function filterPrRefs(refs: PrRef[], query: string, limit = 8, joinHay?: (r: PrRef) => string[]): PrRef[] {
   const words = query.toLowerCase().replace(/^[#@]/, "").split(/\s+/).filter(Boolean);
   const hit = (r: PrRef) => {
     const titleWords = r.title.toLowerCase().split(/[^a-z0-9]+/);
-    return words.every((w) => String(r.number).startsWith(w) || r.repo.toLowerCase().startsWith(w) || titleWords.some((t) => t.startsWith(w)));
+    const extra = (joinHay?.(r) ?? []).map((h) => h.toLowerCase());
+    return words.every((w) =>
+      String(r.number).startsWith(w) || r.repo.toLowerCase().startsWith(w) || titleWords.some((t) => t.startsWith(w))
+      || extra.some((h) => atBoundary(h, w)));
   };
   const rank = (r: PrRef) => (r.state === "merged" ? 1 : 0);
   return refs.filter(hit).sort((a, b) =>
@@ -1871,10 +1883,6 @@ export type MentionRef = { kind: "pr"; ref: PrRef } | { kind: "workstream"; ref:
  *  so `at-ref` finds `orca/at-reference-…`. Board order is kept. */
 export function filterWorkstreamRefs(refs: WorkstreamRef[], query: string, limit = 8): WorkstreamRef[] {
   const words = query.toLowerCase().replace(/^[#@]/, "").split(/\s+/).filter(Boolean);
-  const atBoundary = (hay: string, w: string) => {
-    for (let i = hay.indexOf(w); i >= 0; i = hay.indexOf(w, i + 1)) if (i === 0 || !/[a-z0-9]/.test(hay[i - 1]!)) return true;
-    return false;
-  };
   const hit = (r: WorkstreamRef) => {
     const hays = [r.repo, r.branch, r.title].map((h) => h.toLowerCase());
     return words.every((w) => hays.some((h) => atBoundary(h, w)));
@@ -1882,11 +1890,17 @@ export function filterWorkstreamRefs(refs: WorkstreamRef[], query: string, limit
   return refs.filter(hit).slice(0, limit);
 }
 
-/** The picker's options: open PRs, then workstreams with no PR among `prs`, then merged PRs. */
+/** The picker's options: open PRs, then workstreams with no PR among `prs`, then merged PRs. A PR
+ *  pick also matches its own workstream's title and branch (same repo + PR number), so a query that
+ *  names the workstream — not the PR title — still finds it. */
 export function filterMentions(prs: PrRef[], workstreams: WorkstreamRef[], query: string, limit = 8): MentionRef[] {
   const prKeys = new Set(prs.map((p) => `${p.repo}#${p.number}`));
   const own = workstreams.filter((w) => w.prNumber === undefined || !prKeys.has(`${w.repo}#${w.prNumber}`));
-  const prHits = filterPrRefs(prs, query, limit);
+  const wsByPr = new Map(workstreams.filter((w) => w.prNumber !== undefined).map((w) => [`${w.repo}#${w.prNumber}`, w] as const));
+  const prHits = filterPrRefs(prs, query, limit, (p) => {
+    const ws = wsByPr.get(`${p.repo}#${p.number}`);
+    return ws ? [ws.title, ws.branch] : [];
+  });
   return [
     ...prHits.filter((p) => p.state !== "merged").map((ref): MentionRef => ({ kind: "pr", ref })),
     ...filterWorkstreamRefs(own, query, limit).map((ref): MentionRef => ({ kind: "workstream", ref })),
@@ -2668,10 +2682,12 @@ export function downsample(points: { at: number; v: number }[], max: number, fro
 }
 
 /** One vitals sample, recorded (instance_metric) or live (/api/health). */
-export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number; diskUsedGb?: number; oomKills?: number };
+export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number; diskUsedGb?: number; oomKills?: number; bridgeRssMb?: number };
 type Pt = { at: number; v: number };
 export type InstanceSeries = {
   cpu: Pt[]; mem: Pt[]; agents: Pt[]; disk: Pt[];
+  /** The bridge process's own memory (MB); samples from before it was recorded are skipped. */
+  bridge: Pt[];
   /** Samples that recorded agent runs OOM-killed in their own scope — the Memory chart's markers. */
   ooms: { at: number; n: number }[];
   /** The newest sample — what the card's header stats show, and exactly every chart's last point. */
@@ -2689,7 +2705,7 @@ export function instanceSeries(history: VitalSample[], live: VitalSample | null 
   const samples = history.filter((p) => p.at >= from && p.at <= to);
   const last = samples[samples.length - 1];
   if (live && live.at <= to && (!last || live.at > last.at)) samples.push({ ...live, oomKills: 0 });
-  if (!samples.length) return { cpu: [], mem: [], agents: [], disk: [], ooms: [], latest: null };
+  if (!samples.length) return { cpu: [], mem: [], agents: [], disk: [], bridge: [], ooms: [], latest: null };
   const series = (pts: Pt[]) => pts.length ? [...downsample(pts.slice(0, -1), max - 1, from, to), pts[pts.length - 1]!] : [];
   const newest = samples[samples.length - 1]!;
   return {
@@ -2697,6 +2713,7 @@ export function instanceSeries(history: VitalSample[], live: VitalSample | null 
     mem: series(samples.map((p) => ({ at: p.at, v: p.memUsedGb }))),
     agents: series(samples.map((p) => ({ at: p.at, v: p.runningAgents ?? 0 }))),
     disk: series(samples.flatMap((p) => (p.diskUsedGb == null ? [] : [{ at: p.at, v: p.diskUsedGb }]))),
+    bridge: series(samples.flatMap((p) => (p.bridgeRssMb == null ? [] : [{ at: p.at, v: p.bridgeRssMb }]))),
     ooms: samples.flatMap((p) => (p.oomKills ? [{ at: p.at, n: p.oomKills }] : [])),
     latest: { at: newest.at, cpuPct: newest.cpuPct, memUsedGb: newest.memUsedGb, runningAgents: newest.runningAgents ?? 0 },
   };

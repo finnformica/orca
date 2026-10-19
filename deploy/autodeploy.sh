@@ -27,6 +27,17 @@ mkdir -p "${STATE_DIR}"
 
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>"${LOG}"; }
 
+# The deploy lock: held for the whole run, so two deploys never overlap and the health watchdog
+# (deploy/health-check.sh) never restarts the bridge under a deploy. A manual deploy takes it with
+# `flock ~/.orca/deploy.lock <command>`. No flock (macOS): no lock.
+if command -v flock >/dev/null; then
+  exec 9>>"${STATE_DIR}/deploy.lock"
+  if ! flock -n 9; then
+    log "deferred: another deploy holds ${STATE_DIR}/deploy.lock"
+    exit 0
+  fi
+fi
+
 cd "${REPO}"
 git fetch -q origin main
 

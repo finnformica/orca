@@ -18,6 +18,7 @@ import * as bus from "./bus";
 import { resolvePrompt } from "./attachments";
 import * as cgroup from "./cgroup";
 import { noteOomKill } from "./health";
+import { existsSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { join, resolve } from "path";
 import { stateDir } from "./state";
@@ -263,6 +264,51 @@ const runs = new Map<string, Run>();
 // Generous for a normal exit (the pipe closes immediately), bounded for the pathological one.
 const DRAIN_GRACE_MS = 2_000;
 
+/** Does the exit parse (parseClaudeStreamOutput / parseCodexOutput / parseCursorOutput) need this
+ *  stdout event? A run's stdout used to be kept WHOLE until exit — every reply delta and tool
+ *  result, tens of MB for a long run — and the bridge grew by about that much per run (2026-10-18:
+ *  3 GB plus 2.7 GB swap in 9 hours). The steps are already in the transcript; only the session id,
+ *  the result and the compact markers are read at exit. Pure. */
+export function keepForOutcome(provider: AgentProvider, event: unknown): boolean {
+  const e = event as { type?: string; subtype?: string; compact_result?: unknown; item?: { type?: string } } | null;
+  if (!e || typeof e !== "object") return false;
+  if (provider === "codex") {
+    return e.type === "thread.started" || e.type === "turn.completed" || e.type === "turn.failed" || e.type === "error"
+      || (e.type === "item.completed" && e.item?.type === "agent_message");
+  }
+  if (e.type === "result") return true;
+  if (provider === "cursor") return e.type === "system" && e.subtype === "init";
+  return (e.type === "system" && (e.subtype === "init" || e.subtype === "compact_boundary")) || e.compact_result !== undefined;
+}
+
+/** How much of a run's non-JSON stdout (and its stderr) is kept: the newest part only. */
+export const OUTPUT_TAIL_CHARS = 256 << 10;
+
+/** The part of a run's stdout the exit parse reads: the events `keepForOutcome` names, then a bounded
+ *  tail of the lines that were not JSON (a crash's message, an old single-body answer). */
+export function outcomeLines(provider: AgentProvider) {
+  let kept = "";
+  let tail = "";
+  return {
+    add(line: string, event: unknown): void {
+      if (event === undefined) tail = (tail + line + "\n").slice(-OUTPUT_TAIL_CHARS);
+      else if (keepForOutcome(provider, event)) kept += line + "\n";
+    },
+    text: (pending = ""): string => kept + tail + pending.slice(-OUTPUT_TAIL_CHARS),
+  };
+}
+
+/** A stream's newest `max` characters — stderr is read only for its tail. */
+async function tailText(stream: ReadableStream<Uint8Array>, max = OUTPUT_TAIL_CHARS): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let tail = "";
+  for (let r = await reader.read(); !r.done; r = await reader.read()) tail = (tail + decoder.decode(r.value, { stream: true })).slice(-max);
+  return tail + decoder.decode();
+}
+
+const parseLine = (line: string): unknown => { try { return JSON.parse(line); } catch { return undefined; } };
+
 function codexSessionId(line: string): string | undefined {
   try {
     const event = JSON.parse(line);
@@ -277,60 +323,60 @@ function codexSessionId(line: string): string | undefined {
  *  immediately lets the next `/api/agents` poll persist and copy the exact resumable thread id. */
 async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }, runId?: string, owner?: { repo?: string; branch?: string }): Promise<string> {
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
-  let raw = "";
+  const out = outcomeLines("codex");
   let pending = "";
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
-    raw += value;
-    holder.raw = raw;
     pending += value;
     const lines = pending.split("\n");
     pending = lines.pop() ?? "";
     for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = parseLine(line);
+      out.add(line, event);
+      holder.raw = out.text();
       const sessionId = codexSessionId(line);
       const current = runs.get(key);
       if (sessionId && current?.proc === proc && current.sessionId !== sessionId) {
         runs.set(key, { ...current, sessionId });
       }
-      if (!runId) continue;
-      let event: unknown;
-      try { event = JSON.parse(line); } catch { continue; }
+      if (!runId || event === undefined) continue;
       const written = await transcript.append(runId, codexSteps(event));
       if (written.length && owner?.repo && owner.branch) {
         bus.publish({ kind: "step", runId, repo: owner.repo, branch: owner.branch, steps: written });
       }
     }
   }
-  return raw;
+  return (holder.raw = out.text(pending));
 }
 
 /** Read Cursor's stream-json without waiting for exit, recording each step as it lands. Returns the
- *  full raw stream so parseCursorOutput can extract the final outcome at exit. */
+ *  part of the stream parseCursorOutput reads at exit (outcomeLines), never the whole of it. */
 async function readCursorOutput(proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }, runId?: string, owner?: { repo?: string; branch?: string }): Promise<string> {
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
   const state = { thinking: "" };
-  let raw = "";
+  const out = outcomeLines("cursor");
   let pending = "";
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
-    raw += value;
-    holder.raw = raw;
     pending += value;
     const lines = pending.split("\n");
     pending = lines.pop() ?? "";
     for (const line of lines) {
-      if (!line.trim() || !runId) continue;
-      let event: unknown;
-      try { event = JSON.parse(line); } catch { continue; }
+      if (!line.trim()) continue;
+      const event = parseLine(line);
+      out.add(line, event);
+      holder.raw = out.text();
+      if (!runId || event === undefined) continue;
       const written = await transcript.append(runId, cursorSteps(event, state));
       if (written.length && owner?.repo && owner.branch) {
         bus.publish({ kind: "step", runId, repo: owner.repo, branch: owner.branch, steps: written });
       }
     }
   }
-  return raw;
+  return (holder.raw = out.text(pending));
 }
 
 /** A run's recorded steps — the agent's thought process — oldest first, `tail` limiting to the last
@@ -466,11 +512,11 @@ export function claudeDelta(event: unknown): string | undefined {
 const DELTA_FLUSH_MS = 100;
 
 /** Read claude's `--output-format stream-json` JSONL without waiting for exit, persisting each step
- *  to the run's transcript so `/api/turns` can show it live AND after the fact. Returns the full raw
- *  stream for parseClaudeStreamOutput to extract the final outcome at exit. */
+ *  to the run's transcript so `/api/turns` can show it live AND after the fact. Returns the part of
+ *  the stream parseClaudeStreamOutput reads at exit (outcomeLines), never the whole of it. */
 async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }, owner?: { repo?: string; branch?: string }): Promise<string> {
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
-  let raw = "";
+  const out = outcomeLines("claude");
   let pending = "";
   // Streamed reply text, coalesced and pushed live; never written anywhere (see claudeDelta).
   let delta = "";
@@ -483,15 +529,15 @@ async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "p
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
-    raw += value;
-    holder.raw = raw;
     pending += value;
     const lines = pending.split("\n");
     pending = lines.pop() ?? "";
     for (const line of lines) {
       if (!line.trim()) continue;
-      let event: unknown;
-      try { event = JSON.parse(line); } catch { continue; }
+      const event = parseLine(line);
+      out.add(line, event);
+      if (event === undefined || keepForOutcome("claude", event)) holder.raw = out.text();
+      if (event === undefined) continue;
       const text = claudeDelta(event);
       if (text) {
         delta += text;
@@ -510,7 +556,7 @@ async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "p
   }
   if (flushAt) { clearTimeout(flushAt); flush(); }
   transcript.forget(runId);
-  return raw;
+  return (holder.raw = out.text(pending));
 }
 
 /** Extract claude's final outcome from the stream. The last `type:"result"` event is the same object
@@ -744,7 +790,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       provider === "codex" ? readCodexOutput(key, proc, outHolder, runId, { repo: options.repo, branch: options.branch })
         : provider === "claude" ? readClaudeStream(runId, proc, outHolder, { repo: options.repo, branch: options.branch })
         : readCursorOutput(proc, outHolder, runId, { repo: options.repo, branch: options.branch }),
-      new Response(proc.stderr).text().then((t) => (errHolder.raw = t)),
+      tailText(proc.stderr).then((t) => (errHolder.raw = t)),
     ]);
     const code = await proc.exited;
     await Promise.race([reads, new Promise((r) => setTimeout(r, DRAIN_GRACE_MS))]);
@@ -973,18 +1019,32 @@ export function onRunFinished(fn: ((run: RunFinished) => Promise<void>) | undefi
  *  when it launched one. */
 async function dispatchQueued(repo: string, branch: string, options: LaunchOptions): Promise<boolean> {
   if (!queuedLauncher) return false;
+  let next: db.QueuedMessage | undefined;
   try {
-    const next = await db.claimQueuedMessage(repo, branch);
+    next = await db.claimQueuedMessage(repo, branch);
     if (!next) return false;
     await queuedLauncher(next);
     return true;
   } catch (e) {
-    // Never let a queued send break the run that just finished; the message stays claimed rather
-    // than retrying forever against a worktree that may be gone.
+    // Never let a queued send break the run that just finished. A message whose launch failed goes
+    // back on the queue: it stayed claimed once, and the message was lost (the next send went
+    // without it). Nothing retries it in a loop; the next run's end or send picks it up.
+    if (next) await db.releaseQueuedMessage(next.id).catch(db.logUnlessDown("orca: queued message release failed"));
     db.logUnlessDown("orca: queued message dispatch failed")(e);
     return false;
   }
 }
+
+/** Send what is queued for an IDLE branch, oldest first. A direct send onto a worktree with older
+ *  messages still queued calls this after it queues its own, so the older ones go first. */
+export async function drainQueue(key: string, repo: string, branch: string): Promise<boolean> {
+  if (isRunning(key)) return false; // the run in flight sends the queue when it ends
+  return dispatchQueued(repo, branch, {});
+}
+
+// How long Stop waits for the stopped process to exit before it sends the queue: the next run
+// resumes the SAME session, and two processes on one session both write to its transcript.
+export const stopGrace = { ms: 5_000 }; // mutable so a test needn't wait five seconds
 
 // How often an adopted run's lease is checked for its process having exited.
 export const adoptPoll = { ms: 5_000 }; // mutable so a test needn't wait five seconds
@@ -1050,12 +1110,32 @@ async function finishAdopted(l: lease.Lease, recover: Parameters<typeof adoptLea
   }
 }
 
+/** Forget finished runs whose worktree is gone. A finished entry is kept per worktree (the board
+ *  reads its status, result and prompt), but a reaped worktree's entry was never removed, so the map
+ *  grew with every worktree the bridge ever ran in. Hourly, from the reaper in index.ts. */
+export function pruneRuns(exists: (path: string) => boolean = existsSync): number {
+  let n = 0;
+  for (const [key, r] of runs) {
+    if (r.status !== "running" && !starting.has(key) && !exists(key)) { runs.delete(key); n++; }
+  }
+  return n;
+}
+
+/** How many runs the bridge holds in memory (/api/health's bridge memory). */
+export const runCount = (): number => runs.size;
+
 /** Kill and forget a run (e.g. on discard, or Stop from the chat). Returns the runId it stopped, if
  *  any, so a caller can report what it interrupted. */
 export function stop(key: string): string | undefined {
   const r = runs.get(key);
   if (r?.runId && r.status === "running") stoppedRuns.add(r.runId);
   try { r?.proc?.kill(); } catch { /* already gone */ }
+  // A run adopted after a restart has no handle: its lease names the process. Without this, Stop
+  // left it running and the next run resumed a session it was still writing to.
+  const held = !r?.proc ? lease.current(key) : undefined;
+  if (held && (!r?.runId || held.runId === r.runId) && lease.leased(key)) {
+    try { process.kill(held.pid); } catch { /* already gone */ }
+  }
   runs.delete(key);
   lease.release(key); // discard/stop frees the worktree even if the run was recovered from a lease
   return r?.runId;
@@ -1071,6 +1151,7 @@ export async function interrupt(key: string, opts: { queue?: boolean } = {}): Pr
   const r = runs.get(key);
   const runId = stop(key);
   if (!runId || opts.queue === false || r?.options?.queue === false) return runId;
+  if (r?.proc) await Promise.race([r.proc.exited, new Promise((res) => setTimeout(res, stopGrace.ms))]);
   // A run adopted from a lease after a restart has no options; its turn names the branch.
   const owner = r?.options?.repo && r.options.branch ? { repo: r.options.repo, branch: r.options.branch }
     : await db.turnOwner(runId).catch(() => undefined);

@@ -168,10 +168,16 @@ function useHeld<T>(want: T): T {
  *  OUT while it fades, the new one translates up and IN while it fades, so neither sits fully
  *  opaque over the other and the text never overlaps. Both sit in ONE grid cell with a fixed line
  *  height and `overflow-hidden`, so the line never changes height and nothing sliding leaks outside
- *  it. The box takes 1.2em of layout, but its one grid row is 1.7em (taller than the 1.625em line
- *  it inherits) and runs into a `box-content` padding that an equal negative margin cancels. So
- *  both clips (the box's and each line's own `truncate`) sit below the line's foot, and a
- *  descender (the g of `Thinking`) shows in full with no extra space under the widget. The `label-*` classes are in styles.css (a plain opacity cross-fade under reduced motion). */
+ *  it. The box takes 1.2em of layout, but its one grid row is 2.2em (taller than the ~1.625em line
+ *  it inherits) and runs into a `box-content` padding that an equal negative margin cancels — split
+ *  EVENLY above and below (not bottom-only), so the padding/margin trick itself doesn't move the
+ *  box's own centre. A row bigger than its container still anchors at the container's START by
+ *  default, not its centre, so `content-center` re-centres the oversized row on the box, and
+ *  `items-center` then centres the real line within that row — together putting the line's own
+ *  centre exactly on the box's centre, matching a sibling (the header's spinner) centred on ITS
+ *  own box. (`items-center` alone left the row's own placement un-centred, and the label still
+ *  read low against the spinner.) The `label-*` classes are in styles.css (a plain opacity
+ *  cross-fade under reduced motion). */
 function CrossFade({ text, slot }: { text: string; slot?: string }) {
   const [s, setS] = useState<{ text: string; n: number; gone: string | null }>({ text, n: 0, gone: null });
   if (s.text !== text) setS({ text, n: s.n + 1, gone: s.text });
@@ -181,7 +187,7 @@ function CrossFade({ text, slot }: { text: string; slot?: string }) {
     return () => clearTimeout(t);
   }, [s.n, s.gone]);
   return (
-    <span className="-mb-[0.5em] box-content grid h-[1.2em] min-w-0 flex-1 grid-rows-[1.7em] overflow-hidden pb-[0.5em]">
+    <span className="-my-[0.5em] box-content content-center grid h-[1.2em] min-w-0 flex-1 grid-rows-[2.2em] items-center overflow-hidden py-[0.5em]">
       {s.gone !== null && <span key={`out-${s.n}`} aria-hidden="true" data-slot={slot && `${slot}-out`} className="label-out truncate [grid-area:1/1]">{s.gone}</span>}
       <span key={`in-${s.n}`} data-slot={slot} className={cn("truncate [grid-area:1/1]", s.n > 0 && "label-in")}>{text}</span>
     </span>

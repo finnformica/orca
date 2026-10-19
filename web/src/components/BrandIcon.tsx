@@ -31,13 +31,16 @@ export const brandTitle = (kind: string): string => BRANDS[kind]?.title ?? kind;
 
 /** A service's logo at the text size (`size-4` by default). Decorative: the name is always beside it. */
 export function BrandIcon({ kind, className }: { kind: string; className?: string }) {
+  // inline-flex, not the Tailwind preflight's default block: a block svg next to text breaks onto
+  // its own line (an open Select menu) and a lone `margin-left: auto` meant for a trigger's chevron
+  // pushes a block box flush right (a closed Select trigger) — inline-level boxes ignore auto margins.
   const brand = BRANDS[kind];
   if (!brand) {
     const I = GENERIC[kind] ?? Plug;
-    return <I data-slot="brand-icon" data-kind={kind} className={cn("text-muted-foreground size-4 shrink-0", className)} aria-hidden="true" />;
+    return <I data-slot="brand-icon" data-kind={kind} className={cn("text-muted-foreground inline-flex size-4 shrink-0 align-middle", className)} aria-hidden="true" />;
   }
   return (
-    <svg data-slot="brand-icon" data-kind={kind} viewBox="0 0 24 24" role="img" aria-hidden="true" className={cn("size-4 shrink-0", className)}>
+    <svg data-slot="brand-icon" data-kind={kind} viewBox="0 0 24 24" role="img" aria-hidden="true" className={cn("inline-flex size-4 shrink-0 align-middle", className)}>
       {brand.paths.map((p, i) => <path key={i} d={p.d} fill={p.fill} />)}
     </svg>
   );

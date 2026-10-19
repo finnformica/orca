@@ -238,7 +238,7 @@ test("instanceSeries: the newest sample (live when newer) is every series' raw l
   expect(d.cpu.length).toBeLessThanOrEqual(50);
   expect(d.cpu.at(-1)).toEqual({ at: 999, v: 100 });
   expect(d.disk).toEqual([]); // no readings at all: an empty line, not zeros
-  expect(instanceSeries([], null, 0, 100)).toEqual({ cpu: [], mem: [], agents: [], disk: [], ooms: [], latest: null });
+  expect(instanceSeries([], null, 0, 100)).toEqual({ cpu: [], mem: [], agents: [], disk: [], bridge: [], ooms: [], latest: null });
 });
 
 test("countMax: a fixed top of 8 for the agents axis, growing only past it", () => {
