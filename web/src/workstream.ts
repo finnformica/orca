@@ -2237,6 +2237,22 @@ export function protectionsWarning(
   return oom ? { warn: false, text: oom } : undefined;
 }
 
+/** The machine card's heavy-command list: running first (oldest first), then the queue in order.
+ *  `who` is the workstream (branch, else repo, else "shell"); `since` is when it started or queued.
+ *  Empty when nothing runs or waits. Pure. */
+export function heavyQueueRows(view: { running: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number; startedAt?: number }[]; queued: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number }[] } | undefined): {
+  id: string; state: "running" | "queued"; kind: string; command: string; who: string; since: number; position?: number;
+}[] {
+  if (!view) return [];
+  const who = (e: { repo?: string; branch?: string }) => e.branch ?? e.repo ?? "shell";
+  const short = (c: string) => (c.length > 80 ? `${c.slice(0, 79)}…` : c);
+  return [
+    ...[...view.running].sort((a, b) => (a.startedAt ?? a.queuedAt) - (b.startedAt ?? b.queuedAt))
+      .map((e) => ({ id: e.id, state: "running" as const, kind: e.kind, command: short(e.command), who: who(e), since: e.startedAt ?? e.queuedAt })),
+    ...view.queued.map((e, i) => ({ id: e.id, state: "queued" as const, kind: e.kind, command: short(e.command), who: who(e), since: e.queuedAt, position: i + 1 })),
+  ];
+}
+
 // ---- review signal: who approved, what humans said, what the AI reviewers flagged, what's open ----
 // Pure derivations over gh.reviewSignal (one PR's reviews, comments and inline threads), shared by
 // the list row's review cluster and the PR page's Review panel.

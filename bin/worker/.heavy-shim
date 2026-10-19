@@ -1,0 +1,60 @@
+#!/bin/sh
+# The shims for heavy tools on a worker's PATH (bin/worker is first on it, server/env.ts agentEnv):
+# playwright, jest, vitest, eslint, tsc, npx and bunx are symlinks to this file. A heavy call goes
+# through `orca-run` (the box-wide queue, server/heavy.ts); anything else runs the real tool at once.
+#   - Heavy: `playwright test`, jest, vitest, eslint, tsc, and the same tools (plus `vite build` and
+#     `next build`) through npx or bunx.
+#   - Not heavy: --version, --help, `playwright install` / `show-report`, any other npx/bunx tool.
+#   - Nested calls (ORCA_RUN_SLOT is set under orca-run) never queue again.
+#   - The escape hatch: ORCA_RUN_BYPASS=1 runs the real tool at once.
+name=$(basename "$0")
+self_dir=$(cd "$(dirname "$0")" && pwd -P)
+
+# The real tool: the first one on PATH that is not in this directory.
+real=""
+old_ifs=$IFS
+IFS=:
+for d in $PATH; do
+  [ -n "$d" ] || continue
+  [ "$(cd "$d" 2>/dev/null && pwd -P)" = "$self_dir" ] && continue
+  if [ -x "$d/$name" ] && [ ! -d "$d/$name" ]; then real="$d/$name"; break; fi
+done
+IFS=$old_ifs
+if [ -z "$real" ]; then echo "$name: command not found" >&2; exit 127; fi
+
+if [ -n "$ORCA_RUN_SLOT" ] || [ "$ORCA_RUN_BYPASS" = "1" ]; then exec "$real" "$@"; fi
+
+# kind_of <tool> <args...>: print the queue kind of a direct call, or nothing.
+kind_of() {
+  tool=$1; shift
+  for a in "$@"; do
+    case "$a" in --version|-v|-V|--help|-h) return 0 ;; esac
+  done
+  case "$tool" in
+    playwright) [ "$1" = "test" ] && echo e2e ;;
+    jest|vitest) echo test ;;
+    eslint|tsc) echo lint ;;
+    vite|next) [ "$1" = "build" ] && echo build ;;
+  esac
+}
+
+# npx_kind <args...>: the first word that is not a flag is the tool (`-p <pkg>` and `--package
+# <pkg>` take a value); a version suffix (`eslint@9`) is dropped.
+npx_kind() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -p|--package) shift ;;
+      -*) ;;
+      *) tool=${1##*/}; tool=${tool%@*}; shift; kind_of "$tool" "$@"; return 0 ;;
+    esac
+    shift
+  done
+}
+
+case "$name" in
+  npx|bunx) kind=$(npx_kind "$@") ;;
+  *) kind=$(kind_of "$name" "$@") ;;
+esac
+
+if [ -z "$kind" ]; then exec "$real" "$@"; fi
+exec "$self_dir/orca-run" --kind "$kind" -- "$real" "$@"

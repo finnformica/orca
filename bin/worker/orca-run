@@ -1,0 +1,153 @@
+#!/usr/bin/env bun
+// `orca-run [--kind test|lint|build|e2e] [--timeout <minutes>] -- <command...>` — run a HEAVY command
+// (a test runner, a linter on a repo, tsc, a build, an e2e suite) in a slot of the box-wide queue
+// (server/heavy.ts). Several agents on one box ran these at once and OOM-killed each other.
+//
+// It asks the bridge for a slot and prints `queued: N ahead` to stderr while it waits. When the
+// slot is granted it runs the command (in its own memory-capped scope when the box has one), streams
+// its output, and exits with its exit code. The slot always comes back: on exit, on a signal (the
+// command is stopped first), and on a kill -9 of this process (the bridge sees the connection drop).
+//
+// Nested calls pass straight through: the command runs with ORCA_RUN_SLOT set, and orca-run and the
+// shims beside it (playwright, jest, vitest, eslint, tsc, npx, bunx) do not queue again under it.
+// The escape hatch: ORCA_RUN_BYPASS=1 runs the command at once with no slot. Use it only for a
+// command that is not heavy and that a shim queued by mistake.
+// With no bridge to answer, the command runs at once with a warning: a queue must not stop all work.
+import { API_PORT } from "../../server/ports";
+
+const KINDS = ["test", "lint", "build", "e2e"];
+const argv = process.argv.slice(2);
+let kind = "test";
+let timeoutMin: number | undefined;
+let cmd: string[] = [];
+for (let i = 0; i < argv.length; i++) {
+  const a = argv[i]!;
+  if (a === "--") { cmd = argv.slice(i + 1); break; }
+  if (a === "--kind") kind = argv[++i] ?? "";
+  else if (a === "--timeout") timeoutMin = Number(argv[++i]);
+  else if (a === "-h" || a === "--help") {
+    console.log("usage: orca-run [--kind test|lint|build|e2e] [--timeout minutes] -- <command...>\n  waits for a slot in the box-wide queue, then runs the command and exits with its code\n  ORCA_RUN_BYPASS=1 runs the command at once, with no slot");
+    process.exit(0);
+  } else if (a.startsWith("--")) { console.error(`orca-run: unknown flag ${a}`); process.exit(2); }
+  else { cmd = argv.slice(i); break; }
+}
+if (!KINDS.includes(kind)) { console.error(`orca-run: --kind must be one of ${KINDS.join(", ")}`); process.exit(2); }
+if (!cmd.length) { console.error("orca-run: give the command after --, e.g. orca-run --kind e2e -- npx playwright test tests/login.spec.ts"); process.exit(2); }
+if (timeoutMin !== undefined && !(timeoutMin > 0)) { console.error("orca-run: --timeout needs a positive number of minutes"); process.exit(2); }
+
+/** Run the command; resolve with its exit code. Signals to this process stop it first. */
+async function run(argv: string[], env: Record<string, string | undefined>, maxRunMs?: number): Promise<number> {
+  let proc: ReturnType<typeof Bun.spawn>;
+  try {
+    proc = Bun.spawn(argv, { stdio: ["inherit", "inherit", "inherit"], env: { ...process.env, ...env } });
+  } catch (e) {
+    console.error(`orca-run: ${e instanceof Error ? e.message : String(e)}`);
+    return 127;
+  }
+  const stop = (sig: NodeJS.Signals) => { try { proc.kill(sig); } catch { /* gone */ } };
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => { stop(sig); setTimeout(() => stop("SIGKILL"), 5000).unref(); });
+  const limit = Math.min(maxRunMs ?? Infinity, timeoutMin ? timeoutMin * 60_000 : Infinity);
+  let timedOut = false;
+  const timer = Number.isFinite(limit) ? setTimeout(() => {
+    timedOut = true;
+    console.error(`orca-run: the command ran past ${Math.round(limit / 60_000)} min; stopped`);
+    stop("SIGTERM");
+    setTimeout(() => stop("SIGKILL"), 5000).unref();
+  }, limit) : undefined;
+  const code = await proc.exited;
+  clearTimeout(timer);
+  return timedOut ? 124 : code;
+}
+
+if (process.env.ORCA_RUN_SLOT || process.env.ORCA_RUN_BYPASS === "1") process.exit(await run(cmd, {}));
+
+const base = process.env.ORCA_URL ?? `http://127.0.0.1:${API_PORT}`;
+const controller = new AbortController();
+let res: Response | undefined;
+try {
+  res = await fetch(`${base}/api/heavy`, {
+    method: "POST", headers: { "content-type": "application/json" }, signal: controller.signal,
+    body: JSON.stringify({
+      kind, command: cmd.join(" "), pid: process.pid, cwd: process.cwd(),
+      runId: process.env.ORCA_RUN_ID, repo: process.env.ORCA_REPO, branch: process.env.ORCA_BRANCH,
+    }),
+  });
+} catch (e) {
+  console.error(`orca-run: no bridge at ${base} (${e instanceof Error ? e.message : String(e)}); running without a slot`);
+  process.exit(await run(cmd, { ORCA_RUN_SLOT: "none" }));
+}
+if (res.status === 404) {
+  console.error("orca-run: the bridge has no heavy-command queue yet; running without a slot");
+  process.exit(await run(cmd, { ORCA_RUN_SLOT: "none" }));
+}
+if (!res.ok) {
+  const err = (await res.json().catch(() => ({}))) as { error?: string };
+  console.error(`orca-run: ${err.error ?? `bridge answered ${res.status}`}`);
+  process.exit(1);
+}
+
+// One JSON object per line: `{queued: N}` while waiting, then `{granted, prefix, env, maxRunMs}`,
+// then heartbeats, and `{revoked: reason}` if the bridge takes the slot back.
+type Granted = { granted: string; prefix: string[]; env: Record<string, string>; maxRunMs: number };
+const reader = res.body!.getReader();
+const decoder = new TextDecoder();
+let buf = "";
+let lastAhead = -1;
+let onRevoked: ((reason: string) => void) | undefined;
+async function next(): Promise<Record<string, unknown> | undefined> {
+  for (;;) {
+    const nl = buf.indexOf("\n");
+    if (nl >= 0) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      if (line.trim()) return JSON.parse(line);
+      continue;
+    }
+    const { value, done } = await reader.read();
+    if (done) return undefined;
+    buf += decoder.decode(value, { stream: true });
+  }
+}
+
+let grant: Granted | undefined;
+try {
+  for (;;) {
+    const msg = await next();
+    if (!msg) break;
+    if (typeof msg.error === "string") { console.error(`orca-run: ${msg.error}`); process.exit(75); }
+    if (typeof msg.granted === "string") { grant = msg as unknown as Granted; break; }
+    if (typeof msg.queued === "number" && msg.queued !== lastAhead) {
+      if (msg.queued > 0) console.error(`queued: ${msg.queued} ahead (${kind})`);
+      lastAhead = msg.queued;
+    }
+  }
+} catch (e) {
+  console.error(`orca-run: lost the bridge while queued (${e instanceof Error ? e.message : String(e)}); running without a slot`);
+}
+if (!grant) {
+  if (lastAhead < 0) console.error("orca-run: the bridge sent no slot; running without one");
+  process.exit(await run(cmd, { ORCA_RUN_SLOT: "none" }));
+}
+if (lastAhead > 0) console.error(`orca-run: slot granted (${kind})`);
+
+// Watch the held connection while the command runs: a revoke stops the command.
+void (async () => {
+  try {
+    for (;;) {
+      const msg = await next();
+      if (!msg) return;
+      if (typeof msg.revoked === "string") { onRevoked?.(msg.revoked); return; }
+    }
+  } catch { /* the bridge restarted; the command goes on */ }
+})();
+onRevoked = (reason) => {
+  console.error(`orca-run: the bridge took the slot back (${reason}); stopping the command`);
+  process.kill(process.pid, "SIGTERM");
+};
+
+const code = await run([...grant.prefix, ...cmd], { ...grant.env, ORCA_RUN_SLOT: grant.granted }, grant.maxRunMs);
+await fetch(`${base}/api/heavy/release`, {
+  method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: grant.granted }),
+}).catch(() => { /* the connection drop below frees it too */ });
+controller.abort();
+process.exit(code);
