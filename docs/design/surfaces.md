@@ -45,9 +45,21 @@ Use only these four levels. Each level has one token.
 - Dialogs: `bg-card`, `border`, `rounded-lg`, `shadow-modal`, a `bg-black/50` backdrop.
 - Toasts: `bg-card`, `border`, `shadow-menu`.
 - The Ask pill: `bg-card`, `border`, `shadow-modal`. Use the same classes when it is open and when it is
-  closed. Change only its size and radius.
+  closed. Change only its size and radius. Show hover on the pill as a stronger hairline
+  (`border-border-dark`) and the icon colour. Do not give it a hover fill.
 - Tooltips: `bg-foreground`, `text-background`. Use the `Tip` component. Do not use a native `title=`.
 - The update bar floats over the page: `bg-primary`, `shadow-modal`. It is the only primary-filled overlay.
+
+## Count badges
+
+- One count-badge style everywhere: the `CountBadge` component (`console.tsx`). Do not write a
+  new one.
+- `bg-geist-blue`, `text-white`, `h-4 min-w-4`, `rounded-full`, `px-1`, `text-[10px]`,
+  `font-semibold`, `tabular-nums`. Same in light, dark and every server theme.
+- This covers the Inbox nav item's unread count, the notification bell's unread count and the
+  Previews nav item's running count — and any later count badge.
+- `placement="inline"` sits at the end of a row (`ml-auto`). `placement="compact"` pins to the
+  corner of an icon (`absolute -top-0.5 -right-0.5`). Render nothing at zero.
 
 ## Buttons
 

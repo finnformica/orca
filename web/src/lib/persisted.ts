@@ -41,7 +41,7 @@ export function usePersisted<T>(key: string, fallback: T, valid?: (v: unknown) =
   return [value, set];
 }
 
-/** The same storage for a jotai atom shared across components (the view toggle, density). */
+/** The same storage for a jotai atom shared across components (the repo scope, the sidebar). */
 export function persistedAtom<T>(name: string, fallback: T, valid?: (v: unknown) => v is T, legacyKey?: string) {
   return atomWithStorage<T>(persistedKey(name), fallback, {
     getItem: (key, init) => readPersisted(key, init, valid, legacyKey),

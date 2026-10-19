@@ -10,8 +10,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import { getDefaultStore } from "jotai";
 import * as store from "@/store";
+import * as centre from "@/lib/notificationStore";
 import { App } from "@/App";
-import { agentQueryAtom, densityAtom, instanceScopeAtom, sidebarCollapsedAtom } from "@/lib/atoms";
+import { agentQueryAtom, instanceScopeAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -33,11 +34,10 @@ afterEach(async () => {
   container?.remove();
   root = container = undefined;
   apiFake.reset();
+  centre.reset();
   localStorage.clear();
-  // The atoms outlive localStorage within one run: a dense board left behind here once made later
-  // files' cards hide their prompt.
+  // The atoms outlive localStorage within one run: reset what this file changes for later files.
   const s = getDefaultStore();
-  s.set(densityAtom, "comfortable");
   s.set(sidebarCollapsedAtom, false);
   s.set(instanceScopeAtom, "all");
   s.set(agentQueryAtom, "");
@@ -206,7 +206,27 @@ describe("console shell", () => {
     expect(container!.querySelector('button[aria-label="Expand sidebar"]')).not.toBeNull();
   });
 
-  test("Agents: the list only — no List | Board toggle, no density toggle", async () => {
+  test("Inbox nav badge and bell badge share one CountBadge: same classes, collapsed or not", async () => {
+    centre.reset();
+    apiFake.notificationsData = [{ id: 1, instance: "local", repo: "r", branch: "b", kind: "finished", title: "x", body: "y", createdAt: Date.now() }];
+    await mount();
+    await act(async () => { await flush(); await flush(); });
+    const bellBadge = () => container!.querySelector('[data-slot="notifications-unread"]')!;
+    const inboxBadge = () => container!.querySelector('[data-slot="inbox-unread-count"]')!;
+    // Collapsed to the icon rail: the Inbox nav badge pins to the icon's corner, exactly as the bell's does.
+    await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
+    expect(inboxBadge().className).toBe(bellBadge().className);
+    expect(inboxBadge().textContent).toBe("1");
+    expect(bellBadge().textContent).toBe("1");
+    // Expanded: the row's own badge sits inline, but still the same colour, size, radius, font and padding.
+    await click(container!.querySelector('button[aria-label="Expand sidebar"]')!);
+    for (const c of ["bg-geist-blue", "text-white", "h-4", "min-w-4", "rounded-full", "text-[10px]", "font-semibold"]) {
+      expect(inboxBadge().className.split(" ")).toContain(c);
+      expect(bellBadge().className.split(" ")).toContain(c);
+    }
+  });
+
+  test("Agents: the list only — no List | Board toggle", async () => {
     navigate("/agents");
     await mount();
     expect(container!.querySelector('[data-slot="workstream-list"]')).not.toBeNull();

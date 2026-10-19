@@ -1,5 +1,5 @@
 // The sidebar's other pages. Settings: appearance, the Repos section (one row per configured repo
-// with its agents' numbers; a click opens Agents scoped to it), the GitHub section, the board's density, each machine's hourly cost (editable: the
+// with its agents' numbers; a click opens Agents scoped to it), the GitHub section, each machine's hourly cost (editable: the
 // instance cards' Cost · this month), and the configuration this bridge runs with (read-only — it
 // is edited in orca.config.ts / the config table, not here). Notifications: do not
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
-import { browserNotifyAtom, densityAtom, instanceScopeAtom, notifyDndAtom, repoFilterAtom, toastPrefsAtom } from "@/lib/atoms";
+import { browserNotifyAtom, instanceScopeAtom, notifyDndAtom, repoFilterAtom, toastPrefsAtom } from "@/lib/atoms";
 import { KIND_META, NOTIFICATION_KINDS, browserNotifyChecked, browserNotifyNote, browserPermission } from "../../../shared/notifications";
 import { navigate, useRoute } from "@/lib/route";
 import { useTheme, type Theme } from "@/lib/theme";
@@ -83,7 +83,6 @@ const Count = ({ label, n }: { label: string; n: number }) => (
 
 export function Settings() {
   const [theme, setTheme] = useTheme();
-  const [density, setDensity] = useAtom(densityAtom);
   const repos = useRepos();
   const providers = useAgentProviders();
   const here = thisInstance();
@@ -97,9 +96,6 @@ export function Settings() {
       <VCard slot="settings-appearance" title="Appearance" bodyClass="divide-y">
         <Setting label="Theme" hint="Light, dark, or follow the system.">
           <Segmented label="Theme" value={theme} onChange={(v) => setTheme(v as Theme)} options={THEMES.map((t) => ({ value: t.value, label: t.label }))} />
-        </Setting>
-        <Setting label="Board density" hint="The Board view's cards: full, or status only.">
-          <Segmented label="Density" value={density} onChange={setDensity} options={[{ value: "comfortable", label: "Comfortable" }, { value: "dense", label: "Dense" }]} />
         </Setting>
       </VCard>
       <ServerIdentitySettings />
