@@ -472,6 +472,7 @@ export type Row = {
   /** Messages queued for the branch and not yet sent. */
   queued?: number;
   agentStartedAt?: number;
+  agentRunWait?: LiveAgent["agentRunWait"];
   agentProvider?: AgentProvider;
   preferredProvider?: AgentProvider;
   preferredModel?: string;
@@ -723,6 +724,7 @@ export function assembleRows(): Row[] {
         prompt: e.prompt ?? "",
         worktreePath: wt?.worktreePath, agentStatus: wt?.agentStatus, agentError: wt?.agentError,
         agentResult: wt?.agentResult, agentOutcome: wt?.agentOutcome, agentMeta: wt?.agentMeta, agentCheck: wt?.agentCheck, queued: wt?.queued, agentStartedAt: wt?.agentStartedAt,
+        agentRunWait: wt?.agentStatus === "running" ? wt.agentRunWait : undefined,
         agentProvider: e.agentProvider ?? wt?.agentProvider,
         preferredProvider: e.preferredProvider,
         preferredModel: e.preferredModel,

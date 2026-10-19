@@ -29,7 +29,7 @@ import { BottomSheet } from "@/components/BottomSheet";
 import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
 import {
   DEFAULT_LIST_FILTER, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed, prPill,
-  LIST_ITEM_GAP_PX, NO_FOLD, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, sublineOverflow, toggleNotMerged, toggleQuick,
+  LIST_ITEM_GAP_PX, NO_FOLD, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, runWaitLabel, sortRows, sublineOverflow, toggleNotMerged, toggleQuick,
   type ListColumn, type ListFold, type ListSort, type ListWidths, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
 } from "../workstream";
 import { Button } from "@/components/ui/button";
@@ -674,6 +674,15 @@ export function RunStatus({ row, tone, reasons }: { row: Row; tone: RowTone; rea
   const running = row.agentStatus === "running" && Boolean(row.agentStartedAt);
   const now = useNow(running);
   const duration = running ? undefined : rowDuration(row);
+  // Waiting at the concurrency cap: no process yet, so no spinner and no elapsed time.
+  const runWait = runWaitLabel(row.agentRunWait);
+  if (runWait) return (
+    <div data-slot="run-status" className="flex min-w-0 items-center gap-2 whitespace-nowrap">
+      <Tip label={runWait}>
+        <span data-slot="run-wait" className="flex min-w-0 items-center gap-2"><StatusDot tone="warning" /><span className="text-geist-warning-fg truncate font-medium">Queued: run limit</span></span>
+      </Tip>
+    </div>
+  );
   return (
     <div data-slot="run-status" data-col-part="status" className="flex w-max items-center gap-2 whitespace-nowrap">
       <StatusHoverCard row={row}>

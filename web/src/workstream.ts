@@ -1511,6 +1511,12 @@ export function grantScopeLabel(g: GrantScopeNote | undefined): string | undefin
   return `started from ${via}${g.by ? ` by ${g.by}` : ""}, scoped mode`;
 }
 
+/** A run waiting at the concurrency cap (server/agent.ts waitReason), as the card's tooltip says it. Pure. */
+export function runWaitLabel(w: { running: number; limit: number } | undefined): string | undefined {
+  if (!w) return undefined;
+  return `queued: ${w.running} of ${w.limit} agent runs already going on this machine`;
+}
+
 export function upkeepLabel(rec: UpkeepRecord | undefined, running: boolean): string | undefined {
   if (!rec) return undefined;
   if (rec.gaveUp) return `auto-upkeep gave up: ${rec.gaveUp}`;

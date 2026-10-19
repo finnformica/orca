@@ -13,6 +13,7 @@ export type InboxQuery = { before?: string; source?: string; person?: string; un
 export type InboxThread = ThreadActions & { conversation: Conversation; items: ThreadItem[]; workstream?: { repo: string; branch: string } };
 import type { BridgeInfo, MechanicalMerge, MergePolicy, SyncResult, TurnShots } from "./workstream";
 
+export type RunWait = { since: number; running: number; limit: number };
 export type LiveAgent = {
   branch: string;
   worktreePath: string;
@@ -28,6 +29,8 @@ export type LiveAgent = {
   agentCheck?: TurnCheck;
   agentStartedAt?: number;
   agentFinishedAt?: number;
+  /** The run waits at the concurrency cap: this machine already runs `limit` agent runs. */
+  agentRunWait?: RunWait;
   agentProvider?: AgentProvider;
   agentRunId?: string;
   agentPrompt?: string;

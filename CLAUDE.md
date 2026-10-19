@@ -893,8 +893,9 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   instruction from you, or the reverse (`orchestratorPrompt`).
 - **Loop guards.** `MAX_WAKES` (12) self-wakes in a row with no message from you → it pauses and
   holds further events in the queue until you reply (the window's title says so). Each wake has a
-  `--max-budget-usd`: `orchestratorWakeBudgetUsd` in the app config, 5 unless set. There is
-  deliberately NO cap on concurrent workers (there was one, of 4; the user removed it).
+  `--max-budget-usd`: `orchestratorWakeBudgetUsd` in the app config, 5 unless set. The orchestrator
+  has no cap of its own on workers (there was one, of 4; the user removed it); the per-host run cap
+  below (`ORCA_MAX_CONCURRENT_RUNS`) queues runs above it.
 - **A wake that dies says why, and its message is retried once.** `wakeExit` reads the exit the
   agent's handler reports (`RunFinished.exit`): the CLI's budget result subtype, Orca's own timeout
   timer, any other nonzero exit (with the stderr tail), or the CLI's "No response requested."
@@ -1201,9 +1202,10 @@ silently skipped when `docker` isn't on the box. `/api/diagnostics` reports the 
 49, and Postgres/Tailscale/SSM were unreachable for 12 minutes. Every agent run now gets its own
 `systemd-run --user --scope -p MemoryMax=<repo's agentMemoryMaxGb, default 4>G -p
 MemorySwapMax=0 -p CPUWeight=<agentCpuWeight, default 50>` — a worker's runaway build or headless
-browser is OOM-killed inside its OWN cgroup, never the box's. There is deliberately no cap on
-concurrent workers (Finn removed the orchestrator's once, for the same reason): the fix is bounding
-the blast radius of ONE, not limiting how many run. `--user` (not the system manager): a non-root
+browser is OOM-killed inside its OWN cgroup, never the box's. **Run cap** (`agent.concurrencyLimit`;
+Finn asked for it after the 2026-10-18 OOM): `ORCA_MAX_CONCURRENT_RUNS` per host (default
+floor(RAM GB / 3), at least 2; 0 = off). A run above it waits as the same run and turn ("Queued: run
+limit") and starts when one ends; the orchestrator's own wake neither counts nor waits. `--user` (not the system manager): a non-root
 `systemd-run --scope` against the system manager needs polkit authorization a headless box can't
 grant interactively, but `--user` has no such check — it only needs a reachable user bus, which
 `orca` (a service account, never logged in) doesn't have by default. `loginctl enable-linger orca`

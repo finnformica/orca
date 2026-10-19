@@ -17,8 +17,9 @@ import * as outbox from "./outbox";
 import * as bus from "./bus";
 import { resolvePrompt } from "./attachments";
 import * as cgroup from "./cgroup";
+import { ORCHESTRATOR_REPO } from "../web/src/workstream";
 import { noteOomKill } from "./health";
-import { homedir, tmpdir } from "os";
+import { homedir, tmpdir, totalmem } from "os";
 import { join, resolve } from "path";
 import { stateDir } from "./state";
 
@@ -97,9 +98,14 @@ export type RunState = {
   check?: TurnCheck; // Orca's verification of this run's commit, once it has run
   startedAt?: number;
   finishedAt?: number;
+  /** Set while the run waits at the concurrency cap (`concurrencyLimit`): it is "running" to every
+   *  caller (a follow-up queues behind it), but no process has started yet. */
+  runWait?: RunWait;
 };
+/** Why a run has not started: this host already runs `limit` agent runs (`concurrencyLimit`). */
+export type RunWait = { since: number; running: number; limit: number };
 type Run = RunState & { proc?: Bun.Subprocess; options?: LaunchOptions };
-export type LaunchReceipt = { status: "running"; provider: AgentProvider; runId: string; sessionId?: string };
+export type LaunchReceipt = { status: "running"; provider: AgentProvider; runId: string; sessionId?: string; queued?: true };
 
 export type LaunchOptions = {
   provider?: AgentProvider;
@@ -657,6 +663,11 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   const p = new Promise<void>((r) => { done = r; });
   starting.set(key, p);
   try {
+    preflight(key, options);
+    // The concurrency cap: at the cap, or behind a run already waiting, the run waits and starts
+    // when a slot frees — never a refusal. The orchestrator's own wake never waits (waitReason).
+    const why = waitReason(options) ?? (waiters.length && options.repo !== ORCHESTRATOR_REPO ? { ...runs.get(waiters[0]!.key)!.runWait!, since: Date.now() } : undefined);
+    if (why) return await queueRun(key, cwd, prompt, options, why);
     return await launchRun(key, cwd, prompt, options);
   } finally {
     if (starting.get(key) === p) starting.delete(key);
@@ -664,7 +675,8 @@ export async function launch(key: string, cwd: string, prompt: string, options: 
   }
 }
 
-async function launchRun(key: string, cwd: string, prompt: string, options: LaunchOptions): Promise<LaunchReceipt> {
+/** The refusals every launch checks first, whether it starts now or waits for a slot. */
+function preflight(key: string, options: LaunchOptions): void {
   // A branch preview's bridge launches NOTHING — the last line of defence under every route and loop
   // guard: the 2026-10-15 stray (a preview bridge on a branch's stale code) launched the
   // orchestrator's wakes with a deleted bin/ on PATH.
@@ -678,13 +690,138 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   const provider = options.provider ?? "claude";
   // Only Claude Code has the rules a scoped run needs; codex / cursor run with approvals bypassed.
   if (options.permissionMode === "scoped" && provider !== "claude") throw new Error(`a scoped run (an outside sender's "work" grant) needs a Claude model; ${provider} has no tool rules`);
+}
+
+// ---- the concurrency cap (CLAUDE.md "Box crash safety") ----
+// Three runs at once filled the 8 GB box on 2026-10-18 (a pre-push build of 14 sites plus two
+// `wrangler dev`). Finn asked for a cap in that handoff, which replaces the earlier no-cap rule.
+// Per host, so env, not the shared config: `ORCA_MAX_CONCURRENT_RUNS` (0 = no cap), else
+// floor(RAM GB / 3), at least 2. A run above it waits ("Queued: run limit") and starts when one ends.
+
+/** The most agent runs this host starts at once. Pure over its inputs. */
+export function concurrencyLimit(env: Record<string, string | undefined> = process.env, totalBytes = totalmem()): number {
+  const raw = env.ORCA_MAX_CONCURRENT_RUNS;
+  const n = Number(raw);
+  if (raw !== undefined && raw.trim() !== "" && Number.isFinite(n) && n >= 0) return Math.floor(n);
+  return Math.max(2, Math.floor(totalBytes / 1024 ** 3 / 3));
+}
+
+/** A run waiting for a slot: its ids and turn already exist, so it starts as the same run. */
+type Waiter = { key: string; cwd: string; prompt: string; options: LaunchOptions; pre: PreStarted };
+type PreStarted = { runId: string; sessionId?: string; turn: Promise<void> };
+const waiters: Waiter[] = [];
+/** How often the queue is looked at (a run that ends also drains it at once; this catches an
+ *  adopted lease that ended); mutable so a test needn't wait five seconds. */
+export const queuePoll = { ms: 5_000 };
+let queueTimer: ReturnType<typeof setInterval> | undefined;
+
+/** Agent runs live on this host now: its live leases, less the orchestrator's own wake. */
+function runningCount(): number {
+  const exempt = new Set([...runs].filter(([, r]) => r.options?.repo === ORCHESTRATOR_REPO).map(([k]) => k));
+  return lease.live().filter((l) => !exempt.has(l.key)).length;
+}
+
+/** Why a run may not start now, or undefined. The orchestrator's own wake never waits: one small
+ *  process, and a manager that waits behind its own workers cannot answer you. */
+function waitReason(options: LaunchOptions, now = Date.now()): RunWait | undefined {
+  if (options.repo === ORCHESTRATOR_REPO) return undefined;
+  const limit = concurrencyLimit();
+  const running = runningCount();
+  return limit > 0 && running >= limit ? { since: now, running, limit } : undefined;
+}
+
+async function queueRun(key: string, cwd: string, prompt: string, options: LaunchOptions, why: RunWait): Promise<LaunchReceipt> {
+  const provider = options.provider ?? "claude";
+  const runId = crypto.randomUUID();
   const sessionId = options.resume ?? (provider === "claude" ? crypto.randomUUID() : undefined);
+  const since = why.since;
+  runs.set(key, { status: "running", provider, runId, prompt, sessionId, startedAt: since, options, runWait: why });
+  // The turn exists now, as for a started run: a bridge that dies while the run waits leaves an
+  // interrupted turn (and, for the orchestrator, a claim `recover` re-queues), never a lost message.
+  const turn = recordTurn(options, () => outbox.startTurn({
+    repo: options.repo!, branch: options.branch!, runId, provider, instruction: options.instruction, prompt, sessionId, startedAt: since, source: options.source,
+  }));
+  await turn;
+  waiters.push({ key, cwd, prompt, options, pre: { runId, sessionId, turn } });
+  console.log(`orca: run ${runId} waits: ${why.running} of ${why.limit} agent runs already going`);
+  if (!queueTimer) {
+    queueTimer = setInterval(() => { void drainQueue(); }, queuePoll.ms);
+    queueTimer.unref?.(); // a waiting run never holds shutdown open
+  }
+  return { status: "running", provider, runId, sessionId, queued: true };
+}
+
+let draining = false;
+/** Start the oldest waiting run that may start now — ONE per tick, so the next reading sees what
+ *  that run took before another starts. Called by the poll and when a run ends. */
+async function drainQueue(): Promise<void> {
+  if (draining) return;
+  draining = true;
+  try {
+    // A waiter whose run was stopped (or replaced) meanwhile is dropped.
+    for (let i = waiters.length - 1; i >= 0; i--) if (runs.get(waiters[i]!.key)?.runId !== waiters[i]!.pre.runId) waiters.splice(i, 1);
+    if (!waiters.length) { clearInterval(queueTimer); queueTimer = undefined; return; }
+    for (const [i, w] of waiters.entries()) {
+      const why = waitReason(w.options);
+      const r = runs.get(w.key);
+      if (why) { if (r?.runWait) r.runWait = { ...why, since: r.runWait.since }; continue; }
+      waiters.splice(i, 1);
+      await startWaiter(w);
+      return;
+    }
+  } finally {
+    draining = false;
+  }
+}
+
+async function startWaiter(w: Waiter): Promise<void> {
+  let done!: () => void;
+  const p = new Promise<void>((r) => { done = r; });
+  starting.set(w.key, p); // a Stop pressed now waits for the run to exist, as for any launch
+  runs.delete(w.key); // the placeholder; launchRun's overlap guard must not see it as a live run
+  try {
+    preflight(w.key, w.options);
+    await launchRun(w.key, w.cwd, w.prompt, w.options, w.pre);
+  } catch (e) {
+    // It could not start after all (another run took the worktree or the session meanwhile): the
+    // turn says why, and the after-run path runs as for a run that failed at once.
+    const error = (e instanceof Error ? e.message : String(e)).slice(0, 300);
+    const provider = w.options.provider ?? "claude";
+    const finishedAt = Date.now();
+    await recordTurn(w.options, () => outbox.finishTurn(w.pre.runId, {
+      status: "error", stopReason: "error", response: error, sessionId: w.pre.sessionId, finishedAt,
+      identity: { repo: w.options.repo!, branch: w.options.branch!, provider, instruction: w.options.instruction, prompt: w.prompt, startedAt: finishedAt, source: w.options.source },
+    }));
+    runs.set(w.key, { status: "error", provider, runId: w.pre.runId, prompt: w.prompt, sessionId: w.pre.sessionId, error, finishedAt });
+    const handled = afterRunStarted();
+    const continued = w.options.repo && w.options.branch && w.options.queue !== false ? await dispatchQueued(w.options.repo, w.options.branch, w.options) : false;
+    try {
+      await runFinished?.({
+        key: w.key, cwd: w.cwd, runId: w.pre.runId, options: w.options, status: "error", sessionId: w.pre.sessionId, result: error, continued,
+        exit: { code: 1, timedOut: false, budgetReached: false, stderr: error },
+      });
+    } catch (err) {
+      db.logUnlessDown("orca: run-finished hook failed")(err);
+    }
+    handled();
+  } finally {
+    if (starting.get(w.key) === p) starting.delete(w.key);
+    done();
+  }
+}
+
+/** Runs waiting for a slot on this bridge, oldest first. */
+export const runQueue = (): { key: string; runId: string }[] => waiters.map((w) => ({ key: w.key, runId: w.pre.runId }));
+
+async function launchRun(key: string, cwd: string, prompt: string, options: LaunchOptions, pre?: PreStarted): Promise<LaunchReceipt> {
+  const provider = options.provider ?? "claude";
+  const sessionId = pre ? pre.sessionId : options.resume ?? (provider === "claude" ? crypto.randomUUID() : undefined);
   // Attachment references become files on THIS instance (server/attachments.ts): the message may
   // have been uploaded on another machine.
   const effectivePrompt = await resolvePrompt(!options.resume && (options.handoffFrom || options.history?.length)
     ? handoffPrompt(options.history ?? [], prompt, options.handoffFrom, provider)
     : prompt);
-  const runId = crypto.randomUUID();
+  const runId = pre?.runId ?? crypto.randomUUID();
   const startedAt = Date.now();
   // HEAD before the run, so "did it commit?" is a comparison, not a guess from the outcome text.
   const headBefore = options.check ? await headOf(cwd) : undefined;
@@ -712,7 +849,8 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   // instead of vanishing. Keyed by runId, so a fast follow-up can't clobber the previous turn.
   // Awaited, not fire-and-forget: "the turn exists before the run can produce output" is the whole
   // reason it is written at launch, and an async database must not quietly weaken it.
-  const started = recordTurn(options, () => outbox.startTurn({
+  // A run that waited for a slot wrote its turn when it was asked for.
+  const started = pre ? pre.turn : recordTurn(options, () => outbox.startTurn({
     repo: options.repo!, branch: options.branch!, runId, provider, instruction: options.instruction, prompt, sessionId, startedAt, source: options.source,
   }));
   await started;
@@ -789,6 +927,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     }));
     if (superseded) return;
     lease.release(key, runId); // this run is done — free the worktree (no-op if a re-run already took the lease)
+    if (waiters.length) void drainQueue(); // a slot under the cap is free now
     ledger.record({
       kind: "run", provider, action: options.action, mode: runMode(options),
       status: ok ? "done" : "error", durationMs: meta?.durationMs ?? finishedAt - startedAt,
@@ -1028,6 +1167,19 @@ async function finishAdopted(l: lease.Lease, recover: Parameters<typeof adoptLea
  *  any, so a caller can report what it interrupted. */
 export function stop(key: string): string | undefined {
   const r = runs.get(key);
+  if (r?.runWait && r.runId) {
+    // Still waiting for a slot: no process to kill. Drop the waiter and end its turn as stopped.
+    const i = waiters.findIndex((w) => w.pre.runId === r.runId);
+    if (i >= 0) waiters.splice(i, 1);
+    const options = r.options ?? {};
+    const runId = r.runId;
+    recordTurn(options, () => outbox.finishTurn(runId, {
+      status: "stopped", stopReason: "interrupted", response: "Stopped before it started: it was waiting for a free slot (the run limit).", sessionId: r.sessionId, finishedAt: Date.now(),
+      identity: { repo: options.repo!, branch: options.branch!, provider: r.provider ?? "claude", instruction: options.instruction, prompt: r.prompt ?? "", startedAt: r.startedAt ?? Date.now(), source: options.source },
+    }));
+    runs.delete(key);
+    return runId;
+  }
   if (r?.runId && r.status === "running") stoppedRuns.add(r.runId);
   try { r?.proc?.kill(); } catch { /* already gone */ }
   runs.delete(key);
@@ -1087,5 +1239,6 @@ export const status = (key: string): RunState => {
   return r ? {
     status: r.status, error: r.error, provider: r.provider, runId: r.runId, prompt: r.prompt,
     sessionId: r.sessionId, result: r.result, structured: r.structured, meta: r.meta, check: r.check, startedAt: r.startedAt, finishedAt: r.finishedAt,
+    runWait: r.runWait,
   } : { status: "idle" };
 };

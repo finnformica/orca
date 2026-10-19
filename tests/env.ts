@@ -9,3 +9,6 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 process.env.TMPDIR = mkdtempSync(join(tmpdir(), "orca-test-"));
+// The run cap (server/agent.ts concurrencyLimit) reads this host's RAM: off for the suite;
+// tests/runQueue.test.ts turns it on.
+process.env.ORCA_MAX_CONCURRENT_RUNS = "0";

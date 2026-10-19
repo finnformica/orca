@@ -474,6 +474,7 @@ async function agentRows(repo: RepoConfig): Promise<unknown[]> {
       agentCheck: run.check,
       agentStartedAt: run.startedAt,
       agentFinishedAt: run.finishedAt,
+      agentRunWait: run.runWait, // waiting at the concurrency cap (agent.concurrencyLimit): the card says so
       agentProvider: run.provider,
       agentRunId: run.runId,
       agentPrompt: run.prompt,
