@@ -129,7 +129,7 @@ describe("console shell", () => {
     expect(sidebar.querySelector('[data-slot="instance-scope"]')!.textContent).toBe("All instances"); // two instances in the fake config
     expect(sidebar.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     const items = [...sidebar.querySelectorAll('nav[aria-label="Main"] button')].map(navLabel);
-    expect(items).toEqual(["Overview", "Agents", "Inbox", "Previews", "Integrations", "Handoffs", "Settings"]);
+    expect(items).toEqual(["Overview", "Agents", "Board", "Inbox", "Previews", "Integrations", "Handoffs", "Settings"]);
     expect(navItem("Overview").getAttribute("aria-current")).toBe("page");
     for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Inbox", "/inbox", "inbox-unread"], ["Integrations", "/integrations", "integrations-page"], ["Settings", "/settings", "settings-appearance"]] as const) {
       await click(navItem(label));
@@ -231,7 +231,8 @@ describe("console shell", () => {
     await mount();
     expect(container!.querySelector('[data-slot="workstream-list"]')).not.toBeNull();
     expect(container!.querySelector('[role="group"][aria-label="View"]')).toBeNull();
-    expect(btnByText("Board")).toBeUndefined();
+    // The Board is its own page now (the sidebar's Board entry), never a toggle on this one.
+    expect(btnByText("Board")!.closest('nav[aria-label="Main"]') !== null).toBe(true);
     expect(gridEl()).toBeNull();
     expect(container!.querySelector('button[aria-label^="Switch to"]')).toBeNull();
   });
