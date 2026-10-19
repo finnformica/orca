@@ -2682,10 +2682,12 @@ export function downsample(points: { at: number; v: number }[], max: number, fro
 }
 
 /** One vitals sample, recorded (instance_metric) or live (/api/health). */
-export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number; diskUsedGb?: number; oomKills?: number };
+export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number; diskUsedGb?: number; oomKills?: number; bridgeRssMb?: number };
 type Pt = { at: number; v: number };
 export type InstanceSeries = {
   cpu: Pt[]; mem: Pt[]; agents: Pt[]; disk: Pt[];
+  /** The bridge process's own memory (MB); samples from before it was recorded are skipped. */
+  bridge: Pt[];
   /** Samples that recorded agent runs OOM-killed in their own scope — the Memory chart's markers. */
   ooms: { at: number; n: number }[];
   /** The newest sample — what the card's header stats show, and exactly every chart's last point. */
@@ -2703,7 +2705,7 @@ export function instanceSeries(history: VitalSample[], live: VitalSample | null 
   const samples = history.filter((p) => p.at >= from && p.at <= to);
   const last = samples[samples.length - 1];
   if (live && live.at <= to && (!last || live.at > last.at)) samples.push({ ...live, oomKills: 0 });
-  if (!samples.length) return { cpu: [], mem: [], agents: [], disk: [], ooms: [], latest: null };
+  if (!samples.length) return { cpu: [], mem: [], agents: [], disk: [], bridge: [], ooms: [], latest: null };
   const series = (pts: Pt[]) => pts.length ? [...downsample(pts.slice(0, -1), max - 1, from, to), pts[pts.length - 1]!] : [];
   const newest = samples[samples.length - 1]!;
   return {
@@ -2711,6 +2713,7 @@ export function instanceSeries(history: VitalSample[], live: VitalSample | null 
     mem: series(samples.map((p) => ({ at: p.at, v: p.memUsedGb }))),
     agents: series(samples.map((p) => ({ at: p.at, v: p.runningAgents ?? 0 }))),
     disk: series(samples.flatMap((p) => (p.diskUsedGb == null ? [] : [{ at: p.at, v: p.diskUsedGb }]))),
+    bridge: series(samples.flatMap((p) => (p.bridgeRssMb == null ? [] : [{ at: p.at, v: p.bridgeRssMb }]))),
     ooms: samples.flatMap((p) => (p.oomKills ? [{ at: p.at, n: p.oomKills }] : [])),
     latest: { at: newest.at, cpuPct: newest.cpuPct, memUsedGb: newest.memUsedGb, runningAgents: newest.runningAgents ?? 0 },
   };

@@ -12,6 +12,11 @@
 import * as bus from "./bus";
 
 const RETRY_MS = 3_000;
+/** The most a stream may hold unread (characters). A tab on a laptop that went to sleep keeps its
+ *  socket open but reads nothing, and every step and reply delta queued up for it in the bridge —
+ *  without a bound, for as long as it slept. Past this the stream is closed; the client reopens it
+ *  and catches up from its cursors, as after any drop (web/src/lib/events.ts). */
+export const MAX_BACKLOG_CHARS = 8 << 20;
 /** The events relayed from another instance (its `ready` and keep-alives are dropped). */
 export const RELAYED = ["step", "delta", "turn", "notification"] as const;
 
@@ -19,11 +24,16 @@ export const RELAYED = ["step", "delta", "turn", "notification"] as const;
  *  upstream that drops is retried; when it comes back, a `ready` tells the client to catch up from
  *  its cursors, since anything published there in between was missed. */
 export function eventStream(req: Request, upstreams: string[]): Response {
-  let close = () => {};
+  let close = (_overflow?: boolean) => {};
   const stream = new ReadableStream<string>({
     start(controller) {
       let open = true;
-      const send = (frame: string) => { if (open) try { controller.enqueue(frame); } catch { close(); } };
+      const send = (frame: string) => {
+        if (!open) return;
+        try { controller.enqueue(frame); } catch { close(); return; }
+        // desiredSize is the high-water mark (0) minus what is queued and unread.
+        if ((controller.desiredSize ?? 0) < -MAX_BACKLOG_CHARS) close(true);
+      };
       const event = (name: string, data: unknown) => send(`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`);
       event("ready", {});
       // A comment line every 25s keeps proxies (and some browsers) from reaping an idle stream.
@@ -35,19 +45,21 @@ export function eventStream(req: Request, upstreams: string[]): Response {
         else event("notification", e.notification);
       });
       const aborts = new AbortController();
-      close = () => {
+      // `overflow`: error the stream, which drops its queue — close() keeps the queue for a reader
+      // that, on a stalled stream, never comes.
+      close = (overflow = false) => {
         if (!open) return;
         open = false;
         clearInterval(keepAlive);
         off();
         aborts.abort();
-        try { controller.close(); } catch { /* already closed */ }
+        try { if (overflow) controller.error(new Error("event stream backlog over limit")); else controller.close(); } catch { /* already closed */ }
       };
-      req.signal.addEventListener("abort", close); // tab closed / hidden
+      req.signal.addEventListener("abort", () => close()); // tab closed / hidden
       for (const base of upstreams) void relay(base, aborts.signal, send, () => event("ready", {}));
     },
     cancel() { close(); },
-  });
+  }, { highWaterMark: 0, size: (chunk) => chunk?.length ?? 0 });
   return new Response(stream, {
     headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
   });

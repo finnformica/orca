@@ -116,17 +116,33 @@ export function rateLimitedFor(token: string, now = Date.now()): number {
 
 // ---- ETag cache ----
 
-type Cached = { etag: string; body: unknown; at: number };
+type Cached = { etag: string; body: unknown; at: number; size: number };
 const etags = new Map<string, Cached>();
 const ETAG_MAX = 500;
-function remember(key: string, etag: string, body: unknown): void {
-  etags.delete(key);
-  etags.set(key, { etag, body, at: Date.now() });
-  if (etags.size > ETAG_MAX) etags.delete(etags.keys().next().value!);
+/** The cache's size bound, in characters of response text: 500 entries alone did not bound it, since
+ *  one answer (a job log, a long file list) can be megabytes. An answer over ETAG_ENTRY_MAX_CHARS is
+ *  never kept. */
+export const ETAG_MAX_CHARS = 16 << 20;
+export const ETAG_ENTRY_MAX_CHARS = 1 << 20;
+let etagChars = 0;
+function remember(key: string, etag: string, body: unknown, size: number): void {
+  const old = etags.get(key);
+  if (old) { etags.delete(key); etagChars -= old.size; }
+  if (size > ETAG_ENTRY_MAX_CHARS) return;
+  etags.set(key, { etag, body, at: Date.now(), size });
+  etagChars += size;
+  while (etags.size > ETAG_MAX || etagChars > ETAG_MAX_CHARS) {
+    const [oldest, entry] = etags.entries().next().value!;
+    etags.delete(oldest);
+    etagChars -= entry.size;
+  }
 }
 
+/** The ETag cache's size (tests). */
+export const etagCacheSize = (): { entries: number; chars: number } => ({ entries: etags.size, chars: etagChars });
+
 /** Clear every cache (tests). */
-export function resetCaches(): void { etags.clear(); blockedUntil.clear(); slugCache.clear(); }
+export function resetCaches(): void { etags.clear(); etagChars = 0; blockedUntil.clear(); slugCache.clear(); }
 
 // ---- the request ----
 
@@ -202,7 +218,7 @@ export async function request<T = any>(path: string, opts: RequestOptions): Prom
   const json = /json/.test(accept) && /json/.test(res.headers.get("content-type") ?? "json");
   const body = !text ? undefined : json ? JSON.parse(text) : text;
   const etag = res.headers.get("etag");
-  if (cacheKey && etag) remember(cacheKey, etag, body);
+  if (cacheKey && etag) remember(cacheKey, etag, body, text.length);
   return body as T;
 }
 

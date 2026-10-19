@@ -836,6 +836,17 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   copy `.env` for the test database), open a PR, and pull `main` into the checkout deliberately —
   a restart is survivable now, but it is still a restart. This supersedes "commit straight to main"
   below for this repo.
+- **Bridge memory is bounded** (2026-10-18: 3 GB plus 2.7 GB swap in 9 hours on a small box). A
+  run's stdout keeps only the lines the exit parse reads (`agent.keepForOutcome`), never the whole
+  stream; stderr is a tail. An SSE stream whose unread backlog passes `MAX_BACKLOG_CHARS` is errored
+  (its queue dropped) and the client reopens it. The ETag cache has a size bound. `agent.pruneRuns`
+  drops finished runs of worktrees that are gone. `scripts/memory-harness.ts` measures it
+  (`tests/bridgeMemory.test.ts`).
+- **A queued message is never lost and never skipped.** The queued launch (`verbs.launchQueued`)
+  takes the handover ladder like a typed follow-up (it once started a NEW session each time). A
+  failed launch puts its message back (`db.releaseQueuedMessage`). A send on an idle worktree with
+  older queued messages queues behind them and drains the queue (`agent.drainQueue`). Stop waits up
+  to `agent.stopGrace` for the stopped process before the queue resumes its session.
 - **Server-side verbs** (`server/verbs.ts`): create / follow up / Address PR existed only in the
   browser store, which a server-side caller can't reach. They are built from the same pure pieces —
   the prompts and `continuation()` (the handover-ladder decision, now in `workstream.ts` and used by
@@ -1100,7 +1111,8 @@ needs no second timer; a failed write is logged and swallowed. `GET /api/health/
 either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
 CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300
 points, one line each (no overlay — the running sessions are their own chart). Beside them, in the
-same `LineChart` design, an **Agents** chart (`running_agents` over time) and **Disk used** (axis to
+same `LineChart` design, a **Bridge memory** chart (the bridge process's own RSS, `bridgeRssMb` on
+`/api/health` and `instance_metric.bridge_rss_mb`, named step `20261019-instance-metric-bridge-rss`), an **Agents** chart (`running_agents` over time) and **Disk used** (axis to
 the disk's size; worktrees, preview databases and test containers are what fill the box).
 **OOM kills** are red marks on the Memory chart, counted in its caption: a run the cgroup ceiling
 killed (`server/cgroup.ts`) bumps `health.noteOomKill`, and the next sample writes the count to
