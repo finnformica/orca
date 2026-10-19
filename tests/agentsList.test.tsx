@@ -124,6 +124,7 @@ async function mount() {
 }
 afterEach(async () => {
   apiFake.reset();
+  store._resetReviewSignals(); // a cached digest outlives the file: statusCard reads r#7 from it
   await act(async () => { await store.refresh(); });
   act(() => root?.unmount());
   container?.remove();

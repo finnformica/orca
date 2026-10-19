@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
+import * as centre from "@/lib/notificationStore";
 import type { Row } from "@/store";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -28,6 +29,7 @@ let root: Root | undefined;
 let container: HTMLElement | undefined;
 beforeEach(() => {
   apiFake.reset();
+  centre.reset(); // a mirror an earlier file started holds the stream open; these tests count opens
   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
 });
 afterEach(async () => {
