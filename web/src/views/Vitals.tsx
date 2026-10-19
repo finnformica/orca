@@ -328,7 +328,7 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
                 <StatusDot tone={r.state === "running" ? "building" : "queued"} />
                 <span className="text-muted-foreground w-16 shrink-0 text-xs">{r.state === "running" ? "running" : `queued #${r.position}`}</span>
                 <span className="w-14 shrink-0 text-xs">{r.kind}</span>
-                <span className="min-w-0 flex-1 truncate font-mono text-xs" title={r.command}>{r.command}</span>
+                <Tip label={r.command}><span className="min-w-0 flex-1 truncate font-mono text-xs">{r.command}</span></Tip>
                 <span className="text-muted-foreground max-w-[40%] shrink-0 truncate text-xs">{r.who}</span>
               </li>
             ))}
