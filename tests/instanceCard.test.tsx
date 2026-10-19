@@ -137,14 +137,14 @@ test("no history yet says so instead of an empty chart", async () => {
 test("CPU and memory stay one line each, as on main; Agents and Disk used are charts of the same design beside them", async () => {
   const now = Date.now();
   apiFake.healthHistoryData = [0, 1, 2].map((i) => ({
-    at: now - (2 - i) * 60_000 - 1000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: [0, 2, 1][i], diskUsedGb: [30, 31, 32][i],
+    at: now - (2 - i) * 60_000 - 1000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: [0, 2, 1][i], diskUsedGb: [30, 31, 32][i], bridgeRssMb: [180, 210, 260][i],
   }));
-  apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 12, load1: 0.5, load5: 0.4, memUsedGb: 3.1, memTotalGb: 15.3, uptimeS: 9, at: now, runningAgents: 3,
+  apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 12, load1: 0.5, load5: 0.4, memUsedGb: 3.1, memTotalGb: 15.3, uptimeS: 9, at: now, runningAgents: 3, bridgeRssMb: 300,
     disk: { usedGb: 35.7, totalGb: 144.3 }, rate: { hourlyUsd: 36, source: "config" }, month: { usd: 12, upHours: 0.33, since: 0 } };
   await render(<InstanceCard instance="cloud" here={false} />);
   await ready();
   const chart = (slot: string) => container!.querySelector(`[data-slot="${slot}"]`)!;
-  for (const slot of ["chart-cpu", "chart-mem", "chart-agents", "chart-disk"]) {
+  for (const slot of ["chart-cpu", "chart-mem", "chart-agents", "chart-disk", "chart-bridge"]) {
     // One line, the left axis and its three gridlines — no overlay, no right-hand axis, no marks.
     expect(chart(slot).querySelectorAll("polyline")).toHaveLength(1);
     expect(chart(slot).querySelectorAll(".text-muted-foreground.flex.w-8")).toHaveLength(1);
@@ -161,6 +161,9 @@ test("CPU and memory stay one line each, as on main; Agents and Disk used are ch
   expect(chart("chart-disk").querySelector("figcaption")!.textContent).toBe("Disk used35.7 GB");
   expect(linePoints(chart("chart-disk"))).toHaveLength(4);
   expect([...chart("chart-disk").querySelectorAll(".text-muted-foreground.flex.w-8 span")].map((e) => e.textContent)).toEqual(["144G", "72G", "0G"]);
+  // Bridge memory: the bridge process's own RSS, recorded samples ending on the live reading.
+  expect(chart("chart-bridge").querySelector("figcaption")!.textContent).toBe("Bridge memory300 MB");
+  expect(linePoints(chart("chart-bridge"))).toHaveLength(4);
   // The constant-rate cost ramp is gone; the month's cost is the details cell.
   expect(container!.querySelector('[data-slot="chart-cost"]')).toBeNull();
   expect(detail(container!, "instance-cost")).toBe("Cost · this month$12.00");
