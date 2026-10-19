@@ -1906,6 +1906,14 @@ export async function claimQueuedMessage(repo: string, branch: string, onlyGrant
   });
 }
 
+/** Put a claimed message back on the queue: its launch failed, so it was never sent. Without this
+ *  a failed dispatch left it claimed, and the message was lost. */
+export async function releaseQueuedMessage(id: number): Promise<void> {
+  return withRetry(async (sql) => {
+    await sql`UPDATE queued_message SET dispatched_at = NULL WHERE id = ${id} AND user_id = ${currentUser()}`;
+  });
+}
+
 /** Drop a queued message before it is sent (the user changed their mind). */
 export async function cancelQueuedMessage(id: number): Promise<void> {
   return withRetry(async (sql) => {

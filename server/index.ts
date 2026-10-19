@@ -39,8 +39,8 @@ import { KIND_META } from "../shared/notifications";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
 import * as verbs from "./verbs";
 import * as repos from "./repos";
-import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
-import { ORCHESTRATOR_REPO, attachmentRefs, workstreamShots, followUpPrompt, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import { BusyError, checkGate, compact, launchOptions, launchQueued, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
+import { ORCHESTRATOR_REPO, attachmentRefs, workstreamShots, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
@@ -162,18 +162,7 @@ primary.onPrimary(async () => {
 // ignorant of configuration.
 agent.onQueuedMessage(async (message) => {
   const cfg = await loadConfig();
-  const repo = repoOf(cfg, message.repo);
-  const provider = isAgentProvider(message.provider) ? message.provider : "claude";
-  if (!providerAllowed(repo, provider)) return; // opted out since it was queued
-  // The pin lives in enrichment, so a message queued before a model switch still runs on the model
-  // the card shows when it is dispatched.
-  const fields = (await db.enrichment(repo.name))[message.branch];
-  const pinned = fields?.preferredModel;
-  const mergeWhenGreen = Boolean(fields?.mergeWhenGreen);
-  await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction, { mergeWhenGreen }), message.attachments), {
-    ...launchOptions(cfg, repo, provider, typeof pinned === "string" ? pinned : undefined, fields),
-    branch: message.branch, action: "followup", instruction: message.instruction,
-  });
+  await launchQueued(cfg, repoOf(cfg, message.repo), message);
 });
 
 // The orchestrator's wake loop: a worker it is responsible for going idle wakes it, and its own run
@@ -1348,7 +1337,11 @@ async function api(req: Request, url: URL): Promise<Response> {
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
     if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
-    if (agent.isRunning(body.key)) {
+    // Older messages still queued on an idle worktree go first (verbs.followUp's rule): this one
+    // queues behind them, and the queue drains in order.
+    const behind = Boolean(body.branch && body.worktree) && !agent.isRunning(body.key)
+      && (await db.queuedMessages(repo.name, body.branch).catch(() => [])).length > 0;
+    if (agent.isRunning(body.key) || behind) {
       // Any action landing on a busy worktree (a typed follow-up, Address PR, Resolve conflicts,
       // Retry, Fix) is QUEUED rather than refused — the composer already invited exactly that ("the
       // agent is working — queue the next instruction"), and this route used to 409 every other
@@ -1358,6 +1351,7 @@ async function api(req: Request, url: URL): Promise<Response> {
           repo: repo.name, branch: body.branch, worktreePath: body.worktree,
           instruction: body.instruction ?? body.prompt, attachments: body.attachments ?? [], provider,
         });
+        if (behind) await agent.drainQueue(body.key, repo.name, body.branch);
         return json({ status: "queued", queued });
       }
       return json({ error: "an agent is already running for this worktree" }, 409);

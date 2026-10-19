@@ -947,18 +947,32 @@ export function onRunFinished(fn: ((run: RunFinished) => Promise<void>) | undefi
  *  when it launched one. */
 async function dispatchQueued(repo: string, branch: string, options: LaunchOptions): Promise<boolean> {
   if (!queuedLauncher) return false;
+  let next: db.QueuedMessage | undefined;
   try {
-    const next = await db.claimQueuedMessage(repo, branch);
+    next = await db.claimQueuedMessage(repo, branch);
     if (!next) return false;
     await queuedLauncher(next);
     return true;
   } catch (e) {
-    // Never let a queued send break the run that just finished; the message stays claimed rather
-    // than retrying forever against a worktree that may be gone.
+    // Never let a queued send break the run that just finished. A message whose launch failed goes
+    // back on the queue: it stayed claimed once, and the message was lost (the next send went
+    // without it). Nothing retries it in a loop; the next run's end or send picks it up.
+    if (next) await db.releaseQueuedMessage(next.id).catch(db.logUnlessDown("orca: queued message release failed"));
     db.logUnlessDown("orca: queued message dispatch failed")(e);
     return false;
   }
 }
+
+/** Send what is queued for an IDLE branch, oldest first. A direct send onto a worktree with older
+ *  messages still queued calls this after it queues its own, so the older ones go first. */
+export async function drainQueue(key: string, repo: string, branch: string): Promise<boolean> {
+  if (isRunning(key)) return false; // the run in flight sends the queue when it ends
+  return dispatchQueued(repo, branch, {});
+}
+
+// How long Stop waits for the stopped process to exit before it sends the queue: the next run
+// resumes the SAME session, and two processes on one session both write to its transcript.
+export const stopGrace = { ms: 5_000 }; // mutable so a test needn't wait five seconds
 
 // How often an adopted run's lease is checked for its process having exited.
 export const adoptPoll = { ms: 5_000 }; // mutable so a test needn't wait five seconds
@@ -1030,6 +1044,12 @@ export function stop(key: string): string | undefined {
   const r = runs.get(key);
   if (r?.runId && r.status === "running") stoppedRuns.add(r.runId);
   try { r?.proc?.kill(); } catch { /* already gone */ }
+  // A run adopted after a restart has no handle: its lease names the process. Without this, Stop
+  // left it running and the next run resumed a session it was still writing to.
+  const held = !r?.proc ? lease.current(key) : undefined;
+  if (held && (!r?.runId || held.runId === r.runId) && lease.leased(key)) {
+    try { process.kill(held.pid); } catch { /* already gone */ }
+  }
   runs.delete(key);
   lease.release(key); // discard/stop frees the worktree even if the run was recovered from a lease
   return r?.runId;
@@ -1045,6 +1065,7 @@ export async function interrupt(key: string, opts: { queue?: boolean } = {}): Pr
   const r = runs.get(key);
   const runId = stop(key);
   if (!runId || opts.queue === false || r?.options?.queue === false) return runId;
+  if (r?.proc) await Promise.race([r.proc.exited, new Promise((res) => setTimeout(res, stopGrace.ms))]);
   // A run adopted from a lease after a restart has no options; its turn names the branch.
   const owner = r?.options?.repo && r.options.branch ? { repo: r.options.repo, branch: r.options.branch }
     : await db.turnOwner(runId).catch(() => undefined);
