@@ -19,7 +19,7 @@ import { Tip } from "@/components/ui/tip";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
-import { HISTORY_RANGES, countMax, headerUsage, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { HISTORY_RANGES, countMax, headerUsage, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
@@ -288,12 +288,20 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const ooms = s.ooms.reduce((n, o) => n + o.n, 0);
   const memTotal = h?.memTotalGb ?? Math.max(1, ...(history ?? []).map((p) => p.memTotalGb));
   const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
+  const guard = protectionsWarning(h?.protections);
   return (
     <VCard
       slot={`instance-${instance}`}
       title={<span className="flex items-center gap-2"><Server className="text-muted-foreground size-4" />{instance}{here && <span className="text-muted-foreground font-normal">· this machine</span>}</span>}
       aside={<Segmented label="Range" value={String(hours)} onChange={(v) => setHours(Number(v))} options={HISTORY_RANGES.map((r) => ({ value: String(r.hours), label: r.label }))} />}
     >
+      {guard && (
+        <div data-slot="protections-warning" data-warn={guard.warn || undefined}
+          className={cn("flex items-start gap-2 border-b px-4 py-2 text-xs", guard.warn ? "bg-geist-warning-bg text-geist-warning-fg" : "text-muted-foreground")}>
+          {guard.warn && <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />}
+          <span>{guard.text}{guard.detail && <span className="opacity-80"> {guard.detail}</span>}</span>
+        </div>
+      )}
       <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-b p-4 sm:grid-cols-3 lg:grid-cols-6">
         <Detail label="Status" slot="instance-status">
           <StatusDot tone={tone} />{down ? "Unreachable" : h ? "Online" : "Loading…"}

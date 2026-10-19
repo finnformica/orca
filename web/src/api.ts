@@ -65,6 +65,9 @@ export type InstanceHealth = {
   runningAgents?: number;
   /** The bridge process's resident memory, MB. Absent from an older bridge. */
   bridgeRssMb?: number;
+  /** Which of deploy/harden.sh's protections the box is missing (server/protections.ts), and the
+   *  newest OOM kill in its kernel log (null: none; absent: unreadable). Absent off Linux. */
+  protections?: { missing: { key: string; label: string }[]; lastOomKill?: number | null; at: number };
 };
 /** One recorded sample of an instance's vitals (instance_metric), for the chip's history graphs. */
 export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; /** Absent from a bridge older than migration 13 — unknown, not 0. */

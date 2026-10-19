@@ -2218,6 +2218,25 @@ export function ago(ms: number, now = Date.now()): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/** The instance card's crash-protection strip (server/protections.ts): what deploy/harden.sh would
+ *  add, and the newest OOM kill in the kernel log. `warn` when a protection is missing; a box with
+ *  every protection but a recent kill gets a muted line; nothing otherwise. Pure. */
+export function protectionsWarning(
+  p: { missing: { key: string; label: string }[]; lastOomKill?: number | null } | undefined,
+  now = Date.now(),
+): { warn: boolean; text: string; detail?: string } | undefined {
+  if (!p) return undefined;
+  const oom = p.lastOomKill ? `Last OOM kill ${ago(p.lastOomKill, now)} (${new Date(p.lastOomKill).toISOString().slice(0, 16).replace("T", " ")} UTC).` : undefined;
+  if (p.missing.length) {
+    return {
+      warn: true,
+      text: `Crash protection missing: ${p.missing.map((m) => m.label).join(", ")}.${oom ? ` ${oom}` : ""}`,
+      detail: "Run sudo deploy/harden.sh on this machine (docs/RECOVERY.md). Use --check to see the changes first.",
+    };
+  }
+  return oom ? { warn: false, text: oom } : undefined;
+}
+
 // ---- review signal: who approved, what humans said, what the AI reviewers flagged, what's open ----
 // Pure derivations over gh.reviewSignal (one PR's reviews, comments and inline threads), shared by
 // the list row's review cluster and the PR page's Review panel.
