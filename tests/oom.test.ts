@@ -65,7 +65,8 @@ afterEach(async () => {
 });
 
 async function fakeSystemctl(reply: string): Promise<void> {
-  await writeFile(join(shim, "systemctl"), `#!/bin/sh\ncase "$*" in\n  *"show "*"-p Result --value") echo '${reply}' ;;\n  *) exit 1 ;;\nesac\n`);
+  // A live user manager (cgroup.userManagerCheck asks it before every scoped launch), and the scope's Result.
+  await writeFile(join(shim, "systemctl"), `#!/bin/sh\ncase "$*" in\n  *"is-system-running") echo running ;;\n  *"show "*"-p Result --value") echo '${reply}' ;;\n  *) exit 1 ;;\nesac\n`);
   await chmod(join(shim, "systemctl"), 0o755);
 }
 async function run(branch: string): Promise<void> {
