@@ -1,6 +1,6 @@
 import { atom } from "jotai";
 import { atomWithStorage } from "jotai/utils";
-import { isBoolean, isNumber, isString, isStringArray, persistedAtom } from "./persisted";
+import { isBoolean, isNumber, isString, isStringArray, oneOf, persistedAtom } from "./persisted";
 import { TERMINAL_PANEL_INITIAL, type TerminalPanelState } from "../workstream";
 
 // New-draft composer's selected repo, persisted. The prompt + attachments are persisted by
@@ -10,6 +10,13 @@ export const draftRepoAtom = atomWithStorage("orca.draftRepo", "");
 // The top bar's repo switcher ("all" or a repo name), persisted (lib/persisted; a repo no longer in
 // the config reads as "all" — Shell's useShellFallbacks). Scopes the Overview, Agents and the Done-lane copy.
 export const repoFilterAtom = persistedAtom("repoFilter", "all", isString, "orca.repoFilter");
+
+// Card density, persisted. "comfortable" is the full card; "dense" strips a card down to its
+// at-a-glance status (repo, title, status/condition badges) — dropping the prompt, diffstat, and
+// preview+actions footer — so many sessions fit on screen. Done cards ignore it (always compact).
+export type Density = "comfortable" | "dense";
+// `orca.ui.v1.density` (lib/persisted); the pre-versioned `orca.density` is read once if present.
+export const densityAtom = persistedAtom<Density>("density", "comfortable", oneOf("comfortable", "dense"), "orca.density");
 
 // `repo::branch` of a card whose terminal should open as soon as it renders — set by "New chat",
 // which creates the worktree in the background and drops you straight into its conversation.
