@@ -791,7 +791,7 @@ async function queueRun(key: string, cwd: string, prompt: string, options: Launc
   waiters.push({ key, cwd, prompt, options, pre: { runId, sessionId, turn } });
   console.log(`orca: run ${runId} waits: ${why.running} of ${why.limit} agent runs already going`);
   if (!queueTimer) {
-    queueTimer = setInterval(() => { void drainQueue(); }, queuePoll.ms);
+    queueTimer = setInterval(() => { void drainRunQueue(); }, queuePoll.ms);
     queueTimer.unref?.(); // a waiting run never holds shutdown open
   }
   return { status: "running", provider, runId, sessionId, queued: true };
@@ -800,7 +800,7 @@ async function queueRun(key: string, cwd: string, prompt: string, options: Launc
 let draining = false;
 /** Start the oldest waiting run that may start now — ONE per tick, so the next reading sees what
  *  that run took before another starts. Called by the poll and when a run ends. */
-async function drainQueue(): Promise<void> {
+async function drainRunQueue(): Promise<void> {
   if (draining) return;
   draining = true;
   try {
@@ -987,7 +987,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     }));
     if (superseded) return;
     lease.release(key, runId); // this run is done — free the worktree (no-op if a re-run already took the lease)
-    if (waiters.length) void drainQueue(); // a slot under the cap is free now
+    if (waiters.length) void drainRunQueue(); // a slot under the cap is free now
     ledger.record({
       kind: "run", provider, action: options.action, mode: runMode(options),
       status: ok ? "done" : "error", durationMs: meta?.durationMs ?? finishedAt - startedAt,
