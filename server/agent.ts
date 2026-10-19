@@ -694,15 +694,29 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   const scopeUnit = `orca-run-${runId}`;
   const memoryMaxGb = options.memoryMaxGb ?? cgroup.DEFAULT_MEMORY_MAX_GB;
   const cpuWeight = options.cpuWeight ?? cgroup.DEFAULT_CPU_WEIGHT;
-  const scoped = cgroup.available();
-  const scopedEnv = scoped ? cgroup.runtimeEnv() : {};
+  const linux = cgroup.linux();
+  let scoped = cgroup.available();
+  const scopedEnv = cgroup.runtimeEnv();
+  // A user manager that SHOULD be there (lingering is on) but does not answer: report it and start
+  // unscoped, never fail every run silently (the 2026-10-18 incident).
+  if (linux && (scoped || cgroup.lingering())) {
+    const manager = await cgroup.userManagerCheck({ ...process.env, ...scopedEnv });
+    cgroup.noteUserManager(manager, { repo: options.repo, branch: options.branch });
+    if (!manager.ok) scoped = false;
+  }
+  // Set on every launch: a user-manager restart drops the runtime property.
+  const sliceMaxGb = cgroup.agentsSliceMaxGb();
+  if (scoped && !(await cgroup.limitAgentsSlice(sliceMaxGb, { ...process.env, ...scopedEnv }))) {
+    console.error(`orca: could not set ${cgroup.AGENTS_SLICE} MemoryMax=${sliceMaxGb}G`);
+  }
   const proc = Bun.spawn(
     cgroup.scopedCommand(
       agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd, options.allowedTools,
         options.permissionMode === "scoped" ? scopedRulesHere(cwd, options.scope) : undefined),
-      { available: scoped, memoryMaxGb, cpuWeight, unit: scopeUnit },
+      // A positive OOM score scoped or not: the bridge's -500 must not pass to its agents.
+      { available: scoped, memoryMaxGb, cpuWeight, unit: scopeUnit, slice: cgroup.AGENTS_SLICE, oomScoreAdj: linux ? cgroup.oomScoreAdj() : undefined },
     ),
-    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...scopedEnv, ...options.env }, stdout: "pipe", stderr: "pipe" },
+    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...(scoped ? scopedEnv : {}), ...options.env }, stdout: "pipe", stderr: "pipe" },
   );
   let timedOut = false;
   const timeout = options.timeoutMs ? setTimeout(() => { timedOut = true; proc.kill(); }, options.timeoutMs) : undefined;
