@@ -329,7 +329,7 @@ export function grantAllowsRepo(g: Grant | undefined, repo: string | undefined, 
 /** `orca` verbs by what they need. Read verbs answer questions; work verbs start or steer work on
  *  one repo; `post` may answer on the link the wake came from and `ask-user` asks you; every other
  *  verb (merge, archive, move, stop, sweep, notes set, repo add) needs the full grant — your own chat. */
-export const READ_VERBS = ["board", "chats", "read", "channels"] as const;
+export const READ_VERBS = ["board", "chats", "read", "channels", "machine"] as const;
 export const WORK_VERBS = ["spawn", "send", "address", "status", "pr-shots"] as const;
 
 /** Why `verb` is refused under `grant`, or undefined when allowed. Server-side: the tool route calls

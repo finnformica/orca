@@ -1633,6 +1633,9 @@ export function repoLabel(repos: ReadonlyArray<{ name: string; owner?: string }>
 
 const ORCA_COMMANDS = [
   "  orca board                      every workstream: PR state, agent status, Orca's check verdict",
+  "  orca machine [--on <instance>] [--json]   the box's CPU work / iowait / load per core, disk MB/s, memory, swap, OOM kills",
+  "      (now, 5 min, 1 h) and the heavy queue — the same 15 s samples as the user's machine card. Read it before you",
+  "      spawn more work on a busy box; --json adds the last hour's raw series.",
   "  orca spawn --repo <repo> --title \"<2-5 words>\" --model <id> [--on <instance>] --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"] [--attach <id|path>]…",
   "      --on places the worktree on another instance (the board shows each workstream's `on:`; a `[new draft]`",
   "      that says `on: <instance>` wants that one). Without it, the repo's default instance.",
@@ -2754,6 +2757,91 @@ export function liveCharts(samples: LiveSample[], cores: number): LiveCharts {
     iowait: samples.map((s) => ({ at: s.at, v: s.iowait })),
     ooms: samples.flatMap((s) => (s.ooms ? [{ at: s.at, n: s.ooms }] : [])),
   };
+}
+
+/** One window of `orca machine`: means over the window (the newest sample for "now"); OOM kills add up. */
+export type MachineWindow = {
+  /** The time the window really covers (the ring may hold less than asked), and its samples. */
+  spanMs: number; samples: number;
+  work: number; iowait: number; loadPerCore: number;
+  readMBs?: number; writeMBs?: number;
+  memUsedGb: number; memCacheGb: number; memAvailGb?: number; swapUsedGb?: number;
+  ooms: number;
+};
+export type MachineSummary = { now?: MachineWindow; "5m"?: MachineWindow; "1h"?: MachineWindow };
+export const MACHINE_WINDOWS = [["now", 0], ["5m", 5 * 60_000], ["1h", 3_600_000]] as const;
+
+/** `orca machine`'s numbers, from the SAME samples and the SAME `liveCharts` derivation as the card's
+ *  charts, so the two cannot disagree. "now" is the newest sample; 5m and 1h are means over the
+ *  samples in the window. A window with no samples is absent. Pure. */
+export function machineSummary(samples: LiveSample[], cores: number): MachineSummary {
+  const last = samples[samples.length - 1];
+  if (!last) return {};
+  const c = liveCharts(samples, cores);
+  const out: MachineSummary = {};
+  for (const [name, ms] of MACHINE_WINDOWS) {
+    const idx = samples.flatMap((s, i) => (ms === 0 ? s === last : s.at > last.at - ms) ? [i] : []);
+    if (!idx.length) continue;
+    const mean = (f: (i: number) => number | undefined, digits = 1) => {
+      const v = idx.map(f).filter((n): n is number => n !== undefined);
+      if (!v.length) return undefined;
+      const k = 10 ** digits;
+      return Math.round((v.reduce((a, b) => a + b, 0) / v.length) * k) / k;
+    };
+    const opt = <K extends string>(k: K, v: number | undefined) => (v === undefined ? {} : { [k]: v } as Record<K, number>);
+    out[name] = {
+      spanMs: last.at - samples[idx[0]!]!.at, samples: idx.length,
+      work: mean((i) => c.cpu[i]!.v[0])!, iowait: mean((i) => c.cpu[i]!.v[1])!, loadPerCore: mean((i) => c.loadPerCore[i]!.v, 2)!,
+      ...opt("readMBs", mean((i) => samples[i]!.readMBs)), ...opt("writeMBs", mean((i) => samples[i]!.writeMBs)),
+      memUsedGb: mean((i) => c.mem[i]!.v[0], 2)!, memCacheGb: mean((i) => c.mem[i]!.v[1], 2)!,
+      ...opt("memAvailGb", mean((i) => samples[i]!.memAvailGb, 2)), ...opt("swapUsedGb", mean((i) => samples[i]!.swapUsedGb, 2)),
+      ooms: idx.reduce((n, i) => n + (samples[i]!.ooms ?? 0), 0),
+    };
+  }
+  return out;
+}
+
+/** What `GET /api/machine` answers and `orca machine` prints. */
+export type MachineReport = {
+  /** `at`: the newest sample's time (the answer's time when there is none). */
+  instance: string; at: number; cores: number; memTotalGb: number; sliceMaxGb?: number; diskCapMBs: number; stepMs: number;
+  summary: MachineSummary;
+  heavy: { running: number; queued: number };
+  /** The last hour of 15 s samples, oldest first (`--json` only shows them). */
+  samples: LiveSample[];
+};
+
+const fmtSpan = (ms: number) => (ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`);
+
+/** `orca machine` as plain text: one row per measure, a column per window. Pure. */
+export function machineText(r: MachineReport): string {
+  const head = `${r.instance} · ${r.cores} cores · ${r.memTotalGb} GB RAM · a sample every ${Math.round(r.stepMs / 1000)} s · newest ${new Date(r.at).toISOString().replace("T", " ").slice(0, 19)} UTC`;
+  const heavy = `Heavy queue: ${r.heavy.running} running, ${r.heavy.queued} queued`;
+  const limits = `Disk cap ${r.diskCapMBs} MB/s${r.sliceMaxGb ? ` · agents memory limit ${r.sliceMaxGb} GB` : ""}`;
+  if (!r.summary.now) return [head, "No samples yet: the bridge samples every 15 s and starts empty after a restart.", heavy, limits].join("\n");
+  const cols = MACHINE_WINDOWS.map(([n]) => r.summary[n]);
+  const num = (v: number | undefined, d: number) => (v === undefined ? "—" : v.toFixed(d));
+  const rows: [string, (w: MachineWindow) => string][] = [
+    ["CPU work %", (w) => num(w.work, 1)],
+    ["iowait %", (w) => num(w.iowait, 1)],
+    ["load / core", (w) => num(w.loadPerCore, 2)],
+    ["disk read MB/s", (w) => num(w.readMBs, 1)],
+    ["disk write MB/s", (w) => num(w.writeMBs, 1)],
+    ["memory used GB", (w) => num(w.memUsedGb, 2)],
+    ["cache GB", (w) => num(w.memCacheGb, 2)],
+    ["available GB", (w) => num(w.memAvailGb, 2)],
+    ["swap used GB", (w) => num(w.swapUsedGb, 2)],
+    ["OOM kills", (w) => String(w.ooms)],
+  ];
+  const header = ["", "now", "5 min", "1 h"];
+  const table = [header, ...rows.map(([label, f]) => [label, ...cols.map((w) => (w ? f(w) : "—"))])];
+  const widths = header.map((_, i) => Math.max(...table.map((row) => row[i]!.length)));
+  const lines = table.map((row) => row.map((cell, i) => (i === 0 ? cell.padEnd(widths[i]!) : cell.padStart(widths[i]!))).join("   ").trimEnd());
+  const short = (["5m", "1h"] as const).flatMap((n, i) => {
+    const w = r.summary[n], want = i === 0 ? 5 * 60_000 : 3_600_000;
+    return w && w.spanMs < want - 2 * r.stepMs ? [`${n === "5m" ? "5 min" : "1 h"} covers only ${fmtSpan(w.spanMs)} (the bridge restarted since)`] : [];
+  });
+  return [head, ...lines, ...short, heavy, limits].join("\n");
 }
 
 /** The point nearest `at` (the hover readout), or undefined for no points. Pure. */

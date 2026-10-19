@@ -745,7 +745,8 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   — old one kept as `<template>_bak_<ts>` — and writes its integration env vars back to the main
   checkout's copied `.env`; dry run without `--confirm`, values masked — README), `merge`
   (`--repo r (--pr N | --branch b) --when-green [--small]` or `--cancel`: the merge queue), `chats`,
-  `read`, `notes`.
+  `read`, `notes`, and **`machine [--on <instance>] [--json]`** — what the machine card shows, as plain
+  text (below, "Machine metrics history").
 - **Merge queue — merge on green with nobody watching CI** (`server/mergeQueue.ts`, decisions in
   `workstream.ts` `mergeVerdict` / `mergeRefusal`). A PR — or a branch with no PR yet — is MARKED
   (`mergeWhenGreen` on its enrichment, so shared and restart-proof) by `orca merge --when-green`, the
@@ -1120,7 +1121,14 @@ dashed agents-slice MemoryMax, and **Disk IO** (root device read + write MB/s un
 old line). `StackedChart` (`components/console.tsx`) is their chart; hover or tap opens the shadcn
 tooltip with the values at that time. An older bridge without the route keeps the lines. Beside them,
 in the `LineChart` design, an **Agents** chart (`running_agents` over time) and **Disk used** (axis to
-the disk's size; worktrees, preview databases and test containers are what fill the box). There is
+the disk's size; worktrees, preview databases and test containers are what fill the box). **`orca machine`**
+(`GET /api/machine`, `liveMetrics.machineReport`; a read verb) gives the orchestrator the SAME numbers
+as the card, from the same ring through the same `liveAnswer` and the card's own `liveCharts`
+(`workstream.ts` `machineSummary` / `machineText`), so the two never disagree and lag at most one
+15 s sample: now (the newest sample), 5 min and 1 h for CPU work %, iowait %, load per core, disk
+read / write MB/s, memory used / cache / available GB, swap used GB and OOM kills, plus the heavy
+queue's running and queued counts. `--on` reads another instance's `/api/machine`; `--json` prints
+the report with the last hour's raw samples. There is
 no Bridge memory chart any more (removed at Finn's request); `bridgeRssMb` is still on `/api/health`
 and recorded in `instance_metric.bridge_rss_mb` (named step `20261019-instance-metric-bridge-rss`).
 **OOM kills** are red marks on the Memory chart, counted in its caption: a run the cgroup ceiling

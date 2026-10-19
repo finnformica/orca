@@ -517,6 +517,36 @@ test("O12: the orca command reads a flag followed by another flag as a switch", 
   }
 });
 
+test("O13: orca machine prints the machine card's numbers, here or from another instance, and is a read verb", async () => {
+  const { pushLive, resetLive, machineReport } = await import("../server/liveMetrics");
+  const { machineText } = await import("../web/src/workstream");
+  const { grantRefusal } = await import("../shared/integrations");
+  resetLive();
+  const now = Date.now();
+  for (let i = 0; i < 20; i++) pushLive({ at: now - (19 - i) * 15_000, work: 40, iowait: i > 15 ? 70 : 0, load1: 3, readMBs: 120, writeMBs: 4, memUsedGb: 6, memCacheGb: 4, memAvailGb: 9, swapUsedGb: 0.5, ...(i === 3 ? { ooms: 1 } : {}) });
+  try {
+    const text = await orchestrator.tool(cfg(), "machine");
+    // The same report the card's ring gives /api/machine, printed.
+    expect(text).toBe(machineText(machineReport(db.instanceName())));
+    expect(text.split("\n").find((l) => l.startsWith("iowait %"))!.split(/\s{2,}/)).toEqual(["iowait %", "70.0", "14.0", "14.0"]);
+    expect(text).toContain("OOM kills");
+    const json = JSON.parse(await orchestrator.tool(cfg(), "machine", { json: "" }));
+    expect(json.samples).toHaveLength(20);
+    expect(json.summary.now).toMatchObject({ work: 40, iowait: 70, readMBs: 120, memAvailGb: 9, swapUsedGb: 0.5 });
+    // --on another instance reads ITS /api/machine.
+    const other = { ...machineReport("laptop"), instance: "laptop" };
+    const peer = createServer((req, res) => { res.setHeader("content-type", "application/json"); res.end(req.url === "/api/machine" ? JSON.stringify(other) : "{}"); });
+    await new Promise<void>((r) => peer.listen(0, "127.0.0.1", r));
+    try {
+      const two = { ...cfg(), instances: { laptop: `http://127.0.0.1:${(peer.address() as AddressInfo).port}` } };
+      expect(await orchestrator.tool(two, "machine", { on: "laptop" })).toBe(machineText(other));
+    } finally { peer.close(); }
+    await expect(orchestrator.tool(cfg(), "machine", { on: "nowhere" })).rejects.toThrow('"nowhere" is not a configured instance');
+    // An outside sender's read-only wake may ask too.
+    expect(grantRefusal({ level: "ask", repos: [] }, "machine")).toBeUndefined();
+  } finally { resetLive(); }
+});
+
 test("O8: the ladder decision and the orchestrator's views are pure", () => {
   const turn = (over: Partial<AgentTurn> = {}): AgentTurn => ({ id: "t", provider: "claude", prompt: "p", response: "ok", sessionId: "s1", ...over });
   const base = { provider: "claude" as const, from: "claude" as const, sessionId: "s1", transcript: [turn()] };

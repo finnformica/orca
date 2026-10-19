@@ -23,6 +23,8 @@ MemFree:         7568112 kB
 MemAvailable:   13751040 kB
 Buffers:          503620 kB
 Cached:          4887888 kB
+SwapTotal:       4194300 kB
+SwapFree:        3982408 kB
 `;
 const STAT = (user: number, system: number, idle: number, iowait: number) =>
   `cpu  ${user} 0 ${system} ${idle} ${iowait} 0 0 0 0 0\ncpu0 1 2 3 4 5 6 7 8 0 0\n`;
@@ -45,7 +47,7 @@ describe("parsers", () => {
   });
 
   test("parseMeminfo splits used (total − available) and cache (available − free)", () => {
-    expect(parseMeminfo(MEMINFO)).toEqual({ totalGb: 15.33, usedGb: 2.22, cacheGb: 5.9 });
+    expect(parseMeminfo(MEMINFO)).toEqual({ totalGb: 15.33, usedGb: 2.22, cacheGb: 5.9, availGb: 13.11, swapUsedGb: 0.2 });
     expect(parseMeminfo("MemTotal: 1 kB\n")).toBeUndefined();
   });
 
@@ -96,7 +98,7 @@ describe("sampler", () => {
     fixture(STAT(100, 50, 50, 800), DISKSTATS(2048 * 130 * 15, 2048 * 2 * 15));
     noteLiveOom();
     const v = sampler.tick();
-    expect(v).toEqual({ at: 15_000, work: 15, iowait: 80, load1: 3.46, readMBs: 130, writeMBs: 2, memUsedGb: 2.22, memCacheGb: 5.9, ooms: 1 });
+    expect(v).toEqual({ at: 15_000, work: 15, iowait: 80, load1: 3.46, readMBs: 130, writeMBs: 2, memUsedGb: 2.22, memCacheGb: 5.9, memAvailGb: 13.11, swapUsedGb: 0.2, ooms: 1 });
     // The OOM count belongs to one sample only.
     t = 30_000;
     expect(sampler.tick()?.ooms).toBeUndefined();
@@ -146,5 +148,61 @@ describe("the card's live series (workstream.ts)", () => {
     expect(stackRuns(pts, 5).map((r) => r.map((p) => p.at))).toEqual([[1, 2, 3], [20, 21]]);
     expect(nearestAt(pts, 10)?.at).toBe(3);
     expect(nearestAt([], 1)).toBeUndefined();
+  });
+});
+
+describe("orca machine (machineSummary, machineText, machineReport)", () => {
+  const { liveCharts, machineSummary, machineText } = require("../web/src/workstream") as typeof import("../web/src/workstream");
+  const { machineReport } = require("../server/liveMetrics") as typeof import("../server/liveMetrics");
+  const M = 60_000, NOW = 10 * 3_600_000;
+  // An hour of 15 s samples: quiet, then the last 5 minutes an IO stall (iowait 80 %, reads 130 MB/s).
+  const hour = (): LiveSample[] => Array.from({ length: 240 }, (_, i) => {
+    const at = NOW - (239 - i) * 15_000, stall = at > NOW - 5 * M;
+    return { at, work: stall ? 10 : 30, iowait: stall ? 80 : 0, load1: stall ? 6 : 2, readMBs: stall ? 130 : 1, writeMBs: 2, memUsedGb: 3, memCacheGb: 5, memAvailGb: 12, swapUsedGb: 0.2, ...(i === 10 ? { ooms: 2 } : {}) };
+  });
+
+  test("now is the newest sample; 5 min and 1 h are means over the card's own series", () => {
+    const s = machineSummary(hour(), 4);
+    expect(s.now).toMatchObject({ work: 10, iowait: 80, loadPerCore: 1.5, readMBs: 130, memAvailGb: 12, swapUsedGb: 0.2, ooms: 0, samples: 1 });
+    expect(s["5m"]).toMatchObject({ work: 10, iowait: 80, readMBs: 130, samples: 20, ooms: 0 });
+    // 20 of 240 samples in the stall: work (220×30 + 20×10)/240.
+    expect(s["1h"]).toMatchObject({ work: 28.3, iowait: 6.7, ooms: 2, samples: 240 });
+    // The same load per core the card's tooltip reads.
+    expect(s.now!.loadPerCore).toBe(liveCharts(hour(), 4).loadPerCore.at(-1)!.v);
+    expect(machineSummary([], 4)).toEqual({});
+  });
+
+  test("machineText prints one row per measure and a column per window", () => {
+    const text = machineText({ instance: "cloud", at: NOW, cores: 4, memTotalGb: 15.3, sliceMaxGb: 8.4, diskCapMBs: 125, stepMs: 15_000, summary: machineSummary(hour(), 4), heavy: { running: 2, queued: 1 }, samples: [] });
+    const lines = text.split("\n");
+    expect(lines[0]).toBe("cloud · 4 cores · 15.3 GB RAM · a sample every 15 s · newest 1970-01-01 10:00:00 UTC");
+    expect(lines[1]!.trim().split(/\s+/)).toEqual(["now", "5", "min", "1", "h"]);
+    expect(lines.find((l) => l.startsWith("CPU work %"))!.split(/\s{2,}/)).toEqual(["CPU work %", "10.0", "10.0", "28.3"]);
+    expect(lines.find((l) => l.startsWith("iowait %"))!.split(/\s{2,}/)).toEqual(["iowait %", "80.0", "80.0", "6.7"]);
+    expect(lines.find((l) => l.startsWith("disk read MB/s"))!.split(/\s{2,}/)).toEqual(["disk read MB/s", "130.0", "130.0", "11.8"]);
+    expect(lines.find((l) => l.startsWith("OOM kills"))!.split(/\s{2,}/)).toEqual(["OOM kills", "0", "0", "2"]);
+    expect(lines.find((l) => l.startsWith("swap used GB"))).toContain("0.20");
+    expect(lines.at(-2)).toBe("Heavy queue: 2 running, 1 queued");
+    expect(lines.at(-1)).toBe("Disk cap 125 MB/s · agents memory limit 8.4 GB");
+  });
+
+  test("a short ring says how much the windows cover; an empty one says so", () => {
+    const short = hour().slice(-8); // 2 minutes since a restart
+    const text = machineText({ instance: "cloud", at: NOW, cores: 4, memTotalGb: 15.3, diskCapMBs: 125, stepMs: 15_000, summary: machineSummary(short, 4), heavy: { running: 0, queued: 0 }, samples: [] });
+    expect(text).toContain("5 min covers only 2 min (the bridge restarted since)");
+    expect(text).toContain("1 h covers only 2 min (the bridge restarted since)");
+    expect(machineText({ instance: "cloud", at: NOW, cores: 4, memTotalGb: 15.3, diskCapMBs: 125, stepMs: 15_000, summary: {}, heavy: { running: 0, queued: 0 }, samples: [] }))
+      .toContain("No samples yet: the bridge samples every 15 s and starts empty after a restart.");
+  });
+
+  test("machineReport reads the card's ring through liveAnswer", () => {
+    resetLive();
+    for (const s of hour()) pushLive(s);
+    const r = machineReport("cloud", { now: NOW, sliceMaxGb: 8.4 });
+    expect(r.samples).toEqual(liveAnswer(1, { now: NOW }).samples);
+    expect(r.samples).toHaveLength(240);
+    expect(r).toMatchObject({ instance: "cloud", at: NOW, sliceMaxGb: 8.4, diskCapMBs: 125, stepMs: 15_000, heavy: { running: 0, queued: 0 } });
+    expect(r.summary).toEqual(machineSummary(r.samples, r.cores));
+    resetLive();
   });
 });

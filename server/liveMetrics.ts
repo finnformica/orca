@@ -7,6 +7,9 @@
 import { readFileSync } from "fs";
 import * as os from "os";
 import { parseProcStat, type ProcStatTimes } from "./health";
+import * as cgroup from "./cgroup";
+import * as heavy from "./heavy";
+import { machineSummary, type MachineReport } from "../web/src/workstream";
 
 export const LIVE_SAMPLE_MS = 15_000;
 export const LIVE_WINDOW_MS = 6 * 3_600_000;
@@ -25,6 +28,8 @@ export type LiveSample = {
   readMBs?: number; writeMBs?: number;
   /** GB. used = MemTotal − MemAvailable; cache = MemAvailable − MemFree (reclaimable page cache). */
   memUsedGb: number; memCacheGb: number;
+  /** GB: MemAvailable, and swap in use (SwapTotal − SwapFree). Absent from samples before they were read. */
+  memAvailGb?: number; swapUsedGb?: number;
   /** Agent runs OOM-killed since the previous sample. */
   ooms?: number;
 };
@@ -37,13 +42,13 @@ export type LiveAnswer = {
 
 // ---- pure parsers (fixture-tested) ----
 
-/** /proc/meminfo as used and cache GB, or undefined when the lines are missing. */
-export function parseMeminfo(text: string): { totalGb: number; usedGb: number; cacheGb: number } | undefined {
+/** /proc/meminfo as used, cache, available and swap-used GB, or undefined when the lines are missing. */
+export function parseMeminfo(text: string): { totalGb: number; usedGb: number; cacheGb: number; availGb: number; swapUsedGb: number } | undefined {
   const kb = (k: string) => { const m = text.match(new RegExp(`^${k}:\\s+(\\d+) kB$`, "m")); return m ? Number(m[1]) : undefined; };
   const total = kb("MemTotal"), free = kb("MemFree"), avail = kb("MemAvailable");
   if (total === undefined || free === undefined || avail === undefined) return undefined;
   const gb = (n: number) => Math.round((Math.max(0, n) / 1_048_576) * 100) / 100;
-  return { totalGb: gb(total), usedGb: gb(total - avail), cacheGb: gb(avail - free) };
+  return { totalGb: gb(total), usedGb: gb(total - avail), cacheGb: gb(avail - free), availGb: gb(avail), swapUsedGb: gb((kb("SwapTotal") ?? 0) - (kb("SwapFree") ?? 0)) };
 }
 
 /** The `major:minor` of the filesystem mounted at `/`, from /proc/self/mountinfo. */
@@ -91,6 +96,8 @@ export function cpuSplit(prev: ProcStatTimes, curr: ProcStatTimes): { work: numb
   return { work: pct(work), iowait: pct(iowait) };
 }
 
+const optional = <K extends string>(k: K, v: number | undefined) => (v === undefined ? {} : { [k]: v } as Record<K, number>);
+
 /** Means of the samples per time bucket, at most `max` buckets over [from, to]. OOM kills add up. Pure. */
 export function bucketLive(samples: LiveSample[], max: number, from: number, to: number): LiveSample[] {
   const inRange = samples.filter((s) => s.at >= from && s.at <= to);
@@ -107,12 +114,12 @@ export function bucketLive(samples: LiveSample[], max: number, from: number, to:
   };
   return [...groups.values()].map((g) => {
     const ooms = g.reduce((n, s) => n + (s.ooms ?? 0), 0);
-    const readMBs = mean(g, (s) => s.readMBs), writeMBs = mean(g, (s) => s.writeMBs);
     return {
       at: g[g.length - 1]!.at, work: mean(g, (s) => s.work)!, iowait: mean(g, (s) => s.iowait)!,
       load1: mean(g, (s) => s.load1, round2)!,
-      ...(readMBs === undefined ? {} : { readMBs }), ...(writeMBs === undefined ? {} : { writeMBs }),
+      ...optional("readMBs", mean(g, (s) => s.readMBs)), ...optional("writeMBs", mean(g, (s) => s.writeMBs)),
       memUsedGb: mean(g, (s) => s.memUsedGb, round2)!, memCacheGb: mean(g, (s) => s.memCacheGb, round2)!,
+      ...optional("memAvailGb", mean(g, (s) => s.memAvailGb, round2)), ...optional("swapUsedGb", mean(g, (s) => s.swapUsedGb, round2)),
       ...(ooms ? { ooms } : {}),
     };
   });
@@ -152,7 +159,7 @@ export function createLiveSampler(o: { procRoot?: string; now?: () => number; lo
       ooms = 0;
       return {
         at, ...cpuSplit(last.stat, stat), load1: round2(load1()), ...(io ?? {}),
-        memUsedGb: mem.usedGb, memCacheGb: mem.cacheGb, ...(kills ? { ooms: kills } : {}),
+        memUsedGb: mem.usedGb, memCacheGb: mem.cacheGb, memAvailGb: mem.availGb, swapUsedGb: mem.swapUsedGb, ...(kills ? { ooms: kills } : {}),
       };
     },
   };
@@ -196,6 +203,22 @@ export function liveAnswer(hours: number, o: { sliceMaxGb?: number; now?: number
     cores: os.cpus().length || 1, memTotalGb: Math.round((os.totalmem() / 1_073_741_824) * 10) / 10,
     ...(o.sliceMaxGb ? { sliceMaxGb: o.sliceMaxGb } : {}),
     diskCapMBs: diskCapMBs(),
+  };
+}
+
+/** The agents' slice MemoryMax the charts draw, when this box runs agents in it. */
+export const sliceMaxGbHere = (): number | undefined => (cgroup.available() ? cgroup.agentsSliceMaxGb() : undefined);
+
+/** `GET /api/machine` and `orca machine`: the last hour of the SAME ring the card reads (through
+ *  `liveAnswer`, as /api/health/live does), its windows (`machineSummary`, over the card's
+ *  `liveCharts`), and the heavy queue's counts. */
+export function machineReport(instance: string, o: { now?: number; sliceMaxGb?: number } = {}): MachineReport {
+  const a = liveAnswer(1, { now: o.now, sliceMaxGb: "sliceMaxGb" in o ? o.sliceMaxGb : sliceMaxGbHere() });
+  const q = heavy.slots().view();
+  return {
+    instance, at: a.samples.at(-1)?.at ?? o.now ?? Date.now(), cores: a.cores, memTotalGb: a.memTotalGb,
+    ...(a.sliceMaxGb ? { sliceMaxGb: a.sliceMaxGb } : {}), diskCapMBs: a.diskCapMBs, stepMs: a.stepMs,
+    summary: machineSummary(a.samples, a.cores), heavy: { running: q.running.length, queued: q.queued.length }, samples: a.samples,
   };
 }
 

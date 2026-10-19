@@ -39,7 +39,7 @@ import * as notify from "./notify";
 import * as cgroup from "./cgroup";
 import { KIND_META } from "../shared/notifications";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
-import { liveAnswer, startLiveSampler } from "./liveMetrics";
+import { liveAnswer, machineReport, sliceMaxGbHere, startLiveSampler } from "./liveMetrics";
 import { protectionsReport, withLiveState } from "./protections";
 import * as verbs from "./verbs";
 import * as repos from "./repos";
@@ -389,7 +389,7 @@ const DATABASE_ONLY = new Set([
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history", "/api/health/live", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity",
+  "/api/health/history", "/api/health/live", "/api/machine", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity",
   // A workstream's reported screenshots, read off its turns (the files are served per shot).
   "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -965,7 +965,11 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "GET" && p === "/api/health/live") {
     // This machine's 15 s samples (server/liveMetrics.ts), at most the last 6 hours. In memory on the
     // machine itself, so `?instance=` forwards like /api/health.
-    return json(liveAnswer(historyHours(url.searchParams.get("hours")), { sliceMaxGb: cgroup.available() ? cgroup.agentsSliceMaxGb() : undefined }));
+    return json(liveAnswer(historyHours(url.searchParams.get("hours")), { sliceMaxGb: sliceMaxGbHere() }));
+  }
+  if (req.method === "GET" && p === "/api/machine") {
+    // `orca machine`: the same ring, its now / 5 min / 1 h windows and the heavy queue's counts.
+    return json(machineReport(db.instanceName()));
   }
   if (req.method === "GET" && p === "/api/health/history") {
     // An instance's recorded vitals (instance_metric), oldest first — read from Postgres, so either
