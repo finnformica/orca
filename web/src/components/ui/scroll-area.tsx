@@ -3,11 +3,13 @@ import * as ScrollAreaPrimitive from "@radix-ui/react-scroll-area";
 import { cn } from "@/lib/utils";
 
 /** shadcn's ScrollArea: a native scroll viewport with thin overlay scrollbars. Give it a height cap
- *  (`max-h-…` on the root and `viewportClassName`) and it scrolls inside its card, by touch too. */
+ *  (`max-h-…` in `viewportClassName`) and it scrolls inside its card, by touch too. Radix wraps the
+ *  content in a `display: table` div that grows to its widest line, so `truncate` never applies; a
+ *  vertical-only area makes it a block, and its rows take the area's width. */
 function ScrollArea({ className, viewportClassName, children, horizontal = false, ...props }: React.ComponentProps<typeof ScrollAreaPrimitive.Root> & { viewportClassName?: string; horizontal?: boolean }) {
   return (
     <ScrollAreaPrimitive.Root data-slot="scroll-area" className={cn("relative overflow-hidden", className)} {...props}>
-      <ScrollAreaPrimitive.Viewport data-slot="scroll-area-viewport" className={cn("size-full rounded-[inherit] outline-none focus-visible:ring-2 focus-visible:ring-ring/50", viewportClassName)}>
+      <ScrollAreaPrimitive.Viewport data-slot="scroll-area-viewport" className={cn("size-full rounded-[inherit] outline-none focus-visible:ring-2 focus-visible:ring-ring/50", !horizontal && "[&>div]:!block", viewportClassName)}>
         {children}
       </ScrollAreaPrimitive.Viewport>
       <ScrollBar />

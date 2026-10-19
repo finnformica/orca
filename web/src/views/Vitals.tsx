@@ -333,7 +333,7 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
                 <span className="w-14 shrink-0 text-xs">{r.kind}</span>
                 {/* The Tip's own wrapper must shrink too, or a long command pushes the row past the card. */}
                 <Tip label={r.command} className="min-w-0 flex-1"><span data-slot="heavy-command" className="min-w-0 truncate font-mono text-xs">{r.command}</span></Tip>
-                <span className="text-muted-foreground max-w-[40%] shrink-0 truncate text-xs">{r.who}</span>
+                <span className="text-muted-foreground max-w-[40%] shrink-0 truncate text-xs max-md:max-w-[25%]">{r.who}</span>
               </li>
             ))}
           </ul>
