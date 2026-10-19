@@ -1,7 +1,7 @@
 // The Vercel-style console (sidebar shell, Overview, Agents, Agent page, Usage/Repos/Settings): the
 // pure derivations first — usage rows, chart helpers, durations, the chat log's counters and find,
 // repo summaries — then the pages rendered against the fake api (tests/apiFake.ts) in a real DOM.
-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { getDefaultStore } from "jotai";
@@ -10,6 +10,7 @@ import * as store from "@/store";
 import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import { repoFilterAtom } from "@/lib/atoms";
+import * as centre from "@/lib/notificationStore";
 import {
   agentFailure, downsample, formatDuration, instanceOrder, niceMax, repoSummaries, routingBroken, rowDuration, timeTicks, untilReset,
   usageGroups, type OverviewRow,
@@ -132,6 +133,10 @@ const type = async (input: HTMLInputElement, text: string) => act(async () => {
   input.dispatchEvent(new Event("input", { bubbles: true }));
   await flush();
 });
+
+// The Shell starts the notification mirror, which holds the tab's one live stream. Tear it down, or
+// every later file in this process finds that stream already open (liveEvents counts opens).
+afterAll(() => centre.reset());
 
 describe("the console's pages", () => {
   beforeAll(() => store.configReady);

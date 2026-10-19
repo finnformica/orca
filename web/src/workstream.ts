@@ -284,6 +284,10 @@ const NARRATE = [
   "Keep it brief and factual. This is a running commentary, not a report; the summary comes at the end.",
 ].join("\n");
 
+/** The heavy-command rule (server/heavy.ts, bin/worker/orca-run), in every worker prompt beside
+ *  SCREENSHOTS: several agents share one box, and parallel test runs OOM-killed each other. */
+export const HEAVY_COMMANDS = "This box is shared with other agents, and the box-wide queue is its only CPU control. Run every heavy command through it: `orca-run --kind test|lint|build|e2e|migrate|serve -- <command>`. Heavy means a test runner (jest, vitest, bun test, pytest), Playwright, eslint, prettier, tsc, a frontend or backend build, a database migration, and a local backend or frontend that a test needs. `orca-run` waits for a slot, prints its place in the line, then runs the command and returns its exit code. The heavy tools, `npm`/`pnpm`/`yarn`/`bun` package scripts and `bash <test script>` on your PATH already queue. Never run a whole suite: run only the test files your change touches. Do not set ORCA_RUN_BYPASS=1 for a heavy command.";
+
 /** Prompt used to launch the headless agent — Orca already created it from the latest base.
  *
  *  Deliberately does NOT assume the request is work to be done. "Investigate why X is slow and report
@@ -310,6 +314,7 @@ export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">
     NARRATE,
     NO_PR,
     SCREENSHOTS,
+    HEAVY_COMMANDS,
   ].join("\n"));
 }
 
@@ -373,7 +378,7 @@ export function slackPrompt(
 /** Follow-up instruction for an agent already working a branch (resumes its session). */
 export function followUpPrompt(instruction: string, opts: { mergeWhenGreen?: boolean } = {}): string {
   const mergeNote = opts.mergeWhenGreen ? "\n\n(This PR is marked merge-when-green: Orca's merge queue holds the mark and waits for this run — and anything queued behind it — to finish, then merges once CI is green on your latest push. Commit and push as usual; no separate merge step needed.)" : "";
-  return withOutcomeContract(`${instruction}${mergeNote}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}\n${SCREENSHOTS}`);
+  return withOutcomeContract(`${instruction}${mergeNote}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}\n${SCREENSHOTS}\n${HEAVY_COMMANDS}`);
 }
 
 // Every session starts with no memory of the last one, so it starts by looking: the same three-line
@@ -413,6 +418,7 @@ export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean
     SESSION_START,
     NO_PR,
     SCREENSHOTS,
+    HEAVY_COMMANDS,
     "",
     WRITING_STYLE,
     "",
@@ -824,6 +830,7 @@ export function addressPrPrompt(ws: Pick<Workstream, "prNumber" | "branch">, par
     ...reviewLines(ws, parts.feedback, parts.threads, parts.followed, parts.comments),
     NO_PR,
     SCREENSHOTS,
+    HEAVY_COMMANDS,
   ].join(" "));
 }
 
@@ -2251,6 +2258,22 @@ export function protectionsWarning(
     };
   }
   return oom ? { warn: false, text: oom } : undefined;
+}
+
+/** The machine card's heavy-command list: running first (oldest first), then the queue in order.
+ *  `who` is the workstream (branch, else repo, else "shell"); `since` is when it started or queued.
+ *  Empty when nothing runs or waits. Pure. */
+export function heavyQueueRows(view: { running: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number; startedAt?: number }[]; queued: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number }[] } | undefined): {
+  id: string; state: "running" | "queued"; kind: string; command: string; who: string; since: number; position?: number;
+}[] {
+  if (!view) return [];
+  const who = (e: { repo?: string; branch?: string }) => e.branch ?? e.repo ?? "shell";
+  const short = (c: string) => (c.length > 80 ? `${c.slice(0, 79)}…` : c);
+  return [
+    ...[...view.running].sort((a, b) => (a.startedAt ?? a.queuedAt) - (b.startedAt ?? b.queuedAt))
+      .map((e) => ({ id: e.id, state: "running" as const, kind: e.kind, command: short(e.command), who: who(e), since: e.startedAt ?? e.queuedAt })),
+    ...view.queued.map((e, i) => ({ id: e.id, state: "queued" as const, kind: e.kind, command: short(e.command), who: who(e), since: e.queuedAt, position: i + 1 })),
+  ];
 }
 
 // ---- review signal: who approved, what humans said, what the AI reviewers flagged, what's open ----

@@ -1254,6 +1254,25 @@ orchestrator's) and `orca-shot <url> [--viewport 390x844] [--dark] …`, which p
 every worker prompt says it is the ONLY way to take a screenshot (`SCREENSHOTS`), and shot paths in a
 reply ride the worker report (`reportedShots` in `workerEvent`). `--type <text>` types into the
 focused field.
+**Heavy commands** (`server/heavy.ts`): agents ran Playwright, Jest, eslint and builds at once and
+OOM-killed each other in `orca-agents.slice`. Finn removed the slice's CPUQuota: this queue is the
+ONLY CPU control, so it must see every heavy task. A box-wide slot queue, like `orca-shot`'s but with
+N slots. Kinds: e2e, test, lint, build, migrate, serve (a local server for a test). Limits per kind
+and in total, plus a CPU cost per kind against `cpuBudget` (defaults: e2e 1.5, build 1.5, test 1,
+lint 1, migrate 0.5, serve 0.5; budget 3 on the 4 vCPU box) — all `heavyQueue` in the app config.
+FIFO across the budget and the total (a small job never passes a large one); only a full kind is
+skipped. A max wait, and a max run time per kind (serve 60 min, the rest 30). Workers run `orca-run
+[--kind …] -- <cmd>` (`bin/worker/orca-run`, `POST /api/heavy`, NDJSON like `/api/screenshot`): the
+slot lives as long as the held request, so a killed CLI frees it; `agent.launch` puts `ORCA_RUN_ID`
+in the run's env and its exit calls `releaseRun`; a sweep frees a dead pid or a slot past its max
+run time and stops its command. Each granted command runs in its own capped scope in
+`orca-agents.slice` when the box has a user bus. `bin/worker/.heavy-shim` is linked as every heavy
+tool, as npx/bunx, as npm/pnpm/yarn/bun (by the package script's NAME — npm puts node_modules/.bin
+first, so a script's own tools never reach a shim) and as bash (`bash <file>` by the file's name);
+jest and `playwright test` get one worker unless the call sets one. `ORCA_RUN_SLOT` stops a nested
+call from queueing again, and `ORCA_RUN_BYPASS=1` is the escape hatch. Every worker prompt carries
+`HEAVY_COMMANDS`. With no bridge, `orca-run` runs the command anyway. The machine card lists running
+and queued commands and the CPU in use (`heavy` on `/api/health`, `heavyQueueRows`).
 **No worker browsers** (2026-10-19: branch-demo's committed `.mcp.json` started playwright and
 chrome-devtools MCP servers in every worker; seven of each, with Chrome, pushed load to 29 on 4 cores).
 Two guards. (1) `server/mcp.ts`: every claude launch gets `--strict-mcp-config` and Orca's own

@@ -17,6 +17,7 @@ import * as outbox from "./outbox";
 import * as bus from "./bus";
 import { resolvePrompt } from "./attachments";
 import * as cgroup from "./cgroup";
+import * as heavy from "./heavy";
 import { noteOomKill } from "./health";
 import { existsSync } from "fs";
 import { homedir, tmpdir } from "os";
@@ -158,6 +159,11 @@ export type RunFinished = {
 
 // Orca's own secrets never reach the agent's process (server/env.ts); re-exported for callers.
 export { agentEnv, WORKER_BIN } from "./env";
+
+/** What a run's process knows about itself, for `orca-run`'s slot. Pure. */
+export function runIdentity(runId: string, options: { repo?: string; branch?: string }): Record<string, string> {
+  return { ORCA_RUN_ID: runId, ...(options.repo ? { ORCA_REPO: options.repo } : {}), ...(options.branch ? { ORCA_BRANCH: options.branch } : {}) };
+}
 
 /** How this run reuses prior context — derived from what the launch options carry, so the ledger's
  *  resume/reset/handoff breakdown matches the store's actual continuation decision. Pure. */
@@ -771,7 +777,8 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       // A positive OOM score scoped or not: the bridge's -500 must not pass to its agents.
       { available: scoped, memoryMaxGb, cpuWeight, unit: scopeUnit, slice: cgroup.AGENTS_SLICE, oomScoreAdj: linux ? cgroup.oomScoreAdj() : undefined },
     ),
-    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...(scoped ? scopedEnv : {}), ...options.env }, stdout: "pipe", stderr: "pipe" },
+    // ORCA_RUN_ID / ORCA_REPO / ORCA_BRANCH: `orca-run` (server/heavy.ts) ties its slot to this run.
+    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...(scoped ? scopedEnv : {}), ...runIdentity(runId, options), ...options.env }, stdout: "pipe", stderr: "pipe" },
   );
   let timedOut = false;
   const timeout = options.timeoutMs ? setTimeout(() => { timedOut = true; proc.kill(); }, options.timeoutMs) : undefined;
@@ -800,6 +807,8 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       tailText(proc.stderr).then((t) => (errHolder.raw = t)),
     ]);
     const code = await proc.exited;
+    // A heavy command of this run (bin/worker/orca-run) must not keep its slot past the run.
+    heavy.slots().releaseRun(runId);
     await Promise.race([reads, new Promise((r) => setTimeout(r, DRAIN_GRACE_MS))]);
     const out = outHolder.raw;
     const err = errHolder.raw;

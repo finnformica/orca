@@ -142,7 +142,9 @@ test("recordKills flags the run's workstream and writes the warning into its tra
 // On this box an agent's own shell is in orca-agents.slice: a real process named `chrome` there is
 // killed. Only that one pid is looked at, so nothing else on the box is touched.
 const ownCgroup = (() => { try { return readFileSync("/proc/self/cgroup", "utf8"); } catch { return ""; } })();
-test.skipIf(!ownCgroup.includes("/orca-agents.slice/"))("a real `chrome` process in an agent's scope is killed", async () => {
+// Under the test queue (`bun test` through orca-run) the test is in an exempt `orca-heavy-` scope.
+const inRunScope = ownCgroup.includes("/orca-agents.slice/") && /\/orca-run-[0-9a-f-]{36}\.scope/.test(ownCgroup) && !/\/orca-(shot|heavy)-/.test(ownCgroup);
+test.skipIf(!inRunScope)("a real `chrome` process in an agent's scope is killed", async () => {
   const dir = mkdtempSync(join(tmpdir(), "orca-bw-bin-"));
   try {
     copyFileSync("/bin/sleep", join(dir, "chrome"));

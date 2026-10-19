@@ -49,6 +49,7 @@ import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
 import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
+import * as heavy from "./heavy";
 import { checkCaller, instanceHosts, listServers, selfServer, serverGate, withIdentity } from "./servers";
 import { isAutomatic, leaseHolder } from "../shared/integrations";
 import { instanceOptions } from "../shared/integrationSettings";
@@ -198,6 +199,9 @@ setInterval(() => {
   if (!primary.held()) return;
   void loadConfig().then((cfg) => mergeQueue.tick(cfg)).catch(db.logUnlessDown("orca: merge queue pass failed"));
 }, mergeQueue.MERGE_POLL_MS).unref();
+// The heavy-command queue (server/heavy.ts): take back a slot past its max run time or whose
+// `orca-run` client died without closing its connection.
+setInterval(() => heavy.slots().sweep(), 15_000).unref();
 // Only this bridge may run the orchestrator's wakes: a bridge on code too old for the election (a
 // stray preview bridge, incident 2026-10-15) that launched one is stopped with it, and the wake is
 // re-run here (orchestrator.evictForeignWake). Once a minute, on the primary.
@@ -402,6 +406,12 @@ const INSTANCE_IS_A_FILTER = new Set(["/api/health/history"]);
 
 /** Forward a request to the instance that owns the repo. Returns undefined when the request should
  *  be handled locally. (The chat's live stream is not forwarded — /api/events relays instead.) */
+/** This box's heavy-command queue, for /api/heavy and the machine card (/api/health). */
+function heavyView(cfg: OrcaConfig): heavy.HeavyView {
+  heavy.setSettings(heavy.heavySettings(cfg.heavyQueue));
+  return heavy.slots().view();
+}
+
 async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: OrcaConfig, body: Record<string, unknown>): Promise<Response | undefined> {
   // An explicit `instance` on an otherwise local route (`/api/health?instance=cloud`) still forwards —
   // except where `instance` names whose rows to read, not where to run.
@@ -655,6 +665,36 @@ async function api(req: Request, url: URL): Promise<Response> {
     }
     return json({ error: "not found" }, 404);
   }
+  // The box-wide queue for heavy commands (server/heavy.ts, bin/worker/orca-run). Never forwarded:
+  // a slot is for THIS box's CPU and memory. Like /api/screenshot the answer is NDJSON: `{queued: N}`
+  // while waiting, then `{granted}`, then a heartbeat until the slot is back. The slot lives as long
+  // as this request: a killed `orca-run` drops the connection, and that frees it.
+  if (req.method === "POST" && p === "/api/heavy") {
+    if (!heavy.isHeavyKind(body.kind)) return json({ error: `kind must be one of ${heavy.HEAVY_KINDS.join(", ")}` }, 400);
+    heavy.setSettings(heavy.heavySettings(cfg.heavyQueue));
+    const request: heavy.HeavyRequest = {
+      kind: body.kind, command: String(body.command ?? "").slice(0, 500),
+      ...(typeof body.runId === "string" && body.runId ? { runId: body.runId } : {}),
+      ...(typeof body.repo === "string" && body.repo ? { repo: body.repo } : {}),
+      ...(typeof body.branch === "string" && body.branch ? { branch: body.branch } : {}),
+      ...(typeof body.cwd === "string" && body.cwd ? { cwd: body.cwd } : {}),
+      ...(Number.isInteger(body.pid) && body.pid > 0 ? { pid: body.pid } : {}),
+    };
+    const settings = heavy.heavySettings(cfg.heavyQueue);
+    const scoped = cgroup.available();
+    return heavy.acquireResponse(heavy.slots(), request, req.signal, {
+      maxRunMs: settings.maxRunMs[request.kind], env: scoped ? cgroup.runtimeEnv() : {},
+      prefix: (unit) => heavy.scopePrefix({ available: scoped, unit, memoryMaxGb: settings.memoryMaxGb, slice: cgroup.AGENTS_SLICE }),
+    });
+  }
+  if (req.method === "POST" && p === "/api/heavy/release") {
+    // The CLI's normal end: the command exited. A missing or unknown id is a no-op.
+    if (typeof body.id === "string") heavy.slots().release(body.id);
+    return json({ ok: true });
+  }
+  if (req.method === "GET" && p === "/api/heavy") {
+    return json(heavyView(cfg));
+  }
   if (p.startsWith("/api/orchestrator") && cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName()) {
     // ONE instance hosts the orchestrator (orchestratorOn); everything about it goes there.
     const base = cfg.instances?.[cfg.orchestratorOn];
@@ -898,7 +938,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const since = Date.parse(cfg.instanceBillingSince?.[db.instanceName()] ?? "");
     const month = rate.hourlyUsd > 0 ? await monthCost(rate.hourlyUsd, Number.isFinite(since) ? { billingSince: since } : {}).catch(() => undefined) : undefined;
     // `protections`: which of deploy/harden.sh's protections this box is missing (server/protections.ts).
-    return json({ ...h, rate, month, protections: protections && withLiveState(protections, cgroup.userManagerDown()), database: db.databaseStatus(), outbox: outbox.summary() });
+    return json({ ...h, rate, month, protections: protections && withLiveState(protections, cgroup.userManagerDown()), database: db.databaseStatus(), outbox: outbox.summary(), heavy: heavyView(cfg) });
   }
   if (req.method === "GET" && p === "/api/notifications") {
     // The centre's rows (any instance answers: one table). `since` is the catch-up cursor after a
