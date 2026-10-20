@@ -10,9 +10,10 @@ if (gitRepoVars.length) {
 // This host's identity must not reach the suite. Bun loads a worktree's copied .env (the box's
 // ORCA_INSTANCE, ORCA_BIND, ORCA_PREVIEW_HOST/BIND), and a check run by Orca inherits the agent's
 // env (a real GH_TOKEN, ORCA_RUN_ID/REPO/BRANCH). CI has none of them, and the tests assume that:
-// a leaked ORCA_PREVIEW_HOST failed P4, a leaked GH_TOKEN the githubEnv test. ORCA_RUN_SLOT stays:
+// a leaked ORCA_PREVIEW_HOST failed P4, a leaked GH_TOKEN the githubEnv test, the box's Tailscale
+// API key (TS_OAUTH_*) listed its real tailnet servers in the terminal's trusted origins. ORCA_RUN_SLOT stays:
 // it stops a nested heavy command from queueing again behind the slot this run holds.
-for (const k of ["GH_TOKEN", "GITHUB_TOKEN", "ORCA_INSTANCE", "ORCA_BIND", "ORCA_PREVIEW_HOST", "ORCA_PREVIEW_BIND", "ORCA_RUN_ID", "ORCA_REPO", "ORCA_BRANCH", "ORCA_URL"]) delete process.env[k];
+for (const k of ["GH_TOKEN", "GITHUB_TOKEN", "ORCA_INSTANCE", "ORCA_BIND", "ORCA_PREVIEW_HOST", "ORCA_PREVIEW_BIND", "ORCA_RUN_ID", "ORCA_REPO", "ORCA_BRANCH", "ORCA_URL", "ORCA_SERVER_URL", "ORCA_UI_PORT", "TS_OAUTH_CLIENT_ID", "TS_OAUTH_CLIENT_SECRET", "TS_API_URL"]) delete process.env[k];
 // Nor this host's hydra (and its `claude` shim beside it): a test bridge's usage pass runs `hydra`,
 // which runs `claude --version` — the test's fake claude, an extra launch compactRouting counted.
 // A test that wants hydra puts its own shim first on PATH.
