@@ -53,6 +53,24 @@ describe("agent header: title row splits from status/actions below md, tab pill 
     expect(link.getAttribute("target")).toBe("_blank");
   });
 
+  test("the header has no Follow up button, and Verified sits immediately left of Actions", async () => {
+    apiFake.prsData = [{
+      number: 94, branch: "feat-head", title: "Header layout", url: "https://github.com/o/r/pull/94", head: "abc1234",
+      state: "OPEN", isDraft: false, ciStatus: "passing", reviewStatus: "review_required", mergeable: "MERGEABLE", autoMergeEnabled: false,
+    }];
+    apiFake.enrichmentData.set("r::feat-head", { title: "Header layout", verified: { by: "user", at: new Date().toISOString(), sha: "abc1234", pr: 94 } });
+    await store.refresh();
+    apiFake.prDetailData = { number: 94, title: "Header layout", url: "https://github.com/o/r/pull/94", head: "feat-head" };
+    await mount(94);
+
+    const head = container!.querySelector('[data-slot="agent-header"]')!;
+    expect(head.querySelector('button[aria-label="Follow up"]')).toBeNull();
+    const actions = head.querySelector('button[aria-label="Actions"]')!;
+    const verified = head.querySelector<HTMLElement>('[data-slot="verified-button"]')!;
+    expect(verified.dataset.state).toBe("verified");
+    expect(actions.previousElementSibling).toBe(verified.closest('[data-slot="tip"]')); // the Tip around it
+  });
+
   test("a coworker's PR (no workstream) still shows the PR's own title", async () => {
     apiFake.prDetailData = { number: 91, title: "Someone else's change", url: "https://github.com/o/r/pull/91" };
     await mount(91);

@@ -134,7 +134,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
             title={<><a href={pr.url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground mr-1.5 font-normal hover:underline">#{pr.number}</a>{row.title}</>}
             status={liveRow ? <RowStatus row={liveRow} /> : <Badge variant="outline" className="capitalize">{(pr.state ?? "").toLowerCase()}</Badge>}
             source={<HeaderSource branch={pr.head} prNumber={pr.number} prUrl={pr.url} />}
-            actions={liveRow && <WorkstreamActions row={liveRow} compact={narrow} tipSide="bottom" leading={<><VerifiedButton row={liveRow} icon /><PreviewCell row={liveRow} /></>} />} />
+            actions={liveRow && <WorkstreamActions row={liveRow} compact={narrow} tipSide="bottom" followUp={false} leading={<PreviewCell row={liveRow} />} beforeMenu={<VerifiedButton row={liveRow} icon />} />} />
           <TabsList className={HEADER_TABS}>
             <TabsTrigger value="overview">Overview</TabsTrigger>
             {liveRow && <TabsTrigger value="chat">Chat</TabsTrigger>}
