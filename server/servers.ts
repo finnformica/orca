@@ -217,12 +217,17 @@ export function devicesToServers(devices: TsDevice[], port: number, now = Date.n
   });
 }
 
-/** Mark self and put it first; add it when the source does not list it. Pure. */
+const hostOf = (url: string): string | undefined => { try { return new URL(url).hostname; } catch { return undefined; } };
+
+/** Mark self and put it first; add it when the source does not list it. A discovered row on this
+ *  server's HOST is self even on another scheme or port (`ORCA_SERVER_URL` names an HTTPS front
+ *  door, discovery lists `http://<host>:<port>`), and it takes this server's own url. Pure. */
 export function withSelf(rows: (ServerEntry & { online: boolean })[], self: ServerEntry): ServerInfo[] {
   const selfOrigin = originOf(self.url);
-  const out: ServerInfo[] = rows.map((r) => ({ ...r, self: originOf(r.url) === selfOrigin }));
+  const selfHost = hostOf(self.url);
+  const out: ServerInfo[] = rows.map((r) => ({ ...r, self: originOf(r.url) === selfOrigin || (!!selfHost && hostOf(r.url) === selfHost) }));
   const mine = out.find((r) => r.self);
-  if (mine) { mine.online = true; return [mine, ...out.filter((r) => r !== mine)]; }
+  if (mine) { mine.online = true; mine.url = self.url; return [mine, ...out.filter((r) => r !== mine)]; }
   return [{ ...self, online: true, self: true }, ...out];
 }
 
