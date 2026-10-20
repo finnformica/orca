@@ -531,6 +531,8 @@ The laptop runs its own bridge with the database of the box. It shows the same b
 
 5. Start it. Use `bun run dev` (bridge on `:8787`, UI on `http://localhost:8788`). Or use
    `bun run build`, then `bun run server`.
+   To make the laptop update itself from `main`, see
+   [Local machine](#local-machine-auto-deploy-on-macos).
 
 Notes:
 
@@ -639,6 +641,84 @@ stops an orchestrator wake.
 ```sh
 cd /opt/orca && git pull --ff-only && bun run build && sudo systemctl restart orca
 ```
+
+### Local machine: auto-deploy on macOS
+
+A Mac can update its own Orca like the box does. `deploy/install-local-autodeploy.sh` installs two
+LaunchAgents for your user:
+
+- `dev.orca.bridge` runs the built bridge (`bun run server/index.ts`) from the checkout. It starts
+  at login. launchd starts it again when it stops. The UI is the build in `web/dist`, on the bridge
+  port (`http://localhost:8787`).
+- `dev.orca.autodeploy` runs `deploy/autodeploy.sh` each 60 s with `ORCA_AUTODEPLOY_MODE=launchd`.
+  This is the same script as on the box.
+
+Each tick of the local auto-deploy does these steps:
+
+1. If the checkout is not on `main`, it logs `skipped: … not main` and stops.
+2. If a tracked file has uncommitted changes, it logs `skipped: … has uncommitted changes` and
+   stops. Untracked files do not stop it.
+3. It runs `git fetch origin main`. If `HEAD` is already the same, it logs `up to date at <sha>`.
+4. If the orchestrator is in a wake, it logs `deferred: busy` and tries again at the next tick.
+5. It runs `git pull --ff-only`.
+6. It runs `bun install --frozen-lockfile` only if `package.json` or `bun.lock` changed.
+7. It runs `bun run build`. If the install or the build fails, the bridge does not restart.
+8. It runs `launchctl kickstart -k gui/<uid>/dev.orca.bridge` and logs `deployed <sha>`.
+
+The local auto-deploy does not use `bun run dev`. The dev launcher restarts the bridge on each file
+change. Thus a pull restarts it before the install and the build pass.
+
+Install it from the deploy clone (see below):
+
+1. Stop `bun run dev` if it runs. The bridge agent uses the same port.
+2. Open a shell where `bun`, `gh` and `claude` are on your `PATH`. The agents keep this `PATH`.
+3. Run the installer. It runs `bun install` and `bun run build` once, then loads both agents.
+
+```sh
+cd <orca-checkout>
+deploy/install-local-autodeploy.sh
+```
+
+Do these checks:
+
+```sh
+launchctl print gui/$(id -u)/dev.orca.bridge | head -n 5
+tail -n 5 ~/.orca/autodeploy.log     # one line per tick
+tail -n 20 ~/.orca/bridge.log        # the bridge output
+```
+
+Pause and resume the local auto-deploy:
+
+```sh
+launchctl bootout gui/$(id -u)/dev.orca.autodeploy                                   # pause
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.orca.autodeploy.plist    # resume
+```
+
+Uninstall both agents. The logs in `~/.orca` stay.
+
+```sh
+deploy/install-local-autodeploy.sh --uninstall
+```
+
+Run the installer again after you move `bun` or change your `PATH`. The bridge port comes from
+`ORCA_API_PORT` in `.env` (default 8787).
+
+**Use a separate deploy clone.** Run the auto-deploy from a clone that you do not work in, for
+example `~/orca-deploy`. Do your own work in another clone. Then a branch or an uncommitted edit
+never stops the update. The box does the same: its deploy clone is only for the deploy.
+
+1. Clone Orca into the deploy clone.
+2. Copy your `.env` into the deploy clone.
+3. Run the installer from the deploy clone.
+
+```sh
+git clone https://github.com/finnformica/orca.git ~/orca-deploy
+cp <your-orca-clone>/.env ~/orca-deploy/.env
+cd ~/orca-deploy && deploy/install-local-autodeploy.sh
+```
+
+If the deploy clone goes off `main` or gets an uncommitted edit, the auto-deploy logs `skipped:`.
+It tries again each minute until the clone is clean `main` again.
 
 **Migrations** run when the bridge starts. Orca only adds steps and never changes them. New steps
 have names (`YYYYMMDD-slug`) and are idempotent. Only a merge to `main` reserves a step name. Thus,
