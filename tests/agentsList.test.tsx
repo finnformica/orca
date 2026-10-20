@@ -259,7 +259,7 @@ describe("agents list view", () => {
     const ids = (branch: string) => quick(branch).map((q) => q.dataset.quickAction);
     expect(ids("feat-ci")).toEqual(["addressPr"]); // review data not loaded: CI alone decides; a real problem shows Address PR alone
     expect(ids("feat-draft")).toEqual(["markReady", "addressPr"]);
-    expect(ids("feat-ok")).toEqual(["merge", "autoMerge"]); // approved + clean: Merge and Enable auto-merge (GitHub's), never Slack
+    expect(ids("feat-ok")).toEqual(["merge"]); // approved + already safe to merge: GitHub would merge it now rather than arm auto-merge, so Merge is the one button
     expect(ids("local-idle")).toEqual(["createPr"]); // the worktree has commits of its own
     // Icon-only: no text in the button, the label as its aria-label and in its tooltip.
     for (const q of quick("feat-draft")) {
@@ -441,6 +441,22 @@ describe("agents list by its own width", () => {
   afterEach(() => { Object.defineProperty(proto, "clientWidth", real.client); Object.defineProperty(proto, "offsetWidth", real.offset); Element.prototype.getBoundingClientRect = real.rect; });
   const heads = () => [...container!.querySelectorAll('[data-slot="workstream-list-header"] [role="columnheader"]')].map((h) => h.textContent);
 
+  test("a piece that measures narrower once folded does not unfold its column again (no render loop)", async () => {
+    seed();
+    fakeLayout(650);
+    // A Checks & review piece is 48px in its own cell but 20px once folded into the PR cell (behind
+    // its +N). At 650px the title is 252px with the column unfolded (under the 280 minimum) and
+    // 304px by the folded measure: unfolded it does not fit, folded it would — each commit flipping
+    // the other, until React gave up and the page went blank.
+    const rect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const r = rect.call(this);
+      return (this as HTMLElement).dataset?.colPart === "signals" && this.closest('[data-slot="row-pr-line"]') ? { ...r, width: 20, right: 20 } as DOMRect : r;
+    };
+    await mount();
+    expect(heads()).toEqual(["Workstream", "PR", "Actions"]);
+  });
+
   test("columns fold by priority at the measured widths, before paint, and unfold when space returns", async () => {
     seed();
     fakeLayout(1200);
@@ -451,7 +467,9 @@ describe("agents list by its own width", () => {
     const relayout = async (px: number) => { fakeLayout(px); await act(async () => { await store.refresh(); await flush(); await flush(); }); };
     await relayout(700); // Status leads the subline
     expect(heads()).toEqual(["Workstream", "PR", "Checks & review", "Actions"]);
-    expect(rowOf("feat-ci").querySelector('[data-slot="row-subline"] > [data-slot="folded-status"] [data-slot="run-status"]')).not.toBeNull();
+    // The folded subline shows the status LABEL (StatusLabel), not the duration beside it — that is
+    // the first thing dropped behind +N when space runs out (see the dedicated test below).
+    expect(rowOf("feat-ci").querySelector('[data-slot="row-subline"] > [data-slot="folded-status"] [data-slot="status-trigger"]')).not.toBeNull();
     await relayout(600); // the checks follow the PR number
     expect(heads()).toEqual(["Workstream", "PR", "Actions"]);
     expect([...rowOf("feat-ci").querySelectorAll<HTMLElement>('[data-slot="row-pr-line"] > [data-subline-item]')].map((i) => i.dataset.sublineItem)).toEqual(["state", "pr", "checks", "review"]);
@@ -465,6 +483,23 @@ describe("agents list by its own width", () => {
     await relayout(1200); // space returns: every column back
     expect(heads()).toEqual(["Workstream", "Status", "PR", "Checks & review", "Actions"]);
     expect(rowOf("feat-ci").querySelector('[data-slot="folded-status"]')).toBeNull();
+  });
+
+  test("the folded subline drops the elapsed time first: it is the least relevant item beside the status", async () => {
+    seed(); // local-run is running — its elapsed time (StatusDuration) joins the subline beside the status label
+    fakeLayout(500); // fold.status: the status label and the running duration both fold into the subline
+    await mount();
+    const run = rowOf("local-run");
+    const items = [...run.querySelectorAll<HTMLElement>('[data-slot="row-subline"] > [data-subline-item]')].filter((i) => i.textContent);
+    const keys = items.map((i) => i.dataset.sublineItem);
+    // Placed last: sublineOverflow hides a trailing run in array order, so the last item is always
+    // the first candidate dropped behind +N.
+    expect(keys[keys.length - 1]).toBe("statusDuration");
+    expect(keys.slice(0, 2)).toEqual(["status", "state"]); // the label and the lane pill still lead
+    const hiddenKeys = items.filter((i) => i.getAttribute("aria-hidden") === "true").map((i) => i.dataset.sublineItem);
+    expect(hiddenKeys).toContain("statusDuration"); // the timer goes...
+    expect(hiddenKeys).not.toContain("status"); // ...while the status label...
+    expect(hiddenKeys).not.toContain("state"); // ...and the lane pill stay visible
   });
 
   test("a narrow list stacks its rows on a wide viewport (the docked panel open); no instruction, plan or grant line there", async () => {
@@ -499,6 +534,9 @@ describe("agents list by its own width", () => {
   test("a wide list keeps the grid; a subline that does not fit hides its tail behind +N, listed in full", async () => {
     fakeLayout(1200);
     seed();
+    // Model + preview + diffstat alone (now the repo badge sits by the title, not in the subline)
+    // fit inside 200px — an error makes a real 4th item, so this still exercises overflow.
+    apiFake.agentsData = [...(apiFake.agentsData ?? []), { branch: "feat-ci", worktreePath: "/wt/feat-ci", agentStatus: "error", agentError: "Something broke" }];
     await mount();
     expect(container!.querySelector<HTMLElement>('[data-slot="workstream-list"]')!.dataset.layout).toBe("grid");
     const ci = rowOf("feat-ci");

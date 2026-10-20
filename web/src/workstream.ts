@@ -61,8 +61,12 @@ export function canMerge(s: PrStatusLike): boolean {
  *  the final arbiter — it recomputes and errors clearly if the PR truly can't merge. Approval is
  *  deliberately NOT required here — GitHub branch protection enforces required reviews on its side,
  *  so this lets an owner merge their own PR (which GitHub won't let them self-approve) on an
- *  unprotected repo, while a protected team repo still rejects the unapproved `gh pr merge`. */
-export function mergeSafe(s: PrStatusLike): boolean {
+ *  unprotected repo, while a protected team repo still rejects the unapproved `gh pr merge`.
+ *  Takes just `mergeable` + `ciStatus` (not the full `PrStatusLike`) so a board row — which has
+ *  those two fields but not `state`/`reviewStatus` — can reuse this directly (see `quickActions`,
+ *  `workstreamMenu`): the same rule `server/gh.ts`'s `enableAutoMerge` uses to decide its clean-status
+ *  fallback, so the UI never offers a button GitHub would refuse and merge instead. */
+export function mergeSafe(s: Pick<PrStatusLike, "mergeable" | "ciStatus">): boolean {
   return s.mergeable !== "CONFLICTING" && ciOk(s.ciStatus);
 }
 
@@ -741,7 +745,7 @@ export function appendQuote(draft: string, quote: string): string {
 function attachmentSection(messages: string[]): string[] {
   const files = attachmentRefs(messages.join("\n"));
   if (!files.length) return [];
-  return ["", "## Attachments", "Files attached to the messages above. To give one to a worker, pass `--attach <id>` to orca spawn / orca send (repeatable):",
+  return ["", "## Attachments", "Files attached to the messages above. To give one to a worker, pass `--attach <id>` to orca spawn / orca send; to send one to a channel, to orca post (repeatable):",
     ...files.map((f) => `- ${f.id}  ${f.name}`)];
 }
 
@@ -1782,6 +1786,18 @@ const ORCA_COMMANDS = [
   "                                  on the Handoffs page. A secret or a file over 10 MB blocks it. `orca handoff list`",
   "  orca notes                      print your notes",
   "  orca notes set \"<the whole new text>\"",
+  "  orca cloudflare <read>          the user's Cloudflare account (read access): account | workers (created / modified)",
+  "                                  | deployments <worker> | versions <worker> (author, source) | routes [--zone <zone>]",
+  "                                  | domains (Worker custom domains) | pages | r2 | d1 | zones | dns --zone <zone> [--type t] [--name n]",
+  "                                  | analytics [--worker w] [--since 24h] [--until t] | audit [--resource <name>]",
+  "                                  [--actor <email>] [--since 7d] [--until t] [--limit 50]. A refusal names the token",
+  "                                  permission it lacks: tell the user, never work around it",
+  "  orca cloudflare rollback <worker> --version <id> [--message \"…\"] [--confirm]   deploy that version at 100%",
+  "  orca cloudflare delete <worker> [--confirm]                  delete the Worker and its versions",
+  "  orca cloudflare route add --zone <zone> --pattern <host/path*> --worker <name> [--confirm]",
+  "  orca cloudflare route remove --zone <zone> (--id <route id> | --pattern <pattern>) [--confirm]",
+  "                                  the only Cloudflare writes. Without --confirm each prints its plan and changes",
+  "                                  nothing. Confirm only when the user asked for that exact change; each is logged",
   "  orca channels                   the channel links (Slack, Discord, email…), subscriptions and pairing codes",
   "  orca post --link <id> [--thread <id> | --repo <repo> --branch <branch>] \"<text>\"   post through a channel",
   "                                  link (retried if it fails); with --repo/--branch, in that workstream's thread.",
@@ -1789,6 +1805,9 @@ const ORCA_COMMANDS = [
   "                                  Answer an outside sender on the link their message came from",
   "  orca post --reply \"<text>\"      answer the outside message that woke you, on its link and in its thread —",
   "                                  never copy a thread id by hand",
+  "      --attach <id|path> (repeatable, on --link/--reply/--repo --branch posts) sends a file with the post, an image",
+  "                                  inline (Discord: at most 10 files, 10 MB each). An adapter with no file support",
+  "                                  refuses the post. From an outside message's wake, attachment ids only",
   "  orca thread link <adapter> <thread-id> --repo <repo> --branch <branch> [--link <id>]   send replies in that",
   "                                  external thread to the workstream",
   "  orca ask-user \"<question>\"      ask the user in Orca and on every channel subscribed to questions",
@@ -2084,6 +2103,34 @@ export function verifiedTip(mark: VerifiedMark, state: VerifiedState, head?: str
     ? `Verified by ${who}${when}${on}. New commits landed since${head ? ` (now ${head.slice(0, 7)})` : ""}: test it again.`
     : `Verified by ${who}${when}${on}. Ask a coworker to approve it.`;
 }
+
+// ---- repo badge: a stable colour per repo name ----
+
+/** A fixed set of soft pastel tones for the repo badge (console.tsx RepoBadge), the Verified
+ *  badge's own recipe repeated per colour (`bg-<colour>/15-20`, a darker text shade, a dark-mode
+ *  variant where the background token itself is too light to read as text — geist-blue/green are
+ *  dark enough to use directly, like Pill's own blue/green/amber/purple tones do). Order is part of
+ *  the contract: `repoBadgeToneIndex` picks by position, so never reorder or remove an entry —
+ *  append only. */
+export const REPO_BADGE_TONES = [
+  "bg-geist-blue/15 text-geist-blue",
+  "bg-geist-green/15 text-geist-green",
+  "bg-geist-teal/20 text-teal-700 dark:text-teal-300",
+  "bg-geist-amber/15 text-geist-warning-fg",
+  "bg-purple-500/15 text-purple-700 dark:text-purple-400",
+  "bg-pink-500/15 text-pink-700 dark:text-pink-400",
+] as const;
+
+/** A stable index into REPO_BADGE_TONES for a repo name: same name, same colour, every time — a
+ *  plain string hash (djb2-ish), not cryptographic, only spread across the fixed palette. Pure. */
+export function repoBadgeToneIndex(repo: string): number {
+  let h = 5381;
+  for (let i = 0; i < repo.length; i++) h = ((h * 33) ^ repo.charCodeAt(i)) >>> 0;
+  return h % REPO_BADGE_TONES.length;
+}
+
+/** The repo badge's classes for this repo name. Pure. */
+export const repoBadgeTone = (repo: string): string => REPO_BADGE_TONES[repoBadgeToneIndex(repo)]!;
 
 export type PillTone = "default" | "blue" | "green" | "purple" | "teal" | "amber";
 /** The lane's own pill, with no auto-merge override — the DONE lane's "Merged" rather than its
@@ -4122,7 +4169,10 @@ export function reviewProblems(d: Pick<ReviewDigest, "severe" | "human">): numbe
  *  4/5. Open, not approved, nothing worse than nits / info-level bot threads → Send to Slack (Bump
  *     on Slack once posted, its tooltip saying when) + auto-merge (rule 7). Still shown while an
  *     agent runs (rule 8).
- *  6. Approved (or the Mergeable lane) with nothing outstanding → Merge + auto-merge.
+ *  6. Approved (or the Mergeable lane) with nothing outstanding → Merge + auto-merge — unless it is
+ *     already safe to merge right now (rule 7a): then Merge alone, because GitHub refuses to ARM
+ *     auto-merge on a PR this clean and merges it instead (the clean-status fallback in
+ *     `server/gh.ts`), so a second "Enable auto-merge" button there would quietly just merge too.
  *  7. Auto-merge: Enable auto-merge (GitHub's), or — once GitHub has it on — Disable auto-merge
  *     drawn lit, its tooltip saying it merges once checks and reviews pass. A PR on Orca's own merge
  *     queue shows the same lit icon, disabled (a non-clickable indicator; `orca merge --cancel`
@@ -4143,12 +4193,18 @@ export function quickActions(row: QuickActionRow, ctx: QuickActionContext): Quic
   if (row.isDraft) return [{ id: "markReady", label: "Ready for review" }, ...(problem ? [address] : [])];
   if (problem) return [address];
 
+  const autoMergeOn = row.autoMergeEnabled || row.mergeWhenGreen;
   const autoMerge: QuickAction = row.autoMergeEnabled
     ? { id: "disableAutoMerge", label: "Disable auto-merge", on: true, tip: "Auto-merge on — GitHub merges it once checks and reviews pass. Click to turn it off" }
     : row.mergeWhenGreen
       ? { id: "autoMerge", label: "Auto-merge on", on: true, disabled: "Auto-merge on — Orca's merge queue merges it once checks pass and it merges clean" }
       : { id: "autoMerge", label: "Enable auto-merge", tip: "Enable auto-merge — GitHub merges it once checks and reviews pass" };
-  if (row.reviewStatus === "approved" || row.lane === "MERGEABLE") return [{ id: "merge", label: "Merge" }, autoMerge];
+  if (row.reviewStatus === "approved" || row.lane === "MERGEABLE") {
+    // Already safe to merge (no conflict, CI not pending — `problem` above ruled out a conflict or
+    // failing CI) and not yet armed or queued: offer Merge alone, not a disguised second Merge button.
+    const alreadySafe = !autoMergeOn && mergeSafe({ mergeable: row.mergeable ?? "UNKNOWN", ciStatus: row.ciStatus ?? "none" });
+    return alreadySafe ? [{ id: "merge", label: "Merge" }] : [{ id: "merge", label: "Merge" }, autoMerge];
+  }
   const out: QuickAction[] = [];
   if (ctx.slackChannel) {
     const posted = row.slackNotifiedAt ? Date.parse(row.slackNotifiedAt) : NaN;

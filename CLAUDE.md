@@ -224,6 +224,13 @@ mention or another person's comment on your issue is `ext.linear.message` in the
 has no `actor` (the link's level is the grant, no pairing); `Envelope.display` gives the activity row
 its sender and the issue as the place. `orca post --reply` comments as you under that comment
 (`parentId`); a thread-linked issue gets PR state. The card shows `last poll` (`lastPollAt`).
+**Cloudflare** (`server/cloudflare.ts`, `docs/integrations/cloudflare.md`) is not an adapter: it is
+the `orca cloudflare` verb. The bridge calls the REST and GraphQL API with an account token
+(`ORCA_SECRET_CLOUDFLARE`, account `ORCA_CLOUDFLARE_ACCOUNT_ID`, both stripped from agents). Reads
+cover Workers, deployments, versions, routes, domains, Pages, R2, D1, DNS, analytics and the audit
+log. The only writes are `rollback`, `delete`, `route add` and `route remove`: a dry run without
+`--confirm`, a `[cloudflare]` log line with it, and your own chat only (`cloudflareWriteName`). A 401/403
+names the token permission it needs (`PERMISSIONS`).
 
 ## Multi-repo (aggregated)
 

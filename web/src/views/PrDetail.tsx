@@ -1,21 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { afterDockMotion } from "@/lib/dock";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { Highlight, themes } from "prism-react-renderer";
 import { ArrowLeft, ExternalLink, GitMerge } from "lucide-react";
 import { api } from "../api";
 import type { PrDetail as PrDetailData } from "../../../server/gh";
-import { addPreviewLabel, useWorkstreams, type Row } from "../store";
+import { addPreviewLabel, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
 import { navigate, type PrTab } from "@/lib/route";
-import { useTheme } from "@/lib/theme";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PreviewPanel } from "./PreviewControl";
 import { VerifiedButton } from "./VerifiedButton";
 import { ActionButton } from "@/components/ActionButton";
 import { ScreenshotsCard } from "@/components/Screenshots";
-import { snippetPre } from "@/components/Snippet";
-import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -25,6 +19,8 @@ import { useNarrow } from "@/lib/viewport";
 import { ChecksCard, CiChip, ConversationCard } from "./PrPanels";
 import { Detail, VCard } from "@/components/console";
 import { useSummary } from "@/lib/workstreamHooks";
+import { Markdown } from "@/components/Markdown";
+import { FilesChanged } from "./FilesChanged";
 
 /** Both detail pages pin their header — title / status / actions / tabs stay reachable while a long
  *  diff scrolls under them. Opaque + full-bleed (negative margins) so nothing peeks past the page
@@ -60,6 +56,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
   const [diff, setDiff] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const liveRow = useWorkstreams().find((r) => r.repo === repo && r.prNumber === number); // your own PR, if tracked
+  const loaded = useWorkstreamsLoaded(); // until then, no liveRow does not mean "not yours"
   const summary = useSummary(liveRow); // its commits, for the Details card's Source
   const header = useStickyHeader(Boolean(pr));
   const narrow = useNarrow();
@@ -122,9 +119,13 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
       {pr.autoMergeEnabled && <Badge variant="outline" className="border-transparent bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
     </div>
   );
-  // A coworker's PR has no conversation here; the checks moved onto Overview, so an old /checks link lands there.
+  // The checks moved onto Overview, so an old /checks link lands there. The Chat tab stays when the
+  // URL names it: on a reload the store has no rows yet, and swapping to Overview then looked like the
+  // reload lost the tab. It shows a loading line until the store loads, then the conversation or why
+  // there is none (a coworker's PR, or one merged before today).
   const sig = liveRow ? reviewSig(liveRow) : undefined;
-  const sub2 = (!liveRow && sub === "chat") || sub === "checks" ? "overview" : sub;
+  const sub2 = sub === "checks" ? "overview" : sub;
+  const showChat = Boolean(liveRow) || !loaded || sub === "chat";
 
   return (
     <div style={header.style}>
@@ -137,7 +138,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
             actions={liveRow && <WorkstreamActions row={liveRow} compact={narrow} tipSide="bottom" followUp={false} leading={<PreviewCell row={liveRow} />} beforeMenu={<VerifiedButton row={liveRow} icon />} />} />
           <TabsList className={HEADER_TABS}>
             <TabsTrigger value="overview">Overview</TabsTrigger>
-            {liveRow && <TabsTrigger value="chat">Chat</TabsTrigger>}
+            {showChat && <TabsTrigger value="chat">Chat</TabsTrigger>}
             <TabsTrigger value="files">Files changed ({pr.changedFiles})</TabsTrigger>
             <TabsTrigger value="preview">Preview</TabsTrigger>
           </TabsList>
@@ -174,14 +175,16 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
           <ConversationCard repo={repo} prNumber={number} sig={sig} comments={pr.comments} reviews={pr.reviews} />
         </TabsContent>
 
-        {liveRow && (
+        {showChat && (
           <TabsContent value="chat">
-            <ChatCard row={liveRow} />
+            {liveRow ? <ChatCard row={liveRow} />
+              : !loaded ? <p data-slot="chat-loading" className="text-muted-foreground pt-4 text-sm">Loading conversation…</p>
+              : <p data-slot="chat-none" className="text-muted-foreground pt-4 text-sm">No agent conversation for this PR on the board. It is not an Orca workstream, or it is merged or archived.</p>}
           </TabsContent>
         )}
 
-        <TabsContent value="files" className="space-y-3 pt-4">
-          {diff === null ? <p className="text-muted-foreground text-sm">Loading diff…</p> : <DiffView text={diff} />}
+        <TabsContent value="files" className="pt-4">
+          {diff === null ? <p className="text-muted-foreground text-sm">Loading diff…</p> : <FilesChanged text={diff} scope={`${repo}#${number}`} />}
         </TabsContent>
 
         <TabsContent value="preview" className="pt-4">
@@ -194,130 +197,5 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
 
 const Back = ({ to }: { to: string }) => <Button variant="ghost" size="sm" onClick={() => navigate(to)}><ArrowLeft /> Back to agents</Button>;
 
-const markdownComponents = { pre: snippetPre() };
-export const Markdown = ({ children }: { children: string }) => (
-  <div className="prose prose-sm dark:prose-invert max-w-none">
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>{children}</ReactMarkdown>
-  </div>
-);
-
-// ---- diff rendering with syntax highlighting ----
-type DiffLine = { type: "add" | "del" | "ctx"; text: string };
-type Hunk = { header: string; lines: DiffLine[] };
-type FileDiff = { path: string; lang: string; hunks: Hunk[] };
-
-const LANGS: Record<string, string> = {
-  ts: "tsx", tsx: "tsx", js: "jsx", jsx: "jsx", mjs: "jsx", cjs: "jsx",
-  py: "python", rb: "ruby", go: "go", rs: "rust", java: "java", kt: "kotlin",
-  css: "css", scss: "scss", json: "json", md: "markdown", yml: "yaml", yaml: "yaml",
-  sh: "bash", bash: "bash", sql: "sql", html: "markup", tf: "hcl",
-};
-const langOf = (path: string) => LANGS[path.split(".").pop() ?? ""] ?? "tsx";
-
-function parseDiff(text: string): FileDiff[] {
-  const files: FileDiff[] = [];
-  let file: FileDiff | null = null;
-  let hunk: Hunk | null = null;
-  for (const line of text.split("\n")) {
-    if (line.startsWith("diff --git")) {
-      file = { path: line.split(" b/").pop() ?? "", lang: "tsx", hunks: [] };
-      file.lang = langOf(file.path);
-      files.push(file);
-      hunk = null;
-    } else if (!file) {
-      continue;
-    } else if (line.startsWith("+++ b/")) {
-      file.path = line.slice(6);
-      file.lang = langOf(file.path);
-    } else if (line.startsWith("@@")) {
-      hunk = { header: line, lines: [] };
-      file.hunks.push(hunk);
-    } else if (hunk && (line[0] === "+" || line[0] === "-" || line[0] === " ")) {
-      hunk.lines.push({ type: line[0] === "+" ? "add" : line[0] === "-" ? "del" : "ctx", text: line.slice(1) });
-    }
-  }
-  return files;
-}
-
-/** Collapsing a file you've scrolled deep into deletes all that height from *above* the viewport, so
- *  the page lurches upward and lands past the files below. Pin the clicked header to the screen
- *  position it was already at: measure it, let the toggle lay out, then take the difference back out
- *  of the scroll. Also keeps expanding from jumping. */
-export function keepInPlace(e: React.MouseEvent<HTMLElement>) {
-  const el = e.currentTarget;
-  const before = el.getBoundingClientRect().top;
-  // The scroller is the shell's page column on a desktop (Shell's `page-scroll`), the window on a phone.
-  const box = el.closest<HTMLElement>('[data-slot="page-scroll"]');
-  const scroller = box && box.scrollHeight > box.clientHeight ? box : window;
-  requestAnimationFrame(() => scroller.scrollBy(0, el.getBoundingClientRect().top - before));
-}
-
-export function DiffView({ text }: { text: string }) {
-  const files = parseDiff(text);
-  if (files.length === 0) return <p className="text-muted-foreground text-sm">No diff.</p>;
-  return (
-    <Accordion type="multiple" defaultValue={files.map((_, i) => `f${i}`)} className="space-y-2">
-      {files.map((f, i) => {
-        const lines = f.hunks.flatMap((h) => h.lines);
-        const adds = lines.filter((l) => l.type === "add").length;
-        const dels = lines.filter((l) => l.type === "del").length;
-        // The file header sticks while its diff scrolls, so you always see which file you're
-        // reading. It pins to Radix's header wrapper (`>h3` — the trigger itself can't move inside
-        // it), just below the page's own sticky header (--stick, 0 if nothing is pinned). No
-        // `overflow-hidden` on the item: a clipping ancestor kills sticky — the content's
-        // overflow-x-auto box rounds the bottom corners instead. The header is also a scroll-state
-        // container, so styles.css can square its radius off while it's stuck (no peek-through).
-        return (
-          <AccordionItem key={i} value={`f${i}`} className="rounded-md border last:border-b [&>h3]:sticky [&>h3]:z-10 [&>h3]:[top:var(--stick,0px)] [&>h3]:[container-type:scroll-state]">
-            <AccordionTrigger onClick={keepInPlace} className="bg-muted px-3 py-2 font-mono text-xs rounded-b-none hover:no-underline">
-              <span className="flex flex-1 items-center gap-2 overflow-hidden">
-                <span className="truncate">{f.path}</span>
-                <span className="ml-auto shrink-0">
-                  <span className="text-emerald-600 dark:text-emerald-400">+{adds}</span> <span className="text-red-600 dark:text-red-400">−{dels}</span>
-                </span>
-              </span>
-            </AccordionTrigger>
-            <AccordionContent className="p-0">
-              <div className="overflow-x-auto rounded-b-md border-t font-mono text-xs">
-                {f.hunks.map((h, j) => (
-                  <div key={j}>
-                    <div className="bg-muted/30 px-3 py-0.5 text-cyan-700 dark:text-cyan-400">{h.header}</div>
-                    <HunkView hunk={h} lang={f.lang} />
-                  </div>
-                ))}
-              </div>
-            </AccordionContent>
-          </AccordionItem>
-        );
-      })}
-    </Accordion>
-  );
-}
-
-function HunkView({ hunk, lang }: { hunk: Hunk; lang: string }) {
-  const code = hunk.lines.map((l) => l.text).join("\n");
-  // prism-react-renderer paints token colors inline, so a light theme is dark-on-dark in dark mode:
-  // swap to a dark syntax theme when the `.dark` class is on (useTheme re-renders on toggle).
-  useTheme();
-  const dark = document.documentElement.classList.contains("dark");
-  return (
-    <Highlight theme={dark ? themes.vsDark : themes.github} code={code} language={lang}>
-      {({ tokens, getLineProps, getTokenProps }) => (
-        <>
-          {tokens.map((lineTokens, i) => {
-            const type = hunk.lines[i]?.type ?? "ctx";
-            const bg = type === "add" ? "bg-emerald-500/10 dark:bg-emerald-500/25" : type === "del" ? "bg-red-500/10 dark:bg-red-500/25" : "";
-            const signColor = type === "add" ? "text-emerald-600 dark:text-emerald-400" : type === "del" ? "text-red-600 dark:text-red-400" : "text-muted-foreground";
-            const sign = type === "add" ? "+" : type === "del" ? "−" : " ";
-            return (
-              <div key={i} {...getLineProps({ line: lineTokens, className: `flex px-2 ${bg}` })}>
-                <span className={`${signColor} w-4 shrink-0 select-none`}>{sign}</span>
-                <span className="flex-1 whitespace-pre">{lineTokens.map((token, k) => <span key={k} {...getTokenProps({ token })} />)}</span>
-              </div>
-            );
-          })}
-        </>
-      )}
-    </Highlight>
-  );
-}
+// The page-surface markdown renderer lives in components/Markdown.tsx; re-exported for its older callers.
+export { Markdown } from "@/components/Markdown";

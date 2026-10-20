@@ -64,6 +64,12 @@ A message that mentions the bot (or a DM) carries more than its own text:
   applies to the new message's own attachments and to a quoted parent's.
 - Any other attachment (an image, a binary file) stays a URL line, as before.
 
+Outbound, `orca post … --attach <id|path>` (repeatable) sends files with the post. The adapter
+posts multipart/form-data with `payload_json`, so an image shows inline under the text or the
+embed. The limits are 10 files and 10 MiB a file (a bot's upload limit in a server with no
+boosts). Orca refuses more before it queues the post. The bytes stay in the attachment table, so a
+retried send reads them again.
+
 ## Reply in place or threads
 
 The integration's `config.threads` sets what Orca does with a mention at the top level of a channel.

@@ -1,0 +1,1856 @@
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 4fb4a9c4..79b37a79 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -1251,6 +1251,25 @@ serves it. Workers get `bin/worker/` on PATH (`agentEnv` — not `bin/`, whose `
+ orchestrator's) and `orca-shot <url> [--viewport 390x844] [--dark] …`, which prints `shot: <path>`;
+ every worker prompt says it is the ONLY way to take a screenshot (`SCREENSHOTS`), and shot paths in a
+ reply ride the worker report (`reportedShots` in `workerEvent`).
++**Heavy commands** (`server/heavy.ts`): agents ran Playwright, Jest, eslint and builds at once and
++OOM-killed each other in `orca-agents.slice`. Finn removed the slice's CPUQuota: this queue is the
++ONLY CPU control, so it must see every heavy task. A box-wide slot queue, like `orca-shot`'s but with
++N slots. Kinds: e2e, test, lint, build, migrate, serve (a local server for a test). Limits per kind
++and in total, plus a CPU cost per kind against `cpuBudget` (defaults: e2e 1.5, build 1.5, test 1,
++lint 1, migrate 0.5, serve 0.5; budget 3 on the 4 vCPU box) — all `heavyQueue` in the app config.
++FIFO across the budget and the total (a small job never passes a large one); only a full kind is
++skipped. A max wait, and a max run time per kind (serve 60 min, the rest 30). Workers run `orca-run
++[--kind …] -- <cmd>` (`bin/worker/orca-run`, `POST /api/heavy`, NDJSON like `/api/screenshot`): the
++slot lives as long as the held request, so a killed CLI frees it; `agent.launch` puts `ORCA_RUN_ID`
++in the run's env and its exit calls `releaseRun`; a sweep frees a dead pid or a slot past its max
++run time and stops its command. Each granted command runs in its own capped scope in
++`orca-agents.slice` when the box has a user bus. `bin/worker/.heavy-shim` is linked as every heavy
++tool, as npx/bunx, as npm/pnpm/yarn/bun (by the package script's NAME — npm puts node_modules/.bin
++first, so a script's own tools never reach a shim) and as bash (`bash <file>` by the file's name);
++jest and `playwright test` get one worker unless the call sets one. `ORCA_RUN_SLOT` stops a nested
++call from queueing again, and `ORCA_RUN_BYPASS=1` is the escape hatch. Every worker prompt carries
++`HEAVY_COMMANDS`. With no bridge, `orca-run` runs the command anyway. The machine card lists running
++and queued commands and the CPU in use (`heavy` on `/api/health`, `heavyQueueRows`).
+ **Screenshots in PRs and on the agent page** (`server/prShots.ts`): shots are not stored per turn —
+ `workstreamShots` reads them off the branch's turns (reply + Verification). The newest
+ `PR_SHOTS_MAX` (6) go into the PR body's `## Screenshots` section (`withScreenshotsSection`: replaced
+diff --git a/bin/worker/.heavy-shim b/bin/worker/.heavy-shim
+new file mode 100755
+index 00000000..7f661b65
+--- /dev/null
++++ b/bin/worker/.heavy-shim
+@@ -0,0 +1,162 @@
++#!/bin/sh
++# The shims for heavy work on a worker's PATH (bin/worker is first on it, server/env.ts agentEnv).
++# Every name in bin/worker that links here runs this file. A heavy call goes through `orca-run` (the
++# box-wide queue, server/heavy.ts). Anything else runs the real tool at once. There is no CPU quota on
++# the agents, so this queue is the only CPU control: it must see every heavy task.
++#   - Tools: playwright test, cypress run (e2e); jest, vitest, mocha, pytest (test); eslint,
++#     prettier, tsc, biome, stylelint, knip (lint); vite / next / nest build, webpack, rollup,
++#     esbuild, tsup (build); vite, vite preview, next dev / start, nest start (serve); mikro-orm,
++#     prisma, knex, typeorm, sequelize, drizzle-kit, alembic migrations (migrate). Also through npx,
++#     bunx, `bun x`, `npm exec` and `pnpm dlx`.
++#   - Package scripts: `npm test`, `npm start`, `npm run <s>`, `pnpm <s>`, `yarn <s>`, `bun run <s>`
++#     and `bun test`, by the script's name (script_kind). npm puts node_modules/.bin first on the
++#     PATH, so a tool that a script starts never reaches the shims above; its script name does.
++#   - Test scripts: `bash <file>`, by the file's name (`bash scripts/run-e2e-tests.sh`).
++#   - Not heavy: --version and --help of a tool, installs, and every other command.
++#   - Jest and `playwright test` get one worker (ORCA_RUN_WORKERS) when the call sets none. Jest
++#     otherwise starts one worker per CPU but one.
++#   - Nested calls (ORCA_RUN_SLOT is set under orca-run) never queue again.
++#   - The escape hatch: ORCA_RUN_BYPASS=1 runs the real tool at once.
++name=${0##*/}
++self_dir=$(cd "$(dirname "$0")" && pwd -P)
++
++# The real tool: the first one on PATH that is not in this directory. `-ef` needs no subshell, so
++# the walk stays cheap for bash and bun, which agents start all the time.
++real=""
++old_ifs=$IFS
++IFS=:
++for d in $PATH; do
++  [ -n "$d" ] || continue
++  [ "$d/.heavy-shim" -ef "$self_dir/.heavy-shim" ] && continue
++  if [ -x "$d/$name" ] && [ ! -d "$d/$name" ]; then real="$d/$name"; break; fi
++done
++IFS=$old_ifs
++if [ -z "$real" ]; then echo "$name: command not found" >&2; exit 127; fi
++
++if [ -n "$ORCA_RUN_SLOT" ] || [ "$ORCA_RUN_BYPASS" = "1" ]; then exec "$real" "$@"; fi
++
++KIND=""
++CAP=""
++workers=${ORCA_RUN_WORKERS:-1}
++
++# has_any <flags...> -- <args...>: is one of the flags (or `flag=…`, or a short flag with its value
++# joined) in the args?
++has_any() {
++  flags=""
++  while [ $# -gt 0 ] && [ "$1" != "--" ]; do flags="$flags $1"; shift; done
++  shift
++  for a in "$@"; do
++    for f in $flags; do
++      case "$a" in "$f"|"$f"=*) return 0 ;; esac
++      case "$f" in -?) case "$a" in "$f"[0-9]*) return 0 ;; esac ;; esac
++    done
++  done
++  return 1
++}
++
++# script_kind <name>: the kind of a package script or a script file, by its name.
++script_kind() {
++  case "$1" in
++    *e2e*|*playwright*|*cypress*) KIND=e2e ;;
++    *migrat*|*setup-db*|*setup:db*|db:*|*:db:*|*seed*) KIND=migrate ;;
++    dev|dev:*|dev-*|*:dev|*-dev|start|start:*|start-*|*:start|serve|serve:*|serve-*|preview|preview:*) KIND=serve ;;
++    *test*|*spec*|*vitest*|*jest*|*bench*) KIND=test ;;
++    *lint*|*format*|*prettier*|*type-check*|*typecheck*|*tsc*|*knip*|check|check:*|*:check) KIND=lint ;;
++    *build*|*compile*|*bundle*) KIND=build ;;
++  esac
++}
++
++# tool_kind <tool> <args...>: the kind of a direct call of a tool, and the worker cap it needs.
++tool_kind() {
++  tool=$1
++  shift
++  for a in "$@"; do
++    case "$a" in --version|-v|-V|--help|-h) return 0 ;; esac
++  done
++  case "$tool" in
++    playwright)
++      [ "$1" = "test" ] || return 0
++      KIND=e2e
++      has_any --workers -j -- "$@" || CAP="--workers=$workers" ;;
++    cypress) [ "$1" = "run" ] && KIND=e2e ;;
++    jest)
++      KIND=test
++      has_any --maxWorkers -w --runInBand -i --watch --watchAll -- "$@" || CAP="--maxWorkers=$workers" ;;
++    vitest|mocha|pytest) KIND=test ;;
++    eslint|prettier|tsc|tsgo|biome|stylelint|knip|oxlint) KIND=lint ;;
++    webpack|rollup|esbuild|tsup) KIND=build ;;
++    vite) case "$1" in build) KIND=build ;; optimize) ;; *) KIND=serve ;; esac ;;
++    next|nest|nuxt|astro) case "$1" in build) KIND=build ;; dev|start|preview) KIND=serve ;; esac ;;
++    mikro-orm|prisma|knex|typeorm|sequelize|drizzle-kit|alembic)
++      for a in "$@"; do
++        case "$a" in *migrat*|db:*|push|upgrade|downgrade|seed*) KIND=migrate; return 0 ;; esac
++      done ;;
++  esac
++}
++
++# npx_kind <args...>: the first word that is not a flag is the tool (`-p <pkg>` and `--package
++# <pkg>` take a value); a version suffix (`eslint@9`) is dropped.
++npx_kind() {
++  while [ $# -gt 0 ]; do
++    case "$1" in
++      -p|--package) shift ;;
++      -*) ;;
++      *) tool=${1##*/}; tool=${tool%@*}; shift; tool_kind "$tool" "$@"; return 0 ;;
++    esac
++    shift
++  done
++}
++
++# pm_kind <npm|pnpm|yarn|bun> <args...>: a package manager's call, by its subcommand and script.
++pm_kind() {
++  pm=$1
++  shift
++  while [ $# -gt 0 ]; do
++    case "$1" in
++      --prefix|-C|--dir|--cwd|--filter|-F|--workspace) shift ;;
++      -*) ;;
++      *) break ;;
++    esac
++    shift
++  done
++  [ $# -gt 0 ] || return 0
++  sub=$1
++  shift
++  case "$sub" in
++    test|t|tst) KIND=test ;;
++    start) KIND=serve ;;
++    exec|x|dlx) npx_kind "$@" ;;
++    run|run-script)
++      while [ $# -gt 0 ]; do case "$1" in -w|--workspace|--filter|-F) shift ;; -*) ;; *) break ;; esac; shift; done
++      [ $# -gt 0 ] || return 0
++      # `bun run <file>` runs a file, not a script: no kind by its name.
++      if [ "$pm" = "bun" ]; then case "$1" in */*|*.*) return 0 ;; esac; fi
++      script_kind "$1" ;;
++    *)
++      [ "$pm" = "npm" ] && return 0
++      if [ "$pm" = "bun" ]; then
++        case "$sub" in build) KIND=build; return 0 ;; */*|*.*) return 0 ;; esac
++      fi
++      case "$sub" in install|i|add|remove|rm|update|upgrade|ci|init|create|link|unlink|outdated|why|info|list|ls|pm|publish|pack) return 0 ;; esac
++      script_kind "$sub" ;;
++  esac
++}
++
++# bash_kind <args...>: `bash <file>` by the file's name; `bash -c …` and the rest are not heavy.
++bash_kind() {
++  case "$1" in -*|"") return 0 ;; esac
++  [ -f "$1" ] || return 0
++  b=${1##*/}
++  script_kind "${b%.*}"
++}
++
++case "$name" in
++  npx|bunx) npx_kind "$@" ;;
++  npm|pnpm|yarn|bun) pm_kind "$name" "$@" ;;
++  bash) bash_kind "$@" ;;
++  *) tool_kind "$name" "$@" ;;
++esac
++
++if [ -z "$KIND" ]; then exec "$real" "$@"; fi
++if [ -n "$CAP" ]; then set -- "$@" "$CAP"; fi
++exec "$self_dir/orca-run" --kind "$KIND" -- "$real" "$@"
+diff --git a/bin/worker/alembic b/bin/worker/alembic
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/alembic
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/astro b/bin/worker/astro
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/astro
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/bash b/bin/worker/bash
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/bash
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/biome b/bin/worker/biome
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/biome
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/bun b/bin/worker/bun
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/bun
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/bunx b/bin/worker/bunx
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/bunx
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/cypress b/bin/worker/cypress
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/cypress
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/drizzle-kit b/bin/worker/drizzle-kit
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/drizzle-kit
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/esbuild b/bin/worker/esbuild
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/esbuild
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/eslint b/bin/worker/eslint
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/eslint
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/jest b/bin/worker/jest
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/jest
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/knex b/bin/worker/knex
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/knex
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/knip b/bin/worker/knip
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/knip
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/mikro-orm b/bin/worker/mikro-orm
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/mikro-orm
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/mocha b/bin/worker/mocha
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/mocha
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/nest b/bin/worker/nest
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/nest
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/next b/bin/worker/next
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/next
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/npm b/bin/worker/npm
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/npm
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/npx b/bin/worker/npx
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/npx
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/nuxt b/bin/worker/nuxt
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/nuxt
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/orca-run b/bin/worker/orca-run
+new file mode 100755
+index 00000000..9f14f061
+--- /dev/null
++++ b/bin/worker/orca-run
+@@ -0,0 +1,154 @@
++#!/usr/bin/env bun
++// `orca-run [--kind test|lint|build|e2e|migrate|serve] [--timeout <minutes>] -- <command...>` — run a
++// HEAVY command (a test runner, a linter or formatter on a repo, tsc, a build, an e2e suite, a
++// database migration, a local backend or frontend for a test) in a slot of the box-wide queue
++// (server/heavy.ts). Several agents on one box ran these at once and OOM-killed each other.
++//
++// It asks the bridge for a slot and prints `queued: position N …` to stderr while it waits. When the
++// slot is granted it runs the command (in its own memory-capped scope when the box has one), streams
++// its output, and exits with its exit code. The slot always comes back: on exit, on a signal (the
++// command is stopped first), and on a kill -9 of this process (the bridge sees the connection drop).
++//
++// Nested calls pass straight through: the command runs with ORCA_RUN_SLOT set, and orca-run and the
++// shims beside it (playwright, jest, vitest, eslint, tsc, npx, bunx) do not queue again under it.
++// The escape hatch: ORCA_RUN_BYPASS=1 runs the command at once with no slot. Use it only for a
++// command that is not heavy and that a shim queued by mistake.
++// With no bridge to answer, the command runs at once with a warning: a queue must not stop all work.
++import { API_PORT } from "../../server/ports";
++
++const KINDS = ["test", "lint", "build", "e2e", "migrate", "serve"];
++const argv = process.argv.slice(2);
++let kind = "test";
++let timeoutMin: number | undefined;
++let cmd: string[] = [];
++for (let i = 0; i < argv.length; i++) {
++  const a = argv[i]!;
++  if (a === "--") { cmd = argv.slice(i + 1); break; }
++  if (a === "--kind") kind = argv[++i] ?? "";
++  else if (a === "--timeout") timeoutMin = Number(argv[++i]);
++  else if (a === "-h" || a === "--help") {
++    console.log("usage: orca-run [--kind test|lint|build|e2e|migrate|serve] [--timeout minutes] -- <command...>\n  waits for a slot in the box-wide queue, then runs the command and exits with its code\n  ORCA_RUN_BYPASS=1 runs the command at once, with no slot");
++    process.exit(0);
++  } else if (a.startsWith("--")) { console.error(`orca-run: unknown flag ${a}`); process.exit(2); }
++  else { cmd = argv.slice(i); break; }
++}
++if (!KINDS.includes(kind)) { console.error(`orca-run: --kind must be one of ${KINDS.join(", ")}`); process.exit(2); }
++if (!cmd.length) { console.error("orca-run: give the command after --, e.g. orca-run --kind e2e -- npx playwright test tests/login.spec.ts"); process.exit(2); }
++if (timeoutMin !== undefined && !(timeoutMin > 0)) { console.error("orca-run: --timeout needs a positive number of minutes"); process.exit(2); }
++
++/** Run the command; resolve with its exit code. Signals to this process stop it first. */
++async function run(argv: string[], env: Record<string, string | undefined>, maxRunMs?: number): Promise<number> {
++  let proc: ReturnType<typeof Bun.spawn>;
++  try {
++    proc = Bun.spawn(argv, { stdio: ["inherit", "inherit", "inherit"], env: { ...process.env, ...env } });
++  } catch (e) {
++    console.error(`orca-run: ${e instanceof Error ? e.message : String(e)}`);
++    return 127;
++  }
++  const stop = (sig: NodeJS.Signals) => { try { proc.kill(sig); } catch { /* gone */ } };
++  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(sig, () => { stop(sig); setTimeout(() => stop("SIGKILL"), 5000).unref(); });
++  const limit = Math.min(maxRunMs ?? Infinity, timeoutMin ? timeoutMin * 60_000 : Infinity);
++  let timedOut = false;
++  const timer = Number.isFinite(limit) ? setTimeout(() => {
++    timedOut = true;
++    console.error(`orca-run: the command ran past ${Math.round(limit / 60_000)} min; stopped`);
++    stop("SIGTERM");
++    setTimeout(() => stop("SIGKILL"), 5000).unref();
++  }, limit) : undefined;
++  const code = await proc.exited;
++  clearTimeout(timer);
++  return timedOut ? 124 : code;
++}
++
++if (process.env.ORCA_RUN_SLOT || process.env.ORCA_RUN_BYPASS === "1") process.exit(await run(cmd, {}));
++
++const base = process.env.ORCA_URL ?? `http://127.0.0.1:${API_PORT}`;
++const controller = new AbortController();
++let res: Response | undefined;
++try {
++  res = await fetch(`${base}/api/heavy`, {
++    method: "POST", headers: { "content-type": "application/json" }, signal: controller.signal,
++    body: JSON.stringify({
++      kind, command: cmd.join(" "), pid: process.pid, cwd: process.cwd(),
++      runId: process.env.ORCA_RUN_ID, repo: process.env.ORCA_REPO, branch: process.env.ORCA_BRANCH,
++    }),
++  });
++} catch (e) {
++  console.error(`orca-run: no bridge at ${base} (${e instanceof Error ? e.message : String(e)}); running without a slot`);
++  process.exit(await run(cmd, { ORCA_RUN_SLOT: "none" }));
++}
++if (res.status === 404) {
++  console.error("orca-run: the bridge has no heavy-command queue yet; running without a slot");
++  process.exit(await run(cmd, { ORCA_RUN_SLOT: "none" }));
++}
++if (!res.ok) {
++  const err = (await res.json().catch(() => ({}))) as { error?: string };
++  console.error(`orca-run: ${err.error ?? `bridge answered ${res.status}`}`);
++  process.exit(1);
++}
++
++// One JSON object per line: `{queued: N}` while waiting, then `{granted, prefix, env, maxRunMs}`,
++// then heartbeats, and `{revoked: reason}` if the bridge takes the slot back.
++type Granted = { granted: string; prefix: string[]; env: Record<string, string>; maxRunMs: number; cpus?: number };
++const reader = res.body!.getReader();
++const decoder = new TextDecoder();
++let buf = "";
++let lastAhead = -1;
++let onRevoked: ((reason: string) => void) | undefined;
++async function next(): Promise<Record<string, unknown> | undefined> {
++  for (;;) {
++    const nl = buf.indexOf("\n");
++    if (nl >= 0) {
++      const line = buf.slice(0, nl);
++      buf = buf.slice(nl + 1);
++      if (line.trim()) return JSON.parse(line);
++      continue;
++    }
++    const { value, done } = await reader.read();
++    if (done) return undefined;
++    buf += decoder.decode(value, { stream: true });
++  }
++}
++
++let grant: Granted | undefined;
++try {
++  for (;;) {
++    const msg = await next();
++    if (!msg) break;
++    if (typeof msg.error === "string") { console.error(`orca-run: ${msg.error}`); process.exit(75); }
++    if (typeof msg.granted === "string") { grant = msg as unknown as Granted; break; }
++    if (typeof msg.queued === "number" && msg.queued !== lastAhead) {
++      console.error(`queued: position ${msg.queued + 1} in line for ${kind === "e2e" ? "an" : "a"} ${kind} slot`);
++      lastAhead = msg.queued;
++    }
++  }
++} catch (e) {
++  console.error(`orca-run: lost the bridge while queued (${e instanceof Error ? e.message : String(e)}); running without a slot`);
++}
++if (!grant) {
++  if (lastAhead < 0) console.error("orca-run: the bridge sent no slot; running without one");
++  process.exit(await run(cmd, { ORCA_RUN_SLOT: "none" }));
++}
++if (lastAhead >= 0) console.error(`orca-run: slot granted (${kind})`);
++
++// Watch the held connection while the command runs: a revoke stops the command.
++void (async () => {
++  try {
++    for (;;) {
++      const msg = await next();
++      if (!msg) return;
++      if (typeof msg.revoked === "string") { onRevoked?.(msg.revoked); return; }
++    }
++  } catch { /* the bridge restarted; the command goes on */ }
++})();
++onRevoked = (reason) => {
++  console.error(`orca-run: the bridge took the slot back (${reason}); stopping the command`);
++  process.kill(process.pid, "SIGTERM");
++};
++
++const code = await run([...grant.prefix, ...cmd], { ...grant.env, ORCA_RUN_SLOT: grant.granted, ...(grant.cpus ? { ORCA_RUN_CPUS: String(grant.cpus) } : {}) }, grant.maxRunMs);
++await fetch(`${base}/api/heavy/release`, {
++  method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: grant.granted }),
++}).catch(() => { /* the connection drop below frees it too */ });
++controller.abort();
++process.exit(code);
+diff --git a/bin/worker/oxlint b/bin/worker/oxlint
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/oxlint
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/playwright b/bin/worker/playwright
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/playwright
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/pnpm b/bin/worker/pnpm
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/pnpm
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/prettier b/bin/worker/prettier
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/prettier
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/prisma b/bin/worker/prisma
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/prisma
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/pytest b/bin/worker/pytest
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/pytest
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/rollup b/bin/worker/rollup
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/rollup
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/sequelize b/bin/worker/sequelize
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/sequelize
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/stylelint b/bin/worker/stylelint
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/stylelint
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/tsc b/bin/worker/tsc
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/tsc
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/tsgo b/bin/worker/tsgo
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/tsgo
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/tsup b/bin/worker/tsup
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/tsup
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/typeorm b/bin/worker/typeorm
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/typeorm
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/vite b/bin/worker/vite
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/vite
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/vitest b/bin/worker/vitest
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/vitest
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/webpack b/bin/worker/webpack
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/webpack
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/bin/worker/yarn b/bin/worker/yarn
+new file mode 120000
+index 00000000..efcf264c
+--- /dev/null
++++ b/bin/worker/yarn
+@@ -0,0 +1 @@
++.heavy-shim
+\ No newline at end of file
+diff --git a/docs/SETUP.md b/docs/SETUP.md
+index e4f98764..d8bc1168 100644
+--- a/docs/SETUP.md
++++ b/docs/SETUP.md
+@@ -407,6 +407,81 @@ limits. This browser needs a `chrome-headless-shell` on the box. Use the Playwri
+ `~/.cache/ms-playwright`, or set one with `ORCA_SHOT_BROWSER`. cloud-init does not install a
+ browser.
+ 
++<a id="heavy-commands"></a>
++**Heavy commands** go through a box-wide queue (`server/heavy.ts`). Agents on one box ran
++Playwright, Jest, `eslint` and builds at the same time. On a 4 vCPU, 15.7 GB box this caused OOM
++kills in `orca-agents.slice`. `orca-agents.slice` has no CPU quota, so this queue is the only CPU
++control. It must see every heavy task.
++
++- A worker runs `orca-run [--kind test|lint|build|e2e|migrate|serve] [--timeout <minutes>] --
++  <command...>`. The kind is `test` when you do not give one.
++- These are the kinds:
++  - `test`: jest, vitest, `bun test`, mocha, pytest.
++  - `lint`: eslint, prettier, tsc, biome, stylelint, knip.
++  - `build`: a frontend or backend build.
++  - `e2e`: Playwright, Cypress, an e2e test script.
++  - `migrate`: a database migration or seed.
++  - `serve`: a local backend or frontend that a test needs.
++- `orca-run` asks the bridge for a slot (`POST /api/heavy`). While it waits, it prints
++  `queued: position N in line for a <kind> slot` to stderr.
++- When it gets the slot, it runs the command and streams its output. It exits with the exit code
++  of the command. The command gets `ORCA_RUN_CPUS`, the CPU cost of its slot.
++- The slot always comes back. These events release it:
++  - The command exits.
++  - `orca-run` gets a signal. It stops the command first.
++  - `orca-run` is killed with `kill -9`. The bridge sees the dropped connection.
++  - The agent run that asked ends (`ORCA_RUN_ID`). The bridge also stops the command.
++  - The `orca-run` process is gone (a sweep each 15 s).
++  - The command runs past the max run time of its kind. The bridge stops the command.
++- On a box with a user bus, each command runs in its own scope in `orca-agents.slice`, with a
++  memory limit and no swap. Thus one test run cannot take the whole slice.
++- With no bridge to answer, `orca-run` prints a warning and runs the command at once.
++- The Overview's machine card lists the running and queued commands, with their workstreams, and
++  the CPU in use against the budget. `GET /api/heavy` gives the same data.
++
++Each kind has a CPU cost. The queue grants a slot only when the sum of the running costs stays in
++`cpuBudget`. The queue is first in, first out for the budget and the total. A job does not wait
++for a job of another kind whose own limit is full. A job that costs more than the budget runs when
++nothing else runs.
++
++The limits are in the app config, `heavyQueue`. Each field is optional. These are the defaults for
++a 4 vCPU box. They keep about 3 CPUs busy at most:
++
++```json
++{ "heavyQueue": {
++  "limits": { "e2e": 1, "test": 2, "lint": 2, "build": 1, "migrate": 1, "serve": 2, "total": 4 },
++  "cpu": { "e2e": 1.5, "test": 1, "lint": 1, "build": 1.5, "migrate": 0.5, "serve": 0.5 },
++  "cpuBudget": 3,
++  "maxWaitMinutes": 20,
++  "maxRunMinutes": { "e2e": 30, "test": 30, "lint": 30, "build": 30, "migrate": 30, "serve": 60 },
++  "memoryMaxGb": 3 } }
++```
++
++`maxRunMinutes` can also be one number for all kinds. On a larger box, increase `cpuBudget` and
++the limits.
++
++`bin/worker` is first on a worker's `PATH`. Its shims (`bin/worker/.heavy-shim`) send heavy calls
++through `orca-run`:
++
++- Tools: `playwright test`, `cypress run`, `jest`, `vitest`, `mocha`, `pytest`, `eslint`,
++  `prettier`, `tsc`, the build tools, `vite` and `next dev` servers, and migration CLIs
++  (`mikro-orm`, `prisma`, `knex`, `typeorm`, `sequelize`, `drizzle-kit`, `alembic`). Also through
++  `npx`, `bunx`, `npm exec` and `pnpm dlx`.
++- Package scripts: `npm test`, `npm start`, `npm run <script>`, `pnpm <script>`, `yarn <script>`,
++  `bun run <script>` and `bun test`. The script name gives the kind: `test`, `lint`, `type-check`,
++  `format`, `build`, `dev`, `start`, `setup-db`, `migrate`, `e2e` and similar names.
++- Test scripts: `bash <file>` when the file name looks heavy, for example
++  `bash scripts/run-e2e-tests.sh`.
++- Workers: jest and `playwright test` get one worker when the call sets none. Set
++  `ORCA_RUN_WORKERS` to change it. Jest otherwise starts one worker for each CPU but one.
++- Not heavy: `--version`, `--help`, installs, `bash -c …`, `bun <file>` and all other commands.
++- A call inside a granted command (`ORCA_RUN_SLOT` is set) does not queue again.
++- The shims do not see `python -m pytest`, `node ./node_modules/…` or a script started by its own
++  path. Wrap these in `orca-run` yourself.
++
++The escape hatch: set `ORCA_RUN_BYPASS=1` to run a command at once, with no slot. Use it only for a
++command that is not heavy and that a shim queued by mistake.
++
+ ---
+ 
+ ## 10. Adding a laptop instance
+diff --git a/docs/WORKFLOW.md b/docs/WORKFLOW.md
+index d4896568..fb3187f5 100644
+--- a/docs/WORKFLOW.md
++++ b/docs/WORKFLOW.md
+@@ -393,6 +393,12 @@ the orchestrator's notes or in a repo's `CLAUDE.md`.
+ - **Do not use headless browsers in workers.** Use `orca-shot <url> [--viewport 390x844] [--dark] …`.
+   It goes into the queue for the bridge's one browser, which has a memory limit. It prints
+   `shot: <path>`.
++- **Run heavy commands through the box-wide queue.** It is the only CPU control on the box. Use
++  `orca-run --kind test|lint|build|e2e|migrate|serve -- <command>` for tests, Playwright, eslint,
++  prettier, `tsc`, builds, database migrations and a local server for a test. It waits for a slot,
++  prints `queued: position N …`, then runs the command and returns its exit code. The heavy tools,
++  package scripts and `bash <test script>` on a worker's `PATH` already go through it. See
++  [SETUP.md](SETUP.md#heavy-commands).
+ - **Run only the test files that the change affects.** Do not run the full suite, or two suites at
+   the same time. Each run has a memory limit for each worker (`agentMemoryMaxGb`, 4 GB by default). A
+   type-check or test run of the full project can go above it. The run then ends as
+diff --git a/server/agent.ts b/server/agent.ts
+index 21b6ad3f..e34cacf0 100644
+--- a/server/agent.ts
++++ b/server/agent.ts
+@@ -17,6 +17,7 @@ import * as outbox from "./outbox";
+ import * as bus from "./bus";
+ import { resolvePrompt } from "./attachments";
+ import * as cgroup from "./cgroup";
++import * as heavy from "./heavy";
+ import { noteOomKill } from "./health";
+ import { existsSync } from "fs";
+ import { homedir, tmpdir } from "os";
+@@ -154,6 +155,11 @@ export type RunFinished = {
+ // Orca's own secrets never reach the agent's process (server/env.ts); re-exported for callers.
+ export { agentEnv, WORKER_BIN } from "./env";
+ 
++/** What a run's process knows about itself, for `orca-run`'s slot. Pure. */
++export function runIdentity(runId: string, options: { repo?: string; branch?: string }): Record<string, string> {
++  return { ORCA_RUN_ID: runId, ...(options.repo ? { ORCA_REPO: options.repo } : {}), ...(options.branch ? { ORCA_BRANCH: options.branch } : {}) };
++}
++
+ /** How this run reuses prior context — derived from what the launch options carry, so the ledger's
+  *  resume/reset/handoff breakdown matches the store's actual continuation decision. Pure. */
+ export function runMode(options: LaunchOptions): ledger.RunMode {
+@@ -764,7 +770,8 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
+       // A positive OOM score scoped or not: the bridge's -500 must not pass to its agents.
+       { available: scoped, memoryMaxGb, cpuWeight, unit: scopeUnit, slice: cgroup.AGENTS_SLICE, oomScoreAdj: linux ? cgroup.oomScoreAdj() : undefined },
+     ),
+-    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...(scoped ? scopedEnv : {}), ...options.env }, stdout: "pipe", stderr: "pipe" },
++    // ORCA_RUN_ID / ORCA_REPO / ORCA_BRANCH: `orca-run` (server/heavy.ts) ties its slot to this run.
++    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...(scoped ? scopedEnv : {}), ...runIdentity(runId, options), ...options.env }, stdout: "pipe", stderr: "pipe" },
+   );
+   let timedOut = false;
+   const timeout = options.timeoutMs ? setTimeout(() => { timedOut = true; proc.kill(); }, options.timeoutMs) : undefined;
+@@ -793,6 +800,8 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
+       tailText(proc.stderr).then((t) => (errHolder.raw = t)),
+     ]);
+     const code = await proc.exited;
++    // A heavy command of this run (bin/worker/orca-run) must not keep its slot past the run.
++    heavy.slots().releaseRun(runId);
+     await Promise.race([reads, new Promise((r) => setTimeout(r, DRAIN_GRACE_MS))]);
+     const out = outHolder.raw;
+     const err = errHolder.raw;
+diff --git a/server/config.ts b/server/config.ts
+index 0aef93ba..bc803362 100644
+--- a/server/config.ts
++++ b/server/config.ts
+@@ -1,3 +1,4 @@
++import { heavyQueueProblems, type HeavyQueueConfig } from "./heavy";
+ import * as db from "./db";
+ import { setGithubAccounts } from "./env";
+ import { readJsonSync, statePath, writeJsonSync } from "./state";
+@@ -183,6 +184,10 @@ export type OrcaConfig = {
+   /** How many automatic PR-upkeep address runs (server/upkeep.ts) may go at once on one instance
+    *  (default 2) — each is a full agent run, and the box's memory is shared. */
+   autoUpkeepConcurrency?: number;
++  /** The box-wide queue for heavy commands (server/heavy.ts, `orca-run`): per-kind and total slot
++   *  limits, the max wait and run time in minutes, and each command's memory cap. Unset: defaults
++   *  for a 4 vCPU box (e2e 1, test 2, lint 2, build 1, total 3; 20 min wait, 30 min run, 3 GB). */
++  heavyQueue?: HeavyQueueConfig;
+   /** Which instance the orchestrator lives on, when there are several sharing the database. Its
+    *  routes are forwarded there and worker reports from other instances are posted there, so ONE
+    *  process wakes it (two would resume one session at once). Unset: wherever it is spoken to. */
+@@ -372,6 +377,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
+   if (d.agentCpuWeight !== undefined && (typeof d.agentCpuWeight !== "number" || !(d.agentCpuWeight > 0))) {
+     errors.push("agentCpuWeight must be a positive number (systemd CPUWeight, 1-10000)");
+   }
++  errors.push(...heavyQueueProblems(d.heavyQueue));
+   errors.push(...serverSwitcherProblems(d.serverSwitcher));
+   errors.push(...serverIdentityProblems(d.serverIdentity));
+   if (errors.length) return { errors };
+@@ -389,6 +395,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
+       orchestratorShell: d.orchestratorShell as boolean | undefined,
+       orchestratorWakeBudgetUsd: d.orchestratorWakeBudgetUsd as number | undefined,
+       autoUpkeepConcurrency: d.autoUpkeepConcurrency as number | undefined,
++      heavyQueue: d.heavyQueue as HeavyQueueConfig | undefined,
+       orchestratorOn: d.orchestratorOn as string | undefined,
+       agentCpuWeight: d.agentCpuWeight as number | undefined,
+       githubAccounts: d.githubAccounts as OrcaConfig["githubAccounts"],
+@@ -455,6 +462,7 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
+       ...(file.orchestratorShell === undefined ? {} : { orchestratorShell: file.orchestratorShell }),
+       ...(file.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: file.orchestratorWakeBudgetUsd }),
+       ...(file.autoUpkeepConcurrency === undefined ? {} : { autoUpkeepConcurrency: file.autoUpkeepConcurrency }),
++      ...(file.heavyQueue === undefined ? {} : { heavyQueue: file.heavyQueue as unknown as db.Fields }),
+       ...(file.orchestratorOn === undefined ? {} : { orchestratorOn: file.orchestratorOn }),
+       ...(file.agentCpuWeight === undefined ? {} : { agentCpuWeight: file.agentCpuWeight }),
+       ...(file.githubAccounts === undefined ? {} : { githubAccounts: file.githubAccounts }),
+@@ -526,6 +534,7 @@ async function loadFromDb(): Promise<OrcaConfig> {
+     orchestratorShell: app.orchestratorShell !== false,
+     orchestratorWakeBudgetUsd: app.orchestratorWakeBudgetUsd as number | undefined,
+     autoUpkeepConcurrency: app.autoUpkeepConcurrency as number | undefined,
++    heavyQueue: app.heavyQueue as HeavyQueueConfig | undefined,
+     orchestratorOn: app.orchestratorOn as string | undefined,
+     agentCpuWeight: app.agentCpuWeight as number | undefined,
+     githubAccounts: app.githubAccounts as OrcaConfig["githubAccounts"],
+@@ -566,6 +575,7 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
+       ...(config.orchestratorShell === undefined ? {} : { orchestratorShell: config.orchestratorShell }),
+       ...(config.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: config.orchestratorWakeBudgetUsd }),
+       ...(config.autoUpkeepConcurrency === undefined ? {} : { autoUpkeepConcurrency: config.autoUpkeepConcurrency }),
++      ...(config.heavyQueue === undefined ? {} : { heavyQueue: config.heavyQueue as unknown as db.Fields }),
+       ...(config.orchestratorOn === undefined ? {} : { orchestratorOn: config.orchestratorOn }),
+       ...(config.agentCpuWeight === undefined ? {} : { agentCpuWeight: config.agentCpuWeight }),
+       ...(config.githubAccounts === undefined ? {} : { githubAccounts: config.githubAccounts }),
+diff --git a/server/heavy.ts b/server/heavy.ts
+new file mode 100644
+index 00000000..23457273
+--- /dev/null
++++ b/server/heavy.ts
+@@ -0,0 +1,335 @@
++// The box-wide queue for HEAVY commands: test runners, linters on a whole repo, tsc, builds, e2e
++// suites. Agents on one box ran Playwright, Jest and a frontend build at the same time; on a 4 vCPU
++// 15.7 GB box that OOM-killed runs in orca-agents.slice and pinned the CPU. This is orca-shot's
++// queue (server/screenshot.ts) generalised to N slots:
++//   1. Limits: per kind (e2e, test, lint, build, migrate, serve), in total, and a CPU budget over the
++//      kinds' CPU costs (`heavyQueue` in the app config).
++//   2. A slot is tied to the run: to the CLI's held request (a killed `orca-run` drops it), to the
++//      agent run that asked (`releaseRun` at its exit), and to the CLI's pid (a sweep).
++//   3. A max wait in the queue and a max run time, after which the slot is taken back.
++//   4. Optional: each granted command runs in its own memory-capped systemd scope.
++// The CLI is `bin/worker/orca-run`; the shims beside it (bin/worker/.heavy-shim) route the heavy
++// tools, package scripts and test scripts through it.
++
++// Finn's decision (2026-10-19): no CPUQuota on orca-agents.slice. This queue is the ONLY CPU control,
++// so it covers every heavy task and its defaults keep the box under about 3 busy CPUs (4 vCPU box):
++// each kind has a CPU cost, and the running costs never pass `cpuBudget`.
++export const HEAVY_KINDS = ["e2e", "test", "lint", "build", "migrate", "serve"] as const;
++export type HeavyKind = (typeof HEAVY_KINDS)[number];
++export type HeavyLimits = Record<HeavyKind, number> & { total: number };
++export type PerKind = Record<HeavyKind, number>;
++
++/** How many of each kind may run at once, and of all kinds together. */
++export const DEFAULT_HEAVY_LIMITS: HeavyLimits = { e2e: 1, test: 2, lint: 2, build: 1, migrate: 1, serve: 2, total: 4 };
++/** The CPUs one command of each kind is expected to keep busy. `serve`: a local backend or frontend
++ *  for a test, mostly idle; `migrate`: one database client. */
++export const DEFAULT_HEAVY_CPU: PerKind = { e2e: 1.5, test: 1, lint: 1, build: 1.5, migrate: 0.5, serve: 0.5 };
++/** The sum of the running costs never passes this (a 4 vCPU box keeps one CPU for the rest). */
++export const DEFAULT_CPU_BUDGET = 3;
++export const DEFAULT_MAX_WAIT_MS = 20 * 60_000;
++/** A server for a test runs as long as the tests; everything else gets 30 minutes. */
++export const DEFAULT_MAX_RUN_MS: PerKind = { e2e: 30 * 60_000, test: 30 * 60_000, lint: 30 * 60_000, build: 30 * 60_000, migrate: 30 * 60_000, serve: 60 * 60_000 };
++/** The memory cap of one granted command's own scope. */
++export const DEFAULT_HEAVY_MEMORY_MAX_GB = 3;
++export const HEAVY_CPU_WEIGHT = 50;
++
++/** The app config's `heavyQueue`. Each field is optional; a missing one takes the default.
++ *  `maxRunMinutes` is one number for every kind, or a number per kind. */
++export type HeavyQueueConfig = {
++  limits?: Partial<HeavyLimits>;
++  cpu?: Partial<PerKind>;
++  cpuBudget?: number;
++  maxWaitMinutes?: number;
++  maxRunMinutes?: number | Partial<PerKind>;
++  memoryMaxGb?: number;
++};
++
++export type HeavySettings = { limits: HeavyLimits; cpu: PerKind; cpuBudget: number; maxWaitMs: number; maxRunMs: PerKind; memoryMaxGb: number };
++
++/** Config → settings with every default filled in. Pure. */
++export function heavySettings(cfg: HeavyQueueConfig | undefined): HeavySettings {
++  const run = cfg?.maxRunMinutes;
++  const maxRunMs = { ...DEFAULT_MAX_RUN_MS };
++  for (const k of HEAVY_KINDS) {
++    const m = typeof run === "number" ? run : run?.[k];
++    if (m !== undefined) maxRunMs[k] = m * 60_000;
++  }
++  return {
++    limits: { ...DEFAULT_HEAVY_LIMITS, ...(cfg?.limits ?? {}) },
++    cpu: { ...DEFAULT_HEAVY_CPU, ...(cfg?.cpu ?? {}) },
++    cpuBudget: cfg?.cpuBudget ?? DEFAULT_CPU_BUDGET,
++    maxWaitMs: cfg?.maxWaitMinutes !== undefined ? cfg.maxWaitMinutes * 60_000 : DEFAULT_MAX_WAIT_MS,
++    maxRunMs,
++    memoryMaxGb: cfg?.memoryMaxGb ?? DEFAULT_HEAVY_MEMORY_MAX_GB,
++  };
++}
++
++/** Problems with a `heavyQueue` value, for config validation. Pure. */
++export function heavyQueueProblems(v: unknown): string[] {
++  if (v === undefined) return [];
++  if (!v || typeof v !== "object" || Array.isArray(v)) return ["heavyQueue must be an object"];
++  const o = v as Record<string, unknown>;
++  const errors: string[] = [];
++  const isObj = (x: unknown) => !!x && typeof x === "object" && !Array.isArray(x);
++  const kinds = HEAVY_KINDS.join(", ");
++  if (o.limits !== undefined) {
++    if (!isObj(o.limits)) errors.push("heavyQueue.limits must be an object");
++    else for (const [k, n] of Object.entries(o.limits as object)) {
++      if (![...HEAVY_KINDS, "total"].includes(k)) errors.push(`heavyQueue.limits.${k} is not a kind (${kinds}, total)`);
++      else if (!(Number.isInteger(n) && (n as number) >= 1)) errors.push(`heavyQueue.limits.${k} must be a whole number of at least 1`);
++    }
++  }
++  for (const key of ["cpu", ...(isObj(o.maxRunMinutes) ? ["maxRunMinutes"] : [])]) {
++    if (o[key] === undefined) continue;
++    if (!isObj(o[key])) { errors.push(`heavyQueue.${key} must be an object`); continue; }
++    for (const [k, n] of Object.entries(o[key] as object)) {
++      if (!isHeavyKind(k)) errors.push(`heavyQueue.${key}.${k} is not a kind (${kinds})`);
++      else if (!(typeof n === "number" && n > 0)) errors.push(`heavyQueue.${key}.${k} must be a positive number`);
++    }
++  }
++  for (const k of ["cpuBudget", "maxWaitMinutes", "memoryMaxGb", ...(isObj(o.maxRunMinutes) ? [] : ["maxRunMinutes"])]) {
++    if (o[k] !== undefined && !(typeof o[k] === "number" && (o[k] as number) > 0)) errors.push(`heavyQueue.${k} must be a positive number`);
++  }
++  return errors;
++}
++
++export function isHeavyKind(k: unknown): k is HeavyKind {
++  return typeof k === "string" && (HEAVY_KINDS as readonly string[]).includes(k);
++}
++
++/** Who asks and for what. Only `kind` and `command` are required. */
++export type HeavyRequest = {
++  kind: HeavyKind;
++  /** The command line, for the view. Never run by the bridge. */
++  command: string;
++  /** The agent run that asked (ORCA_RUN_ID in a worker's env). */
++  runId?: string;
++  repo?: string;
++  branch?: string;
++  cwd?: string;
++  /** The `orca-run` process. A dead pid frees the slot. */
++  pid?: number;
++};
++
++/** `cpu`: the kind's CPU cost, set when the slot is granted. */
++export type HeavyEntry = HeavyRequest & { id: string; queuedAt: number; startedAt?: number; unit?: string; cpu?: number };
++export type HeavyView = { running: HeavyEntry[]; queued: HeavyEntry[]; limits: HeavyLimits; cpu: { used: number; budget: number } };
++
++/** Why a slot came back. `done` and `client-gone` are ordinary; the others stop the command. */
++export type ReleaseReason = "done" | "client-gone" | "run-ended" | "max-run" | "pid-dead";
++
++export type Grant = {
++  id: string;
++  /** The CPUs this slot counts for in the budget. */
++  cpu: number;
++  /** The systemd unit the command may run in (the CLI wraps it when the scope is available). */
++  unit: string;
++  /** Set once the slot is back. Idempotent. */
++  release(reason?: ReleaseReason): void;
++  /** Called once when the bridge takes the slot back (not for `done`/`client-gone`). */
++  onRevoke(fn: (reason: ReleaseReason) => void): void;
++};
++
++export type AcquireOpts = { signal?: AbortSignal; onQueue?: (ahead: number) => void };
++
++export class HeavyWaitTimeout extends Error {}
++
++export type SlotManager = {
++  acquire(req: HeavyRequest, opts?: AcquireOpts): Promise<Grant>;
++  /** Give a slot back by id (the CLI's normal end). Unknown ids are a no-op. */
++  release(id: string): void;
++  /** Free every slot (and queued job) of an agent run that ended. Returns how many slots it freed. */
++  releaseRun(runId: string): number;
++  /** Free slots past the max run time or with a dead client. index.ts calls it on a timer. */
++  sweep(): void;
++  view(): HeavyView;
++};
++
++/** The slot manager. Every dependency is injectable, so the tests drive it with a fake clock. */
++export function createSlotManager(deps: {
++  settings?: () => HeavySettings;
++  now?: () => number;
++  /** Is this pid alive? Default: `process.kill(pid, 0)`. */
++  alive?: (pid: number) => boolean;
++  /** Stop a command whose slot was revoked: its scope unit and its client. */
++  stop?: (entry: HeavyEntry, reason: ReleaseReason) => void;
++} = {}): SlotManager {
++  const settings = deps.settings ?? (() => heavySettings(undefined));
++  const now = deps.now ?? Date.now;
++  const alive = deps.alive ?? pidAlive;
++
++  type Job = { entry: HeavyEntry; grant: (g: Grant) => void; fail: (e: Error) => void; onQueue?: (ahead: number) => void; lastAhead?: number; timer?: ReturnType<typeof setTimeout>; cleanup?: () => void };
++  type Slot = { entry: HeavyEntry; released: boolean; revoke?: (r: ReleaseReason) => void };
++  const queue: Job[] = [];
++  const running = new Map<string, Slot>();
++
++  const countKind = (k: HeavyKind) => [...running.values()].filter((s) => s.entry.kind === k).length;
++  const cpuUsed = () => [...running.values()].reduce((n, s) => n + (s.entry.cpu ?? 0), 0);
++
++  function report() {
++    queue.forEach((job, i) => {
++      if (job.lastAhead === i) return;
++      job.lastAhead = i;
++      job.onQueue?.(i);
++    });
++  }
++
++  function drop(job: Job) {
++    const i = queue.indexOf(job);
++    if (i >= 0) queue.splice(i, 1);
++    clearTimeout(job.timer);
++    job.cleanup?.();
++  }
++
++  // FIFO, with one exception: a job whose own kind is full does not block a later job of another
++  // kind (a queued e2e run must not hold back a lint run while the e2e slot is busy). The total and
++  // the CPU budget are shared, so a job that does not fit them stops the scan: a small job never
++  // passes a large one, which then never starves. A job that costs more than the whole budget runs
++  // when nothing else does.
++  function pump() {
++    const { limits, cpu, cpuBudget } = settings();
++    for (let i = 0; i < queue.length && running.size < limits.total;) {
++      const job = queue[i]!;
++      const kind = job.entry.kind;
++      if (countKind(kind) >= limits[kind]) { i++; continue; }
++      if (running.size > 0 && cpuUsed() + cpu[kind] > cpuBudget + 1e-9) break;
++      drop(job);
++      job.entry.startedAt = now();
++      job.entry.cpu = cpu[kind];
++      const slot: Slot = { entry: job.entry, released: false };
++      running.set(job.entry.id, slot);
++      job.grant({
++        id: job.entry.id,
++        cpu: cpu[kind],
++        unit: job.entry.unit!,
++        release: (reason = "done") => free(job.entry.id, reason),
++        onRevoke: (fn) => { slot.revoke = fn; },
++      });
++    }
++    report();
++  }
++
++  function free(id: string, reason: ReleaseReason) {
++    const slot = running.get(id);
++    if (!slot || slot.released) return;
++    slot.released = true;
++    running.delete(id);
++    if (reason !== "done" && reason !== "client-gone") {
++      try { slot.revoke?.(reason); } catch { /* a listener must not stop the queue */ }
++      try { deps.stop?.(slot.entry, reason); } catch { /* the stop is best effort */ }
++    }
++    pump();
++  }
++
++  return {
++    acquire(req, opts = {}) {
++      return new Promise<Grant>((resolve, reject) => {
++        const id = `heavy-${crypto.randomUUID().slice(0, 8)}`;
++        const entry: HeavyEntry = { ...req, id, queuedAt: now(), unit: `orca-heavy-${id.slice(6)}` };
++        const job: Job = { entry, grant: resolve, fail: reject, onQueue: opts.onQueue };
++        if (opts.signal?.aborted) return reject(new Error("cancelled"));
++        const onAbort = () => { drop(job); reject(new Error("cancelled")); report(); };
++        opts.signal?.addEventListener("abort", onAbort, { once: true });
++        job.cleanup = () => opts.signal?.removeEventListener("abort", onAbort);
++        const wait = settings().maxWaitMs;
++        job.timer = setTimeout(() => {
++          drop(job);
++          reject(new HeavyWaitTimeout(`waited ${Math.round(wait / 60_000)} min for a ${entry.kind} slot; the box is busy, try again later`));
++          report();
++        }, wait);
++        queue.push(job);
++        pump();
++      });
++    },
++    release(id) { free(id, "done"); },
++    releaseRun(runId) {
++      for (const job of queue.filter((j) => j.entry.runId === runId)) {
++        drop(job);
++        job.fail(new Error("the agent run ended"));
++      }
++      const ids = [...running.values()].filter((s) => s.entry.runId === runId).map((s) => s.entry.id);
++      for (const id of ids) free(id, "run-ended");
++      report();
++      return ids.length;
++    },
++    sweep() {
++      const { maxRunMs } = settings();
++      for (const slot of [...running.values()]) {
++        if (slot.entry.startedAt !== undefined && now() - slot.entry.startedAt > maxRunMs[slot.entry.kind]) free(slot.entry.id, "max-run");
++        else if (slot.entry.pid !== undefined && !alive(slot.entry.pid)) free(slot.entry.id, "pid-dead");
++      }
++    },
++    view() {
++      const { limits, cpuBudget } = settings();
++      return { running: [...running.values()].map((s) => ({ ...s.entry })), queued: queue.map((j) => ({ ...j.entry })), limits, cpu: { used: Math.round(cpuUsed() * 100) / 100, budget: cpuBudget } };
++    },
++  };
++}
++
++function pidAlive(pid: number): boolean {
++  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === "EPERM"; }
++}
++
++/** The argv prefix that runs a granted command in its own capped scope. Empty when the scope is not
++ *  available. Pure. */
++export function scopePrefix(opts: { available: boolean; unit: string; memoryMaxGb: number; slice?: string }): string[] {
++  if (!opts.available) return [];
++  return [
++    "systemd-run", "--user", "--scope", "--quiet", `--unit=${opts.unit}`, ...(opts.slice ? [`--slice=${opts.slice}`] : []),
++    "-p", `MemoryMax=${opts.memoryMaxGb}G`, "-p", "MemorySwapMax=0", "-p", `CPUWeight=${HEAVY_CPU_WEIGHT}`, "--",
++  ];
++}
++
++/** The answer to `POST /api/heavy`: NDJSON, `{queued: N}` while waiting, then `{granted, unit,
++ *  prefix, env, maxRunMs}`, then a heartbeat every `beatMs` until the slot is back; `{revoked}` if
++ *  the bridge takes it back, `{error}` if it never comes. The slot lives as long as the request: a
++ *  dropped connection (a killed `orca-run`) frees it. */
++export function acquireResponse(manager: SlotManager, request: HeavyRequest, signal: AbortSignal, grantInfo: {
++  maxRunMs: number; env: Record<string, string>; prefix: (unit: string) => string[]; beatMs?: number;
++}): Response {
++  const encoder = new TextEncoder();
++  let grant: Grant | undefined;
++  let beat: ReturnType<typeof setInterval> | undefined;
++  const gone = () => { clearInterval(beat); grant?.release("client-gone"); };
++  signal.addEventListener("abort", gone, { once: true });
++  const stream = new ReadableStream({
++    async start(controller) {
++      let last: unknown = { queued: 0 };
++      const write = (obj: unknown) => { last = obj; try { controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`)); } catch { gone(); } };
++      const close = () => { clearInterval(beat); try { controller.close(); } catch { /* already closed */ } };
++      // A line every 20s keeps the held connection inside Bun's idleTimeout.
++      beat = setInterval(() => write(last), grantInfo.beatMs ?? 20_000);
++      try {
++        grant = await manager.acquire(request, { signal, onQueue: (ahead) => write({ queued: ahead }) });
++      } catch (e) {
++        write({ error: (e as Error).message });
++        return close();
++      }
++      if (signal.aborted) return grant.release("client-gone");
++      grant.onRevoke((reason) => { write({ revoked: reason }); close(); });
++      write({ granted: grant.id, unit: grant.unit, maxRunMs: grantInfo.maxRunMs, prefix: grantInfo.prefix(grant.unit), env: grantInfo.env, cpus: grant.cpu });
++    },
++    cancel() { gone(); },
++  });
++  return new Response(stream, { headers: { "content-type": "application/x-ndjson" } });
++}
++
++// ---- the bridge's one manager ----
++let manager: SlotManager | undefined;
++let current: HeavySettings = heavySettings(undefined);
++/** index.ts sets the settings from the config on each request that reads it. */
++export function setSettings(s: HeavySettings): void { current = s; }
++export function slots(): SlotManager {
++  manager ??= createSlotManager({ settings: () => current, stop: stopEntry });
++  return manager;
++}
++
++/** A revoked slot's command: stop its scope (the whole tree) and its `orca-run` client. */
++function stopEntry(entry: HeavyEntry): void {
++  if (entry.unit) {
++    try {
++      Bun.spawn(["systemctl", "--user", "stop", `${entry.unit}.scope`], { stdout: "ignore", stderr: "ignore", env: { ...process.env, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 0}` } });
++    } catch { /* no systemctl */ }
++  }
++  if (entry.pid) { try { process.kill(entry.pid, "SIGTERM"); } catch { /* already gone */ } }
++}
+diff --git a/server/index.ts b/server/index.ts
+index 40a5f9a0..798889a6 100644
+--- a/server/index.ts
++++ b/server/index.ts
+@@ -48,6 +48,7 @@ import { providerOfModel } from "../shared/models";
+ import * as prShots from "./prShots";
+ import * as terminal from "./terminal";
+ import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
++import * as heavy from "./heavy";
+ import { checkCaller, instanceHosts, listServers, selfServer, serverGate, withIdentity } from "./servers";
+ import { isAutomatic, leaseHolder } from "../shared/integrations";
+ import { instanceOptions } from "../shared/integrationSettings";
+@@ -197,6 +198,9 @@ setInterval(() => {
+   if (!primary.held()) return;
+   void loadConfig().then((cfg) => mergeQueue.tick(cfg)).catch(db.logUnlessDown("orca: merge queue pass failed"));
+ }, mergeQueue.MERGE_POLL_MS).unref();
++// The heavy-command queue (server/heavy.ts): take back a slot past its max run time or whose
++// `orca-run` client died without closing its connection.
++setInterval(() => heavy.slots().sweep(), 15_000).unref();
+ // Only this bridge may run the orchestrator's wakes: a bridge on code too old for the election (a
+ // stray preview bridge, incident 2026-10-15) that launched one is stopped with it, and the wake is
+ // re-run here (orchestrator.evictForeignWake). Once a minute, on the primary.
+@@ -394,6 +398,12 @@ const INSTANCE_IS_A_FILTER = new Set(["/api/health/history"]);
+ 
+ /** Forward a request to the instance that owns the repo. Returns undefined when the request should
+  *  be handled locally. (The chat's live stream is not forwarded — /api/events relays instead.) */
++/** This box's heavy-command queue, for /api/heavy and the machine card (/api/health). */
++function heavyView(cfg: OrcaConfig): heavy.HeavyView {
++  heavy.setSettings(heavy.heavySettings(cfg.heavyQueue));
++  return heavy.slots().view();
++}
++
+ async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: OrcaConfig, body: Record<string, unknown>): Promise<Response | undefined> {
+   // An explicit `instance` on an otherwise local route (`/api/health?instance=cloud`) still forwards —
+   // except where `instance` names whose rows to read, not where to run.
+@@ -647,6 +657,36 @@ async function api(req: Request, url: URL): Promise<Response> {
+     }
+     return json({ error: "not found" }, 404);
+   }
++  // The box-wide queue for heavy commands (server/heavy.ts, bin/worker/orca-run). Never forwarded:
++  // a slot is for THIS box's CPU and memory. Like /api/screenshot the answer is NDJSON: `{queued: N}`
++  // while waiting, then `{granted}`, then a heartbeat until the slot is back. The slot lives as long
++  // as this request: a killed `orca-run` drops the connection, and that frees it.
++  if (req.method === "POST" && p === "/api/heavy") {
++    if (!heavy.isHeavyKind(body.kind)) return json({ error: `kind must be one of ${heavy.HEAVY_KINDS.join(", ")}` }, 400);
++    heavy.setSettings(heavy.heavySettings(cfg.heavyQueue));
++    const request: heavy.HeavyRequest = {
++      kind: body.kind, command: String(body.command ?? "").slice(0, 500),
++      ...(typeof body.runId === "string" && body.runId ? { runId: body.runId } : {}),
++      ...(typeof body.repo === "string" && body.repo ? { repo: body.repo } : {}),
++      ...(typeof body.branch === "string" && body.branch ? { branch: body.branch } : {}),
++      ...(typeof body.cwd === "string" && body.cwd ? { cwd: body.cwd } : {}),
++      ...(Number.isInteger(body.pid) && body.pid > 0 ? { pid: body.pid } : {}),
++    };
++    const settings = heavy.heavySettings(cfg.heavyQueue);
++    const scoped = cgroup.available();
++    return heavy.acquireResponse(heavy.slots(), request, req.signal, {
++      maxRunMs: settings.maxRunMs[request.kind], env: scoped ? cgroup.runtimeEnv() : {},
++      prefix: (unit) => heavy.scopePrefix({ available: scoped, unit, memoryMaxGb: settings.memoryMaxGb, slice: cgroup.AGENTS_SLICE }),
++    });
++  }
++  if (req.method === "POST" && p === "/api/heavy/release") {
++    // The CLI's normal end: the command exited. A missing or unknown id is a no-op.
++    if (typeof body.id === "string") heavy.slots().release(body.id);
++    return json({ ok: true });
++  }
++  if (req.method === "GET" && p === "/api/heavy") {
++    return json(heavyView(cfg));
++  }
+   if (p.startsWith("/api/orchestrator") && cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName()) {
+     // ONE instance hosts the orchestrator (orchestratorOn); everything about it goes there.
+     const base = cfg.instances?.[cfg.orchestratorOn];
+@@ -890,7 +930,7 @@ async function api(req: Request, url: URL): Promise<Response> {
+     const since = Date.parse(cfg.instanceBillingSince?.[db.instanceName()] ?? "");
+     const month = rate.hourlyUsd > 0 ? await monthCost(rate.hourlyUsd, Number.isFinite(since) ? { billingSince: since } : {}).catch(() => undefined) : undefined;
+     // `protections`: which of deploy/harden.sh's protections this box is missing (server/protections.ts).
+-    return json({ ...h, rate, month, protections: protections && withLiveState(protections, cgroup.userManagerDown()), database: db.databaseStatus(), outbox: outbox.summary() });
++    return json({ ...h, rate, month, protections: protections && withLiveState(protections, cgroup.userManagerDown()), database: db.databaseStatus(), outbox: outbox.summary(), heavy: heavyView(cfg) });
+   }
+   if (req.method === "GET" && p === "/api/notifications") {
+     // The centre's rows (any instance answers: one table). `since` is the catch-up cursor after a
+diff --git a/tests/agentsList.test.tsx b/tests/agentsList.test.tsx
+index f49f2b16..23d1eb25 100644
+--- a/tests/agentsList.test.tsx
++++ b/tests/agentsList.test.tsx
+@@ -124,6 +124,7 @@ async function mount() {
+ }
+ afterEach(async () => {
+   apiFake.reset();
++  store._resetReviewSignals(); // a cached digest outlives the file: statusCard reads r#7 from it
+   await act(async () => { await store.refresh(); });
+   act(() => root?.unmount());
+   container?.remove();
+diff --git a/tests/console.test.tsx b/tests/console.test.tsx
+index 6cd315fb..5891ce8f 100644
+--- a/tests/console.test.tsx
++++ b/tests/console.test.tsx
+@@ -1,7 +1,7 @@
+ // The Vercel-style console (sidebar shell, Overview, Agents, Agent page, Usage/Repos/Settings): the
+ // pure derivations first — usage rows, chart helpers, durations, the chat log's counters and find,
+ // repo summaries — then the pages rendered against the fake api (tests/apiFake.ts) in a real DOM.
+-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
++import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+ import { act } from "react";
+ import { createRoot, type Root } from "react-dom/client";
+ import { getDefaultStore } from "jotai";
+@@ -10,6 +10,7 @@ import * as store from "@/store";
+ import { App } from "@/App";
+ import { navigate } from "@/lib/route";
+ import { repoFilterAtom } from "@/lib/atoms";
++import * as centre from "@/lib/notificationStore";
+ import {
+   agentFailure, downsample, formatDuration, instanceOrder, niceMax, repoSummaries, routingBroken, rowDuration, timeTicks, untilReset,
+   usageGroups, type OverviewRow,
+@@ -133,6 +134,10 @@ const type = async (input: HTMLInputElement, text: string) => act(async () => {
+   await flush();
+ });
+ 
++// The Shell starts the notification mirror, which holds the tab's one live stream. Tear it down, or
++// every later file in this process finds that stream already open (liveEvents counts opens).
++afterAll(() => centre.reset());
++
+ describe("the console's pages", () => {
+   beforeAll(() => store.configReady);
+   afterEach(async () => {
+diff --git a/tests/heavy.test.ts b/tests/heavy.test.ts
+new file mode 100644
+index 00000000..59fdbae1
+--- /dev/null
++++ b/tests/heavy.test.ts
+@@ -0,0 +1,350 @@
++// The box-wide heavy-command queue (server/heavy.ts) and its CLI (bin/worker/orca-run) plus the
++// shims beside it. The slot manager runs with a fake clock; the CLI and shims run for real against
++// a tiny bridge that serves the same `acquireResponse` the real route does.
++import { afterAll, beforeAll, describe, expect, test } from "bun:test";
++import { chmodSync, mkdtempSync, writeFileSync } from "fs";
++import { tmpdir } from "os";
++import { dirname, join } from "path";
++import {
++  acquireResponse, createSlotManager, HEAVY_KINDS, heavyQueueProblems, heavySettings, HeavyWaitTimeout, scopePrefix,
++  type Grant, type HeavyEntry, type HeavySettings, type PerKind, type ReleaseReason, type SlotManager,
++} from "../server/heavy";
++import { runIdentity } from "../server/agent";
++import { HEAVY_COMMANDS, followUpPrompt, heavyQueueRows } from "../web/src/workstream";
++import { native } from "./happydom";
++
++const WORKER = join(import.meta.dir, "..", "bin", "worker");
++const tick = () => new Promise((r) => setTimeout(r, 0));
++
++function manager(over: Partial<HeavySettings> = {}, deps: { now?: () => number; alive?: (pid: number) => boolean } = {}) {
++  const stopped: { entry: HeavyEntry; reason: ReleaseReason }[] = [];
++  const s = { ...heavySettings(undefined), ...over };
++  const m = createSlotManager({ settings: () => s, stop: (entry, reason) => stopped.push({ entry, reason }), ...deps });
++  return { m, stopped };
++}
++/** Ask for a slot and record when it is granted. */
++function ask(m: SlotManager, kind: HeavyEntry["kind"], extra: { runId?: string; pid?: number; signal?: AbortSignal; positions?: number[] } = {}) {
++  const r: { grant?: Grant; error?: Error } = {};
++  void m.acquire({ kind, command: `${kind} cmd`, runId: extra.runId, pid: extra.pid }, { signal: extra.signal, onQueue: (n) => extra.positions?.push(n) })
++    .then((g) => { r.grant = g; }, (e) => { r.error = e; });
++  return r;
++}
++
++describe("slot manager", () => {
++  test("HQ1: defaults keep the box under 3 busy CPUs — per-kind limits, the CPU budget, and strict FIFO across the budget", async () => {
++    const { m } = manager();
++    expect(m.view().cpu).toEqual({ used: 0, budget: 3 });
++    const e1 = ask(m, "e2e"), e2 = ask(m, "e2e");
++    const t1 = ask(m, "test"), t2 = ask(m, "test");
++    const s1 = ask(m, "serve");
++    await tick();
++    expect(e1.grant && t1.grant).toBeDefined(); // 1.5 + 1 = 2.5 CPUs
++    expect(e2.grant).toBeUndefined(); // e2e is 1: skipped, it does not block the rest
++    expect(t2.grant).toBeUndefined(); // 2.5 + 1 > 3
++    expect(s1.grant).toBeUndefined(); // 0.5 fits, but it never passes the test that waits for the budget
++    expect(m.view().cpu.used).toBe(2.5);
++    t1.grant!.release();
++    await tick();
++    expect(t2.grant && s1.grant).toBeDefined(); // 1.5 + 1 + 0.5 = 3
++    expect(m.view().cpu.used).toBe(3);
++    expect(e2.grant).toBeUndefined();
++    e1.grant!.release();
++    await tick();
++    expect(e2.grant).toBeDefined();
++    expect(e2.grant!.cpu).toBe(1.5);
++  });
++
++  test("HQ1b: a job that costs more than the whole budget runs alone; the limits and costs come from config", async () => {
++    const { m } = manager(heavySettings({ cpu: { build: 5 }, cpuBudget: 3, limits: { lint: 1 } }));
++    const big = ask(m, "build"), lint = ask(m, "lint");
++    await tick();
++    expect(big.grant).toBeDefined();
++    expect(lint.grant).toBeUndefined();
++    big.grant!.release();
++    await tick();
++    expect(lint.grant).toBeDefined();
++  });
++
++  test("HQ2: FIFO within a kind, and each waiter hears its position as it moves", async () => {
++    const { m } = manager();
++    const first = ask(m, "e2e");
++    const pa: number[] = [], pb: number[] = [];
++    const a = ask(m, "e2e", { positions: pa }), b = ask(m, "e2e", { positions: pb });
++    await tick();
++    expect(pa).toEqual([0]);
++    expect(pb).toEqual([1]);
++    first.grant!.release();
++    await tick();
++    expect(a.grant).toBeDefined();
++    expect(b.grant).toBeUndefined();
++    expect(pb).toEqual([1, 0]);
++    a.grant!.release();
++    a.grant!.release(); // idempotent: a second release frees nothing more
++    await tick();
++    expect(b.grant).toBeDefined();
++    expect(m.view().running).toHaveLength(1);
++  });
++
++  test("HQ3: a run that ends frees its slots, stops their commands and drops its queued jobs", async () => {
++    const { m, stopped } = manager();
++    const mine = ask(m, "e2e", { runId: "run-a" });
++    const other = ask(m, "e2e", { runId: "run-b" });
++    const mineQueued = ask(m, "e2e", { runId: "run-a" });
++    await tick();
++    let revoked: string | undefined;
++    mine.grant!.onRevoke((r) => { revoked = r; });
++    expect(m.releaseRun("run-a")).toBe(1);
++    await tick();
++    expect(revoked).toBe("run-ended");
++    expect(stopped.map((s) => [s.entry.runId, s.reason])).toEqual([["run-a", "run-ended"]]);
++    expect(mineQueued.error?.message).toMatch(/run ended/);
++    expect(other.grant).toBeDefined();
++  });
++
++  test("HQ4: max wait — a job queued too long fails with a clear message and leaves the queue", async () => {
++    const { m } = manager({ maxWaitMs: 30 });
++    const holder = ask(m, "build");
++    const waiter = ask(m, "build");
++    await new Promise((r) => setTimeout(r, 60));
++    expect(holder.grant).toBeDefined();
++    expect(waiter.error).toBeInstanceOf(HeavyWaitTimeout);
++    expect(waiter.error!.message).toMatch(/busy/);
++    expect(m.view().queued).toHaveLength(0);
++  });
++
++  test("HQ5: max run time and a dead client pid — the sweep takes the slot back", async () => {
++    let now = 1_000;
++    const dead = new Set<number>();
++    const maxRunMs = Object.fromEntries(HEAVY_KINDS.map((k) => [k, 60_000])) as PerKind;
++    const { m, stopped } = manager({ maxRunMs }, { now: () => now, alive: (pid) => !dead.has(pid) });
++    const slow = ask(m, "test", { pid: 11 });
++    const gone = ask(m, "test", { pid: 22 });
++    const next = ask(m, "test", { pid: 33 });
++    await tick();
++    const reasons: string[] = [];
++    slow.grant!.onRevoke((r) => reasons.push(`slow:${r}`));
++    gone.grant!.onRevoke((r) => reasons.push(`gone:${r}`));
++    dead.add(22);
++    m.sweep();
++    expect(reasons).toEqual(["gone:pid-dead"]);
++    await tick();
++    expect(next.grant).toBeDefined();
++    now += 61_000;
++    m.sweep();
++    expect(reasons).toEqual(["gone:pid-dead", "slow:max-run", ]);
++    expect(stopped.map((s) => s.reason)).toEqual(["pid-dead", "max-run", "max-run"]);
++    expect(m.view().running).toHaveLength(0);
++  });
++
++  test("HQ6: an aborted request leaves the queue before it gets a slot", async () => {
++    const { m } = manager();
++    const holder = ask(m, "e2e");
++    const ac = new AbortController();
++    const quitter = ask(m, "e2e", { signal: ac.signal });
++    const after = ask(m, "e2e");
++    await tick();
++    ac.abort();
++    await tick();
++    expect(quitter.error?.message).toBe("cancelled");
++    holder.grant!.release();
++    await tick();
++    expect(after.grant).toBeDefined();
++  });
++
++  test("HQ7: config — defaults, overrides and validation", () => {
++    const s = heavySettings({ limits: { e2e: 2 }, cpu: { test: 2 }, cpuBudget: 2.5, maxWaitMinutes: 5, maxRunMinutes: { serve: 90 }, memoryMaxGb: 2 });
++    expect(s.limits).toEqual({ e2e: 2, test: 2, lint: 2, build: 1, migrate: 1, serve: 2, total: 4 });
++    expect(s.cpu).toEqual({ e2e: 1.5, test: 2, lint: 1, build: 1.5, migrate: 0.5, serve: 0.5 });
++    expect(s.cpuBudget).toBe(2.5);
++    expect(s.maxWaitMs).toBe(300_000);
++    expect(s.maxRunMs.serve).toBe(90 * 60_000);
++    expect(s.maxRunMs.test).toBe(30 * 60_000);
++    expect(heavySettings({ maxRunMinutes: 10 }).maxRunMs).toEqual(Object.fromEntries(HEAVY_KINDS.map((k) => [k, 600_000])) as PerKind);
++    expect(heavySettings(undefined).maxRunMs.serve).toBe(60 * 60_000);
++    expect(s.memoryMaxGb).toBe(2);
++    expect(heavyQueueProblems(undefined)).toEqual([]);
++    expect(heavyQueueProblems({ limits: { e2e: 0, unit: 1 }, cpu: { lint: 0, x: 1 }, cpuBudget: 0, maxRunMinutes: -1 })).toEqual([
++      "heavyQueue.limits.e2e must be a whole number of at least 1",
++      "heavyQueue.limits.unit is not a kind (e2e, test, lint, build, migrate, serve, total)",
++      "heavyQueue.cpu.lint must be a positive number",
++      "heavyQueue.cpu.x is not a kind (e2e, test, lint, build, migrate, serve)",
++      "heavyQueue.cpuBudget must be a positive number",
++      "heavyQueue.maxRunMinutes must be a positive number",
++    ]);
++    expect(heavyQueueProblems({ maxRunMinutes: { serve: "a" } })).toEqual(["heavyQueue.maxRunMinutes.serve must be a positive number"]);
++  });
++
++  test("HQ8: the scope prefix caps one command's memory in the agents' slice; none without systemd", () => {
++    expect(scopePrefix({ available: false, unit: "u", memoryMaxGb: 3 })).toEqual([]);
++    expect(scopePrefix({ available: true, unit: "orca-heavy-1", memoryMaxGb: 3, slice: "orca-agents.slice" })).toEqual([
++      "systemd-run", "--user", "--scope", "--quiet", "--unit=orca-heavy-1", "--slice=orca-agents.slice",
++      "-p", "MemoryMax=3G", "-p", "MemorySwapMax=0", "-p", "CPUWeight=50", "--",
++    ]);
++  });
++
++  test("HQ9: a run's env names the run, so its slot is tied to it", () => {
++    expect(runIdentity("r1", { repo: "orca", branch: "b" })).toEqual({ ORCA_RUN_ID: "r1", ORCA_REPO: "orca", ORCA_BRANCH: "b" });
++    expect(runIdentity("r1", {})).toEqual({ ORCA_RUN_ID: "r1" });
++  });
++
++  test("HQ10: the machine card lists running commands, then the queue with positions", () => {
++    expect(heavyQueueRows(undefined)).toEqual([]);
++    const rows = heavyQueueRows({
++      running: [{ id: "b", kind: "test", command: "jest", branch: "feat", queuedAt: 5, startedAt: 9 }, { id: "a", kind: "e2e", command: "playwright test", repo: "demo", queuedAt: 1, startedAt: 2 }],
++      queued: [{ id: "c", kind: "e2e", command: "x".repeat(100), queuedAt: 3 }],
++    });
++    expect(rows.map((r) => [r.id, r.state, r.who, r.position])).toEqual([["a", "running", "demo", undefined], ["b", "running", "feat", undefined], ["c", "queued", "shell", 1]]);
++    expect(rows[2]!.command.length).toBe(80);
++  });
++});
++
++test("HQ16: every worker prompt carries the rule: wrap heavy commands in orca-run, never a whole suite", () => {
++  expect(HEAVY_COMMANDS).toContain("orca-run --kind test|lint|build|e2e|migrate|serve -- <command>");
++  expect(HEAVY_COMMANDS).toMatch(/database migration/);
++  expect(HEAVY_COMMANDS).toMatch(/Never run a whole suite/);
++  expect(followUpPrompt("fix the header").split(HEAVY_COMMANDS)).toHaveLength(2);
++});
++
++// ---- the CLI and the shims, for real ----
++describe("orca-run and the shims", () => {
++  let server: ReturnType<typeof Bun.serve>;
++  let m: SlotManager;
++  let fakeBin: string;
++  const env = () => {
++    const e: Record<string, string> = {};
++    for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("ORCA_")) e[k] = v;
++    // The shims first, then fake real tools, then bun itself (orca-run's `#!/usr/bin/env bun`).
++    return { ...e, PATH: `${WORKER}:${fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin`, ORCA_URL: `http://127.0.0.1:${server.port}` };
++  };
++
++  // happy-dom replaces the globals; the bridge's code must build Bun's Response for Bun.serve.
++  const saved = { Response: globalThis.Response, fetch: globalThis.fetch };
++  beforeAll(() => {
++    globalThis.Response = native.Response;
++    globalThis.fetch = native.fetch;
++    m = createSlotManager({ settings: () => ({ ...heavySettings(undefined), maxWaitMs: 20_000 }) });
++    server = Bun.serve({
++      port: 0,
++      async fetch(req) {
++        const p = new URL(req.url).pathname;
++        const body = req.method === "POST" ? await req.json() : {};
++        if (p === "/api/heavy") return acquireResponse(m, body, req.signal, { maxRunMs: 60_000, env: {}, prefix: () => [], beatMs: 200 });
++        if (p === "/api/heavy/release") { m.release(body.id); return Response.json({ ok: true }); }
++        return new Response("no", { status: 404 });
++      },
++    });
++    // Fake "real" tools: print who they are, their args and the slot they run under.
++    fakeBin = mkdtempSync(join(tmpdir(), "orca-heavy-bin-"));
++    for (const name of ["playwright", "eslint", "npx", "tsc", "jest", "npm", "prettier", "mikro-orm"]) {
++      const f = join(fakeBin, name);
++      writeFileSync(f, `#!/bin/sh\necho "${name} $* slot=\${ORCA_RUN_SLOT:-none}"\n[ -n "$SLEEP" ] && sleep "$SLEEP"\nexit \${EXIT_CODE:-0}\n`);
++      chmodSync(f, 0o755);
++    }
++  });
++  afterAll(() => {
++    server.stop(true);
++    globalThis.Response = saved.Response;
++    globalThis.fetch = saved.fetch;
++  });
++
++  const run = async (cmd: string[], extra: Record<string, string> = {}) => {
++    const proc = Bun.spawn(cmd, { env: { ...env(), ...extra }, stdout: "pipe", stderr: "pipe" });
++    const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
++    return { out, err, code };
++  };
++
++  test("HQ11: orca-run takes a slot, runs the command, returns its exit code and gives the slot back", async () => {
++    const r = await run([join(WORKER, "orca-run"), "--kind", "lint", "--", "eslint", "src"], { EXIT_CODE: "3" });
++    expect(r.code).toBe(3);
++    expect(r.out).toMatch(/^eslint src slot=heavy-\w+/);
++    await Bun.sleep(50);
++    expect(m.view().running).toHaveLength(0);
++  });
++
++  test("HQ12: two Playwright runs at once — the second waits with a queue position", async () => {
++    const first = Bun.spawn(["playwright", "test", "a.spec.ts"], { env: { ...env(), SLEEP: "1" }, stdout: "pipe", stderr: "pipe" });
++    await Bun.sleep(400);
++    expect(m.view().running.map((e) => e.kind)).toEqual(["e2e"]);
++    const t0 = Date.now();
++    const second = await run(["playwright", "test", "b.spec.ts"]);
++    expect(second.err).toContain("queued: position 1 in line for an e2e slot");
++    expect(second.err).toContain("orca-run: slot granted (e2e)");
++    expect(second.out).toMatch(/playwright test b.spec.ts --workers=1 slot=heavy-/);
++    expect(Date.now() - t0).toBeGreaterThan(300);
++    expect(await first.exited).toBe(0);
++  });
++
++  test("HQ13: kill -9 of a waiting or running orca-run frees its place", async () => {
++    const holder = Bun.spawn(["playwright", "test"], { env: { ...env(), SLEEP: "30" }, stdout: "ignore", stderr: "ignore" });
++    await Bun.sleep(400);
++    expect(m.view().running).toHaveLength(1);
++    holder.kill("SIGKILL");
++    await holder.exited;
++    for (let i = 0; i < 40 && m.view().running.length; i++) await Bun.sleep(50);
++    expect(m.view().running).toHaveLength(0);
++    // The fake tool that orca-run started is an orphan now; the real bridge stops its scope.
++    const next = await run(["playwright", "test", "c.spec.ts"]);
++    expect(next.err).not.toContain("queued");
++    expect(next.out).toContain("slot=heavy-");
++  });
++
++  test("HQ14: the shims queue only heavy calls; --version, other tools, nested calls and the bypass run at once", async () => {
++    expect((await run(["playwright", "--version"])).out).toContain("slot=none");
++    expect((await run(["playwright", "install"])).out).toContain("slot=none");
++    expect((await run(["tsc", "--noEmit"])).out).toMatch(/slot=heavy-/);
++    expect((await run(["npx", "-y", "eslint@9", "."])).out).toMatch(/npx -y eslint@9 \. slot=heavy-/);
++    expect((await run(["npx", "cowsay", "hi"])).out).toContain("slot=none");
++    expect((await run(["npx", "-p", "playwright", "playwright", "test"])).out).toMatch(/slot=heavy-/);
++    expect((await run(["tsc", "--noEmit"], { ORCA_RUN_BYPASS: "1" })).out).toContain("slot=none");
++    expect((await run(["eslint", "."], { ORCA_RUN_SLOT: "heavy-outer" })).out).toContain("slot=heavy-outer");
++    // A tool that is not installed is still "not found", never a hang in the queue.
++    const missing = await run(["vitest", "run"]);
++    expect(missing.code).toBe(127);
++    expect(missing.err).toContain("vitest: command not found");
++  });
++
++  test("HQ17: package scripts, test scripts, migrations and formatters queue; jest and playwright get one worker", async () => {
++    const slotted = /slot=heavy-/;
++    // A fake npm prints its args: the script name decides.
++    expect((await run(["npm", "test"])).out).toMatch(slotted);
++    expect((await run(["npm", "run", "type-check"])).out).toMatch(slotted);
++    expect((await run(["npm", "run", "setup-db"])).out).toMatch(slotted);
++    expect((await run(["npm", "run", "dev:local:test"])).out).toMatch(slotted);
++    expect((await run(["npm", "--prefix", "frontend", "run", "build"])).out).toMatch(slotted);
++    expect((await run(["npm", "install"])).out).toContain("slot=none");
++    expect((await run(["npm", "run", "generate-client"])).out).toContain("slot=none");
++    expect((await run(["prettier", "--write", "src"])).out).toMatch(slotted);
++    expect((await run(["mikro-orm", "migration:up"])).out).toMatch(slotted);
++    expect((await run(["mikro-orm", "cache:generate"])).out).toContain("slot=none");
++    // Worker caps: added only when the call sets none.
++    expect((await run(["jest", "src/a.test.ts"])).out).toMatch(/jest src\/a.test.ts --maxWorkers=1 slot=heavy-/);
++    expect((await run(["jest", "-w", "2"])).out).toMatch(/jest -w 2 slot=heavy-/);
++    expect((await run(["jest", "--runInBand"])).out).toMatch(/jest --runInBand slot=heavy-/);
++    expect((await run(["playwright", "test", "x.spec.ts"])).out).toMatch(/playwright test x.spec.ts --workers=1 slot=heavy-/);
++    expect((await run(["playwright", "test", "--workers=2"])).out).toMatch(/playwright test --workers=2 slot=heavy-/);
++    expect((await run(["npx", "jest", "a"], { ORCA_RUN_WORKERS: "2" })).out).toMatch(/npx jest a --maxWorkers=2 slot=heavy-/);
++    // The real bun and bash, through their shims.
++    const dir = mkdtempSync(join(tmpdir(), "orca-heavy-pkg-"));
++    writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { lint: "echo lint slot=${ORCA_RUN_SLOT:-none}", hello: "echo hello slot=${ORCA_RUN_SLOT:-none}" } }));
++    writeFileSync(join(dir, "run-e2e-tests.sh"), "echo e2e slot=${ORCA_RUN_SLOT:-none}\n");
++    writeFileSync(join(dir, "notes.sh"), "echo notes slot=${ORCA_RUN_SLOT:-none}\n");
++    const inDir = async (cmd: string[]) => {
++      const proc = Bun.spawn(cmd, { cwd: dir, env: env(), stdout: "pipe", stderr: "pipe" });
++      const [out] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
++      return out;
++    };
++    expect(await inDir(["bun", "run", "lint"])).toMatch(/lint slot=heavy-/);
++    expect(await inDir(["bun", "run", "hello"])).toContain("hello slot=none");
++    expect(await inDir(["bash", "run-e2e-tests.sh"])).toMatch(/e2e slot=heavy-/);
++    expect(await inDir(["bash", "notes.sh"])).toContain("notes slot=none");
++    expect(await inDir(["bash", "-c", "echo c slot=${ORCA_RUN_SLOT:-none}"])).toContain("c slot=none");
++    expect(m.view().running).toHaveLength(0);
++  });
++
++  test("HQ15: with no bridge, orca-run warns and runs the command anyway", async () => {
++    const r = await run([join(WORKER, "orca-run"), "--", "eslint", "x"], { ORCA_URL: "http://127.0.0.1:9" });
++    expect(r.code).toBe(0);
++    expect(r.err).toContain("running without a slot");
++    expect(r.out).toContain("eslint x");
++  });
++});
+diff --git a/tests/liveEvents.test.tsx b/tests/liveEvents.test.tsx
+index b7523b96..2825ff08 100644
+--- a/tests/liveEvents.test.tsx
++++ b/tests/liveEvents.test.tsx
+@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
+ import { apiFake } from "./apiFake";
+ import * as store from "@/store";
+ import { ChatPanel } from "@/views/Chat";
++import * as centre from "@/lib/notificationStore";
+ import type { Row } from "@/store";
+ 
+ (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+@@ -28,6 +29,7 @@ let root: Root | undefined;
+ let container: HTMLElement | undefined;
+ beforeEach(() => {
+   apiFake.reset();
++  centre.reset(); // a mirror an earlier file started holds the stream open; these tests count opens
+   Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+ });
+ afterEach(async () => {
+diff --git a/tests/statusCard.test.tsx b/tests/statusCard.test.tsx
+index f9a4fd42..9aa6c9f3 100644
+--- a/tests/statusCard.test.tsx
++++ b/tests/statusCard.test.tsx
+@@ -1,7 +1,7 @@
+ // The agent status chip's hover card: `rowStatus` (workstream.ts) returns the tone the label comes
+ // from AND the real inputs behind it, so the card explains the status instead of guessing. The pure
+ // derivation is checked per status first; then the card is opened in a real DOM.
+-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
++import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+ import { act } from "react";
+ import { createRoot, type Root } from "react-dom/client";
+ import "./apiFake";
+@@ -93,6 +93,8 @@ describe("rowStatus (pure)", () => {
+ describe("StatusHoverCard (DOM)", () => {
+   let root: Root | undefined;
+   let host: HTMLDivElement | undefined;
++  // The card reads the review digest cache, which other files in this process fill (agentsList: r#7).
++  beforeEach(() => store._resetReviewSignals());
+   afterEach(() => { act(() => root?.unmount()); host?.remove(); root = undefined; });
+ 
+   test("focus on the chip opens the card with the reasons and Address PR", async () => {
+diff --git a/web/src/api.ts b/web/src/api.ts
+index eef88022..abc13e3a 100644
+--- a/web/src/api.ts
++++ b/web/src/api.ts
+@@ -68,7 +68,12 @@ export type InstanceHealth = {
+   /** Which of deploy/harden.sh's protections the box is missing (server/protections.ts), and the
+    *  newest OOM kill in its kernel log (null: none; absent: unreadable). Absent off Linux. */
+   protections?: { missing: { key: string; label: string }[]; lastOomKill?: number | null; at: number };
++  /** The box-wide heavy-command queue (server/heavy.ts). Absent from an older bridge. */
++  heavy?: HeavyQueueView;
+ };
++export type HeavyEntry = { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number; startedAt?: number; cpu?: number };
++/** `cpu`: the running commands' CPU costs against the budget. Absent from the first cut. */
++export type HeavyQueueView = { running: HeavyEntry[]; queued: HeavyEntry[]; limits: Record<string, number>; cpu?: { used: number; budget: number } };
+ /** One recorded sample of an instance's vitals (instance_metric), for the chip's history graphs. */
+ export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; /** Absent from a bridge older than migration 13 — unknown, not 0. */
+   runningAgents?: number;
+diff --git a/web/src/views/Vitals.tsx b/web/src/views/Vitals.tsx
+index d9398aa5..730d1bed 100644
+--- a/web/src/views/Vitals.tsx
++++ b/web/src/views/Vitals.tsx
+@@ -19,7 +19,7 @@ import { Tip } from "@/components/ui/tip";
+ import { Switch } from "@/components/ui/switch";
+ import { cn } from "@/lib/utils";
+ import { thisInstance } from "../store";
+-import { HISTORY_RANGES, countMax, headerUsage, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
++import { HISTORY_RANGES, countMax, headerUsage, heavyQueueRows, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+ import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StatusDot, UsageSkeleton, VCard } from "@/components/console";
+ 
+ /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
+@@ -289,6 +289,7 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
+   const memTotal = h?.memTotalGb ?? Math.max(1, ...(history ?? []).map((p) => p.memTotalGb));
+   const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
+   const guard = protectionsWarning(h?.protections);
++  const heavyRows = heavyQueueRows(h?.heavy);
+   return (
+     <VCard
+       slot={`instance-${instance}`}
+@@ -318,6 +319,22 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
+           <Tip label={cost.detail}><span className="tabular-nums">{cost.value}{h?.rate?.source === "estimate" && <span className="text-muted-foreground ml-1 text-xs">est.</span>}</span></Tip>
+         ) : "—"}</Detail>
+       </div>
++      {heavyRows.length > 0 && (
++        <div data-slot="heavy-queue" className="border-b px-4 py-3">
++          <div className="text-muted-foreground mb-1.5 text-xs">Heavy commands · orca-run{h?.heavy?.cpu && <span data-slot="heavy-cpu" className="tabular-nums"> · CPU {h.heavy.cpu.used} / {h.heavy.cpu.budget}</span>}</div>
++          <ul className="divide-y">
++            {heavyRows.map((r) => (
++              <li key={r.id} data-slot="heavy-row" data-state={r.state} className="flex items-center gap-2 py-1.5 text-[13px]">
++                <StatusDot tone={r.state === "running" ? "building" : "queued"} />
++                <span className="text-muted-foreground w-16 shrink-0 text-xs">{r.state === "running" ? "running" : `queued #${r.position}`}</span>
++                <span className="w-14 shrink-0 text-xs">{r.kind}</span>
++                <Tip label={r.command}><span className="min-w-0 flex-1 truncate font-mono text-xs">{r.command}</span></Tip>
++                <span className="text-muted-foreground max-w-[40%] shrink-0 truncate text-xs">{r.who}</span>
++              </li>
++            ))}
++          </ul>
++        </div>
++      )}
+       {history === null ? (
+           <div className="grid gap-6 p-4 md:grid-cols-2">
+             <ChartSkeleton slot="chart-cpu-skeleton" /><ChartSkeleton slot="chart-mem-skeleton" />
+diff --git a/web/src/workstream.ts b/web/src/workstream.ts
+index 3461976b..d1e5b5bd 100644
+--- a/web/src/workstream.ts
++++ b/web/src/workstream.ts
+@@ -284,6 +284,10 @@ const NARRATE = [
+   "Keep it brief and factual. This is a running commentary, not a report; the summary comes at the end.",
+ ].join("\n");
+ 
++/** The heavy-command rule (server/heavy.ts, bin/worker/orca-run), in every worker prompt beside
++ *  SCREENSHOTS: several agents share one box, and parallel test runs OOM-killed each other. */
++export const HEAVY_COMMANDS = "This box is shared with other agents, and the box-wide queue is its only CPU control. Run every heavy command through it: `orca-run --kind test|lint|build|e2e|migrate|serve -- <command>`. Heavy means a test runner (jest, vitest, bun test, pytest), Playwright, eslint, prettier, tsc, a frontend or backend build, a database migration, and a local backend or frontend that a test needs. `orca-run` waits for a slot, prints its place in the line, then runs the command and returns its exit code. The heavy tools, `npm`/`pnpm`/`yarn`/`bun` package scripts and `bash <test script>` on your PATH already queue. Never run a whole suite: run only the test files your change touches. Do not set ORCA_RUN_BYPASS=1 for a heavy command.";
++
+ /** Prompt used to launch the headless agent — Orca already created it from the latest base.
+  *
+  *  Deliberately does NOT assume the request is work to be done. "Investigate why X is slow and report
+@@ -310,6 +314,7 @@ export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">
+     NARRATE,
+     NO_PR,
+     SCREENSHOTS,
++    HEAVY_COMMANDS,
+   ].join("\n"));
+ }
+ 
+@@ -373,7 +378,7 @@ export function slackPrompt(
+ /** Follow-up instruction for an agent already working a branch (resumes its session). */
+ export function followUpPrompt(instruction: string, opts: { mergeWhenGreen?: boolean } = {}): string {
+   const mergeNote = opts.mergeWhenGreen ? "\n\n(This PR is marked merge-when-green: Orca's merge queue holds the mark and waits for this run — and anything queued behind it — to finish, then merges once CI is green on your latest push. Commit and push as usual; no separate merge step needed.)" : "";
+-  return withOutcomeContract(`${instruction}${mergeNote}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}\n${SCREENSHOTS}`);
++  return withOutcomeContract(`${instruction}${mergeNote}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}\n${SCREENSHOTS}\n${HEAVY_COMMANDS}`);
+ }
+ 
+ // Every session starts with no memory of the last one, so it starts by looking: the same three-line
+@@ -413,6 +418,7 @@ export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean
+     SESSION_START,
+     NO_PR,
+     SCREENSHOTS,
++    HEAVY_COMMANDS,
+     "",
+     WRITING_STYLE,
+     "",
+@@ -824,6 +830,7 @@ export function addressPrPrompt(ws: Pick<Workstream, "prNumber" | "branch">, par
+     ...reviewLines(ws, parts.feedback, parts.threads, parts.followed, parts.comments),
+     NO_PR,
+     SCREENSHOTS,
++    HEAVY_COMMANDS,
+   ].join(" "));
+ }
+ 
+@@ -2237,6 +2244,22 @@ export function protectionsWarning(
+   return oom ? { warn: false, text: oom } : undefined;
+ }
+ 
++/** The machine card's heavy-command list: running first (oldest first), then the queue in order.
++ *  `who` is the workstream (branch, else repo, else "shell"); `since` is when it started or queued.
++ *  Empty when nothing runs or waits. Pure. */
++export function heavyQueueRows(view: { running: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number; startedAt?: number }[]; queued: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number }[] } | undefined): {
++  id: string; state: "running" | "queued"; kind: string; command: string; who: string; since: number; position?: number;
++}[] {
++  if (!view) return [];
++  const who = (e: { repo?: string; branch?: string }) => e.branch ?? e.repo ?? "shell";
++  const short = (c: string) => (c.length > 80 ? `${c.slice(0, 79)}…` : c);
++  return [
++    ...[...view.running].sort((a, b) => (a.startedAt ?? a.queuedAt) - (b.startedAt ?? b.queuedAt))
++      .map((e) => ({ id: e.id, state: "running" as const, kind: e.kind, command: short(e.command), who: who(e), since: e.startedAt ?? e.queuedAt })),
++    ...view.queued.map((e, i) => ({ id: e.id, state: "queued" as const, kind: e.kind, command: short(e.command), who: who(e), since: e.queuedAt, position: i + 1 })),
++  ];
++}
++
+ // ---- review signal: who approved, what humans said, what the AI reviewers flagged, what's open ----
+ // Pure derivations over gh.reviewSignal (one PR's reviews, comments and inline threads), shared by
+ // the list row's review cluster and the PR page's Review panel.

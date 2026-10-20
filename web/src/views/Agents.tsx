@@ -35,7 +35,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { BrowserKillBadge, Pill, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
+import { BrowserKillBadge, Pill, RepoBadge, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
 import { CopyDone, LaneActions } from "./BulkActions";
 import { ConditionBadges } from "./ConditionBadges";
@@ -182,11 +182,24 @@ function useListLayout(ref: RefObject<HTMLElement | null>): ReturnType<typeof li
   const widths = useRef<ListWidths>(NO_WIDTHS);
   const labels = useRef<ListWidths>({ ...NO_WIDTHS });
   const ro = useRef<ResizeObserver | null>(null);
+  const measuredAt = useRef(0);
   const measure = useRef(() => {
     const el = ref.current;
     if (!el) return;
-    widths.current = measureColumns(el, labels.current) ?? widths.current;
-    const next = listLayout(el.clientWidth, widths.current);
+    const px = el.clientWidth;
+    const now = measureColumns(el, labels.current);
+    if (now) {
+      // At one list width a column's width only GROWS: a folded piece measures narrower where it
+      // lands (behind the subline's +N, in the PR cell), which would unfold the column, which folds
+      // it again — with no fixed point, React gave up and the page went blank (a DevTools close
+      // widened the page into that band). A fold only deepens as widths grow, so this converges; a
+      // resize measures afresh.
+      const keep = px === measuredAt.current ? widths.current : NO_WIDTHS;
+      for (const k of Object.keys(now) as (keyof ListWidths)[]) now[k] = Math.max(now[k], keep[k]);
+      widths.current = now;
+    }
+    measuredAt.current = px;
+    const next = listLayout(px, widths.current);
     setLayout((prev) => (sameLayout(prev, next) ? prev : next));
   }).current;
   const settled = useRef(() => afterDockMotion(measure)).current;
@@ -519,11 +532,10 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
     >
       <div className="min-w-0 flex-1 space-y-1.5">
         <div role="cell" className="flex min-w-0 items-center justify-between gap-2">
-          <span className="flex min-w-0 items-center gap-1.5"><span className="min-w-0 truncate font-medium">{row.title}</span><VerifiedBadge row={row} /></span>
+          <span className="flex min-w-0 items-center gap-1.5"><RepoBadge repo={row.repo} /><span className="min-w-0 truncate font-medium">{row.title}</span><VerifiedBadge row={row} /></span>
           <RunStatus row={row} tone={tone} reasons={reasons} />
         </div>
         <div role="cell" className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
-          <span className="shrink-0">{row.repo}</span>
           <ThreadChips repo={row.repo} branch={row.branch} />
           <span aria-hidden="true">·</span><span className="min-w-0 font-mono break-all">{row.branch}</span>
           {model && <><span aria-hidden="true">·</span><span data-slot="model-label">{model.label}</span></>}
@@ -559,17 +571,19 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
       className={`${GRID} hover:bg-accent/40 focus-visible:bg-accent/40 h-14 border-b md:[content-visibility:auto] md:[contain-intrinsic-size:auto_56px] text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""}`}
     >
       <div role="cell" className="min-w-0">
-        <div className="flex min-w-0 items-center gap-1.5"><span className="min-w-0 truncate font-medium">{row.title}</span><VerifiedBadge row={row} /></div>
+        <div className="flex min-w-0 items-center gap-1.5"><RepoBadge repo={row.repo} /><span className="min-w-0 truncate font-medium">{row.title}</span><VerifiedBadge row={row} /></div>
         <Subline className={SIGNALS} items={[
-          // A folded column leads the subline: the status, then the PR with its checks.
-          fold.status && { key: "status", sep: "after", node: <RunStatus row={row} tone={tone} reasons={reasons} /> },
+          // A folded column leads the subline: the status label, then the PR with its checks. The
+          // elapsed time/duration is the LEAST relevant item — placed last, so it is the first thing
+          // sublineOverflow drops behind +N, kept apart from the status label it sits beside.
+          fold.status && { key: "status", sep: "after", node: <StatusLabel row={row} tone={tone} /> },
           ...(fold.pr ? prItems.map((i, k) => (k === prItems.length - 1 ? { ...i, sep: "after" as const } : i)) : []),
-          { key: "repo", sep: "none", node: row.repo },
           { key: "threads", sep: "none", node: <ThreadChips repo={row.repo} branch={row.branch} iconOnly /> },
           model && { key: "model", node: <Tip label={model.title}><span data-slot="model-label">{model.label}</span></Tip> },
           !isDone && { key: "preview", sep: "none", node: <PrPreviewInline row={row} /> },
           diffstat && { key: "diffstat", node: diffstat },
           error && { key: "error", node: <span data-slot="row-error" className="text-geist-red">{error}</span> },
+          fold.status && { key: "statusDuration", node: <StatusDuration row={row} /> },
         ]} />
       </div>
       {!fold.status && <div role="cell" className="min-w-0"><RunStatus row={row} tone={tone} reasons={reasons} /></div>}
@@ -690,24 +704,43 @@ function SublineMore({ items }: { items: SublineItem[] }) {
   );
 }
 
-/** The status cell: dot + label, and the duration. While running, a spinner and an elapsed time read
- *  off the ONE shared ticker (lib/ticker) — only this cell re-renders each second, never the list. */
-export function RunStatus({ row, tone, reasons }: { row: Row; tone: RowTone; reasons: string[] }) {
+/** The dot + label alone — the part of the status cell worth keeping once space is tight. Split out
+ *  of RunStatus so a folded subline can drop the elapsed time first (StatusDuration below) and keep
+ *  this. */
+function StatusLabel({ row, tone }: { row: Row; tone: RowTone }) {
+  return (
+    <StatusHoverCard row={row}>
+      {tone === "running" ? <Loader2 data-slot="run-spinner" aria-hidden="true" className="text-geist-amber size-3 shrink-0 animate-spin" /> : <StatusDot tone={TONE_DOT[tone]} />}
+      <span data-tone={tone} className="truncate font-medium">{TONE_LABEL[tone]}</span>
+    </StatusHoverCard>
+  );
+}
+
+/** The elapsed/duration text alone, off the ONE shared ticker (lib/ticker) while running — only this
+ *  re-renders each second, never the list. The least relevant part of the status cell: in a folded
+ *  subline (Agents.tsx prItems/signals), it is the first thing `sublineOverflow` drops behind +N. */
+function StatusDuration({ row }: { row: Row }) {
   const running = row.agentStatus === "running" && Boolean(row.agentStartedAt);
   const now = useNow(running);
   const duration = running ? undefined : rowDuration(row);
+  if (running && now !== undefined) {
+    return (
+      <Tip label={`Running since ${new Date(row.agentStartedAt!).toLocaleTimeString()}`}>
+        <span data-slot="elapsed" className="text-muted-foreground tabular-nums">{formatElapsed(now - row.agentStartedAt!)}</span>
+      </Tip>
+    );
+  }
+  if (duration !== undefined) return <span className="text-muted-foreground tabular-nums">{formatDuration(duration)}</span>;
+  return null;
+}
+
+/** The status cell: dot + label, and the duration, side by side — the dedicated Status column and
+ *  the stacked (phone) row, neither of which folds piece by piece. */
+export function RunStatus({ row, tone, reasons }: { row: Row; tone: RowTone; reasons: string[] }) {
   return (
     <div data-slot="run-status" data-col-part="status" className="flex w-max items-center gap-2 whitespace-nowrap">
-      <StatusHoverCard row={row}>
-        {tone === "running" ? <Loader2 data-slot="run-spinner" aria-hidden="true" className="text-geist-amber size-3 shrink-0 animate-spin" /> : <StatusDot tone={TONE_DOT[tone]} />}
-        <span data-tone={tone} className="truncate font-medium">{TONE_LABEL[tone]}</span>
-      </StatusHoverCard>
-      {running && now !== undefined && (
-        <Tip label={`Running since ${new Date(row.agentStartedAt!).toLocaleTimeString()}`}>
-          <span data-slot="elapsed" className="text-muted-foreground tabular-nums">{formatElapsed(now - row.agentStartedAt!)}</span>
-        </Tip>
-      )}
-      {duration !== undefined && <span className="text-muted-foreground tabular-nums">{formatDuration(duration)}</span>}
+      <StatusLabel row={row} tone={tone} />
+      <StatusDuration row={row} />
     </div>
   );
 }

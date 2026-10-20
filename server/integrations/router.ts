@@ -45,6 +45,8 @@ export async function post(link: store.Link, text: string, opts: {
   reply?: ReplyTo; threadId?: string; scope?: { repo: string; branch?: string }; thread?: ConversationRef; key?: string;
   /** Open a thread for the post (`orca post --thread`; Discord: on the message it answers). */
   openThread?: boolean;
+  /** `orca-attachment://` refs, sent as files (`orca post --attach`). */
+  attachments?: string[];
 } = {}, now = Date.now()): Promise<{ id: string; delivery?: number; externalId: string; threadId?: string }> {
   const conn = await store.integration(link.integrationId);
   const threadId = opts.reply ? opts.reply.threadId : opts.threadId;
@@ -57,6 +59,7 @@ export async function post(link: store.Link, text: string, opts: {
     key: opts.key ?? `post:${randomUUID()}`, topic: "orca.message", at: now, source: { adapter: "orca", linkId: link.id },
     ...(opts.scope ? { scope: opts.scope } : {}), ...(thread ? { thread } : {}), text,
     ...(opts.openThread ? { openThread: opts.reply?.messageId ? { messageId: opts.reply.messageId } : {} } : {}),
+    ...(opts.attachments?.length ? { attachments: opts.attachments } : {}),
   }, now, [{ subscriptionId: null, target: {
     kind: "link", integrationId: link.integrationId, adapter: conn?.kind ?? "?", linkId: link.id, externalId, ...(threadId ? { threadId } : {}),
   } }]);

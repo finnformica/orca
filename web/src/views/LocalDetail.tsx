@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import type { ChangeSummary } from "../../../server/git";
 import { api } from "../api";
-import { summary as fetchSummary, useWorkstreams } from "../store";
+import { summary as fetchSummary, useWorkstreams, useWorkstreamsLoaded } from "../store";
 import { navigate, type LocalTab } from "@/lib/route";
-import { DiffView, HEADER_TABS, STICKY_HEADER, useStickyHeader } from "./PrDetail";
+import { HEADER_TABS, STICKY_HEADER, useStickyHeader } from "./PrDetail";
 import { AGENT_TABS, AgentHeader, ChatCard, DetailsCard, HeaderSource, RowStatus } from "./AgentPage";
 import { useNarrow } from "@/lib/viewport";
 import { VCard } from "@/components/console";
@@ -12,12 +12,14 @@ import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PreviewPanel } from "./PreviewControl";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { poll } from "@/lib/poll";
+import { FilesChanged } from "./FilesChanged";
 
 // The agent page for a local session (a worktree + its agent, pre-PR), Vercel's deployment page:
 // Overview (the Details card, then files and commits), Chat (the conversation, filling the
 // viewport below the header and tabs), Files changed (branch-vs-base diff), Preview.
 export function LocalDetail({ repo, branch, sub }: { repo: string; branch: string; sub: LocalTab }) {
   const row = useWorkstreams().find((r) => r.repo === repo && r.branch === branch && !r.mergedAt);
+  const loaded = useWorkstreamsLoaded();
   const [summary, setSummary] = useState<ChangeSummary | null>(null);
   const [diff, setDiff] = useState<string | null>(null);
   const wt = row?.worktreePath;
@@ -37,6 +39,8 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
 
   const go = (t: LocalTab) => navigate(`/${repo}/local/${encodeURIComponent(branch)}${t === "overview" ? "" : `/${t}`}`);
 
+  // On a reload the store has no rows yet: wait, rather than say the session does not exist.
+  if (!row && !loaded) return <p data-slot="local-loading" className="text-muted-foreground text-sm">Loading {branch}…</p>;
   if (!row) return <p className="text-muted-foreground text-sm">No local session for <code>{branch}</code>. <button className="underline" onClick={() => navigate("/agents")}>Back to agents</button></p>;
 
   const hasWork = (summary?.commits.length ?? 0) > 0;
@@ -88,10 +92,10 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
           <ChatCard row={row} />
         </TabsContent>
 
-        <TabsContent value="files" className="space-y-3 pt-4">
+        <TabsContent value="files" className="pt-4">
           {!wt ? <p className="text-muted-foreground text-sm">No worktree checked out.</p>
             : diff === null ? <p className="text-muted-foreground text-sm">Loading diff…</p>
-            : <DiffView text={diff} />}
+            : <FilesChanged text={diff} scope={`${repo}:${branch}`} />}
         </TabsContent>
 
         <TabsContent value="preview" className="pt-4">

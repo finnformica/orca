@@ -33,6 +33,7 @@ import { stateDir } from "./state";
 import { API_PORT } from "./ports";
 import { reachable } from "./peer";
 import { machineReport } from "./liveMetrics";
+import { cloudflareTool } from "./cloudflare";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
@@ -41,9 +42,10 @@ import {
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
-import { grantKey, grantRefusal, isReceiveOnly, receiveOnlyRefusal, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
+import { attachmentIdOf, attachmentRefusal, grantKey, grantRefusal, isReceiveOnly, receiveOnlyRefusal, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
 import * as integrationStore from "./integrations/store";
 import * as integrationRouter from "./integrations/router";
+import * as integrationRegistry from "./integrations/registry";
 
 // ponytail: constants, not config — promote one to OrcaConfig the first time it needs tuning.
 /** Wakes in a row with no message from you before it stops waking itself. The loop guard: an
@@ -556,6 +558,24 @@ async function attachArgs(args: ToolArgs): Promise<string[]> {
   return refs;
 }
 
+/** `orca post --attach`: refuse before anything is queued when the link's adapter cannot send these
+ *  files (no file support, too many, one too large), with the reason the model can act on. The
+ *  caps of the adapter running here, else of its kind (it may run on another instance). */
+async function refuseAttachments(integrationId: string, refs: string[]): Promise<void> {
+  const conn = await integrationStore.integration(integrationId);
+  const caps = integrationRegistry.adapterFor(integrationId)?.caps ?? integrationRegistry.kinds().find((k) => k.kind === conn?.kind)?.caps;
+  const files = await Promise.all(refs.map(async (ref) => {
+    const id = attachmentIdOf(ref);
+    const row = id ? await db.attachment(id) : undefined;
+    return { name: row?.filename ?? ref, bytes: row?.bytes.byteLength ?? 0, text: row ? handoff.asText(row.bytes) : undefined };
+  }));
+  const refusal = caps && attachmentRefusal(conn?.kind ?? "this", caps, files); // an unknown kind: the dispatcher refuses
+  if (refusal) throw new Error(refusal);
+  // The handoff's secret scan: a file with an obvious credential never leaves (the line, never the value).
+  const secrets = files.flatMap((f) => (f.text === undefined ? [] : handoff.scanSecrets(f.text, f.name)));
+  if (secrets.length) throw new Error(`--attach refused: ${secrets.map((x) => `${x.where} line ${x.line} looks like a ${x.kind}`).join("; ")}`);
+}
+
 /** `orca channels`: every link (where Orca can post or listen), the subscriptions and the pairing
  *  codes waiting for the user. Read-only. */
 async function channelsText(): Promise<string> {
@@ -621,12 +641,14 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       return args.json !== undefined ? JSON.stringify(report, null, 2) : machineText(report);
     }
     case "post": {
-      // `orca post --link <id> [--thread <id> | --repo r --branch b] [--thread] "<text>"`: a durable delivery
+      // `orca post --link <id> [--thread <id> | --repo r --branch b] [--thread] [--attach <id|path>]… "<text>"`: a durable delivery
       // through the link's adapter, retried if it fails. With --repo/--branch it continues that
       // workstream's thread on the link, or starts it.
       // `--reply "<text>"` arrives as the flag's value (bin/orca takes the next word), so read it there too.
       // `--thread` opens a thread for the post (Discord: on the mention it answers). With `--reply`, or
       // with no value, it is a switch, and `--reply --thread "<text>"` gives it the text.
+      // `--attach` (repeatable) stores each file like `orca send --attach` and sends it as a file. The
+      // delivery carries only the refs, so a retry reads the bytes again from the attachment table.
       const openThread = typeof args.thread === "string" && (reply !== undefined || !args.thread);
       const text = (words.join(" ").trim() || (typeof args.reply === "string" ? args.reply.trim() : "") || (openThread && typeof args.thread === "string" ? args.thread.trim() : ""));
       const link = typeof args.link === "string" && args.link ? await integrationStore.link(args.link) : undefined;
@@ -643,15 +665,22 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         }, Date.now(), [{ subscriptionId: null, target: { kind: "web" } }]);
         return `${receiveOnlyRefusal(conn!.kind)}. Nothing went to ${link.label ?? link.externalId}; the answer is in Orca's inbox only. Say it in your reply too.`;
       }
+      // A wake an outside sender caused attaches stored ids only: a path would let a message ask Orca
+      // to post any file on this machine to the outside.
+      if (wakeGrant && (Array.isArray(args.attach) ? args.attach : args.attach === undefined ? [] : [args.attach]).some((v) => typeof v === "string" && !attachmentIdOf(v))) {
+        throw new Error("--attach: a wake from an outside message may attach only an attachment id (from ## Attachments), not a file path");
+      }
+      const files = await attachArgs(args);
+      if (files.length) await refuseAttachments(link.integrationId, files);
       const repo = typeof args.repo === "string" && args.repo ? args.repo : undefined;
       const branch = typeof args.branch === "string" && args.branch ? args.branch : undefined;
       const threadId = !openThread && typeof args.thread === "string" && args.thread ? args.thread
         : repo && branch ? (await integrationStore.threadsForWorkstream(repo, branch)).get(link.id) : undefined;
       const r = await integrationRouter.post(link, text, {
         ...(reply ? { reply } : threadId ? { threadId } : {}), ...(repo ? { scope: { repo, ...(branch ? { branch } : {}) } } : {}),
-        ...(openThread ? { openThread } : {}),
+        ...(openThread ? { openThread } : {}), ...(files.length ? { attachments: files } : {}),
       });
-      return `Queued for ${link.label ?? link.id}${r.externalId !== link.externalId ? ` ${r.externalId}` : ""}${r.threadId ? ` (thread ${r.threadId})` : ""}${openThread ? " in a new thread" : ""} as delivery ${r.delivery ?? "?"}; Orca retries it if the send fails.`;
+      return `Queued for ${link.label ?? link.id}${r.externalId !== link.externalId ? ` ${r.externalId}` : ""}${r.threadId ? ` (thread ${r.threadId})` : ""}${openThread ? " in a new thread" : ""}${files.length ? ` with ${files.length} attachment${files.length === 1 ? "" : "s"}` : ""} as delivery ${r.delivery ?? "?"}; Orca retries it if the send fails.`;
     }
     case "thread": {
       // `orca thread link <adapter> <thread-id> --repo r --branch b [--link <id>]`: replies in that
@@ -871,6 +900,9 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       throw new Error("orca repo list [--user <login>] | orca repo add <owner/name> [--on <instance>] [--name <slug>]");
     }
     case "handoff": return handoffVerb(cfg, words, args);
+    // `orca cloudflare …` (server/cloudflare.ts): reads, and three writes behind --confirm. The grant
+    // check above keeps the writes to the user's own chat; the write log names who woke it.
+    case "cloudflare": return cloudflareTool(args, { by: wakeGrant ? `outside sender (${wakeGrant.level} grant)` : "orchestrator (your chat)" });
     case "notes": {
       if (words[0] !== "set") return (await blob()).notes || "(empty)";
       const text = words.slice(1).join(" ").trim();
@@ -878,7 +910,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, handoff`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, handoff, cloudflare`);
   }
 }
 

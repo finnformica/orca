@@ -699,22 +699,36 @@ export async function mergePr(cwd: string, pr: number): Promise<void> {
 // not allowed for this repository (enablePullRequestAutoMerge)".
 const AUTO_NOT_ALLOWED = /auto merge is not allowed/i;
 
-/** Thrown when GitHub refuses to arm auto-merge (the repo disallows it) and the PR isn't safe to
- *  merge right now either. The caller — the `/api/prs/auto-merge` route — catches this and queues
- *  the PR in Orca's own merge-when-green queue instead of failing the click. */
+// GitHub also refuses to ARM auto-merge on a PR that can merge right now: "GraphQL: Pull request is
+// in clean status (enablePullRequestAutoMerge)" when `mergeStateStatus` is CLEAN (everything passes),
+// and the same refusal when it is UNSTABLE (only advisory, non-required checks are failing) — in
+// both cases GitHub considers there is nothing left for auto-merge to wait for.
+const CLEAN_STATUS = /is in clean status/i;
+
+/** Thrown when GitHub refuses to arm auto-merge (the repo disallows it, or the PR is already clean)
+ *  and the PR isn't safe to merge right now either. The caller — the `/api/prs/auto-merge` route —
+ *  catches this and queues the PR in Orca's own merge-when-green queue instead of failing the click. */
 export class AutoMergeNotAllowed extends Error {}
 
 /** Enable auto-merge: GitHub squash-merges the PR once its required checks + reviews pass. A stacked
  *  PR has no auto-merge toggle; it goes through the asynchronous merge API instead. On a repo that
- *  doesn't allow auto-merge, a PR that is safe to merge now is merged directly (`mergePr`, which keeps
- *  the stacked fallback); otherwise this throws `AutoMergeNotAllowed` for the caller to queue. */
-export const enableAutoMerge = (cwd: string, pr: number) =>
-  mutatePr(cwd, pr, "enablePullRequestAutoMerge", ",mergeMethod:SQUASH").catch(async (e: Error) => {
-    if (STACKED.test(e.message)) return mergeAsync(cwd, pr, true);
-    if (!AUTO_NOT_ALLOWED.test(e.message)) throw e;
-    if (mergeSafe(await prStatus(cwd, pr))) return mergePr(cwd, pr);
-    throw new AutoMergeNotAllowed(e.message);
-  });
+ *  doesn't allow auto-merge, or a PR GitHub refuses to arm because it is already clean (or unstable
+ *  on advisory checks only), a PR that is safe to merge now is merged directly (`mergePr`, which keeps
+ *  the stacked fallback); otherwise this throws `AutoMergeNotAllowed` for the caller to queue.
+ *  Resolves `{ merged: true }` when it merged the PR directly, `{ merged: false }` when it only armed
+ *  GitHub's own auto-merge — so the caller can say "merged now" rather than "auto-merge enabled". */
+export const enableAutoMerge = async (cwd: string, pr: number): Promise<{ merged: boolean }> => {
+  try {
+    await mutatePr(cwd, pr, "enablePullRequestAutoMerge", ",mergeMethod:SQUASH");
+    return { merged: false };
+  } catch (e) {
+    const err = e as Error;
+    if (STACKED.test(err.message)) { await mergeAsync(cwd, pr, true); return { merged: false }; }
+    if (!AUTO_NOT_ALLOWED.test(err.message) && !CLEAN_STATUS.test(err.message)) throw err;
+    if (mergeSafe(await prStatus(cwd, pr))) { await mergePr(cwd, pr); return { merged: true }; }
+    throw new AutoMergeNotAllowed(err.message);
+  }
+};
 
 /** Disable auto-merge: GitHub cancels the queued auto-merge on the PR. */
 export const disableAutoMerge = (cwd: string, pr: number) =>

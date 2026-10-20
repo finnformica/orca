@@ -3,7 +3,7 @@
 // orchestrator's inbox, a workstream follow-up, or the web. A failure backs off (5 s, 30 s, 2 min,
 // 10 min, 1 h, respecting retryAfterMs); after the sixth attempt the row is dead and
 // `orca.integration.failed` is published (the web hears it as an `integration_failed` notification).
-import { afterAttempt, CATCH_ALL_SEND_ERROR, clip, sendsToCatchAll, digestEnvelope, paceWait, type DeliveryTarget, type Envelope, type OutboundMessage, type SendResult, type TargetKind } from "../../shared/integrations";
+import { afterAttempt, attachmentRefusal, CATCH_ALL_SEND_ERROR, clip, sendsToCatchAll, digestEnvelope, paceWait, type DeliveryTarget, type Envelope, type OutboundMessage, type SendResult, type TargetKind } from "../../shared/integrations";
 import type { Adapter } from "./adapter";
 import * as router from "./router";
 import * as store from "./store";
@@ -55,6 +55,10 @@ async function sendOne(d: store.Delivery, now: number): Promise<SendResult | { d
       if (sendsToCatchAll(t)) return { ok: false, retryable: false, error: CATCH_ALL_SEND_ERROR };
       const a = sinks.adapter(t.integrationId);
       if (!a) return { ok: false, retryable: true, error: `integration ${t.integrationId} is not running on this bridge` };
+      // Files an adapter cannot send end the delivery with a clear error: never a post without them.
+      // The count only here (no bytes read); an adapter with size limits checks the bytes it reads.
+      const noFiles = attachmentRefusal(a.kind, { attachments: a.caps.attachments, maxAttachments: a.caps.maxAttachments }, (d.envelope.attachments ?? []).map((name) => ({ name })));
+      if (noFiles) return { ok: false, retryable: false, error: noFiles };
       if (a.caps.rate) {
         const key = `${t.integrationId}:${t.externalId}`;
         const wait = paceWait(sentAt.get(key) ?? [], now, a.caps.rate.perTarget, a.caps.rate.windowMs);
