@@ -299,6 +299,7 @@ both, so it carries the pack (`server/handoff.ts`, `views/Handoffs.tsx`, table `
 - Make one with `orca handoff create --to <server> --title … [--message …] [--file <path|id>]…
   [--chat <id>]…`, or with Hand off… in a card's menu (it packs that chat). `orca handoff list`.
 - The Handoffs page (`/handoffs`, nav item after Integrations, `G K`) shows each pack in full: the exact message and every file.
+- The orchestrator's chat shows the same row (`HandoffWidget`) under the reply of the turn that made the pack, with Send, Delete and Open on the Handoffs page. The link is the id: `orca handoff create` prints `orca-handoff://<id>`, and `/api/turns` reads it from the turn's tool results (`handoff.linkTurns`, `turn.handoffs`). Never match by time.
 - Send is the ONLY way out: a click, a confirm with the file list, GET `/api/handoffs/<id>/export`
   here, POST `/api/handoff/import` on the target, POST `/api/handoffs/<id>/sent` here.
 - The import stores the files as attachments and queues ONE message to the target's orchestrator:

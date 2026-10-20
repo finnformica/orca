@@ -63,6 +63,11 @@ export const apiFake = {
   claudePrompts: [] as string[],
   agentLaunches: [] as { key: string; prompt: string; provider: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider; model?: string; instance?: string }[],
   handoffs: [] as { branch: string; content: string }[],
+  // Handoff packs (server/handoff.ts) as the chat's widget reads them: by id, with a send trail.
+  handoffPackById: new Map<string, import("../server/handoff").PackView>(),
+  handoffSelf: "orca-work-box",
+  handoffImportError: null as string | null,
+  handoffCalls: [] as unknown[][],
   slackSends: [] as { repo: string; text: string }[],
   slackPosted: true, // when false, api.slack throws (post failed) → the client copies the message
   // Rename flow: title AI-suggest returns this; rename() calls are captured for assertions.
@@ -208,7 +213,7 @@ export const apiFake = {
   handoffBadgeData: { unsent: 0 },
   handoffPacks: [] as Record<string, unknown>[],
   handoffSeenCalls: 0,
-  reset() { this.inboxUnreadData = { others: 0, mutedKinds: [] }; this.handoffBadgeData = { unsent: 0 }; this.handoffPacks = []; this.handoffSeenCalls = 0; this.inboxData = null; this.inboxCalls = []; this.inboxThreads.clear(); this.threadLinksData = []; this.integrationLinks = []; this.inboxActions = []; this.inboxReplyError = null; this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.holdPrDetail = false; this.releasePrDetail = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.agentsError = null; this.healthHistoryError = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.holdHealth = false; this.healthHistoryData = []; this.healthHistoryCalls = []; this.healthLiveData = null; this.healthLiveCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.settleResult = { outcome: "conflict", files: [] }; this.settleCalls = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.turnPageDbUnavailable = false; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.uploadAttachmentsResult = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.holdSetProfileEnabled = false; this.setProfileEnabledReleasers = []; this.refreshProfileCalls = []; this.refreshProfileError = null; this.refreshProfileStaysStale = false; this.instanceRates = {}; this.setInstanceRateCalls = []; this.setInstanceTerminalCalls = []; this.setShowBoardCalls = []; this.setServerIdentityCalls = []; this.setServerIdentityError = null; this.githubAccounts = []; this.setGithubAccountCalls = []; },
+  reset() { this.inboxUnreadData = { others: 0, mutedKinds: [] }; this.handoffBadgeData = { unsent: 0 }; this.handoffPacks = []; this.handoffSeenCalls = 0; this.inboxData = null; this.inboxCalls = []; this.inboxThreads.clear(); this.threadLinksData = []; this.integrationLinks = []; this.inboxActions = []; this.inboxReplyError = null; this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.holdPrDetail = false; this.releasePrDetail = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.agentsError = null; this.healthHistoryError = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.handoffPackById.clear(); this.handoffSelf = "orca-work-box"; this.handoffImportError = null; this.handoffCalls = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.holdHealth = false; this.healthHistoryData = []; this.healthHistoryCalls = []; this.healthLiveData = null; this.healthLiveCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.settleResult = { outcome: "conflict", files: [] }; this.settleCalls = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.turnPageDbUnavailable = false; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.uploadAttachmentsResult = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.holdSetProfileEnabled = false; this.setProfileEnabledReleasers = []; this.refreshProfileCalls = []; this.refreshProfileError = null; this.refreshProfileStaysStale = false; this.instanceRates = {}; this.setInstanceRateCalls = []; this.setInstanceTerminalCalls = []; this.setShowBoardCalls = []; this.setServerIdentityCalls = []; this.setServerIdentityError = null; this.githubAccounts = []; this.setGithubAccountCalls = []; },
 };
 
 mock.module("@/api", () => ({
@@ -477,6 +482,32 @@ mock.module("@/api", () => ({
       if (apiFake.orchestratorMessageError) throw new Error(apiFake.orchestratorMessageError);
       // A busy orchestrator queues the message behind its wake (the bridge's own queue), never refuses it.
       apiFake.orchestratorMessages.push({ text, attachments }); return { status: apiFake.orchestratorState.running ? "queued" as const : "running" as const };
+    },
+    handoffPack: async (id: string) => {
+      apiFake.handoffCalls.push(["get", id]);
+      const pack = apiFake.handoffPackById.get(id);
+      return pack ? { self: apiFake.handoffSelf, pack } : null;
+    },
+    exportHandoff: async (id: string) => {
+      apiFake.handoffCalls.push(["export", id]);
+      const p = apiFake.handoffPackById.get(id)!;
+      return { version: 1, id, source: p.source, to: p.target, title: p.title, message: p.message, createdAt: p.createdAt, files: [] };
+    },
+    importHandoff: async (url: string, wire: { id: string }) => {
+      apiFake.handoffCalls.push(["import", url, wire.id]);
+      if (apiFake.handoffImportError) throw new Error(apiFake.handoffImportError);
+      return { duplicate: false, files: apiFake.handoffPackById.get(wire.id)?.files.length ?? 0 };
+    },
+    markHandoffSent: async (id: string, to: string) => {
+      apiFake.handoffCalls.push(["sent", id, to]);
+      const p = apiFake.handoffPackById.get(id);
+      if (p) apiFake.handoffPackById.set(id, { ...p, sentAt: 1_700_000_500_000, sentTo: to });
+      return { ok: true };
+    },
+    deleteHandoff: async (id: string) => {
+      apiFake.handoffCalls.push(["delete", id]);
+      apiFake.handoffPackById.delete(id);
+      return { ok: true };
     },
     handoff: async (_repo: string, branch: string, content: string) => {
       apiFake.handoffs.push({ branch, content }); return { path: `/state/handoff/${branch}.md` };
