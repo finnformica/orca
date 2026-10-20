@@ -119,10 +119,12 @@ export function Pill({ children, tone = "default", slot }: { children: ReactNode
  *  title gives up any of its own room. */
 export function RepoBadge({ repo, className }: { repo: string; className?: string }) {
   return (
-    <span data-slot="repo-badge" title={repo}
-      className={cn("inline-flex h-5 min-w-0 max-w-28 shrink-[999] items-center truncate rounded-full px-1.5 text-[11px] font-medium whitespace-nowrap", repoBadgeTone(repo), className)}>
-      {repo}
-    </span>
+    <Tip label={repo} className="min-w-0 shrink-[999]">
+      <span data-slot="repo-badge"
+        className={cn("inline-flex h-5 min-w-0 max-w-28 items-center truncate rounded-full px-1.5 text-[11px] font-medium whitespace-nowrap", repoBadgeTone(repo), className)}>
+        {repo}
+      </span>
+    </Tip>
   );
 }
 

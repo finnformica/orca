@@ -63,9 +63,10 @@ describe("repo badge position and styling", () => {
     await open("/agents");
     const row = container!.querySelector<HTMLElement>('[data-branch="feat-badge"]')!;
     const repoBadge = row.querySelector<HTMLElement>('[data-slot="repo-badge"]')!;
+    const tip = repoBadge.closest('[data-slot="tip"]')!; // the hover label (repo name), not a native title=
     expect(repoBadge.textContent).toBe("r"); // the fake config's one repo
-    expect(repoBadge.previousElementSibling).toBeNull(); // first in the title's flex row
-    expect(repoBadge.nextElementSibling?.textContent).toContain("Repo badge sample");
+    expect(tip.previousElementSibling).toBeNull(); // first in the title's flex row
+    expect(tip.nextElementSibling?.textContent).toContain("Repo badge sample");
     for (const cls of repoBadgeTone("r").split(" ")) expect(repoBadge.className).toContain(cls);
     // No separate repo text in the subline any more.
     expect(row.querySelector('[data-slot="row-subline"]')!.textContent).not.toContain("r·");
@@ -79,8 +80,9 @@ describe("repo badge position and styling", () => {
       await open("/agents");
       const row = container!.querySelector<HTMLElement>('[data-branch="feat-badge"][data-layout="stacked"]')!;
       const repoBadge = row.querySelector<HTMLElement>('[data-slot="repo-badge"]')!;
-      expect(repoBadge.previousElementSibling).toBeNull();
-      expect(repoBadge.nextElementSibling?.textContent).toContain("Repo badge sample");
+      const tip = repoBadge.closest('[data-slot="tip"]')!;
+      expect(tip.previousElementSibling).toBeNull();
+      expect(tip.nextElementSibling?.textContent).toContain("Repo badge sample");
     } finally {
       window.matchMedia = realMatchMedia;
     }
@@ -90,8 +92,9 @@ describe("repo badge position and styling", () => {
     apiFake.prsData = [pr()];
     await open("/board");
     const repoBadge = container!.querySelector<HTMLElement>('[data-slot="repo-badge"]')!;
+    const tip = repoBadge.closest('[data-slot="tip"]')!;
     expect(repoBadge.textContent).toBe("r");
-    expect(repoBadge.nextElementSibling?.textContent).toContain("Repo badge sample");
+    expect(tip.nextElementSibling?.textContent).toContain("Repo badge sample");
     // The old Eyebrow (uppercase, tracking-widest) is gone.
     expect(container!.querySelector(".tracking-widest")).toBeNull();
   });
