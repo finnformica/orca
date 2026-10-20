@@ -305,6 +305,26 @@ test("a long heavy-command queue scrolls inside the card (a ScrollArea with a he
   expect(openTip(tip.querySelector('[data-slot="heavy-command"]') as HTMLElement).textContent).toMatch(/^npx jest src\/a-very-long-path\/\d+\/component.test.tsx --maxWorkers=1$/);
 });
 
+test("the heavy-queue header shows 'unqueued heavy: N' with the command names; a leak alone shows the section", async () => {
+  const now = Date.now();
+  // An empty queue but two heavy commands that skipped it: the section shows, the line in amber.
+  apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 98, load1: 6, load5: 5, memUsedGb: 12, memTotalGb: 15.3, uptimeS: 9, at: now,
+    heavy: { running: [], queued: [], limits: {}, cpu: { used: 0, budget: 3 }, unqueued: { at: now, count: 2, names: ["tsc", "vitest"] } } };
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  const queue = container!.querySelector('[data-slot="heavy-queue"]')!;
+  const line = queue.querySelector('[data-slot="heavy-unqueued"]')!;
+  expect(line.textContent).toBe(" · unqueued heavy: 2 (tsc, vitest)");
+  expect(line.getAttribute("data-leak")).toBe("true");
+  expect(queue.querySelector('[data-slot="heavy-list"]')).toBeNull();
+  await act(async () => { root?.unmount(); root = undefined; await flush(); });
+  // No leak and nothing queued: no section at all, as before.
+  apiFake.healthData = { ...apiFake.healthData, heavy: { running: [], queued: [], limits: {}, unqueued: { at: now, count: 0, names: [] } } };
+  await render(<InstanceCard instance="cloud" here={false} />);
+  await ready();
+  expect(container!.querySelector('[data-slot="heavy-queue"]')).toBeNull();
+});
+
 // The 15 s ring (/api/health/live) for ranges up to 6 hours: the whole box, no split by workstream.
 const liveRing = (now: number) => ({
   stepMs: 15_000, cores: 4, memTotalGb: 15.3, sliceMaxGb: 8.4, diskCapMBs: 125,

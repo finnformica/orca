@@ -1340,7 +1340,10 @@ skipped. A max wait, and a max run time per kind (serve 60 min, the rest 30). Wo
 slot lives as long as the held request, so a killed CLI frees it; `agent.launch` puts `ORCA_RUN_ID`
 in the run's env and its exit calls `releaseRun`; a sweep frees a dead pid or a slot past its max
 run time and stops its command. Each granted command runs in its own capped scope in
-`orca-agents.slice` when the box has a user bus. `bin/worker/.heavy-shim` is linked as every heavy
+`orca-agents.slice` when the box has a user bus. Orca's own post-run check takes a `build` slot too
+(`runCheck`, released on every exit path, `ORCA_RUN_SLOT` set so its shims pass through), and
+`server/heavyLeaks.ts` records, every 15 s, heavy processes in the slice with no slot: the card's
+and `orca machine`'s `unqueued heavy: N (names)`. `bin/worker/.heavy-shim` is linked as every heavy
 tool, as npx/bunx, as npm/pnpm/yarn/bun (by the package script's NAME — npm puts node_modules/.bin
 first, so a script's own tools never reach a shim; `npm ci` / `npm install` are builds) and as bash (`bash <file>` by the file's name);
 jest and `playwright test` get one worker unless the call sets one. `ORCA_RUN_SLOT` stops a nested

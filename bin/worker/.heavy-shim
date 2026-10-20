@@ -5,7 +5,8 @@
 # the agents, so this queue is the only CPU control: it must see every heavy task.
 #   - Tools: playwright test, cypress run (e2e); jest, vitest, mocha, pytest (test); eslint,
 #     prettier, tsc, biome, stylelint, knip (lint); vite / next / nest build, webpack, rollup,
-#     esbuild, tsup (build); vite, vite preview, next dev / start, nest start (serve); mikro-orm,
+#     esbuild, tsup (build); `turbo run <task>` by the task's name, else build; vite, vite
+#     preview, next dev / start, nest start (serve); mikro-orm,
 #     prisma, knex, typeorm, sequelize, drizzle-kit, alembic migrations (migrate). Also through npx,
 #     bunx, `bun x`, `npm exec` and `pnpm dlx`.
 #   - Package scripts: `npm test`, `npm start`, `npm run <s>`, `pnpm <s>`, `yarn <s>`, `bun run <s>`
@@ -92,6 +93,15 @@ tool_kind() {
     webpack|rollup|esbuild|tsup) KIND=build ;;
     vite) case "$1" in build) KIND=build ;; optimize) ;; *) KIND=serve ;; esac ;;
     next|nest|nuxt|astro) case "$1" in build) KIND=build ;; dev|start|preview) KIND=serve ;; esac ;;
+    turbo)
+      # `turbo run test` and `turbo test`: the first task names the kind; an unknown task is a build.
+      for a in "$@"; do
+        case "$a" in
+          -*|run) ;;
+          daemon|login|logout|link|unlink|prune|gen|generate|telemetry|info|ls|query|scan|bin|completion) return 0 ;;
+          *) script_kind "$a"; [ -n "$KIND" ] || KIND=build; return 0 ;;
+        esac
+      done ;;
     mikro-orm|prisma|knex|typeorm|sequelize|drizzle-kit|alembic)
       for a in "$@"; do
         case "$a" in *migrat*|db:*|push|upgrade|downgrade|seed*) KIND=migrate; return 0 ;; esac
@@ -146,6 +156,8 @@ pm_kind() {
         case "$sub" in build) KIND=build; return 0 ;; */*|*.*) return 0 ;; esac
       fi
       case "$sub" in install|i|add|remove|rm|update|upgrade|ci|init|create|link|unlink|outdated|why|info|list|ls|pm|publish|pack) return 0 ;; esac
+      # `pnpm turbo run build`: the binary, not a script named "turbo".
+      if [ "$sub" = "turbo" ]; then tool_kind turbo "$@"; return 0; fi
       script_kind "$sub" ;;
   esac
 }

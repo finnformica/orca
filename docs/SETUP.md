@@ -501,12 +501,14 @@ the limits.
 through `orca-run`:
 
 - Tools: `playwright test`, `cypress run`, `jest`, `vitest`, `mocha`, `pytest`, `eslint`,
-  `prettier`, `tsc`, the build tools, `vite` and `next dev` servers, and migration CLIs
+  `prettier`, `tsc`, the build tools, `turbo run <task>`, `vite` and `next dev` servers, and migration CLIs
   (`mikro-orm`, `prisma`, `knex`, `typeorm`, `sequelize`, `drizzle-kit`, `alembic`). Also through
   `npx`, `bunx`, `npm exec` and `pnpm dlx`.
 - Package scripts: `npm test`, `npm start`, `npm run <script>`, `pnpm <script>`, `yarn <script>`,
   `bun run <script>` and `bun test`. The script name gives the kind: `test`, `lint`, `type-check`,
   `format`, `build`, `dev`, `start`, `setup-db`, `migrate`, `e2e` and similar names.
+  `pnpm turbo run <task>` and `yarn turbo <task>` take the kind of the task. An unknown task is a
+  `build`.
 - Installs: `npm ci` and `npm install` queue as `build`.
 - Test scripts: `bash <file>` when the file name looks heavy, for example
   `bash scripts/run-e2e-tests.sh`.
@@ -519,6 +521,37 @@ through `orca-run`:
 
 The escape hatch: set `ORCA_RUN_BYPASS=1` to run a command at once, with no slot. Use it only for a
 command that is not heavy and that a shim queued by mistake.
+
+<a id="heavy-check"></a>
+**Orca's own check** (`server/check.ts`) also takes a slot. After a run that committed, the bridge
+runs the repo's `checkCommand`, for example `bun install --frozen-lockfile && bun run check`.
+
+- The check takes one `build` slot. It waits in the same line as the workers.
+- On a box with a user bus, it runs in the scope of its slot, with the `build` memory limit.
+- The check sets `ORCA_RUN_SLOT`. Thus the shims inside it do not queue again.
+- The slot comes back when the check passes, fails, times out or cannot start.
+- If the wait fails, the check runs with no slot. The shims inside it then queue each heavy tool.
+- The card shows the check as `check: <command>` in the heavy-command list.
+
+<a id="heavy-leaks"></a>
+**Leaks** are heavy commands that skip the queue. The bridge looks for them every 15 s
+(`server/heavyLeaks.ts`). It reads each process in `orca-agents.slice` and records a process when:
+
+- It is a heavy command: vitest, jest, `bun test`, tsc, `vite build`, turbo, `playwright test`,
+  `next build`, eslint or webpack.
+- It runs outside the scope of a slot (`orca-heavy-*.scope`).
+- Its environment has no `ORCA_RUN_SLOT`, or `ORCA_RUN_SLOT=none` (`orca-run` with no bridge).
+
+A tree counts once: a vitest and its workers are one leak. The pass kills nothing. To see leaks:
+
+1. Open the machine card on the Overview. The heavy-command header shows `unqueued heavy: N
+   (names)` in amber when N is more than 0.
+2. Run `orca machine`. The `Heavy queue` line ends with `unqueued heavy: N (names)`.
+3. Read the bridge log. Each new leak gives one line: `orca: unqueued heavy command <name> (pid
+   <pid>, run <runId>) runs outside orca-run`.
+
+The run id names the agent run that started the leak. Find the call in its transcript, then wrap
+it in `orca-run`, or add a shim for the tool.
 
 ---
 

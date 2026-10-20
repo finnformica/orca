@@ -895,7 +895,7 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     // its own error, and a stopped one is mid-work by definition.
     let check: TurnCheck | undefined;
     if (ok && options.check && headBefore !== undefined && (await headOf(cwd)) !== headBefore) {
-      check = await runCheck(cwd, options.check.command);
+      check = await runCheck(cwd, options.check.command, { repo: options.repo, branch: options.branch });
       // Awaited (the run is over; this only delays the status flip by one round trip), so a run that
       // reads as finished has its verdict on the turn — a reader that polls "finished, then fetch"
       // otherwise sees the check missing when the pool is busy (the notification writes below).

@@ -401,6 +401,8 @@ describe("orca-run and the shims", () => {
   let fakeBin: string;
   /** The agents' slice for the tiny bridge; undefined = no memory budget. */
   let cliSliceGb: number | undefined;
+  /** The kind of each slot request the tiny bridge got, in order. */
+  const asks: string[] = [];
   const env = () => {
     const e: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("ORCA_")) e[k] = v;
@@ -419,6 +421,7 @@ describe("orca-run and the shims", () => {
       async fetch(req) {
         const p = new URL(req.url).pathname;
         const body = req.method === "POST" ? await req.json() : {};
+        if (p === "/api/heavy") asks.push(body.kind);
         if (p === "/api/heavy") return acquireResponse(m, body, req.signal, { maxRunMs: 60_000, env: {}, prefix: () => [], beatMs: 200 });
         if (p === "/api/heavy/release") { m.release(body.id); return Response.json({ ok: true }); }
         return new Response("no", { status: 404 });
@@ -578,6 +581,58 @@ describe("orca-run and the shims", () => {
       cliSliceGb = 11;
       expect((await run([join(WORKER, "orca-run"), "--kind", "lint", "--", "eslint", "src"])).err).not.toContain("memory budget");
     } finally { cliSliceGb = undefined; }
+  });
+
+  test("HQ27: npm test, npm run build, pnpm turbo run, bun test and bun run check each queue exactly once", async () => {
+    // Fake package managers and tools that call more heavy tools by name, as real scripts do. The
+    // inner calls reach the shims again (bin/worker is first on PATH) but run under ORCA_RUN_SLOT.
+    const nest = mkdtempSync(join(tmpdir(), "orca-heavy-nest-"));
+    const tool = (name: string, then = "") => {
+      writeFileSync(join(nest, name), `#!/bin/sh\necho "${name} $* slot=\${ORCA_RUN_SLOT:-none}"\n${then}\n`);
+      chmodSync(join(nest, name), 0o755);
+    };
+    tool("vitest");
+    tool("npm", "vitest run && tsc -p .");
+    tool("pnpm", '[ "$1" = turbo ] && shift && exec turbo "$@"');
+    tool("turbo", '[ "$1" = daemon ] || { vitest run && tsc --noEmit && npm test; }');
+    const dir = mkdtempSync(join(tmpdir(), "orca-heavy-once-"));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ scripts: { check: "tsc --noEmit && vitest run && npm test && echo check slot=${ORCA_RUN_SLOT:-none}" } }));
+    writeFileSync(join(dir, "a.test.ts"), `import { test } from "bun:test";\ntest("a", () => { console.log("bun-test slot=" + (process.env.ORCA_RUN_SLOT ?? "none")); });\n`);
+    const once = async (cmd: string[], kind: string) => {
+      asks.length = 0;
+      const proc = Bun.spawn(cmd, { cwd: dir, env: { ...env(), PATH: `${WORKER}:${nest}:${fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin` }, stdout: "pipe", stderr: "pipe" });
+      const [out, err, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+      expect({ cmd: cmd.join(" "), code, asks: [...asks] }).toEqual({ cmd: cmd.join(" "), code: 0, asks: [kind] });
+      // Every inner tool ran under the one slot, never "none".
+      expect(`${out}${err}`).not.toMatch(/slot=none/);
+      expect(err).not.toContain("orca-run:");
+      return out;
+    };
+    expect(await once(["npm", "test"], "test")).toMatch(/vitest run slot=heavy-[\s\S]*tsc -p \. slot=heavy-/);
+    expect(await once(["npm", "run", "build"], "build")).toMatch(/npm run build slot=heavy-/);
+    expect(await once(["pnpm", "turbo", "run", "test", "--filter", "web"], "test")).toMatch(/turbo run test --filter web slot=heavy-[\s\S]*npm test slot=heavy-/);
+    expect(await once(["pnpm", "turbo", "run", "build"], "build")).toMatch(/turbo run build slot=heavy-/);
+    expect(await once(["turbo", "lint"], "lint")).toMatch(/turbo lint slot=heavy-/);
+    expect(await once(["bun", "test", "./a.test.ts"], "test")).toMatch(/bun-test slot=heavy-/);
+    expect(await once(["bun", "run", "check"], "lint")).toMatch(/check slot=heavy-/);
+    // turbo's own housekeeping is not heavy.
+    asks.length = 0;
+    expect((await run(["turbo", "daemon", "status"], { PATH: `${WORKER}:${nest}:${fakeBin}:${dirname(process.execPath)}:/usr/bin:/bin` })).out).toContain("slot=none");
+    expect(asks).toEqual([]);
+    rmSync(nest, { recursive: true, force: true });
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  test("HQ28: the shims stay first on PATH in a login shell, as the claude CLI's Bash tool runs one", async () => {
+    // The agent's PATH (agentEnv: bin/worker first), with a clean HOME so no user profile runs.
+    const home = mkdtempSync(join(tmpdir(), "orca-heavy-home-"));
+    for (const sh of ["bash", "sh"]) {
+      const r = await run([sh, "-lc", "for t in npm pnpm yarn bun bunx npx vitest vite tsc eslint playwright turbo jest; do command -v $t; done"], { HOME: home });
+      const found = r.out.trim().split("\n");
+      expect(found.length).toBeGreaterThanOrEqual(13);
+      for (const f of found) expect(dirname(f)).toBe(WORKER);
+    }
+    rmSync(home, { recursive: true, force: true });
   });
 
   test("HQ15: with no bridge, orca-run warns and runs the command anyway", async () => {

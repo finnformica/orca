@@ -54,6 +54,7 @@ import * as prShots from "./prShots";
 import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
 import * as heavy from "./heavy";
+import * as heavyLeaks from "./heavyLeaks";
 import { checkCaller, instanceHosts, listServers, selfServer, serverGate, withIdentity } from "./servers";
 import { isAutomatic, leaseHolder } from "../shared/integrations";
 import { instanceOptions } from "../shared/integrationSettings";
@@ -237,6 +238,11 @@ if (!PREVIEW_BRIDGE && process.platform === "linux") setInterval(() => {
   void browserWatch.sweep({ record: (runId, names) => browserWatch.recordKills(runId, names).catch(db.logUnlessDown("orca: browser watchdog record failed")) })
     .catch((e) => console.error(`orca: browser watchdog failed: ${e instanceof Error ? e.message : e}`));
 }, browserWatch.WATCH_INTERVAL_MS).unref();
+// The heavy queue's leak detector (server/heavyLeaks.ts): heavy processes in the agents' slice with
+// no slot, for the machine card and `orca machine`. It reads only; every bridge here keeps its own.
+if (!PREVIEW_BRIDGE && process.platform === "linux") setInterval(() => {
+  try { heavyLeaks.sweep({ log: primary.held() }); } catch (e) { console.error(`orca: heavy leak sweep failed: ${e instanceof Error ? e.message : e}`); }
+}, heavyLeaks.LEAK_INTERVAL_MS).unref();
 // Warm the review queue (gh.listReviewPrs) so its slow cold fetch is paid here, not by a caller. A
 // local-only repo just fails quietly.
 void loadConfig().then((cfg) => cfg.repos.filter(verbs.repoHere)
@@ -427,9 +433,10 @@ function heavySettingsHere(cfg: OrcaConfig): heavy.HeavySettings {
   return heavy.heavySettings(cfg.heavyQueue, cgroup.available() ? heavySliceGb() : undefined);
 }
 /** This box's heavy-command queue, for /api/heavy and the machine card (/api/health). */
-function heavyView(cfg: OrcaConfig): heavy.HeavyView {
+function heavyView(cfg: OrcaConfig): heavy.HeavyView & { unqueued?: heavyLeaks.UnqueuedSummary } {
   heavy.setSettings(heavySettingsHere(cfg));
-  return heavy.slots().view();
+  const unqueued = heavyLeaks.unqueuedSummary();
+  return { ...heavy.slots().view(), ...(unqueued ? { unqueued } : {}) };
 }
 
 async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: OrcaConfig, body: Record<string, unknown>): Promise<Response | undefined> {
