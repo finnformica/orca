@@ -3,7 +3,7 @@ import type { ChangeSummary } from "../../../server/git";
 import { api } from "../api";
 import { summary as fetchSummary, useWorkstreams } from "../store";
 import { navigate, type LocalTab } from "@/lib/route";
-import { DiffView, HEADER_TABS, STICKY_HEADER, useStickyHeader } from "./PrDetail";
+import { HEADER_TABS, STICKY_HEADER, useStickyHeader } from "./PrDetail";
 import { AGENT_TABS, AgentHeader, ChatCard, DetailsCard, HeaderSource, RowStatus } from "./AgentPage";
 import { useNarrow } from "@/lib/viewport";
 import { VCard } from "@/components/console";
@@ -12,6 +12,7 @@ import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PreviewPanel } from "./PreviewControl";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { poll } from "@/lib/poll";
+import { FilesChanged } from "./FilesChanged";
 
 // The agent page for a local session (a worktree + its agent, pre-PR), Vercel's deployment page:
 // Overview (the Details card, then files and commits), Chat (the conversation, filling the
@@ -88,10 +89,10 @@ export function LocalDetail({ repo, branch, sub }: { repo: string; branch: strin
           <ChatCard row={row} />
         </TabsContent>
 
-        <TabsContent value="files" className="space-y-3 pt-4">
+        <TabsContent value="files" className="pt-4">
           {!wt ? <p className="text-muted-foreground text-sm">No worktree checked out.</p>
             : diff === null ? <p className="text-muted-foreground text-sm">Loading diff…</p>
-            : <DiffView text={diff} />}
+            : <FilesChanged text={diff} scope={`${repo}:${branch}`} />}
         </TabsContent>
 
         <TabsContent value="preview" className="pt-4">

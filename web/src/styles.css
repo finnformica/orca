@@ -197,7 +197,7 @@
    corners. ponytail: no JS — add an IntersectionObserver sentinel only if a non-Chromium browser
    has to look right too. */
 @container scroll-state(stuck: top) {
-  [data-slot="accordion-trigger"] {
+  [data-slot="diff-file-header"] {
     border-radius: 0;
   }
 }
