@@ -1,17 +1,20 @@
 // The machine card's high-resolution view of the box: one sample every 15 s for the last 6 hours,
-// in memory only (no table — the 1-minute `instance_metric` history covers longer ranges). On
-// 2026-10-19 an IO stall (iowait 80 %, reads at the EBS cap) looked like CPU on the old one-line
-// chart. Each sample splits the CPU into work and iowait (/proc/stat), reads the root disk's MB/s
-// (/proc/diskstats) and splits memory into used and cache (/proc/meminfo). Whole box only: no
-// per-workstream split (Finn's call). Cost: three small /proc reads every 15 s, no process spawned.
-// On macOS (no /proc) the CPU comes from os.cpus() ticks, and memory and disk take turns: one tick
-// spawns `vm_stat`, the next `ioreg`, so a Mac spawns one small process every 15 s.
+// kept in memory as the fast path for every poll, and persisted in Postgres (`machine_sample`,
+// server/db.ts) so a restart doesn't lose the chart. On 2026-10-19 an IO stall (iowait 80 %, reads
+// at the EBS cap) looked like CPU on the old one-line chart. Each sample splits the CPU into work
+// and iowait (/proc/stat), reads the root disk's MB/s (/proc/diskstats) and splits memory into used
+// and cache (/proc/meminfo). Whole box only: no per-workstream split (Finn's call). Cost: three
+// small /proc reads every 15 s, no process spawned. On macOS (no /proc) the CPU comes from
+// os.cpus() ticks, and memory and disk take turns: one tick spawns `vm_stat`, the next `ioreg`, so
+// a Mac spawns one small process every 15 s.
 import { readFileSync } from "fs";
 import * as os from "os";
 import { parseProcStat, type ProcStatTimes } from "./health";
 import * as cgroup from "./cgroup";
 import * as heavy from "./heavy";
 import { run } from "./run";
+import * as db from "./db";
+import * as lease from "./lease";
 import { machineSummary, type MachineReport } from "../web/src/workstream";
 
 export const LIVE_SAMPLE_MS = 15_000;
@@ -265,9 +268,68 @@ export function pushLive(sample: LiveSample, window = LIVE_WINDOW_MS): void {
   if (i) ring = ring.slice(i);
 }
 
+// ---- persisting the ring across a restart (machine_sample table, server/db.ts) ----
+// The ring was in memory only: every deploy, every crash, lost the whole 6-hour chart (`orca machine`
+// said "1 h covers only 11 min (the bridge restarted since)" seconds after a routine restart). Each
+// 15 s sample is buffered here and flushed to Postgres about once a minute — few writes, not one a
+// tick — and the newest 6 hours are read back to seed the ring before the sampler starts ticking.
+// The ring stays the fast path for every poll: nothing below is read again until the next restart.
+// A real gap in the samples (the bridge really was down) needs no special drawing: it is a gap in
+// `at`, and `stackRuns` already breaks the chart's area there instead of bridging it.
+
+export const MACHINE_SAMPLE_FLUSH_MS = 60_000;
+let pendingSamples: LiveSample[] = [];
+let lastFlushAt = -Infinity; // so the very first sample always flushes, whatever `now`'s scale is
+
+/** Buffer a sample and flush the batch once a minute has passed since the last flush (the very
+ *  first call always flushes). Dropped while the database is down (logged once, by db.ts) or on a
+ *  write failure — the table is advisory, like the lease and the ledger: losing a batch loses only
+ *  the restart gap, never a live sample the ring already has. Callers don't need the returned
+ *  promise (the sampler's tick doesn't await it); tests do, to make a flush deterministic. */
+export function bufferMachineSample(sample: LiveSample, now = sample.at): Promise<void> | undefined {
+  pendingSamples.push(sample);
+  if (now - lastFlushAt < MACHINE_SAMPLE_FLUSH_MS) return undefined;
+  lastFlushAt = now;
+  return flushBatch();
+}
+
+async function flushBatch(): Promise<void> {
+  if (!pendingSamples.length) return;
+  const batch = pendingSamples;
+  pendingSamples = [];
+  if (db.unavailableSince() !== null) return; // dropped, like a skipped instance_metric sample
+  const runningAgents = lease.live().length;
+  try { await db.recordMachineSamples(batch.map((s) => ({ ...s, runningAgents }))); } catch (e) { db.logUnlessDown("orca: failed to save machine samples")(e); }
+}
+
+/** Force the buffered batch to Postgres now, bypassing the once-a-minute throttle — the SIGTERM /
+ *  SIGINT path, so shutdown doesn't wait up to a minute for the last few samples to land. */
+export async function flushMachineSamples(): Promise<void> {
+  lastFlushAt = Date.now();
+  await flushBatch();
+}
+
+/** Restore the ring from the last 6 hours of `machine_sample` rows before the sampler starts
+ *  ticking, so a restart keeps its chart instead of starting empty. Merges rather than replaces, so
+ *  a sample the fresh tick already pushed while this was in flight survives. A missing table, an
+ *  unreachable database, or any other read failure just leaves the ring as it was — advisory, like
+ *  the lease and the ledger. */
+export async function restoreLiveRing(instance = db.instanceName(), now = Date.now()): Promise<void> {
+  try {
+    const history = await db.machineSampleHistory(instance, 6, now);
+    const cutoff = history.length ? history[history.length - 1]!.at : -Infinity;
+    const cut = now - LIVE_WINDOW_MS;
+    ring = [...history, ...ring.filter((s) => s.at > cutoff)].filter((s) => s.at >= cut);
+  } catch (e) {
+    db.logUnlessDown("orca: failed to restore the machine ring")(e);
+  }
+}
+
 /** Start the 15 s sampler. Every bridge runs it (preview bridges too): on Linux it only reads /proc,
- *  on macOS it spawns one small command a tick. */
+ *  on macOS it spawns one small command a tick. Restores the ring from the database first — never
+ *  awaited, so a slow or unreachable database never delays the sampler starting. */
 export function startLiveSampler(ms = LIVE_SAMPLE_MS, platform = process.platform): ReturnType<typeof setInterval> {
+  void restoreLiveRing();
   const s: { tick(): LiveSample | undefined | Promise<LiveSample | undefined> } = platform === "darwin" ? createDarwinSampler() : createLiveSampler();
   let busy = false;
   const tick = async () => {
@@ -275,7 +337,7 @@ export function startLiveSampler(ms = LIVE_SAMPLE_MS, platform = process.platfor
     busy = true;
     try {
       const v = await s.tick();
-      if (v) pushLive(v);
+      if (v) { pushLive(v); bufferMachineSample(v); }
     } catch (e) {
       console.error(`orca: live metrics sample failed: ${e instanceof Error ? e.message : e}`);
     } finally { busy = false; }
@@ -325,5 +387,5 @@ export function withLiveCpu<T extends { cpuPct: number; iowaitPct?: number }>(h:
 }
 export const newestLive = (): LiveSample | undefined => ring[ring.length - 1];
 
-/** Tests: empty the ring. */
-export function resetLive(): void { ring = []; ooms = 0; }
+/** Tests: empty the ring and the flush buffer/throttle. */
+export function resetLive(): void { ring = []; ooms = 0; pendingSamples = []; lastFlushAt = -Infinity; }

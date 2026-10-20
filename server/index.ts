@@ -42,7 +42,7 @@ import * as cgroup from "./cgroup";
 import { heavySliceGb } from "./sliceLimit";
 import { KIND_META } from "../shared/notifications";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
-import { liveAnswer, machineReport, newestLive, sliceMaxGbHere, startLiveSampler, withLiveCpu } from "./liveMetrics";
+import { flushMachineSamples, liveAnswer, machineReport, newestLive, sliceMaxGbHere, startLiveSampler, withLiveCpu } from "./liveMetrics";
 import { protectionsReport, withLiveState } from "./protections";
 import * as verbs from "./verbs";
 import * as repos from "./repos";
@@ -1739,7 +1739,7 @@ async function shutdown(signal: "SIGINT" | "SIGTERM"): Promise<void> {
   void integrations.stopAll(); // close sockets so the next primary can open them
   try {
     await Promise.race([
-      agent.flushHistory(),
+      Promise.all([agent.flushHistory(), flushMachineSamples()]),
       new Promise((r) => setTimeout(r, DRAIN_TIMEOUT_MS)), // never hang a deploy on a wedged write
     ]);
   } catch { /* best effort — we are leaving either way */ }
