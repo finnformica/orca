@@ -1,6 +1,6 @@
 // The machine card's 15 s sampler (server/liveMetrics.ts): pure parsers fed fixture text copied from
 // the box, and the sampler over a fixture /proc directory.
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -77,6 +77,12 @@ describe("bucketLive", () => {
 
 describe("sampler", () => {
   let dir = "";
+  // The ring and the OOM count are module-level, shared with every other file `bun test` loads into
+  // the one process — another file's `noteOomKill()` (health.ts calls `noteLiveOom()` too) can land
+  // before this describe runs, in whatever order the runner's readdir gives (not file order; CI's
+  // once put tests/healthHistory.test.ts's 3 OOM calls ahead of this file, and "ooms: 1" read 6).
+  // A clean start, not just a clean end, makes this test independent of what ran before it.
+  beforeEach(resetLive);
   afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); resetLive(); });
 
   const fixture = (stat: string, disk: string) => {
