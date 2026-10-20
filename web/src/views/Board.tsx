@@ -245,10 +245,10 @@ export function WorkstreamCard({ row }: { row: Row }) {
   const summary = useSummary(row);
   const hasWork = (summary?.commits.length ?? 0) > 0;
 
-  // Card-level busy: any action (from WorkstreamActions or the Run button) dims the card and shows
-  // a spinner, so a multi-second op (promote push + PR create, merge, …) doesn't look frozen.
-  const [busy, setBusy] = useState(false);
-  const runBusy = async (fn: () => Promise<unknown>) => { setBusy(true); try { await fn(); } finally { setBusy(false); } };
+  // Rerun has its own spinner, scoped to that one button — every other action, the title link, the
+  // chat and the menu stay usable while it runs (WorkstreamActions scopes its own actions the same way).
+  const [rerunning, setRerunning] = useState(false);
+  const runRerun = async () => { setRerunning(true); try { await rerunAgent(row); } finally { setRerunning(false); } };
 
   const [terminalOpen, setTerminalOpen] = useTerminalOpen(row);
 
@@ -258,12 +258,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
     : row.prNumber ? `/${row.repo}/prs/${row.prNumber}` : null; // done: link to the merged PR
 
   return (
-    <div className={`bg-card relative flex flex-col rounded-lg border ${dense ? "gap-1 p-2" : "gap-2 p-3"} ${busy ? "pointer-events-none" : ""}`} aria-busy={busy}>
-      {busy && (
-        <div className="bg-card/60 absolute inset-0 z-10 flex items-center justify-center rounded-lg">
-          <Loader2 className="text-muted-foreground size-5 animate-spin" />
-        </div>
-      )}
+    <div className={`bg-card relative flex flex-col rounded-lg border ${dense ? "gap-1 p-2" : "gap-2 p-3"}`}>
       {/* Meta strip: repo (index tab) on the left, "open elsewhere" destinations on the right. */}
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <div className="flex min-w-0 items-center gap-1.5">
@@ -319,8 +314,8 @@ export function WorkstreamCard({ row }: { row: Row }) {
           )}
           {(isLocal || (row.agentStatus && row.agentStatus !== "idle")) && <StatusHoverCard row={row}><AgentBadge row={row} hasWork={hasWork} /></StatusHoverCard>}
           {isLocal && row.worktreePath && row.agentStatus !== "running" && (
-            <button type="button" onClick={() => void runBusy(() => rerunAgent(row))} className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-5 items-center justify-center rounded">
-              <Play className="size-3" />
+            <button type="button" disabled={rerunning} onClick={() => void runRerun()} aria-label="Run" className="text-muted-foreground hover:text-foreground hover:bg-accent inline-flex size-5 items-center justify-center rounded disabled:opacity-60">
+              {rerunning ? <Loader2 className="size-3 animate-spin" /> : <Play className="size-3" />}
             </button>
           )}
           {isOpenPr && <ConditionBadges row={row} />}
@@ -362,7 +357,6 @@ export function WorkstreamCard({ row }: { row: Row }) {
             <WorkstreamActions
               row={row}
               hasWork={hasWork}
-              onBusy={setBusy}
               compact
               leading={
                 <>
@@ -376,13 +370,13 @@ export function WorkstreamCard({ row }: { row: Row }) {
           ) : (
             <>
               <div className="flex items-start gap-2">
-                <QuickActionButtons row={row} hasWork={hasWork} onBusy={setBusy} className="shrink-0" />
+                <QuickActionButtons row={row} hasWork={hasWork} className="shrink-0" />
                 <div className="min-w-0 flex-1"><PreviewControl row={row} /></div>
                 <Button size="sm" variant="outline" className="shrink-0" onClick={() => setTerminalOpen(true)} aria-label="Open terminal">
                   <SquareTerminal className="size-3.5" />
                 </Button>
               </div>
-              <WorkstreamActions row={row} hasWork={hasWork} onBusy={setBusy} quick={false} />
+              <WorkstreamActions row={row} hasWork={hasWork} quick={false} />
             </>
           )}
           <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />

@@ -435,7 +435,6 @@ export function latestInstruction(row: Row): string {
 export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; fold?: ListFold; stacked?: boolean }) {
   const isDone = row.lane === "DONE";
   const pill = prPill(row);
-  const [busy, setBusy] = useState(false);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const [terminalOpen, setTerminalOpen] = useTerminalOpen(row); // "New chat" pops its conversation open on arrival
@@ -474,8 +473,8 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
   // Create PR needs commits of its own — the same worktree summary the diffstat reads.
   const hasWork = row.prNumber ? true : (localSummary?.commits.length ?? 0) > 0;
   // The state-aware quick icons sit left of the preview cell; they only PEEK at the review cache.
-  const quick = hasMenu && <QuickActionButtons row={row} hasWork={hasWork} peek onBusy={setBusy} />;
-  const menu = hasMenu && <WorkstreamActions row={row} hasWork={hasWork} compact menuOnly onBusy={setBusy} onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}
+  const quick = hasMenu && <QuickActionButtons row={row} hasWork={hasWork} peek />;
+  const menu = hasMenu && <WorkstreamActions row={row} hasWork={hasWork} compact menuOnly onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}
     onOpen={to ? () => navigate(to) : undefined} contextAt={menuAt} onContextClose={closeMenu} />;
   // The checks & review chips, one overflow item each: a chip that does not fit goes into the +N card.
   const signals: SublineItem[] = [
@@ -499,13 +498,13 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
     // content column gets the row's full width. State/condition badges, reasons and a run error
     // follow as their own wrapping lines.
     <div
-      ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-layout="stacked" data-branch={row.branch} aria-busy={busy}
+      ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-layout="stacked" data-branch={row.branch}
       aria-label={row.title}
       onClick={openOnRowClick(row)} onKeyDown={onKeyDown}
       // A phone: no menu from a long-press or contextmenu at all, only the browser's own on a link.
       // No selection or iOS callout either, which looked like a menu popping; links keep their callout.
       onContextMenu={(e) => { if (!(e.target as HTMLElement).closest("a, input, textarea")) e.preventDefault(); }}
-      className={`active:bg-accent/40 flex items-start select-none [-webkit-touch-callout:none] [&_a]:[-webkit-touch-callout:default] gap-1 border-b py-3 px-4 text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
+      className={`active:bg-accent/40 flex items-start select-none [-webkit-touch-callout:none] [&_a]:[-webkit-touch-callout:default] gap-1 border-b py-3 px-4 text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""}`}
     >
       <div className="min-w-0 flex-1 space-y-1.5">
         <div role="cell" className="flex min-w-0 items-center justify-between gap-2">
@@ -540,13 +539,13 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
   );
   return (
     <div
-      ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-branch={row.branch} aria-busy={busy}
+      ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-branch={row.branch}
       aria-label={row.title} aria-haspopup={hasMenu ? "menu" : undefined}
       onClick={openOnRowClick(row)} onContextMenu={onContextMenu} onKeyDown={onKeyDown}
       onPointerDown={(e) => { lastPointer.current = e.pointerType; }}
       // `content-visibility: auto`: a row off screen skips its layout and paint, so a dock slide (the
       // page frame changes width every frame) lays out only the rows you see. 56px is its fixed height.
-      className={`${GRID} hover:bg-accent/40 focus-visible:bg-accent/40 h-14 border-b md:[content-visibility:auto] md:[contain-intrinsic-size:auto_56px] text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
+      className={`${GRID} hover:bg-accent/40 focus-visible:bg-accent/40 h-14 border-b md:[content-visibility:auto] md:[contain-intrinsic-size:auto_56px] text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""}`}
     >
       <div role="cell" className="min-w-0">
         <div className="truncate font-medium">{row.title}</div>
