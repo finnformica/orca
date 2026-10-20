@@ -533,7 +533,9 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
       <div className="min-w-0 flex-1 space-y-1.5">
         <div role="cell" className="flex min-w-0 items-center justify-between gap-2">
           <span className="flex min-w-0 items-center gap-1.5"><RepoBadge repo={row.repo} /><span className="min-w-0 truncate font-medium">{row.title}</span><VerifiedBadge row={row} /></span>
-          <RunStatus row={row} tone={tone} reasons={reasons} />
+          {/* No elapsed/duration here (StatusDuration): a stacked row is tight on width, and the
+              dot + label alone already say what the status card explains in full on hover/tap. */}
+          <StatusLabel row={row} tone={tone} />
         </div>
         <div role="cell" className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
           <ThreadChips repo={row.repo} branch={row.branch} />

@@ -2105,12 +2105,13 @@ export function verifiedTip(mark: VerifiedMark, state: VerifiedState, head?: str
 
 // ---- repo badge: a stable colour per repo name ----
 
-/** A fixed set of soft pastel tones for the repo badge (console.tsx RepoBadge), the Verified
- *  badge's own recipe repeated per colour (`bg-<colour>/15-20`, a darker text shade, a dark-mode
- *  variant where the background token itself is too light to read as text — geist-blue/green are
- *  dark enough to use directly, like Pill's own blue/green/amber/purple tones do). Order is part of
- *  the contract: `repoBadgeToneIndex` picks by position, so never reorder or remove an entry —
- *  append only. */
+/** A wide set of soft pastel tones for the repo badge (console.tsx RepoBadge), the Verified badge's
+ *  own recipe repeated per colour (`bg-<colour>/15-20`, a darker text shade, a dark-mode variant
+ *  where the background token itself is too light to read as text — geist-blue/green are dark
+ *  enough to use directly, like Pill's own blue/green/amber/purple tones do). Sixteen entries so an
+ *  aggregated multi-repo board rarely hands two repos the same colour (six once put site-templates
+ *  and ruminate on the same tone). Order is part of the contract: `repoBadgeToneIndex` picks by
+ *  position, so never reorder or remove an entry — append only. */
 export const REPO_BADGE_TONES = [
   "bg-geist-blue/15 text-geist-blue",
   "bg-geist-green/15 text-geist-green",
@@ -2118,14 +2119,29 @@ export const REPO_BADGE_TONES = [
   "bg-geist-amber/15 text-geist-warning-fg",
   "bg-purple-500/15 text-purple-700 dark:text-purple-400",
   "bg-pink-500/15 text-pink-700 dark:text-pink-400",
+  "bg-sky-500/15 text-sky-700 dark:text-sky-300",
+  "bg-indigo-500/15 text-indigo-700 dark:text-indigo-300",
+  "bg-violet-500/15 text-violet-700 dark:text-violet-300",
+  "bg-fuchsia-500/15 text-fuchsia-700 dark:text-fuchsia-300",
+  "bg-rose-500/15 text-rose-700 dark:text-rose-300",
+  "bg-orange-500/15 text-orange-700 dark:text-orange-300",
+  "bg-lime-500/20 text-lime-700 dark:text-lime-300",
+  "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+  "bg-cyan-500/15 text-cyan-700 dark:text-cyan-300",
+  "bg-yellow-500/20 text-yellow-800 dark:text-yellow-300",
 ] as const;
 
-/** A stable index into REPO_BADGE_TONES for a repo name: same name, same colour, every time — a
- *  plain string hash (djb2-ish), not cryptographic, only spread across the fixed palette. Pure. */
+/** A stable index into REPO_BADGE_TONES for a repo name: same name, same colour, every time —
+ *  FNV-1 32-bit (multiply, then xor in the next byte — FNV-1a's own order, xor then multiply,
+ *  re-collided "site-templates" and "ruminate" on this exact palette), which spreads short,
+ *  similar names far better than the old djb2-ish hash did. Not cryptographic. Pure. */
 export function repoBadgeToneIndex(repo: string): number {
-  let h = 5381;
-  for (let i = 0; i < repo.length; i++) h = ((h * 33) ^ repo.charCodeAt(i)) >>> 0;
-  return h % REPO_BADGE_TONES.length;
+  let h = 0x811c9dc5; // FNV 32-bit offset basis
+  for (let i = 0; i < repo.length; i++) {
+    h = Math.imul(h, 0x01000193) >>> 0; // FNV 32-bit prime
+    h ^= repo.charCodeAt(i);
+  }
+  return (h >>> 0) % REPO_BADGE_TONES.length;
 }
 
 /** The repo badge's classes for this repo name. Pure. */

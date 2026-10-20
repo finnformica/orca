@@ -113,15 +113,16 @@ export function Pill({ children, tone = "default", slot }: { children: ReactNode
 /** A workstream's repo, as a small badge beside its title (the Agents rows, the Board card) — in
  *  place of the old separate repo text/column. The colour is a stable hash of the repo name
  *  (workstream.repoBadgeTone), so the same repo always reads the same colour: a quick visual
- *  grouping on an aggregated, multi-repo board. It follows the title's own width rules but with a
- *  much higher shrink priority (`shrink-[999]`, no min-width floor from `truncate`'s own
- *  `overflow:hidden`), so it truncates — and, squeezed enough, shrinks away to nothing — before the
- *  title gives up any of its own room. */
+ *  grouping on an aggregated, multi-repo board. The badge never shrinks (`shrink-0`): the title
+ *  beside it gives up its own room first (its `truncate` already does that). `max-w-full` is only a
+ *  last-resort cap — a plain CSS clamp against the row's own width, inert while the badge's full
+ *  name fits — so a badge that would alone be wider than the row still ellipsizes instead of
+ *  overflowing it. */
 export function RepoBadge({ repo, className }: { repo: string; className?: string }) {
   return (
-    <Tip label={repo} className="min-w-0 shrink-[999]">
+    <Tip label={repo} className="max-w-full shrink-0">
       <span data-slot="repo-badge"
-        className={cn("inline-flex h-5 min-w-0 max-w-28 items-center truncate rounded-full px-1.5 text-[11px] font-medium whitespace-nowrap", repoBadgeTone(repo), className)}>
+        className={cn("inline-flex h-5 min-w-0 max-w-full items-center truncate rounded-full px-1.5 text-[11px] font-medium whitespace-nowrap", repoBadgeTone(repo), className)}>
         {repo}
       </span>
     </Tip>
