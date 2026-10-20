@@ -15,10 +15,13 @@ import { native } from "./happydom"; // happy-dom's preloaded fetch CORS-blocks 
 type Box = { h: number; t: number; w: number };
 
 const PORT = 18734;
+// Not a CI gate: GitHub's runner has google-chrome on PATH, which findBrowser takes, so test for CI
+// itself rather than for a browser.
+const browser = process.env.CI ? undefined : findBrowser();
 let proc: ReturnType<typeof Bun.spawn> | undefined;
 
 beforeAll(async () => {
-  if (!findBrowser()) return; // the test below skips; no point starting a server for it
+  if (!browser) return; // the test below skips; no point starting a server for it
   proc = Bun.spawn(["bunx", "--bun", "vite", "--port", String(PORT), "--strictPort"], {
     cwd: `${import.meta.dir}/../web`, stdout: "ignore", stderr: "ignore",
   });
@@ -36,7 +39,7 @@ afterAll(() => { proc?.kill(); });
  *  row's own top (pillHarnessMain.tsx), so two different rows are directly comparable. */
 const item = (items: Record<string, Box>, prefix: string) => Object.entries(items).find(([k]) => k.startsWith(prefix))![1];
 
-test.skipIf(!findBrowser())("the PR-column pill and its badge siblings share one box: Pill vs Pill, Tip-wrapped vs bare, Pill vs Badge", async () => {
+test.skipIf(!browser)("the PR-column pill and its badge siblings share one box: Pill vs Pill, Tip-wrapped vs bare, Pill vs Badge", async () => {
   const shot = await shooter().shoot({ url: `http://localhost:${PORT}/pill-harness.html`, viewport: { width: 900, height: 700 }, console: true });
   const lines = new Map((shot.console ?? [])
     .filter((l) => l.startsWith("console.error: PILL_MEASUREMENTS "))
@@ -68,4 +71,4 @@ test.skipIf(!findBrowser())("the PR-column pill and its badge siblings share one
   expect(openCi.h).toBeCloseTo(open.h, 1);
   expect(openCi.t).toBeCloseTo(open.t, 1);
   expect(autoMergeBadge.h).toBeCloseTo(open.h, 1);
-});
+}, 60_000); // a cold browser plus Vite's first compile of the harness takes longer than bun's 5 s
