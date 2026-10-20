@@ -134,7 +134,7 @@ test("no history yet says so instead of an empty chart", async () => {
   expect(container!.querySelector('[data-slot="chart-cpu"]')).toBeNull();
 });
 
-test("CPU and memory stay one line each, as on main; Agents and Disk used are charts of the same design beside them", async () => {
+test("CPU and memory stay one line each, as on main; Agents is a chart of the same design beside them", async () => {
   const now = Date.now();
   apiFake.healthHistoryData = [0, 1, 2].map((i) => ({
     at: now - (2 - i) * 60_000 - 1000, cpuPct: [5, 40, 23][i], load1: 0.1, memUsedGb: [2, 2.5, 4.2][i], memTotalGb: 15.3, runningAgents: [0, 2, 1][i], diskUsedGb: [30, 31, 32][i],
@@ -144,7 +144,7 @@ test("CPU and memory stay one line each, as on main; Agents and Disk used are ch
   await render(<InstanceCard instance="cloud" here={false} />);
   await ready();
   const chart = (slot: string) => container!.querySelector(`[data-slot="${slot}"]`)!;
-  for (const slot of ["chart-cpu", "chart-mem", "chart-agents", "chart-disk"]) {
+  for (const slot of ["chart-cpu", "chart-mem", "chart-agents"]) {
     // One line, the left axis and its three gridlines — no overlay, no right-hand axis, no marks.
     expect(chart(slot).querySelectorAll("polyline")).toHaveLength(1);
     expect(chart(slot).querySelectorAll(".text-muted-foreground.flex.w-8")).toHaveLength(1);
@@ -157,10 +157,9 @@ test("CPU and memory stay one line each, as on main; Agents and Disk used are ch
   expect(chart("chart-agents").querySelector("figcaption")!.textContent).toBe("Agents3"); // the live count
   expect([...chart("chart-agents").querySelectorAll(".text-muted-foreground.flex.w-8 span")].map((e) => e.textContent)).toEqual(["8", "4", "0"]); // fixed top of 8 until the data outgrows it
   expect(chart("chart-agents").querySelector("polyline")!.getAttribute("stroke")).toBe("var(--geist-pink)");
-  // Disk used: the recorded samples ending on the live reading, on an axis up to the disk's size.
-  expect(chart("chart-disk").querySelector("figcaption")!.textContent).toBe("Disk used35.7 GB");
-  expect(linePoints(chart("chart-disk"))).toHaveLength(4);
-  expect([...chart("chart-disk").querySelectorAll(".text-muted-foreground.flex.w-8 span")].map((e) => e.textContent)).toEqual(["144G", "72G", "0G"]);
+  // No Disk used chart any more (Finn: the header's Disk cell is enough); the figure still shows there.
+  expect(container!.querySelector('[data-slot="chart-disk"]')).toBeNull();
+  expect(container!.querySelector('[data-slot="instance-cloud"]')!.textContent).toContain("35.7 / 144.3 GB");
   // No Bridge memory chart (Finn: the box's memory is what matters; the row still records the RSS).
   expect(container!.querySelector('[data-slot="chart-bridge"]')).toBeNull();
   // The constant-rate cost ramp is gone; the month's cost is the details cell.
@@ -196,10 +195,10 @@ test("a machine with no rate (the laptop) shows no cost, and no history of OOM k
   expect(detail(container!, "instance-cost")).toBe("Cost · this month—");
   expect(container!.querySelector('[data-slot="chart-mark"]')).toBeNull();
   expect(container!.querySelector('[data-slot="chart-oom"]')).toBeNull();
-  expect(lastValue(container!.querySelector('[data-slot="chart-disk"]')!)).toBe("16.0 GB"); // no live disk reading: the recorded one
+  expect(lastValue(container!.querySelector('[data-slot="chart-mem"]')!)).toBe("2.0 GB");
 });
 
-test("a bridge that sends no runningAgents, rate, month or disk (an older build) still renders: zero agents, no cost, an empty disk chart", async () => {
+test("a bridge that sends no runningAgents, rate, month or disk (an older build) still renders: zero agents, no cost", async () => {
   const now = Date.now();
   apiFake.healthHistoryData = [0, 1].map((i) => ({ at: now - (1 - i) * 60_000 - 1000, cpuPct: 30, load1: 0.1, memUsedGb: 2, memTotalGb: 15.3 }));
   apiFake.healthData = { instance: "cloud", hostname: "orca-box", cores: 4, cpuPct: 30, load1: 0.5, load5: 0.4, memUsedGb: 2, memTotalGb: 15.3, uptimeS: 9, at: now };
@@ -207,7 +206,7 @@ test("a bridge that sends no runningAgents, rate, month or disk (an older build)
   await ready();
   expect(container!.querySelector('[data-slot="chart-cpu"]')!.querySelectorAll("polyline")).toHaveLength(1);
   expect(lastValue(container!.querySelector('[data-slot="chart-agents"]')!)).toBe("0");
-  expect(lastValue(container!.querySelector('[data-slot="chart-disk"]')!)).toBe("—");
+  expect(container!.querySelector('[data-slot="chart-disk"]')).toBeNull();
   expect(detail(container!, "instance-cost")).toBe("Cost · this month—");
 });
 
@@ -397,6 +396,7 @@ test("a bridge without the ring (an older build) keeps the 6h line charts from t
   expect(apiFake.healthLiveCalls).toEqual([{ instance: "cloud", hours: 6 }]);
   expect(container!.querySelector('[data-slot="chart-cpu"] polyline')).toBeTruthy();
   expect(container!.querySelector('[data-slot="chart-io"]')).toBeNull();
+});
 
 test("the heavy-queue header shows one decimal; on a phone the rows scroll sideways with their whole text", async () => {
   const now = Date.now();

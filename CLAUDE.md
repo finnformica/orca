@@ -1124,8 +1124,10 @@ dashed agents-slice MemoryMax, and **Disk IO** (root device read + write MB/s un
 `ORCA_DISK_CAP_MBS`, default 125 — the gp3 baseline; the 2026-10-19 IO stall looked like CPU on the
 old line). `StackedChart` (`components/console.tsx`) is their chart; hover or tap opens the shadcn
 tooltip with the values at that time. An older bridge without the route keeps the lines. Beside them,
-in the `LineChart` design, an **Agents** chart (`running_agents` over time) and **Disk used** (axis to
-the disk's size; worktrees, preview databases and test containers are what fill the box). **`orca machine`**
+in the `LineChart` design, an **Agents** chart (`running_agents` over time). There is no Disk used
+chart any more (removed at Finn's request, #359): the disk figure stays in the details grid's **Disk**
+cell (worktrees, preview databases and test containers are what fill the box), and Disk IO (above)
+covers throughput for the ranges it's available for. **`orca machine`**
 (`GET /api/machine`, `liveMetrics.machineReport`; a read verb) gives the orchestrator the SAME numbers
 as the card, from the same ring through the same `liveAnswer` and the card's own `liveCharts`
 (`workstream.ts` `machineSummary` / `machineText`), so the two never disagree and lag at most one
