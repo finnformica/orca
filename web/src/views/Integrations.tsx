@@ -408,7 +408,7 @@ function PersonRowView({ person: p, kinds, onChange }: { person: PersonRow; kind
         <div className="mt-1 flex flex-wrap items-center gap-1.5">
           {p.identities.length === 0 && <span className="text-muted-foreground text-xs">no identities</span>}
           {p.identities.map((i) => (
-            <span key={`${i.adapter}:${i.externalId}`} data-slot="person-identity" title={`${i.adapter} ${i.externalId}`} className="bg-muted inline-flex h-6 items-center gap-1 rounded-full pr-1 pl-2 text-xs">
+            <span key={`${i.adapter}:${i.externalId}`} data-slot="person-identity" className="bg-muted inline-flex h-6 items-center gap-1 rounded-full pr-1 pl-2 text-xs">
               <BrandIcon kind={i.adapter} className="size-3" />{identityLabel(i, kinds)}
               <button type="button" aria-label={`Remove ${identityLabel(i, kinds)}`} className="hover:bg-accent rounded-full p-0.5"
                 onClick={() => ask(`Remove ${identityLabel(i, kinds)} from ${p.name}?`, "Messages from this identity are dropped again until it is paired.", () => void act("Remove identity", "identities/remove", { adapter: i.adapter, externalId: i.externalId }, onChange))}><X className="size-3" /></button>
