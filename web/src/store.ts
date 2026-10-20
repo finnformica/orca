@@ -40,7 +40,7 @@ const notify = () => { version++; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.delete(l); };
 
 // ---- config ----
-let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; terminal?: Record<string, boolean>; ui?: { showBoard: boolean }; instanceUrls?: Record<string, string>; bridge?: BridgeInfo } | null = null;
+let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; terminal?: Record<string, boolean>; voice?: boolean; ui?: { showBoard: boolean }; instanceUrls?: Record<string, string>; bridge?: BridgeInfo } | null = null;
 export const configReady = api.config()
   .then(async (c) => { cfg = c; notify(); await migrateLocalEnrichment(); void refresh(); })
   .catch(() => { cfg = { repos: EMPTY_REPOS, staleHours: 24, agentProviders: DEFAULT_AGENT_PROVIDERS }; configFailed = true; notify(); });
@@ -129,6 +129,8 @@ export async function setInstanceTerminal(instance: string, on: boolean): Promis
 /** The Board view's nav entry and route (`ui.showBoard` in the app config): on unless the config
  *  says false, and on before the config loads, so a board URL does not flash the Agents view. */
 export const useShowBoard = (): boolean => useSyncExternalStore(subscribe, () => cfg?.ui?.showBoard !== false);
+/** Whether the bridge can transcribe voice (it holds the OpenAI key), so the composer shows its mic. */
+export const useVoiceInput = (): boolean => useSyncExternalStore(subscribe, () => cfg?.voice === true);
 /** Show or hide the Board view for every browser, then in the config mirror. */
 export async function setShowBoard(showBoard: boolean): Promise<void> {
   await api.setShowBoard(showBoard);
