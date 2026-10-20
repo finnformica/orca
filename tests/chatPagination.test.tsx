@@ -9,7 +9,8 @@ import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
-import { fenceExternal, integrationMessage, integrationMetaLine } from "../shared/integrations";
+import { catchAllLabels, fenceExternal, integrationMessage, integrationMetaLine, shownPlace } from "../shared/integrations";
+import { reloadCatchAllLabels } from "@/lib/catchAllLabels";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
@@ -158,14 +159,16 @@ test("P7: the chat's scroller keeps the gesture — reaching its end never scrol
   expect(log().className).toContain("overscroll-contain");
 });
 
-test("P6: the orchestrator's chat is one stream — worker traffic split out as collapsed, tinted blocks; older replies render compact", async () => {
+test("P6: the orchestrator's chat is one stream — a reply with something to say stays open like yours; only reports, and a reply with nothing to say, fold into tinted blocks; older replies render compact", async () => {
   const long = (i: number) => Array.from({ length: 8 }, (_, l) => `reply ${i} line ${l}`).join("\n");
-  // Some carry the recorded source, some (rows from before it) are read off their instruction.
-  const wake = (i: number, source?: "agents") => ({ id: `run-${i}`, provider: "claude", instruction: `${WORKER_EVENT_MARKER} r/feat-${i} — done\nOutcome: done`, prompt: "", response: `noted ${i}`, startedAt: 1000 + i, finishedAt: 1001 + i, source });
+  // Some carry the recorded source, some (rows from before it) are read off their instruction. A
+  // wake that finished with nothing to say for itself (`reply` left out: no text, no structured
+  // outcome) folds; one with a real reply does not, however many come after it.
+  const wake = (i: number, opts: { source?: "agents"; reply?: string } = {}) => ({ id: `run-${i}`, provider: "claude", instruction: `${WORKER_EVENT_MARKER} r/feat-${i} — done\nOutcome: done`, prompt: "", response: opts.reply ?? "", startedAt: 1000 + i, finishedAt: 1001 + i, source: opts.source });
   const mixed = { ...turn(6), instruction: `${WORKER_EVENT_MARKER} r/feat-x — done\nOutcome: ok\n\nask 6`, response: long(6), source: "human" as const };
   apiFake.turnsData.set("r::long", [
-    { ...turn(0), instruction: Array.from({ length: 12 }, (_, l) => `ask 0 line ${l}`).join("\n"), response: long(0), source: "human" }, wake(1, "agents"), wake(2), wake(3, "agents"), { ...turn(4), instruction: `ask 4a${MESSAGE_BREAK}ask 4b\n\nwith a paragraph${MESSAGE_BREAK}ask 4c`, response: long(4) },
-    wake(5), mixed, { ...turn(7), instruction: Array.from({ length: 12 }, (_, l) => `ask 7 line ${l}`).join("\n"), response: long(7) }, wake(8, "agents"),
+    { ...turn(0), instruction: Array.from({ length: 12 }, (_, l) => `ask 0 line ${l}`).join("\n"), response: long(0), source: "human" }, wake(1, { source: "agents" }), wake(2), wake(3, { source: "agents", reply: "noted 3" }), { ...turn(4), instruction: `ask 4a${MESSAGE_BREAK}ask 4b\n\nwith a paragraph${MESSAGE_BREAK}ask 4c`, response: long(4) },
+    wake(5), mixed, { ...turn(7), instruction: Array.from({ length: 12 }, (_, l) => `ask 7 line ${l}`).join("\n"), response: long(7) }, wake(8, { source: "agents", reply: "noted 8" }),
   ]);
   apiFake.queuedData.set("long", [
     { id: 1, instruction: `${WORKER_EVENT_MARKER} r/held — done\nOutcome: ok`, attachments: [] },
@@ -173,19 +176,20 @@ test("P6: the orchestrator's chat is one stream — worker traffic split out as 
   ]);
   await mount(<ChatPanel row={row} />);
   const c = container!;
-  // No channel toggle: your turns, and each run of agent turns between them as ONE collapsed block,
-  // its turns unmounted until opened — wakes 1–3 and 5. Wake 8 holds the newest answer, which is
-  // never folded: it renders as its own turn, its report folded above the reply.
+  // No channel toggle: your turns, and each run of wakes with nothing to say between them as ONE
+  // collapsed block, its turns unmounted until opened — wakes 1, 2 and 5. Wakes 3 and 8 have real
+  // replies, so each renders as its own turn, open, its report folded above the reply.
   const markers = () => [...c.querySelectorAll<HTMLElement>('[data-slot="agents-marker"]')];
-  expect(markers().map((m) => m.querySelector('[data-slot="worker-block-label"]')!.textContent!.replace(/ · \d\d:\d\d.*$/, ""))).toEqual(["3 worker reports · 3 replies", "1 worker report · 1 reply"]);
+  expect(markers().map((m) => m.querySelector('[data-slot="worker-block-label"]')!.textContent!.replace(/ · \d\d:\d\d.*$/, ""))).toEqual(["2 worker reports · 2 replies", "1 worker report · 1 reply"]);
   for (const m of markers()) {
     expect(m.className).toContain("bg-geist-blue/5"); // a style of its own, apart from your bubbles
     expect(m.querySelector("button")!.getAttribute("aria-expanded")).toBe("false");
   }
-  for (const n of [1, 2, 3, 5]) expect(c.textContent).not.toContain(`noted ${n}`);
+  expect(c.textContent).toContain("noted 3"); // open on its own, between the two folded runs
   expect(c.textContent).toContain("noted 8");
+  for (const n of [1, 2, 5]) expect(c.textContent).not.toContain(`r/feat-${n} — done`); // folded: unmounted until opened
   await act(async () => { markers()[0]!.querySelector("button")!.click(); await flush(); });
-  expect(c.textContent).toContain("noted 2"); // expanded inline
+  expect(c.textContent).toContain("r/feat-2 — done"); // expanded inline
   // A wake that carried your message AND a report: your words in the bubble, the report split out
   // above it as its own collapsed block.
   const sixth = [...c.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].find((t) => t.textContent!.includes("reply 6 line 0"))!;
@@ -196,9 +200,11 @@ test("P6: the orchestrator's chat is one stream — worker traffic split out as 
   expect(sixth.querySelector('[data-slot="chat-user"]')!.textContent).not.toContain("r/feat-x");
   await act(async () => { reports.querySelector("button")!.click(); await flush(); });
   expect(reports.querySelector('[data-slot="worker-reports"]')!.textContent).toContain("r/feat-x — done");
-  // Three messages one wake drained: three bubbles, in order — a paragraph inside one stays in it.
+  // Three messages one wake drained: three bubbles, in order — a paragraph inside one stays in it,
+  // rendered as its own markdown paragraph (two <p> elements, not joined into one line).
   const fourth = [...c.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].find((t) => t.textContent!.includes("reply 4 line 0"))!;
-  expect([...fourth.querySelectorAll('[data-slot="chat-user-text"]')].map((b) => b.textContent)).toEqual(["ask 4a", "ask 4b\n\nwith a paragraph", "ask 4c"]);
+  expect([...fourth.querySelectorAll('[data-slot="chat-user-text"]')].map((b) => b.textContent)).toEqual(["ask 4a", "ask 4b\nwith a paragraph", "ask 4c"]);
+  expect(fourth.querySelectorAll('[data-slot="chat-user-text"]')[1]!.querySelectorAll("p")).toHaveLength(2);
   // Queued: your message and the held report, both in the one stream.
   expect(c.textContent).toContain("and then this");
   expect(c.querySelector('[data-slot="worker-report-held"]')).not.toBeNull();
@@ -329,6 +335,35 @@ test("P8: the orchestrator's chat shows an outside message and its answer as ONE
   // A queued outside message is its row too, not a queued bubble of yours.
   expect(field(c.querySelector<HTMLElement>('[data-slot="integration-queued"]')!, "integration-state")).toBe("queued");
   expect(c.querySelector('[data-slot="chat-queued"]')).toBeNull();
+});
+
+test("P9: a row stored with a catch-all link's label as its place shows no place, in the row and opened", async () => {
+  // Stored before the ingest check (#329): the meta line carries "All channels and DMs" for ever.
+  // The chat reads the catch-all links' labels from /api/integrations and drops that place.
+  apiFake.integrationLinks = [{ id: "Lstar", externalId: "*", label: "All channels and DMs" }, { id: "L1", externalId: "C1", label: "#general" }];
+  await reloadCatchAllLabels();
+  const reply = (id: string, text: string, place: string) => ({
+    id, provider: "claude", instruction: outside(text, "Saajan", place), prompt: "", response: "ok", startedAt: 2000, finishedAt: 2001, source: "human" as const,
+  });
+  apiFake.turnsData.set("r::long", [turn(0), reply("old", "knob", "All channels and DMs"), reply("chan", "ship it", "#general")]);
+  apiFake.queuedData.set("long", [{ id: 1, instruction: outside("Lumino", "Saajan", "All channels and DMs"), attachments: [] }]);
+  await mount(<ChatPanel row={row} />);
+  const c = container!;
+  const rows = [...c.querySelectorAll<HTMLElement>('[data-slot="integration-activity"]')];
+  expect(rows.map((r) => r.querySelector('[data-slot="integration-place"]')?.textContent ?? null)).toEqual([null, "#general"]);
+  expect(c.querySelector('[data-slot="integration-queued"] [data-slot="integration-place"]')).toBeNull();
+  await act(async () => { rows[0]!.querySelector("button")!.click(); await flush(); });
+  expect(rows[0]!.querySelector('[data-slot="integration-message-place"]')!.textContent).toBe("Discord");
+  expect(c.textContent).not.toContain("All channels and DMs");
+  apiFake.integrationLinks = [];
+  await reloadCatchAllLabels();
+  // The pure piece: a label is dropped only when a catch-all link has it.
+  const labels = catchAllLabels([{ externalId: "*", label: " All channels and DMs " }, { externalId: "", label: "Everything" }, { externalId: "C1", label: "#general" }]);
+  expect([...labels]).toEqual(["All channels and DMs", "Everything"]);
+  expect(shownPlace("All channels and DMs", labels)).toBeUndefined();
+  expect(shownPlace("#general", labels)).toBe("#general");
+  expect(shownPlace("DM", labels)).toBe("DM");
+  expect(shownPlace(undefined, labels)).toBeUndefined();
 });
 
 test("the pure pieces: merging pages and anchoring", () => {

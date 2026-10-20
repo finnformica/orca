@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
-// `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--press <key>]
+// `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--press <key>] [--type <text>]
 //  [--hover <sel>] [--scroll <y|sel>] [--wait <ms>] [--full-page] [--label before|after] [--out <file>]
-//  [--timeout <seconds>]` — the ONLY way a worker takes a screenshot. It asks the bridge's capped,
+//  [--timeout <seconds>] [--console]` — the ONLY way a worker takes a screenshot. It asks the bridge's capped,
 // one-at-a-time browser (server/screenshot.ts) and prints the PNG's path as `shot: <path>`; never
 // start a browser yourself. --click/--press/--hover/--scroll/--wait run in the order given, after
 // the page (and --wait-for) is ready. --click is a real mouse click (move, press, release), so it
@@ -33,16 +33,18 @@ for (let i = 0; i < argv.length; i++) {
   if (a === "--viewport") body.viewport = value(i++, a);
   else if (a === "--dark") body.dark = true;
   else if (a === "--full-page") body.fullPage = true;
+  else if (a === "--console") body.console = true;
   else if (a === "--wait-for") body.waitFor = value(i++, a);
   else if (a === "--label") body.label = value(i++, a);
   else if (a === "--out") out = value(i++, a);
   else if (a === "--timeout") timeoutS = Number(value(i++, a));
   else if (a === "--click") steps.push({ click: value(i++, a) });
   else if (a === "--press") steps.push({ press: value(i++, a) });
+  else if (a === "--type") steps.push({ type: value(i++, a) });
   else if (a === "--hover") steps.push({ hover: value(i++, a) });
   else if (a === "--scroll") { const v = value(i++, a); steps.push({ scroll: /^\d+$/.test(v) ? Number(v) : v }); }
   else if (a === "--wait") steps.push({ wait: Number(value(i++, a)) });
-  else if (a === "-h" || a === "--help") { console.log("usage: orca-shot <url> [--viewport WxH] [--dark] [--wait-for sel] [--click sel] [--press key] [--hover sel] [--scroll y|sel] [--wait ms] [--full-page] [--label name] [--out file] [--timeout seconds]\n  --click is a real mouse click (opens Radix UI menus/triggers, which open on pointerdown)\n  --press sends a named key (Enter, Escape, ArrowDown, …), repeatable, ordered with --click"); process.exit(0); }
+  else if (a === "-h" || a === "--help") { console.log("usage: orca-shot <url> [--viewport WxH] [--dark] [--wait-for sel] [--click sel] [--press key] [--type text] [--hover sel] [--scroll y|sel] [--wait ms] [--full-page] [--label name] [--out file] [--timeout seconds] [--console]\n  --console prints the page's exceptions, console errors and failed requests\n  --click is a real mouse click (opens Radix UI menus/triggers, which open on pointerdown)\n  --press sends a named key (Enter, Escape, ArrowDown, …), repeatable, ordered with --click\n  --type types text into the focused element (--click the field first)"); process.exit(0); }
   else if (a.startsWith("--")) { console.error(`orca-shot: unknown flag ${a}`); process.exit(2); }
   else body.url = a;
 }
@@ -76,7 +78,7 @@ if (!res.ok) {
 // The body is one JSON object per line: `{queued: N}` while waiting, then the result or an error.
 // A plain single-object body (no trailing newline) parses the same way, as the leftover after the
 // stream ends — so a server that doesn't stream still works.
-let final: { path?: string; bytes?: number; error?: string } | undefined;
+let final: { path?: string; bytes?: number; error?: string; console?: string[] } | undefined;
 let lastAhead = -1;
 try {
   const reader = res.body!.getReader();
@@ -115,3 +117,4 @@ if (!final || final.error || !final.path) {
 }
 if (out) copyFileSync(final.path, out);
 console.log(`shot: ${final.path}${body.label ? ` (${body.label})` : ""}`);
+if (body.console) console.log(final.console?.length ? final.console.map((l) => `console: ${l}`).join("\n") : "console: (no errors)");

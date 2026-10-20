@@ -12,18 +12,22 @@ import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Loader2, Paperclip, Quo
 import { cn, PipContext } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
-import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight } from "../workstream";
-import { integrationMessage, type IntegrationMessage } from "../../../shared/integrations";
+import { RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight } from "../workstream";
+import { HandoffWidget } from "./Handoffs";
+import { integrationMessage, shownPlace, type IntegrationMessage } from "../../../shared/integrations";
+import { useCatchAllLabels } from "@/lib/catchAllLabels";
 import { BrandIcon, brandTitle } from "@/components/BrandIcon";
 import { activityCounts, closeOpenMarkdown, createHold, runLabel, stepDuration, stepInFlight, stepKey, stepRow, stepRuns, toolDetail, toolLabel, workedLabel, workSteps, type StepStatus } from "../steps";
-import { agentLabel, groupSteps, withoutFinalEcho } from "../../../shared/agent";
+import { agentLabel, groupSteps, outcomeLead, withoutFinalEcho } from "../../../shared/agent";
 import { ChatComposer } from "@/components/ChatComposer";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { ShotThumbs } from "@/components/Screenshots";
 import { snippetPre } from "@/components/Snippet";
+import { copyText } from "@/lib/dialogs";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { subscribeTurns } from "@/lib/events";
@@ -78,10 +82,13 @@ const chatComponents = { img: markdownImg, ...tableComponents, pre: snippetPre({
 /** Markdown inside the terminal-styled log: prose spacing and readable lists, but sized and coloured
  *  to sit in the chat's window rather than looking like a pasted document. `tone` overrides the body
  *  text colour (a worker report's folded body reads dimmer than a turn's own reply) without forking
- *  the renderer, its table handling, or its prose setup. `memo`: parsing markdown is the costliest
- *  thing a chat render does (measured: ~300ms commits re-parsing a long orchestrator thread on every
- *  open and close of its panel), and the text of a finished turn never changes. */
-const ChatMarkdown = memo(({ children, tone = "text-neutral-300" }: { children: string; tone?: string }) => (
+ *  the renderer, its table handling, or its prose setup. `breaks` (the user's own bubble): a plain
+ *  single newline, as typed, becomes a visible line break — CommonMark otherwise joins it to the
+ *  next line as one paragraph, which read wrong for a typed message that was never meant as prose.
+ *  `memo`: parsing markdown is the costliest thing a chat render does (measured: ~300ms commits
+ *  re-parsing a long orchestrator thread on every open and close of its panel), and the text of a
+ *  finished turn never changes. */
+const ChatMarkdown = memo(({ children, tone = "text-neutral-300", breaks }: { children: string; tone?: string; breaks?: boolean }) => (
   // wrap-anywhere: the agent's prose is full of unbreakable tokens (`branch/names-with-hashes`,
   // paths, run ids) that are wider than a narrow window, and one of them made the whole log scroll
   // sideways. Code BLOCKS are exempt — they keep their lines and scroll inside themselves.
@@ -97,7 +104,7 @@ const ChatMarkdown = memo(({ children, tone = "text-neutral-300" }: { children: 
     "prose-strong:text-neutral-200",
     "prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none",
     "prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400", tone)}>
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={chatComponents}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]} components={chatComponents}>{children}</ReactMarkdown>
   </div>
 ));
 
@@ -166,7 +173,16 @@ function useHeld<T>(want: T): T {
  *  OUT while it fades, the new one translates up and IN while it fades, so neither sits fully
  *  opaque over the other and the text never overlaps. Both sit in ONE grid cell with a fixed line
  *  height and `overflow-hidden`, so the line never changes height and nothing sliding leaks outside
- *  it. The `label-*` classes are in styles.css (a plain opacity cross-fade under reduced motion). */
+ *  it. The box takes 1.2em of layout, but its one grid row is 2.2em (taller than the ~1.625em line
+ *  it inherits) and runs into a `box-content` padding that an equal negative margin cancels — split
+ *  EVENLY above and below (not bottom-only), so the padding/margin trick itself doesn't move the
+ *  box's own centre. A row bigger than its container still anchors at the container's START by
+ *  default, not its centre, so `content-center` re-centres the oversized row on the box, and
+ *  `items-center` then centres the real line within that row — together putting the line's own
+ *  centre exactly on the box's centre, matching a sibling (the header's spinner) centred on ITS
+ *  own box. (`items-center` alone left the row's own placement un-centred, and the label still
+ *  read low against the spinner.) The `label-*` classes are in styles.css (a plain opacity
+ *  cross-fade under reduced motion). */
 function CrossFade({ text, slot }: { text: string; slot?: string }) {
   const [s, setS] = useState<{ text: string; n: number; gone: string | null }>({ text, n: 0, gone: null });
   if (s.text !== text) setS({ text, n: s.n + 1, gone: s.text });
@@ -176,7 +192,7 @@ function CrossFade({ text, slot }: { text: string; slot?: string }) {
     return () => clearTimeout(t);
   }, [s.n, s.gone]);
   return (
-    <span className="grid h-[1.2em] min-w-0 flex-1 overflow-hidden">
+    <span className="-my-[0.5em] box-content content-center grid h-[1.2em] min-w-0 flex-1 grid-rows-[2.2em] items-center overflow-hidden py-[0.5em]">
       {s.gone !== null && <span key={`out-${s.n}`} aria-hidden="true" data-slot={slot && `${slot}-out`} className="label-out truncate [grid-area:1/1]">{s.gone}</span>}
       <span key={`in-${s.n}`} data-slot={slot} className={cn("truncate [grid-area:1/1]", s.n > 0 && "label-in")}>{text}</span>
     </span>
@@ -260,12 +276,15 @@ function Activity({ steps: given, live, startedAt, finishedAt, load }: {
             {startedAt ? <span className="text-muted-foreground shrink-0 tabular-nums" data-slot="activity-elapsed">{formatDuration(now - startedAt)}</span> : null}
             <span className="text-muted-foreground">{chevron}</span>
           </button>
-          {/* The count line and the trail open together on the first step, and the trail keeps room
-              for its three rows, so a row that lands slides in without pushing the chat down. */}
+          {/* The count line and the trail open together on the first step. The trail's height
+              grows with its rows (never shrinks within a live turn, since steps only accumulate)
+              and the growth itself is what animates \u2014 no space is reserved ahead of what is
+              actually shown, so a short run leaves no gap below its last row. */}
           <Fold open={Boolean(counts || trail.length)}>
             <div className="text-muted-foreground mt-0.5 truncate pl-5.5 text-[11px] leading-4" data-slot="activity-counts">{counts || "\u00a0"}</div>
             {!open && (
-              <ul className="mt-1 min-h-[52px] space-y-0.5 pl-5.5 text-[11px] leading-4 opacity-60" data-slot="activity-trail">
+              <ul className="mt-1 space-y-0.5 pl-5.5 text-[11px] leading-4 opacity-60 transition-[min-height] duration-200 ease-out motion-reduce:transition-none"
+                style={trail.length ? { minHeight: `${trail.length * 18 - 2}px` } : undefined} data-slot="activity-trail">
                 {trail.map((run) => (
                   <li key={stepKey(run.steps[0]!)} className={cn("step-in truncate", run.kind === "text" ? "text-foreground" : "text-muted-foreground")}>{runLabel(run)}</li>
                 ))}
@@ -299,8 +318,12 @@ function Output({ turn }: { turn: AgentTurn }) {
   if (turn.stopped) return <pre className="whitespace-pre-wrap break-words text-amber-400">{turn.response || "Stopped."}</pre>;
   const s = turn.structured;
   if (!s) return <ChatMarkdown>{turn.response || "_(no output)_"}</ChatMarkdown>;
+  // What the reply says before its sections (a snippet to paste, often): `structured` has only the
+  // sections. Without it, a snippet shown while the turn ran vanished when it finished.
+  const lead = outcomeLead(turn.response ?? "");
   return (
     <div className="space-y-1.5 text-neutral-300">
+      {lead && <div data-slot="turn-lead"><ChatMarkdown>{lead}</ChatMarkdown></div>}
       {s.outcome && <ChatMarkdown>{s.outcome}</ChatMarkdown>}
       {s.remaining.length > 0 && <Facet title="Remaining" items={s.remaining} tone="text-amber-400" />}
       {s.decisions.length > 0 && <Facet title="Decisions" items={s.decisions} tone="text-neutral-400" />}
@@ -353,8 +376,7 @@ export function Attachments({ files, className = "" }: { files: AttachmentRef[];
 function MessageActions({ text, onQuote, className }: { text: string; onQuote: () => void; className?: string }) {
   const [copied, setCopied] = useState(false);
   const onCopy = async () => {
-    try { await navigator.clipboard.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1500); }
-    catch { /* clipboard unavailable */ }
+    if (await copyText(text, "message")) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
   };
   const btn = "text-muted-foreground hover:text-foreground";
   return (
@@ -534,10 +556,12 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
         return (
           <div key={i} className="group mb-2 flex justify-end" data-slot="chat-user">
             <div className="max-w-[85%]">
-              {clean && <div data-slot="chat-user-text" className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">
+              {clean && <div data-slot="chat-user-text" className="bg-accent text-foreground rounded-lg px-3 py-2">
                 {/* A long message is cut to its first lines, like an old reply. */}
                 {/* …except your newest message, which is always in full. */}
-                <Clamp on={!(newestSaid && i === said.length - 1) && longMessage(clean)} cut="max-h-[9rem]">{clean}</Clamp>
+                <Clamp on={!(newestSaid && i === said.length - 1) && longMessage(clean)} cut="max-h-[9rem]">
+                  <ChatMarkdown tone="text-foreground" breaks>{clean}</ChatMarkdown>
+                </Clamp>
               </div>}
               <Attachments files={filesOf(text, i)} className="mt-1 justify-end" />
               <div className="mt-0.5 flex items-center justify-end gap-1.5">
@@ -560,6 +584,8 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
             <span className="opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{clockOf(turn.finishedAt) || time}</span>
           </div>
           <Reply turn={turn} loadSteps={loadSteps} compact={compact} />
+          {/* A pack this turn made (`orca handoff create`): review it and Send it here. */}
+          {turnHandoffs(turn).map((id) => <HandoffWidget key={id} id={id} />)}
         </div>
       </div>
     </div>
@@ -716,11 +742,12 @@ const STATE_TONE = { answered: "text-geist-green", "in progress": "text-geist-bl
 /** The collapsed line of an outside message: logo, sender, place, one line of what they wrote, the
  *  time and the state. The same tinted card as worker traffic, with the service's logo for the ⚙. */
 function IntegrationHead({ m, more, time, state }: { m: IntegrationMessage; more: number; time: string; state: keyof typeof STATE_TONE | "queued" }) {
+  const place = shownPlace(m.place, useCatchAllLabels());
   return (
     <>
       <BrandIcon kind={m.adapter} className="size-3.5" />
       <span className="text-foreground shrink-0 font-medium" data-slot="integration-sender">{m.sender ?? brandTitle(m.adapter)}</span>
-      {m.place && <span className="shrink-0" data-slot="integration-place">{m.place}</span>}
+      {place && <span className="shrink-0" data-slot="integration-place">{place}</span>}
       <span className="min-w-0 flex-1 truncate" data-slot="integration-preview">{integrationPreview(m.text)}{more > 0 ? ` · +${more} more` : ""}</span>
       {time && <span className="shrink-0 text-[11px]">{time}</span>}
       <span data-slot="integration-state" className={cn("flex shrink-0 items-center gap-1 text-[11px]", state === "queued" ? "" : STATE_TONE[state])}>
@@ -736,6 +763,7 @@ function IntegrationHead({ m, more, time, state }: { m: IntegrationMessage; more
  *  your conversation, like worker reports. */
 const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadStepsFor }: { turn: AgentTurn; messages: IntegrationMessage[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]> }) {
   const [open, setOpen] = useState(false);
+  const labels = useCatchAllLabels();
   const state = integrationState(turn);
   return (
     <div data-slot="integration-activity" data-adapter={messages[0]!.adapter} data-state={state} data-open={open || undefined}
@@ -752,7 +780,7 @@ const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadSt
               <div className="text-muted-foreground mb-0.5 flex items-center gap-1.5 text-[11px]">
                 <BrandIcon kind={m.adapter} className="size-3" />
                 <span className="text-foreground font-medium">{m.sender ?? brandTitle(m.adapter)}</span>
-                <span>{[m.place, brandTitle(m.adapter)].filter(Boolean).join(" · ")}</span>
+                <span data-slot="integration-message-place">{[shownPlace(m.place, labels), brandTitle(m.adapter)].filter(Boolean).join(" · ")}</span>
                 {m.url && <a href={m.url} target="_blank" rel="noreferrer" className="hover:text-foreground underline-offset-2 hover:underline">Open in {brandTitle(m.adapter)}</a>}
               </div>
               <div className="text-foreground whitespace-pre-wrap break-words">{m.text}</div>
@@ -1139,12 +1167,14 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     <div className="log-themed flex h-full flex-col" data-slot="chat-panel" data-size={size}>
       <div
         ref={scroller}
+        data-slot="chat-log"
         onScroll={onScroll}
         onWheel={() => { seek.current++; }}
         onTouchStart={() => { seek.current++; }}
         // overscroll-contain: hitting the chat's top or bottom must not hand the gesture to the page —
         // it did, and the page then kept scrolling when you turned back to scroll the chat up.
-        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain bg-neutral-950 leading-relaxed ${size === "page" ? "px-4 py-3 md:px-6" : "p-3"} font-sans text-[13px] text-neutral-200 [&_.prose]:text-[13px]`}
+        // No fill of its own: the log takes the surface of what holds it (docs/design/surfaces.md).
+        className={`min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain leading-relaxed ${size === "page" ? "px-4 py-3 md:px-6" : "p-3"} font-sans text-[13px] text-neutral-200 [&_.prose]:text-[13px]`}
       >
         {running && (
           <div className="sticky top-0 z-10 -mt-1 mb-2 flex justify-end">

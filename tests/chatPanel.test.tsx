@@ -345,6 +345,9 @@ test("a live turn shows ONE compact activity block, and on finish it folds into 
   expect(slot("activity-counts")?.textContent).toBe("1 command, 3 files read");
   // The trail: consecutive reads grouped, the interim message as one line of text.
   expect([...slot("activity-trail")!.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["Read 3 files", "Now the suite."]); // markdown stripped on a faded line
+  // The reserved height matches these two rows, not a fixed three-row box that would leave a
+  // gap under a shorter trail (the bug: it always reserved room for three).
+  expect((slot("activity-trail") as HTMLElement).style.minHeight).toBe("34px");
   // Nothing opens by itself: no command input, no output, no code block.
   expect(container!.querySelector("pre")).toBeNull();
   expect(text()).not.toContain("SECRET_FILE_BODY");
@@ -418,6 +421,17 @@ test("the live header's label swaps in two layers — the old line fades out as 
   expect(incoming?.className).toContain("label-in");
   // One fixed-height, clipped box holds both — never a second line, never spilling out.
   expect(out?.closest("[class*='overflow-hidden']")).toBe(incoming?.closest("[class*='overflow-hidden']"));
+  // The box takes 1.2em of layout, but its row (and so each line's own truncate clip) is 2.2em and
+  // runs into padding, split evenly above and below, that a negative margin cancels: a descender
+  // such as the g of `Thinking` is never cut off (the bug: the row shrank to 1.2em under a 1.625em
+  // line), no space is added. `content-center` centres the oversized row on the 1.2em box's own
+  // centre (a grid row bigger than its container anchors at the container's START by default, not
+  // its centre), and `items-center` then centres the real line within that row — together putting
+  // the line's own centre exactly on the box's centre (the bug: a bottom-only pad, and no content
+  // alignment, hung the line off the box's top edge, so a flex sibling like the header's spinner —
+  // centred on its own box — read as higher than the label).
+  const clip = incoming!.closest("[class*='overflow-hidden']")!.classList;
+  expect(["box-content", "content-center", "h-[1.2em]", "grid-rows-[2.2em]", "items-center", "py-[0.5em]", "-my-[0.5em]"].every((c) => clip.contains(c))).toBe(true);
 
   // Once the fade has played, only the new line is left.
   await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
@@ -731,7 +745,7 @@ test("the log never scrolls sideways: prose wraps unbreakable tokens, code block
   // pins the rules that fixed it.
   apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "p", response: "See `orca/surface-branch-review-checks-to-activity-27f26a`.", finishedAt: 2 }]);
   await mount(base);
-  const log = container!.querySelector<HTMLElement>(".bg-neutral-950")!;
+  const log = container!.querySelector<HTMLElement>('[data-slot="chat-log"]')!;
   expect(log.className).toContain("overflow-x-hidden");
   const prose = log.querySelector<HTMLElement>(".prose")!;
   expect(prose.className).toContain("wrap-anywhere");
@@ -769,23 +783,48 @@ test("your newest message and the newest answer are never clamped or folded; old
   expect(clamped()).toEqual(["OLD_ASK", "OLD_REPLY"]);
 });
 
-test("the orchestrator's worker reports fold into one ⚙ block, not shown as something you typed", async () => {
+test("a worker-woken reply is always open; only the reports that woke it fold into one ⚙ block", async () => {
   apiFake.turnsData.set("r::feat", [
     { id: "run-1", provider: "claude", instruction: '[worker finished] r/a "A" — done\nOutcome: Added it.\nFull turn: orca read --run x\n\n[worker finished] r/b "B" — error\nResponse: boom', prompt: "p", response: "A is done; B failed, I've resent it.", finishedAt: 2 },
     { id: "run-2", provider: "claude", instruction: "what now?", prompt: "p", response: "Waiting on C.", finishedAt: 4 },
   ]);
   await mount(base);
-  const marker = container!.querySelector('[data-slot="agents-marker"]')!;
-  expect(marker.querySelector('[data-slot="worker-block-label"]')!.textContent).toMatch(/^2 worker reports · 1 reply/);
-  await act(async () => { marker.querySelector("button")!.click(); await flush(); });
-  await act(async () => { marker.querySelector<HTMLElement>('[data-slot="turn-reports"] button')!.click(); await flush(); });
-  const reports = container!.querySelector('[data-slot="worker-reports"]')!;
-  expect([...reports.querySelectorAll("summary")].map((s) => s.textContent)).toEqual(['⚙ r/a "A" — done', '⚙ r/b "B" — error']);
-  expect(reports.textContent).toContain("Outcome: Added it."); // the full report is behind the toggle
+  // run-1 has a real reply, so it is its own turn, not folded into a run of agent turns.
+  expect(container!.querySelector('[data-slot="agents-marker"]')).toBeNull();
   expect(text()).toContain("A is done; B failed, I've resent it.");
+  // Only the reports that woke it fold, in their own block on that turn.
+  const reports = container!.querySelector('[data-slot="turn-reports"]')!;
+  expect(reports.querySelector('[data-slot="worker-block-label"]')!.textContent).toBe("2 worker reports");
+  expect(reports.querySelector('[data-slot="worker-reports"]')).toBeNull(); // collapsed by default
+  await act(async () => { reports.querySelector("button")!.click(); await flush(); });
+  const open = container!.querySelector('[data-slot="worker-reports"]')!;
+  expect([...open.querySelectorAll("summary")].map((s) => s.textContent)).toEqual(['⚙ r/a "A" — done', '⚙ r/b "B" — error']);
+  expect(open.textContent).toContain("Outcome: Added it."); // the full report is behind the toggle
   // A message you typed is still your bubble, outside the block.
   expect([...container!.querySelectorAll('[data-slot="chat-user-text"]')].map((u) => u.textContent)).toEqual(["what now?"]);
-  expect(marker.contains(container!.querySelector('[data-slot="chat-user"]'))).toBe(false);
+  expect(reports.contains(container!.querySelector('[data-slot="chat-user"]'))).toBe(false);
+});
+
+test("a worker-woken reply stays visible after a newer worker-woken reply arrives; a wake with nothing to say still folds", async () => {
+  const report = (name: string) => `[worker finished] r/${name} "Feature ${name}" — done\nOutcome: Shipped it.`;
+  apiFake.turnsData.set("r::feat", [
+    { id: "run-1", provider: "claude", instruction: report("a"), prompt: "p", response: "Reply A: shipped and verified.", finishedAt: 2 },
+    { id: "run-2", provider: "claude", instruction: report("b"), prompt: "p", response: "Reply B: shipped and verified too.", finishedAt: 4 },
+    // A wake with nothing to say for itself — no text, no structured outcome — still folds.
+    { id: "run-3", provider: "claude", instruction: report("c"), prompt: "p", response: "", finishedAt: 6 },
+    { id: "run-4", provider: "claude", instruction: "thanks", prompt: "p", response: "You're welcome.", finishedAt: 8 },
+  ]);
+  await mount(base);
+  // Both real replies stay in the open, each its own turn — run-2 finishing later does not fold run-1
+  // away.
+  expect(text()).toContain("Reply A: shipped and verified.");
+  expect(text()).toContain("Reply B: shipped and verified too.");
+  expect(container!.querySelectorAll('[data-slot="turn-reports"]').length).toBe(2);
+  // run-3 has no reply worth keeping open: it folds into its own run.
+  const marker = container!.querySelector('[data-slot="agents-marker"]')!;
+  expect(marker).not.toBeNull();
+  expect(marker.querySelector('[data-slot="worker-block-label"]')!.textContent).toMatch(/^1 worker report · 1 reply/);
+  expect(text()).toContain("You're welcome.");
 });
 
 test("a worker report waiting in the queue is a muted system line too, not a queued prompt", async () => {

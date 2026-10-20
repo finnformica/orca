@@ -3,15 +3,18 @@
 // as the row's own column/badge rather than a pill — then one dense row per workstream with only
 // what you act on (workstream.listColumns): the title over repo · model, the
 // status (a spinner and a live elapsed time while running), the PR state + number, checks and the
-// review cluster, the instance, when it last moved, and the actions. Columns flex and truncate, so
-// the list never scrolls sideways. As the page narrows (the docked orchestrator panel takes room),
-// container queries fold the lower-value columns into others (workstream.listColumns' tiers).
+// review cluster, the instance, when it last moved, and the actions. The title takes the room left;
+// every other column is as wide as its widest cell, measured before paint (useListLayout), so the
+// list never scrolls sideways. When the columns leave the title too narrow they fold into the row,
+// one at a time (workstream.listLayout): Status, then Checks & review, then the PR; past that each
+// row stacks as on a phone. A subline that still does not fit ends in a `+N` chip whose card lists
+// the hidden items.
 // Clicking a row opens its agent page; every action is in the trailing ⋯ and on right-click
 // (WorkstreamActions, menu-only).
-// On a phone (below md) each row stacks — title, latest instruction, status, then where it runs —
+// On a phone (below md) each row stacks — title and status, then where it runs —
 // with every action in its one ⋯ menu, and the chips and sort move into a Filters bottom sheet
 // beside the search box.
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { ThreadChips } from "@/components/SourceChip";
 import { useAtom, useAtomValue } from "jotai";
 import { ArrowDown, GitPullRequest, ListFilter, Loader2, Search, X } from "lucide-react";
@@ -20,25 +23,30 @@ import { navigate, useSearch } from "@/lib/route";
 import { useNow } from "@/lib/ticker";
 import { oneOf, persistedKey, readPersisted, usePersisted, writePersisted } from "@/lib/persisted";
 import { useNarrow } from "@/lib/viewport";
+import { afterDockMotion } from "@/lib/dock";
 import { usePullToRefresh } from "@/lib/gestures";
 import { BottomSheet } from "@/components/BottomSheet";
-import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
+import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useReposLoaded, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
 import {
-  DEFAULT_LIST_FILTER, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed, prPill,
-  listColumns, listGridTemplate, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, toggleNotMerged, toggleQuick,
-  type ListColumn, type ListSort, type ListTier, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
+  DEFAULT_LIST_FILTER, detailPath, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, dropStaleRepos, filterRows, formatDuration, formatElapsed, prPill,
+  LIST_ITEM_GAP_PX, NO_FOLD, browserKillLabel, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, sublineOverflow, toggleNotMerged, toggleQuick,
+  type ListColumn, type ListFold, type ListSort, type ListWidths, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
 } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { GrantNote, OrchStatusNote, Pill, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
+import { BrowserKillBadge, Pill, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
-import { ConditionBadges, CopyDone, LaneActions, useSummary, useTerminalOpen } from "./Board";
+import { CopyDone, LaneActions } from "./BulkActions";
+import { ConditionBadges } from "./ConditionBadges";
+import { useSummary, useTerminalOpen } from "@/lib/workstreamHooks";
 import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PrPreviewInline } from "./PreviewControl";
 import { ReviewCluster } from "./Review";
 import { StatusHoverCard } from "./StatusCard";
+import { VerifiedBadge } from "./VerifiedButton";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 export function Agents() {
   return (
@@ -60,7 +68,14 @@ function AgentsList() {
   const instance = useAtomValue(instanceScopeAtom); // the sidebar's scope
   const [q, setQ] = useAtom(agentQueryAtom);
   const search = useSearch();
-  const quick = parseQuickFilter(search);
+  const repos = useRepos();
+  const reposLoaded = useReposLoaded();
+  const repoNames = repos.map((r) => r.name);
+  // Dropping a repo chip's value needs the repo list, else "not loaded yet" reads as "no repos
+  // configured" and wipes every one. Before it loads, the raw (unfiltered) value is used as-is —
+  // the Clear button and the active-filter count still cover it; see the effect below for the drop.
+  const parsedQuick = parseQuickFilter(search);
+  const quick = reposLoaded ? dropStaleRepos(parsedQuick, repoNames) : parsedQuick;
   const [sort, setSort] = usePersisted<ListSort>(persistedKey("agents.sort"), "updated", oneOf(...(Object.keys(SORT_LABELS) as ListSort[])));
   const here = thisInstance();
   const filtersKey = persistedKey("agents.filters", repo); // the chips + search, per repo scope
@@ -82,18 +97,30 @@ function AgentsList() {
     }
     writePersisted(filtersKey, { query: quickFilterQuery(quick), q });
   }, [filtersKey, search, q]); // quick derives from search
+  // A repo chip can go stale (a repo renamed or removed) — its chip then never renders, so it can't
+  // be unticked by hand and would hide every row for good. Once the repo list has loaded, drop it
+  // from the URL too (replace, no history step), so a stale link or a saved filter self-heals.
+  useEffect(() => {
+    if (!reposLoaded) return;
+    if (quick !== parsedQuick) navigate(`/agents${quickFilterQuery(quick)}`, true);
+  }, [reposLoaded, search, repoNames.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
   // The scopes first (they hold on every page), then the search box, then the quick chips.
   const scoped = filterRows(all, { ...DEFAULT_LIST_FILTER, repo, instance, q }, here);
   const visible = sortRows(applyQuickFilter(scoped, quick, here), sort);
   const setQuick = (f: QuickFilter) => navigate(`/agents${quickFilterQuery(f)}`, true); // a filter change is not a history step
   const clear = () => { setQ(""); setQuick(NO_QUICK_FILTER); };
-  const cols = listColumns();
-  const stacked = useNarrow(); // a phone: rows stack, no column header
+  const narrow = useNarrow();
+  const listRef = useRef<HTMLDivElement>(null);
+  const layout = useListLayout(listRef);
+  const fold = layout.fold;
+  const cols = listColumns(fold);
+  // A phone, or a list too narrow for the grid (the docked panel open): rows stack, no column header.
+  const stacked = narrow || fold.stacked;
   const sectionRef = useRef<HTMLElement>(null);
-  const pull = usePullToRefresh(sectionRef, refresh, stacked); // a phone: pull down from the top to refresh
+  const pull = usePullToRefresh(sectionRef, refresh, narrow); // a phone: pull down from the top to refresh
   return (
     <section ref={sectionRef} aria-label="Agents" className="space-y-3">
-      {stacked && pull.phase !== "idle" && (
+      {narrow && pull.phase !== "idle" && (
         <div data-slot="pull-to-refresh" data-phase={pull.phase} role="status" style={{ height: pull.offset }}
           className="text-muted-foreground flex items-end justify-center gap-1.5 overflow-hidden pb-2 text-xs">
           {pull.phase === "refreshing" ? <Loader2 className="size-4 animate-spin" aria-hidden="true" />
@@ -103,7 +130,8 @@ function AgentsList() {
       )}
       <FilterRow scoped={scoped} quick={quick} setQuick={setQuick} clear={clear} visible={visible} total={all.length} q={q} setQ={setQ} sort={sort} setSort={setSort}
         showRepos={repo === "all"} loaded={loaded} />
-      <div data-slot="workstream-list" role="table" aria-label="Workstreams" className="bg-card overflow-hidden rounded-lg border">
+      <div ref={listRef} data-slot="workstream-list" data-layout={stacked ? "stacked" : "grid"} role="table" aria-label="Workstreams"
+        style={{ "--list-cols": layout.template } as CSSProperties} className="bg-card overflow-hidden rounded-lg border">
         {(!loaded || visible.length > 0) && !stacked && <ListHeader cols={cols} />}
         {!loaded ? (
           Array.from({ length: SKELETON_ROWS }, (_, i) => <AgentRowSkeleton key={i} cols={cols} stacked={stacked} />)
@@ -112,14 +140,76 @@ function AgentsList() {
             No agents match.
             <Button size="sm" variant="outline" onClick={clear}>Clear filters</Button>
           </div>
-        ) : visible.map((r) => <AgentRow key={r.repo + r.branch} row={r} cols={cols} stacked={stacked} />)}
+        ) : visible.map((r) => <AgentRow key={r.repo + r.branch} row={r} fold={fold} stacked={stacked} />)}
       </div>
     </section>
   );
 }
 
+const NO_WIDTHS: ListWidths = { status: 0, pr: 0, signals: 0, actions: 0 };
+/** Each content-sized column's natural width: per grid row, the sum of its `data-col-part` pieces
+ *  and their item gaps; the widest row wins. A folded column has no header label, so each label's
+ *  width is kept in `labels` from when it was last drawn — else the column unfolds, sees its label
+ *  and folds again. Null when no grid row is drawn. */
+function measureColumns(list: HTMLElement, labels: ListWidths): ListWidths | null {
+  const rows = list.querySelectorAll<HTMLElement>(":scope > [role=row]:not([data-layout=stacked])");
+  if (!rows.length) return null;
+  const out = { ...NO_WIDTHS };
+  for (const p of list.querySelectorAll<HTMLElement>(":scope > [data-slot=workstream-list-header] [data-col-part]")) {
+    labels[p.dataset.colPart as keyof ListWidths] = Math.ceil(p.getBoundingClientRect().width);
+  }
+  for (const row of rows) {
+    const sum = { ...NO_WIDTHS }, n = { ...NO_WIDTHS };
+    for (const p of row.querySelectorAll<HTMLElement>("[data-col-part]")) {
+      const k = p.dataset.colPart as keyof ListWidths;
+      const w = Math.ceil(p.getBoundingClientRect().width);
+      if (!(k in sum) || w <= 0) continue;
+      sum[k] += w + (n[k]++ ? LIST_ITEM_GAP_PX : 0);
+    }
+    for (const k of Object.keys(out) as (keyof ListWidths)[]) out[k] = Math.max(out[k], sum[k], labels[k]);
+  }
+  return out;
+}
+const sameLayout = (a: ReturnType<typeof listLayout>, b: ReturnType<typeof listLayout>) =>
+  a.template === b.template && a.fold.status === b.fold.status && a.fold.signals === b.fold.signals && a.fold.pr === b.fold.pr && a.fold.stacked === b.fold.stacked;
+
+/** The list's fold and grid template (workstream.listLayout) from its width and its columns' widths.
+ *  Measured in a layout effect after every render, so the first paint already has the right layout;
+ *  again when the list or a measured piece resizes (through afterDockMotion, so a sliding dock never
+ *  sets state per frame). While rows are stacked, the last grid measure stands. */
+function useListLayout(ref: RefObject<HTMLElement | null>): ReturnType<typeof listLayout> {
+  const [layout, setLayout] = useState(() => listLayout(0, NO_WIDTHS));
+  const widths = useRef<ListWidths>(NO_WIDTHS);
+  const labels = useRef<ListWidths>({ ...NO_WIDTHS });
+  const ro = useRef<ResizeObserver | null>(null);
+  const measure = useRef(() => {
+    const el = ref.current;
+    if (!el) return;
+    widths.current = measureColumns(el, labels.current) ?? widths.current;
+    const next = listLayout(el.clientWidth, widths.current);
+    setLayout((prev) => (sameLayout(prev, next) ? prev : next));
+  }).current;
+  const settled = useRef(() => afterDockMotion(measure)).current;
+  useLayoutEffect(() => {
+    if (typeof ResizeObserver === "undefined") return;
+    ro.current = new ResizeObserver(settled);
+    return () => { ro.current?.disconnect(); ro.current = null; };
+  }, []);
+  useLayoutEffect(() => {
+    measure();
+    const el = ref.current;
+    if (!el || !ro.current) return;
+    ro.current.observe(el);
+    for (const p of el.querySelectorAll("[data-col-part]")) ro.current.observe(p); // a cell that grows (a review loads, a timer ticks)
+  });
+  return layout;
+}
+
 /** A row-shaped placeholder, matching `AgentRow`'s grid (desktop) or stacked (phone) layout, so the
- *  list doesn't reflow once the real rows land. */
+ *  list doesn't reflow once the real rows land. Like a real row, it draws a piece for EVERY column:
+ *  a folded column's piece goes under the title. Without it a folded column measured as its header
+ *  label alone, unfolded, measured its piece and folded again — on every commit, until React gave up
+ *  and the page went blank (a docked panel left the list in that width band while it loaded). */
 function AgentRowSkeleton({ cols, stacked }: { cols: ListColumn[]; stacked: boolean }) {
   if (stacked) {
     return (
@@ -135,11 +225,20 @@ function AgentRowSkeleton({ cols, stacked }: { cols: ListColumn[]; stacked: bool
       </div>
     );
   }
+  const folded = listColumns(NO_FOLD).filter((c) => c.key !== "workstream" && !cols.some((o) => o.key === c.key));
+  const piece = (key: ListColumn["key"], className = "") => (
+    <div key={key} data-col-part={key} className={`w-max shrink-0 ${className}`}><Skeleton className={`h-3.5 ${key === "actions" ? "w-8" : "w-16"}`} /></div>
+  );
   return (
-    <div data-slot="workstream-row-skeleton" role="row" style={rowGrid()} className={`${GRID} h-14 border-b last:border-b-0`}>
+    <div data-slot="workstream-row-skeleton" role="row" className={`${GRID} h-14 border-b last:border-b-0`}>
       {cols.map((c) => (
-        <div key={c.key} role="cell" className={`min-w-0 ${LIST_CELL_SHOWN[c.key]}`}>
-          <Skeleton className={`h-3.5 ${c.key === "actions" ? "ml-auto w-8" : c.key === "workstream" ? "w-40" : "w-16"}`} />
+        <div key={c.key} role="cell" className="min-w-0">
+          {c.key === "workstream" ? (
+            <div className="space-y-1.5">
+              <Skeleton className="h-3.5 w-40" />
+              {folded.length > 0 && <div data-slot="skeleton-subline" className="flex gap-1 overflow-hidden">{folded.map((f) => piece(f.key))}</div>}
+            </div>
+          ) : piece(c.key, c.key === "actions" ? "ml-auto" : "")}
         </div>
       ))}
     </div>
@@ -180,6 +279,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
   // caption per family, chips within a family read as one segmented row.
   const stateChips: Chip[] = [
     { group: "pr", value: "open", label: "Open PRs" },
+    { group: "pr", value: "verified", label: "Verified" },
     { group: "pr", value: "mergeable", label: "Mergeable", dot: "queued" },
     { group: "pr", value: "merged", label: "Merged today", dot: "ready" },
   ];
@@ -189,7 +289,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
   ];
   const repoChips: Chip[] = showRepos && repos.length > 1 ? repos.map((r): Chip => ({ group: "repo", value: r.name, label: r.name })) : [];
   // The lane the chips narrow to, when exactly one: the swimlanes' bulk verbs apply to it.
-  const lane: OverviewLane | null = quick.pr.length === 1 && quick.pr[0] !== "open" ? (quick.pr[0] === "merged" ? "DONE" : "MERGEABLE") : null;
+  const lane: OverviewLane | null = quick.pr.length === 1 && quick.pr[0] !== "open" ? (quick.pr[0] === "merged" ? "DONE" : quick.pr[0] === "verified" ? "VERIFIED" : "MERGEABLE") : null;
   const narrow = useNarrow();
   const [sheet, setSheet] = useState(false);
   const renderChip = (c: Chip) => {
@@ -290,26 +390,11 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
 
 // ---- the row ----
 
-// One template per tier as a CSS variable; the page's container queries pick one. Tailwind needs the
-// classes as literal strings: 52rem / 68rem are workstream.LIST_TIER_MIN_REM's mid / wide.
-const TIER_VARS = ["narrow", "mid", "wide"] as const satisfies readonly ListTier[];
-const rowGrid = (): CSSProperties =>
-  Object.fromEntries(TIER_VARS.map((t) => [`--list-${t}`, listGridTemplate(listColumns(t))])) as CSSProperties;
-// gap / padding: workstream.LIST_GAP_PX / LIST_PAD_PX
-const GRID = "grid items-center gap-x-3 px-4 grid-cols-[var(--list-narrow)] @min-[52rem]/page:grid-cols-[var(--list-mid)] @min-[68rem]/page:grid-cols-[var(--list-wide)]";
-/** The checks & review badges, compact: the Checks & review cell and its folded copy in the PR cell. */
-const SIGNALS = "flex min-w-0 items-center gap-1 overflow-hidden [&>*]:shrink-0 [&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5";
-/** A column's own cell: hidden in the tiers that fold it into another cell (listColumnTiers). */
-export const LIST_CELL_SHOWN: Record<ListColumn["key"], string> = {
-  workstream: "", pr: "", actions: "",
-  status: "hidden @min-[68rem]/page:block",
-  signals: "hidden @min-[52rem]/page:flex",
-};
-/** The folded copy: Status under the title below `wide`, the checks in the PR cell below `mid`. */
-export const LIST_FOLDED: { status: string; signals: string } = {
-  status: "@min-[68rem]/page:hidden",
-  signals: "@min-[52rem]/page:hidden",
-};
+// One template for every row: the list's `--list-cols` (useListLayout). gap / padding:
+// workstream.LIST_GAP_PX / LIST_PAD_PX.
+const GRID = "grid items-center gap-x-3 px-4 grid-cols-[var(--list-cols)]";
+/** The checks & review badges, compact: the Checks & review cell and its folded copies. */
+const SIGNALS = "[&_[data-slot=badge]]:px-1.5 [&_[data-slot=badge]]:py-0 [&_[data-slot=badge]]:text-[10px] [&_[data-slot=badge]_svg]:size-2.5";
 
 /** Lines added/removed, compact: green `+N`, red `-N` — a PR's own diffstat (gh, free) or, for a
  *  branch with no PR yet, the worktree's `git diff` against base (useSummary). */
@@ -324,8 +409,12 @@ function Diffstat({ additions, deletions }: { additions: number; deletions: numb
 
 function ListHeader({ cols }: { cols: ListColumn[] }) {
   return (
-    <div role="row" data-slot="workstream-list-header" style={rowGrid()} className={`${GRID} text-muted-foreground h-9 border-b text-xs`}>
-      {cols.map((c) => <div key={c.key} role="columnheader" data-col={c.key} className={`truncate ${LIST_CELL_SHOWN[c.key]} ${c.key === "actions" ? "text-right" : ""}`}>{c.label}</div>)}
+    <div role="row" data-slot="workstream-list-header" className={`${GRID} text-muted-foreground h-9 border-b text-xs`}>
+      {cols.map((c) => (
+        <div key={c.key} role="columnheader" data-col={c.key} className={`truncate ${c.key === "actions" ? "text-right" : ""}`}>
+          {c.key === "workstream" ? c.label : <span data-col-part={c.key} className="inline-block w-max">{c.label}</span>}
+        </div>
+      ))}
     </div>
   );
 }
@@ -333,12 +422,8 @@ function ListHeader({ cols }: { cols: ListColumn[] }) {
 export const TONE_DOT: Record<RowTone, DotTone> = { running: "building", failed: "error", attention: "warning", ready: "ready", neutral: "neutral" };
 export const TONE_LABEL: Record<RowTone, string> = { running: "Running", failed: "Error", attention: "Needs you", ready: "Ready", neutral: "Idle" };
 
-/** The agent page a row opens: its PR page, or its local-session page. */
-export function detailPath(row: Pick<Row, "repo" | "branch" | "lane" | "prNumber">): string | null {
-  if (row.prNumber) return `/${row.repo}/prs/${row.prNumber}`;
-  if (row.lane !== "DONE" && !row.branch.startsWith("opt-")) return `/${row.repo}/local/${encodeURIComponent(row.branch)}`;
-  return null;
-}
+/** The agent page a row opens (pure, in workstream.ts; re-exported for the views that import it here). */
+export { detailPath };
 
 // A click on the row (not on one of its controls) opens the agent page. Menus portal out of the
 // row's DOM but React still bubbles their clicks here — hence the contains().
@@ -359,10 +444,9 @@ export function latestInstruction(row: Row): string {
   return (text || "").replace(/\s+/g, " ").trim();
 }
 
-export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListColumn[]; stacked?: boolean }) {
+export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; fold?: ListFold; stacked?: boolean }) {
   const isDone = row.lane === "DONE";
   const pill = prPill(row);
-  const [busy, setBusy] = useState(false);
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const [terminalOpen, setTerminalOpen] = useTerminalOpen(row); // "New chat" pops its conversation open on arrival
@@ -372,7 +456,6 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
   const instance = rowInstance(row, thisInstance());
   const to = detailPath(row);
   const model = modelBadge(row.agentMeta?.model, row.worktreePath || row.prNumber ? modelFor(row) : undefined);
-  const instruction = latestInstruction(row);
   const error = row.agentStatus === "error" ? row.agentError : undefined;
   const hasMenu = !isDone;
   // A PR's own diffstat (gh, free) when there is one; otherwise the worktree's `git diff` against
@@ -402,18 +485,23 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
   // Create PR needs commits of its own — the same worktree summary the diffstat reads.
   const hasWork = row.prNumber ? true : (localSummary?.commits.length ?? 0) > 0;
   // The state-aware quick icons sit left of the preview cell; they only PEEK at the review cache.
-  const quick = hasMenu && <QuickActionButtons row={row} hasWork={hasWork} peek onBusy={setBusy} />;
-  const menu = hasMenu && <WorkstreamActions row={row} hasWork={hasWork} compact menuOnly onBusy={setBusy} onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}
-    onOpen={to ? () => navigate(to) : undefined} contextAt={menuAt} onContextClose={closeMenu} />;
-  const signals = <>
-    {row.prNumber && !isDone && <ConditionBadges row={row} />}
-    {row.prNumber && !isDone && <ReviewCluster row={row} />}
-    {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
-    {!isDone && <OrchStatusNote status={row.orchStatus} chipOnly />}
-  </>;
+  const quick = hasMenu && <QuickActionButtons row={row} hasWork={hasWork} peek />;
+  const menu = hasMenu && <WorkstreamActions row={row} hasWork={hasWork} compact menuOnly contextAt={menuAt} onContextClose={closeMenu} />;
+  // The checks & review chips, one overflow item each: a chip that does not fit goes into the +N card.
+  const signals: SublineItem[] = [
+    row.prNumber && !isDone && { key: "checks", sep: "none", part: "signals", node: <ConditionBadges row={row} /> },
+    row.prNumber && !isDone && { key: "review", sep: "none", part: "signals", node: <ReviewCluster row={row} /> },
+    !row.prNumber && row.mergeClean === "conflict" && { key: "conflicts", sep: "none", part: "signals", node: <Pill tone="red">Conflicts</Pill> },
+    browserKillLabel(row.browserKilled) && { key: "browser", sep: "none", part: "signals", node: <BrowserKillBadge record={row.browserKilled} /> },
+  ].filter(Boolean) as SublineItem[];
+  // The PR cell's pill and number; the folded checks join them, or all of it joins the subline.
+  const prItems: SublineItem[] = [];
   const prLink = row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" data-slot="pr-link" className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>;
+  prItems.push({ key: "state", sep: "none", part: "pr", node: pill.tooltip ? <Tip label={pill.tooltip}><Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill></Tip> : <Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill> });
+  if (prLink) prItems.push({ key: "pr", sep: "none", part: "pr", node: prLink });
+  if (fold.pr) prItems.push(...signals);
   if (stacked) return (
-    // A phone: a taller, card-like row with no fixed-width columns — everything wraps instead of
+    // A phone (or a narrow list): a taller, card-like row with no fixed-width columns — everything wraps instead of
     // scrolling sideways. Line 1 is title + status; line 2 is branch/model/PR/preview/diffstat. The
     // quick actions and ⋯ menu used to sit in their own trailing column — fixed-width touch targets
     // squeezing the title/branch text into a narrow strip that truncated badly. They now sit at the
@@ -421,17 +509,17 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
     // content column gets the row's full width. State/condition badges, reasons and a run error
     // follow as their own wrapping lines.
     <div
-      ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-layout="stacked" data-branch={row.branch} aria-busy={busy}
+      ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-layout="stacked" data-branch={row.branch}
       aria-label={row.title}
       onClick={openOnRowClick(row)} onKeyDown={onKeyDown}
       // A phone: no menu from a long-press or contextmenu at all, only the browser's own on a link.
       // No selection or iOS callout either, which looked like a menu popping; links keep their callout.
       onContextMenu={(e) => { if (!(e.target as HTMLElement).closest("a, input, textarea")) e.preventDefault(); }}
-      className={`active:bg-accent/40 flex items-start select-none [-webkit-touch-callout:none] [&_a]:[-webkit-touch-callout:default] gap-1 border-b py-3 px-4 text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
+      className={`active:bg-accent/40 flex items-start select-none [-webkit-touch-callout:none] [&_a]:[-webkit-touch-callout:default] gap-1 border-b py-3 px-4 text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""}`}
     >
       <div className="min-w-0 flex-1 space-y-1.5">
         <div role="cell" className="flex min-w-0 items-center justify-between gap-2">
-          <span className="min-w-0 truncate font-medium">{row.title}</span>
+          <span className="flex min-w-0 items-center gap-1.5"><span className="min-w-0 truncate font-medium">{row.title}</span><VerifiedBadge row={row} /></span>
           <RunStatus row={row} tone={tone} reasons={reasons} />
         </div>
         <div role="cell" className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
@@ -444,15 +532,14 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
           {diffstat && <><span aria-hidden="true">·</span>{diffstat}</>}
           {instance && multiInstance && <><span aria-hidden="true">·</span><span data-slot="instance-chip">{instance}</span></>}
         </div>
-        {instruction && <div data-slot="row-instruction" role="cell" className="text-muted-foreground line-clamp-2 text-xs break-words">{instruction}</div>}
-        {!isDone && <OrchStatusNote status={row.orchStatus} />}
-        {!isDone && <GrantNote grant={row.grantScope} />}
+        {/* No description lines here (the orchestrator's plan, a grant): a stacked row keeps its chips only. */}
         {!isDone && <UpkeepNote upkeep={row.upkeep} running={row.agentStatus === "running"} />}
         <div role="cell" className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
           {pill.tooltip ? <Tip label={pill.tooltip}><Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill></Tip> : <Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill>}
           {row.prNumber && !isDone && <ConditionBadges row={row} />}
           {row.prNumber && !isDone && <ReviewCluster row={row} />}
           {!row.prNumber && row.mergeClean === "conflict" && <Pill tone="red">Conflicts</Pill>}
+          <BrowserKillBadge record={row.browserKilled} />
           {(quick || menu) && <div data-slot="row-actions" className="ml-auto flex shrink-0 items-center gap-1">{quick}{menu}</div>}
         </div>
         {reasons.length > 0 && <div role="cell" data-slot="row-reasons" className="text-geist-warning-fg text-xs">{reasons.join(" · ")}</div>}
@@ -463,44 +550,143 @@ export function AgentRow({ row, cols, stacked = false }: { row: Row; cols: ListC
   );
   return (
     <div
-      ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-branch={row.branch} aria-busy={busy}
+      ref={ref} role="row" tabIndex={0} data-slot="workstream-row" data-branch={row.branch}
       aria-label={row.title} aria-haspopup={hasMenu ? "menu" : undefined}
       onClick={openOnRowClick(row)} onContextMenu={onContextMenu} onKeyDown={onKeyDown}
       onPointerDown={(e) => { lastPointer.current = e.pointerType; }}
-      style={rowGrid()}
-      className={`${GRID} hover:bg-accent/40 focus-visible:bg-accent/40 h-14 border-b text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""} ${busy ? "pointer-events-none opacity-60" : ""}`}
+      // `content-visibility: auto`: a row off screen skips its layout and paint, so a dock slide (the
+      // page frame changes width every frame) lays out only the rows you see. 56px is its fixed height.
+      className={`${GRID} hover:bg-accent/40 focus-visible:bg-accent/40 h-14 border-b md:[content-visibility:auto] md:[contain-intrinsic-size:auto_56px] text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""}`}
     >
       <div role="cell" className="min-w-0">
-        <div className="truncate font-medium">{row.title}</div>
-        {/* overflow-hidden: the subline is clipped at the cell's edge, never drawn over the next cell. */}
-        <div data-slot="row-subline" className="text-muted-foreground flex min-w-0 items-center gap-1 overflow-hidden text-xs whitespace-nowrap">
-          {/* Below the wide tier there is no Status column: the status leads the subline instead. */}
-          <span data-slot="folded-status" className={`flex shrink-0 items-center gap-1 ${LIST_FOLDED.status}`}>
-            <RunStatus row={row} tone={tone} reasons={reasons} /><span aria-hidden="true">·</span>
-          </span>
-          <span className="shrink-0">{row.repo}</span>
-          <ThreadChips repo={row.repo} branch={row.branch} iconOnly />
-          {model && <><span aria-hidden="true">·</span><Tip label={model.title}><span data-slot="model-label" className="shrink-0">{model.label}</span></Tip></>}
-          {!isDone && <PrPreviewInline row={row} />}
-          {diffstat && <><span aria-hidden="true">·</span>{diffstat}</>}
-          {error && <><span aria-hidden="true">·</span><span data-slot="row-error" className="text-geist-red truncate">{error}</span></>}
+        <div className="flex min-w-0 items-center gap-1.5"><span className="min-w-0 truncate font-medium">{row.title}</span><VerifiedBadge row={row} /></div>
+        <Subline className={SIGNALS} items={[
+          // A folded column leads the subline: the status, then the PR with its checks.
+          fold.status && { key: "status", sep: "after", node: <RunStatus row={row} tone={tone} reasons={reasons} /> },
+          ...(fold.pr ? prItems.map((i, k) => (k === prItems.length - 1 ? { ...i, sep: "after" as const } : i)) : []),
+          { key: "repo", sep: "none", node: row.repo },
+          { key: "threads", sep: "none", node: <ThreadChips repo={row.repo} branch={row.branch} iconOnly /> },
+          model && { key: "model", node: <Tip label={model.title}><span data-slot="model-label">{model.label}</span></Tip> },
+          !isDone && { key: "preview", sep: "none", node: <PrPreviewInline row={row} /> },
+          diffstat && { key: "diffstat", node: diffstat },
+          error && { key: "error", node: <span data-slot="row-error" className="text-geist-red">{error}</span> },
+        ]} />
+      </div>
+      {!fold.status && <div role="cell" className="min-w-0"><RunStatus row={row} tone={tone} reasons={reasons} /></div>}
+      {!fold.pr && (
+        <div role="cell" className="min-w-0">
+          {/* Folded, the checks & review follow the PR number. */}
+          <Subline slot="row-pr-line" className={SIGNALS} items={fold.signals ? [...prItems, ...signals] : prItems} />
+        </div>
+      )}
+      {!fold.signals && (
+        <div role="cell" data-slot="row-signals" className="min-w-0">
+          <Subline slot="row-signals-line" className={SIGNALS} items={signals} />
+        </div>
+      )}
+      <div role="cell" className="flex justify-end">
+        <div data-col-part="actions" className="flex w-max items-center gap-1">
+          {quick}
+          {!isDone && <PreviewCell row={row} />}
+          {menu}
+          {!isDone && <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />}
         </div>
       </div>
-      <div role="cell" className={`min-w-0 ${LIST_CELL_SHOWN.status}`}><RunStatus row={row} tone={tone} reasons={reasons} /></div>
-      <div role="cell" className="flex min-w-0 items-center gap-2 overflow-hidden">
-        {pill.tooltip ? <Tip label={pill.tooltip}><Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill></Tip> : <Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill>}
-        {row.prNumber && <a href={row.prUrl} target="_blank" rel="noreferrer" data-slot="pr-link" className="text-muted-foreground hover:text-foreground inline-flex shrink-0 items-center gap-0.5 font-mono text-xs"><GitPullRequest className="size-3.5" />{row.prNumber}</a>}
-        {/* Below the mid tier there is no Checks & review column: its badges follow the PR number. */}
-        <span data-slot="folded-signals" className={`${SIGNALS} ${LIST_FOLDED.signals}`}>{signals}</span>
-      </div>
-      <div role="cell" data-slot="row-signals" className={`${SIGNALS} ${LIST_CELL_SHOWN.signals}`}>{signals}</div>
-      <div role="cell" className="flex items-center justify-end gap-1">
-        {quick}
-        {!isDone && <PreviewCell row={row} />}
-        {menu}
-        {!isDone && <TerminalDialog row={row} open={terminalOpen} onClose={() => setTerminalOpen(false)} />}
-      </div>
     </div>
+  );
+}
+
+/** One item of the grid row's subline. `sep` places its "·" (before it by default); `part` names
+ *  the column whose width it counts toward (useListLayout measures it wherever it sits). */
+type SublineItem = { key: string; node: ReactNode; sep?: "before" | "after" | "none"; part?: keyof ListWidths };
+const SUBLINE_GAP_PX = 4; // gap-1
+const CHIP_FALLBACK_PX = 28; // the +N chip's width before it is first drawn
+
+/** The subline: one line, never clipped mid-item. Items that do not fit leave the flow (still drawn
+ *  invisibly, so they stay measurable) and a trailing `+N` chip lists them in full
+ *  (workstream.sublineOverflow decides which). Widths are read when they settle (afterDockMotion). */
+function Subline({ items, slot = "row-subline", className = "" }: { items: (SublineItem | false | null | undefined | "" | 0)[]; slot?: string; className?: string }) {
+  const list = items.filter(Boolean) as SublineItem[];
+  const ref = useRef<HTMLDivElement>(null);
+  const [hidden, setHidden] = useState<string[]>([]);
+  const keys = list.map((i) => i.key).join(",");
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const parts = [...el.querySelectorAll<HTMLElement>(":scope > [data-subline-item]")];
+      const chip = el.querySelector<HTMLElement>(":scope > [data-slot=subline-more]");
+      const gap = parseFloat(getComputedStyle(el).columnGap);
+      const out = sublineOverflow(parts.map((p) => p.offsetWidth), el.clientWidth, Number.isFinite(gap) ? gap : SUBLINE_GAP_PX, chip?.offsetWidth || CHIP_FALLBACK_PX);
+      const next = out.map((i) => parts[i]!.dataset.sublineItem!);
+      setHidden((prev) => (prev.join(",") === next.join(",") ? prev : next));
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => afterDockMotion(measure));
+    ro.observe(el);
+    for (const c of el.children) ro.observe(c);
+    return () => ro.disconnect();
+  }, [keys]);
+  const dot = <span aria-hidden="true">·</span>;
+  const over = list.filter((i) => hidden.includes(i.key));
+  return (
+    // relative + overflow-hidden: a hidden item is drawn out of the flow and never over the next cell.
+    <div ref={ref} data-slot={slot} data-overflow-line="" className={`text-muted-foreground relative flex min-w-0 items-center gap-1 overflow-hidden text-xs whitespace-nowrap ${className}`}>
+      {list.map((i) => (
+        <span key={i.key} data-subline-item={i.key} data-slot={i.key === "status" ? "folded-status" : undefined}
+          aria-hidden={hidden.includes(i.key) || undefined} data-col-part={i.part}
+          className={`flex shrink-0 items-center gap-1 ${hidden.includes(i.key) ? "invisible absolute top-0 left-0" : ""}`}>
+          {(i.sep ?? "before") === "before" && dot}{i.node}{i.sep === "after" && dot}
+        </span>
+      ))}
+      {over.length > 0 && <SublineMore items={over} />}
+    </div>
+  );
+}
+
+/** The `+N` chip: hover opens its card on a mouse, a click or tap pins it open until a second one
+ *  (or Esc, or a click outside) closes it — a hover card ignores touch, so this is a popover. Neither
+ *  the tap nor a click in the card opens the row. */
+function SublineMore({ items }: { items: SublineItem[] }) {
+  const [open, setOpen] = useState(false);
+  const pinned = useRef(false); // opened by a click or tap: leaving with the pointer keeps it open
+  const closing = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const hover = (on: boolean) => (e: { pointerType: string }) => {
+    if (e.pointerType !== "mouse" || pinned.current) return;
+    clearTimeout(closing.current);
+    if (on) setOpen(true);
+    else closing.current = setTimeout(() => setOpen(false), 150);
+  };
+  useEffect(() => () => clearTimeout(closing.current), []);
+  // preventDefault skips Radix's own toggle: the hover may already have opened the card, so a click
+  // pins it rather than toggling it shut.
+  const onClick = (e: MouseEvent<HTMLButtonElement>) => {
+    e.stopPropagation();
+    e.preventDefault();
+    clearTimeout(closing.current);
+    pinned.current = !pinned.current;
+    setOpen(pinned.current);
+  };
+  const onOpenChange = (o: boolean) => { if (!o) pinned.current = false; setOpen(o); };
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverTrigger asChild>
+        <button type="button" data-slot="subline-more" aria-label={`${items.length} more: ${items.map((i) => i.key).join(", ")}`}
+          onClick={onClick} onPointerEnter={hover(true)} onPointerLeave={hover(false)}
+          className="bg-muted text-muted-foreground hover:text-foreground focus-visible:ring-ring/50 inline-flex h-4 shrink-0 items-center rounded-sm px-1.5 text-[11px] font-medium tabular-nums outline-none focus-visible:ring-2">
+          +{items.length}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" side="bottom" data-slot="subline-more-card" className="w-auto max-w-80 p-0 text-xs"
+        onOpenAutoFocus={(e) => e.preventDefault()} onClick={(e) => e.stopPropagation()}
+        onPointerEnter={hover(true)} onPointerLeave={hover(false)}>
+        {/* One item a line; an item's own leading "·" (the PR preview link draws one) is hidden here. */}
+        <ul className="divide-y">
+          {items.map((i) => <li key={i.key} data-subline-hidden={i.key} className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-1 px-3 py-2 break-words [&>[aria-hidden=true]:first-child]:hidden">{i.node}</li>)}
+        </ul>
+      </PopoverContent>
+    </Popover>
   );
 }
 
@@ -511,7 +697,7 @@ export function RunStatus({ row, tone, reasons }: { row: Row; tone: RowTone; rea
   const now = useNow(running);
   const duration = running ? undefined : rowDuration(row);
   return (
-    <div data-slot="run-status" className="flex min-w-0 items-center gap-2 whitespace-nowrap">
+    <div data-slot="run-status" data-col-part="status" className="flex w-max items-center gap-2 whitespace-nowrap">
       <StatusHoverCard row={row}>
         {tone === "running" ? <Loader2 data-slot="run-spinner" aria-hidden="true" className="text-geist-amber size-3 shrink-0 animate-spin" /> : <StatusDot tone={TONE_DOT[tone]} />}
         <span data-tone={tone} className="truncate font-medium">{TONE_LABEL[tone]}</span>

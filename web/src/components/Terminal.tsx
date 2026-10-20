@@ -137,7 +137,7 @@ export function AskOrchestrator() {
       // Below md the bottom bar's Orchestrator button takes its place.
       // A fixed width (Geist renders it at 194px): its LEFT edge moved 10.8px when the web font
       // replaced the wider fallback font after first paint. The label truncates if a fallback is wider.
-      className="bg-card hover:bg-accent/60 text-foreground flex h-8 w-[12.25rem] shrink-0 items-center gap-2 rounded-md border px-2.5 text-sm max-md:hidden">
+      className="bg-card hover:bg-accent text-foreground flex h-8 w-[12.25rem] shrink-0 items-center gap-2 rounded-md border px-2.5 text-sm max-md:hidden">
       <span className="relative inline-flex shrink-0"><Bot className="text-muted-foreground size-3.5 shrink-0" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
       <span data-slot="ask-orchestrator-label" className="text-muted-foreground min-w-0 flex-1 truncate text-left">Ask the orchestrator</span>
       <Shortcut id="orchestrator" />
@@ -221,8 +221,16 @@ export function OrchestratorPanel() {
   // assistant rail behaves — instead of refetching and re-rendering the conversation every time.
   // Set DURING render, not in an effect: the panel and its composer must mount in the commit that
   // opens it, so the composer's layout effect can focus it before the first keystroke.
+  // `open` is now persisted (lib/atoms `orchestratorOpenAtom`), so a reload can restore it true on a
+  // device that reads narrow — which must never auto-open the dock (useOrchestrator routes a phone
+  // to /orchestrator instead). `initialOpen` (captured once, this component's first render only)
+  // tells the restore apart from any later transition to `open`: blocked only while BOTH the restore
+  // was true-on-narrow AND the device is still narrow right now — so a later resize past the
+  // breakpoint lifts it, and nothing about a deliberate later open (there is none in the app itself;
+  // only a test sets the atom directly) is touched.
+  const [initialOpen] = useState(open);
   const [mounted, setMounted] = useState(false);
-  if (open && !mounted) setMounted(true);
+  if (open && !mounted && !(initialOpen && narrow)) setMounted(true);
   // Popped out: the chat lives in an always-on-top Document Picture-in-Picture window (Chrome/Edge
   // 116+), rendered there by a PORTAL — the same React tree, so its state, composer draft, SSE and
   // popovers carry over rather than being copied. Kept from the window days because it costs one
@@ -329,7 +337,7 @@ export function OrchestratorPanel() {
       <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} />
     </div>
   );
-  const panelClass = "bg-card text-foreground flex flex-col overflow-hidden";
+  const panelClass = "bg-background text-foreground flex flex-col overflow-hidden";
   const onKeyDown = (e: React.KeyboardEvent) => { if (e.key === "Escape" && !pip) { e.stopPropagation(); setOpen(false); } };
   if (!mounted) return null;
   return (
@@ -452,7 +460,7 @@ export function OrchestratorWindow() {
   }, []);
   return (
     <PipContext.Provider value={true}>
-      <div role="main" aria-label="Orchestrator" data-slot="orchestrator-window" className="bg-card text-foreground flex h-[100dvh] w-screen flex-col overflow-hidden">
+      <div role="main" aria-label="Orchestrator" data-slot="orchestrator-window" className="bg-background text-foreground flex h-[100dvh] w-screen flex-col overflow-hidden">
         <PanelHeader slot="orchestrator-handle" icon={<Bot className="size-3.5" />}
           title={state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}
           status={<OrchestratorStatusLine state={state} />} />

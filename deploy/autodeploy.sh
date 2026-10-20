@@ -16,6 +16,13 @@
 #
 # A failed install or build never restarts the service — the old build keeps serving — and logs
 # the tail.
+#
+# Two modes (ORCA_AUTODEPLOY_MODE). `systemd`, the default, is the box: orca-autodeploy.timer runs
+# this and the restart is `systemctl restart orca`. `launchd` is a Mac (docs/SETUP.md "Local
+# machine", installed by deploy/install-local-autodeploy.sh): a LaunchAgent runs this every minute
+# and the restart is `launchctl kickstart -k` of the bridge's own LaunchAgent. A Mac's checkout is
+# also the one its owner works in, so launchd mode never touches a checkout that is off `main` or
+# has uncommitted changes to tracked files: it logs a `skipped:` line and tries again next tick.
 set -euo pipefail
 
 REPO="${ORCA_REPO:-/opt/orca}"
@@ -23,11 +30,39 @@ SERVICE="${ORCA_SERVICE_NAME:-orca}"
 BRIDGE_URL="${ORCA_BRIDGE_URL:-http://127.0.0.1:8787}"
 STATE_DIR="${ORCA_STATE_DIR:-$HOME/.orca}"
 LOG="${STATE_DIR}/autodeploy.log"
+MODE="${ORCA_AUTODEPLOY_MODE:-systemd}"
+LAUNCHD_LABEL="${ORCA_LAUNCHD_LABEL:-dev.orca.bridge}"
 mkdir -p "${STATE_DIR}"
 
 log() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$1" >>"${LOG}"; }
 
+# The deploy lock: held for the whole run, so two deploys never overlap and the health watchdog
+# (deploy/health-check.sh) never restarts the bridge under a deploy. A manual deploy takes it with
+# `flock ~/.orca/deploy.lock <command>`. No flock (macOS): no lock.
+if command -v flock >/dev/null; then
+  exec 9>>"${STATE_DIR}/deploy.lock"
+  if ! flock -n 9; then
+    log "deferred: another deploy holds ${STATE_DIR}/deploy.lock"
+    exit 0
+  fi
+fi
+
 cd "${REPO}"
+# A pointer inherited from a git hook would send every git below to another repository.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
+
+if [[ "${MODE}" == "launchd" ]]; then
+  branch="$(git symbolic-ref --short -q HEAD || true)"
+  if [[ "${branch}" != "main" ]]; then
+    log "skipped: ${REPO} is on ${branch:-a detached HEAD}, not main"
+    exit 0
+  fi
+  if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+    log "skipped: ${REPO} has uncommitted changes"
+    exit 0
+  fi
+fi
+
 git fetch -q origin main
 
 head_local="$(git rev-parse HEAD)"
@@ -71,9 +106,16 @@ if ! bun run build >"${build_log}" 2>&1; then
   exit 1
 fi
 
-# The autodeploy unit runs as `orca`, same as every other step here; only the restart needs
-# elevated privilege (deploy/orca-autodeploy.sudoers scopes that to exactly this command).
-sudo -n systemctl restart "${SERVICE}"
+if [[ "${MODE}" == "launchd" ]]; then
+  if ! launchctl kickstart -k "gui/$(id -u)/${LAUNCHD_LABEL}" >/dev/null 2>&1; then
+    log "error: launchctl kickstart of ${LAUNCHD_LABEL} failed (is its LaunchAgent loaded?)"
+    exit 1
+  fi
+else
+  # The autodeploy unit runs as `orca`, same as every other step here; only the restart needs
+  # elevated privilege (deploy/orca-autodeploy.sudoers scopes that to exactly this command).
+  sudo -n systemctl restart "${SERVICE}"
+fi
 
 ok=0
 for _ in $(seq 1 30); do

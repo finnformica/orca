@@ -13,11 +13,13 @@ import * as dispatcher from "../server/integrations/dispatcher";
 import * as registry from "../server/integrations/registry";
 import * as store from "../server/integrations/store";
 import { scrubbedEnv } from "../server/env";
+import * as admin from "../server/integrations/admin";
+import { linkProblem } from "../shared/integrationSettings";
 import { sign, verify, webhookEnvelope } from "../server/integrations/adapters/webhook";
 import { deadNotification, webNotification } from "../server/integrations/adapters/web";
 import type { Adapter } from "../server/integrations/adapter";
 import {
-  MAX_ATTEMPTS, afterAttempt, effectiveGrant, fenceExternal, grantKey, grantRefusal, inboundEnvelope, paceWait, planDeliveries, secretRefRefusal, topicMatches,
+  LEVEL_LABEL, LINK_LEVELS, MAX_ATTEMPTS, afterAttempt, effectiveGrant, fenceExternal, grantKey, grantRefusal, inboundEnvelope, paceWait, planDeliveries, secretRefRefusal, topicMatches,
   type InboundEnvelope, type SendResult, type Subscription,
 } from "../shared/integrations";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../web/src/workstream";
@@ -75,10 +77,85 @@ describe("decisions (pure)", () => {
     expect(grantRefusal(ask, "spawn", { repo: "r" })).toContain('needs "work"');
     expect(grantRefusal(work, "spawn", { repo: "r" })).toBeUndefined();
     expect(grantRefusal(work, "spawn", { repo: "other" })).toContain("outside it");
-    expect(grantRefusal(work, "merge", { repo: "r" })).toContain("full grant");
+    expect(grantRefusal(work, "merge", { repo: "r" })).toContain('needs "admin"'); // only --when-green is work's
     expect(grantRefusal(work, "preview", { status: true })).toBeUndefined();
     expect(grantKey(undefined)).toBe("full");
     expect(grantKey({ level: "work", repos: ["b", "a"] })).toBe("work:a,b");
+  });
+
+  // Each level's allows and refusals, verb by verb. `repo: "r"` is on the grant, `"other"` is not.
+  const work = { level: "work" as const, repos: ["r"] };
+  const adminGrant = { level: "admin" as const, repos: ["r"] };
+  const ask = { level: "ask" as const, repos: [] };
+  const on = (repo: string, extra: Record<string, unknown> = {}) => ({ repo, ...extra });
+
+  test("work: also stop, archive and merge --when-green on its repos; never a direct merge", () => {
+    for (const verb of ["stop", "archive"]) {
+      expect(grantRefusal(work, verb, on("r"))).toBeUndefined();
+      expect(grantRefusal(work, verb, on("other"))).toContain("outside it");
+      expect(grantRefusal(ask, verb, on("r"))).toContain('needs "work"');
+    }
+    expect(grantRefusal(work, "merge", on("r", { "when-green": true }))).toBeUndefined();
+    expect(grantRefusal(work, "merge", on("r", { "when-green": true, small: true }))).toBeUndefined();
+    expect(grantRefusal(work, "merge", on("other", { "when-green": true }))).toContain("outside it");
+    expect(grantRefusal(ask, "merge", on("r", { "when-green": true }))).toContain('needs "work"');
+    expect(grantRefusal(work, "merge", on("r", { cancel: true }))).toContain('needs "admin"');
+    expect(grantRefusal(work, "merge", on("r", { "when-green": true, cancel: true }))).toContain('needs "admin"');
+    // Still refused for work.
+    expect(grantRefusal(work, "move", on("r", { to: "cloud" }))).toContain('needs "admin"');
+    expect(grantRefusal(work, "sweep")).toContain('needs "admin"');
+    expect(grantRefusal(work, "sweep", { confirm: true })).toContain('needs "admin"');
+    expect(grantRefusal(work, "repo", { _: ["add", "o/n"] })).toContain('needs "admin"');
+    expect(grantRefusal(work, "handoff", { _: ["list"] })).toContain('needs "admin"');
+    expect(grantRefusal(work, "notes", { _: ["set", "x"] })).toContain("full grant");
+    expect(grantRefusal(work, "status", on("r", { "clear-grant": true }))).toContain("full grant");
+    expect(grantRefusal(work, "preview", on("r", { "push-to-template": true, confirm: true }))).toContain("full grant");
+    expect(grantRefusal(work, "preview", on("r", { "push-to-template": true }))).toBeUndefined(); // the dry run
+    expect(grantRefusal(work, "handoff", { _: ["create"] })).toContain("full grant");
+    expect(grantRefusal(work, "post", { link: "elsewhere" })).toContain("only on its own link");
+  });
+
+  test("admin: every verb on its repos, plus move, sweep and repo add; never the owner's verbs", () => {
+    for (const [verb, extra] of [
+      ["spawn", {}], ["send", {}], ["address", {}], ["status", { plan: "x" }], ["pr-shots", {}], ["preview", {}], ["stop", {}], ["archive", {}],
+      ["merge", { "when-green": true }], ["merge", { cancel: true }], ["move", { to: "cloud" }],
+    ] as const) {
+      expect(grantRefusal(adminGrant, verb, on("r", extra))).toBeUndefined();
+      expect(grantRefusal(adminGrant, verb, on("other", extra))).toContain("outside it");
+    }
+    expect(grantRefusal(adminGrant, "thread", { _: ["link", "discord", "T1"], repo: "r" })).toBeUndefined();
+    expect(grantRefusal(adminGrant, "sweep")).toBeUndefined();
+    expect(grantRefusal(adminGrant, "sweep", { confirm: true })).toBeUndefined();
+    expect(grantRefusal(adminGrant, "repo", { _: ["add", "o/n"] })).toBeUndefined();
+    expect(grantRefusal(adminGrant, "repo", { _: ["list"] })).toBeUndefined();
+    expect(grantRefusal(adminGrant, "handoff", { _: ["list"] })).toBeUndefined();
+    for (const verb of ["board", "chats", "read", "channels", "machine", "notes", "ask-user"]) expect(grantRefusal(adminGrant, verb)).toBeUndefined();
+    // The owner's alone, even for admin.
+    expect(grantRefusal(adminGrant, "status", on("r", { "clear-grant": true }))).toContain("full grant");
+    expect(grantRefusal(adminGrant, "notes", { _: ["set", "x"] })).toContain("full grant");
+    expect(grantRefusal(adminGrant, "preview", on("r", { "push-to-template": true, confirm: true }))).toContain("full grant");
+    expect(grantRefusal(adminGrant, "handoff", { _: ["create"], to: "x", title: "t" })).toContain("full grant");
+    expect(grantRefusal(adminGrant, "post", { link: "elsewhere" })).toContain("only on its own link");
+    expect(grantRefusal(adminGrant, "made-up")).toContain("full grant");
+    // admin is a link level and a person level, below full: min(link, person) still holds.
+    expect(effectiveGrant({ level: "admin", repos: ["r"] }, { id: "p", maxLevel: "work" }).level).toBe("work");
+    expect(effectiveGrant({ level: "work", repos: ["r"] }, { id: "p", maxLevel: "admin" }).level).toBe("work");
+    expect(effectiveGrant({ level: "admin", repos: ["r"] }, { id: "p", maxLevel: "admin" }).level).toBe("admin");
+    // An admin sender reaches a linked workstream like work does.
+    const links = new Map([["L1", { integrationId: "d", adapter: "discord", externalId: "C1" }]]);
+    expect(planDeliveries({ topic: "ext.discord.message", source: { adapter: "discord", linkId: "L1" }, grant: adminGrant }, [], links, new Map(), { repo: "r", branch: "feat" }))
+      .toEqual([{ subscriptionId: null, target: { kind: "workstream", repo: "r", branch: "feat" } }]);
+  });
+
+  test("levels: Settings names them Notify, Viewer, Editor, Admin; an admin link needs repos; the prompt says what a grant allows", () => {
+    expect(LINK_LEVELS.map((l) => LEVEL_LABEL[l])).toEqual(["Notify", "Viewer", "Editor", "Admin"]);
+    const link = { id: "l1", integrationId: "d", externalId: "C1" };
+    expect(linkProblem({ ...link, level: "admin", repos: ["r"] })).toBeUndefined();
+    expect(linkProblem({ ...link, level: "admin", repos: [] })).toBe("an admin link needs at least one repo");
+    expect(linkProblem({ ...link, level: "full", repos: ["r"] })).toContain("level:");
+    const t = fenceExternal({ text: "hi", source: { adapter: "discord", linkId: "L1" }, grant: adminGrant });
+    expect(t).toContain("grant: admin on r");
+    expect(t).toContain("The admin grant allows: every orca verb on its repos, plus move, sweep [--confirm] and repo add");
   });
 
   test("external text is fenced as data with its source, sender and grant", () => {
@@ -317,14 +394,31 @@ describe("with Postgres", () => {
     const setGrant = (g: unknown) => db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: g as never });
     await setGrant({ level: "ask", repos: [] });
     await expect(orchestrator.tool(cfg, "spawn", { repo: "r" })).rejects.toThrow('needs "work"');
-    await expect(orchestrator.tool(cfg, "merge", { repo: "r", pr: 1 })).rejects.toThrow("full grant");
+    await expect(orchestrator.tool(cfg, "merge", { repo: "r", pr: 1 })).rejects.toThrow('needs "admin"');
+    await expect(orchestrator.tool(cfg, "notes", { _: ["set", "x"] })).rejects.toThrow("full grant");
     await setGrant({ level: "work", repos: ["other"] });
     await expect(orchestrator.tool(cfg, "spawn", { repo: "r" })).rejects.toThrow("outside it");
     await setGrant({ level: "work", repos: ["r"] });
     // Past the grant: the verb's own validation answers now.
     await expect(orchestrator.tool(cfg, "spawn", { repo: "r" })).rejects.toThrow("--objective is required");
+    // work: merge --when-green passes the grant (the verb's own checks answer); a bare merge does not.
+    await expect(orchestrator.tool(cfg, "merge", { repo: "r", "when-green": true })).rejects.toThrow("merge needs --pr");
+    await expect(orchestrator.tool(cfg, "move", { repo: "r", branch: "b", to: "x" })).rejects.toThrow('needs "admin"');
+    await setGrant({ level: "admin", repos: ["r"] });
+    await expect(orchestrator.tool(cfg, "move", { repo: "r", branch: "b" })).rejects.toThrow("--to");
+    await expect(orchestrator.tool(cfg, "notes", { _: ["set", "x"] })).rejects.toThrow("full grant");
+    await expect(orchestrator.tool(cfg, "status", { repo: "r", branch: "b", "clear-grant": true })).rejects.toThrow("full grant");
     await setGrant(null); // your own chat
     await expect(orchestrator.tool(cfg, "spawn", { repo: "r" })).rejects.toThrow("--objective is required");
+  });
+
+  test("an admin link and an admin person save (the widened CHECKs); pairing still takes up to work", async () => {
+    await store.addIntegration({ id: "disc", kind: "discord", name: "Discord", instance: "local", config: {}, enabled: true });
+    await admin.saveLink({ id: "a1", integrationId: "disc", externalId: "C1", level: "admin", repos: ["r"] });
+    expect((await store.link("a1"))?.level).toBe("admin");
+    await admin.savePerson({ id: "p1", name: "Person", maxLevel: "admin" });
+    expect((await store.principal("p1"))?.maxLevel).toBe("admin");
+    await expect(admin.savePerson({ id: "p2", name: "Person 2", maxLevel: "full" })).rejects.toThrow("max level");
   });
 
   test("web adapter: an outside message and a dead delivery become notifications", () => {

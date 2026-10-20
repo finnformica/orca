@@ -19,6 +19,8 @@ export type IntegrationCard = {
   running: boolean;
   health?: { ok: boolean; detail?: string; at?: number; startedAt?: number; error?: string };
   lastEventAt?: number;
+  /** A poller's (Linear's) last completed poll, from its status row. */
+  lastPollAt?: number;
 };
 
 export type LinkRow = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean };
@@ -95,7 +97,8 @@ export function span(ms: number): string {
 }
 const ago = (ms: number): string => (span(ms) === "now" ? "just now" : `${span(ms)} ago`);
 
-/** The one line under a card's name: off, the error, or "Connected 2h · last event 3m ago". An
+/** The one line under a card's name: off, the error, or "Connected 2h · last event 3m ago" (a poller
+ *  adds "last poll 1m ago"). An
  *  Automatic row that no bridge runs names the variable and every instance that lacks it. */
 export function healthLine(c: IntegrationCard, now = Date.now(), options: InstanceOption[] = []): string {
   if (!c.enabled) return "Disconnected";
@@ -112,6 +115,7 @@ export function healthLine(c: IntegrationCard, now = Date.now(), options: Instan
   else if (!c.health.ok) parts.push(c.health.error ?? c.health.detail ?? "Not healthy");
   else parts.push(c.health.startedAt ? `Connected ${span(now - c.health.startedAt)}` : c.health.detail ?? "Connected");
   parts.push(c.lastEventAt ? `last event ${ago(now - c.lastEventAt)}` : "no events yet");
+  if (c.lastPollAt) parts.push(`last poll ${ago(now - c.lastPollAt)}`);
   return parts.join(" · ");
 }
 
@@ -169,7 +173,7 @@ export function linkProblem(l: { id?: string; integrationId?: string; externalId
   if (!l.id || !ID.test(l.id)) return "id: use lower-case letters, digits, '-', '_' or '.'";
   if (!l.integrationId) return "integration is required";
   if (!l.externalId?.trim()) return "the external place is required";
-  if (!["notify", "ask", "work"].includes(l.level ?? "")) return "level: notify, ask or work";
-  if (l.level === "work" && !l.repos?.length) return "a work link needs at least one repo";
+  if (!["notify", "ask", "work", "admin"].includes(l.level ?? "")) return "level: notify, ask, work or admin";
+  if ((l.level === "work" || l.level === "admin") && !l.repos?.length) return `${l.level === "admin" ? "an" : "a"} ${l.level} link needs at least one repo`;
   return undefined;
 }

@@ -17,10 +17,14 @@ import * as outbox from "./outbox";
 import * as bus from "./bus";
 import { resolvePrompt } from "./attachments";
 import * as cgroup from "./cgroup";
+import * as heavy from "./heavy";
 import { noteOomKill } from "./health";
+import { existsSync } from "fs";
 import { homedir, tmpdir } from "os";
 import { join, resolve } from "path";
 import { stateDir } from "./state";
+import { mcpArgs, mcpLockdown, type McpAllow } from "./mcp";
+type McpLockdown = ReturnType<typeof mcpLockdown>;
 
 /** Persist a turn, but never let the history write break the run that produced it. Repo-level runs
  *  (Slack, keyed `slack:…`) carry no branch and so belong to no workstream — they're skipped.
@@ -127,6 +131,9 @@ export type LaunchOptions = {
   /** claude only: `--allowedTools`, for a run that must act without `bypassPermissions` (the
    *  orchestrator, which may run the `orca` command and nothing else). */
   allowedTools?: string[];
+  /** claude only: the project MCP servers this run may start (server/mcp.ts). Unset: none. A
+   *  browser server never starts. */
+  mcpAllow?: McpAllow;
   /** Extra environment for the process, over agentEnv(). */
   env?: Record<string, string>;
   /** `false`: this run's queue is drained by whoever launched it, not by the exit handler (the
@@ -152,6 +159,11 @@ export type RunFinished = {
 
 // Orca's own secrets never reach the agent's process (server/env.ts); re-exported for callers.
 export { agentEnv, WORKER_BIN } from "./env";
+
+/** What a run's process knows about itself, for `orca-run`'s slot. Pure. */
+export function runIdentity(runId: string, options: { repo?: string; branch?: string }): Record<string, string> {
+  return { ORCA_RUN_ID: runId, ...(options.repo ? { ORCA_REPO: options.repo } : {}), ...(options.branch ? { ORCA_BRANCH: options.branch } : {}) };
+}
 
 /** How this run reuses prior context — derived from what the launch options carry, so the ledger's
  *  resume/reset/handoff breakdown matches the store's actual continuation decision. Pure. */
@@ -263,6 +275,51 @@ const runs = new Map<string, Run>();
 // Generous for a normal exit (the pipe closes immediately), bounded for the pathological one.
 const DRAIN_GRACE_MS = 2_000;
 
+/** Does the exit parse (parseClaudeStreamOutput / parseCodexOutput / parseCursorOutput) need this
+ *  stdout event? A run's stdout used to be kept WHOLE until exit — every reply delta and tool
+ *  result, tens of MB for a long run — and the bridge grew by about that much per run (2026-10-18:
+ *  3 GB plus 2.7 GB swap in 9 hours). The steps are already in the transcript; only the session id,
+ *  the result and the compact markers are read at exit. Pure. */
+export function keepForOutcome(provider: AgentProvider, event: unknown): boolean {
+  const e = event as { type?: string; subtype?: string; compact_result?: unknown; item?: { type?: string } } | null;
+  if (!e || typeof e !== "object") return false;
+  if (provider === "codex") {
+    return e.type === "thread.started" || e.type === "turn.completed" || e.type === "turn.failed" || e.type === "error"
+      || (e.type === "item.completed" && e.item?.type === "agent_message");
+  }
+  if (e.type === "result") return true;
+  if (provider === "cursor") return e.type === "system" && e.subtype === "init";
+  return (e.type === "system" && (e.subtype === "init" || e.subtype === "compact_boundary")) || e.compact_result !== undefined;
+}
+
+/** How much of a run's non-JSON stdout (and its stderr) is kept: the newest part only. */
+export const OUTPUT_TAIL_CHARS = 256 << 10;
+
+/** The part of a run's stdout the exit parse reads: the events `keepForOutcome` names, then a bounded
+ *  tail of the lines that were not JSON (a crash's message, an old single-body answer). */
+export function outcomeLines(provider: AgentProvider) {
+  let kept = "";
+  let tail = "";
+  return {
+    add(line: string, event: unknown): void {
+      if (event === undefined) tail = (tail + line + "\n").slice(-OUTPUT_TAIL_CHARS);
+      else if (keepForOutcome(provider, event)) kept += line + "\n";
+    },
+    text: (pending = ""): string => kept + tail + pending.slice(-OUTPUT_TAIL_CHARS),
+  };
+}
+
+/** A stream's newest `max` characters — stderr is read only for its tail. */
+async function tailText(stream: ReadableStream<Uint8Array>, max = OUTPUT_TAIL_CHARS): Promise<string> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let tail = "";
+  for (let r = await reader.read(); !r.done; r = await reader.read()) tail = (tail + decoder.decode(r.value, { stream: true })).slice(-max);
+  return tail + decoder.decode();
+}
+
+const parseLine = (line: string): unknown => { try { return JSON.parse(line); } catch { return undefined; } };
+
 function codexSessionId(line: string): string | undefined {
   try {
     const event = JSON.parse(line);
@@ -277,60 +334,60 @@ function codexSessionId(line: string): string | undefined {
  *  immediately lets the next `/api/agents` poll persist and copy the exact resumable thread id. */
 async function readCodexOutput(key: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }, runId?: string, owner?: { repo?: string; branch?: string }): Promise<string> {
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
-  let raw = "";
+  const out = outcomeLines("codex");
   let pending = "";
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
-    raw += value;
-    holder.raw = raw;
     pending += value;
     const lines = pending.split("\n");
     pending = lines.pop() ?? "";
     for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = parseLine(line);
+      out.add(line, event);
+      holder.raw = out.text();
       const sessionId = codexSessionId(line);
       const current = runs.get(key);
       if (sessionId && current?.proc === proc && current.sessionId !== sessionId) {
         runs.set(key, { ...current, sessionId });
       }
-      if (!runId) continue;
-      let event: unknown;
-      try { event = JSON.parse(line); } catch { continue; }
+      if (!runId || event === undefined) continue;
       const written = await transcript.append(runId, codexSteps(event));
       if (written.length && owner?.repo && owner.branch) {
         bus.publish({ kind: "step", runId, repo: owner.repo, branch: owner.branch, steps: written });
       }
     }
   }
-  return raw;
+  return (holder.raw = out.text(pending));
 }
 
 /** Read Cursor's stream-json without waiting for exit, recording each step as it lands. Returns the
- *  full raw stream so parseCursorOutput can extract the final outcome at exit. */
+ *  part of the stream parseCursorOutput reads at exit (outcomeLines), never the whole of it. */
 async function readCursorOutput(proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }, runId?: string, owner?: { repo?: string; branch?: string }): Promise<string> {
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
   const state = { thinking: "" };
-  let raw = "";
+  const out = outcomeLines("cursor");
   let pending = "";
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
-    raw += value;
-    holder.raw = raw;
     pending += value;
     const lines = pending.split("\n");
     pending = lines.pop() ?? "";
     for (const line of lines) {
-      if (!line.trim() || !runId) continue;
-      let event: unknown;
-      try { event = JSON.parse(line); } catch { continue; }
+      if (!line.trim()) continue;
+      const event = parseLine(line);
+      out.add(line, event);
+      holder.raw = out.text();
+      if (!runId || event === undefined) continue;
       const written = await transcript.append(runId, cursorSteps(event, state));
       if (written.length && owner?.repo && owner.branch) {
         bus.publish({ kind: "step", runId, repo: owner.repo, branch: owner.branch, steps: written });
       }
     }
   }
-  return raw;
+  return (holder.raw = out.text(pending));
 }
 
 /** A run's recorded steps — the agent's thought process — oldest first, `tail` limiting to the last
@@ -466,11 +523,11 @@ export function claudeDelta(event: unknown): string | undefined {
 const DELTA_FLUSH_MS = 100;
 
 /** Read claude's `--output-format stream-json` JSONL without waiting for exit, persisting each step
- *  to the run's transcript so `/api/turns` can show it live AND after the fact. Returns the full raw
- *  stream for parseClaudeStreamOutput to extract the final outcome at exit. */
+ *  to the run's transcript so `/api/turns` can show it live AND after the fact. Returns the part of
+ *  the stream parseClaudeStreamOutput reads at exit (outcomeLines), never the whole of it. */
 async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "pipe", "pipe">, holder: { raw: string }, owner?: { repo?: string; branch?: string }): Promise<string> {
   const reader = proc.stdout.pipeThrough(new TextDecoderStream()).getReader();
-  let raw = "";
+  const out = outcomeLines("claude");
   let pending = "";
   // Streamed reply text, coalesced and pushed live; never written anywhere (see claudeDelta).
   let delta = "";
@@ -483,15 +540,15 @@ async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "p
   while (true) {
     const { value, done } = await reader.read();
     if (done) break;
-    raw += value;
-    holder.raw = raw;
     pending += value;
     const lines = pending.split("\n");
     pending = lines.pop() ?? "";
     for (const line of lines) {
       if (!line.trim()) continue;
-      let event: unknown;
-      try { event = JSON.parse(line); } catch { continue; }
+      const event = parseLine(line);
+      out.add(line, event);
+      if (event === undefined || keepForOutcome("claude", event)) holder.raw = out.text();
+      if (event === undefined) continue;
       const text = claudeDelta(event);
       if (text) {
         delta += text;
@@ -510,7 +567,7 @@ async function readClaudeStream(runId: string, proc: Bun.Subprocess<"ignore", "p
   }
   if (flushAt) { clearTimeout(flushAt); flush(); }
   transcript.forget(runId);
-  return raw;
+  return (holder.raw = out.text(pending));
 }
 
 /** Extract claude's final outcome from the stream. The last `type:"result"` event is the same object
@@ -611,7 +668,7 @@ export function parseCursorOutput(raw: string): { sessionId?: string; result?: s
 // all three CLIs' arg parsers read that leading dash as an unknown option and the run dies before the
 // agent ever sees the prompt — e.g. claude `error: unknown option '- gather children…'`. Reproduced
 // and each `--` form verified against the real CLIs (see multiAgent.test's leading-dash case).
-export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string, permissionMode: PermissionMode = "ask", maxBudgetUsd?: number, allowedTools?: string[], scoped?: ScopedRules): string[] {
+export function agentCommand(provider: AgentProvider, cwd: string, prompt: string, resume?: string, sessionId?: string, model?: string, permissionMode: PermissionMode = "ask", maxBudgetUsd?: number, allowedTools?: string[], scoped?: ScopedRules, mcp?: McpLockdown): string[] {
   // `model` is the card's pinned model (shared/models.ts) or the config default; unset → each CLI's own.
   const m = model ? ["--model", model] : [];
   if (provider === "codex") {
@@ -639,13 +696,15 @@ export function agentCommand(provider: AgentProvider, cwd: string, prompt: strin
   // the run's spend reaches it and reports a budget result, which the turn records as
   // `budget_reached` — the same stop reason Managed Agents uses for a session budget.
   // `scoped` (a "work" grant): dontAsk + the rules of scopedRules, never bypassPermissions.
+  // `mcp` (server/mcp.ts): only Orca's MCP config, never the repo's `.mcp.json`, and the browser
+  // servers' tools denied — a deny rule holds under bypassPermissions too.
+  const deny = [...(permissionMode === "scoped" ? scoped?.deny ?? [] : []), ...(mcp?.deny ?? [])];
   const perms = permissionMode === "scoped"
     ? ["--permission-mode", "dontAsk", "--settings", JSON.stringify({ permissions: { blockReadsOutsideWorkingDirectories: true } }),
       ...(scoped?.addDirs.length ? ["--add-dir", ...scoped.addDirs] : []),
-      "--allowedTools", [...(scoped?.allow ?? []), ...(allowedTools ?? [])].join(","),
-      ...(scoped?.deny.length ? ["--disallowedTools", scoped.deny.join(",")] : [])]
+      "--allowedTools", [...(scoped?.allow ?? []), ...(allowedTools ?? [])].join(",")]
     : ["--permission-mode", permissionMode === "bypass" ? "bypassPermissions" : "default", ...(allowedTools?.length ? ["--allowedTools", allowedTools.join(",")] : [])];
-  return ["claude", "-p", ...perms, ...m, ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--", prompt];
+  return ["claude", "-p", ...perms, ...(deny.length ? ["--disallowedTools", deny.join(",")] : []), ...(mcp ? mcpArgs(mcp) : []), ...m, ...(maxBudgetUsd ? ["--max-budget-usd", String(maxBudgetUsd)] : []), ...(resume ? ["--resume", resume] : ["--session-id", sessionId ?? crypto.randomUUID()]), "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--", prompt];
 }
 
 // Launches between their call and their return, by key: a Stop pressed while a run is still
@@ -694,15 +753,32 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
   const scopeUnit = `orca-run-${runId}`;
   const memoryMaxGb = options.memoryMaxGb ?? cgroup.DEFAULT_MEMORY_MAX_GB;
   const cpuWeight = options.cpuWeight ?? cgroup.DEFAULT_CPU_WEIGHT;
-  const scoped = cgroup.available();
-  const scopedEnv = scoped ? cgroup.runtimeEnv() : {};
+  const linux = cgroup.linux();
+  let scoped = cgroup.available();
+  const scopedEnv = cgroup.runtimeEnv();
+  // A user manager that SHOULD be there (lingering is on) but does not answer: report it and start
+  // unscoped, never fail every run silently (the 2026-10-18 incident).
+  if (linux && (scoped || cgroup.lingering())) {
+    const manager = await cgroup.userManagerCheck({ ...process.env, ...scopedEnv });
+    cgroup.noteUserManager(manager, { repo: options.repo, branch: options.branch });
+    if (!manager.ok) scoped = false;
+  }
+  // Set on every launch: a user-manager restart drops the runtime property.
+  const sliceMaxGb = cgroup.agentsSliceMaxGb();
+  if (scoped && !(await cgroup.limitAgentsSlice(sliceMaxGb, { ...process.env, ...scopedEnv }))) {
+    console.error(`orca: could not set ${cgroup.AGENTS_SLICE} MemoryMax=${sliceMaxGb}G`);
+  }
+  // The slices' `oom` counters before the run, so its exit can name the limit that killed it.
+  const oomBefore = scoped ? cgroup.oomCounters() : {};
   const proc = Bun.spawn(
     cgroup.scopedCommand(
       agentCommand(provider, cwd, effectivePrompt, options.resume, sessionId, options.model, options.permissionMode, options.maxBudgetUsd, options.allowedTools,
-        options.permissionMode === "scoped" ? scopedRulesHere(cwd, options.scope) : undefined),
-      { available: scoped, memoryMaxGb, cpuWeight, unit: scopeUnit },
+        options.permissionMode === "scoped" ? scopedRulesHere(cwd, options.scope) : undefined, mcpLockdown(cwd, options.mcpAllow)),
+      // A positive OOM score scoped or not: the bridge's -500 must not pass to its agents.
+      { available: scoped, memoryMaxGb, cpuWeight, unit: scopeUnit, slice: cgroup.AGENTS_SLICE, oomScoreAdj: linux ? cgroup.oomScoreAdj() : undefined },
     ),
-    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...scopedEnv, ...options.env }, stdout: "pipe", stderr: "pipe" },
+    // ORCA_RUN_ID / ORCA_REPO / ORCA_BRANCH: `orca-run` (server/heavy.ts) ties its slot to this run.
+    { cwd, env: { ...agentEnv(githubEnv(cwd)), ...(scoped ? scopedEnv : {}), ...runIdentity(runId, options), ...options.env }, stdout: "pipe", stderr: "pipe" },
   );
   let timedOut = false;
   const timeout = options.timeoutMs ? setTimeout(() => { timedOut = true; proc.kill(); }, options.timeoutMs) : undefined;
@@ -728,9 +804,11 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
       provider === "codex" ? readCodexOutput(key, proc, outHolder, runId, { repo: options.repo, branch: options.branch })
         : provider === "claude" ? readClaudeStream(runId, proc, outHolder, { repo: options.repo, branch: options.branch })
         : readCursorOutput(proc, outHolder, runId, { repo: options.repo, branch: options.branch }),
-      new Response(proc.stderr).text().then((t) => (errHolder.raw = t)),
+      tailText(proc.stderr).then((t) => (errHolder.raw = t)),
     ]);
     const code = await proc.exited;
+    // A heavy command of this run (bin/worker/orca-run) must not keep its slot past the run.
+    heavy.slots().releaseRun(runId);
     await Promise.race([reads, new Promise((r) => setTimeout(r, DRAIN_GRACE_MS))]);
     const out = outHolder.raw;
     const err = errHolder.raw;
@@ -765,15 +843,29 @@ async function launchRun(key: string, cwd: string, prompt: string, options: Laun
     const finishedAt = Date.now();
     if (meta) meta.durationMs ??= finishedAt - startedAt;
     const structured = result ? parseAgentOutcome(result) : undefined;
-    const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, structured, meta, startedAt, finishedAt };
     const ok = code === 0 && !isError;
     const wasStopped = stoppedRuns.delete(runId);
     // 137 is plain SIGKILL from anything; ask the scope itself (its Result, read while it still has
-    // one — see cgroup.wasOomKilled) rather than assume, so a run you stopped or that died some other
-    // way at 137 isn't mislabelled.
-    const oomKilled = scoped && !ok && !wasStopped && code === 137 && await cgroup.wasOomKilled(scopeUnit, { ...process.env, ...scopedEnv });
-    if (oomKilled) noteOomKill(); // the instance card's Memory chart marks it at the next sample
-    const error = ok ? undefined : oomKilled ? `out of memory (${memoryMaxGb} GB ceiling)` : (err.trim() || result || `exit ${code}`).slice(0, 300);
+    // one — see cgroup.wasOomKilled) and the slices' `oom` counters (cgroup.oomCause) rather than
+    // assume, so a run you stopped or that died some other way at 137 isn't mislabelled.
+    const scopeOom = scoped && !wasStopped && await cgroup.wasOomKilled(scopeUnit, { ...process.env, ...scopedEnv });
+    const oomCause = scoped && !wasStopped
+      ? cgroup.oomCause({ scopeOom, before: oomBefore, after: cgroup.oomCounters(), memoryMaxGb, agentsSliceMaxGb: sliceMaxGb })
+      : undefined;
+    const oomKilled = !ok && !wasStopped && code === 137 && oomCause !== undefined;
+    if (oomKilled || (scopeOom && oomCause)) noteOomKill(); // the instance card's Memory chart marks it at the next sample
+    // The agent is gone, but a dev server or build it left in the background keeps its scope alive
+    // (17:55 on 2026-10-19: a finished worker's nest, vite and backend held 1.7 GB for 14 minutes).
+    // After the OOM read above, which needs the scope: stop it, and every process in it.
+    if (scoped) await stopRunScope(runId, { ...process.env, ...scopedEnv });
+    const rawError = (err.trim() || result || `exit ${code}`).slice(0, 300);
+    // A process of THIS run was OOM-killed (its scope says so) but the agent went on, or failed some
+    // other way: a build, or a git push hook. Name it, so a push that never happened is not silent.
+    const error = ok ? undefined : oomKilled ? oomCause : scopeOom && oomCause ? `${oomCause}: ${rawError}`.slice(0, 300) : rawError;
+    if (ok && scopeOom && oomCause) {
+      result = `${result ?? ""}\n\n> Orca: a process of this run was killed — ${oomCause}. A build or a git push hook may not have finished; check that the push happened.`;
+    }
+    const common = { provider, runId, prompt, sessionId: resolvedSessionId, result, structured, meta, startedAt, finishedAt };
     const stopReason: StopReason = wasStopped ? "interrupted" : budgetReached ? "budget_reached" : ok ? "end_turn" : "error";
     await started; // finish can never overtake start, however fast the run was
     recordTurn(options, () => outbox.finishTurn(runId, {
@@ -860,7 +952,7 @@ export const runStartedAt = (key: string): number | undefined => {
 /** A provider-isolated one-shot: never falls through to a different provider. */
 export function oneShotCommand(provider: AgentProvider, cwd: string, prompt: string, purpose: "title" | "description"): string[] {
   if (provider === "claude") {
-    return ["claude", "-p", prompt, "--model", purpose === "title" ? "haiku" : "sonnet", "--tools", "", "--disable-slash-commands", "--no-session-persistence", "--output-format", "json"];
+    return ["claude", "-p", prompt, "--model", purpose === "title" ? "haiku" : "sonnet", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence", "--output-format", "json"];
   }
   if (provider === "codex") return ["codex", "exec", "--json", "--ephemeral", "--ignore-rules", "--sandbox", "read-only", "-C", cwd, prompt];
   return ["cursor-agent", "-p", prompt, "--output-format", "json", "--mode", "ask", "--trust"];
@@ -872,7 +964,7 @@ export function prDescriptionCommand(provider: AgentProvider, cwd: string, promp
     // Pin sonnet like the one-shot fallback: resuming otherwise inherits the implementation model
     // (opus), and writing a PR body from an already-loaded session doesn't need it — it's ~half the
     // wall clock of a Promote.
-    return ["claude", "-p", prompt, "--resume", resume, "--model", "sonnet", "--tools", "", "--disable-slash-commands", "--output-format", "json"];
+    return ["claude", "-p", prompt, "--resume", resume, "--model", "sonnet", "--tools", "", "--strict-mcp-config", "--disable-slash-commands", "--output-format", "json"];
   }
   if (provider === "codex") {
     return ["codex", "exec", "resume", "--json", "-c", 'sandbox_mode="read-only"', resume, prompt];
@@ -947,18 +1039,32 @@ export function onRunFinished(fn: ((run: RunFinished) => Promise<void>) | undefi
  *  when it launched one. */
 async function dispatchQueued(repo: string, branch: string, options: LaunchOptions): Promise<boolean> {
   if (!queuedLauncher) return false;
+  let next: db.QueuedMessage | undefined;
   try {
-    const next = await db.claimQueuedMessage(repo, branch);
+    next = await db.claimQueuedMessage(repo, branch);
     if (!next) return false;
     await queuedLauncher(next);
     return true;
   } catch (e) {
-    // Never let a queued send break the run that just finished; the message stays claimed rather
-    // than retrying forever against a worktree that may be gone.
+    // Never let a queued send break the run that just finished. A message whose launch failed goes
+    // back on the queue: it stayed claimed once, and the message was lost (the next send went
+    // without it). Nothing retries it in a loop; the next run's end or send picks it up.
+    if (next) await db.releaseQueuedMessage(next.id).catch(db.logUnlessDown("orca: queued message release failed"));
     db.logUnlessDown("orca: queued message dispatch failed")(e);
     return false;
   }
 }
+
+/** Send what is queued for an IDLE branch, oldest first. A direct send onto a worktree with older
+ *  messages still queued calls this after it queues its own, so the older ones go first. */
+export async function drainQueue(key: string, repo: string, branch: string): Promise<boolean> {
+  if (isRunning(key)) return false; // the run in flight sends the queue when it ends
+  return dispatchQueued(repo, branch, {});
+}
+
+// How long Stop waits for the stopped process to exit before it sends the queue: the next run
+// resumes the SAME session, and two processes on one session both write to its transcript.
+export const stopGrace = { ms: 5_000 }; // mutable so a test needn't wait five seconds
 
 // How often an adopted run's lease is checked for its process having exited.
 export const adoptPoll = { ms: 5_000 }; // mutable so a test needn't wait five seconds
@@ -988,6 +1094,12 @@ export function adoptLeases(
   return adopted.length;
 }
 
+/** Stop a finished run's scope (`orca-run-<runId>.scope`): every process still in it is killed. A
+ *  scope that is already gone is fine. Bounded, and never throws: the run is recorded either way. */
+export async function stopRunScope(runId: string, env: Record<string, string | undefined>): Promise<void> {
+  await runCmd(["systemctl", "--user", "stop", `orca-run-${runId}.scope`], { env, allowFail: true, timeoutMs: 10_000 }).catch(() => undefined);
+}
+
 async function finishAdopted(l: lease.Lease, recover: Parameters<typeof adoptLeases>[0]): Promise<void> {
   if (runs.get(l.key)?.runId !== l.runId) return; // a new run took the key meanwhile
   // The journal knows the owner when the turn never reached the database (it was down at launch).
@@ -1005,6 +1117,7 @@ async function finishAdopted(l: lease.Lease, recover: Parameters<typeof adoptLea
     await pending;
   }
   lease.release(l.key, l.runId);
+  if (cgroup.available()) await stopRunScope(l.runId, { ...process.env, ...cgroup.runtimeEnv() }); // what it left behind
   const handled = afterRunStarted();
   try {
     runs.set(l.key, { status, provider: l.provider, runId: l.runId, sessionId: l.sessionId, result, structured: found?.structured, startedAt: l.startedAt, finishedAt, error: ok ? undefined : result });
@@ -1024,12 +1137,32 @@ async function finishAdopted(l: lease.Lease, recover: Parameters<typeof adoptLea
   }
 }
 
+/** Forget finished runs whose worktree is gone. A finished entry is kept per worktree (the board
+ *  reads its status, result and prompt), but a reaped worktree's entry was never removed, so the map
+ *  grew with every worktree the bridge ever ran in. Hourly, from the reaper in index.ts. */
+export function pruneRuns(exists: (path: string) => boolean = existsSync): number {
+  let n = 0;
+  for (const [key, r] of runs) {
+    if (r.status !== "running" && !starting.has(key) && !exists(key)) { runs.delete(key); n++; }
+  }
+  return n;
+}
+
+/** How many runs the bridge holds in memory (/api/health's bridge memory). */
+export const runCount = (): number => runs.size;
+
 /** Kill and forget a run (e.g. on discard, or Stop from the chat). Returns the runId it stopped, if
  *  any, so a caller can report what it interrupted. */
 export function stop(key: string): string | undefined {
   const r = runs.get(key);
   if (r?.runId && r.status === "running") stoppedRuns.add(r.runId);
   try { r?.proc?.kill(); } catch { /* already gone */ }
+  // A run adopted after a restart has no handle: its lease names the process. Without this, Stop
+  // left it running and the next run resumed a session it was still writing to.
+  const held = !r?.proc ? lease.current(key) : undefined;
+  if (held && (!r?.runId || held.runId === r.runId) && lease.leased(key)) {
+    try { process.kill(held.pid); } catch { /* already gone */ }
+  }
   runs.delete(key);
   lease.release(key); // discard/stop frees the worktree even if the run was recovered from a lease
   return r?.runId;
@@ -1045,6 +1178,7 @@ export async function interrupt(key: string, opts: { queue?: boolean } = {}): Pr
   const r = runs.get(key);
   const runId = stop(key);
   if (!runId || opts.queue === false || r?.options?.queue === false) return runId;
+  if (r?.proc) await Promise.race([r.proc.exited, new Promise((res) => setTimeout(res, stopGrace.ms))]);
   // A run adopted from a lease after a restart has no options; its turn names the branch.
   const owner = r?.options?.repo && r.options.branch ? { repo: r.options.repo, branch: r.options.branch }
     : await db.turnOwner(runId).catch(() => undefined);

@@ -2,8 +2,9 @@
 //
 // Why: the branch-demo frontend (and anything using crypto.randomUUID, service workers, etc.) only
 // works in a SECURE CONTEXT — `localhost` counts, a plain-http tailnet name does not, so a cloud
-// preview opened at http://orca-box.…:port rendered a blank page. HTTPS over the tailnet needs
-// certs the Tailscale account doesn't grant. So when this instance relays a preview from its owner,
+// preview opened at http://orca-box.…:port rendered a blank page. The box now also serves such a
+// preview over HTTPS (server/tsserve.ts) for every other viewer; a page on localhost still opens
+// this forward. So when this instance relays a preview from its owner,
 // it forwards the service's port on loopback here and hands the browser http://localhost:<port>.
 // Plain TCP, so Vite's HMR websocket rides it unchanged. One forward per port, same number both
 // ends (the box's port range is the same config), dropped when the preview is stopped.

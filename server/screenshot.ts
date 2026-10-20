@@ -24,7 +24,7 @@ export const SHOT_CPU_WEIGHT = 50;
 export const SHOT_TIMEOUT_MS = 45_000;
 export const DEFAULT_VIEWPORT = { width: 1440, height: 900 };
 
-export type ShotStep = { click: string } | { hover: string } | { scroll: number | string } | { wait: number } | { waitFor: string } | { press: string };
+export type ShotStep = { click: string } | { hover: string } | { scroll: number | string } | { wait: number } | { waitFor: string } | { press: string } | { type: string };
 export type ShotRequest = {
   url: string;
   viewport?: { width: number; height: number };
@@ -37,8 +37,22 @@ export type ShotRequest = {
   fullPage?: boolean;
   /** Free text kept in the file name (`before`, `after`), so a report can say which is which. */
   label?: string;
+  /** Return the page's exceptions, console errors and warnings, and failed requests with the shot. */
+  console?: boolean;
 };
-export type Shot = { id: string; path: string; bytes: number; label?: string };
+export type Shot = { id: string; path: string; bytes: number; label?: string; console?: string[] };
+
+/** The origin of a plain-http URL that is not loopback, else undefined. Such a page is not a
+ *  secure context, so `crypto.randomUUID` and other APIs are missing and an app like branch-demo
+ *  renders blank. The capture browser treats this origin as secure, so a shot shows what the same
+ *  preview shows on localhost. Pure. */
+export function insecureOrigin(url: string): string | undefined {
+  const u = new URL(url);
+  if (u.protocol !== "http:") return undefined;
+  const host = u.hostname.replace(/^\[|\]$/g, "");
+  if (host === "localhost" || host.endsWith(".localhost") || host === "::1" || /^127\./.test(host)) return undefined;
+  return u.origin;
+}
 
 /** Where shots are kept. Disk today; the interface is all a caller sees, so Postgres can replace it. */
 export interface AttachmentStore {
@@ -75,13 +89,15 @@ export function parseShotRequest(body: any): ShotRequest {
   }
   const steps: ShotStep[] = Array.isArray(body.steps) ? body.steps : [];
   for (const s of steps) {
-    if (!s || typeof s !== "object" || !("click" in s || "hover" in s || "scroll" in s || "wait" in s || "waitFor" in s || "press" in s)) throw new Error(`unknown step: ${JSON.stringify(s)}`);
+    if (!s || typeof s !== "object" || !("click" in s || "hover" in s || "scroll" in s || "wait" in s || "waitFor" in s || "press" in s || "type" in s)) throw new Error(`unknown step: ${JSON.stringify(s)}`);
+    if ("type" in s && (typeof s.type !== "string" || s.type.length > 2000)) throw new Error("a type step needs text of at most 2000 characters");
   }
   return {
     url: u.toString(), viewport: viewport ?? DEFAULT_VIEWPORT, dark: !!body.dark,
     waitFor: typeof body.waitFor === "string" && body.waitFor ? body.waitFor : undefined,
     steps, fullPage: !!body.fullPage,
     label: typeof body.label === "string" && body.label ? body.label.replace(/[^\w-]+/g, "-").slice(0, 40) : undefined,
+    console: !!body.console,
   };
 }
 
@@ -91,16 +107,23 @@ export function parseViewport(v: string): { width: number; height: number } {
   return { width: Number(m[1]), height: Number(m[2]) };
 }
 
-/** The headless browser binary: `ORCA_SHOT_BROWSER`, else the newest Playwright headless shell or
- *  Chromium in the cache, else one on PATH. */
-export function findBrowser(env: Record<string, string | undefined> = process.env): string | undefined {
+/** The headless browser binary: `ORCA_SHOT_BROWSER`, else the newest Playwright headless shell in
+ *  the cache, else one on PATH. With `full`, the newest full Chromium in the cache comes first: the
+ *  headless shell ignores `--unsafely-treat-insecure-origin-as-secure` (seen on 156), Chromium does. */
+export function findBrowser(env: Record<string, string | undefined> = process.env, opts: { full?: boolean } = {}): string | undefined {
   if (env.ORCA_SHOT_BROWSER) return env.ORCA_SHOT_BROWSER;
   const cache = join(homedir(), ".cache", "ms-playwright");
+  const builds = [
+    ...(opts.full ? [{ prefix: "chromium-", bin: join("chrome-linux64", "chrome") }] : []),
+    { prefix: "chromium_headless_shell-", bin: join("chrome-headless-shell-linux64", "chrome-headless-shell") },
+  ];
   try {
-    const dirs = readdirSync(cache).filter((d) => d.startsWith("chromium_headless_shell-")).sort().reverse();
-    for (const d of dirs) {
-      const p = join(cache, d, "chrome-headless-shell-linux64", "chrome-headless-shell");
-      if (existsSync(p)) return p;
+    const dirs = readdirSync(cache).sort().reverse();
+    for (const b of builds) {
+      for (const d of dirs.filter((d) => d.startsWith(b.prefix))) {
+        const p = join(cache, d, b.bin);
+        if (existsSync(p)) return p;
+      }
     }
   } catch { /* no cache */ }
   for (const b of ["chrome-headless-shell", "chromium", "chromium-browser", "google-chrome"]) {
@@ -112,7 +135,7 @@ export function findBrowser(env: Record<string, string | undefined> = process.en
 
 /** The exact command a capture launches: the browser wrapped in its own capped scope. Pure, so the
  *  test pins the cap without a real systemd or browser. */
-export function browserCommand(binary: string, profileDir: string, opts: { scoped: boolean; unit: string; memoryMaxGb?: number }): string[] {
+export function browserCommand(binary: string, profileDir: string, opts: { scoped: boolean; unit: string; memoryMaxGb?: number; secureOrigin?: string }): string[] {
   return cgroup.scopedCommand([
     binary, "--headless", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--no-first-run",
     "--hide-scrollbars", "--mute-audio", "--disable-extensions", "--remote-debugging-port=0",
@@ -120,13 +143,16 @@ export function browserCommand(binary: string, profileDir: string, opts: { scope
     // DNS-rebinding guard) — this process has no origin of its own to be on it, so allow any; the
     // debugging port is ephemeral, loopback-only and torn down with the browser after one capture.
     "--remote-allow-origins=*",
+    // Each job has a fresh browser, so the flag covers this one URL's origin only (`insecureOrigin`).
+    ...(opts.secureOrigin ? [`--unsafely-treat-insecure-origin-as-secure=${opts.secureOrigin}`] : []),
     `--user-data-dir=${profileDir}`, "about:blank",
   ], { available: opts.scoped, memoryMaxGb: opts.memoryMaxGb ?? SHOT_MEMORY_MAX_GB, cpuWeight: SHOT_CPU_WEIGHT, unit: opts.unit });
 }
 
 /** One running browser: capture one page, then be killed. */
 export interface BrowserSession {
-  capture(req: ShotRequest): Promise<Uint8Array>;
+  /** `log` collects the page's errors when `req.console` is set. */
+  capture(req: ShotRequest, log: string[]): Promise<Uint8Array>;
   kill(): Promise<void>;
 }
 /** Start the browser. When `signal` aborts (the job timed out) before it is up, the launch must kill
@@ -191,13 +217,15 @@ export function createShooter(deps: {
   }
 
   async function run(req: ShotRequest): Promise<Shot> {
-    const binary = (deps.browser ?? findBrowser)();
+    const secureOrigin = insecureOrigin(req.url);
+    const binary = deps.browser ? deps.browser() : findBrowser(process.env, { full: !!secureOrigin });
     if (!binary) throw new Error("no headless browser on this box (set ORCA_SHOT_BROWSER)");
     const scoped = (deps.scoped ?? (() => cgroup.available()))();
     const id = `shot-${new Date().toISOString().replace(/[:.]/g, "-")}-${crypto.randomUUID().slice(0, 8)}${req.label ? `-${req.label}` : ""}`;
     const unit = `orca-${id}`;
     const profile = mkdtempSync(join(tmpdir(), "orca-shot-"));
-    const argv = browserCommand(binary, profile, { scoped, unit, memoryMaxGb: deps.memoryMaxGb });
+    const argv = browserCommand(binary, profile, { scoped, unit, memoryMaxGb: deps.memoryMaxGb, secureOrigin });
+    const log: string[] = [];
     const abort = new AbortController();
     const launching = launch(argv, scoped ? cgroup.runtimeEnv() : {}, unit, abort.signal);
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -208,9 +236,9 @@ export function createShooter(deps: {
           reject(new Error(`screenshot timed out after ${Math.round(timeoutMs / 1000)}s`));
         }, timeoutMs);
       });
-      const png = await Promise.race([launching.then((session) => session.capture(req)), timeout]);
+      const png = await Promise.race([launching.then((session) => session.capture(req, log)), timeout]);
       const saved = await store.put(`${id}.png`, png);
-      return { ...saved, bytes: png.byteLength, label: req.label };
+      return { ...saved, bytes: png.byteLength, label: req.label, ...(req.console ? { console: log } : {}) };
     } catch (e) {
       // A browser killed by its cgroup's OOM killer reads as a dropped socket; say what happened.
       if (scoped && await cgroup.wasOomKilled(unit, { ...process.env, ...cgroup.runtimeEnv() })) {
@@ -279,7 +307,7 @@ export const cdpLaunch: Launch = async (argv, env, unit, signal) => {
   try {
     const wsUrl = await Promise.race([devtoolsUrl(proc), aborted]);
     const cdp = await Promise.race([connect(wsUrl), aborted]);
-    return { capture: (req) => capture(cdp, req), kill: async () => { cdp.close(); await kill(); } };
+    return { capture: (req, log) => capture(cdp, req, log), kill: async () => { cdp.close(); await kill(); } };
   } catch (e) {
     await kill();
     throw e;
@@ -302,7 +330,24 @@ async function devtoolsUrl(proc: Bun.Subprocess<"ignore", "ignore", "pipe">): Pr
   }
 }
 
-type Cdp = { send(method: string, params?: object, sessionId?: string): Promise<any>; once(method: string, sessionId?: string): Promise<any>; close(): void };
+type Cdp = { send(method: string, params?: object, sessionId?: string): Promise<any>; once(method: string, sessionId?: string): Promise<any>; on(listener: (method: string, params: any) => void): void; close(): void };
+
+/** At most this many console lines, each cut to CONSOLE_LINE_MAX characters. */
+const CONSOLE_MAX = 50;
+const CONSOLE_LINE_MAX = 500;
+
+/** One line for a CDP event a reader of `--console` needs, else undefined. Pure. */
+export function consoleLine(method: string, p: any, urls: Map<string, string>): string | undefined {
+  if (method === "Network.requestWillBeSent") { urls.set(p.requestId, p.request.url); return undefined; }
+  const line = method === "Runtime.exceptionThrown" ? `exception: ${p.exceptionDetails.exception?.description ?? p.exceptionDetails.text}`
+    : method === "Runtime.consoleAPICalled" && (p.type === "error" || p.type === "warning")
+      ? `console.${p.type}: ${p.args.map((a: any) => a.value ?? a.description ?? "").join(" ")}`
+    : method === "Log.entryAdded" && (p.entry.level === "error" || p.entry.level === "warning") ? `${p.entry.level}: ${p.entry.text}`
+    : method === "Network.loadingFailed" && !p.canceled ? `request failed: ${p.errorText} ${urls.get(p.requestId) ?? ""}`
+    : method === "Network.responseReceived" && p.response.status >= 400 ? `HTTP ${p.response.status} ${p.response.url}`
+    : undefined;
+  return line?.trim().slice(0, CONSOLE_LINE_MAX);
+}
 
 function connect(url: string): Promise<Cdp> {
   return new Promise((resolve, reject) => {
@@ -310,6 +355,7 @@ function connect(url: string): Promise<Cdp> {
     let next = 0;
     const calls = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void }>();
     const waiters: Array<{ method: string; sessionId?: string; resolve: (v: any) => void }> = [];
+    const listeners: Array<(method: string, params: any) => void> = [];
     ws.onmessage = (ev) => {
       const msg = JSON.parse(String(ev.data));
       if (msg.id !== undefined) {
@@ -320,6 +366,7 @@ function connect(url: string): Promise<Cdp> {
       } else {
         const i = waiters.findIndex((w) => w.method === msg.method && w.sessionId === msg.sessionId);
         if (i >= 0) waiters.splice(i, 1)[0]!.resolve(msg.params);
+        for (const l of listeners) l(msg.method, msg.params);
       }
     };
     ws.onerror = () => reject(new Error("could not connect to the browser"));
@@ -331,17 +378,26 @@ function connect(url: string): Promise<Cdp> {
         return new Promise((res, rej) => calls.set(id, { resolve: res, reject: rej }));
       },
       once(method, sessionId) { return new Promise((res) => waiters.push({ method, sessionId, resolve: res })); },
+      on(listener) { listeners.push(listener); },
       close() { try { ws.close(); } catch { /* closed */ } },
     });
   });
 }
 
-async function capture(cdp: Cdp, req: ShotRequest): Promise<Uint8Array> {
+async function capture(cdp: Cdp, req: ShotRequest, log: string[]): Promise<Uint8Array> {
   const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await cdp.send("Target.attachToTarget", { targetId, flatten: true });
   const s = (method: string, params?: object) => cdp.send(method, params, sessionId);
   const vp = req.viewport ?? DEFAULT_VIEWPORT;
   await s("Page.enable");
+  if (req.console) {
+    const urls = new Map<string, string>();
+    cdp.on((method, params) => {
+      const line = log.length < CONSOLE_MAX ? consoleLine(method, params, urls) : undefined;
+      if (line) log.push(line);
+    });
+    for (const domain of ["Runtime", "Log", "Network"]) await s(`${domain}.enable`);
+  }
   await s("Emulation.setDeviceMetricsOverride", { width: vp.width, height: vp.height, deviceScaleFactor: 1, mobile: vp.width < 768 });
   await s("Emulation.setEmulatedMedia", { features: [{ name: "prefers-color-scheme", value: req.dark ? "dark" : "light" }] });
   const loaded = cdp.once("Page.loadEventFired", sessionId);
@@ -360,6 +416,9 @@ async function capture(cdp: Cdp, req: ShotRequest): Promise<Uint8Array> {
       await clickSelector(s, evaluate, step.click);
     } else if ("press" in step) {
       await pressKey(s, step.press);
+    } else if ("type" in step) {
+      // Into the focused element (a --click first focuses it), as one paste-like input event.
+      await s("Input.insertText", { text: step.type });
     } else if ("hover" in step) {
       await waitFor(step.hover);
       const { x, y } = await evaluate(`(() => { const r = document.querySelector(${JSON.stringify(step.hover)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);

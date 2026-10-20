@@ -165,8 +165,8 @@ pointer; live worktrees, git, provider-native sessions, and GitHub remain the au
   PRs + worktrees, so enrichment with no branch behind it renders nothing; PRs/worktrees with no
   enrichment still render (incl. PRs not made by Orca). **There is no enrichment GC** — it existed to
   bound a 5MB localStorage bucket, and pruning is now the opposite of the goal. `localStorage` keeps
-  only per-browser UI state (theme, density, composer drafts; the shell's repo, instance scope,
-  sidebar collapse and palette recents, like the Agents list's density, sort and filters, go
+  only per-browser UI state (theme, composer drafts; the shell's repo, instance scope,
+  sidebar collapse and palette recents, like the Agents list's sort and filters, go
   through `lib/persisted.ts` — `persistedAtom` / `usePersisted`, versioned `orca.ui.v1.<name>` keys
   (`persistedKey(name, repo)` for a per-repo value), a safe parse that falls back to the default, and
   a restored repo/instance the config no longer has reads as "all" (`validChoice`); reuse it for new
@@ -197,7 +197,14 @@ the one of `integration.instance`, or for Automatic (`*`, the default) the prima
 that holds the row's lease (`status.auto`, 150 s, renewed each sync — the failover when it lapses). Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents); a
 row holds only the name. An outside sender's message gets a grant (min of link level and person) that
 rides `queued_message.grant_scope`: one grant per orchestrator wake, `orchestrator.tool` refuses
-verbs outside it (`grantRefusal`), and such a wake has no shell; a workstream it spawns or steers
+verbs outside it (`grantRefusal`), and such a wake has no shell. Levels, low to high (Settings
+names in brackets, stored values unchanged): `notify` (Notify), `ask` (Viewer: read verbs, `post` on
+its own link), `work` (Editor: spawn, send, address, status, pr-shots, preview, thread link, stop,
+archive and `merge --when-green` on the link's repos), `admin` (Admin: every verb on those repos,
+plus `move`, `sweep`, `repo add`; named step `20261020-principal-link-admin-level` widened the
+CHECKs), `full` (your own chat only). `status --clear-grant`, `notes set`, `preview
+--push-to-template --confirm` and `handoff create` stay `full` at every level. Pairing approval
+still gives at most `work`. A workstream it spawns or steers
 gets `grantScope` and runs in SCOPED mode (`agent.scopedRules`: `claude -p --permission-mode dontAsk`
 plus allow and deny rules — files in the worktree, git and the toolchain, no secrets, no
 `--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).
@@ -210,6 +217,13 @@ post`, the pairing-code reply), Settings refuses a subscription or Test to one, 
 on a Slack event stays in Orca (the inbox), and the adapter's `send` and `slackApi` refuse writes.
 `/api/slack` (the card's post-as-you button) is not an adapter and still posts; `/api/orchestrator/event` stays for instance-to-instance
 reports, scripts use a signed webhook (`/api/integrations/<id>/inbound`).
+**Linear** (`adapters/linear.ts`, `docs/integrations/linear.md`) polls GraphQL with an `updatedAt`
+cursor and your personal key (`ORCA_SECRET_LINEAR`), so it needs no public URL. An assignment, a
+mention or another person's comment on your issue is `ext.linear.message` in the issue's thread
+(`messageId` = the top-level comment); the place is `project:<id>`, then `team:<KEY>`, then `*`. It
+has no `actor` (the link's level is the grant, no pairing); `Envelope.display` gives the activity row
+its sender and the issue as the place. `orca post --reply` comments as you under that comment
+(`parentId`); a thread-linked issue gets PR state. The card shows `last poll` (`lastPollAt`).
 
 ## Multi-repo (aggregated)
 
@@ -297,12 +311,20 @@ both, so it carries the pack (`server/handoff.ts`, `views/Handoffs.tsx`, table `
 - A pack is a title, a message for the target's orchestrator and files. The file bytes are rows of
   `attachment`. Chats become markdown transcripts.
 - Make one with `orca handoff create --to <server> --title … [--message …] [--file <path|id>]…
-  [--chat <id>]…`, or with Hand off… in a card's menu (it packs that chat). `orca handoff list`.
+  [--chat <id>]…`. `orca handoff list`. The card menu has no Hand off… item any more (removed in the menu redesign).
 - The Handoffs page (`/handoffs`, nav item after Integrations, `G K`) shows each pack in full: the exact message and every file.
+- The orchestrator's chat shows the same row (`HandoffWidget`) under the reply of the turn that made the pack, with Send, Delete and Open on the Handoffs page. The link is the id: `orca handoff create` prints `orca-handoff://<id>`, and `/api/turns` reads it from the turn's tool results (`handoff.linkTurns`, `turn.handoffs`). Never match by time.
 - Send is the ONLY way out: a click, a confirm with the file list, GET `/api/handoffs/<id>/export`
   here, POST `/api/handoff/import` on the target, POST `/api/handoffs/<id>/sent` here.
 - The import stores the files as attachments and queues ONE message to the target's orchestrator:
   `[handoff from <source>] <title>`, the message, the file list. A pack id seen before is a no-op.
+- The Handoffs nav item has a count badge (`HandoffsBadge`, `lib/handoffBadge.ts`, `GET /api/handoffs/badge`):
+  outgoing packs made here and not sent — the only ones waiting on the user's own approval. A
+  received pack needs no approval, so it never counts. The phone shows it in Settings → Navigate.
+  Send or delete clears an outgoing pack. (History: it briefly also counted a received pack not yet
+  seen; Finn asked for outgoing-only.) `handoff.seen_at` (named step `20261020-handoff-seen`) and
+  `POST /api/handoffs/seen` stay: opening the page still marks every received pack seen, for its own
+  "new" tag on that pack's row — unrelated to the badge now.
 - Safety: 10 MB a file, 25 MB a pack. The secret scan (`scanSecrets`: Slack, Anthropic, GitHub, AWS
   keys, private key blocks, `PASSWORD=`) blocks the export AND the import, and names the line only.
 - The import route needs an Origin header, and loopback or a Tailscale user device (the switcher's
@@ -318,8 +340,10 @@ to a middle ground between Geist's flat grays and a first, too-soft pass after r
 `#f9f9f8`/`#fff` light and `#111111`/`#161616` dark, translucent hairline borders rather than flat
 gray, the Geist grays elsewhere, 1px hairlines, no card shadows, `#0070f3` as the one accent,
 status dots and pills as `--geist-*` tokens — all CSS variables in `styles.css`, so every component
-inherits it. **Surface rules** (Finn found the first pass heavy-handed; `tests/console.test.tsx`
-asserts them on every page): 1px hairlines only, never 2px; rows use dividers, never a box inside a
+inherits it. **Surface rules — read `docs/design/surfaces.md` before you touch a fill, border or
+shadow** (four levels: frame, page, raised, overlay; a header shares its body's surface; the composer
+is raised; `tests/surfaces.test.tsx` guards it). In short (Finn found the first pass heavy-handed;
+`tests/console.test.tsx` asserts them on every page): 1px hairlines only, never 2px; rows use dividers, never a box inside a
 card's border; 8px cards (`rounded-lg`), 6px controls (`rounded-md`); 13px body / 12px meta; icons at
 1.5 stroke (a global `svg.lucide` rule); NO shadows except Geist's menu / modal tokens
 (`shadow-menu`, `shadow-modal`) and the orchestrator's side panel (`shadow-modal`); badges are tinted fills
@@ -339,8 +363,8 @@ toggles it, remembered) and a top bar (repo switcher, breadcrumb, and **Ask the 
 right on every page — Vercel's "Ask AI", as a BUTTON: it opens the orchestrator's side panel with its
 composer focused. It was a text box whose keystrokes carried into the composer; the quick-ask pill
 below now covers "fire off a line"). **The quick-ask pill** (`components/QuickAsk.tsx`, the `A` key):
-a small "Ask · A" pill fixed at the bottom centre of the main column (its strip starts where
-the sidebar ends, collapsed or expanded) on every page (desktop; below md the phone's bottom
+a small "Ask · A" pill at the bottom centre of the page card (its strip is absolute in
+`shell-card`, so it moves with the card edge in every frame of a dock slide, a nav change or a resize) on every page (desktop; below md the phone's bottom
 bar has the orchestrator instead) MORPHS (one surface: width, height, radius; instant under reduced
 motion) into a box for messages to the orchestrator with no history — "Ask the orchestrator...", a
 textarea three lines tall that grows to a cap (a JS fallback where `field-sizing` is unsupported), no ✕. Its input
@@ -409,6 +433,9 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   SEPARATELY from "loaded, genuinely nothing" (`useWorkstreamsLoaded` in `store.ts`,
   `useUsageLoaded` in `lib/vitals.ts`): both `useWorkstreams()` and `useUsage()` read `null`/`[]` for
   either case on the wire, which the skeleton can't tell apart from the real value alone.
+  **A failed poll keeps the last good value** (the store's `keepGood` for the agents / PRs / merged
+  streams, the machine card's history and ring in `lib/vitals.ts`): storing the empty fallback made
+  rows, counts and graphs vanish for one cycle and come back — the Overview's flicker.
 - **Agents** (`/agents`, `views/Agents.tsx`): Vercel's Deployments list — one-click **quick
   filter chips**, grouped into families with a muted caption (State: Open PRs, Mergeable, Merged
   today, Not merged; Activity: Running, Needs attention; Repo: one per repo; AND across groups, OR
@@ -420,9 +447,15 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   search, sort; one ~56px row per workstream (repo
   icon + title, latest instruction, status dot + duration, state pill, CI/conflict badges + the
   review cluster, PR, branch, instance, updated, the model as avatar); every action in the trailing
-  ⋯ (`WorkstreamActions menuOnly`). There is no List | Board toggle any more: the list only. As the
-  page (`@container/page`) narrows, Status folds under the title, then Checks & review into the PR
-  cell (`listColumns(tier)`, `LIST_TIER_MIN_REM`); the subline clips, never overlaps.
+  ⋯ (`WorkstreamActions menuOnly`). There is no List | Board toggle any more: the list only. The
+  Workstream column takes the rest (`minmax(0,1fr)`); every other column is as wide as its widest
+  cell (`data-col-part` pieces, measured in a layout effect before paint, `useListLayout`), packed on
+  the right. There are NO fixed breakpoints: as the LIST narrows (its own width, so the docked panel
+  counts), `listLayout` folds Status into the subline, then Checks & review into the PR cell, then
+  the PR, each only when the title would drop under `LIST_TITLE_MIN_PX` (280); past that rows stack as
+  on a phone (re-measured via `afterDockMotion`). Subline items
+  that do not fit leave it behind a `+N` chip (`sublineOverflow`); its popover lists them (hover on
+  a mouse, tap on touch, never opens the row). A stacked row has no instruction line.
 - **Agent page** (the existing `/{repo}/prs/:n` and `/{repo}/local/:branch` routes,
   `views/AgentPage.tsx`): ONE compact sticky header row (`AgentHeader`: repo / title, status, branch
   or PR link, the actions) with the tabs Overview | Chat | Files | Preview directly under it, flush
@@ -437,7 +470,7 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   passing + skipped folded into one expandable line — `checkGroups`), Description and the
   **Conversation** (`prConversation`: chronological like GitHub, a counts line + Jump to unresolved,
   resolved / outdated threads on one line, long bodies behind Show more, bots in ONE folded row).
-- **Settings** (theme, density, the read-only config, then the **Repos** and **GitHub** sections,
+- **Settings** (theme, the read-only config, then the **Repos** and **GitHub** sections,
   `#repos` / `#github`) and **Integrations** (its own nav item). There is no Usage page: the
   Overview's `UsageCard` has every hydra login behind the one remembered chevron
   (`orca.ui.v1.usageExpanded`). Old URLs redirect (`REDIRECTS` in `lib/route.ts`): `/repos`,
@@ -482,11 +515,24 @@ when the board is stale ("Updated 3m ago" — a button: **Refresh everything**, 
 streams, usage, notifications, an open chat, cached review signals — re-runs at once, the icon spins until
 all settle, and past 15s it hard-reloads); an unreachable bridge shows the offline screen.
 
-The board (`web/src/views/Board.tsx`), lanes: **Local → Draft → In Review → Mergeable → Done·today**.
-A workstream is a branch; its lane (`store.laneFor`):
+**The Board** (`/board`, `views/Board.tsx`, the nav entry after Agents): the six lanes of cards,
+with the New-draft box pinned at the top of Local and a density toggle (`densityAtom`). #333 removed
+it; it is back as it was, with the shared `BulkActions`, `NewDraft`, `ConditionBadges` and
+`lib/workstreamHooks`. Settings' **Show Board view** sets `ui.showBoard` in the config document
+(`POST /api/config/ui`, on unless false) for every browser. Off, the nav entry is hidden and
+`/board` is replaced by `/agents`. The Agents list stays the main view. A workstream still has a lane — **Local → Draft → In Review → Verified → Mergeable → Done·today** —
+which the Agents chips, `detailPath` and the bulk verbs (`views/BulkActions.tsx`) read. A workstream
+is a branch; its lane (`store.laneFor`):
 - **open PR, draft** → Draft. **open PR, approved** → Mergeable. **open PR, else** → In Review.
 - **no PR** → Local, until Promote (local repo: sets `promoted`; then Mergeable if `git merge-tree`
   is clean, else In Review). **merged today** (server-local calendar day) → Done (`gh pr list --state merged`).
+- **Verified** (between In Review and Mergeable): the user sets it by hand after a test of the PR.
+  It is a marker only — no merge, nothing to GitHub. It is enrichment `verified` `{ by, at, sha, pr }`
+  (no table). Set and clear it with the PR card's Verify button, the ⋯ menu and the PR page header
+  (`VerifiedButton`), or `orca status --verified | --unverified` on the user's word. A fresh mark on
+  an open, unapproved PR moves it to Verified (`verifiedLane`). A new head commit (`sha` ≠ the PR's
+  head) puts it back in In Review with an amber "Changed since verified" pill (`verifiedState`,
+  `prPill`). Approval still wins: Mergeable. The Agents list has a Verified chip (`?pr=verified`).
 
 Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
 - **A failed action is a notification, never text in the row** — kind `action_failed`, in the ONE
@@ -595,7 +641,10 @@ opened from the card's terminal button, rendering `ChatPanel` (`web/src/views/Ch
 whole conversation from `GET /api/turns` in the orchestrator's chat styling (your messages as bubbles,
 the agent's reply under its provider's name), plus the follow-up `ChatComposer` to send the next
 message. Every `ChatComposer` has the **`@` PR picker** (`prTrigger`: `@` at the start or after a
-space/bracket lists the board's polled PRs; a pick inserts `#123`, or `repo#123`). It opened on `#`
+space/bracket lists the board's polled PRs; a pick inserts `#123`, or `repo#123`). Enter on a
+markdown list line (`- `, `* `, `1. `, `- [ ] `) starts the next item with the same marker and
+indent, and Enter on an empty item removes the marker (`listContinuation`); there it does not send,
+but ⌘/Ctrl+Enter does. It opened on `#`
 until Finn asked for `@`; `#` now opens nothing. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
 involved. Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every
 board action uses. A turn written at launch but not yet finished renders as `▋ working…` (that's how
@@ -612,7 +661,7 @@ Enter did nothing meanwhile.) A failed send comes back into the box if it is sti
 the error line (`<error> — not sent: “<text>”`), so neither message is lost. (History: this
 was briefly a detail-page "Chat" tab; the user asked for it as a terminal-style modal instead, and the
 tab was removed. The Vercel re-brief brought it back on the agent page — as its Chat tab and in
-Build Logs' place — alongside the modal, which the Board's cards and New chat still open.)
+Build Logs' place — alongside the modal, which an Agents row and New chat still open.)
 
 `web/src/workstream.ts` is the pure state machine (no React/IO — imported by store + tests):
 
@@ -640,7 +689,7 @@ its own and is the `@container/page` a page's layout should query (the Overview 
 window; a phone keeps the window's scroll. The edge resizes by drag or by arrow keys. **Open / close
 is branch-demo's right panel**: the panel renders INTO the dock (a portal) at its full width, shows at
 dock width 0 in the commit that opens it, and the dock's width opens on the next frame (a real 150ms
-`width` transition, none while dragging); closing moves the width in the click's OWN commit (the dock
+`width` + `min-width` transition, ease-out, min-width 0 when closed, none while dragging; the nav uses the same ease-out); closing moves the width in the click's OWN commit (the dock
 width is published from a layout effect keyed on `open && expanded`). A closed panel stays mounted —
 draft and scroll kept — clipped by the 0-wide dock, `aria-hidden`, and a focus guard once idle.
 **Measured rules (CDP traces of the production build, 4× CPU, a long orchestrator thread; method and
@@ -654,8 +703,11 @@ not subscribe to the orchestrator's open atom (it re-rendered the page). Measure
 build: dev-mode React is 3–5× slower, and an Orca preview runs dev mode.
 The page and the dock are TWO raised cards with the shell's 6px gutter between them
 (a closed dock's negative start margin cancels it); only `width` and `margin-inline-start` animate. While the dock
-or the nav animates, the page frame (`page-frame`, the `@container/page`) is held at its END width
-(`frozenPageWidth`), so the content lays out once and only the card edge moves. Nothing in the page
+or the nav animates, the page frame (`page-frame`, the `@container/page`) follows the card edge in
+EVERY frame (Finn: the content must move with the edge; PR 328's hold at the END width was wrong).
+It stays cheap with CSS only: `contain: layout paint` on the column and the frame, and
+`content-visibility: auto` on the Agents rows. `?probe=motion` (`lib/motionProbe.ts`) logs each
+slide's frames and the page / pill distance from the card edge. Nothing in the page
 may set React state per frame meanwhile: measure through `afterDockMotion` (`lib/dock.ts`); the page
 column has `contain: layout paint`, so a `fixed` element in a page must portal to `<body>`. `role=dialog`
 `aria-modal=false` — no backdrop, the board it is moving stays visible and usable; Esc or ✕ closes
@@ -732,7 +784,8 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   — old one kept as `<template>_bak_<ts>` — and writes its integration env vars back to the main
   checkout's copied `.env`; dry run without `--confirm`, values masked — README), `merge`
   (`--repo r (--pr N | --branch b) --when-green [--small]` or `--cancel`: the merge queue), `chats`,
-  `read`, `notes`.
+  `read`, `notes`, and **`machine [--on <instance>] [--json]`** — what the machine card shows, as plain
+  text (below, "Machine metrics history").
 - **Merge queue — merge on green with nobody watching CI** (`server/mergeQueue.ts`, decisions in
   `workstream.ts` `mergeVerdict` / `mergeRefusal`). A PR — or a branch with no PR yet — is MARKED
   (`mergeWhenGreen` on its enrichment, so shared and restart-proof) by `orca merge --when-green`, the
@@ -823,6 +876,17 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   copy `.env` for the test database), open a PR, and pull `main` into the checkout deliberately —
   a restart is survivable now, but it is still a restart. This supersedes "commit straight to main"
   below for this repo.
+- **Bridge memory is bounded** (2026-10-18: 3 GB plus 2.7 GB swap in 9 hours on a small box). A
+  run's stdout keeps only the lines the exit parse reads (`agent.keepForOutcome`), never the whole
+  stream; stderr is a tail. An SSE stream whose unread backlog passes `MAX_BACKLOG_CHARS` is errored
+  (its queue dropped) and the client reopens it. The ETag cache has a size bound. `agent.pruneRuns`
+  drops finished runs of worktrees that are gone. `scripts/memory-harness.ts` measures it
+  (`tests/bridgeMemory.test.ts`).
+- **A queued message is never lost and never skipped.** The queued launch (`verbs.launchQueued`)
+  takes the handover ladder like a typed follow-up (it once started a NEW session each time). A
+  failed launch puts its message back (`db.releaseQueuedMessage`). A send on an idle worktree with
+  older queued messages queues behind them and drains the queue (`agent.drainQueue`). Stop waits up
+  to `agent.stopGrace` for the stopped process before the queue resumes its session.
 - **Server-side verbs** (`server/verbs.ts`): create / follow up / Address PR existed only in the
   browser store, which a server-side caller can't reach. They are built from the same pure pieces —
   the prompts and `continuation()` (the handover-ladder decision, now in `workstream.ts` and used by
@@ -1037,7 +1101,13 @@ silent for `PREVIEW_STALE_MS`. **URLs are per viewer:** a service carries `url`,
 loopback — its own preview bound to 127.0.0.1, or a forward (`server/forward.ts`). **The tailnet
 `url` is the default everywhere; the forward is the exception**, only for a repo with
 `previewSecureContext: true` (branch-demo: `crypto.randomUUID` is undefined on a plain-http tailnet
-name, the page was blank, and the tailnet has no HTTPS certs). For such a repo, when a preview status
+name, the page was blank). **Such a repo is also served over HTTPS on the box** (`server/tsserve.ts`):
+`preview.start` runs `sudo -n tailscale serve --bg --https=<H> http://127.0.0.1:<port>` per service
+(`<H>` from `portRange`, which the tailnet ACL admits; `httpsNextPort` adds H+1 → port+1 for a
+collab socket), `url` becomes `https://<ts.net name>:<H>`, commands read it as `{url:<svc>}` and
+`{hosts}` (`preview.expandCommand`), and stop removes exactly those entries. On when
+`ORCA_PREVIEW_BIND` is not loopback and the tailnet grants a cert (`ORCA_PREVIEW_HTTPS` 1/0
+overrides); a failed serve falls back to plain http. For such a repo, when a preview status
 is relayed from its owner (or listed for a page served from localhost — the owner tags each published
 row `secureContext`, since the viewer can't map the owner's path to a repo), the opened service's
 port is forwarded on loopback here. Without the flag no forward is opened and every device gets the
@@ -1055,7 +1125,7 @@ read yet, so its own preview would 403 the same way for a viewer not on localhos
 Plain TCP, so
 Vite's HMR websocket rides it; dropped on stop; a port a local preview holds gets no `localUrl`. The
 browser opens `localUrl` only from a page on localhost (`previewHref`), else `url` — a phone opens the
-owner's tailnet URL, which still lacks a secure context until the tailnet has HTTPS certificates.
+owner's `url` — the HTTPS ts.net one for a `previewSecureContext` repo on the box.
 **Attachments are in the database, not on a host** (`server/attachments.ts`, migration 16): the
 upload stores the bytes (20 MB per file, pruned past 30 days) and answers `orca-attachment://<id>/<name>`
 references in its `paths` field; `agent.launch` — the one place every launch passes, whether queued,
@@ -1085,10 +1155,31 @@ cell), so retention
 needs no second timer; a failed write is logged and swallowed. `GET /api/health/history?instance=&hours=`
 (24 by default, at most 720) is database-only and its `instance` is a filter, never a forward, so
 either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
-CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300
-points, one line each (no overlay — the running sessions are their own chart). Beside them, in the
-same `LineChart` design, an **Agents** chart (`running_agents` over time) and **Disk used** (axis to
-the disk's size; worktrees, preview databases and test containers are what fill the box).
+CPU and memory over 1h / 6h / 24h / 7d as inline SVG (no charting dependency). Over 6 hours they are
+one line each from this history, downsampled to ~300 points. **Up to 6 hours they come from the
+bridge's own 15 s ring** (`server/liveMetrics.ts`, in memory, no table, emptied by a restart;
+`GET /api/health/live?hours=`, forwarded by `?instance=` like `/api/health`): the WHOLE box, never
+split by workstream (Finn's call) — CPU as stacked work + hatched iowait (0–100 % of all cores; load
+is a number in the caption and tooltip, never a second axis), Memory as stacked used + cache under a
+dashed agents-slice MemoryMax, and **Disk IO** (root device read + write MB/s under a dashed cap,
+`ORCA_DISK_CAP_MBS`, default 125 — the gp3 baseline; the 2026-10-19 IO stall looked like CPU on the
+old line). On macOS (no `/proc`) the ring reads CPU from `os.cpus()` (iowait 0), and memory
+(`vm_stat`) and disk (`ioreg` byte counters) take turns, one small spawn a tick (`createDarwinSampler`).
+The card's Status reads Online from a fresh sample too (`instanceStatus`). `StackedChart` (`components/console.tsx`) is their chart; hover or tap opens the shadcn
+tooltip with the values at that time. An older bridge without the route keeps the lines. Beside them,
+in the `LineChart` design, an **Agents** chart (`running_agents` over time). There is no Disk used
+chart any more (removed at Finn's request, #359): the disk figure stays in the details grid's **Disk**
+cell (worktrees, preview databases and test containers are what fill the box), and Disk IO (above)
+covers throughput for the ranges it's available for. **`orca machine`**
+(`GET /api/machine`, `liveMetrics.machineReport`; a read verb) gives the orchestrator the SAME numbers
+as the card, from the same ring through the same `liveAnswer` and the card's own `liveCharts`
+(`workstream.ts` `machineSummary` / `machineText`), so the two never disagree and lag at most one
+15 s sample: now (the newest sample), 5 min and 1 h for CPU work %, iowait %, load per core, disk
+read / write MB/s, memory used / cache / available GB, swap used GB and OOM kills, plus the heavy
+queue's running and queued counts. `--on` reads another instance's `/api/machine`; `--json` prints
+the report with the last hour's raw samples. There is
+no Bridge memory chart any more (removed at Finn's request); `bridgeRssMb` is still on `/api/health`
+and recorded in `instance_metric.bridge_rss_mb` (named step `20261019-instance-metric-bridge-rss`).
 **OOM kills** are red marks on the Memory chart, counted in its caption: a run the cgroup ceiling
 killed (`server/cgroup.ts`) bumps `health.noteOomKill`, and the next sample writes the count to
 `instance_metric.oom_kills` (named step `20261013-instance-metric-oom-kills`; a failed write carries
@@ -1173,6 +1264,11 @@ back. A failed install or build never restarts the service — the old build kee
 log tail goes to `~/.orca/autodeploy.log` (one line per tick). Pause it with
 `systemctl stop orca-autodeploy.timer`; `deploy/bootstrap.sh` installs and enables it, scoped by
 `deploy/orca-autodeploy.sudoers` to exactly `systemctl restart orca` for the `orca` user.
+**A Mac updates itself the same way** (`deploy/install-local-autodeploy.sh`, docs/SETUP.md "Local
+machine"): a `dev.orca.bridge` LaunchAgent runs the BUILT bridge (not `bun run dev`, whose watch
+restarts the bridge on the pull, before install and build pass) and `dev.orca.autodeploy` runs the
+same `autodeploy.sh` each minute with `ORCA_AUTODEPLOY_MODE=launchd`: it skips a checkout off `main`
+or with uncommitted tracked changes, and restarts with `launchctl kickstart -k`.
 **Orphan reaper:** a preview that dies with a bridge crash, a reaped worktree, or a worker's own
 test run leaves its `orca_*` database behind — nothing else drops it, and the box had 8 of them
 (~6.6 GB) accumulate before `server/preview.ts`'s `reap()` existed. It runs at startup and hourly
@@ -1211,6 +1307,13 @@ Postgres and Tailscale are untouched: they are separate systemd units, never chi
 `orca.service`, so they were never inside either limit — the two settings just make sure nothing
 Orca does crowds them out of the 15% left over.
 
+**Agent OOM score and slice** (`server/cgroup.ts`; the 2026-10-18 OOM): agents inherited the
+bridge's `oom_score_adj` -500, so a memcg OOM killed the user manager instead. Every agent now
+starts at +500 through a `sh` wrapper (`withOomScore` — never `-p OOMScoreAdjust=` on a scope: systemd
+255 refuses it and every run fails) and runs in `orca-agents.slice`, whose `MemoryMax` the bridge sets
+before each launch. A user manager that does not answer (lingering on) starts the run unscoped. When
+a run ends (an adopted one too), `agent.stopRunScope` stops its `orca-run-<runId>.scope`, after the
+OOM read: a dev server or build the worker left behind dies with it (2026-10-19: 1.7 GB for 14 min).
 **Screenshots** (`server/screenshot.ts`): workers can't run a browser (the OOM above), so the bridge
 runs ONE — `POST /api/screenshot` (url, viewport, dark, wait-for, click/scroll/wait steps) queues on a
 box-wide queue (one capture at a time), launches a fresh `chrome-headless-shell` over CDP inside its
@@ -1220,7 +1323,43 @@ own `systemd-run --user --scope` (`cgroup.scopedCommand`, `MemoryMax=1.5G`, no s
 serves it. Workers get `bin/worker/` on PATH (`agentEnv` — not `bin/`, whose `orca` is the
 orchestrator's) and `orca-shot <url> [--viewport 390x844] [--dark] …`, which prints `shot: <path>`;
 every worker prompt says it is the ONLY way to take a screenshot (`SCREENSHOTS`), and shot paths in a
-reply ride the worker report (`reportedShots` in `workerEvent`).
+reply ride the worker report (`reportedShots` in `workerEvent`). `--type <text>` types into the
+focused field.
+**Heavy commands** (`server/heavy.ts`): agents ran Playwright, Jest, eslint and builds at once and
+OOM-killed each other in `orca-agents.slice`. Finn removed the slice's CPUQuota: this queue is the
+ONLY CPU control, so it must see every heavy task. A box-wide slot queue, like `orca-shot`'s but with
+N slots. Kinds: e2e, test, lint, build, migrate, serve (a local server for a test). Limits per kind
+and in total, plus a CPU cost per kind against `cpuBudget` (defaults: e2e 1.5, build 1.5, test 1,
+lint 1, migrate 0.5, serve 0.5; budget 3 on the 4 vCPU box), and a memory cap per kind
+(`memoryMaxGb`: e2e, lint, build 6 GB, test 4, others 2) whose running sum stays under the agents'
+slice MemoryMax minus 3 GB (only with a user bus; a 3 GB cap made a 3.5 GB `tsc` thrash
+node_modules off EBS, 2026-10-19) — all `heavyQueue` in the app config.
+FIFO across the budget and the total (a small job never passes a large one); only a full kind is
+skipped. A max wait, and a max run time per kind (serve 60 min, the rest 30). Workers run `orca-run
+[--kind …] -- <cmd>` (`bin/worker/orca-run`, `POST /api/heavy`, NDJSON like `/api/screenshot`): the
+slot lives as long as the held request, so a killed CLI frees it; `agent.launch` puts `ORCA_RUN_ID`
+in the run's env and its exit calls `releaseRun`; a sweep frees a dead pid or a slot past its max
+run time and stops its command. Each granted command runs in its own capped scope in
+`orca-agents.slice` when the box has a user bus. `bin/worker/.heavy-shim` is linked as every heavy
+tool, as npx/bunx, as npm/pnpm/yarn/bun (by the package script's NAME — npm puts node_modules/.bin
+first, so a script's own tools never reach a shim; `npm ci` / `npm install` are builds) and as bash (`bash <file>` by the file's name);
+jest and `playwright test` get one worker unless the call sets one. `ORCA_RUN_SLOT` stops a nested
+call from queueing again, and `ORCA_RUN_BYPASS=1` is the escape hatch. Every worker prompt carries
+`HEAVY_COMMANDS`. With no bridge, `orca-run` runs the command anyway. The machine card lists running
+and queued commands and the CPU in use (`heavy` on `/api/health`, `heavyQueueRows`).
+**No worker browsers** (2026-10-19: branch-demo's committed `.mcp.json` started playwright and
+chrome-devtools MCP servers in every worker; seven of each, with Chrome, pushed load to 29 on 4 cores).
+Two guards. (1) `server/mcp.ts`: every claude launch gets `--strict-mcp-config` and Orca's own
+`--mcp-config` — only the repo's `mcpAllow` servers from its `.mcp.json` (default none; the
+orchestrator: all of its cwd's), never a browser server — plus `--disallowedTools
+mcp__playwright,mcp__chrome-devtools`. (2) `server/browserWatch.ts`: every 30 s the primary kills a
+browser or browser MCP server in `orca-agents.slice` outside orca-shot's scope and the test queue's
+`orca-heavy-*` slots, and records it on the card (`browserKilled`, a "Browser killed" pill) and as
+a step in the run's transcript. The same pass kills an ORPHAN run scope: an `orca-run-<runId>.scope`
+that no lease file on this host names (a test's run with its own state dir), seen on two passes in a
+row. The `.heavy-shim` skips every directory with a `.heavy-shim` (two shim copies on PATH once
+exec'd each other forever) and exits 127 when only shims are left. Until `bin/worker/orca-run` exists, a browser under `playwright
+test` is kept as a test.
 **Screenshots in PRs and on the agent page** (`server/prShots.ts`): shots are not stored per turn —
 `workstreamShots` reads them off the branch's turns (reply + Verification). The newest
 `PR_SHOTS_MAX` (6) go into the PR body's `## Screenshots` section (`withScreenshotsSection`: replaced

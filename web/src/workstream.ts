@@ -7,6 +7,7 @@ import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models
 import { SNIPPETS, WRITING_STYLE } from "../../shared/writingStyle";
 import { asksForInput } from "../../shared/notifications";
 import { integrationMessage, type IntegrationMessage } from "../../shared/integrations";
+import type { LiveSample } from "../../server/liveMetrics";
 export { attachCommand } from "../../shared/agent";
 
 // Kanban lanes are driven by the REVIEW lifecycle only. Conflict / CI / mergeability
@@ -125,6 +126,96 @@ export function prMenuActions(row: PrMenuRow): PrMenuAction[] {
   return actions;
 }
 
+/** The agent page a row opens: its PR page, or its local-session page (null for a finished local). */
+export function detailPath(row: { repo: string; branch: string; lane?: string; prNumber?: number }): string | null {
+  if (row.prNumber) return `/${row.repo}/prs/${row.prNumber}`;
+  if (row.lane !== "DONE" && !row.branch.startsWith("opt-")) return `/${row.repo}/local/${encodeURIComponent(row.branch)}`;
+  return null;
+}
+
+// The workstream actions menu (WorkstreamActions: the ⋯, the right-click menu and the phone sheet),
+// Finn's layout: Open ▸, Copy ▸, Merge ▸, PR ▸, Agent ▸, Slack ▸, then Verified, Rename,
+// Close/Discard (those three are not decided here). An item that does not apply is left out, and an
+// empty group is not shown. Enable/Disable auto-merge is the last item of PR ▸.
+export type MenuGroup = "open" | "copy" | "merge" | "pr" | "agent" | "slack";
+export type MenuItemId =
+  | "open.chat" | "open.pr" | "open.preview" | "open.ci" | "open.orchestrator"
+  | "copy.branch" | "copy.prLink" | "copy.prMarkdown" | "copy.slack" | "copy.preview" | "copy.worktree" | "copy.cli"
+  | "merge.now"
+  | "pr.markReady" | "pr.moveToDraft" | "pr.address" | "pr.addPreview" | "pr.previewPending" | "pr.autoMerge" | "pr.create" | "pr.createDraft" | "pr.promote"
+  | "agent.stop" | "agent.resolveConflicts" | "agent.move"
+  | "slack.send" | "slack.bump";
+export type MenuRow = PrMenuRow & {
+  repo: string; branch: string; lane?: string; hasRemote?: boolean; remote?: boolean;
+  worktreePath?: string; agentStatus?: string; hasPreviewLabel?: boolean;
+};
+
+/** Which items each group of the actions menu shows for a row, in order. Pure. `previewConfigured`:
+ *  the repo has PR previews; `moveTargets`: the other instances a worktree can move to. */
+export function workstreamMenu(row: MenuRow, ctx: { previewConfigured: boolean; moveTargets: number }): Record<MenuGroup, MenuItemId[]> {
+  const isPr = Boolean(row.prNumber);
+  const ciFailing = row.ciStatus === "failing";
+  const conflicting = row.mergeable === "CONFLICTING" || row.mergeClean === "conflict";
+  const pick = (pairs: Array<[boolean, MenuItemId]>) => pairs.filter(([on]) => on).map(([, id]) => id);
+  const preview = prPreviewState(row, ctx.previewConfigured);
+  return {
+    open: pick([
+      [Boolean(detailPath(row)), "open.chat"],
+      [Boolean(row.prUrl), "open.pr"],
+      [Boolean(row.previewUrl), "open.preview"],
+      [Boolean(row.prUrl) && ciFailing, "open.ci"],
+      [true, "open.orchestrator"],
+    ]),
+    copy: pick([
+      [true, "copy.branch"],
+      [Boolean(row.prUrl), "copy.prLink"],
+      [Boolean(row.prUrl), "copy.prMarkdown"],
+      [isPr && Boolean(row.prUrl), "copy.slack"],
+      [Boolean(row.previewUrl), "copy.preview"],
+      [true, "copy.worktree"], // adopts a missing worktree first
+      [!row.remote, "copy.cli"],
+    ]),
+    merge: pick([
+      // A PR: no conflicts and CI not failing (approval is a team norm GitHub enforces). A local
+      // branch: the promoted, clean Mergeable lane.
+      [isPr ? !row.isDraft && row.mergeable === "MERGEABLE" && !ciFailing : row.lane === "MERGEABLE", "merge.now"],
+    ]),
+    pr: isPr
+      ? pick([
+        [Boolean(row.isDraft), "pr.markReady"],
+        [!row.isDraft, "pr.moveToDraft"],
+        [true, "pr.address"],
+        [preview === "add", "pr.addPreview"],
+        [preview === "pending", "pr.previewPending"],
+        [!row.isDraft, "pr.autoMerge"], // GitHub rejects auto-merge on a draft
+      ])
+      : row.lane === "LOCAL"
+        ? (row.hasRemote ? ["pr.create", "pr.createDraft"] : ["pr.promote"])
+        : [],
+    agent: pick([
+      [row.agentStatus === "running" && Boolean(row.worktreePath), "agent.stop"],
+      [!isPr && conflicting, "agent.resolveConflicts"],
+      [Boolean(row.worktreePath) && ctx.moveTargets > 0, "agent.move"],
+    ]),
+    slack: isPr ? ["slack.send", "slack.bump"] : [],
+  };
+}
+
+/** The PR as a markdown link, `[Title](url)`, for Copy ▸ PR as markdown link. */
+export const prMarkdownLink = (row: { title: string; prUrl?: string }): string =>
+  `[${row.title.replace(/[[\]]/g, "\\$&")}](${row.prUrl ?? ""})`;
+
+/** Where Open ▸ Failing CI run goes: the PR's checks tab on GitHub, which lists the failed runs. */
+export const failingCiUrl = (row: { prUrl?: string; ciStatus?: CiStatus }): string | undefined =>
+  row.prUrl && row.ciStatus === "failing" ? `${row.prUrl.replace(/\/$/, "")}/checks` : undefined;
+
+/** The text Open ▸ Orchestrator puts in its composer (not sent): the card's name and its PR. */
+export function orchestratorAbout(row: { repo: string; branch: string; title: string; prNumber?: number }): string {
+  return row.prNumber
+    ? `About ${row.repo}#${row.prNumber} "${row.title}": `
+    : `About ${row.repo} branch ${row.branch} "${row.title}": `;
+}
+
 // Lane-level bulk actions: the same per-card verbs, fired across every card in a swimlane. Which
 // verbs a lane offers is fixed (they mirror what that lane's cards can do); WHICH cards each one
 // runs on is state-gated exactly like the per-card menu, so a bulk "Fix CI" only touches the cards
@@ -188,6 +279,7 @@ const BULK_LANE_ACTIONS: Partial<Record<string, BulkAction[]>> = {
   LOCAL: ["testLocally", "promote", "promoteDraft", "promoteReady", "resolveConflicts", "discard"],
   DRAFT: ["markReady", "addressPr", "follow", "unfollow", "addPreview", "copyLink", "closePr"],
   IN_REVIEW: ["slackNotify", "slackBump", "markReady", "moveToDraft", "autoMerge", "disableAutoMerge", "follow", "unfollow", "addPreview", "copyLink", "addressPr", "merge", "closePr"],
+  VERIFIED: ["slackNotify", "slackBump", "moveToDraft", "autoMerge", "disableAutoMerge", "follow", "unfollow", "addPreview", "copyLink", "addressPr", "merge", "closePr"],
   MERGEABLE: ["merge", "slackNotify", "slackBump", "autoMerge", "disableAutoMerge", "follow", "unfollow", "addPreview", "copyLink", "addressPr", "closePr"],
   DONE: ["copyLink"], // nothing left to do but grab the links (standup / status posts)
 };
@@ -267,7 +359,7 @@ const NO_PR = "Do NOT open a pull request or run `gh pr create` — stop after c
 // The box can't afford a browser per worker (an OOM took it down), so the bridge runs ONE capped,
 // queued browser (server/screenshot.ts) and this is how a worker reaches it. Shot paths in the reply
 // ride into the orchestrator's report (`workerEvent`).
-export const SCREENSHOTS = "To see a UI, the ONLY allowed way to take a screenshot is `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--press <key>] [--hover <sel>] [--scroll <y|sel>] [--label before|after]` (it queues on Orca's one memory-capped browser and prints `shot: <path>`; Read the PNG to look at it). `--click` is a real mouse click, so it opens a Radix UI dropdown/menu trigger (those open on pointerdown, not plain `click`); `--press <key>` sends a named key (Enter, Escape, ArrowDown, …), repeatable and ordered with `--click`, for navigating a menu once it's open. Never launch a browser, Playwright or Puppeteer yourself. Screenshots are optional: commit and push your work FIRST, then take one only if it helps; if it times out or the queue is busy, give up and move on rather than retrying. For a UI change, list each before/after `shot: <path>` line in your Verification. To run Orca itself for a screenshot, use `scripts/preview-orca.sh` (a read-only preview bridge) — never start `server/index.ts` or `bun run dev` directly: a full bridge left running from a worktree acts on the shared database with stale code.";
+export const SCREENSHOTS = "To see a UI, the ONLY allowed way to take a screenshot is `orca-shot <url> [--viewport 390x844] [--dark] [--wait-for <sel>] [--click <sel>] [--press <key>] [--type <text>] [--hover <sel>] [--scroll <y|sel>] [--label before|after] [--console]` (it queues on Orca's one memory-capped browser and prints `shot: <path>`; Read the PNG to look at it). If a page shows blank or a spinner, add `--console` to print its exceptions and failed requests. `--click` is a real mouse click, so it opens a Radix UI dropdown/menu trigger (those open on pointerdown, not plain `click`); `--press <key>` sends a named key (Enter, Escape, ArrowDown, …), repeatable and ordered with `--click`, for navigating a menu once it's open. `--type <text>` types into the focused field (`--click` it first). Never launch a browser yourself: chrome-devtools-mcp, playwright-mcp, @playwright/mcp, Playwright browser launches outside tests and puppeteer are banned. orca-shot is the only way to look at a page. Orca kills any other browser in an agent's scope and flags the workstream. Run Playwright e2e tests only in the test queue's e2e slot (`orca-run --kind e2e -- <command>`). Screenshots are optional: commit and push your work FIRST, then take one only if it helps; if it times out or the queue is busy, give up and move on rather than retrying. For a UI change, list each before/after `shot: <path>` line in your Verification. To run Orca itself for a screenshot, use `scripts/preview-orca.sh` (a read-only preview bridge) — never start `server/index.ts` or `bun run dev` directly: a full bridge left running from a worktree acts on the shared database with stale code.";
 
 // A headless run narrates almost nothing by default: one real run produced 11 text blocks against 97
 // tool calls, so the chat showed a list of commands and nothing about why. Claude's own reasoning is
@@ -283,6 +375,10 @@ const NARRATE = [
   "  reveals a different cause — say so, and say what you're doing instead.",
   "Keep it brief and factual. This is a running commentary, not a report; the summary comes at the end.",
 ].join("\n");
+
+/** The heavy-command rule (server/heavy.ts, bin/worker/orca-run), in every worker prompt beside
+ *  SCREENSHOTS: several agents share one box, and parallel test runs OOM-killed each other. */
+export const HEAVY_COMMANDS = "This box is shared with other agents, and the box-wide queue is its only CPU control. Run every heavy command through it: `orca-run --kind test|lint|build|e2e|migrate|serve -- <command>`. Heavy means a test runner (jest, vitest, bun test, pytest), Playwright, eslint, prettier, tsc, a frontend or backend build, a database migration, and a local backend or frontend that a test needs. `orca-run` waits for a slot, prints its place in the line, then runs the command and returns its exit code. The heavy tools, `npm`/`pnpm`/`yarn`/`bun` package scripts and `bash <test script>` on your PATH already queue. Never run a whole suite: run only the test files your change touches. Do not set ORCA_RUN_BYPASS=1 for a heavy command.";
 
 /** Prompt used to launch the headless agent — Orca already created it from the latest base.
  *
@@ -310,6 +406,7 @@ export function launchPrompt(ws: Pick<Workstream, "title" | "branch" | "prompt">
     NARRATE,
     NO_PR,
     SCREENSHOTS,
+    HEAVY_COMMANDS,
   ].join("\n"));
 }
 
@@ -373,7 +470,7 @@ export function slackPrompt(
 /** Follow-up instruction for an agent already working a branch (resumes its session). */
 export function followUpPrompt(instruction: string, opts: { mergeWhenGreen?: boolean } = {}): string {
   const mergeNote = opts.mergeWhenGreen ? "\n\n(This PR is marked merge-when-green: Orca's merge queue holds the mark and waits for this run — and anything queued behind it — to finish, then merges once CI is green on your latest push. Commit and push as usual; no separate merge step needed.)" : "";
-  return withOutcomeContract(`${instruction}${mergeNote}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}\n${SCREENSHOTS}`);
+  return withOutcomeContract(`${instruction}${mergeNote}\n\nThis is an incremental follow-up. Preserve completed work; files and git are authoritative. Change only what is related to this follow-up.\n${SESSION_START}\nWork autonomously. Verify in proportion to risk, then commit and push your changes.\n${NO_PR}\n${SCREENSHOTS}\n${HEAVY_COMMANDS}`);
 }
 
 // Every session starts with no memory of the last one, so it starts by looking: the same three-line
@@ -413,6 +510,7 @@ export function chatPrompt(instruction: string, opts: { mergeWhenGreen?: boolean
     SESSION_START,
     NO_PR,
     SCREENSHOTS,
+    HEAVY_COMMANDS,
     "",
     WRITING_STYLE,
     "",
@@ -824,6 +922,7 @@ export function addressPrPrompt(ws: Pick<Workstream, "prNumber" | "branch">, par
     ...reviewLines(ws, parts.feedback, parts.threads, parts.followed, parts.comments),
     NO_PR,
     SCREENSHOTS,
+    HEAVY_COMMANDS,
   ].join(" "));
 }
 
@@ -1518,6 +1617,19 @@ export function upkeepLabel(rec: UpkeepRecord | undefined, running: boolean): st
   return undefined;
 }
 
+/** The browser watchdog's record on a workstream (server/browserWatch.ts). */
+export type BrowserKillRecord = { at: string; runId?: string; names: string[]; count: number };
+/** How long the card shows a browser kill. */
+export const BROWSER_KILL_SHOW_MS = 24 * 60 * 60_000;
+
+/** The card's warning for a browser the watchdog killed: shown for a day after the last kill. Pure. */
+export function browserKillLabel(rec: BrowserKillRecord | undefined, now = Date.now()): string | undefined {
+  if (!rec?.count) return undefined;
+  const at = Date.parse(rec.at);
+  if (!Number.isFinite(at) || now - at > BROWSER_KILL_SHOW_MS) return undefined;
+  return `Orca killed ${rec.count} browser process${rec.count === 1 ? "" : "es"} this workstream started (${rec.names.join(", ")}). Use orca-shot.`;
+}
+
 /** The body Orca opens a finished worker's PR with: its outcome, decisions and verification, then
  *  the commits — what a reviewer needs, from what the worker already reported. Pure. */
 export function workerPrBody(input: { outcome?: AgentOutcome; response?: string; commits: string[] }): string {
@@ -1573,7 +1685,7 @@ export function orchStatusText(s: OrchStatus | undefined): string {
 /** One line of the board as the orchestrator reads it. */
 export type BoardRow = {
   repo: string; branch: string; title?: string; worktreePath?: string; agent: string;
-  pr?: { number: number; isDraft?: boolean; reviewStatus?: string; ciStatus?: string; mergeable?: string; merged?: boolean };
+  pr?: { number: number; isDraft?: boolean; reviewStatus?: string; ciStatus?: string; mergeable?: string; merged?: boolean; verified?: VerifiedState };
   check?: boolean; orchestrated?: boolean; last?: string;
   /** The instance holding its worktree, when there is more than one instance. */
   instance?: string;
@@ -1584,7 +1696,7 @@ export function boardText(rows: BoardRow[]): string {
   if (!rows.length) return "(no workstreams)";
   return rows.map((r) => {
     const pr = r.pr
-      ? r.pr.merged ? `PR #${r.pr.number} merged` : `PR #${r.pr.number}${r.pr.isDraft ? " draft" : ""}${r.pr.reviewStatus ? ` review:${r.pr.reviewStatus}` : ""}${r.pr.ciStatus ? ` ci:${r.pr.ciStatus}` : ""}${r.pr.mergeable === "CONFLICTING" ? " CONFLICTS" : ""}`
+      ? r.pr.merged ? `PR #${r.pr.number} merged` : `PR #${r.pr.number}${r.pr.isDraft ? " draft" : ""}${r.pr.reviewStatus ? ` review:${r.pr.reviewStatus}` : ""}${r.pr.ciStatus ? ` ci:${r.pr.ciStatus}` : ""}${r.pr.mergeable === "CONFLICTING" ? " CONFLICTS" : ""}${r.pr.verified === "verified" ? " verified-by-user" : r.pr.verified === "changed" ? " changed-since-user-verified" : ""}`
       : "no PR";
     return [
       `${r.repo}/${r.branch}${r.title ? ` "${r.title}"` : ""}`,
@@ -1612,6 +1724,9 @@ export function repoLabel(repos: ReadonlyArray<{ name: string; owner?: string }>
 
 const ORCA_COMMANDS = [
   "  orca board                      every workstream: PR state, agent status, Orca's check verdict",
+  "  orca machine [--on <instance>] [--json]   the box's CPU work / iowait / load per core, disk MB/s, memory, swap, OOM kills",
+  "      (now, 5 min, 1 h) and the heavy queue — the same 15 s samples as the user's machine card. Read it before you",
+  "      spawn more work on a busy box; --json adds the last hour's raw series.",
   "  orca spawn --repo <repo> --title \"<2-5 words>\" --model <id> [--on <instance>] --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"] [--attach <id|path>]…",
   "      --on places the worktree on another instance (the board shows each workstream's `on:`; a `[new draft]`",
   "      that says `on: <instance>` wants that one). Without it, the repo's default instance.",
@@ -1650,6 +1765,9 @@ const ORCA_COMMANDS = [
   "                                  cards: your plan for it, what it waits on, its merge class (small: fine to",
   "                                  merge on green; needs-finn: the user merges). An empty flag clears that",
   "                                  field; no flags prints it",
+  "  orca status --repo <repo> --branch <branch> --verified | --unverified   set or clear the user's Verified marker",
+  "                                  on its open PR (the PR's current head commit). Only when the user says they tested",
+  "                                  it (\"verified #267\"). It is a marker for the user's board: it merges nothing",
   "  orca status --repo <repo> --branch <branch> --clear-grant   lift an outside sender's grant from a workstream:",
   "                                  its runs leave scoped mode for the repo's own permission mode. Only from the",
   "                                  user's own chat, and only when the user asks",
@@ -1781,15 +1899,6 @@ export const NAV_W = 240, NAV_RAIL_W = 56;
 /** The shell's gutter (branch-demo's `gap-shell`): between the nav, the page card and the panel card. */
 export const SHELL_GAP = 6;
 
-/** The page content's END width for a dock / nav width change that is about to animate: the page
- *  column's content width now, plus every px the nav, the dock and the dock's start margin (−the
- *  gutter while closed) give back or take. The page frame is set to it at once, so the content lays
- *  out ONCE — a container-query grid snaps to its end layout instead of flipping mid-slide — and only
- *  the card's edge animates over it. Widths "now" are the in-flight values (a reversal mid-slide). */
-export function frozenPageWidth(now: { col: number; nav: number; dock: number; dockMargin: number },
-  end: { nav: number; dock: number; dockMargin: number }): number {
-  return Math.max(0, Math.round(now.col + (now.nav - end.nav) + (now.dock - end.dock) + (now.dockMargin - end.dockMargin)));
-}
 /** The narrowest the page column gets beside a docked panel before the nav gives way to its rail. */
 export const DOCK_PAGE_MIN_W = 640;
 export function clampPanelWidth(w: number, vw: number): number {
@@ -1839,14 +1948,26 @@ export function prTrigger(text: string, caret: number): { start: number; query: 
   return { start: caret - line.length + at, query };
 }
 
+/** A word matches a haystack at a word boundary — the start, or just past a non-alphanumeric — so
+ *  `at-ref` finds `orca/at-reference-…` but `earch` does not find `search`. Shared by
+ *  `filterWorkstreamRefs` and `filterPrRefs`'s workstream join. */
+function atBoundary(hay: string, w: string): boolean {
+  for (let i = hay.indexOf(w); i >= 0; i = hay.indexOf(w, i + 1)) if (i === 0 || !/[a-z0-9]/.test(hay[i - 1]!)) return true;
+  return false;
+}
+
 /** Open PRs before merged ones; open newest-numbered first (gh's own list order, a proxy for recent
  *  activity), merged most-recently-merged first. Each word of the query must prefix the number, the
- *  repo name or a word of the title. */
-export function filterPrRefs(refs: PrRef[], query: string, limit = 8): PrRef[] {
+ *  repo name or a word of the title — or hit, at a word boundary, one of `joinHay`'s extra haystacks
+ *  (the PR's own workstream title and branch, from `filterMentions`'s join). */
+export function filterPrRefs(refs: PrRef[], query: string, limit = 8, joinHay?: (r: PrRef) => string[]): PrRef[] {
   const words = query.toLowerCase().replace(/^[#@]/, "").split(/\s+/).filter(Boolean);
   const hit = (r: PrRef) => {
     const titleWords = r.title.toLowerCase().split(/[^a-z0-9]+/);
-    return words.every((w) => String(r.number).startsWith(w) || r.repo.toLowerCase().startsWith(w) || titleWords.some((t) => t.startsWith(w)));
+    const extra = (joinHay?.(r) ?? []).map((h) => h.toLowerCase());
+    return words.every((w) =>
+      String(r.number).startsWith(w) || r.repo.toLowerCase().startsWith(w) || titleWords.some((t) => t.startsWith(w))
+      || extra.some((h) => atBoundary(h, w)));
   };
   const rank = (r: PrRef) => (r.state === "merged" ? 1 : 0);
   return refs.filter(hit).sort((a, b) =>
@@ -1881,10 +2002,6 @@ export type MentionRef = { kind: "pr"; ref: PrRef } | { kind: "workstream"; ref:
  *  so `at-ref` finds `orca/at-reference-…`. Board order is kept. */
 export function filterWorkstreamRefs(refs: WorkstreamRef[], query: string, limit = 8): WorkstreamRef[] {
   const words = query.toLowerCase().replace(/^[#@]/, "").split(/\s+/).filter(Boolean);
-  const atBoundary = (hay: string, w: string) => {
-    for (let i = hay.indexOf(w); i >= 0; i = hay.indexOf(w, i + 1)) if (i === 0 || !/[a-z0-9]/.test(hay[i - 1]!)) return true;
-    return false;
-  };
   const hit = (r: WorkstreamRef) => {
     const hays = [r.repo, r.branch, r.title].map((h) => h.toLowerCase());
     return words.every((w) => hays.some((h) => atBoundary(h, w)));
@@ -1892,11 +2009,17 @@ export function filterWorkstreamRefs(refs: WorkstreamRef[], query: string, limit
   return refs.filter(hit).slice(0, limit);
 }
 
-/** The picker's options: open PRs, then workstreams with no PR among `prs`, then merged PRs. */
+/** The picker's options: open PRs, then workstreams with no PR among `prs`, then merged PRs. A PR
+ *  pick also matches its own workstream's title and branch (same repo + PR number), so a query that
+ *  names the workstream — not the PR title — still finds it. */
 export function filterMentions(prs: PrRef[], workstreams: WorkstreamRef[], query: string, limit = 8): MentionRef[] {
   const prKeys = new Set(prs.map((p) => `${p.repo}#${p.number}`));
   const own = workstreams.filter((w) => w.prNumber === undefined || !prKeys.has(`${w.repo}#${w.prNumber}`));
-  const prHits = filterPrRefs(prs, query, limit);
+  const wsByPr = new Map(workstreams.filter((w) => w.prNumber !== undefined).map((w) => [`${w.repo}#${w.prNumber}`, w] as const));
+  const prHits = filterPrRefs(prs, query, limit, (p) => {
+    const ws = wsByPr.get(`${p.repo}#${p.number}`);
+    return ws ? [ws.title, ws.branch] : [];
+  });
   return [
     ...prHits.filter((p) => p.state !== "merged").map((ref): MentionRef => ({ kind: "pr", ref })),
     ...filterWorkstreamRefs(own, query, limit).map((ref): MentionRef => ({ kind: "workstream", ref })),
@@ -1921,18 +2044,53 @@ export function mentionLabel(m: MentionRef, prs: PrRef[], repoCount: number, con
 // from the same assembled rows the swimlanes render — no endpoint of their own, so the two views can
 // never disagree about how many PRs are mergeable.
 
-export type OverviewLane = "LOCAL" | "DRAFT" | "IN_REVIEW" | "MERGEABLE" | "DONE";
-export const OVERVIEW_LANES: OverviewLane[] = ["LOCAL", "DRAFT", "IN_REVIEW", "MERGEABLE", "DONE"];
+export type OverviewLane = "LOCAL" | "DRAFT" | "IN_REVIEW" | "VERIFIED" | "MERGEABLE" | "DONE";
+export const OVERVIEW_LANES: OverviewLane[] = ["LOCAL", "DRAFT", "IN_REVIEW", "VERIFIED", "MERGEABLE", "DONE"];
 export const LANE_LABELS: Record<OverviewLane, string> = {
-  LOCAL: "Local", DRAFT: "Draft", IN_REVIEW: "In review", MERGEABLE: "Mergeable", DONE: "Done today",
+  LOCAL: "Local", DRAFT: "Draft", IN_REVIEW: "In review", VERIFIED: "Verified", MERGEABLE: "Mergeable", DONE: "Done today",
 };
 
-export type PillTone = "default" | "blue" | "green" | "purple";
+/** The user's own "I tested this PR" marker, set by hand (a button, or `orca status --verified` on
+ *  the user's word). Only a visual marker on the branch's enrichment (`verified`): it merges nothing
+ *  and posts nothing to GitHub. `sha` is the PR head it applies to, so a later push reads as
+ *  "changed since you verified" instead of a silent pass. */
+export type VerifiedMark = { by: "user" | "orchestrator"; at: string; sha?: string; pr?: number };
+export type VerifiedState = "verified" | "changed";
+
+/** A new mark for the PR's current head. Pure. */
+export const verifiedMark = (by: VerifiedMark["by"], head: string | undefined, pr: number | undefined, now: string): VerifiedMark =>
+  ({ by, at: now, ...(head ? { sha: head } : {}), ...(pr ? { pr } : {}) });
+
+/** The mark against the PR as it is now: "changed" once the head moved off the verified commit (or
+ *  the branch got another PR); "verified" otherwise, also when either commit is not known. Pure. */
+export function verifiedState(mark: VerifiedMark | null | undefined, head: string | undefined, pr?: number): VerifiedState | undefined {
+  if (!mark) return undefined;
+  if (mark.pr && pr && mark.pr !== pr) return "changed";
+  return mark.sha && head && mark.sha !== head ? "changed" : "verified";
+}
+
+/** The lane with the marker applied: an open, unapproved PR with a fresh mark moves from In review
+ *  to Verified. Draft, approved (Mergeable) and merged PRs keep their lane. Pure. */
+export const verifiedLane = (lane: OverviewLane, state: VerifiedState | undefined): OverviewLane =>
+  lane === "IN_REVIEW" && state === "verified" ? "VERIFIED" : lane;
+
+/** The pill's hover text for a mark: who, when, and on which commit. Pure. */
+export function verifiedTip(mark: VerifiedMark, state: VerifiedState, head?: string, now = Date.now()): string {
+  const who = mark.by === "orchestrator" ? "the orchestrator, for you," : "you";
+  const at = Date.parse(mark.at);
+  const when = Number.isNaN(at) ? "" : ` ${ago(at, now)}`;
+  const on = mark.sha ? ` at ${mark.sha.slice(0, 7)}` : "";
+  return state === "changed"
+    ? `Verified by ${who}${when}${on}. New commits landed since${head ? ` (now ${head.slice(0, 7)})` : ""}: test it again.`
+    : `Verified by ${who}${when}${on}. Ask a coworker to approve it.`;
+}
+
+export type PillTone = "default" | "blue" | "green" | "purple" | "teal" | "amber";
 /** The lane's own pill, with no auto-merge override — the DONE lane's "Merged" rather than its
  *  swimlane title "Done today". */
 export const lanePill = (lane: OverviewLane): { label: string; tone: PillTone } => ({
   label: lane === "DONE" ? "Merged" : LANE_LABELS[lane],
-  tone: lane === "MERGEABLE" ? "blue" : lane === "DONE" ? "green" : "default",
+  tone: lane === "MERGEABLE" ? "blue" : lane === "DONE" ? "green" : lane === "VERIFIED" ? "teal" : "default",
 });
 
 /** Everything the PR status pill needs: the lane it would otherwise show, whether CI is failing,
@@ -1944,6 +2102,9 @@ export type PrPillLike = {
   autoMergeEnabled?: boolean;
   autoMergeMethod?: string;
   mergeWhenGreen?: Pick<MergeMark, "by">;
+  verified?: VerifiedMark | null;
+  prHead?: string;
+  prNumber?: number;
 };
 
 /** The PR status pill shown on an agents-list row, a board card and the agent page's Details card:
@@ -1952,7 +2113,13 @@ export type PrPillLike = {
  *  "Auto-merge" state, so "it'll merge itself" is visible without opening the PR. Pure. */
 export function prPill(row: PrPillLike): { label: string; tone: PillTone; tooltip?: string } {
   const base = lanePill(row.lane);
-  if (row.lane !== "IN_REVIEW" && row.lane !== "MERGEABLE") return base; // Local/Draft/Merged: unaffected
+  const verified = verifiedState(row.verified, row.prHead, row.prNumber);
+  if (row.lane === "VERIFIED" && row.verified) return { ...base, tooltip: verifiedTip(row.verified, "verified", row.prHead) };
+  // A push after the user's test: never a silent pass, so it wins over auto-merge and failing CI.
+  if (row.lane === "IN_REVIEW" && verified === "changed" && row.verified) {
+    return { label: "Changed since verified", tone: "amber", tooltip: verifiedTip(row.verified, "changed", row.prHead) };
+  }
+  if (row.lane !== "IN_REVIEW" && row.lane !== "MERGEABLE") return base; // Local/Draft/Verified/Merged: unaffected
   if (row.ciStatus === "failing") return base; // a known-red PR isn't about to merge itself
   if (row.autoMergeEnabled) {
     return { label: "Auto-merge", tone: "purple", tooltip: `GitHub auto-merge is enabled${row.autoMergeMethod ? ` (${row.autoMergeMethod})` : ""}` };
@@ -1978,6 +2145,7 @@ export type OverviewRow = {
   agentCheck?: { ok: boolean; command?: string; exitCode?: number };
   prHead?: string; failingChecks?: string[];
   cleanupBlocked?: { why?: string; at?: string };
+  browserKilled?: BrowserKillRecord;
 };
 
 export type Attention = "check failed" | "agent error" | "run stopped" | "CI failing" | "conflicts" | "changes requested" | "message held";
@@ -2058,12 +2226,15 @@ export function rowStatus(row: OverviewRow, opts: { now?: number; unresolved?: n
       }
       if (row.lane === "DRAFT") reasons.push("The PR is a draft.");
       if (row.lane === "IN_REVIEW") reasons.push("The PR waits for an approval.");
+      if (row.lane === "VERIFIED") reasons.push("You verified the PR. It waits for an approval.");
       if (row.ciStatus === "pending") reasons.push(`CI still runs${sha}.`);
       if (row.ciStatus === "passing" && row.lane !== "DONE") reasons.push(`CI passes${sha}.`);
     }
   }
   if (unresolved > 0) reasons.push(`${plural(unresolved, "unresolved review thread")}.`);
   if (row.cleanupBlocked) reasons.push(`Cleanup blocked${row.cleanupBlocked.why ? `: ${row.cleanupBlocked.why}` : ""}.`);
+  const browser = browserKillLabel(row.browserKilled, now);
+  if (browser) reasons.push(browser);
   const addressable = row.prNumber !== undefined && row.lane !== "DONE" && row.agentStatus !== "running"
     && (row.ciStatus === "failing" || row.mergeable === "CONFLICTING" || row.mergeClean === "conflict" || row.reviewStatus === "changes_requested" || unresolved > 0);
   return { tone, reasons, ...(addressable ? { action: "address" as const } : {}) };
@@ -2090,7 +2261,7 @@ export type OverviewStats = {
   running: number;
   attention: number;
   local: number;
-  prs: { draft: number; inReview: number; mergeable: number; total: number };
+  prs: { draft: number; inReview: number; verified: number; mergeable: number; total: number };
   mergedToday: number;
   /** Turns started per hour over the last 24h, oldest first — the activity chart. */
   turnsByHour: number[];
@@ -2099,7 +2270,7 @@ export type OverviewStats = {
 export function overviewStats(rows: OverviewRow[], now = Date.now()): OverviewStats {
   const open = rows.filter((r) => r.prNumber && r.lane !== "DONE");
   const count = (lane: OverviewLane) => open.filter((r) => r.lane === lane).length;
-  const prs = { draft: count("DRAFT"), inReview: count("IN_REVIEW"), mergeable: count("MERGEABLE"), total: open.length };
+  const prs = { draft: count("DRAFT"), inReview: count("IN_REVIEW"), verified: count("VERIFIED"), mergeable: count("MERGEABLE"), total: open.length };
   return {
     running: rows.filter((r) => r.agentStatus === "running").length,
     attention: rows.filter((r) => attentionReasons(r).length > 0).length,
@@ -2212,6 +2383,59 @@ export function ago(ms: number, now = Date.now()): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+}
+
+/** The instance card's crash-protection strip (server/protections.ts): what deploy/harden.sh would
+ *  add, and the newest OOM kill in the kernel log. `warn` when a protection is missing; a box with
+ *  every protection but a recent kill gets a muted line; nothing otherwise. Pure. */
+export function protectionsWarning(
+  p: { missing: { key: string; label: string }[]; lastOomKill?: number | null } | undefined,
+  now = Date.now(),
+): { warn: boolean; text: string; detail?: string } | undefined {
+  if (!p) return undefined;
+  const oom = p.lastOomKill ? `Last OOM kill ${ago(p.lastOomKill, now)} (${new Date(p.lastOomKill).toISOString().slice(0, 16).replace("T", " ")} UTC).` : undefined;
+  if (p.missing.length) {
+    return {
+      warn: true,
+      text: `Crash protection missing: ${p.missing.map((m) => m.label).join(", ")}.${oom ? ` ${oom}` : ""}`,
+      detail: "Run sudo deploy/harden.sh on this machine (docs/RECOVERY.md). Use --check to see the changes first.",
+    };
+  }
+  return oom ? { warn: false, text: oom } : undefined;
+}
+
+/** The machine card's heavy-command list: running first (oldest first), then the queue in order.
+ *  `who` is the workstream (branch, else repo, else "shell"); `since` is when it started or queued.
+ *  `command` is whole: a desktop row truncates it by CSS, a phone row scrolls sideways to show it.
+ *  Empty when nothing runs or waits. Pure. */
+export function heavyQueueRows(view: { running: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number; startedAt?: number; overBudget?: boolean }[]; queued: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number }[] } | undefined): {
+  id: string; state: "running" | "queued"; kind: string; command: string; who: string; since: number; position?: number; overBudget?: boolean;
+}[] {
+  if (!view) return [];
+  const who = (e: { repo?: string; branch?: string }) => e.branch ?? e.repo ?? "shell";
+  return [
+    ...[...view.running].sort((a, b) => (a.startedAt ?? a.queuedAt) - (b.startedAt ?? b.queuedAt))
+      .map((e) => ({ id: e.id, state: "running" as const, kind: e.kind, command: e.command, who: who(e), since: e.startedAt ?? e.queuedAt, ...(e.overBudget ? { overBudget: true } : {}) })),
+    ...view.queued.map((e, i) => ({ id: e.id, state: "queued" as const, kind: e.kind, command: e.command, who: who(e), since: e.queuedAt, position: i + 1 })),
+  ];
+}
+
+/** A CPU or GB figure for the heavy queue's text: one decimal at most (6, 1.5, never 1.0999999999999996). Pure. */
+export function heavyNumber(n: number): string {
+  return String(Math.round(n * 10) / 10);
+}
+
+/** The machine card's heavy-queue header figures: `CPU 1.5 / 3`, `Memory 6 / 8 GB` (only with a
+ *  memory budget), and `memoryOver` when the running caps pass the budget (a lone command whose
+ *  cap is above it). Pure. */
+export function heavyHeader(view: { cpu?: { used: number; budget: number }; memory?: { used: number; budget?: number } } | undefined): { cpu?: string; memory?: string; memoryOver: boolean } {
+  const mem = view?.memory;
+  const hasBudget = mem?.budget !== undefined;
+  return {
+    ...(view?.cpu ? { cpu: `CPU ${heavyNumber(view.cpu.used)} / ${heavyNumber(view.cpu.budget)}` } : {}),
+    ...(mem && hasBudget ? { memory: `Memory ${heavyNumber(mem.used)} / ${heavyNumber(mem.budget!)} GB` } : {}),
+    memoryOver: !!mem && hasBudget && mem.used > mem.budget! + 1e-9,
+  };
 }
 
 // ---- review signal: who approved, what humans said, what the AI reviewers flagged, what's open ----
@@ -2658,7 +2882,155 @@ export function headerUsage(u: UsageReading | null, now = Date.now()): HeaderUsa
 export const usageZone = (pct: number): "ok" | "warn" | "danger" => (pct >= 90 ? "danger" : pct >= 75 ? "warn" : "ok");
 
 /** The instance card's range picker. */
-export const HISTORY_RANGES = [{ label: "6h", hours: 6 }, { label: "24h", hours: 24 }, { label: "7d", hours: 168 }] as const;
+export const HISTORY_RANGES = [{ label: "1h", hours: 1 }, { label: "6h", hours: 6 }, { label: "24h", hours: 24 }, { label: "7d", hours: 168 }] as const;
+
+/** Ranges up to this many hours read the bridge's 15 s ring (/api/health/live); longer ones the
+ *  1-minute history in Postgres. */
+export const LIVE_MAX_HOURS = 6;
+export const usesLiveSource = (hours: number): boolean => hours <= LIVE_MAX_HOURS;
+
+/** One point of a stacked chart: a value per band, bottom band first. */
+export type StackPoint = { at: number; v: number[] };
+export type LiveCharts = {
+  /** Work, iowait (% of all cores). */
+  cpu: StackPoint[];
+  /** Read, write (MB/s). Samples with no disk reading are skipped. */
+  io: StackPoint[];
+  /** Used, cache (GB). */
+  mem: StackPoint[];
+  /** load1 / cores, per sample — shown as a number, never on the % axis. */
+  loadPerCore: { at: number; v: number }[];
+  iowait: { at: number; v: number }[];
+  ooms: { at: number; n: number }[];
+};
+
+/** The live charts' points from /api/health/live's samples. Pure. */
+export function liveCharts(samples: LiveSample[], cores: number): LiveCharts {
+  const c = Math.max(1, cores);
+  return {
+    cpu: samples.map((s) => ({ at: s.at, v: [s.work, s.iowait] })),
+    io: samples.flatMap((s) => (s.readMBs === undefined && s.writeMBs === undefined ? [] : [{ at: s.at, v: [s.readMBs ?? 0, s.writeMBs ?? 0] }])),
+    mem: samples.map((s) => ({ at: s.at, v: [s.memUsedGb, s.memCacheGb] })),
+    loadPerCore: samples.map((s) => ({ at: s.at, v: Math.round((s.load1 / c) * 100) / 100 })),
+    iowait: samples.map((s) => ({ at: s.at, v: s.iowait })),
+    ooms: samples.flatMap((s) => (s.ooms ? [{ at: s.at, n: s.ooms }] : [])),
+  };
+}
+
+/** One window of `orca machine`: means over the window (the newest sample for "now"); OOM kills add up. */
+export type MachineWindow = {
+  /** The time the window really covers (the ring may hold less than asked), and its samples. */
+  spanMs: number; samples: number;
+  work: number; iowait: number; loadPerCore: number;
+  readMBs?: number; writeMBs?: number;
+  memUsedGb: number; memCacheGb: number; memAvailGb?: number; swapUsedGb?: number;
+  ooms: number;
+};
+export type MachineSummary = { now?: MachineWindow; "5m"?: MachineWindow; "1h"?: MachineWindow };
+export const MACHINE_WINDOWS = [["now", 0], ["5m", 5 * 60_000], ["1h", 3_600_000]] as const;
+
+/** `orca machine`'s numbers, from the SAME samples and the SAME `liveCharts` derivation as the card's
+ *  charts, so the two cannot disagree. "now" is the newest sample; 5m and 1h are means over the
+ *  samples in the window. A window with no samples is absent. Pure. */
+/** A sample newer than this counts as the machine answering, for `instanceStatus`. */
+export const INSTANCE_FRESH_MS = 5 * 60_000;
+
+/** The machine card's Status: unreachable when its /api/health failed; online when it answered, OR
+ *  when its newest sample (the live ring or the recorded history) is under `INSTANCE_FRESH_MS` old —
+ *  a /api/health answer that has not come back yet must not hold the card at "Loading…" while its
+ *  charts already show the machine. Loading only with no evidence at all. Pure. */
+export function instanceStatus(o: { down: boolean; health: boolean; newestSampleAt?: number; now: number }): "unreachable" | "online" | "loading" {
+  if (o.down) return "unreachable";
+  if (o.health) return "online";
+  return o.newestSampleAt !== undefined && o.now - o.newestSampleAt <= INSTANCE_FRESH_MS ? "online" : "loading";
+}
+
+export function machineSummary(samples: LiveSample[], cores: number): MachineSummary {
+  const last = samples[samples.length - 1];
+  if (!last) return {};
+  const c = liveCharts(samples, cores);
+  const out: MachineSummary = {};
+  for (const [name, ms] of MACHINE_WINDOWS) {
+    const idx = samples.flatMap((s, i) => (ms === 0 ? s === last : s.at > last.at - ms) ? [i] : []);
+    if (!idx.length) continue;
+    const mean = (f: (i: number) => number | undefined, digits = 1) => {
+      const v = idx.map(f).filter((n): n is number => n !== undefined);
+      if (!v.length) return undefined;
+      const k = 10 ** digits;
+      return Math.round((v.reduce((a, b) => a + b, 0) / v.length) * k) / k;
+    };
+    const opt = <K extends string>(k: K, v: number | undefined) => (v === undefined ? {} : { [k]: v } as Record<K, number>);
+    out[name] = {
+      spanMs: last.at - samples[idx[0]!]!.at, samples: idx.length,
+      work: mean((i) => c.cpu[i]!.v[0])!, iowait: mean((i) => c.cpu[i]!.v[1])!, loadPerCore: mean((i) => c.loadPerCore[i]!.v, 2)!,
+      ...opt("readMBs", mean((i) => samples[i]!.readMBs)), ...opt("writeMBs", mean((i) => samples[i]!.writeMBs)),
+      memUsedGb: mean((i) => c.mem[i]!.v[0], 2)!, memCacheGb: mean((i) => c.mem[i]!.v[1], 2)!,
+      ...opt("memAvailGb", mean((i) => samples[i]!.memAvailGb, 2)), ...opt("swapUsedGb", mean((i) => samples[i]!.swapUsedGb, 2)),
+      ooms: idx.reduce((n, i) => n + (samples[i]!.ooms ?? 0), 0),
+    };
+  }
+  return out;
+}
+
+/** What `GET /api/machine` answers and `orca machine` prints. */
+export type MachineReport = {
+  /** `at`: the newest sample's time (the answer's time when there is none). */
+  instance: string; at: number; cores: number; memTotalGb: number; sliceMaxGb?: number; diskCapMBs: number; stepMs: number;
+  summary: MachineSummary;
+  heavy: { running: number; queued: number };
+  /** The last hour of 15 s samples, oldest first (`--json` only shows them). */
+  samples: LiveSample[];
+};
+
+const fmtSpan = (ms: number) => (ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`);
+
+/** `orca machine` as plain text: one row per measure, a column per window. Pure. */
+export function machineText(r: MachineReport): string {
+  const head = `${r.instance} · ${r.cores} cores · ${r.memTotalGb} GB RAM · a sample every ${Math.round(r.stepMs / 1000)} s · newest ${new Date(r.at).toISOString().replace("T", " ").slice(0, 19)} UTC`;
+  const heavy = `Heavy queue: ${r.heavy.running} running, ${r.heavy.queued} queued`;
+  const limits = `Disk cap ${r.diskCapMBs} MB/s${r.sliceMaxGb ? ` · agents memory limit ${r.sliceMaxGb} GB` : ""}`;
+  if (!r.summary.now) return [head, "No samples yet: the bridge samples every 15 s and starts empty after a restart.", heavy, limits].join("\n");
+  const cols = MACHINE_WINDOWS.map(([n]) => r.summary[n]);
+  const num = (v: number | undefined, d: number) => (v === undefined ? "—" : v.toFixed(d));
+  const rows: [string, (w: MachineWindow) => string][] = [
+    ["CPU work %", (w) => num(w.work, 1)],
+    ["iowait %", (w) => num(w.iowait, 1)],
+    ["load / core", (w) => num(w.loadPerCore, 2)],
+    ["disk read MB/s", (w) => num(w.readMBs, 1)],
+    ["disk write MB/s", (w) => num(w.writeMBs, 1)],
+    ["memory used GB", (w) => num(w.memUsedGb, 2)],
+    ["cache GB", (w) => num(w.memCacheGb, 2)],
+    ["available GB", (w) => num(w.memAvailGb, 2)],
+    ["swap used GB", (w) => num(w.swapUsedGb, 2)],
+    ["OOM kills", (w) => String(w.ooms)],
+  ];
+  const header = ["", "now", "5 min", "1 h"];
+  const table = [header, ...rows.map(([label, f]) => [label, ...cols.map((w) => (w ? f(w) : "—"))])];
+  const widths = header.map((_, i) => Math.max(...table.map((row) => row[i]!.length)));
+  const lines = table.map((row) => row.map((cell, i) => (i === 0 ? cell.padEnd(widths[i]!) : cell.padStart(widths[i]!))).join("   ").trimEnd());
+  const short = (["5m", "1h"] as const).flatMap((n, i) => {
+    const w = r.summary[n], want = i === 0 ? 5 * 60_000 : 3_600_000;
+    return w && w.spanMs < want - 2 * r.stepMs ? [`${n === "5m" ? "5 min" : "1 h"} covers only ${fmtSpan(w.spanMs)} (the bridge restarted since)`] : [];
+  });
+  return [head, ...lines, ...short, heavy, limits].join("\n");
+}
+
+/** The point nearest `at` (the hover readout), or undefined for no points. Pure. */
+export function nearestAt<T extends { at: number }>(points: T[], at: number): T | undefined {
+  return points.reduce<T | undefined>((a, b) => (!a || Math.abs(b.at - at) < Math.abs(a.at - at) ? b : a), undefined);
+}
+
+/** The stacked polygons' runs: a new run after a gap longer than `gapMs` (a bridge restart empties the
+ *  ring; a stall skips samples), so an area never bridges missing time. Pure. */
+export function stackRuns(points: StackPoint[], gapMs: number): StackPoint[][] {
+  const runs: StackPoint[][] = [];
+  for (const p of points) {
+    const run = runs[runs.length - 1];
+    if (run && p.at - run[run.length - 1]!.at <= gapMs) run.push(p);
+    else runs.push([p]);
+  }
+  return runs;
+}
 
 /** At most `max` points, each the mean of its time bucket — a week of minute samples is 10k points,
  *  which no 600px line needs. Gaps survive: an empty bucket emits nothing. */
@@ -2888,7 +3260,7 @@ export function agentFailure(row: { agentStatus?: string; agentError?: string; a
 
 export type QuickFilter = {
   status: ("attention" | "running")[];
-  pr: ("open" | "mergeable" | "merged")[];
+  pr: ("open" | "verified" | "mergeable" | "merged")[];
   by: ("mine" | "orchestrated")[];
   on: string[];
   repo: string[];
@@ -2900,7 +3272,7 @@ export type QuickGroup = Exclude<keyof QuickFilter, "notMerged">;
 export const NO_QUICK_FILTER: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [], notMerged: true };
 export const QUICK_GROUPS: QuickGroup[] = ["status", "pr", "by", "on", "repo"];
 const QUICK_VALUES: Partial<Record<QuickGroup, readonly string[]>> = {
-  status: ["attention", "running"], pr: ["open", "mergeable", "merged"], by: ["mine", "orchestrated"],
+  status: ["attention", "running"], pr: ["open", "verified", "mergeable", "merged"], by: ["mine", "orchestrated"],
 };
 
 /** `?status=attention&on=cloud,local` → the filter. Unknown values are dropped, so a stale link is
@@ -2925,6 +3297,16 @@ export function quickFilterQuery(f: QuickFilter): string {
   return parts.length ? `?${parts.join("&")}` : "";
 }
 
+/** Drop a `repo` chip value that names no configured repo (a rename, e.g. orca-src → orca) — its
+ *  chip never renders, so a stale value can't be unticked by hand and would hide every row forever.
+ *  Returns `f` unchanged (the same reference) when nothing needs dropping, so a caller can tell
+ *  whether anything changed. Only call this once the repo list has loaded: an empty list means
+ *  "not loaded yet", not "no repos configured", and would drop every value. */
+export function dropStaleRepos(f: QuickFilter, repoNames: readonly string[]): QuickFilter {
+  const kept = f.repo.filter((v) => repoNames.includes(v));
+  return kept.length === f.repo.length ? f : { ...f, repo: kept };
+}
+
 /** Flip one chip on or off. */
 export function toggleQuick(f: QuickFilter, group: QuickGroup, value: string): QuickFilter {
   const has = (f[group] as string[]).includes(value);
@@ -2939,7 +3321,7 @@ export function toggleNotMerged(f: QuickFilter): QuickFilter {
 function matchesChip(row: OverviewRow, group: QuickGroup, value: string, here?: string): boolean {
   switch (group) {
     case "status": return value === "running" ? row.agentStatus === "running" : attentionReasons(row).length > 0;
-    case "pr": return value === "merged" ? row.lane === "DONE" : value === "mergeable" ? row.lane === "MERGEABLE" : Boolean(row.prNumber) && row.lane !== "DONE";
+    case "pr": return value === "merged" ? row.lane === "DONE" : value === "mergeable" ? row.lane === "MERGEABLE" : value === "verified" ? row.lane === "VERIFIED" : Boolean(row.prNumber) && row.lane !== "DONE";
     case "by": return value === "orchestrated" ? Boolean(row.orchestrated) : !row.orchestrated;
     case "on": return rowInstance(row, here) === value;
     case "repo": return row.repo === value;
@@ -2985,56 +3367,71 @@ export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) =>
 // review signal, and the actions. The latest instruction, branch and model went into the title's
 // subline and tooltip, the PR # into the state cell, and the per-row repo icon was dropped (the
 // repo is in the subline). The instance column was dropped too — it's a row menu action ("Move to
-// …") and a tooltip, not something worth a whole column — and the width it held goes to the
-// flexible tracks (workstream, signals) via their own `grow`. Each column has a floor in rem; the
-// flexible ones share what is left, so the row never needs a horizontal scroll.
-export type ListColumn = { key: "workstream" | "status" | "pr" | "signals" | "actions"; label: string; minRem: number; grow?: number };
-/** The list's layouts by the PAGE's width (the shell's `@container/page`, so the docked orchestrator
- *  panel counts): `wide` has every column; `mid` folds Status under the title; `narrow` also folds
- *  Checks & review into the PR cell. A phone (below md) stacks each row instead. */
-export type ListTier = "narrow" | "mid" | "wide";
-/** The page width (rem) from which each tier applies — the Agents row's `@min-[…]/page:` classes. */
-export const LIST_TIER_MIN_REM: Record<ListTier, number> = { narrow: 0, mid: 52, wide: 68 };
-export const LIST_TIERS: ListTier[] = ["narrow", "mid", "wide"];
-/** Which tier a page width (px) gets. */
-export function listTier(pagePx: number, remPx = 16): ListTier {
-  return pagePx >= LIST_TIER_MIN_REM.wide * remPx ? "wide" : pagePx >= LIST_TIER_MIN_REM.mid * remPx ? "mid" : "narrow";
+// …") and a tooltip, not something worth a whole column.
+// The Workstream column takes all the room left (minmax(0,1fr)); every other column is as wide as
+// its widest cell (measured in the list, `ListWidths`), packed together on the right. There are no
+// fixed breakpoints: `listLayout` folds columns into the row only when they do not fit beside a
+// Workstream column of `LIST_TITLE_MIN_PX`.
+export type ListColumn = { key: "workstream" | "status" | "pr" | "signals" | "actions"; label: string };
+/** The content-sized columns' natural widths (px): the widest cell of each, its header included.
+ *  `pr` is the state pill + number alone, `signals` the checks and review chips. */
+export type ListWidths = Record<"status" | "pr" | "signals" | "actions", number>;
+/** Which columns are folded: `status` into the subline, `signals` into the PR cell, `pr` (with the
+ *  checks) into the subline; `stacked` when even that leaves the title too narrow — rows stack. */
+export type ListFold = { status: boolean; signals: boolean; pr: boolean; stacked: boolean };
+export const NO_FOLD: ListFold = { status: false, signals: false, pr: false, stacked: false };
+/** The narrowest the Workstream column may get before the next column folds. */
+export const LIST_TITLE_MIN_PX = 280;
+/** The row's column gap (gap-x-3), horizontal padding (px-4) and a cell's own item gap (gap-1), in px
+ *  — kept in step with the row's classes. */
+export const LIST_GAP_PX = 12, LIST_PAD_PX = 32, LIST_ITEM_GAP_PX = 4;
+/** The fold for a list `listPx` wide (its inner width, border excluded) and the columns' natural
+ *  widths, and the grid template for it. Folds by a fixed priority, each step only when the step
+ *  before leaves the title under `LIST_TITLE_MIN_PX`: Status, then Checks & review into the PR cell
+ *  (whose overflow goes behind +N — the PR cell keeps at least its pill and number), then the PR.
+ *  0 is "not measured yet": nothing folds, every column sized by its content. */
+export function listLayout(listPx: number, w: ListWidths): { fold: ListFold; template: string } {
+  const px = (n: number) => `${Math.ceil(n)}px`;
+  if (listPx <= 0) return { fold: NO_FOLD, template: "minmax(0,1fr) max-content max-content max-content max-content" };
+  const inner = listPx - LIST_PAD_PX;
+  const title = (cols: number[]) => inner - cols.reduce((n, c) => n + c + LIST_GAP_PX, 0);
+  const tpl = (cols: number[]) => ["minmax(0,1fr)", ...cols.map(px)].join(" ");
+  const full = [w.status, w.pr, w.signals, w.actions];
+  if (title(full) >= LIST_TITLE_MIN_PX) return { fold: NO_FOLD, template: tpl(full) };
+  const noStatus = [w.pr, w.signals, w.actions];
+  if (title(noStatus) >= LIST_TITLE_MIN_PX) return { fold: { ...NO_FOLD, status: true }, template: tpl(noStatus) };
+  const prRoom = title([w.actions]) - LIST_GAP_PX - LIST_TITLE_MIN_PX;
+  const prWith = w.signals > 0 ? w.pr + LIST_ITEM_GAP_PX + w.signals : w.pr;
+  if (prRoom >= w.pr) return { fold: { ...NO_FOLD, status: true, signals: true }, template: tpl([Math.min(prWith, prRoom), w.actions]) };
+  if (title([w.actions]) >= LIST_TITLE_MIN_PX) return { fold: { status: true, signals: true, pr: true, stacked: false }, template: tpl([w.actions]) };
+  return { fold: { status: true, signals: true, pr: true, stacked: true }, template: "" };
 }
-const TIER_COLUMNS: Record<ListTier, ListColumn["key"][]> = {
-  narrow: ["workstream", "pr", "actions"],
-  mid: ["workstream", "pr", "signals", "actions"],
-  wide: ["workstream", "status", "pr", "signals", "actions"],
-};
-export function listColumns(tier: ListTier = "wide"): ListColumn[] {
+/** The columns with their own cell (and header) under a fold, in order. */
+export function listColumns(fold: ListFold = NO_FOLD): ListColumn[] {
   const all: ListColumn[] = [
-    { key: "workstream", label: "Workstream", minRem: 10, grow: 2 },
-    { key: "status", label: "Status", minRem: 8.5 },
-    // Narrow, the PR cell also holds the checks and review: it takes the same share as the title.
-    { key: "pr", label: "PR", minRem: 8.5, grow: tier === "narrow" ? 2 : undefined },
-    { key: "signals", label: "Checks & review", minRem: 6, grow: 1 },
-    // Fixed, wide enough for the row's quick-action icons (two at most — quickActions never applies
-    // more to one state), the local preview link + its Stop and the ⋯ menu, all size-7 at gap-1, so
-    // the column never shifts between states and nothing overflows into a sideways scroll. The PR-preview icon that used to
-    // sit here moved to a text link next to the model name (PrPreviewInline) — the ⋯ menu's PR
-    // submenu still carries Open/Add PR preview.
-    { key: "actions", label: "Actions", minRem: 10 },
+    { key: "workstream", label: "Workstream" },
+    { key: "status", label: "Status" },
+    { key: "pr", label: "PR" },
+    { key: "signals", label: "Checks & review" },
+    { key: "actions", label: "Actions" },
   ];
-  return all.filter((c) => TIER_COLUMNS[tier].includes(c.key));
+  return all.filter((c) => !(c.key === "status" && fold.status) && !(c.key === "signals" && fold.signals) && !(c.key === "pr" && fold.pr));
 }
-/** Which tiers show a column as its own cell (the rest fold it into another cell). */
-export const listColumnTiers = (key: ListColumn["key"]): ListTier[] => LIST_TIERS.filter((t) => TIER_COLUMNS[t].includes(key));
-/** The CSS grid-template-columns for a column set: fixed floors, `minmax(floor, Nfr)` for the flexible. */
-export const listGridTemplate = (cols: ListColumn[]): string =>
-  cols.map((c) => (c.grow ? `minmax(${c.minRem}rem,${c.grow}fr)` : `${c.minRem}rem`)).join(" ");
-/** The row's gap (gap-x-3) and horizontal padding (px-4) in px — kept in step with the row's classes. */
-export const LIST_GAP_PX = 12, LIST_PAD_PX = 32;
-/** The narrowest a row can be before it would overflow: every floor, every gap, the padding. */
-export const listMinWidth = (cols: ListColumn[], remPx = 16): number =>
-  cols.reduce((n, c) => n + c.minRem * remPx, 0) + LIST_GAP_PX * (cols.length - 1) + LIST_PAD_PX;
-/** What the shell takes off the viewport beside the list: the expanded sidebar (w-60), main's px-6
- *  on both sides, the card's 1px border on both sides. */
-export const LIST_CHROME_PX = 240 + 48 + 2;
-export const listFits = (cols: ListColumn[], viewportPx: number): boolean => listMinWidth(cols) <= viewportPx - LIST_CHROME_PX;
+/** Which subline items (by index) do not fit in `available` px, when the row ends with a `+N` chip
+ *  of `chipPx`. Items keep their order: the first one that does not fit and all after it are hidden.
+ *  A zero-width item (hidden by CSS, or empty) is never counted. Nothing hidden when all fit. */
+export function sublineOverflow(widths: number[], available: number, gapPx: number, chipPx: number): number[] {
+  const shown = widths.map((w, i) => [w, i] as const).filter(([w]) => w > 0);
+  const total = shown.reduce((n, [w], k) => n + w + (k ? gapPx : 0), 0);
+  if (total <= available) return [];
+  let used = 0;
+  for (const [k, [w]] of shown.entries()) {
+    const next = used + (k ? gapPx : 0) + w;
+    if (next + gapPx + chipPx > available) return shown.slice(k).map(([, i]) => i);
+    used = next;
+  }
+  return [];
+}
 
 /** A running agent's live elapsed time, clock-style so the width holds still as it ticks:
  *  "0:07", "12:05", "1:02:03". */
@@ -3411,7 +3808,7 @@ export const longMessage = (text: string): boolean => text.split("\n").length > 
 // (History: a Chat | Agents toggle split them into two channels; a wake carrying your message AND
 // reports counted as yours, so most worker traffic never reached Agents — the user asked for this.)
 
-type Sourced = { source?: TurnSource; instruction?: string; prompt?: string; finishedAt?: number; startedAt?: number };
+type Sourced = { source?: TurnSource; instruction?: string; prompt?: string; finishedAt?: number; startedAt?: number; response?: string; structured?: unknown };
 
 /** A turn's source: recorded since migration 18; a row without it (a worker's turn, a client ahead of
  *  the backfill) is read off its instruction the same way. */
@@ -3433,17 +3830,26 @@ export const integrationState = (t: { finishedAt?: number; failed?: boolean; sto
 export const integrationPreview = (text: string, max = 120): string => clip((text.split("\n").find((l) => l.trim()) ?? "").trim(), max);
 
 export type ChatItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] } | { kind: "integration"; turn: T; messages: IntegrationMessage[] };
-/** What the orchestrator's chat renders: your turns, with each run of agent turns between them as one
- *  collapsed block, and each wake an outside message caused as its own activity row (never your
- *  bubble, even when it holds the newest answer). `keepOut` is a turn that never folds into a block:
- *  the newest answer, which the chat always shows (see newestMessages). */
+
+/** A worker-woken turn worth keeping in the open: it has something to say, not just the worker
+ *  reports that woke it. A wake that finished with no text and no structured outcome — only tool
+ *  steps, nothing to report — has nothing worth keeping visible, so it still folds. */
+const hasReply = (t: Sourced): boolean => Boolean(t.finishedAt) && (Boolean(t.response?.trim()) || Boolean(t.structured));
+
+/** What the orchestrator's chat renders: your turns, with the worker REPORTS that woke a reply folded
+ *  into it (ChatTurn's own WorkerBlock) but the reply itself always in the open, in order, like a
+ *  reply to a human turn. Only a worker-woken turn with nothing to show for itself — no reply yet, or
+ *  one that finished with no text and no structured outcome — folds into one collapsed run with its
+ *  neighbours; an outside message's wake is its own activity row (never your bubble, even when it
+ *  holds the newest answer). `keepOut` is a turn that never folds into a block: the newest answer,
+ *  which the chat always shows (see newestMessages). */
 export function chatItems<T extends Sourced>(turns: T[], keepOut?: T): ChatItem<T>[] {
   const out: ChatItem<T>[] = [];
   for (const t of turns) {
     const last = out[out.length - 1];
     const outside = integrationTurn(t);
     if (outside) out.push({ kind: "integration", turn: t, messages: outside });
-    else if (sourceOf(t) === "human" || t === keepOut) out.push({ kind: "turn", turn: t });
+    else if (sourceOf(t) === "human" || t === keepOut || hasReply(t)) out.push({ kind: "turn", turn: t });
     else if (last?.kind === "agents") last.turns.push(t);
     else out.push({ kind: "agents", turns: [t] });
   }
@@ -3923,5 +4329,81 @@ export function parseHandoffDraft(search: string): { repo: string; branch: strin
   return repo && branch ? { repo, branch, title: q.get("title") ?? branch } : null;
 }
 
+/** The link from a turn to the pack it made: `orca handoff create` (server/orchestrator.ts) prints
+ *  this reference with the pack's full id. The bridge writes the line, not the model, and the run's
+ *  tool-result step stores it, so the chat finds the pack by id, never by time. */
+export const HANDOFF_REF = "orca-handoff://";
+export const handoffRef = (id: string): string => `${HANDOFF_REF}${id}`;
+
+/** Every pack id referenced in a text, in order, each once. Pure. */
+export function handoffRefs(text: string | undefined): string[] {
+  const out: string[] = [];
+  for (const m of (text ?? "").matchAll(/orca-handoff:\/\/([\w-]{8,64})/g)) if (!out.includes(m[1]!)) out.push(m[1]!);
+  return out;
+}
+
+/** The packs a turn made: the ids the bridge linked (`turn.handoffs`), plus any in the turn's loaded
+ *  tool results — a running turn shows its pack before the next page read links it. A failed tool
+ *  call made no pack. Pure. */
+export function turnHandoffs(turn: { handoffs?: string[]; steps?: { kind: string; output?: string; isError?: boolean }[] }): string[] {
+  const out = [...(turn.handoffs ?? [])];
+  for (const s of turn.steps ?? []) if (s.kind === "result" && !s.isError) for (const id of handoffRefs(s.output)) if (!out.includes(id)) out.push(id);
+  return out;
+}
+
+/** Each pack id to the FIRST run whose tool results reference it (runs oldest first). A later echo
+ *  of the same line does not move the pack to a later turn. Pure. */
+export function firstRunPerHandoff(outputs: { runId: string; output: string }[]): Map<string, string[]> {
+  const seen = new Set<string>(), out = new Map<string, string[]>();
+  for (const { runId, output } of outputs) {
+    for (const id of handoffRefs(output)) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.set(runId, [...(out.get(runId) ?? []), id]);
+    }
+  }
+  return out;
+}
+
+export type HandoffWidgetState = "loading" | "ready" | "blocked" | "sent" | "failed" | "discarded";
+/** The chat's handoff widget: `pack` undefined while it loads, null once the bridge says it is gone
+ *  (deleted). A send error shows until a send works. Pure. */
+export function handoffWidgetState(pack: { sentAt?: number; problems: string[] } | null | undefined, sendError?: string): HandoffWidgetState {
+  if (pack === undefined) return "loading";
+  if (pack === null) return "discarded";
+  if (pack.sentAt) return "sent";
+  if (sendError) return "failed";
+  return pack.problems.length ? "blocked" : "ready";
+}
+
 /** A byte count for a file list ("812 B", "4.2 KB", "1.3 MB"). Pure. */
 export const byteSize = (n: number): string => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
+
+// A markdown list item at the start of a line: indent, a bullet (-, *, +) or a number with "." or ")",
+// the spaces after it, and an optional task box ("[ ]" / "[x]").
+const LIST_ITEM = /^(\s*)(?:([-*+])|(\d{1,9})([.)]))(\s+)(\[[ xX]\]\s+)?/;
+
+/** Enter in the composer on a markdown list line, like GitHub / Notion: the next line gets the same
+ *  marker ("- " → "- ", "1. " → "2. ", a task item → "- [ ] ", the same indent), and Enter on an
+ *  EMPTY item removes its marker and ends the list. Null leaves Enter as it is (send, or a newline):
+ *  a selection, a caret inside the marker, a line that is no list item, or a line in an open ```
+ *  fence. Text after the caret moves to the new item. Pure. */
+export function listContinuation(value: string, start: number, end: number): { text: string; caret: number } | null {
+  if (start !== end) return null;
+  const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+  const nl = value.indexOf("\n", start);
+  const lineEnd = nl === -1 ? value.length : nl;
+  const line = value.slice(lineStart, lineEnd);
+  const m = LIST_ITEM.exec(line);
+  if (!m || start - lineStart < m[0].length) return null;
+  const fences = value.slice(0, lineStart).split("\n").filter((l) => /^\s*```/.test(l)).length;
+  if (fences % 2 === 1) return null;
+  const [marker, indent, bullet, num, delim, gap, task] = m;
+  if (line.slice(marker.length).trim() === "") {
+    return { text: value.slice(0, lineStart) + value.slice(lineEnd), caret: lineStart };
+  }
+  const next = indent + (bullet ?? `${Number(num) + 1}${delim}`) + gap + (task ? "[ ] " : "");
+  const after = value.slice(start, lineEnd).trimStart();
+  const text = value.slice(0, start) + "\n" + next + after + value.slice(lineEnd);
+  return { text, caret: start + 1 + next.length };
+}

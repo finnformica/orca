@@ -1,5 +1,6 @@
 // The sidebar's other pages. Settings: appearance, the Repos section (one row per configured repo
-// with its agents' numbers; a click opens Agents scoped to it), the GitHub section, the board's density, each machine's hourly cost (editable: the
+// with its agents' numbers; a click opens Agents scoped to it), the GitHub section, the Board view (shown or
+// hidden for every browser) and its density, each machine's hourly cost (editable: the
 // instance cards' Cost · this month), and the configuration this bridge runs with (read-only — it
 // is edited in orca.config.ts / the config table, not here). Notifications: do not
 // disturb, browser notifications, and which kinds pop a toast (the centre keeps every kind).
@@ -19,11 +20,11 @@ import { browserNotifyAtom, densityAtom, instanceScopeAtom, notifyDndAtom, repoF
 import { KIND_META, NOTIFICATION_KINDS, browserNotifyChecked, browserNotifyNote, browserPermission } from "../../../shared/notifications";
 import { navigate, useRoute } from "@/lib/route";
 import { useTheme, type Theme } from "@/lib/theme";
-import { instanceChoices, setInstanceRate, setInstanceTerminal, staleHours, terminalContext, thisInstance, useAgentProviders, useInstanceRates, useInstanceTerminals, useRepos, useWorkstreams } from "../store";
+import { instanceChoices, setInstanceRate, setInstanceTerminal, setShowBoard, staleHours, terminalContext, thisInstance, useAgentProviders, useInstanceRates, useInstanceTerminals, useRepos, useShowBoard, useWorkstreams } from "../store";
 import { terminalMachines, useOpenTerminal } from "@/components/InstanceTerminal";
 import { ago, repoSummaries, terminalBlocked } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
-import { BrandName, FindBox, NAV, OrcaMark, THEMES } from "@/components/Shell";
+import { BrandName, FindBox, HandoffsBadge, NAV, OrcaMark, THEMES, navShown } from "@/components/Shell";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
@@ -83,7 +84,6 @@ const Count = ({ label, n }: { label: string; n: number }) => (
 
 export function Settings() {
   const [theme, setTheme] = useTheme();
-  const [density, setDensity] = useAtom(densityAtom);
   const repos = useRepos();
   const providers = useAgentProviders();
   const here = thisInstance();
@@ -98,9 +98,7 @@ export function Settings() {
         <Setting label="Theme" hint="Light, dark, or follow the system.">
           <Segmented label="Theme" value={theme} onChange={(v) => setTheme(v as Theme)} options={THEMES.map((t) => ({ value: t.value, label: t.label }))} />
         </Setting>
-        <Setting label="Board density" hint="The Board view's cards: full, or status only.">
-          <Segmented label="Density" value={density} onChange={setDensity} options={[{ value: "comfortable", label: "Comfortable" }, { value: "dense", label: "Dense" }]} />
-        </Setting>
+        <BoardSettings />
       </VCard>
       <ServerIdentitySettings />
       <NotificationSettings />
@@ -132,6 +130,39 @@ export function Settings() {
   );
 }
 
+/** The Board view: shown or hidden for every browser (`ui.showBoard` in the config document), and
+ *  its card density (this browser only). */
+function BoardSettings() {
+  const show = useShowBoard();
+  const [density, setDensity] = useAtom(densityAtom);
+  const [busy, setBusy] = useState(false);
+  const set = async (value: boolean) => {
+    setBusy(true);
+    try { await setShowBoard(value); }
+    catch (e) {
+      const error = e instanceof Error ? e.message : String(e);
+      notifyLocal({
+        kind: "action_failed", repo: "", title: "Board view", label: "Board setting failed", body: error,
+        copy: `Action: ${value ? "Show" : "Hide"} the Board view\nError:\n${error}`,
+        ask: `${value ? "Showing" : "Hiding"} the Board view failed: ${error}. Please investigate and fix.`,
+      });
+    }
+    finally { setBusy(false); }
+  };
+  return (
+    <>
+      <Setting label="Show Board view" hint="The Board page and its nav entry, for every browser." htmlFor="setting-show-board">
+        <Switch id="setting-show-board" data-slot="show-board-switch" checked={show} disabled={busy} onCheckedChange={(v) => void set(v)} />
+      </Setting>
+      {show && (
+        <Setting label="Board density" hint="The Board view's cards: full, or status only.">
+          <Segmented label="Density" value={density} onChange={setDensity} options={[{ value: "comfortable", label: "Comfortable" }, { value: "dense", label: "Dense" }]} />
+        </Setting>
+      )}
+    </>
+  );
+}
+
 /** Phone-only (there is no off-canvas drawer any more): everything the sidebar carried that isn't
  *  one of the bottom bar's five destinations (Overview, Agents, New agent, Orchestrator, Settings
  *  itself) — Find, the instance switcher, and links to Previews, Integrations and Handoffs. Hidden on desktop,
@@ -139,7 +170,8 @@ export function Settings() {
 function MobileNav() {
   const [scope, setScope] = useAtom(instanceScopeAtom);
   const choices = instanceChoices();
-  const links = NAV.filter((n) => ["Inbox", "Previews", "Integrations", "Handoffs"].includes(n.label));
+  const showBoard = useShowBoard();
+  const links = NAV.filter((n) => ["Board", "Inbox", "Previews", "Integrations", "Handoffs"].includes(n.label) && navShown(n.to, showBoard));
   return (
     <VCard slot="settings-mobile-nav" title="Navigate" className="md:hidden" bodyClass="divide-y">
       <Setting label="Find agents" hint="Filters the Agents list.">
@@ -155,6 +187,7 @@ function MobileNav() {
         {links.map(({ to, label, Icon }) => (
           <button key={to} type="button" onClick={() => navigate(to)} className="hover:bg-accent/40 flex w-full items-center gap-3 px-4 py-3 text-left text-sm">
             <Icon className="text-muted-foreground size-4" />{label}
+            {to === "/handoffs" && <HandoffsBadge />}
           </button>
         ))}
       </nav>

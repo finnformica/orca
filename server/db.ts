@@ -942,6 +942,63 @@ export const MIGRATIONS: MigrationStep[] = [
       );
     `,
   },
+  {
+    name: "20261019-instance-metric-bridge-rss",
+    idempotent: true,
+    // The bridge process's own resident memory (MB) at each sample (server/health.ts) — the instance
+    // card's Bridge memory chart, so a leak in the bridge shows before systemd's MemoryMax does.
+    // Nullable: older rows and older bridges record none.
+    sql: `ALTER TABLE instance_metric ADD COLUMN IF NOT EXISTS bridge_rss_mb REAL`,
+  },
+  {
+    name: "20261020-handoff-seen",
+    idempotent: true,
+    // When the user first opened the Handoffs page after an incoming pack arrived. The nav badge
+    // (`handoffBadge`) counts incoming packs with none, plus outgoing packs not sent yet.
+    sql: `ALTER TABLE handoff ADD COLUMN IF NOT EXISTS seen_at BIGINT`,
+  },
+  {
+    name: "20261020-machine-sample",
+    idempotent: true,
+    // The machine card's 15 s ring (server/liveMetrics.ts) was in memory only: a deploy or a crash
+    // lost the whole 6-hour chart. Each instance flushes its buffered samples here about once a
+    // minute (few writes, not one per tick) and reads the newest 6 hours back to seed the ring at
+    // start. Pruned to 7 days by the writer, like instance_metric — far more rows per day at a 15 s
+    // step, so a shorter retention than instance_metric's 32 days.
+    sql: `
+      CREATE TABLE IF NOT EXISTS machine_sample (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        instance TEXT NOT NULL,
+        at TIMESTAMPTZ NOT NULL,
+        cpu_work_pct DOUBLE PRECISION NOT NULL,
+        iowait_pct DOUBLE PRECISION NOT NULL,
+        load1 DOUBLE PRECISION NOT NULL,
+        disk_read_mbs DOUBLE PRECISION,
+        disk_write_mbs DOUBLE PRECISION,
+        mem_used_gb DOUBLE PRECISION NOT NULL,
+        mem_cache_gb DOUBLE PRECISION NOT NULL,
+        mem_avail_gb DOUBLE PRECISION,
+        swap_used_gb DOUBLE PRECISION,
+        running_agents INTEGER,
+        oom_kills INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS machine_sample_instance_at ON machine_sample (instance, at);
+    `,
+  },
+  {
+    name: "20261020-principal-link-admin-level",
+    idempotent: true,
+    // The "admin" grant level (shared/integrations.ts): a trusted person may run every orca verb on
+    // the link's repos, plus move, sweep and repo add. Widen both CHECKs. Each statement drops and
+    // re-adds the SAME constraint in one ALTER TABLE, so a re-run is a no-op.
+    sql: `
+      ALTER TABLE channel_link DROP CONSTRAINT IF EXISTS channel_link_level_check,
+        ADD CONSTRAINT channel_link_level_check CHECK (level IN ('notify','ask','work','admin'));
+      ALTER TABLE principal DROP CONSTRAINT IF EXISTS principal_max_level_check,
+        ADD CONSTRAINT principal_max_level_check CHECK (max_level IN ('notify','ask','work','admin'));
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
@@ -1682,6 +1739,8 @@ export type MetricPoint = {
   at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; runningAgents: number;
   /** Agent runs OOM-killed in their own scope since the previous sample. */
   oomKills?: number;
+  /** The bridge process's resident memory, MB (absent on older rows). */
+  bridgeRssMb?: number;
 };
 
 /** How long a metric row is kept: 32 days, so the card's "this month" cost always has the whole of
@@ -1702,8 +1761,8 @@ export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()):
     // neither.
     await sql.begin(async (tx: Bun.SQL) => {
       await tx`
-        INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents, oom_kills)
-        VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null}, ${p.runningAgents}, ${p.oomKills ?? 0})`;
+        INSERT INTO instance_metric (user_id, instance, at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents, oom_kills, bridge_rss_mb)
+        VALUES (${currentUser()}, ${instance}, ${new Date(at)}, ${p.cpuPct}, ${p.load1}, ${p.memUsedGb}, ${p.memTotalGb}, ${p.diskUsedGb ?? null}, ${p.runningAgents}, ${p.oomKills ?? 0}, ${p.bridgeRssMb ?? null})`;
       await tx`DELETE FROM instance_metric WHERE instance = ${instance} AND at < ${new Date(at - METRIC_RETENTION_MS)}`;
     });
   });
@@ -1713,14 +1772,74 @@ export async function recordMetric(p: Omit<MetricPoint, "at">, at = Date.now()):
 export async function metricHistory(instance: string, hours: number, now = Date.now()): Promise<MetricPoint[]> {
   return withRetry(async (sql) => {
     const rows = await sql`
-      SELECT at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents, oom_kills FROM instance_metric
+      SELECT at, cpu_pct, load1, mem_used_gb, mem_total_gb, disk_used_gb, running_agents, oom_kills, bridge_rss_mb FROM instance_metric
       WHERE user_id = ${currentUser()} AND instance = ${instance} AND at >= ${new Date(now - hours * 3_600_000)}
       ORDER BY at`;
-    return (rows as { at: Date; cpu_pct: number; load1: number; mem_used_gb: number; mem_total_gb: number; disk_used_gb: number | null; running_agents: number | null; oom_kills: number | null }[]).map((r) => ({
+    return (rows as { at: Date; cpu_pct: number; load1: number; mem_used_gb: number; mem_total_gb: number; disk_used_gb: number | null; running_agents: number | null; oom_kills: number | null; bridge_rss_mb: number | null }[]).map((r) => ({
       at: new Date(r.at).getTime(), cpuPct: Number(r.cpu_pct), load1: Number(r.load1), memUsedGb: Number(r.mem_used_gb), memTotalGb: Number(r.mem_total_gb),
       runningAgents: r.running_agents == null ? 0 : Number(r.running_agents),
       ...(r.disk_used_gb == null ? {} : { diskUsedGb: Number(r.disk_used_gb) }),
       ...(r.oom_kills ? { oomKills: Number(r.oom_kills) } : {}),
+      ...(r.bridge_rss_mb == null ? {} : { bridgeRssMb: Number(r.bridge_rss_mb) }),
+    }));
+  });
+}
+
+// ---- machine_sample: the 15 s ring (server/liveMetrics.ts), persisted ----
+
+/** One of server/liveMetrics.ts's `LiveSample`s, plus the running-agent count at flush time (not
+ *  tracked on `LiveSample` itself — the live ring has no use for it, only this table does). */
+export type MachineSamplePoint = {
+  at: number; work: number; iowait: number; load1: number;
+  readMBs?: number; writeMBs?: number;
+  memUsedGb: number; memCacheGb: number; memAvailGb?: number; swapUsedGb?: number;
+  runningAgents?: number; ooms?: number;
+};
+
+/** How long a machine_sample row is kept: 7 days — far more rows per day than instance_metric's
+ *  1-minute step, so a shorter window than its 32 days. */
+export const MACHINE_SAMPLE_RETENTION_MS = 7 * 24 * 3_600_000;
+
+/** Record a batch of THIS instance's buffered 15 s samples (liveMetrics.ts flushes about once a
+ *  minute, not once a tick) and prune its own rows past retention in the same breath, like
+ *  `recordMetric`. One transaction per batch, so a mid-write drop can't leave a partial batch
+ *  behind for `withRetry`'s retry to duplicate. */
+export async function recordMachineSamples(points: MachineSamplePoint[], instance = instanceName()): Promise<void> {
+  if (!points.length || previewBridge()) return; // the instance samples itself once, from its real bridge
+  return withRetry(async (sql) => {
+    const user = currentUser();
+    await sql.begin(async (tx: Bun.SQL) => {
+      for (const p of points) {
+        await tx`
+          INSERT INTO machine_sample (user_id, instance, at, cpu_work_pct, iowait_pct, load1, disk_read_mbs, disk_write_mbs, mem_used_gb, mem_cache_gb, mem_avail_gb, swap_used_gb, running_agents, oom_kills)
+          VALUES (${user}, ${instance}, ${new Date(p.at)}, ${p.work}, ${p.iowait}, ${p.load1}, ${p.readMBs ?? null}, ${p.writeMBs ?? null}, ${p.memUsedGb}, ${p.memCacheGb}, ${p.memAvailGb ?? null}, ${p.swapUsedGb ?? null}, ${p.runningAgents ?? null}, ${p.ooms ?? null})`;
+      }
+      const newest = points[points.length - 1]!.at;
+      await tx`DELETE FROM machine_sample WHERE instance = ${instance} AND at < ${new Date(newest - MACHINE_SAMPLE_RETENTION_MS)}`;
+    });
+  });
+}
+
+/** An instance's machine samples over the last `hours`, oldest first — used to seed the live ring at
+ *  start, so a restart keeps its chart instead of showing a straight line back to empty. */
+export async function machineSampleHistory(instance: string, hours: number, now = Date.now()): Promise<MachineSamplePoint[]> {
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      SELECT at, cpu_work_pct, iowait_pct, load1, disk_read_mbs, disk_write_mbs, mem_used_gb, mem_cache_gb, mem_avail_gb, swap_used_gb, running_agents, oom_kills FROM machine_sample
+      WHERE user_id = ${currentUser()} AND instance = ${instance} AND at >= ${new Date(now - hours * 3_600_000)}
+      ORDER BY at`;
+    return (rows as {
+      at: Date; cpu_work_pct: number; iowait_pct: number; load1: number; disk_read_mbs: number | null; disk_write_mbs: number | null;
+      mem_used_gb: number; mem_cache_gb: number; mem_avail_gb: number | null; swap_used_gb: number | null; running_agents: number | null; oom_kills: number | null;
+    }[]).map((r) => ({
+      at: new Date(r.at).getTime(), work: Number(r.cpu_work_pct), iowait: Number(r.iowait_pct), load1: Number(r.load1),
+      ...(r.disk_read_mbs == null ? {} : { readMBs: Number(r.disk_read_mbs) }),
+      ...(r.disk_write_mbs == null ? {} : { writeMBs: Number(r.disk_write_mbs) }),
+      memUsedGb: Number(r.mem_used_gb), memCacheGb: Number(r.mem_cache_gb),
+      ...(r.mem_avail_gb == null ? {} : { memAvailGb: Number(r.mem_avail_gb) }),
+      ...(r.swap_used_gb == null ? {} : { swapUsedGb: Number(r.swap_used_gb) }),
+      ...(r.running_agents == null ? {} : { runningAgents: Number(r.running_agents) }),
+      ...(r.oom_kills ? { ooms: Number(r.oom_kills) } : {}),
     }));
   });
 }
@@ -1818,6 +1937,20 @@ export async function stepsForRuns(runIds: string[]): Promise<Map<string, { seq:
   });
 }
 
+/** The tool results of these runs that name a handoff pack (`orca-handoff://<id>`, printed by
+ *  `orca handoff create`), oldest first: the link from a turn to the pack it made (handoff.linkTurns). */
+export async function handoffOutputs(runIds: string[]): Promise<{ runId: string; output: string }[]> {
+  if (!runIds.length) return [];
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      SELECT run_id, step->>'output' AS output FROM turn_step
+      WHERE run_id IN ${sql(runIds)} AND step->>'kind' = 'result' AND COALESCE(step->>'isError', 'false') <> 'true'
+        AND step->>'output' LIKE '%orca-handoff://%'
+      ORDER BY at, seq`;
+    return (rows as { run_id: string; output: string }[]).map((r) => ({ runId: r.run_id, output: r.output }));
+  });
+}
+
 // ---- queued messages ----
 
 export type QueuedMessage = {
@@ -1903,6 +2036,14 @@ export async function claimQueuedMessage(repo: string, branch: string, onlyGrant
       ...(grantOf(r.grant_scope) ? { grant: grantOf(r.grant_scope) } : {}),
       ...(r.reply_to ? { replyTo: r.reply_to as ReplyTo } : {}),
     };
+  });
+}
+
+/** Put a claimed message back on the queue: its launch failed, so it was never sent. Without this
+ *  a failed dispatch left it claimed, and the message was lost. */
+export async function releaseQueuedMessage(id: number): Promise<void> {
+  return withRetry(async (sql) => {
+    await sql`UPDATE queued_message SET dispatched_at = NULL WHERE id = ${id} AND user_id = ${currentUser()}`;
   });
 }
 
@@ -2009,12 +2150,15 @@ export type HandoffFile = { name: string; kind: "file" | "chat" | "attachment"; 
 export type HandoffRow = {
   id: string; direction: "out" | "in"; title: string; message: string; target: string; source: string;
   files: HandoffFile[]; createdAt: number; sentAt?: number; sentTo?: string;
+  /** Incoming only: when the user first opened the Handoffs page after it arrived. */
+  seenAt?: number;
 };
 
 const toHandoff = (r: Record<string, unknown>): HandoffRow => ({
   id: String(r.id), direction: r.direction === "in" ? "in" : "out", title: String(r.title), message: String(r.message),
   target: String(r.target), source: String(r.source), files: (typeof r.files === "string" ? JSON.parse(r.files) : r.files) as HandoffFile[] ?? [],
   createdAt: Number(r.created_at), sentAt: r.sent_at === null ? undefined : Number(r.sent_at), sentTo: (r.sent_to as string | null) ?? undefined,
+  ...(r.seen_at === null || r.seen_at === undefined ? {} : { seenAt: Number(r.seen_at) }),
 });
 
 /** Insert a pack. False when a row with this id and direction exists (an import sent twice). */
@@ -2047,6 +2191,27 @@ export async function handoff(id: string, direction: "out" | "in" = "out"): Prom
 export async function markHandoffSent(id: string, to: string, at = Date.now()): Promise<void> {
   return withRetry(async (sql) => {
     await sql`UPDATE handoff SET sent_at = ${at}, sent_to = ${to} WHERE user_id = ${currentUser()} AND direction = 'out' AND id = ${id}`;
+  });
+}
+
+/** What the Handoffs nav badge counts: outgoing packs made here and not sent yet. These are the
+ *  only packs that wait for the user's own approval; a received pack needs no action from them
+ *  beyond reading it, so it does not count. */
+export async function handoffBadge(): Promise<{ unsent: number }> {
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      SELECT count(*) FILTER (WHERE direction = 'out' AND sent_at IS NULL) AS unsent
+      FROM handoff WHERE user_id = ${currentUser()}`;
+    const r = (rows as { unsent: string | number }[])[0];
+    return { unsent: Number(r?.unsent ?? 0) };
+  });
+}
+
+/** The user opened the Handoffs page: every incoming pack is seen. This no longer feeds the nav
+ *  badge (`handoffBadge`); it still drives the "new" tag on a received pack's row. */
+export async function markHandoffsSeen(at = Date.now()): Promise<void> {
+  return withRetry(async (sql) => {
+    await sql`UPDATE handoff SET seen_at = ${at} WHERE user_id = ${currentUser()} AND direction = 'in' AND seen_at IS NULL`;
   });
 }
 

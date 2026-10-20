@@ -10,13 +10,16 @@ import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
 import { getDefaultStore } from "jotai";
 import * as store from "@/store";
+import * as centre from "@/lib/notificationStore";
 import { App } from "@/App";
-import { agentQueryAtom, densityAtom, instanceScopeAtom, sidebarCollapsedAtom } from "@/lib/atoms";
+import { agentQueryAtom, instanceScopeAtom, sidebarCollapsedAtom } from "@/lib/atoms";
 import { navigate } from "@/lib/route";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-beforeAll(() => store.configReady);
+// Every test file shares one process and one URL: an earlier file can leave a PR page open
+// (e.g. /r/prs/7/chat). Start on "/" like afterEach does, so the first test sees the Overview.
+beforeAll(async () => { await store.configReady; await act(async () => navigate("/")); });
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -33,11 +36,10 @@ afterEach(async () => {
   container?.remove();
   root = container = undefined;
   apiFake.reset();
+  centre.reset();
   localStorage.clear();
-  // The atoms outlive localStorage within one run: a dense board left behind here once made later
-  // files' cards hide their prompt.
+  // The atoms outlive localStorage within one run: reset what this file changes for later files.
   const s = getDefaultStore();
-  s.set(densityAtom, "comfortable");
   s.set(sidebarCollapsedAtom, false);
   s.set(instanceScopeAtom, "all");
   s.set(agentQueryAtom, "");
@@ -129,7 +131,7 @@ describe("console shell", () => {
     expect(sidebar.querySelector('[data-slot="instance-scope"]')!.textContent).toBe("All instances"); // two instances in the fake config
     expect(sidebar.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     const items = [...sidebar.querySelectorAll('nav[aria-label="Main"] button')].map(navLabel);
-    expect(items).toEqual(["Overview", "Agents", "Inbox", "Previews", "Integrations", "Handoffs", "Settings"]);
+    expect(items).toEqual(["Overview", "Agents", "Board", "Inbox", "Previews", "Integrations", "Handoffs", "Settings"]);
     expect(navItem("Overview").getAttribute("aria-current")).toBe("page");
     for (const [label, path, slot] of [["Agents", "/agents", "workstream-list"], ["Inbox", "/inbox", "inbox-unread"], ["Integrations", "/integrations", "integrations-page"], ["Settings", "/settings", "settings-appearance"]] as const) {
       await click(navItem(label));
@@ -206,12 +208,66 @@ describe("console shell", () => {
     expect(container!.querySelector('button[aria-label="Expand sidebar"]')).not.toBeNull();
   });
 
-  test("Agents: the list only — no List | Board toggle, no density toggle", async () => {
+  test("Inbox nav badge and bell badge share one CountBadge: same classes, collapsed or not", async () => {
+    centre.reset();
+    apiFake.notificationsData = [{ id: 1, instance: "local", repo: "r", branch: "b", kind: "finished", title: "x", body: "y", createdAt: Date.now() }];
+    await mount();
+    await act(async () => { await flush(); await flush(); });
+    const bellBadge = () => container!.querySelector('[data-slot="notifications-unread"]')!;
+    const inboxBadge = () => container!.querySelector('[data-slot="inbox-unread-count"]')!;
+    // Collapsed to the icon rail: the Inbox nav badge pins to the icon's corner, exactly as the bell's does.
+    await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
+    expect(inboxBadge().className).toBe(bellBadge().className);
+    expect(inboxBadge().textContent).toBe("1");
+    expect(bellBadge().textContent).toBe("1");
+    // Expanded: the row's own badge sits inline, but still the same colour, size, radius, font and padding.
+    await click(container!.querySelector('button[aria-label="Expand sidebar"]')!);
+    for (const c of ["bg-foreground", "text-background", "h-4", "min-w-4", "rounded-full", "text-[10px]", "font-semibold"]) {
+      expect(inboxBadge().className.split(" ")).toContain(c);
+      expect(bellBadge().className.split(" ")).toContain(c);
+    }
+  });
+
+  test("Handoffs nav badge: outgoing packs not sent yet only; a received pack never counts", async () => {
+    apiFake.handoffBadgeData = { unsent: 1 };
+    apiFake.handoffPacks = [
+      { id: "o1", direction: "out", title: "Pending", message: "", target: "box-b", source: "here", files: [], createdAt: 1, preview: [], problems: [], wouldSay: "" },
+      { id: "i1", direction: "in", title: "From B", message: "", target: "here", source: "box-b", files: [], createdAt: 2, sentAt: 2, preview: [], problems: [], wouldSay: "" },
+    ];
+    await mount();
+    const badge = () => container!.querySelector('[data-slot="handoffs-count"]');
+    // The one CountBadge, inline on the Handoffs row, named for a screen reader.
+    expect(navItem("Handoffs").contains(badge())).toBe(true);
+    expect(badge()!.textContent).toBe("1");
+    expect(badge()!.getAttribute("aria-label")).toBe("1 packs waiting to send");
+    // Collapsed to the icon rail: pinned to the icon's corner, like the Inbox badge.
+    await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
+    expect(badge()!.className).toContain("absolute");
+    await click(container!.querySelector('button[aria-label="Expand sidebar"]')!);
+    // The phone reaches Handoffs from Settings → Navigate: the same count there.
+    await act(async () => { navigate("/settings"); await flush(); });
+    expect(container!.querySelector('[data-slot="settings-mobile-nav"] [data-slot="handoffs-count"]')!.textContent).toBe("1");
+    // Open the page: the received pack still shows as new (its own tag, unrelated to the badge),
+    // and the badge count is untouched by that visit.
+    await act(async () => { navigate("/handoffs"); await flush(); await flush(); });
+    expect(apiFake.handoffSeenCalls).toBe(1);
+    expect(container!.querySelector('[data-slot="handoffs-received"] [data-slot="handoff-new"]')).not.toBeNull();
+    expect(navItem("Handoffs").querySelector('[data-slot="handoffs-count"]')!.textContent).toBe("1");
+    // Sent (the count reaches zero): no badge, and the keycap keeps its place at the row's edge.
+    apiFake.handoffBadgeData = { unsent: 0 };
+    await act(async () => { navigate("/"); await flush(); });
+    await act(async () => { navigate("/handoffs"); await flush(); await flush(); });
+    expect(badge()).toBeNull();
+  });
+
+  test("Agents: the list only — no List | Board toggle", async () => {
     navigate("/agents");
     await mount();
     expect(container!.querySelector('[data-slot="workstream-list"]')).not.toBeNull();
     expect(container!.querySelector('[role="group"][aria-label="View"]')).toBeNull();
+    // The Board is its own page now (the sidebar's Board entry), never a toggle on this one.
     expect(btnByText("Board")).toBeUndefined();
+    expect(navItem("Board").closest('nav[aria-label="Main"]') !== null).toBe(true);
     expect(gridEl()).toBeNull();
     expect(container!.querySelector('button[aria-label^="Switch to"]')).toBeNull();
   });

@@ -31,8 +31,13 @@ done
 exec "\${args[@]}"
 `;
 
+const uid = process.getuid?.() ?? 0;
+const sliceDir = `user.slice/user-${uid}.slice/user@${uid}.service/orca.slice/orca-agents.slice`;
+const agentsEvents = () => join(dir, "cgroup", sliceDir, "memory.events.local");
+const userEvents = () => join(dir, "cgroup", `user.slice/user-${uid}.slice/memory.events.local`);
+
 beforeEach(async () => {
-  prev = { ORCA_STATE_DIR: process.env.ORCA_STATE_DIR, ORCA_DATABASE_URL: process.env.ORCA_DATABASE_URL, PATH: process.env.PATH, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, SLACK_TOKEN: process.env.SLACK_TOKEN, ORCA_TEST_FORCE_CGROUP_LINUX: process.env.ORCA_TEST_FORCE_CGROUP_LINUX };
+  prev = { ORCA_STATE_DIR: process.env.ORCA_STATE_DIR, ORCA_DATABASE_URL: process.env.ORCA_DATABASE_URL, PATH: process.env.PATH, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR, SLACK_TOKEN: process.env.SLACK_TOKEN, ORCA_TEST_FORCE_CGROUP_LINUX: process.env.ORCA_TEST_FORCE_CGROUP_LINUX, ORCA_CGROUP_ROOT: process.env.ORCA_CGROUP_ROOT, ORCA_AGENTS_SLICE_MAX_GB: process.env.ORCA_AGENTS_SLICE_MAX_GB };
   dir = await mkdtemp(join(tmpdir(), "orca-oom-"));
   shim = await mkdtemp(join(tmpdir(), "orca-oom-shim-"));
   runtimeDir = await mkdtemp(join(tmpdir(), "orca-oom-runtime-"));
@@ -49,6 +54,12 @@ beforeEach(async () => {
   // server/agent.ts calls cgroup.available() with no `platform` override, so off Linux (macOS) it
   // would read false regardless of the PATH/bus shims below — force the Linux path for this test only.
   process.env.ORCA_TEST_FORCE_CGROUP_LINUX = "1";
+  // A fake cgroup tree: the agents' slice and the user slice, each with no OOM yet.
+  process.env.ORCA_CGROUP_ROOT = join(dir, "cgroup");
+  process.env.ORCA_AGENTS_SLICE_MAX_GB = "2";
+  await mkdir(join(dir, "cgroup", sliceDir), { recursive: true });
+  await writeFile(agentsEvents(), "oom 0\n");
+  await writeFile(userEvents(), "oom 0\n");
   ledger.clear();
   pg = await freshSchema("oom");
   process.env.ORCA_DATABASE_URL = pg.url;
@@ -65,7 +76,8 @@ afterEach(async () => {
 });
 
 async function fakeSystemctl(reply: string): Promise<void> {
-  await writeFile(join(shim, "systemctl"), `#!/bin/sh\ncase "$*" in\n  *"show "*"-p Result --value") echo '${reply}' ;;\n  *) exit 1 ;;\nesac\n`);
+  // A live user manager (cgroup.userManagerCheck asks it before every scoped launch), and the scope's Result.
+  await writeFile(join(shim, "systemctl"), `#!/bin/sh\ncase "$*" in\n  *"is-system-running") echo running ;;\n  *"show "*"-p Result --value") echo '${reply}' ;;\n  *) exit 1 ;;\nesac\n`);
   await chmod(join(shim, "systemctl"), 0o755);
 }
 async function run(branch: string): Promise<void> {
@@ -108,4 +120,35 @@ test("a custom agentMemoryMaxGb is reflected in both the wrapped command and the
   await agent.runAgent(wt, "go", { repo: "r", branch: "custom", provider: "claude", memoryMaxGb: 8 });
   const turn = await finished("custom");
   expect(turn.response).toContain("8 GB");
+});
+
+// The limit that killed a run (cgroup.oomCause): an `oom` counter in memory.events.local that rose
+// while the run was alive names it, so a slice OOM is not a bare "exit 137".
+async function fakeClaude(script: string): Promise<void> {
+  await writeFile(join(shim, "claude"), `#!/bin/sh\n${script}\n`);
+  await chmod(join(shim, "claude"), 0o755);
+}
+
+test("killed while the agents' slice hit its own limit: the error names the slice", async () => {
+  await fakeSystemctl("oom-kill");
+  await fakeClaude(`echo 'oom 1' > "${agentsEvents()}"; kill -9 $$`);
+  await run("slice-oom");
+  expect((await finished("slice-oom")).response).toBe("out of memory: agents slice limit (2 GB, all agent runs together)");
+});
+
+test("killed while the user slice hit a limit, the scope itself fine: still named", async () => {
+  await fakeSystemctl("success");
+  await fakeClaude(`echo 'oom 1' > "${userEvents()}"; kill -9 $$`);
+  await run("user-oom");
+  expect((await finished("user-oom")).response).toContain("out of memory: user slice limit");
+});
+
+test("a run that ends but had a process OOM-killed (a git push hook's build) gets a note", async () => {
+  await fakeSystemctl("oom-kill");
+  await fakeClaude(`printf '{"type":"result","subtype":"success","result":"done","is_error":false}'`);
+  await run("hook-oom");
+  const turn = await finished("hook-oom");
+  expect(turn.failed).toBeUndefined();
+  expect(turn.response).toContain("a process of this run was killed — out of memory (4 GB ceiling)");
+  expect(turn.response).toContain("check that the push happened");
 });

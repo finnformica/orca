@@ -4,19 +4,19 @@
 // local-promote flag, Slack timestamps) with what git/gh can't recover, keyed by repo+branch.
 // Enrichment and the chat transcript now live in the bridge's SQLite store (server/db.ts); this
 // module keeps a synchronous in-memory mirror of it. localStorage holds only per-browser UI state
-// (theme, density, composer drafts) — see the migration below for the one-shot handover.
+// (theme, composer drafts) — see the migration below for the one-shot handover.
 import { useEffect, useSyncExternalStore } from "react";
 import { onRefresh } from "@/lib/refresh";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import {
   addressNeedsAgent, addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, mergedPrIsHistory, followUpPrompt, instanceOrder, launchPrompt,
-  mergeSettled, newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, rowTitle, slackApiText, slackClipboard, titleFromPrompt, withAttachments,
+  mergeSettled, newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, rowTitle, slackApiText, slackClipboard, titleFromPrompt, verifiedLane, verifiedMark, verifiedState, withAttachments,
 } from "./workstream";
-import type { MergeMark } from "./workstream";
+import type { MergeMark, VerifiedMark } from "./workstream";
 import type { BridgeInfo, ReviewDigest, TerminalTargetContext } from "./workstream";
 import { apiBase } from "./lib/server";
-import type { CheckRow, GrantScopeNote, OrchStatus, PrRef, UpkeepRecord, WorkstreamRef } from "./workstream";
+import type { BrowserKillRecord, CheckRow, GrantScopeNote, OrchStatus, PrRef, UpkeepRecord, WorkstreamRef } from "./workstream";
 import type { AgentOutcome, AgentProvider, AgentTurn } from "../../shared/agent";
 import { AUTO_MODEL, defaultModelOf, providerOfModel } from "../../shared/models";
 import { attachCommand, handoffPrompt } from "../../shared/agent";
@@ -40,7 +40,7 @@ const notify = () => { version++; listeners.forEach((l) => l()); };
 const subscribe = (l: () => void) => { listeners.add(l); return () => listeners.delete(l); };
 
 // ---- config ----
-let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; terminal?: Record<string, boolean>; instanceUrls?: Record<string, string>; bridge?: BridgeInfo } | null = null;
+let cfg: { repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort?: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; terminal?: Record<string, boolean>; voice?: boolean; ui?: { showBoard: boolean }; instanceUrls?: Record<string, string>; bridge?: BridgeInfo } | null = null;
 export const configReady = api.config()
   .then(async (c) => { cfg = c; notify(); await migrateLocalEnrichment(); void refresh(); })
   .catch(() => { cfg = { repos: EMPTY_REPOS, staleHours: 24, agentProviders: DEFAULT_AGENT_PROVIDERS }; configFailed = true; notify(); });
@@ -86,6 +86,9 @@ export const useBridge = (): BridgeInfo | undefined => useSyncExternalStore(subs
 
 const repoInfo = (repo: string) => cfg?.repos.find((r) => r.name === repo);
 export const useRepos = (): RepoInfo[] => useSyncExternalStore(subscribe, () => cfg?.repos ?? EMPTY_REPOS);
+/** Whether the repo list has actually landed — `useRepos()` alone can't tell "not loaded yet" from
+ *  "loaded, no repos", and a caller that drops a stale filter value needs to know which. */
+export const useReposLoaded = (): boolean => useSyncExternalStore(subscribe, () => cfg !== null);
 export const agentProviders = (): AgentProvider[] => cfg?.agentProviders ?? DEFAULT_AGENT_PROVIDERS;
 export const useAgentProviders = (): AgentProvider[] => useSyncExternalStore(subscribe, agentProviders);
 export const baseBranch = (repo: string) => repoInfo(repo)?.baseBranch ?? "main";
@@ -126,6 +129,18 @@ export async function setInstanceTerminal(instance: string, on: boolean): Promis
   cfg = { ...cfg, terminal: next };
   notify();
 }
+/** The Board view's nav entry and route (`ui.showBoard` in the app config): on unless the config
+ *  says false, and on before the config loads, so a board URL does not flash the Agents view. */
+export const useShowBoard = (): boolean => useSyncExternalStore(subscribe, () => cfg?.ui?.showBoard !== false);
+/** Whether the bridge can transcribe voice (it holds the OpenAI key), so the composer shows its mic. */
+export const useVoiceInput = (): boolean => useSyncExternalStore(subscribe, () => cfg?.voice === true);
+/** Show or hide the Board view for every browser, then in the config mirror. */
+export async function setShowBoard(showBoard: boolean): Promise<void> {
+  await api.setShowBoard(showBoard);
+  if (!cfg) return;
+  cfg = { ...cfg, ui: { ...cfg.ui, showBoard } };
+  notify();
+}
 /** This bridge's instance name, and every instance a workstream can be placed on, in display order
  *  (`instanceOrder`: cloud, then local, then any others alphabetically — not "this one first").
  *  Empty means a single machine — placement UI stays hidden. */
@@ -147,8 +162,10 @@ export type Enrichment = {
   grantScope?: GrantScopeNote; // an outside sender's grant (server-set): its runs are in scoped mode
   previewInstance?: PreviewPlacement; // written by the bridge that started the preview, cleared on stop
   mergeWhenGreen?: MergeMark; // marked by `orca merge --when-green` / the PR menu (server/mergeQueue.ts)
+  verified?: VerifiedMark | null; // the user's hand-set "I tested this PR" marker (Verified button, `orca status --verified`)
   upkeep?: UpkeepRecord; // automatic PR upkeep's last attempt (server/upkeep.ts)
   cleanupBlocked?: { why?: string; at?: string }; // the reaper left the worktree: it holds work (server/verbs.ts cleanupRepo)
+  browserKilled?: BrowserKillRecord; // the browser watchdog killed a browser this branch's run started (server/browserWatch.ts)
 };
 /** Where a branch's preview runs: the instance, and its key there (a worktree path ON that instance —
  *  "Test on cloud" for a laptop worktree previews the box's own checkout of the branch). */
@@ -247,6 +264,13 @@ export const clientPollCounts = () => ({ ...pollCounts });
 const settle = <T>(p: Promise<T>, fallback: T): Promise<Slice<T>> =>
   p.then((v) => ({ ok: true, v }), () => ({ ok: false, v: fallback }));
 
+/** Store a settled slice. A failed one keeps the last good value: storing its empty fallback made
+ *  every row of the repo leave the board for one poll (the Overview's counts read 0, then came back). */
+function keepGood<T>(by: Map<string, Slice<T>>, name: string, s: Slice<T>): void {
+  const prev = by.get(name);
+  by.set(name, s.ok || !prev ? s : { ok: false, v: prev.v });
+}
+
 function rebuildLive() {
   live = (cfg?.repos ?? []).map((r) => ({
     repo: r.name, hasRemote: r.hasRemote,
@@ -312,7 +336,7 @@ export const pollAgents = coalesced(async () => {
   const polled = await Promise.all((cfg?.repos ?? []).map((r) =>
     settle(api.agents(r.name), [] as LiveAgent[]).then((s) => [r.name, s] as const)));
   pollCounts.agents++;
-  for (const [name, s] of polled) agentsByRepo.set(name, s);
+  for (const [name, s] of polled) keepGood(agentsByRepo, name, s);
   if (polled.some(([, s]) => s.ok)) lastSyncAt = Date.now();
   rebuildLive();
   // Enrichment rides the agents stream: both are local-only bridge calls (no GitHub quota), and it
@@ -331,7 +355,7 @@ export const pollPrs = coalesced(async () => {
   const polled = await Promise.all((cfg?.repos ?? []).map((r) =>
     settle(api.prs(r.name), [] as PrSummary[]).then((s) => [r.name, s] as const)));
   pollCounts.prs++;
-  for (const [name, s] of polled) prsByRepo.set(name, s);
+  for (const [name, s] of polled) keepGood(prsByRepo, name, s);
   rebuildLive();
   runFollowers(); // auto-drive any followed PRs off the status we just polled
   // notify() is the coordinator's job (see pollAgents) — never render off PRs alone.
@@ -342,7 +366,7 @@ export const pollMerged = coalesced(async () => {
     (r.hasRemote ? settle(api.mergedPrs(r.name), [] as MergedPr[]) : Promise.resolve({ ok: true, v: [] as MergedPr[] }))
       .then((s) => [r.name, s] as const)));
   pollCounts.merged++;
-  for (const [name, s] of polled) mergedByRepo.set(name, s);
+  for (const [name, s] of polled) keepGood(mergedByRepo, name, s);
   rebuildLive();
   // notify() is the coordinator's job (see pollAgents): refreshAndGc after a full refresh, or the
   // solo TTL caller below via `.then(notify)`.
@@ -450,7 +474,7 @@ function runFollowers() {
 }
 
 // ---- assembled rows ----
-export type Lane = "LOCAL" | "DRAFT" | "IN_REVIEW" | "MERGEABLE" | "DONE";
+export type Lane = "LOCAL" | "DRAFT" | "IN_REVIEW" | "VERIFIED" | "MERGEABLE" | "DONE";
 export type Row = {
   isDraft?: boolean;
   repo: string;
@@ -503,6 +527,8 @@ export type Row = {
   /** Marked merge-when-green by Orca's own queue (#169), from enrichment — a second, independent
    *  way the status pill reads "Auto-merge" even when GitHub's own flag is off. */
   mergeWhenGreen?: MergeMark;
+  /** The user's own Verified marker (enrichment). The lane and pill read it against `prHead`. */
+  verified?: VerifiedMark | null;
   following?: boolean;
   /** The orchestrator started or continued this one, and hears when its agent finishes. */
   orchestrated?: boolean;
@@ -520,6 +546,8 @@ export type Row = {
   prHead?: string;
   /** Cleanup did not reap the merged/closed worktree, and why (enrichment, server-written). */
   cleanupBlocked?: { why?: string; at?: string };
+  /** The browser watchdog killed a browser one of its runs started (enrichment, server-written). */
+  browserKilled?: BrowserKillRecord;
   feedback?: string[];
   mergedAt?: string;
   slackNotifiedAt?: string;
@@ -529,7 +557,7 @@ export type Row = {
 function laneFor(row: Row, pr?: PrSummary): Lane {
   if (pr) {
     if (pr.isDraft) return "DRAFT";
-    return deriveKanbanState(pr) === "MERGEABLE" ? "MERGEABLE" : "IN_REVIEW";
+    return verifiedLane(deriveKanbanState(pr) === "MERGEABLE" ? "MERGEABLE" : "IN_REVIEW", verifiedState(row.verified, pr.head, pr.number));
   }
   if (row.worktreePath && row.promoted) return row.mergeClean === "clean" ? "MERGEABLE" : "IN_REVIEW";
   return "LOCAL"; // pre-PR worktree
@@ -732,8 +760,8 @@ export function assembleRows(): Row[] {
         prNumber: pr?.number, prBase: pr?.base, prAdditions: pr?.additions, prDeletions: pr?.deletions,
         prUrl: pr?.url, previewUrl: pr?.previewUrl, hasPreviewLabel: pr?.hasPreviewLabel, isDraft: pr?.isDraft,
         ciStatus: pr?.ciStatus, reviewStatus: pr?.reviewStatus, mergeable: pr?.mergeable, autoMergeEnabled: pr?.autoMergeEnabled, autoMergeMethod: pr?.autoMergeMethod,
-        following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, orchStatus: e.orchStatus, grantScope: e.grantScope, upkeep: e.upkeep, previewInstance: e.previewInstance, mergeWhenGreen: e.mergeWhenGreen,
-        failingChecks: pr?.failingChecks, prHead: pr?.head, cleanupBlocked: e.cleanupBlocked ?? undefined, feedback: pr?.feedback,
+        following: e.following, followUps: e.followUps, orchestrated: e.orchestrated, orchStatus: e.orchStatus, grantScope: e.grantScope, upkeep: e.upkeep, previewInstance: e.previewInstance, mergeWhenGreen: e.mergeWhenGreen, verified: e.verified ?? undefined,
+        failingChecks: pr?.failingChecks, prHead: pr?.head, cleanupBlocked: e.cleanupBlocked ?? undefined, browserKilled: e.browserKilled ?? undefined, feedback: pr?.feedback,
         slackNotifiedAt: e.slackNotifiedAt, slackLastBumpedAt: e.slackLastBumpedAt,
         lane: "DRAFT",
       };
@@ -1148,6 +1176,13 @@ export async function mergeWhenGreen(row: Row) {
   await refresh();
 }
 
+/** Set or clear the user's Verified marker: "I tested this PR at its current head". Only a marker on
+ *  the board — it merges nothing and posts nothing to GitHub. */
+export function setVerified(row: Row, on: boolean) {
+  if (!row.prNumber) return;
+  patchEnrich(row.repo, row.branch, { verified: on ? verifiedMark("user", row.prHead, row.prNumber, now()) : undefined });
+}
+
 /** Turns auto-merge back off — GitHub's own, or Orca's merge-when-green queue mark left by the
  *  Enable-auto-merge fallback (the repo disallowed GitHub's), whichever is actually active. */
 export async function disableAutoMerge(row: Row) {
@@ -1182,22 +1217,33 @@ export async function sendSlack(row: Row, kind: "notify" | "bump") {
   try {
     await api.slack(row.repo, slackApiText(ws, kind));
   } catch (e) {
-    const { text, html } = slackClipboard(ws, kind);
-    // Prefer a rich write (text/html) so Slack pastes a real hyperlink; fall back to plain text on
-    // browsers without ClipboardItem or when the write is blocked.
-    try {
-      if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
-        await navigator.clipboard.write([new ClipboardItem({
-          "text/html": new Blob([html], { type: "text/html" }),
-          "text/plain": new Blob([text], { type: "text/plain" }),
-        })]);
-      } else {
-        await navigator.clipboard.writeText(text);
-      }
-    } catch { /* clipboard unavailable — the error below is still surfaced */ }
+    try { await writeSlackClipboard(row, kind); } catch { /* clipboard unavailable — the error below is still surfaced */ }
     throw e instanceof Error ? e : new Error(String(e));
   }
   patchEnrich(row.repo, row.branch, kind === "notify" ? { slackNotifiedAt: now() } : { slackLastBumpedAt: now() });
+}
+
+/** Copy the Slack message to the clipboard: the message Send message posts, as Slack pastes it.
+ *  Prefer a rich write (text/html) so Slack pastes a real hyperlink; fall back to plain text on
+ *  browsers without ClipboardItem. Throws when the clipboard refuses the write. */
+export async function writeSlackClipboard(row: Row, kind: "notify" | "bump" = "notify"): Promise<void> {
+  const { text, html } = slackClipboard({ title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl, previewUrl: row.previewUrl }, kind);
+  if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+    await navigator.clipboard.write([new ClipboardItem({
+      "text/html": new Blob([html], { type: "text/html" }),
+      "text/plain": new Blob([text], { type: "text/plain" }),
+    })]);
+  } else {
+    await navigator.clipboard.writeText(text);
+  }
+}
+
+/** Stop the row's running agent: the worktree, its commits and the session stay (/api/agent/stop,
+ *  the chat's Stop), so the next message resumes the same conversation. */
+export async function stopAgent(row: Row) {
+  if (!row.worktreePath) return;
+  await api.stopAgent(row.worktreePath);
+  await refresh();
 }
 
 /** Orca's own merge of the base, before any agent: true when it left no conflict (a clean merge, or a

@@ -1,7 +1,7 @@
 // The agent status chip's hover card: `rowStatus` (workstream.ts) returns the tone the label comes
 // from AND the real inputs behind it, so the card explains the status instead of guessing. The pure
 // derivation is checked per status first; then the card is opened in a real DOM.
-import { afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import "./apiFake";
@@ -93,6 +93,8 @@ describe("rowStatus (pure)", () => {
 describe("StatusHoverCard (DOM)", () => {
   let root: Root | undefined;
   let host: HTMLDivElement | undefined;
+  // The card reads the review digest cache, which other files in this process fill (agentsList: r#7).
+  beforeEach(() => store._resetReviewSignals());
   afterEach(() => { act(() => root?.unmount()); host?.remove(); root = undefined; });
 
   test("focus on the chip opens the card with the reasons and Address PR", async () => {

@@ -31,15 +31,17 @@ import * as handoff from "./handoff";
 import { selfServer } from "./servers";
 import { stateDir } from "./state";
 import { API_PORT } from "./ports";
+import { reachable } from "./peer";
+import { machineReport } from "./liveMetrics";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
-  joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
-  type BoardRow, type FailStreak, type OrchStatus, type WakeExit,
+  handoffRef, joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, verifiedMark, verifiedState, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  machineText, type BoardRow, type FailStreak, type MachineReport, type OrchStatus, type VerifiedMark, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
-import { grantKey, grantRefusal, isReceiveOnly, receiveOnlyRefusal, type Grant, type ReplyTo } from "../shared/integrations";
+import { grantKey, grantRefusal, isReceiveOnly, receiveOnlyRefusal, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
 import * as integrationStore from "./integrations/store";
 import * as integrationRouter from "./integrations/router";
 
@@ -163,6 +165,7 @@ export function compact(cfg: OrcaConfig): Promise<{ runId: string }> {
     const { runId } = await agent.launch(dir(), dir(), "/compact", {
       provider: "claude", resume: b.sessionId, repo: ORCHESTRATOR_REPO, branch: ORCHESTRATOR_BRANCH,
       instruction: "/compact", action: "compact", queue: false, model: modelOf(cfg, b), source: "human", // your button
+      mcpAllow: "all", // its cwd's `.mcp.json` is yours (minus any browser server)
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
     });
     return { runId };
@@ -429,6 +432,7 @@ async function wake(cfg: OrcaConfig, fresh: string[], grant?: Grant, freshReplyT
       // Anything you said makes it yours; worker reports alone are the agents' (folded in the chat).
       source: turnSource(messages),
       model: modelOf(cfg, b), maxBudgetUsd: budgetOf(cfg),
+      mcpAllow: "all", // its cwd's `.mcp.json` is yours (minus any browser server)
       timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
       // Everything Claude Code has in a terminal (bypassPermissions), as the user asked: a manager
       // who can find things out, run things and fix the machine. `orchestratorShell: false` keeps
@@ -497,7 +501,7 @@ export async function board(cfg: OrcaConfig): Promise<BoardRow[]> {
       rows.push({
         repo: repo.name, branch, title: pr?.title ?? (e.title as string | undefined), worktreePath: worktreePath ?? (remote?.data.worktreePath as string | undefined),
         agent: agentState,
-        pr: pr ? { number: pr.number, isDraft: pr.isDraft, reviewStatus: pr.reviewStatus, ciStatus: pr.ciStatus, mergeable: pr.mergeable } : done && { number: done.number, merged: true },
+        pr: pr ? { number: pr.number, isDraft: pr.isDraft, reviewStatus: pr.reviewStatus, ciStatus: pr.ciStatus, mergeable: pr.mergeable, verified: verifiedState(e.verified as VerifiedMark | undefined, pr.head, pr.number) } : done && { number: done.number, merged: true },
         check: run?.check?.ok ?? ((remote?.data.agentCheck as { ok?: boolean } | undefined)?.ok), orchestrated: Boolean(e.orchestrated),
         last: run?.structured?.outcome ?? run?.error ?? ((remote?.data.agentOutcome as { outcome?: string } | undefined)?.outcome),
         instance: several ? (remote?.instance ?? (worktreePath ? here : undefined)) : undefined,
@@ -559,7 +563,7 @@ async function channelsText(): Promise<string> {
   const byId = new Map(conns.map((c) => [c.id, c]));
   const lines = links.length ? links.map((l) => {
     const c = byId.get(l.integrationId);
-    return `link ${l.id} · ${c?.kind ?? "?"} ${c?.name ?? l.integrationId} on ${c ? (c.instance === "*" ? "automatic" : c.instance) : "?"} · ${l.externalId}${l.label ? ` (${l.label})` : ""} · ${l.level}${l.level === "work" ? ` on ${l.repos.join(", ") || "no repos"}` : ""}${l.requireMention ? " · mention required" : ""}`;
+    return `link ${l.id} · ${c?.kind ?? "?"} ${c?.name ?? l.integrationId} on ${c ? (c.instance === "*" ? "automatic" : c.instance) : "?"} · ${l.externalId}${l.label ? ` (${l.label})` : ""} · ${l.level}${repoScoped(l.level) ? ` on ${l.repos.join(", ") || "no repos"}` : ""}${l.requireMention ? " · mention required" : ""}`;
   }) : ["no channel links"];
   const subLines = subs.map((s) => `sub ${s.id} · ${s.topicPattern}${Object.keys(s.filter).length ? ` ${JSON.stringify(s.filter)}` : ""} → ${s.targetKind}${s.targetId ? ` ${s.targetId}` : ""}${s.digestSeconds ? ` · digest ${s.digestSeconds}s` : ""}`);
   const pairLines = pairings.map((p) => `pairing ${p.code} · ${p.adapter}:${p.externalId}${p.name ? ` (${p.name})` : ""} waits for the user's approval`);
@@ -600,6 +604,22 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
   switch (verb) {
     case "board": return boardText(await board(cfg));
     case "channels": return channelsText();
+    case "machine": {
+      // `orca machine [--on <instance>] [--json]`: what the machine card shows, from the same 15 s ring
+      // (liveMetrics.machineReport) — here, or from another instance's /api/machine.
+      const on = typeof args.on === "string" && args.on ? args.on : db.instanceName();
+      let report: MachineReport;
+      if (on === db.instanceName()) report = machineReport(on);
+      else {
+        const base = cfg.instances?.[on];
+        if (!base) throw new Error(`"${on}" is not a configured instance (instances: ${Object.keys(cfg.instances ?? {}).join(", ") || "none"})`);
+        if (!(await reachable(base))) throw new Error(`${on} is unreachable (no connection to ${new URL(base).host})`);
+        const res = await Bun.fetch(new URL("/api/machine", base)); // Bun.fetch: the test DOM shim swaps the global
+        if (!res.ok) throw new Error(`${on} answered ${res.status} (a bridge older than \`orca machine\` has no /api/machine)`);
+        report = await res.json() as MachineReport;
+      }
+      return args.json !== undefined ? JSON.stringify(report, null, 2) : machineText(report);
+    }
     case "post": {
       // `orca post --link <id> [--thread <id> | --repo r --branch b] [--thread] "<text>"`: a durable delivery
       // through the link's adapter, retried if it fails. With --repo/--branch it continues that
@@ -825,6 +845,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         await db.patchEnrichment(repo.name, branch, { grantScope: null });
         return `Cleared the outside grant of ${repo.name}/${branch}: its next run uses the repo's permission mode.`;
       }
+      if ("verified" in args || "unverified" in args) return verifiedVerb(repo, branch, "verified" in args);
       const prev = (await db.enrichment(repo.name))[branch]?.orchStatus as OrchStatus | undefined;
       const next = orchStatusUpdate(prev, args, new Date().toISOString());
       if (next === undefined) return orchStatusText(prev) || `(no status for ${repo.name}/${branch})`;
@@ -857,7 +878,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, handoff`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, handoff`);
   }
 }
 
@@ -885,9 +906,11 @@ async function handoffVerb(cfg: OrcaConfig, words: string[], args: ToolArgs): Pr
   return [
     `Pack ${pack.id.slice(0, 8)} "${pack.title}" for ${pack.target}: ${pack.files.length} file${pack.files.length === 1 ? "" : "s"}.`,
     ...files,
+    // The chat links this turn to the pack by this line (workstream.ts handoffRefs): keep it verbatim.
+    `Pack id: ${handoffRef(pack.id)}`,
     problems.length
       ? `Send is BLOCKED until this is fixed (make a new pack): ${problems.join("; ")}`
-      : "It is NOT sent. Tell the user to open Handoffs in Orca and click Send; only their click sends it.",
+      : "It is NOT sent. The user sees it under your reply in the chat, and on the Handoffs page; only their click on Send sends it.",
   ].join("\n");
 }
 
@@ -910,6 +933,22 @@ async function mergeVerb(cfg: OrcaConfig, args: ToolArgs): Promise<string> {
 }
 
 /** The body of `orca merge` and of the PR menu's route (index.ts). */
+/** `orca status --verified | --unverified`: the user's hand-set Verified marker, on the user's word
+ *  ("verified #267"). Only enrichment: it merges nothing and posts nothing to GitHub. The mark
+ *  names the PR's head now, so a later push reads as "changed since you verified". */
+async function verifiedVerb(repo: RepoConfig, branch: string, on: boolean): Promise<string> {
+  if (!on) {
+    await db.patchEnrichment(repo.name, branch, { verified: null });
+    return `Cleared the Verified marker of ${repo.name}/${branch}.`;
+  }
+  const pr = verbs.repoHere(repo) ? (await gh.listPrs(repo.repoPath)).find((p) => p.branch === branch) : undefined;
+  if (verbs.repoHere(repo) && !pr) throw new Error(`${repo.name}/${branch} has no open PR to mark verified`);
+  await db.patchEnrichment(repo.name, branch, { verified: verifiedMark("orchestrator", pr?.head, pr?.number, new Date().toISOString()) });
+  return pr
+    ? `Marked PR #${pr.number} (${repo.name}/${branch}) verified at ${pr.head?.slice(0, 7) ?? "its current head"}. A new commit shows it as changed since verified.`
+    : `Marked ${repo.name}/${branch} verified. The repo is not on this instance, so the head commit is not recorded: a later push is not detected.`;
+}
+
 export async function mergeWhenGreen(cfg: OrcaConfig, repo: RepoConfig, body: { pr?: number; branch?: string; small?: boolean; by?: string; cancel?: boolean }): Promise<string> {
   const by = body.by === "orchestrator" ? "orchestrator" as const : "user" as const;
   if (body.cancel) {

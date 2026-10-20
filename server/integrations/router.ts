@@ -48,10 +48,14 @@ export async function post(link: store.Link, text: string, opts: {
 } = {}, now = Date.now()): Promise<{ id: string; delivery?: number; externalId: string; threadId?: string }> {
   const conn = await store.integration(link.integrationId);
   const threadId = opts.reply ? opts.reply.threadId : opts.threadId;
+  // A reply names the message it answers (`replyToExternalMsgId`): Linear's parent comment, email's
+  // In-Reply-To. The inbox's Reply passes the event's own thread; `orca post --reply` gets it here.
+  const thread = opts.thread ?? (opts.reply?.threadId
+    ? { adapter: conn?.kind ?? "?", externalId: opts.reply.threadId, ...(opts.reply.messageId ? { messageId: opts.reply.messageId } : {}) } : undefined);
   const externalId = opts.reply?.channel ?? link.externalId;
   const r = await publish({
     key: opts.key ?? `post:${randomUUID()}`, topic: "orca.message", at: now, source: { adapter: "orca", linkId: link.id },
-    ...(opts.scope ? { scope: opts.scope } : {}), ...(opts.thread ? { thread: opts.thread } : {}), text,
+    ...(opts.scope ? { scope: opts.scope } : {}), ...(thread ? { thread } : {}), text,
     ...(opts.openThread ? { openThread: opts.reply?.messageId ? { messageId: opts.reply.messageId } : {} } : {}),
   }, now, [{ subscriptionId: null, target: {
     kind: "link", integrationId: link.integrationId, adapter: conn?.kind ?? "?", linkId: link.id, externalId, ...(threadId ? { threadId } : {}),

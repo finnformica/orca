@@ -6,6 +6,8 @@
 // (branch-demo's docked AI chat). Each panel publishes its open width here by slot; the dock is the
 // widest one (only one is open at a time, but one closing and one opening land in the same commit).
 // While a drag resizes a panel, the dock's element is written directly, as the panel's own width is.
+// The page frame and the quick-ask pill are placed by the shell card's layout, so they follow the
+// dock's edge in every frame of an open, a close or a resize, with nothing to sync.
 import { atom, useAtom, useAtomValue } from "jotai";
 import { useEffect, useState } from "react";
 import { sidebarCollapsedAtom } from "./atoms";
@@ -18,6 +20,9 @@ export const navExpandedOverrideAtom = atom(false);
 
 /** The shell's dock element, the portal target of a docked panel (null on a phone, before the shell mounts). */
 export const dockElementAtom = atom<HTMLElement | null>(null);
+/** The clip inside the dock: a docked panel renders here. The dock itself does not clip, so the
+ *  resize handle can hang in the gutter outside it (branch-demo's gutter handle). */
+export const dockClipElementAtom = atom<HTMLElement | null>(null);
 
 export function useViewportWidth(): number {
   const [vw, setVw] = useState(() => window.innerWidth);
@@ -93,12 +98,17 @@ export function afterDockMotion(fn: () => void) {
 }
 
 /** True during the page load — until the first input, or one second: a panel open from the start
- *  (`?open=orchestrator`) shows at its width at once, with no slide to replay. Any open you cause
- *  (a click, a key) slides from 0. */
+ *  (`?open=orchestrator`, or the orchestrator panel's own persisted open state) shows at its width
+ *  at once, with no slide to replay. Any open you cause (a click, a key) slides from 0. */
 let starting = true;
-if (typeof window !== "undefined") {
+function armPageLoadWindow() {
+  starting = true;
   const done = () => { starting = false; for (const t of ["pointerdown", "keydown", "click"]) window.removeEventListener(t, done, true); };
   for (const t of ["pointerdown", "keydown", "click"]) window.addEventListener(t, done, true);
   setTimeout(done, 1000);
 }
+if (typeof window !== "undefined") armPageLoadWindow();
 export const appStarting = () => starting;
+/** Test support: a real reload re-arms this (fresh module state); a shared test process does not,
+ *  since an earlier file's click can only flip it false once for the whole run. */
+export const resetAppStartingForTests = (): void => { if (typeof window !== "undefined") armPageLoadWindow(); };

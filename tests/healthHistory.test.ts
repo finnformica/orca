@@ -2,7 +2,8 @@
 // either instance reads them back from Postgres. Pinned here: the hours window, the 32-day prune on
 // write (which only ever touches the writer's own rows), the `hours` clamp, and that a failed write
 // is swallowed rather than surfacing anywhere else.
-import { afterEach, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
+import * as os from "os";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -164,8 +165,12 @@ test("monthCost: the rate over the kernel boot ledger — journal backfill + hea
   const idFile = join(shim, "boot_id");
   writeFileSync(idFile, "bb-bb\n");
   process.env.ORCA_BOOT_ID_FILE = idFile;
+  // The heartbeat dates the live boot by os.uptime(): pin it to this boot's 45 minutes, not the
+  // host's (a box up for days dated "bbbb" before "aaaa").
+  const uptime = spyOn(os, "uptime").mockReturnValue(45 * 60);
   try {
     await heartbeat(b2 + 45 * M);
+    uptime.mockRestore();
     expect((await db.boots("cloud")).map((b) => [b.bootId, b.lastSeen])).toEqual([["aaaa", b1end], ["bbbb", b2 + 45 * M]]);
     // Orca's samples say nothing about the bill: a lone one changes nothing.
     await db.recordMetric(sample(1), b2 + 5 * M);
@@ -179,7 +184,7 @@ test("monthCost: the rate over the kernel boot ledger — journal backfill + hea
     // With the launch configured, nothing before it is billed or unknown.
     const seeded = await monthCost(0.24, { now, billingSince: b1 });
     expect([seeded.unknownHours, seeded.assumedHours, seeded.usd]).toEqual([0, 0, c.usd]);
-  } finally { delete process.env.ORCA_BOOT_ID_FILE; }
+  } finally { uptime.mockRestore(); delete process.env.ORCA_BOOT_ID_FILE; }
   // Another instance's ledger is its own; an instance with none bills nothing it can show.
   const other = await monthCost(0.24, { now, instance: "nowhere" });
   expect([other.usd, other.ledgerFrom]).toEqual([0, null]);

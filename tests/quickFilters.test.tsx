@@ -16,7 +16,7 @@ import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import { agentQueryAtom, instanceScopeAtom, repoFilterAtom } from "@/lib/atoms";
 import {
-  NO_QUICK_FILTER, applyQuickFilter, attentionReasons, notMergedCount, parseQuickFilter, quickCount, quickFilterQuery, toggleNotMerged, toggleQuick, type OverviewRow,
+  NO_QUICK_FILTER, applyQuickFilter, attentionReasons, dropStaleRepos, notMergedCount, parseQuickFilter, quickCount, quickFilterQuery, toggleNotMerged, toggleQuick, type OverviewRow,
 } from "@/workstream";
 
 const row = (over: Partial<OverviewRow>): OverviewRow => ({ repo: "a", branch: "b", title: "t", lane: "LOCAL", ...over });
@@ -83,6 +83,17 @@ describe("quick filters (pure)", () => {
     expect(quickCount(rows, f, "by", "mine", "local")).toBe(2); // its own group is ignored: what switching to it shows ("done" stays hidden)
   });
 
+  test("dropStaleRepos: drops a repo value no repo config names (a rename or removal), keeps the rest", () => {
+    const f = parseQuickFilter("?status=running&repo=a,orca-src,b");
+    expect(dropStaleRepos(f, ["a", "b"])).toEqual({ ...f, repo: ["a", "b"] });
+    // Nothing to drop: the same reference comes back, so a caller can tell nothing changed.
+    const clean = parseQuickFilter("?repo=a,b");
+    expect(dropStaleRepos(clean, ["a", "b"])).toBe(clean);
+    // An empty repo list reads as "not loaded yet", not "no repos configured" — callers must not
+    // call this before the repo list has loaded, else every value would be dropped.
+    expect(dropStaleRepos(f, []).repo).toEqual([]);
+  });
+
   test("the notMerged chip's own count: NOT merged workstreams, under the other groups' chips", () => {
     expect(notMergedCount(rows, NO_QUICK_FILTER, "local")).toBe(4); // everything but "done"
     expect(notMergedCount(rows, parseQuickFilter("?status=running"), "local")).toBe(1); // "run" only
@@ -141,7 +152,7 @@ describe("quick filter chips on the Agents page", () => {
     await open("/agents");
     expect(listed()).toEqual(["cloud-bot", "feat-ci", "feat-ok", "local-held", "local-run"]);
     const labels = [...container!.querySelectorAll('[data-slot="quick-filter"]')].map((c) => c.getAttribute("data-chip"));
-    expect(labels).toEqual(["pr:open", "pr:mergeable", "pr:merged", "notMerged", "status:running", "status:attention"]); // one repo: no repo chips; no mine/orchestrated/instance pills
+    expect(labels).toEqual(["pr:open", "pr:verified", "pr:mergeable", "pr:merged", "notMerged", "status:running", "status:attention"]); // one repo: no repo chips; no mine/orchestrated/instance pills
     // Grouped into families: State (the pr chips + not merged), Activity (status).
     const groups = [...container!.querySelectorAll('[data-slot="quick-filter-group"]')].map((g) => g.getAttribute("data-group"));
     expect(groups).toEqual(["state", "activity"]);
@@ -182,6 +193,15 @@ describe("quick filter chips on the Agents page", () => {
     // Back to plain /agents clears them (the query is part of where you are).
     await act(async () => { navigate("/agents"); await flush(); });
     expect(listed()).toHaveLength(5);
+  });
+
+  test("a stale repo value (a rename, e.g. orca-src → r) self-heals: dropped from the URL, rows reappear", async () => {
+    seed();
+    await open("/agents?repo=orca-src&status=running");
+    // "orca-src" names no configured repo (only "r" exists): dropped once the repo list has loaded,
+    // leaving the other chip untouched — the URL is replaced, not pushed (no extra history step).
+    expect(location.search).toBe("?status=running");
+    expect(listed()).toEqual(["local-run"]); // the stale repo value no longer hides every row
   });
 
   test("not merged: on by default with no URL param, togglable off, and a link round-trips it", async () => {

@@ -266,18 +266,19 @@ describe("the phone layout (390px, touch)", () => {
     expect(nav.querySelector('input[aria-label="Find agents"]')).not.toBeNull();
     expect(nav.querySelector('[role="group"][aria-label="Instance"]')).not.toBeNull();
     const links = [...nav.querySelectorAll('nav[aria-label="More pages"] button')].map((b) => b.textContent);
-    expect(links).toEqual(["Inbox", "Previews", "Integrations", "Handoffs"]);
+    expect(links).toEqual(["Board", "Inbox", "Previews", "Integrations", "Handoffs"]);
     expect($('[data-slot="settings-repos"]')).not.toBeNull();
     expect($('[data-slot="settings-github"]')).not.toBeNull();
-    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[2]!); // Integrations
+    await click(nav.querySelectorAll('nav[aria-label="More pages"] button')[3]!); // Integrations
     expect(location.pathname).toBe("/integrations");
   });
 
-  test("Agents: rows stack with the instruction, error and branch on screen; one ⋯ per row; filters in a sheet", async () => {
+  test("Agents: rows stack with the error and branch on screen, no instruction line; one ⋯ per row; filters in a sheet", async () => {
     await mount("/agents", true);
     expect($('[data-slot="workstream-list-header"]')).toBeNull();
     const row = $('[data-branch="feat-phone"]')!;
     expect(row.dataset.layout).toBe("stacked");
+    expect(row.querySelector('[data-slot="row-instruction"]')).toBeNull(); // Finn: clutter on a phone
     expect(row.style.gridTemplateColumns).toBe("");
     expect(row.querySelector('[data-slot="row-error"]')!.textContent).toBe("rate limited");
     expect(row.textContent).toContain("feat-phone"); // the branch, which desktop keeps in a hover title
@@ -661,7 +662,7 @@ describe("gestures", () => {
     expect(row.className).toContain("[&_a]:[-webkit-touch-callout:default]"); // links keep theirs
     expect(row.hasAttribute("aria-haspopup")).toBe(false); // only the ⋯ opens a menu
     let e!: MouseEvent;
-    await act(async () => { e = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 120, clientY: 40 }); row.querySelector('[data-slot="row-instruction"], span')!.dispatchEvent(e); await flush(); await flush(); });
+    await act(async () => { e = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 120, clientY: 40 }); row.querySelector("span")!.dispatchEvent(e); await flush(); await flush(); });
     expect(e.defaultPrevented).toBe(true); // nor the browser's own menu
     expect($('[role="menu"]')).toBeNull();
     expect($('[data-slot="row-context-menu"]')).toBeNull();
@@ -687,14 +688,15 @@ describe("gestures", () => {
       expect(document.querySelector('[data-radix-popper-content-wrapper]')).toBeNull(); // no dropdown
       const rows = [...sheet.querySelectorAll<HTMLElement>('[data-slot="sheet-item"]')];
       const labels = rows.map((r) => r.textContent?.trim());
-      // The ⋯ menu's own items (submenus open in place as labelled groups), unchanged.
-      for (const l of ["Open", "Copy branch", "Follow up…", "Rename…", "Copy worktree", "Discard"]) expect(labels).toContain(l);
-      expect([...sheet.querySelectorAll('[role="group"]')].map((g) => g.getAttribute("aria-label"))).toContain("Agent");
+      // The ⋯ menu's own items (submenus open in place as labelled groups), in the desktop order.
+      for (const l of ["Agent chat", "Orchestrator", "Branch name", "Worktree path", "Rename…", "Discard"]) expect(labels).toContain(l);
+      expect(labels).not.toContain("Follow up…");
+      expect([...sheet.querySelectorAll('[role="group"]')].map((g) => g.getAttribute("aria-label"))).toEqual(["Open", "Copy", "PR", "Agent"]); // Agent: Move to cloud
       for (const r of rows) {
         expect(r.className).toContain("min-h-12"); // a 48px touch row
         expect(r.querySelector("svg")).not.toBeNull(); // with its icon
       }
-      await click(rows.find((r) => r.textContent?.trim() === "Copy branch")!);
+      await click(rows.find((r) => r.textContent?.trim() === "Branch name")!);
       expect(copied).toEqual(["feat-phone"]);
       expect(location.pathname).toBe("/agents"); // a tap in the sheet is not a tap on the row
       expect(sheet.hasAttribute("data-closing")).toBe(true);
@@ -816,6 +818,19 @@ describe("home-screen shortcuts", () => {
   });
 });
 
+describe("the orchestrator's persisted open state", () => {
+  test("a phone never auto-opens the dock from a persisted open state, and does not navigate to /orchestrator", async () => {
+    localStorage.setItem("orca.ui.v1.orchestratorOpen", "true"); // e.g. left open on a desktop session in the same browser
+    // A real reload reads storage on the atom's first access (`getOnInit`). This test process shares
+    // one jotai store across tests, so the atom already holds a value: give it the stored one first.
+    act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
+    await mount("/agents", true);
+    expect(location.pathname).toBe("/agents"); // no auto-navigation
+    expect($('[data-slot="orchestrator-panel"]') === null).toBe(true); // never mounted (a boolean: a failed toBeNull prints the whole panel)
+    expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(true); // the stored preference itself is untouched, for a later desktop load
+  });
+});
+
 describe("the desktop layout is untouched", () => {
   test("columns and chips as before; the orchestrator is the right-hand side panel", async () => {
     await mount("/agents", false);
@@ -826,7 +841,7 @@ describe("the desktop layout is untouched", () => {
     act(() => { getDefaultStore().set(orchestratorOpenAtom, true); });
     await act(async () => { await flush(); await flush(); });
     expect($('[data-slot="orchestrator-panel"]')!.hasAttribute("data-sheet")).toBe(false);
-    expect($('[data-slot="orchestrator-panel"]')!.parentElement!.dataset.slot).toBe("dock"); // docked in the shell card
+    expect($('[data-slot="orchestrator-panel"]')!.parentElement!.parentElement!.dataset.slot).toBe("dock"); // docked in the shell card (inside its clip)
     expect(document.querySelectorAll('[data-slot="orchestrator-resize"]').length).toBe(1); // its left edge
     expect($('[data-slot="orchestrator-handle"]')!.hasAttribute("data-swipe-handle")).toBe(false); // a mouse: no swipe
     expect($('[data-slot="quick-ask-pill"]')).not.toBeNull(); // the desktop has the quick-ask pill…
@@ -863,11 +878,13 @@ describe("a newer build", () => {
     expect(frame.className).toEqual(expect.stringContaining("pointer-events-none sticky top-0 z-40 h-0"));
     expect(banner.parentElement!.className).toContain("justify-center");
     expect(banner.parentElement!.className).toContain("max-md:pt-[max(0.5rem,env(safe-area-inset-top))]");
-    // branch-demo's floating bar: hairline border, h-12 p-1, a translucent blurred surface, one line.
-    expect(banner.className).toEqual(expect.stringContaining("bg-background/95"));
-    expect(banner.className).toEqual(expect.stringContaining("h-12"));
-    expect(banner.className).toEqual(expect.stringContaining("rounded-lg border p-1"));
-    expect(banner.className).toEqual(expect.stringContaining("shadow-menu backdrop-blur"));
+    // The house's one inverted surface (bg-primary, Merge's button), server-themed, with the stronger
+    // shadow-modal for lift; equal top/bottom padding, one line, no fixed height.
+    expect(banner.className).toEqual(expect.stringContaining("bg-primary text-primary-foreground"));
+    expect(banner.className).not.toContain("h-12");
+    expect(banner.className).toEqual(expect.stringContaining("rounded-lg"));
+    expect(banner.className).toEqual(expect.stringContaining("p-1.5 pl-3"));
+    expect(banner.className).toEqual(expect.stringContaining("shadow-modal"));
     // Slides down and fades in; slides up and fades out.
     expect(banner.dataset.state).toBe("open");
     expect(banner.className).toEqual(expect.stringContaining("animate-in fade-in slide-in-from-top-4"));
@@ -876,6 +893,7 @@ describe("a newer build", () => {
     expect(banner.querySelectorAll("button")).toHaveLength(1);
     const refresh = banner.lastElementChild as HTMLButtonElement;
     expect(refresh.tagName).toBe("BUTTON");
+    expect(refresh.className).toEqual(expect.stringContaining("h-7")); // smaller than size="sm"
     await act(async () => { refresh.click(); await flush(); });
     expect(banner.dataset.state).toBe("closed");
     expect(refresh.disabled).toBe(true);

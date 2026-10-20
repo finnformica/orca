@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test } from "bun:test";
 import { native } from "./happydom";
-import { darwinMemory, EC2_ON_DEMAND_USD, health, imdsInstance, instanceRate, parseVmStat, resetImds, vmStatUsedGb } from "../server/health";
+import { darwinMemory, EC2_ON_DEMAND_USD, health, imdsInstance, instanceRate, parseProcStat, parseVmStat, procStatDelta, resetImds, vmStatUsedGb } from "../server/health";
 
 // A real `vm_stat` capture (Apple Silicon, page size 16384) — asserts the parse against actual
 // field names/formatting, not a hand-trimmed fixture.
@@ -100,6 +100,43 @@ test("health reports this machine's vitals in the shape the chip reads", async (
     expect(h.memPressurePct).toBeUndefined();
     expect(h.memPressure).toBeUndefined();
   }
+});
+
+test("parseProcStat reads the cpu summary line's jiffy counters", () => {
+  const parsed = parseProcStat("cpu  1000 0 500 8000 200 0 0 0 0 0");
+  expect(parsed).toEqual({ user: 1000, nice: 0, system: 500, idle: 8000, iowait: 200, irq: 0, softirq: 0, steal: 0, total: 9700 });
+});
+
+test("parseProcStat returns undefined for a line that isn't the cpu summary", () => {
+  expect(parseProcStat("cpu0 500 0 250 4000 100 0 0 0 0 0")).toBeUndefined();
+  expect(parseProcStat("not /proc/stat at all")).toBeUndefined();
+});
+
+test("procStatDelta: the box's own case — load1 7 on 4 cores read 100% busy, /proc/stat showed 81%", () => {
+  const prev = parseProcStat("cpu  1000 0 500 8000 200 0 0 0 0 0")!;
+  const curr = parseProcStat("cpu  1081 0 500 8019 200 0 0 0 0 0")!; // +100 ticks total, +19 idle, +0 iowait
+  expect(procStatDelta(prev, curr)).toEqual({ cpuPct: 81, iowaitPct: 0 });
+});
+
+test("procStatDelta: iowait (disk-blocked processes) is reported apart from busy CPU", () => {
+  const prev = parseProcStat("cpu  1000 0 500 8000 200 0 0 0 0 0")!;
+  const curr = parseProcStat("cpu  1050 0 500 8035 215 0 0 0 0 0")!; // +100 ticks total, +35 idle, +15 iowait
+  expect(procStatDelta(prev, curr)).toEqual({ cpuPct: 50, iowaitPct: 15 });
+});
+
+test("procStatDelta: a non-positive total delta (clock oddity, or the same sample twice) reads as 0, never negative or NaN", () => {
+  const same = parseProcStat("cpu  1000 0 500 8000 200 0 0 0 0 0")!;
+  expect(procStatDelta(same, same)).toEqual({ cpuPct: 0, iowaitPct: 0 });
+  const earlier = parseProcStat("cpu  2000 0 500 8000 200 0 0 0 0 0")!; // a "curr" with less total than "prev"
+  expect(procStatDelta(earlier, same)).toEqual({ cpuPct: 0, iowaitPct: 0 });
+});
+
+test("health's cpuPct never exceeds the real busy share — load that counts disk-wait doesn't leak in", async () => {
+  await health(); // first call: no prior /proc/stat sample, falls back to the load estimate
+  const h = await health(); // second call: a real delta against the first
+  expect(h.cpuPct).toBeGreaterThanOrEqual(0);
+  expect(h.cpuPct).toBeLessThanOrEqual(100);
+  if (process.platform === "linux") expect(h.iowaitPct).toBeGreaterThanOrEqual(0);
 });
 
 test("parseVmStat reads page size + active/wired/compressor pages off a real vm_stat report", () => {

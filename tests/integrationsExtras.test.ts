@@ -12,7 +12,7 @@ import * as inbox from "../server/integrations/inbox";
 import { launchOptions, permissionFor } from "../server/verbs";
 import type { Adapter } from "../server/integrations/adapter";
 import {
-  PAIRING_ALPHABET, PAIRING_TTL_MS, digestEnvelope, digestWindow, fenceExternal, grantRefusal, inboundEnvelope, integrationMessage, pairingCode, pairingReply, replyToOf,
+  PAIRING_ALPHABET, PAIRING_TTL_MS, digestEnvelope, digestWindow, fenceExternal, grantRefusal, inboundEnvelope, integrationMessage, integrationPlace, isCatchAll, pairingCode, pairingReply, replyToOf,
   type Envelope, type OutboundMessage, type Target,
 } from "../shared/integrations";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, wakeProgress } from "../web/src/workstream";
@@ -249,6 +249,28 @@ describe("with Postgres", () => {
     const dm = await inbox.withSource({ id: "e2", key: "discord:m2", topic: "ext.discord.message", at: 1, text: "hi", actor, grant,
       source: { adapter: "discord", channel: "D1", linkId: "nope" }, raw: { id: "M2", channel_id: "D1" } } as Envelope);
     expect(integrationMessage(dm)).toMatchObject({ place: "DM", url: "https://discord.com/channels/@me/D1/M2" });
+    // A channel message under the catch-all link: its label ("All channels and DMs") names no real
+    // channel, so it never reads as the place — only the sender and the message.
+    await store.addLink({ id: "Lstar2", integrationId: "discord-work", externalId: "*", label: "All channels and DMs", level: "ask", repos: [], requireMention: false });
+    const viaStar = await inbox.withSource({ id: "e3", key: "discord:m3", topic: "ext.discord.message", at: 1, text: "ship it?", actor, grant,
+      source: { adapter: "discord", channel: "C2", linkId: "Lstar2" }, raw: { id: "M3", channel_id: "C2", guild_id: "G1" } } as Envelope);
+    expect(integrationMessage(viaStar)).toEqual({ adapter: "discord", sender: "Saajan", url: "https://discord.com/channels/G1/C2/M3", text: "ship it?" });
+    // Every catch-all form: "*" padded, an empty or missing external id. A real place keeps its label.
+    const inGuild = { source: { adapter: "discord" }, raw: { id: "M4", channel_id: "C3", guild_id: "G1" } } as Pick<Envelope, "source" | "raw">;
+    const label = "All channels and DMs";
+    for (const externalId of ["*", " * ", "*\n", "", "  ", null, undefined]) {
+      expect(isCatchAll(externalId)).toBe(true);
+      expect(integrationPlace(inGuild, { externalId, label })).toBeUndefined();
+    }
+    for (const externalId of ["C3", "G1", "all", "**"]) {
+      expect(isCatchAll(externalId)).toBe(false);
+      expect(integrationPlace(inGuild, { externalId, label: "#eng" })).toBe("#eng");
+    }
+    // Through withSource: a link stored with a padded "*" (a hand SQL insert) is a catch-all too.
+    await store.addLink({ id: "Lstar3", integrationId: "discord-work", externalId: " * ", label, level: "ask", repos: [], requireMention: false });
+    const viaPadded = await inbox.withSource({ id: "e4", key: "discord:m4", topic: "ext.discord.message", at: 1, text: "Lumino", actor, grant,
+      source: { adapter: "discord", channel: "C3", linkId: "Lstar3" }, raw: { id: "M4", channel_id: "C3", guild_id: "G1" } } as Envelope);
+    expect(integrationMessage(viaPadded)).not.toHaveProperty("place");
   });
 
   test("orca channels, post, thread link and ask-user — and the grant on post", async () => {

@@ -1,3 +1,4 @@
+import { heavyQueueProblems, type HeavyQueueConfig } from "./heavy";
 import * as db from "./db";
 import { setGithubAccounts } from "./env";
 import { readJsonSync, statePath, writeJsonSync } from "./state";
@@ -6,7 +7,9 @@ import { MERGE_WHEN_GREEN, type MergePolicy } from "../web/src/workstream";
 import { serverSwitcherProblems, type ServerSwitcherConfig } from "./servers";
 import { serverIdentityProblems, type ServerIdentityConfig } from "../shared/serverIdentity";
 
-/** Preview service: `{port}` = this service's assigned port; `{svc:name}` = another's. */
+/** Preview service: `{port}` = this service's assigned port; `{svc:name}` = another's;
+ *  `{url:name}` = the URL the browser opens for a service (HTTPS on a box, see server/tsserve.ts);
+ *  `{hosts}` = every host the browser may use, comma-separated. The full list: `preview.expandCommand`. */
 export type PreviewService = {
   name: string;
   command: string;
@@ -15,6 +18,9 @@ export type PreviewService = {
    *  or on shutdown. `{db}` is substituted with this preview's per-worktree database name — the hook is
    *  how a per-preview Postgres DB gets dropped. Runs with the worktree as cwd, best-effort. */
   onStop?: string;
+  /** Also serve port + 1 over HTTPS, at this service's HTTPS port + 1: a socket the app reaches at
+   *  its URL's port + 1 (branch-demo's collab server beside the backend). Only for an HTTPS preview. */
+  httpsNextPort?: boolean;
 };
 
 /** Per-repo opt-ins. Every one defaults to OFF, because each either spends money, is externally
@@ -105,6 +111,10 @@ export type RepoConfig = {
    *  default (4GB). A run that hits it is killed by the kernel alone, not the box; the turn's
    *  response says so and its stop reason is `error`. */
   agentMemoryMaxGb?: number;
+  /** The servers of the repo's committed `.mcp.json` that its agents may start (server/mcp.ts).
+   *  Unset or empty = none: every claude run gets `--strict-mcp-config`. A browser server
+   *  (playwright, chrome-devtools, puppeteer) never starts, even when listed. */
+  mcpAllow?: string[];
   /** Which Orca instance executes this repo (`db.instanceName()`). Absent = whichever instance is
    *  reading, i.e. today's single-machine behaviour. An instance ignores repos assigned elsewhere,
    *  which is how a laptop and a cloud box divide the work without a queue between them. */
@@ -142,6 +152,8 @@ export type RepoConfig = {
   autoUpkeep?: boolean;
 };
 
+export type UiOptions = { showBoard?: boolean };
+
 export type OrcaConfig = {
   /** Where each named instance can be reached, e.g. `{ cloud: "http://orca.tail1234.ts.net:8787" }`.
    *  A request for a repo this instance doesn't run is forwarded to its owner — that is how a board
@@ -160,6 +172,9 @@ export type OrcaConfig = {
    *  exactly `true`. ONLY Settings sets it (`/api/config/terminal`): a pasted config document keeps
    *  the stored value and the checked-in file never seeds it. */
   terminal?: Record<string, boolean>;
+  /** Console options shared by every browser. `showBoard`: the Board view's nav entry and route
+   *  (on unless false). Settings sets it (`/api/config/ui`). */
+  ui?: UiOptions;
   /** Repos Orca manages; the first is the default. */
   repos: RepoConfig[];
   /** Inclusive [min, max] port range for preview services (shared across repos). */
@@ -183,6 +198,11 @@ export type OrcaConfig = {
   /** How many automatic PR-upkeep address runs (server/upkeep.ts) may go at once on one instance
    *  (default 2) — each is a full agent run, and the box's memory is shared. */
   autoUpkeepConcurrency?: number;
+  /** The box-wide queue for heavy commands (server/heavy.ts, `orca-run`): per-kind and total slot
+   *  limits, the max wait and run time in minutes, and each command's memory cap. Unset: defaults
+   *  for a 4 vCPU box (e2e 1, test 2, lint 2, build 1, total 4; 20 min wait, 30 min run; memory caps
+   *  e2e/lint/build 6 GB, test 4 GB, others 2 GB, their sum under the agents' slice minus 3 GB). */
+  heavyQueue?: HeavyQueueConfig;
   /** Which instance the orchestrator lives on, when there are several sharing the database. Its
    *  routes are forwarded there and worker reports from other instances are posted there, so ONE
    *  process wakes it (two would resume one session at once). Unset: wherever it is spoken to. */
@@ -281,6 +301,9 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
     if (r.agentMemoryMaxGb !== undefined && (typeof r.agentMemoryMaxGb !== "number" || !(r.agentMemoryMaxGb > 0))) {
       errors.push(`${where}.agentMemoryMaxGb must be a positive number of GB`);
     }
+    if (r.mcpAllow !== undefined && (!Array.isArray(r.mcpAllow) || r.mcpAllow.some((n) => typeof n !== "string" || !n.trim()))) {
+      errors.push(`${where}.mcpAllow must be a list of MCP server names`);
+    }
     if (r.features !== undefined) {
       if (!r.features || typeof r.features !== "object" || Array.isArray(r.features)) {
         errors.push(`${where}.features must be an object`);
@@ -319,6 +342,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       if (!s || typeof s !== "object") { errors.push(`${where}.previewServices[${j}] must be an object`); continue; }
       if (typeof s.name !== "string" || !s.name.trim()) errors.push(`${where}.previewServices[${j}].name is required`);
       if (typeof s.command !== "string" || !s.command.trim()) errors.push(`${where}.previewServices[${j}].command is required`);
+      if (s.httpsNextPort !== undefined && typeof s.httpsNextPort !== "boolean") errors.push(`${where}.previewServices[${j}].httpsNextPort must be true or false`);
     }
   }
   const portRange = d.portRange;
@@ -372,6 +396,12 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
   if (d.agentCpuWeight !== undefined && (typeof d.agentCpuWeight !== "number" || !(d.agentCpuWeight > 0))) {
     errors.push("agentCpuWeight must be a positive number (systemd CPUWeight, 1-10000)");
   }
+  if (d.ui !== undefined) {
+    const ui = d.ui as Record<string, unknown> | null;
+    const ok = ui && typeof ui === "object" && !Array.isArray(ui) && (ui.showBoard === undefined || typeof ui.showBoard === "boolean");
+    if (!ok) errors.push("ui must be { showBoard?: true | false }");
+  }
+  errors.push(...heavyQueueProblems(d.heavyQueue));
   errors.push(...serverSwitcherProblems(d.serverSwitcher));
   errors.push(...serverIdentityProblems(d.serverIdentity));
   if (errors.length) return { errors };
@@ -389,11 +419,13 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       orchestratorShell: d.orchestratorShell as boolean | undefined,
       orchestratorWakeBudgetUsd: d.orchestratorWakeBudgetUsd as number | undefined,
       autoUpkeepConcurrency: d.autoUpkeepConcurrency as number | undefined,
+      heavyQueue: d.heavyQueue as HeavyQueueConfig | undefined,
       orchestratorOn: d.orchestratorOn as string | undefined,
       agentCpuWeight: d.agentCpuWeight as number | undefined,
       githubAccounts: d.githubAccounts as OrcaConfig["githubAccounts"],
       serverSwitcher: d.serverSwitcher as ServerSwitcherConfig | undefined,
       serverIdentity: d.serverIdentity as ServerIdentityConfig | undefined,
+      ui: d.ui as UiOptions | undefined,
     },
   };
 }
@@ -455,6 +487,7 @@ async function seedFromFile(file: OrcaConfig): Promise<void> {
       ...(file.orchestratorShell === undefined ? {} : { orchestratorShell: file.orchestratorShell }),
       ...(file.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: file.orchestratorWakeBudgetUsd }),
       ...(file.autoUpkeepConcurrency === undefined ? {} : { autoUpkeepConcurrency: file.autoUpkeepConcurrency }),
+      ...(file.heavyQueue === undefined ? {} : { heavyQueue: file.heavyQueue as unknown as db.Fields }),
       ...(file.orchestratorOn === undefined ? {} : { orchestratorOn: file.orchestratorOn }),
       ...(file.agentCpuWeight === undefined ? {} : { agentCpuWeight: file.agentCpuWeight }),
       ...(file.githubAccounts === undefined ? {} : { githubAccounts: file.githubAccounts }),
@@ -526,11 +559,13 @@ async function loadFromDb(): Promise<OrcaConfig> {
     orchestratorShell: app.orchestratorShell !== false,
     orchestratorWakeBudgetUsd: app.orchestratorWakeBudgetUsd as number | undefined,
     autoUpkeepConcurrency: app.autoUpkeepConcurrency as number | undefined,
+    heavyQueue: app.heavyQueue as HeavyQueueConfig | undefined,
     orchestratorOn: app.orchestratorOn as string | undefined,
     agentCpuWeight: app.agentCpuWeight as number | undefined,
     githubAccounts: app.githubAccounts as OrcaConfig["githubAccounts"],
     serverSwitcher: app.serverSwitcher as ServerSwitcherConfig | undefined,
     serverIdentity: app.serverIdentity as ServerIdentityConfig | undefined,
+    ui: app.ui as UiOptions | undefined,
   };
   cached = config;
   cachedAt = Date.now();
@@ -566,11 +601,13 @@ export async function saveConfigDocument(config: OrcaConfig): Promise<void> {
       ...(config.orchestratorShell === undefined ? {} : { orchestratorShell: config.orchestratorShell }),
       ...(config.orchestratorWakeBudgetUsd === undefined ? {} : { orchestratorWakeBudgetUsd: config.orchestratorWakeBudgetUsd }),
       ...(config.autoUpkeepConcurrency === undefined ? {} : { autoUpkeepConcurrency: config.autoUpkeepConcurrency }),
+      ...(config.heavyQueue === undefined ? {} : { heavyQueue: config.heavyQueue as unknown as db.Fields }),
       ...(config.orchestratorOn === undefined ? {} : { orchestratorOn: config.orchestratorOn }),
       ...(config.agentCpuWeight === undefined ? {} : { agentCpuWeight: config.agentCpuWeight }),
       ...(config.githubAccounts === undefined ? {} : { githubAccounts: config.githubAccounts }),
       ...(config.serverSwitcher === undefined ? {} : { serverSwitcher: config.serverSwitcher as unknown as db.Fields }),
       ...(config.serverIdentity === undefined ? {} : { serverIdentity: config.serverIdentity as unknown as db.Fields }),
+      ...(config.ui === undefined ? {} : { ui: config.ui as unknown as db.Fields }),
     },
   });
   invalidateConfig();
@@ -598,6 +635,16 @@ export async function setServerIdentity(identity: ServerIdentityConfig | null): 
   if (!config) throw new Error(`the stored config does not parse: ${errors.join("; ")}`);
   const { serverIdentity: _old, ...rest } = config;
   await saveConfigDocument({ ...rest, ...(current.terminal ? { terminal: current.terminal } : {}), ...(identity ? { serverIdentity: identity } : {}) });
+}
+
+/** Set the console options — Settings' Board view row. Same path as `setServerIdentity`, so nothing
+ *  else in the document changes. */
+export async function setUiOptions(ui: UiOptions): Promise<void> {
+  invalidateConfig();
+  const current = await loadConfig();
+  const { config, errors } = parseConfigDocument(await configDocument());
+  if (!config) throw new Error(`the stored config does not parse: ${errors.join("; ")}`);
+  await saveConfigDocument({ ...config, ...(current.terminal ? { terminal: current.terminal } : {}), ui: { ...config.ui, ...ui } });
 }
 
 /** The document as stored (paths still templated) — what the settings UI shows you to edit. */

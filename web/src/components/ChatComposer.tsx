@@ -1,13 +1,13 @@
 import { useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ArrowUp, FileText, GitBranch, Paperclip, X } from "lucide-react";
+import { ArrowUp, FileText, GitBranch, Loader2, Mic, Paperclip, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ExpandableImage } from "@/components/ExpandableImage";
 import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
-import { usePrRefs, useWorkstreamRefs } from "@/store";
-import { NO_WALK, appendQuote, filterMentions, historyKey, historyStep, insertPrRef, mentionLabel, prTrigger, type HistoryWalk, type MentionRef } from "@/workstream";
-import { lineVisualRow } from "@/lib/caretRow";
+import { usePrRefs, useVoiceInput, useWorkstreamRefs } from "@/store";
+import { NO_WALK, appendQuote, filterMentions, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, type HistoryWalk, type MentionRef } from "@/workstream";
+import { lineVisualRow, scrollCaretIntoView } from "@/lib/caretRow";
 import { cn, PipContext } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
 import { joinPrefill } from "@/lib/palette";
@@ -15,6 +15,8 @@ import { endTypeahead } from "@/lib/orchestratorOpen";
 import type { OrchestratorPrefill } from "@/lib/atoms";
 import { enterSends, isCoarse, isMobile, keepComposerFocus } from "@/lib/viewport";
 import { Textarea } from "@/components/ui/textarea";
+import { appendTranscript, MAX_RECORD_MS, recordClock, useVoiceRecorder } from "@/lib/voice";
+import { notifyLocal } from "@/lib/notificationStore";
 
 // historyKey's firstVisualRow/lastVisualRow, measured against the box's real layout — only for
 // ArrowUp/ArrowDown, and only for the line historyKey's own "\n" check would otherwise defer to (a
@@ -40,6 +42,7 @@ function visualRowFlags(el: HTMLTextAreaElement, key: string): { firstVisualRow?
 // "chatbox" (à la Claude/ChatGPT) wrapping image thumbnails, the textarea, and a bottom toolbar
 // with the repo selector (via `leading`) on the left and an icon send button on the right.
 // Accepts files of any type by paste, drag-drop, or the paperclip picker; Enter sends; Shift/⌘/Ctrl+Enter breaks the line.
+// Enter on a markdown list line continues the list (listContinuation); Enter on an empty item ends it.
 // On a touch screen Enter breaks the line (a phone keyboard has no Shift+Enter) and the button sends.
 // Owns its own text + attachments; with a `persistKey` it survives page reloads (localStorage).
 // `variant="quick"` is the same input dressed as the quick-ask box (components/QuickAsk): no border of
@@ -111,6 +114,9 @@ export function ChatComposer({
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [active, setActive] = useState(0);
   const pendingCaret = useRef<number | null>(null);
+  // Set only by list continuation (below): the caret just jumped to a new line a real keystroke
+  // would have scrolled into view on its own — a scripted caret move does not.
+  const pendingScroll = useRef(false);
   // Whether the queued caret set below should also focus the box — true for a pick or a Quote (the
   // user's own click), false for a prefill on mobile (see below): opening the orchestrator with text
   // already in hand must not pop the on-screen keyboard over the page.
@@ -137,6 +143,7 @@ export function ChatComposer({
       if (pendingFocus.current) el.focus();
       el.setSelectionRange(pendingCaret.current, pendingCaret.current);
       pendingCaret.current = null;
+      if (pendingScroll.current) { scrollCaretIntoView(el); pendingScroll.current = false; }
     }
   }, [value]);
   const quick = variant === "quick";
@@ -190,6 +197,20 @@ export function ChatComposer({
     setValue(next);
     walk.current = NO_WALK; // text from outside the box is the new draft
   }, [insert?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Voice input: the mic records, the bridge transcribes, and the text goes after the draft for an
+  // edit before send. Shown only when the bridge holds a transcription key (`voice` on /api/config).
+  const voiceOn = useVoiceInput();
+  const voice = useVoiceRecorder(
+    (text) => {
+      const next = appendTranscript(latest.current, text);
+      pendingCaret.current = next.length;
+      pendingFocus.current = !isMobile(); // the phone's keyboard stays down until a tap on the box
+      setValue(next);
+      walk.current = NO_WALK;
+    },
+    (message) => notifyLocal({ kind: "action_failed", repo: repo ?? "", title: "Voice input", label: "Voice input failed", body: message, copy: message }),
+  );
 
   // Clicking anywhere in the chrome (border, padding, toolbar gap) focuses the textarea, so the
   // whole box behaves like one input. preventDefault keeps the existing caret/selection intact.
@@ -270,6 +291,22 @@ export function ChatComposer({
       if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); pick(matches[activeIdx]!); return; }
       // preventDefault also keeps a host <dialog> from closing on this Escape.
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setDismissedAt(trig!.start); return; }
+    }
+    // Enter on a markdown list line continues the list (or ends it on an empty item) instead of
+    // sending, on every device; there ⌘/Ctrl+Enter sends where Enter would. Never mid-IME composition.
+    if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+      const el = e.currentTarget as HTMLTextAreaElement;
+      const list = listContinuation(el.value, el.selectionStart, el.selectionEnd);
+      if (list && (e.metaKey || e.ctrlKey)) {
+        if (!isCoarse()) { e.preventDefault(); void submit(); return; }
+      } else if (list) {
+        e.preventDefault();
+        pendingCaret.current = list.caret;
+        pendingScroll.current = true;
+        setValue(list.text);
+        setCaret(list.caret);
+        return;
+      }
     }
     // Enter sends, like a chat; Shift/⌘/Ctrl+Enter breaks the line. (It was ⌘+Enter to send.) A
     // textarea inserts the newline for Shift on its own; ⌘/Ctrl need it put in by hand. On a touch
@@ -411,6 +448,7 @@ export function ChatComposer({
           <input ref={fileRef} type="file" multiple hidden onChange={(e) => { addImages(e.target.files ?? []); e.target.value = ""; }} />
           <div data-slot="chat-composer-actions" className="ml-auto flex shrink-0 items-center gap-1">
             {onCancel && <Button type="button" size="sm" variant="ghost" onClick={cancel}>Cancel</Button>}
+            {voiceOn && <VoiceButton phase={voice.phase} elapsed={voice.elapsed} onClick={voice.toggle} />}
             {action ?? (
               <Button type="button" size="icon" variant="ghost" data-slot="composer-attach" className="text-muted-foreground size-8" onClick={() => fileRef.current?.click()}>
                 <Paperclip className="size-4" />
@@ -445,6 +483,43 @@ export function ChatComposer({
       {error && <p data-slot="chat-composer-error" className={cn("text-destructive text-xs break-words", quick ? "border-t px-3 py-1.5" : "mt-1 px-1")}>{error}</p>}
       {footer}
     </div>
+  );
+}
+
+// The mic: idle → recording (a red dot, the clock, a stop square; a tap stops) → transcribing (a spinner).
+function VoiceButton({ phase, elapsed, onClick }: { phase: "idle" | "recording" | "transcribing"; elapsed: number; onClick: () => void }) {
+  if (phase === "recording") {
+    return (
+      <>
+        <span data-slot="composer-recording" role="status" className="text-destructive flex items-center gap-1.5 px-1 font-mono text-xs tabular-nums">
+          <span className="bg-destructive size-2 rounded-full motion-safe:animate-pulse" aria-hidden />
+          {recordClock(elapsed)}
+          <span className="text-muted-foreground">/ {recordClock(MAX_RECORD_MS)}</span>
+        </span>
+        <Tip label="Stop recording">
+          <Button type="button" size="icon" variant="ghost" data-slot="composer-mic" data-state="recording" aria-label="Stop recording" className="text-destructive hover:text-destructive bg-destructive/10 hover:bg-destructive/15 size-8" onClick={onClick}>
+            <Square className="size-3.5 fill-current" />
+          </Button>
+        </Tip>
+      </>
+    );
+  }
+  if (phase === "transcribing") {
+    return (
+      <>
+        <span data-slot="composer-transcribing" role="status" className="text-muted-foreground px-1 text-xs">Transcribing…</span>
+        <Button type="button" size="icon" variant="ghost" data-slot="composer-mic" data-state="transcribing" aria-label="Transcribing" className="text-muted-foreground size-8" disabled>
+          <Loader2 className="size-4 animate-spin" />
+        </Button>
+      </>
+    );
+  }
+  return (
+    <Tip label="Voice input">
+      <Button type="button" size="icon" variant="ghost" data-slot="composer-mic" data-state="idle" aria-label="Voice input" className="text-muted-foreground size-8" onClick={onClick}>
+        <Mic className="size-4" />
+      </Button>
+    </Tip>
   );
 }
 

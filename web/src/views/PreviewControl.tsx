@@ -6,11 +6,12 @@ import { addPreviewLabel, baseBranch, instanceChoices, previewConfigured, previe
 import { previewHref, previewLabel, prPreviewState } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { StatusDot } from "@/components/console";
+import { CountBadge, StatusDot } from "@/components/console";
 import { Tip } from "@/components/ui/tip";
 import { poll } from "@/lib/poll";
 import { sharedSource } from "@/lib/vitals";
 import { actionFailed } from "@/lib/notificationStore";
+import { copyText } from "@/lib/dialogs";
 
 // Shared preview lifecycle: start in the background, poll status, expose ready/failed/link. Driven
 // by a preview `key` (the worktree path) and a `starter` that spins it up — so the same hook powers
@@ -91,8 +92,7 @@ function usePreview(initialKey: string | undefined, starter: () => Promise<{ key
 function ErrorLog({ error }: { error: string }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
-    try { await navigator.clipboard.writeText(error); setCopied(true); setTimeout(() => setCopied(false), 1500); }
-    catch { /* clipboard unavailable */ }
+    if (await copyText(error, "log")) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
   };
   return (
     <details className="text-xs">
@@ -327,8 +327,7 @@ export function PrPreviewInline({ row }: { row: Row }) {
 function LogPopover({ error }: { error: string }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
-    try { await navigator.clipboard.writeText(error); setCopied(true); setTimeout(() => setCopied(false), 1500); }
-    catch { /* clipboard unavailable */ }
+    if (await copyText(error, "log")) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
   };
   return (
     <Popover>
@@ -454,11 +453,7 @@ export function PreviewsBadge({ compact = false }: { compact?: boolean }) {
     <span data-slot="previews-badge" className={compact ? "absolute -top-0.5 -right-0.5 flex items-center" : "ml-auto flex items-center gap-1.5"}>
       {loading ? <Loader2 className="size-3 animate-spin" aria-label="a base preview is starting" />
         : active && <span className="bg-geist-blue size-1.5 rounded-full" aria-label="a base preview is running" />}
-      {!unavailable && running > 0 && (
-        <span className="bg-foreground text-background flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold tabular-nums" aria-label={`${running} running previews`}>
-          {running}
-        </span>
-      )}
+      {!unavailable && running > 0 && <CountBadge count={running} slot="previews-running-count" label="running previews" />}
     </span>
   );
 }

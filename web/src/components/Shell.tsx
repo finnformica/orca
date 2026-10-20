@@ -8,13 +8,13 @@
 // centred); every inset clears the notch and the home indicator. What the sidebar alone carried
 // (Previews, Repos, Usage, Find, the instance switcher) is reachable from Settings on a phone — see
 // MobileNav in views/Pages.tsx.
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   Boxes, Check, ChevronsLeft, ChevronsRight, ChevronsUpDown, CircleUser, FolderSync, LayoutGrid, Loader2,
   Bot, Command, Keyboard, Monitor, MonitorPlay, Moon, Plus, RefreshCw, Search, Settings, Sun, X,
-  Package, Plug, Inbox,
+  Package, Plug, Inbox, Columns3,
 } from "lucide-react";
 import { navigate, useRoute, type Route } from "@/lib/route";
 import { addNewOpenAtom, agentQueryAtom, instanceScopeAtom, paletteOpenAtom, repoFilterAtom, shortcutsHelpOpenAtom } from "@/lib/atoms";
@@ -23,8 +23,9 @@ import { CommandPalette, Shortcuts, ShortcutsHelp } from "@/components/CommandPa
 import { ActivityDot, AskOrchestrator, useOrchestrator, useOrchestratorActivity } from "@/components/Terminal";
 import { QuickAsk } from "@/components/QuickAsk";
 import { SLIDE_MS } from "@/components/SidePanel";
-import { dockElementAtom, dockMoving, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
+import { dockClipElementAtom, dockElementAtom, dockWidthAtom, noteDockMotion, useNavToggle } from "@/lib/dock";
 import { HeaderUsageMeter } from "@/views/Vitals";
+import { CountBadge } from "@/components/console";
 import { BridgeLabel, DatabaseBanner, OfflineScreen, StaleIndicator, UpdateBanner } from "@/components/Freshness";
 import { useTheme, type Theme } from "@/lib/theme";
 import { cn, PortalContainer } from "@/lib/utils";
@@ -32,10 +33,11 @@ import { validChoice } from "@/lib/persisted";
 import { useSwipeToDismiss } from "@/lib/gestures";
 import { isMobile, useNarrow } from "@/lib/viewport";
 import { api } from "../api";
-import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, type OptimisticDraft } from "../store";
-import { NAV_RAIL_W, NAV_W, SHELL_GAP, frozenPageWidth, repoLabel, summarizeSync } from "../workstream";
+import { instanceChoices, thisInstance, undoDraft, useConfigFailed, useRepos, useShowBoard, type OptimisticDraft } from "../store";
+import { PANEL_MIN_W, SHELL_GAP, repoLabel, summarizeSync } from "../workstream";
 import { PreviewsBadge } from "@/views/PreviewControl";
 import { useInboxUnread } from "@/lib/inboxUnread";
+import { useHandoffBadge } from "@/lib/handoffBadge";
 import { AddServerDialog, ServerMenu, ServerOffline, useServerProblem, useServers } from "@/components/ServerMenu";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
 import { poll } from "@/lib/poll";
@@ -58,29 +60,37 @@ export const navRow = (collapsed: boolean, active = false) => cn(
   collapsed && "md:justify-center md:px-0",
 );
 export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (r: Route) => boolean; badge?: (compact: boolean) => ReactNode }[] = [
-  { to: "/", label: "Overview", Icon: LayoutGrid, match: (r) => r.name === "board" },
+  { to: "/", label: "Overview", Icon: LayoutGrid, match: (r) => r.name === "overview" },
   // An agent's own page (PR or local detail) is "inside" Agents, as a deployment is inside Deployments.
   { to: "/agents", label: "Agents", Icon: Boxes, match: (r) => r.name === "agents" || r.name === "pr" || r.name === "local" },
+  // The five lanes of cards (views/Board.tsx). Settings can hide it (`ui.showBoard`, navShown).
+  { to: "/board", label: "Board", Icon: Columns3, match: (r) => r.name === "board" },
   // Every integration's inbound messages and events, one timeline (views/Inbox.tsx).
   // Orca's own notifications are rows here too; its count is the bell's (lib/inboxUnread.ts).
   { to: "/inbox", label: "Inbox", Icon: Inbox, match: (r) => r.name === "inbox", badge: (compact) => <InboxBadge compact={compact} /> },
   // The previews (and Test master) page; its badges are what the two header buttons used to carry.
   { to: "/previews", label: "Previews", Icon: MonitorPlay, match: (r) => r.name === "previews", badge: (compact) => <PreviewsBadge compact={compact} /> },
   { to: "/integrations", label: "Integrations", Icon: Plug, match: (r) => r.name === "integrations" },
-  { to: "/handoffs", label: "Handoffs", Icon: Package, match: (r) => r.name === "handoffs" },
+  // Its count is outgoing packs waiting for the user to send them (lib/handoffBadge.ts).
+  { to: "/handoffs", label: "Handoffs", Icon: Package, match: (r) => r.name === "handoffs", badge: (compact) => <HandoffsBadge compact={compact} /> },
   // Repos and GitHub are sections of Settings.
   { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
 ];
 
+/** Whether a nav entry shows: the Board's only while the config's `ui.showBoard` is on. */
+export const navShown = (to: string, showBoard: boolean) => to !== "/board" || showBoard;
+
 /** The docked right column (desktop): its OWN card beside the page card, as branch-demo's right panel
  *  — the shell's gutter between them, no shared hairline. The open side panel renders INTO it
  *  (SidePanel's portal) at its full width; only the width and the start margin animate (branch-demo's
- *  150ms, Tailwind's default ease) and the card clips the panel, so the panel slides and never
+ *  150ms ease-out; the min-width tweens with the width, so an open never pops to it) and the card clips the panel, so the panel slides and never
  *  reflows. Closed, a negative start margin cancels the gutter (a 0-wide flex item still takes the gap). The card's
- *  surface stays until the close has finished (`painted`), so its edge does not vanish mid-slide. */
+ *  surface stays until the close has finished (`painted`), so its edge does not vanish mid-slide.
+ *  The clip is an inner element, not the dock: the resize handle hangs in the gutter, outside the card. */
 export function Dock() {
   const dock = useAtomValue(dockWidthAtom);
   const setDockElement = useSetAtom(dockElementAtom);
+  const setDockClip = useSetAtom(dockClipElementAtom);
   const [painted, setPainted] = useState(dock > 0);
   if (dock > 0 && !painted) setPainted(true);
   useEffect(() => {
@@ -96,49 +106,11 @@ export function Dock() {
       // of the chat restyles its whole subtree (measured: ~4000 elements, 100–150ms each at 4× CPU, twice
       // per open / close). The margin is an inline style; the card's surface rides `data-painted`.
       data-painted={painted ? "" : undefined}
-      className="relative shrink-0 overflow-hidden transition-[width,margin-inline-start] data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden md:data-[painted]:rounded-[10px] md:data-[painted]:bg-card md:data-[painted]:shadow-shell"
-      style={{ width: dock, marginInlineStart: dock > 0 ? 0 : -SHELL_GAP, transitionDuration: `${SLIDE_MS}ms` }} />
+      className="relative shrink-0 transition-[width,min-width,margin-inline-start] ease-out data-[resizing]:transition-none motion-reduce:transition-none max-md:hidden md:data-[painted]:rounded-[10px] md:data-[painted]:bg-background md:data-[painted]:shadow-shell"
+      style={{ width: dock, minWidth: dock > 0 ? Math.min(PANEL_MIN_W, dock) : 0, marginInlineStart: dock > 0 ? 0 : -SHELL_GAP, transitionDuration: `${SLIDE_MS}ms` }}>
+      <div data-slot="dock-clip" ref={setDockClip} className="absolute inset-0 overflow-hidden rounded-[inherit]" />
+    </div>
   );
-}
-
-/** Holds the page content at its END width while the dock or the nav animates (`frozenPageWidth`):
- *  the content lays out once at the start, and only the page card's edge moves over it. Cleared once
- *  the slide is over, so the page follows a window resize again. It READS NO LAYOUT in the commit
- *  (measured: a getBoundingClientRect / clientWidth here forced a ~100ms style + layout pass at 4×
- *  CPU): the column's width at rest comes from a ResizeObserver, and the rest is the widths the
- *  previous and the new state ASK for — exact for a reversal mid-slide too. No React state: the
- *  frame's style is written directly. */
-function useFrozenPage(els: { col: HTMLElement | null; frame: HTMLElement | null },
-  dock: number, rail: boolean, narrow: boolean) {
-  const was = useRef({ dock, rail });
-  const restCol = useRef<number | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout>>();
-  const { col, frame } = els;
-  useEffect(() => {
-    if (!col || typeof ResizeObserver === "undefined") return;
-    // At rest only: the frame is not held, and nothing animates.
-    const ro = new ResizeObserver(([e]) => { if (e && !dockMoving() && !frame?.style.width) restCol.current = e.contentRect.width; });
-    ro.observe(col);
-    return () => ro.disconnect();
-  }, [col, frame]);
-  useLayoutEffect(() => {
-    const prev = was.current;
-    was.current = { dock, rail };
-    if (!frame) return;
-    const release = () => { clearTimeout(timer.current); frame.style.width = ""; };
-    if (narrow) return release();
-    if (prev.dock === dock && prev.rail === rail) return;
-    // Before the observer's first report (it reports on observe, so in practice never): read it once.
-    if (restCol.current === null) restCol.current = col?.clientWidth ?? null;
-    if (restCol.current === null) return release();
-    const asked = (s: { dock: number; rail: boolean }) => ({ nav: s.rail ? NAV_RAIL_W : NAV_W, dock: s.dock, dockMargin: s.dock > 0 ? 0 : -SHELL_GAP });
-    const end = frozenPageWidth({ col: restCol.current, ...asked(prev) }, asked({ dock, rail }));
-    restCol.current = end; // the column's width at rest once this slide is over
-    clearTimeout(timer.current);
-    frame.style.width = `${end}px`;
-    timer.current = setTimeout(release, SLIDE_MS + 60);
-  }, [dock, rail, narrow, frame, col]);
-  useEffect(() => () => clearTimeout(timer.current), []);
 }
 
 /** Feeds lib/dock's motion flag from the shell's own width transitions (the dock, the nav's rail). */
@@ -174,9 +146,6 @@ export function Shell({ crumbs, sidebarActions, children }: {
   const narrow = useNarrow();
   const [shellEl, setShellEl] = useState<HTMLElement | null>(null);
   useDockMotion(shellEl);
-  const [colEl, setColEl] = useState<HTMLElement | null>(null);
-  const [frameEl, setFrameEl] = useState<HTMLElement | null>(null);
-  useFrozenPage({ col: colEl, frame: frameEl }, useAtomValue(dockWidthAtom), collapsed, narrow);
   useEffect(() => poll(loadIdentity, 60_000), []);
   return (
     // Desktop: branch-demo's app shell. The nav sits on the LOWER surface — the canvas, in the
@@ -192,25 +161,26 @@ export function Shell({ crumbs, sidebarActions, children }: {
       <aside
         data-slot="sidebar" data-chrome="" data-collapsed={collapsed}
         className={cn(
-          "z-50 max-md:hidden md:flex md:shrink-0 md:flex-col md:overflow-hidden md:transition-[width] md:duration-150 motion-reduce:transition-none",
+          "z-50 max-md:hidden md:flex md:shrink-0 md:flex-col md:overflow-hidden md:transition-[width] md:duration-150 md:ease-out motion-reduce:transition-none",
           collapsed ? "md:w-14" : "md:w-60",
         )}
       >
         <Sidebar collapsed={collapsed} onToggle={() => setRail(!collapsed)} actions={sidebarActions} />
       </aside>
-      <div data-slot="shell-card" className="flex min-w-0 flex-1 md:overflow-hidden md:rounded-[10px] md:bg-background md:shadow-shell">
+      <div data-slot="shell-card" className="relative flex min-w-0 flex-1 md:overflow-hidden md:rounded-[10px] md:bg-background md:shadow-shell">
       {/* The page column scrolls on its own on a desktop (md:h-screen + overflow), as each column of an
           app shell does: the docked panel then sits flush against the window's edge, with no page
           scrollbar outside it (the gutter is reserved here, not on <html>; its children never shrink to
           fit the column's height — the top bar did). A phone keeps the window's own scroll (its keyboard and pull-to-refresh
           code read window.scrollY). Inside it, the page FRAME is the `@container/page` the pages'
-          layouts query, so they respond to the room the dock leaves, not to the window; while the dock
-          or the nav animates, the frame is held at its end width (useFrozenPage). */}
+          layouts query, so they respond to the room the dock leaves, not to the window. While the dock
+          or the nav animates, the frame follows the card edge in every frame — no hold at an end width
+          (Finn: the content must move WITH the edge). Only CSS moves: no React state per frame. */}
       {/* `contain: layout paint` on a desktop: while the dock or the nav animates, the page's reflow and
           repaint stay inside this column. (A `fixed` descendant would now be placed against this box —
           the page has none; the Agents row's right-click anchor is portaled to <body>.) */}
-      <div data-slot="page-scroll" ref={setColEl} className="flex min-w-0 flex-1 flex-col md:h-full md:overflow-x-hidden md:overflow-y-auto md:[scrollbar-gutter:stable] md:[contain:layout_paint]">
-      <div data-slot="page-frame" ref={setFrameEl} className="@container/page flex min-w-0 flex-1 shrink-0 flex-col md:*:shrink-0">
+      <div data-slot="page-scroll" className="flex min-w-0 flex-1 flex-col md:h-full md:overflow-x-hidden md:overflow-y-auto md:[scrollbar-gutter:stable] md:[contain:layout_paint]">
+      <div data-slot="page-frame" className="@container/page flex min-w-0 flex-1 shrink-0 flex-col md:*:shrink-0 md:[contain:layout_paint]">
         {/* The update bar floats at the top centre of the page column (zero height, sticky), so it covers
             neither the nav nor the docked panel and never moves the layout. */}
         <UpdateBanner />
@@ -247,12 +217,15 @@ export function Shell({ crumbs, sidebarActions, children }: {
         </main>
       </div>
       </div>
+      {/* The quick-ask pill, bottom centre of the page CARD on every page but an agent's Chat tab
+          (desktop; the phone's bottom bar has the orchestrator). Placed by the card, not by a copy of
+          the dock's transition: it moves with the card edge in the same frames — an open, a close, the
+          nav's rail, a resize drag or key. */}
+      {!chatTab(route) && <QuickAsk />}
       </div>
       <Dock />
       </div>
       <BottomBar activity={activity} />
-      {/* The quick-ask pill, bottom centre of every page but an agent's Chat tab (desktop; the phone's bottom bar has the orchestrator). */}
-      {!chatTab(route) && <QuickAsk />}
       <Shortcuts />
       <CommandPalette />
       <ShortcutsHelp />
@@ -279,6 +252,7 @@ function Sidebar({ collapsed, onToggle, actions }: {
 }) {
   const route = useRoute();
   const narrow = useNarrow();
+  const showBoard = useShowBoard();
   return (
     <>
       <div className="flex h-14 items-center gap-2 px-3">
@@ -286,7 +260,7 @@ function Sidebar({ collapsed, onToggle, actions }: {
       </div>
       {!collapsed && <div className="px-3 pb-2"><FindBox /></div>}
       <nav aria-label="Main" className="flex flex-col gap-0.5 px-2 py-1">
-        {NAV.map(({ to, label, Icon, match, badge }) => {
+        {NAV.filter((n) => navShown(n.to, showBoard)).map(({ to, label, Icon, match, badge }) => {
           const active = match(route);
           const shortcut = pageShortcut(to);
           const item = (
@@ -431,7 +405,7 @@ function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" className="hover:bg-accent/60 flex min-w-0 flex-1 items-center gap-2 rounded-md p-1" aria-label="Switch instance">
+        <button type="button" className="hover:bg-accent flex min-w-0 flex-1 items-center gap-2 rounded-md p-1" aria-label="Switch instance">
           {body}
           <ChevronsUpDown className={cn("text-muted-foreground size-3.5 shrink-0", collapsed && "md:hidden")} />
         </button>
@@ -463,7 +437,7 @@ export function FindBox() {
 }
 
 // The top bar's context switcher (Vercel's "All Projects ▾"): the repo scope, shared with the
-// Board view and the Agents filters. Hidden with a single repo.
+// Overview and the Agents filters. Hidden with a single repo.
 function RepoSwitcher() {
   const repos = useRepos();
   const [repo, setRepo] = useAtom(repoFilterAtom);
@@ -471,7 +445,7 @@ function RepoSwitcher() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" data-slot="repo-switcher" className="hover:bg-accent/60 flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium">
+        <button type="button" data-slot="repo-switcher" className="hover:bg-accent flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium">
           {repo === "all" ? "All repos" : repoLabel(repos, repo)} <ChevronsUpDown className="text-muted-foreground size-3.5" />
         </button>
       </DropdownMenuTrigger>
@@ -642,15 +616,19 @@ export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
   );
 }
 
+/** The Handoffs nav item's count: outgoing packs made here and not sent yet. The phone's Settings
+ *  → Navigate link shows it too. */
+export function HandoffsBadge({ compact = false }: { compact?: boolean }) {
+  const count = useHandoffBadge();
+  // At zero it still holds the row's right edge, so the keycap after it stays where it was.
+  if (!count) return compact ? null : <span className="ml-auto" />;
+  return <CountBadge count={count} placement={compact ? "compact" : "inline"} slot="handoffs-count" label="packs waiting to send" />;
+}
+
 /** The Inbox nav item's unread count: the one count the bell shows too. */
 function InboxBadge({ compact = false }: { compact?: boolean }) {
   const unread = useInboxUnread();
   // At zero it still holds the row's right edge, so the keycap after it stays where it was.
   if (!unread) return compact ? null : <span className="ml-auto" />;
-  return (
-    <span data-slot="inbox-unread-count" aria-label={`${unread} unread`}
-      className={cn("bg-geist-blue flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold text-white tabular-nums", compact ? "absolute -top-0.5 -right-0.5" : "ml-auto")}>
-      {unread > 99 ? "99+" : unread}
-    </span>
-  );
+  return <CountBadge count={unread} placement={compact ? "compact" : "inline"} slot="inbox-unread-count" />;
 }

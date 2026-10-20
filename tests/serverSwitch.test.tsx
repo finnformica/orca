@@ -239,7 +239,7 @@ test("S6: the top bar menu — repos-selector look, current checked, status dot 
   await act(async () => { await flush(); await flush(); await flush(); });
   const trigger = q('[data-slot="server-menu"]')!;
   expect(trigger.textContent).toBe("cloud"); // the home server's own name
-  expect(trigger.className).toContain("hover:bg-accent/60"); // the repos selector's trigger, not a tinted pill
+  expect(trigger.className).toContain("hover:bg-accent"); // the repos selector's trigger, not a tinted pill
   const bar = q('[data-slot="topbar"]')!;
   const repo = bar.querySelector('[data-slot="repo-switcher"]');
   if (repo) expect(trigger.compareDocumentPosition(repo) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

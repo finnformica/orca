@@ -1,11 +1,12 @@
 import {
-  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, modelFor, parseConfigDocument,
+  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, setUiOptions, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
 import * as attachments from "./attachments";
+import * as voice from "./voice";
 import * as preview from "./preview";
 import * as forward from "./forward";
 import { reachable } from "./peer";
@@ -32,20 +33,27 @@ import * as integrationAdmin from "./integrations/admin";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
 import * as primary from "./primary";
+import { scrubbedEnv } from "./env";
 import * as mergeQueue from "./mergeQueue";
 import * as upkeep from "./upkeep";
+import * as browserWatch from "./browserWatch";
 import * as notify from "./notify";
+import * as cgroup from "./cgroup";
+import { heavySliceGb } from "./sliceLimit";
 import { KIND_META } from "../shared/notifications";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
+import { flushMachineSamples, liveAnswer, machineReport, newestLive, sliceMaxGbHere, startLiveSampler, withLiveCpu } from "./liveMetrics";
+import { protectionsReport, withLiveState } from "./protections";
 import * as verbs from "./verbs";
 import * as repos from "./repos";
-import { BusyError, checkGate, compact, launchOptions, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
-import { ORCHESTRATOR_REPO, attachmentRefs, workstreamShots, followUpPrompt, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
+import { BusyError, checkGate, compact, launchOptions, launchQueued, newWorktree, placement, removeWorktree, startPreview } from "./verbs";
+import { ORCHESTRATOR_REPO, attachmentRefs, workstreamShots, mergeSafe, prDescriptionPrompt, sweepText, titleFromPrompt, validPrDescription, withAttachments } from "../web/src/workstream";
 import { AGENT_PROVIDERS, attachCommand, isAgentProvider, providerBinary, type AgentOutcome, type AgentProvider, type AgentStep, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
 import * as prShots from "./prShots";
 import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
+import * as heavy from "./heavy";
 import { checkCaller, instanceHosts, listServers, selfServer, serverGate, withIdentity } from "./servers";
 import { isAutomatic, leaseHolder } from "../shared/integrations";
 import { instanceOptions } from "../shared/integrationSettings";
@@ -162,24 +170,23 @@ primary.onPrimary(async () => {
 // ignorant of configuration.
 agent.onQueuedMessage(async (message) => {
   const cfg = await loadConfig();
-  const repo = repoOf(cfg, message.repo);
-  const provider = isAgentProvider(message.provider) ? message.provider : "claude";
-  if (!providerAllowed(repo, provider)) return; // opted out since it was queued
-  // The pin lives in enrichment, so a message queued before a model switch still runs on the model
-  // the card shows when it is dispatched.
-  const fields = (await db.enrichment(repo.name))[message.branch];
-  const pinned = fields?.preferredModel;
-  const mergeWhenGreen = Boolean(fields?.mergeWhenGreen);
-  await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction, { mergeWhenGreen }), message.attachments), {
-    ...launchOptions(cfg, repo, provider, typeof pinned === "string" ? pinned : undefined, fields),
-    branch: message.branch, action: "followup", instruction: message.instruction,
-  });
+  await launchQueued(cfg, repoOf(cfg, message.repo), message);
 });
 
 // The orchestrator's wake loop: a worker it is responsible for going idle wakes it, and its own run
 // ending drains what queued up meanwhile. Config is read per event, like every request. The
 // notification centre hears the same event first (it swallows its own failures), so a toast never
 // waits on a wake.
+// A dead user manager (server/cgroup.ts) is news, never silent: agent runs start without a memory
+// scope until it is back. The health watchdog (deploy/health-check.sh) restarts it.
+cgroup.onUserManagerDown((down, run) => {
+  void notify.emit({
+    key: `user-manager-down:${db.instanceName()}:${down.since}`, kind: "box_alert",
+    repo: run.repo ?? "", branch: run.branch, title: `${db.instanceName()}: user manager down`,
+    body: `Agent runs start without a memory scope until it is back (${down.reason}). The health watchdog restarts it; else run sudo systemctl restart user@${process.getuid?.() ?? "<uid>"}.service.`,
+  });
+});
+
 agent.onRunFinished(async (run) => {
   if (!primary.held()) return; // a secondary reports nothing — the primary's hooks are the one voice
   await notify.onRunFinished(run);
@@ -196,6 +203,14 @@ setInterval(() => {
   if (!primary.held()) return;
   void loadConfig().then((cfg) => mergeQueue.tick(cfg)).catch(db.logUnlessDown("orca: merge queue pass failed"));
 }, mergeQueue.MERGE_POLL_MS).unref();
+// The heavy-command queue (server/heavy.ts): take back a slot past its max run time or whose
+// `orca-run` client died without closing its connection.
+setInterval(() => heavy.slots().sweep(), 15_000).unref();
+// A stopped or outright-killed `orca-heavy-*.scope` sits in `systemctl --user list-units` as
+// failed forever otherwise; clear each one's failed state once a minute.
+if (process.platform === "linux") setInterval(() => {
+  void heavy.clearFailedHeavyScopes().catch((e) => console.error(`orca: clearing failed heavy scopes failed: ${e instanceof Error ? e.message : e}`));
+}, 60_000).unref();
 // Only this bridge may run the orchestrator's wakes: a bridge on code too old for the election (a
 // stray preview bridge, incident 2026-10-15) that launched one is stopped with it, and the wake is
 // re-run here (orchestrator.evictForeignWake). Once a minute, on the primary.
@@ -213,6 +228,15 @@ if (!PREVIEW_BRIDGE) setInterval(() => {
   if (!primary.held()) return;
   void loadConfig().then((cfg) => upkeep.tick(cfg)).catch(db.logUnlessDown("orca: upkeep pass failed"));
 }, upkeep.UPKEEP_POLL_MS).unref();
+// The browser watchdog (server/browserWatch.ts): a browser or a browser MCP server in the agents'
+// slice is killed and flagged on the workstream that started it, and a run scope that no lease on
+// this host names (a test's leaked run) is killed.
+if (!PREVIEW_BRIDGE && process.platform === "linux") setInterval(() => {
+  if (!primary.held()) return;
+  try { browserWatch.sweepOrphanScopes(); } catch (e) { console.error(`orca: orphan scope sweep failed: ${e instanceof Error ? e.message : e}`); }
+  void browserWatch.sweep({ record: (runId, names) => browserWatch.recordKills(runId, names).catch(db.logUnlessDown("orca: browser watchdog record failed")) })
+    .catch((e) => console.error(`orca: browser watchdog failed: ${e instanceof Error ? e.message : e}`));
+}, browserWatch.WATCH_INTERVAL_MS).unref();
 // Warm the review queue (gh.listReviewPrs) so its slow cold fetch is paid here, not by a caller. A
 // local-only repo just fails quietly.
 void loadConfig().then((cfg) => cfg.repos.filter(verbs.repoHere)
@@ -239,6 +263,10 @@ const publishPreviews = () => loadConfig().then((cfg) => verbs.previewRows(cfg, 
 // (server/health.ts). Each instance samples itself; either answers the history from Postgres.
 primary.onPrimary(() => { startMetricsSampler(); });
 
+// The machine card's 15 s view of the box (server/liveMetrics.ts): in memory, last 6 hours. Every
+// bridge runs it (it only reads /proc), so a preview bridge's card has data too.
+startLiveSampler();
+
 // Stale hydra logins (an access token that lapsed — hydra never renews one, a Claude launch does):
 // renewed on THIS host by one minimal launch each, so the rotation never routes to one. Every 30
 // minutes on the primary; each instance renews its own logins (server/usage.ts renewStaleLogins).
@@ -254,6 +282,7 @@ if (!PREVIEW_BRIDGE) primary.onPrimary(() => {
 // thrown (see preview.reap).
 const REAP_INTERVAL_MS = 60 * 60 * 1000;
 function runReaper(): void {
+  agent.pruneRuns(); // finished runs of worktrees that are gone (bridge memory)
   if (!primary.held()) return;
   void loadConfig().then((cfg) => preview.reap(cfg.repos.filter(verbs.repoHere)))
     .catch(db.logUnlessDown("orca: preview/container reap failed"));
@@ -328,7 +357,7 @@ function whenDatabaseDown(req: Request, url: URL, e: db.DbUnavailable): Response
   return degradedJson({ error: `${e.message} — this needs the database; it will work again once it is back` }, 503);
 }
 
-const BRIDGE_BRANCH = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: import.meta.dir }).stdout.toString().trim() || undefined;
+const BRIDGE_BRANCH = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: import.meta.dir, env: scrubbedEnv() }).stdout.toString().trim() || undefined;
 const bridgeInfo = () => ({ preview: PREVIEW_BRIDGE, branch: BRIDGE_BRANCH, port: API_PORT, ...primary.state() });
 
 /** A caller-supplied base ref, rejected unless it looks like a branch name (never a `-flag` that git
@@ -370,7 +399,7 @@ const DATABASE_ONLY = new Set([
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity",
+  "/api/health/history", "/api/health/live", "/api/machine", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui",
   // A workstream's reported screenshots, read off its turns (the files are served per shot).
   "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -392,6 +421,17 @@ const INSTANCE_IS_A_FILTER = new Set(["/api/health/history"]);
 
 /** Forward a request to the instance that owns the repo. Returns undefined when the request should
  *  be handled locally. (The chat's live stream is not forwarded — /api/events relays instead.) */
+/** The heavy queue's settings for this box. The memory budget applies only when the commands run
+ *  in capped scopes inside the agents' slice: without systemd there are no caps to add up. */
+function heavySettingsHere(cfg: OrcaConfig): heavy.HeavySettings {
+  return heavy.heavySettings(cfg.heavyQueue, cgroup.available() ? heavySliceGb() : undefined);
+}
+/** This box's heavy-command queue, for /api/heavy and the machine card (/api/health). */
+function heavyView(cfg: OrcaConfig): heavy.HeavyView {
+  heavy.setSettings(heavySettingsHere(cfg));
+  return heavy.slots().view();
+}
+
 async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: OrcaConfig, body: Record<string, unknown>): Promise<Response | undefined> {
   // An explicit `instance` on an otherwise local route (`/api/health?instance=cloud`) still forwards —
   // except where `instance` names whose rows to read, not where to run.
@@ -518,6 +558,12 @@ async function api(req: Request, url: URL): Promise<Response> {
       throw e;
     }
   }
+  // Voice input (server/voice.ts): a recorded clip in, its transcript out. The OpenAI key stays on this
+  // bridge; the owner gate keeps anyone else on the network from spending it. Multipart, so here.
+  if (req.method === "POST" && p === "/api/voice/transcribe") {
+    const gate = await terminalOwner(req, cfg);
+    return gate ?? voice.handleTranscribe(req);
+  }
   // One stored attachment's bytes, for the chat's thumbnail / file chip. Read from Postgres, so any
   // instance answers it whichever one took the upload. Served inline but sandboxed and never sniffed:
   // a pasted SVG or HTML file must not run as this (unauthenticated) origin.
@@ -567,8 +613,17 @@ async function api(req: Request, url: URL): Promise<Response> {
         const r = await handoff.createPack({ to: String(body.to ?? ""), title: String(body.title ?? ""), message: typeof body.message === "string" ? body.message : "", chats, source: (await selfServer(cfg.serverSwitcher ?? {})).name });
         return json({ pack: await handoff.one(r.pack.id) });
       }
+      // The nav badge: outgoing packs waiting for the user to send them. Opening the Handoffs page
+      // separately marks every received pack seen (the page's own "new" tag, not the badge).
+      if (req.method === "GET" && p === "/api/handoffs/badge") return json(await db.handoffBadge());
+      if (req.method === "POST" && p === "/api/handoffs/seen") { await db.markHandoffsSeen(); return json({ ok: true }); }
       const m = p.match(/^\/api\/handoffs\/([\w-]+)(\/export|\/sent)?$/);
       if (m && req.method === "GET" && m[2] === "/export") return json(await handoff.exportPack(m[1]!));
+      // One pack, for the review widget under the orchestrator's reply. 404 once it is deleted.
+      if (m && req.method === "GET" && !m[2]) {
+        const pack = await handoff.one(m[1]!);
+        return pack ? json({ self: (await selfServer(cfg.serverSwitcher ?? {})).name, pack }) : json({ error: `no pack ${m[1]}` }, 404);
+      }
       if (m && req.method === "POST" && m[2] === "/sent") {
         if (typeof body.to !== "string" || !body.to.trim()) return json({ error: "to required" }, 400);
         await db.markHandoffSent(m[1]!, body.to.trim());
@@ -644,6 +699,36 @@ async function api(req: Request, url: URL): Promise<Response> {
       }
     }
     return json({ error: "not found" }, 404);
+  }
+  // The box-wide queue for heavy commands (server/heavy.ts, bin/worker/orca-run). Never forwarded:
+  // a slot is for THIS box's CPU and memory. Like /api/screenshot the answer is NDJSON: `{queued: N}`
+  // while waiting, then `{granted}`, then a heartbeat until the slot is back. The slot lives as long
+  // as this request: a killed `orca-run` drops the connection, and that frees it.
+  if (req.method === "POST" && p === "/api/heavy") {
+    if (!heavy.isHeavyKind(body.kind)) return json({ error: `kind must be one of ${heavy.HEAVY_KINDS.join(", ")}` }, 400);
+    const settings = heavySettingsHere(cfg);
+    heavy.setSettings(settings);
+    const request: heavy.HeavyRequest = {
+      kind: body.kind, command: String(body.command ?? "").slice(0, 500),
+      ...(typeof body.runId === "string" && body.runId ? { runId: body.runId } : {}),
+      ...(typeof body.repo === "string" && body.repo ? { repo: body.repo } : {}),
+      ...(typeof body.branch === "string" && body.branch ? { branch: body.branch } : {}),
+      ...(typeof body.cwd === "string" && body.cwd ? { cwd: body.cwd } : {}),
+      ...(Number.isInteger(body.pid) && body.pid > 0 ? { pid: body.pid } : {}),
+    };
+    const scoped = cgroup.available();
+    return heavy.acquireResponse(heavy.slots(), request, req.signal, {
+      maxRunMs: settings.maxRunMs[request.kind], env: scoped ? cgroup.runtimeEnv() : {},
+      prefix: (unit, memoryGb) => heavy.scopePrefix({ available: scoped, unit, memoryMaxGb: memoryGb, slice: cgroup.AGENTS_SLICE }),
+    });
+  }
+  if (req.method === "POST" && p === "/api/heavy/release") {
+    // The CLI's normal end: the command exited. A missing or unknown id is a no-op.
+    if (typeof body.id === "string") heavy.slots().release(body.id);
+    return json({ ok: true });
+  }
+  if (req.method === "GET" && p === "/api/heavy") {
+    return json(heavyView(cfg));
   }
   if (p.startsWith("/api/orchestrator") && cfg.orchestratorOn && cfg.orchestratorOn !== db.instanceName()) {
     // ONE instance hosts the orchestrator (orchestratorOn); everything about it goes there.
@@ -884,10 +969,11 @@ async function api(req: Request, url: URL): Promise<Response> {
     // ledger, from its configured billing start, for the card's Cost cell (absent when the query
     // fails — vitals must still answer).
     const cfg = await loadConfig();
-    const [h, rate] = await Promise.all([health(), instanceRate(cfg.instanceHourlyUsd)]);
+    const [h, rate, protections] = await Promise.all([health(), instanceRate(cfg.instanceHourlyUsd), protectionsReport()]);
     const since = Date.parse(cfg.instanceBillingSince?.[db.instanceName()] ?? "");
     const month = rate.hourlyUsd > 0 ? await monthCost(rate.hourlyUsd, Number.isFinite(since) ? { billingSince: since } : {}).catch(() => undefined) : undefined;
-    return json({ ...h, rate, month, database: db.databaseStatus(), outbox: outbox.summary() });
+    // `protections`: which of deploy/harden.sh's protections this box is missing (server/protections.ts).
+    return json({ ...withLiveCpu(h, newestLive()), rate, month, protections: protections && withLiveState(protections, cgroup.userManagerDown()), database: db.databaseStatus(), outbox: outbox.summary(), heavy: heavyView(cfg) });
   }
   if (req.method === "GET" && p === "/api/notifications") {
     // The centre's rows (any instance answers: one table). `since` is the catch-up cursor after a
@@ -900,6 +986,15 @@ async function api(req: Request, url: URL): Promise<Response> {
     const ids = body.all === true ? "all" : Array.isArray(body.ids) ? body.ids.map(Number).filter(Number.isFinite) : [];
     const changed = await db.markNotificationsRead(ids);
     return json({ ok: true, changed });
+  }
+  if (req.method === "GET" && p === "/api/health/live") {
+    // This machine's 15 s samples (server/liveMetrics.ts), at most the last 6 hours. In memory on the
+    // machine itself, so `?instance=` forwards like /api/health.
+    return json(liveAnswer(historyHours(url.searchParams.get("hours")), { sliceMaxGb: sliceMaxGbHere() }));
+  }
+  if (req.method === "GET" && p === "/api/machine") {
+    // `orca machine`: the same ring, its now / 5 min / 1 h windows and the heavy queue's counts.
+    return json(machineReport(db.instanceName()));
   }
   if (req.method === "GET" && p === "/api/health/history") {
     // An instance's recorded vitals (instance_metric), oldest first — read from Postgres, so either
@@ -984,6 +1079,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     await setServerIdentity(identityUpdate(body.name, body.color));
     return json({ ok: true });
   }
+  if (req.method === "POST" && p === "/api/config/ui") {
+    // Settings' Board view row: show or hide the Board view for every browser.
+    if (typeof body.showBoard !== "boolean") return json({ error: "showBoard (true or false) is required" }, 400);
+    await setUiOptions({ showBoard: body.showBoard });
+    return json({ ok: true });
+  }
   if (req.method === "POST" && p === "/api/config/terminal") {
     // Settings' Terminal row: one instance's web terminal on or off. It hands out a shell, so it is
     // gated like the terminal itself — the owner only, never a cross-origin page.
@@ -1020,6 +1121,10 @@ async function api(req: Request, url: URL): Promise<Response> {
       instance: db.instanceName(), instances: Object.keys(cfg.instances ?? {}),
       instanceHourlyUsd: cfg.instanceHourlyUsd ?? {},
       terminal: cfg.terminal ?? {},
+      // Whether this bridge holds a transcription key, so the composer shows its mic. Never the key.
+      voice: voice.voiceAvailable(),
+      // Console options for every browser: the Board view is on unless the document says false.
+      ui: { showBoard: cfg.ui?.showBoard !== false },
       // Each machine's address: the terminal panel connects to a machine's own bridge directly (a
       // bridge never relays another machine's shell). Tailnet addresses, no secret.
       instanceUrls: cfg.instances ?? {},
@@ -1222,7 +1327,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const { worktreePath } = await git.baseWorktree(repo.repoPath, repo.worktreeRoot, repo.baseBranch);
     await git.copyToWorktree(repo.repoPath, worktreePath, repo.copyToWorktree);
     await git.linkToWorktree(repo.repoPath, worktreePath, repo.linkToWorktree);
-    await preview.start(worktreePath, worktreePath, repo.previewServices, cfg.portRange);
+    await preview.start(worktreePath, worktreePath, repo.previewServices, cfg.portRange, { https: repo.previewSecureContext === true });
     void publishPreviews();
     const host = preview.ownerHost(cfg.instances, db.instanceName());
     void notify.watchPreview({ key: worktreePath, repo: repo.name, title: `${repo.name} ${repo.baseBranch}`, host });
@@ -1348,7 +1453,11 @@ async function api(req: Request, url: URL): Promise<Response> {
     const provider = body.provider ?? "claude";
     if (!isAgentProvider(provider)) return json({ error: `unsupported agent provider: ${provider}` }, 400);
     if (!providerAllowed(repo, provider)) return notEnabled(repo, `The ${provider} agent`);
-    if (agent.isRunning(body.key)) {
+    // Older messages still queued on an idle worktree go first (verbs.followUp's rule): this one
+    // queues behind them, and the queue drains in order.
+    const behind = Boolean(body.branch && body.worktree) && !agent.isRunning(body.key)
+      && (await db.queuedMessages(repo.name, body.branch).catch(() => [])).length > 0;
+    if (agent.isRunning(body.key) || behind) {
       // Any action landing on a busy worktree (a typed follow-up, Address PR, Resolve conflicts,
       // Retry, Fix) is QUEUED rather than refused — the composer already invited exactly that ("the
       // agent is working — queue the next instruction"), and this route used to 409 every other
@@ -1358,6 +1467,7 @@ async function api(req: Request, url: URL): Promise<Response> {
           repo: repo.name, branch: body.branch, worktreePath: body.worktree,
           instruction: body.instruction ?? body.prompt, attachments: body.attachments ?? [], provider,
         });
+        if (behind) await agent.drainQueue(body.key, repo.name, body.branch);
         return json({ status: "queued", queued });
       }
       return json({ error: "an agent is already running for this worktree" }, 409);
@@ -1474,6 +1584,9 @@ async function api(req: Request, url: URL): Promise<Response> {
       const files = attachmentRefs(`${t.instruction ?? ""}\n${t.prompt}`);
       if (files.length) t.attachments = files;
     }
+    // The packs the orchestrator made (`orca handoff create`), linked by the id its tool result names:
+    // the chat draws a review widget for each. A failed lookup only loses the widgets.
+    if (repo.name === ORCHESTRATOR_REPO && !degraded) await handoff.linkTurns(turns).catch(db.logUnlessDown("handoff links"));
     for (const t of turns) if (t.instruction !== undefined) t.prompt = "";
     const body = page ? { turns, older: page.older } : turns;
     return degraded ? degradedJson(body) : json(body);
@@ -1626,7 +1739,7 @@ async function shutdown(signal: "SIGINT" | "SIGTERM"): Promise<void> {
   void integrations.stopAll(); // close sockets so the next primary can open them
   try {
     await Promise.race([
-      agent.flushHistory(),
+      Promise.all([agent.flushHistory(), flushMachineSamples()]),
       new Promise((r) => setTimeout(r, DRAIN_TIMEOUT_MS)), // never hang a deploy on a wedged write
     ]);
   } catch { /* best effort — we are leaving either way */ }

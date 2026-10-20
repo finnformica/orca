@@ -210,6 +210,9 @@ has its own `.env`. Start from `.env.example`. This table shows all variables:
 | `ORCA_BIND` | `127.0.0.1` | The listen addresses, separated by commas. If another instance must get access to a machine, the machine binds `127.0.0.1,<tailnet-ip>`. Loopback is **not** optional: `bin/orca` and the Vite proxy of an Orca preview use it. Do not use `0.0.0.0`. |
 | `ORCA_PREVIEW_HOST` | `localhost` | The host name in preview links (`{host}` in a preview command). On the box, use its tailnet name. |
 | `ORCA_PREVIEW_BIND` | `127.0.0.1` | The address that preview services listen on (`{bind}`). On the box, use its tailnet IP. |
+| `ORCA_PREVIEW_HTTPS` | auto | `1` or `0`. Serve the previews of a `previewSecureContext` repo over HTTPS with `tailscale serve`. If it is not set, HTTPS is on when `ORCA_PREVIEW_BIND` is not loopback and the tailnet gives this machine a cert. See section 9. |
+| `ORCA_PREVIEW_HTTPS_HOST` | the ts.net name | The host name of HTTPS preview links. If it is not set, Orca reads it from `tailscale status --json`. |
+| `ORCA_TAILSCALE_CMD` | `sudo -n tailscale` | The tailscale CLI, separated by spaces. On Linux as a user that is not root, the default is `sudo -n tailscale`. Else it is `tailscale`. |
 | `ORCA_API_PORT` | `8787` | The port of the bridge. |
 | `ORCA_UI_PORT` | `8788` | The port of the Vite dev UI (only for `bun run dev`). |
 | `ORCA_STATE_DIR` | `~/.orca` | The operational files of each host: run leases, the run ledger, the working directory of the orchestrator, handoff files, the attachment cache, env backups, `autodeploy.log`. Orca keeps this directory out of all worktrees. |
@@ -299,7 +302,7 @@ auto-deploy to fail.
 | `mergePolicy` | never merge, never open PRs | `{ whenGreen: "never"\|"small"\|"any", denyPaths: [globs], autoPr: bool }`. See [WORKFLOW.md](WORKFLOW.md#from-finished-run-to-merged-pr). |
 | `modelEscalation` | `suggest` | `"apply"` pins a worker to the next higher model after two failures in sequence. |
 | `previewServices` | `[]` | `[{ name, command, open?, onStop? }]`. See [§9](#9-previews-and-the-template-database). |
-| `previewSecureContext` | `false` | Set it when the app needs a secure context (for example `crypto.randomUUID`). Then, for a laptop page on localhost, Orca forwards the preview of the box to `http://localhost:<port>`. |
+| `previewSecureContext` | `false` | Set it when the app needs a secure context (for example `crypto.randomUUID`). Then the box serves the preview over HTTPS on its ts.net name, and a laptop page on localhost gets a forward to `http://localhost:<port>`. See section 9. |
 | `previewLabel` | `preview` | The PR label that the "Add preview" action adds. |
 | `prLabels` | none | The labels in the Promote menu: `[{ name, default? }]`. |
 | `slackChannel` | none | The channel that the notify/bump message names. |
@@ -371,9 +374,33 @@ Turn on previews for each repo. Set `"features": { "previews": true }` and add o
 - `{port}`: the assigned port of this service. `{svc:<name>}`: the port of a different service.
 - `{bind}`: `ORCA_PREVIEW_BIND`, the address to listen on. `{host}`: `ORCA_PREVIEW_HOST`. Use it in
   all URLs that go to the browser.
+- `{url:<name>}`: the URL that the browser uses for a service. For an HTTPS preview, it is
+  `https://<ts.net name>:<https port>`. Else it is `http://{host}:{svc:<name>}`.
+- `{hosts}`: all host names that the browser can use, separated by commas. Use it for the allowed
+  hosts of a dev server.
 - `{db}`: a database name for each worktree (`orca_…`). `onStop` runs at teardown. Usually it
   removes this database.
 - `open: true` sets the service that the **Open** button opens.
+- `httpsNextPort: true` also serves port + 1 over HTTPS, at the HTTPS port + 1. Use it for a socket
+  that the app finds at the port + 1 of a service URL.
+
+**Secure-context previews.** Some apps need a secure context (branch-demo uses
+`crypto.randomUUID`). A plain-http tailnet URL is not a secure context. HTTP on the ts.net name does
+not work, because `*.ts.net` is HSTS-preloaded. Set `previewSecureContext: true` on the repo. Then
+each viewer gets a secure URL:
+
+- **The box UI and a phone.** The box runs `tailscale serve --bg --https=<H> http://127.0.0.1:<port>`
+  for each service. Orca selects `<H>` from `portRange`, because the tailnet ACL admits only that
+  range. The preview link is `https://<ts.net name>:<H>`. Stop removes the entries
+  (`tailscale serve --https=<H> off`). Orca does not change other serve entries.
+- **The laptop on localhost.** Orca forwards the opened service to `http://localhost:<port>`, as
+  before (`server/forward.ts`). `localhost` is a secure context.
+- **The commands.** Use `{url:<name>}` for every URL that the frontend calls, and `{hosts}` for its
+  allowed hosts. A command that still uses `http://{host}:{svc:<name>}` keeps plain http.
+
+If `tailscale serve` fails, Orca removes the entries that it added and uses plain http. The box
+needs `ORCA_PREVIEW_BIND` beyond loopback (the default box `.env` has `0.0.0.0`). The `orca` user
+needs passwordless `sudo` for `tailscale`.
 
 **Vite apps must permit the tailnet Host header.** If they do not, they answer 403 "Blocked
 request". Vite 5 has no environment variable for this. The `vite.config.ts` of the app must read a
@@ -406,6 +433,92 @@ To make a configured preview the new template, run `orca preview --repo <r> --br
 limits. This browser needs a `chrome-headless-shell` on the box. Use the Playwright browser under
 `~/.cache/ms-playwright`, or set one with `ORCA_SHOT_BROWSER`. cloud-init does not install a
 browser.
+
+<a id="heavy-commands"></a>
+**Heavy commands** go through a box-wide queue (`server/heavy.ts`). Agents on one box ran
+Playwright, Jest, `eslint` and builds at the same time. On a 4 vCPU, 15.7 GB box this caused OOM
+kills in `orca-agents.slice`. `orca-agents.slice` has no CPU quota, so this queue is the only CPU
+control. It must see every heavy task.
+
+- A worker runs `orca-run [--kind test|lint|build|e2e|migrate|serve] [--timeout <minutes>] --
+  <command...>`. The kind is `test` when you do not give one.
+- These are the kinds:
+  - `test`: jest, vitest, `bun test`, mocha, pytest.
+  - `lint`: eslint, prettier, tsc, biome, stylelint, knip.
+  - `build`: a frontend or backend build.
+  - `e2e`: Playwright, Cypress, an e2e test script.
+  - `migrate`: a database migration or seed.
+  - `serve`: a local backend or frontend that a test needs.
+- `orca-run` asks the bridge for a slot (`POST /api/heavy`). While it waits, it prints
+  `queued: position N in line for a <kind> slot` to stderr.
+- When it gets the slot, it runs the command and streams its output. It exits with the exit code
+  of the command. The command gets `ORCA_RUN_CPUS`, the CPU cost of its slot.
+- The slot always comes back. These events release it:
+  - The command exits.
+  - `orca-run` gets a signal. It stops the command first.
+  - `orca-run` is killed with `kill -9`. The bridge sees the dropped connection.
+  - The agent run that asked ends (`ORCA_RUN_ID`). The bridge also stops the command.
+  - The `orca-run` process is gone (a sweep each 15 s).
+  - The command runs past the max run time of its kind. The bridge stops the command.
+- On a box with a user bus, each command runs in its own scope in `orca-agents.slice`, with the
+  memory limit of its kind and no swap. Thus one test run cannot take the whole slice.
+- With no bridge to answer, `orca-run` prints a warning and runs the command at once.
+- The Overview's machine card lists the running and queued commands, with their workstreams, the
+  CPU in use against the budget and the memory in use against the memory budget. `GET /api/heavy`
+  gives the same data.
+
+Each kind has a CPU cost. The queue grants a slot only when the sum of the running costs stays in
+`cpuBudget`. The queue is first in, first out for the budget and the total. A job does not wait
+for a job of another kind whose own limit is full. A job that costs more than the budget runs when
+nothing else runs.
+
+Each kind also has a memory limit (`memoryMaxGb`). On a box with a user bus, the queue grants a
+slot only when the sum of the running limits stays in the memory budget. The memory budget is the
+`MemoryMax` of `orca-agents.slice` minus 3 GB. The same first-in, first-out rule applies. A limit
+larger than the budget runs when nothing else runs.
+
+Do not set a memory limit below the working set of the command. At its limit, the kernel drops the
+file pages of the command. The command then reads `node_modules` from disk again and again. On EBS,
+this makes the whole box slow.
+
+The limits are in the app config, `heavyQueue`. Each field is optional. These are the defaults for
+a 4 vCPU box. They keep about 3 CPUs busy at most:
+
+```json
+{ "heavyQueue": {
+  "limits": { "e2e": 1, "test": 2, "lint": 2, "build": 1, "migrate": 1, "serve": 2, "total": 4 },
+  "cpu": { "e2e": 1.5, "test": 1, "lint": 1, "build": 1.5, "migrate": 0.5, "serve": 0.5 },
+  "cpuBudget": 3,
+  "maxWaitMinutes": 20,
+  "maxRunMinutes": { "e2e": 30, "test": 30, "lint": 30, "build": 30, "migrate": 30, "serve": 60 },
+  "memoryMaxGb": { "e2e": 6, "test": 4, "lint": 6, "build": 6, "migrate": 2, "serve": 2 } } }
+```
+
+`maxRunMinutes` and `memoryMaxGb` can also be one number for all kinds. On a larger box, increase `cpuBudget` and
+the limits.
+
+`bin/worker` is first on a worker's `PATH`. Its shims (`bin/worker/.heavy-shim`) send heavy calls
+through `orca-run`:
+
+- Tools: `playwright test`, `cypress run`, `jest`, `vitest`, `mocha`, `pytest`, `eslint`,
+  `prettier`, `tsc`, the build tools, `vite` and `next dev` servers, and migration CLIs
+  (`mikro-orm`, `prisma`, `knex`, `typeorm`, `sequelize`, `drizzle-kit`, `alembic`). Also through
+  `npx`, `bunx`, `npm exec` and `pnpm dlx`.
+- Package scripts: `npm test`, `npm start`, `npm run <script>`, `pnpm <script>`, `yarn <script>`,
+  `bun run <script>` and `bun test`. The script name gives the kind: `test`, `lint`, `type-check`,
+  `format`, `build`, `dev`, `start`, `setup-db`, `migrate`, `e2e` and similar names.
+- Installs: `npm ci` and `npm install` queue as `build`.
+- Test scripts: `bash <file>` when the file name looks heavy, for example
+  `bash scripts/run-e2e-tests.sh`.
+- Workers: jest and `playwright test` get one worker when the call sets none. Set
+  `ORCA_RUN_WORKERS` to change it. Jest otherwise starts one worker for each CPU but one.
+- Not heavy: `--version`, `--help`, other installs, `bash -c …`, `bun <file>` and all other commands.
+- A call inside a granted command (`ORCA_RUN_SLOT` is set) does not queue again.
+- The shims do not see `python -m pytest`, `node ./node_modules/…` or a script started by its own
+  path. Wrap these in `orca-run` yourself.
+
+The escape hatch: set `ORCA_RUN_BYPASS=1` to run a command at once, with no slot. Use it only for a
+command that is not heavy and that a shim queued by mistake.
 
 ---
 
@@ -445,6 +558,8 @@ The laptop runs its own bridge with the database of the box. It shows the same b
 
 5. Start it. Use `bun run dev` (bridge on `:8787`, UI on `http://localhost:8788`). Or use
    `bun run build`, then `bun run server`.
+   To make the laptop update itself from `main`, see
+   [Local machine](#local-machine-auto-deploy-on-macos).
 
 Notes:
 
@@ -452,7 +567,8 @@ Notes:
   worktree does not migrate the shared database.
 - On macOS, agent runs have no memory ceiling (macOS has no `systemd-run`).
 - For a repo with `previewSecureContext: true`, Orca forwards the preview of the box to `localhost`
-  for a page from localhost. Other repos open the tailnet URL of the box.
+  for a page from localhost. Other viewers open the HTTPS ts.net URL of the box (section 9). Other
+  repos open the tailnet URL of the box.
 - When the laptop sleeps, it is "down" for all work on it. Requests that Orca forwards to it fail
   until it wakes.
 
@@ -553,6 +669,84 @@ stops an orchestrator wake.
 ```sh
 cd /opt/orca && git pull --ff-only && bun run build && sudo systemctl restart orca
 ```
+
+### Local machine: auto-deploy on macOS
+
+A Mac can update its own Orca like the box does. `deploy/install-local-autodeploy.sh` installs two
+LaunchAgents for your user:
+
+- `dev.orca.bridge` runs the built bridge (`bun run server/index.ts`) from the checkout. It starts
+  at login. launchd starts it again when it stops. The UI is the build in `web/dist`, on the bridge
+  port (`http://localhost:8787`).
+- `dev.orca.autodeploy` runs `deploy/autodeploy.sh` each 60 s with `ORCA_AUTODEPLOY_MODE=launchd`.
+  This is the same script as on the box.
+
+Each tick of the local auto-deploy does these steps:
+
+1. If the checkout is not on `main`, it logs `skipped: … not main` and stops.
+2. If a tracked file has uncommitted changes, it logs `skipped: … has uncommitted changes` and
+   stops. Untracked files do not stop it.
+3. It runs `git fetch origin main`. If `HEAD` is already the same, it logs `up to date at <sha>`.
+4. If the orchestrator is in a wake, it logs `deferred: busy` and tries again at the next tick.
+5. It runs `git pull --ff-only`.
+6. It runs `bun install --frozen-lockfile` only if `package.json` or `bun.lock` changed.
+7. It runs `bun run build`. If the install or the build fails, the bridge does not restart.
+8. It runs `launchctl kickstart -k gui/<uid>/dev.orca.bridge` and logs `deployed <sha>`.
+
+The local auto-deploy does not use `bun run dev`. The dev launcher restarts the bridge on each file
+change. Thus a pull restarts it before the install and the build pass.
+
+Install it from the deploy clone (see below):
+
+1. Stop `bun run dev` if it runs. The bridge agent uses the same port.
+2. Open a shell where `bun`, `gh` and `claude` are on your `PATH`. The agents keep this `PATH`.
+3. Run the installer. It runs `bun install` and `bun run build` once, then loads both agents.
+
+```sh
+cd <orca-checkout>
+deploy/install-local-autodeploy.sh
+```
+
+Do these checks:
+
+```sh
+launchctl print gui/$(id -u)/dev.orca.bridge | head -n 5
+tail -n 5 ~/.orca/autodeploy.log     # one line per tick
+tail -n 20 ~/.orca/bridge.log        # the bridge output
+```
+
+Pause and resume the local auto-deploy:
+
+```sh
+launchctl bootout gui/$(id -u)/dev.orca.autodeploy                                   # pause
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.orca.autodeploy.plist    # resume
+```
+
+Uninstall both agents. The logs in `~/.orca` stay.
+
+```sh
+deploy/install-local-autodeploy.sh --uninstall
+```
+
+Run the installer again after you move `bun` or change your `PATH`. The bridge port comes from
+`ORCA_API_PORT` in `.env` (default 8787).
+
+**Use a separate deploy clone.** Run the auto-deploy from a clone that you do not work in, for
+example `~/orca-deploy`. Do your own work in another clone. Then a branch or an uncommitted edit
+never stops the update. The box does the same: its deploy clone is only for the deploy.
+
+1. Clone Orca into the deploy clone.
+2. Copy your `.env` into the deploy clone.
+3. Run the installer from the deploy clone.
+
+```sh
+git clone https://github.com/finnformica/orca.git ~/orca-deploy
+cp <your-orca-clone>/.env ~/orca-deploy/.env
+cd ~/orca-deploy && deploy/install-local-autodeploy.sh
+```
+
+If the deploy clone goes off `main` or gets an uncommitted edit, the auto-deploy logs `skipped:`.
+It tries again each minute until the clone is clean `main` again.
 
 **Migrations** run when the bridge starts. Orca only adds steps and never changes them. New steps
 have names (`YYYYMMDD-slug`) and are idempotent. Only a merge to `main` reserves a step name. Thus,

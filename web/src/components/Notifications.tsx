@@ -18,7 +18,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import {
   AlertTriangle, ArrowUpRight, Bell, BellOff, Bot, Check, CheckCheck, CircleAlert, CircleX, Copy, ExternalLink, FileText, GitPullRequest, GitPullRequestArrow, GitMerge, Hammer, MessageCircleQuestion,
-  MessagesSquare, MonitorCheck, MonitorX, OctagonPause, Reply, RotateCcw, ScrollText, Send, ShieldX, Square, Undo2, UserPlus, Wrench, X,
+  MessagesSquare, MonitorCheck, MonitorX, OctagonPause, Reply, RotateCcw, ScrollText, Send, Server, ShieldX, Square, Undo2, UserPlus, Wrench, X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { navigate } from "@/lib/route";
@@ -38,7 +38,7 @@ import { ActionButton } from "@/components/ActionButton";
 import { detailPath } from "@/views/Agents";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Segmented } from "@/components/console";
+import { CountBadge, Segmented } from "@/components/console";
 import { Kbd } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { MarqueeText } from "@/components/ui/marquee-text";
@@ -50,7 +50,7 @@ const ICON: Record<NotificationKind, typeof Bell> = {
   needs_input: MessageCircleQuestion, finished: Check, failed: CircleX, stopped: OctagonPause, check_failed: ShieldX,
   pr_ci_failed: AlertTriangle, pr_conflicts: GitPullRequestArrow, preview_ready: MonitorCheck, preview_failed: MonitorX, action_failed: CircleAlert,
   merged: GitMerge, merge_refused: GitPullRequest, auto_address: Wrench, upkeep_gave_up: CircleAlert, draft_sent: Send,
-  integration_failed: CircleX, external_message: MessagesSquare, pairing_requested: UserPlus,
+  integration_failed: CircleX, external_message: MessagesSquare, pairing_requested: UserPlus, box_alert: Server,
 };
 const TONE_TEXT = { ready: "text-geist-green", error: "text-geist-red", warning: "text-geist-warning-fg", queued: "text-geist-blue", neutral: "text-muted-foreground" } as const;
 
@@ -450,11 +450,7 @@ export function NotificationBell({ collapsed = false }: { collapsed?: boolean })
           <button type="button" data-slot="notifications-bell" aria-label={`Notifications${unread ? ` (${unread} unread)` : ""}`}
             className={footIcon}>
             {dnd ? <BellOff className="size-4" /> : <Bell className="size-4" />}
-            {unread > 0 && (
-              <span data-slot="notifications-unread" className="bg-foreground text-background absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] leading-none font-semibold tabular-nums">
-                {unread > 99 ? "99+" : unread}
-              </span>
-            )}
+            <CountBadge count={unread} placement="compact" slot="notifications-unread" />
           </button>
         </PopoverTrigger>
       </Tip>

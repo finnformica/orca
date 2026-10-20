@@ -1,0 +1,170 @@
+#!/bin/sh
+# The shims for heavy work on a worker's PATH (bin/worker is first on it, server/env.ts agentEnv).
+# Every name in bin/worker that links here runs this file. A heavy call goes through `orca-run` (the
+# box-wide queue, server/heavy.ts). Anything else runs the real tool at once. There is no CPU quota on
+# the agents, so this queue is the only CPU control: it must see every heavy task.
+#   - Tools: playwright test, cypress run (e2e); jest, vitest, mocha, pytest (test); eslint,
+#     prettier, tsc, biome, stylelint, knip (lint); vite / next / nest build, webpack, rollup,
+#     esbuild, tsup (build); vite, vite preview, next dev / start, nest start (serve); mikro-orm,
+#     prisma, knex, typeorm, sequelize, drizzle-kit, alembic migrations (migrate). Also through npx,
+#     bunx, `bun x`, `npm exec` and `pnpm dlx`.
+#   - Package scripts: `npm test`, `npm start`, `npm run <s>`, `pnpm <s>`, `yarn <s>`, `bun run <s>`
+#     and `bun test`, by the script's name (script_kind). npm puts node_modules/.bin first on the
+#     PATH, so a tool that a script starts never reaches the shims above; its script name does.
+#   - Test scripts: `bash <file>`, by the file's name (`bash scripts/run-e2e-tests.sh`).
+#   - `npm ci` and `npm install` (build): they unpack a whole node_modules and run its install
+#     scripts.
+#   - Not heavy: --version and --help of a tool, other installs, and every other command.
+#   - Jest and `playwright test` get one worker (ORCA_RUN_WORKERS) when the call sets none. Jest
+#     otherwise starts one worker per CPU but one.
+#   - Nested calls (ORCA_RUN_SLOT is set under orca-run) never queue again.
+#   - The escape hatch: ORCA_RUN_BYPASS=1 runs the real tool at once.
+name=${0##*/}
+self_dir=$(cd "${0%/*}" && pwd -P)
+
+# The real tool: the first one on PATH that is not in a shim directory. A shim directory is any
+# directory with a `.heavy-shim` in it: this one, /opt/orca/bin/worker, and a worktree's copy.
+# Skipping only this directory let two copies on PATH exec each other forever (2026-10-19: six
+# such loops, 25% CPU each). A test that is a shell builtin needs no subshell, so the walk stays
+# cheap for bash and bun, which agents start all the time.
+real=""
+old_ifs=$IFS
+IFS=:
+for d in $PATH; do
+  [ -n "$d" ] || continue
+  [ -e "$d/.heavy-shim" ] && continue
+  if [ -x "$d/$name" ] && [ ! -d "$d/$name" ]; then real="$d/$name"; break; fi
+done
+IFS=$old_ifs
+if [ -z "$real" ]; then echo "$name: command not found (only Orca shims on PATH)" >&2; exit 127; fi
+
+if [ -n "$ORCA_RUN_SLOT" ] || [ "$ORCA_RUN_BYPASS" = "1" ]; then exec "$real" "$@"; fi
+
+KIND=""
+CAP=""
+workers=${ORCA_RUN_WORKERS:-1}
+
+# has_any <flags...> -- <args...>: is one of the flags (or `flag=…`, or a short flag with its value
+# joined) in the args?
+has_any() {
+  flags=""
+  while [ $# -gt 0 ] && [ "$1" != "--" ]; do flags="$flags $1"; shift; done
+  shift
+  for a in "$@"; do
+    for f in $flags; do
+      case "$a" in "$f"|"$f"=*) return 0 ;; esac
+      case "$f" in -?) case "$a" in "$f"[0-9]*) return 0 ;; esac ;; esac
+    done
+  done
+  return 1
+}
+
+# script_kind <name>: the kind of a package script or a script file, by its name.
+script_kind() {
+  case "$1" in
+    *e2e*|*playwright*|*cypress*) KIND=e2e ;;
+    *migrat*|*setup-db*|*setup:db*|db:*|*:db:*|*seed*) KIND=migrate ;;
+    dev|dev:*|dev-*|*:dev|*-dev|start|start:*|start-*|*:start|serve|serve:*|serve-*|preview|preview:*) KIND=serve ;;
+    *test*|*spec*|*vitest*|*jest*|*bench*) KIND=test ;;
+    *lint*|*format*|*prettier*|*type-check*|*typecheck*|*tsc*|*knip*|check|check:*|*:check) KIND=lint ;;
+    *build*|*compile*|*bundle*) KIND=build ;;
+  esac
+}
+
+# tool_kind <tool> <args...>: the kind of a direct call of a tool, and the worker cap it needs.
+tool_kind() {
+  tool=$1
+  shift
+  for a in "$@"; do
+    case "$a" in --version|-v|-V|--help|-h) return 0 ;; esac
+  done
+  case "$tool" in
+    playwright)
+      [ "$1" = "test" ] || return 0
+      KIND=e2e
+      has_any --workers -j -- "$@" || CAP="--workers=$workers" ;;
+    cypress) [ "$1" = "run" ] && KIND=e2e ;;
+    jest)
+      KIND=test
+      has_any --maxWorkers -w --runInBand -i --watch --watchAll -- "$@" || CAP="--maxWorkers=$workers" ;;
+    vitest|mocha|pytest) KIND=test ;;
+    eslint|prettier|tsc|tsgo|biome|stylelint|knip|oxlint) KIND=lint ;;
+    webpack|rollup|esbuild|tsup) KIND=build ;;
+    vite) case "$1" in build) KIND=build ;; optimize) ;; *) KIND=serve ;; esac ;;
+    next|nest|nuxt|astro) case "$1" in build) KIND=build ;; dev|start|preview) KIND=serve ;; esac ;;
+    mikro-orm|prisma|knex|typeorm|sequelize|drizzle-kit|alembic)
+      for a in "$@"; do
+        case "$a" in *migrat*|db:*|push|upgrade|downgrade|seed*) KIND=migrate; return 0 ;; esac
+      done ;;
+  esac
+}
+
+# npx_kind <args...>: the first word that is not a flag is the tool (`-p <pkg>` and `--package
+# <pkg>` take a value); a version suffix (`eslint@9`) is dropped.
+npx_kind() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -p|--package) shift ;;
+      -*) ;;
+      *) tool=${1##*/}; tool=${tool%@*}; shift; tool_kind "$tool" "$@"; return 0 ;;
+    esac
+    shift
+  done
+}
+
+# pm_kind <npm|pnpm|yarn|bun> <args...>: a package manager's call, by its subcommand and script.
+pm_kind() {
+  pm=$1
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --prefix|-C|--dir|--cwd|--filter|-F|--workspace) shift ;;
+      -*) ;;
+      *) break ;;
+    esac
+    shift
+  done
+  [ $# -gt 0 ] || return 0
+  sub=$1
+  shift
+  case "$sub" in
+    test|t|tst) KIND=test ;;
+    start) KIND=serve ;;
+    exec|x|dlx) npx_kind "$@" ;;
+    run|run-script)
+      while [ $# -gt 0 ]; do case "$1" in -w|--workspace|--filter|-F) shift ;; -*) ;; *) break ;; esac; shift; done
+      [ $# -gt 0 ] || return 0
+      # `bun run <file>` runs a file, not a script: no kind by its name.
+      if [ "$pm" = "bun" ]; then case "$1" in */*|*.*) return 0 ;; esac; fi
+      script_kind "$1" ;;
+    *)
+      if [ "$pm" = "npm" ]; then
+        case "$sub" in ci|clean-install|install|i|in|isntall) KIND=build ;; esac
+        return 0
+      fi
+      if [ "$pm" = "bun" ]; then
+        case "$sub" in build) KIND=build; return 0 ;; */*|*.*) return 0 ;; esac
+      fi
+      case "$sub" in install|i|add|remove|rm|update|upgrade|ci|init|create|link|unlink|outdated|why|info|list|ls|pm|publish|pack) return 0 ;; esac
+      script_kind "$sub" ;;
+  esac
+}
+
+# bash_kind <args...>: `bash <file>` by the file's name; `bash -c …` and the rest are not heavy.
+bash_kind() {
+  case "$1" in -*|"") return 0 ;; esac
+  [ -f "$1" ] || return 0
+  b=${1##*/}
+  script_kind "${b%.*}"
+}
+
+case "$name" in
+  npx|bunx) npx_kind "$@" ;;
+  npm|pnpm|yarn|bun) pm_kind "$name" "$@" ;;
+  bash) bash_kind "$@" ;;
+  *) tool_kind "$name" "$@" ;;
+esac
+
+if [ -z "$KIND" ]; then exec "$real" "$@"; fi
+if [ -n "$CAP" ]; then set -- "$@" "$CAP"; fi
+exec "$self_dir/orca-run" --kind "$KIND" -- "$real" "$@"

@@ -234,6 +234,7 @@ Levels, from low to high:
 | `notify` | Nothing inbound. Orca drops their messages. | Post to the link. |
 | `ask` | Ask questions. Get answers about status, PRs, board. | Read only. No spawn, send, merge or push. |
 | `work` | Ask, and start or steer work on the link's `repos`. | Spawn and follow up on those repos only. |
+| `admin` | A trusted person. Added later, see `docs/integrations/ADAPTERS.md` section 7. | Every verb on those repos, plus move, sweep and repo add. Never the owner's verbs. |
 
 Effective grant = min(`channel_link.level`, `principal.max_level`), repos = `channel_link.repos`. Unknown senders get a pairing code (as in the Discord plugin). You approve them in the UI.
 

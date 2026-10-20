@@ -105,6 +105,33 @@ describe("workstream refs", () => {
     expect(filterMentions([], wsRefs, "auth").map(label)).toEqual(["auth-flow"]);
     expect(filterMentions(refs, wsRefs, "", 4)).toHaveLength(4);
   });
+
+  // A PR whose title doesn't name its workstream (the bug: "More item check rules" / branch-demo
+  // #6361 "feat: add compare, date, pattern checks" didn't show for a query on the workstream title).
+  const titleRefs: PrRef[] = [...refs, { repo: "web", number: 6361, title: "feat: add compare, date, pattern checks", state: "open" }];
+  const titleWsRefs: WorkstreamRef[] = [...wsRefs, { repo: "web", branch: "orca/item-check-rules-9f3a21", title: "More item check rules", prNumber: 6361 }];
+  const label = (m: ReturnType<typeof filterMentions>[number]) => (m.kind === "pr" ? `#${m.ref.number}` : m.ref.branch);
+
+  test("filterMentions: a PR pick also matches its workstream's title", () => {
+    expect(filterMentions(titleRefs, titleWsRefs, "more item").map(label)).toEqual(["#6361"]);
+    expect(filterMentions(titleRefs, titleWsRefs, "check rules").map(label)).toEqual(["#6361"]);
+  });
+
+  test("filterMentions: a PR pick also matches its workstream's branch", () => {
+    expect(filterMentions(titleRefs, titleWsRefs, "item-check").map(label)).toEqual(["#6361"]);
+    expect(filterMentions(titleRefs, titleWsRefs, "9f3a21").map(label)).toEqual(["#6361"]);
+  });
+
+  test("filterMentions: the workstream-title match is still one row, not a duplicate workstream row", () => {
+    const hits = filterMentions(titleRefs, titleWsRefs, "more item");
+    expect(hits).toHaveLength(1);
+    expect(hits[0]).toEqual({ kind: "pr", ref: titleRefs[5]! });
+  });
+
+  test("filterMentions: current ordering is kept (open PRs, then no-PR workstreams, then merged)", () => {
+    expect(filterMentions(titleRefs, titleWsRefs, "").map(label))
+      .toEqual(["#6361", "#6150", "#6101", "#42", "orca/local-search-1a2b", "rate-limits", "#6095", "#6090"]);
+  });
 });
 
 // ---- the real composer: keyboard navigation, click, Escape ----

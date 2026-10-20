@@ -1,5 +1,5 @@
-// E2E for the copy shortcuts in Actions → Agent: Copy worktree copies the branch path, while Copy
-// CLI copies the active provider's resumable command. Copy CLI also remains in the card's top-right
+// E2E for the copy shortcuts in Actions → Copy: Worktree path copies the branch path, while CLI
+// command copies the active provider's resumable command. Copy CLI also remains in the card's top-right
 // copy menu (see cardDetails.test.tsx). Driven against the preloaded fake api
 // (tests/apiFake.ts) and rendered into a real DOM. See WorkstreamActions.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
@@ -49,26 +49,26 @@ afterEach(async () => {
 const menuitem = (text: string) => [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === text);
 
 describe("Copy worktree action", () => {
-  test("Actions → Agent → Copy worktree copies the worktree path", async () => {
+  test("Actions → Copy → Worktree path copies the worktree path", async () => {
     mount();
     await pointerdown([...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("Actions"))!);
-    // Open the Agent submenu, then click Copy worktree.
-    const agentTrigger = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Agent")!;
+    // Open the Copy submenu, then click Worktree path.
+    const agentTrigger = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Copy")!;
     await pointerdown(agentTrigger);
     await click(agentTrigger);
-    const item = menuitem("Copy worktree")!;
+    const item = menuitem("Worktree path")!;
     expect(item).not.toBeNull();
     await click(item);
     expect(copied).toBe("/wt/feat");
   });
 
-  test("Actions → Agent → Copy CLI copies the exact Codex resume command", async () => {
+  test("Actions → Copy → CLI command copies the exact Codex resume command", async () => {
     mount({ ...row, agentProvider: "codex", sessionId: "codex-123" });
     await pointerdown([...container!.querySelectorAll("button")].find((b) => b.textContent?.includes("Actions"))!);
-    const agentTrigger = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Agent")!;
+    const agentTrigger = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Copy")!;
     await pointerdown(agentTrigger);
     await click(agentTrigger);
-    const item = menuitem("Copy CLI")!;
+    const item = menuitem("CLI command")!;
     expect(item).not.toBeNull();
     await click(item);
     expect(copied).toBe('cd "/wt/feat" && codex resume --include-non-interactive --dangerously-bypass-approvals-and-sandbox codex-123');

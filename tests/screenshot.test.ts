@@ -173,6 +173,8 @@ describe("SHOT3 requests and storage", () => {
     expect(() => parseShotRequest({})).toThrow(/url required/);
     expect(() => parseShotRequest({ url: "http://x", viewport: "big" })).toThrow(/WIDTHxHEIGHT/);
     expect(() => parseShotRequest({ url: "http://x", steps: [{ drag: "a" }] })).toThrow(/unknown step/);
+    expect(() => parseShotRequest({ url: "http://x", steps: [{ type: 3 }] })).toThrow(/type step/);
+    expect(parseShotRequest({ url: "http://x", steps: [{ type: "hi" }] }).steps).toEqual([{ type: "hi" }]);
     const r = parseShotRequest({ url: "http://x:1/a", viewport: "390x844", dark: true, steps: [{ click: "#go" }, { hover: "#menu" }], label: "after dark" });
     expect(r).toMatchObject({ viewport: { width: 390, height: 844 }, dark: true, steps: [{ click: "#go" }, { hover: "#menu" }], label: "after-dark" });
   });
@@ -230,11 +232,11 @@ describe("SHOT4 workers", () => {
     let got: any;
     const server = Bun.serve({ port: 0, hostname: "127.0.0.1", async fetch(r) { got = await r.json(); return native.Response.json({ path: "/tmp/shot-h.png" }); } });
     try {
-      const proc = Bun.spawn([join(WORKER_BIN, "orca-shot"), "http://localhost:5173/agents", "--click", "#row", "--hover", "#menu"], {
+      const proc = Bun.spawn([join(WORKER_BIN, "orca-shot"), "http://localhost:5173/agents", "--click", "#row", "--hover", "#menu", "--click", "textarea", "--type", "hello world", "--press", "Enter"], {
         env: { ...process.env, ORCA_URL: `http://127.0.0.1:${server.port}` }, stdout: "pipe", stderr: "pipe",
       });
       expect(await proc.exited).toBe(0);
-      expect(got.steps).toEqual([{ click: "#row" }, { hover: "#menu" }]);
+      expect(got.steps).toEqual([{ click: "#row" }, { hover: "#menu" }, { click: "textarea" }, { type: "hello world" }, { press: "Enter" }]);
     } finally {
       server.stop(true);
     }
@@ -401,6 +403,65 @@ describe("SHOT5 real clicks open Radix-style pointerdown-only menus", () => {
         url: `http://127.0.0.1:${server.port}/`,
         steps: [{ click: "#trigger" }, { press: "F13NotAKey!" }],
       })).rejects.toThrow(/unknown --press key/);
+    } finally {
+      server.stop(true);
+    }
+  }, 20_000);
+});
+
+// A plain-http tailnet name is not a secure context, so `crypto.randomUUID` is missing and
+// branch-demo's preview renders blank (2026-10-19: `TypeError: crypto.randomUUID is not a function`
+// in ai-socket-context.tsx). The capture browser treats the target's origin as secure, and
+// `--console` returns the page's errors so the next blank page explains itself.
+describe("SHOT6 secure context and --console", () => {
+  test("only a plain-http, non-loopback origin is treated as secure", async () => {
+    const { insecureOrigin } = await import("../server/screenshot");
+    expect(insecureOrigin("http://orca-flow-box.example.ts.net:39753/demo")).toBe("http://orca-flow-box.example.ts.net:39753");
+    expect(insecureOrigin("http://100.64.0.1:5173/")).toBe("http://100.64.0.1:5173");
+    expect(insecureOrigin("http://localhost:5173/")).toBeUndefined();
+    expect(insecureOrigin("http://127.0.0.1:5173/")).toBeUndefined();
+    expect(insecureOrigin("http://[::1]:5173/")).toBeUndefined();
+    expect(insecureOrigin("https://example.com/")).toBeUndefined();
+    const argv = browserCommand("/fake/chrome", "/tmp/p", { scoped: false, unit: "u", secureOrigin: "http://box:1" });
+    expect(argv).toContain("--unsafely-treat-insecure-origin-as-secure=http://box:1");
+    expect(browserCommand("/fake/chrome", "/tmp/p", { scoped: false, unit: "u" }).some((a) => a.startsWith("--unsafely"))).toBe(false);
+    expect(parseShotRequest({ url: "http://x", console: true }).console).toBe(true);
+  });
+
+  test("console lines: exceptions, console errors, failed requests and HTTP errors only", async () => {
+    const { consoleLine } = await import("../server/screenshot");
+    const urls = new Map<string, string>();
+    expect(consoleLine("Network.requestWillBeSent", { requestId: "1", request: { url: "http://b/api" } }, urls)).toBeUndefined();
+    expect(consoleLine("Network.loadingFailed", { requestId: "1", errorText: "net::ERR_CONNECTION_REFUSED" }, urls)).toBe("request failed: net::ERR_CONNECTION_REFUSED http://b/api");
+    expect(consoleLine("Runtime.exceptionThrown", { exceptionDetails: { text: "x", exception: { description: "TypeError: boom" } } }, urls)).toBe("exception: TypeError: boom");
+    expect(consoleLine("Runtime.consoleAPICalled", { type: "log", args: [{ value: "hi" }] }, urls)).toBeUndefined();
+    expect(consoleLine("Runtime.consoleAPICalled", { type: "error", args: [{ value: "bad" }] }, urls)).toBe("console.error: bad");
+    expect(consoleLine("Network.responseReceived", { response: { status: 404, url: "http://b/x" } }, urls)).toBe("HTTP 404 http://b/x");
+    expect(consoleLine("Network.responseReceived", { response: { status: 200, url: "http://b/x" } }, urls)).toBeUndefined();
+  });
+
+  test("a real browser sees a non-loopback http page as secure and reports its errors", async () => {
+    const binary = findBrowser(process.env, { full: true });
+    const { networkInterfaces } = await import("os");
+    const ip = Object.values(networkInterfaces()).flat().find((i) => i && i.family === "IPv4" && !i.internal)?.address;
+    if (!binary || !ip) { console.warn("SHOT6: no browser or no non-loopback address — skipping"); return; }
+    const page = `<!doctype html><body><script>
+      console.error("secure=" + isSecureContext + " uuid=" + typeof crypto.randomUUID);
+      throw new Error("boom from the page");
+    </script></body>`;
+    const server = Bun.serve({ port: 0, hostname: "0.0.0.0", fetch: () => new native.Response(page, { headers: { "content-type": "text/html" } }) });
+    try {
+      // No `browser` override: the shooter picks the full Chromium itself for a non-loopback URL.
+      const s = createShooter({ store: store(), scoped: () => false, timeoutMs: 8_000 });
+      let shot;
+      try {
+        shot = await s.shoot({ url: `http://${ip}:${server.port}/`, viewport: { width: 400, height: 300 }, console: true });
+      } catch (e) {
+        console.warn(`SHOT6: browser did not run here (${(e as Error).message}) — skipping`);
+        return;
+      }
+      expect(shot.console).toContain("console.error: secure=true uuid=function");
+      expect(shot.console!.some((l) => l.startsWith("exception: Error: boom from the page"))).toBe(true);
     } finally {
       server.stop(true);
     }

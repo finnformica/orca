@@ -48,7 +48,7 @@ describe("overview derivations (pure)", () => {
     const s = overviewStats(rows, NOW);
     expect(s.running).toBe(1);
     expect(s.attention).toBe(3);
-    expect(s.prs).toEqual({ draft: 1, inReview: 2, mergeable: 1, total: 4 });
+    expect(s.prs).toEqual({ draft: 1, inReview: 2, verified: 0, mergeable: 1, total: 4 });
     expect(s.local).toBe(2);
     expect(s.mergedToday).toBe(1);
     expect(s.turnsByHour).toHaveLength(24);

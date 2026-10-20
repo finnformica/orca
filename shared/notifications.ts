@@ -6,6 +6,7 @@ import { parseAgentOutcome, type AgentOutcome, type StopReason, type TurnCheck }
 export const NOTIFICATION_KINDS = [
   "needs_input", "finished", "failed", "stopped", "check_failed", "pr_ci_failed", "pr_conflicts", "preview_ready", "preview_failed", "action_failed",
   "merged", "merge_refused", "auto_address", "upkeep_gave_up", "draft_sent", "integration_failed", "external_message", "pairing_requested",
+  "box_alert",
 ] as const;
 export type NotificationKind = typeof NOTIFICATION_KINDS[number];
 
@@ -81,6 +82,9 @@ export const KIND_META: Record<NotificationKind, KindMeta> = {
   external_message: { label: "Message", persistent: false, urgent: false, tone: "neutral" },
   // An unknown sender on Slack, Discord… got a pairing code; approve it to let them talk to Orca.
   pairing_requested: { label: "Pairing request", persistent: true, urgent: false, tone: "queued" },
+  // A machine problem Orca found itself (server/cgroup.ts: the user manager is down, so agent runs
+  // start without a memory scope). It stays until read: the box is less safe until it is fixed.
+  box_alert: { label: "Machine problem", persistent: true, urgent: true, tone: "error" },
 };
 
 /** How long a non-persistent toast stays. */

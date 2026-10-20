@@ -49,6 +49,21 @@ has it, the card says which servers do not have it.
   - Rate limits: the core sends at most 5 messages each 5 seconds to one channel. A `429` is retried
     after Discord's `retry_after`.
 
+## Replies and attachments
+
+A message that mentions the bot (or a DM) carries more than its own text:
+
+- **A reply quotes its parent.** The parent's author, text and attachments go in the envelope's
+  text before the new message's own, as `> Name wrote: ...`. The adapter reads the parent from
+  Discord's own embed (`referenced_message`), or with one REST read when Discord did not embed it.
+  A reply that does not mention the bot quotes nothing, and makes no extra Discord call.
+- **A text attachment's content is inlined**, in a fenced block under its filename: `.txt`, `.md`,
+  `.json`, `.log`, `.csv`, `.yaml` and `.yml` files, and anything with a `text/*` content type. The
+  adapter downloads the file itself — Discord's attachment URLs are signed and expire, so an agent
+  could not fetch one later. A file over 100 KB is cut to that size, with a note saying so. This
+  applies to the new message's own attachments and to a quoted parent's.
+- Any other attachment (an image, a binary file) stays a URL line, as before.
+
 ## Reply in place or threads
 
 The integration's `config.threads` sets what Orca does with a mention at the top level of a channel.
@@ -193,11 +208,17 @@ The primary bridge reads the rows each minute. `GET /api/integrations` shows the
 
 ## Levels
 
-| Level | What a person in the channel can do |
-|---|---|
-| `notify` | Nothing inbound. Orca only posts. |
-| `ask` | Ask questions. Orca reads the board and past chats. |
-| `work` | Also start and continue workstreams on the link's repos. |
+Settings shows each level by a name. The database keeps the value in the first column.
+
+| Level | Settings name | What a person in the channel can do |
+|---|---|---|
+| `notify` | Notify | Nothing inbound. Orca only posts. |
+| `ask` | Viewer | Ask questions. Orca reads the board and past chats. |
+| `work` | Editor | Also start, continue, stop and archive workstreams on the link's repos, and queue a merge with `merge --when-green`. |
+| `admin` | Admin | Every `orca` verb on the link's repos, plus `move`, `sweep` and `repo add`. Not `notes set`, `status --clear-grant`, `preview --push-to-template --confirm`, `handoff create` or settings. |
+
+Only your own chat in Orca has the `full` grant. Pairing approval gives at most `work`. To make a
+person Admin, set their level in Settings after you approve them.
 
 The orchestrator's tool route checks each verb against the grant of the message. A Discord message
 cannot start work on a repo that its link does not list.

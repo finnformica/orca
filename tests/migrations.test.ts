@@ -106,8 +106,9 @@ test("every step named uniquely, ids strictly increasing, and an idempotent step
   for (const step of db.MIGRATIONS.filter((s) => s.idempotent)) {
     const statements = step.sql.replace(/--[^\n]*/g, "").split(";").map((s) => s.trim().replace(/\s+/g, " ")).filter(Boolean);
     for (const st of statements) {
-      // …or a backfill that only fills NULLs, so a re-run touches nothing it already wrote.
-      expect(`${db.stepLabel(step)}: ${st}`).toMatch(/^[\w-]+: (CREATE (UNIQUE )?(TABLE|INDEX) IF NOT EXISTS |ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS |UPDATE (\S+) .* AND \S+ IS NULL$)/i);
+      // …or a backfill that only fills NULLs, so a re-run touches nothing it already wrote, or one
+      // ALTER TABLE that drops a constraint IF EXISTS and re-adds the same one (a widened CHECK).
+      expect(`${db.stepLabel(step)}: ${st}`).toMatch(/^[\w-]+: (CREATE (UNIQUE )?(TABLE|INDEX) IF NOT EXISTS |ALTER TABLE \S+ ADD COLUMN IF NOT EXISTS |ALTER TABLE \S+ DROP CONSTRAINT IF EXISTS (\S+), ADD CONSTRAINT \4 |UPDATE (\S+) .* AND \S+ IS NULL$)/i);
     }
   }
 });

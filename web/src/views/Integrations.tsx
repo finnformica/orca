@@ -26,12 +26,14 @@ import {
   SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, instanceText, integrationProblem, linkProblem, parseFilter, postableLinks, targetLabel,
   type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow,
 } from "../../../shared/integrationSettings";
-import { AUTO_INSTANCE, CATCH_ALL, isAutomatic, isReceiveOnly, type AdapterMeta, type Level } from "../../../shared/integrations";
+import { AUTO_INSTANCE, CATCH_ALL, LEVEL_LABEL, LINK_LEVELS as LEVELS, isAutomatic, isReceiveOnly, repoScoped, type AdapterMeta, type LinkLevel } from "../../../shared/integrations";
 
 type Overview = IntegrationsOverview;
-type LinkLevel = Exclude<Level, "full">;
-const LINK_LEVELS: { value: LinkLevel; label: string }[] = [{ value: "notify", label: "Notify" }, { value: "ask", label: "Ask" }, { value: "work", label: "Work" }];
-const LEVEL_TONE = { notify: "default", ask: "blue", work: "green" } as const;
+// Friendly names (Notify, Viewer, Editor, Admin); the stored values stay notify / ask / work / admin.
+const LINK_LEVELS: { value: LinkLevel; label: string }[] = LEVELS.map((value) => ({ value, label: LEVEL_LABEL[value] }));
+// Pairing approval is unchanged: it takes up to "work" (POST /api/integrations/pairing/approve). Set Admin on the person after.
+const PAIRING_LEVELS = LINK_LEVELS.filter((l) => l.value !== "admin");
+const LEVEL_TONE = { notify: "default", ask: "blue", work: "green", admin: "purple" } as const;
 // The page's own copy of server/env.ts ORCA_SECRETS (the server checks again): enough to warn early.
 const STRIPPED = ["SLACK_TOKEN"] as const;
 
@@ -184,7 +186,7 @@ function LinkRowView({ link: l, receiveOnly, onEdit, onChange }: { link: LinkRow
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-1.5">
           <Pill tone={LEVEL_TONE[l.level]} slot="link-level">{LINK_LEVELS.find((x) => x.value === l.level)?.label}</Pill>
-          {l.level === "work" && l.repos.map((r) => <Pill key={r}>{r}</Pill>)}
+          {repoScoped(l.level) && l.repos.map((r) => <Pill key={r}>{r}</Pill>)}
           {l.requireMention && <Pill>@mention</Pill>}
         </div>
         {l.externalId === CATCH_ALL && <div data-slot="link-receive-only" className="text-muted-foreground mt-1 text-xs">A catch-all link only receives. Orca answers in the DM or channel the message came from.</div>}
@@ -267,7 +269,7 @@ function IntegrationDialog({ kinds, options, existing, onClose, onSaved }: { kin
       <Field label="Kind" htmlFor="int-kind">
         <Select value={kind} onValueChange={setKind} disabled={!!existing}>
           <SelectTrigger id="int-kind" className="w-full"><SelectValue /></SelectTrigger>
-          <SelectContent>{kinds.map((k) => <SelectItem key={k.kind} value={k.kind}><BrandIcon kind={k.kind} />{k.label}</SelectItem>)}</SelectContent>
+          <SelectContent>{kinds.map((k) => <SelectItem key={k.kind} value={k.kind}><BrandIcon kind={k.kind} className="mr-2" />{k.label}</SelectItem>)}</SelectContent>
         </Select>
       </Field>
       <div className="grid gap-4 sm:grid-cols-2">
@@ -316,7 +318,7 @@ function LinkDialog({ integration: c, meta, link, onClose, onSaved }: { integrat
   const [mention, setMention] = useState(link?.requireMention ?? true);
   const [busy, setBusy] = useState(false);
   const id = link?.id ?? `${c.id}-${(label || externalId).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`.slice(0, 63);
-  const body = { id, integrationId: c.id, externalId, label, level, repos: level === "work" ? chosen : [], requireMention: mention };
+  const body = { id, integrationId: c.id, externalId, label, level, repos: repoScoped(level) ? chosen : [], requireMention: mention };
   const problem = linkProblem(body);
   const place = meta?.place ?? "place";
   const save = async () => { setBusy(true); const r = await act(`Save link ${label || externalId}`, "links/save", body, onSaved); setBusy(false); if (r) onClose(); };
@@ -327,13 +329,13 @@ function LinkDialog({ integration: c, meta, link, onClose, onSaved }: { integrat
         <Field label={`${place[0]!.toUpperCase()}${place.slice(1)} id`} htmlFor="link-ext"><Input id="link-ext" value={externalId} onChange={(e) => setExternalId(e.target.value)} placeholder="C0123ABC" className="font-mono" /></Field>
         <Field label="Label" htmlFor="link-label"><Input id="link-label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="#eng" /></Field>
       </div>
-      <Field label="Level" htmlFor="link-level" hint={level === "notify" ? "Orca posts here. It ignores messages." : level === "ask" ? "Senders can ask about status, PRs and the board." : "Senders can also start and steer work on the repos below."}>
+      <Field label="Level" htmlFor="link-level" hint={level === "notify" ? "Orca posts here. It ignores messages." : level === "ask" ? "Senders can ask about status, PRs and the board." : level === "work" ? "Senders can also start, steer, stop, archive and queue merges on the repos below." : "Senders can run every orca verb on the repos below, plus move, sweep and repo add. Not settings or notes."}>
         <Select value={level} onValueChange={(v) => setLevel(v as LinkLevel)}>
           <SelectTrigger id="link-level" className="w-full"><SelectValue /></SelectTrigger>
           <SelectContent>{LINK_LEVELS.map((l) => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}</SelectContent>
         </Select>
       </Field>
-      {level === "work" && (
+      {repoScoped(level) && (
         <Field label="Repos">
           <ul className="grid grid-cols-2 gap-x-4 gap-y-1.5">
             {repos.map((r) => (
@@ -444,7 +446,7 @@ function ApproveDialog({ pairing: p, people, onClose, onSaved }: { pairing: Pair
           <Field label="Max level" htmlFor="pair-level">
             <Select value={maxLevel} onValueChange={(v) => setMaxLevel(v as LinkLevel)}>
               <SelectTrigger id="pair-level" className="w-full"><SelectValue /></SelectTrigger>
-              <SelectContent>{LINK_LEVELS.map((l) => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}</SelectContent>
+              <SelectContent>{PAIRING_LEVELS.map((l) => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}</SelectContent>
             </Select>
           </Field>
         </div>

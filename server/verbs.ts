@@ -19,7 +19,7 @@ import * as notify from "./notify";
 import { existsSync } from "fs";
 import * as prShots from "./prShots";
 import { featuresOf, modelFor, providerAllowed, type OrcaConfig, type RepoConfig } from "./config";
-import { addressNeedsAgent, addressPrPrompt, chatPrompt, cleanupDecision, continuation, launchPrompt, mergeSettled, mergedPrIsHistory, slugifyBranch, titleFromPrompt, workerPrBody, type MechanicalMerge, type SweepReport } from "../web/src/workstream";
+import { addressNeedsAgent, addressPrPrompt, chatPrompt, cleanupDecision, continuation, followUpPrompt, launchPrompt, mergeSettled, mergedPrIsHistory, slugifyBranch, titleFromPrompt, withAttachments, workerPrBody, type MechanicalMerge, type SweepReport } from "../web/src/workstream";
 import { providerOfModel } from "../shared/models";
 import { isAgentProvider, type AgentOutcome, type AgentProvider } from "../shared/agent";
 
@@ -49,7 +49,7 @@ export const launchOptions = (cfg: OrcaConfig, repo: RepoConfig, provider: Agent
   ...(permissionFor(repo, fields) === "scoped" ? { scope: { baseBranch: repo.baseBranch, checkCommand: repo.checkCommand } } : {}),
   maxBudgetUsd: repo.agentMaxBudgetUsd, check: checkGate(repo),
   timeoutMs: cfg.agentTimeoutMinutes ? cfg.agentTimeoutMinutes * 60_000 : undefined,
-  memoryMaxGb: repo.agentMemoryMaxGb, cpuWeight: cfg.agentCpuWeight,
+  memoryMaxGb: repo.agentMemoryMaxGb, cpuWeight: cfg.agentCpuWeight, mcpAllow: repo.mcpAllow,
 });
 
 /** A new branch + worktree for a titled piece of work, with the repo's local config copied in. The
@@ -81,7 +81,7 @@ export async function startPreview(cfg: OrcaConfig, repo: RepoConfig, key: strin
   // before the config listed it boots without one and the preview dies on "Error: .env not found".
   // Re-copy what's missing here, leaving any worktree-local edit intact.
   await git.copyToWorktree(repo.repoPath, worktree, repo.copyToWorktree, { keepExisting: true });
-  await preview.start(key, worktree, repo.previewServices, cfg.portRange);
+  await preview.start(key, worktree, repo.previewServices, cfg.portRange, { https: repo.previewSecureContext === true });
   const host = preview.ownerHost(cfg.instances, db.instanceName());
   if (branch) {
     await db.patchEnrichment(repo.name, branch, { previewInstance: { instance: db.instanceName(), key, startedAt: new Date().toISOString() } })
@@ -179,8 +179,12 @@ export async function followUp(
   const worktreePath = await ensureWorktree(repo, branch);
   const e = (await db.enrichment(repo.name))[branch] ?? {};
   const provider = providerFor(repo, e);
-  if (agent.isRunning(worktreePath)) {
+  // Older messages still queued on an idle worktree (a Stop, a failed dispatch) go first: this one
+  // queues behind them and the queue drains in order, instead of jumping ahead and leaving them.
+  const behind = !agent.isRunning(worktreePath) && (await db.queuedMessages(repo.name, branch).catch(() => [])).length > 0;
+  if (agent.isRunning(worktreePath) || behind) {
     await db.queueMessage({ repo: repo.name, branch, worktreePath, instruction: input.instruction, attachments: [], provider });
+    if (behind) await agent.drainQueue(worktreePath, repo.name, branch);
     return { status: "queued", worktreePath };
   }
   const next = continuation({
@@ -195,6 +199,31 @@ export async function followUp(
   });
   await db.patchEnrichment(repo.name, branch, { agentProvider: provider, sessionId: receipt.sessionId });
   return { status: "running", worktreePath };
+}
+
+/** Launch a message that waited in the queue — the follow-up the run in flight held back. It takes
+ *  the same handover ladder as a typed follow-up (`continuation`): a native resume of the branch's
+ *  session while healthy. It used to launch with no resume at all, so each queued message started a
+ *  NEW session with none of the conversation, and the next `orca send` resumed a session that never
+ *  saw it (the 2026-10-18 "back to three cards" loss). */
+export async function launchQueued(cfg: OrcaConfig, repo: RepoConfig, message: db.QueuedMessage): Promise<void> {
+  const provider = isAgentProvider(message.provider) ? message.provider : "claude";
+  if (!providerAllowed(repo, provider)) return; // opted out since it was queued
+  // The pin lives in enrichment, so a message queued before a model switch still runs on the model
+  // the card shows when it is dispatched.
+  const e = (await db.enrichment(repo.name))[message.branch] ?? {};
+  const pinned = e.preferredModel;
+  const next = continuation({
+    provider, from: isAgentProvider(e.agentProvider) ? e.agentProvider : undefined,
+    sessionId: e.sessionId as string | undefined,
+    contextPct: agent.status(message.worktreePath).meta?.contextPct,
+    transcript: await db.turns(repo.name, message.branch),
+  });
+  const receipt = await agent.runAgent(message.worktreePath, withAttachments(followUpPrompt(message.instruction, { mergeWhenGreen: Boolean(e.mergeWhenGreen) }), message.attachments), {
+    ...launchOptions(cfg, repo, provider, typeof pinned === "string" ? pinned : undefined, e), ...next,
+    branch: message.branch, action: "followup", instruction: message.instruction,
+  });
+  await db.patchEnrichment(repo.name, message.branch, { agentProvider: provider, sessionId: receipt.sessionId });
 }
 
 /** Compact a branch's Claude session: `/compact` as the whole prompt, on a native resume of that

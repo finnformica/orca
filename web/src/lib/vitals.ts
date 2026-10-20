@@ -2,7 +2,7 @@
 // resource is polled once however many components show it (the bridge is HTTP/1.1 with six
 // connections per host — see lib/poll.ts), and only while something is mounted to show it.
 import { useSyncExternalStore } from "react";
-import { api, type InstanceHealth, type MetricPoint } from "@/api";
+import { api, type InstanceHealth, type LiveAnswer, type MetricPoint } from "@/api";
 import type { Usage } from "../../../server/usage";
 import { withProfileEnabled } from "../workstream";
 import { poll } from "./poll";
@@ -168,7 +168,8 @@ const historySources = new Map<string, ReturnType<typeof sharedSource<MetricPoin
 /** An instance's last-day samples (/api/health/history — database-only, so any instance answers),
  *  polled once a minute (the sampler writes once a minute) while something shows them: the header
  *  chip's popover, the overview's instance tiles. One loop per instance however many show it. null
- *  = nothing to watch; the value is null until the first answer, [] when the fetch fails. */
+ *  = nothing to watch; the value is null until the first answer, [] when the first fetch fails (a
+ *  later failure keeps the last good samples). */
 export function useHealthHistory(instance: string | null, hours = 24): MetricPoint[] | null {
   if (instance === null) return useSyncExternalStore(NOTHING.subscribe, NOTHING.get);
   const key = `${instance}|${hours}`;
@@ -176,12 +177,41 @@ export function useHealthHistory(instance: string | null, hours = 24): MetricPoi
   if (!src) {
     src = sharedSource<MetricPoint[]>((set) => {
       let live = true;
-      const load = () => api.healthHistory(instance, hours).then((v) => { if (live) set(v); }, () => { if (live) set([]); });
+      // A failed poll keeps the last good samples: `[]` swapped the graphs for "No history recorded
+      // yet" until the next good poll, a minute later — the Overview's flicker.
+      let last: MetricPoint[] | null = null;
+      const load = () => api.healthHistory(instance, hours).then((v) => { if (live) set(last = v); }, () => { if (live) set(last ?? []); });
       loaders.add(load);
       const stop = poll(load, 60_000);
       return () => { live = false; loaders.delete(load); stop(); };
     });
     historySources.set(key, src);
+  }
+  return useSyncExternalStore(src.subscribe, src.get);
+}
+
+const liveSources = new Map<string, ReturnType<typeof sharedSource<LiveAnswer | false>>>();
+
+/** A machine's 15 s ring (/api/health/live, at most 6 hours), polled every 15 s while a card shows a
+ *  short range. `instance` undefined = the answering one; null = nothing to watch. The value is null
+ *  until the first answer, false when the fetch fails before any answer (an older bridge has no such
+ *  route); a later failure keeps the last good answer. */
+export function useHealthLive(instance: string | undefined | null, hours: number): LiveAnswer | false | null {
+  if (instance === null) return useSyncExternalStore(NOTHING.subscribe, NOTHING.get);
+  const key = `${instance ?? ""}|${hours}`;
+  let src = liveSources.get(key);
+  if (!src) {
+    src = sharedSource<LiveAnswer | false>((set) => {
+      let live = true;
+      // A failed poll keeps the last good answer: `false` (an older bridge) swapped the stacked
+      // charts for the line charts until the next good poll. Only a bridge that never answered is old.
+      let last: LiveAnswer | null = null;
+      const load = () => api.healthLive(instance, hours).then((v) => { if (live) set(last = v); }, () => { if (live) set(last ?? false); });
+      loaders.add(load);
+      const stop = poll(load, 15_000);
+      return () => { live = false; loaders.delete(load); stop(); };
+    });
+    liveSources.set(key, src);
   }
   return useSyncExternalStore(src.subscribe, src.get);
 }

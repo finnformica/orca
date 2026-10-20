@@ -517,6 +517,36 @@ test("O12: the orca command reads a flag followed by another flag as a switch", 
   }
 });
 
+test("O13: orca machine prints the machine card's numbers, here or from another instance, and is a read verb", async () => {
+  const { pushLive, resetLive, machineReport } = await import("../server/liveMetrics");
+  const { machineText } = await import("../web/src/workstream");
+  const { grantRefusal } = await import("../shared/integrations");
+  resetLive();
+  const now = Date.now();
+  for (let i = 0; i < 20; i++) pushLive({ at: now - (19 - i) * 15_000, work: 40, iowait: i > 15 ? 70 : 0, load1: 3, readMBs: 120, writeMBs: 4, memUsedGb: 6, memCacheGb: 4, memAvailGb: 9, swapUsedGb: 0.5, ...(i === 3 ? { ooms: 1 } : {}) });
+  try {
+    const text = await orchestrator.tool(cfg(), "machine");
+    // The same report the card's ring gives /api/machine, printed.
+    expect(text).toBe(machineText(machineReport(db.instanceName())));
+    expect(text.split("\n").find((l) => l.startsWith("iowait %"))!.split(/\s{2,}/)).toEqual(["iowait %", "70.0", "14.0", "14.0"]);
+    expect(text).toContain("OOM kills");
+    const json = JSON.parse(await orchestrator.tool(cfg(), "machine", { json: "" }));
+    expect(json.samples).toHaveLength(20);
+    expect(json.summary.now).toMatchObject({ work: 40, iowait: 70, readMBs: 120, memAvailGb: 9, swapUsedGb: 0.5 });
+    // --on another instance reads ITS /api/machine.
+    const other = { ...machineReport("laptop"), instance: "laptop" };
+    const peer = createServer((req, res) => { res.setHeader("content-type", "application/json"); res.end(req.url === "/api/machine" ? JSON.stringify(other) : "{}"); });
+    await new Promise<void>((r) => peer.listen(0, "127.0.0.1", r));
+    try {
+      const two = { ...cfg(), instances: { laptop: `http://127.0.0.1:${(peer.address() as AddressInfo).port}` } };
+      expect(await orchestrator.tool(two, "machine", { on: "laptop" })).toBe(machineText(other));
+    } finally { peer.close(); }
+    await expect(orchestrator.tool(cfg(), "machine", { on: "nowhere" })).rejects.toThrow('"nowhere" is not a configured instance');
+    // An outside sender's read-only wake may ask too.
+    expect(grantRefusal({ level: "ask", repos: [] }, "machine")).toBeUndefined();
+  } finally { resetLive(); }
+});
+
 test("O8: the ladder decision and the orchestrator's views are pure", () => {
   const turn = (over: Partial<AgentTurn> = {}): AgentTurn => ({ id: "t", provider: "claude", prompt: "p", response: "ok", sessionId: "s1", ...over });
   const base = { provider: "claude" as const, from: "claude" as const, sessionId: "s1", transcript: [turn()] };
@@ -884,6 +914,27 @@ test("O22: orca status keeps a short per-workstream record on its enrichment, an
 
   expect(await orchestrator.tool(cfg(), "status", { ...at, clear: "" })).toBe(`Cleared the status of r/${branch}.`);
   expect((await db.enrichment("r"))[branch]).not.toHaveProperty("orchStatus");
+});
+
+test("O31: orca status --verified / --unverified set and clear the user's Verified marker at the PR head", async () => {
+  const pr = (head: string) => [{ number: 267, title: "Cache", headRefName: "feat-v", headRefOid: head, baseRefName: "main", url: "u", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [], comments: [], author: { login: "me" }, reviews: [], labels: [] }];
+  const at = { repo: "r", branch: "feat-v" };
+  // No open PR: nothing to verify.
+  await expect(orchestrator.tool(cfg(), "status", { ...at, verified: "" })).rejects.toThrow("has no open PR to mark verified");
+
+  await setPrListFixture(pr("aaaaaaa1111"));
+  expect(await orchestrator.tool(cfg(), "status", { ...at, verified: "" })).toBe("Marked PR #267 (r/feat-v) verified at aaaaaaa. A new commit shows it as changed since verified.");
+  expect((await db.enrichment("r"))["feat-v"]!.verified).toMatchObject({ by: "orchestrator", sha: "aaaaaaa1111", pr: 267 });
+  expect(boardText(await orchestrator.board(cfg()))).toMatch(/PR #267 [^|]*verified-by-user/);
+
+  // A new head commit: the board says so, not a silent pass.
+  await setPrListFixture(pr("bbbbbbb2222"));
+  expect(boardText(await orchestrator.board(cfg()))).toMatch(/PR #267 [^|]*changed-since-user-verified/);
+
+  expect(await orchestrator.tool(cfg(), "status", { ...at, unverified: "" })).toBe("Cleared the Verified marker of r/feat-v.");
+  expect((await db.enrichment("r"))["feat-v"] ?? {}).not.toHaveProperty("verified");
+  expect(boardText(await orchestrator.board(cfg()))).not.toMatch(/verified-by-user|user-verified/);
+  await setPrListFixture([]);
 });
 
 test("O23: two failures in a row on one model put the next model up in the report; modelEscalation: apply moves it", async () => {

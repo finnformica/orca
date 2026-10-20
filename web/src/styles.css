@@ -27,6 +27,8 @@
   --accent-foreground: #222222;
   --destructive: #e5484d;
   --border: rgba(0, 0, 0, 0.1);
+  /* branch-demo's border-dark (gray-alpha-300): the resize handle's line on hover. */
+  --border-dark: #0b0b0b3e;
   --input: rgba(0, 0, 0, 0.1);
   /* The chat log's text stops between the foreground and the muted text (styles below). */
   --text-soft: #4d4d4d;
@@ -66,6 +68,9 @@
   --geist-teal: #50e3c2;
   --geist-amber: #f5a623;
   --geist-red: #e5484d;
+  /* Two validated categorical chart slots (the Disk IO chart's read and write), stepped per mode. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
   --geist-gray: #8f8f8f;
   --geist-pink: #ff0080;
   --geist-warning-bg: #fff8e6;
@@ -96,6 +101,7 @@
   --accent-foreground: #e8e8e8;
   --destructive: #e5484d;
   --border: rgba(255, 255, 255, 0.12);
+  --border-dark: #ffffff33;
   --input: rgba(255, 255, 255, 0.12);
   --text-soft: #d2d2d2;
   --text-faint: #848484;
@@ -116,6 +122,8 @@
   --selected: var(--accent);
   --selected-fg: var(--foreground);
   --heading: var(--foreground);
+  --series-1: #3987e5;
+  --series-2: #d95926;
   --geist-warning-bg: #2a1d03;
   --geist-warning-fg: #ffb224;
   --geist-error-bg: #2a0e0f;
@@ -178,6 +186,7 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-border: var(--border);
+  --color-border-dark: var(--border-dark);
   --color-input: var(--input);
   --color-ring: var(--ring);
 }
@@ -193,10 +202,10 @@
   }
 }
 
-/* The themed frame (Slack's workspace sidebar plus top bar): the sidebar, the top bar and the closed
-   Ask pill carry `data-chrome`. Inside it the neutral tokens become the frame's tones, so the Find
-   box, the keycaps, the badges, the menus' triggers and the Ask button follow with no class of
-   their own. Menus portal out of it and take the page's tinted tokens. */
+/* The themed frame (Slack's workspace sidebar plus top bar): the sidebar and the phone's top bar
+   carry `data-chrome`. Inside it the neutral tokens become the frame's tones, so the Find box, the
+   keycaps, the badges and the menus' triggers follow with no class of their own. The Ask pill is an
+   overlay, not the frame (docs/design/surfaces.md). Menus portal out of it and take the page's tinted tokens. */
 [data-chrome] {
   --background: var(--sb-bg);
   --selected: var(--sb-active);

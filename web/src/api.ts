@@ -1,6 +1,8 @@
 import type { LaunchReceipt, RunMeta } from "../../server/agent";
 import type { RepoFeatures } from "../../server/config";
 import type { ChangeSummary } from "../../server/git";
+import type { LiveAnswer } from "../../server/liveMetrics";
+export type { LiveAnswer, LiveSample } from "../../server/liveMetrics";
 import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSummary, ReviewSignal, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
 import type { PackView, WirePack } from "../../server/handoff";
@@ -53,6 +55,9 @@ export type QueuedMessage = {
 
 export type InstanceHealth = {
   instance: string; hostname: string; cores: number; cpuPct: number; load1: number; load5: number;
+  /** The iowait share of the same interval cpuPct covers. Absent off Linux or on the bridge's first
+   *  sample after a restart. */
+  iowaitPct?: number;
   memUsedGb: number; memTotalGb: number; memPressurePct?: number; memPressure?: boolean;
   disk?: { usedGb: number; totalGb: number }; uptimeS: number;
   at: number;
@@ -63,7 +68,16 @@ export type InstanceHealth = {
   month?: { usd: number; upHours: number; since: number; unknownHours?: number; usdMax?: number; assumedHours?: number; ledgerFrom?: number | null; billingSince?: number };
   /** Absent from an older bridge. */
   runningAgents?: number;
+  /** Which of deploy/harden.sh's protections the box is missing (server/protections.ts), and the
+   *  newest OOM kill in its kernel log (null: none; absent: unreadable). Absent off Linux. */
+  protections?: { missing: { key: string; label: string }[]; lastOomKill?: number | null; at: number };
+  /** The box-wide heavy-command queue (server/heavy.ts). Absent from an older bridge. */
+  heavy?: HeavyQueueView;
 };
+export type HeavyEntry = { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number; startedAt?: number; cpu?: number; memoryGb?: number };
+/** `cpu`: the running commands' CPU costs against the budget. Absent from the first cut. `memory`:
+ *  their memory caps (GB) against the budget; no `budget` when the box has none. Absent from older bridges. */
+export type HeavyQueueView = { running: HeavyEntry[]; queued: HeavyEntry[]; limits: Record<string, number>; cpu?: { used: number; budget: number }; memory?: { used: number; budget?: number } };
 /** One recorded sample of an instance's vitals (instance_metric), for the chip's history graphs. */
 export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; /** Absent from a bridge older than migration 13 — unknown, not 0. */
   runningAgents?: number;
@@ -95,10 +109,11 @@ export type RepoInfo = {
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
 export const api = {
-  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; terminal?: Record<string, boolean>; instanceUrls?: Record<string, string>; bridge?: BridgeInfo }> => get("/api/config").then(res),
+  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; terminal?: Record<string, boolean>; voice?: boolean; ui?: { showBoard: boolean }; instanceUrls?: Record<string, string>; bridge?: BridgeInfo }> => get("/api/config").then(res),
   /** Settings' Machine cost: one instance's USD/hour; null clears it (back to the EC2 estimate / 0). */
   setInstanceRate: (instance: string, hourlyUsd: number | null): Promise<{ ok: true }> => post("/api/config/instance-rate", { instance, hourlyUsd }),
   setInstanceTerminal: (instance: string, on: boolean): Promise<{ ok: true }> => post("/api/config/terminal", { instance, on }),
+  setShowBoard: (showBoard: boolean): Promise<{ ok: true }> => post("/api/config/ui", { showBoard }),
   setServerIdentity: (name: string, color: string): Promise<{ ok: true }> => post("/api/config/identity", { name, color }),
   usage: (): Promise<Usage | null> => get("/api/usage").then(res),
   /** The unified inbox (shared/inbox.ts): one window of rows, newest first, with the filter facets. */
@@ -124,9 +139,13 @@ export const api = {
   // Handoff packs (server/handoff.ts) on the CURRENT server; the import goes to another server's
   // absolute URL from this browser — the boxes never call each other.
   handoffs: (): Promise<{ self: string; packs: PackView[] }> => get("/api/handoffs").then(res),
+  /** One pack; null once it is deleted (404). */
+  handoffPack: (id: string): Promise<{ self: string; pack: PackView } | null> => get(`/api/handoffs/${encodeURIComponent(id)}`).then((r) => (r.status === 404 ? null : res(r))),
   createHandoff: (body: { to: string; title: string; message?: string; repo?: string; branch?: string; chats?: number[] }): Promise<{ pack: PackView }> => post("/api/handoffs", body),
   exportHandoff: (id: string): Promise<WirePack> => apiFetch(`/api/handoffs/${encodeURIComponent(id)}/export`, { cache: "no-store" }).then(res),
   markHandoffSent: (id: string, to: string): Promise<{ ok: boolean }> => post(`/api/handoffs/${encodeURIComponent(id)}/sent`, { to }),
+  handoffBadge: (): Promise<{ unsent: number }> => get("/api/handoffs/badge").then(res),
+  markHandoffsSeen: (): Promise<{ ok: boolean }> => post("/api/handoffs/seen", {}),
   deleteHandoff: (id: string): Promise<{ ok: boolean }> => apiFetch(`/api/handoffs/${encodeURIComponent(id)}`, { method: "DELETE" }).then(res),
   importHandoff: (targetUrl: string, pack: WirePack): Promise<{ duplicate: boolean; files: number }> =>
     fetch(`${targetUrl}/api/handoff/import`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(pack) }).then(res),
@@ -247,6 +266,7 @@ export const api = {
   // A machine's vitals (the header's instance chip); `instance` asks another instance for its own.
   health: (instance?: string): Promise<InstanceHealth> => get(`/api/health${instance ? `?instance=${encodeURIComponent(instance)}` : ""}`).then(res),
   // Its recorded vitals over the last `hours` (default 24), read from Postgres by whichever instance answers.
+  healthLive: (instance: string | undefined, hours: number): Promise<LiveAnswer> => get(`/api/health/live?hours=${hours}${instance ? `&instance=${encodeURIComponent(instance)}` : ""}`).then(res),
   healthHistory: (instance: string, hours = 24): Promise<MetricPoint[]> => get(`/api/health/history?instance=${encodeURIComponent(instance)}&hours=${hours}`).then(res),
   syncWorktrees: (repo: string): Promise<SyncResult[]> => post("/api/worktrees/sync", { repo }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>
@@ -264,5 +284,11 @@ export const api = {
     const form = new FormData();
     for (const f of files) form.append("files", f);
     return (await apiFetch("/api/attachments", { method: "POST", body: form }).then(res)).paths;
+  },
+  // A recorded clip → its transcript (server/voice.ts). The bridge holds the key.
+  transcribe: async (audio: Blob, name: string): Promise<string> => {
+    const form = new FormData();
+    form.append("audio", audio, name);
+    return (await apiFetch("/api/voice/transcribe", { method: "POST", body: form }).then(res)).text;
   },
 };

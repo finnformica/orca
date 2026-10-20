@@ -59,7 +59,7 @@ test("Q1: the pill is on every page; it opens a box that sends on Enter without 
     expect(pill).not.toBeNull();
     expect(pill.textContent).toContain("Ask");
     expect(pill.textContent).toContain("A"); // the shortcut hint
-    expect($('[data-slot="quick-ask"]')!.className).toContain("fixed bottom-5"); // bottom centre (of the main column, Q7)
+    expect($('[data-slot="quick-ask"]')!.className).toContain("absolute inset-x-0 bottom-5"); // bottom centre (of the page card, Q7)
     await act(async () => { root?.unmount(); }); container?.remove();
   }
   await mount("/");
@@ -106,17 +106,26 @@ test("Q2: the confirmation fades on its own and the box stays open; Esc closes; 
   expect(panelOpen()).toBe(false);
 });
 
-test("Q4: one surface morphs pill ↔ box (width, height, radius; none under reduced motion), solid on hover, no ✕, no footer", async () => {
+test("Q4: one surface morphs pill ↔ box (width, height, radius; none under reduced motion), one fill on hover, no ✕, no footer", async () => {
   await mount("/");
   const closed = surface();
   expect(closed.dataset.state).toBe("closed");
   const cls = () => surface().className.split(/\s+/);
-  expect(cls()).toEqual(expect.arrayContaining(["transition-[width,height,border-radius,box-shadow,background-color]", "motion-reduce:transition-none", "h-8", "rounded-[16px]", "bg-card", "hover:bg-accent"]));
-  expect(surface().className).not.toMatch(/hover:bg-[\w-]+\/\d+/); // no translucent hover: the page never shows through
+  expect(cls()).toEqual(expect.arrayContaining(["transition-[width,height,border-radius,border-color]", "motion-reduce:transition-none", "h-8", "rounded-[16px]", "bg-card"]));
+  // Finn: the closed pill must show the open box's fill. A hover fill changed it under the pointer, so
+  // hover shows on the hairline and the icon instead — never as a fill, on the pill or the surface.
+  expect($('[data-slot="quick-ask-pill"]')!.className).not.toMatch(/hover:bg-/);
+  expect(surface().className).not.toMatch(/hover:bg-/);
+  expect(cls()).toContain("has-[[data-slot=quick-ask-pill]:hover]:border-border-dark");
   expect(cls()).toContain("[interpolate-size:allow-keywords]"); // height can animate to auto
-  expect(closed.hasAttribute("data-chrome")).toBe(true); // the closed pill is part of the server's themed frame
+  // ONE surface look open and closed (docs/design/surfaces.md): only size and radius change.
+  const look = (c: string) => c.split(/\s+/).filter((x) => /^(bg-|text-|border|shadow-)/.test(x)).sort();
+  const closedLook = look(surface().className);
+  expect(closedLook).toEqual(["bg-card", "border", "shadow-modal", "text-foreground"]);
+  expect(closed.hasAttribute("data-chrome")).toBe(false); // an overlay, not the themed frame
   await click($('[data-slot="quick-ask-pill"]')!);
-  expect(surface().hasAttribute("data-chrome")).toBe(false); // the open box is a neutral card
+  expect(look(surface().className)).toEqual(closedLook);
+  expect(surface().hasAttribute("data-chrome")).toBe(false);
   expect(surface()).toBe(closed); // the SAME element, so its box animates rather than being swapped
   expect(surface().dataset.state).toBe("open");
   expect(cls()).toEqual(expect.arrayContaining(["h-auto", "rounded-xl", "w-[min(560px,calc(100%-2rem))]"]));
@@ -161,7 +170,8 @@ test("Q4: one surface morphs pill ↔ box (width, height, radius; none under red
   await act(async () => { await new Promise((r) => setTimeout(r, MORPH_MS + 20)); });
   expect($('[data-slot="quick-ask-leaving"]')).toBeNull();
   expect($('[data-slot="quick-ask-pill"]')!.className).toContain("fade-in-0");
-  expect(cls()).toContain("hover:bg-accent");
+  expect($('[data-slot="quick-ask-pill"]')!.className).not.toMatch(/hover:bg-/);
+  expect(look(surface().className)).toEqual(closedLook); // back to the same look
 });
 
 test("Q5: a send is optimistic — cleared, still open and focused at once; quick successive sends all arrive, in order", async () => {
@@ -271,23 +281,22 @@ test("Q9: the box is the shared composer — @ opens the PR picker (# does not);
   expect(apiFake.orchestratorMessages).toEqual([{ text: "look at #6101 @fi", attachments: [] }]);
 });
 
-test("Q7: the pill is centred on the main column — its strip starts where the sidebar ends, collapsed or expanded, and ends where the docked panel starts", async () => {
+test("Q7: the pill is centred on the page card — its strip spans the card, collapsed or expanded nav, so it moves with the card's edges", async () => {
   const s = getDefaultStore();
   await mount("/");
-  const strip = () => $('[data-slot="quick-ask"]')!.className.split(/\s+/);
+  const stripEl = () => $('[data-slot="quick-ask"]')!;
+  const strip = () => stripEl().className.split(/\s+/);
   const sidebar = () => $('[data-slot="sidebar"]')!.className.split(/\s+/);
-  const right = () => $('[data-slot="quick-ask"]')!.style.right;
-  // Expanded: a 15rem sidebar, a strip from 15rem to the right edge, its content centred in it.
+  // Expanded: the strip is the card's full width, its content centred in it.
   expect(sidebar()).toContain("md:w-60");
-  expect(strip()).toEqual(expect.arrayContaining(["fixed", "left-60", "justify-center"]));
-  expect(right()).toBe("0px"); // nothing docked: to the window's edge
-  expect(strip()).not.toContain("inset-x-0");
-  // Collapsed: the icon column is 3.5rem, and the strip follows it.
+  expect(stripEl().parentElement!.dataset.slot).toBe("shell-card");
+  expect(strip()).toEqual(expect.arrayContaining(["absolute", "inset-x-0", "justify-center"]));
+  expect(strip()).not.toContain("fixed");
+  // Collapsed: the card grows to the rail, and the strip with it — nothing of its own changes.
+  const before = stripEl().className;
   await act(async () => { s.set(sidebarCollapsedAtom, true); await flush(); });
   expect(sidebar()).toContain("md:w-14");
-  expect(strip()).toEqual(expect.arrayContaining(["left-14", "justify-center"]));
-  expect(right()).toBe("0px");
-  expect(strip()).not.toContain("left-60");
+  expect(stripEl().className).toBe(before);
   // Below md there is no pill — the phone's bottom bar carries the orchestrator.
   expect(strip()).toContain("max-md:hidden");
   // The open box is sized to the strip, not the viewport.

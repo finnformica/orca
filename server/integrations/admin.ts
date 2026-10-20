@@ -5,7 +5,7 @@
 // the /api/integrations/pairing/approve|deny routes the page posts to).
 import * as db from "../db";
 import { ORCA_SECRETS } from "../env";
-import { CATCH_ALL, CATCH_ALL_SEND_ERROR, isAutomatic, isReceiveOnly, leaseHolder, receiveOnlyRefusal, secretRefRefusal, type Level, type Subscription, type TargetKind } from "../../shared/integrations";
+import { CATCH_ALL, CATCH_ALL_SEND_ERROR, isAutomatic, isReceiveOnly, leaseHolder, receiveOnlyRefusal, secretRefRefusal, LINK_LEVELS, type Level, type LinkLevel, type Subscription, type TargetKind } from "../../shared/integrations";
 import {
   integrationProblem, linkProblem,
   type DeadRow, type IntegrationCard, type IntegrationsOverview, type PersonRow,
@@ -17,7 +17,7 @@ import * as dispatcher from "./dispatcher";
 import type { Connection } from "./adapter";
 
 const user = () => db.currentUser();
-type Status = { ok?: boolean; detail?: string; at?: number; startedAt?: number; error?: string | null; lastEventAt?: number; secretSet?: boolean; secretMissing?: Record<string, number> };
+type Status = { ok?: boolean; detail?: string; at?: number; startedAt?: number; error?: string | null; lastEventAt?: number; lastPollAt?: number; secretSet?: boolean; secretMissing?: Record<string, number> };
 
 async function statuses(): Promise<Map<string, Status>> {
   return db.withRetry(async (sql) => {
@@ -71,11 +71,12 @@ export async function overview(here = db.instanceName(), now = Date.now()): Prom
     const secretMissingOn = auto && !runsOn ? Object.keys(s.secretMissing ?? {}).sort() : [];
     const secretSet = secretSetHere(c, here, now) ?? (auto && !runsOn ? undefined : s.secretSet);
     const lastEventAt = Math.max(last.get(c.id) ?? 0, s.lastEventAt ?? 0) || undefined;
+    const lastPollAt = Math.max(live[c.id]?.lastPollAt ?? 0, s.lastPollAt ?? 0) || undefined;
     return {
       id: c.id, kind: c.kind, name: c.name, instance: c.instance, enabled: c.enabled, config: c.config,
       ...(c.secretRef ? { secretRef: c.secretRef } : {}), ...(secretSet !== undefined ? { secretSet } : {}),
       ...(auto && runsOn ? { runsOn } : {}), ...(secretMissingOn.length ? { secretMissingOn } : {}),
-      running, ...(h ? { health: h } : {}), ...(lastEventAt ? { lastEventAt } : {}),
+      running, ...(h ? { health: h } : {}), ...(lastEventAt ? { lastEventAt } : {}), ...(lastPollAt ? { lastPollAt } : {}),
     };
   });
   const deadRows: DeadRow[] = dead.map((d) => ({
@@ -147,13 +148,13 @@ export async function removeLink(id: string): Promise<void> {
   });
 }
 
-const LEVEL_OK = (l: unknown): l is Exclude<Level, "full"> => l === "notify" || l === "ask" || l === "work";
+const LEVEL_OK = (l: unknown): l is LinkLevel => (LINK_LEVELS as readonly unknown[]).includes(l);
 
 export async function savePerson(b: Record<string, unknown>): Promise<void> {
   const id = String(b.id ?? "").trim(), name = String(b.name ?? "").trim();
   if (!id || !name) fail("a person needs an id and a name");
-  if (!LEVEL_OK(b.maxLevel)) fail("max level: notify, ask or work");
-  await store.addPrincipal({ id, name, maxLevel: b.maxLevel as Exclude<Level, "full"> });
+  if (!LEVEL_OK(b.maxLevel)) fail("max level: notify, ask, work or admin");
+  await store.addPrincipal({ id, name, maxLevel: b.maxLevel as LinkLevel });
 }
 
 /** Remove a person and every identity paired to them: their messages are dropped again. */

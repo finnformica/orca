@@ -8,6 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { previewDbName } from "../server/preview";
 import { applyEnv, envDiff, mask, pushToTemplate } from "../server/pushTemplate";
+import { canCreateDatabases } from "./pg";
+
+const createdb = await canCreateDatabases();
 
 const BASE = new URL(process.env.ORCA_TEST_DATABASE_URL || "postgres://localhost:5432/postgres");
 const SLOW = 60_000;
@@ -28,6 +31,7 @@ async function fresh(db: string, note: string) {
 }
 
 beforeAll(async () => {
+  if (!createdb) return; // PT2/PT3 skip: this role can't create the throwaway databases
   admin = new Bun.SQL(BASE.toString());
   root = mkdtempSync(join(tmpdir(), "orca-push-"));
   repoPath = join(root, "repo"); worktree = join(root, "wt"); backupDir = join(root, "backups");
@@ -44,6 +48,7 @@ beforeAll(async () => {
 }, SLOW);
 
 afterAll(async () => {
+  if (!createdb) return;
   for (const db of await ours()) await admin.unsafe(`DROP DATABASE IF EXISTS "${db}" WITH (FORCE)`);
   await admin.end();
 }, SLOW);
@@ -56,7 +61,7 @@ test("PT1: the env diff copies integration variables only, writes them as the pr
   expect(mask(SECRET)).not.toContain(SECRET.slice(2, 6));
 });
 
-test("PT2: without --confirm it prints the plan and the masked diff, and changes nothing", async () => {
+test.skipIf(!createdb)("PT2: without --confirm it prints the plan and the masked diff, and changes nothing", async () => {
   const before = sourceEnv();
   const out = await pushToTemplate({ worktree, repoPath, envFile: "backend/.env", confirm: false, backupDir });
   expect(out).toContain(`replace ${template} with a whole copy of the preview database ${preview}`);
@@ -69,7 +74,7 @@ test("PT2: without --confirm it prints the plan and the masked diff, and changes
   expect(await notes(template)).toEqual(["old template"]);
 }, SLOW);
 
-test("PT3: --confirm refuses while the template has connections, then swaps it, keeps a backup, writes the env, and the printed restore works", async () => {
+test.skipIf(!createdb)("PT3: --confirm refuses while the template has connections, then swaps it, keeps a backup, writes the env, and the printed restore works", async () => {
   const held = new Bun.SQL(urlOf(template));
   await held`SELECT 1`;
   await expect(pushToTemplate({ worktree, repoPath, envFile: "backend/.env", confirm: true, backupDir })).rejects.toThrow(/refusing: \d+ connection\(s\) open on pushtest_tmpl_/);

@@ -7,7 +7,7 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  listServers, resetServerCaches, serverGate, serverSwitcherProblems, trustedOrigin, type ServerSwitcherConfig,
+  listServers, resetServerCaches, serverGate, withSelf, serverSwitcherProblems, trustedOrigin, type ServerSwitcherConfig,
 } from "../server/servers";
 import { parseConfigDocument } from "../server/config";
 import { native } from "./happydom";
@@ -231,6 +231,16 @@ test("trustedOrigin: localhost/127.0.0.1 is trusted on the API port and the Vite
   expect(trustedOrigin("http://localhost:9999", [], "tail1234.ts.net", 8787, 9999)).toBe(true);
 });
 
+test("serverGate: a loopback caller is the owner's own browser — accepted with no whois", async () => {
+  for (const ip of ["127.0.0.1", "::ffff:127.0.0.1", "::1"]) {
+    const h = handler();
+    const res = await serverGate(req("POST", OTHER), ip, ON, h.next);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBe(OTHER);
+  }
+  expect(calls().filter((c) => c.startsWith("whois"))).toEqual([]);
+});
+
 test("serverGate: a localhost origin on the API or Vite dev port gets CORS after whois, like a tailnet page", async () => {
   const h = handler();
   const fromDevApp = await serverGate(req("GET", "http://localhost:8788"), "100.64.0.5", {}, h.next);
@@ -336,4 +346,16 @@ test("the config document validates serverSwitcher", () => {
   const repos = [{ name: "orca", repoPath: "/r", worktreeRoot: "/w", baseBranch: "main" }];
   expect(parseConfigDocument({ repos, serverSwitcher: ON }).config?.serverSwitcher).toEqual(ON);
   expect(parseConfigDocument({ repos, serverSwitcher: { enabled: 1 } }).errors).toEqual(["serverSwitcher.enabled must be true or false"]);
+});
+
+test("withSelf: a discovered row on this server's host is self on any scheme or port, and takes the self url", () => {
+  const self = { name: "box-a", url: "https://box-a.tail.ts.net" };
+  const rows = [
+    { name: "box-b", url: "http://box-b.tail.ts.net:8787", online: true },
+    { name: "box-a", url: "http://box-a.tail.ts.net:8787", online: false },
+  ];
+  expect(withSelf(rows, self)).toEqual([
+    { name: "box-a", url: "https://box-a.tail.ts.net", online: true, self: true },
+    { name: "box-b", url: "http://box-b.tail.ts.net:8787", online: true, self: false },
+  ]);
 });

@@ -98,6 +98,36 @@ test("export → import: the target stores the files as attachments and queues o
   await expect(handoff.exportPack(pack.id)).rejects.toThrow("already sent");
 });
 
+test("the Handoffs nav badge counts only outgoing packs waiting to be sent; a received pack never counts", async () => {
+  expect(await db.handoffBadge()).toEqual({ unsent: 0 });
+  const { pack } = await handoff.createPack({ to: "orca-personal-box", title: "Pending", source: "orca-flow-box" });
+  const { pack: other } = await handoff.createPack({ to: "orca-personal-box", title: "Second", source: "orca-flow-box" });
+  expect(await db.handoffBadge()).toEqual({ unsent: 2 });
+
+  // A pack from another server arrives: it needs no approval from the user, so it never counts.
+  const wire = await handoff.exportPack(pack.id);
+  await handoff.importPack({ ...wire, id: "incoming-pack-1" }, async () => {});
+  expect(await db.handoffBadge()).toEqual({ unsent: 2 });
+
+  // Acting on an outgoing pack clears it: Send marks it sent, Delete removes it.
+  await db.markHandoffSent(pack.id, "orca-personal-box");
+  await db.deleteHandoff(other.id);
+  expect(await db.handoffBadge()).toEqual({ unsent: 0 });
+});
+
+test("a received pack is marked seen once the Handoffs page opens, for its own 'new' tag — unrelated to the nav badge", async () => {
+  const { pack } = await handoff.createPack({ to: "orca-personal-box", title: "Pending", source: "orca-flow-box" });
+  const wire = await handoff.exportPack(pack.id);
+  await handoff.importPack({ ...wire, id: "incoming-pack-1" }, async () => {});
+  expect((await db.handoff("incoming-pack-1", "in"))!.seenAt).toBeUndefined();
+
+  await db.markHandoffsSeen(1_800_000_000_000);
+  expect((await db.handoff("incoming-pack-1", "in"))!.seenAt).toBe(1_800_000_000_000);
+  await db.markHandoffsSeen(1_900_000_000_000); // seen once: the first time stays
+  expect((await db.handoff("incoming-pack-1", "in"))!.seenAt).toBe(1_800_000_000_000);
+  expect((await handoff.one(pack.id))!.seenAt).toBeUndefined(); // only received packs carry it
+});
+
 test("the secret scan finds each obvious token kind, by line, without the value", () => {
   for (const [k, v] of Object.entries(fake)) {
     const hits = handoff.scanSecrets(`fine\nvalue ${v} here`, "f.md");
@@ -170,4 +200,46 @@ test("the Handoffs page's pure parts: the target server by name, never the sourc
   expect(parseHandoffDraft(path.slice("/handoffs".length))).toEqual({ repo: "orca", branch: "feat/discord", title: "Discord & co" });
   expect(parseHandoffDraft("?repo=orca")).toBeNull();
   expect([byteSize(812), byteSize(4300), byteSize(1_400_000)]).toEqual(["812 B", "4.2 KB", "1.3 MB"]);
+});
+
+test("the chat links a pack to the turn that made it: by the id the CLI prints, not by time", async () => {
+  const { ORCHESTRATOR_REPO, handoffRef, handoffRefs, handoffWidgetState } = await import("../web/src/workstream");
+  const doc = join(dir, "design.md");
+  await writeFile(doc, "# Discord design\n");
+  const out = await tool(cfg, "handoff", { _: ["create"], to: "orca-personal-box", title: "Discord setup", file: "design.md", _cwd: dir });
+  const [pack] = await handoff.list();
+  // The bridge prints the full id; the step that records this output is the link.
+  expect(out).toContain(`Pack id: ${handoffRef(pack!.id)}`);
+  expect(out).toContain("under your reply in the chat");
+  expect(handoffRefs(out)).toEqual([pack!.id]);
+
+  // Three orchestrator turns. The first made the pack; the second echoes the line later (a read of
+  // its own output); the third ran a create that failed. Only the first gets the widget.
+  const turn = async (runId: string, at: number, steps: Record<string, unknown>[]) => {
+    await db.startTurn({ repo: ORCHESTRATOR_REPO, branch: "orchestrator", runId, provider: "claude", instruction: "pack it", prompt: "p", startedAt: at });
+    await db.appendSteps(runId, 0, steps.map((s, i) => ({ at: at + i, ...s })));
+    await db.finishTurn(runId, { status: "done", response: "Done.", finishedAt: at + 100 });
+  };
+  await turn("run-made", 1_700_000_000_000, [
+    { kind: "tool", id: "t1", name: "Bash", input: { command: "orca handoff create --to orca-personal-box --title 'Discord setup'" } },
+    { kind: "result", id: "t1", output: out },
+  ]);
+  await turn("run-echo", 1_700_000_200_000, [{ kind: "result", id: "t2", output: out }]);
+  await turn("run-failed", 1_700_000_400_000, [{ kind: "result", id: "t3", isError: true, output: `Pack id: ${handoffRef("pack-never-made")}` }]);
+  const turns = await db.turns(ORCHESTRATOR_REPO, "orchestrator");
+  await handoff.linkTurns(turns);
+  expect(turns.map((t) => [t.id, t.handoffs])).toEqual([["run-made", [pack!.id]], ["run-echo", undefined], ["run-failed", undefined]]);
+
+  // The widget's states follow the pack: ready, failed after a refused send, sent, discarded.
+  expect(handoffWidgetState(await handoff.one(pack!.id))).toBe("ready");
+  expect(handoffWidgetState(await handoff.one(pack!.id), "Import refused")).toBe("failed");
+  await db.markHandoffSent(pack!.id, "orca-personal-box");
+  expect(handoffWidgetState(await handoff.one(pack!.id), "Import refused")).toBe("sent");
+  await db.deleteHandoff(pack!.id);
+  expect(handoffWidgetState((await handoff.one(pack!.id)) ?? null)).toBe("discarded");
+  expect(handoffWidgetState(undefined)).toBe("loading");
+  // A deleted pack keeps its link, so the turn still says what happened to it.
+  const again = await db.turns(ORCHESTRATOR_REPO, "orchestrator");
+  await handoff.linkTurns(again);
+  expect(again[0]!.handoffs).toEqual([pack!.id]);
 });
