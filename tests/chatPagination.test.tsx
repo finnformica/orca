@@ -159,14 +159,16 @@ test("P7: the chat's scroller keeps the gesture — reaching its end never scrol
   expect(log().className).toContain("overscroll-contain");
 });
 
-test("P6: the orchestrator's chat is one stream — worker traffic split out as collapsed, tinted blocks; older replies render compact", async () => {
+test("P6: the orchestrator's chat is one stream — a reply with something to say stays open like yours; only reports, and a reply with nothing to say, fold into tinted blocks; older replies render compact", async () => {
   const long = (i: number) => Array.from({ length: 8 }, (_, l) => `reply ${i} line ${l}`).join("\n");
-  // Some carry the recorded source, some (rows from before it) are read off their instruction.
-  const wake = (i: number, source?: "agents") => ({ id: `run-${i}`, provider: "claude", instruction: `${WORKER_EVENT_MARKER} r/feat-${i} — done\nOutcome: done`, prompt: "", response: `noted ${i}`, startedAt: 1000 + i, finishedAt: 1001 + i, source });
+  // Some carry the recorded source, some (rows from before it) are read off their instruction. A
+  // wake that finished with nothing to say for itself (`reply` left out: no text, no structured
+  // outcome) folds; one with a real reply does not, however many come after it.
+  const wake = (i: number, opts: { source?: "agents"; reply?: string } = {}) => ({ id: `run-${i}`, provider: "claude", instruction: `${WORKER_EVENT_MARKER} r/feat-${i} — done\nOutcome: done`, prompt: "", response: opts.reply ?? "", startedAt: 1000 + i, finishedAt: 1001 + i, source: opts.source });
   const mixed = { ...turn(6), instruction: `${WORKER_EVENT_MARKER} r/feat-x — done\nOutcome: ok\n\nask 6`, response: long(6), source: "human" as const };
   apiFake.turnsData.set("r::long", [
-    { ...turn(0), instruction: Array.from({ length: 12 }, (_, l) => `ask 0 line ${l}`).join("\n"), response: long(0), source: "human" }, wake(1, "agents"), wake(2), wake(3, "agents"), { ...turn(4), instruction: `ask 4a${MESSAGE_BREAK}ask 4b\n\nwith a paragraph${MESSAGE_BREAK}ask 4c`, response: long(4) },
-    wake(5), mixed, { ...turn(7), instruction: Array.from({ length: 12 }, (_, l) => `ask 7 line ${l}`).join("\n"), response: long(7) }, wake(8, "agents"),
+    { ...turn(0), instruction: Array.from({ length: 12 }, (_, l) => `ask 0 line ${l}`).join("\n"), response: long(0), source: "human" }, wake(1, { source: "agents" }), wake(2), wake(3, { source: "agents", reply: "noted 3" }), { ...turn(4), instruction: `ask 4a${MESSAGE_BREAK}ask 4b\n\nwith a paragraph${MESSAGE_BREAK}ask 4c`, response: long(4) },
+    wake(5), mixed, { ...turn(7), instruction: Array.from({ length: 12 }, (_, l) => `ask 7 line ${l}`).join("\n"), response: long(7) }, wake(8, { source: "agents", reply: "noted 8" }),
   ]);
   apiFake.queuedData.set("long", [
     { id: 1, instruction: `${WORKER_EVENT_MARKER} r/held — done\nOutcome: ok`, attachments: [] },
@@ -174,19 +176,20 @@ test("P6: the orchestrator's chat is one stream — worker traffic split out as 
   ]);
   await mount(<ChatPanel row={row} />);
   const c = container!;
-  // No channel toggle: your turns, and each run of agent turns between them as ONE collapsed block,
-  // its turns unmounted until opened — wakes 1–3 and 5. Wake 8 holds the newest answer, which is
-  // never folded: it renders as its own turn, its report folded above the reply.
+  // No channel toggle: your turns, and each run of wakes with nothing to say between them as ONE
+  // collapsed block, its turns unmounted until opened — wakes 1, 2 and 5. Wakes 3 and 8 have real
+  // replies, so each renders as its own turn, open, its report folded above the reply.
   const markers = () => [...c.querySelectorAll<HTMLElement>('[data-slot="agents-marker"]')];
-  expect(markers().map((m) => m.querySelector('[data-slot="worker-block-label"]')!.textContent!.replace(/ · \d\d:\d\d.*$/, ""))).toEqual(["3 worker reports · 3 replies", "1 worker report · 1 reply"]);
+  expect(markers().map((m) => m.querySelector('[data-slot="worker-block-label"]')!.textContent!.replace(/ · \d\d:\d\d.*$/, ""))).toEqual(["2 worker reports · 2 replies", "1 worker report · 1 reply"]);
   for (const m of markers()) {
     expect(m.className).toContain("bg-geist-blue/5"); // a style of its own, apart from your bubbles
     expect(m.querySelector("button")!.getAttribute("aria-expanded")).toBe("false");
   }
-  for (const n of [1, 2, 3, 5]) expect(c.textContent).not.toContain(`noted ${n}`);
+  expect(c.textContent).toContain("noted 3"); // open on its own, between the two folded runs
   expect(c.textContent).toContain("noted 8");
+  for (const n of [1, 2, 5]) expect(c.textContent).not.toContain(`r/feat-${n} — done`); // folded: unmounted until opened
   await act(async () => { markers()[0]!.querySelector("button")!.click(); await flush(); });
-  expect(c.textContent).toContain("noted 2"); // expanded inline
+  expect(c.textContent).toContain("r/feat-2 — done"); // expanded inline
   // A wake that carried your message AND a report: your words in the bubble, the report split out
   // above it as its own collapsed block.
   const sixth = [...c.querySelectorAll<HTMLElement>('[data-slot="chat-turn"]')].find((t) => t.textContent!.includes("reply 6 line 0"))!;
