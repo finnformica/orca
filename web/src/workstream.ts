@@ -3658,7 +3658,7 @@ export const longMessage = (text: string): boolean => text.split("\n").length > 
 // (History: a Chat | Agents toggle split them into two channels; a wake carrying your message AND
 // reports counted as yours, so most worker traffic never reached Agents — the user asked for this.)
 
-type Sourced = { source?: TurnSource; instruction?: string; prompt?: string; finishedAt?: number; startedAt?: number };
+type Sourced = { source?: TurnSource; instruction?: string; prompt?: string; finishedAt?: number; startedAt?: number; response?: string; structured?: unknown };
 
 /** A turn's source: recorded since migration 18; a row without it (a worker's turn, a client ahead of
  *  the backfill) is read off its instruction the same way. */
@@ -3680,17 +3680,26 @@ export const integrationState = (t: { finishedAt?: number; failed?: boolean; sto
 export const integrationPreview = (text: string, max = 120): string => clip((text.split("\n").find((l) => l.trim()) ?? "").trim(), max);
 
 export type ChatItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] } | { kind: "integration"; turn: T; messages: IntegrationMessage[] };
-/** What the orchestrator's chat renders: your turns, with each run of agent turns between them as one
- *  collapsed block, and each wake an outside message caused as its own activity row (never your
- *  bubble, even when it holds the newest answer). `keepOut` is a turn that never folds into a block:
- *  the newest answer, which the chat always shows (see newestMessages). */
+
+/** A worker-woken turn worth keeping in the open: it has something to say, not just the worker
+ *  reports that woke it. A wake that finished with no text and no structured outcome — only tool
+ *  steps, nothing to report — has nothing worth keeping visible, so it still folds. */
+const hasReply = (t: Sourced): boolean => Boolean(t.finishedAt) && (Boolean(t.response?.trim()) || Boolean(t.structured));
+
+/** What the orchestrator's chat renders: your turns, with the worker REPORTS that woke a reply folded
+ *  into it (ChatTurn's own WorkerBlock) but the reply itself always in the open, in order, like a
+ *  reply to a human turn. Only a worker-woken turn with nothing to show for itself — no reply yet, or
+ *  one that finished with no text and no structured outcome — folds into one collapsed run with its
+ *  neighbours; an outside message's wake is its own activity row (never your bubble, even when it
+ *  holds the newest answer). `keepOut` is a turn that never folds into a block: the newest answer,
+ *  which the chat always shows (see newestMessages). */
 export function chatItems<T extends Sourced>(turns: T[], keepOut?: T): ChatItem<T>[] {
   const out: ChatItem<T>[] = [];
   for (const t of turns) {
     const last = out[out.length - 1];
     const outside = integrationTurn(t);
     if (outside) out.push({ kind: "integration", turn: t, messages: outside });
-    else if (sourceOf(t) === "human" || t === keepOut) out.push({ kind: "turn", turn: t });
+    else if (sourceOf(t) === "human" || t === keepOut || hasReply(t)) out.push({ kind: "turn", turn: t });
     else if (last?.kind === "agents") last.turns.push(t);
     else out.push({ kind: "agents", turns: [t] });
   }

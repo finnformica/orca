@@ -783,23 +783,48 @@ test("your newest message and the newest answer are never clamped or folded; old
   expect(clamped()).toEqual(["OLD_ASK", "OLD_REPLY"]);
 });
 
-test("the orchestrator's worker reports fold into one ⚙ block, not shown as something you typed", async () => {
+test("a worker-woken reply is always open; only the reports that woke it fold into one ⚙ block", async () => {
   apiFake.turnsData.set("r::feat", [
     { id: "run-1", provider: "claude", instruction: '[worker finished] r/a "A" — done\nOutcome: Added it.\nFull turn: orca read --run x\n\n[worker finished] r/b "B" — error\nResponse: boom', prompt: "p", response: "A is done; B failed, I've resent it.", finishedAt: 2 },
     { id: "run-2", provider: "claude", instruction: "what now?", prompt: "p", response: "Waiting on C.", finishedAt: 4 },
   ]);
   await mount(base);
-  const marker = container!.querySelector('[data-slot="agents-marker"]')!;
-  expect(marker.querySelector('[data-slot="worker-block-label"]')!.textContent).toMatch(/^2 worker reports · 1 reply/);
-  await act(async () => { marker.querySelector("button")!.click(); await flush(); });
-  await act(async () => { marker.querySelector<HTMLElement>('[data-slot="turn-reports"] button')!.click(); await flush(); });
-  const reports = container!.querySelector('[data-slot="worker-reports"]')!;
-  expect([...reports.querySelectorAll("summary")].map((s) => s.textContent)).toEqual(['⚙ r/a "A" — done', '⚙ r/b "B" — error']);
-  expect(reports.textContent).toContain("Outcome: Added it."); // the full report is behind the toggle
+  // run-1 has a real reply, so it is its own turn, not folded into a run of agent turns.
+  expect(container!.querySelector('[data-slot="agents-marker"]')).toBeNull();
   expect(text()).toContain("A is done; B failed, I've resent it.");
+  // Only the reports that woke it fold, in their own block on that turn.
+  const reports = container!.querySelector('[data-slot="turn-reports"]')!;
+  expect(reports.querySelector('[data-slot="worker-block-label"]')!.textContent).toBe("2 worker reports");
+  expect(reports.querySelector('[data-slot="worker-reports"]')).toBeNull(); // collapsed by default
+  await act(async () => { reports.querySelector("button")!.click(); await flush(); });
+  const open = container!.querySelector('[data-slot="worker-reports"]')!;
+  expect([...open.querySelectorAll("summary")].map((s) => s.textContent)).toEqual(['⚙ r/a "A" — done', '⚙ r/b "B" — error']);
+  expect(open.textContent).toContain("Outcome: Added it."); // the full report is behind the toggle
   // A message you typed is still your bubble, outside the block.
   expect([...container!.querySelectorAll('[data-slot="chat-user-text"]')].map((u) => u.textContent)).toEqual(["what now?"]);
-  expect(marker.contains(container!.querySelector('[data-slot="chat-user"]'))).toBe(false);
+  expect(reports.contains(container!.querySelector('[data-slot="chat-user"]'))).toBe(false);
+});
+
+test("a worker-woken reply stays visible after a newer worker-woken reply arrives; a wake with nothing to say still folds", async () => {
+  const report = (name: string) => `[worker finished] r/${name} "Feature ${name}" — done\nOutcome: Shipped it.`;
+  apiFake.turnsData.set("r::feat", [
+    { id: "run-1", provider: "claude", instruction: report("a"), prompt: "p", response: "Reply A: shipped and verified.", finishedAt: 2 },
+    { id: "run-2", provider: "claude", instruction: report("b"), prompt: "p", response: "Reply B: shipped and verified too.", finishedAt: 4 },
+    // A wake with nothing to say for itself — no text, no structured outcome — still folds.
+    { id: "run-3", provider: "claude", instruction: report("c"), prompt: "p", response: "", finishedAt: 6 },
+    { id: "run-4", provider: "claude", instruction: "thanks", prompt: "p", response: "You're welcome.", finishedAt: 8 },
+  ]);
+  await mount(base);
+  // Both real replies stay in the open, each its own turn — run-2 finishing later does not fold run-1
+  // away.
+  expect(text()).toContain("Reply A: shipped and verified.");
+  expect(text()).toContain("Reply B: shipped and verified too.");
+  expect(container!.querySelectorAll('[data-slot="turn-reports"]').length).toBe(2);
+  // run-3 has no reply worth keeping open: it folds into its own run.
+  const marker = container!.querySelector('[data-slot="agents-marker"]')!;
+  expect(marker).not.toBeNull();
+  expect(marker.querySelector('[data-slot="worker-block-label"]')!.textContent).toMatch(/^1 worker report · 1 reply/);
+  expect(text()).toContain("You're welcome.");
 });
 
 test("a worker report waiting in the queue is a muted system line too, not a queued prompt", async () => {
