@@ -2502,6 +2502,13 @@ export function heavyHeader(view: { cpu?: { used: number; budget: number }; memo
   };
 }
 
+/** The leak detector's line (server/heavyLeaks.ts): heavy processes in the agents' slice with no
+ *  slot. `unqueued heavy: 2 (tsc, vitest)`; undefined before the first pass. Pure. */
+export function unqueuedHeavyText(u: { count: number; names: string[] } | undefined): string | undefined {
+  if (!u) return undefined;
+  return u.count > 0 ? `unqueued heavy: ${u.count} (${u.names.join(", ")})` : "unqueued heavy: 0";
+}
+
 // ---- review signal: who approved, what humans said, what the AI reviewers flagged, what's open ----
 // Pure derivations over gh.reviewSignal (one PR's reviews, comments and inline threads), shared by
 // the list row's review cluster and the PR page's Review panel.
@@ -3041,7 +3048,8 @@ export type MachineReport = {
   /** `at`: the newest sample's time (the answer's time when there is none). */
   instance: string; at: number; cores: number; memTotalGb: number; sliceMaxGb?: number; diskCapMBs: number; stepMs: number;
   summary: MachineSummary;
-  heavy: { running: number; queued: number };
+  /** `unqueued`: the leak detector's newest pass (server/heavyLeaks.ts); absent before the first one. */
+  heavy: { running: number; queued: number; unqueued?: { count: number; names: string[] } };
   /** The last hour of 15 s samples, oldest first (`--json` only shows them). */
   samples: LiveSample[];
 };
@@ -3051,7 +3059,8 @@ const fmtSpan = (ms: number) => (ms >= 60_000 ? `${Math.round(ms / 60_000)} min`
 /** `orca machine` as plain text: one row per measure, a column per window. Pure. */
 export function machineText(r: MachineReport): string {
   const head = `${r.instance} · ${r.cores} cores · ${r.memTotalGb} GB RAM · a sample every ${Math.round(r.stepMs / 1000)} s · newest ${new Date(r.at).toISOString().replace("T", " ").slice(0, 19)} UTC`;
-  const heavy = `Heavy queue: ${r.heavy.running} running, ${r.heavy.queued} queued`;
+  const leaks = unqueuedHeavyText(r.heavy.unqueued);
+  const heavy = `Heavy queue: ${r.heavy.running} running, ${r.heavy.queued} queued${leaks ? ` · ${leaks}` : ""}`;
   const limits = `Disk cap ${r.diskCapMBs} MB/s${r.sliceMaxGb ? ` · agents memory limit ${r.sliceMaxGb} GB` : ""}`;
   if (!r.summary.now) return [head, "No samples yet: the bridge samples every 15 s and starts empty after a restart.", heavy, limits].join("\n");
   const cols = MACHINE_WINDOWS.map(([n]) => r.summary[n]);

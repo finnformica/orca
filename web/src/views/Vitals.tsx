@@ -20,7 +20,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
-import { HISTORY_RANGES, countMax, liveCharts, nearestAt, usesLiveSource, headerUsage, heavyHeader, instanceStatus, heavyQueueRows, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { HISTORY_RANGES, countMax, liveCharts, nearestAt, usesLiveSource, headerUsage, heavyHeader, instanceStatus, heavyQueueRows, hostHints, unqueuedHeavyText, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StackedChart, StatusDot, UsageSkeleton, VCard, type StackBand } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
@@ -314,6 +314,8 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   // tasks waiting on the disk too), so on the % axis it would read as part of the stack.
   const loadAt = (at: number) => nearestAt(live?.loadPerCore ?? [], at)?.v;
   const heavyTop = heavyHeader(h?.heavy);
+  const leaks = h?.heavy?.unqueued;
+  const leakText = unqueuedHeavyText(leaks);
   const narrow = useNarrow();
   return (
     <VCard
@@ -352,14 +354,16 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
           <Tip label={cost.detail}><span className="tabular-nums">{cost.value}{h?.rate?.source === "estimate" && <span className="text-muted-foreground ml-1 text-xs">est.</span>}</span></Tip>
         ) : "—"}</Detail>
       </div>
-      {heavyRows.length > 0 && (
+      {(heavyRows.length > 0 || (leaks?.count ?? 0) > 0) && (
         <div data-slot="heavy-queue" className="border-b px-4 py-3">
           <div className="text-muted-foreground mb-1.5 text-xs">Heavy commands · orca-run{heavyTop.cpu && <span data-slot="heavy-cpu" className="tabular-nums"> · {heavyTop.cpu}</span>}{heavyTop.memory && (
             <span data-slot="heavy-memory" data-over={heavyTop.memoryOver || undefined} className={cn("tabular-nums", heavyTop.memoryOver && "text-geist-warning-fg")}> · {heavyTop.memory}</span>
+          )}{leakText && (
+            <Tip label="Heavy processes in the agents' slice with no orca-run slot. The queue does not see them."><span data-slot="heavy-unqueued" data-leak={(leaks?.count ?? 0) > 0 || undefined} className={cn("tabular-nums", (leaks?.count ?? 0) > 0 && "text-geist-warning-fg")}> · {leakText}</span></Tip>
           )}</div>
           {/* Many rows (a busy queue) scroll inside the card instead of growing it. On a phone the rows
               keep their whole text and scroll sideways too; on a desktop a long command truncates. */}
-          <ScrollArea viewportClassName="max-h-64" horizontal={narrow}>
+          {heavyRows.length > 0 && <ScrollArea viewportClassName="max-h-64" horizontal={narrow}>
           <ul data-slot="heavy-list" className={cn("divide-y pr-2.5", narrow && "w-max min-w-full pb-2.5")}>
             {heavyRows.map((r) => (
               <li key={r.id} data-slot="heavy-row" data-state={r.state} className="flex items-center gap-2 py-1.5 text-[13px] whitespace-nowrap">
@@ -373,7 +377,7 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
               </li>
             ))}
           </ul>
-          </ScrollArea>
+          </ScrollArea>}
         </div>
       )}
       {(usesLiveSource(hours) && liveAnswer === null) || history === null ? (

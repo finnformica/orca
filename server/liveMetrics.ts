@@ -12,6 +12,7 @@ import * as os from "os";
 import { parseProcStat, type ProcStatTimes } from "./health";
 import * as cgroup from "./cgroup";
 import * as heavy from "./heavy";
+import { unqueuedSummary } from "./heavyLeaks";
 import { run } from "./run";
 import * as db from "./db";
 import * as lease from "./lease";
@@ -366,6 +367,8 @@ export function liveAnswer(hours: number, o: { sliceMaxGb?: number; now?: number
 /** The agents' slice MemoryMax the charts draw, when this box runs agents in it. */
 export const sliceMaxGbHere = (): number | undefined => (cgroup.available() ? cgroup.agentsSliceMaxGb() : undefined);
 
+const unqueuedField = () => { const u = unqueuedSummary(); return u ? { unqueued: { count: u.count, names: u.names } } : {}; };
+
 /** `GET /api/machine` and `orca machine`: the last hour of the SAME ring the card reads (through
  *  `liveAnswer`, as /api/health/live does), its windows (`machineSummary`, over the card's
  *  `liveCharts`), and the heavy queue's counts. */
@@ -375,7 +378,7 @@ export function machineReport(instance: string, o: { now?: number; sliceMaxGb?: 
   return {
     instance, at: a.samples.at(-1)?.at ?? o.now ?? Date.now(), cores: a.cores, memTotalGb: a.memTotalGb,
     ...(a.sliceMaxGb ? { sliceMaxGb: a.sliceMaxGb } : {}), diskCapMBs: a.diskCapMBs, stepMs: a.stepMs,
-    summary: machineSummary(a.samples, a.cores), heavy: { running: q.running.length, queued: q.queued.length }, samples: a.samples,
+    summary: machineSummary(a.samples, a.cores), heavy: { running: q.running.length, queued: q.queued.length, ...unqueuedField() }, samples: a.samples,
   };
 }
 

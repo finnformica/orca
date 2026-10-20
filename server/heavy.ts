@@ -379,12 +379,15 @@ export function slots(): SlotManager {
 
 /** A revoked slot's command: stop its scope (the whole tree) and its `orca-run` client. */
 function stopEntry(entry: HeavyEntry): void {
-  if (entry.unit) {
-    try {
-      Bun.spawn(["systemctl", "--user", "stop", `${entry.unit}.scope`], { stdout: "ignore", stderr: "ignore", env: { ...process.env, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 0}` } });
-    } catch { /* no systemctl */ }
-  }
+  if (entry.unit) stopHeavyScope(entry.unit);
   if (entry.pid) { try { process.kill(entry.pid, "SIGTERM"); } catch { /* already gone */ } }
+}
+
+/** Stop a slot's scope and everything left in it. A scope that is already gone is a no-op. */
+export function stopHeavyScope(unit: string): void {
+  try {
+    Bun.spawn(["systemctl", "--user", "stop", `${unit}.scope`], { stdout: "ignore", stderr: "ignore", env: { ...process.env, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 0}` } });
+  } catch { /* no systemctl */ }
 }
 
 // ---- failed scopes ----
