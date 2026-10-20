@@ -60,7 +60,9 @@ describe("POST /api/voice/transcribe", () => {
     const ai = fakeOpenAI(() => Response.json({ text: "x" }));
     const big = await handleTranscribe(upload(MAX_AUDIO_BYTES + 1), { env, fetch: ai.fetch });
     expect(big.status).toBe(413);
-    const declared = await handleTranscribe(upload(4, "audio/webm", { "content-length": String(MAX_AUDIO_BYTES * 2) }), { env, fetch: ai.fetch });
+    // A stub: a real Request computes its own content-length. Its body must never be read.
+    const huge = { headers: new Headers({ "content-length": String(MAX_AUDIO_BYTES * 2) }), formData: () => { throw new Error("body read"); } } as unknown as Request;
+    const declared = await handleTranscribe(huge, { env, fetch: ai.fetch });
     expect(declared.status).toBe(413);
     expect(ai.seen).toHaveLength(0);
   });
