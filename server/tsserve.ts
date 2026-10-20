@@ -35,17 +35,16 @@ export function certHost(status: unknown): string | undefined {
   return name && certs.includes(name) ? name : undefined;
 }
 
-let cached: { host: string | undefined } | undefined;
-/** The HTTPS host for previews: `ORCA_PREVIEW_HTTPS_HOST`, else the tailnet cert name (read once). */
+let cached: string | undefined;
+/** The HTTPS host for previews: `ORCA_PREVIEW_HTTPS_HOST`, else the tailnet cert name. A found name
+ *  is kept; a miss is read again next time (tailscaled down for a moment must not disable HTTPS). */
 export function httpsHost(): string | undefined {
   if (process.env.ORCA_PREVIEW_HTTPS_HOST) return process.env.ORCA_PREVIEW_HTTPS_HOST;
   if (!cached) {
     const r = run(["status", "--json"]);
-    let host: string | undefined;
-    try { host = r.ok ? certHost(JSON.parse(r.out)) : undefined; } catch { host = undefined; }
-    cached = { host };
+    try { cached = r.ok ? certHost(JSON.parse(r.out)) : undefined; } catch { cached = undefined; }
   }
-  return cached.host;
+  return cached;
 }
 
 /** Should this machine serve secure-context previews over HTTPS? `ORCA_PREVIEW_HTTPS`: `0` off, `1`
