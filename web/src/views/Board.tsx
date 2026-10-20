@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
-import { GrantNote, OrchStatusNote, Skeleton, UpkeepNote } from "@/components/console";
+import { GrantNote, OrchStatusNote, RepoBadge, Skeleton, UpkeepNote } from "@/components/console";
 import { PreviewControl } from "./PreviewControl";
 import { StatusHoverCard } from "./StatusCard";
 import { TerminalDialog } from "@/components/Terminal";
@@ -131,10 +131,6 @@ function WorkstreamCardSkeleton() {
     </div>
   );
 }
-
-const Eyebrow = ({ repo }: { repo: string }) => (
-  <div className="text-muted-foreground min-w-fit text-[10px] font-semibold tracking-widest uppercase">{repo}</div>
-);
 
 // External destination link (opens elsewhere) — labelled + trailing arrow so it reads as "go there",
 // distinct from the action buttons in the footer.
@@ -261,10 +257,10 @@ export function WorkstreamCard({ row }: { row: Row }) {
 
   return (
     <div className={`bg-card relative flex flex-col rounded-lg border ${dense ? "gap-1 p-2" : "gap-2 p-3"}`}>
-      {/* Meta strip: repo (index tab) on the left, "open elsewhere" destinations on the right. */}
+      {/* Meta strip: "open elsewhere" destinations on the right. The repo itself is the badge beside
+          the title below, not here any more. */}
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
         <div className="flex min-w-0 items-center gap-1.5">
-          <Eyebrow repo={row.repo} />
           {row.orchestrated && (
             <Tip label="Started or continued by the orchestrator, which hears when its agent finishes">
               <span aria-label="Orchestrated">
@@ -291,6 +287,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
       {/* Identity: the title anchors the card; prompt is supporting context. */}
       <div className="space-y-0.5">
         <div className="flex min-w-0 items-center gap-1.5">
+          <RepoBadge repo={row.repo} />
           {titleTo ? (
             <button type="button" onClick={() => navigate(titleTo)} className="text-foreground block min-w-0 truncate text-left text-sm font-medium hover:underline">
               {row.title}

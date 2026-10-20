@@ -451,7 +451,9 @@ describe("agents list by its own width", () => {
     const relayout = async (px: number) => { fakeLayout(px); await act(async () => { await store.refresh(); await flush(); await flush(); }); };
     await relayout(700); // Status leads the subline
     expect(heads()).toEqual(["Workstream", "PR", "Checks & review", "Actions"]);
-    expect(rowOf("feat-ci").querySelector('[data-slot="row-subline"] > [data-slot="folded-status"] [data-slot="run-status"]')).not.toBeNull();
+    // The folded subline shows the status LABEL (StatusLabel), not the duration beside it — that is
+    // the first thing dropped behind +N when space runs out (see the dedicated test below).
+    expect(rowOf("feat-ci").querySelector('[data-slot="row-subline"] > [data-slot="folded-status"] [data-slot="status-trigger"]')).not.toBeNull();
     await relayout(600); // the checks follow the PR number
     expect(heads()).toEqual(["Workstream", "PR", "Actions"]);
     expect([...rowOf("feat-ci").querySelectorAll<HTMLElement>('[data-slot="row-pr-line"] > [data-subline-item]')].map((i) => i.dataset.sublineItem)).toEqual(["state", "pr", "checks", "review"]);
@@ -465,6 +467,23 @@ describe("agents list by its own width", () => {
     await relayout(1200); // space returns: every column back
     expect(heads()).toEqual(["Workstream", "Status", "PR", "Checks & review", "Actions"]);
     expect(rowOf("feat-ci").querySelector('[data-slot="folded-status"]')).toBeNull();
+  });
+
+  test("the folded subline drops the elapsed time first: it is the least relevant item beside the status", async () => {
+    seed(); // local-run is running — its elapsed time (StatusDuration) joins the subline beside the status label
+    fakeLayout(500); // fold.status: the status label and the running duration both fold into the subline
+    await mount();
+    const run = rowOf("local-run");
+    const items = [...run.querySelectorAll<HTMLElement>('[data-slot="row-subline"] > [data-subline-item]')].filter((i) => i.textContent);
+    const keys = items.map((i) => i.dataset.sublineItem);
+    // Placed last: sublineOverflow hides a trailing run in array order, so the last item is always
+    // the first candidate dropped behind +N.
+    expect(keys[keys.length - 1]).toBe("statusDuration");
+    expect(keys.slice(0, 2)).toEqual(["status", "state"]); // the label and the lane pill still lead
+    const hiddenKeys = items.filter((i) => i.getAttribute("aria-hidden") === "true").map((i) => i.dataset.sublineItem);
+    expect(hiddenKeys).toContain("statusDuration"); // the timer goes...
+    expect(hiddenKeys).not.toContain("status"); // ...while the status label...
+    expect(hiddenKeys).not.toContain("state"); // ...and the lane pill stay visible
   });
 
   test("a narrow list stacks its rows on a wide viewport (the docked panel open); no instruction, plan or grant line there", async () => {
@@ -499,6 +518,9 @@ describe("agents list by its own width", () => {
   test("a wide list keeps the grid; a subline that does not fit hides its tail behind +N, listed in full", async () => {
     fakeLayout(1200);
     seed();
+    // Model + preview + diffstat alone (now the repo badge sits by the title, not in the subline)
+    // fit inside 200px — an error makes a real 4th item, so this still exercises overflow.
+    apiFake.agentsData = [...(apiFake.agentsData ?? []), { branch: "feat-ci", worktreePath: "/wt/feat-ci", agentStatus: "error", agentError: "Something broke" }];
     await mount();
     expect(container!.querySelector<HTMLElement>('[data-slot="workstream-list"]')!.dataset.layout).toBe("grid");
     const ci = rowOf("feat-ci");

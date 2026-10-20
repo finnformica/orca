@@ -2088,6 +2088,34 @@ export function verifiedTip(mark: VerifiedMark, state: VerifiedState, head?: str
     : `Verified by ${who}${when}${on}. Ask a coworker to approve it.`;
 }
 
+// ---- repo badge: a stable colour per repo name ----
+
+/** A fixed set of soft pastel tones for the repo badge (console.tsx RepoBadge), the Verified
+ *  badge's own recipe repeated per colour (`bg-<colour>/15-20`, a darker text shade, a dark-mode
+ *  variant where the background token itself is too light to read as text — geist-blue/green are
+ *  dark enough to use directly, like Pill's own blue/green/amber/purple tones do). Order is part of
+ *  the contract: `repoBadgeToneIndex` picks by position, so never reorder or remove an entry —
+ *  append only. */
+export const REPO_BADGE_TONES = [
+  "bg-geist-blue/15 text-geist-blue",
+  "bg-geist-green/15 text-geist-green",
+  "bg-geist-teal/20 text-teal-700 dark:text-teal-300",
+  "bg-geist-amber/15 text-geist-warning-fg",
+  "bg-purple-500/15 text-purple-700 dark:text-purple-400",
+  "bg-pink-500/15 text-pink-700 dark:text-pink-400",
+] as const;
+
+/** A stable index into REPO_BADGE_TONES for a repo name: same name, same colour, every time — a
+ *  plain string hash (djb2-ish), not cryptographic, only spread across the fixed palette. Pure. */
+export function repoBadgeToneIndex(repo: string): number {
+  let h = 5381;
+  for (let i = 0; i < repo.length; i++) h = ((h * 33) ^ repo.charCodeAt(i)) >>> 0;
+  return h % REPO_BADGE_TONES.length;
+}
+
+/** The repo badge's classes for this repo name. Pure. */
+export const repoBadgeTone = (repo: string): string => REPO_BADGE_TONES[repoBadgeToneIndex(repo)]!;
+
 export type PillTone = "default" | "blue" | "green" | "purple" | "teal" | "amber";
 /** The lane's own pill, with no auto-merge override — the DONE lane's "Merged" rather than its
  *  swimlane title "Done today". */

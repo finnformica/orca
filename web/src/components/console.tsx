@@ -5,7 +5,7 @@ import { useId, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { Tip } from "@/components/ui/tip";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { browserKillLabel, grantScopeLabel, nearestAt, niceMax, orchStatusText, sparklineSegments, stackRuns, timeTicks, type StackPoint, upkeepLabel, usageZone, type BrowserKillRecord, type GrantScopeNote, type OrchStatus, type UpkeepRecord } from "../workstream";
+import { browserKillLabel, grantScopeLabel, nearestAt, niceMax, orchStatusText, repoBadgeTone, sparklineSegments, stackRuns, timeTicks, type StackPoint, upkeepLabel, usageZone, type BrowserKillRecord, type GrantScopeNote, type OrchStatus, type UpkeepRecord } from "../workstream";
 
 /** A card: hairline border, no shadow, a 48px header row with the title left and controls right. */
 export function VCard({ title, aside, children, className, slot, bodyClass, onHeaderClick, expanded }: {
@@ -106,6 +106,22 @@ export function Pill({ children, tone = "default", slot }: { children: ReactNode
   return (
     <span data-slot={slot ?? "pill"} className={cn("inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2.5 text-xs font-medium whitespace-nowrap [&>svg]:size-3", tones[tone])}>
       {children}
+    </span>
+  );
+}
+
+/** A workstream's repo, as a small badge beside its title (the Agents rows, the Board card) — in
+ *  place of the old separate repo text/column. The colour is a stable hash of the repo name
+ *  (workstream.repoBadgeTone), so the same repo always reads the same colour: a quick visual
+ *  grouping on an aggregated, multi-repo board. It follows the title's own width rules but with a
+ *  much higher shrink priority (`shrink-[999]`, no min-width floor from `truncate`'s own
+ *  `overflow:hidden`), so it truncates — and, squeezed enough, shrinks away to nothing — before the
+ *  title gives up any of its own room. */
+export function RepoBadge({ repo, className }: { repo: string; className?: string }) {
+  return (
+    <span data-slot="repo-badge" title={repo}
+      className={cn("inline-flex h-5 min-w-0 max-w-28 shrink-[999] items-center truncate rounded-full px-1.5 text-[11px] font-medium whitespace-nowrap", repoBadgeTone(repo), className)}>
+      {repo}
     </span>
   );
 }
