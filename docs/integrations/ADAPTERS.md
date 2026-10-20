@@ -83,7 +83,9 @@ The data shapes (`shared/integrations.ts`):
 export type Capabilities = {
   inbound: "socket" | "poll" | "relay" | "none";
   outbound: boolean;
-  threads: boolean; edits: boolean; reactions: boolean; attachments: boolean;
+  threads: boolean; edits: boolean; reactions: boolean;
+  attachments: boolean;                                    // outbound files (msg.attachments)
+  maxAttachments?: number; maxAttachmentBytes?: number;    // the platform's file limits
   maxTextLength: number;
   rate?: { perTarget: number; windowMs: number };
 };
@@ -94,7 +96,7 @@ export type OutboundMessage = {
   text: string; title?: string; url?: string; topic?: Topic;
   replyToExternalMsgId?: string; references?: string[];   // email threading
   edit?: boolean;                                          // replace Target.messageId
-  attachments?: string[];
+  attachments?: string[];                                  // orca-attachment://<id>/<name> refs
 };
 
 export type SendResult =
@@ -158,6 +160,21 @@ export type InboundMessage = {
     platform gives it.
   - `retryable: false` for bad auth, a missing channel, or a bad message.
 - The core paces sends per target from `caps.rate`. Set it when the platform has a limit.
+- Send `msg.attachments` as files on the same message. Each is an `orca-attachment://<id>/<name>`
+  ref (`orca post --attach`). The delivery stores only the refs.
+  - Read the bytes with `db.attachment(attachmentIdOf(ref))` at each send. A retry then sends them
+    again.
+  - A ref with no row: return `retryable: false`. A database error may throw: the core retries.
+  - Set `caps.maxAttachments` and `caps.maxAttachmentBytes` to the platform's limits. Check the
+    bytes with `attachmentRefusal` and return `retryable: false` when it refuses. Never cut the
+    list or skip a file.
+  - Discord sends multipart/form-data: `payload_json` and `files[0]`, `files[1]` … (10 files, 10 MiB
+    a file).
+- Set `caps.attachments: false` when the platform cannot take files (Slack, webhook, web, Linear
+  now). The core then never calls `send` with attachments:
+  - `orca post --attach` refuses before it queues: `attachments not supported: …`.
+  - The dispatcher ends an old delivery with the same error (not retryable), and the user gets
+    the `integration_failed` notification.
 
 ### `handle(req, body)`
 
@@ -325,6 +342,7 @@ first (section 7).
 | `orca post --link <id> [--thread <id> \| --repo r --branch b] "<text>"` | Publishes `orca.message` with a delivery to the link. With `--repo` and `--branch` it continues that workstream's thread on the link, or starts it. |
 | `orca post --reply "<text>"` | Answers the outside message that woke the orchestrator: its link, its place (the DM for a catch-all link) and its thread. The grant check runs on that link. A wake from your own chat or a worker report has nothing to answer, so `--reply` fails there. |
 | `orca post --reply --thread "<text>"` | Answers the same way, but opens a thread for the answer where the adapter can (Discord: on the mention). Use it for a long answer, a job with many steps, a workstream or a long conversation. The thread that the send returns is recorded as the workstream's thread on the link. |
+| `orca post … --attach <id\|path>` | Repeatable, on every form above. Sends each file with the post (Discord: an image shows inline). The value is an attachment id (from `## Attachments`) or an absolute path on the orchestrator's machine, stored like an upload. Refused before it queues when the adapter has no file support, when there are too many files or a file is too large, or when a text file holds an obvious secret (the handoff scan). A wake from an outside message may attach only ids. |
 | `orca post --link <catch-all>` | Refused. A catch-all link (`external_id` `*`) only receives: it names no place to post to. |
 | `orca thread link <adapter> <thread-id> --repo r --branch b [--link <id>]` | Binds an external thread to a workstream. Replies in it then go to the workstream (with a `work` grant on its repo). |
 | `orca ask-user "<question>"` | Publishes `orca.question`. The bell shows it as `needs_input`. Subscriptions to `orca.question` also send it out (for example to your Slack DM). |

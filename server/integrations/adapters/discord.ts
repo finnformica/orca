@@ -18,10 +18,14 @@
 // `msg.thread` (`orca post --thread`) opens a thread for one post when the default is in place: on
 // the mention for a reply in a chain, on the post for a first post. In a thread or a DM it changes
 // nothing. The thread's id comes back, so the core moves the conversation (and its workstream) there.
-// Edits PATCH the message. A 429 is retryable with Discord's `retry_after`. The bot token is
+// `msg.attachments` (`orca post --attach`) go as files on the same message: multipart/form-data with
+// `payload_json`, so an image shows inline. The bytes are read from the attachment table at each
+// send, so a retry sends them again. At most 10 files and 10 MiB a file (a bot's upload limit in a
+// server without boosts); more is refused, never cut. Edits PATCH the message. A 429 is retryable with Discord's `retry_after`. The bot token is
 // `secretRef` (ORCA_SECRET_DISCORD_BOT) — never logged, never in `raw`.
 import type { Adapter, AdapterContext, Connection } from "../adapter";
-import { clip, inboundEnvelope, type Capabilities, type OutboundMessage, type SendResult, type Target, type Topic } from "../../../shared/integrations";
+import * as db from "../../db";
+import { attachmentIdOf, attachmentRefusal, clip, inboundEnvelope, type Capabilities, type OutboundMessage, type SendResult, type Target, type Topic } from "../../../shared/integrations";
 
 export const API = "https://discord.com/api/v10";
 
@@ -31,13 +35,42 @@ export const INTENTS = (1 << 0) | (1 << 9) | (1 << 12) | (1 << 15);
 /** Close codes no reconnect can fix: bad token, bad or disallowed intents, bad shard/version. */
 const FATAL_CLOSE = new Set([4004, 4010, 4011, 4012, 4013, 4014]);
 /** Discord's limits: content is cut at 2000 characters; about 5 messages per 5s per channel. */
-// `attachments: false` stays: the core's meaning of the flag is a real `orca-attachment://` ref
-// (server/attachments.ts), which this adapter does not produce. A text attachment's content goes
-// inline in `text` instead (see `attachmentText`); any other file stays a URL line.
+// `attachments: true` is OUTBOUND: `orca-attachment://` refs go as files. Inbound produces no refs:
+// a text attachment's content goes inline in `text` (see `attachmentText`); any other file stays a URL line.
+export const DISCORD_MAX_FILES = 10;
+export const DISCORD_MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const DISCORD_CAPS: Capabilities = {
-  inbound: "socket", outbound: true, threads: true, edits: true, reactions: false, attachments: false,
+  inbound: "socket", outbound: true, threads: true, edits: true, reactions: false, attachments: true,
+  maxAttachments: DISCORD_MAX_FILES, maxAttachmentBytes: DISCORD_MAX_FILE_BYTES,
   maxTextLength: 2000, rate: { perTarget: 5, windowMs: 5_000 },
 };
+
+/** One file for a message: its name, type and bytes. */
+export type DiscordFile = { name: string; type: string; bytes: Uint8Array };
+
+/** A message with files as Discord takes it: `payload_json` (the JSON body plus an `attachments`
+ *  entry for each file) and the parts `files[0]`, `files[1]` … Pure. */
+export function multipartBody(body: unknown, files: DiscordFile[]): FormData {
+  const form = new FormData();
+  form.append("payload_json", JSON.stringify({ ...(body as Record<string, unknown>), attachments: files.map((f, i) => ({ id: i, filename: f.name })) }));
+  files.forEach((f, i) => form.append(`files[${i}]`, new File([new Uint8Array(f.bytes)], f.name, { type: f.type })));
+  return form;
+}
+
+/** The files of `refs`, read from the attachment table, or the SendResult that ends the send: a
+ *  file the table lost or over Discord's limits is final; a database error throws, and the core
+ *  retries the delivery. */
+export async function loadFiles(refs: string[]): Promise<DiscordFile[] | SendResult> {
+  const files: DiscordFile[] = [];
+  for (const ref of refs) {
+    const id = attachmentIdOf(ref);
+    const row = id ? await db.attachment(id) : undefined;
+    if (!row) return { ok: false, retryable: false, error: `attachment ${ref} is gone (pruned after 30 days, or never stored)` };
+    files.push({ name: row.filename.replace(/[^\w.-]+/g, "-") || "file", type: row.mimeType || "application/octet-stream", bytes: row.bytes });
+  }
+  const refusal = attachmentRefusal("discord", DISCORD_CAPS, files.map((f) => ({ name: f.name, bytes: f.bytes.byteLength })));
+  return refusal ? { ok: false, retryable: false, error: refusal } : files;
+}
 
 /** The WebSocket constructor the Gateway uses. A test swaps in a fake server. */
 export const gateway = { WebSocket: globalThis.WebSocket as unknown as new (url: string) => WebSocketLike, baseBackoffMs: 1_000 };
@@ -53,13 +86,13 @@ export type WebSocketLike = {
 type Rest = { ok: boolean; status: number; data: Record<string, unknown>; retryAfterMs?: number; error?: string };
 
 /** One REST call. Never throws: a network error is `status: 0`. Pure I/O. */
-export async function discordApi(token: string, method: string, path: string, body?: unknown): Promise<Rest> {
+export async function discordApi(token: string, method: string, path: string, body?: unknown, files: DiscordFile[] = []): Promise<Rest> {
   try {
-    const res = await fetch(API + path, {
-      method,
-      headers: { authorization: `Bot ${token}`, "content-type": "application/json", "user-agent": "DiscordBot (https://github.com/finnformica/orca, 1)" },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
+    const agent = { authorization: `Bot ${token}`, "user-agent": "DiscordBot (https://github.com/finnformica/orca, 1)" };
+    // With files: multipart (fetch sets the boundary in content-type), else plain JSON.
+    const res = await fetch(API + path, files.length
+      ? { method, headers: agent, body: multipartBody(body ?? {}, files) }
+      : { method, headers: { ...agent, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
     const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
     if (res.ok) return { ok: true, status: res.status, data };
     // 429: `retry_after` (seconds, a float) in the body, else the Retry-After header.
@@ -458,8 +491,12 @@ export function discordAdapter(connection: Connection): Adapter {
       // A Discord thread is a channel; a reply chain lives in its channel.
       const channel = chain?.channel ?? target.threadId ?? target.externalId;
       const body = render(msg);
+      const loaded = msg.attachments?.length ? await loadFiles(msg.attachments) : [];
+      if (!Array.isArray(loaded)) return loaded;
+      // Every call that writes the message carries the files; a thread open does not.
+      const api = (method: string, path: string, b: unknown) => discordApi(token(), method, path, b, loaded);
       if (msg.edit && target.messageId) {
-        const r = await discordApi(token(), "PATCH", `/channels/${channel}/messages/${target.messageId}`, body);
+        const r = await api("PATCH", `/channels/${channel}/messages/${target.messageId}`, body);
         return r.ok ? { ok: true, externalMsgId: target.messageId, ...(target.threadId ? { threadId: target.threadId } : {}) } : failure(r);
       }
       if (chain && msg.thread) {
@@ -467,7 +504,7 @@ export function discordAdapter(connection: Connection): Adapter {
         // the answer in it. The thread's id is that message's id: the conversation moves there.
         const on = msg.replyToExternalMsgId ?? newest.get(chainKey(chain.channel, chain.root)) ?? chain.root;
         if (await openThreadOn(chain.channel, on, msg)) {
-          const r = await discordApi(token(), "POST", `/channels/${on}/messages`, body);
+          const r = await api("POST", `/channels/${on}/messages`, body);
           if (!r.ok) return failure(r);
           return { ok: true, ...(typeof r.data.id === "string" ? { externalMsgId: r.data.id } : {}), threadId: on };
         }
@@ -476,7 +513,7 @@ export function discordAdapter(connection: Connection): Adapter {
       if (chain) {
         // Reply in place: a Discord reply to the chain's newest message. A deleted one makes it a plain post.
         const key = chainKey(chain.channel, chain.root);
-        const r = await discordApi(token(), "POST", `/channels/${chain.channel}/messages`, {
+        const r = await api("POST", `/channels/${chain.channel}/messages`, {
           ...body, message_reference: { message_id: newest.get(key) ?? chain.root, fail_if_not_exists: false },
         });
         if (!r.ok) return failure(r);
@@ -484,13 +521,13 @@ export function discordAdapter(connection: Connection): Adapter {
         if (id) { remember(roots, id, chain.root); remember(newest, key, id); }
         return { ok: true, ...(id ? { externalMsgId: id } : {}), threadId: target.threadId! };
       }
-      let r = await discordApi(token(), "POST", `/channels/${channel}/messages`, body);
+      let r = await api("POST", `/channels/${channel}/messages`, body);
       // A thread id that is a message id in the link's channel names a thread nobody opened yet: the
       // core's pairing reply to a new sender, or `orca post --thread` after the open at ingest failed.
       // Threads on: open it on that message, then post again (Discord's 160004 = a thread already
       // exists there). Threads off: reply to that message in the channel instead.
       if (!r.ok && r.status === 404 && !threads && target.threadId && target.threadId !== target.externalId) {
-        r = await discordApi(token(), "POST", `/channels/${target.externalId}/messages`, { ...body, message_reference: { message_id: target.threadId, fail_if_not_exists: false } });
+        r = await api("POST", `/channels/${target.externalId}/messages`, { ...body, message_reference: { message_id: target.threadId, fail_if_not_exists: false } });
         if (!r.ok) return failure(r);
         return { ok: true, ...(typeof r.data.id === "string" ? { externalMsgId: r.data.id } : {}), threadId: target.threadId };
       }
@@ -498,7 +535,7 @@ export function discordAdapter(connection: Connection): Adapter {
         const t = await discordApi(token(), "POST", `/channels/${target.externalId}/messages/${target.threadId}/threads`, { name: clip(msg.title || msg.text.split("\n")[0] || "Orca", 90), auto_archive_duration: 1440 });
         if (t.ok || t.data.code === 160004) {
           parents.set(target.threadId, target.externalId);
-          r = await discordApi(token(), "POST", `/channels/${channel}/messages`, body);
+          r = await api("POST", `/channels/${channel}/messages`, body);
         }
       }
       if (!r.ok) return failure(r);
