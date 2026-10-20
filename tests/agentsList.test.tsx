@@ -453,7 +453,7 @@ describe("agents list by its own width", () => {
       const r = rect.call(this);
       return (this as HTMLElement).dataset?.colPart === "signals" && this.closest('[data-slot="row-pr-line"]') ? { ...r, width: 20, right: 20 } as DOMRect : r;
     };
-    await mount("/agents");
+    await mount();
     expect(heads()).toEqual(["Workstream", "PR", "Actions"]);
   });
 
