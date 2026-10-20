@@ -277,6 +277,9 @@ export function whoisVerdict(whois: unknown, allowedLogins?: string[]): WhoisVer
 /** Who is calling from this address, cached per address for five minutes. A whois that fails (not
  *  a tailnet address, no tailscale) is a refusal and is NOT cached, so a fixed daemon takes effect. */
 export async function checkCaller(ip: string, sw: ServerSwitcherConfig, now = Date.now()): Promise<WhoisVerdict> {
+  // The owner's own browser: a page on another server, calling this laptop's bridge on the machine
+  // it runs on (macOS loops a call to its own tailnet address back). whois knows no loopback.
+  if (ip === "::1" || ip.startsWith("127.")) return { ok: true, login: "loopback" };
   const hit = whoisCache.get(ip);
   if (hit && now - hit.at < WHOIS_TTL_MS) return hit.verdict;
   let whois: unknown;

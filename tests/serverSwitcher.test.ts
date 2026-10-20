@@ -231,6 +231,16 @@ test("trustedOrigin: localhost/127.0.0.1 is trusted on the API port and the Vite
   expect(trustedOrigin("http://localhost:9999", [], "tail1234.ts.net", 8787, 9999)).toBe(true);
 });
 
+test("serverGate: a loopback caller is the owner's own browser — accepted with no whois", async () => {
+  for (const ip of ["127.0.0.1", "::ffff:127.0.0.1", "::1"]) {
+    const h = handler();
+    const res = await serverGate(req("POST", OTHER), ip, ON, h.next);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBe(OTHER);
+  }
+  expect(calls().filter((c) => c.startsWith("whois"))).toEqual([]);
+});
+
 test("serverGate: a localhost origin on the API or Vite dev port gets CORS after whois, like a tailnet page", async () => {
   const h = handler();
   const fromDevApp = await serverGate(req("GET", "http://localhost:8788"), "100.64.0.5", {}, h.next);
