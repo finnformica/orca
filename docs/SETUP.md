@@ -210,6 +210,9 @@ has its own `.env`. Start from `.env.example`. This table shows all variables:
 | `ORCA_BIND` | `127.0.0.1` | The listen addresses, separated by commas. If another instance must get access to a machine, the machine binds `127.0.0.1,<tailnet-ip>`. Loopback is **not** optional: `bin/orca` and the Vite proxy of an Orca preview use it. Do not use `0.0.0.0`. |
 | `ORCA_PREVIEW_HOST` | `localhost` | The host name in preview links (`{host}` in a preview command). On the box, use its tailnet name. |
 | `ORCA_PREVIEW_BIND` | `127.0.0.1` | The address that preview services listen on (`{bind}`). On the box, use its tailnet IP. |
+| `ORCA_PREVIEW_HTTPS` | auto | `1` or `0`. Serve the previews of a `previewSecureContext` repo over HTTPS with `tailscale serve`. If it is not set, HTTPS is on when `ORCA_PREVIEW_BIND` is not loopback and the tailnet gives this machine a cert. See section 9. |
+| `ORCA_PREVIEW_HTTPS_HOST` | the ts.net name | The host name of HTTPS preview links. If it is not set, Orca reads it from `tailscale status --json`. |
+| `ORCA_TAILSCALE_CMD` | `sudo -n tailscale` | The tailscale CLI, separated by spaces. On Linux as a user that is not root, the default is `sudo -n tailscale`. Else it is `tailscale`. |
 | `ORCA_API_PORT` | `8787` | The port of the bridge. |
 | `ORCA_UI_PORT` | `8788` | The port of the Vite dev UI (only for `bun run dev`). |
 | `ORCA_STATE_DIR` | `~/.orca` | The operational files of each host: run leases, the run ledger, the working directory of the orchestrator, handoff files, the attachment cache, env backups, `autodeploy.log`. Orca keeps this directory out of all worktrees. |
@@ -299,7 +302,7 @@ auto-deploy to fail.
 | `mergePolicy` | never merge, never open PRs | `{ whenGreen: "never"\|"small"\|"any", denyPaths: [globs], autoPr: bool }`. See [WORKFLOW.md](WORKFLOW.md#from-finished-run-to-merged-pr). |
 | `modelEscalation` | `suggest` | `"apply"` pins a worker to the next higher model after two failures in sequence. |
 | `previewServices` | `[]` | `[{ name, command, open?, onStop? }]`. See [§9](#9-previews-and-the-template-database). |
-| `previewSecureContext` | `false` | Set it when the app needs a secure context (for example `crypto.randomUUID`). Then, for a laptop page on localhost, Orca forwards the preview of the box to `http://localhost:<port>`. |
+| `previewSecureContext` | `false` | Set it when the app needs a secure context (for example `crypto.randomUUID`). Then the box serves the preview over HTTPS on its ts.net name, and a laptop page on localhost gets a forward to `http://localhost:<port>`. See section 9. |
 | `previewLabel` | `preview` | The PR label that the "Add preview" action adds. |
 | `prLabels` | none | The labels in the Promote menu: `[{ name, default? }]`. |
 | `slackChannel` | none | The channel that the notify/bump message names. |
@@ -371,9 +374,33 @@ Turn on previews for each repo. Set `"features": { "previews": true }` and add o
 - `{port}`: the assigned port of this service. `{svc:<name>}`: the port of a different service.
 - `{bind}`: `ORCA_PREVIEW_BIND`, the address to listen on. `{host}`: `ORCA_PREVIEW_HOST`. Use it in
   all URLs that go to the browser.
+- `{url:<name>}`: the URL that the browser uses for a service. For an HTTPS preview, it is
+  `https://<ts.net name>:<https port>`. Else it is `http://{host}:{svc:<name>}`.
+- `{hosts}`: all host names that the browser can use, separated by commas. Use it for the allowed
+  hosts of a dev server.
 - `{db}`: a database name for each worktree (`orca_…`). `onStop` runs at teardown. Usually it
   removes this database.
 - `open: true` sets the service that the **Open** button opens.
+- `httpsNextPort: true` also serves port + 1 over HTTPS, at the HTTPS port + 1. Use it for a socket
+  that the app finds at the port + 1 of a service URL.
+
+**Secure-context previews.** Some apps need a secure context (branch-demo uses
+`crypto.randomUUID`). A plain-http tailnet URL is not a secure context. HTTP on the ts.net name does
+not work, because `*.ts.net` is HSTS-preloaded. Set `previewSecureContext: true` on the repo. Then
+each viewer gets a secure URL:
+
+- **The box UI and a phone.** The box runs `tailscale serve --bg --https=<H> http://127.0.0.1:<port>`
+  for each service. Orca selects `<H>` from `portRange`, because the tailnet ACL admits only that
+  range. The preview link is `https://<ts.net name>:<H>`. Stop removes the entries
+  (`tailscale serve --https=<H> off`). Orca does not change other serve entries.
+- **The laptop on localhost.** Orca forwards the opened service to `http://localhost:<port>`, as
+  before (`server/forward.ts`). `localhost` is a secure context.
+- **The commands.** Use `{url:<name>}` for every URL that the frontend calls, and `{hosts}` for its
+  allowed hosts. A command that still uses `http://{host}:{svc:<name>}` keeps plain http.
+
+If `tailscale serve` fails, Orca removes the entries that it added and uses plain http. The box
+needs `ORCA_PREVIEW_BIND` beyond loopback (the default box `.env` has `0.0.0.0`). The `orca` user
+needs passwordless `sudo` for `tailscale`.
 
 **Vite apps must permit the tailnet Host header.** If they do not, they answer 403 "Blocked
 request". Vite 5 has no environment variable for this. The `vite.config.ts` of the app must read a
@@ -540,7 +567,8 @@ Notes:
   worktree does not migrate the shared database.
 - On macOS, agent runs have no memory ceiling (macOS has no `systemd-run`).
 - For a repo with `previewSecureContext: true`, Orca forwards the preview of the box to `localhost`
-  for a page from localhost. Other repos open the tailnet URL of the box.
+  for a page from localhost. Other viewers open the HTTPS ts.net URL of the box (section 9). Other
+  repos open the tailnet URL of the box.
 - When the laptop sleeps, it is "down" for all work on it. Requests that Orca forwards to it fail
   until it wakes.
 

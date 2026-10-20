@@ -284,7 +284,12 @@ branch before the merge.
   - `{svc:name}`: the port of a different service.
   - `{bind}`: `ORCA_PREVIEW_BIND`.
   - `{host}`: `ORCA_PREVIEW_HOST`.
+  - `{url:name}`: the URL that the browser uses for a service (HTTPS for a secure-context preview).
+  - `{hosts}`: all host names that the browser can use, separated by commas.
   - `{db}`: a database name for each worktree, for an `onStop` drop.
+- **Secure context.** For a repo with `previewSecureContext: true`, the box serves each service over
+  HTTPS with `tailscale serve`. The box UI and a phone open the `https://…ts.net:<port>` URL. A
+  laptop page on localhost opens a localhost forward. See `docs/SETUP.md` section 9.
 - **Template database.** Some repos, for example branch-demo, give each preview its **own** Postgres
   database. Orca clones that database from `PREVIEW_TEMPLATE_DB` (`scripts/preview-db.sh create {db}`).
   Then Orca migrates it to the branch's schema. `onStop` drops it.

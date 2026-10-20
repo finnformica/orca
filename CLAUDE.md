@@ -1080,7 +1080,13 @@ silent for `PREVIEW_STALE_MS`. **URLs are per viewer:** a service carries `url`,
 loopback — its own preview bound to 127.0.0.1, or a forward (`server/forward.ts`). **The tailnet
 `url` is the default everywhere; the forward is the exception**, only for a repo with
 `previewSecureContext: true` (branch-demo: `crypto.randomUUID` is undefined on a plain-http tailnet
-name, the page was blank, and the tailnet has no HTTPS certs). For such a repo, when a preview status
+name, the page was blank). **Such a repo is also served over HTTPS on the box** (`server/tsserve.ts`):
+`preview.start` runs `sudo -n tailscale serve --bg --https=<H> http://127.0.0.1:<port>` per service
+(`<H>` from `portRange`, which the tailnet ACL admits; `httpsNextPort` adds H+1 → port+1 for a
+collab socket), `url` becomes `https://<ts.net name>:<H>`, commands read it as `{url:<svc>}` and
+`{hosts}` (`preview.expandCommand`), and stop removes exactly those entries. On when
+`ORCA_PREVIEW_BIND` is not loopback and the tailnet grants a cert (`ORCA_PREVIEW_HTTPS` 1/0
+overrides); a failed serve falls back to plain http. For such a repo, when a preview status
 is relayed from its owner (or listed for a page served from localhost — the owner tags each published
 row `secureContext`, since the viewer can't map the owner's path to a repo), the opened service's
 port is forwarded on loopback here. Without the flag no forward is opened and every device gets the
@@ -1098,7 +1104,7 @@ read yet, so its own preview would 403 the same way for a viewer not on localhos
 Plain TCP, so
 Vite's HMR websocket rides it; dropped on stop; a port a local preview holds gets no `localUrl`. The
 browser opens `localUrl` only from a page on localhost (`previewHref`), else `url` — a phone opens the
-owner's tailnet URL, which still lacks a secure context until the tailnet has HTTPS certificates.
+owner's `url` — the HTTPS ts.net one for a `previewSecureContext` repo on the box.
 **Attachments are in the database, not on a host** (`server/attachments.ts`, migration 16): the
 upload stores the bytes (20 MB per file, pruned past 30 days) and answers `orca-attachment://<id>/<name>`
 references in its `paths` field; `agent.launch` — the one place every launch passes, whether queued,
