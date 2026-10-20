@@ -36,10 +36,14 @@ has it, the card says which servers do not have it.
   - An unknown person gets a pairing code from the core. The code is a reply to their message.
   - The adapter ignores messages from bots.
 - Outbound: a post to the link's channel.
-  - A catch-all link (`external_id` `*`) only receives. It names no channel, so nothing posts to
-    it. A reply to a message on it goes to the DM or channel that the message came from. Test, a
-    subscription and `orca post --link` refuse a catch-all link at once. The dispatcher ends an
-    old delivery to `*` with the same error, and does not call Discord.
+  - A catch-all link (`external_id` `*`) names no channel. A reply to a message on it goes to
+    the DM or channel that the message came from.
+  - The orchestrator posts through the catch-all link to any channel or thread that the bot can
+    see. It names the place with `--channel` (see [Post through the catch-all link](#post-through-the-catch-all-link)).
+    A channel link only to post is not necessary.
+  - A bare `orca post --link <catch-all>` (no `--channel`, no `--reply`) is refused. Test and a
+    subscription also refuse a catch-all link, because they name no channel. The dispatcher ends
+    an old delivery to `*` with the same error, and does not call Discord.
   - The first post for a workstream starts its conversation. The core keeps its thread id. Later
     posts for the workstream continue there, and a reply there goes to the workstream.
   - A post with a title is an embed (a linked title and a colour). This matches the build posts in
@@ -193,7 +197,8 @@ Check the columns against `server/integrations/store.ts` before you run this. Th
 schema.
 
 To accept DMs, add a catch-all link (`*`). It also covers each channel that has no link of its own.
-A catch-all link only receives: Settings shows no Test for it, and nothing posts to it.
+Settings shows no Test for it, and a subscription cannot target it: neither names a channel.
+The orchestrator posts through it with `--channel` (below).
 
 ```sql
 INSERT INTO channel_link (id, user_id, integration_id, external_id, level) VALUES ('discord-dm', 'me', 'discord', '*', 'ask');
@@ -212,6 +217,24 @@ You can also add `principal` and `identity` rows by hand.
 The primary bridge reads the rows each minute. `GET /api/integrations` shows the health line:
 `connected as <bot name>`, or the reason it is down.
 
+## Post through the catch-all link
+
+One catch-all link is enough for a server. The orchestrator posts to any channel or thread that the
+bot can see:
+
+```bash
+orca post --link <catch-all id> --channel <channel id> "<text>"
+orca post --link <catch-all id> --channel <channel id> --thread <thread id> "<text>"
+```
+
+- The grant is the catch-all link's grant. `orca channels` marks the link `catch-all`.
+- `--thread <id>` posts in that thread. A Discord thread is a channel, so the post goes there.
+- `--channel` without a catch-all link is refused. A channel link already names its channel.
+- A wake from an outside message posts only where the message came from. Use `--reply` there.
+- Discord refuses a channel that the bot cannot see. The delivery then fails with Discord's error.
+
+Old channel links still work. Remove a channel link that exists only to post.
+
 ## Levels
 
 Settings shows each level by a name. The database keeps the value in the first column.
@@ -225,6 +248,11 @@ Settings shows each level by a name. The database keeps the value in the first c
 
 Only your own chat in Orca has the `full` grant. Pairing approval gives at most `work`. To make a
 person Admin, set their level in Settings after you approve them.
+
+A person is one person on every platform. The **People** section of **Integrations** shows each
+person with their identities (for example `Discord @ana`, `Slack @ana`, `Email ana@example.com`) and
+their level. Use **+ Identity** to add an identity by hand. To join a pairing from another platform
+to the same person, select that person in **Approve**.
 
 The orchestrator's tool route checks each verb against the grant of the message. A Discord message
 cannot start work on a repo that its link does not list.

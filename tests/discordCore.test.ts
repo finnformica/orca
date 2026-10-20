@@ -13,7 +13,7 @@ import * as store from "../server/integrations/store";
 import { context } from "../server/integrations/registry";
 import { discordAdapter, gateway, type WebSocketLike } from "../server/integrations/adapters/discord";
 import type { Connection } from "../server/integrations/adapter";
-import { CATCH_ALL_SEND_ERROR, pairingReply, replyToOf } from "../shared/integrations";
+import { CATCH_ALL_POST_ERROR, CATCH_ALL_SEND_ERROR, pairingReply, replyToOf } from "../shared/integrations";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../web/src/workstream";
 import type { OrcaConfig } from "../server/config";
 import { native } from "./happydom";
@@ -243,10 +243,29 @@ for (const threads of [true, false]) describe(`Discord on the integrations core 
     expect(discord.channels.has("M50")).toBe(false);
   });
 
-  offTest("nothing posts to a catch-all link: orca post and a subscription refuse it, an old row never reaches Discord", async () => {
+  offTest("orca post through the catch-all link names the channel or thread; a bare post, --channel on a channel link and an outside wake's other channel are refused", async () => {
     await store.addLink({ id: "Lstar", integrationId: "discord", externalId: "*", label: "All channels and DMs", level: "ask", repos: [], requireMention: true });
+    discord.channels.set("C2", { posts: [], replyTo: [] });
+    discord.channels.set("T9", { parent: "C2", posts: [], replyTo: [] });
     const cfg = { repos: [] } as unknown as OrcaConfig;
-    await expect(orchestrator.tool(cfg, "post", { link: "Lstar", _: ["hi"] })).rejects.toThrow(CATCH_ALL_SEND_ERROR);
+    await expect(orchestrator.tool(cfg, "post", { link: "Lstar", _: ["hi"] })).rejects.toThrow(CATCH_ALL_POST_ERROR);
+    await expect(orchestrator.tool(cfg, "post", { link: "L1", channel: "C2", _: ["hi"] })).rejects.toThrow("--channel works only with a catch-all link");
+    // Your own chat: any channel the bot can see, and a thread in it.
+    expect(await orchestrator.tool(cfg, "post", { link: "Lstar", channel: "C2", _: ["deploy done"] })).toContain("Queued for All channels and DMs C2");
+    await orchestrator.tool(cfg, "post", { link: "Lstar", channel: "C2", thread: "T9", _: ["in the thread"] });
+    await dispatcher.dispatchOnce(Date.now() + 6_000);
+    expect(discord.channels.get("C2")!.posts).toEqual(["deploy done"]);
+    expect(discord.channels.get("T9")!.posts).toEqual(["in the thread"]);
+    // A wake from an outside message on the catch-all: only the place it came from.
+    await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: { level: "ask", repos: [], linkId: "Lstar" } as never, wakeReplyTo: { linkId: "Lstar", channel: "C1" } as never });
+    await expect(orchestrator.tool(cfg, "post", { link: "Lstar", channel: "C2", _: ["leak"] })).rejects.toThrow("posts only where the message came from");
+    await orchestrator.tool(cfg, "post", { link: "Lstar", channel: "C1", _: ["here"] });
+    await db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: null as never, wakeReplyTo: null as never });
+    await store.deliveries({ state: "dead" }).then((d) => expect(d).toEqual([]));
+  });
+
+  offTest("a subscription to a catch-all link plans nothing, and an old row to * never reaches Discord", async () => {
+    await store.addLink({ id: "Lstar", integrationId: "discord", externalId: "*", label: "All channels and DMs", level: "ask", repos: [], requireMention: true });
     // A subscription to it (made before the form refused one) plans no delivery.
     await store.addSubscription({ topicPattern: "orca.pr.*", filter: {}, targetKind: "link", targetId: "Lstar" });
     expect((await router.publish({ key: "pr:r#8", topic: "orca.pr.opened", at: 1, source: { adapter: "orca" }, text: "Opened PR #8" })).deliveries).toEqual([]);

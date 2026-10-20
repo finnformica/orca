@@ -7,7 +7,7 @@ import * as db from "../db";
 import { ORCA_SECRETS } from "../env";
 import { CATCH_ALL, CATCH_ALL_SEND_ERROR, isAutomatic, leaseHolder, secretRefRefusal, LINK_LEVELS, type Level, type LinkLevel, type Subscription, type TargetKind } from "../../shared/integrations";
 import {
-  integrationProblem, linkProblem,
+  identityProblem, integrationProblem, linkProblem,
   type DeadRow, type IntegrationCard, type IntegrationsOverview, type PersonRow,
 } from "../../shared/integrationSettings";
 import * as registry from "./registry";
@@ -38,10 +38,11 @@ async function lastEvents(): Promise<Map<string, number>> {
 async function people(): Promise<PersonRow[]> {
   return db.withRetry(async (sql) => {
     const ps = await sql`SELECT id, name, max_level FROM principal WHERE user_id = ${user()} ORDER BY name`;
-    const ids = await sql`SELECT adapter, external_id, principal_id FROM identity WHERE user_id = ${user()} ORDER BY adapter, external_id`;
+    const ids = await sql`SELECT adapter, external_id, principal_id, name FROM identity WHERE user_id = ${user()} ORDER BY adapter, external_id`;
     return (ps as { id: string; name: string; max_level: PersonRow["maxLevel"] }[]).map((p) => ({
       id: p.id, name: p.name, maxLevel: p.max_level,
-      identities: (ids as { adapter: string; external_id: string; principal_id: string }[]).filter((i) => i.principal_id === p.id).map((i) => ({ adapter: i.adapter, externalId: i.external_id })),
+      identities: (ids as { adapter: string; external_id: string; principal_id: string; name: string | null }[]).filter((i) => i.principal_id === p.id)
+        .map((i) => ({ adapter: i.adapter, externalId: i.external_id, ...(i.name ? { name: i.name } : {}) })),
     }));
   });
 }
@@ -167,6 +168,16 @@ export async function removePerson(id: string): Promise<void> {
   });
 }
 
+/** Add identity: bind a platform id to a person by hand, as an approved pairing does. */
+export async function addIdentity(b: Record<string, unknown>): Promise<void> {
+  const i = { principal: String(b.principal ?? "").trim(), adapter: String(b.adapter ?? "").trim(), externalId: String(b.externalId ?? "").trim() };
+  const problem = identityProblem(i, registry.kinds().map((k) => k.kind));
+  if (problem) fail(problem);
+  if (!(await store.principal(i.principal))) fail(`no person ${i.principal}`);
+  const name = typeof b.name === "string" && b.name.trim() ? b.name.trim().replace(/^@/, "") : undefined;
+  await store.addIdentity(i.principal, { adapter: i.adapter, externalId: i.externalId, ...(name ? { name } : {}) });
+}
+
 export async function removeIdentity(adapter: string, externalId: string): Promise<void> {
   await db.withRetry(async (sql) => { await sql`DELETE FROM identity WHERE user_id = ${user()} AND adapter = ${adapter} AND external_id = ${externalId}`; });
 }
@@ -251,6 +262,7 @@ export async function route(p: string, b: Record<string, unknown>): Promise<unkn
     case "/api/integrations/links/test": return testLink(String(b.id));
     case "/api/integrations/people/save": await savePerson(b); return { ok: true };
     case "/api/integrations/people/remove": await removePerson(String(b.id)); return { ok: true };
+    case "/api/integrations/identities/add": await addIdentity(b); return { ok: true };
     case "/api/integrations/identities/remove": await removeIdentity(String(b.adapter), String(b.externalId)); return { ok: true };
     case "/api/integrations/subscriptions/add": return { ok: true, id: await addSubscription(b) };
     case "/api/integrations/subscriptions/remove": await store.removeSubscription(Number(b.id)); return { ok: true };

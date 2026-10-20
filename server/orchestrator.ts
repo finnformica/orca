@@ -42,7 +42,7 @@ import {
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
-import { attachmentIdOf, attachmentRefusal, grantKey, grantRefusal, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
+import { attachmentIdOf, attachmentRefusal, catchAllPostRefusal, grantKey, grantRefusal, repoScoped, type Grant, type ReplyTo } from "../shared/integrations";
 import * as integrationStore from "./integrations/store";
 import * as integrationRouter from "./integrations/router";
 import * as integrationRegistry from "./integrations/registry";
@@ -583,7 +583,7 @@ async function channelsText(): Promise<string> {
   const byId = new Map(conns.map((c) => [c.id, c]));
   const lines = links.length ? links.map((l) => {
     const c = byId.get(l.integrationId);
-    return `link ${l.id} · ${c?.kind ?? "?"} ${c?.name ?? l.integrationId} on ${c ? (c.instance === "*" ? "automatic" : c.instance) : "?"} · ${l.externalId}${l.label ? ` (${l.label})` : ""} · ${l.level}${repoScoped(l.level) ? ` on ${l.repos.join(", ") || "no repos"}` : ""}${l.requireMention ? " · mention required" : ""}`;
+    return `link ${l.id} · ${c?.kind ?? "?"} ${c?.name ?? l.integrationId} on ${c ? (c.instance === "*" ? "automatic" : c.instance) : "?"} · ${l.externalId}${l.label ? ` (${l.label})` : ""} · ${l.level}${repoScoped(l.level) ? ` on ${l.repos.join(", ") || "no repos"}` : ""}${l.requireMention ? " · mention required" : ""}${l.externalId === "*" ? " · catch-all: post with --channel <id> [--thread <id>]" : ""}`;
   }) : ["no channel links"];
   const subLines = subs.map((s) => `sub ${s.id} · ${s.topicPattern}${Object.keys(s.filter).length ? ` ${JSON.stringify(s.filter)}` : ""} → ${s.targetKind}${s.targetId ? ` ${s.targetId}` : ""}${s.digestSeconds ? ` · digest ${s.digestSeconds}s` : ""}`);
   const pairLines = pairings.map((p) => `pairing ${p.code} · ${p.adapter}:${p.externalId}${p.name ? ` (${p.name})` : ""} waits for the user's approval`);
@@ -641,7 +641,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       return args.json !== undefined ? JSON.stringify(report, null, 2) : machineText(report);
     }
     case "post": {
-      // `orca post --link <id> [--thread <id> | --repo r --branch b] [--thread] [--attach <id|path>]… "<text>"`: a durable delivery
+      // `orca post --link <id> [--channel <id>] [--thread <id> | --repo r --branch b] [--thread] [--attach <id|path>]… "<text>"`: a durable delivery
       // through the link's adapter, retried if it fails. With --repo/--branch it continues that
       // workstream's thread on the link, or starts it.
       // `--reply "<text>"` arrives as the flag's value (bin/orca takes the next word), so read it there too.
@@ -654,6 +654,10 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       const link = typeof args.link === "string" && args.link ? await integrationStore.link(args.link) : undefined;
       if (!link) throw new Error(`--link must name a channel link (orca channels lists them)${args.link ? `: no link "${args.link}"` : ""}`);
       if (!text) throw new Error('the message is required: orca post --link <id> "<text>"');
+      // A catch-all link posts to any channel or thread the bot can see: `--channel <id> [--thread <id>]`.
+      const channel = typeof args.channel === "string" && args.channel.trim() ? args.channel.trim() : undefined;
+      const placeRefusal = catchAllPostRefusal(link, { ...(channel ? { channel } : {}), reply: !!reply, grant: wakeGrant, wakeReplyTo: b.wakeReplyTo ?? null });
+      if (placeRefusal) throw new Error(placeRefusal);
       // A wake an outside sender caused attaches stored ids only: a path would let a message ask Orca
       // to post any file on this machine to the outside.
       if (wakeGrant && (Array.isArray(args.attach) ? args.attach : args.attach === undefined ? [] : [args.attach]).some((v) => typeof v === "string" && !attachmentIdOf(v))) {
@@ -667,7 +671,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         : repo && branch ? (await integrationStore.threadsForWorkstream(repo, branch)).get(link.id) : undefined;
       const r = await integrationRouter.post(link, text, {
         ...(reply ? { reply } : threadId ? { threadId } : {}), ...(repo ? { scope: { repo, ...(branch ? { branch } : {}) } } : {}),
-        ...(openThread ? { openThread } : {}), ...(files.length ? { attachments: files } : {}),
+        ...(openThread ? { openThread } : {}), ...(files.length ? { attachments: files } : {}), ...(channel ? { channel } : {}),
       });
       return `Queued for ${link.label ?? link.id}${r.externalId !== link.externalId ? ` ${r.externalId}` : ""}${r.threadId ? ` (thread ${r.threadId})` : ""}${openThread ? " in a new thread" : ""}${files.length ? ` with ${files.length} attachment${files.length === 1 ? "" : "s"}` : ""} as delivery ${r.delivery ?? "?"}; Orca retries it if the send fails.`;
     }

@@ -1802,6 +1802,8 @@ const ORCA_COMMANDS = [
   "  orca post --link <id> [--thread <id> | --repo <repo> --branch <branch>] \"<text>\"   post through a channel",
   "                                  link (retried if it fails); with --repo/--branch, in that workstream's thread.",
   "                                  Answer an outside sender on the link their message came from",
+  "  orca post --link <catch-all id> --channel <id> [--thread <id>] \"<text>\"   post through a catch-all link (`*`)",
+  "                                  to any channel or thread the bot can see. Never make a channel link only to post",
   "  orca post --reply \"<text>\"      answer the outside message that woke you, on its link and in its thread —",
   "                                  never copy a thread id by hand",
   "      --attach <id|path> (repeatable, on --link/--reply/--repo --branch posts) sends a file with the post, an image",
