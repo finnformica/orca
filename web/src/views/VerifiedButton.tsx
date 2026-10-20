@@ -35,3 +35,17 @@ export function VerifiedButton({ row, icon = false, className }: { row: Row; ico
     </Tip>
   );
 }
+
+/** The read-only marker beside a workstream's title (the Agents rows, the Board cards): only an open
+ *  PR marked verified on its current head. Set and clear it with VerifiedButton or the ⋯ menu. */
+export function VerifiedBadge({ row }: { row: Row }) {
+  if (!canVerify(row) || !row.verified || verifiedState(row.verified, row.prHead, row.prNumber) !== "verified") return null;
+  return (
+    <Tip label={verifiedTip(row.verified, "verified", row.prHead)} className="shrink-0">
+      <span data-slot="verified-badge" aria-label="Verified"
+        className="bg-geist-teal/20 inline-flex h-5 shrink-0 items-center gap-1 rounded-full px-1.5 text-[11px] font-medium text-teal-700 dark:text-teal-300">
+        <ShieldCheck className="size-3" />Verified
+      </span>
+    </Tip>
+  );
+}

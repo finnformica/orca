@@ -24,7 +24,7 @@ import { ModelPicker } from "@/components/ModelPicker";
 import { Tip } from "@/components/ui/tip";
 import { CopyDone, LaneActions } from "./BulkActions";
 import { ConditionBadges } from "./ConditionBadges";
-import { VerifiedButton } from "./VerifiedButton";
+import { VerifiedBadge, VerifiedButton } from "./VerifiedButton";
 import { NewDraft } from "./NewDraft";
 import { useSummary, useTerminalOpen } from "@/lib/workstreamHooks";
 
@@ -290,13 +290,16 @@ export function WorkstreamCard({ row }: { row: Row }) {
 
       {/* Identity: the title anchors the card; prompt is supporting context. */}
       <div className="space-y-0.5">
-        {titleTo ? (
-          <button type="button" onClick={() => navigate(titleTo)} className="text-foreground block w-full truncate text-left text-sm font-medium hover:underline">
-            {row.title}
-          </button>
-        ) : (
-          <div className="truncate text-sm font-medium">{row.title}</div>
-        )}
+        <div className="flex min-w-0 items-center gap-1.5">
+          {titleTo ? (
+            <button type="button" onClick={() => navigate(titleTo)} className="text-foreground block min-w-0 truncate text-left text-sm font-medium hover:underline">
+              {row.title}
+            </button>
+          ) : (
+            <div className="min-w-0 truncate text-sm font-medium">{row.title}</div>
+          )}
+          <VerifiedBadge row={row} />
+        </div>
         {!dense && row.prompt && <p className="text-muted-foreground line-clamp-2 text-xs">{row.prompt}</p>}
         <OrchStatusNote status={row.orchStatus} />
         <GrantNote grant={row.grantScope} />

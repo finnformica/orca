@@ -134,17 +134,15 @@ export function detailPath(row: { repo: string; branch: string; lane?: string; p
 }
 
 // The workstream actions menu (WorkstreamActions: the ⋯, the right-click menu and the phone sheet),
-// Finn's layout: Open ▸, Copy ▸, Merge ▸, Enable/Disable auto-merge, PR ▸, Agent ▸, Slack ▸, then
-// Verified, Rename, Close/Discard (those three are not decided here). An item that does not apply is
-// left out, and an empty group is not shown. Auto-merge is its own top-level item, not nested in the
-// Merge submenu, so it stays one click away.
-export type MenuGroup = "open" | "copy" | "merge" | "autoMerge" | "pr" | "agent" | "slack";
+// Finn's layout: Open ▸, Copy ▸, Merge ▸, PR ▸, Agent ▸, Slack ▸, then Verified, Rename,
+// Close/Discard (those three are not decided here). An item that does not apply is left out, and an
+// empty group is not shown. Enable/Disable auto-merge is the last item of PR ▸.
+export type MenuGroup = "open" | "copy" | "merge" | "pr" | "agent" | "slack";
 export type MenuItemId =
   | "open.chat" | "open.pr" | "open.preview" | "open.ci" | "open.orchestrator"
   | "copy.branch" | "copy.prLink" | "copy.prMarkdown" | "copy.slack" | "copy.preview" | "copy.worktree" | "copy.cli"
   | "merge.now"
-  | "autoMerge.toggle"
-  | "pr.markReady" | "pr.moveToDraft" | "pr.address" | "pr.addPreview" | "pr.previewPending" | "pr.create" | "pr.createDraft" | "pr.promote"
+  | "pr.markReady" | "pr.moveToDraft" | "pr.address" | "pr.addPreview" | "pr.previewPending" | "pr.autoMerge" | "pr.create" | "pr.createDraft" | "pr.promote"
   | "agent.stop" | "agent.resolveConflicts" | "agent.move"
   | "slack.send" | "slack.bump";
 export type MenuRow = PrMenuRow & {
@@ -182,9 +180,6 @@ export function workstreamMenu(row: MenuRow, ctx: { previewConfigured: boolean; 
       // branch: the promoted, clean Mergeable lane.
       [isPr ? !row.isDraft && row.mergeable === "MERGEABLE" && !ciFailing : row.lane === "MERGEABLE", "merge.now"],
     ]),
-    autoMerge: pick([
-      [isPr && !row.isDraft, "autoMerge.toggle"], // GitHub rejects auto-merge on a draft
-    ]),
     pr: isPr
       ? pick([
         [Boolean(row.isDraft), "pr.markReady"],
@@ -192,6 +187,7 @@ export function workstreamMenu(row: MenuRow, ctx: { previewConfigured: boolean; 
         [true, "pr.address"],
         [preview === "add", "pr.addPreview"],
         [preview === "pending", "pr.previewPending"],
+        [!row.isDraft, "pr.autoMerge"], // GitHub rejects auto-merge on a draft
       ])
       : row.lane === "LOCAL"
         ? (row.hasRemote ? ["pr.create", "pr.createDraft"] : ["pr.promote"])
