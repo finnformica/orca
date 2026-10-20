@@ -76,7 +76,7 @@ export function parseDiff(text: string): FileDiff[] {
     if (!file) continue;
     const m = HUNK.exec(line);
     if (m) {
-      hunk = { header: line, oldStart: +m[1], oldLines: m[2] === undefined ? 1 : +m[2], newStart: +m[3], newLines: m[4] === undefined ? 1 : +m[4], section: m[5] ?? "", lines: [] };
+      hunk = { header: line, oldStart: Number(m[1]), oldLines: m[2] === undefined ? 1 : Number(m[2]), newStart: Number(m[3]), newLines: m[4] === undefined ? 1 : Number(m[4]), section: m[5] ?? "", lines: [] };
       oldLeft = hunk.oldLines; newLeft = hunk.newLines; oldNo = hunk.oldStart; newNo = hunk.newStart;
       file.hunks.push(hunk);
       continue;
@@ -134,20 +134,20 @@ export function buildFileTree(files: FileDiff[]): TreeNode[] {
   for (const file of files) {
     const parts = file.path.split("/");
     let dir = root;
-    for (let i = 0; i < parts.length - 1; i++) {
+    const name = parts.pop() ?? file.path;
+    parts.forEach((part, i) => {
       const path = parts.slice(0, i + 1).join("/");
       let next = dir.children.find((c): c is TreeDir => c.kind === "dir" && c.path === path);
-      if (!next) { next = { kind: "dir", name: parts[i], path, children: [] }; dir.children.push(next); }
+      if (!next) { next = { kind: "dir", name: part, path, children: [] }; dir.children.push(next); }
       dir = next;
-    }
-    dir.children.push({ kind: "file", name: parts[parts.length - 1], path: file.path, file });
+    });
+    dir.children.push({ kind: "file", name, path: file.path, file });
   }
   const tidy = (nodes: TreeNode[]): TreeNode[] => nodes
     .map((n) => {
       if (n.kind === "file") return n;
       let d: TreeDir = { ...n, children: tidy(n.children) };
-      while (d.children.length === 1 && d.children[0].kind === "dir") {
-        const only = d.children[0];
+      for (let only = d.children[0]; d.children.length === 1 && only?.kind === "dir"; only = d.children[0]) {
         d = { kind: "dir", name: `${d.name}/${only.name}`, path: only.path, children: only.children };
       }
       return d;
@@ -209,10 +209,11 @@ export function splitRows(hunk: Hunk): SplitRow[] {
   const ls = hunk.lines;
   let i = 0;
   while (i < ls.length) {
-    if (ls[i].type === "ctx") { rows.push({ left: ls[i], right: ls[i], leftIndex: i, rightIndex: i }); i++; continue; }
+    const line = ls[i]!;
+    if (line.type === "ctx") { rows.push({ left: line, right: line, leftIndex: i, rightIndex: i }); i++; continue; }
     const dels: number[] = [], adds: number[] = [];
-    while (i < ls.length && ls[i].type === "del") dels.push(i++);
-    while (i < ls.length && ls[i].type === "add") adds.push(i++);
+    while (ls[i]?.type === "del") dels.push(i++);
+    while (ls[i]?.type === "add") adds.push(i++);
     for (let k = 0; k < Math.max(dels.length, adds.length); k++) {
       const d = dels[k], a = adds[k];
       rows.push({ left: d === undefined ? undefined : ls[d], leftIndex: d, right: a === undefined ? undefined : ls[a], rightIndex: a });
@@ -232,7 +233,8 @@ export const isMarkdown = (path: string): boolean => /\.(md|mdx|markdown)$/i.tes
 export function markdownPreview(f: FileDiff): { sections: string[]; complete: boolean } | null {
   if (!isMarkdown(f.path) || f.status === "deleted" || f.binary || f.hunks.length === 0) return null;
   const sections = f.hunks.map((h) => h.lines.filter((l) => l.type !== "del").map((l) => l.text).join("\n"));
-  const complete = f.status === "added" || (f.hunks.length === 1 && f.hunks[0].newStart <= 1 && f.hunks[0].oldLines === 0);
+  const only = f.hunks.length === 1 ? f.hunks[0] : undefined;
+  const complete = f.status === "added" || (!!only && only.newStart <= 1 && only.oldLines === 0);
   return { sections, complete };
 }
 

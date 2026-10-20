@@ -2,7 +2,7 @@
 // title and the tab bar must stay pinned instead of scrolling away — and each file's accordion
 // header must stay visible (just below that page header) while you read its hunks. We render the
 // real LocalDetail on the Files tab and assert the sticky wrappers + the --stick offset that keeps
-// the file header from sliding under the page header. See LocalDetail.tsx and DiffView (PrDetail.tsx).
+// the file header from sliding under the page header. See LocalDetail.tsx and FilesChanged.tsx.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -62,7 +62,7 @@ async function waitFor(selector: string): Promise<HTMLElement> {
   expect(el).not.toBeNull();
   return el!;
 }
-const waitForTrigger = () => waitFor("[data-slot=accordion-trigger]");
+const waitForTrigger = () => waitFor("[data-slot=diff-file-header] button[aria-expanded]");
 
 afterEach(() => {
   act(() => root?.unmount());
@@ -90,20 +90,21 @@ describe("sticky worktree-detail header", () => {
     // The pinned header publishes its height so the diff headers can park below it.
     expect(container!.querySelector<HTMLElement>("[style*='--stick']")).not.toBeNull();
 
-    // The file's accordion header sticks (on Radix's h3 wrapper — the trigger can't move inside it)
-    // at that offset, and no clipping ancestor kills it.
+    // The file's header sticks below the top bar (3.5rem) AND the page header (--stick), and no
+    // clipping ancestor kills it.
     const trigger = await waitForTrigger();
-    expect(trigger.textContent).toContain("web/src/App.tsx");
-    const item = trigger.closest("[data-slot=accordion-item]")!;
-    expect(item.className).toContain("[&>h3]:sticky");
-    expect(item.className).toContain("var(--stick");
-    expect(item.className).not.toContain("overflow-hidden");
+    const header = trigger.closest<HTMLElement>("[data-slot=diff-file-header]")!;
+    expect(header.textContent).toContain("web/src/App.tsx");
+    const fileSticky = header.parentElement!;
+    expect(fileSticky.className).toMatch(/\bsticky\b/);
+    expect(fileSticky.className).toContain("top-[calc(3.5rem+var(--stick,0px))]");
+    expect(header.closest("[data-slot=diff-file]")!.className).not.toContain("overflow-hidden");
 
-    // While stuck, its rounded top corners would let the code underneath peek through — the header
-    // is a scroll-state container and the stylesheet squares the radius off for exactly that state.
-    expect(item.className).toContain("container-type:scroll-state");
+    // While stuck, its rounded top corners would let the code underneath peek through — the sticky
+    // wrapper is a scroll-state container and the stylesheet squares the header's radius off then.
+    expect(fileSticky.className).toContain("container-type:scroll-state");
     const css = await Bun.file(new URL("../web/src/styles.css", import.meta.url)).text();
-    expect(css.replace(/\s+/g, " ")).toContain("@container scroll-state(stuck: top) { [data-slot=\"accordion-trigger\"] { border-radius: 0; }");
+    expect(css.replace(/\s+/g, " ")).toContain("@container scroll-state(stuck: top) { [data-slot=\"diff-file-header\"] { border-radius: 0; }");
   });
 
   // Collapsing a file you'd scrolled deep into used to delete that height from above the viewport,
@@ -123,7 +124,7 @@ describe("sticky worktree-detail header", () => {
     Object.assign(window, { scrollBy: (x: number, y: number) => scrolls.push([x, y]) });
 
     await act(async () => { trigger.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
-    expect(trigger.getAttribute("data-state")).toBe("closed");
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
     await new Promise((r) => requestAnimationFrame(() => r(null))); // the handler corrects on the next frame
     expect(scrolls).toEqual([[0, -1864]]); // the lost height taken back out of the scroll position
   });
