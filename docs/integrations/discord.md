@@ -208,11 +208,17 @@ The primary bridge reads the rows each minute. `GET /api/integrations` shows the
 
 ## Levels
 
-| Level | What a person in the channel can do |
-|---|---|
-| `notify` | Nothing inbound. Orca only posts. |
-| `ask` | Ask questions. Orca reads the board and past chats. |
-| `work` | Also start and continue workstreams on the link's repos. |
+Settings shows each level by a name. The database keeps the value in the first column.
+
+| Level | Settings name | What a person in the channel can do |
+|---|---|---|
+| `notify` | Notify | Nothing inbound. Orca only posts. |
+| `ask` | Viewer | Ask questions. Orca reads the board and past chats. |
+| `work` | Editor | Also start, continue, stop and archive workstreams on the link's repos, and queue a merge with `merge --when-green`. |
+| `admin` | Admin | Every `orca` verb on the link's repos, plus `move`, `sweep` and `repo add`. Not `notes set`, `status --clear-grant`, `preview --push-to-template --confirm`, `handoff create` or settings. |
+
+Only your own chat in Orca has the `full` grant. Pairing approval gives at most `work`. To make a
+person Admin, set their level in Settings after you approve them.
 
 The orchestrator's tool route checks each verb against the grant of the message. A Discord message
 cannot start work on a repo that its link does not list.

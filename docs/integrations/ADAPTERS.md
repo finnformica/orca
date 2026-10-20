@@ -186,8 +186,8 @@ Use Settings > Integrations (`/settings/integrations`): Connect, links, people, 
    registry refuses any other name, except the names in `ORCA_SECRETS` (`server/env.ts`).
 2. Add an `integration` row: `id`, `kind`, `name`, `instance` (`*` for Automatic, or the one
    instance that runs it, section 6.1), `config`, `secret_ref` (the variable name).
-3. Add a `channel_link` row for each external place: `level` (`notify`, `ask` or `work`), `repos`
-   (for `work`), `require_mention`.
+3. Add a `channel_link` row for each external place: `level` (`notify`, `ask`, `work` or `admin`),
+   `repos` (for `work` and `admin`), `require_mention`.
 4. Add `principal` and `identity` rows for each person who may write to Orca. Or let them write
    once and approve their pairing code (section 10).
 5. Add `subscription` rows for what goes out: `topic_pattern`, `filter` (for example
@@ -243,10 +243,14 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 |---|---|---|
 | `notify` | Nothing inbound. The gate drops the message. | Post to the link. |
 | `ask` | Ask questions. | `orca board`, `chats`, `read`, `notes`, `channels`, `ask-user`, `preview --status`, `repo list`, and `post` on the link the message came from. |
-| `work` | Ask, and start or steer work on the link's repos. | Also `spawn`, `send`, `address`, `status`, `pr-shots`, `preview`, `thread link` on those repos. |
+| `work` (Editor) | Ask, and start, steer, stop or archive work on the link's repos. | Also `spawn`, `send`, `address`, `status`, `pr-shots`, `preview`, `thread link`, `stop`, `archive` and `merge --when-green` on those repos. `archive` and `stop` act only on orchestrated workstreams. The repo's `mergePolicy` decides a merge. |
+| `admin` (Admin) | A trusted person. | Every verb on the link's repos (`merge --cancel` too), plus `move`, `sweep [--confirm]`, `repo add` and `handoff list`. |
 | `full` | Your own chat in Orca. | Every verb. |
 
-- The grant is min(link level, person's max level). The link's repos limit `work`.
+- The grant is min(link level, person's max level). The link's repos limit `work` and `admin`.
+- Only `full` may run `status --clear-grant`, `notes set`, `preview --push-to-template --confirm`
+  and `handoff create`. No `orca` verb changes settings, secrets, pairing, levels or links.
+- Settings shows the levels as Notify, Viewer, Editor and Admin. The stored values do not change.
 - A `notify` link takes nothing in, as above. One exception is opt-in: set
   `"machineEventsOnNotify": true` in the integration's `config`. Then a machine event (no `actor`:
   a poller such as GitHub, or a webhook) on a `notify` link gets through.

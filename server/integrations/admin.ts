@@ -5,7 +5,7 @@
 // the /api/integrations/pairing/approve|deny routes the page posts to).
 import * as db from "../db";
 import { ORCA_SECRETS } from "../env";
-import { CATCH_ALL, CATCH_ALL_SEND_ERROR, isAutomatic, leaseHolder, secretRefRefusal, type Level, type Subscription, type TargetKind } from "../../shared/integrations";
+import { CATCH_ALL, CATCH_ALL_SEND_ERROR, isAutomatic, leaseHolder, secretRefRefusal, LINK_LEVELS, type Level, type LinkLevel, type Subscription, type TargetKind } from "../../shared/integrations";
 import {
   integrationProblem, linkProblem,
   type DeadRow, type IntegrationCard, type IntegrationsOverview, type PersonRow,
@@ -148,13 +148,13 @@ export async function removeLink(id: string): Promise<void> {
   });
 }
 
-const LEVEL_OK = (l: unknown): l is Exclude<Level, "full"> => l === "notify" || l === "ask" || l === "work";
+const LEVEL_OK = (l: unknown): l is LinkLevel => (LINK_LEVELS as readonly unknown[]).includes(l);
 
 export async function savePerson(b: Record<string, unknown>): Promise<void> {
   const id = String(b.id ?? "").trim(), name = String(b.name ?? "").trim();
   if (!id || !name) fail("a person needs an id and a name");
-  if (!LEVEL_OK(b.maxLevel)) fail("max level: notify, ask or work");
-  await store.addPrincipal({ id, name, maxLevel: b.maxLevel as Exclude<Level, "full"> });
+  if (!LEVEL_OK(b.maxLevel)) fail("max level: notify, ask, work or admin");
+  await store.addPrincipal({ id, name, maxLevel: b.maxLevel as LinkLevel });
 }
 
 /** Remove a person and every identity paired to them: their messages are dropped again. */

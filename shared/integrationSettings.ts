@@ -169,7 +169,7 @@ export function linkProblem(l: { id?: string; integrationId?: string; externalId
   if (!l.id || !ID.test(l.id)) return "id: use lower-case letters, digits, '-', '_' or '.'";
   if (!l.integrationId) return "integration is required";
   if (!l.externalId?.trim()) return "the external place is required";
-  if (!["notify", "ask", "work"].includes(l.level ?? "")) return "level: notify, ask or work";
-  if (l.level === "work" && !l.repos?.length) return "a work link needs at least one repo";
+  if (!["notify", "ask", "work", "admin"].includes(l.level ?? "")) return "level: notify, ask, work or admin";
+  if ((l.level === "work" || l.level === "admin") && !l.repos?.length) return `${l.level === "admin" ? "an" : "a"} ${l.level} link needs at least one repo`;
   return undefined;
 }

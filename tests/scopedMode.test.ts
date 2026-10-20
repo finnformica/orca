@@ -76,7 +76,7 @@ describe("decisions (pure)", () => {
     expect(grantRefusal(work, "status", { repo: "r" })).toBeUndefined();
     expect(grantRefusal(work, "status", { repo: "r", "clear-grant": "" })).toContain("needs your own chat");
     expect(grantRefusal(undefined, "status", { repo: "r", "clear-grant": "" })).toBeUndefined();
-    expect(grantRefusal(work, "merge", { repo: "r" })).toContain("full grant");
+    expect(grantRefusal(work, "merge", { repo: "r" })).toContain('needs "admin"'); // work queues only with --when-green
     expect(effectiveGrant({ id: "L1", level: "work", repos: ["r"] }, { id: "finn", maxLevel: "full" }).level).toBe("work");
   });
 });
