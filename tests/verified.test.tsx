@@ -117,7 +117,8 @@ describe("Verified marker on the Board and the Agents page", () => {
     await reload();
     expect(laneOf("Cache layer")).toBe("VERIFIED");
     expect(button().textContent).toBe("Verified");
-    expect(badge()?.textContent).toBe("Verified");
+    expect(badge()?.getAttribute("aria-label")).toBe("Verified"); // icon only: no label text
+    expect(badge()?.textContent).toBe("");
     expect(badge()!.closest('[data-slot="tip"]')!.previousElementSibling?.textContent).toBe("Cache layer"); // right after the title
 
     // A new commit lands on the PR: not a silent pass.
@@ -147,7 +148,8 @@ describe("Verified marker on the Board and the Agents page", () => {
     expect(statePill()).toBe("Verified");
     expect(chipCount()).toBe("1");
     expect(container!.querySelectorAll('[data-slot="workstream-row"]')).toHaveLength(1);
-    expect(badge()?.textContent).toBe("Verified");
+    expect(badge()?.getAttribute("aria-label")).toBe("Verified"); // icon only: no label text
+    expect(badge()?.textContent).toBe("");
     expect(badge()!.closest('[data-slot="tip"]')!.previousElementSibling?.textContent).toBe("Cache layer");
     close();
 
@@ -165,5 +167,24 @@ describe("Verified marker on the Board and the Agents page", () => {
     await open("/board");
     expect(laneOf("Cache layer")).toBe("DRAFT");
     expect(container!.querySelector('[data-slot="verified-button"]')).toBeNull();
+  });
+
+  test("the Agents list's Verified pill shares the same pill classes (height, padding, font, icon size) as its siblings", async () => {
+    const mark = verifiedMark("user", "aaa1111", 267, new Date().toISOString());
+    apiFake.prsData = [pr("aaa1111"), { ...pr("bbb2222"), number: 268, branch: "feat-w", title: "Other work" }];
+    apiFake.enrichmentData.set("r::feat-v", { verified: mark });
+    await open("/agents");
+    const verifiedPill = container!.querySelector<HTMLElement>('[data-branch="feat-v"] [data-slot="state-pill"]')!;
+    const siblingPill = container!.querySelector<HTMLElement>('[data-branch="feat-w"] [data-slot="state-pill"]')!;
+    expect(verifiedPill.textContent).toBe("Verified");
+    expect(siblingPill.textContent).toBe("In review"); // a genuinely different state/tone, not a coincidence
+    // Same component (console.tsx Pill), so these layout classes never diverge by tone.
+    const SHARED = ["inline-flex", "h-6", "shrink-0", "items-center", "gap-1", "rounded-full", "px-2.5", "text-xs", "font-medium", "whitespace-nowrap"];
+    const verifiedClasses = verifiedPill.className.split(/\s+/);
+    const siblingClasses = siblingPill.className.split(/\s+/);
+    for (const c of SHARED) {
+      expect(verifiedClasses).toContain(c);
+      expect(siblingClasses).toContain(c);
+    }
   });
 });
