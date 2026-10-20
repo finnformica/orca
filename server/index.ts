@@ -239,8 +239,9 @@ if (!PREVIEW_BRIDGE && process.platform === "linux") setInterval(() => {
     .catch((e) => console.error(`orca: browser watchdog failed: ${e instanceof Error ? e.message : e}`));
 }, browserWatch.WATCH_INTERVAL_MS).unref();
 // The heavy queue's leak detector (server/heavyLeaks.ts): heavy processes in the agents' slice with
-// no slot, for the machine card and `orca machine`. It reads only; every bridge here keeps its own.
-if (!PREVIEW_BRIDGE && process.platform === "linux") setInterval(() => {
+// no slot, for the machine card and `orca machine`. It reads only and logs only on the primary, so
+// every bridge here (a preview bridge too) keeps its own.
+if (process.platform === "linux") setInterval(() => {
   try { heavyLeaks.sweep({ log: primary.held() }); } catch (e) { console.error(`orca: heavy leak sweep failed: ${e instanceof Error ? e.message : e}`); }
 }, heavyLeaks.LEAK_INTERVAL_MS).unref();
 // Warm the review queue (gh.listReviewPrs) so its slow cold fetch is paid here, not by a caller. A
