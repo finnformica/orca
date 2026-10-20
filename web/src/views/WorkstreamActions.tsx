@@ -9,7 +9,7 @@ import {
   cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, setVerified, slackChannel, staleHours, stopAgent, suggestTitle, useCachedReviewDigest, useRepos, useReviewDigest, writeSlackClipboard, type Row,
 } from "../store";
 import {
-  detailPath, failingCiUrl, firstLine, orchestratorAbout, prMarkdownLink, quickActions, reviewProblems, shouldBump, slackClipboard, verifiedState, workstreamMenu, type MenuItemId, type QuickActionId,
+  detailPath, failingCiUrl, firstLine, mergeSafe, orchestratorAbout, prMarkdownLink, quickActions, reviewProblems, shouldBump, slackClipboard, verifiedState, workstreamMenu, type MenuItemId, type QuickActionId,
 } from "../workstream";
 import { canVerify } from "./VerifiedButton";
 import { reviewSig } from "./Review";
@@ -167,6 +167,10 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
 
   const moveTargets = row.worktreePath ? instanceChoices().filter((i) => i !== (row.instance ?? thisInstance())) : [];
   const mergeWhenGreenOn = Boolean(row.autoMergeEnabled || row.mergeWhenGreen);
+  // Already safe to merge (no conflict, CI not pending) and not yet armed or queued: GitHub refuses
+  // to ARM auto-merge there and merges it instead (gh.ts's clean-status fallback), so "Enable
+  // auto-merge" would be a second button that quietly just merges — Merge ▸ Merge now covers it.
+  const autoMergeWouldMergeNow = !mergeWhenGreenOn && mergeSafe({ mergeable: row.mergeable ?? "UNKNOWN", ciStatus: row.ciStatus ?? "none" });
   // The message Send message posts, as Slack pastes it (rich text, else plain).
   const copySlack = async () => {
     try { await writeSlackClipboard(row); }
@@ -222,8 +226,9 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
       )}
 
       {/* Enable/Disable auto-merge — GitHub's auto-merge, or Orca's queue where the repo refuses it
-          (store.autoMerge); Disable cancels whichever is active (store.disableAutoMerge). */}
-      {has("autoMerge.toggle") && (mergeWhenGreenOn
+          (store.autoMerge); Disable cancels whichever is active (store.disableAutoMerge). Hidden
+          (not disabled) when it would just merge now — Merge ▸ Merge now is the one button there. */}
+      {has("autoMerge.toggle") && !autoMergeWouldMergeNow && (mergeWhenGreenOn
         ? <Item icon={Zap} busy={isBusy("Disable auto-merge")} onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</Item>
         : <Item icon={Zap} busy={isBusy("Enable auto-merge")} onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</Item>)}
 

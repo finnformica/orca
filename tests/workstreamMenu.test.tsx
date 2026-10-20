@@ -147,7 +147,8 @@ const prRow: store.Row = {
 
 describe("WorkstreamActions: the redesigned menu", () => {
   test("top level in Finn's order; Follow up…, Follow PR and Hand off… are gone", async () => {
-    await mount(prRow);
+    // Pending CI: not yet safe to merge, so Enable auto-merge still has something to arm.
+    await mount({ ...prRow, ciStatus: "pending" });
     expect(labels()).toEqual(["Open", "Copy", "Merge", "Enable auto-merge", "PR", "Agent", "Slack", "Mark verified", "Rename…", "Close PR"]);
     for (const gone of ["Follow up…", "Follow PR (auto-fix)", "Hand off…", "Merge when green"]) expect(labels()).not.toContain(gone);
     expect(menuitem("Close PR")!.className).toContain("text-destructive");
@@ -222,12 +223,25 @@ describe("WorkstreamActions: the redesigned menu", () => {
     expect(menuitem("Merge when green")).toBeUndefined();
   });
 
-  test("Enable auto-merge toggles to Disable auto-merge, top-level, next to Merge", async () => {
+  test("Enable auto-merge is hidden once the PR is already safe to merge (GitHub would just merge it, not arm it)", async () => {
+    // prRow is already mergeable + CI passing: GitHub's own clean-status refusal (server/gh.ts's
+    // enableAutoMerge fallback) means a click here would merge now, not arm a toggle — so the menu
+    // offers Merge ▸ Merge now alone, never a second button that quietly does the same thing.
     await mount(prRow);
+    expect(labels()).not.toContain("Enable auto-merge");
+    expect(labels()).toContain("Merge");
+  });
+
+  test("Enable auto-merge toggles to Disable auto-merge, top-level, next to Merge; refreshes after the click", async () => {
+    // Still pending: GitHub will actually arm it (not refuse with clean status), so the button has
+    // something to do.
+    await mount({ ...prRow, ciStatus: "pending" });
     expect(labels()).toContain("Enable auto-merge");
     await click(menuitem("Enable auto-merge")!);
     expect(apiFake.calls).toContain("autoMerge:7");
-    act(() => root!.render(<WorkstreamActions row={{ ...prRow, autoMergeEnabled: true }} />));
+    // The label follows the live PR state: re-rendered with the server's post-click truth, the menu
+    // shows Disable, never a stale Enable that would misfire a second click.
+    act(() => root!.render(<WorkstreamActions row={{ ...prRow, ciStatus: "pending", autoMergeEnabled: true }} />));
     await reopen();
     expect(labels()).toContain("Disable auto-merge");
     expect(labels()).not.toContain("Enable auto-merge");

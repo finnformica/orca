@@ -71,9 +71,20 @@ describe("quickActions", () => {
     expect(quickActions(sent, ctx)[0]).toEqual({ id: "slack", label: "Bump on Slack", slackKind: "bump", tip: "Bump on Slack — posted 3h ago" });
   });
 
-  test("6. approved with nothing outstanding (nits allowed) → Merge + Enable auto-merge, never Slack", () => {
-    expect(ids(approved, { reviewProblems: 0 })).toEqual(["merge", "autoMerge"]);
-    expect(ids({ ...openPr, reviewStatus: "approved" })).toEqual(["merge", "autoMerge"]); // reviewStatus alone, before the lane follows
+  test("6. approved, CI still pending → Merge + Enable auto-merge, never Slack", () => {
+    const pending = { ...approved, ciStatus: "pending" as const };
+    expect(ids(pending, { reviewProblems: 0 })).toEqual(["merge", "autoMerge"]);
+    expect(ids({ ...openPr, reviewStatus: "approved", ciStatus: "pending" })).toEqual(["merge", "autoMerge"]); // reviewStatus alone, before the lane follows
+  });
+
+  test("6b. approved and already safe to merge (CI passing/none, no conflict) → Merge alone: GitHub refuses to arm auto-merge on a PR this clean and merges it instead, so a second button would be redundant", () => {
+    expect(ids(approved, { reviewProblems: 0 })).toEqual(["merge"]); // approved is CI passing + MERGEABLE already
+    expect(ids({ ...approved, ciStatus: "none" })).toEqual(["merge"]);
+    expect(ids({ ...openPr, reviewStatus: "approved" })).toEqual(["merge"]); // reviewStatus alone, before the lane follows
+    // Already armed or queued still shows its own state — that toggle has something to show even
+    // though the PR also happens to be safe to merge right now.
+    expect(ids({ ...approved, autoMergeEnabled: true })).toEqual(["merge", "disableAutoMerge"]);
+    expect(ids({ ...approved, mergeWhenGreen: { by: "orchestrator" } })).toEqual(["merge", "autoMerge"]);
   });
 
   test("7. auto-merge already on → Disable auto-merge in its place, saying it merges once checks and reviews pass", () => {
