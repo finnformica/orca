@@ -246,6 +246,32 @@ describe("agents list view", () => {
     expect(ticker.stats()).toEqual({ listeners: 0, running: false });
   });
 
+  // Finn (#397): dropping the repo text out of the subline left a stray leading "·" wherever the
+  // item before it (an empty ThreadChips — no thread links in this fixture) rendered nothing.
+  test("the subline never starts with '·': an empty ThreadChips leaves no item for the next one's dot", async () => {
+    seed();
+    await mount();
+    const subline = rowOf("feat-ci").querySelector('[data-slot="row-subline"]')!;
+    expect(subline.querySelector('[data-subline-item="threads"]')).toBeNull(); // no thread links: gated out, not just hidden
+    expect(subline.textContent!.trim().startsWith("·")).toBe(false);
+  });
+
+  test("the subline draws exactly one dot around a real thread chip, never a stray or doubled one", async () => {
+    seed();
+    apiFake.threadLinksData = [{ adapter: "slack", externalThreadId: "t1", repo: "r", branch: "feat-ci" }];
+    await mount();
+    const subline = rowOf("feat-ci").querySelector('[data-slot="row-subline"]')!;
+    const items = [...subline.querySelectorAll<HTMLElement>(":scope > [data-subline-item]")];
+    // The chip genuinely leads the subline (icon-only, so its own textContent is empty — a dot test
+    // on raw text would miss it), and nothing — including a dot — sits before it.
+    expect(items[0]!.dataset.sublineItem).toBe("threads");
+    expect(items[0]!.querySelector('span[aria-hidden="true"]')).toBeNull();
+    // A dot for "model"/"diffstat" (each wants its own leading one) and preview's self-baked one —
+    // never two back to back for the same gap, and never trailing at the very end.
+    expect(subline.innerHTML).not.toMatch(/aria-hidden="true">·<\/span>\s*<span aria-hidden="true">·<\/span>/);
+    expect(items.at(-1)!.innerHTML.trim().endsWith('aria-hidden="true">·</span>')).toBe(false);
+  });
+
   test("quick actions: every verb that applies, icon-only with a tooltip, immediately left of the preview cell; a click runs the verb, not the row", async () => {
     apiFake.prsData = [
       pr({ number: 8, branch: "feat-ci", title: "Red CI", ciStatus: "failing" }),
@@ -414,6 +440,32 @@ describe("agents list by its own width", () => {
     expect(sublineOverflow([60, 60, 60, 60], 200, 4, 24)).toEqual([2, 3]); // 124 + 4 + 24 fits; the third does not
     expect(sublineOverflow([60, 0, 60, 60, 60], 200, 4, 24)).toEqual([3, 4]); // a zero-width item is never hidden or counted
     expect(sublineOverflow([300, 10], 200, 4, 24)).toEqual([0, 1]); // even the first can go
+  });
+
+  // Finn (#397): dropping the repo text out of the subline left a stray leading "·" wherever the
+  // item before it (an empty ThreadChips) rendered nothing. The caller must already have dropped any
+  // item with nothing to show — sublineDots only resolves the dot gaps between what's left.
+  test("pure: sublineDots never leads, never trails, never doubles — one dot per real gap", () => {
+    // A single item: no gap to put a dot in, either side.
+    expect(ws.sublineDots([{}])).toEqual([{ before: false, after: false }]);
+    // Plain defaults: every gap but the first gets a leading dot.
+    expect(ws.sublineDots([{}, {}, {}])).toEqual([
+      { before: false, after: false }, { before: true, after: false }, { before: true, after: false },
+    ]);
+    // "none" on both sides of a gap: no dot (a PR's state pill glued to its number).
+    expect(ws.sublineDots([{ sep: "none" }, { sep: "none" }])).toEqual([
+      { before: false, after: false }, { before: false, after: false },
+    ]);
+    // The earlier item's "after" and the later item's default "before" both want the SAME gap:
+    // exactly one dot (the earlier item's), never two.
+    expect(ws.sublineDots([{ sep: "after" }, {}])).toEqual([
+      { before: false, after: true }, { before: false, after: false },
+    ]);
+    // "after" on the very last item is a trailing dot — dropped, the line never ends on "·"; an
+    // earlier "after" still draws its dot (middle item, not last).
+    expect(ws.sublineDots([{}, { sep: "after" }, { sep: "after" }])).toEqual([
+      { before: false, after: false }, { before: false, after: true }, { before: false, after: false },
+    ]);
   });
 
   // happy-dom lays out nothing: give the list, each subline and each subline item a width.

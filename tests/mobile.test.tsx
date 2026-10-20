@@ -317,6 +317,10 @@ describe("the phone layout (390px, touch)", () => {
     expect(line2!.querySelector('a[data-slot="pr-link"]')).not.toBeNull();
     expect(line2!.querySelector('[data-slot="pr-preview-inline"]')).not.toBeNull();
     expect(line2!.querySelector('[data-slot="diffstat"]')!.textContent).toBe("+42 −9");
+    // No thread links in this fixture, so ThreadChips renders nothing: the line must start with the
+    // branch, never a stray "·" left over from the empty chip before it (Finn, #397).
+    expect(line2!.textContent!.trim().startsWith("·")).toBe(false);
+    expect(line2!.textContent).not.toContain("· ·");
     expect(line1!.querySelector('[data-slot="diffstat"]')).toBeNull();
     expect(line2!.querySelector('[data-slot="state-pill"]')).toBeNull();
     // The state pill and PR condition badges are their own wrapping line, after line 2.

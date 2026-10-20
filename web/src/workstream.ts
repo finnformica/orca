@@ -3495,6 +3495,25 @@ export function sublineOverflow(widths: number[], available: number, gapPx: numb
   return [];
 }
 
+/** An item in a "·"-joined subline: `sep` says which side of IT draws a dot — "before" (default),
+ *  "after", or "none" for one glued to its neighbour (a PR's state pill and number). Every item here
+ *  must already be known to render real, visible content: an item with nothing to show (an empty
+ *  ThreadChips) must be left OUT by the caller first, the same way a `cond && {...}` item already
+ *  is — `sublineDots` cannot see inside `node` to tell. */
+export type SublineSepItem = { sep?: "before" | "after" | "none" };
+
+/** Resolves each item's own "before"/"after" dot into ONE per gap: never before the first item,
+ *  never after the last (a line never starts or ends with "·"), and never two in a row when the
+ *  earlier item's "after" and the next item's default "before" would otherwise both fire into the
+ *  same empty gap (the earlier item's "after" wins; the later item stays glued). Pure. */
+export function sublineDots(items: readonly SublineSepItem[]): { before: boolean; after: boolean }[] {
+  return items.map((item, i) => {
+    const isLast = i === items.length - 1;
+    const prevAfter = i > 0 && items[i - 1]!.sep === "after";
+    return { before: i > 0 && !prevAfter && (item.sep ?? "before") === "before", after: !isLast && item.sep === "after" };
+  });
+}
+
 /** A running agent's live elapsed time, clock-style so the width holds still as it ticks:
  *  "0:07", "12:05", "1:02:03". */
 export function formatElapsed(ms: number): string {
