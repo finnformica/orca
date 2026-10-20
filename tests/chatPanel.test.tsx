@@ -891,6 +891,42 @@ test("a delivered queued message leaves the queue at once: on a stream reconnect
   expect(container!.querySelector('[data-slot="chat-queued"]')).toBeNull();
 });
 
+test("a queued message is the sent bubble with the same markdown, faded; once sent it looks the same without the fade", async () => {
+  const msg = "**ship** it with `bun run build`\n\n- one\n- two";
+  apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", instruction: "first", prompt: "p", response: "done 1", startedAt: 1, finishedAt: 5 }]);
+  apiFake.queuedData.set("feat", [{ id: 7, repo: "r", branch: "feat", instruction: msg, attachments: [], createdAt: 3 }]);
+  await mount(base);
+  const queued = container!.querySelector<HTMLElement>('[data-slot="chat-queued"]')!;
+  const queuedText = queued.querySelector<HTMLElement>('[data-slot="chat-queued-text"]')!;
+  // Markdown, like a sent message — never the raw `**` and `-`.
+  expect(queuedText.querySelector("strong")!.textContent).toBe("ship");
+  expect(queuedText.querySelector("code")!.textContent).toBe("bun run build");
+  expect([...queuedText.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["one", "two"]);
+  expect(queuedText.textContent).not.toContain("**");
+  // Pending: the message fades, the label says why, and it can still be cancelled.
+  expect(queued.dataset.pending).toBe("true");
+  expect(queuedText.className).toContain("opacity-60");
+  expect(queued.querySelector('[data-slot="queued-label"]')!.textContent).toBe("queued — sends when the current run finishescancel");
+  const queuedHtml = queuedText.innerHTML, queuedClass = queuedText.className.replace(" opacity-60", ""), shellClass = queued.className;
+
+  // It sends: the same bubble in its turn, the same markup, minus the fade.
+  apiFake.queuedData.set("feat", []);
+  apiFake.turnsData.set("r::feat", [
+    { id: "run-1", provider: "claude", instruction: "first", prompt: "p", response: "done 1", startedAt: 1, finishedAt: 5 },
+    { id: "run-2", provider: "claude", instruction: msg, prompt: "p", response: "Shipped.", startedAt: 6, finishedAt: 9 },
+  ]);
+  const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
+  await act(async () => { stream.dispatchEvent(new Event("ready")); await flush(); await flush(); });
+  expect(container!.querySelector('[data-slot="chat-queued"]')).toBeNull();
+  const sent = [...container!.querySelectorAll<HTMLElement>('[data-slot="chat-user"]')].at(-1)!;
+  const sentText = sent.querySelector<HTMLElement>('[data-slot="chat-user-text"]')!;
+  expect(sentText.innerHTML).toBe(queuedHtml);
+  expect(sentText.className).toBe(queuedClass);
+  expect(sent.className).toBe(shellClass.replace("mb-4", "mb-2")); // the turn's spacing, nothing else
+  expect(sent.dataset.pending).toBeUndefined();
+  expect(sentText.className).not.toContain("opacity-60");
+});
+
 test("undeliveredQueued: a turn delivers a queued entry only if it started after it and carries its text", () => {
   const q = [{ instruction: "deploy", createdAt: 10 }, { instruction: "and test", createdAt: 10 }];
   // The same text sent BEFORE the entry was queued does not deliver it.

@@ -333,8 +333,17 @@ test("P8: the orchestrator's chat shows an outside message and its answer as ONE
   expect(field(rows[0]!, "integration-reply")).toContain("answered Saajan");
   expect(rows[0]!.querySelector<HTMLAnchorElement>('[data-slot="integration-message"] a')!.href).toBe("https://discord.com/channels/G/C/M");
   // A queued outside message is its row too, not a queued bubble of yours.
-  expect(field(c.querySelector<HTMLElement>('[data-slot="integration-queued"]')!, "integration-state")).toBe("queued");
+  const queued = c.querySelector<HTMLElement>('[data-slot="integration-queued"]')!;
+  expect(field(queued, "integration-state")).toBe("queued");
   expect(c.querySelector('[data-slot="chat-queued"]')).toBeNull();
+  // The SAME card as a delivered one, faded while it waits.
+  expect(queued.dataset.pending).toBe("true");
+  expect(queued.className).toBe(`${rows[0]!.className} opacity-60`);
+  expect(rows[0]!.dataset.pending).toBeUndefined();
+  // Open, it shows the message in full, like a delivered card — with no reply yet.
+  await act(async () => { queued.querySelector("button")!.click(); await flush(); });
+  expect(queued.querySelector('[data-slot="integration-message"]')!.textContent).toContain("one more");
+  expect(queued.querySelector('[data-slot="integration-reply"]')).toBeNull();
 });
 
 test("P9: a row stored with a catch-all link's label as its place shows no place, in the row and opened", async () => {
