@@ -10,6 +10,15 @@ import { GlobalRegistrator } from "@happy-dom/global-registrator";
 // tests talk to a real Bun server, which happy-dom's client can't.
 export const native = { fetch: Bun.fetch as typeof fetch, AbortSignal: globalThis.AbortSignal, AbortController: globalThis.AbortController, Response: globalThis.Response, Request: globalThis.Request, Headers: globalThis.Headers, WebSocket: globalThis.WebSocket };
 
+// Bun's own FormData/File, captured at this same pre-registration moment — kept OUT of `native`
+// above (which many other test files import unchanged) so only `tests/voice.test.ts` opts into
+// them: `handleTranscribe` calls the real `Request.formData()`, Bun's own multipart parser, on a
+// `Request` built with these, matching what a deployed bridge actually parses (happy-dom's own
+// FormData/Request pairing never goes through that parser at all, so a test built on it isn't
+// exercising the real code). A SEPARATE export, not an addition to `native`, so every other
+// happy-dom-based test keeps the exact globals it had before.
+export const nativeUpload = { FormData: globalThis.FormData, File: globalThis.File };
+
 // A real base URL (not about:blank, whose pathname reads "blank"), so navigate() moves the route
 // store between pages the way it does in the browser. Not localhost: code that behaves differently
 // on a localhost page (previewHref) keeps its non-local default.
