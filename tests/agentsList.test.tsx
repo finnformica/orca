@@ -300,8 +300,8 @@ describe("agents list view", () => {
     // The ⋯ menu's items, for comparison.
     await pointerdown(row.querySelector('button[aria-label="Actions"]')!);
     const dots = menuItems(document.body);
-    // Address PR and Add preview live in the PR submenu, as on the ⋯.
-    expect(dots).toEqual(["Open", "Open PR #8", "Copy branch", "Follow up…", "Mark verified", "Rename…", "Hand off…", "PR", "Agent", "Slack", "Close PR"]);
+    // Finn's order: the submenus, then Verified, Rename… and Close PR last (no Agent ▸: nothing applies).
+    expect(dots).toEqual(["Open", "Copy", "Merge", "PR", "Slack", "Mark verified", "Rename…", "Close PR"]);
     await key(document.body.querySelector('[role="menu"]')!, "Escape");
     expect(document.body.querySelector('[role="menu"]')).toBeNull();
 
@@ -346,8 +346,15 @@ describe("agents list view", () => {
     await contextmenu(row, 0, 0); // a keyboard-raised contextmenu has no pointer position
     const menu = ctxMenu()!;
     expect(menu).not.toBeNull();
-    expect(menuItems(menu)).toContain("Move to cloud"); // a worktree can move instance
-    const copy = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Copy branch")!;
+    const openSub = async (label: string) => {
+      const t = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === label)!;
+      await pointerdown(t);
+      await act(async () => { t.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
+    };
+    await openSub("Agent");
+    expect(menuItems(document.body)).toContain("Move to cloud"); // a worktree can move instance
+    await openSub("Copy");
+    const copy = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Branch name")!;
     await act(async () => { copy.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
     expect(copied).toEqual(["local-idle"]);
     expect(ctxMenu()).toBeNull();

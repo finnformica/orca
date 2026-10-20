@@ -28,7 +28,7 @@ import { usePullToRefresh } from "@/lib/gestures";
 import { BottomSheet } from "@/components/BottomSheet";
 import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
 import {
-  DEFAULT_LIST_FILTER, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed, prPill,
+  DEFAULT_LIST_FILTER, detailPath, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed, prPill,
   LIST_ITEM_GAP_PX, NO_FOLD, browserKillLabel, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, sublineOverflow, toggleNotMerged, toggleQuick,
   type ListColumn, type ListFold, type ListSort, type ListWidths, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
 } from "../workstream";
@@ -407,12 +407,8 @@ function ListHeader({ cols }: { cols: ListColumn[] }) {
 export const TONE_DOT: Record<RowTone, DotTone> = { running: "building", failed: "error", attention: "warning", ready: "ready", neutral: "neutral" };
 export const TONE_LABEL: Record<RowTone, string> = { running: "Running", failed: "Error", attention: "Needs you", ready: "Ready", neutral: "Idle" };
 
-/** The agent page a row opens: its PR page, or its local-session page. */
-export function detailPath(row: Pick<Row, "repo" | "branch" | "lane" | "prNumber">): string | null {
-  if (row.prNumber) return `/${row.repo}/prs/${row.prNumber}`;
-  if (row.lane !== "DONE" && !row.branch.startsWith("opt-")) return `/${row.repo}/local/${encodeURIComponent(row.branch)}`;
-  return null;
-}
+/** The agent page a row opens (pure, in workstream.ts; re-exported for the views that import it here). */
+export { detailPath };
 
 // A click on the row (not on one of its controls) opens the agent page. Menus portal out of the
 // row's DOM but React still bubbles their clicks here — hence the contains().
@@ -475,8 +471,7 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
   const hasWork = row.prNumber ? true : (localSummary?.commits.length ?? 0) > 0;
   // The state-aware quick icons sit left of the preview cell; they only PEEK at the review cache.
   const quick = hasMenu && <QuickActionButtons row={row} hasWork={hasWork} peek />;
-  const menu = hasMenu && <WorkstreamActions row={row} hasWork={hasWork} compact menuOnly onFollowUp={to ? () => navigate(`${to}/chat`) : undefined}
-    onOpen={to ? () => navigate(to) : undefined} contextAt={menuAt} onContextClose={closeMenu} />;
+  const menu = hasMenu && <WorkstreamActions row={row} hasWork={hasWork} compact menuOnly contextAt={menuAt} onContextClose={closeMenu} />;
   // The checks & review chips, one overflow item each: a chip that does not fit goes into the +N card.
   const signals: SublineItem[] = [
     row.prNumber && !isDone && { key: "checks", sep: "none", part: "signals", node: <ConditionBadges row={row} /> },

@@ -126,6 +126,96 @@ export function prMenuActions(row: PrMenuRow): PrMenuAction[] {
   return actions;
 }
 
+/** The agent page a row opens: its PR page, or its local-session page (null for a finished local). */
+export function detailPath(row: { repo: string; branch: string; lane?: string; prNumber?: number }): string | null {
+  if (row.prNumber) return `/${row.repo}/prs/${row.prNumber}`;
+  if (row.lane !== "DONE" && !row.branch.startsWith("opt-")) return `/${row.repo}/local/${encodeURIComponent(row.branch)}`;
+  return null;
+}
+
+// The workstream actions menu (WorkstreamActions: the ⋯, the right-click menu and the phone sheet),
+// Finn's layout: Open ▸, Copy ▸, Merge ▸, PR ▸, Agent ▸, Slack ▸, then Verified, Rename, Close/Discard
+// (those three are not decided here). An item that does not apply is left out, and an empty group
+// is not shown.
+export type MenuGroup = "open" | "copy" | "merge" | "pr" | "agent" | "slack";
+export type MenuItemId =
+  | "open.chat" | "open.pr" | "open.preview" | "open.ci" | "open.orchestrator"
+  | "copy.branch" | "copy.prLink" | "copy.prMarkdown" | "copy.slack" | "copy.preview" | "copy.worktree" | "copy.cli"
+  | "merge.now" | "merge.whenGreen"
+  | "pr.markReady" | "pr.moveToDraft" | "pr.address" | "pr.addPreview" | "pr.previewPending" | "pr.create" | "pr.createDraft" | "pr.promote"
+  | "agent.stop" | "agent.resolveConflicts" | "agent.move"
+  | "slack.send" | "slack.bump";
+export type MenuRow = PrMenuRow & {
+  repo: string; branch: string; lane?: string; hasRemote?: boolean; remote?: boolean;
+  worktreePath?: string; agentStatus?: string; hasPreviewLabel?: boolean;
+};
+
+/** Which items each group of the actions menu shows for a row, in order. Pure. `previewConfigured`:
+ *  the repo has PR previews; `moveTargets`: the other instances a worktree can move to. */
+export function workstreamMenu(row: MenuRow, ctx: { previewConfigured: boolean; moveTargets: number }): Record<MenuGroup, MenuItemId[]> {
+  const isPr = Boolean(row.prNumber);
+  const ciFailing = row.ciStatus === "failing";
+  const conflicting = row.mergeable === "CONFLICTING" || row.mergeClean === "conflict";
+  const pick = (pairs: Array<[boolean, MenuItemId]>) => pairs.filter(([on]) => on).map(([, id]) => id);
+  const preview = prPreviewState(row, ctx.previewConfigured);
+  return {
+    open: pick([
+      [Boolean(detailPath(row)), "open.chat"],
+      [Boolean(row.prUrl), "open.pr"],
+      [Boolean(row.previewUrl), "open.preview"],
+      [Boolean(row.prUrl) && ciFailing, "open.ci"],
+      [true, "open.orchestrator"],
+    ]),
+    copy: pick([
+      [true, "copy.branch"],
+      [Boolean(row.prUrl), "copy.prLink"],
+      [Boolean(row.prUrl), "copy.prMarkdown"],
+      [isPr && Boolean(row.prUrl), "copy.slack"],
+      [Boolean(row.previewUrl), "copy.preview"],
+      [true, "copy.worktree"], // adopts a missing worktree first
+      [!row.remote, "copy.cli"],
+    ]),
+    merge: pick([
+      // A PR: no conflicts and CI not failing (approval is a team norm GitHub enforces). A local
+      // branch: the promoted, clean Mergeable lane.
+      [isPr ? !row.isDraft && row.mergeable === "MERGEABLE" && !ciFailing : row.lane === "MERGEABLE", "merge.now"],
+      [isPr && !row.isDraft, "merge.whenGreen"], // GitHub rejects auto-merge on a draft
+    ]),
+    pr: isPr
+      ? pick([
+        [Boolean(row.isDraft), "pr.markReady"],
+        [!row.isDraft, "pr.moveToDraft"],
+        [true, "pr.address"],
+        [preview === "add", "pr.addPreview"],
+        [preview === "pending", "pr.previewPending"],
+      ])
+      : row.lane === "LOCAL"
+        ? (row.hasRemote ? ["pr.create", "pr.createDraft"] : ["pr.promote"])
+        : [],
+    agent: pick([
+      [row.agentStatus === "running" && Boolean(row.worktreePath), "agent.stop"],
+      [!isPr && conflicting, "agent.resolveConflicts"],
+      [Boolean(row.worktreePath) && ctx.moveTargets > 0, "agent.move"],
+    ]),
+    slack: isPr ? ["slack.send", "slack.bump"] : [],
+  };
+}
+
+/** The PR as a markdown link, `[Title](url)`, for Copy ▸ PR as markdown link. */
+export const prMarkdownLink = (row: { title: string; prUrl?: string }): string =>
+  `[${row.title.replace(/[[\]]/g, "\\$&")}](${row.prUrl ?? ""})`;
+
+/** Where Open ▸ Failing CI run goes: the PR's checks tab on GitHub, which lists the failed runs. */
+export const failingCiUrl = (row: { prUrl?: string; ciStatus?: CiStatus }): string | undefined =>
+  row.prUrl && row.ciStatus === "failing" ? `${row.prUrl.replace(/\/$/, "")}/checks` : undefined;
+
+/** The text Open ▸ Orchestrator puts in its composer (not sent): the card's name and its PR. */
+export function orchestratorAbout(row: { repo: string; branch: string; title: string; prNumber?: number }): string {
+  return row.prNumber
+    ? `About ${row.repo}#${row.prNumber} "${row.title}": `
+    : `About ${row.repo} branch ${row.branch} "${row.title}": `;
+}
+
 // Lane-level bulk actions: the same per-card verbs, fired across every card in a swimlane. Which
 // verbs a lane offers is fixed (they mirror what that lane's cards can do); WHICH cards each one
 // runs on is state-gated exactly like the per-card menu, so a bulk "Fix CI" only touches the cards
