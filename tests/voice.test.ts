@@ -7,7 +7,7 @@ import { appendTranscript, clipName, pickAudioMime, recordClock } from "../web/s
 const KEY = "sk-proj-TESTKEY1234567890abcdef";
 const env = { [VOICE_KEY_ENV]: KEY };
 
-function upload(bytes: number | Uint8Array, type = "audio/webm", headers: Record<string, string> = {}): Request {
+function upload(bytes: number | Uint8Array<ArrayBuffer>, type = "audio/webm", headers: Record<string, string> = {}): Request {
   const form = new FormData();
   form.append("audio", new File([typeof bytes === "number" ? new Uint8Array(bytes) : bytes], "clip", { type }));
   return new Request("http://127.0.0.1/api/voice/transcribe", { method: "POST", body: form, headers });
