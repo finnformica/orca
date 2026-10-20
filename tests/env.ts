@@ -1,3 +1,12 @@
+// Fail fast when git would act on another repository. A git hook exports GIT_DIR (and friends); a
+// suite started from a hook in a linked worktree once re-initialised the MAIN clone (core.bare=true,
+// the scratch identity) and committed a scratch "init" over a worker's branch, because every test
+// that spawns git with process.env passed GIT_DIR on. Unset them before `bun test`.
+import { inheritedGitRepoVars } from "../server/env";
+const gitRepoVars = inheritedGitRepoVars();
+if (gitRepoVars.length) {
+  throw new Error(`bun test refuses to start: ${gitRepoVars.join(", ")} set. Git would act on that repository, not the tests' scratch repos. Run: unset ${gitRepoVars.join(" ")}`);
+}
 // orca.config now requires ORCA_DEV_ROOT (fails loudly otherwise). Give the test suite a default so
 // files that import orca.config (e.g. previewPreflight.test.ts) don't throw at import time. Real
 // runs still require the operator to set it; this only covers the test process.
