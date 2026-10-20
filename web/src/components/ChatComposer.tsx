@@ -6,7 +6,7 @@ import { ExpandableImage } from "@/components/ExpandableImage";
 import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { usePrRefs, useVoiceInput, useWorkstreamRefs } from "@/store";
-import { NO_WALK, appendQuote, filterMentions, historyKey, historyStep, insertPrRef, mentionLabel, prTrigger, type HistoryWalk, type MentionRef } from "@/workstream";
+import { NO_WALK, appendQuote, filterMentions, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, type HistoryWalk, type MentionRef } from "@/workstream";
 import { lineVisualRow } from "@/lib/caretRow";
 import { cn, PipContext } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
@@ -42,6 +42,7 @@ function visualRowFlags(el: HTMLTextAreaElement, key: string): { firstVisualRow?
 // "chatbox" (à la Claude/ChatGPT) wrapping image thumbnails, the textarea, and a bottom toolbar
 // with the repo selector (via `leading`) on the left and an icon send button on the right.
 // Accepts files of any type by paste, drag-drop, or the paperclip picker; Enter sends; Shift/⌘/Ctrl+Enter breaks the line.
+// Enter on a markdown list line continues the list (listContinuation); Enter on an empty item ends it.
 // On a touch screen Enter breaks the line (a phone keyboard has no Shift+Enter) and the button sends.
 // Owns its own text + attachments; with a `persistKey` it survives page reloads (localStorage).
 // `variant="quick"` is the same input dressed as the quick-ask box (components/QuickAsk): no border of
@@ -286,6 +287,21 @@ export function ChatComposer({
       if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); pick(matches[activeIdx]!); return; }
       // preventDefault also keeps a host <dialog> from closing on this Escape.
       if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setDismissedAt(trig!.start); return; }
+    }
+    // Enter on a markdown list line continues the list (or ends it on an empty item) instead of
+    // sending, on every device; there ⌘/Ctrl+Enter sends where Enter would. Never mid-IME composition.
+    if (e.key === "Enter" && !e.shiftKey && !e.altKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
+      const el = e.currentTarget as HTMLTextAreaElement;
+      const list = listContinuation(el.value, el.selectionStart, el.selectionEnd);
+      if (list && (e.metaKey || e.ctrlKey)) {
+        if (!isCoarse()) { e.preventDefault(); void submit(); return; }
+      } else if (list) {
+        e.preventDefault();
+        pendingCaret.current = list.caret;
+        setValue(list.text);
+        setCaret(list.caret);
+        return;
+      }
     }
     // Enter sends, like a chat; Shift/⌘/Ctrl+Enter breaks the line. (It was ⌘+Enter to send.) A
     // textarea inserts the newline for Shift on its own; ⌘/Ctrl need it put in by hand. On a touch
