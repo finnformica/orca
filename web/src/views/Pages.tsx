@@ -24,7 +24,7 @@ import { instanceChoices, setInstanceRate, setInstanceTerminal, setShowBoard, st
 import { terminalMachines, useOpenTerminal } from "@/components/InstanceTerminal";
 import { ago, repoSummaries, terminalBlocked } from "../workstream";
 import { Detail, Empty, Pill, SectionTitle, Segmented, StatusDot, VCard } from "@/components/console";
-import { BrandName, FindBox, NAV, OrcaMark, THEMES, navShown } from "@/components/Shell";
+import { BrandName, FindBox, HandoffsBadge, NAV, OrcaMark, THEMES, navShown } from "@/components/Shell";
 import { Tip } from "@/components/ui/tip";
 import { cn } from "@/lib/utils";
 import { loadIdentity, useServerIdentity } from "@/lib/identity";
@@ -187,6 +187,7 @@ function MobileNav() {
         {links.map(({ to, label, Icon }) => (
           <button key={to} type="button" onClick={() => navigate(to)} className="hover:bg-accent/40 flex w-full items-center gap-3 px-4 py-3 text-left text-sm">
             <Icon className="text-muted-foreground size-4" />{label}
+            {to === "/handoffs" && <HandoffsBadge />}
           </button>
         ))}
       </nav>

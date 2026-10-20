@@ -20,6 +20,7 @@ import { apiBase, type ServerEntry } from "@/lib/server";
 import { confirmDialog } from "@/lib/dialogs";
 import { notifyLocal } from "@/lib/notificationStore";
 import { navigate, useSearch } from "@/lib/route";
+import { refreshHandoffBadge } from "@/lib/handoffBadge";
 
 const failed = (label: string, title: string, e: unknown) => {
   const error = e instanceof Error ? e.message : String(e);
@@ -28,7 +29,13 @@ const failed = (label: string, title: string, e: unknown) => {
 
 export function HandoffsPage() {
   const [data, setData] = useState<{ self: string; packs: PackView[] } | null>(null);
-  const load = useCallback(() => api.handoffs().then(setData).catch((e) => { setData({ self: "", packs: [] }); failed("Load handoffs", "list", e); }), []);
+  // Each load also refreshes the nav badge. Received packs are marked seen once this page shows them;
+  // this load's rows keep their old `seenAt`, so a new pack still reads "new" until the next visit.
+  const load = useCallback(() => api.handoffs().then(async (d) => {
+    setData(d);
+    if (d.packs.some((p) => p.direction === "in" && !p.seenAt)) await api.markHandoffsSeen().catch(() => {});
+    refreshHandoffBadge();
+  }).catch((e) => { setData({ self: "", packs: [] }); failed("Load handoffs", "list", e); }), []);
   useEffect(() => { void load(); }, [load]);
   const draft = parseHandoffDraft(useSearch());
   const { servers } = useServers();
@@ -56,7 +63,10 @@ export function HandoffsPage() {
           {received.map((p) => (
             <div key={p.id} className="flex items-center justify-between gap-3 px-4 py-3 text-sm">
               <span className="min-w-0 truncate"><span className="font-medium">{p.title}</span><span className="text-muted-foreground"> · from {p.source} · {p.files.length} file{p.files.length === 1 ? "" : "s"}</span></span>
-              <Pill tone="blue">queued to the orchestrator</Pill>
+              <span className="flex shrink-0 items-center gap-2">
+                {!p.seenAt && <Pill tone="amber" slot="handoff-new">new</Pill>}
+                <Pill tone="blue">queued to the orchestrator</Pill>
+              </span>
             </div>
           ))}
         </VCard>

@@ -950,6 +950,13 @@ export const MIGRATIONS: MigrationStep[] = [
     // Nullable: older rows and older bridges record none.
     sql: `ALTER TABLE instance_metric ADD COLUMN IF NOT EXISTS bridge_rss_mb REAL`,
   },
+  {
+    name: "20261020-handoff-seen",
+    idempotent: true,
+    // When the user first opened the Handoffs page after an incoming pack arrived. The nav badge
+    // (`handoffBadge`) counts incoming packs with none, plus outgoing packs not sent yet.
+    sql: `ALTER TABLE handoff ADD COLUMN IF NOT EXISTS seen_at BIGINT`,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
@@ -2028,12 +2035,15 @@ export type HandoffFile = { name: string; kind: "file" | "chat" | "attachment"; 
 export type HandoffRow = {
   id: string; direction: "out" | "in"; title: string; message: string; target: string; source: string;
   files: HandoffFile[]; createdAt: number; sentAt?: number; sentTo?: string;
+  /** Incoming only: when the user first opened the Handoffs page after it arrived. */
+  seenAt?: number;
 };
 
 const toHandoff = (r: Record<string, unknown>): HandoffRow => ({
   id: String(r.id), direction: r.direction === "in" ? "in" : "out", title: String(r.title), message: String(r.message),
   target: String(r.target), source: String(r.source), files: (typeof r.files === "string" ? JSON.parse(r.files) : r.files) as HandoffFile[] ?? [],
   createdAt: Number(r.created_at), sentAt: r.sent_at === null ? undefined : Number(r.sent_at), sentTo: (r.sent_to as string | null) ?? undefined,
+  ...(r.seen_at === null || r.seen_at === undefined ? {} : { seenAt: Number(r.seen_at) }),
 });
 
 /** Insert a pack. False when a row with this id and direction exists (an import sent twice). */
@@ -2066,6 +2076,25 @@ export async function handoff(id: string, direction: "out" | "in" = "out"): Prom
 export async function markHandoffSent(id: string, to: string, at = Date.now()): Promise<void> {
   return withRetry(async (sql) => {
     await sql`UPDATE handoff SET sent_at = ${at}, sent_to = ${to} WHERE user_id = ${currentUser()} AND direction = 'out' AND id = ${id}`;
+  });
+}
+
+/** What the Handoffs nav badge counts: outgoing packs not sent yet, and incoming packs not seen yet. */
+export async function handoffBadge(): Promise<{ unsent: number; unseen: number }> {
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      SELECT count(*) FILTER (WHERE direction = 'out' AND sent_at IS NULL) AS unsent,
+             count(*) FILTER (WHERE direction = 'in' AND seen_at IS NULL) AS unseen
+      FROM handoff WHERE user_id = ${currentUser()}`;
+    const r = (rows as { unsent: string | number; unseen: string | number }[])[0];
+    return { unsent: Number(r?.unsent ?? 0), unseen: Number(r?.unseen ?? 0) };
+  });
+}
+
+/** The user opened the Handoffs page: every incoming pack is seen. */
+export async function markHandoffsSeen(at = Date.now()): Promise<void> {
+  return withRetry(async (sql) => {
+    await sql`UPDATE handoff SET seen_at = ${at} WHERE user_id = ${currentUser()} AND direction = 'in' AND seen_at IS NULL`;
   });
 }
 
