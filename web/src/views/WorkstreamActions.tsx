@@ -51,13 +51,22 @@ const SheetMenu = createContext<(() => void) | null>(null);
 type Select = (e: Event) => void;
 const SHEET_ROW = "active:bg-accent flex min-h-12 w-full items-center gap-3 rounded-md px-2 text-left text-[15px] outline-none select-none focus-visible:bg-accent disabled:opacity-50";
 
-function Item({ icon: Icon, onSelect, disabled, className, children }: { icon?: LucideIcon; onSelect?: Select; disabled?: boolean; className?: string; children: ReactNode }) {
+// `busy` scopes a spinner (and the disable that blocks a double-click) to THIS item alone — every
+// other item, the card link, the chat and the menu itself stay usable while one action runs.
+function Item({ icon: Icon, onSelect, disabled, busy, className, children }: { icon?: LucideIcon; onSelect?: Select; disabled?: boolean; busy?: boolean; className?: string; children: ReactNode }) {
   const close = useContext(SheetMenu);
-  if (!close) return <DropdownMenuItem onSelect={onSelect} disabled={disabled} className={className}>{children}</DropdownMenuItem>;
+  const isDisabled = disabled || busy;
+  if (!close) return (
+    <DropdownMenuItem onSelect={onSelect} disabled={isDisabled} className={className}>
+      <span className="min-w-0 flex-1 truncate">{children}</span>
+      {busy && <Loader2 className="size-3.5 shrink-0 animate-spin" />}
+    </DropdownMenuItem>
+  );
   return (
-    <button type="button" role="menuitem" data-slot="sheet-item" disabled={disabled} className={cn(SHEET_ROW, className)}
+    <button type="button" role="menuitem" data-slot="sheet-item" disabled={isDisabled} className={cn(SHEET_ROW, className)}
       onClick={() => { const e = new Event("select", { cancelable: true }); onSelect?.(e); if (!e.defaultPrevented) close(); }}>
-      {Icon && <Icon className="text-muted-foreground size-5 shrink-0" />}<span className="min-w-0 flex-1">{children}</span>
+      {busy ? <Loader2 className="text-muted-foreground size-5 shrink-0 animate-spin" /> : (Icon && <Icon className="text-muted-foreground size-5 shrink-0" />)}
+      <span className="min-w-0 flex-1">{children}</span>
     </button>
   );
 }
@@ -116,8 +125,8 @@ const mergeConfirm = (row: Row): ConfirmOptions => ({
 // page has the conversation); without it the menu's Follow up opens the composer as the button does.
 // `contextAt` (menuOnly) opens the SAME items as a right-click menu at that point — a second,
 // controlled root over the one items fragment, so the two menus can't drift; `onOpen` adds Open.
-export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false, leading, quick = true, tipSide, menuOnly = false, onFollowUp, onOpen, contextAt, onContextClose }: {
-  row: Row; hasWork?: boolean; onBusy?: (busy: boolean) => void; compact?: boolean; leading?: ReactNode; quick?: boolean; tipSide?: "top" | "bottom"; menuOnly?: boolean; onFollowUp?: () => void;
+export function WorkstreamActions({ row, hasWork = true, compact = false, leading, quick = true, tipSide, menuOnly = false, onFollowUp, onOpen, contextAt, onContextClose }: {
+  row: Row; hasWork?: boolean; compact?: boolean; leading?: ReactNode; quick?: boolean; tipSide?: "top" | "bottom"; menuOnly?: boolean; onFollowUp?: () => void;
   onOpen?: () => void; contextAt?: { x: number; y: number } | null; onContextClose?: () => void;
 }) {
   // Reopen the follow-up box on reload if a draft was left in progress, so nothing typed is lost.
@@ -131,17 +140,24 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
   // Wrap every action so it (a) surfaces errors — menu items are fire-and-forget, so a failed
   // promote/merge would otherwise vanish silently — as a failed-action notification (lib/notificationStore: the message, Copy,
   // Ask the orchestrator), never as text in the row, where it broke the Agents list's layout; the ⋯
-  // keeps only a ✗ with the first line as its tooltip; and (b) reports busy up to the card, which
-  // shows a loading overlay (actions like promote push + open a PR and take a few seconds).
+  // keeps only a ✗ with the first line as its tooltip; and (b) tracks busy PER ACTION (keyed by its
+  // label), so only the clicked item shows a spinner and is disabled — every other action, the card
+  // link, the chat and the menu itself stay usable. A second click on the SAME action while it's
+  // still running is a no-op (`isBusy` guards `run`); if the server itself refuses because the agent
+  // is already running, that lands in `fail` as the usual error toast — no extra client-side rule.
+  const [busyActions, setBusyActions] = useState<Set<string>>(() => new Set());
+  const isBusy = (action: string) => busyActions.has(action);
   const fail = (action: string, e: unknown) => {
     setErr(e instanceof Error ? e.message : String(e));
     actionFailed({ action, title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }, e);
   };
   const run = (action: string, fn: () => Promise<unknown>) => async () => {
-    setErr(null); onBusy?.(true);
+    if (busyActions.has(action)) return;
+    setErr(null);
+    setBusyActions((s) => new Set(s).add(action));
     try { await fn(); }
     catch (e) { fail(action, e); }
-    finally { onBusy?.(false); }
+    finally { setBusyActions((s) => { const next = new Set(s); next.delete(action); return next; }); }
   };
 
   const isPr = Boolean(row.prNumber);
@@ -198,10 +214,10 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
         <>
           {onOpen && <Item icon={ArrowUpRight} onSelect={onOpen}>Open</Item>}
           {row.prUrl && <Item icon={ExternalLink} onSelect={() => window.open(row.prUrl, "_blank", "noreferrer")}>Open PR #{row.prNumber}</Item>}
-          <Item icon={Copy} onSelect={run("Copy branch", copyBranch)}>Copy branch</Item>
+          <Item icon={Copy} busy={isBusy("Copy branch")} onSelect={run("Copy branch", copyBranch)}>Copy branch</Item>
           <Sep />
           <Item icon={MessageSquarePlus} disabled={submitting} onSelect={() => (onFollowUp ? onFollowUp() : setComposing(true))}>Follow up…</Item>
-          {row.lane === "MERGEABLE" && <Item icon={GitMerge} onSelect={() => void confirmMerge()}>{mergeLabel}</Item>}
+          {row.lane === "MERGEABLE" && <Item icon={GitMerge} busy={isBusy("Merge")} onSelect={() => void confirmMerge()}>{mergeLabel}</Item>}
           <Sep />
         </>
       )}
@@ -217,10 +233,10 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
       )}
       {/* Lifecycle: promote a local branch, or merge from a lane where Merge isn't already a header button */}
       {isLocalLane && (row.hasRemote
-        ? <PromoteSubmenu row={row} disabled={!hasWork} run={run} />
-        : <Item icon={GitPullRequestArrow} disabled={!hasWork} onSelect={run("Promote", () => promote(row))}>Promote</Item>)}
+        ? <PromoteSubmenu row={row} disabled={!hasWork} run={run} isBusy={isBusy} />
+        : <Item icon={GitPullRequestArrow} disabled={!hasWork} busy={isBusy("Promote")} onSelect={run("Promote", () => promote(row))}>Promote</Item>)}
       {canMergeNow && row.lane !== "MERGEABLE" && (
-        <Item icon={GitMerge} onSelect={() => void confirmMerge()}>
+        <Item icon={GitMerge} busy={isBusy("Merge")} onSelect={() => void confirmMerge()}>
           Merge{unreviewed ? " (unreviewed)" : ""}
         </Item>
       )}
@@ -230,26 +246,26 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
       <Item icon={Package} onSelect={() => navigate(handoffDraftPath(row))}>Hand off…</Item>
       {/* Move the worktree to another instance (verbs.moveWorkstream). Not while its agent runs. */}
       {row.worktreePath && instanceChoices().filter((i) => i !== (row.instance ?? thisInstance())).map((to) => {
-        const moveItem = <Item icon={ArrowRightLeft} key={to} disabled={row.agentStatus === "running"} onSelect={run(`Move to ${to}`, () => moveWorkstream(row, to))}>Move to {to}</Item>;
+        const moveItem = <Item icon={ArrowRightLeft} key={to} disabled={row.agentStatus === "running"} busy={isBusy(`Move to ${to}`)} onSelect={run(`Move to ${to}`, () => moveWorkstream(row, to))}>Move to {to}</Item>;
         return row.agentStatus === "running" ? <Tip key={to} label="Wait for the agent to finish first">{moveItem}</Tip> : moveItem;
       })}
 
       {/* PR — every action that needs an open PR, in one place (workstream.prMenuActions) */}
       {isPr && (
         <Sub label="PR">
-            {prActions.includes("markReady") && <Item icon={CheckCheck} onSelect={run("Mark ready", () => markReady(row))}>Mark ready for review</Item>}
-            {prActions.includes("moveToDraft") && <Item icon={GitPullRequestDraft} onSelect={run("Move to draft", () => convertToDraft(row))}>Move to draft</Item>}
+            {prActions.includes("markReady") && <Item icon={CheckCheck} busy={isBusy("Mark ready")} onSelect={run("Mark ready", () => markReady(row))}>Mark ready for review</Item>}
+            {prActions.includes("moveToDraft") && <Item icon={GitPullRequestDraft} busy={isBusy("Move to draft")} onSelect={run("Move to draft", () => convertToDraft(row))}>Move to draft</Item>}
             {/* A PR Orca queued itself (the repo refused GitHub's auto-merge) reads the same as GitHub's
                 own auto-merge here: Disable cancels whichever is actually active (store.disableAutoMerge). */}
             {prActions.includes("autoMerge") && (row.autoMergeEnabled || row.mergeWhenGreen
-              ? <Item icon={Zap} onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</Item>
-              : <Item icon={Zap} onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</Item>)}
+              ? <Item icon={Zap} busy={isBusy("Disable auto-merge")} onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</Item>
+              : <Item icon={Zap} busy={isBusy("Enable auto-merge")} onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</Item>)}
             {/* One agent verb: conflicts, CI and review in a single run (store.addressPr). */}
-            {prActions.includes("addressPr") && <Item icon={Wrench} onSelect={run("Address PR", () => addressPr(row))}>Address PR</Item>}
+            {prActions.includes("addressPr") && <Item icon={Wrench} busy={isBusy("Address PR")} onSelect={run("Address PR", () => addressPr(row))}>Address PR</Item>}
             {prPreview === "ready" && <Item icon={Globe} onSelect={() => window.open(row.previewUrl, "_blank", "noreferrer")}>Open PR preview</Item>}
             {prPreview === "pending" && <Item icon={Globe} disabled>Deploying preview…</Item>}
-            {prPreview === "add" && <Item icon={Globe} onSelect={run("Add preview", () => addPreviewLabel(row))}>Add PR preview</Item>}
-            {prActions.includes("copyLink") && <><Sep /><Item icon={Link} onSelect={run("Copy link", copyLink)}>Copy link</Item></>}
+            {prPreview === "add" && <Item icon={Globe} busy={isBusy("Add preview")} onSelect={run("Add preview", () => addPreviewLabel(row))}>Add PR preview</Item>}
+            {prActions.includes("copyLink") && <><Sep /><Item icon={Link} busy={isBusy("Copy link")} onSelect={run("Copy link", copyLink)}>Copy link</Item></>}
           </Sub>
       )}
 
@@ -257,17 +273,17 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
 
       {/* Agent — provider-neutral work; resolve conflicts lives here only for a local branch (no PR) */}
       <Sub label="Agent">
-          {!isPr && conflicting && <Item icon={Wrench} onSelect={run("Resolve conflicts", () => resolveConflicts(row))}>Resolve conflicts</Item>}
+          {!isPr && conflicting && <Item icon={Wrench} busy={isBusy("Resolve conflicts")} onSelect={run("Resolve conflicts", () => resolveConflicts(row))}>Resolve conflicts</Item>}
           {/* Local only — see the card's copy menu. */}
-          {!row.remote && <Item icon={SquareTerminal} onSelect={run("Copy CLI", copyCli)}>Copy CLI</Item>}
-          <Item icon={FolderOpen} onSelect={run("Copy worktree", copyWorktree)}>Copy worktree</Item>
+          {!row.remote && <Item icon={SquareTerminal} busy={isBusy("Copy CLI")} onSelect={run("Copy CLI", copyCli)}>Copy CLI</Item>}
+          <Item icon={FolderOpen} busy={isBusy("Copy worktree")} onSelect={run("Copy worktree", copyWorktree)}>Copy worktree</Item>
         </Sub>
 
       {/* Slack — only meaningful once there's a PR to link */}
       {isPr && (
         <Sub label="Slack">
-            <Item icon={Send} onSelect={run("Slack message", () => sendSlack(row, "notify"))}>Send message{notified ? " again" : ""}</Item>
-            <Item icon={BellRing} disabled={!notified} onSelect={run("Slack bump", () => sendSlack(row, "bump"))}>Send bump{bumpDue ? " (due)" : ""}</Item>
+            <Item icon={Send} busy={isBusy("Slack message")} onSelect={run("Slack message", () => sendSlack(row, "notify"))}>Send message{notified ? " again" : ""}</Item>
+            <Item icon={BellRing} disabled={!notified} busy={isBusy("Slack bump")} onSelect={run("Slack bump", () => sendSlack(row, "bump"))}>Send bump{bumpDue ? " (due)" : ""}</Item>
           </Sub>
       )}
 
@@ -276,6 +292,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
       {isPr ? (
         <Item icon={XCircle}
           className="text-destructive focus:text-destructive"
+          busy={isBusy("Close PR")}
           onSelect={() => void (async () => {
             if (await confirmDialog({ title: `Close PR #${row.prNumber}?`, description: `Close "${row.title}" without a merge. This removes the worktree and the local branch.`, confirmLabel: "Close PR", destructive: true })) await run("Close PR", () => closePr(row))();
           })()}
@@ -301,7 +318,7 @@ export function WorkstreamActions({ row, hasWork = true, onBusy, compact = false
     // vertical centering on every row. `gap` only spaces boxes the layout actually generates.
     <div className="flex flex-col gap-1">
       <div className="flex flex-wrap items-center gap-1">
-        {!menuOnly && quick && <QuickActionButtons row={row} hasWork={hasWork} onBusy={onBusy} tipSide={tipSide} />}
+        {!menuOnly && quick && <QuickActionButtons row={row} hasWork={hasWork} tipSide={tipSide} />}
         {!menuOnly && leading}
         {!menuOnly && <Button size={icon} className={iconClass} variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)} aria-label="Follow up">
           {compact
@@ -425,7 +442,7 @@ function RenameDialog({ row, open, onClose }: { row: Row; open: boolean; onClose
 
 // Promote a local branch into a PR — choose ready/draft and toggle the repo's configured PR labels
 // (config `prLabels`; entries with `default: true` start checked). Repos with none show no toggles.
-function PromoteSubmenu({ row, disabled, run }: { row: Row; disabled?: boolean; run: (action: string, fn: () => Promise<unknown>) => () => void }) {
+function PromoteSubmenu({ row, disabled, run, isBusy }: { row: Row; disabled?: boolean; run: (action: string, fn: () => Promise<unknown>) => () => void; isBusy: (action: string) => boolean }) {
   const prLabels = useRepos().find((r) => r.name === row.repo)?.prLabels ?? [];
   const [checked, setChecked] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(prLabels.map((l) => [l.name, l.default ?? false])));
@@ -440,8 +457,8 @@ function PromoteSubmenu({ row, disabled, run }: { row: Row; disabled?: boolean; 
         </CheckItem>
       ))}
       {prLabels.length > 0 && <Sep />}
-      <Item icon={GitPullRequestArrow} onSelect={run("Create PR", () => promote(row, { draft: false, labels }))}>Create PR (ready)</Item>
-      <Item icon={GitPullRequestDraft} onSelect={run("Create draft PR", () => promote(row, { draft: true, labels }))}>Create draft PR</Item>
+      <Item icon={GitPullRequestArrow} busy={isBusy("Create PR")} onSelect={run("Create PR", () => promote(row, { draft: false, labels }))}>Create PR (ready)</Item>
+      <Item icon={GitPullRequestDraft} busy={isBusy("Create draft PR")} onSelect={run("Create draft PR", () => promote(row, { draft: true, labels }))}>Create draft PR</Item>
     </Sub>
   );
 }
@@ -490,11 +507,14 @@ export function FollowUpComposer(
  *  the Board card and the Agents rows share) as icon-only ghost buttons, each with its tooltip: the
  *  notification quick actions' style (size-7, first in the foreground colour, the rest muted; spinner
  *  → ✓/✗; a failure is an action-failed notification). Each runs the existing store verb its ⋯ menu
- *  item runs. A disabled one says why in its tooltip. Below md only the first two show. `peek` reads
- *  the review digest only if it is already cached (an Agents row: never one fetch per row); without
- *  it, the actions are decided on what the row itself knows. Clicks never reach an enclosing row. */
-export function QuickActionButtons({ row, hasWork = true, onBusy, peek = false, tipSide = "top", className }: {
-  row: Row; hasWork?: boolean; onBusy?: (busy: boolean) => void; peek?: boolean; tipSide?: "top" | "bottom"; className?: string;
+ *  item runs. Busy is scoped to the one button that was clicked (ActionButton's own loading state,
+ *  which also blocks a double-click) — every other action, the card link, the chat and the menu stay
+ *  usable while it runs. A disabled one says why in its tooltip. Below md only the first two show.
+ *  `peek` reads the review digest only if it is already cached (an Agents row: never one fetch per
+ *  row); without it, the actions are decided on what the row itself knows. Clicks never reach an
+ *  enclosing row. */
+export function QuickActionButtons({ row, hasWork = true, peek = false, tipSide = "top", className }: {
+  row: Row; hasWork?: boolean; peek?: boolean; tipSide?: "top" | "bottom"; className?: string;
 }) {
   const repoInfo = useRepos().find((r) => r.name === row.repo);
   const fetched = useReviewDigest(row.repo, peek ? undefined : row.prNumber, reviewSig(row));
@@ -528,7 +548,7 @@ export function QuickActionButtons({ row, hasWork = true, onBusy, peek = false, 
                 className={cn("size-7", i === 0 ? "text-foreground" : "text-muted-foreground hover:text-foreground")}
                 confirm={a.id === "merge" ? mergeConfirm(row) : undefined}
                 failure={{ action: a.label, title: row.title, repo: row.repo, branch: row.branch, prNumber: row.prNumber }}
-                onRun={async () => { onBusy?.(true); try { await run(); } finally { onBusy?.(false); } }}>
+                onRun={run}>
                 {/* Auto-merge already on: a filled bolt, so the state reads at a glance. */}
                 <Icon className={cn("size-3.5", a.on && "fill-current text-purple-700 dark:text-purple-400")} />
               </ActionButton>
