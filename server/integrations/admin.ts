@@ -132,6 +132,8 @@ export async function saveLink(b: Record<string, unknown>): Promise<void> {
     label: typeof b.label === "string" && b.label.trim() ? b.label.trim() : undefined,
     level: String(b.level ?? "") as Exclude<Level, "full">,
     repos: Array.isArray(b.repos) ? b.repos.map(String).filter(Boolean) : [], requireMention: b.requireMention !== false,
+    // Off unless set to exactly `true`, and only for a work link.
+    addRepos: b.level === "work" && b.addRepos === true,
   };
   const problem = linkProblem(l);
   if (problem) fail(problem);

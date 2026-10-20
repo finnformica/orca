@@ -1776,6 +1776,8 @@ const ORCA_COMMANDS = [
   "                                  (the one whose account owns it, else the default), add it to the config with its",
   "                                  default branch and no previews. Do this when the user names work on a repo the",
   "                                  board doesn't have, then spawn on it",
+  "                                  An outside sender's wake may run it only when its grant says \"+ new repos\", and only",
+  "                                  for a repo without ✓ in `orca repo list`; the repo then joins that grant",
   "  orca handoff create --to <server> --title \"…\" [--message \"…\"] [--file <path|attachment id>]… [--chat <id>]…",
   "                                  pack context (docs, chat transcripts, files) for ANOTHER Orca server (its",
   "                                  Tailscale hostname). It only prepares the pack: the user sends it with a click",

@@ -23,7 +23,7 @@ export type IntegrationCard = {
   lastPollAt?: number;
 };
 
-export type LinkRow = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean };
+export type LinkRow = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean; addRepos?: boolean };
 export type PersonRow = { id: string; name: string; maxLevel: Exclude<Level, "full">; identities: { adapter: string; externalId: string }[] };
 
 /** A pending pairing code (the core's server/integrations/store.ts `Pairing`): an unknown sender
@@ -165,11 +165,11 @@ export function integrationProblem(i: { id?: string; kind?: string; name?: strin
   return secretRefRefusal(i.secretRef || undefined, stripped);
 }
 
-export function linkProblem(l: { id?: string; integrationId?: string; externalId?: string; level?: string; repos?: string[] }): string | undefined {
+export function linkProblem(l: { id?: string; integrationId?: string; externalId?: string; level?: string; repos?: string[]; addRepos?: boolean }): string | undefined {
   if (!l.id || !ID.test(l.id)) return "id: use lower-case letters, digits, '-', '_' or '.'";
   if (!l.integrationId) return "integration is required";
   if (!l.externalId?.trim()) return "the external place is required";
   if (!["notify", "ask", "work"].includes(l.level ?? "")) return "level: notify, ask or work";
-  if (l.level === "work" && !l.repos?.length) return "a work link needs at least one repo";
+  if (l.level === "work" && !l.repos?.length && !l.addRepos) return "a work link needs at least one repo, or Add new repos";
   return undefined;
 }

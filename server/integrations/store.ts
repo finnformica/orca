@@ -91,33 +91,42 @@ export async function markSecretMissing(id: string, here: string, missing: boole
 
 // ── channel_link, principal, identity ────────────────────────────────────────────────────────────
 
-export type Link = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean };
-type LinkRow = { id: string; integration_id: string; external_id: string; label: string | null; level: Link["level"]; repos: string[]; require_mention: boolean };
+/** `addRepos`: a "work" sender here may add a NEW repo to Orca (`orca repo add`); it joins `repos`. */
+export type Link = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean; addRepos?: boolean };
+type LinkRow = { id: string; integration_id: string; external_id: string; label: string | null; level: Link["level"]; repos: string[]; require_mention: boolean; add_repos: boolean | null };
 const toLink = (r: LinkRow): Link => ({
   id: r.id, integrationId: r.integration_id, externalId: r.external_id, ...(r.label ? { label: r.label } : {}),
-  level: r.level, repos: r.repos ?? [], requireMention: r.require_mention,
+  level: r.level, repos: r.repos ?? [], requireMention: r.require_mention, ...(r.add_repos ? { addRepos: true } : {}),
 });
 
 export async function addLink(l: Link): Promise<void> {
   return db.withRetry(async (sql) => {
     await sql`
-      INSERT INTO channel_link (id, user_id, integration_id, external_id, label, level, repos, require_mention)
-      VALUES (${l.id}, ${user()}, ${l.integrationId}, ${l.externalId}, ${l.label ?? null}, ${l.level}, ${sql.array(l.repos, "TEXT")}, ${l.requireMention})
+      INSERT INTO channel_link (id, user_id, integration_id, external_id, label, level, repos, require_mention, add_repos)
+      VALUES (${l.id}, ${user()}, ${l.integrationId}, ${l.externalId}, ${l.label ?? null}, ${l.level}, ${sql.array(l.repos, "TEXT")}, ${l.requireMention}, ${l.addRepos === true})
       ON CONFLICT (user_id, id) DO UPDATE SET external_id = EXCLUDED.external_id, label = EXCLUDED.label,
-        level = EXCLUDED.level, repos = EXCLUDED.repos, require_mention = EXCLUDED.require_mention`;
+        level = EXCLUDED.level, repos = EXCLUDED.repos, require_mention = EXCLUDED.require_mention, add_repos = EXCLUDED.add_repos`;
+  });
+}
+
+/** Add `repo` to a link's repos (a repo its sender just added with `orca repo add`). Idempotent. */
+export async function addLinkRepo(id: string, repo: string): Promise<void> {
+  return db.withRetry(async (sql) => {
+    await sql`UPDATE channel_link SET repos = array_append(repos, ${repo}::text)
+      WHERE user_id = ${user()} AND id = ${id} AND NOT (${repo}::text = ANY(repos))`;
   });
 }
 
 export async function links(): Promise<Link[]> {
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention FROM channel_link WHERE user_id = ${user()}`;
+    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, add_repos FROM channel_link WHERE user_id = ${user()}`;
     return (rows as LinkRow[]).map(toLink);
   });
 }
 
 export async function link(id: string): Promise<Link | undefined> {
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention FROM channel_link WHERE user_id = ${user()} AND id = ${id}`;
+    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, add_repos FROM channel_link WHERE user_id = ${user()} AND id = ${id}`;
     const r = (rows as LinkRow[])[0];
     return r ? toLink(r) : undefined;
   });
@@ -126,7 +135,7 @@ export async function link(id: string): Promise<Link | undefined> {
 /** The link for an external place on one integration (a Slack channel id, a mailbox). */
 export async function linkFor(integrationId: string, externalId: string): Promise<Link | undefined> {
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention FROM channel_link
+    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, add_repos FROM channel_link
       WHERE user_id = ${user()} AND integration_id = ${integrationId} AND external_id = ${externalId}`;
     const r = (rows as LinkRow[])[0];
     return r ? toLink(r) : undefined;

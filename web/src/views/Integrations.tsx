@@ -181,6 +181,7 @@ function LinkRowView({ link: l, onEdit, onChange }: { link: LinkRow; onEdit: () 
         <div className="mt-1 flex flex-wrap items-center gap-1.5">
           <Pill tone={LEVEL_TONE[l.level]} slot="link-level">{LINK_LEVELS.find((x) => x.value === l.level)?.label}</Pill>
           {l.level === "work" && l.repos.map((r) => <Pill key={r}>{r}</Pill>)}
+          {l.level === "work" && l.addRepos && <Pill slot="link-add-repos">+ new repos</Pill>}
           {l.requireMention && <Pill>@mention</Pill>}
         </div>
         {l.externalId === CATCH_ALL && <div data-slot="link-receive-only" className="text-muted-foreground mt-1 text-xs">A catch-all link only receives. Orca answers in the DM or channel the message came from.</div>}
@@ -310,9 +311,10 @@ function LinkDialog({ integration: c, meta, link, onClose, onSaved }: { integrat
   const [level, setLevel] = useState<LinkLevel>(link?.level ?? "notify");
   const [chosen, setChosen] = useState<string[]>(link?.repos ?? []);
   const [mention, setMention] = useState(link?.requireMention ?? true);
+  const [addRepos, setAddRepos] = useState(link?.addRepos ?? false);
   const [busy, setBusy] = useState(false);
   const id = link?.id ?? `${c.id}-${(label || externalId).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`.slice(0, 63);
-  const body = { id, integrationId: c.id, externalId, label, level, repos: level === "work" ? chosen : [], requireMention: mention };
+  const body = { id, integrationId: c.id, externalId, label, level, repos: level === "work" ? chosen : [], requireMention: mention, addRepos: level === "work" && addRepos };
   const problem = linkProblem(body);
   const place = meta?.place ?? "place";
   const save = async () => { setBusy(true); const r = await act(`Save link ${label || externalId}`, "links/save", body, onSaved); setBusy(false); if (r) onClose(); };
@@ -340,6 +342,15 @@ function LinkDialog({ integration: c, meta, link, onClose, onSaved }: { integrat
             ))}
           </ul>
         </Field>
+      )}
+      {level === "work" && (
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <Label htmlFor="link-add-repos">Add new repos</Label>
+            <div className="text-muted-foreground mt-0.5 text-xs">A sender at work level can add a repo that a signed-in gh account sees and Orca does not have. It then joins this link. Repos Orca has stay out.</div>
+          </div>
+          <Switch id="link-add-repos" checked={addRepos} onCheckedChange={setAddRepos} />
+        </div>
       )}
       <div className="flex items-center justify-between gap-4">
         <Label htmlFor="link-mention">Only when @-mentioned</Label>

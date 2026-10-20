@@ -1039,6 +1039,50 @@ test("O27: stop refuses a branch this orchestrator isn't responsible for", async
   await expect(orchestrator.tool(cfg(), "stop", { repo: "r" })).rejects.toThrow("--branch is required");
 });
 
+test("O30b: a work sender on a link with Add new repos may add a NEW repo, which joins the link's and the wake's grant", async () => {
+  const store = await import("../server/integrations/store");
+  const { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } = await import("../web/src/workstream");
+  const devRoot = realpathSync(await mkdtemp(join(tmpdir(), "orca-devroot-")));
+  const keys = ["ORCA_DEV_ROOT", "ORCA_GH_ACCOUNTS", "ORCA_GH_CLONE_SRC", "ORCA_GH_REPO_FIXTURE", "ORCA_GH_VIEW_DENY"];
+  const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+  const setGrant = (g: unknown) => db.patchEnrichment(ORCHESTRATOR_REPO, ORCHESTRATOR_BRANCH, { wakeGrant: g as never });
+  const grantNow = async () => (await db.enrichment(ORCHESTRATOR_REPO))[ORCHESTRATOR_BRANCH]?.wakeGrant as { repos: string[] } | null;
+  try {
+    process.env.ORCA_DEV_ROOT = devRoot;
+    process.env.ORCA_GH_ACCOUNTS = "work-login";
+    process.env.ORCA_GH_CLONE_SRC = repo;
+    const view = join(state, "repoview.json");
+    await writeFile(view, JSON.stringify({ nameWithOwner: "acme/widgets", defaultBranchRef: { name: "main" } }));
+    process.env.ORCA_GH_REPO_FIXTURE = view;
+    await store.addLink({ id: "L1", integrationId: "chat", externalId: "C1", level: "work", repos: ["other"], requireMention: false, addRepos: true });
+    const open = { level: "work", repos: ["other"], linkId: "L1", addRepos: true };
+
+    // Option off: refused, whatever the repo.
+    await setGrant({ level: "work", repos: ["other"], linkId: "L1" });
+    await expect(orchestrator.tool(cfg(), "repo", { _: ["add", "acme/widgets"] })).rejects.toThrow("may not add repos");
+    // A level below work: refused.
+    await setGrant({ level: "ask", repos: [], linkId: "L1" });
+    await expect(orchestrator.tool(cfg(), "repo", { _: ["add", "acme/widgets"] })).rejects.toThrow('needs "work"');
+    // A repo Orca already has ("r"), outside the grant: refused. The option never widens access to it.
+    await setGrant(open);
+    await expect(orchestrator.tool(cfg(), "repo", { _: ["add", "acme/r"] })).rejects.toThrow('Orca already has "r"');
+    await expect(orchestrator.tool(cfg(), "spawn", { repo: "r" })).rejects.toThrow("outside it");
+    // A repo no signed-in gh account sees: refused with the reason.
+    process.env.ORCA_GH_VIEW_DENY = "work-login";
+    await expect(orchestrator.tool(cfg(), "repo", { _: ["add", "acme/widgets"] })).rejects.toThrow("No signed-in gh account can see acme/widgets");
+    delete process.env.ORCA_GH_VIEW_DENY;
+    // A new, visible repo: added, and it joins the link's grant and this wake's grant at once.
+    expect(await orchestrator.tool(cfg(), "repo", { _: ["add", "acme/widgets"] })).toContain("and to this sender's grant");
+    expect((await store.link("L1"))!.repos).toEqual(["other", "widgets"]);
+    expect((await grantNow())!.repos).toEqual(["other", "widgets"]);
+    const withIt: OrcaConfig = { ...cfg(), repos: [...cfg().repos, { name: "widgets", repoPath: join(devRoot, "widgets"), worktreeRoot: join(devRoot, "widgets", ".worktrees"), baseBranch: "main", previewServices: [] }] };
+    await expect(orchestrator.tool(withIt, "spawn", { repo: "widgets" })).rejects.toThrow("--objective is required"); // past the grant
+  } finally {
+    await setGrant(null);
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
+});
+
 test("O30: orca repo list / add — the orchestrator sets up a repo the board doesn't have, on the account that owns it", async () => {
   const devRoot = realpathSync(await mkdtemp(join(tmpdir(), "orca-devroot-")));
   const saved = { ORCA_DEV_ROOT: process.env.ORCA_DEV_ROOT, ORCA_GH_ACCOUNTS: process.env.ORCA_GH_ACCOUNTS, ORCA_GH_CLONE_SRC: process.env.ORCA_GH_CLONE_SRC, ORCA_GH_REPOLIST_FIXTURE: process.env.ORCA_GH_REPOLIST_FIXTURE, ORCA_GH_REPO_FIXTURE: process.env.ORCA_GH_REPO_FIXTURE };

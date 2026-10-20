@@ -951,6 +951,13 @@ export const MIGRATIONS: MigrationStep[] = [
     sql: `ALTER TABLE instance_metric ADD COLUMN IF NOT EXISTS bridge_rss_mb REAL`,
   },
   {
+    name: "20261020-channel-link-add-repos",
+    idempotent: true,
+    // A link's "Add new repos" option: a "work" sender there may add a repo Orca does not have yet
+    // (`orca repo add`), which then joins the link's repos. Off for every existing link.
+    sql: `ALTER TABLE channel_link ADD COLUMN IF NOT EXISTS add_repos BOOLEAN NOT NULL DEFAULT false`,
+  },
+  {
     name: "20261020-handoff-seen",
     idempotent: true,
     // When the user first opened the Handoffs page after an incoming pack arrived. The nav badge

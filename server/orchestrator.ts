@@ -41,7 +41,7 @@ import {
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
-import { grantKey, grantRefusal, type Grant, type ReplyTo } from "../shared/integrations";
+import { grantKey, grantRefusal, repoAddRefusal, type Grant, type ReplyTo } from "../shared/integrations";
 import * as integrationStore from "./integrations/store";
 import * as integrationRouter from "./integrations/router";
 
@@ -563,7 +563,7 @@ async function channelsText(): Promise<string> {
   const byId = new Map(conns.map((c) => [c.id, c]));
   const lines = links.length ? links.map((l) => {
     const c = byId.get(l.integrationId);
-    return `link ${l.id} · ${c?.kind ?? "?"} ${c?.name ?? l.integrationId} on ${c ? (c.instance === "*" ? "automatic" : c.instance) : "?"} · ${l.externalId}${l.label ? ` (${l.label})` : ""} · ${l.level}${l.level === "work" ? ` on ${l.repos.join(", ") || "no repos"}` : ""}${l.requireMention ? " · mention required" : ""}`;
+    return `link ${l.id} · ${c?.kind ?? "?"} ${c?.name ?? l.integrationId} on ${c ? (c.instance === "*" ? "automatic" : c.instance) : "?"} · ${l.externalId}${l.label ? ` (${l.label})` : ""} · ${l.level}${l.level === "work" ? ` on ${l.repos.join(", ") || "no repos"}${l.addRepos ? " + new repos" : ""}` : ""}${l.requireMention ? " · mention required" : ""}`;
   }) : ["no channel links"];
   const subLines = subs.map((s) => `sub ${s.id} · ${s.topicPattern}${Object.keys(s.filter).length ? ` ${JSON.stringify(s.filter)}` : ""} → ${s.targetKind}${s.targetId ? ` ${s.targetId}` : ""}${s.digestSeconds ? ` · digest ${s.digestSeconds}s` : ""}`);
   const pairLines = pairings.map((p) => `pairing ${p.code} · ${p.adapter}:${p.externalId}${p.name ? ` (${p.name})` : ""} waits for the user's approval`);
@@ -852,9 +852,22 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         if (!target) throw new Error("orca repo add <owner/name> [--on <instance>] [--name <slug>]");
         const on = typeof args.on === "string" && args.on ? args.on : db.instanceName();
         const name = typeof args.name === "string" && args.name ? args.name : undefined;
+        // An outside sender's grant got here only with its link's `addRepos` (grantRefusal): it may add
+        // a NEW repo, never one Orca already has. A repo no signed-in gh account sees fails in repos.add.
+        if (wakeGrant) {
+          const have = await Promise.all(cfg.repos.map(async (r) => ({ name: r.name, repoPath: r.repoPath, nameWithOwner: await git.remoteNameWithOwner(r.repoPath).catch(() => "") })));
+          const refused = repoAddRefusal(target, (name ?? target.split("/")[1] ?? "").toLowerCase(), have);
+          if (refused) throw new Error(refused);
+        }
         const repo = on !== db.instanceName()
           ? (await viaInstance(cfg, on, "/api/repos/add", { nameWithOwner: target, name })) as unknown as RepoConfig
           : await repos.add(cfg, target, { name });
+        if (wakeGrant?.linkId) {
+          // The new repo joins the link's grant (later messages) and this wake's (the request goes on now).
+          await integrationStore.addLinkRepo(wakeGrant.linkId, repo.name);
+          await patch({ wakeGrant: { ...wakeGrant, repos: [...new Set([...wakeGrant.repos, repo.name])] } });
+          return `Added ${target} to Orca as "${repo.name}" on ${on}, and to this sender's grant. Spawn on it with --repo ${repo.name}.`;
+        }
         return `Added ${target} to Orca as "${repo.name}" on ${on}: ${repo.repoPath}, base ${repo.baseBranch}${repo.githubUser ? `, gh account ${repo.githubUser}` : ""}. No previews or check command yet — the user sets those in Settings. It is on the board now; spawn on it with --repo ${repo.name}.`;
       }
       throw new Error("orca repo list [--user <login>] | orca repo add <owner/name> [--on <instance>] [--name <slug>]");

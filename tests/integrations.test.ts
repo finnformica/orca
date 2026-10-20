@@ -18,9 +18,10 @@ import { sign, verify, webhookEnvelope } from "../server/integrations/adapters/w
 import { deadNotification, webNotification } from "../server/integrations/adapters/web";
 import type { Adapter } from "../server/integrations/adapter";
 import {
-  MAX_ATTEMPTS, afterAttempt, effectiveGrant, fenceExternal, grantKey, grantRefusal, inboundEnvelope, paceWait, planDeliveries, secretRefRefusal, topicMatches,
+  MAX_ATTEMPTS, afterAttempt, effectiveGrant, fenceExternal, grantKey, grantRefusal, inboundEnvelope, paceWait, planDeliveries, repoAddRefusal, secretRefRefusal, topicMatches,
   type InboundEnvelope, type SendResult, type Subscription,
 } from "../shared/integrations";
+import { linkProblem } from "../shared/integrationSettings";
 import { ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO } from "../web/src/workstream";
 import type { OrcaConfig } from "../server/config";
 import { native } from "./happydom";
@@ -80,6 +81,31 @@ describe("decisions (pure)", () => {
     expect(grantRefusal(work, "preview", { status: true })).toBeUndefined();
     expect(grantKey(undefined)).toBe("full");
     expect(grantKey({ level: "work", repos: ["b", "a"] })).toBe("work:a,b");
+  });
+
+  test("grants: Add new repos lets a work sender run repo add for a NEW repo only", () => {
+    // The option rides the effective grant only at work level.
+    expect(effectiveGrant({ id: "L", level: "work", repos: ["r"], addRepos: true }, { id: "p", maxLevel: "work" }).addRepos).toBe(true);
+    expect(effectiveGrant({ id: "L", level: "work", repos: ["r"], addRepos: true }, { id: "p", maxLevel: "ask" }).addRepos).toBeUndefined();
+    expect(effectiveGrant({ id: "L", level: "work", repos: ["r"] }, { id: "p", maxLevel: "work" }).addRepos).toBeUndefined();
+    const add = { _: ["add", "acme/new"] };
+    expect(grantRefusal({ level: "work", repos: ["r"], linkId: "L", addRepos: true }, "repo", add)).toBeUndefined();
+    expect(grantRefusal({ level: "work", repos: ["r"], linkId: "L" }, "repo", add)).toContain("may not add repos"); // option off
+    expect(grantRefusal({ level: "ask", repos: [], linkId: "L", addRepos: true }, "repo", add)).toContain('needs "work"'); // below work
+    expect(grantRefusal({ level: "work", repos: ["r"], linkId: "L", addRepos: true }, "merge", { repo: "r" })).toContain("full grant");
+    expect(grantKey({ level: "work", repos: ["r"], addRepos: true })).toBe("work:r+add");
+    // A repo Orca already has stays out: by remote, by name, by clone folder.
+    const have = [{ name: "app", repoPath: "/dev/app", nameWithOwner: "acme/app" }, { name: "site", repoPath: "/dev/web-site" }];
+    expect(repoAddRefusal("acme/new", "new", have)).toBeUndefined();
+    expect(repoAddRefusal("ACME/App", "app", have)).toContain('Orca already has "app"');
+    expect(repoAddRefusal("other/site", "site", have)).toContain('Orca already has "site"');
+    expect(repoAddRefusal("other/web-site", "ws", have)).toContain('Orca already has "site"');
+    // A work link may name no repo when it may add them; the prompt says so.
+    expect(linkProblem({ id: "l", integrationId: "i", externalId: "C", level: "work", repos: [] })).toContain("at least one repo");
+    expect(linkProblem({ id: "l", integrationId: "i", externalId: "C", level: "work", repos: [], addRepos: true })).toBeUndefined();
+    const t = fenceExternal({ text: "add acme/new", source: { adapter: "discord", linkId: "L" }, grant: { level: "work", repos: ["r"], addRepos: true } });
+    expect(t).toContain("grant: work on r + new repos");
+    expect(t).toContain("orca repo add <owner/name>");
   });
 
   test("external text is fenced as data with its source, sender and grant", () => {

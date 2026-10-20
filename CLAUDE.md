@@ -197,7 +197,7 @@ verbs outside it (`grantRefusal`), and such a wake has no shell; a workstream it
 gets `grantScope` and runs in SCOPED mode (`agent.scopedRules`: `claude -p --permission-mode dontAsk`
 plus allow and deny rules — files in the worktree, git and the toolchain, no secrets, no
 `--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).
-Only a wake whose every message is yours clears it on a steer; `orca status --clear-grant` clears it. An unknown sender gets a one-time
+Only a wake whose every message is yours clears it on a steer; `orca status --clear-grant` clears it. A link's **Add new repos** option (`channel_link.add_repos`, named step `20261020-channel-link-add-repos`, off by default) lets a "work" grant run `orca repo add` for a repo a signed-in gh account sees and Orca does not have (`repoAddRefusal`); the repo then joins the link's repos and the wake's grant. A repo Orca already has stays outside. An unknown sender gets a one-time
 pairing code (`pairing_code`; approve with `POST /api/integrations/pairing/approve`). The orchestrator
 has `orca channels`, `post`, `thread link` and `ask-user`. A subscription's `digest_seconds` batches
 its deliveries per fixed window (`delivery.digest_key`). `/api/slack` still posts at once as
