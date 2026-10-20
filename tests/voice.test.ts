@@ -3,7 +3,7 @@
 import { describe, expect, test } from "bun:test";
 import { MAX_AUDIO_BYTES, TRANSCRIBE_MODEL, TRANSCRIBE_URL, VOICE_KEY_ENV, audioFileName, handleTranscribe, redact, voiceAvailable } from "../server/voice";
 import { appendTranscript, clipName, pickAudioMime, recordClock } from "../web/src/lib/voice";
-import { native } from "./happydom";
+import { native, nativeUpload } from "./happydom";
 
 const KEY = "sk-proj-TESTKEY1234567890abcdef";
 const env = { [VOICE_KEY_ENV]: KEY };
@@ -16,8 +16,8 @@ const env = { [VOICE_KEY_ENV]: KEY };
 // unrecognised extension (a real image, say) is what a genuinely unsupported upload looks like.
 const UPLOAD_NAME: Record<string, string> = { "audio/webm": "voice.webm", "audio/mp4": "voice.m4a", "image/png": "clip.png" };
 function upload(bytes: number | Uint8Array<ArrayBuffer>, type = "audio/webm", headers: Record<string, string> = {}): Request {
-  const form = new native.FormData();
-  form.append("audio", new native.File([typeof bytes === "number" ? new Uint8Array(bytes) : bytes], UPLOAD_NAME[type] ?? "clip", { type }));
+  const form = new nativeUpload.FormData();
+  form.append("audio", new nativeUpload.File([typeof bytes === "number" ? new Uint8Array(bytes) : bytes], UPLOAD_NAME[type] ?? "clip", { type }));
   return new native.Request("http://127.0.0.1/api/voice/transcribe", { method: "POST", body: form, headers });
 }
 
@@ -78,7 +78,7 @@ describe("POST /api/voice/transcribe", () => {
   test("an empty clip, a missing field and an unknown type are refused", async () => {
     const ai = fakeOpenAI(() => Response.json({ text: "x" }));
     expect((await handleTranscribe(upload(0), { env, fetch: ai.fetch })).status).toBe(400);
-    const noField = new native.Request("http://127.0.0.1/api/voice/transcribe", { method: "POST", body: new native.FormData() });
+    const noField = new native.Request("http://127.0.0.1/api/voice/transcribe", { method: "POST", body: new nativeUpload.FormData() });
     expect((await handleTranscribe(noField, { env, fetch: ai.fetch })).status).toBe(400);
     expect((await handleTranscribe(upload(4, "image/png"), { env, fetch: ai.fetch })).status).toBe(415);
     expect(ai.seen).toHaveLength(0);
