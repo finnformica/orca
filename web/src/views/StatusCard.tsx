@@ -2,10 +2,12 @@ import type { ReactNode } from "react";
 import { Wrench } from "lucide-react";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { ActionButton } from "@/components/ActionButton";
+import { Tip } from "@/components/ui/tip";
+import { useNow } from "@/lib/ticker";
 import { StatusDot } from "@/components/console";
 import { cn } from "@/lib/utils";
 import { addressPr, modelFor, useCachedReviewDigest, type Row } from "../store";
-import { modelBadge, rowStatus } from "../workstream";
+import { formatDuration, formatElapsed, modelBadge, rowDuration, rowStatus } from "../workstream";
 import { TONE_DOT, TONE_LABEL } from "./Agents";
 
 /** The agent status chip's hover card (Agents list, board card, agent page): WHY the status is what
@@ -27,6 +29,8 @@ export function StatusHoverCard({ row, children, className = "gap-2" }: { row: R
         <div data-slot="status-card" data-tone={s.tone}>
           <div className="flex items-center gap-2 border-b px-4 py-2.5 text-sm font-medium">
             <StatusDot tone={TONE_DOT[s.tone]} />{TONE_LABEL[s.tone]}
+            {/* The elapsed time beside the header: a folded Agents row no longer shows it. */}
+            <span data-slot="status-card-duration" className="ml-auto text-xs font-normal"><StatusDuration row={row} /></span>
           </div>
           <ul className="space-y-1.5 px-4 py-3 text-[13px]">
             {s.reasons.map((r) => <li key={r} data-slot="status-reason" className="text-muted-foreground break-words">{r}</li>)}
@@ -43,4 +47,22 @@ export function StatusHoverCard({ row, children, className = "gap-2" }: { row: R
       </HoverCardContent>
     </HoverCard>
   );
+}
+
+/** The elapsed/duration text alone, off the ONE shared ticker (lib/ticker) while running — only this
+ *  re-renders each second, never the list. In the Agents row's Status cell, and beside this card's
+ *  header — the only place it shows once the Status column folds into the subline. */
+export function StatusDuration({ row }: { row: Row }) {
+  const running = row.agentStatus === "running" && Boolean(row.agentStartedAt);
+  const now = useNow(running);
+  const duration = running ? undefined : rowDuration(row);
+  if (running && now !== undefined) {
+    return (
+      <Tip label={`Running since ${new Date(row.agentStartedAt!).toLocaleTimeString()}`}>
+        <span data-slot="elapsed" className="text-muted-foreground tabular-nums">{formatElapsed(now - row.agentStartedAt!)}</span>
+      </Tip>
+    );
+  }
+  if (duration !== undefined) return <span className="text-muted-foreground tabular-nums">{formatDuration(duration)}</span>;
+  return null;
 }

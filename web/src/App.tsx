@@ -9,6 +9,7 @@ import { Shell, Crumb, AddNew } from "@/components/Shell";
 import { OrchestratorPanel, OrchestratorPage, OrchestratorWindow, isOrchestratorWindow } from "@/components/Terminal";
 import { TerminalPanel } from "@/components/InstanceTerminal";
 import { ToastHost } from "@/components/Notifications";
+import { OverflowText } from "@/components/OverflowText";
 import { useShowBoard, useWorkstreams } from "./store";
 import { NewDraft } from "./views/NewDraft";
 import { Overview } from "./views/Overview";
@@ -43,7 +44,7 @@ export function App() {
     if (open === "new") setAddNew(true); else ask();
   }, []);
   // Pop out's popup window (no Document PiP in this browser): the chat alone, no shell around it.
-  if (route.name === "orchestrator" && isOrchestratorWindow()) return <TooltipProvider><OrchestratorWindow /></TooltipProvider>;
+  if (route.name === "orchestrator" && isOrchestratorWindow()) return <TooltipProvider><OrchestratorWindow /><OverflowText /></TooltipProvider>;
   return (
     <TooltipProvider>
       <Shell crumbs={<Crumbs route={route} />} sidebarActions={(collapsed) => <SidebarAction collapsed={collapsed} />}>
@@ -52,6 +53,7 @@ export function App() {
       <ToastHost />
       <OrchestratorPanel />
       <TerminalPanel />
+      <OverflowText />
     </TooltipProvider>
   );
 }
