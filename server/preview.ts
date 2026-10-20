@@ -23,6 +23,7 @@ import * as docker from "./docker";
 import { githubEnv, scrubbedEnv } from "./env";
 import { cwdInWorktree, listenerPids, processCwd } from "./proc";
 import { readJsonSync, statePath, writeJsonSync } from "./state";
+import * as tsserve from "./tsserve";
 
 /** A stable, Postgres-identifier-safe database name for one preview (keyed by its worktree path), so
  *  the `{db}` placeholder in a preview command resolves to a per-worktree database on the shared
@@ -37,7 +38,11 @@ export function previewDbName(key: string): string {
 
 // Adopted svcs (re-surfaced after an ungraceful bridge exit) have no proc handle / log fd — we
 // only know their port, and reap them via killPort. Owned svcs (started this run) have both.
-type Svc = { name: string; port: number; open: boolean; proc?: Bun.Subprocess; logPath: string; logFd?: number; exited: boolean; startedAt: number; onStop?: string; everUp: boolean };
+// `https` = the HTTPS port `tailscale serve` maps to this service on `httpsHost` (server/tsserve.ts);
+// with `httpsNext`, https + 1 maps to port + 1 as well.
+type Https = { https?: number; httpsHost?: string; httpsNext?: boolean };
+type Svc = { name: string; port: number; open: boolean; proc?: Bun.Subprocess; logPath: string; logFd?: number; exited: boolean; startedAt: number; onStop?: string; everUp: boolean } & Https;
+type SavedSvc = { name: string; port: number; open: boolean; logPath: string; startedAt: number; onStop?: string } & Https;
 /** Host the browser should use for preview links (ORCA_PREVIEW_HOST, e.g. the tailnet name of the
  *  box). Defaults to localhost, which is correct for a laptop instance. */
 export const previewHost = (): string => process.env.ORCA_PREVIEW_HOST || "localhost";
@@ -73,29 +78,31 @@ const previews = new Map<string, Svc[]>();
 const reg = () => statePath("previews.json");
 const LEGACY_REG = join(tmpdir(), "orca-previews.json");
 function persist(): void {
-  const data: Record<string, Array<{ name: string; port: number; open: boolean; logPath: string; startedAt: number; onStop?: string }>> = {};
-  // onStop persists so a preview re-adopted after a bridge restart still drops its DB on teardown.
-  for (const [key, svcs] of previews) data[key] = svcs.map(({ name, port, open, logPath, startedAt, onStop }) => ({ name, port, open, logPath, startedAt, onStop }));
+  const data: Record<string, SavedSvc[]> = {};
+  // onStop persists so a preview re-adopted after a bridge restart still drops its DB on teardown;
+  // the HTTPS ports so its serve entries are still removed.
+  for (const [key, svcs] of previews) data[key] = svcs.map(({ name, port, open, logPath, startedAt, onStop, https, httpsHost, httpsNext }) => ({ name, port, open, logPath, startedAt, onStop, https, httpsHost, httpsNext }));
   try { writeJsonSync(reg(), data); } catch { /* best effort */ }
 }
 
 /** Re-adopt preview servers that outlived an ungraceful bridge exit; drop entries whose ports are
  *  dead. Call once on boot, before serving. */
 export async function reattach(): Promise<void> {
-  let data: Record<string, Array<{ name: string; port: number; open: boolean; logPath: string; startedAt: number; onStop?: string }>>;
+  let data: Record<string, SavedSvc[]>;
   const read = readJsonSync<typeof data>(reg()) ?? readJsonSync<typeof data>(LEGACY_REG);
   if (!read) return; // no registry yet / unreadable
   data = read;
   for (const [key, svcs] of Object.entries(data)) {
     const live: Svc[] = [];
     for (const s of svcs) {
-      if (!(await portReady(s.port))) continue; // dead → drop
+      if (!(await portReady(s.port))) { unserve(s); continue; } // dead → drop
       // Only re-adopt if the server on that port is actually running IN this worktree. Ports get
       // reassigned across restarts, so a responding port may now be a DIFFERENT worktree's server —
       // adopting it would make this card serve someone else's code ("none of my changes"). If it's
       // foreign, leave it alone (its own key will re-adopt it) rather than adopt or kill it.
       const pid = listenerPids(s.port)[0];
       if (pid && cwdInWorktree(processCwd(pid), key)) live.push({ ...s, exited: false, everUp: true }); // re-adopted only because its port responded
+      else unserve(s); // its serve entries point at nothing (a foreign server's own key serves it)
     }
     if (live.length) previews.set(key, live);
   }
@@ -138,25 +145,97 @@ export function killTree(pid: number, signal: NodeJS.Signals = "SIGTERM"): void 
   try { process.kill(pid, signal); } catch { /* already gone */ }
 }
 
-export async function start(key: string, cwd: string, services: PreviewService[], portRange: [number, number]): Promise<void> {
+/** What a preview command's placeholders expand to. Pure, so the URL and env logic is testable.
+ *  - `{port}` this service's port; `{svc:name}` another's port; `{db}` the preview's database.
+ *  - `{host}` the plain host the browser reaches a preview at; `{bind}` what services listen on.
+ *  - `{url:name}` the URL the browser opens for a service: `https://<ts.net name>:<https port>` when
+ *    the preview is served over HTTPS (server/tsserve.ts), else `http://{host}:{svc:name}`.
+ *  - `{hosts}` every host name the browser may use, comma-separated — for a dev server's allowed hosts. */
+export type CommandContext = { name: string; ports: Record<string, number>; db: string; host: string; bind: string; https?: { host: string; ports: Record<string, number> } };
+export function expandCommand(command: string, c: CommandContext): string {
+  const url = (n: string): string => c.https?.ports[n] !== undefined ? `https://${c.https.host}:${c.https.ports[n]}` : `http://${c.host}:${c.ports[n] ?? ""}`;
+  const hosts = [...new Set([c.host, ...(c.https ? [c.https.host] : [])])].join(",");
+  return command
+    .replace(/\{port\}/g, String(c.ports[c.name]))
+    .replace(/\{svc:(\w+)\}/g, (_, n) => String(c.ports[n] ?? ""))
+    .replace(/\{url:(\w+)\}/g, (_, n) => url(n))
+    .replace(/\{hosts\}/g, hosts)
+    .replace(/\{db\}/g, c.db)
+    // `{host}` is what the BROWSER reaches the preview at (a frontend's backend URL); `{bind}` is
+    // what the service listens on. The same on a laptop (localhost); not on a box.
+    .replace(/\{host\}/g, c.host)
+    .replace(/\{bind\}/g, c.bind);
+}
+
+/** The ports one service's HTTPS needs: its own, and port + 1 for `httpsNextPort` (e.g. branch-demo's
+ *  collab socket, which the frontend reaches at the backend URL's port + 1). */
+const httpsSpan = (s: { httpsNextPort?: boolean }): number => (s.httpsNextPort ? 2 : 1);
+
+/** Pick an HTTPS port per service in `range` (the tailnet ACL admits only that range): for a service
+ *  with `httpsNextPort`, a pair H, H + 1. Never a port in `taken` (this preview's own ports, other
+ *  previews' HTTPS ports) or one `free` says the OS holds (a serve entry listens, so it counts). */
+export async function pickHttpsPorts(services: { name: string; httpsNextPort?: boolean }[], range: [number, number], taken: Set<number>, free: (p: number) => Promise<boolean> = portFree): Promise<Record<string, number>> {
+  const out: Record<string, number> = {};
+  const used = new Set(taken);
+  const [min, max] = range;
+  for (const s of services) {
+    const span = httpsSpan(s);
+    let found: number | undefined;
+    for (let i = 0; i < 40 && found === undefined; i++) {
+      const p = min + Math.floor(Math.random() * (max - min + 2 - span));
+      const ports = Array.from({ length: span }, (_, k) => p + k);
+      if (ports.some((q) => used.has(q))) continue;
+      if ((await Promise.all(ports.map(free))).every(Boolean)) found = p;
+    }
+    if (found === undefined) throw new Error(`no free HTTPS port in ${min}–${max}`);
+    for (let k = 0; k < span; k++) used.add(found + k);
+    out[s.name] = found;
+  }
+  return out;
+}
+
+/** Remove a service's serve entries. */
+function unserve(s: Https): void {
+  if (s.https === undefined) return;
+  tsserve.remove(s.https);
+  if (s.httpsNext) tsserve.remove(s.https + 1);
+}
+
+/** Serve every service over HTTPS. Undefined (nothing left behind) when it can't. */
+async function serveHttps(services: PreviewService[], ports: Record<string, number>, portRange: [number, number]): Promise<{ host: string; ports: Record<string, number> } | undefined> {
+  const host = tsserve.httpsHost();
+  if (!host) return undefined;
+  const taken = new Set<number>();
+  for (const s of services) { taken.add(ports[s.name]!); if (s.httpsNextPort) taken.add(ports[s.name]! + 1); }
+  for (const svcs of previews.values()) for (const s of svcs) if (s.https !== undefined) { taken.add(s.https); if (s.httpsNext) taken.add(s.https + 1); }
+  let https: Record<string, number>;
+  try { https = await pickHttpsPorts(services, portRange, taken); } catch (e) { console.error(`orca: preview https: ${e instanceof Error ? e.message : e}`); return undefined; }
+  const added: Https[] = [];
+  for (const s of services) {
+    const one: Https = { https: https[s.name]!, httpsNext: s.httpsNextPort === true };
+    const ok = tsserve.add(one.https!, ports[s.name]!) && (!one.httpsNext || tsserve.add(one.https! + 1, ports[s.name]! + 1));
+    added.push(one);
+    if (!ok) { for (const a of added) unserve(a); return undefined; } // plain http, as before
+  }
+  return { host, ports: https };
+}
+
+/** `https`: the repo needs a secure context (`previewSecureContext`). On a machine that serves
+ *  previews over HTTPS (`tsserve.enabled`), each service then gets an HTTPS port on the tailnet. */
+export async function start(key: string, cwd: string, services: PreviewService[], portRange: [number, number], opts: { https?: boolean } = {}): Promise<void> {
   stop(key); // reap tracked procs + orphaned servers for this worktree so we never serve stale code
   const ports: Record<string, number> = {};
   for (const s of services) ports[s.name] = await freePort(portRange);
   const db = previewDbName(key); // this preview's own database name — `{db}` in commands / onStop
+  const https = opts.https && tsserve.enabled(previewBind()) ? await serveHttps(services, ports, portRange) : undefined;
   const svcs: Svc[] = services.map((s) => {
-    const cmd = s.command
-      .replace(/\{port\}/g, String(ports[s.name]))
-      .replace(/\{svc:(\w+)\}/g, (_, n) => String(ports[n] ?? ""))
-      .replace(/\{db\}/g, db)
-      // `{host}` is what the BROWSER reaches the preview at (a frontend's backend URL); `{bind}` is
-      // what the service listens on. The same on a laptop (localhost); not on a box.
-      .replace(/\{host\}/g, previewHost())
-      .replace(/\{bind\}/g, previewBind());
+    const cmd = expandCommand(s.command, { name: s.name, ports, db, host: previewHost(), bind: previewBind(), https });
     const logPath = join(tmpdir(), `orca-preview-${key.replace(/[^\w]+/g, "_")}-${s.name}.log`);
     const logFd = openSync(logPath, "w"); // capture output so a failed service is diagnosable
     const proc = Bun.spawn(["sh", "-lc", cmd], { cwd, env: scrubbedEnv(githubEnv(cwd)), stdout: logFd, stderr: logFd });
     const onStop = s.onStop?.replace(/\{db\}/g, db); // resolved now; runs at teardown (stop with teardown=true)
-    const svc: Svc = { name: s.name, port: ports[s.name]!, open: s.open ?? false, proc, logPath, logFd, exited: false, startedAt: Date.now(), onStop, everUp: false };
+    const tls: Https = https ? { https: https.ports[s.name], httpsHost: https.host, httpsNext: s.httpsNextPort === true } : {};
+    const svc: Svc = { name: s.name, port: ports[s.name]!, open: s.open ?? false, proc, logPath, logFd, exited: false, startedAt: Date.now(), onStop, everUp: false, ...tls };
     void proc.exited.then(() => { svc.exited = true; });
     return svc;
   });
@@ -220,7 +299,9 @@ export async function status(key: string, host = previewHost()): Promise<SvcStat
     // `localUrl` only when the service is on this machine's loopback; bound to a tailnet address,
     // localhost would not reach it.
     const loopback = ["127.0.0.1", "localhost", "::1"].includes(previewBind());
-    return { name: s.name, port: s.port, url: `http://${host}:${s.port}`, ...(loopback ? { localUrl: `http://localhost:${s.port}` } : {}), open: s.open, running, ready, error: running ? undefined : await tail(s.logPath), startedAt: s.startedAt };
+    // Served over HTTPS (server/tsserve.ts): that is the URL every viewer but a localhost page opens.
+    const url = s.https !== undefined && s.httpsHost ? `https://${s.httpsHost}:${s.https}` : `http://${host}:${s.port}`;
+    return { name: s.name, port: s.port, url, ...(loopback ? { localUrl: `http://localhost:${s.port}` } : {}), open: s.open, running, ready, error: running ? undefined : await tail(s.logPath), startedAt: s.startedAt };
   }));
 }
 
@@ -250,6 +331,7 @@ export function stop(key: string, teardown = false): void {
     if (s.proc?.pid) { try { killTree(s.proc.pid); } catch { /* gone */ } } // reap the sh wrapper + ALL its children (nest/vite + the backgrounded reseed loop)
     else { try { s.proc?.kill(); } catch { /* already gone / adopted, no handle */ } }
     killPort(s.port); // precise: reap the actual listener the sh-wrapper kill (or adoption) leaves behind
+    unserve(s); // its HTTPS entries on the tailnet
     if (s.logFd !== undefined) { try { closeSync(s.logFd); } catch { /* already closed */ } }
   }
   killWorktree(key); // key === worktree path; sweeps orphans from a prior run (narrow pattern)

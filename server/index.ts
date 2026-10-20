@@ -1327,7 +1327,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const { worktreePath } = await git.baseWorktree(repo.repoPath, repo.worktreeRoot, repo.baseBranch);
     await git.copyToWorktree(repo.repoPath, worktreePath, repo.copyToWorktree);
     await git.linkToWorktree(repo.repoPath, worktreePath, repo.linkToWorktree);
-    await preview.start(worktreePath, worktreePath, repo.previewServices, cfg.portRange);
+    await preview.start(worktreePath, worktreePath, repo.previewServices, cfg.portRange, { https: repo.previewSecureContext === true });
     void publishPreviews();
     const host = preview.ownerHost(cfg.instances, db.instanceName());
     void notify.watchPreview({ key: worktreePath, repo: repo.name, title: `${repo.name} ${repo.baseBranch}`, host });

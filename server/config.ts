@@ -7,7 +7,9 @@ import { MERGE_WHEN_GREEN, type MergePolicy } from "../web/src/workstream";
 import { serverSwitcherProblems, type ServerSwitcherConfig } from "./servers";
 import { serverIdentityProblems, type ServerIdentityConfig } from "../shared/serverIdentity";
 
-/** Preview service: `{port}` = this service's assigned port; `{svc:name}` = another's. */
+/** Preview service: `{port}` = this service's assigned port; `{svc:name}` = another's;
+ *  `{url:name}` = the URL the browser opens for a service (HTTPS on a box, see server/tsserve.ts);
+ *  `{hosts}` = every host the browser may use, comma-separated. The full list: `preview.expandCommand`. */
 export type PreviewService = {
   name: string;
   command: string;
@@ -16,6 +18,9 @@ export type PreviewService = {
    *  or on shutdown. `{db}` is substituted with this preview's per-worktree database name — the hook is
    *  how a per-preview Postgres DB gets dropped. Runs with the worktree as cwd, best-effort. */
   onStop?: string;
+  /** Also serve port + 1 over HTTPS, at this service's HTTPS port + 1: a socket the app reaches at
+   *  its URL's port + 1 (branch-demo's collab server beside the backend). Only for an HTTPS preview. */
+  httpsNextPort?: boolean;
 };
 
 /** Per-repo opt-ins. Every one defaults to OFF, because each either spends money, is externally
@@ -337,6 +342,7 @@ export function parseConfigDocument(doc: unknown): { config?: OrcaConfig; errors
       if (!s || typeof s !== "object") { errors.push(`${where}.previewServices[${j}] must be an object`); continue; }
       if (typeof s.name !== "string" || !s.name.trim()) errors.push(`${where}.previewServices[${j}].name is required`);
       if (typeof s.command !== "string" || !s.command.trim()) errors.push(`${where}.previewServices[${j}].command is required`);
+      if (s.httpsNextPort !== undefined && typeof s.httpsNextPort !== "boolean") errors.push(`${where}.previewServices[${j}].httpsNextPort must be true or false`);
     }
   }
   const portRange = d.portRange;
