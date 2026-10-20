@@ -42,7 +42,7 @@ import * as cgroup from "./cgroup";
 import { heavySliceGb } from "./sliceLimit";
 import { KIND_META } from "../shared/notifications";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
-import { liveAnswer, machineReport, newestLive, saveLiveRing, sliceMaxGbHere, startLiveSampler, withLiveCpu } from "./liveMetrics";
+import { flushMachineSamples, liveAnswer, machineReport, newestLive, sliceMaxGbHere, startLiveSampler, withLiveCpu } from "./liveMetrics";
 import { protectionsReport, withLiveState } from "./protections";
 import * as verbs from "./verbs";
 import * as repos from "./repos";
@@ -1722,13 +1722,12 @@ async function shutdown(signal: "SIGINT" | "SIGTERM"): Promise<void> {
   if (draining) return; // a second Ctrl-C shouldn't interrupt the drain
   draining = true;
   if (signal === "SIGINT") preview.killAll();
-  saveLiveRing(); // so the restart gap is as short as possible, not up to a minute of it
   void primary.release(); // the next bridge takes the duties now, not at its next retry
   void dispatcher.stop();
   void integrations.stopAll(); // close sockets so the next primary can open them
   try {
     await Promise.race([
-      agent.flushHistory(),
+      Promise.all([agent.flushHistory(), flushMachineSamples()]),
       new Promise((r) => setTimeout(r, DRAIN_TIMEOUT_MS)), // never hang a deploy on a wedged write
     ]);
   } catch { /* best effort — we are leaving either way */ }

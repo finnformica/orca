@@ -9,7 +9,6 @@ import { instanceStatus } from "../web/src/workstream";
 import {
   bucketLive, byteRates, cpuSplit, createDarwinSampler, createLiveSampler, darwinCpuTimes, IOREG_CMD, parseIoregDisk, parseVmStatMemory, VM_STAT_CMD, diskCapMBs, diskRates, liveAnswer, noteLiveOom, parseDiskstats, parseMeminfo,
   pushLive, resetLive, rootDevice, type LiveSample,
-  liveRingPath, loadLiveRing, maybeSaveLiveRing, newestLive, restoreLiveRing, saveLiveRing, LIVE_RING_SAVE_INTERVAL_MS,
 } from "../server/liveMetrics";
 
 const MOUNTINFO = `25 30 0:23 / /sys rw,nosuid,nodev,noexec,relatime shared:7 - sysfs sysfs rw
@@ -140,70 +139,6 @@ describe("sampler", () => {
     expect(diskCapMBs(undefined)).toBe(125);
     expect(diskCapMBs("250")).toBe(250);
     expect(diskCapMBs("nope")).toBe(125);
-  });
-});
-
-describe("the ring survives a restart (server/state.ts)", () => {
-  // Isolate the operational-state dir so the ring cache lands in a scratch dir, never the real
-  // ~/.orca — liveRingPath() reads ORCA_STATE_DIR fresh on every call, so setting it per test is
-  // enough; no module to re-import.
-  let dir = "", prevStateDir: string | undefined;
-  beforeEach(() => {
-    prevStateDir = process.env.ORCA_STATE_DIR;
-    dir = mkdtempSync(join(tmpdir(), "orca-live-ring-"));
-    process.env.ORCA_STATE_DIR = dir;
-    resetLive();
-  });
-  afterEach(() => {
-    if (prevStateDir === undefined) delete process.env.ORCA_STATE_DIR; else process.env.ORCA_STATE_DIR = prevStateDir;
-    rmSync(dir, { recursive: true, force: true });
-    resetLive();
-  });
-
-  const s = (at: number): LiveSample => ({ at, work: 1, iowait: 0, load1: 0, memUsedGb: 1, memCacheGb: 0 });
-
-  test("saveLiveRing and loadLiveRing round-trip the ring, sorted by time", () => {
-    pushLive(s(1000));
-    pushLive(s(2000));
-    saveLiveRing();
-    expect(loadLiveRing(liveRingPath(), 2000)).toEqual([s(1000), s(2000)]);
-  });
-
-  test("a missing file loads as no samples", () => {
-    expect(loadLiveRing(liveRingPath(), Date.now())).toEqual([]);
-  });
-
-  test("a corrupt file loads as no samples, never throws", () => {
-    writeFileSync(liveRingPath(), "{not json");
-    expect(loadLiveRing(liveRingPath(), Date.now())).toEqual([]);
-    writeFileSync(liveRingPath(), JSON.stringify({ samples: [{ at: 1 }, "nope", 5] }));
-    expect(loadLiveRing(liveRingPath(), 10_000)).toEqual([]);
-  });
-
-  test("load drops samples outside the 6-hour window", () => {
-    const H = 3_600_000;
-    writeFileSync(liveRingPath(), JSON.stringify({ samples: [s(7 * H), s(0)] }));
-    expect(loadLiveRing(liveRingPath(), 7 * H).map((x) => x.at)).toEqual([7 * H]);
-  });
-
-  test("maybeSaveLiveRing writes at most once a minute", () => {
-    pushLive(s(1000));
-    maybeSaveLiveRing(1000); // the first call always saves
-    expect(loadLiveRing(liveRingPath(), 2000)).toHaveLength(1);
-    pushLive(s(2000));
-    maybeSaveLiveRing(1000 + LIVE_RING_SAVE_INTERVAL_MS - 1); // too soon: the disk keeps the old ring
-    expect(loadLiveRing(liveRingPath(), 2000)).toHaveLength(1);
-    maybeSaveLiveRing(1000 + LIVE_RING_SAVE_INTERVAL_MS);
-    expect(loadLiveRing(liveRingPath(), 2000)).toHaveLength(2);
-  });
-
-  test("restoreLiveRing populates the ring from disk at startup", () => {
-    pushLive(s(1000));
-    saveLiveRing();
-    resetLive();
-    expect(newestLive()).toBeUndefined();
-    restoreLiveRing(liveRingPath(), 1000);
-    expect(newestLive()).toEqual(s(1000));
   });
 });
 

@@ -950,6 +950,35 @@ export const MIGRATIONS: MigrationStep[] = [
     // Nullable: older rows and older bridges record none.
     sql: `ALTER TABLE instance_metric ADD COLUMN IF NOT EXISTS bridge_rss_mb REAL`,
   },
+  {
+    name: "20261020-machine-sample",
+    idempotent: true,
+    // The machine card's 15 s ring (server/liveMetrics.ts) was in memory only: a deploy or a crash
+    // lost the whole 6-hour chart. Each instance flushes its buffered samples here about once a
+    // minute (few writes, not one per tick) and reads the newest 6 hours back to seed the ring at
+    // start. Pruned to 7 days by the writer, like instance_metric — far more rows per day at a 15 s
+    // step, so a shorter retention than instance_metric's 32 days.
+    sql: `
+      CREATE TABLE IF NOT EXISTS machine_sample (
+        id BIGSERIAL PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        instance TEXT NOT NULL,
+        at TIMESTAMPTZ NOT NULL,
+        cpu_work_pct DOUBLE PRECISION NOT NULL,
+        iowait_pct DOUBLE PRECISION NOT NULL,
+        load1 DOUBLE PRECISION NOT NULL,
+        disk_read_mbs DOUBLE PRECISION,
+        disk_write_mbs DOUBLE PRECISION,
+        mem_used_gb DOUBLE PRECISION NOT NULL,
+        mem_cache_gb DOUBLE PRECISION NOT NULL,
+        mem_avail_gb DOUBLE PRECISION,
+        swap_used_gb DOUBLE PRECISION,
+        running_agents INTEGER,
+        oom_kills INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS machine_sample_instance_at ON machine_sample (instance, at);
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
@@ -1732,6 +1761,65 @@ export async function metricHistory(instance: string, hours: number, now = Date.
       ...(r.disk_used_gb == null ? {} : { diskUsedGb: Number(r.disk_used_gb) }),
       ...(r.oom_kills ? { oomKills: Number(r.oom_kills) } : {}),
       ...(r.bridge_rss_mb == null ? {} : { bridgeRssMb: Number(r.bridge_rss_mb) }),
+    }));
+  });
+}
+
+// ---- machine_sample: the 15 s ring (server/liveMetrics.ts), persisted ----
+
+/** One of server/liveMetrics.ts's `LiveSample`s, plus the running-agent count at flush time (not
+ *  tracked on `LiveSample` itself — the live ring has no use for it, only this table does). */
+export type MachineSamplePoint = {
+  at: number; work: number; iowait: number; load1: number;
+  readMBs?: number; writeMBs?: number;
+  memUsedGb: number; memCacheGb: number; memAvailGb?: number; swapUsedGb?: number;
+  runningAgents?: number; ooms?: number;
+};
+
+/** How long a machine_sample row is kept: 7 days — far more rows per day than instance_metric's
+ *  1-minute step, so a shorter window than its 32 days. */
+export const MACHINE_SAMPLE_RETENTION_MS = 7 * 24 * 3_600_000;
+
+/** Record a batch of THIS instance's buffered 15 s samples (liveMetrics.ts flushes about once a
+ *  minute, not once a tick) and prune its own rows past retention in the same breath, like
+ *  `recordMetric`. One transaction per batch, so a mid-write drop can't leave a partial batch
+ *  behind for `withRetry`'s retry to duplicate. */
+export async function recordMachineSamples(points: MachineSamplePoint[], instance = instanceName()): Promise<void> {
+  if (!points.length || previewBridge()) return; // the instance samples itself once, from its real bridge
+  return withRetry(async (sql) => {
+    const user = currentUser();
+    await sql.begin(async (tx: Bun.SQL) => {
+      for (const p of points) {
+        await tx`
+          INSERT INTO machine_sample (user_id, instance, at, cpu_work_pct, iowait_pct, load1, disk_read_mbs, disk_write_mbs, mem_used_gb, mem_cache_gb, mem_avail_gb, swap_used_gb, running_agents, oom_kills)
+          VALUES (${user}, ${instance}, ${new Date(p.at)}, ${p.work}, ${p.iowait}, ${p.load1}, ${p.readMBs ?? null}, ${p.writeMBs ?? null}, ${p.memUsedGb}, ${p.memCacheGb}, ${p.memAvailGb ?? null}, ${p.swapUsedGb ?? null}, ${p.runningAgents ?? null}, ${p.ooms ?? null})`;
+      }
+      const newest = points[points.length - 1]!.at;
+      await tx`DELETE FROM machine_sample WHERE instance = ${instance} AND at < ${new Date(newest - MACHINE_SAMPLE_RETENTION_MS)}`;
+    });
+  });
+}
+
+/** An instance's machine samples over the last `hours`, oldest first — used to seed the live ring at
+ *  start, so a restart keeps its chart instead of showing a straight line back to empty. */
+export async function machineSampleHistory(instance: string, hours: number, now = Date.now()): Promise<MachineSamplePoint[]> {
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      SELECT at, cpu_work_pct, iowait_pct, load1, disk_read_mbs, disk_write_mbs, mem_used_gb, mem_cache_gb, mem_avail_gb, swap_used_gb, running_agents, oom_kills FROM machine_sample
+      WHERE user_id = ${currentUser()} AND instance = ${instance} AND at >= ${new Date(now - hours * 3_600_000)}
+      ORDER BY at`;
+    return (rows as {
+      at: Date; cpu_work_pct: number; iowait_pct: number; load1: number; disk_read_mbs: number | null; disk_write_mbs: number | null;
+      mem_used_gb: number; mem_cache_gb: number; mem_avail_gb: number | null; swap_used_gb: number | null; running_agents: number | null; oom_kills: number | null;
+    }[]).map((r) => ({
+      at: new Date(r.at).getTime(), work: Number(r.cpu_work_pct), iowait: Number(r.iowait_pct), load1: Number(r.load1),
+      ...(r.disk_read_mbs == null ? {} : { readMBs: Number(r.disk_read_mbs) }),
+      ...(r.disk_write_mbs == null ? {} : { writeMBs: Number(r.disk_write_mbs) }),
+      memUsedGb: Number(r.mem_used_gb), memCacheGb: Number(r.mem_cache_gb),
+      ...(r.mem_avail_gb == null ? {} : { memAvailGb: Number(r.mem_avail_gb) }),
+      ...(r.swap_used_gb == null ? {} : { swapUsedGb: Number(r.swap_used_gb) }),
+      ...(r.running_agents == null ? {} : { runningAgents: Number(r.running_agents) }),
+      ...(r.oom_kills ? { ooms: Number(r.oom_kills) } : {}),
     }));
   });
 }
