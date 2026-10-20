@@ -12,6 +12,7 @@ import { ArrowDown, Bot, Check, ChevronRight, Cog, Copy, Loader2, Paperclip, Quo
 import { cn, PipContext } from "@/lib/utils";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
@@ -81,10 +82,13 @@ const chatComponents = { img: markdownImg, ...tableComponents, pre: snippetPre({
 /** Markdown inside the terminal-styled log: prose spacing and readable lists, but sized and coloured
  *  to sit in the chat's window rather than looking like a pasted document. `tone` overrides the body
  *  text colour (a worker report's folded body reads dimmer than a turn's own reply) without forking
- *  the renderer, its table handling, or its prose setup. `memo`: parsing markdown is the costliest
- *  thing a chat render does (measured: ~300ms commits re-parsing a long orchestrator thread on every
- *  open and close of its panel), and the text of a finished turn never changes. */
-const ChatMarkdown = memo(({ children, tone = "text-neutral-300" }: { children: string; tone?: string }) => (
+ *  the renderer, its table handling, or its prose setup. `breaks` (the user's own bubble): a plain
+ *  single newline, as typed, becomes a visible line break — CommonMark otherwise joins it to the
+ *  next line as one paragraph, which read wrong for a typed message that was never meant as prose.
+ *  `memo`: parsing markdown is the costliest thing a chat render does (measured: ~300ms commits
+ *  re-parsing a long orchestrator thread on every open and close of its panel), and the text of a
+ *  finished turn never changes. */
+const ChatMarkdown = memo(({ children, tone = "text-neutral-300", breaks }: { children: string; tone?: string; breaks?: boolean }) => (
   // wrap-anywhere: the agent's prose is full of unbreakable tokens (`branch/names-with-hashes`,
   // paths, run ids) that are wider than a narrow window, and one of them made the whole log scroll
   // sideways. Code BLOCKS are exempt — they keep their lines and scroll inside themselves.
@@ -100,7 +104,7 @@ const ChatMarkdown = memo(({ children, tone = "text-neutral-300" }: { children: 
     "prose-strong:text-neutral-200",
     "prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none",
     "prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400", tone)}>
-    <ReactMarkdown remarkPlugins={[remarkGfm]} components={chatComponents}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]} components={chatComponents}>{children}</ReactMarkdown>
   </div>
 ));
 
@@ -552,10 +556,12 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
         return (
           <div key={i} className="group mb-2 flex justify-end" data-slot="chat-user">
             <div className="max-w-[85%]">
-              {clean && <div data-slot="chat-user-text" className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">
+              {clean && <div data-slot="chat-user-text" className="bg-accent text-foreground rounded-lg px-3 py-2">
                 {/* A long message is cut to its first lines, like an old reply. */}
                 {/* …except your newest message, which is always in full. */}
-                <Clamp on={!(newestSaid && i === said.length - 1) && longMessage(clean)} cut="max-h-[9rem]">{clean}</Clamp>
+                <Clamp on={!(newestSaid && i === said.length - 1) && longMessage(clean)} cut="max-h-[9rem]">
+                  <ChatMarkdown tone="text-foreground" breaks>{clean}</ChatMarkdown>
+                </Clamp>
               </div>}
               <Attachments files={filesOf(text, i)} className="mt-1 justify-end" />
               <div className="mt-0.5 flex items-center justify-end gap-1.5">
