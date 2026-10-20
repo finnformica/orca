@@ -411,6 +411,9 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   SEPARATELY from "loaded, genuinely nothing" (`useWorkstreamsLoaded` in `store.ts`,
   `useUsageLoaded` in `lib/vitals.ts`): both `useWorkstreams()` and `useUsage()` read `null`/`[]` for
   either case on the wire, which the skeleton can't tell apart from the real value alone.
+  **A failed poll keeps the last good value** (the store's `keepGood` for the agents / PRs / merged
+  streams, the machine card's history and ring in `lib/vitals.ts`): storing the empty fallback made
+  rows, counts and graphs vanish for one cycle and come back — the Overview's flicker.
 - **Agents** (`/agents`, `views/Agents.tsx`): Vercel's Deployments list — one-click **quick
   filter chips**, grouped into families with a muted caption (State: Open PRs, Mergeable, Merged
   today, Not merged; Activity: Running, Needs attention; Repo: one per repo; AND across groups, OR
@@ -609,7 +612,10 @@ opened from the card's terminal button, rendering `ChatPanel` (`web/src/views/Ch
 whole conversation from `GET /api/turns` in the orchestrator's chat styling (your messages as bubbles,
 the agent's reply under its provider's name), plus the follow-up `ChatComposer` to send the next
 message. Every `ChatComposer` has the **`@` PR picker** (`prTrigger`: `@` at the start or after a
-space/bracket lists the board's polled PRs; a pick inserts `#123`, or `repo#123`). It opened on `#`
+space/bracket lists the board's polled PRs; a pick inserts `#123`, or `repo#123`). Enter on a
+markdown list line (`- `, `* `, `1. `, `- [ ] `) starts the next item with the same marker and
+indent, and Enter on an empty item removes the marker (`listContinuation`); there it does not send,
+but ⌘/Ctrl+Enter does. It opened on `#`
 until Finn asked for `@`; `#` now opens nothing. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
 involved. Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every
 board action uses. A turn written at launch but not yet finished renders as `▋ working…` (that's how

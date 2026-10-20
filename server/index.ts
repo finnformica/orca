@@ -33,6 +33,7 @@ import * as integrationAdmin from "./integrations/admin";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
 import * as primary from "./primary";
+import { scrubbedEnv } from "./env";
 import * as mergeQueue from "./mergeQueue";
 import * as upkeep from "./upkeep";
 import * as browserWatch from "./browserWatch";
@@ -351,7 +352,7 @@ function whenDatabaseDown(req: Request, url: URL, e: db.DbUnavailable): Response
   return degradedJson({ error: `${e.message} — this needs the database; it will work again once it is back` }, 503);
 }
 
-const BRIDGE_BRANCH = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: import.meta.dir }).stdout.toString().trim() || undefined;
+const BRIDGE_BRANCH = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: import.meta.dir, env: scrubbedEnv() }).stdout.toString().trim() || undefined;
 const bridgeInfo = () => ({ preview: PREVIEW_BRIDGE, branch: BRIDGE_BRANCH, port: API_PORT, ...primary.state() });
 
 /** A caller-supplied base ref, rejected unless it looks like a branch name (never a `-flag` that git

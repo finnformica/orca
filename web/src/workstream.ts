@@ -4172,3 +4172,32 @@ export function parseHandoffDraft(search: string): { repo: string; branch: strin
 
 /** A byte count for a file list ("812 B", "4.2 KB", "1.3 MB"). Pure. */
 export const byteSize = (n: number): string => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
+
+// A markdown list item at the start of a line: indent, a bullet (-, *, +) or a number with "." or ")",
+// the spaces after it, and an optional task box ("[ ]" / "[x]").
+const LIST_ITEM = /^(\s*)(?:([-*+])|(\d{1,9})([.)]))(\s+)(\[[ xX]\]\s+)?/;
+
+/** Enter in the composer on a markdown list line, like GitHub / Notion: the next line gets the same
+ *  marker ("- " → "- ", "1. " → "2. ", a task item → "- [ ] ", the same indent), and Enter on an
+ *  EMPTY item removes its marker and ends the list. Null leaves Enter as it is (send, or a newline):
+ *  a selection, a caret inside the marker, a line that is no list item, or a line in an open ```
+ *  fence. Text after the caret moves to the new item. Pure. */
+export function listContinuation(value: string, start: number, end: number): { text: string; caret: number } | null {
+  if (start !== end) return null;
+  const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+  const nl = value.indexOf("\n", start);
+  const lineEnd = nl === -1 ? value.length : nl;
+  const line = value.slice(lineStart, lineEnd);
+  const m = LIST_ITEM.exec(line);
+  if (!m || start - lineStart < m[0].length) return null;
+  const fences = value.slice(0, lineStart).split("\n").filter((l) => /^\s*```/.test(l)).length;
+  if (fences % 2 === 1) return null;
+  const [marker, indent, bullet, num, delim, gap, task] = m;
+  if (line.slice(marker.length).trim() === "") {
+    return { text: value.slice(0, lineStart) + value.slice(lineEnd), caret: lineStart };
+  }
+  const next = indent + (bullet ?? `${Number(num) + 1}${delim}`) + gap + (task ? "[ ] " : "");
+  const after = value.slice(start, lineEnd).trimStart();
+  const text = value.slice(0, start) + "\n" + next + after + value.slice(lineEnd);
+  return { text, caret: start + 1 + next.length };
+}

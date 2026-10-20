@@ -12,12 +12,25 @@ export const SECRET_PREFIX = "ORCA_SECRET_";
 
 export type Env = Record<string, string | undefined>;
 
+/** Variables that point git at a repository other than the one a command names. Git exports them
+ *  into its hooks, so a process started from a hook in a linked worktree inherits GIT_DIR, and then
+ *  `git init <dir>` re-inits THAT repo and `git -C <dir>` commits to its branch (the scratch-repo
+ *  incident: core.bare=true and a test identity in the main clone, an "init" commit on a worker's
+ *  branch). Orca always names its repo (`git -C`, `cwd`), so no spawn inherits them. */
+export const GIT_REPO_VARS = ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_PREFIX"] as const;
+
+/** The GIT_REPO_VARS set in `env` (the test preload refuses to start with any). */
+export function inheritedGitRepoVars(env: Env = process.env): string[] {
+  return GIT_REPO_VARS.filter((key) => env[key] !== undefined);
+}
+
 /** The bridge's LIVE environment (Bun.spawn otherwise snapshots PATH at startup, which defeats a
  *  test's PATH shim) minus Orca's secrets, with `extra` laid over it — a key set to `undefined` is
- *  removed. `keep` names secrets this one spawn may still see (a deliberate, named allow-back). */
+ *  removed. GIT_REPO_VARS are never inherited. `keep` names secrets this one spawn may still see (a deliberate, named allow-back). */
 export function scrubbedEnv(extra: Env = {}, opts: { keep?: readonly string[] } = {}): Record<string, string> {
   const env: Env = { ...process.env };
   for (const key of ORCA_SECRETS) if (!opts.keep?.includes(key)) delete env[key];
+  for (const key of GIT_REPO_VARS) delete env[key]; // an inherited repo pointer; `extra` may still set one
   // An integration's token (its row names the variable, shared/integrations.ts secretRefRefusal).
   for (const key of Object.keys(env)) if (key.startsWith(SECRET_PREFIX) && !opts.keep?.includes(key)) delete env[key];
   Object.assign(env, extra);

@@ -39,6 +39,8 @@ if command -v flock >/dev/null; then
 fi
 
 cd "${REPO}"
+# A pointer inherited from a git hook would send every git below to another repository.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_PREFIX
 git fetch -q origin main
 
 head_local="$(git rev-parse HEAD)"

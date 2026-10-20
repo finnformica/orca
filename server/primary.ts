@@ -18,6 +18,7 @@ import { existsSync, readFileSync, statSync } from "fs";
 import { dirname, join, resolve } from "path";
 import { errorText, instanceName, isDbError, logUnlessDown, onAvailable, onUnavailable, previewBridge, unavailableSince } from "./db";
 import { processCwd } from "./proc";
+import { scrubbedEnv } from "./env";
 
 /** How often a secondary retries the lock, and a primary re-asserts it (a dropped connection loses it). */
 export const PRIMARY_RETRY_MS = Number(process.env.ORCA_PRIMARY_RETRY_MS) || 5_000;
@@ -207,7 +208,7 @@ export function watchSource(onGone: () => unknown, dir: string = SOURCE_DIR, ms 
  *  that does (a tarball deploy with no .git). Throws when neither has it — a wake with no `orca`
  *  command is the incident, not a degraded mode. */
 export function mainBin(dir: string = SOURCE_DIR): string {
-  const out = Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir, stderr: "ignore" });
+  const out = Bun.spawnSync(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd: dir, env: scrubbedEnv(), stderr: "ignore" });
   const common = out.success ? out.stdout.toString().trim() : "";
   const candidates = [common ? join(common, "..", "bin") : "", join(dir, "..", "bin")].filter(Boolean);
   for (const bin of candidates) if (existsSync(join(bin, "orca"))) return bin;
