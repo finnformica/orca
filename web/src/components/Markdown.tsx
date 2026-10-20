@@ -26,7 +26,7 @@ const img = ({ src, alt }: { src?: string; alt?: string }) =>
 const elements = { table, th: cell("th"), td: cell("td"), img };
 const components = { ...elements, pre: snippetPre(elements) };
 
-export const MARKDOWN_CLASS = "prose prose-sm dark:prose-invert max-w-none min-w-0 wrap-anywhere prose-pre:wrap-normal prose-img:my-2";
+export const MARKDOWN_CLASS = "prose prose-sm dark:prose-invert max-w-none min-w-0 wrap-anywhere prose-pre:wrap-normal prose-img:my-2 prose-code:before:content-none prose-code:after:content-none prose-code:font-normal";
 
 export const Markdown = memo(({ children, className }: { children: string; className?: string }) => (
   <div data-slot="markdown" className={cn(MARKDOWN_CLASS, className)}>

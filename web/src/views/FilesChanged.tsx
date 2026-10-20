@@ -358,6 +358,8 @@ function useCodeTheme() {
 const DiffBody = memo(({ file, view, wrap }: { file: FileDiff; view: ViewMode; wrap: boolean }) => {
   const theme = useCodeTheme();
   const digits = gutterDigits(file);
+  // An added file has no old side and a deleted file no new side: one number column, not an empty one.
+  const cols = { old: file.status !== "added", new: file.status !== "deleted" };
   // The code box is a size container, so a hunk header can be as wide as the box (100cqw) and stay
   // put while long lines scroll sideways under it.
   return (
@@ -366,14 +368,19 @@ const DiffBody = memo(({ file, view, wrap }: { file: FileDiff; view: ViewMode; w
         {file.hunks.map((h, j) => (
           <Highlight key={j} theme={theme} code={h.lines.map((l) => l.text).join("\n")} language={file.lang}>
             {({ tokens, getTokenProps }) => {
-              const code = (i: number | undefined) => i === undefined ? null : (tokens[i] ?? []).map((t, k) => <span key={k} {...getTokenProps({ token: t as Token })} />);
+              // Only the inline colour, never prism's class names: a markdown table's tokens are
+              // `token table`, and Tailwind's `.table` (display: table) put every cell on its own line.
+              const code = (i: number | undefined) => i === undefined ? null : (tokens[i] ?? []).map((t, k) => {
+                const { children, style } = getTokenProps({ token: t as Token });
+                return <span key={k} style={style}>{children}</span>;
+              });
               return (
                 <div data-slot="diff-hunk">
                   <div data-slot="diff-hunk-header" className="bg-geist-blue/5 text-muted-foreground sticky left-0 w-[100cqw] truncate px-3 py-1">
                     {hunkLabel(h)}
                   </div>
                   {view === "unified"
-                    ? h.lines.map((l, i) => <UnifiedRow key={i} line={l} digits={digits} wrap={wrap}>{code(i)}</UnifiedRow>)
+                    ? h.lines.map((l, i) => <UnifiedRow key={i} line={l} digits={digits} cols={cols} wrap={wrap}>{code(i)}</UnifiedRow>)
                     : splitRows(h).map((r, i) => (
                       <div key={i} data-slot="diff-split-row" className="grid grid-cols-2">
                         <SplitHalf line={r.left} side="old" digits={digits}>{code(r.leftIndex)}</SplitHalf>
@@ -397,11 +404,11 @@ const Num = ({ n, digits, tone }: { n?: number; digits: number; tone: string }) 
   <span className={cn("text-muted-foreground/70 shrink-0 px-2 text-right select-none", tone)} style={{ width: `calc(${digits}ch + 1rem)` }}>{n ?? ""}</span>
 );
 
-function UnifiedRow({ line, digits, wrap, children }: { line: DiffLine; digits: number; wrap: boolean; children: ReactNode }) {
+function UnifiedRow({ line, digits, cols, wrap, children }: { line: DiffLine; digits: number; cols: { old: boolean; new: boolean }; wrap: boolean; children: ReactNode }) {
   return (
     <div data-slot="diff-line" data-type={line.type} className={cn("flex", ROW_TONE[line.type])}>
-      <Num n={line.old} digits={digits} tone={GUTTER_TONE[line.type]} />
-      <Num n={line.new} digits={digits} tone={GUTTER_TONE[line.type]} />
+      {cols.old && <Num n={line.old} digits={digits} tone={GUTTER_TONE[line.type]} />}
+      {cols.new && <Num n={line.new} digits={digits} tone={GUTTER_TONE[line.type]} />}
       <span className={cn("w-5 shrink-0 text-center select-none", line.type === "add" ? "text-geist-green" : line.type === "del" ? "text-geist-red" : "text-muted-foreground")}>{SIGN[line.type]}</span>
       <span className={cn("pr-4", wrap ? "min-w-0 flex-1 whitespace-pre-wrap wrap-anywhere" : "flex-1 whitespace-pre")}>{children}{line.noNewline && <NoNewline />}</span>
     </div>

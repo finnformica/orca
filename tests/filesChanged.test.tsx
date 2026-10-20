@@ -93,6 +93,9 @@ describe("Files changed", () => {
     const [h] = parseDiff(await fixture("pr161-rename.diff"))[0]!.hunks;
     expect(nums).toEqual([String(h!.lines[0]!.old ?? ""), String(h!.lines[0]!.new ?? "")]);
     expect(section("web/public/icon-192.png").textContent).toContain("Binary file not shown.");
+    // An added file has no old side: one number column (new), the sign, the code.
+    const added = section("bin/worker/bun").querySelector<HTMLElement>("[data-slot=diff-line]")!;
+    expect([...added.children].map((c) => c.textContent)).toEqual(["1", "+", ".heavy-shim⊘"]);
   });
 
   test("a new markdown file opens rendered, wraps, and toggles to code", async () => {
@@ -172,4 +175,16 @@ describe("Markdown never widens the page", () => {
     expect(box.querySelector("table")).not.toBeNull();
     expect(q("img")!.className).toContain("max-w-full");
   });
+});
+
+// Prism names a markdown table's tokens `token table`, and Tailwind's `.table` utility is
+// `display: table`: the old view put each table cell on its own line. Token spans carry no class.
+test("code tokens carry only their colour, never prism's class names", async () => {
+  text = await fixture("pr289-markdown.diff");
+  await mount();
+  const md = section("docs/integrations/ADAPTERS.md");
+  await click(md.querySelector("[aria-label='Show the code']")!);
+  const row = qa("[data-slot=diff-line]").find((l) => l.textContent?.includes("| File | Content |"))!;
+  expect(row).toBeDefined();
+  expect(row.querySelectorAll("span[class~=table], span[class*=token]").length).toBe(0);
 });
