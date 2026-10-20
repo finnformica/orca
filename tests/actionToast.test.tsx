@@ -79,7 +79,11 @@ test("T2 a failed Merge on the Agents list: a card in the notification stack and
   {
     await mount("/agents");
     await pointerdown(q(`[data-branch="feat-ok"]`)!.querySelector('button[aria-label="Actions"]')!);
-    await click([...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Merge")!);
+    // Merge ▸ Merge now (the menu redesign put Merge in its own submenu).
+    const mergeSub = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Merge")!;
+    await pointerdown(mergeSub);
+    await click(mergeSub);
+    await click([...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Merge now")!);
     expect(await answer()).toBe('Merge PR #9? — Merge "Approved thing" into main. You cannot undo this.');
     await act(async () => { await flush(); await flush(); });
     expect(apiFake.calls).toContain("merge:9");
