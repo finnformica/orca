@@ -182,11 +182,24 @@ function useListLayout(ref: RefObject<HTMLElement | null>): ReturnType<typeof li
   const widths = useRef<ListWidths>(NO_WIDTHS);
   const labels = useRef<ListWidths>({ ...NO_WIDTHS });
   const ro = useRef<ResizeObserver | null>(null);
+  const measuredAt = useRef(0);
   const measure = useRef(() => {
     const el = ref.current;
     if (!el) return;
-    widths.current = measureColumns(el, labels.current) ?? widths.current;
-    const next = listLayout(el.clientWidth, widths.current);
+    const px = el.clientWidth;
+    const now = measureColumns(el, labels.current);
+    if (now) {
+      // At one list width a column's width only GROWS: a folded piece measures narrower where it
+      // lands (behind the subline's +N, in the PR cell), which would unfold the column, which folds
+      // it again — with no fixed point, React gave up and the page went blank (a DevTools close
+      // widened the page into that band). A fold only deepens as widths grow, so this converges; a
+      // resize measures afresh.
+      const keep = px === measuredAt.current ? widths.current : NO_WIDTHS;
+      for (const k of Object.keys(now) as (keyof ListWidths)[]) now[k] = Math.max(now[k], keep[k]);
+      widths.current = now;
+    }
+    measuredAt.current = px;
+    const next = listLayout(px, widths.current);
     setLayout((prev) => (sameLayout(prev, next) ? prev : next));
   }).current;
   const settled = useRef(() => afterDockMotion(measure)).current;

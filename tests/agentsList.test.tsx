@@ -441,6 +441,22 @@ describe("agents list by its own width", () => {
   afterEach(() => { Object.defineProperty(proto, "clientWidth", real.client); Object.defineProperty(proto, "offsetWidth", real.offset); Element.prototype.getBoundingClientRect = real.rect; });
   const heads = () => [...container!.querySelectorAll('[data-slot="workstream-list-header"] [role="columnheader"]')].map((h) => h.textContent);
 
+  test("a piece that measures narrower once folded does not unfold its column again (no render loop)", async () => {
+    seed();
+    fakeLayout(650);
+    // A Checks & review piece is 48px in its own cell but 20px once folded into the PR cell (behind
+    // its +N). At 650px the title is 252px with the column unfolded (under the 280 minimum) and
+    // 304px by the folded measure: unfolded it does not fit, folded it would — each commit flipping
+    // the other, until React gave up and the page went blank.
+    const rect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const r = rect.call(this);
+      return (this as HTMLElement).dataset?.colPart === "signals" && this.closest('[data-slot="row-pr-line"]') ? { ...r, width: 20, right: 20 } as DOMRect : r;
+    };
+    await mount();
+    expect(heads()).toEqual(["Workstream", "PR", "Actions"]);
+  });
+
   test("columns fold by priority at the measured widths, before paint, and unfold when space returns", async () => {
     seed();
     fakeLayout(1200);
