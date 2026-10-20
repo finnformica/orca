@@ -98,28 +98,33 @@ test("export → import: the target stores the files as attachments and queues o
   await expect(handoff.exportPack(pack.id)).rejects.toThrow("already sent");
 });
 
-test("the Handoffs nav badge counts unsent packs and unseen received packs; seen and sent clear them", async () => {
-  expect(await db.handoffBadge()).toEqual({ unsent: 0, unseen: 0 });
+test("the Handoffs nav badge counts only outgoing packs waiting to be sent; a received pack never counts", async () => {
+  expect(await db.handoffBadge()).toEqual({ unsent: 0 });
   const { pack } = await handoff.createPack({ to: "orca-personal-box", title: "Pending", source: "orca-flow-box" });
   const { pack: other } = await handoff.createPack({ to: "orca-personal-box", title: "Second", source: "orca-flow-box" });
-  expect(await db.handoffBadge()).toEqual({ unsent: 2, unseen: 0 });
+  expect(await db.handoffBadge()).toEqual({ unsent: 2 });
 
-  // A pack from another server arrives: unseen until the Handoffs page opens.
+  // A pack from another server arrives: it needs no approval from the user, so it never counts.
   const wire = await handoff.exportPack(pack.id);
   await handoff.importPack({ ...wire, id: "incoming-pack-1" }, async () => {});
-  expect(await db.handoffBadge()).toEqual({ unsent: 2, unseen: 1 });
-  expect((await db.handoff("incoming-pack-1", "in"))!.seenAt).toBeUndefined();
-
-  await db.markHandoffsSeen(1_800_000_000_000);
-  expect(await db.handoffBadge()).toEqual({ unsent: 2, unseen: 0 });
-  expect((await db.handoff("incoming-pack-1", "in"))!.seenAt).toBe(1_800_000_000_000);
-  await db.markHandoffsSeen(1_900_000_000_000); // seen once: the first time stays
-  expect((await db.handoff("incoming-pack-1", "in"))!.seenAt).toBe(1_800_000_000_000);
+  expect(await db.handoffBadge()).toEqual({ unsent: 2 });
 
   // Acting on an outgoing pack clears it: Send marks it sent, Delete removes it.
   await db.markHandoffSent(pack.id, "orca-personal-box");
   await db.deleteHandoff(other.id);
-  expect(await db.handoffBadge()).toEqual({ unsent: 0, unseen: 0 });
+  expect(await db.handoffBadge()).toEqual({ unsent: 0 });
+});
+
+test("a received pack is marked seen once the Handoffs page opens, for its own 'new' tag — unrelated to the nav badge", async () => {
+  const { pack } = await handoff.createPack({ to: "orca-personal-box", title: "Pending", source: "orca-flow-box" });
+  const wire = await handoff.exportPack(pack.id);
+  await handoff.importPack({ ...wire, id: "incoming-pack-1" }, async () => {});
+  expect((await db.handoff("incoming-pack-1", "in"))!.seenAt).toBeUndefined();
+
+  await db.markHandoffsSeen(1_800_000_000_000);
+  expect((await db.handoff("incoming-pack-1", "in"))!.seenAt).toBe(1_800_000_000_000);
+  await db.markHandoffsSeen(1_900_000_000_000); // seen once: the first time stays
+  expect((await db.handoff("incoming-pack-1", "in"))!.seenAt).toBe(1_800_000_000_000);
   expect((await handoff.one(pack.id))!.seenAt).toBeUndefined(); // only received packs carry it
 });
 

@@ -613,7 +613,8 @@ async function api(req: Request, url: URL): Promise<Response> {
         const r = await handoff.createPack({ to: String(body.to ?? ""), title: String(body.title ?? ""), message: typeof body.message === "string" ? body.message : "", chats, source: (await selfServer(cfg.serverSwitcher ?? {})).name });
         return json({ pack: await handoff.one(r.pack.id) });
       }
-      // The nav badge: packs that need the user. Opening the Handoffs page marks the incoming ones seen.
+      // The nav badge: outgoing packs waiting for the user to send them. Opening the Handoffs page
+      // separately marks every received pack seen (the page's own "new" tag, not the badge).
       if (req.method === "GET" && p === "/api/handoffs/badge") return json(await db.handoffBadge());
       if (req.method === "POST" && p === "/api/handoffs/seen") { await db.markHandoffsSeen(); return json({ ok: true }); }
       const m = p.match(/^\/api\/handoffs\/([\w-]+)(\/export|\/sent)?$/);

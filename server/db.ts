@@ -2079,19 +2079,21 @@ export async function markHandoffSent(id: string, to: string, at = Date.now()): 
   });
 }
 
-/** What the Handoffs nav badge counts: outgoing packs not sent yet, and incoming packs not seen yet. */
-export async function handoffBadge(): Promise<{ unsent: number; unseen: number }> {
+/** What the Handoffs nav badge counts: outgoing packs made here and not sent yet. These are the
+ *  only packs that wait for the user's own approval; a received pack needs no action from them
+ *  beyond reading it, so it does not count. */
+export async function handoffBadge(): Promise<{ unsent: number }> {
   return withRetry(async (sql) => {
     const rows = await sql`
-      SELECT count(*) FILTER (WHERE direction = 'out' AND sent_at IS NULL) AS unsent,
-             count(*) FILTER (WHERE direction = 'in' AND seen_at IS NULL) AS unseen
+      SELECT count(*) FILTER (WHERE direction = 'out' AND sent_at IS NULL) AS unsent
       FROM handoff WHERE user_id = ${currentUser()}`;
-    const r = (rows as { unsent: string | number; unseen: string | number }[])[0];
-    return { unsent: Number(r?.unsent ?? 0), unseen: Number(r?.unseen ?? 0) };
+    const r = (rows as { unsent: string | number }[])[0];
+    return { unsent: Number(r?.unsent ?? 0) };
   });
 }
 
-/** The user opened the Handoffs page: every incoming pack is seen. */
+/** The user opened the Handoffs page: every incoming pack is seen. This no longer feeds the nav
+ *  badge (`handoffBadge`); it still drives the "new" tag on a received pack's row. */
 export async function markHandoffsSeen(at = Date.now()): Promise<void> {
   return withRetry(async (sql) => {
     await sql`UPDATE handoff SET seen_at = ${at} WHERE user_id = ${currentUser()} AND direction = 'in' AND seen_at IS NULL`;
