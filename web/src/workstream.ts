@@ -2792,6 +2792,19 @@ export const MACHINE_WINDOWS = [["now", 0], ["5m", 5 * 60_000], ["1h", 3_600_000
 /** `orca machine`'s numbers, from the SAME samples and the SAME `liveCharts` derivation as the card's
  *  charts, so the two cannot disagree. "now" is the newest sample; 5m and 1h are means over the
  *  samples in the window. A window with no samples is absent. Pure. */
+/** A sample newer than this counts as the machine answering, for `instanceStatus`. */
+export const INSTANCE_FRESH_MS = 5 * 60_000;
+
+/** The machine card's Status: unreachable when its /api/health failed; online when it answered, OR
+ *  when its newest sample (the live ring or the recorded history) is under `INSTANCE_FRESH_MS` old —
+ *  a /api/health answer that has not come back yet must not hold the card at "Loading…" while its
+ *  charts already show the machine. Loading only with no evidence at all. Pure. */
+export function instanceStatus(o: { down: boolean; health: boolean; newestSampleAt?: number; now: number }): "unreachable" | "online" | "loading" {
+  if (o.down) return "unreachable";
+  if (o.health) return "online";
+  return o.newestSampleAt !== undefined && o.now - o.newestSampleAt <= INSTANCE_FRESH_MS ? "online" : "loading";
+}
+
 export function machineSummary(samples: LiveSample[], cores: number): MachineSummary {
   const last = samples[samples.length - 1];
   if (!last) return {};

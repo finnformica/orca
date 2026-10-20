@@ -4,11 +4,14 @@
 // chart. Each sample splits the CPU into work and iowait (/proc/stat), reads the root disk's MB/s
 // (/proc/diskstats) and splits memory into used and cache (/proc/meminfo). Whole box only: no
 // per-workstream split (Finn's call). Cost: three small /proc reads every 15 s, no process spawned.
+// On macOS (no /proc) the CPU comes from os.cpus() ticks, and memory and disk take turns: one tick
+// spawns `vm_stat`, the next `ioreg`, so a Mac spawns one small process every 15 s.
 import { readFileSync } from "fs";
 import * as os from "os";
 import { parseProcStat, type ProcStatTimes } from "./health";
 import * as cgroup from "./cgroup";
 import * as heavy from "./heavy";
+import { run } from "./run";
 import { machineSummary, type MachineReport } from "../web/src/workstream";
 
 export const LIVE_SAMPLE_MS = 15_000;
@@ -125,6 +128,48 @@ export function bucketLive(samples: LiveSample[], max: number, from: number, to:
   });
 }
 
+// ---- macOS parsers (fixture-tested): no /proc there ----
+
+/** os.cpus() summed over the cores, in the shape of a /proc/stat read, so `cpuSplit` serves both.
+ *  macOS reports no iowait: it reads 0. */
+export function darwinCpuTimes(cpus: { times: { user: number; nice: number; sys: number; idle: number; irq: number } }[]): ProcStatTimes {
+  const t = { user: 0, nice: 0, system: 0, idle: 0, iowait: 0, irq: 0, softirq: 0, steal: 0, total: 0 };
+  for (const c of cpus) { t.user += c.times.user; t.nice += c.times.nice; t.system += c.times.sys; t.idle += c.times.idle; t.irq += c.times.irq; }
+  t.total = t.user + t.nice + t.system + t.idle + t.irq;
+  return t;
+}
+
+/** `vm_stat` as used, cache and available GB. used = active + wired + compressor (Activity Monitor's
+ *  "Memory Used", the same figure as /api/health's header); cache = inactive + speculative, the pages
+ *  the kernel takes back first (mostly file-backed), clamped to what used leaves; available = total −
+ *  used. Undefined when the page size or a needed line is missing. */
+export function parseVmStatMemory(text: string, totalBytes: number): { usedGb: number; cacheGb: number; availGb: number } | undefined {
+  const pageSize = Number(text.match(/page size of (\d+) bytes/)?.[1]);
+  const pages = (k: string) => { const m = text.match(new RegExp(`^${k}:\\s+(\\d+)\\.`, "m")); return m ? Number(m[1]) : undefined; };
+  const active = pages("Pages active"), wired = pages("Pages wired down"), inactive = pages("Pages inactive");
+  if (!pageSize || active === undefined || wired === undefined || inactive === undefined || !(totalBytes > 0)) return undefined;
+  const used = Math.min(totalBytes, pageSize * (active + wired + (pages("Pages occupied by compressor") ?? 0)));
+  const cache = Math.min(totalBytes - used, pageSize * (inactive + (pages("Pages speculative") ?? 0)));
+  const gb = (n: number) => round2(Math.max(0, n) / 1_073_741_824);
+  return { usedGb: gb(used), cacheGb: gb(cache), availGb: gb(totalBytes - used) };
+}
+
+export type DiskBytes = { readBytes: number; writeBytes: number };
+
+/** The bytes read and written since boot, summed over every block storage driver in
+ *  `ioreg -r -c IOBlockStorageDriver -k Statistics -d 1 -w 0`. Undefined when no driver reports them. */
+export function parseIoregDisk(text: string): DiskBytes | undefined {
+  const sum = (k: string) => [...text.matchAll(new RegExp(`"Bytes \\(${k}\\)"=(\\d+)`, "g"))].reduce((n, m) => n + Number(m[1]), 0);
+  if (!/"Bytes \((Read|Write)\)"=\d+/.test(text)) return undefined;
+  return { readBytes: sum("Read"), writeBytes: sum("Write") };
+}
+
+/** Read and write MB/s between two byte counts `ms` apart. A counter that went back reads 0. */
+export function byteRates(prev: DiskBytes, curr: DiskBytes, ms: number): { readMBs: number; writeMBs: number } {
+  const rate = (d: number) => (ms > 0 && d > 0 ? round1(d / 1_048_576 / (ms / 1000)) : 0);
+  return { readMBs: rate(curr.readBytes - prev.readBytes), writeMBs: rate(curr.writeBytes - prev.writeBytes) };
+}
+
 // ---- the sampler (I/O) ----
 
 const read = (path: string): string | undefined => {
@@ -165,6 +210,52 @@ export function createLiveSampler(o: { procRoot?: string; now?: () => number; lo
   };
 }
 
+export const VM_STAT_CMD = ["vm_stat"];
+export const IOREG_CMD = ["ioreg", "-r", "-c", "IOBlockStorageDriver", "-k", "Statistics", "-d", "1", "-w", "0"];
+
+/** The macOS sampler. CPU on every tick (os.cpus(), no spawn); memory and disk take turns, so each
+ *  tick spawns ONE command: even ticks `vm_stat`, odd ticks `ioreg`. A sample carries the newest
+ *  memory reading and the disk rate over the last two `ioreg` reads (30 s apart). No sample on the
+ *  first tick, nor until a memory reading exists. Swap is absent: `vm_stat` does not report it. */
+export function createDarwinSampler(o: {
+  now?: () => number; load1?: () => number; cpus?: () => Parameters<typeof darwinCpuTimes>[0];
+  totalBytes?: () => number; run?: (cmd: string[]) => Promise<string>;
+} = {}) {
+  const now = o.now ?? Date.now;
+  const load1 = o.load1 ?? (() => os.loadavg()[0] ?? 0);
+  const cpus = o.cpus ?? os.cpus;
+  const totalBytes = o.totalBytes ?? os.totalmem;
+  const exec = o.run ?? ((cmd: string[]) => run(cmd));
+  let n = 0;
+  let prevCpu: ProcStatTimes | undefined;
+  let mem: ReturnType<typeof parseVmStatMemory>;
+  let disk: { at: number; bytes: DiskBytes } | undefined;
+  let io: { readMBs: number; writeMBs: number } | undefined;
+  return {
+    async tick(): Promise<LiveSample | undefined> {
+      const at = now();
+      const cpu = darwinCpuTimes(cpus());
+      const turn = n++ % 2;
+      try {
+        if (turn === 0) mem = parseVmStatMemory(await exec(VM_STAT_CMD), totalBytes()) ?? mem;
+        else {
+          const bytes = parseIoregDisk(await exec(IOREG_CMD));
+          if (bytes) { io = disk ? byteRates(disk.bytes, bytes, at - disk.at) : io; disk = { at, bytes }; }
+        }
+      } catch { /* the command is missing or failed: keep the last reading */ }
+      const last = prevCpu;
+      prevCpu = cpu;
+      if (!last || !mem) return undefined;
+      const kills = ooms;
+      ooms = 0;
+      return {
+        at, ...cpuSplit(last, cpu), load1: round2(load1()), ...(io ?? {}),
+        memUsedGb: mem.usedGb, memCacheGb: mem.cacheGb, memAvailGb: mem.availGb, ...(kills ? { ooms: kills } : {}),
+      };
+    },
+  };
+}
+
 /** Push a sample and drop what fell out of the 6-hour window. */
 export function pushLive(sample: LiveSample, window = LIVE_WINDOW_MS): void {
   ring.push(sample);
@@ -174,18 +265,22 @@ export function pushLive(sample: LiveSample, window = LIVE_WINDOW_MS): void {
   if (i) ring = ring.slice(i);
 }
 
-/** Start the 15 s sampler. Every bridge runs it (preview bridges too): it only reads /proc. */
-export function startLiveSampler(ms = LIVE_SAMPLE_MS): ReturnType<typeof setInterval> {
-  const s = createLiveSampler();
-  const tick = () => {
+/** Start the 15 s sampler. Every bridge runs it (preview bridges too): on Linux it only reads /proc,
+ *  on macOS it spawns one small command a tick. */
+export function startLiveSampler(ms = LIVE_SAMPLE_MS, platform = process.platform): ReturnType<typeof setInterval> {
+  const s: { tick(): LiveSample | undefined | Promise<LiveSample | undefined> } = platform === "darwin" ? createDarwinSampler() : createLiveSampler();
+  let busy = false;
+  const tick = async () => {
+    if (busy) return; // a slow spawn never stacks ticks
+    busy = true;
     try {
-      const v = s.tick();
+      const v = await s.tick();
       if (v) pushLive(v);
     } catch (e) {
       console.error(`orca: live metrics sample failed: ${e instanceof Error ? e.message : e}`);
-    }
+    } finally { busy = false; }
   };
-  tick();
+  void tick();
   return setInterval(tick, ms).unref();
 }
 
