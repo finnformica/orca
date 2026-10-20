@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as db from "../server/db";
 import * as transcript from "../server/transcript";
-import { browserProcess, isTestRunner, killStep, nextKillRecord, readProcs, recordKills, sweep, watchVerdict, type ProcInfo } from "../server/browserWatch";
+import { browserProcess, isTestRunner, killStep, nextKillRecord, orphanRun, readProcs, recordKills, sweep, sweepOrphanScopes, watchVerdict, type ProcInfo } from "../server/browserWatch";
+import * as lease from "../server/lease";
 import { browserKillLabel, rowStatus, BROWSER_KILL_SHOW_MS } from "../web/src/workstream";
 import { freshSchema, type TestDb } from "./pg";
 
@@ -157,4 +158,71 @@ test.skipIf(!inRunScope)("a real `chrome` process in an agent's scope is killed"
     expect(await child.exited).not.toBe(0);
     expect(child.signalCode).toBe("SIGKILL");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ---- orphan run scopes (2026-10-19: six fake claudes of a test looped in real run scopes) ----
+const OTHER = "0b7a2f4e-1c3d-4e5f-8a9b-0c1d2e3f4a5b";
+const inOther = `${SLICE}/orca-run-${OTHER}.scope`;
+
+test("an orphan is a process in a run scope of the agents' slice that no lease names", () => {
+  const known = new Set([RUN]);
+  expect(orphanRun(proc(["sh", "claude"], inOther), known)).toBe(OTHER);
+  expect(orphanRun(proc(["sh", "claude"], `${inOther}/sub`), known)).toBe(OTHER);
+  expect(orphanRun(proc(["sh", "claude"]), known)).toBeUndefined(); // leased
+  expect(orphanRun(proc(["sh"], `${SLICE}/orca-heavy-1.scope`), known)).toBeUndefined(); // a queue slot
+  expect(orphanRun(proc(["sh"], `/system.slice/orca-run-${OTHER}.scope`), known)).toBeUndefined(); // not the agents' slice
+  expect(orphanRun({ ...proc(["sh"], inOther), pid: 7 }, known, 7)).toBeUndefined(); // never itself
+});
+
+test("an orphan scope is killed on the second pass that sees it; a run leased in between is kept; no lease read kills nothing", () => {
+  const procs: ProcInfo[] = [
+    { pid: 1, cgroup: inOther, argv: ["/bin/sh", "/opt/orca/bin/worker/bun", "/tmp/x/claude"], comm: "sh" },
+    { pid: 2, cgroup: `${inOther}/sub`, argv: ["sleep", "60"], comm: "sleep" },
+    { pid: 3, cgroup: inRun, argv: ["claude"], comm: "claude" },
+  ];
+  const killed: number[] = [];
+  const suspects = new Set<string>();
+  const pass = (known: Set<string> | undefined) => sweepOrphanScopes({ procs: () => procs, known: () => known, kill: (p) => killed.push(p), suspects });
+  expect(pass(new Set([RUN]))).toEqual([]); // first sight: a launch may not have its lease yet
+  expect(pass(new Set([RUN]))).toEqual([{ pid: 1, runId: OTHER }, { pid: 2, runId: OTHER }]);
+  expect(killed).toEqual([1, 2]);
+  // Seen once, then its lease appears: kept.
+  killed.length = 0;
+  suspects.clear();
+  pass(new Set([RUN]));
+  expect(pass(new Set([RUN, OTHER]))).toEqual([]);
+  // The leases can't be read: nothing is killed, and nothing is a suspect after.
+  pass(new Set([RUN]));
+  expect(pass(undefined)).toEqual([]);
+  expect(pass(new Set([RUN]))).toEqual([]);
+  expect(killed).toEqual([]);
+});
+
+test("knownRunIds reads every lease file here, and refuses when one can't be read", () => {
+  expect(lease.knownRunIds()).toEqual(new Set()); // no leases dir yet
+  lease.acquire({ key: "/w/a", worktreePath: "/w/a", provider: "claude", runId: RUN, pid: process.pid, startedAt: Date.now() });
+  lease.acquire({ key: "/w/b", worktreePath: "/w/b", provider: "claude", runId: OTHER, pid: 999_999_999, startedAt: 0, timeoutMs: 1 }); // dead and expired: still named
+  expect(lease.knownRunIds()).toEqual(new Set([RUN, OTHER]));
+  writeFileSync(join(state, "leases", "bad.json"), "{not json");
+  expect(lease.knownRunIds()).toBeUndefined();
+});
+
+test("a real process in an orphan scope dies; a leased run's process is kept", async () => {
+  const orphan = Bun.spawn(["sleep", "30"]);
+  const leased = Bun.spawn(["sleep", "30"]);
+  try {
+    lease.acquire({ key: "/w/leased", worktreePath: "/w/leased", provider: "claude", runId: RUN, pid: leased.pid, startedAt: Date.now() });
+    const procs = (): ProcInfo[] => [
+      { pid: orphan.pid, cgroup: inOther, argv: ["sleep", "30"], comm: "sleep" },
+      { pid: leased.pid, cgroup: inRun, argv: ["sleep", "30"], comm: "sleep" },
+    ];
+    const suspects = new Set<string>();
+    sweepOrphanScopes({ procs, suspects });
+    sweepOrphanScopes({ procs, suspects });
+    expect(await orphan.exited).not.toBe(0);
+    expect(leased.exitCode).toBeNull();
+  } finally {
+    orphan.kill("SIGKILL");
+    leased.kill("SIGKILL");
+  }
 });

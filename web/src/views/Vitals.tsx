@@ -20,7 +20,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
-import { HISTORY_RANGES, countMax, liveCharts, nearestAt, usesLiveSource, headerUsage, heavyQueueRows, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { HISTORY_RANGES, countMax, liveCharts, nearestAt, usesLiveSource, headerUsage, heavyHeader, heavyQueueRows, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StackedChart, StatusDot, UsageSkeleton, VCard, type StackBand } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
@@ -309,6 +309,8 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   // Load is a NUMBER in the CPU caption and tooltip, never a line: it is a queue length (which counts
   // tasks waiting on the disk too), so on the % axis it would read as part of the stack.
   const loadAt = (at: number) => nearestAt(live?.loadPerCore ?? [], at)?.v;
+  const heavyTop = heavyHeader(h?.heavy);
+  const narrow = useNarrow();
   return (
     <VCard
       slot={`instance-${instance}`}
@@ -348,18 +350,22 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
       </div>
       {heavyRows.length > 0 && (
         <div data-slot="heavy-queue" className="border-b px-4 py-3">
-          <div className="text-muted-foreground mb-1.5 text-xs">Heavy commands · orca-run{h?.heavy?.cpu && <span data-slot="heavy-cpu" className="tabular-nums"> · CPU {h.heavy.cpu.used} / {h.heavy.cpu.budget}</span>}{h?.heavy?.memory?.budget !== undefined && <span data-slot="heavy-memory" className="tabular-nums"> · Memory {h.heavy.memory.used} / {h.heavy.memory.budget} GB</span>}</div>
-          {/* Many rows (a busy queue) scroll inside the card, on a phone too, instead of growing it. */}
-          <ScrollArea viewportClassName="max-h-64">
-          <ul className="divide-y pr-2.5">
+          <div className="text-muted-foreground mb-1.5 text-xs">Heavy commands · orca-run{heavyTop.cpu && <span data-slot="heavy-cpu" className="tabular-nums"> · {heavyTop.cpu}</span>}{heavyTop.memory && (
+            <span data-slot="heavy-memory" data-over={heavyTop.memoryOver || undefined} className={cn("tabular-nums", heavyTop.memoryOver && "text-geist-warning-fg")}> · {heavyTop.memory}</span>
+          )}</div>
+          {/* Many rows (a busy queue) scroll inside the card instead of growing it. On a phone the rows
+              keep their whole text and scroll sideways too; on a desktop a long command truncates. */}
+          <ScrollArea viewportClassName="max-h-64" horizontal={narrow}>
+          <ul data-slot="heavy-list" className={cn("divide-y pr-2.5", narrow && "w-max min-w-full pb-2.5")}>
             {heavyRows.map((r) => (
-              <li key={r.id} data-slot="heavy-row" data-state={r.state} className="flex items-center gap-2 py-1.5 text-[13px]">
+              <li key={r.id} data-slot="heavy-row" data-state={r.state} className="flex items-center gap-2 py-1.5 text-[13px] whitespace-nowrap">
                 <StatusDot tone={r.state === "running" ? "building" : "queued"} />
                 <span className="text-muted-foreground w-16 shrink-0 text-xs">{r.state === "running" ? "running" : `queued #${r.position}`}</span>
                 <span className="w-14 shrink-0 text-xs">{r.kind}</span>
                 {/* The Tip's own wrapper must shrink too, or a long command pushes the row past the card. */}
-                <Tip label={r.command} className="min-w-0 flex-1"><span data-slot="heavy-command" className="min-w-0 truncate font-mono text-xs">{r.command}</span></Tip>
-                <span className="text-muted-foreground max-w-[40%] shrink-0 truncate text-xs max-md:max-w-[25%]">{r.who}</span>
+                <Tip label={r.command} className={cn(!narrow && "min-w-0 flex-1")}><span data-slot="heavy-command" className={cn("font-mono text-xs", !narrow && "min-w-0 truncate")}>{r.command}</span></Tip>
+                {r.overBudget && <span data-slot="heavy-over" className="text-geist-warning-fg shrink-0 text-xs">over memory budget</span>}
+                <span data-slot="heavy-who" className={cn("text-muted-foreground shrink-0 text-xs", !narrow && "max-w-[40%] truncate")}>{r.who}</span>
               </li>
             ))}
           </ul>

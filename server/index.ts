@@ -1,5 +1,5 @@
 import {
-  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, modelFor, parseConfigDocument,
+  API_PORT, configDocument, featuresOf, invalidateConfig, loadConfig, setInstanceTerminal, setServerIdentity, setUiOptions, modelFor, parseConfigDocument,
   providerAllowed, providersFor, repoOf, runsHere, saveConfigDocument, type OrcaConfig, type RepoConfig,
 } from "./config";
 import * as git from "./git";
@@ -37,6 +37,7 @@ import * as upkeep from "./upkeep";
 import * as browserWatch from "./browserWatch";
 import * as notify from "./notify";
 import * as cgroup from "./cgroup";
+import { heavySliceGb } from "./sliceLimit";
 import { KIND_META } from "../shared/notifications";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
 import { liveAnswer, machineReport, newestLive, sliceMaxGbHere, startLiveSampler, withLiveCpu } from "./liveMetrics";
@@ -221,9 +222,11 @@ if (!PREVIEW_BRIDGE) setInterval(() => {
   void loadConfig().then((cfg) => upkeep.tick(cfg)).catch(db.logUnlessDown("orca: upkeep pass failed"));
 }, upkeep.UPKEEP_POLL_MS).unref();
 // The browser watchdog (server/browserWatch.ts): a browser or a browser MCP server in the agents'
-// slice is killed and flagged on the workstream that started it.
+// slice is killed and flagged on the workstream that started it, and a run scope that no lease on
+// this host names (a test's leaked run) is killed.
 if (!PREVIEW_BRIDGE && process.platform === "linux") setInterval(() => {
   if (!primary.held()) return;
+  try { browserWatch.sweepOrphanScopes(); } catch (e) { console.error(`orca: orphan scope sweep failed: ${e instanceof Error ? e.message : e}`); }
   void browserWatch.sweep({ record: (runId, names) => browserWatch.recordKills(runId, names).catch(db.logUnlessDown("orca: browser watchdog record failed")) })
     .catch((e) => console.error(`orca: browser watchdog failed: ${e instanceof Error ? e.message : e}`));
 }, browserWatch.WATCH_INTERVAL_MS).unref();
@@ -389,7 +392,7 @@ const DATABASE_ONLY = new Set([
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history", "/api/health/live", "/api/machine", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity",
+  "/api/health/history", "/api/health/live", "/api/machine", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui",
   // A workstream's reported screenshots, read off its turns (the files are served per shot).
   "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -414,7 +417,7 @@ const INSTANCE_IS_A_FILTER = new Set(["/api/health/history"]);
 /** The heavy queue's settings for this box. The memory budget applies only when the commands run
  *  in capped scopes inside the agents' slice: without systemd there are no caps to add up. */
 function heavySettingsHere(cfg: OrcaConfig): heavy.HeavySettings {
-  return heavy.heavySettings(cfg.heavyQueue, cgroup.available() ? cgroup.agentsSliceMaxGb() : undefined);
+  return heavy.heavySettings(cfg.heavyQueue, cgroup.available() ? heavySliceGb() : undefined);
 }
 /** This box's heavy-command queue, for /api/heavy and the machine card (/api/health). */
 function heavyView(cfg: OrcaConfig): heavy.HeavyView {
@@ -1054,6 +1057,12 @@ async function api(req: Request, url: URL): Promise<Response> {
     await setServerIdentity(identityUpdate(body.name, body.color));
     return json({ ok: true });
   }
+  if (req.method === "POST" && p === "/api/config/ui") {
+    // Settings' Board view row: show or hide the Board view for every browser.
+    if (typeof body.showBoard !== "boolean") return json({ error: "showBoard (true or false) is required" }, 400);
+    await setUiOptions({ showBoard: body.showBoard });
+    return json({ ok: true });
+  }
   if (req.method === "POST" && p === "/api/config/terminal") {
     // Settings' Terminal row: one instance's web terminal on or off. It hands out a shell, so it is
     // gated like the terminal itself — the owner only, never a cross-origin page.
@@ -1090,6 +1099,8 @@ async function api(req: Request, url: URL): Promise<Response> {
       instance: db.instanceName(), instances: Object.keys(cfg.instances ?? {}),
       instanceHourlyUsd: cfg.instanceHourlyUsd ?? {},
       terminal: cfg.terminal ?? {},
+      // Console options for every browser: the Board view is on unless the document says false.
+      ui: { showBoard: cfg.ui?.showBoard !== false },
       // Each machine's address: the terminal panel connects to a machine's own bridge directly (a
       // bridge never relays another machine's shell). Tailnet addresses, no secret.
       instanceUrls: cfg.instances ?? {},

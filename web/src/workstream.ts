@@ -2266,18 +2266,36 @@ export function protectionsWarning(
 
 /** The machine card's heavy-command list: running first (oldest first), then the queue in order.
  *  `who` is the workstream (branch, else repo, else "shell"); `since` is when it started or queued.
+ *  `command` is whole: a desktop row truncates it by CSS, a phone row scrolls sideways to show it.
  *  Empty when nothing runs or waits. Pure. */
-export function heavyQueueRows(view: { running: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number; startedAt?: number }[]; queued: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number }[] } | undefined): {
-  id: string; state: "running" | "queued"; kind: string; command: string; who: string; since: number; position?: number;
+export function heavyQueueRows(view: { running: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number; startedAt?: number; overBudget?: boolean }[]; queued: { id: string; kind: string; command: string; repo?: string; branch?: string; queuedAt: number }[] } | undefined): {
+  id: string; state: "running" | "queued"; kind: string; command: string; who: string; since: number; position?: number; overBudget?: boolean;
 }[] {
   if (!view) return [];
   const who = (e: { repo?: string; branch?: string }) => e.branch ?? e.repo ?? "shell";
-  const short = (c: string) => (c.length > 80 ? `${c.slice(0, 79)}…` : c);
   return [
     ...[...view.running].sort((a, b) => (a.startedAt ?? a.queuedAt) - (b.startedAt ?? b.queuedAt))
-      .map((e) => ({ id: e.id, state: "running" as const, kind: e.kind, command: short(e.command), who: who(e), since: e.startedAt ?? e.queuedAt })),
-    ...view.queued.map((e, i) => ({ id: e.id, state: "queued" as const, kind: e.kind, command: short(e.command), who: who(e), since: e.queuedAt, position: i + 1 })),
+      .map((e) => ({ id: e.id, state: "running" as const, kind: e.kind, command: e.command, who: who(e), since: e.startedAt ?? e.queuedAt, ...(e.overBudget ? { overBudget: true } : {}) })),
+    ...view.queued.map((e, i) => ({ id: e.id, state: "queued" as const, kind: e.kind, command: e.command, who: who(e), since: e.queuedAt, position: i + 1 })),
   ];
+}
+
+/** A CPU or GB figure for the heavy queue's text: one decimal at most (6, 1.5, never 1.0999999999999996). Pure. */
+export function heavyNumber(n: number): string {
+  return String(Math.round(n * 10) / 10);
+}
+
+/** The machine card's heavy-queue header figures: `CPU 1.5 / 3`, `Memory 6 / 8 GB` (only with a
+ *  memory budget), and `memoryOver` when the running caps pass the budget (a lone command whose
+ *  cap is above it). Pure. */
+export function heavyHeader(view: { cpu?: { used: number; budget: number }; memory?: { used: number; budget?: number } } | undefined): { cpu?: string; memory?: string; memoryOver: boolean } {
+  const mem = view?.memory;
+  const hasBudget = mem?.budget !== undefined;
+  return {
+    ...(view?.cpu ? { cpu: `CPU ${heavyNumber(view.cpu.used)} / ${heavyNumber(view.cpu.budget)}` } : {}),
+    ...(mem && hasBudget ? { memory: `Memory ${heavyNumber(mem.used)} / ${heavyNumber(mem.budget!)} GB` } : {}),
+    memoryOver: !!mem && hasBudget && mem.used > mem.budget! + 1e-9,
+  };
 }
 
 // ---- review signal: who approved, what humans said, what the AI reviewers flagged, what's open ----

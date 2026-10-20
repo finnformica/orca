@@ -9,6 +9,8 @@
 // The end-to-end check runs scripts/memory-harness.ts (the real run path, a fake claude with a large
 // stdout, stalled streams) in a child process and reads its memory report.
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as agent from "../server/agent";
 import * as bus from "../server/bus";
@@ -117,19 +119,33 @@ test("the GitHub ETag cache is bounded by size, and skips one huge answer", asyn
 });
 
 test("the harness: many large runs and stalled streams leave the bridge's heap small", async () => {
-  const proc = Bun.spawn(["bun", join(import.meta.dir, "..", "scripts", "memory-harness.ts"), "--runs", "6", "--concurrency", "2", "--mb", "10", "--stalled", "2"], {
+  // Its temp dirs go under a root of ours, so every fake claude it starts can be found and killed,
+  // even when it fails or times out (2026-10-19: six of them outlived a run for minutes).
+  const root = await mkdtemp(join(tmpdir(), "orca-memh-root-"));
+  const proc = Bun.spawn(["bun", join(import.meta.dir, "..", "scripts", "memory-harness.ts"), "--runs", "6", "--concurrency", "2", "--mb", "10", "--stalled", "2", "--root", root], {
     env: { ...process.env, NODE_ENV: "test" }, stdout: "pipe", stderr: "pipe",
   });
-  const [out, err] = [await new Response(proc.stdout).text(), await new Response(proc.stderr).text()];
-  expect(await proc.exited, err).toBe(0);
-  const report = JSON.parse(out.trim().split("\n").at(-1)!);
-  expect(report.statuses).toEqual({ done: 6 });
-  // Before: 60 MB of stdout went through, and the heap kept about all of it (plus the streams'
-  // backlog). Now a few MB stay.
-  expect(report.heapAfterMb).toBeLessThan(30);
-  expect(report.stalledStreamsOpen).toBe(0);
-  expect(report.runsBeforePrune).toBeGreaterThan(0);
-  expect(report.runsAfterPrune).toBe(0);
+  const kill = setTimeout(() => proc.kill("SIGKILL"), 55_000);
+  try {
+    const [out, err] = [await new Response(proc.stdout).text(), await new Response(proc.stderr).text()];
+    expect(await proc.exited, err).toBe(0);
+    const report = JSON.parse(out.trim().split("\n").at(-1)!);
+    expect(report.statuses).toEqual({ done: 6 });
+    expect(report.fakeScopes).toBe(6); // every run went through the fake systemd-run, none through the box's
+    // Before: 60 MB of stdout went through, and the heap kept about all of it (plus the streams'
+    // backlog). Now a few MB stay.
+    expect(report.heapAfterMb).toBeLessThan(30);
+    expect(report.stalledStreamsOpen).toBe(0);
+    expect(report.runsBeforePrune).toBeGreaterThan(0);
+    expect(report.runsAfterPrune).toBe(0);
+    // No fake claude outlives the harness.
+    expect(Bun.spawnSync(["pgrep", "-f", `${root}/orca-memh-bin-`]).stdout.toString().trim()).toBe("");
+  } finally {
+    clearTimeout(kill);
+    proc.kill("SIGKILL");
+    Bun.spawnSync(["pkill", "-KILL", "-f", `${root}/orca-memh-bin-`]);
+    await rm(root, { recursive: true, force: true });
+  }
 }, 60_000);
 
 let pg: TestDb;

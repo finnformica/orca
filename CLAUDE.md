@@ -490,8 +490,12 @@ when the board is stale ("Updated 3m ago" — a button: **Refresh everything**, 
 streams, usage, notifications, an open chat, cached review signals — re-runs at once, the icon spins until
 all settle, and past 15s it hard-reloads); an unreachable bridge shows the offline screen.
 
-There is no kanban Board view any more (its density setting went with it); the Agents list is the
-one view. A workstream still has a lane — **Local → Draft → In Review → Mergeable → Done·today** —
+**The Board** (`/board`, `views/Board.tsx`, the nav entry after Agents): the five lanes of cards,
+with the New-draft box pinned at the top of Local and a density toggle (`densityAtom`). #333 removed
+it; it is back as it was, with the shared `BulkActions`, `NewDraft`, `ConditionBadges` and
+`lib/workstreamHooks`. Settings' **Show Board view** sets `ui.showBoard` in the config document
+(`POST /api/config/ui`, on unless false) for every browser. Off, the nav entry is hidden and
+`/board` is replaced by `/agents`. The Agents list stays the main view. A workstream still has a lane — **Local → Draft → In Review → Mergeable → Done·today** —
 which the Agents chips, `detailPath` and the bulk verbs (`views/BulkActions.tsx`) read. A workstream
 is a branch; its lane (`store.laneFor`):
 - **open PR, draft** → Draft. **open PR, approved** → Mergeable. **open PR, else** → In Review.
@@ -1301,7 +1305,10 @@ orchestrator: all of its cwd's), never a browser server — plus `--disallowedTo
 mcp__playwright,mcp__chrome-devtools`. (2) `server/browserWatch.ts`: every 30 s the primary kills a
 browser or browser MCP server in `orca-agents.slice` outside orca-shot's scope and the test queue's
 `orca-heavy-*` slots, and records it on the card (`browserKilled`, a "Browser killed" pill) and as
-a step in the run's transcript. Until `bin/worker/orca-run` exists, a browser under `playwright
+a step in the run's transcript. The same pass kills an ORPHAN run scope: an `orca-run-<runId>.scope`
+that no lease file on this host names (a test's run with its own state dir), seen on two passes in a
+row. The `.heavy-shim` skips every directory with a `.heavy-shim` (two shim copies on PATH once
+exec'd each other forever) and exits 127 when only shims are left. Until `bin/worker/orca-run` exists, a browser under `playwright
 test` is kept as a test.
 **Screenshots in PRs and on the agent page** (`server/prShots.ts`): shots are not stored per turn —
 `workstreamShots` reads them off the branch's turns (reply + Verification). The newest
