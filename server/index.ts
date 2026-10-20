@@ -6,6 +6,7 @@ import * as git from "./git";
 import * as gh from "./gh";
 import * as agent from "./agent";
 import * as attachments from "./attachments";
+import * as voice from "./voice";
 import * as preview from "./preview";
 import * as forward from "./forward";
 import { reachable } from "./peer";
@@ -550,6 +551,12 @@ async function api(req: Request, url: URL): Promise<Response> {
       if (e instanceof attachments.AttachmentTooLarge) return json({ error: e.message }, 413);
       throw e;
     }
+  }
+  // Voice input (server/voice.ts): a recorded clip in, its transcript out. The OpenAI key stays on this
+  // bridge; the owner gate keeps anyone else on the network from spending it. Multipart, so here.
+  if (req.method === "POST" && p === "/api/voice/transcribe") {
+    const gate = await terminalOwner(req, cfg);
+    return gate ?? voice.handleTranscribe(req);
   }
   // One stored attachment's bytes, for the chat's thumbnail / file chip. Read from Postgres, so any
   // instance answers it whichever one took the upload. Served inline but sandboxed and never sniffed:
@@ -1099,6 +1106,8 @@ async function api(req: Request, url: URL): Promise<Response> {
       instance: db.instanceName(), instances: Object.keys(cfg.instances ?? {}),
       instanceHourlyUsd: cfg.instanceHourlyUsd ?? {},
       terminal: cfg.terminal ?? {},
+      // Whether this bridge holds a transcription key, so the composer shows its mic. Never the key.
+      voice: voice.voiceAvailable(),
       // Console options for every browser: the Board view is on unless the document says false.
       ui: { showBoard: cfg.ui?.showBoard !== false },
       // Each machine's address: the terminal panel connects to a machine's own bridge directly (a

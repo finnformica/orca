@@ -109,7 +109,7 @@ export type RepoInfo = {
 const q = (repo: string, extra = "") => `?repo=${encodeURIComponent(repo)}${extra}`;
 
 export const api = {
-  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; terminal?: Record<string, boolean>; ui?: { showBoard: boolean }; instanceUrls?: Record<string, string>; bridge?: BridgeInfo }> => get("/api/config").then(res),
+  config: (): Promise<{ repos: RepoInfo[]; staleHours: number; agentProviders: AgentProvider[]; apiPort: number; instance?: string; instances?: string[]; instanceHourlyUsd?: Record<string, number>; terminal?: Record<string, boolean>; voice?: boolean; ui?: { showBoard: boolean }; instanceUrls?: Record<string, string>; bridge?: BridgeInfo }> => get("/api/config").then(res),
   /** Settings' Machine cost: one instance's USD/hour; null clears it (back to the EC2 estimate / 0). */
   setInstanceRate: (instance: string, hourlyUsd: number | null): Promise<{ ok: true }> => post("/api/config/instance-rate", { instance, hourlyUsd }),
   setInstanceTerminal: (instance: string, on: boolean): Promise<{ ok: true }> => post("/api/config/terminal", { instance, on }),
@@ -280,5 +280,11 @@ export const api = {
     const form = new FormData();
     for (const f of files) form.append("files", f);
     return (await apiFetch("/api/attachments", { method: "POST", body: form }).then(res)).paths;
+  },
+  // A recorded clip → its transcript (server/voice.ts). The bridge holds the key.
+  transcribe: async (audio: Blob, name: string): Promise<string> => {
+    const form = new FormData();
+    form.append("audio", audio, name);
+    return (await apiFetch("/api/voice/transcribe", { method: "POST", body: form }).then(res)).text;
   },
 };
