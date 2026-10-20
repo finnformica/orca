@@ -582,6 +582,13 @@ dialog[data-bottom-sheet][data-closing]::backdrop {
   [data-slot="notification-toast"][data-swipe-out] { animation: none; }
 }
 
+/* The hover marquee (lib/marquee.ts, components/OverflowText.tsx) scrolls a `truncate` element's own
+   scrollLeft. Chrome keeps the ellipsis where it fell before the scroll, so the end never showed:
+   while it moves, the text clips at the box edge instead. */
+[data-marquee] {
+  text-overflow: clip !important;
+}
+
 /* The live activity block (views/Chat.tsx): a trail row fades and slides in (180ms); the header
    label swaps in TWO layers that run together, same duration and easing (220ms, LABEL_FADE_MS) —
    the old line translates up and out while it fades, the new line translates up and in while it
