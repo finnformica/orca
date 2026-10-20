@@ -1229,6 +1229,11 @@ back. A failed install or build never restarts the service — the old build kee
 log tail goes to `~/.orca/autodeploy.log` (one line per tick). Pause it with
 `systemctl stop orca-autodeploy.timer`; `deploy/bootstrap.sh` installs and enables it, scoped by
 `deploy/orca-autodeploy.sudoers` to exactly `systemctl restart orca` for the `orca` user.
+**A Mac updates itself the same way** (`deploy/install-local-autodeploy.sh`, docs/SETUP.md "Local
+machine"): a `dev.orca.bridge` LaunchAgent runs the BUILT bridge (not `bun run dev`, whose watch
+restarts the bridge on the pull, before install and build pass) and `dev.orca.autodeploy` runs the
+same `autodeploy.sh` each minute with `ORCA_AUTODEPLOY_MODE=launchd`: it skips a checkout off `main`
+or with uncommitted tracked changes, and restarts with `launchctl kickstart -k`.
 **Orphan reaper:** a preview that dies with a bridge crash, a reaped worktree, or a worker's own
 test run leaves its `orca_*` database behind — nothing else drops it, and the box had 8 of them
 (~6.6 GB) accumulate before `server/preview.ts`'s `reap()` existed. It runs at startup and hourly
