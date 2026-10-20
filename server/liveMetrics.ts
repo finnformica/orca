@@ -12,6 +12,7 @@ import { parseProcStat, type ProcStatTimes } from "./health";
 import * as cgroup from "./cgroup";
 import * as heavy from "./heavy";
 import { run } from "./run";
+import { statePath, writeJsonSync, readJsonSync } from "./state";
 import { machineSummary, type MachineReport } from "../web/src/workstream";
 
 export const LIVE_SAMPLE_MS = 15_000;
@@ -265,9 +266,63 @@ export function pushLive(sample: LiveSample, window = LIVE_WINDOW_MS): void {
   if (i) ring = ring.slice(i);
 }
 
+// ---- persisting the ring across a restart (~/.orca/live-ring.json) ----
+// The ring was in memory only: every deploy, every crash, lost the whole 6-hour chart (`orca machine`
+// said "1 h covers only 11 min (the bridge restarted since)" seconds after a routine restart). No
+// migration for this — it is operational state like the lease and the ledger (CLAUDE.md): advisory,
+// kept out of every worktree, and a missing or corrupt file just means starting empty, same as
+// before. A real gap in the samples (the bridge really was down) needs no special drawing: it is a
+// gap in `at`, and `stackRuns` already breaks the chart's area there instead of bridging it.
+
+const LIVE_RING_FILE = "live-ring.json";
+export const liveRingPath = (): string => statePath(LIVE_RING_FILE);
+export const LIVE_RING_SAVE_INTERVAL_MS = 60_000;
+
+function isLiveSample(v: unknown): v is LiveSample {
+  if (!v || typeof v !== "object") return false;
+  const s = v as Record<string, unknown>;
+  return Number.isFinite(s.at) && Number.isFinite(s.work) && Number.isFinite(s.iowait) &&
+    Number.isFinite(s.load1) && Number.isFinite(s.memUsedGb) && Number.isFinite(s.memCacheGb);
+}
+
+/** Save the ring to disk (atomic write). A failure is logged and swallowed — the cache is advisory,
+ *  like the lease and the ledger: losing it loses only the restart gap, never a live sample. */
+export function saveLiveRing(path = liveRingPath()): void {
+  try { writeJsonSync(path, { samples: ring }); } catch (e) {
+    console.error(`orca: failed to save the live-metrics ring: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/** The samples a prior `saveLiveRing` left, dropping anything outside the 6-hour window and anything
+ *  malformed, kept to the 15 s step and sorted by time. Missing or corrupt file: no samples, never
+ *  throws — same contract as `readJsonSync`. */
+export function loadLiveRing(path = liveRingPath(), now = Date.now(), window = LIVE_WINDOW_MS): LiveSample[] {
+  const raw = readJsonSync<{ samples?: unknown[] }>(path);
+  const samples = Array.isArray(raw?.samples) ? raw.samples : [];
+  const cut = now - window;
+  return samples.filter(isLiveSample).filter((s) => s.at >= cut).sort((a, b) => a.at - b.at);
+}
+
+/** Restore the ring from disk before the sampler starts ticking, so a restart keeps up to 6 hours of
+ *  history instead of starting empty. */
+export function restoreLiveRing(path = liveRingPath(), now = Date.now()): void {
+  ring = loadLiveRing(path, now);
+}
+
+let lastRingSaveAt = -Infinity; // so the very first tick always saves, whatever `now`'s scale is
+
+/** Save the ring at most once a minute — called after every tick. A write on every 15 s tick would
+ *  cost nothing the chart needs: losing the newest minute on a crash is an acceptable gap. */
+export function maybeSaveLiveRing(now = Date.now()): void {
+  if (now - lastRingSaveAt < LIVE_RING_SAVE_INTERVAL_MS) return;
+  lastRingSaveAt = now;
+  saveLiveRing();
+}
+
 /** Start the 15 s sampler. Every bridge runs it (preview bridges too): on Linux it only reads /proc,
- *  on macOS it spawns one small command a tick. */
+ *  on macOS it spawns one small command a tick. Restores the ring from disk first. */
 export function startLiveSampler(ms = LIVE_SAMPLE_MS, platform = process.platform): ReturnType<typeof setInterval> {
+  restoreLiveRing();
   const s: { tick(): LiveSample | undefined | Promise<LiveSample | undefined> } = platform === "darwin" ? createDarwinSampler() : createLiveSampler();
   let busy = false;
   const tick = async () => {
@@ -275,7 +330,7 @@ export function startLiveSampler(ms = LIVE_SAMPLE_MS, platform = process.platfor
     busy = true;
     try {
       const v = await s.tick();
-      if (v) pushLive(v);
+      if (v) { pushLive(v); maybeSaveLiveRing(v.at); }
     } catch (e) {
       console.error(`orca: live metrics sample failed: ${e instanceof Error ? e.message : e}`);
     } finally { busy = false; }
@@ -325,5 +380,5 @@ export function withLiveCpu<T extends { cpuPct: number; iowaitPct?: number }>(h:
 }
 export const newestLive = (): LiveSample | undefined => ring[ring.length - 1];
 
-/** Tests: empty the ring. */
-export function resetLive(): void { ring = []; ooms = 0; }
+/** Tests: empty the ring and the save throttle. */
+export function resetLive(): void { ring = []; ooms = 0; lastRingSaveAt = -Infinity; }
