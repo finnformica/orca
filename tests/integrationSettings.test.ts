@@ -11,9 +11,9 @@ import * as registry from "../server/integrations/registry";
 import * as router from "../server/integrations/router";
 import * as store from "../server/integrations/store";
 import type { Adapter } from "../server/integrations/adapter";
-import { CATCH_ALL_SEND_ERROR, type Capabilities, type OutboundMessage, type SendResult } from "../shared/integrations";
+import { CATCH_ALL_POST_ERROR, CATCH_ALL_SEND_ERROR, catchAllPostRefusal, type Capabilities, type OutboundMessage, type SendResult } from "../shared/integrations";
 import {
-  healthLine, healthTone, integrationProblem, linkProblem, parseFilter, span, targetLabel,
+  healthLine, healthTone, identityLabel, identityProblem, integrationProblem, linkProblem, parseFilter, span, targetLabel,
   type IntegrationCard,
 } from "../shared/integrationSettings";
 import { native } from "./happydom";
@@ -57,6 +57,33 @@ describe("decisions (pure)", () => {
     expect(parseFilter("repo=orca, adapter=slack")).toEqual({ repo: "orca", adapter: "slack" });
     expect(parseFilter("")).toEqual({});
     expect(parseFilter("team=x")).toBeUndefined();
+  });
+
+  test("identities: a label per platform, the Add identity checks", () => {
+    const kinds = [{ kind: "discord", label: "Discord" }, { kind: "slack", label: "Slack" }, { kind: "email", label: "Email" }];
+    expect(identityLabel({ adapter: "discord", externalId: "1234", name: "saajan" }, kinds)).toBe("Discord @saajan");
+    expect(identityLabel({ adapter: "slack", externalId: "U1", name: "@ana" }, kinds)).toBe("Slack @ana");
+    expect(identityLabel({ adapter: "email", externalId: "ana@example.com", name: "Ana" }, kinds)).toBe("Email ana@example.com");
+    expect(identityLabel({ adapter: "discord", externalId: "1234" }, kinds)).toBe("Discord 1234");
+    expect(identityLabel({ adapter: "linear", externalId: "u9", name: "bo" })).toBe("Linear @bo");
+    expect(identityProblem({ principal: "ana", adapter: "slack", externalId: "U1" }, ["slack"])).toBeUndefined();
+    expect(identityProblem({ principal: "", adapter: "slack", externalId: "U1" }, ["slack"])).toBe("pick a person");
+    expect(identityProblem({ principal: "ana", adapter: "irc", externalId: "U1" }, ["slack"])).toContain("adapter");
+    expect(identityProblem({ principal: "ana", adapter: "slack", externalId: " " }, ["slack"])).toContain("platform id");
+  });
+
+  test("catch-all posts: --channel names the place; a bare post and --channel on a channel link are refused; an outside wake keeps to its place", () => {
+    const all = { id: "discord-all", externalId: "*" }, chan = { id: "eng", externalId: "C1" };
+    expect(catchAllPostRefusal(all, {})).toBe(CATCH_ALL_POST_ERROR);
+    expect(catchAllPostRefusal(all, { reply: true })).toBeUndefined();
+    expect(catchAllPostRefusal(all, { channel: "C9" })).toBeUndefined();
+    expect(catchAllPostRefusal(all, { channel: "C9", grant: { level: "full", repos: [] } })).toBeUndefined();
+    expect(catchAllPostRefusal(chan, {})).toBeUndefined();
+    expect(catchAllPostRefusal(chan, { channel: "C9" })).toContain("only with a catch-all link");
+    const grant = { level: "admin" as const, repos: ["r"], linkId: "discord-all" };
+    expect(catchAllPostRefusal(all, { channel: "C9", grant, wakeReplyTo: { linkId: "discord-all", channel: "C1" } })).toContain("posts only where the message came from");
+    expect(catchAllPostRefusal(all, { channel: "C1", grant, wakeReplyTo: { linkId: "discord-all", channel: "C1" } })).toBeUndefined();
+    expect(catchAllPostRefusal(all, { channel: "T1", grant, wakeReplyTo: { linkId: "discord-all", channel: "C1", threadId: "T1" } })).toBeUndefined();
   });
 
   test("labels", () => {
@@ -125,7 +152,7 @@ describe("with Postgres", () => {
     expect(off.links).toHaveLength(1);
   });
 
-  test("a catch-all link only receives: Test and a subscription to it fail at once, with no delivery row", async () => {
+  test("a catch-all link names no channel: Test and a subscription to it fail at once, with no delivery row", async () => {
     await connect();
     await admin.route("/api/integrations/links/save", { id: "all", integrationId: "chat", externalId: "*", label: "All channels and DMs", level: "ask", repos: [], requireMention: true });
     await expect(admin.route("/api/integrations/links/test", { id: "all" })).rejects.toThrow(CATCH_ALL_SEND_ERROR);
@@ -177,7 +204,11 @@ describe("with Postgres", () => {
     await store.approvePairing(p!.code, { id: "saajan", name: "Saajan", maxLevel: "ask" });
     const o = await admin.overview("local");
     expect(o.pairings).toEqual([]);
-    expect(o.people).toEqual([{ id: "saajan", name: "Saajan", maxLevel: "ask", identities: [{ adapter: "fakechat", externalId: "U9" }] }]);
+    expect(o.people).toEqual([{ id: "saajan", name: "Saajan", maxLevel: "ask", identities: [{ adapter: "fakechat", externalId: "U9", name: "Saajan" }] }]);
+    // An identity paired before the name column: the named step fills it from the approved code.
+    const step = db.MIGRATIONS.find((m) => m.name === "20261020-show-identity-name")!;
+    await db.withRetry(async (sql) => { await sql`UPDATE identity SET name = NULL`; await sql.unsafe(step.sql); await sql.unsafe(step.sql); });
+    expect((await admin.overview("local")).people[0]!.identities).toEqual([{ adapter: "fakechat", externalId: "U9", name: "Saajan" }]);
     expect(await router.ingest("chat", msg("e2"))).toBe("new");
     expect((await store.event("fakechat:e2"))!.grant).toMatchObject({ level: "ask", principalId: "saajan" }); // min(work link, ask person)
     expect((await admin.overview("local")).integrations[0]!.lastEventAt).toBeGreaterThan(0);
@@ -199,6 +230,26 @@ describe("with Postgres", () => {
     await admin.route("/api/integrations/people/remove", { id: "saajan" });
     expect((await admin.overview("local")).people).toEqual([]);
     expect(await router.ingest("chat", msg("e3"))).toBe("rejected");
+  });
+
+  test("people are global: Add identity binds ids on several adapters to one person, and a message from any of them gets that person's level", async () => {
+    await connect();
+    await admin.route("/api/integrations/people/save", { id: "ana", name: "Ana", maxLevel: "admin" });
+    await admin.route("/api/integrations/identities/add", { principal: "ana", adapter: "fakechat", externalId: "U5", name: "@ana" });
+    await admin.route("/api/integrations/identities/add", { principal: "ana", adapter: "slack", externalId: "US1", name: "ana.s" });
+    await admin.route("/api/integrations/identities/add", { principal: "ana", adapter: "email", externalId: "ana@example.com" });
+    await expect(admin.route("/api/integrations/identities/add", { principal: "nobody", adapter: "slack", externalId: "US2" })).rejects.toThrow("no person nobody");
+    await expect(admin.route("/api/integrations/identities/add", { principal: "ana", adapter: "irc", externalId: "x" })).rejects.toThrow("adapter");
+    const [ana] = (await admin.overview("local")).people;
+    expect(ana).toEqual({ id: "ana", name: "Ana", maxLevel: "admin", identities: [
+      { adapter: "email", externalId: "ana@example.com" }, { adapter: "fakechat", externalId: "U5", name: "ana" }, { adapter: "slack", externalId: "US1", name: "ana.s" },
+    ] });
+    // The gate trusts the hand-added identity: min(work link, admin person) = work.
+    expect(await router.ingest("chat", { key: "fakechat:a1", topic: "ext.fakechat.message", at: Date.now(), source: { adapter: "fakechat", channel: "R1" }, actor: { external: { adapter: "fakechat", id: "U5" } }, mentioned: true, text: "status?" })).toBe("new");
+    expect((await store.event("fakechat:a1"))!.grant).toMatchObject({ level: "work", principalId: "ana" });
+    // A pairing approval with no name keeps the name added by hand.
+    await admin.route("/api/integrations/identities/add", { principal: "ana", adapter: "fakechat", externalId: "U5" });
+    expect((await admin.overview("local")).people[0]!.identities[1]).toEqual({ adapter: "fakechat", externalId: "U5", name: "ana" });
   });
 
   test("subscriptions: add with a filter, route an event, remove; removing a link or integration takes its subscriptions", async () => {

@@ -14,8 +14,8 @@
 // On a phone (below md) each row stacks — title and status, then where it runs —
 // with every action in its one ⋯ menu, and the chips and sort move into a Filters bottom sheet
 // beside the search box.
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
-import { ThreadChips } from "@/components/SourceChip";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
+import { ThreadChips, useThreadSources } from "@/components/SourceChip";
 import { useAtom, useAtomValue } from "jotai";
 import { ArrowDown, GitPullRequest, ListFilter, Loader2, Search, X } from "lucide-react";
 import { agentQueryAtom, instanceScopeAtom, repoFilterAtom } from "@/lib/atoms";
@@ -28,8 +28,8 @@ import { BottomSheet } from "@/components/BottomSheet";
 import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useReposLoaded, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
 import {
   DEFAULT_LIST_FILTER, detailPath, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, dropStaleRepos, filterRows, prPill,
-  LIST_ITEM_GAP_PX, NO_FOLD, browserKillLabel, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowInstance, rowTone, sortRows, sublineOverflow, toggleNotMerged, toggleQuick,
-  type ListColumn, type ListFold, type ListSort, type ListWidths, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
+  LIST_ITEM_GAP_PX, NO_FOLD, browserKillLabel, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowInstance, rowTone, sortRows, sublineDots, sublineOverflow, toggleNotMerged, toggleQuick,
+  type ListColumn, type ListFold, type ListSort, type ListWidths, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone, type SublineSepItem,
 } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
@@ -464,6 +464,9 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
   const [terminalOpen, setTerminalOpen] = useTerminalOpen(row); // "New chat" pops its conversation open on arrival
   const tone = rowTone(row);
   const reasons = attentionReasons(row);
+  // Hoisted (not left to ThreadChips' own hook) so the subline knows, before it renders, whether
+  // the chip will draw anything — an item that renders nothing must not be in the dot-joined list.
+  const threadSources = useThreadSources(row.repo, row.branch);
   const multiInstance = instanceChoices().length > 1; // instance is a phone-only subline detail, not its own column
   const instance = rowInstance(row, thisInstance());
   const to = detailPath(row);
@@ -512,6 +515,20 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
   prItems.push({ key: "state", sep: "none", part: "pr", node: pill.tooltip ? <Tip label={pill.tooltip}><Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill></Tip> : <Pill tone={pill.tone} slot="state-pill">{pill.label}</Pill> });
   if (prLink) prItems.push({ key: "pr", sep: "none", part: "pr", node: prLink });
   if (fold.pr) prItems.push(...signals);
+  // The stacked (phone) row's own meta line — branch/model/PR/preview/diffstat/instance — dot-joined
+  // the same way the desktop Subline is: an item that would render nothing (an empty ThreadChips) is
+  // left out of the array entirely, and sublineDots resolves the rest so the line never starts or
+  // ends with "·" and never doubles one up (Finn, #397).
+  const metaItems: (SublineSepItem & { key: string; node: ReactNode })[] = [
+    threadSources.length > 0 && { key: "threads", sep: "none" as const, node: <ThreadChips repo={row.repo} branch={row.branch} /> },
+    { key: "branch", node: <span className="min-w-0 font-mono break-all">{row.branch}</span> },
+    model && { key: "model", node: <span data-slot="model-label">{model.label}</span> },
+    prLink && { key: "pr", sep: "none" as const, node: prLink },
+    !isDone && { key: "preview", sep: "none" as const, node: <PrPreviewInline row={row} /> },
+    diffstat && { key: "diffstat", node: diffstat },
+    instance && multiInstance && { key: "instance", node: <span data-slot="instance-chip">{instance}</span> },
+  ].filter(Boolean) as (SublineSepItem & { key: string; node: ReactNode })[];
+  const metaDots = sublineDots(metaItems);
   if (stacked) return (
     // A phone (or a narrow list): a taller, card-like row with no fixed-width columns — everything wraps instead of
     // scrolling sideways. Line 1 is title + status; line 2 is branch/model/PR/preview/diffstat. The
@@ -532,16 +549,18 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
       <div className="min-w-0 flex-1 space-y-1.5">
         <div role="cell" className="flex min-w-0 items-center justify-between gap-2">
           <span className="flex min-w-0 items-center gap-1.5"><RepoBadge repo={row.repo} /><span className="min-w-0 truncate font-medium">{row.title}</span><VerifiedBadge row={row} /></span>
-          <RunStatus row={row} tone={tone} reasons={reasons} />
+          {/* No elapsed/duration here (StatusDuration): a stacked row is tight on width, and the
+              dot + label alone already say what the status card explains in full on hover/tap. */}
+          <StatusLabel row={row} tone={tone} />
         </div>
         <div role="cell" className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
-          <ThreadChips repo={row.repo} branch={row.branch} />
-          <span aria-hidden="true">·</span><span className="min-w-0 font-mono break-all">{row.branch}</span>
-          {model && <><span aria-hidden="true">·</span><span data-slot="model-label">{model.label}</span></>}
-          {prLink}
-          {!isDone && <PrPreviewInline row={row} />}
-          {diffstat && <><span aria-hidden="true">·</span>{diffstat}</>}
-          {instance && multiInstance && <><span aria-hidden="true">·</span><span data-slot="instance-chip">{instance}</span></>}
+          {metaItems.map((i, idx) => (
+            <Fragment key={i.key}>
+              {metaDots[idx]!.before && <span aria-hidden="true">·</span>}
+              {i.node}
+              {metaDots[idx]!.after && <span aria-hidden="true">·</span>}
+            </Fragment>
+          ))}
         </div>
         {/* No description lines here (the orchestrator's plan, a grant): a stacked row keeps its chips only. */}
         {!isDone && <UpkeepNote upkeep={row.upkeep} running={row.agentStatus === "running"} />}
@@ -576,7 +595,9 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
           // elapsed time/duration does NOT fold with it: the status hover card shows it beside its header.
           fold.status && { key: "status", sep: "after", node: <StatusLabel row={row} tone={tone} /> },
           ...(fold.pr ? prItems.map((i, k) => (k === prItems.length - 1 ? { ...i, sep: "after" as const } : i)) : []),
-          { key: "threads", sep: "none", node: <ThreadChips repo={row.repo} branch={row.branch} iconOnly /> },
+          // Gated on there being a thread to show: an empty ThreadChips must not occupy a slot, or
+          // the dot meant for the item after it would land with nothing before it (Finn, #397).
+          threadSources.length > 0 && { key: "threads", sep: "none", node: <ThreadChips repo={row.repo} branch={row.branch} iconOnly /> },
           model && { key: "model", node: <Tip label={model.title}><span data-slot="model-label">{model.label}</span></Tip> },
           !isDone && { key: "preview", sep: "none", node: <PrPreviewInline row={row} /> },
           diffstat && { key: "diffstat", node: diffstat },
@@ -641,14 +662,15 @@ function Subline({ items, slot = "row-subline", className = "" }: { items: (Subl
   }, [keys]);
   const dot = <span aria-hidden="true">·</span>;
   const over = list.filter((i) => hidden.includes(i.key));
+  const dots = sublineDots(list);
   return (
     // relative + overflow-hidden: a hidden item is drawn out of the flow and never over the next cell.
     <div ref={ref} data-slot={slot} data-overflow-line="" className={`text-muted-foreground relative flex min-w-0 items-center gap-1 overflow-hidden text-xs whitespace-nowrap ${className}`}>
-      {list.map((i) => (
+      {list.map((i, idx) => (
         <span key={i.key} data-subline-item={i.key} data-slot={i.key === "status" ? "folded-status" : undefined}
           aria-hidden={hidden.includes(i.key) || undefined} data-col-part={i.part}
           className={`flex shrink-0 items-center gap-1 ${hidden.includes(i.key) ? "invisible absolute top-0 left-0" : ""}`}>
-          {(i.sep ?? "before") === "before" && dot}{i.node}{i.sep === "after" && dot}
+          {dots[idx]!.before && dot}{i.node}{dots[idx]!.after && dot}
         </span>
       ))}
       {over.length > 0 && <SublineMore items={over} />}

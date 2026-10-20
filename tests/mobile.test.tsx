@@ -307,14 +307,20 @@ describe("the phone layout (390px, touch)", () => {
     expect(row.querySelector('[class*="min-w-["]')).toBeNull();
     const cells = [...row.querySelectorAll('[role="cell"]')];
     const [line1, line2, line3] = cells;
-    // Line 1: title and status share the row.
+    // Line 1: title and status share the row. Just the dot + label — no elapsed/duration text
+    // (Finn: it crowded the row; StatusDuration is desktop-only on a stacked row).
     expect(line1!.textContent).toContain("feat wide");
-    expect(line1!.querySelector('[data-slot="run-status"]')).not.toBeNull();
+    expect(line1!.querySelector('[data-slot="status-dot"]')).not.toBeNull();
+    expect(line1!.querySelector('[data-slot="elapsed"]')).toBeNull();
     // Line 2: branch, model, PR, preview info, diffstat — none of that spills into line 1 or line 3.
     expect(line2!.textContent).toContain("feat-wide");
     expect(line2!.querySelector('a[data-slot="pr-link"]')).not.toBeNull();
     expect(line2!.querySelector('[data-slot="pr-preview-inline"]')).not.toBeNull();
     expect(line2!.querySelector('[data-slot="diffstat"]')!.textContent).toBe("+42 −9");
+    // No thread links in this fixture, so ThreadChips renders nothing: the line must start with the
+    // branch, never a stray "·" left over from the empty chip before it (Finn, #397).
+    expect(line2!.textContent!.trim().startsWith("·")).toBe(false);
+    expect(line2!.textContent).not.toContain("· ·");
     expect(line1!.querySelector('[data-slot="diffstat"]')).toBeNull();
     expect(line2!.querySelector('[data-slot="state-pill"]')).toBeNull();
     // The state pill and PR condition badges are their own wrapping line, after line 2.
@@ -326,6 +332,18 @@ describe("the phone layout (390px, touch)", () => {
     const menuButton = row.querySelector<HTMLElement>('button[aria-label="Actions"]')!;
     expect(menuButton.closest('[class*="absolute"]')).toBeNull();
     expect(line3!.contains(menuButton)).toBe(true);
+  });
+
+  test("Agents at 390px: a running row's status line keeps the spinner and label, but drops the elapsed time", async () => {
+    await mount("/agents", true);
+    apiFake.agentsData = [{ branch: "feat-phone", worktreePath: "/wt/feat-phone", agentStatus: "running", agentStartedAt: Date.now() - 65_000 }];
+    await act(async () => { await store.refresh(); await flush(); await flush(); });
+    const row = $('[data-branch="feat-phone"]')!;
+    const line1 = row.querySelectorAll('[role="cell"]')[0]!;
+    expect(line1.querySelector('[data-slot="run-spinner"]')).not.toBeNull();
+    expect(line1.textContent).toContain("Running");
+    expect(line1.querySelector('[data-slot="elapsed"]')).toBeNull();
+    expect(line1.textContent).not.toMatch(/\d+:\d\d/); // no "1:05"-style duration beside the label
   });
 
   test("Agents at 390px: quick actions + ⋯ sit on the badges line, not a squeezing trailing column", async () => {

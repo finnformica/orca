@@ -3,6 +3,11 @@
 // place of the old separate repo text/column (Board's Eyebrow, the Agents subline's "repo" item).
 // Its colour is a stable hash of the repo name, from a fixed pastel palette. The pure model first,
 // then its position against the fake api in a real DOM.
+//
+// Finn's phone report on PR #392: the badge squished to "branch-d" while the title still had room,
+// and two repos (site-templates, ruminate) shared a tone on the old six-colour palette. The badge
+// now never shrinks (title gives up room first) and the palette grew to 14-16 tones with a better-
+// spread hash. The elapsed-status-time fix (dropped on a stacked/phone row) is tests/mobile.test.tsx's.
 import { afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -28,6 +33,25 @@ describe("repo badge colour (pure)", () => {
     const names = ["orca", "branch-demo", "site-templates", "chorus-server", "finnformica"];
     const tones = new Set(names.map(repoBadgeToneIndex));
     expect(tones.size).toBeGreaterThan(1); // not every name hashing to the same slot
+  });
+
+  test("grown to 14-16 soft pastel tones, each with a readable light- and dark-mode text shade", () => {
+    expect(REPO_BADGE_TONES.length).toBeGreaterThanOrEqual(14);
+    expect(REPO_BADGE_TONES.length).toBeLessThanOrEqual(16);
+    for (const tone of REPO_BADGE_TONES) {
+      expect(tone).toMatch(/^bg-\S+\/(?:15|20) text-\S+/); // a soft (15-20%) fill, a readable text shade
+      expect(tone.includes("dark:text-") || /text-geist-(blue|green|warning-fg)$/.test(tone)).toBe(true);
+    }
+  });
+
+  test("the board's own repos no longer collide — the old six-tone, djb2-ish hash gave site-templates and ruminate the same colour", () => {
+    const repos = ["orca", "site-templates", "ruminate", "smfstudio", "agency-tooling", "flowerbox254"];
+    const indexes = repos.map(repoBadgeToneIndex);
+    expect(new Set(indexes).size).toBe(repos.length);
+    for (const i of indexes) {
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(i).toBeLessThan(REPO_BADGE_TONES.length);
+    }
   });
 });
 
@@ -70,6 +94,13 @@ describe("repo badge position and styling", () => {
     for (const cls of repoBadgeTone("r").split(" ")) expect(repoBadge.className).toContain(cls);
     // No separate repo text in the subline any more.
     expect(row.querySelector('[data-slot="row-subline"]')!.textContent).not.toContain("r·");
+    // The badge never shrinks away (shrink-0): the title beside it gives up its own room instead,
+    // via its own `truncate`. A max-width is only a last-resort cap at the row's own width — not a
+    // small fixed one like the old max-w-28 that squished "branch-demo" down to "branch-d".
+    expect(tip.className).toContain("shrink-0");
+    expect(tip.className).not.toContain("shrink-[");
+    expect(tip.className).toContain("max-w-full");
+    expect(tip.className).not.toMatch(/max-w-\d/);
   });
 
   test("the Agents stacked/phone row: the badge leads the title there too", async () => {

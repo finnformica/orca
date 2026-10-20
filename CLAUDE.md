@@ -206,7 +206,7 @@ plus allow and deny rules — files in the worktree, git and the toolchain, no s
 `--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).
 Only a wake whose every message is yours clears it on a steer; `orca status --clear-grant` clears it. An unknown sender gets a one-time
 pairing code (`pairing_code`; approve with `POST /api/integrations/pairing/approve`). The orchestrator
-has `orca channels`, `post`, `thread link` and `ask-user`. A subscription's `digest_seconds` batches
+has `orca channels`, `post`, `thread link` and `ask-user`. A catch-all link (`*`) posts to any channel or thread the bot can see with `orca post --link <id> --channel <id> [--thread <id>]` (`catchAllPostRefusal`: a bare post is refused, an outside wake posts only where its message came from), so no channel link is made only to post. People are global: the Integrations page lists them first, with their identities on every adapter (`identity.name`, named step `20261020-show-identity-name`). A subscription's `digest_seconds` batches
 its deliveries per fixed window (`delivery.digest_key`). `/api/slack` still posts at once as
 you (`postAsUser`), not through the queue; `/api/orchestrator/event` stays for instance-to-instance
 reports, scripts use a signed webhook (`/api/integrations/<id>/inbound`).

@@ -620,9 +620,27 @@ export const replyToOf = (e: Pick<Envelope, "key" | "source" | "thread">): Reply
 // ── The catch-all link ───────────────────────────────────────────────────────────────────────────
 
 /** A catch-all link's external id: it takes in every place its integration hears (DMs, a bot's every
- *  channel). It names no place, so nothing can post to it — a reply goes to the DM it came from. */
+ *  channel). It names no place itself: a reply goes to the DM or channel it came from, and `orca post`
+ *  names the channel (`--channel <id>`). A subscription or a Test has no channel, so they refuse it. */
 export const CATCH_ALL = "*";
-export const CATCH_ALL_SEND_ERROR = "a catch-all link (external id *) only receives: it names no channel to post to. Link a channel and post there.";
+export const CATCH_ALL_SEND_ERROR = "a catch-all link (external id *) names no channel to post to. Post with orca post --link <id> --channel <channel id>, or link the channel.";
+/** `orca post --link <catch-all>` with no `--channel` and no `--reply`. */
+export const CATCH_ALL_POST_ERROR = "a catch-all link (external id *) names no channel: add --channel <channel id> [--thread <thread id>], or answer with --reply";
+/** Why `orca post` cannot post on `link` with `--channel`, or undefined. A catch-all link posts to
+ *  any channel or thread the bot can see, named by `--channel`; the grant is the catch-all link's.
+ *  A bare post (no channel, no reply) is refused, and `--channel` on a link that names its own place
+ *  is refused. A wake from an outside message posts only where that message came from. Pure. */
+export function catchAllPostRefusal(link: { id: string; externalId: string }, o: { channel?: string; reply?: boolean; grant?: Grant | null; wakeReplyTo?: ReplyTo | null }): string | undefined {
+  const all = link.externalId === CATCH_ALL;
+  if (o.channel && !all) return `--channel works only with a catch-all link: ${link.id} already posts to ${link.externalId}`;
+  if (!all || o.reply) return undefined;
+  if (!o.channel) return CATCH_ALL_POST_ERROR;
+  if (o.grant && o.grant.level !== "full" && o.channel !== o.wakeReplyTo?.channel && o.channel !== o.wakeReplyTo?.threadId) {
+    return `refused: a wake from an outside message posts only where the message came from (use --reply), not to channel ${o.channel}`;
+  }
+  return undefined;
+}
+
 /** True for a link target with no place to post to. Pure. */
 export const sendsToCatchAll = (t: DeliveryTarget): boolean => t.kind === "link" && t.externalId === CATCH_ALL;
 
