@@ -61,8 +61,12 @@ export function canMerge(s: PrStatusLike): boolean {
  *  the final arbiter — it recomputes and errors clearly if the PR truly can't merge. Approval is
  *  deliberately NOT required here — GitHub branch protection enforces required reviews on its side,
  *  so this lets an owner merge their own PR (which GitHub won't let them self-approve) on an
- *  unprotected repo, while a protected team repo still rejects the unapproved `gh pr merge`. */
-export function mergeSafe(s: PrStatusLike): boolean {
+ *  unprotected repo, while a protected team repo still rejects the unapproved `gh pr merge`.
+ *  Takes just `mergeable` + `ciStatus` (not the full `PrStatusLike`) so a board row — which has
+ *  those two fields but not `state`/`reviewStatus` — can reuse this directly (see `quickActions`,
+ *  `workstreamMenu`): the same rule `server/gh.ts`'s `enableAutoMerge` uses to decide its clean-status
+ *  fallback, so the UI never offers a button GitHub would refuse and merge instead. */
+export function mergeSafe(s: Pick<PrStatusLike, "mergeable" | "ciStatus">): boolean {
   return s.mergeable !== "CONFLICTING" && ciOk(s.ciStatus);
 }
 
@@ -4121,7 +4125,10 @@ export function reviewProblems(d: Pick<ReviewDigest, "severe" | "human">): numbe
  *  4/5. Open, not approved, nothing worse than nits / info-level bot threads → Send to Slack (Bump
  *     on Slack once posted, its tooltip saying when) + auto-merge (rule 7). Still shown while an
  *     agent runs (rule 8).
- *  6. Approved (or the Mergeable lane) with nothing outstanding → Merge + auto-merge.
+ *  6. Approved (or the Mergeable lane) with nothing outstanding → Merge + auto-merge — unless it is
+ *     already safe to merge right now (rule 7a): then Merge alone, because GitHub refuses to ARM
+ *     auto-merge on a PR this clean and merges it instead (the clean-status fallback in
+ *     `server/gh.ts`), so a second "Enable auto-merge" button there would quietly just merge too.
  *  7. Auto-merge: Enable auto-merge (GitHub's), or — once GitHub has it on — Disable auto-merge
  *     drawn lit, its tooltip saying it merges once checks and reviews pass. A PR on Orca's own merge
  *     queue shows the same lit icon, disabled (a non-clickable indicator; `orca merge --cancel`
@@ -4142,12 +4149,18 @@ export function quickActions(row: QuickActionRow, ctx: QuickActionContext): Quic
   if (row.isDraft) return [{ id: "markReady", label: "Ready for review" }, ...(problem ? [address] : [])];
   if (problem) return [address];
 
+  const autoMergeOn = row.autoMergeEnabled || row.mergeWhenGreen;
   const autoMerge: QuickAction = row.autoMergeEnabled
     ? { id: "disableAutoMerge", label: "Disable auto-merge", on: true, tip: "Auto-merge on — GitHub merges it once checks and reviews pass. Click to turn it off" }
     : row.mergeWhenGreen
       ? { id: "autoMerge", label: "Auto-merge on", on: true, disabled: "Auto-merge on — Orca's merge queue merges it once checks pass and it merges clean" }
       : { id: "autoMerge", label: "Enable auto-merge", tip: "Enable auto-merge — GitHub merges it once checks and reviews pass" };
-  if (row.reviewStatus === "approved" || row.lane === "MERGEABLE") return [{ id: "merge", label: "Merge" }, autoMerge];
+  if (row.reviewStatus === "approved" || row.lane === "MERGEABLE") {
+    // Already safe to merge (no conflict, CI not pending — `problem` above ruled out a conflict or
+    // failing CI) and not yet armed or queued: offer Merge alone, not a disguised second Merge button.
+    const alreadySafe = !autoMergeOn && mergeSafe({ mergeable: row.mergeable ?? "UNKNOWN", ciStatus: row.ciStatus ?? "none" });
+    return alreadySafe ? [{ id: "merge", label: "Merge" }] : [{ id: "merge", label: "Merge" }, autoMerge];
+  }
   const out: QuickAction[] = [];
   if (ctx.slackChannel) {
     const posted = row.slackNotifiedAt ? Date.parse(row.slackNotifiedAt) : NaN;

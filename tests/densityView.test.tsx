@@ -53,14 +53,16 @@ const labelledBtn = (label: string) => [...container!.querySelectorAll("button")
 describe("dense view", () => {
   test("comfortable (default) shows the prompt, diffstat and full labelled actions", async () => {
     apiFake.summaryData = { files: [{}, {}], commits: [{}], additions: 12, deletions: 3 };
-    await mount({ ...base, lane: "MERGEABLE", reviewStatus: "approved" });
+    // CI still pending: not yet safe to merge, so Enable auto-merge has something to arm (and shows
+    // beside Merge) — a clean PR instead hides it (tests/workstreamMenu.test.tsx, tests/quickActions.test.ts).
+    await mount({ ...base, lane: "MERGEABLE", reviewStatus: "approved", ciStatus: "pending" });
     expect(container!.textContent).toContain("Make the board denser"); // prompt
     expect(container!.textContent).toContain("2 files"); // diffstat
     // Labelled toolbar (text buttons), not icon-only.
     expect(labelledBtn("Follow up")).toBe(true);
     expect(container!.textContent).toContain("Test on"); // "Test on <instance>" now that previews can be placed (the fake config has two instances)
-    // Approved and clean: the state-aware quick actions (workstream.quickActions) — icon-only with a
-    // tooltip, on the preview line immediately LEFT of Test: Merge and Enable auto-merge (GitHub's).
+    // Approved, pending CI: the state-aware quick actions (workstream.quickActions) — icon-only with
+    // a tooltip, on the preview line immediately LEFT of Test: Merge and Enable auto-merge (GitHub's).
     expect(byAria("Merge")).not.toBeNull();
     expect(byAria("Enable auto-merge")).not.toBeNull();
     expect(labelledBtn("Enable auto-merge")).toBe(false);
@@ -74,7 +76,8 @@ describe("dense view", () => {
   test("dense folds the toolbar into icon buttons: Test locally, Follow up, Merge, Actions", async () => {
     getDefaultStore().set(densityAtom, "dense");
     apiFake.summaryData = { files: [{}, {}], commits: [{}], additions: 12, deletions: 3 };
-    await mount({ ...base, lane: "MERGEABLE", reviewStatus: "approved" });
+    // CI still pending, so Enable auto-merge shows beside Merge (a clean PR hides it instead).
+    await mount({ ...base, lane: "MERGEABLE", reviewStatus: "approved", ciStatus: "pending" });
     // At-a-glance status survives.
     expect(container!.textContent).toContain("Add dense view"); // title
     expect(container!.textContent).toContain("CI"); // condition badge
@@ -82,8 +85,8 @@ describe("dense view", () => {
     // Every verb is an icon button (found by aria-label), and none renders its text label.
     expect(byAria("Test locally")).not.toBeNull();
     expect(byAria("Follow up")).not.toBeNull();
-    // Approved and clean: Merge now AND Enable auto-merge, never Merge when green (not a quick action
-    // any more — Orca's queue merges what it can by itself) and never Slack.
+    // Approved, pending CI: Merge now AND Enable auto-merge, never Merge when green (not a quick
+    // action any more — Orca's queue merges what it can by itself) and never Slack.
     expect(container!.querySelector('button[aria-label="Merge"]')).not.toBeNull();
     expect(byAria("Enable auto-merge")).not.toBeNull();
     expect(byAria("Merge when green")).toBeNull();

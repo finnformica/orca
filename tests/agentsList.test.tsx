@@ -259,7 +259,7 @@ describe("agents list view", () => {
     const ids = (branch: string) => quick(branch).map((q) => q.dataset.quickAction);
     expect(ids("feat-ci")).toEqual(["addressPr"]); // review data not loaded: CI alone decides; a real problem shows Address PR alone
     expect(ids("feat-draft")).toEqual(["markReady", "addressPr"]);
-    expect(ids("feat-ok")).toEqual(["merge", "autoMerge"]); // approved + clean: Merge and Enable auto-merge (GitHub's), never Slack
+    expect(ids("feat-ok")).toEqual(["merge"]); // approved + already safe to merge: GitHub would merge it now rather than arm auto-merge, so Merge is the one button
     expect(ids("local-idle")).toEqual(["createPr"]); // the worktree has commits of its own
     // Icon-only: no text in the button, the label as its aria-label and in its tooltip.
     for (const q of quick("feat-draft")) {

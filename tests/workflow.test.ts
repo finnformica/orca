@@ -566,6 +566,53 @@ test("W9c auto-merge not allowed: a repo without auto-merge enabled gets a direc
   }
 });
 
+test("W9d auto-merge clean-status refusal: GitHub's 'is in clean status' refusal (the PR can already merge) gets the same fallback as 'not allowed' — merged directly when safe, AutoMergeNotAllowed when not", async () => {
+  process.env.ORCA_GH_CLEAN_STATUS = "1";
+  try {
+    await fixture({ mergeable: "MERGEABLE", statusCheckRollup: [{ conclusion: "SUCCESS" }] });
+    const read = await recordGhArgs();
+    const result = await enableAutoMerge(repo, 78);
+    expect(result).toEqual({ merged: true }); // tells the caller to say "merged now", not "auto-merge enabled"
+    process.env.ORCA_GH_ARGS_LOG = "";
+    const log = await read();
+    expect(log).toMatch(/^graphql enablePullRequestAutoMerge \{"id":"PR_78"\} .*mergeMethod:SQUASH/m); // tried auto-merge first
+    expect(log).toMatch(/^graphql mergePullRequest \{"id":"PR_78"\} .*mergeMethod:SQUASH/m);           // then merged directly
+
+    // CI still running → not safe to merge now: queue it instead (the route's AutoMergeNotAllowed path).
+    await fixture({ mergeable: "MERGEABLE", statusCheckRollup: [{ state: "PENDING" }] });
+    const err = await enableAutoMerge(repo, 78).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(AutoMergeNotAllowed);
+    expect(String(err)).toContain("Pull request is in clean status");
+  } finally {
+    delete process.env.ORCA_GH_CLEAN_STATUS;
+  }
+});
+
+test("W9e auto-merge UNSTABLE refusal: only an advisory (non-required) check failing is still safe to merge, so the same clean-status fallback merges it", async () => {
+  // A fresh scratch repo for a fresh requiredChecks cache key (keyed by cwd + base branch).
+  const unstable = await makeScratchRepo();
+  process.env.ORCA_GH_CLEAN_STATUS = "1";
+  try {
+    await setRequiredChecksFixture(["build-backend"]);
+    await setPrFixture({
+      state: "OPEN", mergeable: "MERGEABLE", reviewDecision: "APPROVED", baseRefName: "main",
+      statusCheckRollup: [{ name: "build-backend", conclusion: "SUCCESS" }, { name: "claude-review", conclusion: "FAILURE" }],
+    });
+    const result = await enableAutoMerge(unstable, 79);
+    expect(result).toEqual({ merged: true }); // advisory failure alone doesn't make it unsafe
+
+    // The required check itself failing still isn't safe to merge → queue instead.
+    await setPrFixture({
+      state: "OPEN", mergeable: "MERGEABLE", reviewDecision: "APPROVED", baseRefName: "main",
+      statusCheckRollup: [{ name: "build-backend", conclusion: "FAILURE" }, { name: "claude-review", conclusion: "FAILURE" }],
+    });
+    const err = await enableAutoMerge(unstable, 79).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(AutoMergeNotAllowed);
+  } finally {
+    delete process.env.ORCA_GH_CLEAN_STATUS;
+  }
+});
+
 test("S1 source-of-truth: listWorktrees returns live worktrees under the root", async () => {
   const root = join(repo, ".worktrees");
   await createWorktree(repo, root, "feat-list", "main");
