@@ -206,6 +206,11 @@ setInterval(() => {
 // The heavy-command queue (server/heavy.ts): take back a slot past its max run time or whose
 // `orca-run` client died without closing its connection.
 setInterval(() => heavy.slots().sweep(), 15_000).unref();
+// A stopped or outright-killed `orca-heavy-*.scope` sits in `systemctl --user list-units` as
+// failed forever otherwise; clear each one's failed state once a minute.
+if (process.platform === "linux") setInterval(() => {
+  void heavy.clearFailedHeavyScopes().catch((e) => console.error(`orca: clearing failed heavy scopes failed: ${e instanceof Error ? e.message : e}`));
+}, 60_000).unref();
 // Only this bridge may run the orchestrator's wakes: a bridge on code too old for the election (a
 // stray preview bridge, incident 2026-10-15) that launched one is stopped with it, and the wake is
 // re-run here (orchestrator.evictForeignWake). Once a minute, on the primary.
