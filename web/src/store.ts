@@ -1214,22 +1214,33 @@ export async function sendSlack(row: Row, kind: "notify" | "bump") {
   try {
     await api.slack(row.repo, slackApiText(ws, kind));
   } catch (e) {
-    const { text, html } = slackClipboard(ws, kind);
-    // Prefer a rich write (text/html) so Slack pastes a real hyperlink; fall back to plain text on
-    // browsers without ClipboardItem or when the write is blocked.
-    try {
-      if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
-        await navigator.clipboard.write([new ClipboardItem({
-          "text/html": new Blob([html], { type: "text/html" }),
-          "text/plain": new Blob([text], { type: "text/plain" }),
-        })]);
-      } else {
-        await navigator.clipboard.writeText(text);
-      }
-    } catch { /* clipboard unavailable — the error below is still surfaced */ }
+    try { await writeSlackClipboard(row, kind); } catch { /* clipboard unavailable — the error below is still surfaced */ }
     throw e instanceof Error ? e : new Error(String(e));
   }
   patchEnrich(row.repo, row.branch, kind === "notify" ? { slackNotifiedAt: now() } : { slackLastBumpedAt: now() });
+}
+
+/** Copy the Slack message to the clipboard: the message Send message posts, as Slack pastes it.
+ *  Prefer a rich write (text/html) so Slack pastes a real hyperlink; fall back to plain text on
+ *  browsers without ClipboardItem. Throws when the clipboard refuses the write. */
+export async function writeSlackClipboard(row: Row, kind: "notify" | "bump" = "notify"): Promise<void> {
+  const { text, html } = slackClipboard({ title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl, previewUrl: row.previewUrl }, kind);
+  if (typeof ClipboardItem !== "undefined" && navigator.clipboard?.write) {
+    await navigator.clipboard.write([new ClipboardItem({
+      "text/html": new Blob([html], { type: "text/html" }),
+      "text/plain": new Blob([text], { type: "text/plain" }),
+    })]);
+  } else {
+    await navigator.clipboard.writeText(text);
+  }
+}
+
+/** Stop the row's running agent: the worktree, its commits and the session stay (/api/agent/stop,
+ *  the chat's Stop), so the next message resumes the same conversation. */
+export async function stopAgent(row: Row) {
+  if (!row.worktreePath) return;
+  await api.stopAgent(row.worktreePath);
+  await refresh();
 }
 
 /** Orca's own merge of the base, before any agent: true when it left no conflict (a clean merge, or a

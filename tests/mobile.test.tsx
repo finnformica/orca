@@ -688,14 +688,15 @@ describe("gestures", () => {
       expect(document.querySelector('[data-radix-popper-content-wrapper]')).toBeNull(); // no dropdown
       const rows = [...sheet.querySelectorAll<HTMLElement>('[data-slot="sheet-item"]')];
       const labels = rows.map((r) => r.textContent?.trim());
-      // The ⋯ menu's own items (submenus open in place as labelled groups), unchanged.
-      for (const l of ["Open", "Copy branch", "Follow up…", "Rename…", "Copy worktree", "Discard"]) expect(labels).toContain(l);
-      expect([...sheet.querySelectorAll('[role="group"]')].map((g) => g.getAttribute("aria-label"))).toContain("Agent");
+      // The ⋯ menu's own items (submenus open in place as labelled groups), in the desktop order.
+      for (const l of ["Agent chat", "Orchestrator", "Branch name", "Worktree path", "Rename…", "Discard"]) expect(labels).toContain(l);
+      expect(labels).not.toContain("Follow up…");
+      expect([...sheet.querySelectorAll('[role="group"]')].map((g) => g.getAttribute("aria-label"))).toEqual(["Open", "Copy", "PR", "Agent"]); // Agent: Move to cloud
       for (const r of rows) {
         expect(r.className).toContain("min-h-12"); // a 48px touch row
         expect(r.querySelector("svg")).not.toBeNull(); // with its icon
       }
-      await click(rows.find((r) => r.textContent?.trim() === "Copy branch")!);
+      await click(rows.find((r) => r.textContent?.trim() === "Branch name")!);
       expect(copied).toEqual(["feat-phone"]);
       expect(location.pathname).toBe("/agents"); // a tap in the sheet is not a tap on the row
       expect(sheet.hasAttribute("data-closing")).toBe(true);

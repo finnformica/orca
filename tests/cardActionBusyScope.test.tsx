@@ -120,7 +120,7 @@ describe("card action busy scope", () => {
     expect(container!.querySelector('button[aria-label="Run"]')?.querySelector(".animate-spin")).toBeNull();
   });
 
-  test("Actions menu: Address PR spins and disables only itself on reopen — Copy worktree in the Agent submenu still runs", async () => {
+  test("Actions menu: Address PR spins and disables only itself on reopen — Worktree path in the Copy submenu still runs", async () => {
     apiFake.holdClaude = true;
     let copied = "";
     Object.defineProperty(globalThis.navigator, "clipboard", {
@@ -153,10 +153,10 @@ describe("card action busy scope", () => {
     expect(apiFake.claudePrompts.length).toBe(1); // still just the one launch
 
     // A different action, in a different submenu, is unaffected.
-    const agentTrigger = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Agent")!;
+    const agentTrigger = [...document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.trim() === "Copy")!;
     await pointerdown(agentTrigger);
     await click(agentTrigger);
-    await click(menuitem("Copy worktree")!);
+    await click(menuitem("Worktree path")!);
     expect(copied).toBe("/wt/feat");
 
     await act(async () => { apiFake.releaseClaude!(); await flush(); });

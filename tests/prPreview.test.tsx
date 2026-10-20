@@ -192,11 +192,11 @@ async function openPrSubmenu() {
 }
 
 describe("WorkstreamActions → PR submenu", () => {
-  test("Add PR preview runs addPreviewLabel", async () => {
+  test("Add preview runs addPreviewLabel", async () => {
     await mount(<WorkstreamActions row={addRow} />);
     await openPrSubmenu();
-    expect(menuitem("Add PR preview")).not.toBeUndefined();
-    await click(menuitem("Add PR preview")!);
+    expect(menuitem("Add preview")).not.toBeUndefined();
+    await click(menuitem("Add preview")!);
     expect(apiFake.calls).toContain("addPreviewLabel:6");
   });
 
@@ -209,18 +209,27 @@ describe("WorkstreamActions → PR submenu", () => {
     expect(apiFake.calls.filter((c) => c.startsWith("addPreviewLabel"))).toEqual([]); // disabled — no call fires
   });
 
-  test("Open PR preview once previewUrl is set", async () => {
-    await mount(<WorkstreamActions row={{ ...addRow, previewUrl: "https://x.preview.test" }} />);
-    await openPrSubmenu();
-    expect(menuitem("Open PR preview")).not.toBeUndefined();
-    expect(menuitem("Add PR preview")).toBeUndefined();
+  test("once previewUrl is set: no Add preview; Open ▸ PR preview opens it", async () => {
+    const opened: string[] = [];
+    const prevOpen = window.open;
+    window.open = ((u: string) => { opened.push(u); return null; }) as typeof window.open;
+    try {
+      await mount(<WorkstreamActions row={{ ...addRow, previewUrl: "https://x.preview.test" }} />);
+      await openPrSubmenu();
+      expect(menuitem("Add preview")).toBeUndefined();
+      const openTrigger = menuitem("Open")!;
+      await pointerdown(openTrigger);
+      await click(openTrigger);
+      await click(menuitem("PR preview")!);
+      expect(opened).toEqual(["https://x.preview.test"]);
+    } finally { window.open = prevOpen; }
   });
 
   test("hidden entirely on a repo with no preview label / previews feature configured", async () => {
     await mount(<WorkstreamActions row={unconfiguredRow} />);
     await openPrSubmenu();
-    expect(menuitem("Add PR preview")).toBeUndefined();
-    expect(menuitem("Open PR preview")).toBeUndefined();
+    expect(menuitem("Add preview")).toBeUndefined();
+    expect(menuitem("PR preview")).toBeUndefined();
     expect(menuitem("Deploying preview…")).toBeUndefined();
   });
 });

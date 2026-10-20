@@ -1,14 +1,16 @@
 import { createPortal } from "react-dom";
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  ArrowRightLeft, ArrowUpRight, BellRing, Bot, Check, CheckCheck, ChevronDown, Copy, ExternalLink, FolderOpen, GitMerge, GitPullRequestArrow, GitPullRequestDraft, Globe,
-  Link, Loader2, MessageSquarePlus, MoreVertical, Package, Pencil, Send, ShieldCheck, ShieldOff, Sparkles, SquareTerminal, Tag, Trash2, Wrench, X, XCircle, Zap, type LucideIcon,
+  ArrowRightLeft, BellRing, Bot, Check, CheckCheck, ChevronDown, CircleX, ExternalLink, FolderOpen, GitBranch, GitMerge, GitPullRequestArrow, GitPullRequestDraft, Globe,
+  Link, Loader2, MessageSquare, MessageSquarePlus, MoreVertical, Pencil, Send, ShieldCheck, ShieldOff, Sparkles, Square, SquareTerminal, Tag, Trash2, Wrench, X, XCircle, Zap, type LucideIcon,
 } from "lucide-react";
 import {
   addPreviewLabel, addressPr, autoMerge, baseBranch, closePr, convertToDraft, discardDraft, ensureWorktree, followUp, instanceChoices, markReady, moveWorkstream, previewConfigured, thisInstance,
-  cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, setVerified, slackChannel, staleHours, suggestTitle, toggleFollow, useCachedReviewDigest, useRepos, useReviewDigest, type Row,
+  cliCommand, disableAutoMerge, merge, modelFor, promote, rename, resolveConflicts, sendSlack, setCardModel, setVerified, slackChannel, staleHours, stopAgent, suggestTitle, useCachedReviewDigest, useRepos, useReviewDigest, writeSlackClipboard, type Row,
 } from "../store";
-import { firstLine, handoffDraftPath, prMenuActions, prPreviewState, quickActions, reviewProblems, shouldBump, verifiedState, type QuickActionId } from "../workstream";
+import {
+  detailPath, failingCiUrl, firstLine, orchestratorAbout, prMarkdownLink, quickActions, reviewProblems, shouldBump, slackClipboard, verifiedState, workstreamMenu, type MenuItemId, type QuickActionId,
+} from "../workstream";
 import { canVerify } from "./VerifiedButton";
 import { reviewSig } from "./Review";
 import { ActionButton } from "@/components/ActionButton";
@@ -23,18 +25,17 @@ import { ModelPicker } from "@/components/ModelPicker";
 import { BottomSheet } from "@/components/BottomSheet";
 import { useNarrow } from "@/lib/viewport";
 import { navigate } from "@/lib/route";
+import { openOrchestrator } from "@/lib/orchestratorOpen";
 import { Input } from "@/components/ui/input";
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
-// One organised action menu for every actionable workstream (open PR or local branch). Actions are
-// grouped: promote/merge at top, then a PR submenu (every PR-scoped action — draft toggle, resolve
-// conflicts, fix CI, add preview, copy link — see workstream.prMenuActions), an Agent submenu
-// (provider-neutral agent work + worktree/CLI copy shortcuts)
-// and a Slack submenu. Keeps the card header uncluttered — the
-// contextual state lives in badges, so the menu doesn't need per-item spinners.
+// One organised action menu for every actionable workstream (open PR or local branch), in Finn's
+// order: Open ▸, Copy ▸, Merge ▸, PR ▸, Agent ▸, Slack ▸, then Verified, Rename… and Close PR /
+// Discard last, in red. Which items show is pure (workstream.workstreamMenu): an item that does not
+// apply is left out, and an empty submenu is not shown.
 // localStorage key for a row's in-progress follow-up draft; whether one exists also drives
 // whether the composer auto-reopens after a reload (see FollowUpComposer).
 const followUpDraftKey = (row: Row) => `orca.followup.${row.repo}::${row.branch}`;
@@ -121,14 +122,12 @@ const mergeConfirm = (row: Row): ConfirmOptions => ({
 // state-aware quick actions (QuickActionButtons) and then `leading` — the Test / Preview control — so
 // the quick icons always sit immediately left of it; `quick={false}` leaves them to the caller (the
 // comfortable Board card puts them on its preview line). `menuOnly` is the Agents list's trailing ⋯:
-// no toolbar, Follow up and Merge move INTO the menu, so every verb is still one click away (the row
-// renders its quick icons itself, left of its preview cell). `onFollowUp` replaces the inline composer there (the agent's
-// page has the conversation); without it the menu's Follow up opens the composer as the button does.
-// `contextAt` (menuOnly) opens the SAME items as a right-click menu at that point — a second,
-// controlled root over the one items fragment, so the two menus can't drift; `onOpen` adds Open.
-export function WorkstreamActions({ row, hasWork = true, compact = false, leading, quick = true, tipSide, menuOnly = false, onFollowUp, onOpen, contextAt, onContextClose }: {
-  row: Row; hasWork?: boolean; compact?: boolean; leading?: ReactNode; quick?: boolean; tipSide?: "top" | "bottom"; menuOnly?: boolean; onFollowUp?: () => void;
-  onOpen?: () => void; contextAt?: { x: number; y: number } | null; onContextClose?: () => void;
+// no toolbar (the row renders its quick icons itself, left of its preview cell); Open ▸ Agent chat
+// takes the reply. `contextAt` (menuOnly) opens the SAME items as a right-click menu at that point — a
+// second, controlled root over the one items fragment, so the two menus can't drift.
+export function WorkstreamActions({ row, hasWork = true, compact = false, leading, quick = true, tipSide, menuOnly = false, contextAt, onContextClose }: {
+  row: Row; hasWork?: boolean; compact?: boolean; leading?: ReactNode; quick?: boolean; tipSide?: "top" | "bottom"; menuOnly?: boolean;
+  contextAt?: { x: number; y: number } | null; onContextClose?: () => void;
 }) {
   // Reopen the follow-up box on reload if a draft was left in progress, so nothing typed is lost.
   const [composing, setComposing] = useState(() => hasDraft(followUpDraftKey(row)));
@@ -162,44 +161,23 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
   };
 
   const isPr = Boolean(row.prNumber);
-  const isLocalLane = row.lane === "LOCAL";
-  const conflicting = row.mergeable === "CONFLICTING" || row.mergeClean === "conflict";
-  const ciFailing = row.ciStatus === "failing";
   const notified = Boolean(row.slackNotifiedAt);
   const bumpDue = shouldBump(row.slackNotifiedAt, row.slackLastBumpedAt, Date.now(), staleHours());
-  // Offer Merge whenever it's actually mergeable — for a PR that means no conflicts + CI not failing
-  // (approval is a team norm GitHub enforces, and you can't approve your own PR); for a local branch
-  // it's the promoted+clean Mergeable lane.
-  const canMergeNow = isPr ? (!row.isDraft && row.mergeable === "MERGEABLE" && !ciFailing) : row.lane === "MERGEABLE";
   const unreviewed = isPr && row.reviewStatus !== "approved";
-  const repoInfo = useRepos().find((r) => r.name === row.repo);
 
-  // Copy shortcuts adopt a missing worktree first. Copy CLI intentionally lives both here and in
-  // the card's top-right copy menu: this submenu is discoverable while the icon is faster.
-  const copyWorktree = async () => {
-    const path = row.worktreePath ?? (await ensureWorktree(row));
-    await copyText(path, "worktree path");
+  const moveTargets = row.worktreePath ? instanceChoices().filter((i) => i !== (row.instance ?? thisInstance())) : [];
+  const mergeWhenGreenOn = Boolean(row.autoMergeEnabled || row.mergeWhenGreen);
+  // The message Send message posts, as Slack pastes it (rich text, else plain).
+  const copySlack = async () => {
+    try { await writeSlackClipboard(row); }
+    catch { await copyText(slackClipboard({ title: row.title, prNumber: row.prNumber ?? 0, prUrl: row.prUrl, previewUrl: row.previewUrl }, "notify").text, "Slack message"); }
   };
-  const copyCli = async () => {
-    const command = await cliCommand(row);
-    await copyText(command, "CLI command");
-  };
-  const copyLink = async () => {
-    if (!row.prUrl) return;
-    await copyText(row.prUrl, "PR link");
-  };
-  const copyBranch = async () => {
-    await copyText(row.branch, "branch");
-  };
-  const prActions = prMenuActions(row);
-  const prPreview = prPreviewState(row, previewConfigured(row.repo));
   const confirmMerge = async () => { if (await confirmDialog(mergeConfirm(row))) await run("Merge", () => merge(row))(); };
 
   // Icon-only in compact view; labelled otherwise. `icon` keeps every toolbar button a
   // consistent square so the row lines up regardless of which verbs are present.
   const icon = compact ? "icon" : "sm";
   const iconClass = compact ? "size-7" : undefined;
-  const mergeLabel = `Merge${unreviewed ? " (unreviewed)" : ""}`;
   const narrow = useNarrow();
   const [sheetOpen, setSheetOpen] = useState(false);
   const trigger = (onClick?: () => void) => (
@@ -209,94 +187,90 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
       {compact ? (!err && <MoreVertical className="size-4" />) : <>Actions <ChevronDown className="size-3.5" /></>}
     </Button>
   );
+  const menu = workstreamMenu(row, { previewConfigured: previewConfigured(row.repo), moveTargets: moveTargets.length });
+  const has = (id: MenuItemId) => Object.values(menu).some((ids) => ids.includes(id));
+  const chatPath = detailPath(row);
+  const openUrl = (url?: string) => url && window.open(url, "_blank", "noreferrer");
+  const copy = (action: string, text: () => string | Promise<string>, label: string) => run(action, async () => { await copyText(await text(), label); });
   const items = (
     <>
-      {menuOnly && (
-        <>
-          {onOpen && <Item icon={ArrowUpRight} onSelect={onOpen}>Open</Item>}
-          {row.prUrl && <Item icon={ExternalLink} onSelect={() => window.open(row.prUrl, "_blank", "noreferrer")}>Open PR #{row.prNumber}</Item>}
-          <Item icon={Copy} busy={isBusy("Copy branch")} onSelect={run("Copy branch", copyBranch)}>Copy branch</Item>
-          <Sep />
-          <Item icon={MessageSquarePlus} disabled={submitting} onSelect={() => (onFollowUp ? onFollowUp() : setComposing(true))}>Follow up…</Item>
-          {row.lane === "MERGEABLE" && <Item icon={GitMerge} busy={isBusy("Merge")} onSelect={() => void confirmMerge()}>{mergeLabel}</Item>}
-          <Sep />
-        </>
-      )}
-      {/* Follow: put the card on autopilot — Orca watches the PR and fires the agent to resolve
-          conflicts / fix CI / address review comments as they appear. */}
-      {isPr && (
-        <>
-          <CheckItem icon={Bot} checked={Boolean(row.following)} onCheckedChange={() => toggleFollow(row)} onSelect={(e) => e.preventDefault()}>
-            Follow PR (auto-fix)
-          </CheckItem>
-          <Sep />
-        </>
-      )}
-      {/* The user's own Verified marker (VerifiedButton): set, re-set at a new head, or clear. */}
-      {canVerify(row) && (
-        <>
-          {verifiedState(row.verified, row.prHead, row.prNumber) !== "verified" && (
-            <Item icon={ShieldCheck} onSelect={() => setVerified(row, true)}>{row.verified ? "Verify again (new commits)" : "Mark verified"}</Item>
-          )}
-          {row.verified && <Item icon={ShieldOff} onSelect={() => setVerified(row, false)}>Clear verified</Item>}
-          <Sep />
-        </>
-      )}
-      {/* Lifecycle: promote a local branch, or merge from a lane where Merge isn't already a header button */}
-      {isLocalLane && (row.hasRemote
-        ? <PromoteSubmenu row={row} disabled={!hasWork} run={run} isBusy={isBusy} />
-        : <Item icon={GitPullRequestArrow} disabled={!hasWork} busy={isBusy("Promote")} onSelect={run("Promote", () => promote(row))}>Promote</Item>)}
-      {canMergeNow && row.lane !== "MERGEABLE" && (
-        <Item icon={GitMerge} busy={isBusy("Merge")} onSelect={() => void confirmMerge()}>
-          Merge{unreviewed ? " (unreviewed)" : ""}
-        </Item>
-      )}
-      {/* Rename — fix a broken/auto title. AI suggests a name (editable); a PR renames on GitHub. */}
-      <Item icon={Pencil} onSelect={() => setRenaming(true)}>Rename…</Item>
-      {/* Pack this chat for another Orca server (the Handoffs page; nothing is sent until Send). */}
-      <Item icon={Package} onSelect={() => navigate(handoffDraftPath(row))}>Hand off…</Item>
-      {/* Move the worktree to another instance (verbs.moveWorkstream). Not while its agent runs. */}
-      {row.worktreePath && instanceChoices().filter((i) => i !== (row.instance ?? thisInstance())).map((to) => {
-        const moveItem = <Item icon={ArrowRightLeft} key={to} disabled={row.agentStatus === "running"} busy={isBusy(`Move to ${to}`)} onSelect={run(`Move to ${to}`, () => moveWorkstream(row, to))}>Move to {to}</Item>;
-        return row.agentStatus === "running" ? <Tip key={to} label="Wait for the agent to finish first">{moveItem}</Tip> : moveItem;
-      })}
+      {/* Open ▸ — every place this workstream lives; Orchestrator only fills its composer, never sends. */}
+      <Sub label="Open">
+        {has("open.chat") && <Item icon={MessageSquare} onSelect={() => chatPath && navigate(`${chatPath}/chat`)}>Agent chat</Item>}
+        {has("open.pr") && <Item icon={ExternalLink} onSelect={() => openUrl(row.prUrl)}>PR on GitHub</Item>}
+        {has("open.preview") && <Item icon={Globe} onSelect={() => openUrl(row.previewUrl)}>PR preview</Item>}
+        {has("open.ci") && <Item icon={CircleX} onSelect={() => openUrl(failingCiUrl(row))}>Failing CI run</Item>}
+        <Item icon={Bot} onSelect={() => openOrchestrator(orchestratorAbout(row))}>Orchestrator</Item>
+      </Sub>
 
-      {/* PR — every action that needs an open PR, in one place (workstream.prMenuActions) */}
-      {isPr && (
+      {/* Copy ▸ — a missing worktree is adopted first (Worktree path, CLI command). */}
+      <Sub label="Copy">
+        <Item icon={GitBranch} busy={isBusy("Copy branch")} onSelect={copy("Copy branch", () => row.branch, "branch")}>Branch name</Item>
+        {has("copy.prLink") && <Item icon={Link} busy={isBusy("Copy PR link")} onSelect={copy("Copy PR link", () => row.prUrl ?? "", "PR link")}>PR link</Item>}
+        {has("copy.prMarkdown") && <Item icon={Link} busy={isBusy("Copy PR markdown link")} onSelect={copy("Copy PR markdown link", () => prMarkdownLink(row), "PR markdown link")}>PR as markdown link</Item>}
+        {has("copy.slack") && <Item icon={Send} busy={isBusy("Copy Slack message")} onSelect={run("Copy Slack message", copySlack)}>Slack message text</Item>}
+        {has("copy.preview") && <Item icon={Globe} busy={isBusy("Copy preview URL")} onSelect={copy("Copy preview URL", () => row.previewUrl ?? "", "preview URL")}>Preview URL</Item>}
+        <Item icon={FolderOpen} busy={isBusy("Copy worktree")} onSelect={copy("Copy worktree", async () => row.worktreePath ?? (await ensureWorktree(row)), "worktree path")}>Worktree path</Item>
+        {has("copy.cli") && <Item icon={SquareTerminal} busy={isBusy("Copy CLI")} onSelect={copy("Copy CLI", () => cliCommand(row), "CLI command")}>CLI command</Item>}
+      </Sub>
+
+      {/* Merge ▸ — Merge when green is GitHub's auto-merge, or Orca's queue where the repo refuses it
+          (store.autoMerge); off cancels whichever is active (store.disableAutoMerge). */}
+      {menu.merge.length > 0 && (
+        <Sub label="Merge">
+          {has("merge.now") && <Item icon={GitMerge} busy={isBusy("Merge")} onSelect={() => void confirmMerge()}>Merge now{unreviewed ? " (unreviewed)" : ""}</Item>}
+          {has("merge.whenGreen") && (
+            <CheckItem icon={Zap} checked={mergeWhenGreenOn}
+              onCheckedChange={mergeWhenGreenOn ? run("Disable merge when green", () => disableAutoMerge(row)) : run("Merge when green", () => autoMerge(row))}>
+              Merge when green
+            </CheckItem>
+          )}
+        </Sub>
+      )}
+
+      {/* PR ▸ — the open PR's verbs; for a local branch, Create PR (today's Promote). */}
+      {menu.pr.length > 0 && (isPr ? (
         <Sub label="PR">
-            {prActions.includes("markReady") && <Item icon={CheckCheck} busy={isBusy("Mark ready")} onSelect={run("Mark ready", () => markReady(row))}>Mark ready for review</Item>}
-            {prActions.includes("moveToDraft") && <Item icon={GitPullRequestDraft} busy={isBusy("Move to draft")} onSelect={run("Move to draft", () => convertToDraft(row))}>Move to draft</Item>}
-            {/* A PR Orca queued itself (the repo refused GitHub's auto-merge) reads the same as GitHub's
-                own auto-merge here: Disable cancels whichever is actually active (store.disableAutoMerge). */}
-            {prActions.includes("autoMerge") && (row.autoMergeEnabled || row.mergeWhenGreen
-              ? <Item icon={Zap} busy={isBusy("Disable auto-merge")} onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</Item>
-              : <Item icon={Zap} busy={isBusy("Enable auto-merge")} onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</Item>)}
-            {/* One agent verb: conflicts, CI and review in a single run (store.addressPr). */}
-            {prActions.includes("addressPr") && <Item icon={Wrench} busy={isBusy("Address PR")} onSelect={run("Address PR", () => addressPr(row))}>Address PR</Item>}
-            {prPreview === "ready" && <Item icon={Globe} onSelect={() => window.open(row.previewUrl, "_blank", "noreferrer")}>Open PR preview</Item>}
-            {prPreview === "pending" && <Item icon={Globe} disabled>Deploying preview…</Item>}
-            {prPreview === "add" && <Item icon={Globe} busy={isBusy("Add preview")} onSelect={run("Add preview", () => addPreviewLabel(row))}>Add PR preview</Item>}
-            {prActions.includes("copyLink") && <><Sep /><Item icon={Link} busy={isBusy("Copy link")} onSelect={run("Copy link", copyLink)}>Copy link</Item></>}
-          </Sub>
+          {has("pr.markReady") && <Item icon={CheckCheck} busy={isBusy("Mark ready")} onSelect={run("Mark ready", () => markReady(row))}>Mark ready</Item>}
+          {has("pr.moveToDraft") && <Item icon={GitPullRequestDraft} busy={isBusy("Move to draft")} onSelect={run("Move to draft", () => convertToDraft(row))}>Move to draft</Item>}
+          {/* One agent verb: conflicts, CI and review in a single run (store.addressPr). */}
+          {has("pr.address") && <Item icon={Wrench} busy={isBusy("Address PR")} onSelect={run("Address PR", () => addressPr(row))}>Address PR</Item>}
+          {has("pr.addPreview") && <Item icon={Globe} busy={isBusy("Add preview")} onSelect={run("Add preview", () => addPreviewLabel(row))}>Add preview</Item>}
+          {has("pr.previewPending") && <Item icon={Globe} disabled>Deploying preview…</Item>}
+        </Sub>
+      ) : has("pr.promote")
+        ? <Sub label="PR"><Item icon={GitPullRequestArrow} disabled={!hasWork} busy={isBusy("Promote")} onSelect={run("Promote", () => promote(row))}>Promote</Item></Sub>
+        : <PromoteSubmenu row={row} disabled={!hasWork} run={run} isBusy={isBusy} />)}
+
+      {/* Agent ▸ — Stop keeps the worktree, its commits and the session (the chat's Stop). */}
+      {menu.agent.length > 0 && (
+        <Sub label="Agent">
+          {has("agent.stop") && <Item icon={Square} busy={isBusy("Stop agent")} onSelect={run("Stop agent", () => stopAgent(row))}>Stop agent</Item>}
+          {has("agent.resolveConflicts") && <Item icon={Wrench} busy={isBusy("Resolve conflicts")} onSelect={run("Resolve conflicts", () => resolveConflicts(row))}>Resolve conflicts</Item>}
+          {/* Move the worktree to another instance (verbs.moveWorkstream). Not while its agent runs. */}
+          {has("agent.move") && moveTargets.map((to) => {
+            const moveItem = <Item icon={ArrowRightLeft} key={to} disabled={row.agentStatus === "running"} busy={isBusy(`Move to ${to}`)} onSelect={run(`Move to ${to}`, () => moveWorkstream(row, to))}>Move to {to}</Item>;
+            return row.agentStatus === "running" ? <Tip key={to} label="Wait for the agent to finish first">{moveItem}</Tip> : moveItem;
+          })}
+        </Sub>
+      )}
+
+      {/* Slack ▸ — only once there is a PR to link */}
+      {menu.slack.length > 0 && (
+        <Sub label="Slack">
+          <Item icon={Send} busy={isBusy("Slack message")} onSelect={run("Slack message", () => sendSlack(row, "notify"))}>Send message{notified ? " again" : ""}</Item>
+          <Item icon={BellRing} disabled={!notified} busy={isBusy("Slack bump")} onSelect={run("Slack bump", () => sendSlack(row, "bump"))}>Send bump{bumpDue ? " (due)" : ""}</Item>
+        </Sub>
       )}
 
       <Sep />
-
-      {/* Agent — provider-neutral work; resolve conflicts lives here only for a local branch (no PR) */}
-      <Sub label="Agent">
-          {!isPr && conflicting && <Item icon={Wrench} busy={isBusy("Resolve conflicts")} onSelect={run("Resolve conflicts", () => resolveConflicts(row))}>Resolve conflicts</Item>}
-          {/* Local only — see the card's copy menu. */}
-          {!row.remote && <Item icon={SquareTerminal} busy={isBusy("Copy CLI")} onSelect={run("Copy CLI", copyCli)}>Copy CLI</Item>}
-          <Item icon={FolderOpen} busy={isBusy("Copy worktree")} onSelect={run("Copy worktree", copyWorktree)}>Copy worktree</Item>
-        </Sub>
-
-      {/* Slack — only meaningful once there's a PR to link */}
-      {isPr && (
-        <Sub label="Slack">
-            <Item icon={Send} busy={isBusy("Slack message")} onSelect={run("Slack message", () => sendSlack(row, "notify"))}>Send message{notified ? " again" : ""}</Item>
-            <Item icon={BellRing} disabled={!notified} busy={isBusy("Slack bump")} onSelect={run("Slack bump", () => sendSlack(row, "bump"))}>Send bump{bumpDue ? " (due)" : ""}</Item>
-          </Sub>
+      {/* The user's own Verified marker (VerifiedButton): set, re-set at a new head, or clear. */}
+      {canVerify(row) && verifiedState(row.verified, row.prHead, row.prNumber) !== "verified" && (
+        <Item icon={ShieldCheck} onSelect={() => setVerified(row, true)}>{row.verified ? "Verify again (new commits)" : "Mark verified"}</Item>
       )}
+      {canVerify(row) && row.verified && <Item icon={ShieldOff} onSelect={() => setVerified(row, false)}>Clear verified</Item>}
+      {/* Rename — fix a broken/auto title. AI suggests a name (editable); a PR renames on GitHub. */}
+      <Item icon={Pencil} onSelect={() => setRenaming(true)}>Rename…</Item>
 
       {/* Close/Discard — Close PR abandons an open PR (+cleanup); Discard only for pre-PR locals */}
       <Sep />
@@ -451,7 +425,7 @@ function RenameDialog({ row, open, onClose }: { row: Row; open: boolean; onClose
   );
 }
 
-// Promote a local branch into a PR — choose ready/draft and toggle the repo's configured PR labels
+// PR ▸ for a local branch (today's Promote): create the PR ready or as a draft and toggle the repo's configured PR labels
 // (config `prLabels`; entries with `default: true` start checked). Repos with none show no toggles.
 function PromoteSubmenu({ row, disabled, run, isBusy }: { row: Row; disabled?: boolean; run: (action: string, fn: () => Promise<unknown>) => () => void; isBusy: (action: string) => boolean }) {
   const prLabels = useRepos().find((r) => r.name === row.repo)?.prLabels ?? [];
@@ -459,8 +433,8 @@ function PromoteSubmenu({ row, disabled, run, isBusy }: { row: Row; disabled?: b
     Object.fromEntries(prLabels.map((l) => [l.name, l.default ?? false])));
   const labels = prLabels.filter((l) => checked[l.name]).map((l) => l.name);
   return (
-    <Sub label="Promote to PR" disabled={disabled}>
-      <Label>Promote to PR</Label>
+    <Sub label="PR" disabled={disabled}>
+      {prLabels.length > 0 && <Label>Labels</Label>}
       {prLabels.map((l) => (
         <CheckItem icon={Tag} key={l.name} checked={checked[l.name] ?? false}
           onCheckedChange={(c) => setChecked((s) => ({ ...s, [l.name]: Boolean(c) }))} onSelect={(e) => e.preventDefault()}>
@@ -468,7 +442,7 @@ function PromoteSubmenu({ row, disabled, run, isBusy }: { row: Row; disabled?: b
         </CheckItem>
       ))}
       {prLabels.length > 0 && <Sep />}
-      <Item icon={GitPullRequestArrow} busy={isBusy("Create PR")} onSelect={run("Create PR", () => promote(row, { draft: false, labels }))}>Create PR (ready)</Item>
+      <Item icon={GitPullRequestArrow} busy={isBusy("Create PR")} onSelect={run("Create PR", () => promote(row, { draft: false, labels }))}>Create PR</Item>
       <Item icon={GitPullRequestDraft} busy={isBusy("Create draft PR")} onSelect={run("Create draft PR", () => promote(row, { draft: true, labels }))}>Create draft PR</Item>
     </Sub>
   );
