@@ -88,7 +88,7 @@ const chatComponents = { img: markdownImg, ...tableComponents, pre: snippetPre({
  *  `memo`: parsing markdown is the costliest thing a chat render does (measured: ~300ms commits
  *  re-parsing a long orchestrator thread on every open and close of its panel), and the text of a
  *  finished turn never changes. */
-const ChatMarkdown = memo(({ children, tone = "text-neutral-300", breaks }: { children: string; tone?: string; breaks?: boolean }) => (
+const ChatMarkdown = memo(({ children, tone = "text-neutral-300", breaks, outside }: { children: string; tone?: string; breaks?: boolean; outside?: boolean }) => (
   // wrap-anywhere: the agent's prose is full of unbreakable tokens (`branch/names-with-hashes`,
   // paths, run ids) that are wider than a narrow window, and one of them made the whole log scroll
   // sideways. Code BLOCKS are exempt — they keep their lines and scroll inside themselves.
@@ -104,8 +104,25 @@ const ChatMarkdown = memo(({ children, tone = "text-neutral-300", breaks }: { ch
     "prose-strong:text-neutral-200",
     "prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none",
     "prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400", tone)}>
-    <ReactMarkdown remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]} components={chatComponents}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]} components={outside ? outsideComponents : chatComponents}>{children}</ReactMarkdown>
   </div>
+));
+
+/** An outside sender's message (Discord, Slack, email…): the chat's markdown, but an image is a link,
+ *  never loaded — a stranger's message must not make this browser fetch a remote URL. */
+const outsideImg = ({ src, alt }: { src?: string | Blob; alt?: string }) =>
+  typeof src === "string" ? <a href={src} target="_blank" rel="noreferrer">{alt || src}</a> : <>{alt}</>;
+const outsideComponents = { ...chatComponents, img: outsideImg };
+// One line: every block renders inline, so the line keeps its height and its `truncate`.
+const inlineBlock = ({ children: c }: { children?: ReactNode }) => <>{c}</>;
+const inlineComponents = { ...outsideComponents, p: inlineBlock, ul: inlineBlock, ol: inlineBlock, li: inlineBlock, blockquote: inlineBlock, h1: inlineBlock, h2: inlineBlock, h3: inlineBlock, h4: inlineBlock, h5: inlineBlock, h6: inlineBlock, pre: inlineBlock };
+
+/** The one-line preview of an outside message: the SAME markdown as its expanded body (bold, code,
+ *  links), inline. The preview is clipped, so a cut `**` or backtick is closed first. */
+const InlineMarkdown = memo(({ children }: { children: string }) => (
+  <span data-slot="inline-markdown" className="[&_code]:font-mono [&_code]:text-sky-300 [&_strong]:text-foreground [&_strong]:font-semibold [&_a]:text-sky-400">
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={inlineComponents}>{closeOpenMarkdown(children)}</ReactMarkdown>
+  </span>
 ));
 
 /** Markdown for a single Facet item (Remaining / Decisions / Verification / Commits): same renderer
@@ -443,7 +460,9 @@ function UserBubble({ text, files, clamp, footer, pending, slot = "chat-user", t
 }) {
   return (
     <div className={cn("group flex justify-end", className)} data-slot={slot} data-pending={pending || undefined}>
-      <div className="max-w-[85%]">
+      {/* Each child keeps its own width on the right: a queued message's long label must not widen
+          its bubble past a sent one's. */}
+      <div data-slot="user-bubble-column" className="flex max-w-[85%] flex-col items-end">
         {/* Pending: the message and its files fade; the queued label below stays readable. */}
         {text && <div data-slot={textSlot} className={cn("bg-accent text-foreground rounded-lg px-3 py-2", pending && "opacity-60")}>
           <Clamp on={clamp} cut="max-h-[9rem]">
@@ -765,7 +784,7 @@ function IntegrationHead({ m, more, time, state }: { m: IntegrationMessage; more
       <BrandIcon kind={m.adapter} className="size-3.5" />
       <span className="text-foreground shrink-0 font-medium" data-slot="integration-sender">{m.sender ?? brandTitle(m.adapter)}</span>
       {place && <span className="shrink-0" data-slot="integration-place">{place}</span>}
-      <span className="min-w-0 flex-1 truncate" data-slot="integration-preview">{integrationPreview(m.text)}{more > 0 ? ` · +${more} more` : ""}</span>
+      <span className="min-w-0 flex-1 truncate" data-slot="integration-preview"><InlineMarkdown>{integrationPreview(m.text)}</InlineMarkdown>{more > 0 ? ` · +${more} more` : ""}</span>
       {time && <span className="shrink-0 text-[11px]">{time}</span>}
       <span data-slot="integration-state" className={cn("flex shrink-0 items-center gap-1 text-[11px]", state === "queued" ? "" : STATE_TONE[state])}>
         {state === "in progress" && <Loader2 className="size-3 animate-spin" />}{state}
@@ -805,7 +824,7 @@ function IntegrationMessages({ messages }: { messages: IntegrationMessage[] }) {
         <span data-slot="integration-message-place">{[shownPlace(m.place, labels), brandTitle(m.adapter)].filter(Boolean).join(" · ")}</span>
         {m.url && <a href={m.url} target="_blank" rel="noreferrer" className="hover:text-foreground underline-offset-2 hover:underline">Open in {brandTitle(m.adapter)}</a>}
       </div>
-      <div className="text-foreground whitespace-pre-wrap break-words">{m.text}</div>
+      <div data-slot="integration-message-text"><ChatMarkdown tone="text-foreground" breaks outside>{m.text}</ChatMarkdown></div>
     </div>
   ));
 }

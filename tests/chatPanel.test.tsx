@@ -907,7 +907,12 @@ test("a queued message is the sent bubble with the same markdown, faded; once se
   expect(queued.dataset.pending).toBe("true");
   expect(queuedText.className).toContain("opacity-60");
   expect(queued.querySelector('[data-slot="queued-label"]')!.textContent).toBe("queued — sends when the current run finishescancel");
-  const queuedHtml = queuedText.innerHTML, queuedClass = queuedText.className.replace(" opacity-60", ""), shellClass = queued.className;
+  // Same width and right alignment as a sent bubble: the column keeps each child at its own width on
+  // the right, so the long queued label below cannot stretch the bubble.
+  const column = queued.querySelector<HTMLElement>('[data-slot="user-bubble-column"]')!;
+  expect(column.className).toContain("items-end");
+  expect(queuedText.parentElement).toBe(column);
+  const queuedHtml = queuedText.innerHTML, queuedClass = queuedText.className.replace(" opacity-60", ""), shellClass = queued.className, columnClass = column.className;
 
   // It sends: the same bubble in its turn, the same markup, minus the fade.
   apiFake.queuedData.set("feat", []);
@@ -924,6 +929,7 @@ test("a queued message is the sent bubble with the same markdown, faded; once se
   expect(sentText.className).toBe(queuedClass);
   expect(sent.className).toBe(shellClass.replace("mb-4", "mb-2")); // the turn's spacing, nothing else
   expect(sent.dataset.pending).toBeUndefined();
+  expect(sent.querySelector('[data-slot="user-bubble-column"]')!.className).toBe(columnClass);
   expect(sentText.className).not.toContain("opacity-60");
 });
 
