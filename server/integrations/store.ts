@@ -148,6 +148,15 @@ export async function addPrincipal(p: Principal, identities: { adapter: string; 
   });
 }
 
+/** Bind one platform identity to a person (Settings' Add identity): the same identity on another
+ *  person moves here. `name` is how the People section shows it ("@saajan"); empty keeps the old one. */
+export async function addIdentity(principalId: string, i: { adapter: string; externalId: string; name?: string }): Promise<void> {
+  return db.withRetry(async (sql) => {
+    await sql`INSERT INTO identity (user_id, adapter, external_id, principal_id, name) VALUES (${user()}, ${i.adapter}, ${i.externalId}, ${principalId}, ${i.name ?? null})
+      ON CONFLICT (user_id, adapter, external_id) DO UPDATE SET principal_id = EXCLUDED.principal_id, name = COALESCE(EXCLUDED.name, identity.name)`;
+  });
+}
+
 /** The paired person behind a platform user, or undefined (unknown senders get nothing inbound). */
 export async function principalFor(adapter: string, externalId: string): Promise<Principal | undefined> {
   return db.withRetry(async (sql) => {
@@ -437,8 +446,8 @@ export async function approvePairing(code: string, principal: { id: string; name
         VALUES (${principal.id}, ${user()}, ${principal.name ?? p.name ?? p.external_id}, ${principal.maxLevel ?? "ask"})
         ON CONFLICT (user_id, id) DO UPDATE SET name = COALESCE(${principal.name ?? null}::text, principal.name),
           max_level = COALESCE(${principal.maxLevel ?? null}::text, principal.max_level)`;
-      await tx`INSERT INTO identity (user_id, adapter, external_id, principal_id) VALUES (${user()}, ${p.adapter}, ${p.external_id}, ${principal.id})
-        ON CONFLICT (user_id, adapter, external_id) DO UPDATE SET principal_id = EXCLUDED.principal_id`;
+      await tx`INSERT INTO identity (user_id, adapter, external_id, principal_id, name) VALUES (${user()}, ${p.adapter}, ${p.external_id}, ${principal.id}, ${p.name})
+        ON CONFLICT (user_id, adapter, external_id) DO UPDATE SET principal_id = EXCLUDED.principal_id, name = COALESCE(EXCLUDED.name, identity.name)`;
       const done = await tx`UPDATE pairing_code SET state = 'approved', principal_id = ${principal.id}, decided_at = ${now}
         WHERE user_id = ${user()} AND code = ${p.code}
         RETURNING code, integration_id, adapter, external_id, name, link_id, created_at, expires_at, state, principal_id`;

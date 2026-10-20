@@ -24,7 +24,10 @@ export type IntegrationCard = {
 };
 
 export type LinkRow = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean };
-export type PersonRow = { id: string; name: string; maxLevel: Exclude<Level, "full">; identities: { adapter: string; externalId: string }[] };
+/** One platform identity of a person: the adapter kind, the platform's id, and the name it goes by there. */
+export type IdentityRow = { adapter: string; externalId: string; name?: string };
+/** A person (a principal): global, with identities on any number of adapters. */
+export type PersonRow = { id: string; name: string; maxLevel: Exclude<Level, "full">; identities: IdentityRow[] };
 
 /** A pending pairing code (the core's server/integrations/store.ts `Pairing`): an unknown sender
  *  wrote to a link; you approve or deny them here. */
@@ -171,5 +174,21 @@ export function linkProblem(l: { id?: string; integrationId?: string; externalId
   if (!l.externalId?.trim()) return "the external place is required";
   if (!["notify", "ask", "work", "admin"].includes(l.level ?? "")) return "level: notify, ask, work or admin";
   if ((l.level === "work" || l.level === "admin") && !l.repos?.length) return `${l.level === "admin" ? "an" : "a"} ${l.level} link needs at least one repo`;
+  return undefined;
+}
+
+/** How the People section shows one identity: "Discord @saajan", "Email ana@example.com". An address
+ *  is its own name; a platform id with no name stays the id. `kinds` gives the adapter's label. Pure. */
+export function identityLabel(i: IdentityRow, kinds: Pick<AdapterMeta, "kind" | "label">[] = []): string {
+  const kind = kinds.find((k) => k.kind === i.adapter)?.label ?? (i.adapter ? `${i.adapter[0]!.toUpperCase()}${i.adapter.slice(1)}` : "?");
+  const who = i.externalId.includes("@") ? i.externalId : i.name?.trim() ? `@${i.name.trim().replace(/^@/, "")}` : i.externalId;
+  return `${kind} ${who}`;
+}
+
+/** Why Add identity cannot save, or undefined. Pure. */
+export function identityProblem(i: { principal?: string; adapter?: string; externalId?: string }, kinds: string[]): string | undefined {
+  if (!i.principal?.trim()) return "pick a person";
+  if (!i.adapter || !kinds.includes(i.adapter)) return `adapter: one of ${kinds.join(", ")}`;
+  if (!i.externalId?.trim()) return "the platform id is required";
   return undefined;
 }

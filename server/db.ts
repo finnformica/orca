@@ -999,6 +999,19 @@ export const MIGRATIONS: MigrationStep[] = [
         ADD CONSTRAINT principal_max_level_check CHECK (max_level IN ('notify','ask','work','admin'));
     `,
   },
+  {
+    name: "20261020-show-identity-name",
+    idempotent: true,
+    // The People section shows each identity by name ("Discord @saajan"). A nullable column; the
+    // backfill reads the newest approved pairing code of each identity and fills only empty names.
+    sql: `
+      ALTER TABLE identity ADD COLUMN IF NOT EXISTS name TEXT;
+      UPDATE identity i SET name = pc.name FROM (
+        SELECT DISTINCT ON (user_id, adapter, external_id) user_id, adapter, external_id, name FROM pairing_code
+        WHERE state = 'approved' AND name IS NOT NULL ORDER BY user_id, adapter, external_id, decided_at DESC NULLS LAST
+      ) pc WHERE i.user_id = pc.user_id AND i.adapter = pc.adapter AND i.external_id = pc.external_id AND i.name IS NULL;
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };

@@ -1,7 +1,7 @@
-// Settings > Integrations (docs/research/integrations.md §6.1): a card per integration row — health,
-// last event, a Test, the enabled switch (connect / disconnect), its channel links with their level
-// and repos — then the people and their identities with the pending pairing codes, the
-// subscriptions, and the dead deliveries with Retry. Generic over adapter kinds: the kinds, their
+// Settings > Integrations (docs/research/integrations.md §6.1): first the people — each a global
+// person with identities on any adapter, their level and the pending pairing codes — then a card per
+// integration row — health, last event, a Test, the enabled switch (connect / disconnect), its links
+// with their level and repos — the subscriptions, and the dead deliveries with Retry. Generic over adapter kinds: the kinds, their
 // labels and their Connect fields come from the registry (`overview.kinds`), so a new adapter's
 // card and form appear with no change here. The decisions are pure in shared/integrationSettings.ts.
 import { useEffect, useState, type ReactNode } from "react";
@@ -23,7 +23,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Empty, Pill, SectionTitle, StatusDot, VCard } from "@/components/console";
 import {
-  SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, instanceText, integrationProblem, linkProblem, parseFilter, targetLabel,
+  SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, integrationProblem, linkProblem, parseFilter, targetLabel,
   type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow,
 } from "../../../shared/integrationSettings";
 import { AUTO_INSTANCE, CATCH_ALL, LEVEL_LABEL, LINK_LEVELS as LEVELS, isAutomatic, repoScoped, type AdapterMeta, type LinkLevel } from "../../../shared/integrations";
@@ -84,10 +84,12 @@ export function IntegrationsPage() {
       {!data && !error && <VCard><Empty>Loading…</Empty></VCard>}
       {data && (
         <>
-          {data.integrations.length === 0
-            ? <VCard slot="integrations-empty"><Empty icon={<Plug className="size-5" />}>No integrations yet. Connect one of: {data.kinds.map((k) => k.label).join(", ")}.</Empty></VCard>
-            : data.integrations.map((c) => <IntegrationCardView key={c.id} card={c} data={data} onChange={reload} />)}
           <PeopleCard data={data} onChange={reload} />
+          <div className="space-y-6" data-slot="integrations-list">
+            {data.integrations.length === 0
+              ? <VCard slot="integrations-empty"><Empty icon={<Plug className="size-5" />}>No integrations yet. Connect one of: {data.kinds.map((k) => k.label).join(", ")}.</Empty></VCard>
+              : data.integrations.map((c) => <IntegrationCardView key={c.id} card={c} data={data} onChange={reload} />)}
+          </div>
           <SubscriptionsCard data={data} onChange={reload} />
           <DeadCard data={data} onChange={reload} />
         </>
@@ -100,7 +102,8 @@ export function IntegrationsPage() {
 
 function IntegrationCardView({ card: c, data, onChange }: { card: IntegrationCard; data: Overview; onChange: () => void }) {
   const meta = data.kinds.find((k) => k.kind === c.kind);
-  const links = data.links.filter((l) => l.integrationId === c.id);
+  // The catch-all link first: it is the integration's one link to every channel and DM.
+  const links = data.links.filter((l) => l.integrationId === c.id).sort((a, b) => Number(b.externalId === CATCH_ALL) - Number(a.externalId === CATCH_ALL));
   const [test, setTest] = useState<{ busy?: boolean; ok?: boolean; detail?: string }>({});
   const [linkOpen, setLinkOpen] = useState<LinkRow | "new" | null>(null);
   const [editOpen, setEditOpen] = useState(false);
@@ -177,15 +180,15 @@ function LinkRowView({ link: l, onEdit, onChange }: { link: LinkRow; onEdit: () 
     <li data-slot="integration-link" className="flex flex-col gap-2 px-4 py-3 text-sm md:flex-row md:items-center md:gap-4">
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium">{l.label ?? l.externalId}</span>
-          {l.label && <span className="text-muted-foreground font-mono text-xs">{l.externalId}</span>}
+          <span className="font-medium">{l.label ?? (l.externalId === CATCH_ALL ? "All channels and DMs" : l.externalId)}</span>
+          {l.label && l.externalId !== CATCH_ALL && <span className="text-muted-foreground font-mono text-xs">{l.externalId}</span>}
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-1.5">
           <Pill tone={LEVEL_TONE[l.level]} slot="link-level">{LINK_LEVELS.find((x) => x.value === l.level)?.label}</Pill>
           {repoScoped(l.level) && l.repos.map((r) => <Pill key={r}>{r}</Pill>)}
           {l.requireMention && <Pill>@mention</Pill>}
         </div>
-        {l.externalId === CATCH_ALL && <div data-slot="link-receive-only" className="text-muted-foreground mt-1 text-xs">A catch-all link only receives. Orca answers in the DM or channel the message came from.</div>}
+        {l.externalId === CATCH_ALL && <div data-slot="link-catch-all" className="text-muted-foreground mt-1 text-xs">Every channel, thread and DM the bot can see. Orca answers where a message came from, and posts to any channel with <span className="font-mono">orca post --link {l.id} --channel &lt;id&gt;</span>.</div>}
         {test.state && <div data-slot="link-test-result" className={test.state === "sent" ? "text-geist-green mt-1 text-xs" : test.state === "pending" ? "text-muted-foreground mt-1 text-xs" : "text-geist-red mt-1 text-xs"}>
           {test.state === "sent" ? "Test message sent" : test.state === "pending" ? "Test queued — not sent yet" : `Test ${test.state}${test.error ? `: ${test.error}` : ""}`}
         </div>}
@@ -353,12 +356,23 @@ function LinkDialog({ integration: c, meta, link, onClose, onSaved }: { integrat
 
 // ── people and pairing ───────────────────────────────────────────────────────────────────────────
 
+/** A person id from a name, unique among `taken` (the server keeps ids as given). */
+const personId = (name: string, taken: string[]): string => {
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "person";
+  let id = base;
+  for (let n = 2; taken.includes(id); n++) id = `${base}-${n}`;
+  return id;
+};
+
+/** People are global: one person has identities on every adapter (Discord, Slack, email…), one
+ *  level for all of them, and a pairing from any adapter can join an existing person. */
 function PeopleCard({ data, onChange }: { data: Overview; onChange: () => void }) {
   const [approve, setApprove] = useState<Pairing | null>(null);
+  const [adding, setAdding] = useState(false);
   const integrationName = (id: string) => data.integrations.find((c) => c.id === id)?.name ?? id;
   return (
     <div>
-      <SectionTitle>People</SectionTitle>
+      <SectionTitle aside={<Button variant="ghost" size="sm" onClick={() => setAdding(true)} data-slot="person-add"><Plus />Add person</Button>}>People</SectionTitle>
       <VCard slot="integration-people" bodyClass="divide-y">
         {data.pairings.map((p) => (
           <div key={p.code} data-slot="pairing" className="bg-geist-amber/5 flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
@@ -367,7 +381,7 @@ function PeopleCard({ data, onChange }: { data: Overview; onChange: () => void }
                 <Pill tone="amber">Pairing {p.code}</Pill>
                 <span className="font-medium">{p.name ?? p.externalId}</span>
               </div>
-              <div className="text-muted-foreground mt-1 text-xs break-words">{p.adapter} · <span className="font-mono">{p.externalId}</span> · via {integrationName(p.integrationId)} · {ago(p.createdAt)}</div>
+              <div className="text-muted-foreground mt-1 text-xs break-words">{identityLabel(p, data.kinds)} · <span className="font-mono">{p.externalId}</span> · via {integrationName(p.integrationId)} · {ago(p.createdAt)}</div>
             </div>
             <div className="flex gap-2">
               <Button size="sm" onClick={() => setApprove(p)} className="max-sm:h-10 max-sm:flex-1">Approve</Button>
@@ -376,45 +390,100 @@ function PeopleCard({ data, onChange }: { data: Overview; onChange: () => void }
           </div>
         ))}
         {data.people.length === 0 && data.pairings.length === 0 && <Empty>No people yet. An unknown sender gets a pairing code, and it shows here for you to approve.</Empty>}
-        {data.people.map((p) => <PersonRowView key={p.id} person={p} onChange={onChange} />)}
+        {data.people.map((p) => <PersonRowView key={p.id} person={p} kinds={data.kinds} onChange={onChange} />)}
       </VCard>
       {approve && <ApproveDialog pairing={approve} people={data.people} onClose={() => setApprove(null)} onSaved={onChange} />}
+      {adding && <PersonDialog people={data.people} onClose={() => setAdding(false)} onSaved={onChange} />}
     </div>
   );
 }
 
-function PersonRowView({ person: p, onChange }: { person: PersonRow; onChange: () => void }) {
+function PersonRowView({ person: p, kinds, onChange }: { person: PersonRow; kinds: AdapterMeta[]; onChange: () => void }) {
   const [ask, confirmNode] = useConfirm();
+  const [adding, setAdding] = useState(false);
   return (
     <div data-slot="person" className="flex flex-col gap-2 px-4 py-3 text-sm sm:flex-row sm:items-center sm:gap-4">
       <div className="min-w-0 flex-1">
         <div className="font-medium">{p.name}</div>
-        <div className="mt-1 flex flex-wrap gap-1.5">
+        <div className="mt-1 flex flex-wrap items-center gap-1.5">
           {p.identities.length === 0 && <span className="text-muted-foreground text-xs">no identities</span>}
           {p.identities.map((i) => (
-            <span key={`${i.adapter}:${i.externalId}`} className="bg-muted inline-flex h-6 items-center gap-1 rounded-full pr-1 pl-2.5 text-xs">
-              {i.adapter} <span className="font-mono">{i.externalId}</span>
-              <button type="button" aria-label={`Unpair ${i.adapter} ${i.externalId}`} className="hover:bg-accent rounded-full p-0.5"
-                onClick={() => void act("Unpair identity", "identities/remove", { adapter: i.adapter, externalId: i.externalId }, onChange)}><X className="size-3" /></button>
+            <span key={`${i.adapter}:${i.externalId}`} data-slot="person-identity" title={`${i.adapter} ${i.externalId}`} className="bg-muted inline-flex h-6 items-center gap-1 rounded-full pr-1 pl-2 text-xs">
+              <BrandIcon kind={i.adapter} className="size-3" />{identityLabel(i, kinds)}
+              <button type="button" aria-label={`Remove ${identityLabel(i, kinds)}`} className="hover:bg-accent rounded-full p-0.5"
+                onClick={() => ask(`Remove ${identityLabel(i, kinds)} from ${p.name}?`, "Messages from this identity are dropped again until it is paired.", () => void act("Remove identity", "identities/remove", { adapter: i.adapter, externalId: i.externalId }, onChange))}><X className="size-3" /></button>
             </span>
           ))}
+          <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" onClick={() => setAdding(true)} aria-label={`Add identity to ${p.name}`}><Plus />Identity</Button>
         </div>
       </div>
       <div className="flex items-center gap-2">
         <Select value={p.maxLevel} onValueChange={(v) => void act(`Set ${p.name}'s level`, "people/save", { ...p, maxLevel: v }, onChange)}>
           <SelectTrigger aria-label={`${p.name} max level`} size="sm" className="w-28 max-sm:h-10 max-sm:flex-1"><SelectValue /></SelectTrigger>
-          <SelectContent>{LINK_LEVELS.map((l) => <SelectItem key={l.value} value={l.value}>Up to {l.label}</SelectItem>)}</SelectContent>
+          <SelectContent>{LINK_LEVELS.map((l) => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}</SelectContent>
         </Select>
         <Button variant="ghost" size="icon" className="size-8 max-sm:size-10" aria-label={`Remove ${p.name}`}
           onClick={() => ask(`Remove ${p.name}?`, "Every identity is unpaired. Their messages are dropped again.", () => void act(`Remove ${p.name}`, "people/remove", { id: p.id }, onChange))}><Trash2 /></Button>
       </div>
+      {adding && <IdentityDialog person={p} kinds={kinds} onClose={() => setAdding(false)} onSaved={onChange} />}
       {confirmNode}
     </div>
   );
 }
 
+function PersonDialog({ people, onClose, onSaved }: { people: PersonRow[]; onClose: () => void; onSaved: () => void }) {
+  const [name, setName] = useState("");
+  const [maxLevel, setMaxLevel] = useState<LinkLevel>("ask");
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    const r = await act(`Add ${name}`, "people/save", { id: personId(name, people.map((p) => p.id)), name: name.trim(), maxLevel }, onSaved);
+    setBusy(false); if (r) onClose();
+  };
+  return (
+    <FormDialog title="Add a person" problem={name.trim() ? undefined : "name is required"} busy={busy} onSubmit={() => void save()} onClose={onClose}
+      description="Then add their identities: one per platform. Their level caps every message from any of them.">
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="Name" htmlFor="person-name"><Input id="person-name" value={name} onChange={(e) => setName(e.target.value)} /></Field>
+        <Field label="Max level" htmlFor="person-level">
+          <Select value={maxLevel} onValueChange={(v) => setMaxLevel(v as LinkLevel)}>
+            <SelectTrigger id="person-level" className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>{LINK_LEVELS.map((l) => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}</SelectContent>
+          </Select>
+        </Field>
+      </div>
+    </FormDialog>
+  );
+}
+
+function IdentityDialog({ person: p, kinds, onClose, onSaved }: { person: PersonRow; kinds: AdapterMeta[]; onClose: () => void; onSaved: () => void }) {
+  const [adapter, setAdapter] = useState(kinds[0]?.kind ?? "");
+  const [externalId, setExternalId] = useState("");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const body = { principal: p.id, adapter, externalId: externalId.trim(), name: name.trim() };
+  const problem = identityProblem(body, kinds.map((k) => k.kind));
+  const save = async () => { setBusy(true); const r = await act(`Add identity to ${p.name}`, "identities/add", body, onSaved); setBusy(false); if (r) onClose(); };
+  return (
+    <FormDialog title={`Add an identity to ${p.name}`} problem={problem} busy={busy} onSubmit={() => void save()} onClose={onClose}
+      description="The platform's own user id (Discord, Slack) or the email address. A message from it then counts as this person.">
+      <Field label="Platform" htmlFor="identity-adapter">
+        <Select value={adapter} onValueChange={setAdapter}>
+          <SelectTrigger id="identity-adapter" className="w-full"><SelectValue /></SelectTrigger>
+          <SelectContent>{kinds.map((k) => <SelectItem key={k.kind} value={k.kind}><BrandIcon kind={k.kind} className="mr-2" />{k.label}</SelectItem>)}</SelectContent>
+        </Select>
+      </Field>
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Field label="User id or address" htmlFor="identity-id"><Input id="identity-id" value={externalId} onChange={(e) => setExternalId(e.target.value)} className="font-mono" /></Field>
+        <Field label="Name there (optional)" htmlFor="identity-name"><Input id="identity-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="@handle" /></Field>
+      </div>
+    </FormDialog>
+  );
+}
+
 function ApproveDialog({ pairing: p, people, onClose, onSaved }: { pairing: Pairing; people: PersonRow[]; onClose: () => void; onSaved: () => void }) {
-  const [personId, setPersonId] = useState("new");
+  // A known name joins that person: the same human on a second platform is one person, one level.
+  const [personId, setPersonId] = useState(() => people.find((x) => p.name && x.name.toLowerCase() === p.name.toLowerCase())?.id ?? "new");
   const [name, setName] = useState(p.name ?? "");
   const [maxLevel, setMaxLevel] = useState<LinkLevel>("ask");
   const [busy, setBusy] = useState(false);
@@ -426,7 +495,7 @@ function ApproveDialog({ pairing: p, people, onClose, onSaved }: { pairing: Pair
   return (
     <FormDialog title={`Approve ${p.name ?? p.externalId}`} busy={busy} onSubmit={() => void save()} onClose={onClose}
       problem={personId === "new" && !name.trim() ? "name is required" : undefined}
-      description={<>Code <span className="font-mono">{p.code}</span> from {p.adapter} <span className="font-mono">{p.externalId}</span>. Their messages then get min(link level, their level).</>}>
+      description={<>Code <span className="font-mono">{p.code}</span> from {p.adapter} <span className="font-mono">{p.externalId}</span>. Pick an existing person to add this identity to them. Their messages then get min(link level, their level).</>}>
       <Field label="Person" htmlFor="pair-person">
         <Select value={personId} onValueChange={setPersonId}>
           <SelectTrigger id="pair-person" className="w-full"><SelectValue /></SelectTrigger>
