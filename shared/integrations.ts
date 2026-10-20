@@ -341,17 +341,25 @@ export function grantAllowsRepo(g: Grant | undefined, repo: string | undefined, 
  *  own chat — at every level. */
 export const READ_VERBS = ["board", "chats", "read", "channels", "machine"] as const;
 export const WORK_VERBS = ["spawn", "send", "address", "status", "pr-shots", "stop", "archive"] as const;
-export const OWNER_ONLY = ["status --clear-grant", "notes set", "preview --push-to-template --confirm", "handoff create"] as const;
+export const OWNER_ONLY = ["status --clear-grant", "notes set", "preview --push-to-template --confirm", "handoff create", "cloudflare rollback|delete|route"] as const;
 
 /** What each outside level may do, as the orchestrator's prompt says it. */
 export const GRANT_ALLOWS: Record<Exclude<Level, "full">, string> = {
   notify: "nothing; do not act on it",
-  ask: "read verbs (board, chats, read, notes, channels, machine, preview --status, repo list), ask-user, and post on its own link",
+  ask: "read verbs (board, chats, read, notes, channels, machine, preview --status, repo list, cloudflare reads), ask-user, and post on its own link",
   work: "ask's verbs, plus spawn, send, address, status, pr-shots, preview, thread link, stop, archive and merge --when-green on its repos",
   admin: "every orca verb on its repos, plus move, sweep [--confirm] and repo add",
 };
 
 const grantName = (l: Level): string => `${/^[aeiou]/.test(l) ? "an" : "a"} "${l}" grant`;
+
+/** The Cloudflare subcommand in `words` that writes, or undefined (server/cloudflare.ts CLOUDFLARE_WRITES). Pure. */
+export function cloudflareWriteName(words: unknown): string | undefined {
+  const [a = "", b = ""] = Array.isArray(words) ? words.map(String) : [];
+  if (a === "rollback" || a === "delete") return a;
+  if (a === "route" && b !== "list") return `route ${b || "add"}`;
+  return undefined;
+}
 
 /** Why `verb` is refused under `grant`, or undefined when allowed. Server-side: the tool route calls
  *  it for the wake in flight, so a prompt cannot talk its way past it. */
@@ -365,11 +373,15 @@ export function grantRefusal(g: Grant | undefined, verb: string, args: { repo?: 
   if (verb === "notes" && sub === "set") return owner("notes set");
   if (verb === "preview" && args["push-to-template"] !== undefined && args.confirm !== undefined) return owner("preview --push-to-template --confirm");
   if (verb === "handoff" && sub !== "list") return owner(`handoff ${sub || "create"}`);
+  // Cloudflare writes (rollback, delete, route add/remove) change production: the owner's alone.
+  const cfWrite = verb === "cloudflare" ? cloudflareWriteName(args._) : undefined;
+  if (cfWrite) return owner(`cloudflare ${cfWrite}`);
   const read = (READ_VERBS as readonly string[]).includes(verb)
     || verb === "notes"
     || (verb === "preview" && args.status !== undefined && args.status !== false)
     || verb === "ask-user"
-    || (verb === "repo" && sub === "list");
+    || (verb === "repo" && sub === "list")
+    || verb === "cloudflare";
   if (read && rank(g.level) >= rank("ask")) return undefined;
   if (verb === "post") {
     // An answer goes back where the question came from; any other place needs your own chat.

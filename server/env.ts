@@ -5,9 +5,9 @@
 // they are the CLI's, not ours.
 
 /** Orca's secrets. Add one here and every spawn drops it. */
-export const ORCA_SECRETS = ["SLACK_TOKEN", "ORCA_DATABASE_URL", "ORCA_TEST_DATABASE_URL", "TS_OAUTH_CLIENT_ID", "TS_OAUTH_CLIENT_SECRET"] as const;
+export const ORCA_SECRETS = ["SLACK_TOKEN", "ORCA_DATABASE_URL", "ORCA_TEST_DATABASE_URL", "TS_OAUTH_CLIENT_ID", "TS_OAUTH_CLIENT_SECRET", "ORCA_CLOUDFLARE_ACCOUNT_ID"] as const;
 
-/** Every variable with this prefix is a secret too: an integration's token lives in one. */
+/** Every variable with this prefix is a secret too: an integration's token lives in one (ORCA_SECRET_CLOUDFLARE, server/cloudflare.ts). */
 export const SECRET_PREFIX = "ORCA_SECRET_";
 
 export type Env = Record<string, string | undefined>;
