@@ -175,10 +175,11 @@ export const api = {
     post("/api/suggest-title", { repo, ...b }),
   rename: (repo: string, b: { branch: string; title: string; pr?: number }): Promise<{ ok: true }> =>
     post("/api/rename", { repo, ...b }),
-  // If the repo disallows GitHub auto-merge, the server queues the PR in Orca's own merge-when-green
-  // queue instead of failing (`queued: true`) — the UI picks this up from the next enrichment poll
-  // (`row.mergeWhenGreen`), which already reads as the purple "Auto-merge" state.
-  autoMerge: (repo: string, pr: number): Promise<{ ok: true; queued?: boolean; text?: string }> => post("/api/prs/auto-merge", { repo, pr }),
+  // If the repo disallows GitHub auto-merge (or GitHub refuses to arm it on an already-clean PR), the
+  // server either queues the PR in Orca's own merge-when-green queue instead of failing (`queued:
+  // true`) — the UI picks this up from the next enrichment poll (`row.mergeWhenGreen`), which already
+  // reads as the purple "Auto-merge" state — or merges it directly (`merged: true`).
+  autoMerge: (repo: string, pr: number): Promise<{ ok: true; queued?: boolean; merged?: boolean; text?: string }> => post("/api/prs/auto-merge", { repo, pr }),
   mergeWhenGreen: (repo: string, pr: number, branch?: string): Promise<{ text: string }> => post("/api/prs/merge-when-green", { repo, pr, branch, by: "user" }),
   cancelMergeWhenGreen: (repo: string, pr: number, branch?: string): Promise<{ text: string }> =>
     post("/api/prs/merge-when-green", { repo, pr, branch, cancel: true }),

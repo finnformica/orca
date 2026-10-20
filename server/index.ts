@@ -1398,8 +1398,10 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/prs/auto-merge") {
     if (!featuresOf(repo).autoMerge) return notEnabled(repo, "Auto-merge");
     try {
-      await gh.enableAutoMerge(repo.repoPath, body.pr); // GitHub merges once checks + reviews pass
-      return json({ ok: true });
+      // GitHub merges once checks + reviews pass; a PR GitHub says is already clean to merge is
+      // merged directly instead (`merged: true`), so the reply says "merged now", not "enabled".
+      const { merged } = await gh.enableAutoMerge(repo.repoPath, body.pr);
+      return json(merged ? { ok: true, merged: true, text: `Merged PR #${body.pr} now. It was already clean to merge.` } : { ok: true });
     } catch (e) {
       // The repo disallows GitHub's own auto-merge and the PR isn't safe to merge now: queue it in
       // Orca's own merge-when-green queue instead. This is Finn's own click, so the mergePolicy that

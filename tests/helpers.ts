@@ -42,6 +42,8 @@ esac
 // - `pr view` → ORCA_GH_FIXTURE; `pr list` → ORCA_PRLIST_FIXTURE (merged/closed: ORCA_PRLIST_DONE_FIXTURE).
 // - ORCA_GH_STACKED: a merge fails the way GitHub refuses a stacked PR; merge-async answers
 //   ORCA_GH_MERGE_ASYNC. ORCA_GH_NO_AUTO: auto-merge fails the way a repo without it refuses it.
+//   ORCA_GH_CLEAN_STATUS: auto-merge fails the way GitHub refuses it on a PR that is already clean
+//   to merge (CLEAN) or only has advisory checks failing (UNSTABLE).
 // - ORCA_GH_VIEW_DENY: logins whose token cannot see a repository (server/repos.ts tries the next).
 const env = (k: string) => process.env[k];
 const read = async (k: string): Promise<string | undefined> => { const f = env(k); if (!f) return undefined; try { return await readFile(f, "utf8"); } catch { return undefined; } };
@@ -76,6 +78,7 @@ async function fakeGraphql(query: string, vars: Record<string, any>, token: stri
   if (/^\s*mutation/.test(query)) {
     const name = /\{\s*(\w+)\(/.exec(query)?.[1] ?? "";
     if (name === "enablePullRequestAutoMerge" && env("ORCA_GH_NO_AUTO")) return gqlError("Auto merge is not allowed for this repository", name);
+    if (name === "enablePullRequestAutoMerge" && env("ORCA_GH_CLEAN_STATUS")) return gqlError("Pull request is in clean status", name);
     if ((name === "mergePullRequest" || name === "enablePullRequestAutoMerge") && env("ORCA_GH_STACKED")) return gqlError(STACKED_MSG, name);
     return json({ data: { [name]: { clientMutationId: null } } });
   }
