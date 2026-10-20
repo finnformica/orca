@@ -378,7 +378,8 @@ let liveLoaded = false;
 // One render off the fully-settled view — never mid-flight (see pollAgents).
 async function refreshAll(streams: Promise<void>[]): Promise<void> {
   await Promise.all(streams);
-  liveLoaded = true;
+  // A poll tick that beats the config polls zero repos: that is not "loaded, nothing there".
+  if (cfg) liveLoaded = true;
   notify();
 }
 
