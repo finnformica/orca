@@ -12,6 +12,9 @@ import { createWorktree } from "../server/git";
 import { previewDbName, reap } from "../server/preview";
 import type { RepoConfig } from "../server/config";
 import { installFakeDocker, makeScratchRepo, restoreDockerPath } from "./helpers";
+import { canCreateDatabases } from "./pg";
+
+const createdb = await canCreateDatabases();
 
 const BASE = new URL(process.env.ORCA_TEST_DATABASE_URL || "postgres://localhost:5432/postgres");
 const SLOW = 30_000;
@@ -49,7 +52,7 @@ async function repoWithEnv(): Promise<RepoConfig> {
   return { name: "reaptest", repoPath, worktreeRoot, baseBranch: "main", previewServices: [], copyToWorktree: ["backend/.env"] };
 }
 
-test("R1 the reaper drops an orphan preview db, keeps a live worktree's, and leaves a freshly-created one alone", async () => {
+test.skipIf(!createdb)("R1 the reaper drops an orphan preview db, keeps a live worktree's, and leaves a freshly-created one alone", async () => {
   const repo = await repoWithEnv();
   const { worktreePath: liveWorktree } = await createWorktree(repo.repoPath, repo.worktreeRoot, "live-branch", "main");
 

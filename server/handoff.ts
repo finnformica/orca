@@ -18,6 +18,7 @@ import { basename, isAbsolute, resolve } from "path";
 import * as db from "./db";
 import { attachmentRef } from "./attachments";
 import type { AgentTurn } from "../shared/agent";
+import { firstRunPerHandoff } from "../web/src/workstream";
 
 export const HANDOFF_MAX_FILE_BYTES = 10 * 1024 * 1024;
 export const HANDOFF_MAX_PACK_BYTES = 25 * 1024 * 1024;
@@ -187,6 +188,17 @@ export async function list(): Promise<PackView[]> {
 export async function one(id: string): Promise<PackView | undefined> {
   const p = await db.handoff(id);
   return p && view(p);
+}
+
+/** Sets `handoffs` on each turn that made a pack: the ids its own tool results name (the line
+ *  `orca handoff create` prints), each pack on the first turn that names it. One query for the page.
+ *  The chat draws a review widget for each under the turn's reply. */
+export async function linkTurns(turns: AgentTurn[]): Promise<void> {
+  const byRun = firstRunPerHandoff(await db.handoffOutputs(turns.map((t) => t.id)));
+  for (const t of turns) {
+    const ids = byRun.get(t.id);
+    if (ids) t.handoffs = ids;
+  }
 }
 
 // ---- export (source) / import (target) ----

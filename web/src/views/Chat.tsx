@@ -15,7 +15,8 @@ import remarkGfm from "remark-gfm";
 import type { AgentStep, AgentTurn } from "../../../shared/agent";
 import { api, type QueuedMessage } from "../api";
 import { followUp, modelFor, refresh, setCardModel, type Row } from "../store";
-import { RECENT_FULL, TAIL_WINDOW, reportShots, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight } from "../workstream";
+import { RECENT_FULL, TAIL_WINDOW, reportShots, turnHandoffs, TURN_PAGE_SIZE, WORKER_EVENT_MARKER, agentsMarker, attachmentRefs, isImageName, quoteMarkdown, withoutAttachmentList, type AttachmentRef, anchoredScrollTop, capWindow, chatItems, chatPlaceholder, longMessage, newestMessages, splitMessages, longReply, revealAbove, revealBelow, windowRange, type TurnWindow, asTurnPage, atBottom, dayLabel, formatDuration, isWorkerEvent, mergeLatestPage, prependOlderPage, promptInstruction, sameDay, unlandedSends, undeliveredQueued, composerHistory, integrationPreview, integrationState, anchorShift, eagerFrom, estimateItemHeight } from "../workstream";
+import { HandoffWidget } from "./Handoffs";
 import { integrationMessage, shownPlace, type IntegrationMessage } from "../../../shared/integrations";
 import { useCatchAllLabels } from "@/lib/catchAllLabels";
 import { BrandIcon, brandTitle } from "@/components/BrandIcon";
@@ -577,6 +578,8 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
             <span className="opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{clockOf(turn.finishedAt) || time}</span>
           </div>
           <Reply turn={turn} loadSteps={loadSteps} compact={compact} />
+          {/* A pack this turn made (`orca handoff create`): review it and Send it here. */}
+          {turnHandoffs(turn).map((id) => <HandoffWidget key={id} id={id} />)}
         </div>
       </div>
     </div>

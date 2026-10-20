@@ -139,10 +139,12 @@ export const api = {
   // Handoff packs (server/handoff.ts) on the CURRENT server; the import goes to another server's
   // absolute URL from this browser — the boxes never call each other.
   handoffs: (): Promise<{ self: string; packs: PackView[] }> => get("/api/handoffs").then(res),
+  /** One pack; null once it is deleted (404). */
+  handoffPack: (id: string): Promise<{ self: string; pack: PackView } | null> => get(`/api/handoffs/${encodeURIComponent(id)}`).then((r) => (r.status === 404 ? null : res(r))),
   createHandoff: (body: { to: string; title: string; message?: string; repo?: string; branch?: string; chats?: number[] }): Promise<{ pack: PackView }> => post("/api/handoffs", body),
   exportHandoff: (id: string): Promise<WirePack> => apiFetch(`/api/handoffs/${encodeURIComponent(id)}/export`, { cache: "no-store" }).then(res),
   markHandoffSent: (id: string, to: string): Promise<{ ok: boolean }> => post(`/api/handoffs/${encodeURIComponent(id)}/sent`, { to }),
-  handoffBadge: (): Promise<{ unsent: number; unseen: number }> => get("/api/handoffs/badge").then(res),
+  handoffBadge: (): Promise<{ unsent: number }> => get("/api/handoffs/badge").then(res),
   markHandoffsSeen: (): Promise<{ ok: boolean }> => post("/api/handoffs/seen", {}),
   deleteHandoff: (id: string): Promise<{ ok: boolean }> => apiFetch(`/api/handoffs/${encodeURIComponent(id)}`, { method: "DELETE" }).then(res),
   importHandoff: (targetUrl: string, pack: WirePack): Promise<{ duplicate: boolean; files: number }> =>

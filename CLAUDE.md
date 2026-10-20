@@ -299,14 +299,18 @@ both, so it carries the pack (`server/handoff.ts`, `views/Handoffs.tsx`, table `
 - Make one with `orca handoff create --to <server> --title … [--message …] [--file <path|id>]…
   [--chat <id>]…`, or with Hand off… in a card's menu (it packs that chat). `orca handoff list`.
 - The Handoffs page (`/handoffs`, nav item after Integrations, `G K`) shows each pack in full: the exact message and every file.
+- The orchestrator's chat shows the same row (`HandoffWidget`) under the reply of the turn that made the pack, with Send, Delete and Open on the Handoffs page. The link is the id: `orca handoff create` prints `orca-handoff://<id>`, and `/api/turns` reads it from the turn's tool results (`handoff.linkTurns`, `turn.handoffs`). Never match by time.
 - Send is the ONLY way out: a click, a confirm with the file list, GET `/api/handoffs/<id>/export`
   here, POST `/api/handoff/import` on the target, POST `/api/handoffs/<id>/sent` here.
 - The import stores the files as attachments and queues ONE message to the target's orchestrator:
   `[handoff from <source>] <title>`, the message, the file list. A pack id seen before is a no-op.
 - The Handoffs nav item has a count badge (`HandoffsBadge`, `lib/handoffBadge.ts`, `GET /api/handoffs/badge`):
-  packs made here and not sent, plus received packs not seen. The phone shows it in Settings → Navigate.
-  Opening the page marks every received pack seen (`handoff.seen_at`, named step `20261020-handoff-seen`).
-  Send or delete clears an outgoing pack.
+  outgoing packs made here and not sent — the only ones waiting on the user's own approval. A
+  received pack needs no approval, so it never counts. The phone shows it in Settings → Navigate.
+  Send or delete clears an outgoing pack. (History: it briefly also counted a received pack not yet
+  seen; Finn asked for outgoing-only.) `handoff.seen_at` (named step `20261020-handoff-seen`) and
+  `POST /api/handoffs/seen` stay: opening the page still marks every received pack seen, for its own
+  "new" tag on that pack's row — unrelated to the badge now.
 - Safety: 10 MB a file, 25 MB a pack. The secret scan (`scanSecrets`: Slack, Anthropic, GitHub, AWS
   keys, private key blocks, `PASSWORD=`) blocks the export AND the import, and names the line only.
 - The import route needs an Origin header, and loopback or a Tailscale user device (the switcher's

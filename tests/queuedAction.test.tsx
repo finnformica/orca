@@ -7,7 +7,7 @@
 // just be noise. Driven against the real store + apiFake (tests/apiFake.ts), same style as
 // activeFollowing.test.tsx; a tiny probe component reads the toast stack (lib/notificationStore) without
 // mounting the whole App.
-import { afterEach, beforeAll, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { apiFake } from "./apiFake";
@@ -34,6 +34,10 @@ async function mountProbe() {
   document.body.appendChild(container);
   await act(async () => { root = createRoot(container!); root.render(<Probe />); });
 }
+
+// The notification store is a module singleton: a file that ran earlier in the same `bun test`
+// process can leave a toast on it, which the first test here then counts.
+beforeEach(() => { act(() => centre.reset()); });
 
 afterEach(async () => {
   act(() => root?.unmount());

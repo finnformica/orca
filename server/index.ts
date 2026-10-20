@@ -613,11 +613,17 @@ async function api(req: Request, url: URL): Promise<Response> {
         const r = await handoff.createPack({ to: String(body.to ?? ""), title: String(body.title ?? ""), message: typeof body.message === "string" ? body.message : "", chats, source: (await selfServer(cfg.serverSwitcher ?? {})).name });
         return json({ pack: await handoff.one(r.pack.id) });
       }
-      // The nav badge: packs that need the user. Opening the Handoffs page marks the incoming ones seen.
+      // The nav badge: outgoing packs waiting for the user to send them. Opening the Handoffs page
+      // separately marks every received pack seen (the page's own "new" tag, not the badge).
       if (req.method === "GET" && p === "/api/handoffs/badge") return json(await db.handoffBadge());
       if (req.method === "POST" && p === "/api/handoffs/seen") { await db.markHandoffsSeen(); return json({ ok: true }); }
       const m = p.match(/^\/api\/handoffs\/([\w-]+)(\/export|\/sent)?$/);
       if (m && req.method === "GET" && m[2] === "/export") return json(await handoff.exportPack(m[1]!));
+      // One pack, for the review widget under the orchestrator's reply. 404 once it is deleted.
+      if (m && req.method === "GET" && !m[2]) {
+        const pack = await handoff.one(m[1]!);
+        return pack ? json({ self: (await selfServer(cfg.serverSwitcher ?? {})).name, pack }) : json({ error: `no pack ${m[1]}` }, 404);
+      }
       if (m && req.method === "POST" && m[2] === "/sent") {
         if (typeof body.to !== "string" || !body.to.trim()) return json({ error: "to required" }, 400);
         await db.markHandoffSent(m[1]!, body.to.trim());
@@ -1578,6 +1584,9 @@ async function api(req: Request, url: URL): Promise<Response> {
       const files = attachmentRefs(`${t.instruction ?? ""}\n${t.prompt}`);
       if (files.length) t.attachments = files;
     }
+    // The packs the orchestrator made (`orca handoff create`), linked by the id its tool result names:
+    // the chat draws a review widget for each. A failed lookup only loses the widgets.
+    if (repo.name === ORCHESTRATOR_REPO && !degraded) await handoff.linkTurns(turns).catch(db.logUnlessDown("handoff links"));
     for (const t of turns) if (t.instruction !== undefined) t.prompt = "";
     const body = page ? { turns, older: page.older } : turns;
     return degraded ? degradedJson(body) : json(body);

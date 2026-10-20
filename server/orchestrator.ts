@@ -36,7 +36,7 @@ import { machineReport } from "./liveMetrics";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
-  joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, verifiedMark, verifiedState, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  handoffRef, joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, verifiedMark, verifiedState, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
   machineText, type BoardRow, type FailStreak, type MachineReport, type OrchStatus, type VerifiedMark, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
@@ -895,9 +895,11 @@ async function handoffVerb(cfg: OrcaConfig, words: string[], args: ToolArgs): Pr
   return [
     `Pack ${pack.id.slice(0, 8)} "${pack.title}" for ${pack.target}: ${pack.files.length} file${pack.files.length === 1 ? "" : "s"}.`,
     ...files,
+    // The chat links this turn to the pack by this line (workstream.ts handoffRefs): keep it verbatim.
+    `Pack id: ${handoffRef(pack.id)}`,
     problems.length
       ? `Send is BLOCKED until this is fixed (make a new pack): ${problems.join("; ")}`
-      : "It is NOT sent. Tell the user to open Handoffs in Orca and click Send; only their click sends it.",
+      : "It is NOT sent. The user sees it under your reply in the chat, and on the Handoffs page; only their click on Send sends it.",
   ].join("\n");
 }
 
