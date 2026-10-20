@@ -191,7 +191,10 @@ function useListLayout(ref: RefObject<HTMLElement | null>): ReturnType<typeof li
 }
 
 /** A row-shaped placeholder, matching `AgentRow`'s grid (desktop) or stacked (phone) layout, so the
- *  list doesn't reflow once the real rows land. */
+ *  list doesn't reflow once the real rows land. Like a real row, it draws a piece for EVERY column:
+ *  a folded column's piece goes under the title. Without it a folded column measured as its header
+ *  label alone, unfolded, measured its piece and folded again — on every commit, until React gave up
+ *  and the page went blank (a docked panel left the list in that width band while it loaded). */
 function AgentRowSkeleton({ cols, stacked }: { cols: ListColumn[]; stacked: boolean }) {
   if (stacked) {
     return (
@@ -207,13 +210,20 @@ function AgentRowSkeleton({ cols, stacked }: { cols: ListColumn[]; stacked: bool
       </div>
     );
   }
+  const folded = listColumns(NO_FOLD).filter((c) => c.key !== "workstream" && !cols.some((o) => o.key === c.key));
+  const piece = (key: ListColumn["key"], className = "") => (
+    <div key={key} data-col-part={key} className={`w-max shrink-0 ${className}`}><Skeleton className={`h-3.5 ${key === "actions" ? "w-8" : "w-16"}`} /></div>
+  );
   return (
     <div data-slot="workstream-row-skeleton" role="row" className={`${GRID} h-14 border-b last:border-b-0`}>
       {cols.map((c) => (
         <div key={c.key} role="cell" className="min-w-0">
-          {c.key === "workstream" ? <Skeleton className="h-3.5 w-40" /> : (
-            <div data-col-part={c.key} className={`w-max ${c.key === "actions" ? "ml-auto" : ""}`}><Skeleton className={`h-3.5 ${c.key === "actions" ? "w-8" : "w-16"}`} /></div>
-          )}
+          {c.key === "workstream" ? (
+            <div className="space-y-1.5">
+              <Skeleton className="h-3.5 w-40" />
+              {folded.length > 0 && <div data-slot="skeleton-subline" className="flex gap-1 overflow-hidden">{folded.map((f) => piece(f.key))}</div>}
+            </div>
+          ) : piece(c.key, c.key === "actions" ? "ml-auto" : "")}
         </div>
       ))}
     </div>
