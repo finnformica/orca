@@ -260,6 +260,13 @@ export const clientPollCounts = () => ({ ...pollCounts });
 const settle = <T>(p: Promise<T>, fallback: T): Promise<Slice<T>> =>
   p.then((v) => ({ ok: true, v }), () => ({ ok: false, v: fallback }));
 
+/** Store a settled slice. A failed one keeps the last good value: storing its empty fallback made
+ *  every row of the repo leave the board for one poll (the Overview's counts read 0, then came back). */
+function keepGood<T>(by: Map<string, Slice<T>>, name: string, s: Slice<T>): void {
+  const prev = by.get(name);
+  by.set(name, s.ok || !prev ? s : { ok: false, v: prev.v });
+}
+
 function rebuildLive() {
   live = (cfg?.repos ?? []).map((r) => ({
     repo: r.name, hasRemote: r.hasRemote,
@@ -325,7 +332,7 @@ export const pollAgents = coalesced(async () => {
   const polled = await Promise.all((cfg?.repos ?? []).map((r) =>
     settle(api.agents(r.name), [] as LiveAgent[]).then((s) => [r.name, s] as const)));
   pollCounts.agents++;
-  for (const [name, s] of polled) agentsByRepo.set(name, s);
+  for (const [name, s] of polled) keepGood(agentsByRepo, name, s);
   if (polled.some(([, s]) => s.ok)) lastSyncAt = Date.now();
   rebuildLive();
   // Enrichment rides the agents stream: both are local-only bridge calls (no GitHub quota), and it
@@ -344,7 +351,7 @@ export const pollPrs = coalesced(async () => {
   const polled = await Promise.all((cfg?.repos ?? []).map((r) =>
     settle(api.prs(r.name), [] as PrSummary[]).then((s) => [r.name, s] as const)));
   pollCounts.prs++;
-  for (const [name, s] of polled) prsByRepo.set(name, s);
+  for (const [name, s] of polled) keepGood(prsByRepo, name, s);
   rebuildLive();
   runFollowers(); // auto-drive any followed PRs off the status we just polled
   // notify() is the coordinator's job (see pollAgents) — never render off PRs alone.
@@ -355,7 +362,7 @@ export const pollMerged = coalesced(async () => {
     (r.hasRemote ? settle(api.mergedPrs(r.name), [] as MergedPr[]) : Promise.resolve({ ok: true, v: [] as MergedPr[] }))
       .then((s) => [r.name, s] as const)));
   pollCounts.merged++;
-  for (const [name, s] of polled) mergedByRepo.set(name, s);
+  for (const [name, s] of polled) keepGood(mergedByRepo, name, s);
   rebuildLive();
   // notify() is the coordinator's job (see pollAgents): refreshAndGc after a full refresh, or the
   // solo TTL caller below via `.then(notify)`.
