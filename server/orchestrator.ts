@@ -33,6 +33,7 @@ import { stateDir } from "./state";
 import { API_PORT } from "./ports";
 import { reachable } from "./peer";
 import { machineReport } from "./liveMetrics";
+import { cloudflareTool } from "./cloudflare";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
@@ -860,6 +861,9 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       throw new Error("orca repo list [--user <login>] | orca repo add <owner/name> [--on <instance>] [--name <slug>]");
     }
     case "handoff": return handoffVerb(cfg, words, args);
+    // `orca cloudflare …` (server/cloudflare.ts): reads, and three writes behind --confirm. The grant
+    // check above keeps the writes to the user's own chat; the write log names who woke it.
+    case "cloudflare": return cloudflareTool(args, { by: wakeGrant ? `outside sender (${wakeGrant.level} grant)` : "orchestrator (your chat)" });
     case "notes": {
       if (words[0] !== "set") return (await blob()).notes || "(empty)";
       const text = words.slice(1).join(" ").trim();
@@ -867,7 +871,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, handoff`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, handoff, cloudflare`);
   }
 }
 
