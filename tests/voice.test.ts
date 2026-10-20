@@ -3,44 +3,22 @@
 import { describe, expect, test } from "bun:test";
 import { MAX_AUDIO_BYTES, TRANSCRIBE_MODEL, TRANSCRIBE_URL, VOICE_KEY_ENV, audioFileName, handleTranscribe, redact, voiceAvailable } from "../server/voice";
 import { appendTranscript, clipName, pickAudioMime, recordClock } from "../web/src/lib/voice";
-import { native } from "./happydom";
+import { native, nativeUpload } from "./happydom";
 
 const KEY = "sk-proj-TESTKEY1234567890abcdef";
 const env = { [VOICE_KEY_ENV]: KEY };
 
-/** A multipart body built the way a browser sends it (as tests/attachmentsRelay.test.ts does): the
- *  happy-dom preload swaps in a FormData that cannot be read back reliably — `handleTranscribe`'s
- *  own `req.formData()` call read "no audio recorded" for every real clip once enough other test
- *  files had run before this one. `native.Request` is Bun's own, captured before happy-dom replaced
- *  the global, so its `.formData()` uses Bun's multipart parser, not happy-dom's. */
-function multipartBody(fields: { name: string; filename?: string; type?: string; bytes: Uint8Array }[]): { body: Uint8Array<ArrayBuffer>; contentType: string } {
-  const boundary = `----orcaVoiceTest${crypto.randomUUID()}`;
-  const enc = new TextEncoder();
-  const parts: Uint8Array[] = [];
-  for (const f of fields) {
-    const disposition = f.filename ? `form-data; name="${f.name}"; filename="${f.filename}"` : `form-data; name="${f.name}"`;
-    parts.push(enc.encode(`--${boundary}\r\nContent-Disposition: ${disposition}\r\n${f.type ? `Content-Type: ${f.type}\r\n` : ""}\r\n`), f.bytes, enc.encode("\r\n"));
-  }
-  parts.push(enc.encode(`--${boundary}--\r\n`));
-  const body = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
-  let at = 0;
-  for (const p of parts) { body.set(p, at); at += p.byteLength; }
-  return { body, contentType: `multipart/form-data; boundary=${boundary}` };
-}
-
-// Bun's own multipart parser (now that `upload()` goes through it, not happy-dom's) does not carry a
-// part's Content-Type into File.type — `audio.type` always reads "". `handleTranscribe` already
-// expects this: it falls back to the upload's filename extension, which is why the real client
-// (web/src/lib/voice.ts) always names the clip with `clipName(type)` ("voice.webm", "voice.m4a").
-// An unrecognised type (the "unsupported" test) keeps a plain name, same as a browser never would
-// send one for it.
-const EXT: Record<string, string> = { "audio/webm": "webm", "audio/mp4": "m4a" };
-
+// Bun's own Request/FormData/File (not happy-dom's preloaded ones): `handleTranscribe` calls the
+// real `Request.formData()`, Bun's own multipart parser, which reads a part's type from its FILE
+// NAME's extension, never the declared Content-Type — happy-dom's Request/FormData never goes
+// through that parser, so a test built on it wouldn't exercise the code `server/voice.ts` actually
+// runs. The name here is what the browser actually sends (`web/src/lib/voice.ts`'s `clipName`); an
+// unrecognised extension (a real image, say) is what a genuinely unsupported upload looks like.
+const UPLOAD_NAME: Record<string, string> = { "audio/webm": "voice.webm", "audio/mp4": "voice.m4a", "image/png": "clip.png" };
 function upload(bytes: number | Uint8Array<ArrayBuffer>, type = "audio/webm", headers: Record<string, string> = {}): Request {
-  const fileBytes = typeof bytes === "number" ? new Uint8Array(bytes) : bytes;
-  const filename = EXT[type] ? `clip.${EXT[type]}` : "clip";
-  const { body, contentType } = multipartBody([{ name: "audio", filename, type, bytes: fileBytes }]);
-  return new native.Request("http://127.0.0.1/api/voice/transcribe", { method: "POST", headers: { "content-type": contentType, ...headers }, body });
+  const form = new nativeUpload.FormData();
+  form.append("audio", new nativeUpload.File([typeof bytes === "number" ? new Uint8Array(bytes) : bytes], UPLOAD_NAME[type] ?? "clip", { type }));
+  return new native.Request("http://127.0.0.1/api/voice/transcribe", { method: "POST", body: form, headers });
 }
 
 type Seen = { url: string; auth: string | null; file: File; model: string };
@@ -100,8 +78,7 @@ describe("POST /api/voice/transcribe", () => {
   test("an empty clip, a missing field and an unknown type are refused", async () => {
     const ai = fakeOpenAI(() => Response.json({ text: "x" }));
     expect((await handleTranscribe(upload(0), { env, fetch: ai.fetch })).status).toBe(400);
-    const { body: emptyBody, contentType: emptyType } = multipartBody([]);
-    const noField = new native.Request("http://127.0.0.1/api/voice/transcribe", { method: "POST", headers: { "content-type": emptyType }, body: emptyBody });
+    const noField = new native.Request("http://127.0.0.1/api/voice/transcribe", { method: "POST", body: new nativeUpload.FormData() });
     expect((await handleTranscribe(noField, { env, fetch: ai.fetch })).status).toBe(400);
     expect((await handleTranscribe(upload(4, "image/png"), { env, fetch: ai.fetch })).status).toBe(415);
     expect(ai.seen).toHaveLength(0);
