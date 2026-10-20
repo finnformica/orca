@@ -193,7 +193,14 @@ the one of `integration.instance`, or for Automatic (`*`, the default) the prima
 that holds the row's lease (`status.auto`, 150 s, renewed each sync — the failover when it lapses). Secrets stay in env vars named `ORCA_SECRET_*` (stripped from agents); a
 row holds only the name. An outside sender's message gets a grant (min of link level and person) that
 rides `queued_message.grant_scope`: one grant per orchestrator wake, `orchestrator.tool` refuses
-verbs outside it (`grantRefusal`), and such a wake has no shell; a workstream it spawns or steers
+verbs outside it (`grantRefusal`), and such a wake has no shell. Levels, low to high (Settings
+names in brackets, stored values unchanged): `notify` (Notify), `ask` (Viewer: read verbs, `post` on
+its own link), `work` (Editor: spawn, send, address, status, pr-shots, preview, thread link, stop,
+archive and `merge --when-green` on the link's repos), `admin` (Admin: every verb on those repos,
+plus `move`, `sweep`, `repo add`; named step `20261020-principal-link-admin-level` widened the
+CHECKs), `full` (your own chat only). `status --clear-grant`, `notes set`, `preview
+--push-to-template --confirm` and `handoff create` stay `full` at every level. Pairing approval
+still gives at most `work`. A workstream it spawns or steers
 gets `grantScope` and runs in SCOPED mode (`agent.scopedRules`: `claude -p --permission-mode dontAsk`
 plus allow and deny rules — files in the worktree, git and the toolchain, no secrets, no
 `--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).

@@ -986,6 +986,19 @@ export const MIGRATIONS: MigrationStep[] = [
       CREATE INDEX IF NOT EXISTS machine_sample_instance_at ON machine_sample (instance, at);
     `,
   },
+  {
+    name: "20261020-principal-link-admin-level",
+    idempotent: true,
+    // The "admin" grant level (shared/integrations.ts): a trusted person may run every orca verb on
+    // the link's repos, plus move, sweep and repo add. Widen both CHECKs. Each statement drops and
+    // re-adds the SAME constraint in one ALTER TABLE, so a re-run is a no-op.
+    sql: `
+      ALTER TABLE channel_link DROP CONSTRAINT IF EXISTS channel_link_level_check,
+        ADD CONSTRAINT channel_link_level_check CHECK (level IN ('notify','ask','work','admin'));
+      ALTER TABLE principal DROP CONSTRAINT IF EXISTS principal_max_level_check,
+        ADD CONSTRAINT principal_max_level_check CHECK (max_level IN ('notify','ask','work','admin'));
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };

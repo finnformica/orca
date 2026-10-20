@@ -17,7 +17,9 @@ import { navigate } from "@/lib/route";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-beforeAll(() => store.configReady);
+// Every test file shares one process and one URL: an earlier file can leave a PR page open
+// (e.g. /r/prs/7/chat). Start on "/" like afterEach does, so the first test sees the Overview.
+beforeAll(async () => { await store.configReady; await act(async () => navigate("/")); });
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
