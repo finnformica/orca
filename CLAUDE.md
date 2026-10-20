@@ -1128,7 +1128,9 @@ split by workstream (Finn's call) — CPU as stacked work + hatched iowait (0–
 is a number in the caption and tooltip, never a second axis), Memory as stacked used + cache under a
 dashed agents-slice MemoryMax, and **Disk IO** (root device read + write MB/s under a dashed cap,
 `ORCA_DISK_CAP_MBS`, default 125 — the gp3 baseline; the 2026-10-19 IO stall looked like CPU on the
-old line). `StackedChart` (`components/console.tsx`) is their chart; hover or tap opens the shadcn
+old line). On macOS (no `/proc`) the ring reads CPU from `os.cpus()` (iowait 0), and memory
+(`vm_stat`) and disk (`ioreg` byte counters) take turns, one small spawn a tick (`createDarwinSampler`).
+The card's Status reads Online from a fresh sample too (`instanceStatus`). `StackedChart` (`components/console.tsx`) is their chart; hover or tap opens the shadcn
 tooltip with the values at that time. An older bridge without the route keeps the lines. Beside them,
 in the `LineChart` design, an **Agents** chart (`running_agents` over time). There is no Disk used
 chart any more (removed at Finn's request, #359): the disk figure stays in the details grid's **Disk**

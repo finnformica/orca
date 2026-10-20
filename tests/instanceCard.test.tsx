@@ -475,3 +475,17 @@ test("the heavy-queue header shows one decimal; on a phone the rows scroll sidew
     window.matchMedia = realMatchMedia;
   }
 });
+
+test("the status is Online while /api/health has not answered, once the machine's samples are fresh; Loading with no evidence", async () => {
+  apiFake.holdHealth = true;
+  const now = Date.now();
+  apiFake.healthHistoryData = [{ at: now - 60_000, cpuPct: 30, load1: 0.1, memUsedGb: 2, memTotalGb: 24 }];
+  await render(<InstanceCard instance="local" here={false} />);
+  await ready();
+  expect(detail(container!.querySelector('[data-slot="instance-local"]')!, "instance-status")).toContain("Online");
+  await act(async () => { root?.unmount(); }); container?.remove();
+  apiFake.healthHistoryData = [];
+  await render(<InstanceCard instance="laptop" here={false} />);
+  await ready();
+  expect(detail(container!.querySelector('[data-slot="instance-laptop"]')!, "instance-status")).toContain("Loading…");
+});
