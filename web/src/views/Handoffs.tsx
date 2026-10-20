@@ -4,11 +4,13 @@
 // message the target's orchestrator gets and every file, text files in full. Send is the only way a
 // pack leaves: a click, a confirm with the file list, then GET the pack here, POST it to the target's
 // /api/handoff/import, and mark it sent here. A secret or a file over the cap blocks Send.
+// The orchestrator's chat draws the SAME row (`HandoffWidget`, variant "chat") under the reply of the
+// turn that made the pack, so the review and the click can happen there; there is one send path.
 import { useCallback, useEffect, useState } from "react";
-import { Package, Send, Trash2 } from "lucide-react";
+import { ExternalLink, Package, Send, Trash2 } from "lucide-react";
 import { api } from "../api";
 import type { PackView } from "../../../server/handoff";
-import { byteSize, handoffTarget, handoffTargets, parseHandoffDraft } from "../workstream";
+import { byteSize, handoffTarget, handoffTargets, handoffWidgetState, parseHandoffDraft } from "../workstream";
 import { Empty, Pill, VCard } from "@/components/console";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -110,10 +112,36 @@ function NewPack({ draft, others, onCreated }: { draft: { repo: string; branch: 
   );
 }
 
-function PackRow({ pack, source, servers, onChange }: { pack: PackView; source: { name: string; url?: string }; servers: ServerEntry[]; onChange: () => void }) {
+/** A pack the orchestrator made, under the reply of the turn that made it (Chat.tsx): the Handoffs
+ *  page's own row, so Send, Delete and the preview are the page's. A deleted pack says so. */
+export function HandoffWidget({ id }: { id: string }) {
+  const [data, setData] = useState<{ self: string; pack: PackView } | null | undefined>(undefined);
+  const [loadError, setLoadError] = useState<string>();
+  const { servers } = useServers();
+  const load = useCallback(() => api.handoffPack(id).then((d) => { setData(d); setLoadError(undefined); }).catch((e) => setLoadError(e instanceof Error ? e.message : String(e))), [id]);
+  useEffect(() => { void load(); }, [load]);
+  if (data === null) {
+    return <div data-slot="chat-handoff" data-state="discarded" className="text-muted-foreground mt-2 rounded-md border px-3 py-2 text-xs">Handoff pack deleted. It was not sent.</div>;
+  }
+  if (!data) {
+    return <div data-slot="chat-handoff" data-state="loading" className="text-muted-foreground mt-2 rounded-md border px-3 py-2 text-xs">{loadError ? `Cannot load the handoff pack: ${loadError}` : "Loading the handoff pack…"}</div>;
+  }
+  return (
+    <div className="mt-2 rounded-md border">
+      <PackRow pack={data.pack} source={{ name: data.self, url: apiBase() || undefined }} servers={servers} onChange={load} variant="chat" />
+    </div>
+  );
+}
+
+function PackRow({ pack, source, servers, onChange, variant = "page" }: { pack: PackView; source: { name: string; url?: string }; servers: ServerEntry[]; onChange: () => void; variant?: "page" | "chat" }) {
+  const chat = variant === "chat";
   const [open, setOpen] = useState(!pack.sentAt);
   const [chosen, setChosen] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
+  // The last send's result, for the chat's widget: what the target said, or the error.
+  const [sendError, setSendError] = useState<string>();
+  const [result, setResult] = useState<string>();
+  const state = handoffWidgetState(pack, sendError);
   const others = handoffTargets(servers, source);
   const target = handoffTarget(servers, pack.target, source, chosen);
   const blocked = pack.problems.length > 0;
@@ -132,12 +160,18 @@ function PackRow({ pack, source, servers, onChange }: { pack: PackView; source: 
     });
     if (!ok) return;
     setBusy(true);
+    setSendError(undefined);
     try {
       const wire = await api.exportHandoff(pack.id);
-      await api.importHandoff(target.url, wire);
+      const r = await api.importHandoff(target.url, wire);
       await api.markHandoffSent(pack.id, target.name);
+      setResult(r.duplicate ? `${target.name} already had this pack. Nothing was queued again.` : `The orchestrator on ${target.name} got the message and ${r.files} file${r.files === 1 ? "" : "s"}.`);
       onChange();
-    } catch (e) { failed(`Send to ${target.name}`, pack.title, e); }
+    } catch (e) {
+      // The chat's widget shows the error in place; the page shows it as a notification.
+      if (chat) setSendError(e instanceof Error ? e.message : String(e));
+      else failed(`Send to ${target.name}`, pack.title, e);
+    }
     finally { setBusy(false); }
   };
   const remove = async () => {
@@ -150,10 +184,11 @@ function PackRow({ pack, source, servers, onChange }: { pack: PackView; source: 
     </Button>
   );
   return (
-    <div data-slot="handoff-pack" className="px-4 py-3 text-sm">
+    <div data-slot={chat ? "chat-handoff" : "handoff-pack"} data-state={state} className={chat ? "px-3 py-2.5 text-[13px]" : "px-4 py-3 text-sm"}>
       <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
         <button type="button" className="min-w-0 text-left" aria-expanded={open} onClick={() => setOpen(!open)}>
           <span className="flex items-center gap-2 font-medium">
+            {chat && <Package className="text-muted-foreground size-4 shrink-0" />}
             {pack.title}
             {pack.sentAt ? <Pill tone="green">sent to {pack.sentTo}</Pill> : blocked ? <Pill tone="red">blocked</Pill> : <Pill tone="blue">ready</Pill>}
           </span>
@@ -161,21 +196,32 @@ function PackRow({ pack, source, servers, onChange }: { pack: PackView; source: 
             for {pack.target} · {pack.files.length} file{pack.files.length === 1 ? "" : "s"} · {byteSize(total)} · from {pack.source} · {open ? "hide" : "show"} preview
           </span>
         </button>
-        {!pack.sentAt && (
+        {(!pack.sentAt || chat) && (
           <div className="flex flex-wrap items-center gap-2">
+            {chat && (
+              <Tip label="Open on the Handoffs page">
+                <Button variant="ghost" size="icon" aria-label="Open on the Handoffs page" onClick={() => navigate("/handoffs")} className="size-10 md:size-8"><ExternalLink className="size-4" /></Button>
+              </Tip>
+            )}
             {(others.length > 1 || (!target && others.length > 0)) && (
               <Select value={target?.url ?? ""} onValueChange={setChosen}>
                 <SelectTrigger aria-label="Send to" className="h-10 md:h-8 md:w-48"><SelectValue placeholder="Choose a server" /></SelectTrigger>
                 <SelectContent>{others.map((s) => <SelectItem key={s.url} value={s.url}>{s.name}</SelectItem>)}</SelectContent>
               </Select>
             )}
-            {blocked ? <Tip label={pack.problems[0]!}>{sendButton}</Tip>
+            {!pack.sentAt && (blocked ? <Tip label={pack.problems[0]!}>{sendButton}</Tip>
               : !target ? <Tip label={`No server named ${pack.target} in the server list. Choose one, or add it in the server menu.`}>{sendButton}</Tip>
-              : sendButton}
-            <Button variant="ghost" size="icon" aria-label="Delete pack" onClick={() => void remove()} className="size-10 md:size-8"><Trash2 className="size-4" /></Button>
+              : sendButton)}
+            {!pack.sentAt && <Button variant="ghost" size="icon" aria-label="Delete pack" onClick={() => void remove()} className="size-10 md:size-8"><Trash2 className="size-4" /></Button>}
           </div>
         )}
       </div>
+      {chat && sendError && <p data-slot="handoff-error" role="alert" className="text-geist-red mt-2 text-xs">Send failed: {sendError}</p>}
+      {chat && pack.sentAt && (
+        <p data-slot="handoff-result" className="text-muted-foreground mt-2 text-xs">
+          {result ?? `Sent to ${pack.sentTo} on ${new Date(pack.sentAt).toLocaleString()}.`}
+        </p>
+      )}
       {blocked && !pack.sentAt && (
         <ul data-slot="handoff-problems" className="text-geist-red mt-2 list-disc space-y-0.5 pl-5 text-xs">
           {pack.problems.map((p) => <li key={p}>{p}</li>)}
