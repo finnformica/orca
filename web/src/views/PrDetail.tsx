@@ -3,7 +3,7 @@ import { afterDockMotion } from "@/lib/dock";
 import { ArrowLeft, ExternalLink, GitMerge } from "lucide-react";
 import { api } from "../api";
 import type { PrDetail as PrDetailData } from "../../../server/gh";
-import { addPreviewLabel, useWorkstreams, type Row } from "../store";
+import { addPreviewLabel, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
 import { navigate, type PrTab } from "@/lib/route";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PreviewPanel } from "./PreviewControl";
@@ -56,6 +56,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
   const [diff, setDiff] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const liveRow = useWorkstreams().find((r) => r.repo === repo && r.prNumber === number); // your own PR, if tracked
+  const loaded = useWorkstreamsLoaded(); // until then, no liveRow does not mean "not yours"
   const summary = useSummary(liveRow); // its commits, for the Details card's Source
   const header = useStickyHeader(Boolean(pr));
   const narrow = useNarrow();
@@ -118,9 +119,13 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
       {pr.autoMergeEnabled && <Badge variant="outline" className="border-transparent bg-purple-500/10 text-purple-700 dark:text-purple-400">Auto-merge <GitMerge /></Badge>}
     </div>
   );
-  // A coworker's PR has no conversation here; the checks moved onto Overview, so an old /checks link lands there.
+  // The checks moved onto Overview, so an old /checks link lands there. The Chat tab stays when the
+  // URL names it: on a reload the store has no rows yet, and swapping to Overview then looked like the
+  // reload lost the tab. It shows a loading line until the store loads, then the conversation or why
+  // there is none (a coworker's PR, or one merged before today).
   const sig = liveRow ? reviewSig(liveRow) : undefined;
-  const sub2 = (!liveRow && sub === "chat") || sub === "checks" ? "overview" : sub;
+  const sub2 = sub === "checks" ? "overview" : sub;
+  const showChat = Boolean(liveRow) || !loaded || sub === "chat";
 
   return (
     <div style={header.style}>
@@ -133,7 +138,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
             actions={liveRow && <WorkstreamActions row={liveRow} compact={narrow} tipSide="bottom" followUp={false} leading={<PreviewCell row={liveRow} />} beforeMenu={<VerifiedButton row={liveRow} icon />} />} />
           <TabsList className={HEADER_TABS}>
             <TabsTrigger value="overview">Overview</TabsTrigger>
-            {liveRow && <TabsTrigger value="chat">Chat</TabsTrigger>}
+            {showChat && <TabsTrigger value="chat">Chat</TabsTrigger>}
             <TabsTrigger value="files">Files changed ({pr.changedFiles})</TabsTrigger>
             <TabsTrigger value="preview">Preview</TabsTrigger>
           </TabsList>
@@ -170,9 +175,11 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
           <ConversationCard repo={repo} prNumber={number} sig={sig} comments={pr.comments} reviews={pr.reviews} />
         </TabsContent>
 
-        {liveRow && (
+        {showChat && (
           <TabsContent value="chat">
-            <ChatCard row={liveRow} />
+            {liveRow ? <ChatCard row={liveRow} />
+              : !loaded ? <p data-slot="chat-loading" className="text-muted-foreground pt-4 text-sm">Loading conversation…</p>
+              : <p data-slot="chat-none" className="text-muted-foreground pt-4 text-sm">No agent conversation for this PR on the board. It is not an Orca workstream, or it is merged or archived.</p>}
           </TabsContent>
         )}
 
