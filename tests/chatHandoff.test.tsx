@@ -76,7 +76,7 @@ const linkedTurn = () => apiFake.turnsData.set("r::feat", [
 ]);
 
 test("ready: the widget under the reply shows the title, target, message, files, chats and sizes", async () => {
-  apiFake.handoffPacks.set(ID, pack());
+  apiFake.handoffPackById.set(ID, pack());
   linkedTurn();
   await mount();
   const w = widget()!;
@@ -100,7 +100,7 @@ test("ready: the widget under the reply shows the title, target, message, files,
 });
 
 test("sent: Send is the page's path (export, import on the target, mark sent), then the result shows", async () => {
-  apiFake.handoffPacks.set(ID, pack());
+  apiFake.handoffPackById.set(ID, pack());
   linkedTurn();
   await mount();
   await click(sendButton());
@@ -115,7 +115,7 @@ test("sent: Send is the page's path (export, import on the target, mark sent), t
 });
 
 test("failed: a refused import shows the error in the widget, and the pack stays ready to send again", async () => {
-  apiFake.handoffPacks.set(ID, pack());
+  apiFake.handoffPackById.set(ID, pack());
   apiFake.handoffImportError = "Import refused: the caller is not a Tailscale user device.";
   linkedTurn();
   await mount();
@@ -130,7 +130,7 @@ test("failed: a refused import shows the error in the widget, and the pack stays
 });
 
 test("discarded: Delete removes the pack and the widget says it was not sent", async () => {
-  apiFake.handoffPacks.set(ID, pack());
+  apiFake.handoffPackById.set(ID, pack());
   linkedTurn();
   await mount();
   await click(widget()!.querySelector('[aria-label="Delete pack"]')!);
@@ -142,7 +142,7 @@ test("discarded: Delete removes the pack and the widget says it was not sent", a
 });
 
 test("a running turn shows its pack from the tool result in its steps, before the bridge links it", async () => {
-  apiFake.handoffPacks.set(ID, pack());
+  apiFake.handoffPackById.set(ID, pack());
   apiFake.turnsData.set("r::feat", [{
     id: "run-2", provider: "claude", prompt: "pack it", response: "",
     steps: [

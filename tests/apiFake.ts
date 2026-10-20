@@ -64,7 +64,7 @@ export const apiFake = {
   agentLaunches: [] as { key: string; prompt: string; provider: AgentProvider; resume?: string; history?: unknown[]; handoffFrom?: AgentProvider; model?: string; instance?: string }[],
   handoffs: [] as { branch: string; content: string }[],
   // Handoff packs (server/handoff.ts) as the chat's widget reads them: by id, with a send trail.
-  handoffPacks: new Map<string, import("../server/handoff").PackView>(),
+  handoffPackById: new Map<string, import("../server/handoff").PackView>(),
   handoffSelf: "orca-work-box",
   handoffImportError: null as string | null,
   handoffCalls: [] as unknown[][],
@@ -209,7 +209,11 @@ export const apiFake = {
   inboxReplyError: null as string | null,
   // What api.inboxUnread answers: the inbox rows the bell has no copy of, and muted kinds.
   inboxUnreadData: { others: 0, mutedKinds: [] as string[] },
-  reset() { this.inboxUnreadData = { others: 0, mutedKinds: [] }; this.inboxData = null; this.inboxCalls = []; this.inboxThreads.clear(); this.threadLinksData = []; this.integrationLinks = []; this.inboxActions = []; this.inboxReplyError = null; this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.holdPrDetail = false; this.releasePrDetail = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.agentsError = null; this.healthHistoryError = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.handoffPacks.clear(); this.handoffSelf = "orca-work-box"; this.handoffImportError = null; this.handoffCalls = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.holdHealth = false; this.healthHistoryData = []; this.healthHistoryCalls = []; this.healthLiveData = null; this.healthLiveCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.settleResult = { outcome: "conflict", files: [] }; this.settleCalls = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.turnPageDbUnavailable = false; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.uploadAttachmentsResult = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.holdSetProfileEnabled = false; this.setProfileEnabledReleasers = []; this.refreshProfileCalls = []; this.refreshProfileError = null; this.refreshProfileStaysStale = false; this.instanceRates = {}; this.setInstanceRateCalls = []; this.setInstanceTerminalCalls = []; this.setShowBoardCalls = []; this.setServerIdentityCalls = []; this.setServerIdentityError = null; this.githubAccounts = []; this.setGithubAccountCalls = []; },
+  // The Handoffs nav badge (api.handoffBadge) and page (api.handoffs); markHandoffsSeen clears `unseen`.
+  handoffBadgeData: { unsent: 0, unseen: 0 },
+  handoffPacks: [] as Record<string, unknown>[],
+  handoffSeenCalls: 0,
+  reset() { this.inboxUnreadData = { others: 0, mutedKinds: [] }; this.handoffBadgeData = { unsent: 0, unseen: 0 }; this.handoffPacks = []; this.handoffSeenCalls = 0; this.inboxData = null; this.inboxCalls = []; this.inboxThreads.clear(); this.threadLinksData = []; this.integrationLinks = []; this.inboxActions = []; this.inboxReplyError = null; this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.holdPrDetail = false; this.releasePrDetail = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.agentsError = null; this.healthHistoryError = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.handoffPackById.clear(); this.handoffSelf = "orca-work-box"; this.handoffImportError = null; this.handoffCalls = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.holdHealth = false; this.healthHistoryData = []; this.healthHistoryCalls = []; this.healthLiveData = null; this.healthLiveCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.settleResult = { outcome: "conflict", files: [] }; this.settleCalls = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.turnPageDbUnavailable = false; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.uploadAttachmentsResult = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.holdSetProfileEnabled = false; this.setProfileEnabledReleasers = []; this.refreshProfileCalls = []; this.refreshProfileError = null; this.refreshProfileStaysStale = false; this.instanceRates = {}; this.setInstanceRateCalls = []; this.setInstanceTerminalCalls = []; this.setShowBoardCalls = []; this.setServerIdentityCalls = []; this.setServerIdentityError = null; this.githubAccounts = []; this.setGithubAccountCalls = []; },
 };
 
 mock.module("@/api", () => ({
@@ -226,6 +230,14 @@ mock.module("@/api", () => ({
       return { ...page, rows: filterInbox(page.rows, q) };
     },
     inboxUnread: async () => apiFake.inboxUnreadData,
+    handoffBadge: async () => apiFake.handoffBadgeData,
+    handoffs: async () => ({ self: "here", packs: apiFake.handoffPacks }),
+    markHandoffsSeen: async () => {
+      apiFake.handoffSeenCalls++;
+      apiFake.handoffBadgeData = { ...apiFake.handoffBadgeData, unseen: 0 };
+      apiFake.handoffPacks = apiFake.handoffPacks.map((p) => (p.direction === "in" && !p.seenAt ? { ...p, seenAt: Date.now() } : p));
+      return { ok: true };
+    },
     inboxThread: async (c: string) => {
       const t = apiFake.inboxThreads.get(c);
       if (!t) throw new Error("no such conversation");
@@ -473,28 +485,28 @@ mock.module("@/api", () => ({
     },
     handoffPack: async (id: string) => {
       apiFake.handoffCalls.push(["get", id]);
-      const pack = apiFake.handoffPacks.get(id);
+      const pack = apiFake.handoffPackById.get(id);
       return pack ? { self: apiFake.handoffSelf, pack } : null;
     },
     exportHandoff: async (id: string) => {
       apiFake.handoffCalls.push(["export", id]);
-      const p = apiFake.handoffPacks.get(id)!;
+      const p = apiFake.handoffPackById.get(id)!;
       return { version: 1, id, source: p.source, to: p.target, title: p.title, message: p.message, createdAt: p.createdAt, files: [] };
     },
     importHandoff: async (url: string, wire: { id: string }) => {
       apiFake.handoffCalls.push(["import", url, wire.id]);
       if (apiFake.handoffImportError) throw new Error(apiFake.handoffImportError);
-      return { duplicate: false, files: apiFake.handoffPacks.get(wire.id)?.files.length ?? 0 };
+      return { duplicate: false, files: apiFake.handoffPackById.get(wire.id)?.files.length ?? 0 };
     },
     markHandoffSent: async (id: string, to: string) => {
       apiFake.handoffCalls.push(["sent", id, to]);
-      const p = apiFake.handoffPacks.get(id);
-      if (p) apiFake.handoffPacks.set(id, { ...p, sentAt: 1_700_000_500_000, sentTo: to });
+      const p = apiFake.handoffPackById.get(id);
+      if (p) apiFake.handoffPackById.set(id, { ...p, sentAt: 1_700_000_500_000, sentTo: to });
       return { ok: true };
     },
     deleteHandoff: async (id: string) => {
       apiFake.handoffCalls.push(["delete", id]);
-      apiFake.handoffPacks.delete(id);
+      apiFake.handoffPackById.delete(id);
       return { ok: true };
     },
     handoff: async (_repo: string, branch: string, content: string) => {
