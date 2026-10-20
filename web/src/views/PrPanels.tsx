@@ -105,9 +105,9 @@ export function CiChip({ repo, prNumber, ciStatus, checks }: { repo: string; prN
     <HoverCard onOpenChange={(open) => { if (open && !checks && prNumber) ensureChecks(repo, prNumber); }}>
       <HoverCardTrigger asChild>
         <span data-slot="ci-chip" data-status={ciStatus} tabIndex={0} aria-label={CI_LABEL[ciStatus]}>
-          {ciStatus === "passing" && <Badge variant="success">CI <Check /></Badge>}
-          {ciStatus === "failing" && <Badge variant="destructive">CI <X /></Badge>}
-          {ciStatus === "pending" && <Badge variant="outline">CI <Clock /></Badge>}
+          {ciStatus === "passing" && <Badge variant="success" className="h-6">CI <Check /></Badge>}
+          {ciStatus === "failing" && <Badge variant="destructive" className="h-6">CI <X /></Badge>}
+          {ciStatus === "pending" && <Badge variant="outline" className="h-6">CI <Clock /></Badge>}
         </span>
       </HoverCardTrigger>
       <HoverCardContent align="start" className="w-96 max-w-[calc(100vw-2rem)] p-0">
