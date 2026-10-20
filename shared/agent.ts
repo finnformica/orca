@@ -130,6 +130,8 @@ export type AgentTurn = {
   stepSeq?: number;
   /** Files the message carried (stored attachments, `/api/attachments/<id>`) — server-decorated. */
   attachments?: { id: string; name: string }[];
+  /** Handoff packs this turn made (`orca handoff create`), by id — server-decorated (handoff.linkTurns). */
+  handoffs?: string[];
 };
 
 const OUTCOME_HEADINGS = ["outcome", "verification", "decisions", "remaining", "commits"] as const;

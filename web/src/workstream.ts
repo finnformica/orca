@@ -4179,6 +4179,53 @@ export function parseHandoffDraft(search: string): { repo: string; branch: strin
   return repo && branch ? { repo, branch, title: q.get("title") ?? branch } : null;
 }
 
+/** The link from a turn to the pack it made: `orca handoff create` (server/orchestrator.ts) prints
+ *  this reference with the pack's full id. The bridge writes the line, not the model, and the run's
+ *  tool-result step stores it, so the chat finds the pack by id, never by time. */
+export const HANDOFF_REF = "orca-handoff://";
+export const handoffRef = (id: string): string => `${HANDOFF_REF}${id}`;
+
+/** Every pack id referenced in a text, in order, each once. Pure. */
+export function handoffRefs(text: string | undefined): string[] {
+  const out: string[] = [];
+  for (const m of (text ?? "").matchAll(/orca-handoff:\/\/([\w-]{8,64})/g)) if (!out.includes(m[1]!)) out.push(m[1]!);
+  return out;
+}
+
+/** The packs a turn made: the ids the bridge linked (`turn.handoffs`), plus any in the turn's loaded
+ *  tool results — a running turn shows its pack before the next page read links it. A failed tool
+ *  call made no pack. Pure. */
+export function turnHandoffs(turn: { handoffs?: string[]; steps?: { kind: string; output?: string; isError?: boolean }[] }): string[] {
+  const out = [...(turn.handoffs ?? [])];
+  for (const s of turn.steps ?? []) if (s.kind === "result" && !s.isError) for (const id of handoffRefs(s.output)) if (!out.includes(id)) out.push(id);
+  return out;
+}
+
+/** Each pack id to the FIRST run whose tool results reference it (runs oldest first). A later echo
+ *  of the same line does not move the pack to a later turn. Pure. */
+export function firstRunPerHandoff(outputs: { runId: string; output: string }[]): Map<string, string[]> {
+  const seen = new Set<string>(), out = new Map<string, string[]>();
+  for (const { runId, output } of outputs) {
+    for (const id of handoffRefs(output)) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.set(runId, [...(out.get(runId) ?? []), id]);
+    }
+  }
+  return out;
+}
+
+export type HandoffWidgetState = "loading" | "ready" | "blocked" | "sent" | "failed" | "discarded";
+/** The chat's handoff widget: `pack` undefined while it loads, null once the bridge says it is gone
+ *  (deleted). A send error shows until a send works. Pure. */
+export function handoffWidgetState(pack: { sentAt?: number; problems: string[] } | null | undefined, sendError?: string): HandoffWidgetState {
+  if (pack === undefined) return "loading";
+  if (pack === null) return "discarded";
+  if (pack.sentAt) return "sent";
+  if (sendError) return "failed";
+  return pack.problems.length ? "blocked" : "ready";
+}
+
 /** A byte count for a file list ("812 B", "4.2 KB", "1.3 MB"). Pure. */
 export const byteSize = (n: number): string => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
 

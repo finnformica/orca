@@ -1829,6 +1829,20 @@ export async function stepsForRuns(runIds: string[]): Promise<Map<string, { seq:
   });
 }
 
+/** The tool results of these runs that name a handoff pack (`orca-handoff://<id>`, printed by
+ *  `orca handoff create`), oldest first: the link from a turn to the pack it made (handoff.linkTurns). */
+export async function handoffOutputs(runIds: string[]): Promise<{ runId: string; output: string }[]> {
+  if (!runIds.length) return [];
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      SELECT run_id, step->>'output' AS output FROM turn_step
+      WHERE run_id IN ${sql(runIds)} AND step->>'kind' = 'result' AND COALESCE(step->>'isError', 'false') <> 'true'
+        AND step->>'output' LIKE '%orca-handoff://%'
+      ORDER BY at, seq`;
+    return (rows as { run_id: string; output: string }[]).map((r) => ({ runId: r.run_id, output: r.output }));
+  });
+}
+
 // ---- queued messages ----
 
 export type QueuedMessage = {
