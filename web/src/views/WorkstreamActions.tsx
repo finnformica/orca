@@ -123,14 +123,16 @@ const mergeConfirm = (row: Row): ConfirmOptions => ({
 // the quick icons always sit immediately left of it; `quick={false}` leaves them to the caller (the
 // comfortable Board card puts them on its preview line). `menuOnly` is the Agents list's trailing ⋯:
 // no toolbar (the row renders its quick icons itself, left of its preview cell); Open ▸ Agent chat
-// takes the reply. `contextAt` (menuOnly) opens the SAME items as a right-click menu at that point — a
+// takes the reply. `followUp={false}` drops the Follow up button (the agent page: its Chat tab has
+// the composer). `beforeMenu` sits immediately left of the Actions trigger (the agent page's Verified
+// button). `contextAt` (menuOnly) opens the SAME items as a right-click menu at that point — a
 // second, controlled root over the one items fragment, so the two menus can't drift.
-export function WorkstreamActions({ row, hasWork = true, compact = false, leading, quick = true, tipSide, menuOnly = false, contextAt, onContextClose }: {
-  row: Row; hasWork?: boolean; compact?: boolean; leading?: ReactNode; quick?: boolean; tipSide?: "top" | "bottom"; menuOnly?: boolean;
+export function WorkstreamActions({ row, hasWork = true, compact = false, leading, quick = true, tipSide, menuOnly = false, followUp: showFollowUp = true, beforeMenu, contextAt, onContextClose }: {
+  row: Row; hasWork?: boolean; compact?: boolean; leading?: ReactNode; quick?: boolean; followUp?: boolean; beforeMenu?: ReactNode; tipSide?: "top" | "bottom"; menuOnly?: boolean;
   contextAt?: { x: number; y: number } | null; onContextClose?: () => void;
 }) {
   // Reopen the follow-up box on reload if a draft was left in progress, so nothing typed is lost.
-  const [composing, setComposing] = useState(() => hasDraft(followUpDraftKey(row)));
+  const [composing, setComposing] = useState(() => showFollowUp && hasDraft(followUpDraftKey(row)));
   const [renaming, setRenaming] = useState(false);
   // The follow-up submit is optimistic — the box closes instantly while the launch (ensureWorktree +
   // upload + claude) runs for a few seconds. Show a spinner on the Follow up button meanwhile, so the
@@ -218,19 +220,12 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
         {has("copy.cli") && <Item icon={SquareTerminal} busy={isBusy("Copy CLI")} onSelect={copy("Copy CLI", () => cliCommand(row), "CLI command")}>CLI command</Item>}
       </Sub>
 
-      {/* Merge ▸ — Merge now only; auto-merge is its own top-level item, right below. */}
+      {/* Merge ▸ — Merge now only; auto-merge is in PR ▸. */}
       {menu.merge.length > 0 && (
         <Sub label="Merge">
           {has("merge.now") && <Item icon={GitMerge} busy={isBusy("Merge")} onSelect={() => void confirmMerge()}>Merge now{unreviewed ? " (unreviewed)" : ""}</Item>}
         </Sub>
       )}
-
-      {/* Enable/Disable auto-merge — GitHub's auto-merge, or Orca's queue where the repo refuses it
-          (store.autoMerge); Disable cancels whichever is active (store.disableAutoMerge). Hidden
-          (not disabled) when it would just merge now — Merge ▸ Merge now is the one button there. */}
-      {has("autoMerge.toggle") && !autoMergeWouldMergeNow && (mergeWhenGreenOn
-        ? <Item icon={Zap} busy={isBusy("Disable auto-merge")} onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</Item>
-        : <Item icon={Zap} busy={isBusy("Enable auto-merge")} onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</Item>)}
 
       {/* PR ▸ — the open PR's verbs; for a local branch, Create PR (today's Promote). */}
       {menu.pr.length > 0 && (isPr ? (
@@ -241,6 +236,12 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
           {has("pr.address") && <Item icon={Wrench} busy={isBusy("Address PR")} onSelect={run("Address PR", () => addressPr(row))}>Address PR</Item>}
           {has("pr.addPreview") && <Item icon={Globe} busy={isBusy("Add preview")} onSelect={run("Add preview", () => addPreviewLabel(row))}>Add preview</Item>}
           {has("pr.previewPending") && <Item icon={Globe} disabled>Deploying preview…</Item>}
+          {/* Enable/Disable auto-merge — GitHub's auto-merge, or Orca's queue where the repo refuses it
+              (store.autoMerge); Disable cancels whichever is active (store.disableAutoMerge). Hidden
+              (not disabled) when it would just merge now — Merge ▸ Merge now is the one button there. */}
+          {has("pr.autoMerge") && !autoMergeWouldMergeNow && (mergeWhenGreenOn
+            ? <Item icon={Zap} busy={isBusy("Disable auto-merge")} onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</Item>
+            : <Item icon={Zap} busy={isBusy("Enable auto-merge")} onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</Item>)}
         </Sub>
       ) : has("pr.promote")
         ? <Sub label="PR"><Item icon={GitPullRequestArrow} disabled={!hasWork} busy={isBusy("Promote")} onSelect={run("Promote", () => promote(row))}>Promote</Item></Sub>
@@ -309,11 +310,12 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
       <div className="flex flex-wrap items-center gap-1">
         {!menuOnly && quick && <QuickActionButtons row={row} hasWork={hasWork} tipSide={tipSide} />}
         {!menuOnly && leading}
-        {!menuOnly && <Button size={icon} className={iconClass} variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)} aria-label="Follow up">
+        {!menuOnly && showFollowUp && <Button size={icon} className={iconClass} variant="soft" disabled={submitting || row.agentStatus === "running"} onClick={() => setComposing((v) => !v)} aria-label="Follow up">
           {compact
             ? (submitting ? <Loader2 className="size-4 animate-spin" /> : <MessageSquarePlus className="size-3.5" />)
             : <>{submitting && <Loader2 className="size-4 animate-spin" />}Follow up</>}
         </Button>}
+        {!menuOnly && beforeMenu}
         {narrow ? (
           // A phone: the ⋯ opens the items as a bottom sheet — on a tap only, never a long-press.
           <>

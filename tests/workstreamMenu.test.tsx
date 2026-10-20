@@ -28,8 +28,7 @@ describe("workstreamMenu: the items of each submenu, and the hide rules", () => 
       open: ["open.chat", "open.pr", "open.orchestrator"],
       copy: ["copy.branch", "copy.prLink", "copy.prMarkdown", "copy.slack", "copy.worktree", "copy.cli"],
       merge: ["merge.now"],
-      autoMerge: ["autoMerge.toggle"],
-      pr: ["pr.moveToDraft", "pr.address", "pr.addPreview"],
+      pr: ["pr.moveToDraft", "pr.address", "pr.addPreview", "pr.autoMerge"],
       agent: ["agent.move"],
       slack: ["slack.send", "slack.bump"],
     });
@@ -40,7 +39,6 @@ describe("workstreamMenu: the items of each submenu, and the hide rules", () => 
     expect(m.open).toEqual(["open.chat", "open.orchestrator"]);
     expect(m.copy).toEqual(["copy.branch", "copy.worktree", "copy.cli"]);
     expect(m.merge).toEqual([]);
-    expect(m.autoMerge).toEqual([]); // no PR, so no auto-merge toggle
     expect(m.pr).toEqual(["pr.create", "pr.createDraft"]);
     expect(m.slack).toEqual([]);
     // A local repo (no remote) promotes in place.
@@ -56,7 +54,7 @@ describe("workstreamMenu: the items of each submenu, and the hide rules", () => 
     expect(withPreview.pr).not.toContain("pr.addPreview");
     expect(workstreamMenu({ ...pr, hasPreviewLabel: true }, ctx).pr).toContain("pr.previewPending");
     const none = workstreamMenu(pr, { ...ctx, previewConfigured: false });
-    expect(none.pr).toEqual(["pr.moveToDraft", "pr.address"]);
+    expect(none.pr).toEqual(["pr.moveToDraft", "pr.address", "pr.autoMerge"]);
     expect(none.open).not.toContain("open.preview");
     expect(none.copy).not.toContain("copy.preview");
   });
@@ -65,14 +63,15 @@ describe("workstreamMenu: the items of each submenu, and the hide rules", () => 
     const red = workstreamMenu({ ...pr, ciStatus: "failing" }, ctx);
     expect(red.open).toEqual(["open.chat", "open.pr", "open.ci", "open.orchestrator"]);
     expect(red.merge).toEqual([]);
-    expect(red.autoMerge).toEqual(["autoMerge.toggle"]);
+    expect(red.pr).toContain("pr.autoMerge");
   });
 
   test("a draft PR: Mark ready, and no Merge or auto-merge items", () => {
     const m = workstreamMenu({ ...pr, isDraft: true }, ctx);
     expect(m.pr[0]).toBe("pr.markReady");
     expect(m.merge).toEqual([]);
-    expect(m.autoMerge).toEqual([]); // GitHub rejects auto-merge on a draft
+    expect(m.pr).not.toContain("pr.autoMerge"); // GitHub rejects auto-merge on a draft
+    expect(m).not.toHaveProperty("autoMerge"); // no top-level group any more
   });
 
   test("Agent ▸: Stop agent only while it runs; Resolve conflicts only for a local branch; Move only with a worktree and another instance", () => {
@@ -147,9 +146,8 @@ const prRow: store.Row = {
 
 describe("WorkstreamActions: the redesigned menu", () => {
   test("top level in Finn's order; Follow up…, Follow PR and Hand off… are gone", async () => {
-    // Pending CI: not yet safe to merge, so Enable auto-merge still has something to arm.
-    await mount({ ...prRow, ciStatus: "pending" });
-    expect(labels()).toEqual(["Open", "Copy", "Merge", "Enable auto-merge", "PR", "Agent", "Slack", "Mark verified", "Rename…", "Close PR"]);
+    await mount(prRow);
+    expect(labels()).toEqual(["Open", "Copy", "Merge", "PR", "Agent", "Slack", "Mark verified", "Rename…", "Close PR"]);
     for (const gone of ["Follow up…", "Follow PR (auto-fix)", "Hand off…", "Merge when green"]) expect(labels()).not.toContain(gone);
     expect(menuitem("Close PR")!.className).toContain("text-destructive");
   });
@@ -216,26 +214,29 @@ describe("WorkstreamActions: the redesigned menu", () => {
     expect(apiFake.slackSends).toEqual([]); // a copy never posts
   });
 
-  test("Merge ▸ Merge now only; Enable/Disable auto-merge is its own top-level item", async () => {
+  test("Merge ▸ Merge now only; Enable/Disable auto-merge is in PR ▸", async () => {
     await mount(prRow);
+    expect(labels()).not.toContain("Enable auto-merge"); // not a top-level item
     await openSub("Merge");
     expect(labels()).toContain("Merge now (unreviewed)");
     expect(menuitem("Merge when green")).toBeUndefined();
+    expect(menuitem("Enable auto-merge")).toBeUndefined();
   });
 
-  test("Enable auto-merge is hidden once the PR is already safe to merge (GitHub would just merge it, not arm it)", async () => {
+  test("PR ▸ Enable auto-merge is hidden once the PR is already safe to merge (GitHub would just merge it, not arm it)", async () => {
     // prRow is already mergeable + CI passing: GitHub's own clean-status refusal (server/gh.ts's
     // enableAutoMerge fallback) means a click here would merge now, not arm a toggle — so the menu
     // offers Merge ▸ Merge now alone, never a second button that quietly does the same thing.
     await mount(prRow);
+    await openSub("PR");
     expect(labels()).not.toContain("Enable auto-merge");
-    expect(labels()).toContain("Merge");
   });
 
-  test("Enable auto-merge toggles to Disable auto-merge, top-level, next to Merge; refreshes after the click", async () => {
+  test("PR ▸ Enable auto-merge toggles to Disable auto-merge; refreshes after the click", async () => {
     // Still pending: GitHub will actually arm it (not refuse with clean status), so the button has
     // something to do.
     await mount({ ...prRow, ciStatus: "pending" });
+    await openSub("PR");
     expect(labels()).toContain("Enable auto-merge");
     await click(menuitem("Enable auto-merge")!);
     expect(apiFake.calls).toContain("autoMerge:7");
@@ -243,6 +244,8 @@ describe("WorkstreamActions: the redesigned menu", () => {
     // shows Disable, never a stale Enable that would misfire a second click.
     act(() => root!.render(<WorkstreamActions row={{ ...prRow, ciStatus: "pending", autoMergeEnabled: true }} />));
     await reopen();
+    expect(labels()).not.toContain("Disable auto-merge"); // not a top-level item
+    await openSub("PR");
     expect(labels()).toContain("Disable auto-merge");
     expect(labels()).not.toContain("Enable auto-merge");
     await click(menuitem("Disable auto-merge")!);

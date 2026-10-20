@@ -81,6 +81,8 @@ const reload = async () => { await act(async () => { await store.refresh(); awai
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
 const laneOf = (title: string) => [...container!.querySelectorAll<HTMLElement>("[data-lane]")].find((l) => l.textContent?.includes(title))?.dataset.lane;
 const button = () => container!.querySelector<HTMLButtonElement>('[data-slot="verified-button"]')!;
+// The read-only badge beside the title (VerifiedBadge), on the Board card or the Agents row.
+const badge = () => container!.querySelector<HTMLElement>('[data-slot="verified-badge"]');
 const statePill = () => container!.querySelector('[data-slot="workstream-row"] [data-slot="state-pill"]')?.textContent;
 const chipCount = () => container!.querySelector('[data-chip="pr:verified"] [data-slot="quick-count"]')!.textContent;
 
@@ -103,6 +105,7 @@ describe("Verified marker on the Board and the Agents page", () => {
     apiFake.prsData = [pr("aaa1111")];
     await open("/board");
     expect(laneOf("Cache layer")).toBe("IN_REVIEW");
+    expect(badge()).toBeNull();
     expect(button().dataset.state).toBe("none");
     expect(button().textContent).toBe("Verify");
 
@@ -114,6 +117,8 @@ describe("Verified marker on the Board and the Agents page", () => {
     await reload();
     expect(laneOf("Cache layer")).toBe("VERIFIED");
     expect(button().textContent).toBe("Verified");
+    expect(badge()?.textContent).toBe("Verified");
+    expect(badge()!.closest('[data-slot="tip"]')!.previousElementSibling?.textContent).toBe("Cache layer"); // right after the title
 
     // A new commit lands on the PR: not a silent pass.
     apiFake.prsData = [pr("bbb2222")];
@@ -121,10 +126,12 @@ describe("Verified marker on the Board and the Agents page", () => {
     expect(laneOf("Cache layer")).toBe("IN_REVIEW");
     expect(button().dataset.state).toBe("changed");
     expect(button().textContent).toBe("Changed since verified");
+    expect(badge()).toBeNull(); // a mark on an older head is no badge
     close();
 
     await open("/agents");
     expect(statePill()).toBe("Changed since verified");
+    expect(badge()).toBeNull();
     expect(chipCount()).toBe("0");
     close();
 
@@ -140,6 +147,8 @@ describe("Verified marker on the Board and the Agents page", () => {
     expect(statePill()).toBe("Verified");
     expect(chipCount()).toBe("1");
     expect(container!.querySelectorAll('[data-slot="workstream-row"]')).toHaveLength(1);
+    expect(badge()?.textContent).toBe("Verified");
+    expect(badge()!.closest('[data-slot="tip"]')!.previousElementSibling?.textContent).toBe("Cache layer");
     close();
 
     // Clear: a click on a fresh mark takes it off.

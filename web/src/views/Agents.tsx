@@ -44,6 +44,7 @@ import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PrPreviewInline } from "./PreviewControl";
 import { ReviewCluster } from "./Review";
 import { StatusHoverCard } from "./StatusCard";
+import { VerifiedBadge } from "./VerifiedButton";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
@@ -504,7 +505,7 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
     >
       <div className="min-w-0 flex-1 space-y-1.5">
         <div role="cell" className="flex min-w-0 items-center justify-between gap-2">
-          <span className="min-w-0 truncate font-medium">{row.title}</span>
+          <span className="flex min-w-0 items-center gap-1.5"><span className="min-w-0 truncate font-medium">{row.title}</span><VerifiedBadge row={row} /></span>
           <RunStatus row={row} tone={tone} reasons={reasons} />
         </div>
         <div role="cell" className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
@@ -544,7 +545,7 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
       className={`${GRID} hover:bg-accent/40 focus-visible:bg-accent/40 h-14 border-b md:[content-visibility:auto] md:[contain-intrinsic-size:auto_56px] text-sm outline-none last:border-b-0 ${to ? "cursor-pointer" : ""}`}
     >
       <div role="cell" className="min-w-0">
-        <div className="truncate font-medium">{row.title}</div>
+        <div className="flex min-w-0 items-center gap-1.5"><span className="min-w-0 truncate font-medium">{row.title}</span><VerifiedBadge row={row} /></div>
         <Subline className={SIGNALS} items={[
           // A folded column leads the subline: the status, then the PR with its checks.
           fold.status && { key: "status", sep: "after", node: <RunStatus row={row} tone={tone} reasons={reasons} /> },
