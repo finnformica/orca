@@ -88,7 +88,7 @@ const chatComponents = { img: markdownImg, ...tableComponents, pre: snippetPre({
  *  `memo`: parsing markdown is the costliest thing a chat render does (measured: ~300ms commits
  *  re-parsing a long orchestrator thread on every open and close of its panel), and the text of a
  *  finished turn never changes. */
-const ChatMarkdown = memo(({ children, tone = "text-neutral-300", breaks }: { children: string; tone?: string; breaks?: boolean }) => (
+const ChatMarkdown = memo(({ children, tone = "text-neutral-300", breaks, outside }: { children: string; tone?: string; breaks?: boolean; outside?: boolean }) => (
   // wrap-anywhere: the agent's prose is full of unbreakable tokens (`branch/names-with-hashes`,
   // paths, run ids) that are wider than a narrow window, and one of them made the whole log scroll
   // sideways. Code BLOCKS are exempt — they keep their lines and scroll inside themselves.
@@ -104,8 +104,25 @@ const ChatMarkdown = memo(({ children, tone = "text-neutral-300", breaks }: { ch
     "prose-strong:text-neutral-200",
     "prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none",
     "prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400", tone)}>
-    <ReactMarkdown remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]} components={chatComponents}>{children}</ReactMarkdown>
+    <ReactMarkdown remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]} components={outside ? outsideComponents : chatComponents}>{children}</ReactMarkdown>
   </div>
+));
+
+/** An outside sender's message (Discord, Slack, email…): the chat's markdown, but an image is a link,
+ *  never loaded — a stranger's message must not make this browser fetch a remote URL. */
+const outsideImg = ({ src, alt }: { src?: string | Blob; alt?: string }) =>
+  typeof src === "string" ? <a href={src} target="_blank" rel="noreferrer">{alt || src}</a> : <>{alt}</>;
+const outsideComponents = { ...chatComponents, img: outsideImg };
+// One line: every block renders inline, so the line keeps its height and its `truncate`.
+const inlineBlock = ({ children: c }: { children?: ReactNode }) => <>{c}</>;
+const inlineComponents = { ...outsideComponents, p: inlineBlock, ul: inlineBlock, ol: inlineBlock, li: inlineBlock, blockquote: inlineBlock, h1: inlineBlock, h2: inlineBlock, h3: inlineBlock, h4: inlineBlock, h5: inlineBlock, h6: inlineBlock, pre: inlineBlock };
+
+/** The one-line preview of an outside message: the SAME markdown as its expanded body (bold, code,
+ *  links), inline. The preview is clipped, so a cut `**` or backtick is closed first. */
+const InlineMarkdown = memo(({ children }: { children: string }) => (
+  <span data-slot="inline-markdown" className="[&_code]:font-mono [&_code]:text-sky-300 [&_strong]:text-foreground [&_strong]:font-semibold [&_a]:text-sky-400">
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={inlineComponents}>{closeOpenMarkdown(children)}</ReactMarkdown>
+  </span>
 ));
 
 /** Markdown for a single Facet item (Remaining / Decisions / Verification / Commits): same renderer
@@ -410,24 +427,50 @@ function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () =>
       </div>
     );
   }
-  // An outside message waiting for its wake: its activity row, never your bubble.
+  // An outside message waiting for its wake: the SAME card a delivered one gets (IntegrationCard),
+  // faded, its state "queued". Open, it shows the message in full; the reply comes once it runs.
   const outside = integrationMessage(message.instruction);
   if (outside) {
     return (
-      <div data-slot="integration-queued" className="border-geist-blue/20 bg-geist-blue/5 text-muted-foreground mb-4 flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-[12px] opacity-70">
-        <IntegrationHead m={outside} more={0} time="" state="queued" />
-      </div>
+      <IntegrationCard slot="integration-queued" pending messages={[outside]} time="" state="queued">
+        <IntegrationMessages messages={[outside]} />
+      </IntegrationCard>
     );
   }
+  // Your message: the SAME bubble and markdown as a sent one (UserBubble), faded until it sends. Once
+  // sent it is that bubble in its turn, without the fade.
+  const text = withoutAttachmentList(message.instruction);
   return (
-    <div className="mb-4 flex justify-end opacity-60" data-slot="chat-queued">
-      <div className="max-w-[85%]">
-        <div className="bg-accent text-foreground rounded-lg px-3 py-2 whitespace-pre-wrap break-words">{withoutAttachmentList(message.instruction)}</div>
-        <Attachments files={attachmentRefs((message.attachments ?? []).join("\n"))} className="mt-1 justify-end" />
-        <div className="text-muted-foreground mt-1 flex items-center justify-end gap-2 text-[10px] tracking-widest uppercase">
-          <span>queued — sends when the current run finishes</span>
+    <UserBubble slot="chat-queued" textSlot="chat-queued-text" pending className="mb-4" text={text} clamp={false}
+      files={attachmentRefs((message.attachments ?? []).join("\n"))}
+      footer={
+        <div data-slot="queued-label" className="text-muted-foreground flex items-center justify-end gap-2 text-[10px] tracking-widest uppercase">
+          <span className="text-right">queued — sends when the current run finishes</span>
           <button type="button" onClick={onCancel} className="tracking-normal normal-case hover:text-red-400">cancel</button>
         </div>
+      } />
+  );
+}
+
+/** What you said: a tinted bubble on the right, in markdown, with its files under it and a footer
+ *  line. ONE component for a sent message (in its turn) and a queued one (`pending`: faded, its
+ *  footer the queued label), so a message looks the same before and after it sends. */
+function UserBubble({ text, files, clamp, footer, pending, slot = "chat-user", textSlot = "chat-user-text", className = "mb-2" }: {
+  text: string; files: AttachmentRef[]; clamp: boolean; footer: ReactNode; pending?: boolean; slot?: string; textSlot?: string; className?: string;
+}) {
+  return (
+    <div className={cn("group flex justify-end", className)} data-slot={slot} data-pending={pending || undefined}>
+      {/* Each child keeps its own width on the right: a queued message's long label must not widen
+          its bubble past a sent one's. */}
+      <div data-slot="user-bubble-column" className="flex max-w-[85%] flex-col items-end">
+        {/* Pending: the message and its files fade; the queued label below stays readable. */}
+        {text && <div data-slot={textSlot} className={cn("bg-accent text-foreground rounded-lg px-3 py-2", pending && "opacity-60")}>
+          <Clamp on={clamp} cut="max-h-[9rem]">
+            <ChatMarkdown tone="text-foreground" breaks>{text}</ChatMarkdown>
+          </Clamp>
+        </div>}
+        <Attachments files={files} className={cn("mt-1 justify-end", pending && "opacity-60")} />
+        <div className="mt-0.5">{footer}</div>
       </div>
     </div>
   );
@@ -554,22 +597,15 @@ const ChatTurn = memo(function ChatTurn({ turn, loadStepsFor, compact, newestSai
       {said.map((text, i) => {
         const clean = withoutAttachmentList(text);
         return (
-          <div key={i} className="group mb-2 flex justify-end" data-slot="chat-user">
-            <div className="max-w-[85%]">
-              {clean && <div data-slot="chat-user-text" className="bg-accent text-foreground rounded-lg px-3 py-2">
-                {/* A long message is cut to its first lines, like an old reply. */}
-                {/* …except your newest message, which is always in full. */}
-                <Clamp on={!(newestSaid && i === said.length - 1) && longMessage(clean)} cut="max-h-[9rem]">
-                  <ChatMarkdown tone="text-foreground" breaks>{clean}</ChatMarkdown>
-                </Clamp>
-              </div>}
-              <Attachments files={filesOf(text, i)} className="mt-1 justify-end" />
-              <div className="mt-0.5 flex items-center justify-end gap-1.5">
+          // A long message is cut to its first lines, like an old reply — except your newest message,
+          // which is always in full.
+          <UserBubble key={i} text={clean} files={filesOf(text, i)} clamp={!(newestSaid && i === said.length - 1) && longMessage(clean)}
+            footer={
+              <div className="flex items-center justify-end gap-1.5">
                 {clean && <MessageActions text={clean} onQuote={() => onQuote(clean)} />}
                 {i === said.length - 1 && <div className="text-muted-foreground text-[10px] opacity-0 transition-opacity group-hover:opacity-100" data-slot="turn-time">{time}</div>}
               </div>
-            </div>
-          </div>
+            } />
         );
       })}
       <div className="group flex gap-2" data-slot="chat-reply">
@@ -748,7 +784,7 @@ function IntegrationHead({ m, more, time, state }: { m: IntegrationMessage; more
       <BrandIcon kind={m.adapter} className="size-3.5" />
       <span className="text-foreground shrink-0 font-medium" data-slot="integration-sender">{m.sender ?? brandTitle(m.adapter)}</span>
       {place && <span className="shrink-0" data-slot="integration-place">{place}</span>}
-      <span className="min-w-0 flex-1 truncate" data-slot="integration-preview">{integrationPreview(m.text)}{more > 0 ? ` · +${more} more` : ""}</span>
+      <span className="min-w-0 flex-1 truncate" data-slot="integration-preview"><InlineMarkdown>{integrationPreview(m.text)}</InlineMarkdown>{more > 0 ? ` · +${more} more` : ""}</span>
       {time && <span className="shrink-0 text-[11px]">{time}</span>}
       <span data-slot="integration-state" className={cn("flex shrink-0 items-center gap-1 text-[11px]", state === "queued" ? "" : STATE_TONE[state])}>
         {state === "in progress" && <Loader2 className="size-3 animate-spin" />}{state}
@@ -757,45 +793,58 @@ function IntegrationHead({ m, more, time, state }: { m: IntegrationMessage; more
   );
 }
 
-/** A wake an outside message caused (Discord, Slack, email…): ONE collapsed activity row, never your
- *  bubble. Open, it shows each message in full with a link to it, then the orchestrator's answer —
- *  its folded steps (the `orca post --reply` among them) and its reply — so the bulk stays out of
- *  your conversation, like worker reports. */
-const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadStepsFor }: { turn: AgentTurn; messages: IntegrationMessage[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]> }) {
+/** The tinted card of an outside message (Discord, Slack, email…): ONE collapsed activity row that
+ *  opens in place. A delivered message's wake (IntegrationBlock) and a queued one (Queued, `pending`:
+ *  faded) are the same card, so it looks the same before and after it runs. */
+function IntegrationCard({ slot, messages, time, state, pending, children }: {
+  slot: string; messages: IntegrationMessage[]; time: string; state: keyof typeof STATE_TONE | "queued"; pending?: boolean; children: ReactNode;
+}) {
   const [open, setOpen] = useState(false);
-  const labels = useCatchAllLabels();
-  const state = integrationState(turn);
   return (
-    <div data-slot="integration-activity" data-adapter={messages[0]!.adapter} data-state={state} data-open={open || undefined}
-      className="border-geist-blue/20 bg-geist-blue/5 mb-4 rounded-md border text-[12px]">
+    <div data-slot={slot} data-adapter={messages[0]!.adapter} data-state={state} data-open={open || undefined} data-pending={pending || undefined}
+      className={cn("border-geist-blue/20 bg-geist-blue/5 mb-4 rounded-md border text-[12px]", pending && "opacity-60")}>
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
         className="text-muted-foreground hover:text-foreground flex w-full items-center gap-1.5 px-2.5 py-1.5 text-left">
         <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
-        <IntegrationHead m={messages[0]!} more={messages.length - 1} time={clockOf(turn.startedAt)} state={state} />
+        <IntegrationHead m={messages[0]!} more={messages.length - 1} time={time} state={state} />
       </button>
-      {open && (
-        <div className="border-geist-blue/20 space-y-3 border-t px-2.5 py-2" data-slot="integration-body">
-          {messages.map((m, i) => (
-            <div key={i} data-slot="integration-message">
-              <div className="text-muted-foreground mb-0.5 flex items-center gap-1.5 text-[11px]">
-                <BrandIcon kind={m.adapter} className="size-3" />
-                <span className="text-foreground font-medium">{m.sender ?? brandTitle(m.adapter)}</span>
-                <span data-slot="integration-message-place">{[shownPlace(m.place, labels), brandTitle(m.adapter)].filter(Boolean).join(" · ")}</span>
-                {m.url && <a href={m.url} target="_blank" rel="noreferrer" className="hover:text-foreground underline-offset-2 hover:underline">Open in {brandTitle(m.adapter)}</a>}
-              </div>
-              <div className="text-foreground whitespace-pre-wrap break-words">{m.text}</div>
-            </div>
-          ))}
-          <div className="flex gap-2" data-slot="integration-reply">
-            <span className="bg-accent text-foreground inline-flex size-5 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3" /></span>
-            <div className="min-w-0 flex-1">
-              <div className="text-foreground mb-0.5 text-[11px] font-medium">Orchestrator</div>
-              <Reply turn={turn} loadSteps={loadStepsFor && (() => loadStepsFor(turn))} />
-            </div>
-          </div>
-        </div>
-      )}
+      {open && <div className="border-geist-blue/20 space-y-3 border-t px-2.5 py-2" data-slot="integration-body">{children}</div>}
     </div>
+  );
+}
+
+/** Each outside message in full, with a link to it: the open card's body. */
+function IntegrationMessages({ messages }: { messages: IntegrationMessage[] }) {
+  const labels = useCatchAllLabels();
+  return messages.map((m, i) => (
+    <div key={i} data-slot="integration-message">
+      <div className="text-muted-foreground mb-0.5 flex items-center gap-1.5 text-[11px]">
+        <BrandIcon kind={m.adapter} className="size-3" />
+        <span className="text-foreground font-medium">{m.sender ?? brandTitle(m.adapter)}</span>
+        <span data-slot="integration-message-place">{[shownPlace(m.place, labels), brandTitle(m.adapter)].filter(Boolean).join(" · ")}</span>
+        {m.url && <a href={m.url} target="_blank" rel="noreferrer" className="hover:text-foreground underline-offset-2 hover:underline">Open in {brandTitle(m.adapter)}</a>}
+      </div>
+      <div data-slot="integration-message-text"><ChatMarkdown tone="text-foreground" breaks outside>{m.text}</ChatMarkdown></div>
+    </div>
+  ));
+}
+
+/** A wake an outside message caused: ONE collapsed activity row, never your bubble. Open, it shows
+ *  each message in full with a link to it, then the orchestrator's answer — its folded steps (the
+ *  `orca post --reply` among them) and its reply — so the bulk stays out of your conversation, like
+ *  worker reports. */
+const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadStepsFor }: { turn: AgentTurn; messages: IntegrationMessage[]; loadStepsFor?: (turn: AgentTurn) => Promise<AgentStep[]> }) {
+  return (
+    <IntegrationCard slot="integration-activity" messages={messages} time={clockOf(turn.startedAt)} state={integrationState(turn)}>
+      <IntegrationMessages messages={messages} />
+      <div className="flex gap-2" data-slot="integration-reply">
+        <span className="bg-accent text-foreground inline-flex size-5 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3" /></span>
+        <div className="min-w-0 flex-1">
+          <div className="text-foreground mb-0.5 text-[11px] font-medium">Orchestrator</div>
+          <Reply turn={turn} loadSteps={loadStepsFor && (() => loadStepsFor(turn))} />
+        </div>
+      </div>
+    </IntegrationCard>
   );
 });
 

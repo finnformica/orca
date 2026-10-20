@@ -3,6 +3,7 @@
 // desktop layout (≥ 1024px, and the whole md range) never sees any of it. "Coarse" is a finger, not a
 // mouse: Enter then inserts a newline (there is no Shift on a phone keyboard) and tap targets grow.
 import { useSyncExternalStore } from "react";
+import { isTruncated, TRUNCATED_SELECTOR } from "./marquee";
 
 export const NARROW_QUERY = "(max-width: 767px)";
 export const COARSE_QUERY = "(pointer: coarse)";
@@ -143,16 +144,17 @@ export function keepComposerFocus(e: { preventDefault(): void; currentTarget: Ev
 }
 
 // Text cut off with an ellipsis has no hover on a phone to reveal it: a tap on it (when it really is
-// cut off, and the tap isn't a control's) toggles it open — styles.css `[data-expanded]`.
+// cut off, and the tap isn't a control's) toggles it open — styles.css `[data-expanded]`. The same
+// selector and overflow test as the mouse's hover marquee (lib/marquee), so both act on the same text.
 const TAP_SKIP = "button, a, input, textarea, select, label, [role=button], [role=row], [role=menuitem], [role=tab], [role=option]";
 export function expandTruncatedOnTap(win: Window = window): () => void {
   const onClick = (e: MouseEvent) => {
     if (!win.matchMedia?.(NARROW_QUERY).matches) return;
     const el = e.target as Element | null;
-    const t = typeof el?.closest === "function" ? el.closest<HTMLElement>(".truncate, [data-expanded]") : null;
+    const t = typeof el?.closest === "function" ? el.closest<HTMLElement>(`${TRUNCATED_SELECTOR}, [data-expanded]`) : null;
     if (!t || t.closest(TAP_SKIP)) return;
     if (t.dataset.expanded === "true") { delete t.dataset.expanded; return; }
-    if (t.scrollWidth > t.clientWidth) t.dataset.expanded = "true";
+    if (isTruncated(t.scrollWidth, t.clientWidth)) t.dataset.expanded = "true";
   };
   win.document.addEventListener("click", onClick);
   return () => win.document.removeEventListener("click", onClick);

@@ -111,4 +111,17 @@ describe("StatusHoverCard (DOM)", () => {
     expect([...card.querySelectorAll("[data-slot=status-reason]")].map((e) => e.textContent)).toEqual(["The PR has merge conflicts with its base."]);
     expect(card.textContent).toContain("Address PR");
   });
+
+  test("the header carries the elapsed time of a running agent, and a finished run's duration", async () => {
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    const r = { repo: "r", hasRemote: true, branch: "b", title: "t", prompt: "", lane: "LOCAL" as const, agentStatus: "running" as const, agentStartedAt: Date.now() - 65_000 };
+    act(() => root!.render(<StatusHoverCard row={r}><span>Running</span></StatusHoverCard>));
+    const trigger = host.querySelector<HTMLElement>("[data-slot=status-trigger]")!;
+    expect(trigger.querySelector("[data-slot=elapsed]")).toBeNull(); // the chip itself is untouched
+    await act(async () => { trigger.focus(); await new Promise((res) => setTimeout(res, 250)); });
+    const head = document.querySelector("[data-slot=status-card] [data-slot=status-card-duration]")!;
+    expect(head.querySelector("[data-slot=elapsed]")!.textContent).toMatch(/^1:0[56]$/);
+  });
 });

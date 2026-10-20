@@ -112,10 +112,10 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   expect(ring.getAttribute("aria-label")).toBe("Context: not measured yet"); // the status poll waits for the slide…
   await afterSlide();
   expect(ring.getAttribute("aria-label")).toBe("Context 42% full"); // …then reads it
-  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
+  await act(async () => { ring.click(); await flush(); }); // the card opens on a click only
   await act(async () => { document.body.querySelector<HTMLButtonElement>('button[data-slot="context-compact"]')!.click(); await flush(); await flush(); });
   expect(apiFake.calls).toContain(`compact:${ORCHESTRATOR_REPO}:${ORCHESTRATOR_BRANCH}`);
-  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })); await new Promise((r) => setTimeout(r, 200)); });
+  await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
 
   const textarea = p.querySelector("textarea")!;
   await act(async () => {

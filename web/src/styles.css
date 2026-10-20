@@ -582,25 +582,11 @@ dialog[data-bottom-sheet][data-closing]::backdrop {
   [data-slot="notification-toast"][data-swipe-out] { animation: none; }
 }
 
-/* MarqueeText (components/ui/marquee-text.tsx): a truncated title scrolls left to its cut-off end
-   on hover, then eases back on leave. The component measures the overflow and sets
-   --marquee-distance/--marquee-duration on the overflowing span only, so a short title's inner span
-   never has anything to transition. A right-edge fade stands in for an ellipsis — text-overflow
-   can't put "…" partway into the moving inline-block below. */
-[data-slot="marquee-text"][data-overflowing="true"] {
-  mask-image: linear-gradient(to right, black calc(100% - 16px), transparent 100%);
-}
-[data-slot="marquee-text"][data-overflowing="true"]:hover {
-  mask-image: none;
-}
-[data-slot="marquee-text"] > [data-slot="marquee-text-inner"] {
-  transition: transform var(--marquee-duration, 0ms) linear;
-}
-[data-slot="marquee-text"][data-overflowing="true"]:hover > [data-slot="marquee-text-inner"] {
-  transform: translateX(var(--marquee-distance));
-}
-@media (prefers-reduced-motion: reduce) {
-  [data-slot="marquee-text"] > [data-slot="marquee-text-inner"] { transition: none; }
+/* The hover marquee (lib/marquee.ts, components/OverflowText.tsx) scrolls a `truncate` element's own
+   scrollLeft. Chrome keeps the ellipsis where it fell before the scroll, so the end never showed:
+   while it moves, the text clips at the box edge instead. */
+[data-marquee] {
+  text-overflow: clip !important;
 }
 
 /* The live activity block (views/Chat.tsx): a trail row fades and slides in (180ms); the header

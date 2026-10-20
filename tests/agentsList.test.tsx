@@ -537,21 +537,25 @@ describe("agents list by its own width", () => {
     expect(rowOf("feat-ci").querySelector('[data-slot="folded-status"]')).toBeNull();
   });
 
-  test("the folded subline drops the elapsed time first: it is the least relevant item beside the status", async () => {
-    seed(); // local-run is running — its elapsed time (StatusDuration) joins the subline beside the status label
-    fakeLayout(500); // fold.status: the status label and the running duration both fold into the subline
+  test("a folded Status column drops the elapsed time from the row; the status card shows it beside its header", async () => {
+    seed(); // local-run is running
+    fakeLayout(500); // fold.status: the status label folds into the subline
     await mount();
     const run = rowOf("local-run");
-    const items = [...run.querySelectorAll<HTMLElement>('[data-slot="row-subline"] > [data-subline-item]')].filter((i) => i.textContent);
-    const keys = items.map((i) => i.dataset.sublineItem);
-    // Placed last: sublineOverflow hides a trailing run in array order, so the last item is always
-    // the first candidate dropped behind +N.
-    expect(keys[keys.length - 1]).toBe("statusDuration");
+    const keys = [...run.querySelectorAll<HTMLElement>('[data-slot="row-subline"] > [data-subline-item]')].map((i) => i.dataset.sublineItem);
     expect(keys.slice(0, 2)).toEqual(["status", "state"]); // the label and the lane pill still lead
-    const hiddenKeys = items.filter((i) => i.getAttribute("aria-hidden") === "true").map((i) => i.dataset.sublineItem);
-    expect(hiddenKeys).toContain("statusDuration"); // the timer goes...
-    expect(hiddenKeys).not.toContain("status"); // ...while the status label...
-    expect(hiddenKeys).not.toContain("state"); // ...and the lane pill stay visible
+    expect(keys).not.toContain("statusDuration");
+    expect(run.querySelector('[data-slot="elapsed"]')).toBeNull(); // nowhere in the row, not even behind +N
+    expect(ticker.stats().listeners).toBe(0); // no hidden copy ticks
+    const trigger = run.querySelector<HTMLElement>('[data-slot="folded-status"] [data-slot="status-trigger"]')!;
+    await act(async () => { trigger.focus(); await new Promise((r) => setTimeout(r, 250)); });
+    const head = document.querySelector('[data-slot="status-card"] [data-slot="status-card-duration"]')!;
+    expect(head.querySelector('[data-slot="elapsed"]')!.textContent).toMatch(/^1:\d\d$/);
+    act(() => trigger.blur());
+    // Wide again: the Status column is back with its elapsed time in the row.
+    fakeLayout(1200);
+    await act(async () => { await store.refresh(); await flush(); await flush(); });
+    expect(rowOf("local-run").querySelector('[data-slot="run-status"] [data-slot="elapsed"]')).not.toBeNull();
   });
 
   test("a narrow list stacks its rows on a wide viewport (the docked panel open); no instruction, plan or grant line there", async () => {

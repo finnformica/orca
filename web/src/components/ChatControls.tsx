@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModelPicker } from "@/components/ModelPicker";
@@ -35,18 +35,12 @@ export function ChatControls({ model, onModel, only, ran, contextPct, compact }:
   );
 }
 
-/** How full the session is: an icon button holding a small ring, with the number in a popover on
- *  hover (and on click or focus, for touch and keyboard). It turns amber at the point the handover
- *  ladder stops resuming the session and starts a fresh one. */
+/** How full the session is: an icon button holding a small ring, with the number and Compact in a
+ *  popover. It opens ONLY on a click (Enter or Space on the focused button): Finn found a card that
+ *  opened on hover annoying. An outside click or Esc closes it. It turns amber at the point the
+ *  handover ladder stops resuming the session and starts a fresh one. */
 function ContextRing({ pct, compact }: { pct?: number; compact?: CompactControl }) {
   const [open, setOpen] = useState(false);
-  // Closing waits a moment so the pointer can cross from the ring to the card (and its button).
-  const closing = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const hover = (on: boolean) => {
-    clearTimeout(closing.current);
-    if (on) setOpen(true);
-    else closing.current = setTimeout(() => setOpen(false), 150);
-  };
   const value = Math.max(0, Math.min(100, Math.round(pct ?? 0)));
   const full = value >= CONTEXT_RESET_PCT;
   const r = 6, c = 2 * Math.PI * r;
@@ -57,7 +51,6 @@ function ContextRing({ pct, compact }: { pct?: number; compact?: CompactControl 
           type="button" size="icon" variant="ghost" data-slot="context-ring"
           aria-label={pct === undefined ? "Context: not measured yet" : `Context ${value}% full`}
           className={`size-8 shrink-0 cursor-pointer ${full ? "text-amber-400 hover:text-amber-300" : "text-muted-foreground"}`}
-          onPointerEnter={() => hover(true)} onPointerLeave={() => hover(false)}
         >
           <svg viewBox="0 0 16 16" className="size-4 -rotate-90">
             <circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeWidth="2" opacity="0.25" />
@@ -65,9 +58,8 @@ function ContextRing({ pct, compact }: { pct?: number; compact?: CompactControl 
           </svg>
         </Button>
       </PopoverTrigger>
-      {/* Not focus-stealing: hovering the ring must not pull the caret out of the message box. */}
-      <PopoverContent side="top" align="start" className="w-56 p-2 text-xs" data-slot="context-ring-card" onOpenAutoFocus={(e) => e.preventDefault()}
-        onPointerEnter={() => hover(true)} onPointerLeave={() => hover(false)}>
+      {/* Not focus-stealing: opening the card must not pull the caret out of the message box. */}
+      <PopoverContent side="top" align="start" className="w-56 p-2 text-xs" data-slot="context-ring-card" onOpenAutoFocus={(e) => e.preventDefault()}>
         {pct === undefined ? <div className="font-medium">Context not measured yet</div> : <div className="font-medium">Context {value}% full</div>}
         <div className="text-muted-foreground mt-0.5">
           {pct === undefined ? "It is reported when a Claude run finishes."

@@ -317,10 +317,10 @@ test("Q8: the box carries every composer's toolbar — the orchestrator's model 
   expect(toolbar.querySelector('[data-slot="composer-attach"]')).not.toBeNull();
   expect(toolbar.querySelector('button[aria-label="Send"]')!.textContent).toContain("Send");
   // The ring's Compact compacts the orchestrator's session, as in the panel.
-  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
+  await act(async () => { ring.click(); await flush(); }); // the card opens on a click only
   await act(async () => { document.body.querySelector<HTMLButtonElement>('button[data-slot="context-compact"]')!.click(); await flush(); await flush(); });
   expect(apiFake.calls).toContain("compact:@orca:orchestrator");
-  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })); await new Promise((r) => setTimeout(r, 200)); });
+  await act(async () => { ring.click(); await flush(); }); // a second click closes it
   // Pick another model: the orchestrator's setting changes (api.orchestratorModel), the box stays open.
   await act(async () => {
     picker.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, pointerType: "mouse" }));

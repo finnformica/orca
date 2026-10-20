@@ -632,9 +632,36 @@ test("the composer carries the card's model picker and context ring — the same
   // And how full the session is, from the card's last run.
   const ring = container!.querySelector<HTMLButtonElement>('[data-slot="chat-composer-leading"] button[data-slot="context-ring"]')!;
   expect(ring.getAttribute("aria-label")).toBe("Context 61% full");
-  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
-  expect(document.body.querySelector('[data-slot="context-ring-card"]')!.textContent).toBe("Context 61% fullA fresh session starts at 80%.Compact");
-  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })); await flush(); });
+  const card = () => document.body.querySelector('[data-slot="context-ring-card"]');
+  // Finn: a card that opened on hover was annoying. Neither hover nor focus opens it…
+  await act(async () => {
+    ring.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+    ring.dispatchEvent(new PointerEvent("pointerenter", { pointerType: "mouse" }));
+    ring.focus();
+    await new Promise((r) => setTimeout(r, 250));
+  });
+  expect(card()).toBeNull();
+  // …only a click does (Enter or Space on the focused button is a click).
+  await act(async () => { ring.click(); await flush(); });
+  expect(card()!.textContent).toBe("Context 61% fullA fresh session starts at 80%.Compact");
+  expect(ring.getAttribute("aria-expanded")).toBe("true");
+  // Leaving with the pointer keeps it open; Esc closes it.
+  await act(async () => { ring.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); await new Promise((r) => setTimeout(r, 250)); });
+  expect(card()).not.toBeNull();
+  await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
+  expect(card()).toBeNull();
+  // A click outside closes it too.
+  await act(async () => { ring.click(); await new Promise((r) => setTimeout(r, 20)); }); // Radix listens for an outside press a tick after it opens
+  expect(card()).not.toBeNull();
+  // A whole click on the page: this Radix version arms on the pointerdown and dismisses on the click.
+  await act(async () => {
+    const o = { bubbles: true, button: 0 };
+    document.body.dispatchEvent(new PointerEvent("pointerdown", { ...o, pointerType: "mouse" }));
+    document.body.dispatchEvent(new PointerEvent("pointerup", { ...o, pointerType: "mouse" }));
+    for (const t of ["mousedown", "mouseup", "click"]) document.body.dispatchEvent(new MouseEvent(t, o));
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  expect(card()).toBeNull();
 });
 
 test("a card whose runs never report context (Codex, Cursor, or nothing run yet) says so", async () => {
@@ -643,10 +670,10 @@ test("a card whose runs never report context (Codex, Cursor, or nothing run yet)
   expect(ring.getAttribute("aria-label")).toBe("Context: not measured yet");
 });
 
-/** Hover the context ring open and return its card. */
+/** Click the context ring open and return its card. */
 async function ringCard() {
   const ring = container!.querySelector<HTMLButtonElement>('button[data-slot="context-ring"]')!;
-  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
+  await act(async () => { ring.click(); await flush(); });
   return document.body.querySelector<HTMLElement>('[data-slot="context-ring-card"]')!;
 }
 const compactButton = () => document.body.querySelector<HTMLButtonElement>('button[data-slot="context-compact"]');
@@ -862,6 +889,48 @@ test("a delivered queued message leaves the queue at once: on a stream reconnect
   apiFake.queuedData.set("feat", [{ id: 7, repo: "r", branch: "feat", instruction: "and then deploy it", attachments: [], createdAt: 3 }]);
   await act(async () => { stream.dispatchEvent(Object.assign(new Event("turn"), { data: JSON.stringify({ repo: "r", branch: "feat", runId: "run-2" }) })); await flush(); await flush(); });
   expect(container!.querySelector('[data-slot="chat-queued"]')).toBeNull();
+});
+
+test("a queued message is the sent bubble with the same markdown, faded; once sent it looks the same without the fade", async () => {
+  const msg = "**ship** it with `bun run build`\n\n- one\n- two";
+  apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", instruction: "first", prompt: "p", response: "done 1", startedAt: 1, finishedAt: 5 }]);
+  apiFake.queuedData.set("feat", [{ id: 7, repo: "r", branch: "feat", instruction: msg, attachments: [], createdAt: 3 }]);
+  await mount(base);
+  const queued = container!.querySelector<HTMLElement>('[data-slot="chat-queued"]')!;
+  const queuedText = queued.querySelector<HTMLElement>('[data-slot="chat-queued-text"]')!;
+  // Markdown, like a sent message — never the raw `**` and `-`.
+  expect(queuedText.querySelector("strong")!.textContent).toBe("ship");
+  expect(queuedText.querySelector("code")!.textContent).toBe("bun run build");
+  expect([...queuedText.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["one", "two"]);
+  expect(queuedText.textContent).not.toContain("**");
+  // Pending: the message fades, the label says why, and it can still be cancelled.
+  expect(queued.dataset.pending).toBe("true");
+  expect(queuedText.className).toContain("opacity-60");
+  expect(queued.querySelector('[data-slot="queued-label"]')!.textContent).toBe("queued — sends when the current run finishescancel");
+  // Same width and right alignment as a sent bubble: the column keeps each child at its own width on
+  // the right, so the long queued label below cannot stretch the bubble.
+  const column = queued.querySelector<HTMLElement>('[data-slot="user-bubble-column"]')!;
+  expect(column.className).toContain("items-end");
+  expect(queuedText.parentElement).toBe(column);
+  const queuedHtml = queuedText.innerHTML, queuedClass = queuedText.className.replace(" opacity-60", ""), shellClass = queued.className, columnClass = column.className;
+
+  // It sends: the same bubble in its turn, the same markup, minus the fade.
+  apiFake.queuedData.set("feat", []);
+  apiFake.turnsData.set("r::feat", [
+    { id: "run-1", provider: "claude", instruction: "first", prompt: "p", response: "done 1", startedAt: 1, finishedAt: 5 },
+    { id: "run-2", provider: "claude", instruction: msg, prompt: "p", response: "Shipped.", startedAt: 6, finishedAt: 9 },
+  ]);
+  const stream = (globalThis as unknown as { EventSource: { opened: EventTarget[] } }).EventSource.opened.at(-1)!;
+  await act(async () => { stream.dispatchEvent(new Event("ready")); await flush(); await flush(); });
+  expect(container!.querySelector('[data-slot="chat-queued"]')).toBeNull();
+  const sent = [...container!.querySelectorAll<HTMLElement>('[data-slot="chat-user"]')].at(-1)!;
+  const sentText = sent.querySelector<HTMLElement>('[data-slot="chat-user-text"]')!;
+  expect(sentText.innerHTML).toBe(queuedHtml);
+  expect(sentText.className).toBe(queuedClass);
+  expect(sent.className).toBe(shellClass.replace("mb-4", "mb-2")); // the turn's spacing, nothing else
+  expect(sent.dataset.pending).toBeUndefined();
+  expect(sent.querySelector('[data-slot="user-bubble-column"]')!.className).toBe(columnClass);
+  expect(sentText.className).not.toContain("opacity-60");
 });
 
 test("undeliveredQueued: a turn delivers a queued entry only if it started after it and carries its text", () => {

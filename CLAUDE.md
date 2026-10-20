@@ -348,7 +348,10 @@ card's border; 8px cards (`rounded-lg`), 6px controls (`rounded-md`); 13px body 
 1.5 stroke (a global `svg.lucide` rule); NO shadows except Geist's menu / modal tokens
 (`shadow-menu`, `shadow-modal`) and the orchestrator's side panel (`shadow-modal`); badges are tinted fills
 with no border; buttons are Geist's three — primary (inverted; Merge too), secondary (hairline),
-tertiary (ghost: every icon-only row / toolbar button). The agent page's conversation runs
+tertiary (ghost: every icon-only row / toolbar button). Single-line truncation is always Tailwind's
+`truncate`, never a wrapper: `OverflowText` (mounted once in `App`, `lib/marquee.ts`) scrolls any
+overflowing `truncate` on a mouse hover, start to end and back; reduced motion gets a `Tip` with the
+full text; a phone taps to expand (`expandTruncatedOnTap`). The agent page's conversation runs
 full-bleed in its card and follows the page's theme (`.log-themed` remaps the terminal palette in
 light mode). Every conversation — the agent page's Chat tab, a card's modal, the orchestrator's panel
 and page — is ONE `ChatPanel` in ONE styling (bubbles; replies under the agent's name, `author`

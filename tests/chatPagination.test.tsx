@@ -333,8 +333,44 @@ test("P8: the orchestrator's chat shows an outside message and its answer as ONE
   expect(field(rows[0]!, "integration-reply")).toContain("answered Saajan");
   expect(rows[0]!.querySelector<HTMLAnchorElement>('[data-slot="integration-message"] a')!.href).toBe("https://discord.com/channels/G/C/M");
   // A queued outside message is its row too, not a queued bubble of yours.
-  expect(field(c.querySelector<HTMLElement>('[data-slot="integration-queued"]')!, "integration-state")).toBe("queued");
+  const queued = c.querySelector<HTMLElement>('[data-slot="integration-queued"]')!;
+  expect(field(queued, "integration-state")).toBe("queued");
   expect(c.querySelector('[data-slot="chat-queued"]')).toBeNull();
+  // The SAME card as a delivered one, faded while it waits.
+  expect(queued.dataset.pending).toBe("true");
+  expect(queued.className).toBe(`${rows[0]!.className} opacity-60`);
+  expect(rows[0]!.dataset.pending).toBeUndefined();
+  // Open, it shows the message in full, like a delivered card — with no reply yet.
+  await act(async () => { queued.querySelector("button")!.click(); await flush(); });
+  expect(queued.querySelector('[data-slot="integration-message"]')!.textContent).toContain("one more");
+  expect(queued.querySelector('[data-slot="integration-reply"]')).toBeNull();
+});
+
+test("P8b: an outside message's preview line renders the same markdown as its open body; its images are links, never loaded", async () => {
+  const text = "can you ship **#12** with `bun run build`?\n![pixel](https://tracker.example/p.png)";
+  apiFake.turnsData.set("r::long", [turn(0), { id: "d1", provider: "claude", instruction: outside(text), prompt: "", response: "ok", startedAt: 2000, finishedAt: 2001, source: "human" as const }]);
+  await mount(<ChatPanel row={row} />);
+  const card = container!.querySelector<HTMLElement>('[data-slot="integration-activity"]')!;
+  const preview = card.querySelector<HTMLElement>('[data-slot="integration-preview"]')!;
+  expect(preview.querySelector("strong")!.textContent).toBe("#12"); // not the raw **#12**
+  expect(preview.querySelector("code")!.textContent).toBe("bun run build");
+  expect(preview.textContent).toBe("can you ship #12 with bun run build?");
+  expect(preview.querySelector("p, ul, div")).toBeNull(); // inline, so the line keeps its truncate
+  await act(async () => { card.querySelector("button")!.click(); await flush(); });
+  const body = card.querySelector<HTMLElement>('[data-slot="integration-message-text"]')!;
+  expect(body.querySelector("strong")!.textContent).toBe("#12"); // the same renderer, opened
+  expect(body.querySelector("img")).toBeNull(); // a stranger's image is never fetched…
+  expect(body.querySelector<HTMLAnchorElement>('a[href="https://tracker.example/p.png"]')!.textContent).toBe("pixel"); // …it is a link
+  expect(container!.querySelector("img[src*='tracker.example']")).toBeNull();
+});
+
+test("P8c: a clipped preview closes a cut ** so it never shows a stray marker", async () => {
+  const long = `${"word ".repeat(22)}**bold tail that runs past the clip**`;
+  apiFake.turnsData.set("r::long", [turn(0), { id: "d1", provider: "claude", instruction: outside(long), prompt: "", response: "ok", startedAt: 2000, finishedAt: 2001, source: "human" as const }]);
+  await mount(<ChatPanel row={row} />);
+  const preview = container!.querySelector<HTMLElement>('[data-slot="integration-activity"] [data-slot="integration-preview"]')!;
+  expect(preview.textContent).not.toContain("**");
+  expect(preview.querySelector("strong")).not.toBeNull();
 });
 
 test("P9: a row stored with a catch-all link's label as its place shows no place, in the row and opened", async () => {

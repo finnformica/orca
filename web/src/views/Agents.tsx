@@ -20,7 +20,6 @@ import { useAtom, useAtomValue } from "jotai";
 import { ArrowDown, GitPullRequest, ListFilter, Loader2, Search, X } from "lucide-react";
 import { agentQueryAtom, instanceScopeAtom, repoFilterAtom } from "@/lib/atoms";
 import { navigate, useSearch } from "@/lib/route";
-import { useNow } from "@/lib/ticker";
 import { oneOf, persistedKey, readPersisted, usePersisted, writePersisted } from "@/lib/persisted";
 import { useNarrow } from "@/lib/viewport";
 import { afterDockMotion } from "@/lib/dock";
@@ -28,8 +27,8 @@ import { usePullToRefresh } from "@/lib/gestures";
 import { BottomSheet } from "@/components/BottomSheet";
 import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useReposLoaded, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
 import {
-  DEFAULT_LIST_FILTER, detailPath, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, dropStaleRepos, filterRows, formatDuration, formatElapsed, prPill,
-  LIST_ITEM_GAP_PX, NO_FOLD, browserKillLabel, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, sublineDots, sublineOverflow, toggleNotMerged, toggleQuick,
+  DEFAULT_LIST_FILTER, detailPath, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, dropStaleRepos, filterRows, prPill,
+  LIST_ITEM_GAP_PX, NO_FOLD, browserKillLabel, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowInstance, rowTone, sortRows, sublineDots, sublineOverflow, toggleNotMerged, toggleQuick,
   type ListColumn, type ListFold, type ListSort, type ListWidths, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone, type SublineSepItem,
 } from "../workstream";
 import { Button } from "@/components/ui/button";
@@ -43,7 +42,7 @@ import { useSummary, useTerminalOpen } from "@/lib/workstreamHooks";
 import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PrPreviewInline } from "./PreviewControl";
 import { ReviewCluster } from "./Review";
-import { StatusHoverCard } from "./StatusCard";
+import { StatusDuration, StatusHoverCard } from "./StatusCard";
 import { VerifiedBadge } from "./VerifiedButton";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -593,8 +592,7 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
         <div className="flex min-w-0 items-center gap-1.5"><RepoBadge repo={row.repo} /><span className="min-w-0 truncate font-medium">{row.title}</span><VerifiedBadge row={row} /></div>
         <Subline className={SIGNALS} items={[
           // A folded column leads the subline: the status label, then the PR with its checks. The
-          // elapsed time/duration is the LEAST relevant item — placed last, so it is the first thing
-          // sublineOverflow drops behind +N, kept apart from the status label it sits beside.
+          // elapsed time/duration does NOT fold with it: the status hover card shows it beside its header.
           fold.status && { key: "status", sep: "after", node: <StatusLabel row={row} tone={tone} /> },
           ...(fold.pr ? prItems.map((i, k) => (k === prItems.length - 1 ? { ...i, sep: "after" as const } : i)) : []),
           // Gated on there being a thread to show: an empty ThreadChips must not occupy a slot, or
@@ -604,7 +602,6 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
           !isDone && { key: "preview", sep: "none", node: <PrPreviewInline row={row} /> },
           diffstat && { key: "diffstat", node: diffstat },
           error && { key: "error", node: <span data-slot="row-error" className="text-geist-red">{error}</span> },
-          fold.status && { key: "statusDuration", node: <StatusDuration row={row} /> },
         ]} />
       </div>
       {!fold.status && <div role="cell" className="min-w-0"><RunStatus row={row} tone={tone} reasons={reasons} /></div>}
@@ -727,8 +724,8 @@ function SublineMore({ items }: { items: SublineItem[] }) {
 }
 
 /** The dot + label alone — the part of the status cell worth keeping once space is tight. Split out
- *  of RunStatus so a folded subline can drop the elapsed time first (StatusDuration below) and keep
- *  this. */
+ *  of RunStatus so a folded subline shows this without the elapsed time (StatusDuration), which the
+ *  status hover card then shows instead. */
 function StatusLabel({ row, tone }: { row: Row; tone: RowTone }) {
   return (
     <StatusHoverCard row={row}>
@@ -736,24 +733,6 @@ function StatusLabel({ row, tone }: { row: Row; tone: RowTone }) {
       <span data-tone={tone} className="truncate font-medium">{TONE_LABEL[tone]}</span>
     </StatusHoverCard>
   );
-}
-
-/** The elapsed/duration text alone, off the ONE shared ticker (lib/ticker) while running — only this
- *  re-renders each second, never the list. The least relevant part of the status cell: in a folded
- *  subline (Agents.tsx prItems/signals), it is the first thing `sublineOverflow` drops behind +N. */
-function StatusDuration({ row }: { row: Row }) {
-  const running = row.agentStatus === "running" && Boolean(row.agentStartedAt);
-  const now = useNow(running);
-  const duration = running ? undefined : rowDuration(row);
-  if (running && now !== undefined) {
-    return (
-      <Tip label={`Running since ${new Date(row.agentStartedAt!).toLocaleTimeString()}`}>
-        <span data-slot="elapsed" className="text-muted-foreground tabular-nums">{formatElapsed(now - row.agentStartedAt!)}</span>
-      </Tip>
-    );
-  }
-  if (duration !== undefined) return <span className="text-muted-foreground tabular-nums">{formatDuration(duration)}</span>;
-  return null;
 }
 
 /** The status cell: dot + label, and the duration, side by side — the dedicated Status column and
