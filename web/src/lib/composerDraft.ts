@@ -20,7 +20,11 @@ export function clearDraft(key: string) {
 
 export async function saveDraft(key: string, text: string, images: File[]) {
   if (!text.trim() && !images.length) return clearDraft(key);
-  const stored: StoredDraft = { text, images: await Promise.all(images.map(toStored)) };
+  // One attachment that fails to encode (a FileReader error) must not drop the whole draft, or
+  // leave the composer's save chain rejected — which would stop every later save too. Keep the
+  // text and whatever attachments did encode, the same fallback as the quota case below.
+  const encoded = await Promise.allSettled(images.map(toStored));
+  const stored: StoredDraft = { text, images: encoded.filter((r) => r.status === "fulfilled").map((r) => r.value) };
   // Attachments can blow the ~5MB quota; if so, keep at least the text so it isn't lost.
   try { localStorage.setItem(key, JSON.stringify(stored)); }
   catch { try { localStorage.setItem(key, JSON.stringify({ text, images: [] })); } catch { /* full */ } }
