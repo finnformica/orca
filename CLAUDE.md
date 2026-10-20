@@ -303,6 +303,10 @@ both, so it carries the pack (`server/handoff.ts`, `views/Handoffs.tsx`, table `
   here, POST `/api/handoff/import` on the target, POST `/api/handoffs/<id>/sent` here.
 - The import stores the files as attachments and queues ONE message to the target's orchestrator:
   `[handoff from <source>] <title>`, the message, the file list. A pack id seen before is a no-op.
+- The Handoffs nav item has a count badge (`HandoffsBadge`, `lib/handoffBadge.ts`, `GET /api/handoffs/badge`):
+  packs made here and not sent, plus received packs not seen. The phone shows it in Settings → Navigate.
+  Opening the page marks every received pack seen (`handoff.seen_at`, named step `20261020-handoff-seen`).
+  Send or delete clears an outgoing pack.
 - Safety: 10 MB a file, 25 MB a pack. The secret scan (`scanSecrets`: Slack, Anthropic, GitHub, AWS
   keys, private key blocks, `PASSWORD=`) blocks the export AND the import, and names the line only.
 - The import route needs an Origin header, and loopback or a Tailscale user device (the switcher's
