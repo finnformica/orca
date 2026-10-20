@@ -80,6 +80,16 @@ const key = async (el: HTMLTextAreaElement, init: KeyboardEventInit = {}) => {
   await act(async () => { el.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init })); await flush(); });
 };
 
+/** Stands in for the box's real layout (happy-dom has none): each logical line is `lineHeight` px
+ *  tall, only `clientHeight` px of the box is visible, and `scrollTop` is a real settable value —
+ *  the same shape the scroll-into-view fix reads. */
+function mockScroll(el: HTMLTextAreaElement, clientHeight: number, lineHeight: number) {
+  let top = 0;
+  Object.defineProperty(el, "scrollHeight", { configurable: true, get: () => ((el.value.match(/\n/g)?.length ?? 0) + 1) * lineHeight });
+  Object.defineProperty(el, "clientHeight", { configurable: true, get: () => clientHeight });
+  Object.defineProperty(el, "scrollTop", { configurable: true, get: () => top, set: (v: number) => { top = v; } });
+}
+
 describe("ChatComposer list continuation", () => {
   test("Enter on a list line continues the list; on an empty item it ends it; then Enter sends", async () => {
     const sent: string[] = [];
@@ -112,5 +122,19 @@ describe("ChatComposer list continuation", () => {
     await type(el, "hello");
     await key(el);
     expect(sent).toEqual(["hello"]);
+  });
+
+  test("Enter on a list line near the bottom scrolls the new item into view", async () => {
+    const sent: string[] = [];
+    const el = await mount(sent);
+    const lines = Array.from({ length: 9 }, (_, i) => `- item ${i + 1}`).join("\n");
+    await type(el, `${lines}\n- item 10`);
+    mockScroll(el, 60, 20); // 3 lines visible, 11 lines once the new item lands
+    let revealed = false;
+    el.scrollIntoView = ((opts?: ScrollIntoViewOptions) => { revealed = opts?.block === "nearest"; }) as typeof el.scrollIntoView;
+    await key(el);
+    expect(el.value).toBe(`${lines}\n- item 10\n- `);
+    expect(el.scrollTop).toBe(160); // 11 lines × 20px, minus the 60px visible — the new item's line pinned to the bottom edge
+    expect(revealed).toBe(true); // and any ancestor asked to reveal the box itself
   });
 });

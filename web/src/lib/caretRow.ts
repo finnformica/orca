@@ -43,3 +43,20 @@ export function lineVisualRow(el: HTMLTextAreaElement, lineText: string, offset:
 function cssPropName(camel: string): string {
   return camel.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
 }
+
+/** Scrolls `el` so the caret (`el.selectionEnd`) is visible, and asks any scrolling ancestor to
+ *  reveal the box itself. Needed after a programmatic edit (the composer's list continuation) that
+ *  sets `value` and the caret directly — a real keystroke gets caret-follows-scroll for free from
+ *  the browser, a scripted one does not. `scrollHeight` already reports the real wrapped height of
+ *  the box's content, so asking for it with the value CUT at the caret — instead of a mirror that
+ *  would have to reproduce the box's own line-wrapping — gives the caret's pixel bottom directly. */
+export function scrollCaretIntoView(el: HTMLTextAreaElement): void {
+  const { value, selectionEnd, scrollTop, clientHeight } = el;
+  el.value = value.slice(0, selectionEnd);
+  const caretBottom = el.scrollHeight;
+  el.value = value;
+  el.setSelectionRange(selectionEnd, selectionEnd);
+  if (caretBottom > scrollTop + clientHeight) el.scrollTop = caretBottom - clientHeight;
+  else if (caretBottom < scrollTop) el.scrollTop = caretBottom;
+  el.scrollIntoView({ block: "nearest" });
+}
