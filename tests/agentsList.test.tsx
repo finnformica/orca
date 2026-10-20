@@ -537,4 +537,42 @@ describe("agents list by its own width", () => {
     await act(async () => { card.querySelector("li")!.click(); await flush(); });
     expect(location.pathname).toBe(path);
   });
+
+  test("a panel dragged wide while the list loads: the skeleton holds one layout and /agents renders (it once looped until the page went blank)", async () => {
+    // The browser's numbers (a 900px window, the docked panel dragged to its widest): a 401px list,
+    // header labels narrower than the skeleton's pieces ("PR" is 16px, its piece 64px). With the PR
+    // folded, the skeleton drew no PR piece, so the PR measured 16px, fit, unfolded, measured 64px and
+    // folded again — every commit, until React threw "Maximum update depth exceeded".
+    fakeLayout(401);
+    const LABEL_PX: Record<string, number> = { status: 39, pr: 16, signals: 100, actions: 43 };
+    const PIECE_PX: Record<string, number> = { status: 64, pr: 64, signals: 64, actions: 32 };
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      const part = (this as HTMLElement).dataset?.colPart ?? "";
+      const w = (this.closest('[data-slot="workstream-list-header"]') ? LABEL_PX : PIECE_PX)[part] ?? 0;
+      return { width: w, height: 0, x: 0, y: 0, top: 0, left: 0, right: w, bottom: 0, toJSON() {} } as DOMRect;
+    };
+    const errors: unknown[] = [];
+    const realError = console.error;
+    console.error = (...a: unknown[]) => { errors.push(a[0]); };
+    const onError = (e: ErrorEvent) => { errors.push(e.error ?? e.message); e.preventDefault(); };
+    window.addEventListener("error", onError);
+    try {
+      store._resetWorkstreamsLoaded(); // still loading: the skeleton rows are what the list measures
+      container = document.createElement("div");
+      document.body.appendChild(container);
+      await act(async () => { root = createRoot(container!); root.render(<Agents />); await flush(); });
+    } finally {
+      console.error = realError;
+      window.removeEventListener("error", onError);
+    }
+    expect(errors.map(String).filter((e) => /Maximum update depth|#185/.test(e))).toEqual([]);
+    const list = container!.querySelector<HTMLElement>('[data-slot="workstream-list"]')!;
+    expect(list).not.toBeNull(); // the page rendered
+    expect(list.querySelectorAll('[data-slot="workstream-row-skeleton"]').length).toBeGreaterThan(0);
+    // The PR folds, and its skeleton piece sits under the title as a real row's PR would.
+    expect(heads()).toEqual(["Workstream", "Actions"]);
+    expect(list.style.getPropertyValue("--list-cols")).toBe("minmax(0,1fr) 43px");
+    const sub = list.querySelector('[data-slot="workstream-row-skeleton"] [data-slot="skeleton-subline"]')!;
+    expect([...sub.querySelectorAll<HTMLElement>("[data-col-part]")].map((p) => p.dataset.colPart)).toEqual(["status", "pr", "signals"]);
+  });
 });
