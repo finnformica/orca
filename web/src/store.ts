@@ -86,6 +86,9 @@ export const useBridge = (): BridgeInfo | undefined => useSyncExternalStore(subs
 
 const repoInfo = (repo: string) => cfg?.repos.find((r) => r.name === repo);
 export const useRepos = (): RepoInfo[] => useSyncExternalStore(subscribe, () => cfg?.repos ?? EMPTY_REPOS);
+/** Whether the repo list has actually landed — `useRepos()` alone can't tell "not loaded yet" from
+ *  "loaded, no repos", and a caller that drops a stale filter value needs to know which. */
+export const useReposLoaded = (): boolean => useSyncExternalStore(subscribe, () => cfg !== null);
 export const agentProviders = (): AgentProvider[] => cfg?.agentProviders ?? DEFAULT_AGENT_PROVIDERS;
 export const useAgentProviders = (): AgentProvider[] => useSyncExternalStore(subscribe, agentProviders);
 export const baseBranch = (repo: string) => repoInfo(repo)?.baseBranch ?? "main";

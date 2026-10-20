@@ -26,9 +26,9 @@ import { useNarrow } from "@/lib/viewport";
 import { afterDockMotion } from "@/lib/dock";
 import { usePullToRefresh } from "@/lib/gestures";
 import { BottomSheet } from "@/components/BottomSheet";
-import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
+import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useReposLoaded, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
 import {
-  DEFAULT_LIST_FILTER, detailPath, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, filterRows, formatDuration, formatElapsed, prPill,
+  DEFAULT_LIST_FILTER, detailPath, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, dropStaleRepos, filterRows, formatDuration, formatElapsed, prPill,
   LIST_ITEM_GAP_PX, NO_FOLD, browserKillLabel, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowDuration, rowInstance, rowTone, sortRows, sublineOverflow, toggleNotMerged, toggleQuick,
   type ListColumn, type ListFold, type ListSort, type ListWidths, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone,
 } from "../workstream";
@@ -68,7 +68,14 @@ function AgentsList() {
   const instance = useAtomValue(instanceScopeAtom); // the sidebar's scope
   const [q, setQ] = useAtom(agentQueryAtom);
   const search = useSearch();
-  const quick = parseQuickFilter(search);
+  const repos = useRepos();
+  const reposLoaded = useReposLoaded();
+  const repoNames = repos.map((r) => r.name);
+  // Dropping a repo chip's value needs the repo list, else "not loaded yet" reads as "no repos
+  // configured" and wipes every one. Before it loads, the raw (unfiltered) value is used as-is —
+  // the Clear button and the active-filter count still cover it; see the effect below for the drop.
+  const parsedQuick = parseQuickFilter(search);
+  const quick = reposLoaded ? dropStaleRepos(parsedQuick, repoNames) : parsedQuick;
   const [sort, setSort] = usePersisted<ListSort>(persistedKey("agents.sort"), "updated", oneOf(...(Object.keys(SORT_LABELS) as ListSort[])));
   const here = thisInstance();
   const filtersKey = persistedKey("agents.filters", repo); // the chips + search, per repo scope
@@ -90,6 +97,13 @@ function AgentsList() {
     }
     writePersisted(filtersKey, { query: quickFilterQuery(quick), q });
   }, [filtersKey, search, q]); // quick derives from search
+  // A repo chip can go stale (a repo renamed or removed) — its chip then never renders, so it can't
+  // be unticked by hand and would hide every row for good. Once the repo list has loaded, drop it
+  // from the URL too (replace, no history step), so a stale link or a saved filter self-heals.
+  useEffect(() => {
+    if (!reposLoaded) return;
+    if (quick !== parsedQuick) navigate(`/agents${quickFilterQuery(quick)}`, true);
+  }, [reposLoaded, search, repoNames.join(",")]); // eslint-disable-line react-hooks/exhaustive-deps
   // The scopes first (they hold on every page), then the search box, then the quick chips.
   const scoped = filterRows(all, { ...DEFAULT_LIST_FILTER, repo, instance, q }, here);
   const visible = sortRows(applyQuickFilter(scoped, quick, here), sort);
