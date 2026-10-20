@@ -249,17 +249,19 @@ test("one runaway tool result can't dominate a transcript, and a missing one is 
 // already holds and gets only what's new — the same query whether the run is on this machine or
 // another one, which is the whole reason the in-process bus and its SSE stream were removed.
 test("steps are readable by cursor, so a tail returns only what is new", async () => {
-  await start("run-a", "a");
-  await transcript.append("run-a", [{ at: 1, kind: "text", text: "one" }, { at: 2, kind: "text", text: "two" }]);
+  // Its own run id: transcript.ts counts seq in memory per run id for the whole process, and other
+  // files in the same `bun test` run append to a "run-a" too.
+  await start("run-cursor", "a");
+  await transcript.append("run-cursor", [{ at: 1, kind: "text", text: "one" }, { at: 2, kind: "text", text: "two" }]);
 
-  const all = await transcript.numbered("run-a");
+  const all = await transcript.numbered("run-cursor");
   expect(all.map((r) => r.step.text)).toEqual(["one", "two"]);
   expect(all.map((r) => r.seq)).toEqual([1, 2]); // dense, so a cursor is just "how far I've read"
 
-  await transcript.append("run-a", [{ at: 3, kind: "text", text: "three" }]);
-  expect((await transcript.numbered("run-a", { afterSeq: 2 })).map((r) => r.step.text)).toEqual(["three"]);
-  expect(await transcript.numbered("run-a", { afterSeq: 3 })).toEqual([]); // caught up → nothing to send
-  expect((await transcript.read("run-a", 1)).map((s) => s.text)).toEqual(["three"]); // tail
+  await transcript.append("run-cursor", [{ at: 3, kind: "text", text: "three" }]);
+  expect((await transcript.numbered("run-cursor", { afterSeq: 2 })).map((r) => r.step.text)).toEqual(["three"]);
+  expect(await transcript.numbered("run-cursor", { afterSeq: 3 })).toEqual([]); // caught up → nothing to send
+  expect((await transcript.read("run-cursor", 1)).map((s) => s.text)).toEqual(["three"]); // tail
 });
 
 test("a retried write cannot duplicate a step", async () => {

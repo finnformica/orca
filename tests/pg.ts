@@ -13,6 +13,17 @@ const BASE_URL = process.env.ORCA_TEST_DATABASE_URL || "postgres://localhost:543
 
 let counter = 0;
 
+/** May the test role create databases? The tests that clone real databases (the preview reaper,
+ *  push-to-template) need it; CI's superuser has it, a box's limited test grant does not. Such a
+ *  test skips without it, like a Linux-only test on a Mac. */
+export async function canCreateDatabases(): Promise<boolean> {
+  const sql = new Bun.SQL(BASE_URL);
+  try {
+    const [r] = await sql`SELECT rolcreatedb OR rolsuper AS ok FROM pg_roles WHERE rolname = current_user`;
+    return !!(r as { ok?: boolean } | undefined)?.ok;
+  } catch { return false; } finally { await sql.end().catch(() => {}); }
+}
+
 export type TestDb = { url: string; drop: () => Promise<void> };
 
 /** Create an isolated schema and return a URL scoped to it. Call `drop()` when the file is done. */
