@@ -3296,6 +3296,16 @@ export function quickFilterQuery(f: QuickFilter): string {
   return parts.length ? `?${parts.join("&")}` : "";
 }
 
+/** Drop a `repo` chip value that names no configured repo (a rename, e.g. orca-src → orca) — its
+ *  chip never renders, so a stale value can't be unticked by hand and would hide every row forever.
+ *  Returns `f` unchanged (the same reference) when nothing needs dropping, so a caller can tell
+ *  whether anything changed. Only call this once the repo list has loaded: an empty list means
+ *  "not loaded yet", not "no repos configured", and would drop every value. */
+export function dropStaleRepos(f: QuickFilter, repoNames: readonly string[]): QuickFilter {
+  const kept = f.repo.filter((v) => repoNames.includes(v));
+  return kept.length === f.repo.length ? f : { ...f, repo: kept };
+}
+
 /** Flip one chip on or off. */
 export function toggleQuick(f: QuickFilter, group: QuickGroup, value: string): QuickFilter {
   const has = (f[group] as string[]).includes(value);

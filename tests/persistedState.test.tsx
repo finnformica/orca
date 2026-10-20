@@ -144,6 +144,17 @@ describe("the Agents page remembers its filters", () => {
     expect(saved("all")).toEqual({ query: "?status=running", q: "" }); // the other scope untouched
   });
 
+  test("a stale repo value in a saved filter self-heals: dropped on restore, not brought back", async () => {
+    // "orca-src" was a repo's old name (now "r") — a filter saved before the rename must not keep
+    // hiding every row forever, since its chip can never render to untick it by hand.
+    writePersisted(persistedKey("agents.filters", "all"), { query: "?repo=orca-src&status=running", q: "" });
+    await open("/agents");
+    expect(location.search).toBe("?status=running"); // dropped once the repo list has loaded
+    expect(saved()).toEqual({ query: "?status=running", q: "" }); // rewritten clean
+    await reload(); // the clean query is what the next session restores, not the stale one
+    expect(location.search).toBe("?status=running");
+  });
+
   test("sort restores from storage; an unknown value falls back to Last activity", async () => {
     writePersisted(persistedKey("agents.sort"), "title");
     await open("/agents");
