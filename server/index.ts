@@ -33,6 +33,7 @@ import * as integrationAdmin from "./integrations/admin";
 import { deadNotification, webAdapter } from "./integrations/adapters/web";
 import * as orchestrator from "./orchestrator";
 import * as primary from "./primary";
+import { scrubbedEnv } from "./env";
 import * as mergeQueue from "./mergeQueue";
 import * as upkeep from "./upkeep";
 import * as browserWatch from "./browserWatch";
@@ -205,6 +206,11 @@ setInterval(() => {
 // The heavy-command queue (server/heavy.ts): take back a slot past its max run time or whose
 // `orca-run` client died without closing its connection.
 setInterval(() => heavy.slots().sweep(), 15_000).unref();
+// A stopped or outright-killed `orca-heavy-*.scope` sits in `systemctl --user list-units` as
+// failed forever otherwise; clear each one's failed state once a minute.
+if (process.platform === "linux") setInterval(() => {
+  void heavy.clearFailedHeavyScopes().catch((e) => console.error(`orca: clearing failed heavy scopes failed: ${e instanceof Error ? e.message : e}`));
+}, 60_000).unref();
 // Only this bridge may run the orchestrator's wakes: a bridge on code too old for the election (a
 // stray preview bridge, incident 2026-10-15) that launched one is stopped with it, and the wake is
 // re-run here (orchestrator.evictForeignWake). Once a minute, on the primary.
@@ -351,7 +357,7 @@ function whenDatabaseDown(req: Request, url: URL, e: db.DbUnavailable): Response
   return degradedJson({ error: `${e.message} — this needs the database; it will work again once it is back` }, 503);
 }
 
-const BRIDGE_BRANCH = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: import.meta.dir }).stdout.toString().trim() || undefined;
+const BRIDGE_BRANCH = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: import.meta.dir, env: scrubbedEnv() }).stdout.toString().trim() || undefined;
 const bridgeInfo = () => ({ preview: PREVIEW_BRIDGE, branch: BRIDGE_BRANCH, port: API_PORT, ...primary.state() });
 
 /** A caller-supplied base ref, rejected unless it looks like a branch name (never a `-flag` that git

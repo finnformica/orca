@@ -6,7 +6,8 @@ import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, w
 import { tmpdir } from "os";
 import { dirname, join } from "path";
 import {
-  acquireResponse, createSlotManager, HEAVY_KINDS, heavyMemoryBudgetGb, heavyQueueProblems, heavySettings, HeavyWaitTimeout, scopePrefix,
+  acquireResponse, clearFailedHeavyScopes, createSlotManager, HEAVY_KINDS, heavyMemoryBudgetGb, heavyQueueProblems, heavySettings, HeavyWaitTimeout,
+  parseFailedHeavyUnits, scopePrefix,
   type Grant, type HeavyEntry, type HeavySettings, type PerKind, type ReleaseReason, type SlotManager,
 } from "../server/heavy";
 import { runIdentity } from "../server/agent";
@@ -296,6 +297,64 @@ describe("slot manager", () => {
     await tick();
     expect(t.grant?.overBudget).toBeUndefined();
     expect(heavyHeader(fine.view()).memoryOver).toBe(false);
+  });
+
+  test("HQ22: a caller whose process died gets its scope stopped on client-gone; a mere connection blip does not", async () => {
+    const dead = new Set<number>();
+    const { m, stopped } = manager({}, { alive: (pid) => !dead.has(pid) });
+    const exited = ask(m, "test", { pid: 101 });
+    const blipped = ask(m, "test", { pid: 202 });
+    const noPid = ask(m, "lint");
+    await tick();
+    dead.add(101); // the caller's own process (orca-run) is gone — reparented its heavy command to pid 1
+    exited.grant!.release("client-gone");
+    blipped.grant!.release("client-gone"); // pid 202 is still alive: the connection merely dropped
+    noPid.grant!.release("client-gone"); // no pid to check: unchanged, conservative behaviour
+    await tick();
+    expect(stopped.map((s) => [s.entry.pid, s.reason])).toEqual([[101, "client-gone"]]);
+    expect(m.view().running).toHaveLength(0); // every slot is freed either way
+  });
+
+  test("HQ23: a run-end that arrives after its caller's connection already dropped is a no-op, not a double stop", async () => {
+    const dead = new Set<number>();
+    const { m, stopped } = manager({}, { alive: (pid) => !dead.has(pid) });
+    const job = ask(m, "build", { runId: "run-x", pid: 55 });
+    await tick();
+    dead.add(55); // the agent run that started it ended, killing orca-run with it
+    job.grant!.release("client-gone");
+    expect(m.releaseRun("run-x")).toBe(0); // already gone; nothing left for releaseRun to find
+    await tick();
+    expect(stopped.map((s) => [s.entry.runId, s.reason])).toEqual([["run-x", "client-gone"]]);
+  });
+
+  test("HQ24: parses the UNIT column of `systemctl --user list-units --state=failed`, keeping only orca-heavy scopes", () => {
+    const stdout = [
+      "orca-heavy-ab12cd34.scope loaded failed failed Transient scope for orca-run",
+      "orca-run-11111111-1111-1111-1111-111111111111.scope loaded failed failed Transient scope",
+      "",
+    ].join("\n");
+    expect(parseFailedHeavyUnits(stdout)).toEqual(["orca-heavy-ab12cd34.scope"]);
+    expect(parseFailedHeavyUnits("")).toEqual([]);
+  });
+
+  test("HQ25: clears every failed orca-heavy scope's failed state, and nothing else", async () => {
+    const calls: string[][] = [];
+    const run = async (cmd: string[]) => {
+      calls.push(cmd);
+      if (cmd[2] === "list-units") return { stdout: "orca-heavy-a1.scope loaded failed failed x\norca-heavy-b2.scope loaded failed failed y\n", code: 0 };
+      return { stdout: "", code: 0 };
+    };
+    const units = await clearFailedHeavyScopes({ run });
+    expect(units).toEqual(["orca-heavy-a1.scope", "orca-heavy-b2.scope"]);
+    expect(calls.slice(1)).toEqual([
+      ["systemctl", "--user", "reset-failed", "orca-heavy-a1.scope"],
+      ["systemctl", "--user", "reset-failed", "orca-heavy-b2.scope"],
+    ]);
+  });
+
+  test("HQ26: no failed units and no systemctl are both harmless", async () => {
+    expect(await clearFailedHeavyScopes({ run: async () => ({ stdout: "", code: 1 }) })).toEqual([]);
+    expect(await clearFailedHeavyScopes({ run: async () => { throw new Error("no systemctl"); } })).toEqual([]);
   });
 
   test("HQ21: the heavy queue's figures show one decimal at most", () => {

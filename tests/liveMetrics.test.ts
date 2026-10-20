@@ -5,8 +5,9 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { parseProcStat } from "../server/health";
+import { instanceStatus } from "../web/src/workstream";
 import {
-  bucketLive, cpuSplit, createLiveSampler, diskCapMBs, diskRates, liveAnswer, noteLiveOom, parseDiskstats, parseMeminfo,
+  bucketLive, byteRates, cpuSplit, createDarwinSampler, createLiveSampler, darwinCpuTimes, IOREG_CMD, parseIoregDisk, parseVmStatMemory, VM_STAT_CMD, diskCapMBs, diskRates, liveAnswer, noteLiveOom, parseDiskstats, parseMeminfo,
   pushLive, resetLive, rootDevice, type LiveSample,
 } from "../server/liveMetrics";
 
@@ -219,5 +220,112 @@ describe("orca machine (machineSummary, machineText, machineReport)", () => {
     expect(r).toMatchObject({ instance: "cloud", at: NOW, sliceMaxGb: 8.4, diskCapMBs: 125, stepMs: 15_000, heavy: { running: 0, queued: 0 } });
     expect(r.summary).toEqual(machineSummary(r.samples, r.cores));
     resetLive();
+  });
+});
+
+// ---- macOS: no /proc. CPU from os.cpus(), memory from vm_stat, disk from ioreg. ----
+
+// The real Apple Silicon `vm_stat` capture from tests/health.test.ts (page size 16384).
+const VM_STAT = `Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                               21309.
+Pages active:                            612847.
+Pages inactive:                          583296.
+Pages speculative:                         4821.
+Pages throttled:                              0.
+Pages wired down:                        198532.
+Pages purgeable:                          12044.
+"Translation faults":                 892374651.
+Pages copy-on-write:                    3847291.
+Pages zero filled:                   412938475.
+Pages reactivated:                       284719.
+Pages purged:                           1829374.
+File-backed pages:                       421837.
+Anonymous pages:                         774306.
+Pages stored in compressor:              892147.
+Pages occupied by compressor:            213847.
+Decompressions:                         3847291.
+Compressions:                           5847392.
+Pageins:                                8473921.
+Pageouts:                                  48372.
+Swapins:                                       0.
+Swapouts:                                      0.
+`;
+// `ioreg -r -c IOBlockStorageDriver -k Statistics -d 1 -w 0` in its documented shape: the internal
+// SSD and one mounted disk image, each with its own byte counters since boot.
+const IOREG = (read: number, write: number) => `+-o IOBlockStorageDriver  <class IOBlockStorageDriver, id 0x100000412, registered, matched, active, busy 0 (0 ms), retain 7>
+    {
+      "Statistics" = {"Operations (Write)"=9518283,"Latency Time (Write)"=0,"Bytes (Read)"=${read},"Errors (Write)"=0,"Total Time (Read)"=4815162342,"Latency Time (Read)"=0,"Retries (Read)"=0,"Errors (Read)"=0,"Total Time (Write)"=2718281828,"Bytes (Write)"=${write},"Operations (Read)"=12233344,"Retries (Write)"=0}
+    }
+
++-o IOBlockStorageDriver  <class IOBlockStorageDriver, id 0x1000a2c31, registered, matched, active, busy 0 (0 ms), retain 6>
+    {
+      "Statistics" = {"Operations (Write)"=0,"Latency Time (Write)"=0,"Bytes (Read)"=1048576,"Errors (Write)"=0,"Total Time (Read)"=1000,"Latency Time (Read)"=0,"Retries (Read)"=0,"Errors (Read)"=0,"Total Time (Write)"=0,"Bytes (Write)"=0,"Operations (Read)"=16,"Retries (Write)"=0}
+    }
+`;
+const GB24 = 24 * 1_073_741_824;
+const core = (user: number, sys: number, idle: number) => ({ times: { user, nice: 0, sys, idle, irq: 0 } });
+
+describe("macOS parsers", () => {
+  test("parseVmStatMemory: used is active + wired + compressor (the header's figure), cache is inactive + speculative", () => {
+    // 16384 × (612847 + 198532 + 213847) = 15.64 GB used; 16384 × (583296 + 4821) = 8.97 GB cache, clamped to 24 − 15.64.
+    expect(parseVmStatMemory(VM_STAT, GB24)).toEqual({ usedGb: 15.64, cacheGb: 8.36, availGb: 8.36 });
+    expect(parseVmStatMemory(VM_STAT, 64 * 1_073_741_824)).toEqual({ usedGb: 15.64, cacheGb: 8.97, availGb: 48.36 });
+    expect(parseVmStatMemory("no report", GB24)).toBeUndefined();
+  });
+
+  test("parseIoregDisk sums every driver's bytes; byteRates gives MB/s and reads a reset as 0", () => {
+    expect(parseIoregDisk(IOREG(1000, 2000))).toEqual({ readBytes: 1000 + 1048576, writeBytes: 2000 });
+    expect(parseIoregDisk("+-o IOBlockStorageDriver\n")).toBeUndefined();
+    expect(byteRates({ readBytes: 0, writeBytes: 0 }, { readBytes: 30 * 1_048_576 * 40, writeBytes: 30 * 1_048_576 }, 30_000)).toEqual({ readMBs: 40, writeMBs: 1 });
+    expect(byteRates({ readBytes: 9, writeBytes: 9 }, { readBytes: 0, writeBytes: 0 }, 30_000)).toEqual({ readMBs: 0, writeMBs: 0 });
+  });
+
+  test("darwinCpuTimes sums the cores into a /proc/stat shape with no iowait", () => {
+    const a = darwinCpuTimes([core(0, 0, 0), core(0, 0, 0)]);
+    const b = darwinCpuTimes([core(300, 100, 600), core(100, 100, 800)]);
+    expect(b).toMatchObject({ user: 400, system: 200, idle: 1400, iowait: 0, total: 2000 });
+    expect(cpuSplit(a, b)).toEqual({ work: 30, iowait: 0 });
+  });
+});
+
+describe("the macOS sampler", () => {
+  test("each tick spawns ONE command, vm_stat and ioreg in turn; samples carry CPU, memory and disk MB/s", async () => {
+    resetLive();
+    let t = 0, ticks = 0;
+    const calls: string[][] = [];
+    const sampler = createDarwinSampler({
+      now: () => t, load1: () => 4.444, totalBytes: () => GB24,
+      // 10 cores; each tick adds 1000 ticks per core, 250 of them busy: 25 % work.
+      cpus: () => Array.from({ length: 10 }, () => core(200 * ticks, 50 * ticks, 750 * ticks)),
+      run: async (cmd) => { calls.push(cmd); return cmd[0] === "vm_stat" ? VM_STAT : IOREG(ticks * 15 * 1_048_576 * 4, ticks * 15 * 1_048_576 * 2); },
+    });
+    const step = async () => { const v = await sampler.tick(); ticks++; t += 15_000; return v; };
+    expect(await step()).toBeUndefined(); // baseline
+    // Tick 2 (ioreg): memory from tick 1, no disk rate yet (one ioreg read).
+    expect(await step()).toEqual({ at: 15_000, work: 25, iowait: 0, load1: 4.44, memUsedGb: 15.64, memCacheGb: 8.36, memAvailGb: 8.36 });
+    await step(); // vm_stat
+    noteLiveOom();
+    // Tick 4 (ioreg): 30 s since the last ioreg read, 4 and 2 MB/s.
+    expect(await step()).toEqual({ at: 45_000, work: 25, iowait: 0, load1: 4.44, readMBs: 4, writeMBs: 2, memUsedGb: 15.64, memCacheGb: 8.36, memAvailGb: 8.36, ooms: 1 });
+    expect(calls).toEqual([VM_STAT_CMD, IOREG_CMD, VM_STAT_CMD, IOREG_CMD]);
+    resetLive();
+  });
+
+  test("a failed command keeps the last reading, and no memory reading means no sample", async () => {
+    let t = 0;
+    const sampler = createDarwinSampler({ now: () => (t += 15_000), totalBytes: () => GB24, cpus: () => [core(t, 0, t)], run: async () => { throw new Error("vm_stat: not found"); } });
+    expect(await sampler.tick()).toBeUndefined();
+    expect(await sampler.tick()).toBeUndefined();
+  });
+});
+
+describe("instanceStatus", () => {
+  test("unreachable beats all; health or a fresh sample is online; nothing is loading", () => {
+    const now = 1_000_000_000;
+    expect(instanceStatus({ down: true, health: true, now })).toBe("unreachable");
+    expect(instanceStatus({ down: false, health: true, now })).toBe("online");
+    expect(instanceStatus({ down: false, health: false, newestSampleAt: now - 60_000, now })).toBe("online");
+    expect(instanceStatus({ down: false, health: false, newestSampleAt: now - 10 * 60_000, now })).toBe("loading");
+    expect(instanceStatus({ down: false, health: false, now })).toBe("loading");
   });
 });

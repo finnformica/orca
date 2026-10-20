@@ -20,7 +20,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { thisInstance } from "../store";
-import { HISTORY_RANGES, countMax, liveCharts, nearestAt, usesLiveSource, headerUsage, heavyHeader, heavyQueueRows, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
+import { HISTORY_RANGES, countMax, liveCharts, nearestAt, usesLiveSource, headerUsage, heavyHeader, instanceStatus, heavyQueueRows, hostHints, instanceSeries, loginStatus, monthCostLabel, niceMax, protectionsWarning, routingBroken, usageGroups, type UsageGroup } from "../workstream";
 import { ChartSkeleton, Detail, Empty, LineChart, Pill, Ring, Segmented, StackedChart, StatusDot, UsageSkeleton, VCard, type StackBand } from "@/components/console";
 
 /** The Overview's and the Usage page's card — one component, one behaviour: the high-level rows (the
@@ -298,7 +298,11 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const now = s.latest;
   const ooms = s.ooms.reduce((n, o) => n + o.n, 0);
   const memTotal = h?.memTotalGb ?? Math.max(1, ...(history ?? []).map((p) => p.memTotalGb));
-  const tone = down ? "error" : !h ? "neutral" : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
+  const status = instanceStatus({
+    down, health: Boolean(h), now: to,
+    newestSampleAt: Math.max(liveAnswer ? (liveAnswer.samples.at(-1)?.at ?? 0) : 0, history?.at(-1)?.at ?? 0) || undefined,
+  });
+  const tone = status === "unreachable" ? "error" : !h ? (status === "online" ? "ready" : "neutral") : h.cpuPct >= 80 || h.memUsedGb / h.memTotalGb >= 0.9 ? "warning" : "ready";
   const guard = protectionsWarning(h?.protections);
   const heavyRows = heavyQueueRows(h?.heavy);
   const live = liveAnswer ? liveCharts(liveAnswer.samples, liveAnswer.cores) : null;
@@ -326,7 +330,7 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
       )}
       <div className="grid grid-cols-2 gap-x-6 gap-y-4 border-b p-4 sm:grid-cols-3 lg:grid-cols-6">
         <Detail label="Status" slot="instance-status">
-          <StatusDot tone={tone} />{down ? "Unreachable" : h ? "Online" : "Loading…"}
+          <StatusDot tone={tone} />{status === "unreachable" ? "Unreachable" : status === "online" ? "Online" : "Loading…"}
         </Detail>
         <Detail label="CPU" slot="instance-cpu">{now ? (
           <>

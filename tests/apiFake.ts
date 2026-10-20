@@ -44,6 +44,10 @@ export const apiFake = {
   releasePrs: null as null | (() => void),
   // Override for api.agents: when set, returned verbatim (lets a test drive a done run with a result).
   agentsData: null as null | unknown[],
+  // When set, api.agents rejects — a transient failure of the agents stream (a dropped request).
+  agentsError: null as null | string,
+  // When set, api.healthHistory rejects — a transient failure of a machine card's history poll.
+  healthHistoryError: null as null | string,
   // Preview services served by api.previewMaster (on start) + api.previewStatus (the poll) — tests set
   // these to drive the Test-master menu through its ready state.
   previewSvcs: [] as unknown[],
@@ -77,6 +81,8 @@ export const apiFake = {
   holdUsage: false,
   releaseUsage: null as null | (() => void),
   healthData: null as null | Record<string, unknown>,
+  // When true, api.health never answers — a forward that has not come back.
+  holdHealth: false,
   healthHistoryData: [] as Record<string, unknown>[],
   healthHistoryCalls: [] as { instance: string; hours?: number }[],
   // /api/health/live's answer; null = the route fails, as on a bridge older than it.
@@ -202,7 +208,7 @@ export const apiFake = {
   handoffBadgeData: { unsent: 0, unseen: 0 },
   handoffPacks: [] as Record<string, unknown>[],
   handoffSeenCalls: 0,
-  reset() { this.inboxUnreadData = { others: 0, mutedKinds: [] }; this.handoffBadgeData = { unsent: 0, unseen: 0 }; this.handoffPacks = []; this.handoffSeenCalls = 0; this.inboxData = null; this.inboxCalls = []; this.inboxThreads.clear(); this.threadLinksData = []; this.integrationLinks = []; this.inboxActions = []; this.inboxReplyError = null; this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.holdPrDetail = false; this.releasePrDetail = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.healthHistoryData = []; this.healthHistoryCalls = []; this.healthLiveData = null; this.healthLiveCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.settleResult = { outcome: "conflict", files: [] }; this.settleCalls = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.turnPageDbUnavailable = false; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.uploadAttachmentsResult = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.holdSetProfileEnabled = false; this.setProfileEnabledReleasers = []; this.refreshProfileCalls = []; this.refreshProfileError = null; this.refreshProfileStaysStale = false; this.instanceRates = {}; this.setInstanceRateCalls = []; this.setInstanceTerminalCalls = []; this.setShowBoardCalls = []; this.setServerIdentityCalls = []; this.setServerIdentityError = null; this.githubAccounts = []; this.setGithubAccountCalls = []; },
+  reset() { this.inboxUnreadData = { others: 0, mutedKinds: [] }; this.handoffBadgeData = { unsent: 0, unseen: 0 }; this.handoffPacks = []; this.handoffSeenCalls = 0; this.inboxData = null; this.inboxCalls = []; this.inboxThreads.clear(); this.threadLinksData = []; this.integrationLinks = []; this.inboxActions = []; this.inboxReplyError = null; this.worktrees.clear(); this.pending = null; this.calls = []; this.compactError = null; this.mergeError = null; this.summaryData = null; this.diffText = ""; this.prDetailData = null; this.prDetailError = null; this.holdPrDetail = false; this.releasePrDetail = null; this.prsData = []; this.prsError = null; this.holdPrs = false; this.releasePrs = null; this.agentsData = null; this.agentsError = null; this.healthHistoryError = null; this.previewSvcs = []; this.previewMasterError = null; this.previewsData = []; this.previewsError = null; this.claudePrompts = []; this.agentLaunches = []; this.handoffs = []; this.slackSends = []; this.slackPosted = true; this.suggestTitleReply = "Suggested Name"; this.suggestTitleCalls = []; this.renames = []; this.titleProviders = []; this.createWorktreeCalls = []; this.adoptCalls = []; this.previewCalls = []; this.previewStatusCalls = []; this.previewStopCalls = []; this.previewStopError = null; this.holdUsage = false; this.releaseUsage = null; this.healthData = null; this.holdHealth = false; this.healthHistoryData = []; this.healthHistoryCalls = []; this.healthLiveData = null; this.healthLiveCalls = []; this.holdHealthHistory = false; this.releaseHealthHistory = null; this.promotions = []; this.reviewEvidenceData = []; this.reviewEvidenceError = null; this.prCommentsData = []; this.reviewSignalAuthor = "me"; this.reviewSignalCalls = []; this.ciEvidenceData = []; this.ciEvidenceError = null; this.settleResult = { outcome: "conflict", files: [] }; this.settleCalls = []; this.claudeError = null; this.holdClaude = false; this.releaseClaude = null; this.agentQueued = null; this.usageData = null; this.enrichmentData.clear(); this.turnsData.clear(); this.turnPageCalls = []; this.turnPageDbUnavailable = false; this.holdTurnPages = false; this.heldTurnPages = []; this.stopped = []; this.orchestratorState = { key: "/state/orchestrator", running: false, paused: false, notes: "", model: "claude-fable-5-1" }; this.orchestratorMessages = []; this.uploadAttachmentsResult = []; this.orchestratorMessageError = null; this.orchestratorMessageDelays = []; this.notificationsData = []; this.notificationCalls = []; this.notificationFetches = []; this.turnStepsData.clear(); this.turnFinished.clear(); this.queuedData.clear(); this.importError = null; this.holdEnrichmentWrites = false; this.releaseEnrichmentWrites = null; this.setProfileEnabledCalls = []; this.setProfileEnabledError = null; this.holdSetProfileEnabled = false; this.setProfileEnabledReleasers = []; this.refreshProfileCalls = []; this.refreshProfileError = null; this.refreshProfileStaysStale = false; this.instanceRates = {}; this.setInstanceRateCalls = []; this.setInstanceTerminalCalls = []; this.setShowBoardCalls = []; this.setServerIdentityCalls = []; this.setServerIdentityError = null; this.githubAccounts = []; this.setGithubAccountCalls = []; },
 };
 
 mock.module("@/api", () => ({
@@ -289,7 +295,10 @@ mock.module("@/api", () => ({
       apiFake.notificationsData = apiFake.notificationsData.map((n) => (ids === "all" || ids.includes(n.id as number)) && !n.readAt ? { ...n, readAt: Date.now() } : n);
       return { ok: true, changed: 0 };
     },
-    agents: async () => apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const })),
+    agents: async () => {
+      if (apiFake.agentsError) throw new Error(apiFake.agentsError);
+      return apiFake.agentsData ?? [...apiFake.worktrees.values()].map((w) => ({ ...w, agentStatus: "running" as const }));
+    },
     prs: async () => {
       if (apiFake.holdPrs) await new Promise<void>((resolve) => { apiFake.releasePrs = () => { apiFake.holdPrs = false; resolve(); }; });
       if (apiFake.prsError) throw new Error(apiFake.prsError);
@@ -451,6 +460,7 @@ mock.module("@/api", () => ({
     healthHistory: async (instance: string, hours?: number) => {
       apiFake.healthHistoryCalls.push({ instance, hours });
       if (apiFake.holdHealthHistory) await new Promise<void>((resolve) => { apiFake.releaseHealthHistory = () => { apiFake.holdHealthHistory = false; resolve(); }; });
+      if (apiFake.healthHistoryError) throw new Error(apiFake.healthHistoryError);
       return apiFake.healthHistoryData;
     },
     healthLive: async (instance: string | undefined, hours: number) => {
@@ -458,7 +468,7 @@ mock.module("@/api", () => ({
       if (!apiFake.healthLiveData) throw new Error("404 not found");
       return apiFake.healthLiveData;
     },
-    health: async (instance?: string) => apiFake.healthData ?? { instance: instance ?? "cloud", hostname: "orca-box", cores: 4, cpuPct: 12, load1: 0.5, load5: 0.4, memUsedGb: 3.1, memTotalGb: 15.3, disk: { usedGb: 11, totalGb: 145 }, uptimeS: 90000, rate: { hourlyUsd: 0.2331, source: "estimate", instanceType: "m7i.xlarge", region: "eu-west-2" }, month: { usd: 5.52, upHours: 23.68, since: 0 }, at: Date.now() },
+    health: async (instance?: string) => apiFake.holdHealth ? new Promise<never>(() => {}) : apiFake.healthData ?? { instance: instance ?? "cloud", hostname: "orca-box", cores: 4, cpuPct: 12, load1: 0.5, load5: 0.4, memUsedGb: 3.1, memTotalGb: 15.3, disk: { usedGb: 11, totalGb: 145 }, uptimeS: 90000, rate: { hourlyUsd: 0.2331, source: "estimate", instanceType: "m7i.xlarge", region: "eu-west-2" }, month: { usd: 5.52, upHours: 23.68, since: 0 }, at: Date.now() },
     orchestrator: async () => apiFake.orchestratorState,
     orchestratorModel: async (model: string) => { apiFake.orchestratorState = { ...apiFake.orchestratorState, model }; return { ok: true as const }; },
     orchestratorMessage: async (text: string, attachments: string[] = []) => {

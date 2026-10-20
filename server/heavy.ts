@@ -256,7 +256,13 @@ export function createSlotManager(deps: {
     if (!slot || slot.released) return;
     slot.released = true;
     running.delete(id);
-    if (reason !== "done" && reason !== "client-gone") {
+    // "client-gone" is ordinary (a network blip; `orca-run` is likely still watching its own child)
+    // UNLESS its pid is no longer alive: the caller itself exited — killed along with the agent run
+    // that started it, or crashed outright — and its command, already moved into its OWN transient
+    // scope by `systemd-run --scope`, survives the dead parent reparented to pid 1. Nothing else will
+    // ever stop that scope, so this is the one place that must.
+    const callerGone = reason === "client-gone" && slot.entry.pid !== undefined && !alive(slot.entry.pid);
+    if ((reason !== "done" && reason !== "client-gone") || callerGone) {
       try { slot.revoke?.(reason); } catch { /* a listener must not stop the queue */ }
       try { deps.stop?.(slot.entry, reason); } catch { /* the stop is best effort */ }
     }
@@ -379,4 +385,38 @@ function stopEntry(entry: HeavyEntry): void {
     } catch { /* no systemctl */ }
   }
   if (entry.pid) { try { process.kill(entry.pid, "SIGTERM"); } catch { /* already gone */ } }
+}
+
+// ---- failed scopes ----
+
+/** The UNIT column of a `systemctl --user list-units --state=failed --no-legend --plain` line (the
+ *  DESCRIPTION column may hold spaces). Pure. */
+export function parseFailedHeavyUnits(stdout: string): string[] {
+  return stdout.split("\n").map((l) => l.trim().split(/\s+/)[0])
+    .filter((u): u is string => !!u && /^orca-heavy-[^.]+\.scope$/.test(u));
+}
+
+export type SystemctlRun = (cmd: string[]) => Promise<{ stdout: string; code: number }>;
+
+/** `systemctl --user list-units` otherwise shows an `orca-heavy-*.scope` as failed forever — a
+ *  stopped scope, or one whose command was killed outright, both leave systemd's failed-unit
+ *  bookkeeping behind. This clears it for each one already in that state. It never stops a
+ *  scope that is still running: `--state=failed` lists only units systemd has already marked so. */
+export async function clearFailedHeavyScopes(deps: { run?: SystemctlRun } = {}): Promise<string[]> {
+  const run = deps.run ?? defaultSystemctl;
+  const listed = await run(["systemctl", "--user", "list-units", "--state=failed", "--no-legend", "--plain", "orca-heavy-*.scope"]).catch(() => undefined);
+  if (!listed || listed.code !== 0) return [];
+  const units = parseFailedHeavyUnits(listed.stdout);
+  for (const unit of units) await run(["systemctl", "--user", "reset-failed", unit]).catch(() => undefined);
+  return units;
+}
+
+async function defaultSystemctl(cmd: string[]): Promise<{ stdout: string; code: number }> {
+  try {
+    const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "ignore", env: { ...process.env, XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR ?? `/run/user/${process.getuid?.() ?? 0}` } });
+    const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    return { stdout, code };
+  } catch {
+    return { stdout: "", code: 1 }; // no systemctl
+  }
 }

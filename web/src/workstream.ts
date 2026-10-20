@@ -2792,6 +2792,19 @@ export const MACHINE_WINDOWS = [["now", 0], ["5m", 5 * 60_000], ["1h", 3_600_000
 /** `orca machine`'s numbers, from the SAME samples and the SAME `liveCharts` derivation as the card's
  *  charts, so the two cannot disagree. "now" is the newest sample; 5m and 1h are means over the
  *  samples in the window. A window with no samples is absent. Pure. */
+/** A sample newer than this counts as the machine answering, for `instanceStatus`. */
+export const INSTANCE_FRESH_MS = 5 * 60_000;
+
+/** The machine card's Status: unreachable when its /api/health failed; online when it answered, OR
+ *  when its newest sample (the live ring or the recorded history) is under `INSTANCE_FRESH_MS` old —
+ *  a /api/health answer that has not come back yet must not hold the card at "Loading…" while its
+ *  charts already show the machine. Loading only with no evidence at all. Pure. */
+export function instanceStatus(o: { down: boolean; health: boolean; newestSampleAt?: number; now: number }): "unreachable" | "online" | "loading" {
+  if (o.down) return "unreachable";
+  if (o.health) return "online";
+  return o.newestSampleAt !== undefined && o.now - o.newestSampleAt <= INSTANCE_FRESH_MS ? "online" : "loading";
+}
+
 export function machineSummary(samples: LiveSample[], cores: number): MachineSummary {
   const last = samples[samples.length - 1];
   if (!last) return {};
@@ -3645,7 +3658,7 @@ export const longMessage = (text: string): boolean => text.split("\n").length > 
 // (History: a Chat | Agents toggle split them into two channels; a wake carrying your message AND
 // reports counted as yours, so most worker traffic never reached Agents — the user asked for this.)
 
-type Sourced = { source?: TurnSource; instruction?: string; prompt?: string; finishedAt?: number; startedAt?: number };
+type Sourced = { source?: TurnSource; instruction?: string; prompt?: string; finishedAt?: number; startedAt?: number; response?: string; structured?: unknown };
 
 /** A turn's source: recorded since migration 18; a row without it (a worker's turn, a client ahead of
  *  the backfill) is read off its instruction the same way. */
@@ -3667,17 +3680,26 @@ export const integrationState = (t: { finishedAt?: number; failed?: boolean; sto
 export const integrationPreview = (text: string, max = 120): string => clip((text.split("\n").find((l) => l.trim()) ?? "").trim(), max);
 
 export type ChatItem<T> = { kind: "turn"; turn: T } | { kind: "agents"; turns: T[] } | { kind: "integration"; turn: T; messages: IntegrationMessage[] };
-/** What the orchestrator's chat renders: your turns, with each run of agent turns between them as one
- *  collapsed block, and each wake an outside message caused as its own activity row (never your
- *  bubble, even when it holds the newest answer). `keepOut` is a turn that never folds into a block:
- *  the newest answer, which the chat always shows (see newestMessages). */
+
+/** A worker-woken turn worth keeping in the open: it has something to say, not just the worker
+ *  reports that woke it. A wake that finished with no text and no structured outcome — only tool
+ *  steps, nothing to report — has nothing worth keeping visible, so it still folds. */
+const hasReply = (t: Sourced): boolean => Boolean(t.finishedAt) && (Boolean(t.response?.trim()) || Boolean(t.structured));
+
+/** What the orchestrator's chat renders: your turns, with the worker REPORTS that woke a reply folded
+ *  into it (ChatTurn's own WorkerBlock) but the reply itself always in the open, in order, like a
+ *  reply to a human turn. Only a worker-woken turn with nothing to show for itself — no reply yet, or
+ *  one that finished with no text and no structured outcome — folds into one collapsed run with its
+ *  neighbours; an outside message's wake is its own activity row (never your bubble, even when it
+ *  holds the newest answer). `keepOut` is a turn that never folds into a block: the newest answer,
+ *  which the chat always shows (see newestMessages). */
 export function chatItems<T extends Sourced>(turns: T[], keepOut?: T): ChatItem<T>[] {
   const out: ChatItem<T>[] = [];
   for (const t of turns) {
     const last = out[out.length - 1];
     const outside = integrationTurn(t);
     if (outside) out.push({ kind: "integration", turn: t, messages: outside });
-    else if (sourceOf(t) === "human" || t === keepOut) out.push({ kind: "turn", turn: t });
+    else if (sourceOf(t) === "human" || t === keepOut || hasReply(t)) out.push({ kind: "turn", turn: t });
     else if (last?.kind === "agents") last.turns.push(t);
     else out.push({ kind: "agents", turns: [t] });
   }
@@ -4159,3 +4181,32 @@ export function parseHandoffDraft(search: string): { repo: string; branch: strin
 
 /** A byte count for a file list ("812 B", "4.2 KB", "1.3 MB"). Pure. */
 export const byteSize = (n: number): string => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`);
+
+// A markdown list item at the start of a line: indent, a bullet (-, *, +) or a number with "." or ")",
+// the spaces after it, and an optional task box ("[ ]" / "[x]").
+const LIST_ITEM = /^(\s*)(?:([-*+])|(\d{1,9})([.)]))(\s+)(\[[ xX]\]\s+)?/;
+
+/** Enter in the composer on a markdown list line, like GitHub / Notion: the next line gets the same
+ *  marker ("- " → "- ", "1. " → "2. ", a task item → "- [ ] ", the same indent), and Enter on an
+ *  EMPTY item removes its marker and ends the list. Null leaves Enter as it is (send, or a newline):
+ *  a selection, a caret inside the marker, a line that is no list item, or a line in an open ```
+ *  fence. Text after the caret moves to the new item. Pure. */
+export function listContinuation(value: string, start: number, end: number): { text: string; caret: number } | null {
+  if (start !== end) return null;
+  const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+  const nl = value.indexOf("\n", start);
+  const lineEnd = nl === -1 ? value.length : nl;
+  const line = value.slice(lineStart, lineEnd);
+  const m = LIST_ITEM.exec(line);
+  if (!m || start - lineStart < m[0].length) return null;
+  const fences = value.slice(0, lineStart).split("\n").filter((l) => /^\s*```/.test(l)).length;
+  if (fences % 2 === 1) return null;
+  const [marker, indent, bullet, num, delim, gap, task] = m;
+  if (line.slice(marker.length).trim() === "") {
+    return { text: value.slice(0, lineStart) + value.slice(lineEnd), caret: lineStart };
+  }
+  const next = indent + (bullet ?? `${Number(num) + 1}${delim}`) + gap + (task ? "[ ] " : "");
+  const after = value.slice(start, lineEnd).trimStart();
+  const text = value.slice(0, start) + "\n" + next + after + value.slice(lineEnd);
+  return { text, caret: start + 1 + next.length };
+}

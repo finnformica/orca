@@ -415,6 +415,9 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   SEPARATELY from "loaded, genuinely nothing" (`useWorkstreamsLoaded` in `store.ts`,
   `useUsageLoaded` in `lib/vitals.ts`): both `useWorkstreams()` and `useUsage()` read `null`/`[]` for
   either case on the wire, which the skeleton can't tell apart from the real value alone.
+  **A failed poll keeps the last good value** (the store's `keepGood` for the agents / PRs / merged
+  streams, the machine card's history and ring in `lib/vitals.ts`): storing the empty fallback made
+  rows, counts and graphs vanish for one cycle and come back — the Overview's flicker.
 - **Agents** (`/agents`, `views/Agents.tsx`): Vercel's Deployments list — one-click **quick
   filter chips**, grouped into families with a muted caption (State: Open PRs, Mergeable, Merged
   today, Not merged; Activity: Running, Needs attention; Repo: one per repo; AND across groups, OR
@@ -613,7 +616,10 @@ opened from the card's terminal button, rendering `ChatPanel` (`web/src/views/Ch
 whole conversation from `GET /api/turns` in the orchestrator's chat styling (your messages as bubbles,
 the agent's reply under its provider's name), plus the follow-up `ChatComposer` to send the next
 message. Every `ChatComposer` has the **`@` PR picker** (`prTrigger`: `@` at the start or after a
-space/bracket lists the board's polled PRs; a pick inserts `#123`, or `repo#123`). It opened on `#`
+space/bracket lists the board's polled PRs; a pick inserts `#123`, or `repo#123`). Enter on a
+markdown list line (`- `, `* `, `1. `, `- [ ] `) starts the next item with the same marker and
+indent, and Enter on an empty item removes the marker (`listContinuation`); there it does not send,
+but ⌘/Ctrl+Enter does. It opened on `#`
 until Finn asked for `@`; `#` now opens nothing. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
 involved. Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every
 board action uses. A turn written at launch but not yet finished renders as `▋ working…` (that's how
@@ -1126,7 +1132,9 @@ split by workstream (Finn's call) — CPU as stacked work + hatched iowait (0–
 is a number in the caption and tooltip, never a second axis), Memory as stacked used + cache under a
 dashed agents-slice MemoryMax, and **Disk IO** (root device read + write MB/s under a dashed cap,
 `ORCA_DISK_CAP_MBS`, default 125 — the gp3 baseline; the 2026-10-19 IO stall looked like CPU on the
-old line). `StackedChart` (`components/console.tsx`) is their chart; hover or tap opens the shadcn
+old line). On macOS (no `/proc`) the ring reads CPU from `os.cpus()` (iowait 0), and memory
+(`vm_stat`) and disk (`ioreg` byte counters) take turns, one small spawn a tick (`createDarwinSampler`).
+The card's Status reads Online from a fresh sample too (`instanceStatus`). `StackedChart` (`components/console.tsx`) is their chart; hover or tap opens the shadcn
 tooltip with the values at that time. An older bridge without the route keeps the lines. Beside them,
 in the `LineChart` design, an **Agents** chart (`running_agents` over time). There is no Disk used
 chart any more (removed at Finn's request, #359): the disk figure stays in the details grid's **Disk**
@@ -1225,6 +1233,11 @@ back. A failed install or build never restarts the service — the old build kee
 log tail goes to `~/.orca/autodeploy.log` (one line per tick). Pause it with
 `systemctl stop orca-autodeploy.timer`; `deploy/bootstrap.sh` installs and enables it, scoped by
 `deploy/orca-autodeploy.sudoers` to exactly `systemctl restart orca` for the `orca` user.
+**A Mac updates itself the same way** (`deploy/install-local-autodeploy.sh`, docs/SETUP.md "Local
+machine"): a `dev.orca.bridge` LaunchAgent runs the BUILT bridge (not `bun run dev`, whose watch
+restarts the bridge on the pull, before install and build pass) and `dev.orca.autodeploy` runs the
+same `autodeploy.sh` each minute with `ORCA_AUTODEPLOY_MODE=launchd`: it skips a checkout off `main`
+or with uncommitted tracked changes, and restarts with `launchctl kickstart -k`.
 **Orphan reaper:** a preview that dies with a bridge crash, a reaped worktree, or a worker's own
 test run leaves its `orca_*` database behind — nothing else drops it, and the box had 8 of them
 (~6.6 GB) accumulate before `server/preview.ts`'s `reap()` existed. It runs at startup and hourly

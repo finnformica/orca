@@ -388,6 +388,36 @@ test("hover on a live chart opens its tooltip with the values at that time, iowa
   expect(memTip).toContain("1 agent run out of memory");
 });
 
+// The Overview's flicker: a failed poll replaced the last good data with "nothing" — the graphs became
+// "No history recorded yet", or the stacked ring charts became the old line charts — until the next
+// good poll. A failure now keeps what the card already shows.
+test("a failed history or ring poll keeps the graphs the last good poll drew", async () => {
+  const now = Date.now();
+  apiFake.healthLiveData = liveRing(now);
+  apiFake.healthHistoryData = [{ at: now - 60_000, cpuPct: 50, load1: 2, memUsedGb: 12, memTotalGb: 15.3, runningAgents: 2 }];
+  await render(<><RefreshVitals /><InstanceCard instance="cloud" here={false} /></>);
+  await ready();
+  const refresh = async () => {
+    await act(async () => { container!.querySelector<HTMLButtonElement>('[data-slot="instances-refresh"]')!.click(); await flush(); await flush(); });
+  };
+  expect(container!.querySelector('[data-slot="chart-cpu"] polyline')).toBeTruthy(); // 24h: from the history
+
+  apiFake.healthHistoryError = "network blip";
+  await refresh();
+  expect(apiFake.healthHistoryCalls).toHaveLength(2);
+  expect(container!.textContent).not.toContain("No history recorded yet");
+  expect(container!.querySelector('[data-slot="chart-cpu"] polyline')).toBeTruthy();
+  apiFake.healthHistoryError = null;
+
+  await pickRange("1h"); // the ring
+  expect(container!.querySelector('[data-slot="chart-io"]')).toBeTruthy();
+  apiFake.healthLiveData = null; // the fake's ring route now fails
+  const calls = apiFake.healthLiveCalls.length;
+  await refresh();
+  expect(apiFake.healthLiveCalls.length).toBeGreaterThan(calls);
+  expect(container!.querySelector('[data-slot="chart-io"]')).toBeTruthy(); // still the stacked charts
+});
+
 test("a bridge without the ring (an older build) keeps the 6h line charts from the history", async () => {
   apiFake.healthHistoryData = [{ at: Date.now() - 60_000, cpuPct: 50, load1: 2, memUsedGb: 12, memTotalGb: 15.3 }];
   localStorage.setItem("orca.ui.v1.instanceRange:cloud", "6");
@@ -444,4 +474,18 @@ test("the heavy-queue header shows one decimal; on a phone the rows scroll sidew
   } finally {
     window.matchMedia = realMatchMedia;
   }
+});
+
+test("the status is Online while /api/health has not answered, once the machine's samples are fresh; Loading with no evidence", async () => {
+  apiFake.holdHealth = true;
+  const now = Date.now();
+  apiFake.healthHistoryData = [{ at: now - 60_000, cpuPct: 30, load1: 0.1, memUsedGb: 2, memTotalGb: 24 }];
+  await render(<InstanceCard instance="local" here={false} />);
+  await ready();
+  expect(detail(container!.querySelector('[data-slot="instance-local"]')!, "instance-status")).toContain("Online");
+  await act(async () => { root?.unmount(); }); container?.remove();
+  apiFake.healthHistoryData = [];
+  await render(<InstanceCard instance="laptop" here={false} />);
+  await ready();
+  expect(detail(container!.querySelector('[data-slot="instance-laptop"]')!, "instance-status")).toContain("Loading…");
 });
