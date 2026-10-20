@@ -208,6 +208,18 @@ describe("console shell", () => {
     expect(container!.querySelector('button[aria-label="Expand sidebar"]')).not.toBeNull();
   });
 
+  test("collapsed, the logo centres on the same axis as a nav icon; expanded, neither carries that class", async () => {
+    await mount();
+    const navButton = () => container!.querySelector<HTMLElement>('nav[aria-label="Main"] button')!;
+    const logoButton = () => container!.querySelector<HTMLElement>('[data-slot="round-mark"]')!.closest("button")!;
+    expect(navButton().className).not.toContain("justify-center"); // expanded: neither centres
+    expect(logoButton().className).not.toContain("justify-center");
+    await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
+    // Same centring class on both, so they sit on the same horizontal axis in the icon rail.
+    expect(navButton().className).toContain("md:justify-center");
+    expect(logoButton().className).toContain("md:justify-center");
+  });
+
   test("Inbox nav badge and bell badge share one CountBadge: same classes, collapsed or not", async () => {
     centre.reset();
     apiFake.notificationsData = [{ id: 1, instance: "local", repo: "r", branch: "b", kind: "finished", title: "x", body: "y", createdAt: Date.now() }];

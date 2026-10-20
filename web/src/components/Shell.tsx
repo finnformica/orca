@@ -401,11 +401,11 @@ function InstanceSwitcher({ collapsed }: { collapsed: boolean }) {
       </span>
     </>
   );
-  if (choices.length < 2) return <button type="button" onClick={() => navigate("/")} className="flex min-w-0 flex-1 items-center gap-2" aria-label="Orca — go to overview">{body}</button>;
+  if (choices.length < 2) return <button type="button" onClick={() => navigate("/")} className={cn("flex min-w-0 flex-1 items-center gap-2", collapsed && "md:justify-center")} aria-label="Orca — go to overview">{body}</button>;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" className="hover:bg-accent flex min-w-0 flex-1 items-center gap-2 rounded-md p-1" aria-label="Switch instance">
+        <button type="button" className={cn("hover:bg-accent flex min-w-0 flex-1 items-center gap-2 rounded-md p-1", collapsed && "md:justify-center")} aria-label="Switch instance">
           {body}
           <ChevronsUpDown className={cn("text-muted-foreground size-3.5 shrink-0", collapsed && "md:hidden")} />
         </button>
