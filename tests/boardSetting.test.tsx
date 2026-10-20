@@ -80,14 +80,14 @@ const click = async (el: Element) => { await act(async () => { (el as HTMLElemen
 const navBoard = () => [...document.querySelectorAll<HTMLButtonElement>('nav[aria-label="Main"] button')].find((b) => b.querySelector('[data-slot="nav-label"]')?.textContent?.trim() === "Board");
 const lanes = () => [...document.querySelectorAll("h3")].map((h) => h.firstChild?.textContent?.trim());
 
-test("BV2: on by default — the Board nav entry opens /board with the five lanes and the new-draft box", async () => {
+test("BV2: on by default — the Board nav entry opens /board with the six lanes and the new-draft box", async () => {
   await open("/agents");
   expect(navBoard()).toBeDefined();
   await click(navBoard()!);
   expect(location.pathname).toBe("/board");
   expect(navBoard()!.getAttribute("aria-current")).toBe("page");
   expect(document.querySelector("h1")!.textContent).toBe("Board");
-  expect(lanes().slice(0, 5)).toEqual(["Local", "Draft", "In Review", "Mergeable", "Done · today"]);
+  expect(lanes().slice(0, 6)).toEqual(["Local", "Draft", "In Review", "Verified", "Mergeable", "Done · today"]);
   expect(document.querySelector('textarea[placeholder^="Describe a feature"]')).not.toBeNull();
   expect(document.querySelector('button[aria-label="Switch to dense view"]')).not.toBeNull();
 });

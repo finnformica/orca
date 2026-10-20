@@ -90,13 +90,15 @@ export function CountBadge({ count, placement = "inline", slot = "count-badge", 
 }
 
 /** An environment-style pill (Production / Preview): rounded, hairline, an optional leading icon. */
-export function Pill({ children, tone = "default", slot }: { children: ReactNode; tone?: "default" | "blue" | "green" | "amber" | "red" | "purple"; slot?: string }) {
+export function Pill({ children, tone = "default", slot }: { children: ReactNode; tone?: "default" | "blue" | "green" | "amber" | "red" | "purple" | "teal"; slot?: string }) {
   const tones = {
     default: "border-transparent bg-selected text-selected-foreground", // the server's theme: not a status
     blue: "border-transparent bg-geist-blue/15 text-geist-blue",
     green: "border-transparent bg-geist-green/15 text-geist-green",
     amber: "border-transparent bg-geist-amber/15 text-geist-warning-fg",
     red: "border-transparent bg-geist-red/15 text-geist-red",
+    // The user's own Verified marker: Geist's teal, darkened for text contrast on light.
+    teal: "border-transparent bg-geist-teal/20 text-teal-700 dark:text-teal-300",
     // No --geist-purple token exists; GitHub's own merge-purple, matched by the ad hoc Tailwind
     // purple the Auto-merge condition badge already uses (Board.tsx / PrDetail.tsx).
     purple: "border-transparent bg-purple-500/15 text-purple-700 dark:text-purple-400",

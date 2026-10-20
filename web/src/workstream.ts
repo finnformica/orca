@@ -189,6 +189,7 @@ const BULK_LANE_ACTIONS: Partial<Record<string, BulkAction[]>> = {
   LOCAL: ["testLocally", "promote", "promoteDraft", "promoteReady", "resolveConflicts", "discard"],
   DRAFT: ["markReady", "addressPr", "follow", "unfollow", "addPreview", "copyLink", "closePr"],
   IN_REVIEW: ["slackNotify", "slackBump", "markReady", "moveToDraft", "autoMerge", "disableAutoMerge", "follow", "unfollow", "addPreview", "copyLink", "addressPr", "merge", "closePr"],
+  VERIFIED: ["slackNotify", "slackBump", "moveToDraft", "autoMerge", "disableAutoMerge", "follow", "unfollow", "addPreview", "copyLink", "addressPr", "merge", "closePr"],
   MERGEABLE: ["merge", "slackNotify", "slackBump", "autoMerge", "disableAutoMerge", "follow", "unfollow", "addPreview", "copyLink", "addressPr", "closePr"],
   DONE: ["copyLink"], // nothing left to do but grab the links (standup / status posts)
 };
@@ -1594,7 +1595,7 @@ export function orchStatusText(s: OrchStatus | undefined): string {
 /** One line of the board as the orchestrator reads it. */
 export type BoardRow = {
   repo: string; branch: string; title?: string; worktreePath?: string; agent: string;
-  pr?: { number: number; isDraft?: boolean; reviewStatus?: string; ciStatus?: string; mergeable?: string; merged?: boolean };
+  pr?: { number: number; isDraft?: boolean; reviewStatus?: string; ciStatus?: string; mergeable?: string; merged?: boolean; verified?: VerifiedState };
   check?: boolean; orchestrated?: boolean; last?: string;
   /** The instance holding its worktree, when there is more than one instance. */
   instance?: string;
@@ -1605,7 +1606,7 @@ export function boardText(rows: BoardRow[]): string {
   if (!rows.length) return "(no workstreams)";
   return rows.map((r) => {
     const pr = r.pr
-      ? r.pr.merged ? `PR #${r.pr.number} merged` : `PR #${r.pr.number}${r.pr.isDraft ? " draft" : ""}${r.pr.reviewStatus ? ` review:${r.pr.reviewStatus}` : ""}${r.pr.ciStatus ? ` ci:${r.pr.ciStatus}` : ""}${r.pr.mergeable === "CONFLICTING" ? " CONFLICTS" : ""}`
+      ? r.pr.merged ? `PR #${r.pr.number} merged` : `PR #${r.pr.number}${r.pr.isDraft ? " draft" : ""}${r.pr.reviewStatus ? ` review:${r.pr.reviewStatus}` : ""}${r.pr.ciStatus ? ` ci:${r.pr.ciStatus}` : ""}${r.pr.mergeable === "CONFLICTING" ? " CONFLICTS" : ""}${r.pr.verified === "verified" ? " verified-by-user" : r.pr.verified === "changed" ? " changed-since-user-verified" : ""}`
       : "no PR";
     return [
       `${r.repo}/${r.branch}${r.title ? ` "${r.title}"` : ""}`,
@@ -1674,6 +1675,9 @@ const ORCA_COMMANDS = [
   "                                  cards: your plan for it, what it waits on, its merge class (small: fine to",
   "                                  merge on green; needs-finn: the user merges). An empty flag clears that",
   "                                  field; no flags prints it",
+  "  orca status --repo <repo> --branch <branch> --verified | --unverified   set or clear the user's Verified marker",
+  "                                  on its open PR (the PR's current head commit). Only when the user says they tested",
+  "                                  it (\"verified #267\"). It is a marker for the user's board: it merges nothing",
   "  orca status --repo <repo> --branch <branch> --clear-grant   lift an outside sender's grant from a workstream:",
   "                                  its runs leave scoped mode for the repo's own permission mode. Only from the",
   "                                  user's own chat, and only when the user asks",
@@ -1949,18 +1953,53 @@ export function mentionLabel(m: MentionRef, prs: PrRef[], repoCount: number, con
 // from the same assembled rows the swimlanes render — no endpoint of their own, so the two views can
 // never disagree about how many PRs are mergeable.
 
-export type OverviewLane = "LOCAL" | "DRAFT" | "IN_REVIEW" | "MERGEABLE" | "DONE";
-export const OVERVIEW_LANES: OverviewLane[] = ["LOCAL", "DRAFT", "IN_REVIEW", "MERGEABLE", "DONE"];
+export type OverviewLane = "LOCAL" | "DRAFT" | "IN_REVIEW" | "VERIFIED" | "MERGEABLE" | "DONE";
+export const OVERVIEW_LANES: OverviewLane[] = ["LOCAL", "DRAFT", "IN_REVIEW", "VERIFIED", "MERGEABLE", "DONE"];
 export const LANE_LABELS: Record<OverviewLane, string> = {
-  LOCAL: "Local", DRAFT: "Draft", IN_REVIEW: "In review", MERGEABLE: "Mergeable", DONE: "Done today",
+  LOCAL: "Local", DRAFT: "Draft", IN_REVIEW: "In review", VERIFIED: "Verified", MERGEABLE: "Mergeable", DONE: "Done today",
 };
 
-export type PillTone = "default" | "blue" | "green" | "purple";
+/** The user's own "I tested this PR" marker, set by hand (a button, or `orca status --verified` on
+ *  the user's word). Only a visual marker on the branch's enrichment (`verified`): it merges nothing
+ *  and posts nothing to GitHub. `sha` is the PR head it applies to, so a later push reads as
+ *  "changed since you verified" instead of a silent pass. */
+export type VerifiedMark = { by: "user" | "orchestrator"; at: string; sha?: string; pr?: number };
+export type VerifiedState = "verified" | "changed";
+
+/** A new mark for the PR's current head. Pure. */
+export const verifiedMark = (by: VerifiedMark["by"], head: string | undefined, pr: number | undefined, now: string): VerifiedMark =>
+  ({ by, at: now, ...(head ? { sha: head } : {}), ...(pr ? { pr } : {}) });
+
+/** The mark against the PR as it is now: "changed" once the head moved off the verified commit (or
+ *  the branch got another PR); "verified" otherwise, also when either commit is not known. Pure. */
+export function verifiedState(mark: VerifiedMark | null | undefined, head: string | undefined, pr?: number): VerifiedState | undefined {
+  if (!mark) return undefined;
+  if (mark.pr && pr && mark.pr !== pr) return "changed";
+  return mark.sha && head && mark.sha !== head ? "changed" : "verified";
+}
+
+/** The lane with the marker applied: an open, unapproved PR with a fresh mark moves from In review
+ *  to Verified. Draft, approved (Mergeable) and merged PRs keep their lane. Pure. */
+export const verifiedLane = (lane: OverviewLane, state: VerifiedState | undefined): OverviewLane =>
+  lane === "IN_REVIEW" && state === "verified" ? "VERIFIED" : lane;
+
+/** The pill's hover text for a mark: who, when, and on which commit. Pure. */
+export function verifiedTip(mark: VerifiedMark, state: VerifiedState, head?: string, now = Date.now()): string {
+  const who = mark.by === "orchestrator" ? "the orchestrator, for you," : "you";
+  const at = Date.parse(mark.at);
+  const when = Number.isNaN(at) ? "" : ` ${ago(at, now)}`;
+  const on = mark.sha ? ` at ${mark.sha.slice(0, 7)}` : "";
+  return state === "changed"
+    ? `Verified by ${who}${when}${on}. New commits landed since${head ? ` (now ${head.slice(0, 7)})` : ""}: test it again.`
+    : `Verified by ${who}${when}${on}. Ask a coworker to approve it.`;
+}
+
+export type PillTone = "default" | "blue" | "green" | "purple" | "teal" | "amber";
 /** The lane's own pill, with no auto-merge override — the DONE lane's "Merged" rather than its
  *  swimlane title "Done today". */
 export const lanePill = (lane: OverviewLane): { label: string; tone: PillTone } => ({
   label: lane === "DONE" ? "Merged" : LANE_LABELS[lane],
-  tone: lane === "MERGEABLE" ? "blue" : lane === "DONE" ? "green" : "default",
+  tone: lane === "MERGEABLE" ? "blue" : lane === "DONE" ? "green" : lane === "VERIFIED" ? "teal" : "default",
 });
 
 /** Everything the PR status pill needs: the lane it would otherwise show, whether CI is failing,
@@ -1972,6 +2011,9 @@ export type PrPillLike = {
   autoMergeEnabled?: boolean;
   autoMergeMethod?: string;
   mergeWhenGreen?: Pick<MergeMark, "by">;
+  verified?: VerifiedMark | null;
+  prHead?: string;
+  prNumber?: number;
 };
 
 /** The PR status pill shown on an agents-list row, a board card and the agent page's Details card:
@@ -1980,7 +2022,13 @@ export type PrPillLike = {
  *  "Auto-merge" state, so "it'll merge itself" is visible without opening the PR. Pure. */
 export function prPill(row: PrPillLike): { label: string; tone: PillTone; tooltip?: string } {
   const base = lanePill(row.lane);
-  if (row.lane !== "IN_REVIEW" && row.lane !== "MERGEABLE") return base; // Local/Draft/Merged: unaffected
+  const verified = verifiedState(row.verified, row.prHead, row.prNumber);
+  if (row.lane === "VERIFIED" && row.verified) return { ...base, tooltip: verifiedTip(row.verified, "verified", row.prHead) };
+  // A push after the user's test: never a silent pass, so it wins over auto-merge and failing CI.
+  if (row.lane === "IN_REVIEW" && verified === "changed" && row.verified) {
+    return { label: "Changed since verified", tone: "amber", tooltip: verifiedTip(row.verified, "changed", row.prHead) };
+  }
+  if (row.lane !== "IN_REVIEW" && row.lane !== "MERGEABLE") return base; // Local/Draft/Verified/Merged: unaffected
   if (row.ciStatus === "failing") return base; // a known-red PR isn't about to merge itself
   if (row.autoMergeEnabled) {
     return { label: "Auto-merge", tone: "purple", tooltip: `GitHub auto-merge is enabled${row.autoMergeMethod ? ` (${row.autoMergeMethod})` : ""}` };
@@ -2087,6 +2135,7 @@ export function rowStatus(row: OverviewRow, opts: { now?: number; unresolved?: n
       }
       if (row.lane === "DRAFT") reasons.push("The PR is a draft.");
       if (row.lane === "IN_REVIEW") reasons.push("The PR waits for an approval.");
+      if (row.lane === "VERIFIED") reasons.push("You verified the PR. It waits for an approval.");
       if (row.ciStatus === "pending") reasons.push(`CI still runs${sha}.`);
       if (row.ciStatus === "passing" && row.lane !== "DONE") reasons.push(`CI passes${sha}.`);
     }
@@ -2121,7 +2170,7 @@ export type OverviewStats = {
   running: number;
   attention: number;
   local: number;
-  prs: { draft: number; inReview: number; mergeable: number; total: number };
+  prs: { draft: number; inReview: number; verified: number; mergeable: number; total: number };
   mergedToday: number;
   /** Turns started per hour over the last 24h, oldest first — the activity chart. */
   turnsByHour: number[];
@@ -2130,7 +2179,7 @@ export type OverviewStats = {
 export function overviewStats(rows: OverviewRow[], now = Date.now()): OverviewStats {
   const open = rows.filter((r) => r.prNumber && r.lane !== "DONE");
   const count = (lane: OverviewLane) => open.filter((r) => r.lane === lane).length;
-  const prs = { draft: count("DRAFT"), inReview: count("IN_REVIEW"), mergeable: count("MERGEABLE"), total: open.length };
+  const prs = { draft: count("DRAFT"), inReview: count("IN_REVIEW"), verified: count("VERIFIED"), mergeable: count("MERGEABLE"), total: open.length };
   return {
     running: rows.filter((r) => r.agentStatus === "running").length,
     attention: rows.filter((r) => attentionReasons(r).length > 0).length,
@@ -3120,7 +3169,7 @@ export function agentFailure(row: { agentStatus?: string; agentError?: string; a
 
 export type QuickFilter = {
   status: ("attention" | "running")[];
-  pr: ("open" | "mergeable" | "merged")[];
+  pr: ("open" | "verified" | "mergeable" | "merged")[];
   by: ("mine" | "orchestrated")[];
   on: string[];
   repo: string[];
@@ -3132,7 +3181,7 @@ export type QuickGroup = Exclude<keyof QuickFilter, "notMerged">;
 export const NO_QUICK_FILTER: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [], notMerged: true };
 export const QUICK_GROUPS: QuickGroup[] = ["status", "pr", "by", "on", "repo"];
 const QUICK_VALUES: Partial<Record<QuickGroup, readonly string[]>> = {
-  status: ["attention", "running"], pr: ["open", "mergeable", "merged"], by: ["mine", "orchestrated"],
+  status: ["attention", "running"], pr: ["open", "verified", "mergeable", "merged"], by: ["mine", "orchestrated"],
 };
 
 /** `?status=attention&on=cloud,local` → the filter. Unknown values are dropped, so a stale link is
@@ -3171,7 +3220,7 @@ export function toggleNotMerged(f: QuickFilter): QuickFilter {
 function matchesChip(row: OverviewRow, group: QuickGroup, value: string, here?: string): boolean {
   switch (group) {
     case "status": return value === "running" ? row.agentStatus === "running" : attentionReasons(row).length > 0;
-    case "pr": return value === "merged" ? row.lane === "DONE" : value === "mergeable" ? row.lane === "MERGEABLE" : Boolean(row.prNumber) && row.lane !== "DONE";
+    case "pr": return value === "merged" ? row.lane === "DONE" : value === "mergeable" ? row.lane === "MERGEABLE" : value === "verified" ? row.lane === "VERIFIED" : Boolean(row.prNumber) && row.lane !== "DONE";
     case "by": return value === "orchestrated" ? Boolean(row.orchestrated) : !row.orchestrated;
     case "on": return rowInstance(row, here) === value;
     case "repo": return row.repo === value;

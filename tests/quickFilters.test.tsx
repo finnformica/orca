@@ -141,7 +141,7 @@ describe("quick filter chips on the Agents page", () => {
     await open("/agents");
     expect(listed()).toEqual(["cloud-bot", "feat-ci", "feat-ok", "local-held", "local-run"]);
     const labels = [...container!.querySelectorAll('[data-slot="quick-filter"]')].map((c) => c.getAttribute("data-chip"));
-    expect(labels).toEqual(["pr:open", "pr:mergeable", "pr:merged", "notMerged", "status:running", "status:attention"]); // one repo: no repo chips; no mine/orchestrated/instance pills
+    expect(labels).toEqual(["pr:open", "pr:verified", "pr:mergeable", "pr:merged", "notMerged", "status:running", "status:attention"]); // one repo: no repo chips; no mine/orchestrated/instance pills
     // Grouped into families: State (the pr chips + not merged), Activity (status).
     const groups = [...container!.querySelectorAll('[data-slot="quick-filter-group"]')].map((g) => g.getAttribute("data-group"));
     expect(groups).toEqual(["state", "activity"]);

@@ -501,17 +501,24 @@ when the board is stale ("Updated 3m ago" — a button: **Refresh everything**, 
 streams, usage, notifications, an open chat, cached review signals — re-runs at once, the icon spins until
 all settle, and past 15s it hard-reloads); an unreachable bridge shows the offline screen.
 
-**The Board** (`/board`, `views/Board.tsx`, the nav entry after Agents): the five lanes of cards,
+**The Board** (`/board`, `views/Board.tsx`, the nav entry after Agents): the six lanes of cards,
 with the New-draft box pinned at the top of Local and a density toggle (`densityAtom`). #333 removed
 it; it is back as it was, with the shared `BulkActions`, `NewDraft`, `ConditionBadges` and
 `lib/workstreamHooks`. Settings' **Show Board view** sets `ui.showBoard` in the config document
 (`POST /api/config/ui`, on unless false) for every browser. Off, the nav entry is hidden and
-`/board` is replaced by `/agents`. The Agents list stays the main view. A workstream still has a lane — **Local → Draft → In Review → Mergeable → Done·today** —
+`/board` is replaced by `/agents`. The Agents list stays the main view. A workstream still has a lane — **Local → Draft → In Review → Verified → Mergeable → Done·today** —
 which the Agents chips, `detailPath` and the bulk verbs (`views/BulkActions.tsx`) read. A workstream
 is a branch; its lane (`store.laneFor`):
 - **open PR, draft** → Draft. **open PR, approved** → Mergeable. **open PR, else** → In Review.
 - **no PR** → Local, until Promote (local repo: sets `promoted`; then Mergeable if `git merge-tree`
   is clean, else In Review). **merged today** (server-local calendar day) → Done (`gh pr list --state merged`).
+- **Verified** (between In Review and Mergeable): the user sets it by hand after a test of the PR.
+  It is a marker only — no merge, nothing to GitHub. It is enrichment `verified` `{ by, at, sha, pr }`
+  (no table). Set and clear it with the PR card's Verify button, the ⋯ menu and the PR page header
+  (`VerifiedButton`), or `orca status --verified | --unverified` on the user's word. A fresh mark on
+  an open, unapproved PR moves it to Verified (`verifiedLane`). A new head commit (`sha` ≠ the PR's
+  head) puts it back in In Review with an amber "Changed since verified" pill (`verifiedState`,
+  `prPill`). Approval still wins: Mergeable. The Agents list has a Verified chip (`?pr=verified`).
 
 Actions (all via `ActionButton`, spinner → ✓/✗, no double-fire):
 - **A failed action is a notification, never text in the row** — kind `action_failed`, in the ONE

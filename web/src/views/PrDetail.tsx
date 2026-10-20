@@ -11,6 +11,7 @@ import { navigate, type PrTab } from "@/lib/route";
 import { useTheme } from "@/lib/theme";
 import { WorkstreamActions } from "./WorkstreamActions";
 import { PreviewCell, PreviewPanel } from "./PreviewControl";
+import { VerifiedButton } from "./VerifiedButton";
 import { ActionButton } from "@/components/ActionButton";
 import { ScreenshotsCard } from "@/components/Screenshots";
 import { snippetPre } from "@/components/Snippet";
@@ -133,7 +134,7 @@ export function PrDetail({ repo, number, sub }: { repo: string; number: number; 
             title={<><a href={pr.url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground mr-1.5 font-normal hover:underline">#{pr.number}</a>{row.title}</>}
             status={liveRow ? <RowStatus row={liveRow} /> : <Badge variant="outline" className="capitalize">{(pr.state ?? "").toLowerCase()}</Badge>}
             source={<HeaderSource branch={pr.head} prNumber={pr.number} prUrl={pr.url} />}
-            actions={liveRow && <WorkstreamActions row={liveRow} compact={narrow} tipSide="bottom" leading={<PreviewCell row={liveRow} />} />} />
+            actions={liveRow && <WorkstreamActions row={liveRow} compact={narrow} tipSide="bottom" leading={<><VerifiedButton row={liveRow} icon /><PreviewCell row={liveRow} /></>} />} />
           <TabsList className={HEADER_TABS}>
             <TabsTrigger value="overview">Overview</TabsTrigger>
             {liveRow && <TabsTrigger value="chat">Chat</TabsTrigger>}
