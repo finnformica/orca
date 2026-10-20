@@ -745,7 +745,7 @@ export function appendQuote(draft: string, quote: string): string {
 function attachmentSection(messages: string[]): string[] {
   const files = attachmentRefs(messages.join("\n"));
   if (!files.length) return [];
-  return ["", "## Attachments", "Files attached to the messages above. To give one to a worker, pass `--attach <id>` to orca spawn / orca send (repeatable):",
+  return ["", "## Attachments", "Files attached to the messages above. To give one to a worker, pass `--attach <id>` to orca spawn / orca send; to send one to a channel, to orca post (repeatable):",
     ...files.map((f) => `- ${f.id}  ${f.name}`)];
 }
 
@@ -1804,6 +1804,9 @@ const ORCA_COMMANDS = [
   "                                  Answer an outside sender on the link their message came from",
   "  orca post --reply \"<text>\"      answer the outside message that woke you, on its link and in its thread —",
   "                                  never copy a thread id by hand",
+  "      --attach <id|path> (repeatable, on --link/--reply/--repo --branch posts) sends a file with the post, an image",
+  "                                  inline (Discord: at most 10 files, 10 MB each). An adapter with no file support",
+  "                                  refuses the post. From an outside message's wake, attachment ids only",
   "  orca thread link <adapter> <thread-id> --repo <repo> --branch <branch> [--link <id>]   send replies in that",
   "                                  external thread to the workstream",
   "  orca ask-user \"<question>\"      ask the user in Orca and on every channel subscribed to questions",

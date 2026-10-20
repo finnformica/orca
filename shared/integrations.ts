@@ -105,7 +105,12 @@ export type Capabilities = {
   threads: boolean;
   edits: boolean;
   reactions: boolean;
+  /** Outbound files: `OutboundMessage.attachments` are sent as files. False: the core refuses a
+   *  message with attachments (`attachmentRefusal`), it never drops them. */
   attachments: boolean;
+  /** The platform's file limits, checked before the send (Discord: 10 files, 10 MiB a file). */
+  maxAttachments?: number;
+  maxAttachmentBytes?: number;
   maxTextLength: number;
   /** Outbound pace per target: at most `perTarget` sends each `windowMs` (Slack: 1 per second). */
   rate?: { perTarget: number; windowMs: number };
@@ -129,8 +134,28 @@ export type OutboundMessage = {
   /** Open a thread for this message (`orca post --thread`), on `replyToExternalMsgId` when set. An
    *  adapter with no threads, or a target already in a thread or a DM, posts as usual. */
   thread?: boolean;
+  /** `orca-attachment://<id>/<name>` refs (`orca post --attach`). The bytes stay in the `attachment`
+   *  table, so a retry reads them again by id. */
   attachments?: string[];
 };
+
+/** The attachment id in an `orca-attachment://<id>/<name>` ref, or a bare id. */
+export const attachmentIdOf = (ref: string): string | undefined => ref.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/)?.[1];
+
+const mb = (n: number) => `${(n / 1024 / 1024).toFixed(1).replace(/\.0$/, "")} MB`;
+
+/** Why `kind` cannot send these files, or undefined when it can. Pure: `orca post` asks it before
+ *  it queues, the dispatcher before a send (no adapter gets files it cannot send), and an adapter
+ *  with limits on the bytes it read. */
+export function attachmentRefusal(kind: string, caps: Pick<Capabilities, "attachments" | "maxAttachments" | "maxAttachmentBytes">, files: { name: string; bytes?: number }[]): string | undefined {
+  if (!files.length) return undefined;
+  if (!caps.attachments) return `attachments not supported: the ${kind} adapter cannot send files (${files.length} attached). Post without --attach.`;
+  if (caps.maxAttachments !== undefined && files.length > caps.maxAttachments) return `too many attachments: ${files.length}, ${kind} takes at most ${caps.maxAttachments} in one message`;
+  const max = caps.maxAttachmentBytes;
+  const big = max === undefined ? undefined : files.find((f) => (f.bytes ?? 0) > max);
+  if (big) return `attachment too large: ${big.name} is ${mb(big.bytes!)}, ${kind} takes at most ${mb(max!)} a file`;
+  return undefined;
+}
 
 export type SendResult =
   | { ok: true; externalMsgId?: string; threadId?: string }
@@ -248,10 +273,12 @@ export function digestEnvelope(events: Envelope[], key: string): Envelope {
   if (sorted.length === 1) return first;
   const line = (e: Envelope) => `• ${e.title ? `${e.title}: ` : ""}${e.text.replace(/\s+/g, " ").trim()}${e.link?.url ? ` (${e.link.url})` : ""}`;
   const scopes = new Set(sorted.map((e) => `${e.scope?.repo ?? ""}::${e.scope?.branch ?? ""}`));
+  const attachments = [...new Set(sorted.flatMap((e) => e.attachments ?? []))]; // never dropped
   return {
     id: first.id, key: `digest:${key}`, topic: first.topic, at: sorted.at(-1)!.at, source: { adapter: "orca" },
     ...(scopes.size === 1 && first.scope ? { scope: first.scope } : {}),
     title: `${sorted.length} events`, text: sorted.map(line).join("\n"),
+    ...(attachments.length ? { attachments } : {}),
   };
 }
 
