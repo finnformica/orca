@@ -411,6 +411,9 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   SEPARATELY from "loaded, genuinely nothing" (`useWorkstreamsLoaded` in `store.ts`,
   `useUsageLoaded` in `lib/vitals.ts`): both `useWorkstreams()` and `useUsage()` read `null`/`[]` for
   either case on the wire, which the skeleton can't tell apart from the real value alone.
+  **A failed poll keeps the last good value** (the store's `keepGood` for the agents / PRs / merged
+  streams, the machine card's history and ring in `lib/vitals.ts`): storing the empty fallback made
+  rows, counts and graphs vanish for one cycle and come back — the Overview's flicker.
 - **Agents** (`/agents`, `views/Agents.tsx`): Vercel's Deployments list — one-click **quick
   filter chips**, grouped into families with a muted caption (State: Open PRs, Mergeable, Merged
   today, Not merged; Activity: Running, Needs attention; Repo: one per repo; AND across groups, OR
