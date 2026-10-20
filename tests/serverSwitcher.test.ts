@@ -7,7 +7,7 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  listServers, resetServerCaches, serverGate, serverSwitcherProblems, trustedOrigin, type ServerSwitcherConfig,
+  listServers, resetServerCaches, serverGate, withSelf, serverSwitcherProblems, trustedOrigin, type ServerSwitcherConfig,
 } from "../server/servers";
 import { parseConfigDocument } from "../server/config";
 import { native } from "./happydom";
@@ -346,4 +346,16 @@ test("the config document validates serverSwitcher", () => {
   const repos = [{ name: "orca", repoPath: "/r", worktreeRoot: "/w", baseBranch: "main" }];
   expect(parseConfigDocument({ repos, serverSwitcher: ON }).config?.serverSwitcher).toEqual(ON);
   expect(parseConfigDocument({ repos, serverSwitcher: { enabled: 1 } }).errors).toEqual(["serverSwitcher.enabled must be true or false"]);
+});
+
+test("withSelf: a discovered row on this server's host is self on any scheme or port, and takes the self url", () => {
+  const self = { name: "box-a", url: "https://box-a.tail.ts.net" };
+  const rows = [
+    { name: "box-b", url: "http://box-b.tail.ts.net:8787", online: true },
+    { name: "box-a", url: "http://box-a.tail.ts.net:8787", online: false },
+  ];
+  expect(withSelf(rows, self)).toEqual([
+    { name: "box-a", url: "https://box-a.tail.ts.net", online: true, self: true },
+    { name: "box-b", url: "http://box-b.tail.ts.net:8787", online: true, self: false },
+  ]);
 });
