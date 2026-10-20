@@ -226,8 +226,8 @@ describe("console shell", () => {
     }
   });
 
-  test("Handoffs nav badge: unsent packs plus unseen received packs; opening the page clears the received part", async () => {
-    apiFake.handoffBadgeData = { unsent: 1, unseen: 2 };
+  test("Handoffs nav badge: outgoing packs not sent yet only; a received pack never counts", async () => {
+    apiFake.handoffBadgeData = { unsent: 1 };
     apiFake.handoffPacks = [
       { id: "o1", direction: "out", title: "Pending", message: "", target: "box-b", source: "here", files: [], createdAt: 1, preview: [], problems: [], wouldSay: "" },
       { id: "i1", direction: "in", title: "From B", message: "", target: "here", source: "box-b", files: [], createdAt: 2, sentAt: 2, preview: [], problems: [], wouldSay: "" },
@@ -236,25 +236,25 @@ describe("console shell", () => {
     const badge = () => container!.querySelector('[data-slot="handoffs-count"]');
     // The one CountBadge, inline on the Handoffs row, named for a screen reader.
     expect(navItem("Handoffs").contains(badge())).toBe(true);
-    expect(badge()!.textContent).toBe("3");
-    expect(badge()!.getAttribute("aria-label")).toBe("3 handoffs need you");
+    expect(badge()!.textContent).toBe("1");
+    expect(badge()!.getAttribute("aria-label")).toBe("1 packs waiting to send");
     // Collapsed to the icon rail: pinned to the icon's corner, like the Inbox badge.
     await click(container!.querySelector('button[aria-label="Collapse sidebar"]')!);
     expect(badge()!.className).toContain("absolute");
     await click(container!.querySelector('button[aria-label="Expand sidebar"]')!);
     // The phone reaches Handoffs from Settings → Navigate: the same count there.
     await act(async () => { navigate("/settings"); await flush(); });
-    expect(container!.querySelector('[data-slot="settings-mobile-nav"] [data-slot="handoffs-count"]')!.textContent).toBe("3");
-    // Open the page: the received pack shows as new once, is marked seen, and only the unsent pack counts.
+    expect(container!.querySelector('[data-slot="settings-mobile-nav"] [data-slot="handoffs-count"]')!.textContent).toBe("1");
+    // Open the page: the received pack still shows as new (its own tag, unrelated to the badge),
+    // and the badge count is untouched by that visit.
     await act(async () => { navigate("/handoffs"); await flush(); await flush(); });
     expect(apiFake.handoffSeenCalls).toBe(1);
     expect(container!.querySelector('[data-slot="handoffs-received"] [data-slot="handoff-new"]')).not.toBeNull();
     expect(navItem("Handoffs").querySelector('[data-slot="handoffs-count"]')!.textContent).toBe("1");
     // Sent (the count reaches zero): no badge, and the keycap keeps its place at the row's edge.
-    apiFake.handoffBadgeData = { unsent: 0, unseen: 0 };
+    apiFake.handoffBadgeData = { unsent: 0 };
     await act(async () => { navigate("/"); await flush(); });
     await act(async () => { navigate("/handoffs"); await flush(); await flush(); });
-    expect(apiFake.handoffSeenCalls).toBe(1); // nothing new to mark
     expect(badge()).toBeNull();
   });
 

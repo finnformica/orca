@@ -71,7 +71,7 @@ export const NAV: { to: string; label: string; Icon: typeof LayoutGrid; match: (
   // The previews (and Test master) page; its badges are what the two header buttons used to carry.
   { to: "/previews", label: "Previews", Icon: MonitorPlay, match: (r) => r.name === "previews", badge: (compact) => <PreviewsBadge compact={compact} /> },
   { to: "/integrations", label: "Integrations", Icon: Plug, match: (r) => r.name === "integrations" },
-  // Its count is the packs that need you: not sent yet, or received and not seen (lib/handoffBadge.ts).
+  // Its count is outgoing packs waiting for the user to send them (lib/handoffBadge.ts).
   { to: "/handoffs", label: "Handoffs", Icon: Package, match: (r) => r.name === "handoffs", badge: (compact) => <HandoffsBadge compact={compact} /> },
   // Repos and GitHub are sections of Settings.
   { to: "/settings", label: "Settings", Icon: Settings, match: (r) => r.name === "settings" },
@@ -616,13 +616,13 @@ export function ProfileMenu({ collapsed = false }: { collapsed?: boolean }) {
   );
 }
 
-/** The Handoffs nav item's count: packs not sent yet, and received packs not seen yet. The phone's
- *  Settings → Navigate link shows it too. */
+/** The Handoffs nav item's count: outgoing packs made here and not sent yet. The phone's Settings
+ *  → Navigate link shows it too. */
 export function HandoffsBadge({ compact = false }: { compact?: boolean }) {
   const count = useHandoffBadge();
   // At zero it still holds the row's right edge, so the keycap after it stays where it was.
   if (!count) return compact ? null : <span className="ml-auto" />;
-  return <CountBadge count={count} placement={compact ? "compact" : "inline"} slot="handoffs-count" label="handoffs need you" />;
+  return <CountBadge count={count} placement={compact ? "compact" : "inline"} slot="handoffs-count" label="packs waiting to send" />;
 }
 
 /** The Inbox nav item's unread count: the one count the bell shows too. */
