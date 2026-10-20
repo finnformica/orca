@@ -31,11 +31,13 @@ import * as handoff from "./handoff";
 import { selfServer } from "./servers";
 import { stateDir } from "./state";
 import { API_PORT } from "./ports";
+import { reachable } from "./peer";
+import { machineReport } from "./liveMetrics";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
   joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
-  type BoardRow, type FailStreak, type OrchStatus, type WakeExit,
+  machineText, type BoardRow, type FailStreak, type MachineReport, type OrchStatus, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
@@ -602,6 +604,22 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
   switch (verb) {
     case "board": return boardText(await board(cfg));
     case "channels": return channelsText();
+    case "machine": {
+      // `orca machine [--on <instance>] [--json]`: what the machine card shows, from the same 15 s ring
+      // (liveMetrics.machineReport) — here, or from another instance's /api/machine.
+      const on = typeof args.on === "string" && args.on ? args.on : db.instanceName();
+      let report: MachineReport;
+      if (on === db.instanceName()) report = machineReport(on);
+      else {
+        const base = cfg.instances?.[on];
+        if (!base) throw new Error(`"${on}" is not a configured instance (instances: ${Object.keys(cfg.instances ?? {}).join(", ") || "none"})`);
+        if (!(await reachable(base))) throw new Error(`${on} is unreachable (no connection to ${new URL(base).host})`);
+        const res = await Bun.fetch(new URL("/api/machine", base)); // Bun.fetch: the test DOM shim swaps the global
+        if (!res.ok) throw new Error(`${on} answered ${res.status} (a bridge older than \`orca machine\` has no /api/machine)`);
+        report = await res.json() as MachineReport;
+      }
+      return args.json !== undefined ? JSON.stringify(report, null, 2) : machineText(report);
+    }
     case "post": {
       // `orca post --link <id> [--thread <id> | --repo r --branch b] [--thread] "<text>"`: a durable delivery
       // through the link's adapter, retried if it fails. With --repo/--branch it continues that
@@ -848,7 +866,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
       await patch({ notes: text });
       return "Notes saved.";
     }
-    default: throw new Error(`unknown command "${verb}". Commands: board, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, handoff`);
+    default: throw new Error(`unknown command "${verb}". Commands: board, machine, spawn, send, address, archive, stop [--drop-queue], sweep [--confirm], merge --when-green, preview [--status | --push-to-template [--confirm]], status, chats, read, notes, handoff`);
   }
 }
 

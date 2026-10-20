@@ -41,6 +41,7 @@ import * as cgroup from "./cgroup";
 import { heavySliceGb } from "./sliceLimit";
 import { KIND_META } from "../shared/notifications";
 import { health, historyHours, instanceRate, monthCost, startMetricsSampler } from "./health";
+import { liveAnswer, machineReport, newestLive, sliceMaxGbHere, startLiveSampler, withLiveCpu } from "./liveMetrics";
 import { protectionsReport, withLiveState } from "./protections";
 import * as verbs from "./verbs";
 import * as repos from "./repos";
@@ -256,6 +257,10 @@ const publishPreviews = () => loadConfig().then((cfg) => verbs.previewRows(cfg, 
 // (server/health.ts). Each instance samples itself; either answers the history from Postgres.
 primary.onPrimary(() => { startMetricsSampler(); });
 
+// The machine card's 15 s view of the box (server/liveMetrics.ts): in memory, last 6 hours. Every
+// bridge runs it (it only reads /proc), so a preview bridge's card has data too.
+startLiveSampler();
+
 // Stale hydra logins (an access token that lapsed — hydra never renews one, a Claude launch does):
 // renewed on THIS host by one minimal launch each, so the rotation never routes to one. Every 30
 // minutes on the primary; each instance renews its own logins (server/usage.ts renewStaleLogins).
@@ -388,7 +393,7 @@ const DATABASE_ONLY = new Set([
   // what that merge fetches from a PEER — always this host's own, unmerged, never forwarded (a repo's
   // placement must not send it chasing a worktree that has nothing to do with hydra).
   "/api/usage", "/api/usage/local", "/api/diagnostics", "/api/turns/steps", "/api/queued", "/api/queued/cancel", "/api/health",
-  "/api/health/history", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui",
+  "/api/health/history", "/api/health/live", "/api/machine", "/api/config/instance-rate", "/api/config/terminal", "/api/config/identity", "/api/config/ui",
   // A workstream's reported screenshots, read off its turns (the files are served per shot).
   "/api/shots",
   // Answered by EVERY instance: its own worktrees (if the repo is checked out here) plus what the
@@ -953,7 +958,7 @@ async function api(req: Request, url: URL): Promise<Response> {
     const since = Date.parse(cfg.instanceBillingSince?.[db.instanceName()] ?? "");
     const month = rate.hourlyUsd > 0 ? await monthCost(rate.hourlyUsd, Number.isFinite(since) ? { billingSince: since } : {}).catch(() => undefined) : undefined;
     // `protections`: which of deploy/harden.sh's protections this box is missing (server/protections.ts).
-    return json({ ...h, rate, month, protections: protections && withLiveState(protections, cgroup.userManagerDown()), database: db.databaseStatus(), outbox: outbox.summary(), heavy: heavyView(cfg) });
+    return json({ ...withLiveCpu(h, newestLive()), rate, month, protections: protections && withLiveState(protections, cgroup.userManagerDown()), database: db.databaseStatus(), outbox: outbox.summary(), heavy: heavyView(cfg) });
   }
   if (req.method === "GET" && p === "/api/notifications") {
     // The centre's rows (any instance answers: one table). `since` is the catch-up cursor after a
@@ -966,6 +971,15 @@ async function api(req: Request, url: URL): Promise<Response> {
     const ids = body.all === true ? "all" : Array.isArray(body.ids) ? body.ids.map(Number).filter(Number.isFinite) : [];
     const changed = await db.markNotificationsRead(ids);
     return json({ ok: true, changed });
+  }
+  if (req.method === "GET" && p === "/api/health/live") {
+    // This machine's 15 s samples (server/liveMetrics.ts), at most the last 6 hours. In memory on the
+    // machine itself, so `?instance=` forwards like /api/health.
+    return json(liveAnswer(historyHours(url.searchParams.get("hours")), { sliceMaxGb: sliceMaxGbHere() }));
+  }
+  if (req.method === "GET" && p === "/api/machine") {
+    // `orca machine`: the same ring, its now / 5 min / 1 h windows and the heavy queue's counts.
+    return json(machineReport(db.instanceName()));
   }
   if (req.method === "GET" && p === "/api/health/history") {
     // An instance's recorded vitals (instance_metric), oldest first — read from Postgres, so either

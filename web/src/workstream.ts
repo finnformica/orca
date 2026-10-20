@@ -7,6 +7,7 @@ import { AUTO_MODEL, MODELS, modelLabel, prettyModel } from "../../shared/models
 import { SNIPPETS, WRITING_STYLE } from "../../shared/writingStyle";
 import { asksForInput } from "../../shared/notifications";
 import { integrationMessage, type IntegrationMessage } from "../../shared/integrations";
+import type { LiveSample } from "../../server/liveMetrics";
 export { attachCommand } from "../../shared/agent";
 
 // Kanban lanes are driven by the REVIEW lifecycle only. Conflict / CI / mergeability
@@ -1632,6 +1633,9 @@ export function repoLabel(repos: ReadonlyArray<{ name: string; owner?: string }>
 
 const ORCA_COMMANDS = [
   "  orca board                      every workstream: PR state, agent status, Orca's check verdict",
+  "  orca machine [--on <instance>] [--json]   the box's CPU work / iowait / load per core, disk MB/s, memory, swap, OOM kills",
+  "      (now, 5 min, 1 h) and the heavy queue — the same 15 s samples as the user's machine card. Read it before you",
+  "      spawn more work on a busy box; --json adds the last hour's raw series.",
   "  orca spawn --repo <repo> --title \"<2-5 words>\" --model <id> [--on <instance>] --objective \"…\" --output \"…\" --boundaries \"…\" [--context \"…\"] [--attach <id|path>]…",
   "      --on places the worktree on another instance (the board shows each workstream's `on:`; a `[new draft]`",
   "      that says `on: <instance>` wants that one). Without it, the repo's default instance.",
@@ -2738,7 +2742,142 @@ export function headerUsage(u: UsageReading | null, now = Date.now()): HeaderUsa
 export const usageZone = (pct: number): "ok" | "warn" | "danger" => (pct >= 90 ? "danger" : pct >= 75 ? "warn" : "ok");
 
 /** The instance card's range picker. */
-export const HISTORY_RANGES = [{ label: "6h", hours: 6 }, { label: "24h", hours: 24 }, { label: "7d", hours: 168 }] as const;
+export const HISTORY_RANGES = [{ label: "1h", hours: 1 }, { label: "6h", hours: 6 }, { label: "24h", hours: 24 }, { label: "7d", hours: 168 }] as const;
+
+/** Ranges up to this many hours read the bridge's 15 s ring (/api/health/live); longer ones the
+ *  1-minute history in Postgres. */
+export const LIVE_MAX_HOURS = 6;
+export const usesLiveSource = (hours: number): boolean => hours <= LIVE_MAX_HOURS;
+
+/** One point of a stacked chart: a value per band, bottom band first. */
+export type StackPoint = { at: number; v: number[] };
+export type LiveCharts = {
+  /** Work, iowait (% of all cores). */
+  cpu: StackPoint[];
+  /** Read, write (MB/s). Samples with no disk reading are skipped. */
+  io: StackPoint[];
+  /** Used, cache (GB). */
+  mem: StackPoint[];
+  /** load1 / cores, per sample — shown as a number, never on the % axis. */
+  loadPerCore: { at: number; v: number }[];
+  iowait: { at: number; v: number }[];
+  ooms: { at: number; n: number }[];
+};
+
+/** The live charts' points from /api/health/live's samples. Pure. */
+export function liveCharts(samples: LiveSample[], cores: number): LiveCharts {
+  const c = Math.max(1, cores);
+  return {
+    cpu: samples.map((s) => ({ at: s.at, v: [s.work, s.iowait] })),
+    io: samples.flatMap((s) => (s.readMBs === undefined && s.writeMBs === undefined ? [] : [{ at: s.at, v: [s.readMBs ?? 0, s.writeMBs ?? 0] }])),
+    mem: samples.map((s) => ({ at: s.at, v: [s.memUsedGb, s.memCacheGb] })),
+    loadPerCore: samples.map((s) => ({ at: s.at, v: Math.round((s.load1 / c) * 100) / 100 })),
+    iowait: samples.map((s) => ({ at: s.at, v: s.iowait })),
+    ooms: samples.flatMap((s) => (s.ooms ? [{ at: s.at, n: s.ooms }] : [])),
+  };
+}
+
+/** One window of `orca machine`: means over the window (the newest sample for "now"); OOM kills add up. */
+export type MachineWindow = {
+  /** The time the window really covers (the ring may hold less than asked), and its samples. */
+  spanMs: number; samples: number;
+  work: number; iowait: number; loadPerCore: number;
+  readMBs?: number; writeMBs?: number;
+  memUsedGb: number; memCacheGb: number; memAvailGb?: number; swapUsedGb?: number;
+  ooms: number;
+};
+export type MachineSummary = { now?: MachineWindow; "5m"?: MachineWindow; "1h"?: MachineWindow };
+export const MACHINE_WINDOWS = [["now", 0], ["5m", 5 * 60_000], ["1h", 3_600_000]] as const;
+
+/** `orca machine`'s numbers, from the SAME samples and the SAME `liveCharts` derivation as the card's
+ *  charts, so the two cannot disagree. "now" is the newest sample; 5m and 1h are means over the
+ *  samples in the window. A window with no samples is absent. Pure. */
+export function machineSummary(samples: LiveSample[], cores: number): MachineSummary {
+  const last = samples[samples.length - 1];
+  if (!last) return {};
+  const c = liveCharts(samples, cores);
+  const out: MachineSummary = {};
+  for (const [name, ms] of MACHINE_WINDOWS) {
+    const idx = samples.flatMap((s, i) => (ms === 0 ? s === last : s.at > last.at - ms) ? [i] : []);
+    if (!idx.length) continue;
+    const mean = (f: (i: number) => number | undefined, digits = 1) => {
+      const v = idx.map(f).filter((n): n is number => n !== undefined);
+      if (!v.length) return undefined;
+      const k = 10 ** digits;
+      return Math.round((v.reduce((a, b) => a + b, 0) / v.length) * k) / k;
+    };
+    const opt = <K extends string>(k: K, v: number | undefined) => (v === undefined ? {} : { [k]: v } as Record<K, number>);
+    out[name] = {
+      spanMs: last.at - samples[idx[0]!]!.at, samples: idx.length,
+      work: mean((i) => c.cpu[i]!.v[0])!, iowait: mean((i) => c.cpu[i]!.v[1])!, loadPerCore: mean((i) => c.loadPerCore[i]!.v, 2)!,
+      ...opt("readMBs", mean((i) => samples[i]!.readMBs)), ...opt("writeMBs", mean((i) => samples[i]!.writeMBs)),
+      memUsedGb: mean((i) => c.mem[i]!.v[0], 2)!, memCacheGb: mean((i) => c.mem[i]!.v[1], 2)!,
+      ...opt("memAvailGb", mean((i) => samples[i]!.memAvailGb, 2)), ...opt("swapUsedGb", mean((i) => samples[i]!.swapUsedGb, 2)),
+      ooms: idx.reduce((n, i) => n + (samples[i]!.ooms ?? 0), 0),
+    };
+  }
+  return out;
+}
+
+/** What `GET /api/machine` answers and `orca machine` prints. */
+export type MachineReport = {
+  /** `at`: the newest sample's time (the answer's time when there is none). */
+  instance: string; at: number; cores: number; memTotalGb: number; sliceMaxGb?: number; diskCapMBs: number; stepMs: number;
+  summary: MachineSummary;
+  heavy: { running: number; queued: number };
+  /** The last hour of 15 s samples, oldest first (`--json` only shows them). */
+  samples: LiveSample[];
+};
+
+const fmtSpan = (ms: number) => (ms >= 60_000 ? `${Math.round(ms / 60_000)} min` : `${Math.round(ms / 1000)} s`);
+
+/** `orca machine` as plain text: one row per measure, a column per window. Pure. */
+export function machineText(r: MachineReport): string {
+  const head = `${r.instance} · ${r.cores} cores · ${r.memTotalGb} GB RAM · a sample every ${Math.round(r.stepMs / 1000)} s · newest ${new Date(r.at).toISOString().replace("T", " ").slice(0, 19)} UTC`;
+  const heavy = `Heavy queue: ${r.heavy.running} running, ${r.heavy.queued} queued`;
+  const limits = `Disk cap ${r.diskCapMBs} MB/s${r.sliceMaxGb ? ` · agents memory limit ${r.sliceMaxGb} GB` : ""}`;
+  if (!r.summary.now) return [head, "No samples yet: the bridge samples every 15 s and starts empty after a restart.", heavy, limits].join("\n");
+  const cols = MACHINE_WINDOWS.map(([n]) => r.summary[n]);
+  const num = (v: number | undefined, d: number) => (v === undefined ? "—" : v.toFixed(d));
+  const rows: [string, (w: MachineWindow) => string][] = [
+    ["CPU work %", (w) => num(w.work, 1)],
+    ["iowait %", (w) => num(w.iowait, 1)],
+    ["load / core", (w) => num(w.loadPerCore, 2)],
+    ["disk read MB/s", (w) => num(w.readMBs, 1)],
+    ["disk write MB/s", (w) => num(w.writeMBs, 1)],
+    ["memory used GB", (w) => num(w.memUsedGb, 2)],
+    ["cache GB", (w) => num(w.memCacheGb, 2)],
+    ["available GB", (w) => num(w.memAvailGb, 2)],
+    ["swap used GB", (w) => num(w.swapUsedGb, 2)],
+    ["OOM kills", (w) => String(w.ooms)],
+  ];
+  const header = ["", "now", "5 min", "1 h"];
+  const table = [header, ...rows.map(([label, f]) => [label, ...cols.map((w) => (w ? f(w) : "—"))])];
+  const widths = header.map((_, i) => Math.max(...table.map((row) => row[i]!.length)));
+  const lines = table.map((row) => row.map((cell, i) => (i === 0 ? cell.padEnd(widths[i]!) : cell.padStart(widths[i]!))).join("   ").trimEnd());
+  const short = (["5m", "1h"] as const).flatMap((n, i) => {
+    const w = r.summary[n], want = i === 0 ? 5 * 60_000 : 3_600_000;
+    return w && w.spanMs < want - 2 * r.stepMs ? [`${n === "5m" ? "5 min" : "1 h"} covers only ${fmtSpan(w.spanMs)} (the bridge restarted since)`] : [];
+  });
+  return [head, ...lines, ...short, heavy, limits].join("\n");
+}
+
+/** The point nearest `at` (the hover readout), or undefined for no points. Pure. */
+export function nearestAt<T extends { at: number }>(points: T[], at: number): T | undefined {
+  return points.reduce<T | undefined>((a, b) => (!a || Math.abs(b.at - at) < Math.abs(a.at - at) ? b : a), undefined);
+}
+
+/** The stacked polygons' runs: a new run after a gap longer than `gapMs` (a bridge restart empties the
+ *  ring; a stall skips samples), so an area never bridges missing time. Pure. */
+export function stackRuns(points: StackPoint[], gapMs: number): StackPoint[][] {
+  const runs: StackPoint[][] = [];
+  for (const p of points) {
+    const run = runs[runs.length - 1];
+    if (run && p.at - run[run.length - 1]!.at <= gapMs) run.push(p);
+    else runs.push([p]);
+  }
+  return runs;
+}
 
 /** At most `max` points, each the mean of its time bucket — a week of minute samples is 10k points,
  *  which no 600px line needs. Gaps survive: an empty bucket emits nothing. */
@@ -2758,12 +2897,10 @@ export function downsample(points: { at: number; v: number }[], max: number, fro
 }
 
 /** One vitals sample, recorded (instance_metric) or live (/api/health). */
-export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number; diskUsedGb?: number; oomKills?: number; bridgeRssMb?: number };
+export type VitalSample = { at: number; cpuPct: number; memUsedGb: number; runningAgents?: number; diskUsedGb?: number; oomKills?: number };
 type Pt = { at: number; v: number };
 export type InstanceSeries = {
   cpu: Pt[]; mem: Pt[]; agents: Pt[]; disk: Pt[];
-  /** The bridge process's own memory (MB); samples from before it was recorded are skipped. */
-  bridge: Pt[];
   /** Samples that recorded agent runs OOM-killed in their own scope — the Memory chart's markers. */
   ooms: { at: number; n: number }[];
   /** The newest sample — what the card's header stats show, and exactly every chart's last point. */
@@ -2781,7 +2918,7 @@ export function instanceSeries(history: VitalSample[], live: VitalSample | null 
   const samples = history.filter((p) => p.at >= from && p.at <= to);
   const last = samples[samples.length - 1];
   if (live && live.at <= to && (!last || live.at > last.at)) samples.push({ ...live, oomKills: 0 });
-  if (!samples.length) return { cpu: [], mem: [], agents: [], disk: [], bridge: [], ooms: [], latest: null };
+  if (!samples.length) return { cpu: [], mem: [], agents: [], disk: [], ooms: [], latest: null };
   const series = (pts: Pt[]) => pts.length ? [...downsample(pts.slice(0, -1), max - 1, from, to), pts[pts.length - 1]!] : [];
   const newest = samples[samples.length - 1]!;
   return {
@@ -2789,7 +2926,6 @@ export function instanceSeries(history: VitalSample[], live: VitalSample | null 
     mem: series(samples.map((p) => ({ at: p.at, v: p.memUsedGb }))),
     agents: series(samples.map((p) => ({ at: p.at, v: p.runningAgents ?? 0 }))),
     disk: series(samples.flatMap((p) => (p.diskUsedGb == null ? [] : [{ at: p.at, v: p.diskUsedGb }]))),
-    bridge: series(samples.flatMap((p) => (p.bridgeRssMb == null ? [] : [{ at: p.at, v: p.bridgeRssMb }]))),
     ooms: samples.flatMap((p) => (p.oomKills ? [{ at: p.at, n: p.oomKills }] : [])),
     latest: { at: newest.at, cpuPct: newest.cpuPct, memUsedGb: newest.memUsedGb, runningAgents: newest.runningAgents ?? 0 },
   };

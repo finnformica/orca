@@ -2,7 +2,7 @@
 // resource is polled once however many components show it (the bridge is HTTP/1.1 with six
 // connections per host — see lib/poll.ts), and only while something is mounted to show it.
 import { useSyncExternalStore } from "react";
-import { api, type InstanceHealth, type MetricPoint } from "@/api";
+import { api, type InstanceHealth, type LiveAnswer, type MetricPoint } from "@/api";
 import type { Usage } from "../../../server/usage";
 import { withProfileEnabled } from "../workstream";
 import { poll } from "./poll";
@@ -182,6 +182,28 @@ export function useHealthHistory(instance: string | null, hours = 24): MetricPoi
       return () => { live = false; loaders.delete(load); stop(); };
     });
     historySources.set(key, src);
+  }
+  return useSyncExternalStore(src.subscribe, src.get);
+}
+
+const liveSources = new Map<string, ReturnType<typeof sharedSource<LiveAnswer | false>>>();
+
+/** A machine's 15 s ring (/api/health/live, at most 6 hours), polled every 15 s while a card shows a
+ *  short range. `instance` undefined = the answering one; null = nothing to watch. The value is null
+ *  until the first answer, false when the fetch fails (an older bridge has no such route). */
+export function useHealthLive(instance: string | undefined | null, hours: number): LiveAnswer | false | null {
+  if (instance === null) return useSyncExternalStore(NOTHING.subscribe, NOTHING.get);
+  const key = `${instance ?? ""}|${hours}`;
+  let src = liveSources.get(key);
+  if (!src) {
+    src = sharedSource<LiveAnswer | false>((set) => {
+      let live = true;
+      const load = () => api.healthLive(instance, hours).then((v) => { if (live) set(v); }, () => { if (live) set(false); });
+      loaders.add(load);
+      const stop = poll(load, 15_000);
+      return () => { live = false; loaders.delete(load); stop(); };
+    });
+    liveSources.set(key, src);
   }
   return useSyncExternalStore(src.subscribe, src.get);
 }

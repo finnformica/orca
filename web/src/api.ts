@@ -1,6 +1,8 @@
 import type { LaunchReceipt, RunMeta } from "../../server/agent";
 import type { RepoFeatures } from "../../server/config";
 import type { ChangeSummary } from "../../server/git";
+import type { LiveAnswer } from "../../server/liveMetrics";
+export type { LiveAnswer, LiveSample } from "../../server/liveMetrics";
 import type { CiFailureEvidence, ConversationComment, MergedPr, PrDetail, PrSummary, ReviewSignal, ReviewThreadEvidence } from "../../server/gh";
 import type { Usage } from "../../server/usage";
 import type { PackView, WirePack } from "../../server/handoff";
@@ -66,8 +68,6 @@ export type InstanceHealth = {
   month?: { usd: number; upHours: number; since: number; unknownHours?: number; usdMax?: number; assumedHours?: number; ledgerFrom?: number | null; billingSince?: number };
   /** Absent from an older bridge. */
   runningAgents?: number;
-  /** The bridge process's resident memory, MB. Absent from an older bridge. */
-  bridgeRssMb?: number;
   /** Which of deploy/harden.sh's protections the box is missing (server/protections.ts), and the
    *  newest OOM kill in its kernel log (null: none; absent: unreadable). Absent off Linux. */
   protections?: { missing: { key: string; label: string }[]; lastOomKill?: number | null; at: number };
@@ -82,9 +82,7 @@ export type HeavyQueueView = { running: HeavyEntry[]; queued: HeavyEntry[]; limi
 export type MetricPoint = { at: number; cpuPct: number; load1: number; memUsedGb: number; memTotalGb: number; diskUsedGb?: number; /** Absent from a bridge older than migration 13 — unknown, not 0. */
   runningAgents?: number;
   /** Agent runs OOM-killed in their own scope since the previous sample (absent = none). */
-  oomKills?: number;
-  /** The bridge process's resident memory, MB (absent on older rows). */
-  bridgeRssMb?: number };
+  oomKills?: number };
 export type PreviewSvc = { name: string; port: number; url: string; localUrl?: string; open: boolean; running: boolean; ready: boolean; error?: string; startedAt: number };
 
 const post = (path: string, body: unknown) =>
@@ -264,6 +262,7 @@ export const api = {
   // A machine's vitals (the header's instance chip); `instance` asks another instance for its own.
   health: (instance?: string): Promise<InstanceHealth> => get(`/api/health${instance ? `?instance=${encodeURIComponent(instance)}` : ""}`).then(res),
   // Its recorded vitals over the last `hours` (default 24), read from Postgres by whichever instance answers.
+  healthLive: (instance: string | undefined, hours: number): Promise<LiveAnswer> => get(`/api/health/live?hours=${hours}${instance ? `&instance=${encodeURIComponent(instance)}` : ""}`).then(res),
   healthHistory: (instance: string, hours = 24): Promise<MetricPoint[]> => get(`/api/health/history?instance=${encodeURIComponent(instance)}&hours=${hours}`).then(res),
   syncWorktrees: (repo: string): Promise<SyncResult[]> => post("/api/worktrees/sync", { repo }),
   discardWorktree: (repo: string, worktreePath: string, branch?: string, deleteBranch?: boolean): Promise<{ ok: true }> =>

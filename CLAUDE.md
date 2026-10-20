@@ -749,7 +749,8 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   — old one kept as `<template>_bak_<ts>` — and writes its integration env vars back to the main
   checkout's copied `.env`; dry run without `--confirm`, values masked — README), `merge`
   (`--repo r (--pr N | --branch b) --when-green [--small]` or `--cancel`: the merge queue), `chats`,
-  `read`, `notes`.
+  `read`, `notes`, and **`machine [--on <instance>] [--json]`** — what the machine card shows, as plain
+  text (below, "Machine metrics history").
 - **Merge queue — merge on green with nobody watching CI** (`server/mergeQueue.ts`, decisions in
   `workstream.ts` `mergeVerdict` / `mergeRefusal`). A PR — or a branch with no PR yet — is MARKED
   (`mergeWhenGreen` on its enrichment, so shared and restart-proof) by `orca merge --when-green`, the
@@ -1113,11 +1114,29 @@ cell), so retention
 needs no second timer; a failed write is logged and swallowed. `GET /api/health/history?instance=&hours=`
 (24 by default, at most 720) is database-only and its `instance` is a filter, never a forward, so
 either machine graphs the other even while it is down. Each machine's card (Overview, Usage) draws
-CPU and memory over 6h / 24h / 7d as inline SVG (no charting dependency), downsampled to ~300
-points, one line each (no overlay — the running sessions are their own chart). Beside them, in the
-same `LineChart` design, a **Bridge memory** chart (the bridge process's own RSS, `bridgeRssMb` on
-`/api/health` and `instance_metric.bridge_rss_mb`, named step `20261019-instance-metric-bridge-rss`), an **Agents** chart (`running_agents` over time) and **Disk used** (axis to
-the disk's size; worktrees, preview databases and test containers are what fill the box).
+CPU and memory over 1h / 6h / 24h / 7d as inline SVG (no charting dependency). Over 6 hours they are
+one line each from this history, downsampled to ~300 points. **Up to 6 hours they come from the
+bridge's own 15 s ring** (`server/liveMetrics.ts`, in memory, no table, emptied by a restart;
+`GET /api/health/live?hours=`, forwarded by `?instance=` like `/api/health`): the WHOLE box, never
+split by workstream (Finn's call) — CPU as stacked work + hatched iowait (0–100 % of all cores; load
+is a number in the caption and tooltip, never a second axis), Memory as stacked used + cache under a
+dashed agents-slice MemoryMax, and **Disk IO** (root device read + write MB/s under a dashed cap,
+`ORCA_DISK_CAP_MBS`, default 125 — the gp3 baseline; the 2026-10-19 IO stall looked like CPU on the
+old line). `StackedChart` (`components/console.tsx`) is their chart; hover or tap opens the shadcn
+tooltip with the values at that time. An older bridge without the route keeps the lines. Beside them,
+in the `LineChart` design, an **Agents** chart (`running_agents` over time). There is no Disk used
+chart any more (removed at Finn's request, #359): the disk figure stays in the details grid's **Disk**
+cell (worktrees, preview databases and test containers are what fill the box), and Disk IO (above)
+covers throughput for the ranges it's available for. **`orca machine`**
+(`GET /api/machine`, `liveMetrics.machineReport`; a read verb) gives the orchestrator the SAME numbers
+as the card, from the same ring through the same `liveAnswer` and the card's own `liveCharts`
+(`workstream.ts` `machineSummary` / `machineText`), so the two never disagree and lag at most one
+15 s sample: now (the newest sample), 5 min and 1 h for CPU work %, iowait %, load per core, disk
+read / write MB/s, memory used / cache / available GB, swap used GB and OOM kills, plus the heavy
+queue's running and queued counts. `--on` reads another instance's `/api/machine`; `--json` prints
+the report with the last hour's raw samples. There is
+no Bridge memory chart any more (removed at Finn's request); `bridgeRssMb` is still on `/api/health`
+and recorded in `instance_metric.bridge_rss_mb` (named step `20261019-instance-metric-bridge-rss`).
 **OOM kills** are red marks on the Memory chart, counted in its caption: a run the cgroup ceiling
 killed (`server/cgroup.ts`) bumps `health.noteOomKill`, and the next sample writes the count to
 `instance_metric.oom_kills` (named step `20261013-instance-metric-oom-kills`; a failed write carries

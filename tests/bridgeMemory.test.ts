@@ -18,7 +18,6 @@ import * as db from "../server/db";
 import * as events from "../server/events";
 import * as github from "../server/github";
 import { health } from "../server/health";
-import { instanceSeries } from "../web/src/workstream";
 import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
 
@@ -163,14 +162,11 @@ afterAll(async () => {
   if (prevUrl === undefined) delete process.env.ORCA_DATABASE_URL; else process.env.ORCA_DATABASE_URL = prevUrl;
 });
 
-test("/api/health reports the bridge's RSS, the sampler records it, and the card charts it", async () => {
+test("/api/health reports the bridge's RSS and the sampler records it", async () => {
   const h = await health();
   expect(h.bridgeRssMb).toBeGreaterThan(0);
   const at = Date.now() - 60_000;
   await db.recordMetric({ cpuPct: 5, load1: 0.1, memUsedGb: 1, memTotalGb: 8, runningAgents: 0, bridgeRssMb: 321 }, at);
   const [row] = await db.metricHistory(db.instanceName(), 1);
   expect(row).toMatchObject({ bridgeRssMb: 321 });
-  // The card's series: the recorded sample, then the live reading as the newest point.
-  const s = instanceSeries([row!], { at: Date.now(), cpuPct: 5, memUsedGb: 1, bridgeRssMb: h.bridgeRssMb }, at - 1_000, Date.now() + 1_000);
-  expect(s.bridge.map((p) => p.v)).toEqual([321, h.bridgeRssMb]);
 });
