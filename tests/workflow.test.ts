@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { baseWorktree, changeSummary, copyToWorktree, createWorktree, linkToWorktree, listWorktrees, removeWorktree, resolveBase, resolvePrBody, syncWorktrees } from "../server/git";
-import { AutoMergeNotAllowed, addLabel, ciEvidence, convertToDraft, countExternalFeedback, createPr, disableAutoMerge, enableAutoMerge, listMerged, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prStatus, reviewEvidence } from "../server/gh";
+import { AutoMergeNotAllowed, addLabel, ciEvidence, convertToDraft, countExternalFeedback, createPr, disableAutoMerge, enableAutoMerge, listMerged, listPrs, listReviewPrs, markReady, mergePr, prDetail, prDiff, prMergeGate, prStatus, reviewEvidence } from "../server/gh";
 import { freePort, killTree, orphanPreviewDbs, previewDbName, previewHost } from "../server/preview";
 import { portFree, reclaimBridgePort, waitForPortFree } from "../server/net";
 import { run } from "../server/run";
@@ -634,6 +634,67 @@ test("S2b required-check gating: only merge-gating checks decide CI (advisory bo
   const ungatedPrs = await listPrs(ungated);
   expect(ungatedPrs[0]!.ciStatus).toBe("failing");
   expect(ungatedPrs[0]!.failingChecks).toEqual(["claude-review"]);
+});
+
+test("S2c prStatus required-check gating: Merge is refused only on a required failure, never an advisory one", async () => {
+  const rollup = [
+    { name: "build-backend", conclusion: "SUCCESS" },
+    { name: "claude-review", conclusion: "FAILURE" }, // advisory AI-review bot — not a merge gate
+  ];
+
+  // Branch protection requires only build-backend → the failing advisory bot is ignored, CI passes.
+  const gated = await makeScratchRepo(); // fresh cwd = fresh requiredChecks cache key
+  await setRequiredChecksFixture(["build-backend"]);
+  await setPrFixture({ state: "OPEN", mergeable: "MERGEABLE", reviewDecision: "APPROVED", baseRefName: "main", statusCheckRollup: rollup });
+  expect((await prStatus(gated, 1)).ciStatus).toBe("passing");
+
+  // The required check itself failing still blocks, with the same required set.
+  const requiredFailing = await makeScratchRepo();
+  await setRequiredChecksFixture(["build-backend"]);
+  await setPrFixture({ state: "OPEN", mergeable: "MERGEABLE", reviewDecision: "APPROVED", baseRefName: "main", statusCheckRollup: [{ name: "build-backend", conclusion: "FAILURE" }, { name: "claude-review", conclusion: "FAILURE" }] });
+  expect((await prStatus(requiredFailing, 1)).ciStatus).toBe("failing");
+
+  // Control: no branch protection (empty required set) → every check gates, so the bot fails CI.
+  const ungated = await makeScratchRepo();
+  await setRequiredChecksFixture([]);
+  await setPrFixture({ state: "OPEN", mergeable: "MERGEABLE", reviewDecision: "APPROVED", baseRefName: "main", statusCheckRollup: rollup });
+  expect((await prStatus(ungated, 1)).ciStatus).toBe("failing");
+});
+
+test("S2d prMergeGate required-check gating: failingChecks lists only required failures", async () => {
+  const rollup = [
+    { name: "build-backend", conclusion: "SUCCESS" },
+    { name: "claude-review", conclusion: "FAILURE" }, // advisory AI-review bot — not a merge gate
+  ];
+  const view = (statusCheckRollup: typeof rollup) => ({
+    number: 50, title: "Legible", headRefName: "feat-leg", baseRefName: "main", url: "u", isDraft: false,
+    headRefOid: "deadbeef", state: "OPEN", mergeable: "MERGEABLE", reviewDecision: "APPROVED",
+    changedFiles: 1, files: [{ path: "a.ts" }], statusCheckRollup,
+  });
+
+  // Branch protection requires only build-backend → the failing advisory bot never gates the merge queue.
+  const gated = await makeScratchRepo();
+  await setRequiredChecksFixture(["build-backend"]);
+  await setViewFixture(view(rollup));
+  const gate = await prMergeGate(gated, 50);
+  expect(gate.ciStatus).toBe("passing");
+  expect(gate.failingChecks).toEqual([]);
+
+  // The required check itself failing still blocks and is named.
+  const requiredFailing = await makeScratchRepo();
+  await setRequiredChecksFixture(["build-backend"]);
+  await setViewFixture(view([{ name: "build-backend", conclusion: "FAILURE" }, { name: "claude-review", conclusion: "FAILURE" }]));
+  const gate2 = await prMergeGate(requiredFailing, 50);
+  expect(gate2.ciStatus).toBe("failing");
+  expect(gate2.failingChecks).toEqual(["build-backend"]);
+
+  // Control: no branch protection (empty required set) → every check gates, so the bot's name shows.
+  const ungated = await makeScratchRepo();
+  await setRequiredChecksFixture([]);
+  await setViewFixture(view(rollup));
+  const gate3 = await prMergeGate(ungated, 50);
+  expect(gate3.ciStatus).toBe("failing");
+  expect(gate3.failingChecks).toEqual(["claude-review"]);
 });
 
 test("S3 auto-merge badge: listPrs surfaces GitHub's autoMergeRequest as a boolean flag", async () => {

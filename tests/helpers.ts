@@ -168,7 +168,8 @@ export async function setPrFixture(status: {
   state: string;
   mergeable: string;
   reviewDecision: string;
-  statusCheckRollup: Array<{ conclusion?: string; state?: string }>;
+  statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string }>;
+  baseRefName?: string;
 }): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), "orca-fx-"));
   const path = join(dir, "pr.json");

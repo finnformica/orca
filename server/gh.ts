@@ -720,16 +720,21 @@ export const enableAutoMerge = (cwd: string, pr: number) =>
 export const disableAutoMerge = (cwd: string, pr: number) =>
   mutatePr(cwd, pr, "disablePullRequestAutoMerge");
 
+/** Only required checks decide pass/fail (the board's own rule, `mapSummary` above) — an advisory
+ *  bot failing must not read as "CI is failing" here either. */
 export async function prStatus(cwd: string, pr: number): Promise<PrStatus> {
-  const json = await viewPr(cwd, pr, `state,mergeable,reviewDecision,${ROLLUP}`) as {
+  const json = await viewPr(cwd, pr, `state,mergeable,reviewDecision,baseRefName,${ROLLUP}`) as {
     state: string;
     mergeable: string;
     reviewDecision: string;
-    statusCheckRollup: Array<{ status?: string; conclusion?: string; state?: string }>;
+    baseRefName?: string;
+    statusCheckRollup: Array<{ name?: string; context?: string; status?: string; conclusion?: string; state?: string }>;
   };
+  const required = json.baseRefName ? await requiredChecks(cwd, json.baseRefName) : new Set<string>();
+  const gating = gatingChecks(json.statusCheckRollup ?? [], required);
   return {
     state: json.state,
-    ciStatus: rollupCi(json.statusCheckRollup ?? []),
+    ciStatus: rollupCi(gating),
     reviewStatus: mapReview(json.reviewDecision ?? ""),
     mergeable: (json.mergeable as Mergeable) ?? "UNKNOWN",
   };
@@ -741,19 +746,22 @@ export type PrMergeGate = PrStatus & {
   /** Changed paths as GitHub lists them — capped at 100, so `changedFiles` is the true count. */
   files: string[]; changedFiles: number; failingChecks: string[];
 };
+/** Same required-check filter as the board: only a check in the PR base's required set (or, when
+ *  that set is empty, every check) decides `ciStatus` and lists in `failingChecks`. */
 export async function prMergeGate(cwd: string, pr: number): Promise<PrMergeGate> {
-  const j = await viewPr(cwd, pr, `number,title,headRefName,url,isDraft,headRefOid,state,mergeable,reviewDecision,${ROLLUP},${FILES},changedFiles`) as {
-    number: number; title: string; headRefName: string; url: string; isDraft: boolean; headRefOid: string;
+  const j = await viewPr(cwd, pr, `number,title,headRefName,baseRefName,url,isDraft,headRefOid,state,mergeable,reviewDecision,${ROLLUP},${FILES},changedFiles`) as {
+    number: number; title: string; headRefName: string; baseRefName?: string; url: string; isDraft: boolean; headRefOid: string;
     state: string; mergeable: string; reviewDecision: string; changedFiles?: number; files?: Array<{ path: string }>;
     statusCheckRollup: Array<{ name?: string; context?: string; conclusion?: string; state?: string }>;
   };
-  const checks = j.statusCheckRollup ?? [];
+  const required = j.baseRefName ? await requiredChecks(cwd, j.baseRefName) : new Set<string>();
+  const gating = gatingChecks(j.statusCheckRollup ?? [], required);
   const files = (j.files ?? []).map((f) => f.path);
   return {
     number: j.number, title: j.title, branch: j.headRefName, url: j.url, isDraft: Boolean(j.isDraft), headSha: j.headRefOid,
-    state: j.state, ciStatus: rollupCi(checks), reviewStatus: mapReview(j.reviewDecision ?? ""), mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",
+    state: j.state, ciStatus: rollupCi(gating), reviewStatus: mapReview(j.reviewDecision ?? ""), mergeable: (j.mergeable as Mergeable) ?? "UNKNOWN",
     files, changedFiles: j.changedFiles ?? files.length,
-    failingChecks: checks.filter((c) => FAIL.has(c.conclusion || c.state || "")).map((c) => c.name || c.context || "check"),
+    failingChecks: gating.filter((c) => checkOutcome(c) === "failing").map((c) => checkName(c) || "unnamed check"),
   };
 }
 
