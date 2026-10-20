@@ -214,19 +214,18 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
         {has("copy.cli") && <Item icon={SquareTerminal} busy={isBusy("Copy CLI")} onSelect={copy("Copy CLI", () => cliCommand(row), "CLI command")}>CLI command</Item>}
       </Sub>
 
-      {/* Merge ▸ — Merge when green is GitHub's auto-merge, or Orca's queue where the repo refuses it
-          (store.autoMerge); off cancels whichever is active (store.disableAutoMerge). */}
+      {/* Merge ▸ — Merge now only; auto-merge is its own top-level item, right below. */}
       {menu.merge.length > 0 && (
         <Sub label="Merge">
           {has("merge.now") && <Item icon={GitMerge} busy={isBusy("Merge")} onSelect={() => void confirmMerge()}>Merge now{unreviewed ? " (unreviewed)" : ""}</Item>}
-          {has("merge.whenGreen") && (
-            <CheckItem icon={Zap} checked={mergeWhenGreenOn}
-              onCheckedChange={mergeWhenGreenOn ? run("Disable merge when green", () => disableAutoMerge(row)) : run("Merge when green", () => autoMerge(row))}>
-              Merge when green
-            </CheckItem>
-          )}
         </Sub>
       )}
+
+      {/* Enable/Disable auto-merge — GitHub's auto-merge, or Orca's queue where the repo refuses it
+          (store.autoMerge); Disable cancels whichever is active (store.disableAutoMerge). */}
+      {has("autoMerge.toggle") && (mergeWhenGreenOn
+        ? <Item icon={Zap} busy={isBusy("Disable auto-merge")} onSelect={run("Disable auto-merge", () => disableAutoMerge(row))}>Disable auto-merge</Item>
+        : <Item icon={Zap} busy={isBusy("Enable auto-merge")} onSelect={run("Enable auto-merge", () => autoMerge(row))}>Enable auto-merge</Item>)}
 
       {/* PR ▸ — the open PR's verbs; for a local branch, Create PR (today's Promote). */}
       {menu.pr.length > 0 && (isPr ? (

@@ -134,14 +134,16 @@ export function detailPath(row: { repo: string; branch: string; lane?: string; p
 }
 
 // The workstream actions menu (WorkstreamActions: the ⋯, the right-click menu and the phone sheet),
-// Finn's layout: Open ▸, Copy ▸, Merge ▸, PR ▸, Agent ▸, Slack ▸, then Verified, Rename, Close/Discard
-// (those three are not decided here). An item that does not apply is left out, and an empty group
-// is not shown.
-export type MenuGroup = "open" | "copy" | "merge" | "pr" | "agent" | "slack";
+// Finn's layout: Open ▸, Copy ▸, Merge ▸, Enable/Disable auto-merge, PR ▸, Agent ▸, Slack ▸, then
+// Verified, Rename, Close/Discard (those three are not decided here). An item that does not apply is
+// left out, and an empty group is not shown. Auto-merge is its own top-level item, not nested in the
+// Merge submenu, so it stays one click away.
+export type MenuGroup = "open" | "copy" | "merge" | "autoMerge" | "pr" | "agent" | "slack";
 export type MenuItemId =
   | "open.chat" | "open.pr" | "open.preview" | "open.ci" | "open.orchestrator"
   | "copy.branch" | "copy.prLink" | "copy.prMarkdown" | "copy.slack" | "copy.preview" | "copy.worktree" | "copy.cli"
-  | "merge.now" | "merge.whenGreen"
+  | "merge.now"
+  | "autoMerge.toggle"
   | "pr.markReady" | "pr.moveToDraft" | "pr.address" | "pr.addPreview" | "pr.previewPending" | "pr.create" | "pr.createDraft" | "pr.promote"
   | "agent.stop" | "agent.resolveConflicts" | "agent.move"
   | "slack.send" | "slack.bump";
@@ -179,7 +181,9 @@ export function workstreamMenu(row: MenuRow, ctx: { previewConfigured: boolean; 
       // A PR: no conflicts and CI not failing (approval is a team norm GitHub enforces). A local
       // branch: the promoted, clean Mergeable lane.
       [isPr ? !row.isDraft && row.mergeable === "MERGEABLE" && !ciFailing : row.lane === "MERGEABLE", "merge.now"],
-      [isPr && !row.isDraft, "merge.whenGreen"], // GitHub rejects auto-merge on a draft
+    ]),
+    autoMerge: pick([
+      [isPr && !row.isDraft, "autoMerge.toggle"], // GitHub rejects auto-merge on a draft
     ]),
     pr: isPr
       ? pick([
