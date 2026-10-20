@@ -7,7 +7,7 @@ import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { usePrRefs, useVoiceInput, useWorkstreamRefs } from "@/store";
 import { NO_WALK, appendQuote, filterMentions, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, type HistoryWalk, type MentionRef } from "@/workstream";
-import { lineVisualRow } from "@/lib/caretRow";
+import { lineVisualRow, scrollCaretIntoView } from "@/lib/caretRow";
 import { cn, PipContext } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
 import { joinPrefill } from "@/lib/palette";
@@ -114,6 +114,9 @@ export function ChatComposer({
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const [active, setActive] = useState(0);
   const pendingCaret = useRef<number | null>(null);
+  // Set only by list continuation (below): the caret just jumped to a new line a real keystroke
+  // would have scrolled into view on its own — a scripted caret move does not.
+  const pendingScroll = useRef(false);
   // Whether the queued caret set below should also focus the box — true for a pick or a Quote (the
   // user's own click), false for a prefill on mobile (see below): opening the orchestrator with text
   // already in hand must not pop the on-screen keyboard over the page.
@@ -140,6 +143,7 @@ export function ChatComposer({
       if (pendingFocus.current) el.focus();
       el.setSelectionRange(pendingCaret.current, pendingCaret.current);
       pendingCaret.current = null;
+      if (pendingScroll.current) { scrollCaretIntoView(el); pendingScroll.current = false; }
     }
   }, [value]);
   const quick = variant === "quick";
@@ -298,6 +302,7 @@ export function ChatComposer({
       } else if (list) {
         e.preventDefault();
         pendingCaret.current = list.caret;
+        pendingScroll.current = true;
         setValue(list.text);
         setCaret(list.caret);
         return;
