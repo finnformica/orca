@@ -99,6 +99,32 @@ test("ready: the widget under the reply shows the title, target, message, files,
   expect(apiFake.handoffCalls.filter(([k]) => k !== "get")).toEqual([]);
 });
 
+test("narrow-safe layout: its own container, the badge in the title's flow, one row of actions with Send first", async () => {
+  apiFake.handoffPackById.set(ID, pack({ title: "Integrations: new direction (Funnel webhooks, GitHub App, Slack paused)" }));
+  linkedTurn();
+  await mount();
+  const w = widget()!;
+  // The layout follows the widget's width (the chat panel is narrow on a wide viewport), never the viewport's.
+  expect(w.className).toContain("@container/handoff");
+  expect(w.innerHTML).not.toMatch(/\bmd:flex-row\b/);
+  // The badge is inside the title element, after the text, so it wraps with the last word.
+  const title = w.querySelector('[data-slot="handoff-title"]')!;
+  expect(title.querySelector('[data-slot="handoff-badge"]')!.textContent).toBe("ready");
+  expect(title.textContent).toBe("Integrations: new direction (Funnel webhooks, GitHub App, Slack paused) ready");
+  // The metadata line wraps only between whole items.
+  const meta = [...w.querySelectorAll<HTMLElement>('[data-slot="handoff-meta"] > span')];
+  expect(meta.map((m) => m.className)).toEqual(meta.map(() => "whitespace-nowrap"));
+  expect(meta.map((m) => m.textContent)).toEqual(["for personal", "· 2 files", "· 2.3 KB", "· from orca-work-box", "· hide preview"]);
+  // One row of actions under the title: Send (the main button), then open and delete as icon buttons.
+  const actions = w.querySelector<HTMLElement>('[data-slot="handoff-actions"]')!;
+  expect(actions.className).toMatch(/\bflex\b/);
+  expect(actions.className).not.toMatch(/(^| )flex-col/);
+  const buttons = [...actions.querySelectorAll("button")].filter((b) => b.getAttribute("role") !== "combobox"); // not the server picker
+  expect(buttons.map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual(["Send to personal", "Open on the Handoffs page", "Delete pack"]);
+  expect(buttons[0]!.textContent).toBe("Send to personal"); // the labelled main button
+  for (const b of buttons.slice(1)) { expect(b.textContent).toBe(""); expect(b.querySelector("svg")).toBeTruthy(); } // icon-only
+});
+
 test("sent: Send is the page's path (export, import on the target, mark sent), then the result shows", async () => {
   apiFake.handoffPackById.set(ID, pack());
   linkedTurn();

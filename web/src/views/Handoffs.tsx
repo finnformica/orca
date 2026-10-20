@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tip } from "@/components/ui/tip";
+import { cn } from "@/lib/utils";
 import { useServers } from "@/components/ServerMenu";
 import { apiBase, type ServerEntry } from "@/lib/server";
 import { confirmDialog } from "@/lib/dialogs";
@@ -184,25 +185,32 @@ function PackRow({ pack, source, servers, onChange, variant = "page" }: { pack: 
     </Button>
   );
   return (
-    <div data-slot={chat ? "chat-handoff" : "handoff-pack"} data-state={state} className={chat ? "px-3 py-2.5 text-[13px]" : "px-4 py-3 text-sm"}>
-      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
-        <button type="button" className="min-w-0 text-left" aria-expanded={open} onClick={() => setOpen(!open)}>
-          <span className="flex items-center gap-2 font-medium">
-            {chat && <Package className="text-muted-foreground size-4 shrink-0" />}
-            {pack.title}
-            {pack.sentAt ? <Pill tone="green">sent to {pack.sentTo}</Pill> : blocked ? <Pill tone="red">blocked</Pill> : <Pill tone="blue">ready</Pill>}
-          </span>
-          <span className="text-muted-foreground block text-xs">
-            for {pack.target} · {pack.files.length} file{pack.files.length === 1 ? "" : "s"} · {byteSize(total)} · from {pack.source} · {open ? "hide" : "show"} preview
+    // Its own container (@container/handoff): the chat's side panel is narrow on a wide viewport, so
+    // the layout follows the row's width, never the viewport's. Narrow: the actions are one row under
+    // the title. Wide: they sit to its right.
+    <div data-slot={chat ? "chat-handoff" : "handoff-pack"} data-state={state} className={cn("@container/handoff", chat ? "px-3 py-2.5 text-[13px]" : "px-4 py-3 text-sm")}>
+      <div className="flex flex-col gap-2 @2xl/handoff:flex-row @2xl/handoff:items-center @2xl/handoff:justify-between">
+        <button type="button" className="flex min-w-0 items-start gap-2 text-left" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {/* One line box tall, so the icon sits on the title's first line when it wraps. */}
+          {chat && <span className="flex h-5 shrink-0 items-center"><Package className="text-muted-foreground size-4" /></span>}
+          <span className="min-w-0">
+            {/* The badge rides the title's text flow: it follows the last word, never a column of its own. */}
+            <span data-slot="handoff-title" className="block leading-5 font-medium break-words">
+              {pack.title}{" "}
+              <span data-slot="handoff-badge" className="ml-0.5 inline-flex align-middle">
+                {pack.sentAt ? <Pill tone="green">sent to {pack.sentTo}</Pill> : blocked ? <Pill tone="red">blocked</Pill> : <Pill tone="blue">ready</Pill>}
+              </span>
+            </span>
+            {/* Each item stays whole: the line wraps between items, at a " · ". */}
+            <span data-slot="handoff-meta" className="text-muted-foreground mt-0.5 flex flex-wrap gap-x-1 text-xs leading-5">
+              {[`for ${pack.target}`, `${pack.files.length} file${pack.files.length === 1 ? "" : "s"}`, byteSize(total), `from ${pack.source}`, `${open ? "hide" : "show"} preview`].map((m, i) => (
+                <span key={i} className="whitespace-nowrap">{i > 0 && <span aria-hidden="true">· </span>}{m}</span>
+              ))}
+            </span>
           </span>
         </button>
         {(!pack.sentAt || chat) && (
-          <div className="flex flex-wrap items-center gap-2">
-            {chat && (
-              <Tip label="Open on the Handoffs page">
-                <Button variant="ghost" size="icon" aria-label="Open on the Handoffs page" onClick={() => navigate("/handoffs")} className="size-10 md:size-8"><ExternalLink className="size-4" /></Button>
-              </Tip>
-            )}
+          <div data-slot="handoff-actions" className={cn("flex flex-wrap items-center gap-1 @2xl/handoff:shrink-0 @2xl/handoff:flex-nowrap", chat && "pl-6 @2xl/handoff:pl-0")}>
             {(others.length > 1 || (!target && others.length > 0)) && (
               <Select value={target?.url ?? ""} onValueChange={setChosen}>
                 <SelectTrigger aria-label="Send to" className="h-10 md:h-8 md:w-48"><SelectValue placeholder="Choose a server" /></SelectTrigger>
@@ -212,7 +220,16 @@ function PackRow({ pack, source, servers, onChange, variant = "page" }: { pack: 
             {!pack.sentAt && (blocked ? <Tip label={pack.problems[0]!}>{sendButton}</Tip>
               : !target ? <Tip label={`No server named ${pack.target} in the server list. Choose one, or add it in the server menu.`}>{sendButton}</Tip>
               : sendButton)}
-            {!pack.sentAt && <Button variant="ghost" size="icon" aria-label="Delete pack" onClick={() => void remove()} className="size-10 md:size-8"><Trash2 className="size-4" /></Button>}
+            {chat && (
+              <Tip label="Open on the Handoffs page">
+                <Button variant="ghost" size="icon" aria-label="Open on the Handoffs page" onClick={() => navigate("/handoffs")} className="size-10 md:size-8"><ExternalLink className="size-4" /></Button>
+              </Tip>
+            )}
+            {!pack.sentAt && (
+              <Tip label="Delete pack">
+                <Button variant="ghost" size="icon" aria-label="Delete pack" onClick={() => void remove()} className="size-10 md:size-8"><Trash2 className="size-4" /></Button>
+              </Tip>
+            )}
           </div>
         )}
       </div>
