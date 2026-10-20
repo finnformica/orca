@@ -244,3 +244,13 @@ export function gutterDigits(f: FileDiff): number {
   for (const h of f.hunks) max = Math.max(max, h.oldStart + h.oldLines, h.newStart + h.newLines);
   return String(max).length;
 }
+
+/** The line numbers a unified row shows, left to right. A wide page: old and new, minus the side an
+ *  added or a deleted file does not have. A narrow page (`compact`, a phone) has no width for two
+ *  columns: ONE — the new number, or the old one for a deleted line (its red row says which side). */
+export function rowNumbers(line: DiffLine, status: DiffStatus, compact: boolean): (number | undefined)[] {
+  if (compact) return [line.type === "del" ? line.old : line.new];
+  if (status === "added") return [line.new];
+  if (status === "deleted") return [line.old];
+  return [line.old, line.new];
+}

@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   LARGE_DIFF_LINES, buildFileTree, collapseReason, diffTotals, fileAnchor, fileSig, filterFiles, gutterDigits,
-  isGenerated, markdownPreview, parseDiff, splitRows, treeDirs, treeOrder, type FileDiff, type TreeDir,
+  isGenerated, markdownPreview, parseDiff, rowNumbers, splitRows, treeDirs, treeOrder, type FileDiff, type TreeDir,
 } from "@/diff";
 
 const fixture = (name: string) => Bun.file(new URL(`./fixtures/diffs/${name}`, import.meta.url)).text();
@@ -179,4 +179,17 @@ test("gutter width and Viewed signature", async () => {
   const b = first("diff --git a/a b/a\n@@ -1 +1 @@\n-x\n+z\n");
   expect(fileSig(a)).not.toBe(fileSig(b));
   expect(fileSig(a)).toBe(fileSig(first("diff --git a/a b/a\n@@ -1 +1 @@\n-x\n+y\n")));
+});
+
+// A phone has no width for two number columns: one, the new number (the old one on a deleted line).
+test("row numbers: two columns on a wide page, one on a phone", () => {
+  const add = { type: "add", text: "", new: 9 } as const;
+  const del = { type: "del", text: "", old: 7 } as const;
+  const ctx = { type: "ctx", text: "", old: 5, new: 6 } as const;
+  expect(rowNumbers(ctx, "modified", false)).toEqual([5, 6]);
+  expect(rowNumbers(add, "added", false)).toEqual([9]);
+  expect(rowNumbers(del, "deleted", false)).toEqual([7]);
+  expect(rowNumbers(ctx, "modified", true)).toEqual([6]);
+  expect(rowNumbers(add, "modified", true)).toEqual([9]);
+  expect(rowNumbers(del, "modified", true)).toEqual([7]);
 });

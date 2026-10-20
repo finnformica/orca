@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import {
   buildFileTree, collapseReason, diffTotals, fileAnchor, fileSig, filterFiles, gutterDigits, markdownPreview, splitRows, STATUS_LETTER,
-  treeOrder, type DiffLine, type DiffStatus, type FileDiff, type Hunk, type TreeNode, parseDiff,
+  rowNumbers, treeOrder, type DiffLine, type DiffStatus, type FileDiff, type Hunk, type TreeNode, parseDiff,
 } from "../diff";
 import { Markdown } from "@/components/Markdown";
 import { BottomSheet, SHEET_CLOSE_MS } from "@/components/BottomSheet";
@@ -159,7 +159,7 @@ export function FilesChanged({ text, scope }: { text: string; scope: string }) {
         <div ref={listRef} data-slot="diff-list" className="min-w-0 space-y-3">
           {ordered.length === 0 && <p className="text-muted-foreground text-sm">No files match “{query}”.</p>}
           {ordered.map((f) => (
-            <FileSection key={f.path} file={f} open={isOpen(f)} loaded={!!loaded[f.path]} viewed={isViewed(f)} view={view} wrap={wrap}
+            <FileSection key={f.path} file={f} open={isOpen(f)} loaded={!!loaded[f.path]} viewed={isViewed(f)} view={view} wrap={wrap} compact={narrow}
               onToggle={(e) => { keepInPlace(e); setOpen((o) => ({ ...o, [f.path]: !isOpen(f) })); }}
               onLoad={() => setLoaded((l) => ({ ...l, [f.path]: true }))}
               onViewed={toggleViewed} />
@@ -255,8 +255,8 @@ function PathLabel({ file }: { file: FileDiff }) {
   );
 }
 
-function FileSection({ file, open, loaded, viewed, view, wrap, onToggle, onLoad, onViewed }: {
-  file: FileDiff; open: boolean; loaded: boolean; viewed: boolean; view: ViewMode; wrap: boolean;
+function FileSection({ file, open, loaded, viewed, view, wrap, compact, onToggle, onLoad, onViewed }: {
+  file: FileDiff; open: boolean; loaded: boolean; viewed: boolean; view: ViewMode; wrap: boolean; compact: boolean;
   onToggle: (e: React.MouseEvent<HTMLElement>) => void; onLoad: () => void; onViewed: (f: FileDiff, on: boolean, header: HTMLElement) => void;
 }) {
   const headerRef = useRef<HTMLDivElement>(null);
@@ -320,7 +320,7 @@ function FileSection({ file, open, loaded, viewed, view, wrap, onToggle, onLoad,
               </div>
             )
             : rendered && preview ? <MarkdownPreview sections={preview.sections} complete={preview.complete} />
-            : <DiffBody file={file} view={view} wrap={wrap} />}
+            : <DiffBody file={file} view={view} wrap={wrap} compact={compact} />}
         </div>
       )}
     </section>
@@ -355,11 +355,10 @@ function useCodeTheme() {
   return document.documentElement.classList.contains("dark") ? themes.vsDark : themes.github;
 }
 
-const DiffBody = memo(({ file, view, wrap }: { file: FileDiff; view: ViewMode; wrap: boolean }) => {
+/** `compact`: a phone — one narrow line-number column (`rowNumbers`), so the code gets the width. */
+const DiffBody = memo(({ file, view, wrap, compact }: { file: FileDiff; view: ViewMode; wrap: boolean; compact: boolean }) => {
   const theme = useCodeTheme();
   const digits = gutterDigits(file);
-  // An added file has no old side and a deleted file no new side: one number column, not an empty one.
-  const cols = { old: file.status !== "added", new: file.status !== "deleted" };
   // The code box is a size container, so a hunk header can be as wide as the box (100cqw) and stay
   // put while long lines scroll sideways under it.
   return (
@@ -380,7 +379,7 @@ const DiffBody = memo(({ file, view, wrap }: { file: FileDiff; view: ViewMode; w
                     {hunkLabel(h)}
                   </div>
                   {view === "unified"
-                    ? h.lines.map((l, i) => <UnifiedRow key={i} line={l} digits={digits} cols={cols} wrap={wrap}>{code(i)}</UnifiedRow>)
+                    ? h.lines.map((l, i) => <UnifiedRow key={i} line={l} numbers={rowNumbers(l, file.status, compact)} digits={digits} compact={compact} wrap={wrap}>{code(i)}</UnifiedRow>)
                     : splitRows(h).map((r, i) => (
                       <div key={i} data-slot="diff-split-row" className="grid grid-cols-2">
                         <SplitHalf line={r.left} side="old" digits={digits}>{code(r.leftIndex)}</SplitHalf>
@@ -400,16 +399,16 @@ const DiffBody = memo(({ file, view, wrap }: { file: FileDiff; view: ViewMode; w
 /** `@@ -12,7 +12,9 @@ function x()` → the numbers, then the section git found. */
 const hunkLabel = (h: Hunk) => `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@${h.section ? ` ${h.section}` : ""}`;
 
-const Num = ({ n, digits, tone }: { n?: number; digits: number; tone: string }) => (
-  <span className={cn("text-muted-foreground/70 shrink-0 px-2 text-right select-none", tone)} style={{ width: `calc(${digits}ch + 1rem)` }}>{n ?? ""}</span>
+const Num = ({ n, digits, tone, compact }: { n?: number; digits: number; tone: string; compact?: boolean }) => (
+  <span data-slot="diff-num" className={cn("text-muted-foreground/70 shrink-0 text-right select-none", compact ? "px-1" : "px-2", tone)}
+    style={{ width: `calc(${digits}ch + ${compact ? "0.5rem" : "1rem"})` }}>{n ?? ""}</span>
 );
 
-function UnifiedRow({ line, digits, cols, wrap, children }: { line: DiffLine; digits: number; cols: { old: boolean; new: boolean }; wrap: boolean; children: ReactNode }) {
+function UnifiedRow({ line, numbers, digits, compact, wrap, children }: { line: DiffLine; numbers: (number | undefined)[]; digits: number; compact: boolean; wrap: boolean; children: ReactNode }) {
   return (
     <div data-slot="diff-line" data-type={line.type} className={cn("flex", ROW_TONE[line.type])}>
-      {cols.old && <Num n={line.old} digits={digits} tone={GUTTER_TONE[line.type]} />}
-      {cols.new && <Num n={line.new} digits={digits} tone={GUTTER_TONE[line.type]} />}
-      <span className={cn("w-5 shrink-0 text-center select-none", line.type === "add" ? "text-geist-green" : line.type === "del" ? "text-geist-red" : "text-muted-foreground")}>{SIGN[line.type]}</span>
+      {numbers.map((n, i) => <Num key={i} n={n} digits={digits} compact={compact} tone={GUTTER_TONE[line.type]} />)}
+      <span className={cn(compact ? "w-4" : "w-5", "shrink-0 text-center select-none", line.type === "add" ? "text-geist-green" : line.type === "del" ? "text-geist-red" : "text-muted-foreground")}>{SIGN[line.type]}</span>
       <span className={cn("pr-4", wrap ? "min-w-0 flex-1 whitespace-pre-wrap wrap-anywhere" : "flex-1 whitespace-pre")}>{children}{line.noNewline && <NoNewline />}</span>
     </div>
   );

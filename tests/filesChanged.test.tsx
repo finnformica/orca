@@ -9,6 +9,7 @@ import { FilesChanged } from "@/views/FilesChanged";
 import { Markdown } from "@/components/Markdown";
 import { buildFileTree, parseDiff, treeOrder } from "@/diff";
 import { persistedKey } from "@/lib/persisted";
+import { NARROW_QUERY } from "@/lib/viewport";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -175,6 +176,16 @@ describe("Markdown never widens the page", () => {
     expect(box.querySelector("table")).not.toBeNull();
     expect(q("img")!.className).toContain("max-w-full");
   });
+
+  // Tailwind Typography wraps inline code in literal backticks (code::before / ::after content).
+  // GitHub shows none; a PR description and a rendered file get none either.
+  test("inline code has no backticks", async () => {
+    await mount(<Markdown>{"Each `event.key` is unique."}</Markdown>);
+    const cls = q("[data-slot=markdown]")!.className;
+    expect(cls).toContain("prose-code:before:content-none");
+    expect(cls).toContain("prose-code:after:content-none");
+    expect(q("code")!.textContent).toBe("event.key");
+  });
 });
 
 // Prism names a markdown table's tokens `token table`, and Tailwind's `.table` utility is
@@ -187,4 +198,25 @@ test("code tokens carry only their colour, never prism's class names", async () 
   const row = qa("[data-slot=diff-line]").find((l) => l.textContent?.includes("| File | Content |"))!;
   expect(row).toBeDefined();
   expect(row.querySelectorAll("span[class~=table], span[class*=token]").length).toBe(0);
+});
+
+// On a phone the gutter is ONE narrow number column, so the code gets the width (two full columns
+// took about 75px of a 390px screen).
+test("a phone shows one narrow line-number column", async () => {
+  const real = window.matchMedia;
+  window.matchMedia = ((query: string) => ({ matches: query === NARROW_QUERY, media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia;
+  try {
+    text = await fixture("pr161-rename.diff");
+    await mount();
+    const rows = qa("[data-slot=diff-line]");
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) expect(r.querySelectorAll("[data-slot=diff-num]").length).toBe(1);
+    const num = rows[0]!.querySelector<HTMLElement>("[data-slot=diff-num]")!;
+    expect(num.style.width).toBe("calc(2ch + 0.5rem)");
+    expect(num.className).toContain("px-1");
+    const del = rows.find((r) => r.dataset.type === "del")!;
+    expect(del.querySelector("[data-slot=diff-num]")!.textContent).not.toBe("");
+  } finally {
+    window.matchMedia = real;
+  }
 });
