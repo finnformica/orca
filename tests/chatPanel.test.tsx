@@ -632,9 +632,36 @@ test("the composer carries the card's model picker and context ring — the same
   // And how full the session is, from the card's last run.
   const ring = container!.querySelector<HTMLButtonElement>('[data-slot="chat-composer-leading"] button[data-slot="context-ring"]')!;
   expect(ring.getAttribute("aria-label")).toBe("Context 61% full");
-  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
-  expect(document.body.querySelector('[data-slot="context-ring-card"]')!.textContent).toBe("Context 61% fullA fresh session starts at 80%.Compact");
-  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerout", { bubbles: true })); await flush(); });
+  const card = () => document.body.querySelector('[data-slot="context-ring-card"]');
+  // Finn: a card that opened on hover was annoying. Neither hover nor focus opens it…
+  await act(async () => {
+    ring.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+    ring.dispatchEvent(new PointerEvent("pointerenter", { pointerType: "mouse" }));
+    ring.focus();
+    await new Promise((r) => setTimeout(r, 250));
+  });
+  expect(card()).toBeNull();
+  // …only a click does (Enter or Space on the focused button is a click).
+  await act(async () => { ring.click(); await flush(); });
+  expect(card()!.textContent).toBe("Context 61% fullA fresh session starts at 80%.Compact");
+  expect(ring.getAttribute("aria-expanded")).toBe("true");
+  // Leaving with the pointer keeps it open; Esc closes it.
+  await act(async () => { ring.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" })); await new Promise((r) => setTimeout(r, 250)); });
+  expect(card()).not.toBeNull();
+  await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
+  expect(card()).toBeNull();
+  // A click outside closes it too.
+  await act(async () => { ring.click(); await new Promise((r) => setTimeout(r, 20)); }); // Radix listens for an outside press a tick after it opens
+  expect(card()).not.toBeNull();
+  // A whole click on the page: this Radix version arms on the pointerdown and dismisses on the click.
+  await act(async () => {
+    const o = { bubbles: true, button: 0 };
+    document.body.dispatchEvent(new PointerEvent("pointerdown", { ...o, pointerType: "mouse" }));
+    document.body.dispatchEvent(new PointerEvent("pointerup", { ...o, pointerType: "mouse" }));
+    for (const t of ["mousedown", "mouseup", "click"]) document.body.dispatchEvent(new MouseEvent(t, o));
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  expect(card()).toBeNull();
 });
 
 test("a card whose runs never report context (Codex, Cursor, or nothing run yet) says so", async () => {
@@ -643,10 +670,10 @@ test("a card whose runs never report context (Codex, Cursor, or nothing run yet)
   expect(ring.getAttribute("aria-label")).toBe("Context: not measured yet");
 });
 
-/** Hover the context ring open and return its card. */
+/** Click the context ring open and return its card. */
 async function ringCard() {
   const ring = container!.querySelector<HTMLButtonElement>('button[data-slot="context-ring"]')!;
-  await act(async () => { ring.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); await flush(); });
+  await act(async () => { ring.click(); await flush(); });
   return document.body.querySelector<HTMLElement>('[data-slot="context-ring-card"]')!;
 }
 const compactButton = () => document.body.querySelector<HTMLButtonElement>('button[data-slot="context-compact"]');
