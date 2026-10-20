@@ -36,8 +36,8 @@ import { machineReport } from "./liveMetrics";
 import { featuresOf, runsHere, type OrcaConfig, type RepoConfig } from "./config";
 import {
   MODEL_LADDER, NO_REPLY_PLACEHOLDER, ORCHESTRATOR_BRANCH, ORCHESTRATOR_REPO, boardText, briefProblems, continuation, isWorkerEvent, isWorkerProblem, onlyCleanReports,
-  joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
-  machineText, type BoardRow, type FailStreak, type MachineReport, type OrchStatus, type WakeExit,
+  joinMessages, ladderStep, mergedPrIsHistory, nextFailStreak, orchStatusText, orchStatusUpdate, verifiedMark, verifiedState, orchestratorPrompt, sessionHint, sweepText, turnSource, wakeExitReason, wakeProgress, wakeStoppedLine, withAttachments, workerBrief, workerEvent,
+  machineText, type BoardRow, type FailStreak, type MachineReport, type OrchStatus, type VerifiedMark, type WakeExit,
 } from "../web/src/workstream";
 import { activityLines, type AgentTurn } from "../shared/agent";
 import { providerOfModel } from "../shared/models";
@@ -501,7 +501,7 @@ export async function board(cfg: OrcaConfig): Promise<BoardRow[]> {
       rows.push({
         repo: repo.name, branch, title: pr?.title ?? (e.title as string | undefined), worktreePath: worktreePath ?? (remote?.data.worktreePath as string | undefined),
         agent: agentState,
-        pr: pr ? { number: pr.number, isDraft: pr.isDraft, reviewStatus: pr.reviewStatus, ciStatus: pr.ciStatus, mergeable: pr.mergeable } : done && { number: done.number, merged: true },
+        pr: pr ? { number: pr.number, isDraft: pr.isDraft, reviewStatus: pr.reviewStatus, ciStatus: pr.ciStatus, mergeable: pr.mergeable, verified: verifiedState(e.verified as VerifiedMark | undefined, pr.head, pr.number) } : done && { number: done.number, merged: true },
         check: run?.check?.ok ?? ((remote?.data.agentCheck as { ok?: boolean } | undefined)?.ok), orchestrated: Boolean(e.orchestrated),
         last: run?.structured?.outcome ?? run?.error ?? ((remote?.data.agentOutcome as { outcome?: string } | undefined)?.outcome),
         instance: several ? (remote?.instance ?? (worktreePath ? here : undefined)) : undefined,
@@ -834,6 +834,7 @@ export async function tool(cfg: OrcaConfig, verb: string, args: ToolArgs = {}): 
         await db.patchEnrichment(repo.name, branch, { grantScope: null });
         return `Cleared the outside grant of ${repo.name}/${branch}: its next run uses the repo's permission mode.`;
       }
+      if ("verified" in args || "unverified" in args) return verifiedVerb(repo, branch, "verified" in args);
       const prev = (await db.enrichment(repo.name))[branch]?.orchStatus as OrchStatus | undefined;
       const next = orchStatusUpdate(prev, args, new Date().toISOString());
       if (next === undefined) return orchStatusText(prev) || `(no status for ${repo.name}/${branch})`;
@@ -919,6 +920,22 @@ async function mergeVerb(cfg: OrcaConfig, args: ToolArgs): Promise<string> {
 }
 
 /** The body of `orca merge` and of the PR menu's route (index.ts). */
+/** `orca status --verified | --unverified`: the user's hand-set Verified marker, on the user's word
+ *  ("verified #267"). Only enrichment: it merges nothing and posts nothing to GitHub. The mark
+ *  names the PR's head now, so a later push reads as "changed since you verified". */
+async function verifiedVerb(repo: RepoConfig, branch: string, on: boolean): Promise<string> {
+  if (!on) {
+    await db.patchEnrichment(repo.name, branch, { verified: null });
+    return `Cleared the Verified marker of ${repo.name}/${branch}.`;
+  }
+  const pr = verbs.repoHere(repo) ? (await gh.listPrs(repo.repoPath)).find((p) => p.branch === branch) : undefined;
+  if (verbs.repoHere(repo) && !pr) throw new Error(`${repo.name}/${branch} has no open PR to mark verified`);
+  await db.patchEnrichment(repo.name, branch, { verified: verifiedMark("orchestrator", pr?.head, pr?.number, new Date().toISOString()) });
+  return pr
+    ? `Marked PR #${pr.number} (${repo.name}/${branch}) verified at ${pr.head?.slice(0, 7) ?? "its current head"}. A new commit shows it as changed since verified.`
+    : `Marked ${repo.name}/${branch} verified. The repo is not on this instance, so the head commit is not recorded: a later push is not detected.`;
+}
+
 export async function mergeWhenGreen(cfg: OrcaConfig, repo: RepoConfig, body: { pr?: number; branch?: string; small?: boolean; by?: string; cancel?: boolean }): Promise<string> {
   const by = body.by === "orchestrator" ? "orchestrator" as const : "user" as const;
   if (body.cancel) {

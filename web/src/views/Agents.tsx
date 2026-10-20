@@ -264,6 +264,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
   // caption per family, chips within a family read as one segmented row.
   const stateChips: Chip[] = [
     { group: "pr", value: "open", label: "Open PRs" },
+    { group: "pr", value: "verified", label: "Verified" },
     { group: "pr", value: "mergeable", label: "Mergeable", dot: "queued" },
     { group: "pr", value: "merged", label: "Merged today", dot: "ready" },
   ];
@@ -273,7 +274,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
   ];
   const repoChips: Chip[] = showRepos && repos.length > 1 ? repos.map((r): Chip => ({ group: "repo", value: r.name, label: r.name })) : [];
   // The lane the chips narrow to, when exactly one: the swimlanes' bulk verbs apply to it.
-  const lane: OverviewLane | null = quick.pr.length === 1 && quick.pr[0] !== "open" ? (quick.pr[0] === "merged" ? "DONE" : "MERGEABLE") : null;
+  const lane: OverviewLane | null = quick.pr.length === 1 && quick.pr[0] !== "open" ? (quick.pr[0] === "merged" ? "DONE" : quick.pr[0] === "verified" ? "VERIFIED" : "MERGEABLE") : null;
   const narrow = useNarrow();
   const [sheet, setSheet] = useState(false);
   const renderChip = (c: Chip) => {

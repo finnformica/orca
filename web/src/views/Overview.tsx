@@ -58,6 +58,7 @@ function AgentsSnapshot({ rows }: { rows: Row[] }) {
   const pipeline: { lane: OverviewLane; n: number; cls: string; chip: QuickFilter["pr"][number] }[] = [
     { lane: "DRAFT", n: s.prs.draft, cls: "bg-geist-gray", chip: "open" },
     { lane: "IN_REVIEW", n: s.prs.inReview, cls: "bg-geist-amber", chip: "open" },
+    { lane: "VERIFIED", n: s.prs.verified, cls: "bg-geist-teal", chip: "verified" },
     { lane: "MERGEABLE", n: s.prs.mergeable, cls: "bg-geist-blue", chip: "mergeable" },
   ];
   if (!loaded) {

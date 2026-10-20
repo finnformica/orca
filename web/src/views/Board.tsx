@@ -1,4 +1,4 @@
-// The Board view: the five lanes of workstream cards (Local → Draft → In Review → Mergeable →
+// The Board view: the six lanes of workstream cards (Local → Draft → In Review → Verified → Mergeable →
 // Done · today). Restored from before #333; shown only while the config's `ui.showBoard` is on.
 import { useState, type ReactNode } from "react";
 import { ThreadChips } from "@/components/SourceChip";
@@ -24,6 +24,7 @@ import { ModelPicker } from "@/components/ModelPicker";
 import { Tip } from "@/components/ui/tip";
 import { CopyDone, LaneActions } from "./BulkActions";
 import { ConditionBadges } from "./ConditionBadges";
+import { VerifiedButton } from "./VerifiedButton";
 import { NewDraft } from "./NewDraft";
 import { useSummary, useTerminalOpen } from "@/lib/workstreamHooks";
 
@@ -56,6 +57,7 @@ const LANES: { lane: Lane; title: string }[] = [
   { lane: "LOCAL", title: "Local" },
   { lane: "DRAFT", title: "Draft" },
   { lane: "IN_REVIEW", title: "In Review" },
+  { lane: "VERIFIED", title: "Verified" },
   { lane: "MERGEABLE", title: "Mergeable" },
   { lane: "DONE", title: "Done · today" },
 ];
@@ -75,11 +77,11 @@ export function Board() {
   };
 
   return (
-    <div className="grid grid-cols-1 gap-3 md:h-[calc(100dvh-6.5rem)] md:grid-cols-3 xl:grid-cols-5">
+    <div className="grid grid-cols-1 gap-3 md:h-[calc(100dvh-6.5rem)] md:grid-cols-3 xl:grid-cols-6">
       {LANES.map(({ lane, title }) => {
         const cards = cardsFor(lane);
         return (
-          <div key={lane} className="bg-muted/30 flex flex-col overflow-hidden rounded-lg border">
+          <div key={lane} data-lane={lane} className="bg-muted/30 flex flex-col overflow-hidden rounded-lg border">
             <h3 className="text-muted-foreground flex shrink-0 items-center gap-2 border-b px-3 py-2 text-xs font-semibold tracking-wide uppercase">
               {title} {loaded ? <span className="opacity-60">{cards.length}</span> : <Skeleton className="h-3 w-3" />}
               {lane === "DONE" && cards.length > 0 && <CopyDone cards={cards} />}
@@ -319,6 +321,7 @@ export function WorkstreamCard({ row }: { row: Row }) {
             </button>
           )}
           {isOpenPr && <ConditionBadges row={row} />}
+          {isOpenPr && <VerifiedButton row={row} />}
           {isLocal && row.mergeClean === "conflict" && <Badge variant="destructive">Conflicts with {baseBranch(row.repo)}</Badge>}
         </div>
       )}

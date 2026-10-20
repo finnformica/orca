@@ -916,6 +916,27 @@ test("O22: orca status keeps a short per-workstream record on its enrichment, an
   expect((await db.enrichment("r"))[branch]).not.toHaveProperty("orchStatus");
 });
 
+test("O31: orca status --verified / --unverified set and clear the user's Verified marker at the PR head", async () => {
+  const pr = (head: string) => [{ number: 267, title: "Cache", headRefName: "feat-v", headRefOid: head, baseRefName: "main", url: "u", state: "OPEN", isDraft: false, mergeable: "MERGEABLE", reviewDecision: "", statusCheckRollup: [], comments: [], author: { login: "me" }, reviews: [], labels: [] }];
+  const at = { repo: "r", branch: "feat-v" };
+  // No open PR: nothing to verify.
+  await expect(orchestrator.tool(cfg(), "status", { ...at, verified: "" })).rejects.toThrow("has no open PR to mark verified");
+
+  await setPrListFixture(pr("aaaaaaa1111"));
+  expect(await orchestrator.tool(cfg(), "status", { ...at, verified: "" })).toBe("Marked PR #267 (r/feat-v) verified at aaaaaaa. A new commit shows it as changed since verified.");
+  expect((await db.enrichment("r"))["feat-v"]!.verified).toMatchObject({ by: "orchestrator", sha: "aaaaaaa1111", pr: 267 });
+  expect(boardText(await orchestrator.board(cfg()))).toMatch(/PR #267 [^|]*verified-by-user/);
+
+  // A new head commit: the board says so, not a silent pass.
+  await setPrListFixture(pr("bbbbbbb2222"));
+  expect(boardText(await orchestrator.board(cfg()))).toMatch(/PR #267 [^|]*changed-since-user-verified/);
+
+  expect(await orchestrator.tool(cfg(), "status", { ...at, unverified: "" })).toBe("Cleared the Verified marker of r/feat-v.");
+  expect((await db.enrichment("r"))["feat-v"] ?? {}).not.toHaveProperty("verified");
+  expect(boardText(await orchestrator.board(cfg()))).not.toMatch(/verified-by-user|user-verified/);
+  await setPrListFixture([]);
+});
+
 test("O23: two failures in a row on one model put the next model up in the report; modelEscalation: apply moves it", async () => {
   let escalation: "suggest" | "apply" = "suggest";
   const conf = (): OrcaConfig => ({ ...cfg(), repos: cfg().repos.map((r) => ({ ...r, modelEscalation: escalation })) });
