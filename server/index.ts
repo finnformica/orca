@@ -55,7 +55,7 @@ import * as terminal from "./terminal";
 import { diskStore, parseShotRequest, shooter, type ShotRequest } from "./screenshot";
 import * as heavy from "./heavy";
 import * as heavyLeaks from "./heavyLeaks";
-import { checkCaller, instanceHosts, listServers, selfServer, serverGate, withIdentity } from "./servers";
+import { checkCaller, forwardedHeaders, instanceHosts, listServers, selfServer, serverGate, withIdentity } from "./servers";
 import { isAutomatic, leaseHolder } from "../shared/integrations";
 import { instanceOptions } from "../shared/integrationSettings";
 import { identityUpdate, serverIdentityProblems } from "../shared/serverIdentity";
@@ -464,7 +464,9 @@ async function forwardToOwner(req: Request, url: URL, repo: RepoConfig, cfg: Orc
     // Streamed through, not buffered: a large body (a diff) reaches the browser as it arrives.
     const upstream = await fetch(target, {
       method: req.method,
-      headers: req.headers,
+      // Server-to-server, not the browser's cross-origin call: drop Origin/Referer so the owner's
+      // serverGate never runs its whois check against THIS box's own address (forwardedHeaders).
+      headers: forwardedHeaders(req.headers),
       // The body was consumed by the JSON parse above; re-serialise it (a clone of a consumed
       // request has no text, and the forwarded request went out empty).
       body: req.method === "GET" || req.method === "HEAD" ? undefined : JSON.stringify(body),
@@ -744,7 +746,8 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (!base) return json({ error: `the orchestrator lives on "${cfg.orchestratorOn}", which has no address configured (set instances.${cfg.orchestratorOn})` }, 502);
     if (!(await reachable(base))) return json({ error: `${cfg.orchestratorOn} is unreachable (no connection to ${new URL(base).host})` }, 502);
     try {
-      const upstream = await fetch(new URL(url.pathname + url.search, base), { method: req.method, headers: req.headers, body: req.method === "GET" ? undefined : JSON.stringify(body), signal: req.signal });
+      // Server-to-server: drop Origin/Referer, same as forwardToOwner (forwardedHeaders).
+      const upstream = await fetch(new URL(url.pathname + url.search, base), { method: req.method, headers: forwardedHeaders(req.headers), body: req.method === "GET" ? undefined : JSON.stringify(body), signal: req.signal });
       return new Response(upstream.body, { status: upstream.status, headers: upstream.headers });
     } catch (e) {
       return json({ error: `${cfg.orchestratorOn} is unreachable: ${e instanceof Error ? e.message : String(e)}` }, 502);

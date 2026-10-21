@@ -7,7 +7,7 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync, existsSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  listServers, resetServerCaches, serverGate, withSelf, serverSwitcherProblems, trustedOrigin, type ServerSwitcherConfig,
+  forwardedHeaders, listServers, resetServerCaches, serverGate, withSelf, serverSwitcherProblems, trustedOrigin, type ServerSwitcherConfig,
 } from "../server/servers";
 import { parseConfigDocument } from "../server/config";
 import { native } from "./happydom";
@@ -229,6 +229,28 @@ test("trustedOrigin: localhost/127.0.0.1 is trusted on the API port and the Vite
   expect(ok("https://localhost:8787")).toBe(false); // the http(s) rule stays unix: no HTTPS localhost
   // A different uiPort is honoured, not hardcoded.
   expect(trustedOrigin("http://localhost:9999", [], "tail1234.ts.net", 8787, 9999)).toBe(true);
+});
+
+test("forwardedHeaders: drops Origin/Referer/Sec-Fetch-* so a server-to-server forward never looks like a cross-origin browser call", () => {
+  const headers = new Headers({
+    origin: "http://box-b.tail1234.ts.net:8787", referer: "http://box-b.tail1234.ts.net:8787/board",
+    "sec-fetch-site": "cross-site", "sec-fetch-mode": "cors", "sec-fetch-dest": "empty",
+    "content-type": "application/json", cookie: "a=b",
+  });
+  const out = forwardedHeaders(headers);
+  for (const h of ["origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest"]) expect(out.has(h)).toBe(false);
+  expect(out.get("content-type")).toBe("application/json"); // everything else rides along unchanged
+  expect(out.get("cookie")).toBe("a=b");
+  expect(headers.has("origin")).toBe(true); // the input is untouched
+});
+
+test("a forwarded request (dropped Origin) is read by serverGate as having none, and passes through with no whois", async () => {
+  const h = handler();
+  const forwarded = new Request(req("GET", OTHER).url, { headers: forwardedHeaders(req("GET", OTHER).headers) });
+  const res = await serverGate(forwarded, "100.64.0.9", ON, h.next); // 100.64.0.9 is box-b itself: a tagged node
+  expect(h.calls).toBe(1);
+  expect(res.status).toBe(200);
+  expect(calls().filter((c) => c.startsWith("whois"))).toEqual([]); // no cross-origin check ran at all
 });
 
 test("serverGate: a loopback caller is the owner's own browser — accepted with no whois", async () => {
