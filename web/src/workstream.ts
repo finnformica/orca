@@ -1926,6 +1926,14 @@ export function clampPanelWidth(w: number, vw: number): number {
   return Math.round(Math.min(vw, Math.max(PANEL_MIN_W, Math.min(max, Number.isFinite(w) ? w : PANEL_DEFAULT_W))));
 }
 
+/** The Files-changed tab's file tree sidebar (views/FilesChanged.tsx): a width remembered per
+ *  browser, never narrower than a readable tree, never wider than half the page beside it. */
+export const TREE_MIN_W = 192, TREE_DEFAULT_W = 256;
+export function clampTreeWidth(w: number, vw: number): number {
+  const max = Math.max(TREE_MIN_W, vw / 2);
+  return Math.round(Math.min(max, Math.max(TREE_MIN_W, Number.isFinite(w) ? w : TREE_DEFAULT_W)));
+}
+
 /** The nav sidebar as an icon rail: what you chose (`collapsed`), or — while a docked panel is open
  *  (`dock` > 0 px) and the full nav would leave the page under `DOCK_PAGE_MIN_W` — the rail, unless
  *  you expanded it again while that panel was open (`expandedOverride`). The choice you saved is

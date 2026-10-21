@@ -9,7 +9,7 @@
 // - a lockfile, a generated file or a large diff waits behind Load diff; a deleted file starts
 //   folded; a viewed file folds and stays folded until its diff changes.
 // The decisions (parse, tree, order, split rows, what starts collapsed) are pure in `diff.ts`.
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { Highlight, themes, type Token } from "prism-react-renderer";
 import {
   Check, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Copy, FileCode, FileText, Folder, FolderOpen, ListTree, Search, WrapText,
@@ -18,14 +18,17 @@ import {
   buildFileTree, collapseReason, diffTotals, fileAnchor, fileSig, filterFiles, gutterDigits, markdownPreview, splitRows, STATUS_LETTER,
   rowNumbers, treeOrder, type DiffLine, type DiffStatus, type FileDiff, type Hunk, type TreeNode, parseDiff,
 } from "../diff";
+import { clampTreeWidth, TREE_DEFAULT_W, TREE_MIN_W } from "../workstream";
 import { Markdown } from "@/components/Markdown";
 import { BottomSheet, SHEET_CLOSE_MS } from "@/components/BottomSheet";
 import { Segmented } from "@/components/console";
+import { RESIZE_HANDLE_CLASS, RESIZE_STEP, usePanelWidth } from "@/components/SidePanel";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tip";
 import { copyText } from "@/lib/dialogs";
+import { diffTreeWidthAtom } from "@/lib/atoms";
 import { isBoolean, oneOf, persistedKey, usePersisted } from "@/lib/persisted";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -81,6 +84,54 @@ export function FilesChanged({ text, scope }: { text: string; scope: string }) {
   const isOpen = (f: FileDiff) => open[f.path] ?? !(isViewed(f) || collapseReason(f) === "deleted");
   const [active, setActive] = useState<string | null>(null);
   const [sheet, setSheet] = useState(false);
+
+  // The tree sidebar's width: same pattern as the dock (usePanelWidth), a half-the-page cap instead
+  // of the dock's own. Only wired up on the wide layout — a phone opens the tree as a bottom sheet.
+  const { width: treeWidth, setSavedWidth: setTreeWidth } = usePanelWidth(diffTreeWidthAtom, clampTreeWidth);
+  // The grid container: its `--diff-tree-w` custom property IS the sidebar's column, so a drag writes
+  // straight to it (no per-frame re-render) and state is committed once, on release — SidePanel's drag.
+  const gridRef = useRef<HTMLDivElement>(null);
+  const onTreeResizeStart = (e: ReactPointerEvent) => {
+    if (e.button !== 0) return;
+    const handle = e.currentTarget as HTMLElement;
+    handle.focus(); // the arrow keys resize from here on (preventDefault below blocks the default focus)
+    const el = gridRef.current;
+    if (!el) return;
+    const x0 = e.clientX, w0 = treeWidth;
+    let last = w0;
+    handle.setAttribute("data-resizing", "");
+    const move = (ev: PointerEvent) => {
+      // The edge is on the RIGHT of the tree: dragging right widens it.
+      last = clampTreeWidth(w0 + (ev.clientX - x0), window.innerWidth);
+      el.style.setProperty("--diff-tree-w", `${last}px`);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up);
+      document.body.style.cursor = "";
+      handle.removeAttribute("data-resizing");
+      setTreeWidth(last);
+    };
+    document.body.style.cursor = "ew-resize";
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    e.preventDefault();
+  };
+  const onTreeResizeKey = (e: React.KeyboardEvent) => {
+    const step = e.shiftKey ? RESIZE_STEP * 3 : RESIZE_STEP;
+    const next = e.key === "ArrowRight" ? treeWidth + step : e.key === "ArrowLeft" ? treeWidth - step
+      : e.key === "Home" ? TREE_MIN_W : e.key === "End" ? Number.MAX_SAFE_INTEGER : null;
+    if (next === null) return;
+    e.preventDefault();
+    const w = clampTreeWidth(next, window.innerWidth);
+    if (w === treeWidth) return;
+    gridRef.current?.style.setProperty("--diff-tree-w", `${w}px`);
+    setTreeWidth(w);
+  };
+  const onTreeResizeReset = () => {
+    const w = clampTreeWidth(TREE_DEFAULT_W, window.innerWidth);
+    gridRef.current?.style.setProperty("--diff-tree-w", `${w}px`);
+    setTreeWidth(w);
+  };
 
   const reveal = (path: string) => {
     setActive(path);
@@ -152,9 +203,12 @@ export function FilesChanged({ text, scope }: { text: string; scope: string }) {
         </div>
       </div>
 
-      <div className="grid min-w-0 gap-4 @4xl/page:grid-cols-[16rem_minmax(0,1fr)] @6xl/page:grid-cols-[18rem_minmax(0,1fr)]">
+      <div ref={gridRef} className="grid min-w-0 gap-4 @4xl/page:grid-cols-[var(--diff-tree-w)_minmax(0,1fr)]" style={{ "--diff-tree-w": `${treeWidth}px` } as CSSProperties}>
         <aside data-slot="diff-tree-sidebar" className={cn("sticky hidden max-h-[calc(100dvh-3.5rem-var(--stick,0px)-2rem)] min-h-0 flex-col self-start @4xl/page:flex", "top-[calc(3.5rem+var(--stick,0px)+0.75rem)]")}>
           {treePanel}
+          <div data-slot="diff-tree-resize" role="separator" aria-orientation="vertical" aria-label="Resize file tree" onPointerDown={onTreeResizeStart}
+            tabIndex={0} aria-valuenow={treeWidth} aria-valuemin={TREE_MIN_W} onKeyDown={onTreeResizeKey} onDoubleClick={onTreeResizeReset}
+            className={cn(RESIZE_HANDLE_CLASS, "top-0 right-0 h-full")} />
         </aside>
         <div ref={listRef} data-slot="diff-list" className="min-w-0 space-y-3">
           {ordered.length === 0 && <p className="text-muted-foreground text-sm">No files match “{query}”.</p>}

@@ -33,8 +33,10 @@ export const RESIZE_HANDLE_CLASS =
 
 type WidthAtom = WritableAtom<number, [number], void>;
 
-/** The panel's width: saved per browser, clamped to the viewport on load and on a browser resize. */
-export function usePanelWidth(widthAtom: WidthAtom) {
+/** The panel's width: saved per browser, clamped to the viewport on load and on a browser resize.
+ *  `clamp` defaults to the docked panel's own rule; the Files-changed tree sidebar reuses this hook
+ *  with `clampTreeWidth` instead (views/FilesChanged.tsx). */
+export function usePanelWidth(widthAtom: WidthAtom, clamp: (w: number, vw: number) => number = clampPanelWidth) {
   const [savedWidth, setSavedWidth] = useAtom(widthAtom);
   const [vw, setVw] = useState(() => window.innerWidth);
   useEffect(() => {
@@ -42,7 +44,7 @@ export function usePanelWidth(widthAtom: WidthAtom) {
     window.addEventListener("resize", fit);
     return () => window.removeEventListener("resize", fit);
   }, []);
-  return { width: clampPanelWidth(savedWidth, vw), vw, setSavedWidth };
+  return { width: clamp(savedWidth, vw), vw, setSavedWidth };
 }
 
 export type SwipeProps = ReturnType<typeof useSwipeToDismiss>;
