@@ -327,6 +327,23 @@ function withCors(res: Response, origin: string): Response {
 /** Strip the IPv4-mapped IPv6 prefix Bun reports for an IPv4 peer on a dual-stack socket. Pure. */
 export const plainIp = (ip: string): string => ip.replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/, "");
 
+/** Browser-only headers a forwarded request must drop (`forwardedHeaders`). */
+const BROWSER_ONLY_HEADERS = ["origin", "referer", "sec-fetch-site", "sec-fetch-mode", "sec-fetch-dest", "sec-fetch-user"];
+
+/**
+ * Headers for a request one Orca instance forwards to another on a caller's behalf (`forwardToOwner`,
+ * the `/api/orchestrator` forward). This is a server-to-server call, not a browser's cross-origin one —
+ * so the browser's Origin/Referer (and other browser-only CORS headers) must not ride along. Without
+ * this, a request forwarded from server A's page (a trusted foreign Origin, by `trustedOrigin`) made
+ * `serverGate` on server B run its whois check against A's own address, which is a tagged node, not a
+ * user device, and B refused the call with "the caller is a tagged node". Pure.
+ */
+export function forwardedHeaders(headers: Headers): Headers {
+  const out = new Headers(headers);
+  for (const h of BROWSER_ONLY_HEADERS) out.delete(h);
+  return out;
+}
+
 /**
  * Wrap one `/api` request. `next` is the normal handler. Unchanged (no CORS header, no whois) when:
  * the feature is off; the request has no Origin; the Origin is this server's own (or the request's
