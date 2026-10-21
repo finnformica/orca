@@ -21,6 +21,7 @@ const fixture = (name: string) => Bun.file(new URL(`./fixtures/diffs/${name}`, i
 let root: Root | undefined;
 let container: HTMLElement | undefined;
 let text = "";
+const prevInnerWidth = window.innerWidth;
 
 beforeEach(async () => {
   localStorage.clear();
@@ -30,6 +31,9 @@ afterEach(() => {
   act(() => root?.unmount());
   container?.remove();
   root = container = undefined;
+  // A test below sets window.innerWidth for the resize-clamp math; restore it so a later FILE in the
+  // same bun test process (the whole suite runs in one process) doesn't inherit it.
+  Object.defineProperty(window, "innerWidth", { value: prevInnerWidth, configurable: true });
 });
 
 async function mount(node = <FilesChanged text={text} scope="orca#1" />) {
