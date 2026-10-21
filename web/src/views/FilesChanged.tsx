@@ -39,6 +39,11 @@ type ViewMode = "unified" | "split";
 /** Where a sticky thing parks: under the top bar (h-14) and the page's own sticky header (--stick). */
 const STICK_TOP = "top-[calc(3.5rem+var(--stick,0px))]";
 
+/** The grid's column gap (Tailwind `gap-4` = 1rem = 16px). The resize handle sits half this, less
+ *  half the 1px line, past the tree's right edge — the same centring formula as the dock's gutter
+ *  handle (SidePanel.tsx), so the line lands on the gap's centre instead of its left edge. */
+export const TREE_GAP_PX = 16;
+
 const STATUS_TONE: Record<DiffStatus, string> = {
   added: "text-geist-green", modified: "text-geist-amber", deleted: "text-geist-red", renamed: "text-geist-blue",
 };
@@ -208,7 +213,7 @@ export function FilesChanged({ text, scope }: { text: string; scope: string }) {
           {treePanel}
           <div data-slot="diff-tree-resize" role="separator" aria-orientation="vertical" aria-label="Resize file tree" onPointerDown={onTreeResizeStart}
             tabIndex={0} aria-valuenow={treeWidth} aria-valuemin={TREE_MIN_W} onKeyDown={onTreeResizeKey} onDoubleClick={onTreeResizeReset}
-            className={cn(RESIZE_HANDLE_CLASS, "top-0 right-0 h-full")} />
+            className={cn(RESIZE_HANDLE_CLASS, "top-0 h-full")} style={{ right: -(TREE_GAP_PX + 1) / 2 }} />
         </aside>
         <div ref={listRef} data-slot="diff-list" className="min-w-0 space-y-3">
           {ordered.length === 0 && <p className="text-muted-foreground text-sm">No files match “{query}”.</p>}

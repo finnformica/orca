@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { FilesChanged } from "@/views/FilesChanged";
+import { FilesChanged, TREE_GAP_PX } from "@/views/FilesChanged";
 import { Markdown } from "@/components/Markdown";
 import { buildFileTree, parseDiff, treeOrder } from "@/diff";
 import { persistedKey } from "@/lib/persisted";
@@ -189,11 +189,17 @@ describe("the tree sidebar's width", () => {
     expect(edge.getAttribute("role")).toBe("separator");
     expect(edge.tabIndex).toBe(0);
     expect(grid.style.getPropertyValue("--diff-tree-w")).toBe(`${TREE_DEFAULT_W}px`);
+    // Centred in the column gap, not flush against the tree's edge — half the gap, less half the
+    // 1px line, however wide the column is (the offset is fixed; the column width moves the edge
+    // itself, not the handle's position within the gap).
+    const centred = `${-(TREE_GAP_PX + 1) / 2}px`;
+    expect(edge.style.right).toBe(centred);
 
     const press = async (k: string) => { await act(async () => { edge.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })); await flush(); }); };
     await press("ArrowRight"); // the edge is on the right: dragging/widening goes that way
     expect(grid.style.getPropertyValue("--diff-tree-w")).toBe(`${TREE_DEFAULT_W + RESIZE_STEP}px`);
     expect(JSON.parse(localStorage.getItem(persistedKey("diffTreeWidth"))!)).toBe(TREE_DEFAULT_W + RESIZE_STEP);
+    expect(edge.style.right).toBe(centred); // still centred at the new width
     await press("ArrowLeft");
     expect(grid.style.getPropertyValue("--diff-tree-w")).toBe(`${TREE_DEFAULT_W}px`);
     await press("Home");
