@@ -53,6 +53,8 @@ export const orchestratorWidthAtom = persistedAtom<number>("orchestratorWidth", 
 export const terminalPanelAtom = atom<TerminalPanelState>(TERMINAL_PANEL_INITIAL);
 // Its width, like the orchestrator's: remembered per browser, clamped to the viewport on use.
 export const terminalWidthAtom = persistedAtom<number>("terminalWidth", 460, isNumber);
+// The Files-changed tab's file tree sidebar (views/FilesChanged.tsx): same pattern, its own default.
+export const diffTreeWidthAtom = persistedAtom<number>("diffTreeWidth", 256, isNumber);
 // The quick-ask box (the bottom-centre pill, the A key): one message to the orchestrator, no history.
 export const quickAskOpenAtom = atom(false);
 // What the orchestrator is up to, for the launcher's indicator: `running` while a wake is in flight,

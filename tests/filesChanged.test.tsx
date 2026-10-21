@@ -10,6 +10,8 @@ import { Markdown } from "@/components/Markdown";
 import { buildFileTree, parseDiff, treeOrder } from "@/diff";
 import { persistedKey } from "@/lib/persisted";
 import { NARROW_QUERY } from "@/lib/viewport";
+import { RESIZE_STEP } from "@/components/SidePanel";
+import { clampTreeWidth, TREE_DEFAULT_W, TREE_MIN_W } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -161,6 +163,51 @@ describe("Files changed", () => {
   test("an empty diff says so", async () => {
     await mount(<FilesChanged text="" scope="x" />);
     expect(container!.textContent).toBe("No changes.");
+  });
+});
+
+// The tree sidebar's drag-to-resize handle (its right edge): same pattern as the dock's own
+// (SidePanel's usePanelWidth + RESIZE_HANDLE_CLASS), a half-the-page cap instead of the dock's own.
+describe("the tree sidebar's width", () => {
+  test("clampTreeWidth: a sane minimum, half the page as the max, NaN reads as the default", () => {
+    expect(clampTreeWidth(100, 2000)).toBe(TREE_MIN_W); // below the minimum
+    expect(clampTreeWidth(300, 2000)).toBe(300); // within range, unchanged
+    expect(clampTreeWidth(2000, 900)).toBe(450); // past half the page, pulled back to it
+    expect(clampTreeWidth(Number.NaN, 2000)).toBe(TREE_DEFAULT_W);
+    expect(clampTreeWidth(300, 200)).toBe(TREE_MIN_W); // the page itself is tiny: the minimum wins
+  });
+
+  test("a drag, the arrow keys and a double-click resize the column; the width is remembered", async () => {
+    Object.defineProperty(window, "innerWidth", { value: 1440, configurable: true });
+    await mount();
+    const grid = q("[data-slot=diff-tree-sidebar]")!.parentElement!;
+    const edge = q("[data-slot=diff-tree-resize]")!;
+    expect(edge.getAttribute("role")).toBe("separator");
+    expect(edge.tabIndex).toBe(0);
+    expect(grid.style.getPropertyValue("--diff-tree-w")).toBe(`${TREE_DEFAULT_W}px`);
+
+    const press = async (k: string) => { await act(async () => { edge.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })); await flush(); }); };
+    await press("ArrowRight"); // the edge is on the right: dragging/widening goes that way
+    expect(grid.style.getPropertyValue("--diff-tree-w")).toBe(`${TREE_DEFAULT_W + RESIZE_STEP}px`);
+    expect(JSON.parse(localStorage.getItem(persistedKey("diffTreeWidth"))!)).toBe(TREE_DEFAULT_W + RESIZE_STEP);
+    await press("ArrowLeft");
+    expect(grid.style.getPropertyValue("--diff-tree-w")).toBe(`${TREE_DEFAULT_W}px`);
+    await press("Home");
+    expect(grid.style.getPropertyValue("--diff-tree-w")).toBe(`${TREE_MIN_W}px`);
+    await press("End");
+    expect(grid.style.getPropertyValue("--diff-tree-w")).toBe(`${clampTreeWidth(Number.MAX_SAFE_INTEGER, 1440)}px`);
+
+    await act(async () => { edge.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); await flush(); });
+    expect(grid.style.getPropertyValue("--diff-tree-w")).toBe(`${TREE_DEFAULT_W}px`);
+    expect(JSON.parse(localStorage.getItem(persistedKey("diffTreeWidth"))!)).toBe(TREE_DEFAULT_W);
+  });
+
+  test("the phone's bottom sheet shows the tree with no resize handle to grab", async () => {
+    await mount();
+    await click(q("button[aria-label='Show file tree']")!);
+    const sheet = q("[data-slot=diff-tree-sheet]")!;
+    expect(sheet.querySelector("[data-slot=diff-tree]")).not.toBeNull();
+    expect(sheet.querySelector("[data-slot=diff-tree-resize]")).toBeNull();
   });
 });
 
