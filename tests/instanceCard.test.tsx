@@ -327,10 +327,10 @@ test("the heavy-queue header shows 'unqueued heavy: N' with the command names; a
 
 // The 15 s ring (/api/health/live) for ranges up to 6 hours: the whole box, no split by workstream.
 const liveRing = (now: number) => ({
-  stepMs: 15_000, cores: 4, memTotalGb: 15.3, sliceMaxGb: 8.4, diskCapMBs: 125,
+  stepMs: 15_000, cores: 4, memTotalGb: 15.3, sliceMaxGb: 8.4, diskCapMBs: 125, swapTotalGb: 4,
   samples: [0, 1, 2].map((i) => ({
     at: now - (2 - i) * 15_000, work: [20, 10, 15][i]!, iowait: [5, 80, 2][i]!, load1: [1, 6, 2][i]!,
-    readMBs: [3, 130, 1][i]!, writeMBs: [1, 2, 0.5][i]!, memUsedGb: [3, 3.5, 4][i]!, memCacheGb: 5, ...(i === 1 ? { ooms: 1 } : {}),
+    readMBs: [3, 130, 1][i]!, writeMBs: [1, 2, 0.5][i]!, memUsedGb: [3, 3.5, 4][i]!, memCacheGb: 5, swapUsedGb: [0.2, 3.5, 3.4][i]!, ...(i === 1 ? { ooms: 1 } : {}),
   })),
 });
 const pickRange = async (label: string) => {
@@ -340,7 +340,7 @@ const pickRange = async (label: string) => {
 const bands = (chart: Element) => [...chart.querySelectorAll('[data-slot="chart-band"]')].map((g) => g.getAttribute("data-band"));
 const legend = (chart: Element) => chart.querySelector('[data-slot="chart-legend"]')!.textContent;
 
-test("up to 6 hours the card reads the 15 s ring: CPU work + hatched iowait, memory used + cache under the agents limit, disk IO under its cap", async () => {
+test("up to 6 hours the card reads the 15 s ring: CPU work + hatched iowait, memory used + cache under the agents limit, swap of the swap file's size", async () => {
   const now = Date.now();
   apiFake.healthLiveData = liveRing(now);
   apiFake.healthHistoryData = [{ at: now - 60_000, cpuPct: 50, load1: 2, memUsedGb: 12, memTotalGb: 15.3, runningAgents: 2 }];
@@ -365,17 +365,19 @@ test("up to 6 hours the card reads the 15 s ring: CPU work + hatched iowait, mem
   expect(mem.querySelectorAll('[data-slot="chart-mark"]')).toHaveLength(1);
   expect(mem.querySelector('[data-slot="chart-oom"]')!.textContent).toBe(" · 1 OOM kill");
 
-  const io = container!.querySelector('[data-slot="chart-io"]')!;
-  expect(bands(io)).toEqual(["Read", "Write"]);
-  expect(lastValue(io)).toBe("1.5 MB/s");
-  expect(legend(io)).toBe("ReadWriteCap 125 MB/s");
+  // Swap, in Disk IO's place: the swap file's size is the axis.
+  const swap = container!.querySelector('[data-slot="chart-swap"]')!;
+  expect(bands(swap)).toEqual(["Swap"]);
+  expect(lastValue(swap)).toBe("3.4 GB in swap");
+  expect(swap.textContent).toContain("Swap · of 4 GB");
+  expect(container!.querySelector('[data-slot="chart-io"]')).toBeNull();
   // No native title tooltips on the live charts.
-  expect(container!.querySelectorAll('[data-slot="chart-cpu"] title, [data-slot="chart-mem"] title, [data-slot="chart-io"] title')).toHaveLength(0);
+  expect(container!.querySelectorAll('[data-slot="chart-cpu"] title, [data-slot="chart-mem"] title, [data-slot="chart-swap"] title')).toHaveLength(0);
   // The other charts stay on the history.
   expect(container!.querySelector('[data-slot="chart-agents"]')).toBeTruthy();
 
   await pickRange("24h");
-  expect(container!.querySelector('[data-slot="chart-io"]')).toBeNull();
+  expect(container!.querySelector('[data-slot="chart-swap"]')).toBeNull();
   expect(container!.querySelector('[data-slot="chart-cpu"] polyline')).toBeTruthy();
 });
 
@@ -399,10 +401,10 @@ test("hover on a live chart opens its tooltip with the values at that time, iowa
   const leave = (slot: string) => act(async () => { svgOf(slot).dispatchEvent(new PointerEvent("pointerout", { bubbles: true, pointerType: "mouse", relatedTarget: document.body })); await flush(); });
   await leave("chart-cpu");
   expect(document.querySelector('[data-slot="chart-tooltip"]')).toBeNull();
-  const ioTip = await hover("chart-io");
-  expect(ioTip).toContain("Read130.0 MB/s");
-  expect(ioTip).toContain("iowait80%");
-  await leave("chart-io");
+  const swapTip = await hover("chart-swap");
+  expect(swapTip).toContain("Swap3.5 GB");
+  expect(swapTip).toContain("iowait80%");
+  await leave("chart-swap");
   const memTip = await hover("chart-mem");
   expect(memTip).toContain("Used3.5 GB");
   expect(memTip).toContain("1 agent run out of memory");
@@ -430,12 +432,12 @@ test("a failed history or ring poll keeps the graphs the last good poll drew", a
   apiFake.healthHistoryError = null;
 
   await pickRange("1h"); // the ring
-  expect(container!.querySelector('[data-slot="chart-io"]')).toBeTruthy();
+  expect(container!.querySelector('[data-slot="chart-swap"]')).toBeTruthy();
   apiFake.healthLiveData = null; // the fake's ring route now fails
   const calls = apiFake.healthLiveCalls.length;
   await refresh();
   expect(apiFake.healthLiveCalls.length).toBeGreaterThan(calls);
-  expect(container!.querySelector('[data-slot="chart-io"]')).toBeTruthy(); // still the stacked charts
+  expect(container!.querySelector('[data-slot="chart-swap"]')).toBeTruthy(); // still the stacked charts
 });
 
 test("a bridge without the ring (an older build) keeps the 6h line charts from the history", async () => {
@@ -445,7 +447,7 @@ test("a bridge without the ring (an older build) keeps the 6h line charts from t
   await ready();
   expect(apiFake.healthLiveCalls).toEqual([{ instance: "cloud", hours: 6 }]);
   expect(container!.querySelector('[data-slot="chart-cpu"] polyline')).toBeTruthy();
-  expect(container!.querySelector('[data-slot="chart-io"]')).toBeNull();
+  expect(container!.querySelector('[data-slot="chart-swap"]')).toBeNull();
 });
 
 test("the heavy-queue header shows one decimal; on a phone the rows scroll sideways with their whole text", async () => {
