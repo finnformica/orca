@@ -295,10 +295,11 @@ export function PrPreviewButton({ row }: { row: Row }) {
 
 /** The same GitHub PR-preview control as PrPreviewCell, as inline text instead of an icon — sits
  *  next to the model name in the Agents-list row's subline (desktop and the phone's stacked meta
- *  line), Vercel-style: a globe and "Preview" as the link text once it's live (the URL is its tooltip), "+ Add preview"
- *  before the label is on, "Deploying preview…" while it's building. Hidden under the same
- *  conditions as PrPreviewCell (see prPreviewState) — bakes in its own leading "·" separator so a
- *  caller can render it unconditionally alongside the subline's other dot-joined items. */
+ *  line), Vercel-style: "Preview" followed by an external-link icon once it's live (the URL is its
+ *  tooltip), "+ Add preview" before the label is on, "Deploying preview…" while it's building.
+ *  Hidden under the same conditions as PrPreviewCell (see prPreviewState) — bakes in its own
+ *  leading "·" separator so a caller can render it unconditionally alongside the subline's other
+ *  dot-joined items. */
 export function PrPreviewInline({ row }: { row: Row }) {
   const { state, busy, add } = usePrPreviewAdd(row);
   if (state === "hidden") return null;
@@ -309,7 +310,7 @@ export function PrPreviewInline({ row }: { row: Row }) {
         <Tip label={row.previewUrl!} className="shrink-0">
           <a href={row.previewUrl} target="_blank" rel="noreferrer" data-slot="pr-preview-inline" data-state={state}
             className="inline-flex items-center gap-0.5 underline hover:text-foreground">
-            <Globe className="size-3" />Preview
+            Preview<ExternalLink className="size-3" />
           </a>
         </Tip>
       ) : state === "pending" ? (
