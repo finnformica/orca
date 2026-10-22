@@ -24,7 +24,7 @@ export function BridgeLabel({ previewPage = PREVIEW_PAGE }: { previewPage?: bool
   return (
     <Tip label={label.title} className="min-w-0">
       <span role="status" data-slot="bridge-label" className={`${label.warn ? "bg-geist-warning-bg text-geist-warning-fg" : "bg-muted text-muted-foreground"} inline-flex h-6 min-w-0 items-center gap-1 rounded-full px-2 text-xs font-medium`}>
-        <Server className="size-3.5 shrink-0" aria-hidden="true" /><span className="truncate">{label.text}</span>
+        <Server className="size-3.5 shrink-0" aria-hidden="true" /><span className="truncate max-md:sr-only">{label.text}</span>
       </span>
     </Tip>
   );
@@ -43,11 +43,11 @@ export function StaleIndicator() {
   return (
     <button type="button" data-slot="stale-indicator" aria-busy={refreshing} disabled={refreshing}
       onClick={() => void refreshEverything().then(() => setNow(Date.now()))}
-      className="bg-geist-warning-bg text-geist-warning-fg inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-xs font-medium hover:opacity-80 disabled:cursor-progress">
+      className="bg-geist-warning-bg text-geist-warning-fg inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-xs font-medium hover:opacity-80 disabled:cursor-progress max-md:h-8 max-md:px-2.5">
       {refreshing
         ? <RefreshCw className="size-3.5 animate-spin" aria-hidden="true" />
         : <CloudOff className="size-3.5" aria-hidden="true" />}
-      <span role="status">{refreshing ? "Refreshing…" : `Updated ${ago(last, now)}`}</span>
+      <span role="status" className="max-md:sr-only">{refreshing ? "Refreshing…" : `Updated ${ago(last, now)}`}</span>
     </button>
   );
 }

@@ -28,7 +28,7 @@ describe("notification quick actions", () => {
   test("a failed action: Ask the orchestrator (primary) and Copy, each only with its text, then Open", () => {
     const failed = { kind: "action_failed", ask: "Action Merge … failed", copy: "Action: Merge…" };
     expect(notificationActions(failed, {})).toEqual([
-      { id: "ask", label: "Ask the orchestrator", primary: true }, { id: "copy", label: "Copy" }, { id: "open", label: "Open" },
+      { id: "ask", label: "Ask Orca", primary: true }, { id: "copy", label: "Copy" }, { id: "open", label: "Open" },
     ]);
     expect(notificationActions({ ...failed, ask: undefined }, all).map((a) => a.id)).toEqual(["copy", "open"]);
     expect(ids("action_failed")).toEqual(["open"]);

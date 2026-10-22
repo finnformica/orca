@@ -131,7 +131,7 @@ export function AskOrchestrator() {
   const { ask, open, close } = useOrchestrator();
   const activity = useAtomValue(orchestratorActivityAtom);
   return (
-    <button type="button" data-slot="ask-orchestrator" onClick={() => (open ? close() : ask())} aria-label="Ask the orchestrator" aria-expanded={open}
+    <button type="button" data-slot="ask-orchestrator" onClick={() => (open ? close() : ask())} aria-label="Ask Orca" aria-expanded={open}
       // Shell.tsx wraps this with the header's usage meter in one ml-auto slot, so this button stays
       // right-aligned whether or not the meter renders (it's absent while loading or signed out).
       // Below md the bottom bar's Orchestrator button takes its place.
@@ -139,7 +139,7 @@ export function AskOrchestrator() {
       // replaced the wider fallback font after first paint. The label truncates if a fallback is wider.
       className="bg-card hover:bg-accent text-foreground flex h-8 w-[12.25rem] shrink-0 items-center gap-2 rounded-md border px-2.5 text-sm max-md:hidden">
       <span className="relative inline-flex shrink-0"><Bot className="text-muted-foreground size-3.5 shrink-0" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
-      <span data-slot="ask-orchestrator-label" className="text-muted-foreground min-w-0 flex-1 truncate text-left">Ask the orchestrator</span>
+      <span data-slot="ask-orchestrator-label" className="text-muted-foreground min-w-0 flex-1 truncate text-left">Ask Orca</span>
       <Shortcut id="orchestrator" />
     </button>
   );

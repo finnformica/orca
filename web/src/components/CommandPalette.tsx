@@ -67,7 +67,7 @@ function useCommands(): Command[] {
     out.push({ id: `action:${id}`, group: "Actions", label, shortcut, keywords, run });
   action("new", "New agent", () => setAddNew(true), "new", "add draft create");
   action("orchestrator", "Open orchestrator", () => ask(), "orchestrator", "ask chat");
-  action("quickAsk", "Quick ask the orchestrator", () => setQuickAsk(true), "quickAsk", "message one line");
+  action("quickAsk", "Quick ask Orca", () => setQuickAsk(true), "quickAsk", "message one line");
   action("find", "Find agents", () => focusFind(collapsed, setCollapsed), "find", "search filter");
   action("notifications", "Notifications", () => setNotifications(true), "notifications", "bell inbox alerts");
   action("sidebar", collapsed ? "Expand sidebar" : "Collapse sidebar", () => setCollapsed(!collapsed), "sidebar", "toggle sidebar");
@@ -110,7 +110,7 @@ export function CommandPalette() {
   // Nothing you typed is wasted: after the matches, it can always go to the orchestrator as a message.
   const ranked = [
     ...(rankPalette(commands, query, recent) as Command[]),
-    ...(query.trim() ? [{ id: "action:ask", group: "Actions" as const, label: `Ask the orchestrator: “${query.trim()}”`, run: () => ask(query.trim()) }] : []),
+    ...(query.trim() ? [{ id: "action:ask", group: "Actions" as const, label: `Ask Orca: “${query.trim()}”`, run: () => ask(query.trim()) }] : []),
   ];
   const listRef = useRef<HTMLDivElement>(null);
   const listId = useId();

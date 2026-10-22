@@ -3655,7 +3655,7 @@ const NOTIFICATION_ACTION_RULES: Record<string, ActionRule[]> = {
   upkeep_gave_up: [{ id: "address", label: "Address PR", needs: "row" }, { id: "viewPr", label: "View PR", needs: "prUrl" }],
   // A failed action (a local notification): hand it to the orchestrator, or copy the message and
   // where it happened — each only when the notification carries its text.
-  action_failed: [{ id: "ask", label: "Ask the orchestrator" }, { id: "copy", label: "Copy" }],
+  action_failed: [{ id: "ask", label: "Ask Orca" }, { id: "copy", label: "Copy" }],
   // A just-sent draft (also local): Undo while it's still fresh.
   draft_sent: [{ id: "undo", label: "Undo" }],
 };

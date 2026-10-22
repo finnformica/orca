@@ -265,7 +265,7 @@ test("S1: C, O, ?, ⌘B and Esc work from the page — and never while typing in
   await press(document.body, "?", { shiftKey: true });
   expect(dialogOpen("shortcuts-help")).toBe(true);
   const help = q('[data-slot="shortcuts-help"]')!;
-  for (const t of ["Command palette", "New agent", "Ask the orchestrator", "Esc"]) expect(help.textContent).toContain(t);
+  for (const t of ["Command palette", "New agent", "Ask Orca", "Esc"]) expect(help.textContent).toContain(t);
   // Every registered shortcut, as its keycaps (⌘ K / Ctrl K).
   for (const s of SHORTCUTS) expect(keycaps(help.querySelector(`li [data-shortcut="${s.id}"]`))).toEqual(shortcutKeys(s.id));
   // The page chords under their own Navigation heading.
@@ -364,9 +364,9 @@ test("S5: the top bar of every page has an Ask-the-orchestrator BUTTON that open
     await mount(path);
     const entry = q<HTMLButtonElement>('header[data-slot="topbar"] button[data-slot="ask-orchestrator"]');
     expect(entry).not.toBeNull();
-    expect(entry!.textContent).toContain("Ask the orchestrator");
+    expect(entry!.textContent).toContain("Ask Orca");
     expect(keycaps(entry!.querySelector('[data-shortcut="orchestrator"]'))).toEqual(["O"]);
-    expect(q('header[data-slot="topbar"] input[aria-label="Ask the orchestrator"]')).toBeNull(); // no text box in the chrome any more
+    expect(q('header[data-slot="topbar"] input[aria-label="Ask Orca"]')).toBeNull(); // no text box in the chrome any more
     act(() => root?.unmount()); container?.remove();
   }
   localStorage.setItem("orca.chat.@orca::orchestrator", JSON.stringify({ text: "earlier draft", images: [] }));

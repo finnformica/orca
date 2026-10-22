@@ -15,7 +15,7 @@ import { COARSE_QUERY, NARROW_QUERY, enterSends, expandTruncatedOnTap, keepCompo
 import { poll } from "@/lib/poll";
 import { PULL_REFRESH_PX, pullState, swipeArm, swipeDecision, swipeOffset, STALE_AFTER_MS, launchOverlay, newerBuild, previewHref, previewLabel, staleAge } from "@/workstream";
 import { themeColor } from "@/lib/theme";
-import { UpdateBanner } from "@/components/Freshness";
+import { BridgeLabel, UpdateBanner } from "@/components/Freshness";
 import { SHEET_CLOSE_MS } from "@/components/BottomSheet";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -230,6 +230,30 @@ describe("the phone layout (390px, touch)", () => {
     await click(items.find((b) => b.textContent === "Agents")!);
     expect(location.pathname).toBe("/agents");
     expect(items[0]!.getAttribute("aria-current")).toBeNull();
+  });
+
+  // At 390px and 360px the bar crowded: a preview's bridge label ran off the right edge and the
+  // breadcrumb shrank to nothing. Each rule below is phone-only (max-md:), so a desktop is unchanged.
+  test("the top bar fits a phone: the page name keeps room, the badges go to icons, every target is 32px", async () => {
+    await mount("/agents", true);
+    const bar = $('header[data-slot="topbar"]')!;
+    const cls = (el: Element | null) => (el as HTMLElement).className.split(/\s+/);
+    expect(cls($('[data-slot="topbar-mark"]'))).toEqual(expect.arrayContaining(["size-8", "md:hidden"]));
+    const crumbs = bar.querySelector('nav[aria-label="Breadcrumb"]')!;
+    expect(cls(crumbs)).toEqual(expect.arrayContaining(["min-w-0", "max-md:min-w-[4.5rem]"]));
+    expect(crumbs.textContent).toContain("Agents");
+    // Hidden on a phone, as before: the bottom bar's Orchestrator replaces both.
+    expect(cls($('[data-slot="ask-orchestrator"]')!.parentElement)).toContain("max-md:hidden");
+    // The bridge label keeps its icon and colour; its text is for a screen reader only.
+    const label = document.createElement("div");
+    document.body.appendChild(label);
+    const r = createRoot(label);
+    await act(async () => { r.render(<BridgeLabel previewPage />); await flush(); });
+    const text = label.querySelector('[data-slot="bridge-label"] span')!;
+    expect(cls(text)).toContain("max-md:sr-only");
+    expect(text.textContent).toContain("API");
+    act(() => r.unmount());
+    label.remove();
   });
 
   // Regression: the dialog used to render inside the sidebar's hidden-on-phone <aside> (max-md:hidden).

@@ -58,7 +58,7 @@ export function HandoffsPage() {
       {draft && <NewPack draft={draft} others={others} onCreated={() => { navigate("/handoffs", true); void load(); }} />}
       <VCard slot="handoffs" title="Packs" bodyClass="divide-y">
         {data === null ? <Empty>Loading…</Empty>
-          : out.length === 0 ? <Empty icon={<Package />}>No packs. Ask the orchestrator: <code className="font-mono">orca handoff create --to &lt;server&gt; …</code>, or use Hand off… on a card.</Empty>
+          : out.length === 0 ? <Empty icon={<Package />}>No packs. Ask Orca: <code className="font-mono">orca handoff create --to &lt;server&gt; …</code>, or use Hand off… on a card.</Empty>
           : out.map((p) => <PackRow key={p.id} pack={p} source={source} servers={servers} onChange={load} />)}
       </VCard>
       {received.length > 0 && (
