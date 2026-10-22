@@ -306,10 +306,12 @@ export function PrPreviewInline({ row }: { row: Row }) {
     <>
       <span aria-hidden="true">·</span>
       {state === "ready" ? (
-        <a href={row.previewUrl} target="_blank" rel="noreferrer" title={row.previewUrl} data-slot="pr-preview-inline" data-state={state}
-          className="inline-flex shrink-0 items-center gap-0.5 underline hover:text-foreground">
-          <Globe className="size-3" />Preview
-        </a>
+        <Tip label={row.previewUrl!} className="shrink-0">
+          <a href={row.previewUrl} target="_blank" rel="noreferrer" data-slot="pr-preview-inline" data-state={state}
+            className="inline-flex items-center gap-0.5 underline hover:text-foreground">
+            <Globe className="size-3" />Preview
+          </a>
+        </Tip>
       ) : state === "pending" ? (
         <span data-slot="pr-preview-inline" data-state={state} className="shrink-0">Deploying preview…</span>
       ) : (

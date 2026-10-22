@@ -165,14 +165,14 @@ describe("PrPreviewInline (next to the model name in the Agents-list subline)", 
     expect(container!.querySelector('[data-slot="pr-preview-inline"]')).toBeNull();
   });
 
-  test("ready on an unconfigured repo: 'Preview' as the link text, the URL as its title, no Add", async () => {
+  test("ready on an unconfigured repo: 'Preview' as the link text, the URL as its tooltip, no Add", async () => {
     await mount(<PrPreviewInline row={{ ...unconfiguredRow, previewUrl: "https://feat-ruminate.acme.workers.dev" }} />);
     const el = container!.querySelector<HTMLElement>('[data-slot="pr-preview-inline"]')!;
     expect(el.dataset.state).toBe("ready");
     expect(el.tagName).toBe("A");
     expect(el.textContent).toBe("Preview");
     expect(el.getAttribute("href")).toBe("https://feat-ruminate.acme.workers.dev");
-    expect(el.getAttribute("title")).toBe("https://feat-ruminate.acme.workers.dev");
+    expect(el.closest('[data-slot="tip"]')).not.toBeNull(); // the full URL is its hover tooltip (Tip)
   });
 
   test("add: a '+ Add preview' text link before the label is on", async () => {
@@ -193,7 +193,7 @@ describe("PrPreviewInline (next to the model name in the Agents-list subline)", 
     expect(el.textContent).toContain("Deploying preview");
   });
 
-  test("ready: a globe and 'Preview' as the link text, the full URL in href and title", async () => {
+  test("ready: a globe and 'Preview' as the link text, the full URL in href and its tooltip", async () => {
     await mount(<PrPreviewInline row={{ ...addRow, previewUrl: "https://feat-6.preview.branch-demo.dev" }} />);
     const el = container!.querySelector<HTMLElement>('[data-slot="pr-preview-inline"]')!;
     expect(el.dataset.state).toBe("ready");
@@ -201,7 +201,7 @@ describe("PrPreviewInline (next to the model name in the Agents-list subline)", 
     expect(el.getAttribute("href")).toBe("https://feat-6.preview.branch-demo.dev");
     expect(el.getAttribute("target")).toBe("_blank");
     expect(el.textContent).toBe("Preview");
-    expect(el.getAttribute("title")).toBe("https://feat-6.preview.branch-demo.dev");
+    expect(el.closest('[data-slot="tip"]')).not.toBeNull(); // the full URL is its hover tooltip (Tip)
     expect(el.querySelector(".lucide-globe")).not.toBeNull();
     expect(el.className).toContain("underline"); // always underlined, not just on hover
   });
