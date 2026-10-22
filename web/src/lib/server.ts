@@ -248,12 +248,10 @@ export const showServerMenu = (answer: ServersAnswer | null, list: ServerEntry[]
   return answer ? answer.enabled !== false && (list.length > minListed || !answer.tailscaleApi) : list.length > 1;
 };
 
-/** GET /api/servers on the HOME server — never the chosen base: the list is the home server's. A
- *  short timeout, like `probeServer`'s: this polls every minute, and a hung request (an unreachable
- *  DNS, a dead connection) must never pile up behind the next tick instead of just trying again. */
+/** GET /api/servers on the HOME server — never the chosen base: the list is the home server's. */
 export async function fetchServers(): Promise<ServersAnswer | null> {
   try {
-    const r = await fetch("/api/servers", { cache: "no-store", signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    const r = await fetch("/api/servers", { cache: "no-store" });
     if (!r.ok) return null;
     const v: unknown = await r.json();
     return isAnswer(v) ? v : null;

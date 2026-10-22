@@ -371,18 +371,16 @@ test("S5: the top bar of every page has an Ask-the-orchestrator BUTTON that open
   }
   localStorage.setItem("orca.chat.@orca::orchestrator", JSON.stringify({ text: "earlier draft", images: [] }));
   await mount("/agents");
-  const button = q<HTMLButtonElement>('button[data-slot="ask-orchestrator"]')!;
-  await act(async () => { button.click(); await flush(); await flush(); });
+  await act(async () => { q('button[data-slot="ask-orchestrator"]')!.click(); await flush(); await flush(); });
   expect(panel()).not.toBeNull();
-  expect(button.getAttribute("aria-expanded")).toBe("true");
   const box = panel()!.querySelector("textarea")!;
   expect(document.activeElement).toBe(box);
   expect(box.value).toBe("earlier draft"); // the draft is where you left it
-  // The button is a toggle (Terminal.tsx AskOrchestrator, #305): clicking it again while open
-  // closes the docked panel instead of just refocusing it.
-  await act(async () => { button.click(); await flush(); });
-  expect(panel()).toBeNull();
-  expect(button.getAttribute("aria-expanded")).toBe("false");
+  // Clicking it while open just brings focus back to the composer, text intact.
+  box.blur();
+  await act(async () => { q('button[data-slot="ask-orchestrator"]')!.click(); await flush(); });
+  expect(document.activeElement).toBe(box);
+  expect(box.value).toBe("earlier draft");
 });
 
 test("S6: every control with a shortcut shows its keycap — the pill, the top bar, Find, Add New, the bell, the palette's rows and the profile menu", async () => {

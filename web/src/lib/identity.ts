@@ -10,7 +10,7 @@
 // component reads), the page title (`Orca | Personal`) and the favicon (the black
 // circle a very dark shade of the theme colour, the orca the colour). Neutral sets no theme at all.
 import { useSyncExternalStore } from "react";
-import { apiBase, apiFetch, identityOf, PROBE_TIMEOUT_MS, type ServersAnswer } from "./server";
+import { apiBase, apiFetch, identityOf, type ServersAnswer } from "./server";
 import { persistedKey, readPersisted, writePersisted } from "./persisted";
 import { faviconSvg, isNeutral, markBg, markColor, pageTitle, themeCss, type ServerIdentityConfig } from "../../../shared/serverIdentity";
 
@@ -71,11 +71,10 @@ function set(next: ActiveIdentity): void {
   subs.forEach((f) => f());
 }
 
-/** Ask the active server for its identity. A failure keeps what is shown. A short timeout, like
- *  `probeServer`'s: this polls every minute, and a hung request must never pile up. */
+/** Ask the active server for its identity. A failure keeps what is shown. */
 export async function loadIdentity(): Promise<void> {
   try {
-    const r = await apiFetch("/api/servers", { cache: "no-store", signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    const r = await apiFetch("/api/servers", { cache: "no-store" });
     if (!r.ok) return;
     const v = await r.json() as ServersAnswer;
     if (v?.self && typeof v.self.name === "string") set(activeIdentityOf(v));
