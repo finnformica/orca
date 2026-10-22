@@ -100,12 +100,12 @@ describe("console shell", () => {
   // left edge moved 1211.2 → 1222.0 when Geist replaced the fallback font, and the page then grew
   // past the viewport, so a classic scrollbar took ~15px off the right. Neither shows in a DOM-only
   // render, so this pins the two rules that hold the button still.
-  test("\"Ask the orchestrator\" keeps its place while the page loads: a fixed width, and the scrollbar gutter reserved", async () => {
+  test("\"Ask the orchestrator\" keeps its place while the page loads: a reserved label width, and the scrollbar gutter reserved", async () => {
     await mount();
     const ask = container!.querySelector<HTMLElement>('[data-slot="ask-orchestrator"]')!;
-    expect(ask.className.split(/\s+/)).toContain("w-[12.25rem]"); // its width can't follow the font
+    expect(ask.className.split(/\s+/)).not.toContain("w-[12.25rem]"); // sized to its content, not a fixed rem width
     const label = ask.querySelector<HTMLElement>('[data-slot="ask-orchestrator-label"]')!;
-    expect(label.className.split(/\s+/)).toEqual(expect.arrayContaining(["truncate", "min-w-0"])); // a wider fallback font can't widen it
+    expect(label.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-[8ch]", "whitespace-nowrap"])); // a wider fallback font can't shrink it below this
     expect(label.textContent).toBe("Ask Orca");
     expect(ask.getAttribute("aria-label")).toBe("Ask Orca");
     const css = readFileSync(join(import.meta.dir, "..", "web", "src", "styles.css"), "utf8");
