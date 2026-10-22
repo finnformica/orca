@@ -575,7 +575,69 @@ test("an instruction held mid-run shows as queued, and can be cancelled", async 
 
   const cancel = [...container!.querySelectorAll("button")].find((b) => b.textContent === "cancel");
   await act(async () => { cancel!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
-  expect(text()).not.toContain("also update the docs");
+  // Gone from the queue — not deleted outright: see the tests below for where it goes.
+  expect(container!.querySelector('[data-slot="chat-queued"]')).toBeNull();
+});
+
+// --- Cancel puts the message's text back in the composer (never just deletes it) --------------
+
+test("cancelling with an empty composer fills it with the queued text, caret at the end", async () => {
+  apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "big refactor", startedAt: 1 }]);
+  apiFake.queuedData.set("feat", [
+    { id: 7, repo: "r", branch: "feat", instruction: "also update the docs", attachments: [], createdAt: 2 },
+  ]);
+  await mount({ ...base, agentStatus: "running" });
+
+  const cancel = [...container!.querySelectorAll("button")].find((b) => b.textContent === "cancel")!;
+  await act(async () => { cancel.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
+
+  const box = container!.querySelector("textarea")!;
+  expect(box.value).toBe("also update the docs");
+  expect(document.activeElement).toBe(box);
+  expect(box.selectionStart).toBe(box.value.length);
+  expect(box.selectionEnd).toBe(box.value.length);
+});
+
+test("cancelling with existing draft text appends the queued text after a newline, keeping the draft", async () => {
+  apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "big refactor", startedAt: 1 }]);
+  apiFake.queuedData.set("feat", [
+    { id: 7, repo: "r", branch: "feat", instruction: "also update the docs", attachments: [], createdAt: 2 },
+  ]);
+  await mount({ ...base, agentStatus: "running" });
+
+  const box = container!.querySelector("textarea")!;
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+  await act(async () => {
+    valueSetter.call(box, "one more thing:");
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  const cancel = [...container!.querySelectorAll("button")].find((b) => b.textContent === "cancel")!;
+  await act(async () => { cancel.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
+
+  expect(box.value).toBe("one more thing:\nalso update the docs");
+});
+
+test("a failed cancel leaves the composer, and the queued entry, as they were", async () => {
+  apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", prompt: "big refactor", startedAt: 1 }]);
+  apiFake.queuedData.set("feat", [
+    { id: 7, repo: "r", branch: "feat", instruction: "also update the docs", attachments: [], createdAt: 2 },
+  ]);
+  apiFake.cancelQueuedError = "network error";
+  await mount({ ...base, agentStatus: "running" });
+
+  const box = container!.querySelector("textarea")!;
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+  await act(async () => {
+    valueSetter.call(box, "my draft");
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  const cancel = [...container!.querySelectorAll("button")].find((b) => b.textContent === "cancel")!;
+  await act(async () => { cancel.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); });
+
+  expect(box.value).toBe("my draft"); // untouched — the cancel never took effect
+  expect(text()).toContain("also update the docs"); // still queued, still visible
 });
 
 test("a slow attachment save can't resurrect the message you already sent", async () => {

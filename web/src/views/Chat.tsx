@@ -1095,6 +1095,22 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
     const seq = ++queuedSeq.current;
     return api.queued(row.repo, row.branch).then((q) => { if (seq === queuedSeq.current) setQueued(q); }).catch(() => {});
   };
+  // Cancel puts the message's text back in the composer — the SAME append-after-draft, caret-at-end
+  // mechanism as Quote (ChatComposer's `insert`), raw rather than as a blockquote — so a cancelled
+  // message is never just lost. Only once the cancel call itself has succeeded: a failed cancel must
+  // leave both the queue and the composer exactly as they were.
+  // Its attachments are not restored: the composer only takes freshly picked/pasted/dropped `File`s
+  // (images), with no way for anything outside it to hand it a file already on the bridge — so a
+  // cancelled message's attachments are lost, as before.
+  const onCancelQueued = async (m: QueuedMessage) => {
+    try {
+      await api.cancelQueued(row.repo, m.id);
+    } catch {
+      return;
+    }
+    setInsert({ text: withoutAttachmentList(m.instruction), seq: ++insertSeq.current });
+    await loadQueued();
+  };
   // The context ring's Compact button. `compacting` is the compact run's id ("" while the request is
   // in flight): pending until that turn arrives finished over the stream, then the ring is re-read.
   const [compacting, setCompacting] = useState<string | null>(null);
@@ -1278,7 +1294,7 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
           <Queued
             key={m.id}
             message={m}
-            onCancel={() => void api.cancelQueued(row.repo, m.id).then(loadQueued)}
+            onCancel={() => void onCancelQueued(m)}
           />
         ))}
         {/* Scrolled up while the agent keeps talking: a way back down, instead of being dragged there. */}
