@@ -170,6 +170,8 @@ describe("agents list view", () => {
     expect(ci.querySelectorAll('[data-col-part="pr"]')).toHaveLength(2);
     expect(ci.querySelector('[data-col-part="actions"]')!.className).toContain("w-max");
     expect(ci.querySelector('[data-slot="row-subline"]')!.className).toContain("overflow-hidden");
+    // A small gap keeps the subline off the title line above it (Finn: "a little spacing").
+    expect(ci.querySelector('[data-slot="row-subline"]')!.className).toContain("mt-1");
     expect(rowOf("feat-ci").querySelectorAll('[role="cell"]')).toHaveLength(5); // one per header, the last holding preview + ⋯
     expect(rowOf("feat-ci").querySelector(".lucide-folder-git2")).toBeNull();
     // The row menu's trigger is vertical dots, not horizontal — same menu, same right-click.

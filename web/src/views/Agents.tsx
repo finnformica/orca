@@ -590,7 +590,7 @@ export function AgentRow({ row, fold = NO_FOLD, stacked = false }: { row: Row; f
     >
       <div role="cell" className="min-w-0">
         <div className="flex min-w-0 items-center gap-1.5"><RepoBadge repo={row.repo} /><span className="min-w-0 truncate font-medium">{row.title}</span><VerifiedBadge row={row} /></div>
-        <Subline className={SIGNALS} items={[
+        <Subline className={`mt-1 ${SIGNALS}`} items={[
           // A folded column leads the subline: the status label, then the PR with its checks. The
           // elapsed time/duration does NOT fold with it: the status hover card shows it beside its header.
           fold.status && { key: "status", sep: "after", node: <StatusLabel row={row} tone={tone} /> },
