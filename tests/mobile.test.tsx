@@ -215,7 +215,7 @@ describe("the phone layout (390px, touch)", () => {
     await mount("/", true);
     const bar = $('[data-slot="bottom-bar"]')!;
     const items = [...bar.querySelectorAll("button")];
-    expect(items.map((b) => b.textContent)).toEqual(["Overview", "Agents", "New agent", "Orchestrator", "Settings"]);
+    expect(items.map((b) => b.textContent)).toEqual(["Overview", "Agents", "New agent", "Orca", "Settings"]);
     expect(bar.className).toContain("md:hidden"); // never on a desktop-width screen
     expect(bar.className).toContain("safe-area-inset-bottom");
     expect($('[data-slot="topbar-mark"]')!.className).toContain("md:hidden");
@@ -402,7 +402,7 @@ describe("the phone layout (390px, touch)", () => {
   test("the orchestrator opens as a routed page, not the overlay panel: no drag, resize or pop out", async () => {
     await mount("/", true);
     expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false);
-    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orca")!);
     await act(async () => { await flush(); await flush(); });
     expect(location.pathname).toBe("/orchestrator");
     expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false); // the side panel never opens on a phone
@@ -414,13 +414,13 @@ describe("the phone layout (390px, touch)", () => {
     expect(document.querySelectorAll('[data-slot="orchestrator-resize"]')).toHaveLength(0);
     expect(document.querySelector('[aria-label="Pop out"]')).toBeNull();
     // The bottom bar marks it the current destination, like Agents does.
-    const button = [...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!;
+    const button = [...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orca")!;
     expect(button.getAttribute("aria-current")).toBe("page");
   });
 
   test("no autofocus on mobile: opening the orchestrator page or the New-draft dialog never pops the keyboard", async () => {
     await mount("/", true);
-    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orca")!);
     await act(async () => { await flush(); await flush(); });
     const page = $('[data-slot="orchestrator-page"]')!;
     expect(document.activeElement).not.toBe(page.querySelector("textarea"));
@@ -433,7 +433,7 @@ describe("the phone layout (390px, touch)", () => {
 
   test("the orchestrator page's own scroller holds the conversation; its back arrow returns to the previous page", async () => {
     await mount("/agents", true);
-    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orca")!);
     await act(async () => { await flush(); await flush(); });
     const page = $('[data-slot="orchestrator-page"]')!;
     // The chat's own div is the thing that scrolls — nothing about the page wraps it in a second one.
@@ -445,7 +445,7 @@ describe("the phone layout (390px, touch)", () => {
 
   test("the orchestrator page on a phone: edge-to-edge dividers, even 12px padding, a compact Send", async () => {
     await mount("/", true);
-    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orca")!);
     await act(async () => { await flush(); await flush(); });
     const page = $('[data-slot="orchestrator-page"]')!;
     const cls = (el: Element) => el.className.split(/\s+/);
@@ -587,7 +587,7 @@ describe("the phone layout (390px, touch)", () => {
 
   test("tapping Send with the composer focused sends once and keeps the focus (and the keyboard) in the box", async () => {
     await mount("/", true);
-    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orca")!);
     await act(async () => { await flush(); await flush(); });
     const page = $('[data-slot="orchestrator-page"]')!;
     const box = page.querySelector("textarea")!;

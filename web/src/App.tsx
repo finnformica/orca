@@ -83,7 +83,7 @@ function BoardRoute() {
   return show ? <BoardPage /> : <Agents />;
 }
 
-const TITLES = { overview: "Overview", agents: "Agents", board: "Board", inbox: "Inbox", previews: "Previews", handoffs: "Handoffs", settings: "Settings", orchestrator: "Orchestrator", integrations: "Integrations" } as const;
+const TITLES = { overview: "Overview", agents: "Agents", board: "Board", inbox: "Inbox", previews: "Previews", handoffs: "Handoffs", settings: "Settings", orchestrator: "Orca", integrations: "Integrations" } as const;
 
 function Crumbs({ route }: { route: Route }) {
   const rows = useWorkstreams();

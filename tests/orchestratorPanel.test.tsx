@@ -47,7 +47,7 @@ const panelEl = () => container!.querySelector<HTMLElement>('[data-slot="orchest
 /** The open panel, or null: it stays mounted (slid out) once it has been opened. */
 const panel = () => { const p = panelEl(); return p && p.dataset.state === "open" ? p : null; };
 const launcher = () => container!.querySelector<HTMLButtonElement>('button[data-slot="ask-orchestrator"]')!;
-const closeButton = (root: ParentNode = container!) => root.querySelector<HTMLButtonElement>('button[aria-label="Close orchestrator"]')!;
+const closeButton = (root: ParentNode = container!) => root.querySelector<HTMLButtonElement>('button[aria-label="Close Orca"]')!;
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
 const DAY = 86_400_000;
 /** The status poll starts once the slide is over (useSlideSettled), not in its frames. */
@@ -84,7 +84,7 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   expect(p.getAttribute("role")).toBe("dialog");
   expect(p.getAttribute("aria-modal")).toBe("false");
   expect(p.getAttribute("aria-hidden")).toBe("false");
-  expect(p.querySelector("#orchestrator-title")!.textContent).toBe("Orchestrator");
+  expect(p.querySelector("#orchestrator-title")!.textContent).toBe("Orca");
   expect(document.activeElement).toBe(p.querySelector("textarea")); // focused, ready to type
   expect(p.textContent).toContain("ship the cache");
   expect(p.textContent).toContain("Spawned r/add-cache.");
@@ -98,7 +98,7 @@ test("Ask the orchestrator opens its conversation in a side panel over the page,
   const user = p.querySelector<HTMLElement>('[data-slot="chat-user"]')!;
   expect(user.className).toContain("justify-end");
   expect(user.firstElementChild!.firstElementChild!.className).toContain("bg-accent");
-  expect(p.querySelector('[data-slot="chat-reply"]')!.textContent).toContain("Orchestrator");
+  expect(p.querySelector('[data-slot="chat-reply"]')!.textContent).toContain("Orca");
   expect([...p.querySelectorAll('[data-slot="chat-day"]')].map((d) => d.textContent)).toEqual(["Yesterday", "Today"]);
   expect(p.querySelector('[data-slot="turn-time"]')!.className).toContain("group-hover:opacity-100");
   expect(p.textContent).not.toContain("❯"); // no terminal prompt glyphs here
@@ -183,7 +183,7 @@ test("a paused orchestrator says so", async () => {
   await mount(<Entry />);
   await click(launcher());
   await afterSlide();
-  expect(panel()!.textContent).toContain("Orchestrator · paused until you reply");
+  expect(panel()!.textContent).toContain("Orca · paused until you reply");
   const ring = panel()!.querySelector<HTMLElement>('[data-slot="context-ring"]')!;
   expect(ring.className).toContain("text-amber-400");
 });
@@ -342,9 +342,9 @@ test("the popup window's page is the orchestrator's header and chat alone", asyn
   expect(isOrchestratorWindow("/agents", "?window")).toBe(false);
   await mount(<OrchestratorWindow />);
   const win = container!.querySelector('[data-slot="orchestrator-window"]')!;
-  expect(win.textContent).toContain("Orchestrator");
+  expect(win.textContent).toContain("Orca");
   expect(win.querySelector("textarea")).not.toBeNull();
-  expect(win.querySelector('[aria-label="Close orchestrator"]')).toBeNull();
+  expect(win.querySelector('[aria-label="Close Orca"]')).toBeNull();
 });
 
 test("Pop out shows at tablet width and up; it hides only below the app's own phone breakpoint (not lg)", async () => {
