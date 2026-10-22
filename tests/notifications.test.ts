@@ -216,6 +216,15 @@ describe("emitting, once", () => {
     expect(await db.addNotification({ key: "run:run-x:finished", repo: "r", kind: "finished", title: "t", body: "" })).toBeUndefined();
   });
 
+  test("the orchestrator's own wake that asks you something is a row titled \"Orca\", the name the UI uses", async () => {
+    await notify.onRunFinished({
+      key: "/state/orchestrator", cwd: "/state/orchestrator", runId: "run-orca", options: { repo: "@orca", branch: "orchestrator" }, status: "done" as const,
+      result: "Which PR should I merge first?", continued: false, exit: { code: 0, timedOut: false, budgetReached: false, stderr: "" },
+    });
+    const rows = await db.notifications();
+    expect(rows.map((n) => [n.kind, n.title])).toEqual([["needs_input", "Orca"]]);
+  });
+
   test("PRs: CI failing and conflicts, once per PR — a second poll, a check flap or the other instance adds nothing", async () => {
     const prs = [{ number: 7, title: "Add login", branch: "feat", state: "OPEN", ciStatus: "failing", mergeable: "CONFLICTING", failingChecks: ["test"], head: "abc" }];
     await notify.prs("r", prs);

@@ -293,7 +293,7 @@ export function OrchestratorPanel() {
   };
   const key = state?.key, running = !!state?.running;
   const row: Row = useMemo(() => ({
-    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
+    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orca", prompt: "", lane: "LOCAL",
     worktreePath: key, agentStatus: running ? "running" : "idle",
   }), [key, running]);
   // Width: dragged from the panel's left edge (SidePanel), remembered per browser, clamped to the
@@ -387,7 +387,7 @@ export function OrchestratorPage() {
   const prefill = useAtomValue(orchestratorPrefillAtom);
   const { state, load, controls } = useOrchestratorState(true);
   const row: Row = {
-    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
+    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orca", prompt: "", lane: "LOCAL",
     worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
   };
   return (
@@ -449,7 +449,7 @@ export function OrchestratorWindow() {
   const { state, load, controls } = useOrchestratorState(true);
   const key = state?.key, running = !!state?.running;
   const row: Row = useMemo(() => ({
-    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
+    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orca", prompt: "", lane: "LOCAL",
     worktreePath: key, agentStatus: running ? "running" : "idle",
   }), [key, running]);
   // The size you leave it at is the next Pop out's size, as for the PiP window.

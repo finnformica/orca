@@ -99,7 +99,7 @@ describe("installable app (PWA files)", () => {
     expect(html).toContain(`<meta name="theme-color" media="(prefers-color-scheme: light)" content="${themeColor(false)}" />`);
     expect(html).toContain(`<meta name="theme-color" media="(prefers-color-scheme: dark)" content="${themeColor(true)}" />`);
     expect(m.user_preferences.color_scheme_dark).toEqual({ theme_color: themeColor(true), background_color: themeColor(true) });
-    expect(m.shortcuts.map((s) => [s.name, launchOverlay(new URL(s.url, "http://x").search)])).toEqual([["New agent", "new"], ["Orchestrator", "orchestrator"]]);
+    expect(m.shortcuts.map((s) => [s.name, launchOverlay(new URL(s.url, "http://x").search)])).toEqual([["New agent", "new"], ["Orca", "orchestrator"]]);
     expect(launchOverlay("?open=nope")).toBeNull();
   });
 
@@ -731,7 +731,7 @@ describe("gestures", () => {
       const rows = [...sheet.querySelectorAll<HTMLElement>('[data-slot="sheet-item"]')];
       const labels = rows.map((r) => r.textContent?.trim());
       // The ⋯ menu's own items (submenus open in place as labelled groups), in the desktop order.
-      for (const l of ["Agent chat", "Orchestrator", "Branch name", "Worktree path", "Rename…", "Discard"]) expect(labels).toContain(l);
+      for (const l of ["Agent chat", "Ask Orca", "Branch name", "Worktree path", "Rename…", "Discard"]) expect(labels).toContain(l);
       expect(labels).not.toContain("Follow up…");
       expect([...sheet.querySelectorAll('[role="group"]')].map((g) => g.getAttribute("aria-label"))).toEqual(["Open", "Copy", "PR", "Agent"]); // Agent: Move to cloud
       for (const r of rows) {

@@ -20,6 +20,6 @@
   ],
   "shortcuts": [
     { "name": "New agent", "short_name": "New", "url": "/?open=new", "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }] },
-    { "name": "Orchestrator", "short_name": "Ask", "url": "/?open=orchestrator", "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }] }
+    { "name": "Orca", "short_name": "Orca", "url": "/?open=orchestrator", "icons": [{ "src": "/icon-192.png", "sizes": "192x192", "type": "image/png" }] }
   ]
 }

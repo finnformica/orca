@@ -206,7 +206,7 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
         {has("open.pr") && <Item icon={ExternalLink} onSelect={() => openUrl(row.prUrl)}>PR on GitHub</Item>}
         {has("open.preview") && <Item icon={Globe} onSelect={() => openUrl(row.previewUrl)}>PR preview</Item>}
         {has("open.ci") && <Item icon={CircleX} onSelect={() => openUrl(failingCiUrl(row))}>Failing CI run</Item>}
-        <Item icon={Bot} onSelect={() => openOrchestrator(orchestratorAbout(row))}>Orchestrator</Item>
+        <Item icon={Bot} onSelect={() => openOrchestrator(orchestratorAbout(row))}>Ask Orca</Item>
       </Sub>
 
       {/* Copy ▸ — a missing worktree is adopted first (Worktree path, CLI command). */}

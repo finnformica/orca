@@ -840,7 +840,7 @@ const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadSt
       <div className="flex gap-2" data-slot="integration-reply">
         <span className="bg-accent text-foreground inline-flex size-5 shrink-0 items-center justify-center rounded-full" aria-hidden="true"><Bot className="size-3" /></span>
         <div className="min-w-0 flex-1">
-          <div className="text-foreground mb-0.5 text-[11px] font-medium">Orchestrator</div>
+          <div className="text-foreground mb-0.5 text-[11px] font-medium">Orca</div>
           <Reply turn={turn} loadSteps={loadStepsFor && (() => loadStepsFor(turn))} />
         </div>
       </div>
