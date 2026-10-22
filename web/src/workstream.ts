@@ -2707,13 +2707,16 @@ export const previewLabel = (href: string): string => { try { return new URL(hre
 export type PrPreviewState = "hidden" | "add" | "pending" | "ready";
 export type PrPreviewRow = { prNumber?: number; previewUrl?: string; hasPreviewLabel?: boolean };
 
-/** `configured`: the repo has a `previewLabel` or opted into RepoFeatures.previews — otherwise there
- *  is nothing a click could do, so the control hides rather than offering a button that 404s.
- *  `justAdded`: an optimistic flag the control sets right after a successful Add click, so it reads
- *  as pending at once rather than waiting for the next PR poll to carry `hasPreviewLabel`. */
+/** A PR with a `previewUrl` is "ready" on ANY repo: a deploy bot (Cloudflare, Vercel, Netlify) posts
+ *  it with no Orca config. `configured`: the repo has a `previewLabel` or opted into
+ *  RepoFeatures.previews — only then are Add and pending shown, since otherwise there is nothing a
+ *  click could do. `justAdded`: an optimistic flag the control sets right after a successful Add
+ *  click, so it reads as pending at once rather than waiting for the next PR poll to carry
+ *  `hasPreviewLabel`. */
 export function prPreviewState(row: PrPreviewRow, configured: boolean, justAdded = false): PrPreviewState {
-  if (!row.prNumber || !configured) return "hidden";
+  if (!row.prNumber) return "hidden";
   if (row.previewUrl) return "ready";
+  if (!configured) return "hidden";
   if (row.hasPreviewLabel || justAdded) return "pending";
   return "add";
 }

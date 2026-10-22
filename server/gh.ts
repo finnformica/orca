@@ -1,5 +1,6 @@
 import { forRepo, GitHubNotFoundError } from "./github";
 import { mergeSafe } from "../web/src/workstream";
+import { extractPreviewUrl } from "./previewUrl";
 
 export type CiStatus = "none" | "pending" | "passing" | "failing";
 export type ReviewStatus = "none" | "review_required" | "changes_requested" | "approved";
@@ -318,12 +319,6 @@ export type PrSummary = PrStatus & {
   /** The PR's head commit — what a CI notification is keyed on, and what cleanup calls "pushed". */
   head?: string;
 };
-
-/** Pull a deploy-preview URL out of a PR's comments (posted by the pr-preview action). */
-function extractPreviewUrl(comments: Array<{ body?: string }>): string | undefined {
-  const urls = comments.flatMap((c) => [...(c.body ?? "").matchAll(/https?:\/\/[^\s)\]<]+/g)].map((m) => m[0]));
-  return urls.find((u) => /\.preview\./.test(u) && !/api\.preview/.test(u) && !/\.(png|jpe?g|gif|svg)(\?|$)/i.test(u));
-}
 
 /** Count HUMAN feedback on a PR: issue comments + reviews left by someone other than the author,
  *  excluding bots (login ends in `[bot]` — CI/preview/coverage). Drives "Follow PR": a rise in this

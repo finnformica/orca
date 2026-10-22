@@ -242,8 +242,9 @@ function usePrPreviewAdd(row: Row) {
  *  the pr-preview action posts once the repo's preview label lands on the PR — distinct from the
  *  LOCAL preview cell above, so both can sit side by side. A link once the PR carries a `previewUrl`,
  *  an "Add PR preview" button before the label is on, a spinner (same slot) while the label is on but
- *  the deploy hasn't posted its URL yet. Hidden entirely when there's no PR or the repo never
- *  configured a preview label / the previews feature (see store.previewConfigured). */
+ *  the deploy hasn't posted its URL yet. The link shows on any repo (a deploy bot's comment is
+ *  enough); Add and the spinner only where the repo configured a preview label / the previews
+ *  feature (see store.previewConfigured). Hidden when there's no PR. */
 export function PrPreviewCell({ row }: { row: Row }) {
   const { state, busy, add } = usePrPreviewAdd(row);
   if (state === "hidden") return null;
