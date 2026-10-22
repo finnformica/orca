@@ -131,7 +131,7 @@ export function AskOrchestrator() {
   const { ask, open, close } = useOrchestrator();
   const activity = useAtomValue(orchestratorActivityAtom);
   return (
-    <button type="button" data-slot="ask-orchestrator" onClick={() => (open ? close() : ask())} aria-label="Ask the orchestrator" aria-expanded={open}
+    <button type="button" data-slot="ask-orchestrator" onClick={() => (open ? close() : ask())} aria-label="Ask Orca" aria-expanded={open}
       // Shell.tsx wraps this with the header's usage meter in one ml-auto slot, so this button stays
       // right-aligned whether or not the meter renders (it's absent while loading or signed out).
       // Below md the bottom bar's Orchestrator button takes its place.
@@ -139,7 +139,7 @@ export function AskOrchestrator() {
       // replaced the wider fallback font after first paint. The label truncates if a fallback is wider.
       className="bg-card hover:bg-accent text-foreground flex h-8 w-[12.25rem] shrink-0 items-center gap-2 rounded-md border px-2.5 text-sm max-md:hidden">
       <span className="relative inline-flex shrink-0"><Bot className="text-muted-foreground size-3.5 shrink-0" /><ActivityDot activity={activity} className="absolute -top-1 -right-1 size-1.5" /></span>
-      <span data-slot="ask-orchestrator-label" className="text-muted-foreground min-w-0 flex-1 truncate text-left">Ask the orchestrator</span>
+      <span data-slot="ask-orchestrator-label" className="text-muted-foreground min-w-0 flex-1 truncate text-left">Ask Orca</span>
       <Shortcut id="orchestrator" />
     </button>
   );
@@ -293,7 +293,7 @@ export function OrchestratorPanel() {
   };
   const key = state?.key, running = !!state?.running;
   const row: Row = useMemo(() => ({
-    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
+    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orca", prompt: "", lane: "LOCAL",
     worktreePath: key, agentStatus: running ? "running" : "idle",
   }), [key, running]);
   // Width: dragged from the panel's left edge (SidePanel), remembered per browser, clamped to the
@@ -307,7 +307,7 @@ export function OrchestratorPanel() {
       slot="orchestrator-handle" swipe={swipe} touch={coarse && !pip}
       icon={<Bot className="size-3.5" />} titleId="orchestrator-title"
       // Paused = it has woken itself as many times as it may without hearing from you.
-      title={state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}
+      title={state?.paused ? "Orca · paused until you reply" : "Orca"}
       status={<OrchestratorStatusLine state={state} />}
       actions={<>
         {pip ? (
@@ -322,7 +322,7 @@ export function OrchestratorPanel() {
           </Tip>
         )}
         <Tip label="Close" shortcut="escape">
-          <Button size="icon" variant="ghost" className="size-7 max-md:size-11" aria-label="Close orchestrator" onClick={() => setOpen(false)}>
+          <Button size="icon" variant="ghost" className="size-7 max-md:size-11" aria-label="Close Orca" onClick={() => setOpen(false)}>
             <X className="size-4" />
           </Button>
         </Tip>
@@ -347,13 +347,13 @@ export function OrchestratorPanel() {
         // PipContext tells the composer not to trust ITS narrow viewport for max-md: sizing.
         <PortalContainer.Provider value={pip.document.body}>
           <PipContext.Provider value={true}>
-            <div role="dialog" aria-label="Orchestrator" data-slot="orchestrator-panel" data-pip="" className={`${panelClass} h-screen w-screen`}>{header()}{chat}</div>
+            <div role="dialog" aria-label="Orca" data-slot="orchestrator-panel" data-pip="" className={`${panelClass} h-screen w-screen`}>{header()}{chat}</div>
           </PipContext.Provider>
         </PortalContainer.Provider>,
         pip.document.body,
       )}
       {!pip && (
-        <SidePanel open={open} onClose={() => setOpen(false)} slot="orchestrator" label="Orchestrator" labelledBy="orchestrator-title"
+        <SidePanel open={open} onClose={() => setOpen(false)} slot="orchestrator" label="Orca" labelledBy="orchestrator-title"
           widthAtom={orchestratorWidthAtom} swipe={coarse && !pip} header={header}>
           {chat}
         </SidePanel>
@@ -387,7 +387,7 @@ export function OrchestratorPage() {
   const prefill = useAtomValue(orchestratorPrefillAtom);
   const { state, load, controls } = useOrchestratorState(true);
   const row: Row = {
-    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
+    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orca", prompt: "", lane: "LOCAL",
     worktreePath: state?.key, agentStatus: state?.running ? "running" : "idle",
   };
   return (
@@ -399,7 +399,7 @@ export function OrchestratorPage() {
         </Button>
         <div className="min-w-0">
           {/* Paused = it has woken itself as many times as it may without hearing from you. */}
-          <div className="truncate text-sm font-medium">{state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}</div>
+          <div className="truncate text-sm font-medium">{state?.paused ? "Orca · paused until you reply" : "Orca"}</div>
           <OrchestratorStatusLine state={state} />
         </div>
       </div>
@@ -417,7 +417,7 @@ export function OrchestratorPage() {
 const OrchestratorChat = memo(function OrchestratorChat({ row, prefill, controls, load }: { row: Row; prefill: OrchestratorPrefill | null; controls: ChatControlsProps; load: () => Promise<unknown> }) {
   return (
     <ChatPanel
-      row={row} author="Orchestrator" prefill={prefill} outbox controls={controls}
+      row={row} author="Orca" prefill={prefill} outbox controls={controls}
       send={async (text, images) => {
         await sendToOrchestrator(text, images);
         await load();
@@ -449,7 +449,7 @@ export function OrchestratorWindow() {
   const { state, load, controls } = useOrchestratorState(true);
   const key = state?.key, running = !!state?.running;
   const row: Row = useMemo(() => ({
-    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orchestrator", prompt: "", lane: "LOCAL",
+    repo: ORCHESTRATOR_REPO, hasRemote: false, branch: ORCHESTRATOR_BRANCH, title: "Orca", prompt: "", lane: "LOCAL",
     worktreePath: key, agentStatus: running ? "running" : "idle",
   }), [key, running]);
   // The size you leave it at is the next Pop out's size, as for the PiP window.
@@ -460,9 +460,9 @@ export function OrchestratorWindow() {
   }, []);
   return (
     <PipContext.Provider value={true}>
-      <div role="main" aria-label="Orchestrator" data-slot="orchestrator-window" className="bg-background text-foreground flex h-[100dvh] w-screen flex-col overflow-hidden">
+      <div role="main" aria-label="Orca" data-slot="orchestrator-window" className="bg-background text-foreground flex h-[100dvh] w-screen flex-col overflow-hidden">
         <PanelHeader slot="orchestrator-handle" icon={<Bot className="size-3.5" />}
-          title={state?.paused ? "Orchestrator · paused until you reply" : "Orchestrator"}
+          title={state?.paused ? "Orca · paused until you reply" : "Orca"}
           status={<OrchestratorStatusLine state={state} />} />
         <div className="min-h-0 flex-1">
           <OrchestratorChat row={row} prefill={prefill} controls={controls} load={load} />

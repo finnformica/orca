@@ -45,7 +45,7 @@ export async function onRunFinished(run: RunFinished): Promise<void> {
   const { repo, branch } = run.options;
   if (!repo || !branch || run.status === "running") return; // a repo-level run (Slack) belongs to no workstream
   const orchestrator = repo === ORCHESTRATOR_REPO;
-  const title = orchestrator ? "Orchestrator" : await titleOf(repo, branch);
+  const title = orchestrator ? "Orca" : await titleOf(repo, branch);
   const common = { repo, branch, runId: run.runId, title };
   const own = runNotification({
     ...common, status: run.status, response: run.result, outcome: run.structured, orchestrator, continued: run.continued,

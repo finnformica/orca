@@ -114,7 +114,7 @@ test("T2 a failed Merge on the Agents list: a card in the notification stack and
 
     // Its quick actions, the notification toasts' own: Ask the orchestrator (primary), Copy, Open.
     await hover(t);
-    expect(actionLabels(t)).toEqual(["Ask the orchestrator", "Copy", "Open"]);
+    expect(actionLabels(t)).toEqual(["Ask Orca", "Copy", "Open"]);
     for (const b of t.querySelector('[data-slot="notification-actions"]')!.querySelectorAll("button")) expect(b.className).toContain("size-7");
 
     // Listed in the centre, unread, with the same verbs and label.
@@ -124,7 +124,7 @@ test("T2 a failed Merge on the Agents list: a card in the notification stack and
     expect(row.dataset.unread).toBe("");
     expect(row.textContent).toContain("Approved thing");
     expect(row.textContent).toContain("Merge failed");
-    expect(actionLabels(row.closest("li")!)).toEqual(["Ask the orchestrator", "Copy", "Open", "Mark as read"]);
+    expect(actionLabels(row.closest("li")!)).toEqual(["Ask Orca", "Copy", "Open", "Mark as read"]);
 
     // Copy: the message plus its context; acting marks it read, so it leaves the stack — and being
     // local, nothing is sent to the bridge about it.
@@ -142,7 +142,7 @@ test("T3 Ask the orchestrator on a failed action: the panel opens with the hand-
   await act(async () => { await flush(); });
   const t = cards("action_failed")[0]!;
   await hover(t);
-  await click(button(t, "Ask the orchestrator"));
+  await click(button(t, "Ask Orca"));
   const box = q('[data-slot="orchestrator-panel"]')!.querySelector("textarea")!;
   expect(box.value).toBe("Action Merge on r/feat-ok (PR #9) failed: boom. Please investigate and fix.");
   expect(apiFake.orchestratorMessages).toEqual([]);

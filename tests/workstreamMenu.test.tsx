@@ -165,9 +165,9 @@ describe("WorkstreamActions: the redesigned menu", () => {
     s.set(orchestratorOpenAtom, false);
     await mount(prRow);
     await openSub("Open");
-    expect(labels()).toEqual(expect.arrayContaining(["Agent chat", "PR on GitHub", "Orchestrator"]));
+    expect(labels()).toEqual(expect.arrayContaining(["Agent chat", "PR on GitHub", "Ask Orca"]));
     expect(labels()).not.toContain("Failing CI run"); // CI passes
-    await click(menuitem("Orchestrator")!);
+    await click(menuitem("Ask Orca")!);
     expect(s.get(orchestratorOpenAtom)).toBe(true);
     expect(s.get(orchestratorPrefillAtom)?.text).toBe('About r#7 "Feat": ');
     expect(apiFake.orchestratorMessages).toEqual([]); // not sent

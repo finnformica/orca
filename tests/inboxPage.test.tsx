@@ -67,7 +67,7 @@ describe("the Inbox page", () => {
     seed();
     await open("/inbox");
     const list = all("inbox-row");
-    expect(list.map((r) => r.querySelector('[data-slot="inbox-sender"]')!.textContent)).toEqual(["Orchestrator", "Ada", "Saajan"]);
+    expect(list.map((r) => r.querySelector('[data-slot="inbox-sender"]')!.textContent)).toEqual(["Orca", "Ada", "Saajan"]);
     expect(list.map((r) => r.querySelector('[data-slot="source-chip"]')!.getAttribute("data-source"))).toEqual(["orca", "email", "slack"]);
     expect(list.map((r) => r.querySelector('[data-slot="delivery-state"]')?.getAttribute("data-state") ?? null)).toEqual(["dead", null, "sent"]);
     expect(list[2]!.querySelector('[data-slot="workstream-chip"]')!.textContent).toContain("Login form");

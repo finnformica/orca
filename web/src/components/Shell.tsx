@@ -194,14 +194,16 @@ export function Shell({ crumbs, sidebarActions, children }: {
             "max-md:h-[calc(3.5rem+env(safe-area-inset-top))] max-md:pt-[env(safe-area-inset-top)]",
           )}
         >
-          <button type="button" data-slot="topbar-mark" onClick={() => navigate("/")} aria-label="Orca — go to overview" className="shrink-0 md:hidden"><RoundMark /></button>
+          <button type="button" data-slot="topbar-mark" onClick={() => navigate("/")} aria-label="Orca — go to overview" className="flex size-8 shrink-0 items-center justify-center md:hidden"><RoundMark /></button>
           {/* The phone has no sidebar: the server's name goes beside the mark — the server menu
               carries it when it shows. */}
           {!serverMenu && identity && <span data-slot="topbar-identity" className="text-server-fg truncate text-sm font-medium md:hidden">{identity.label}</span>}
           <ServerMenu />
           <RepoSwitcher />
-          <nav aria-label="Breadcrumb" className="text-muted-foreground flex min-w-0 items-center gap-2 text-sm">{crumbs}</nav>
-          <span className="contents max-md:ml-auto max-md:flex"><BridgeLabel /><StaleIndicator /></span>
+          {/* A phone keeps the page name: the crumbs never shrink under 4.5rem (they truncate), and the
+              server and repo menus shrink first. */}
+          <nav aria-label="Breadcrumb" className="text-muted-foreground flex min-w-0 items-center gap-2 text-sm max-md:min-w-[4.5rem]">{crumbs}</nav>
+          <span className="contents max-md:ml-auto max-md:flex max-md:shrink-0 max-md:items-center max-md:gap-2"><BridgeLabel /><StaleIndicator /></span>
           {/* A reserved slot, not a margin on whichever of these happens to render first: the usage
               meter is absent while loading or with nothing signed in, and ml-auto on it alone left
               "Ask the orchestrator" stuck against the breadcrumbs until the meter appeared. */}
@@ -242,7 +244,7 @@ export const chatTab = (route: Route) => (route.name === "pr" || route.name === 
 export const Crumb = ({ children, to }: { children: ReactNode; to?: string }) => (
   <>
     <span className="text-border select-none" aria-hidden="true">/</span>
-    {to ? <button type="button" onClick={() => navigate(to)} className="hover:text-foreground truncate">{children}</button>
+    {to ? <button type="button" onClick={() => navigate(to)} className="hover:text-foreground truncate max-md:py-1.5">{children}</button>
       : <span className="text-foreground truncate" aria-current="page">{children}</span>}
   </>
 );
@@ -361,7 +363,7 @@ function BottomBar({ activity }: { activity: { running: boolean; unread: boolean
       {/* The orchestrator, carrying the activity dot the desktop's quick-ask pill shows (there is no pill below md).
           `ask()` routes here to /orchestrator on a narrow screen rather than opening the side panel. */}
       <button type="button" className={cn(item, "relative", route.name === "orchestrator" && "text-server-fg")} aria-current={route.name === "orchestrator" ? "page" : undefined} onClick={() => ask()}>
-        <Bot className="size-5" /><ActivityDot activity={activity} className="absolute top-1.5 right-[calc(50%-0.9rem)]" /><span className={label}>Orchestrator</span>
+        <Bot className="size-5" /><ActivityDot activity={activity} className="absolute top-1.5 right-[calc(50%-0.9rem)]" /><span className={label}>Orca</span>
       </button>
       <button type="button" className={cn(item, settings.match(route) && "text-server-fg")} aria-current={settings.match(route) ? "page" : undefined} onClick={() => navigate("/settings")}><Settings className="size-5" /><span className={label}>Settings</span></button>
     </nav>
@@ -445,8 +447,8 @@ function RepoSwitcher() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button type="button" data-slot="repo-switcher" className="hover:bg-accent flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium">
-          {repo === "all" ? "All repos" : repoLabel(repos, repo)} <ChevronsUpDown className="text-muted-foreground size-3.5" />
+        <button type="button" data-slot="repo-switcher" className="hover:bg-accent flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm font-medium max-md:min-w-0 max-md:max-w-[8rem] max-md:shrink">
+          <span className="truncate">{repo === "all" ? "All repos" : repoLabel(repos, repo)}</span> <ChevronsUpDown className="text-muted-foreground size-3.5 shrink-0" />
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" className="min-w-[12rem]">

@@ -34,7 +34,7 @@ export const CHORD_TIMEOUT_MS = 1000;
 export const SHORTCUTS: Shortcut[] = [
   { id: "palette", label: "Command palette", mod: true, key: "K" },
   { id: "new", label: "New agent", key: "C" },
-  { id: "orchestrator", label: "Ask the orchestrator", key: "O" },
+  { id: "orchestrator", label: "Ask Orca", key: "O" },
   { id: "quickAsk", label: "Quick ask (one message, no history)", key: "A" },
   { id: "find", label: "Find agents", key: "F" },
   { id: "notifications", label: "Notifications", key: "N" },

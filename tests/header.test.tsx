@@ -106,6 +106,8 @@ describe("console shell", () => {
     expect(ask.className.split(/\s+/)).toContain("w-[12.25rem]"); // its width can't follow the font
     const label = ask.querySelector<HTMLElement>('[data-slot="ask-orchestrator-label"]')!;
     expect(label.className.split(/\s+/)).toEqual(expect.arrayContaining(["truncate", "min-w-0"])); // a wider fallback font can't widen it
+    expect(label.textContent).toBe("Ask Orca");
+    expect(ask.getAttribute("aria-label")).toBe("Ask Orca");
     const css = readFileSync(join(import.meta.dir, "..", "web", "src", "styles.css"), "utf8");
     // A phone reserves it on <html>; a desktop on the page column, which scrolls on its own there.
     expect(css).toMatch(/@media \(max-width: 767px\)\s*\{\s*\/\*[^*]*\*\/\s*html\s*\{\s*scrollbar-gutter:\s*stable;/);

@@ -323,7 +323,7 @@ function ReplyBox({ eventId, to, onSent, onCancel, autoFocus, ws }: { eventId: s
 function InboxRowView({ row, selected, onOpen, onMarkRead, onChanged }: {
   row: InboxRow; selected: boolean; onOpen: () => void; onMarkRead: (ids: string[], read: boolean) => void; onChanged: () => void;
 }) {
-  const sender = row.sender?.name ?? (row.kind === "question" ? "Orchestrator" : sourceLabel(row.adapter));
+  const sender = row.sender?.name ?? (row.kind === "question" ? "Orca" : sourceLabel(row.adapter));
   // A row with its own badge (an Orca notification: the kind is its "sender") leads with its title.
   const who = row.badge && row.title ? row.title : sender;
   const kind = row.badge ? undefined : KIND_LABEL[row.kind];

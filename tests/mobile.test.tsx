@@ -15,7 +15,7 @@ import { COARSE_QUERY, NARROW_QUERY, enterSends, expandTruncatedOnTap, keepCompo
 import { poll } from "@/lib/poll";
 import { PULL_REFRESH_PX, pullState, swipeArm, swipeDecision, swipeOffset, STALE_AFTER_MS, launchOverlay, newerBuild, previewHref, previewLabel, staleAge } from "@/workstream";
 import { themeColor } from "@/lib/theme";
-import { UpdateBanner } from "@/components/Freshness";
+import { BridgeLabel, UpdateBanner } from "@/components/Freshness";
 import { SHEET_CLOSE_MS } from "@/components/BottomSheet";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -99,7 +99,7 @@ describe("installable app (PWA files)", () => {
     expect(html).toContain(`<meta name="theme-color" media="(prefers-color-scheme: light)" content="${themeColor(false)}" />`);
     expect(html).toContain(`<meta name="theme-color" media="(prefers-color-scheme: dark)" content="${themeColor(true)}" />`);
     expect(m.user_preferences.color_scheme_dark).toEqual({ theme_color: themeColor(true), background_color: themeColor(true) });
-    expect(m.shortcuts.map((s) => [s.name, launchOverlay(new URL(s.url, "http://x").search)])).toEqual([["New agent", "new"], ["Orchestrator", "orchestrator"]]);
+    expect(m.shortcuts.map((s) => [s.name, launchOverlay(new URL(s.url, "http://x").search)])).toEqual([["New agent", "new"], ["Orca", "orchestrator"]]);
     expect(launchOverlay("?open=nope")).toBeNull();
   });
 
@@ -215,7 +215,7 @@ describe("the phone layout (390px, touch)", () => {
     await mount("/", true);
     const bar = $('[data-slot="bottom-bar"]')!;
     const items = [...bar.querySelectorAll("button")];
-    expect(items.map((b) => b.textContent)).toEqual(["Overview", "Agents", "New agent", "Orchestrator", "Settings"]);
+    expect(items.map((b) => b.textContent)).toEqual(["Overview", "Agents", "New agent", "Orca", "Settings"]);
     expect(bar.className).toContain("md:hidden"); // never on a desktop-width screen
     expect(bar.className).toContain("safe-area-inset-bottom");
     expect($('[data-slot="topbar-mark"]')!.className).toContain("md:hidden");
@@ -230,6 +230,30 @@ describe("the phone layout (390px, touch)", () => {
     await click(items.find((b) => b.textContent === "Agents")!);
     expect(location.pathname).toBe("/agents");
     expect(items[0]!.getAttribute("aria-current")).toBeNull();
+  });
+
+  // At 390px and 360px the bar crowded: a preview's bridge label ran off the right edge and the
+  // breadcrumb shrank to nothing. Each rule below is phone-only (max-md:), so a desktop is unchanged.
+  test("the top bar fits a phone: the page name keeps room, the badges go to icons, every target is 32px", async () => {
+    await mount("/agents", true);
+    const bar = $('header[data-slot="topbar"]')!;
+    const cls = (el: Element | null) => (el as HTMLElement).className.split(/\s+/);
+    expect(cls($('[data-slot="topbar-mark"]'))).toEqual(expect.arrayContaining(["size-8", "md:hidden"]));
+    const crumbs = bar.querySelector('nav[aria-label="Breadcrumb"]')!;
+    expect(cls(crumbs)).toEqual(expect.arrayContaining(["min-w-0", "max-md:min-w-[4.5rem]"]));
+    expect(crumbs.textContent).toContain("Agents");
+    // Hidden on a phone, as before: the bottom bar's Orchestrator replaces both.
+    expect(cls($('[data-slot="ask-orchestrator"]')!.parentElement)).toContain("max-md:hidden");
+    // The bridge label keeps its icon and colour; its text is for a screen reader only.
+    const label = document.createElement("div");
+    document.body.appendChild(label);
+    const r = createRoot(label);
+    await act(async () => { r.render(<BridgeLabel previewPage />); await flush(); });
+    const text = label.querySelector('[data-slot="bridge-label"] span')!;
+    expect(cls(text)).toContain("max-md:sr-only");
+    expect(text.textContent).toContain("API");
+    act(() => r.unmount());
+    label.remove();
   });
 
   // Regression: the dialog used to render inside the sidebar's hidden-on-phone <aside> (max-md:hidden).
@@ -378,7 +402,7 @@ describe("the phone layout (390px, touch)", () => {
   test("the orchestrator opens as a routed page, not the overlay panel: no drag, resize or pop out", async () => {
     await mount("/", true);
     expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false);
-    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orca")!);
     await act(async () => { await flush(); await flush(); });
     expect(location.pathname).toBe("/orchestrator");
     expect(getDefaultStore().get(orchestratorOpenAtom)).toBe(false); // the side panel never opens on a phone
@@ -390,13 +414,13 @@ describe("the phone layout (390px, touch)", () => {
     expect(document.querySelectorAll('[data-slot="orchestrator-resize"]')).toHaveLength(0);
     expect(document.querySelector('[aria-label="Pop out"]')).toBeNull();
     // The bottom bar marks it the current destination, like Agents does.
-    const button = [...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!;
+    const button = [...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orca")!;
     expect(button.getAttribute("aria-current")).toBe("page");
   });
 
   test("no autofocus on mobile: opening the orchestrator page or the New-draft dialog never pops the keyboard", async () => {
     await mount("/", true);
-    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orca")!);
     await act(async () => { await flush(); await flush(); });
     const page = $('[data-slot="orchestrator-page"]')!;
     expect(document.activeElement).not.toBe(page.querySelector("textarea"));
@@ -409,7 +433,7 @@ describe("the phone layout (390px, touch)", () => {
 
   test("the orchestrator page's own scroller holds the conversation; its back arrow returns to the previous page", async () => {
     await mount("/agents", true);
-    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orca")!);
     await act(async () => { await flush(); await flush(); });
     const page = $('[data-slot="orchestrator-page"]')!;
     // The chat's own div is the thing that scrolls — nothing about the page wraps it in a second one.
@@ -421,7 +445,7 @@ describe("the phone layout (390px, touch)", () => {
 
   test("the orchestrator page on a phone: edge-to-edge dividers, even 12px padding, a compact Send", async () => {
     await mount("/", true);
-    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orca")!);
     await act(async () => { await flush(); await flush(); });
     const page = $('[data-slot="orchestrator-page"]')!;
     const cls = (el: Element) => el.className.split(/\s+/);
@@ -563,7 +587,7 @@ describe("the phone layout (390px, touch)", () => {
 
   test("tapping Send with the composer focused sends once and keeps the focus (and the keyboard) in the box", async () => {
     await mount("/", true);
-    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orchestrator")!);
+    await click([...$('[data-slot="bottom-bar"]')!.querySelectorAll("button")].find((b) => b.textContent === "Orca")!);
     await act(async () => { await flush(); await flush(); });
     const page = $('[data-slot="orchestrator-page"]')!;
     const box = page.querySelector("textarea")!;
@@ -707,7 +731,7 @@ describe("gestures", () => {
       const rows = [...sheet.querySelectorAll<HTMLElement>('[data-slot="sheet-item"]')];
       const labels = rows.map((r) => r.textContent?.trim());
       // The ⋯ menu's own items (submenus open in place as labelled groups), in the desktop order.
-      for (const l of ["Agent chat", "Orchestrator", "Branch name", "Worktree path", "Rename…", "Discard"]) expect(labels).toContain(l);
+      for (const l of ["Agent chat", "Ask Orca", "Branch name", "Worktree path", "Rename…", "Discard"]) expect(labels).toContain(l);
       expect(labels).not.toContain("Follow up…");
       expect([...sheet.querySelectorAll('[role="group"]')].map((g) => g.getAttribute("aria-label"))).toEqual(["Open", "Copy", "PR", "Agent"]); // Agent: Move to cloud
       for (const r of rows) {

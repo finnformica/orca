@@ -30,7 +30,7 @@ import { isMobile } from "@/lib/viewport";
 
 /** How long the "Sent" confirmation shows after a send (ms). The box itself stays open. */
 export const SENT_FLASH_MS = 2500;
-export const QUICK_ASK_PLACEHOLDER = "Ask the orchestrator...";
+export const QUICK_ASK_PLACEHOLDER = "Ask Orca...";
 /** The pill ↔ box morph (ms) — the surface's `duration-200`. */
 export const MORPH_MS = 200;
 const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -127,7 +127,7 @@ export function QuickAsk() {
                 every composer's toolbar: model and context on the left (then the receipt), attach
                 and Send (with its key) on the right. */}
             <ChatComposer variant="quick" persistKey="orca.quickAsk" onSubmit={send} placeholder={QUICK_ASK_PLACEHOLDER}
-              inputLabel="Message the orchestrator" icon={<Bot className="text-muted-foreground mt-1 size-4 shrink-0" />}
+              inputLabel="Message Orca" icon={<Bot className="text-muted-foreground mt-1 size-4 shrink-0" />}
               leading={
                 <div className="flex min-w-0 items-center gap-1">
                   <ChatControls {...controls} compact={compact} />
@@ -142,7 +142,7 @@ export function QuickAsk() {
               } />
           </div>
         ) : (
-          <button type="button" data-slot="quick-ask-pill" onClick={() => setOpen(true)} aria-label="Ask the orchestrator (quick)"
+          <button type="button" data-slot="quick-ask-pill" onClick={() => setOpen(true)} aria-label="Ask Orca (quick)"
             className="animate-in fade-in-0 hover:[&>svg]:text-foreground flex size-full items-center justify-center gap-2 px-3 text-sm whitespace-nowrap transition-colors duration-150 motion-reduce:animate-none">
             <Bot className="text-muted-foreground size-3.5" />
             <span>Ask</span>

@@ -512,7 +512,7 @@ export function GitHubSection() {
           : accounts.length === 0 ? <Empty>No gh account is signed in on this machine.</Empty>
           : accounts.map((a) => <AccountRowView key={a.login} account={a} onSaved={setAccounts} />)}
         <div className="text-muted-foreground px-4 py-3 text-xs">
-          Add an account on this machine: <code className="font-mono">gh auth login</code>. Pin a repo to one with <code className="font-mono">githubUser</code> in its config, or ask the orchestrator to add the repo — it picks the account that owns it.
+          Add an account on this machine: <code className="font-mono">gh auth login</code>. Pin a repo to one with <code className="font-mono">githubUser</code> in its config, or ask Orca to add the repo — it picks the account that owns it.
         </div>
       </VCard>
     </SettingsSection>

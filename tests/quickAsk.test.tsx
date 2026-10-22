@@ -130,7 +130,7 @@ test("Q4: one surface morphs pill ↔ box (width, height, radius; none under red
   expect(surface().dataset.state).toBe("open");
   expect(cls()).toEqual(expect.arrayContaining(["h-auto", "rounded-xl", "w-[min(560px,calc(100%-2rem))]"]));
   const box = $('[data-slot="quick-ask-box"]')!;
-  expect(input().placeholder).toBe("Ask the orchestrator...");
+  expect(input().placeholder).toBe("Ask Orca...");
   expect(box.querySelector('[aria-label="Close quick ask"]')).toBeNull(); // no ✕
   expect(box.textContent).not.toContain("Open full chat"); // no footer
   expect(box.textContent).not.toContain("One message, no history");
