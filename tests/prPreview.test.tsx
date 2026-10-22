@@ -34,8 +34,16 @@ describe("prPreviewState (pure)", () => {
   test("hidden without a PR, even on a configured repo", () => {
     expect(prPreviewState({}, true)).toBe("hidden");
   });
-  test("hidden with a PR on an unconfigured repo", () => {
+  test("hidden with a PR on an unconfigured repo, even with the label or a just-added flag", () => {
     expect(prPreviewState({ prNumber: 1 }, false)).toBe("hidden");
+    expect(prPreviewState({ prNumber: 1, hasPreviewLabel: true }, false)).toBe("hidden");
+    expect(prPreviewState({ prNumber: 1 }, false, true)).toBe("hidden");
+  });
+  test("ready on an unconfigured repo once a deploy bot posted a previewUrl", () => {
+    expect(prPreviewState({ prNumber: 1, previewUrl: "https://feat.acme.pages.dev" }, false)).toBe("ready");
+  });
+  test("hidden without a PR, even with a previewUrl", () => {
+    expect(prPreviewState({ previewUrl: "https://x" }, false)).toBe("hidden");
   });
   test("ready once previewUrl has posted, regardless of the label flag", () => {
     expect(prPreviewState({ prNumber: 1, previewUrl: "https://x", hasPreviewLabel: true }, true)).toBe("ready");
@@ -67,6 +75,13 @@ describe("PrPreviewCell (Agents list / phone row)", () => {
   test("hidden: a PR exists but the repo has no preview label / previews feature configured", async () => {
     await mount(<PrPreviewCell row={unconfiguredRow} />);
     expect(cellOf()).toBeNull();
+  });
+
+  test("ready on an unconfigured repo: a deploy bot's previewUrl is enough for the link", async () => {
+    await mount(<PrPreviewCell row={{ ...unconfiguredRow, previewUrl: "https://feat-ruminate.acme.workers.dev" }} />);
+    const c = cellOf()!;
+    expect(c.dataset.state).toBe("ready");
+    expect(c.querySelector("a")!.getAttribute("href")).toBe("https://feat-ruminate.acme.workers.dev");
   });
 
   test("add: an enabled 'Add PR preview' button before the label is on", async () => {
@@ -150,6 +165,16 @@ describe("PrPreviewInline (next to the model name in the Agents-list subline)", 
     expect(container!.querySelector('[data-slot="pr-preview-inline"]')).toBeNull();
   });
 
+  test("ready on an unconfigured repo: 'Preview' as the link text, the URL as its tooltip, no Add", async () => {
+    await mount(<PrPreviewInline row={{ ...unconfiguredRow, previewUrl: "https://feat-ruminate.acme.workers.dev" }} />);
+    const el = container!.querySelector<HTMLElement>('[data-slot="pr-preview-inline"]')!;
+    expect(el.dataset.state).toBe("ready");
+    expect(el.tagName).toBe("A");
+    expect(el.textContent).toBe("Preview");
+    expect(el.getAttribute("href")).toBe("https://feat-ruminate.acme.workers.dev");
+    expect(el.closest('[data-slot="tip"]')).not.toBeNull(); // the full URL is its hover tooltip (Tip)
+  });
+
   test("add: a '+ Add preview' text link before the label is on", async () => {
     await mount(<PrPreviewInline row={addRow} />);
     const el = container!.querySelector<HTMLElement>('[data-slot="pr-preview-inline"]')!;
@@ -168,14 +193,16 @@ describe("PrPreviewInline (next to the model name in the Agents-list subline)", 
     expect(el.textContent).toContain("Deploying preview");
   });
 
-  test("ready: the preview's own host as the link text, once previewUrl has posted", async () => {
+  test("ready: a globe and 'Preview' as the link text, the full URL in href and its tooltip", async () => {
     await mount(<PrPreviewInline row={{ ...addRow, previewUrl: "https://feat-6.preview.branch-demo.dev" }} />);
     const el = container!.querySelector<HTMLElement>('[data-slot="pr-preview-inline"]')!;
     expect(el.dataset.state).toBe("ready");
     expect(el.tagName).toBe("A");
     expect(el.getAttribute("href")).toBe("https://feat-6.preview.branch-demo.dev");
     expect(el.getAttribute("target")).toBe("_blank");
-    expect(el.textContent).toBe("feat-6.preview.branch-demo.dev");
+    expect(el.textContent).toBe("Preview");
+    expect(el.closest('[data-slot="tip"]')).not.toBeNull(); // the full URL is its hover tooltip (Tip)
+    expect(el.querySelector(".lucide-globe")).not.toBeNull();
     expect(el.className).toContain("underline"); // always underlined, not just on hover
   });
 });

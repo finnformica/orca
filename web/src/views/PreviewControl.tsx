@@ -242,8 +242,9 @@ function usePrPreviewAdd(row: Row) {
  *  the pr-preview action posts once the repo's preview label lands on the PR — distinct from the
  *  LOCAL preview cell above, so both can sit side by side. A link once the PR carries a `previewUrl`,
  *  an "Add PR preview" button before the label is on, a spinner (same slot) while the label is on but
- *  the deploy hasn't posted its URL yet. Hidden entirely when there's no PR or the repo never
- *  configured a preview label / the previews feature (see store.previewConfigured). */
+ *  the deploy hasn't posted its URL yet. The link shows on any repo (a deploy bot's comment is
+ *  enough); Add and the spinner only where the repo configured a preview label / the previews
+ *  feature (see store.previewConfigured). Hidden when there's no PR. */
 export function PrPreviewCell({ row }: { row: Row }) {
   const { state, busy, add } = usePrPreviewAdd(row);
   if (state === "hidden") return null;
@@ -294,7 +295,7 @@ export function PrPreviewButton({ row }: { row: Row }) {
 
 /** The same GitHub PR-preview control as PrPreviewCell, as inline text instead of an icon — sits
  *  next to the model name in the Agents-list row's subline (desktop and the phone's stacked meta
- *  line), Vercel-style: the deploy's own host as the link text once it's live, "+ Add preview"
+ *  line), Vercel-style: a globe and "Preview" as the link text once it's live (the URL is its tooltip), "+ Add preview"
  *  before the label is on, "Deploying preview…" while it's building. Hidden under the same
  *  conditions as PrPreviewCell (see prPreviewState) — bakes in its own leading "·" separator so a
  *  caller can render it unconditionally alongside the subline's other dot-joined items. */
@@ -305,10 +306,12 @@ export function PrPreviewInline({ row }: { row: Row }) {
     <>
       <span aria-hidden="true">·</span>
       {state === "ready" ? (
-        <a href={row.previewUrl} target="_blank" rel="noreferrer" data-slot="pr-preview-inline" data-state={state}
-          className="min-w-0 truncate underline hover:text-foreground">
-          {previewLabel(row.previewUrl!)}
-        </a>
+        <Tip label={row.previewUrl!} className="shrink-0">
+          <a href={row.previewUrl} target="_blank" rel="noreferrer" data-slot="pr-preview-inline" data-state={state}
+            className="inline-flex items-center gap-0.5 underline hover:text-foreground">
+            <Globe className="size-3" />Preview
+          </a>
+        </Tip>
       ) : state === "pending" ? (
         <span data-slot="pr-preview-inline" data-state={state} className="shrink-0">Deploying preview…</span>
       ) : (
