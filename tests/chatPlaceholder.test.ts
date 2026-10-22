@@ -18,7 +18,7 @@ test("idle placeholder for a workstream chat names neither a model nor Fable", (
 
 test("idle placeholder for the orchestrator names neither a model nor Fable", () => {
   const placeholder = chatPlaceholder(false, ORCHESTRATOR_REPO);
-  expect(placeholder).toBe("Message the orchestrator…");
+  expect(placeholder).toBe("Message Orca…");
   expect(placeholder).not.toMatch(/fable|opus|sonnet|haiku/i);
 });
 

@@ -127,7 +127,7 @@ export function QuickAsk() {
                 every composer's toolbar: model and context on the left (then the receipt), attach
                 and Send (with its key) on the right. */}
             <ChatComposer variant="quick" persistKey="orca.quickAsk" onSubmit={send} placeholder={QUICK_ASK_PLACEHOLDER}
-              inputLabel="Message the orchestrator" icon={<Bot className="text-muted-foreground mt-1 size-4 shrink-0" />}
+              inputLabel="Message Orca" icon={<Bot className="text-muted-foreground mt-1 size-4 shrink-0" />}
               leading={
                 <div className="flex min-w-0 items-center gap-1">
                   <ChatControls {...controls} compact={compact} />

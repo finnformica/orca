@@ -1094,7 +1094,7 @@ export const ORCHESTRATOR_BRANCH = "orchestrator";
  *  composer; idle never names the model, since the model chip already shows it. */
 export function chatPlaceholder(running: boolean, repo: string): string {
   if (running) return "Queue a message…";
-  return repo === ORCHESTRATOR_REPO ? "Message the orchestrator…" : "Reply…";
+  return repo === ORCHESTRATOR_REPO ? "Message Orca…" : "Reply…";
 }
 
 /** What a worker is told. Anthropic's multi-agent research system found a delegated task needs an
