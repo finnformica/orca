@@ -295,7 +295,7 @@ export function PrPreviewButton({ row }: { row: Row }) {
 
 /** The same GitHub PR-preview control as PrPreviewCell, as inline text instead of an icon — sits
  *  next to the model name in the Agents-list row's subline (desktop and the phone's stacked meta
- *  line), Vercel-style: the deploy's own host as the link text once it's live, "+ Add preview"
+ *  line), Vercel-style: a globe and "Preview" as the link text once it's live (the URL is its tooltip), "+ Add preview"
  *  before the label is on, "Deploying preview…" while it's building. Hidden under the same
  *  conditions as PrPreviewCell (see prPreviewState) — bakes in its own leading "·" separator so a
  *  caller can render it unconditionally alongside the subline's other dot-joined items. */
@@ -306,9 +306,9 @@ export function PrPreviewInline({ row }: { row: Row }) {
     <>
       <span aria-hidden="true">·</span>
       {state === "ready" ? (
-        <a href={row.previewUrl} target="_blank" rel="noreferrer" data-slot="pr-preview-inline" data-state={state}
-          className="min-w-0 truncate underline hover:text-foreground">
-          {previewLabel(row.previewUrl!)}
+        <a href={row.previewUrl} target="_blank" rel="noreferrer" title={row.previewUrl} data-slot="pr-preview-inline" data-state={state}
+          className="inline-flex shrink-0 items-center gap-0.5 underline hover:text-foreground">
+          <Globe className="size-3" />Preview
         </a>
       ) : state === "pending" ? (
         <span data-slot="pr-preview-inline" data-state={state} className="shrink-0">Deploying preview…</span>
