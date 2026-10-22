@@ -42,6 +42,8 @@ export type LiveSample = {
 };
 export type LiveAnswer = {
   samples: LiveSample[]; stepMs: number; cores: number; memTotalGb: number;
+  /** The swap file's size, GB (the Swap chart's axis). Absent without /proc/meminfo, or with no swap. */
+  swapTotalGb?: number;
   /** The agents' slice MemoryMax (GB), when the box runs agents in it. */
   sliceMaxGb?: number;
   diskCapMBs: number;
@@ -347,6 +349,14 @@ export function startLiveSampler(ms = LIVE_SAMPLE_MS, platform = process.platfor
   return setInterval(tick, ms).unref();
 }
 
+/** This box's swap size in GB from /proc/meminfo, or undefined (a Mac, or no swap file). */
+export function swapTotalGb(proc = "/proc"): number | undefined {
+  try {
+    const kb = Number(/^SwapTotal:\s+(\d+)/m.exec(readFileSync(`${proc}/meminfo`, "utf8"))?.[1]);
+    return kb > 0 ? Math.round((kb / 1_048_576) * 10) / 10 : undefined;
+  } catch { return undefined; }
+}
+
 /** The disk cap for this host: `ORCA_DISK_CAP_MBS` when it is a positive number, else the default. */
 export function diskCapMBs(raw = process.env.ORCA_DISK_CAP_MBS): number {
   const n = Number(raw);
@@ -361,6 +371,7 @@ export function liveAnswer(hours: number, o: { sliceMaxGb?: number; now?: number
     cores: os.cpus().length || 1, memTotalGb: Math.round((os.totalmem() / 1_073_741_824) * 10) / 10,
     ...(o.sliceMaxGb ? { sliceMaxGb: o.sliceMaxGb } : {}),
     diskCapMBs: diskCapMBs(),
+    ...((s) => (s === undefined ? {} : { swapTotalGb: s }))(swapTotalGb()),
   };
 }
 

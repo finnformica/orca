@@ -2980,6 +2980,8 @@ export type LiveCharts = {
   io: StackPoint[];
   /** Used, cache (GB). */
   mem: StackPoint[];
+  /** Swap in use, GB — the samples that read it. */
+  swap: StackPoint[];
   /** load1 / cores, per sample — shown as a number, never on the % axis. */
   loadPerCore: { at: number; v: number }[];
   iowait: { at: number; v: number }[];
@@ -2993,6 +2995,7 @@ export function liveCharts(samples: LiveSample[], cores: number): LiveCharts {
     cpu: samples.map((s) => ({ at: s.at, v: [s.work, s.iowait] })),
     io: samples.flatMap((s) => (s.readMBs === undefined && s.writeMBs === undefined ? [] : [{ at: s.at, v: [s.readMBs ?? 0, s.writeMBs ?? 0] }])),
     mem: samples.map((s) => ({ at: s.at, v: [s.memUsedGb, s.memCacheGb] })),
+    swap: samples.flatMap((s) => (s.swapUsedGb === undefined ? [] : [{ at: s.at, v: [s.swapUsedGb] }])),
     loadPerCore: samples.map((s) => ({ at: s.at, v: Math.round((s.load1 / c) * 100) / 100 })),
     iowait: samples.map((s) => ({ at: s.at, v: s.iowait })),
     ooms: samples.flatMap((s) => (s.ooms ? [{ at: s.at, n: s.ooms }] : [])),

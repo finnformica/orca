@@ -270,12 +270,13 @@ export function RefreshVitals() {
 const pct = (v: number) => `${Math.round(v)}%`;
 const count = (v: number) => String(Math.round(v));
 const gb = (v: number) => `${v.toFixed(1)} GB`;
-const mbs = (v: number) => `${v.toFixed(1)} MB/s`;
 
 // The live charts' bands, bottom first. iowait is grey and hatched: time the CPU waited on the disk,
 // not work, so it must not read as a third kind of work.
 const CPU_BANDS: StackBand[] = [{ label: "Work", color: "var(--geist-blue)" }, { label: "iowait", color: "var(--geist-gray)", hatch: true }];
-const IO_BANDS: StackBand[] = [{ label: "Read", color: "var(--series-1)" }, { label: "Write", color: "var(--series-2)" }];
+// Swap, not disk IO (Finn: the MB/s said nothing he could act on; the swap did — 2026-10-22's gaps in
+// these charts were the box paging a preview's 3 GB out to disk). The axis is the swap file's size.
+const SWAP_BANDS: StackBand[] = [{ label: "Swap", color: "var(--geist-red)" }];
 const MEM_BANDS: StackBand[] = [{ label: "Used", color: "var(--geist-green)" }, { label: "Cache", color: "var(--geist-gray)" }];
 
 /** One machine. `here`: the instance answering this page (its health needs no `?instance=`). */
@@ -307,7 +308,7 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
   const heavyRows = heavyQueueRows(h?.heavy);
   const live = liveAnswer ? liveCharts(liveAnswer.samples, liveAnswer.cores) : null;
   const gapMs = Math.max(3 * (liveAnswer ? liveAnswer.stepMs : 15_000), ((to - from) / 360) * 3);
-  const ioMax = liveAnswer ? niceMax(Math.max(liveAnswer.diskCapMBs * 1.15, ...(live?.io ?? []).map((p) => (p.v[0] ?? 0) + (p.v[1] ?? 0)))) : 0;
+  const swapMax = liveAnswer ? (liveAnswer.swapTotalGb ?? niceMax(Math.max(0.1, ...(live?.swap ?? []).map((p) => p.v[0] ?? 0)))) : 0;
   const liveOoms = (live?.ooms ?? []).reduce((n, o) => n + o.n, 0);
   const oomCaption = (n: number) => n > 0 && <span data-slot="chart-oom" className="text-[var(--geist-red)]"> · {n} OOM kill{n === 1 ? "" : "s"}</span>;
   // Load is a NUMBER in the CPU caption and tooltip, never a line: it is a queue length (which counts
@@ -383,7 +384,7 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
       {(usesLiveSource(hours) && liveAnswer === null) || history === null ? (
           <div className="grid gap-6 p-4 md:grid-cols-2">
             <ChartSkeleton slot="chart-cpu-skeleton" /><ChartSkeleton slot="chart-mem-skeleton" />
-            <ChartSkeleton slot="chart-io-skeleton" /><ChartSkeleton slot="chart-agents-skeleton" />
+            <ChartSkeleton slot="chart-swap-skeleton" /><ChartSkeleton slot="chart-agents-skeleton" />
           </div>
         )
         : !history.length && !live?.cpu.length ? <Empty>No history recorded yet — the sampler writes once a minute.</Empty>
@@ -398,8 +399,8 @@ export function InstanceCard({ instance, here }: { instance: string; here: boole
                   fmt={gb} axis={(v) => `${Math.round(v)}G`} gapMs={gapMs} summary={(p) => `${gb(p.v[0] ?? 0)} used`}
                   refs={liveAnswer.sliceMaxGb ? [{ v: liveAnswer.sliceMaxGb, label: `Agents limit ${liveAnswer.sliceMaxGb} GB` }] : []}
                   marks={live.ooms.map((o) => ({ at: o.at, label: `${o.n} agent run${o.n === 1 ? "" : "s"} out of memory` }))} />
-                <StackedChart slot="chart-io" label="Disk IO" points={live.io} bands={IO_BANDS} from={from} to={to} max={ioMax} fmt={mbs} axis={(v) => String(Math.round(v))} gapMs={gapMs}
-                  refs={[{ v: liveAnswer.diskCapMBs, label: `Cap ${liveAnswer.diskCapMBs} MB/s` }]}
+                <StackedChart slot="chart-swap" label={liveAnswer.swapTotalGb ? `Swap · of ${liveAnswer.swapTotalGb} GB` : "Swap"} points={live.swap} bands={SWAP_BANDS} from={from} to={to} max={swapMax}
+                  fmt={gb} axis={(v) => `${Math.round(v)}G`} gapMs={gapMs} summary={(p) => `${gb(p.v[0] ?? 0)} in swap`}
                   extra={(at) => { const w = nearestAt(live.iowait, at)?.v; return w === undefined ? [] : [{ label: "iowait", value: pct(w) }]; }} />
               </>
             ) : (
