@@ -96,16 +96,16 @@ describe("console shell", () => {
     expect([...bar.children].at(-1)).toBe(group); // still the rightmost thing, loaded or not
   });
 
-  // Measured on a cold load (orca-shot, a trace of getBoundingClientRect each frame): the button's
-  // left edge moved 1211.2 → 1222.0 when Geist replaced the fallback font, and the page then grew
-  // past the viewport, so a classic scrollbar took ~15px off the right. Neither shows in a DOM-only
-  // render, so this pins the two rules that hold the button still.
-  test("\"Ask the orchestrator\" keeps its place while the page loads: a reserved label width, and the scrollbar gutter reserved", async () => {
+  // "Ask Orca" fits its content (min-w-fit), not a fixed rem width sized for the retired, longer
+  // "Ask the orchestrator" label. A classic scrollbar can still take ~15px off the right when the
+  // page grows past the viewport, which does not show in a DOM-only render, so this also pins the
+  // scrollbar-gutter rule that holds the rest of the top bar still.
+  test("\"Ask the orchestrator\" fits its content, and the scrollbar gutter is reserved", async () => {
     await mount();
     const ask = container!.querySelector<HTMLElement>('[data-slot="ask-orchestrator"]')!;
-    expect(ask.className.split(/\s+/)).not.toContain("w-[12.25rem]"); // sized to its content, not a fixed rem width
+    expect(ask.className.split(/\s+/)).toContain("min-w-fit"); // sized to its content, not a fixed rem width
+    expect(ask.className.split(/\s+/)).not.toContain("w-[12.25rem]");
     const label = ask.querySelector<HTMLElement>('[data-slot="ask-orchestrator-label"]')!;
-    expect(label.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-[8ch]", "whitespace-nowrap"])); // a wider fallback font can't shrink it below this
     expect(label.textContent).toBe("Ask Orca");
     expect(ask.getAttribute("aria-label")).toBe("Ask Orca");
     const css = readFileSync(join(import.meta.dir, "..", "web", "src", "styles.css"), "utf8");
