@@ -371,15 +371,26 @@ test("S5: the top bar of every page has an Ask-the-orchestrator BUTTON that open
   }
   localStorage.setItem("orca.chat.@orca::orchestrator", JSON.stringify({ text: "earlier draft", images: [] }));
   await mount("/agents");
-  await act(async () => { q('button[data-slot="ask-orchestrator"]')!.click(); await flush(); await flush(); });
+  const button = q<HTMLButtonElement>('button[data-slot="ask-orchestrator"]')!;
+  await act(async () => { button.click(); await flush(); await flush(); });
   expect(panel()).not.toBeNull();
+  expect(button.getAttribute("aria-expanded")).toBe("true");
   const box = panel()!.querySelector("textarea")!;
-  expect(document.activeElement).toBe(box);
+  // Compare focus by a label, not by element: a failed toBe on two DOM nodes prints both trees,
+  // which took ~20 s and GBs of memory and made this test flaky instead of red.
+  const focused = () => (document.activeElement === box ? "composer" : document.activeElement?.tagName);
+  expect(focused()).toBe("composer");
   expect(box.value).toBe("earlier draft"); // the draft is where you left it
-  // Clicking it while open just brings focus back to the composer, text intact.
-  box.blur();
-  await act(async () => { q('button[data-slot="ask-orchestrator"]')!.click(); await flush(); });
-  expect(document.activeElement).toBe(box);
+  // The button is a toggle (#305): clicking it while open closes the docked panel, and the
+  // composer gives up focus.
+  await act(async () => { button.click(); await flush(); });
+  expect(panel()).toBeNull();
+  expect(button.getAttribute("aria-expanded")).toBe("false");
+  expect(focused()).not.toBe("composer");
+  // Clicking it again opens it as you left it: focused, text intact.
+  await act(async () => { button.click(); await flush(); await flush(); });
+  expect(panel()).not.toBeNull();
+  expect(focused()).toBe("composer");
   expect(box.value).toBe("earlier draft");
 });
 
