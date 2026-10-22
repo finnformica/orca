@@ -379,6 +379,7 @@ test("S5: the top bar of every page has an Ask-the-orchestrator BUTTON that open
   // Clicking it while open just brings focus back to the composer, text intact.
   box.blur();
   await act(async () => { q('button[data-slot="ask-orchestrator"]')!.click(); await flush(); });
+  console.error("DIAG active=", document.activeElement?.tagName, document.activeElement?.getAttribute?.("data-slot"), "panel=", !!panel(), "box.isConnected=", box.isConnected);
   expect(document.activeElement).toBe(box);
   expect(box.value).toBe("earlier draft");
 });
