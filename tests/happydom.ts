@@ -24,6 +24,18 @@ export const nativeUpload = { FormData: globalThis.FormData, File: globalThis.Fi
 // on a localhost page (previewHref) keeps its non-local default.
 GlobalRegistrator.register({ url: "http://orca.test/" });
 
+// No test reaches the network for the fake origin. Component tests talk to the fake `api`
+// (tests/apiFake.ts), but lib/server.ts calls `fetch` directly for /api/servers (the Shell's
+// identity poll, ServerMenu's list). Mounting the App sent those to happy-dom's fetch, which made a
+// real DNS lookup for orca.test. Reject at once instead, as a failed lookup does: every caller
+// catches it. A test with its own `globalThis.fetch` replaces this one.
+const happyFetch = globalThis.fetch;
+globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  if (new URL(url, location.href).hostname === "orca.test") return Promise.reject(new TypeError("Failed to fetch"));
+  return happyFetch(input, init);
+}) as typeof fetch;
+
 // happy-dom ships no EventSource, and the chat opens one for its live step feed — without this the
 // panel throws on mount. A stub rather than a real connection: component tests assert rendering, and
 // the stream's own behaviour is covered server-side. Tests that want to drive it can reach the
