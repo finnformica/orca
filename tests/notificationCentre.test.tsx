@@ -362,10 +362,16 @@ describe("the notification centre", () => {
     await click($("notifications-bell"));
     const panel = $("notification-centre")!;
     expect(panel).not.toBeNull();
-    expect(document.activeElement).toBe(panel.querySelector('[aria-label="Mark all as read"]'));
+    // Focus by a label, not by element: a failed toBe on two DOM nodes prints both trees, which
+    // took ~20 s and GBs of memory and made this test flaky instead of red.
+    const focused = () => { const a = document.activeElement; return a?.getAttribute("data-slot") ?? a?.getAttribute("aria-label") ?? a?.tagName; };
+    expect(focused()).toBe("Mark all as read");
     await pressKey("Escape");
     expect($("notification-centre")).toBeNull();
-    expect(document.activeElement).toBe($("notifications-bell"));
+    // Radix gives focus back to the trigger in a setTimeout(0) set when the popover unmounts, which
+    // is after pressKey's own ticks: wait one more.
+    await act(async () => { await flush(); });
+    expect(focused()).toBe("notifications-bell");
   });
 
   test("nothing unread: Mark all as read is disabled, so initial focus falls back to the Unread/All toggle", async () => {
