@@ -1053,7 +1053,23 @@ with See all.
 ## Deploying (a cloud box + the laptop, one database)
 
 The two instances are named **`local`** (the laptop, `ORCA_INSTANCE=local`, bound to
-`127.0.0.1,<its tailnet ip>` so the box can reach it) and **`cloud`** (the EC2 box, `orca-box`).
+`127.0.0.1,<its tailnet ip>` so the box can reach it) and **`cloud`** (the EC2 box, `orca-flow-box`).
+
+**Reaching the cloud box (`orca-flow-box`).** EC2 `i-07de815c13bc95313`, m7i.xlarge, `eu-west-2`,
+on the tailnet `pony-hawksbill.ts.net` as `100.115.134.63` (`tag:orca`). It has NO SSH and no
+public address: a shell is AWS Systems Manager — interactive
+`aws ssm start-session --region eu-west-2 --target i-07de815c13bc95313`, or non-interactive
+`aws ssm send-command --region eu-west-2 --instance-ids i-07de815c13bc95313 --document-name
+AWS-RunShellScript --parameters 'commands=["…"]'` then `aws ssm get-command-invocation --command-id
+<id> --instance-id i-07de815c13bc95313`. `Token has expired and refresh failed` means the laptop's
+`aws sso login` is due; a worker cannot run it. On the box: the checkout is `/opt/orca` (user
+`orca`, env `/opt/orca/.env`), the service is systemd `orca` (`journalctl -u orca`), auto-deploy logs to
+`~orca/.orca/autodeploy.log`, Postgres is on `localhost:5432`. Orca itself:
+`https://orca-flow-box.pony-hawksbill.ts.net` (`tailscale serve` 443 → 8787, `ORCA_SERVER_URL`) or
+`http://orca-flow-box:8787` from any tailnet device; the API has no auth. The orchestrator and the
+workers it places on `cloud` already run ON the box — for them it is `localhost:8787`, the
+checkout and the logs are local files, and no SSM is needed. From a phone, Settings → Instances →
+Open terminal is a shell on it.
 `instances` in the app config holds both addresses, so a workstream can be placed on either from
 either, and the orchestrator (`orchestratorOn: cloud`) can `spawn --on local`.
 
