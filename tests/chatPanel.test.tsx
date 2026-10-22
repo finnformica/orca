@@ -892,16 +892,20 @@ test("a delivered queued message leaves the queue at once: on a stream reconnect
 });
 
 test("a queued message is the sent bubble with the same markdown, faded; once sent it looks the same without the fade", async () => {
-  const msg = "**ship** it with `bun run build`\n\n- one\n- two";
+  const msg = "**ship** it with `bun run build`\nsee [the docs](https://example.com)\n\n- one\n- two";
   apiFake.turnsData.set("r::feat", [{ id: "run-1", provider: "claude", instruction: "first", prompt: "p", response: "done 1", startedAt: 1, finishedAt: 5 }]);
   apiFake.queuedData.set("feat", [{ id: 7, repo: "r", branch: "feat", instruction: msg, attachments: [], createdAt: 3 }]);
   await mount(base);
   const queued = container!.querySelector<HTMLElement>('[data-slot="chat-queued"]')!;
   const queuedText = queued.querySelector<HTMLElement>('[data-slot="chat-queued-text"]')!;
-  // Markdown, like a sent message — never the raw `**` and `-`.
+  // Markdown, like a sent message — never the raw `**`, `-`, `[]()` or a literal `\n`.
   expect(queuedText.querySelector("strong")!.textContent).toBe("ship");
   expect(queuedText.querySelector("code")!.textContent).toBe("bun run build");
   expect([...queuedText.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["one", "two"]);
+  const link = queuedText.querySelector<HTMLAnchorElement>("a")!;
+  expect(link.textContent).toBe("the docs");
+  expect(link.href).toBe("https://example.com/");
+  expect(queuedText.querySelector("p")!.innerHTML).toContain("<br"); // a single typed newline is a visible break
   expect(queuedText.textContent).not.toContain("**");
   // Pending: the message fades, the label says why, and it can still be cancelled.
   expect(queued.dataset.pending).toBe("true");
@@ -931,6 +935,39 @@ test("a queued message is the sent bubble with the same markdown, faded; once se
   expect(sent.dataset.pending).toBeUndefined();
   expect(sent.querySelector('[data-slot="user-bubble-column"]')!.className).toBe(columnClass);
   expect(sentText.className).not.toContain("opacity-60");
+});
+
+test("a message still sending renders the same markdown as a sent one, not raw text", async () => {
+  const msg = "**ship** it with `bun run build`\nsee [the docs](https://example.com)\n\n- one\n- two";
+  apiFake.turnsData.set("r::feat", []);
+  apiFake.holdClaude = true; // keep the launch in flight so the message stays in the "sending" state
+  await mount(base);
+  const box = container!.querySelector("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(box, msg);
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+  });
+  const send = container!.querySelector<HTMLButtonElement>('button[aria-label="Send"]')!;
+  await act(async () => { send.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+
+  const sending = container!.querySelector<HTMLElement>('[data-slot="chat-sending"]')!;
+  const sendingText = sending.querySelector<HTMLElement>('[data-slot="chat-sending-text"]')!;
+  // The SAME bubble and markdown as a sent or queued message — a list, inline code, a link and a
+  // line break, never raw `**`, `-`, `` ` `` or `[]()`.
+  expect(sendingText.querySelector("strong")!.textContent).toBe("ship");
+  expect(sendingText.querySelector("code")!.textContent).toBe("bun run build");
+  expect([...sendingText.querySelectorAll("li")].map((li) => li.textContent)).toEqual(["one", "two"]);
+  const link = sendingText.querySelector<HTMLAnchorElement>("a")!;
+  expect(link.textContent).toBe("the docs");
+  expect(link.href).toBe("https://example.com/");
+  expect(sendingText.querySelector("p")!.innerHTML).toContain("<br");
+  expect(sendingText.textContent).not.toContain("**");
+  expect(sending.dataset.pending).toBe("true");
+  expect(sendingText.className).toContain("opacity-60");
+  expect(text()).toContain("sending…");
+
+  await act(async () => { apiFake.releaseClaude?.(); await flush(); await flush(); });
 });
 
 test("undeliveredQueued: a turn delivers a queued entry only if it started after it and carries its text", () => {

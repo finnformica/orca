@@ -453,8 +453,8 @@ function Queued({ message, onCancel }: { message: QueuedMessage; onCancel: () =>
 }
 
 /** What you said: a tinted bubble on the right, in markdown, with its files under it and a footer
- *  line. ONE component for a sent message (in its turn) and a queued one (`pending`: faded, its
- *  footer the queued label), so a message looks the same before and after it sends. */
+ *  line. ONE component for a sent message (in its turn), one still sending, and a queued one
+ *  (`pending`: faded, its footer the state label), so a message looks the same at every stage. */
 function UserBubble({ text, files, clamp, footer, pending, slot = "chat-user", textSlot = "chat-user-text", className = "mb-2" }: {
   text: string; files: AttachmentRef[]; clamp: boolean; footer: ReactNode; pending?: boolean; slot?: string; textSlot?: string; className?: string;
 }) {
@@ -1266,13 +1266,13 @@ export function ChatPanel({ row, send, controls, prefill, outbox, author, size =
           </div>
         )}
         {/* Not drawn once the real thing has arrived over the stream — the same text twice, one of
-            them "sending", is worse than the moment's gap it would cover. */}
+            them "sending", is worse than the moment's gap it would cover. The SAME bubble and
+            markdown as a sent or queued message (UserBubble), so a list, a link or a line break
+            looks identical at every stage. */}
         {unlanded.map((m) => (
-          <div key={m.id} className="mb-4" data-slot="chat-sending">
-            <div className="mb-2 flex justify-end"><div className="bg-accent text-foreground max-w-[85%] rounded-lg px-3 py-2 whitespace-pre-wrap break-words opacity-70">{m.text}</div></div>
-            <Attachments files={m.attachments ?? []} className="mb-2 justify-end" />
-            <div className="text-muted-foreground pl-8 text-[11px]">▋ sending…</div>
-          </div>
+          <UserBubble key={m.id} slot="chat-sending" textSlot="chat-sending-text" pending className="mb-4" text={m.text} clamp={false}
+            files={m.attachments ?? []}
+            footer={<div className="text-muted-foreground text-[11px]">▋ sending…</div>} />
         ))}
         {pendingQueued.map((m) => (
           <Queued
