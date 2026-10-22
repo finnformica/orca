@@ -193,7 +193,7 @@ describe("PrPreviewInline (next to the model name in the Agents-list subline)", 
     expect(el.textContent).toContain("Deploying preview");
   });
 
-  test("ready: a globe and 'Preview' as the link text, the full URL in href and its tooltip", async () => {
+  test("ready: 'Preview' as the link text followed by an external-link icon, the full URL in href and its tooltip", async () => {
     await mount(<PrPreviewInline row={{ ...addRow, previewUrl: "https://feat-6.preview.branch-demo.dev" }} />);
     const el = container!.querySelector<HTMLElement>('[data-slot="pr-preview-inline"]')!;
     expect(el.dataset.state).toBe("ready");
@@ -202,7 +202,9 @@ describe("PrPreviewInline (next to the model name in the Agents-list subline)", 
     expect(el.getAttribute("target")).toBe("_blank");
     expect(el.textContent).toBe("Preview");
     expect(el.closest('[data-slot="tip"]')).not.toBeNull(); // the full URL is its hover tooltip (Tip)
-    expect(el.querySelector(".lucide-globe")).not.toBeNull();
+    const icon = el.querySelector(".lucide-external-link")!;
+    expect(icon).not.toBeNull();
+    expect(el.lastElementChild).toBe(icon); // the icon is the LAST child — after the text label
     expect(el.className).toContain("underline"); // always underlined, not just on hover
   });
 });
