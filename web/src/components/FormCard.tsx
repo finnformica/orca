@@ -30,8 +30,8 @@ export function FormCard({ id }: { id: string }) {
   const [loadError, setLoadError] = useState<string>();
   const load = useCallback(() => api.form(id).then((d) => { setForm(d?.form ?? null); setLoadError(undefined); }).catch((e) => setLoadError(e instanceof Error ? e.message : String(e))), [id]);
   useEffect(() => { void load(); }, [load]);
-  if (form === null) return <div data-slot="chat-form" data-state="missing" className="text-muted-foreground mt-2 rounded-md border px-3 py-2 text-xs">This form is gone.</div>;
-  if (!form) return <div data-slot="chat-form" data-state="loading" className="text-muted-foreground mt-2 rounded-md border px-3 py-2 text-xs">{loadError ? `Cannot load the form: ${loadError}` : "Loading the form…"}</div>;
+  if (form === null) return <div data-slot="chat-form" data-state="missing" className="bg-card text-muted-foreground mt-2 rounded-md border px-3 py-2 text-xs">This form is gone.</div>;
+  if (!form) return <div data-slot="chat-form" data-state="loading" className="bg-card text-muted-foreground mt-2 rounded-md border px-3 py-2 text-xs">{loadError ? `Cannot load the form: ${loadError}` : "Loading the form…"}</div>;
   return <FormBody form={form} onDone={setForm} />;
 }
 
@@ -71,7 +71,7 @@ export function FormBody({ form, onDone }: { form: FormView; onDone: (f: FormVie
   };
 
   return (
-    <div data-slot="chat-form" data-state={form.state} className="mt-2 rounded-md border text-[13px]">
+    <div data-slot="chat-form" data-state={form.state} className="bg-card mt-2 rounded-md border text-[13px]">
       <div className="flex items-start gap-2 border-b px-3 py-2.5">
         <span className="flex h-5 shrink-0 items-center"><ClipboardList className="text-muted-foreground size-4" /></span>
         <div className="min-w-0 flex-1">

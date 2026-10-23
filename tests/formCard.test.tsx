@@ -48,6 +48,11 @@ describe("form card", () => {
   test("one input per field type; a secret is masked with a reveal toggle", async () => {
     apiFake.formById.set(ID, form());
     await render(<FormCard id={ID} />);
+    // The raised surface (docs/design/surfaces.md): the --card token, so it stands out from the chat
+    // log and follows dark mode. Never a hard-coded colour.
+    const card = q("[data-slot=chat-form]")!;
+    expect(card.className.split(/\s+/)).toContain("bg-card");
+    expect(card.className).not.toMatch(/bg-(white|neutral|\[#)/);
     const types = [...container!.querySelectorAll("[data-slot=form-field]")].map((e) => e.getAttribute("data-type"));
     expect(types).toEqual(EVERY_TYPE.map((f) => f.type));
     expect(field("project").type).toBe("text");
