@@ -29,14 +29,13 @@ import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useReposLoa
 import {
   DEFAULT_LIST_FILTER, detailPath, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, dropStaleRepos, filterRows, prPill,
   LIST_ITEM_GAP_PX, NO_FOLD, browserKillLabel, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, quickGroupActive, clearQuickGroup, rowInstance, rowTone, sortRows, sublineDots, sublineOverflow, toggleNotMerged, toggleQuick,
-  type ListColumn, type ListFold, type ListSort, type ListWidths, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone, type SublineSepItem,
+  type ListColumn, type ListFold, type ListSort, type ListWidths, type QuickFilter, type QuickGroup, type RowTone, type SublineSepItem,
 } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { BrowserKillBadge, Pill, RepoBadge, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
-import { CopyDone, LaneActions } from "./BulkActions";
 import { ConditionBadges } from "./ConditionBadges";
 import { useSummary, useTerminalOpen } from "@/lib/workstreamHooks";
 import { QuickActionButtons, WorkstreamActions } from "./WorkstreamActions";
@@ -357,8 +356,6 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
     ] },
   ];
   if (showRepos && repos.length > 1) groups.push({ group: "repo", label: "Repo", chips: repos.map((r): Chip => ({ group: "repo", value: r.name, label: r.name })) });
-  // The lane the chips narrow to, when exactly one: the swimlanes' bulk verbs apply to it.
-  const lane: OverviewLane | null = quick.pr.length === 1 && quick.pr[0] !== "open" ? (quick.pr[0] === "merged" || quick.pr[0] === "week" ? "DONE" : quick.pr[0] === "verified" ? "VERIFIED" : "MERGEABLE") : null;
   const narrow = useNarrow();
   const [sheet, setSheet] = useState(false);
   const clearAll = (quickActive(quick) || q) && (
@@ -400,15 +397,9 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
           {q && <button type="button" onClick={() => setQ("")} aria-label="Clear search" className="text-muted-foreground hover:text-foreground max-md:-mr-2 max-md:inline-flex max-md:size-11 max-md:items-center max-md:justify-center"><X className="size-3.5" /></button>}
         </label>
   );
-  const laneActions = (
-    <>
-      {lane === "DONE" && visible.length > 0 && <span className="text-muted-foreground"><CopyDone cards={visible} /></span>}
-      {lane && <span className="text-muted-foreground"><LaneActions lane={lane} cards={visible} /></span>}
-    </>
-  );
   if (narrow) {
     // A phone: the search box and a Filters button (with how many chips are on) on one line; the
-    // chips and the sort live in a bottom sheet. The count and the lane's bulk verbs stay in view.
+    // chips and the sort live in a bottom sheet. The count stays in view.
     const active = QUICK_GROUPS.reduce((n, g) => n + quick[g].length, 0) + (quick.notMerged ? 0 : 1);
     return (
       <div data-slot="filter-bar" className="space-y-2">
@@ -420,7 +411,6 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-muted-foreground text-xs tabular-nums" data-slot="agents-count">{loaded ? `${visible.length} of ${total}` : <Skeleton className="h-3 w-16" />}</span>
-          <span className="ml-auto flex items-center gap-2">{laneActions}</span>
         </div>
         <BottomSheet open={sheet} onClose={() => setSheet(false)} title="Filters" slot="filter-sheet">
           {sheetGroups}
@@ -436,7 +426,6 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
         {dropdowns}
         <div className="ml-auto flex items-center gap-2">
           <span className="text-muted-foreground text-xs tabular-nums" data-slot="agents-count">{loaded ? `${visible.length} of ${total}` : <Skeleton className="h-3 w-16" />}</span>
-          {laneActions}
           {sortSelect}
         </div>
       </div>
