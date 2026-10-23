@@ -29,7 +29,7 @@ export function register(kind: AdapterKind, factory: AdapterFactory, meta?: Omit
 }
 register("slack", slackAdapter, {
   label: "Slack", caps: SLACK_CAPS, place: "channel", secretExample: "SLACK_TOKEN",
-  help: "Your user token (xoxp-…): Orca posts as you. Inbound (mentions of you, DMs, group DMs) needs SLACK_APP_TOKEN. Link `im` / `mpim` for DMs. Setup: docs/integrations/slack.md.",
+  help: "Your user token (xoxp-…): Orca posts as you and polls your mentions, DMs and group DMs each minute. Link `im` / `mpim` for DMs. Setup: docs/integrations/slack.md.",
 });
 register("webhook", webhookAdapter, { label: "Webhook", caps: WEBHOOK_CAPS, place: "hook", secretExample: "ORCA_SECRET_WEBHOOK", help: "Signed POSTs to /api/integrations/<id>/inbound (HMAC sha256 of the body)." });
 register("discord", discordAdapter, {

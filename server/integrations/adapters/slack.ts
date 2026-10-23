@@ -1,17 +1,17 @@
 // The Slack adapter (docs/research/integrations.md §5; setup: docs/integrations/slack.md). Two-way,
 // as YOU: the row's token is a user token (`xoxp`, SLACK_TOKEN), so every post is in your name, and
-// the events are your own (Slack's user event subscriptions). Dependency-free: Socket Mode is a hand
-// client over Bun's WebSocket, like adapters/discord.ts; the Web API is plain `fetch`.
+// Orca reads what you can read. Dependency-free: the Web API is plain `fetch`; the optional Socket
+// Mode is a hand client over Bun's WebSocket, like adapters/discord.ts.
 //
 // OUTBOUND: `chat.postMessage` (a thread reply with `thread_ts`, thread id `channel:thread_ts`),
 // `chat.update` for an edit, the retryable/fatal split and a 1-per-second pace per channel. A target
 // that is a user id (`U…`) or a list of them (`U1,U2`) is a DM or group DM: `conversations.open`
 // gives its channel first. `postMessage` / `postAsUser` keep /api/slack's post exactly as it was.
 //
-// INBOUND (Socket Mode): the app-level token (`xapp`, the variable `config.appTokenRef` names,
-// default SLACK_APP_TOKEN) opens the socket through `apps.connections.open`. Every envelope is acked
-// at once. Unset, inbound stays off and the adapter only posts. A `message` event becomes one
-// envelope when another person wrote it and it is one of:
+// INBOUND, with SLACK_TOKEN alone: a poll every `pollSeconds` (see "Polling" below). With an app-level
+// token (`xapp`, the variable `config.appTokenRef` names, default SLACK_APP_TOKEN) Socket Mode is used
+// instead: `apps.connections.open`, every envelope acked at once. `config.inbound` ("poll", "socket",
+// "off") picks one by hand. A message becomes one envelope when another person wrote it and it is one of:
 // - a mention of you (`<@you>`) in a channel or private channel;
 // - a DM to you (source channel `D…`, parent `im`) or a group DM (parent `mpim`);
 // - a reply in a thread Orca already talks in (a mention came there, or Orca posted there).
@@ -87,7 +87,7 @@ export const threadTs = (threadId?: string): string | undefined =>
   threadId?.includes(":") ? threadId.slice(threadId.indexOf(":") + 1) || undefined : threadId && /^\d+\.\d+$/.test(threadId) ? threadId : undefined;
 
 export const SLACK_CAPS: Capabilities = {
-  inbound: "socket", outbound: true, threads: true, edits: true, reactions: false, attachments: false,
+  inbound: "poll", outbound: true, threads: true, edits: true, reactions: false, attachments: false,
   maxTextLength: 39_000, rate: { perTarget: 1, windowMs: 1_000 },
 };
 
@@ -180,7 +180,7 @@ export const socketMode = { WebSocket: globalThis.WebSocket as unknown as new (u
 /** The wait before reconnect number `attempt`: 1s, 2s, 4s … 60s; Slack's Retry-After wins when longer. */
 export const backoffMs = (attempt: number, retryAfterMs = 0): number => Math.max(Math.min(60_000, socketMode.baseBackoffMs * 2 ** attempt), retryAfterMs);
 
-/** The size of each in-memory map (thread keys Orca talks in, user names). */
+/** The size of the user-name map. */
 const MAP_CAP = 5_000;
 const remember = <V>(map: Map<string, V>, k: string, v: V) => {
   map.delete(k);
@@ -188,24 +188,131 @@ const remember = <V>(map: Map<string, V>, k: string, v: V) => {
   if (map.size > MAP_CAP) map.delete(map.keys().next().value!);
 };
 
-export function slackAdapter(connection: Connection, opts: { openDms?: boolean } = {}): Adapter {
+// ── Polling (the default inbound: SLACK_TOKEN alone) ─────────────────────────────────────────────
+// Every `pollSeconds` (default 60):
+// (a) DMs and group DMs: conversations.list (types im,mpim, cached 5 min), then conversations.history
+//     from each one's last-seen ts. Slack gives a user token no "last message" time for a
+//     conversation, so a DM with a message in the last 24 h is read on every poll, and the others
+//     in turns, at most `historyBudget` calls a poll. Each keeps its own ts: a message in a quiet DM
+//     comes late, never lost.
+// (b) Mentions in channels: search.messages for `<@you>`, newest first, back to the last-seen ts
+//     less 5 min (search indexes late; the core's key dedupes the overlap).
+// (c) Replies in threads Orca talks in: conversations.replies from each thread's last-seen ts.
+// The cursor (integration_cursor, one JSON value) keeps every ts and the threads, so a restart
+// neither replays nor misses. A 429 ends the poll; the next one waits for Slack's Retry-After.
+
+/** What the poller and Socket Mode keep between polls and restarts. Every ts is Slack's string. */
+export type SlackCursor = {
+  v: 1;
+  /** When polling began: the floor for a DM not seen yet. */
+  start: string;
+  /** The newest mention read by search. */
+  mention: string;
+  /** DM or group DM channel id → the newest ts read there. */
+  dms: Record<string, string>;
+  /** Thread key (`channel:thread_ts`) Orca talks in → the newest ts read there. */
+  threads: Record<string, string>;
+};
+
+/** A ts for a time in ms. */
+export const tsOf = (ms: number): string => `${Math.floor(ms / 1000)}.000000`;
+const tsMs = (ts: string | undefined): number => Number(ts ?? 0) * 1000;
+/** The later of two ts. */
+export const laterTs = (a: string, b: string | undefined): string => (b && Number(b) > Number(a) ? b : a);
+
+/** The stored cursor, or a new one that starts now (a first start reads no history). Pure. */
+export function parseCursor(raw: string | undefined, now: number): SlackCursor {
+  try {
+    const c = raw ? (JSON.parse(raw) as Partial<SlackCursor>) : undefined;
+    if (c?.v === 1 && typeof c.start === "string") {
+      return { v: 1, start: c.start, mention: typeof c.mention === "string" ? c.mention : c.start, dms: { ...(c.dms ?? {}) }, threads: { ...(c.threads ?? {}) } };
+    }
+  } catch { /* a bad value starts again from now */ }
+  const t = tsOf(now);
+  return { v: 1, start: t, mention: t, dms: {}, threads: {} };
+}
+
+/** A thread with no activity for this long is no longer polled. */
+export const THREAD_TTL_MS = 7 * 24 * 60 * 60_000;
+/** At most this many threads are kept (the newest). */
+export const MAX_THREADS = 200;
+/** A DM with a message this recent is read on every poll. */
+export const HOT_MS = 24 * 60 * 60_000;
+/** Search reads back this far before the last mention: search indexes late. */
+export const MENTION_OVERLAP_S = 300;
+
+/** The threads still worth a poll: active in the last week, the newest MAX_THREADS. Pure. */
+export function pruneThreads(threads: Record<string, string>, now: number): Record<string, string> {
+  return Object.fromEntries(Object.entries(threads)
+    .filter(([, ts]) => now - tsMs(ts) < THREAD_TTL_MS)
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .slice(0, MAX_THREADS));
+}
+
+/** The DMs to read this poll: every hot one (newest first), then the others in turns from `next`,
+ *  `budget` in all. Returns where the turns go on next time. Pure. */
+export function pickConversations(ids: string[], dms: Record<string, string>, now: number, budget: number, next: number): { pick: string[]; next: number } {
+  const hot = ids.filter((id) => dms[id] && now - tsMs(dms[id]) < HOT_MS).sort((a, b) => Number(dms[b]) - Number(dms[a]));
+  const pick = hot.slice(0, budget);
+  const cold = ids.filter((id) => !hot.includes(id));
+  const room = Math.min(budget - pick.length, cold.length);
+  const from = cold.length ? next % cold.length : 0;
+  for (let i = 0; i < room; i++) pick.push(cold[(from + i) % cold.length]!);
+  return { pick, next: cold.length ? (from + room) % cold.length : 0 };
+}
+
+/** One search.messages match. */
+export type SearchMatch = { ts?: string; text?: string; user?: string; permalink?: string; channel?: { id?: string; is_im?: boolean; is_mpim?: boolean; is_private?: boolean } };
+
+/** A search match as a message event: the thread from the permalink's `thread_ts`. A match in a DM
+ *  or group DM is left to the DM poll. Pure. */
+export function searchEvent(m: SearchMatch): SlackEvent | undefined {
+  if (!m.channel?.id || !m.ts || m.channel.is_im || m.channel.is_mpim) return undefined;
+  let thread: string | undefined;
+  try { thread = m.permalink ? new URL(m.permalink).searchParams.get("thread_ts") ?? undefined : undefined; } catch { /* no thread */ }
+  return { type: "message", user: m.user, text: m.text, ts: m.ts, channel: m.channel.id, channel_type: m.channel.is_private ? "group" : "channel", ...(thread && thread !== m.ts ? { thread_ts: thread } : {}) };
+}
+
+export type SlackPollResult = { ingested: number; calls: number; error?: string; retryAfterMs?: number };
+export type SlackAdapter = Adapter & { poll(): Promise<SlackPollResult> };
+
+const DEFAULT_POLL_SECONDS = 60;
+const DEFAULT_HISTORY_BUDGET = 20;
+const MAX_HISTORY_PAGES = 5;
+const MAX_SEARCH_PAGES = 3;
+const CONVERSATIONS_TTL_MS = 5 * 60_000;
+type SlackMessage = SlackEvent & { reply_count?: number };
+
+export function slackAdapter(connection: Connection, opts: { openDms?: boolean } = {}): SlackAdapter {
   const token = () => (connection.secretRef ? process.env[connection.secretRef] : undefined) ?? "";
   const appRef = typeof connection.config.appTokenRef === "string" && connection.config.appTokenRef ? connection.config.appTokenRef : APP_TOKEN_REF;
   const appToken = () => process.env[appRef] ?? "";
-  // Inbound is on unless `config.socket` is false (Settings stores the text "false").
-  const socketOff = connection.config.socket === false || connection.config.socket === "false";
+  // `config.inbound`: "poll", "socket" or "off". Unset: Socket Mode when the app-level token is set, else polling.
+  const mode = (): "poll" | "socket" | "off" => {
+    const want = String(connection.config.inbound ?? "");
+    if (want === "off") return "off";
+    if (want === "poll") return "poll";
+    return appToken() ? "socket" : "poll";
+  };
+  const pollMs = () => Math.max(15, Number(connection.config.pollSeconds) || DEFAULT_POLL_SECONDS) * 1000;
+  const budget = () => Math.max(1, Number(connection.config.historyBudget) || DEFAULT_HISTORY_BUDGET);
   let ctx: AdapterContext | undefined;
   let ws: WebSocketLike | undefined;
   let retry: ReturnType<typeof setTimeout> | undefined;
   let attempt = 0;
   let stopped = false;
-  let inbound = false;
+  let running: "poll" | "socket" | "off" = "off";
   let me = { team: "", userId: "", name: "" };
-  let state: { ok: boolean; detail?: string; lastEventAt?: number } = { ok: false, detail: "not started" };
-  const threads = new Map<string, true>(); // thread keys Orca talks in: a reply there needs no mention
+  let state: { ok: boolean; detail?: string; lastEventAt?: number; lastPollAt?: number } = { ok: false, detail: "not started" };
+  let cur: SlackCursor = parseCursor(undefined, Date.now()); // the threads live here in both modes
+  let conversations: { at: number; list: { id: string; place: "im" | "mpim" }[] } | undefined;
+  let turn = 0; // where the quiet DMs' turns go on
+  let inFlight: Promise<SlackPollResult> | undefined;
   const names = new Map<string, string>(); // user id → display name
 
   const setState = (s: typeof state) => { state = { ...state, ...s }; void ctx?.status(state).catch(() => {}); };
+  const saveCursor = () => ctx?.cursor.set(JSON.stringify(cur)) ?? Promise.resolve();
+  const talkIn = (key: string, ts: string) => { cur.threads[key] = laterTs(cur.threads[key] ?? "0", ts); };
 
   async function nameOf(user: string): Promise<string | undefined> {
     const known = names.get(user);
@@ -217,15 +324,148 @@ export function slackAdapter(connection: Connection, opts: { openDms?: boolean }
     return name || undefined;
   }
 
-  async function onEvent(ev: SlackEvent, team: string): Promise<void> {
-    if (!ctx || ev.type !== "message" || !ev.user || ev.user === me.userId) return;
-    const made = slackInbound(ev, { team: team || me.team, userId: me.userId, name: me.name, integrationId: connection.id }, { known: (k) => threads.has(k) });
-    if (!made) return;
+  /** One message event, from the socket or a poll: the envelope, the sender's name, the core. */
+  async function handle(ev: SlackEvent, team = ""): Promise<"new" | "duplicate" | "rejected" | undefined> {
+    if (!ctx || ev.type !== "message" || !ev.user || ev.user === me.userId) return undefined;
+    const made = slackInbound(ev, { team: team || me.team, userId: me.userId, name: me.name, integrationId: connection.id }, { known: (k) => k in cur.threads });
+    if (!made) return undefined;
     const senderName = await nameOf(ev.user).catch(() => undefined);
     const e = senderName ? { ...made, actor: { external: { ...made.actor!.external, name: senderName } } } : made;
     const verdict = await ctx.ingest(e);
-    if (verdict === "new" && e.thread) remember(threads, e.thread.externalId, true);
+    if (verdict === "new") {
+      state.lastEventAt = Date.now();
+      // A reply in its thread now needs no mention. A top-level DM is its own conversation: no thread.
+      if (e.thread?.externalId.includes(":")) talkIn(e.thread.externalId, ev.ts!);
+    }
+    return verdict;
   }
+
+  // ── The poller ──
+
+  async function dmList(call: (m: string, p: Record<string, string | number | boolean | undefined>) => Promise<SlackResult>): Promise<{ id: string; place: "im" | "mpim" }[] | undefined> {
+    if (conversations && Date.now() - conversations.at < CONVERSATIONS_TTL_MS) return conversations.list;
+    const list: { id: string; place: "im" | "mpim" }[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 10; page++) {
+      const r = await call("conversations.list", { types: "im,mpim", exclude_archived: true, limit: 200, cursor });
+      if (!r.ok) return undefined;
+      for (const c of (r.channels as { id?: string; is_mpim?: boolean; is_user_deleted?: boolean }[] | undefined) ?? []) {
+        if (c.id && !c.is_user_deleted) list.push({ id: c.id, place: c.is_mpim ? "mpim" : "im" });
+      }
+      cursor = (r.response_metadata as { next_cursor?: string } | undefined)?.next_cursor || undefined;
+      if (!cursor) break;
+    }
+    conversations = { at: Date.now(), list };
+    return list;
+  }
+
+  async function pollNow(): Promise<SlackPollResult> {
+    if (!ctx) return { ingested: 0, calls: 0, error: "not started" };
+    const now = Date.now();
+    // `cur` is read once at start: this bridge alone owns it, and `send` adds threads to it between polls.
+    cur.threads = pruneThreads(cur.threads, now);
+    let calls = 0, ingested = 0, retryAfterMs = 0;
+    const errors: string[] = [];
+    const call = async (method: string, params: Record<string, string | number | boolean | undefined>): Promise<SlackResult> => {
+      calls++;
+      const r = await slackRead(token(), method, params);
+      if (r.retryAfterMs) retryAfterMs = Math.max(retryAfterMs, r.retryAfterMs);
+      if (!r.ok) errors.push(`${method}: ${r.error ?? "unknown error"}`);
+      return r;
+    };
+    const limited = () => retryAfterMs > 0;
+    const take = async (ev: SlackEvent) => { if ((await handle(ev)) === "new") ingested++; };
+
+    // (a) DMs and group DMs.
+    const list = await dmList(call);
+    if (list && !limited()) {
+      const { pick, next } = pickConversations(list.map((c) => c.id), cur.dms, now, budget(), turn);
+      turn = next;
+      for (const id of pick) {
+        if (limited()) break;
+        const place = list.find((c) => c.id === id)!.place;
+        const oldest = cur.dms[id] ?? cur.start;
+        const msgs: SlackMessage[] = [];
+        let cursor: string | undefined;
+        let ok = true;
+        for (let page = 0; page < MAX_HISTORY_PAGES; page++) {
+          const r = await call("conversations.history", { channel: id, oldest, limit: 200, cursor });
+          if (!r.ok) { ok = false; break; }
+          msgs.push(...((r.messages as SlackMessage[] | undefined) ?? []));
+          cursor = r.has_more ? (r.response_metadata as { next_cursor?: string } | undefined)?.next_cursor || undefined : undefined;
+          if (!cursor) break;
+        }
+        if (!ok) continue;
+        for (const m of msgs.filter((x) => Number(x.ts) > Number(oldest)).sort((a, b) => Number(a.ts) - Number(b.ts))) {
+          await take({ ...m, type: "message", channel: id, channel_type: place });
+          cur.dms[id] = laterTs(cur.dms[id] ?? oldest, m.ts);
+        }
+      }
+    }
+
+    // (b) Mentions in channels, by search.
+    // Newest first, page by page, until a page reaches back past the floor. Never before `start`.
+    const floor = Math.max(Number(cur.start), Number(cur.mention) - MENTION_OVERLAP_S);
+    const found: SearchMatch[] = [];
+    // `complete`: the pages reached the floor. Only then does the cursor move: a search cut short
+    // (a 429, an error, the page cap) reads the same span again next time, and the core's key dedupes.
+    let complete = false;
+    for (let page = 1; page <= MAX_SEARCH_PAGES && !limited(); page++) {
+      const r = await call("search.messages", { query: `<@${me.userId}>`, sort: "timestamp", sort_dir: "desc", count: 50, page });
+      if (!r.ok) break;
+      const msgs = r.messages as { matches?: SearchMatch[]; paging?: { pages?: number } } | undefined;
+      const matches = msgs?.matches ?? [];
+      found.push(...matches.filter((m) => Number(m.ts) > floor));
+      if (!matches.length || Number(matches.at(-1)!.ts) <= floor || page >= (msgs?.paging?.pages ?? 1)) { complete = true; break; }
+    }
+    for (const m of found.sort((a, b) => Number(a.ts) - Number(b.ts))) {
+      const ev = searchEvent(m);
+      if (ev) await take(ev);
+      if (complete) cur.mention = laterTs(cur.mention, m.ts);
+    }
+
+    // (c) Replies in threads Orca talks in, the most recent first.
+    const keys = Object.keys(cur.threads).filter((k) => /^[^:]+:\d+\.\d+$/.test(k)).sort((a, b) => Number(cur.threads[b]) - Number(cur.threads[a]));
+    for (const key of keys.slice(0, budget())) {
+      if (limited()) break;
+      const [channel, thread] = [key.slice(0, key.indexOf(":")), key.slice(key.indexOf(":") + 1)];
+      const oldest = cur.threads[key]!;
+      const r = await call("conversations.replies", { channel, ts: thread, oldest, limit: 200 });
+      if (!r.ok) continue;
+      const place = channel.startsWith("D") ? "im" : "channel";
+      for (const m of ((r.messages as SlackMessage[] | undefined) ?? []).filter((x) => Number(x.ts) > Number(oldest) && x.ts !== thread).sort((a, b) => Number(a.ts) - Number(b.ts))) {
+        await take({ ...m, type: "message", channel, channel_type: place, thread_ts: thread });
+        talkIn(key, m.ts!);
+      }
+    }
+
+    await saveCursor();
+    const lastPollAt = Date.now();
+    const error = errors.length ? errors.slice(0, 3).join("; ") : undefined;
+    setState({ ok: !error, detail: error ? `poll: ${error}` : `polling every ${pollMs() / 1000}s as ${me.name || me.userId}`, lastPollAt });
+    return { ingested, calls, ...(error ? { error } : {}), ...(retryAfterMs ? { retryAfterMs } : {}) };
+  }
+
+  /** One poll at a time: a call while one runs waits for it, then polls again. Never throws. */
+  function poll(): Promise<SlackPollResult> {
+    const run = (inFlight ?? Promise.resolve()).catch(() => undefined).then(() => pollNow()).catch((e) => {
+      const error = e instanceof Error ? e.message : String(e);
+      setState({ ok: false, detail: `poll failed: ${error}` });
+      return { ingested: 0, calls: 0, error };
+    });
+    inFlight = run;
+    return run;
+  }
+
+  function loop(): void {
+    if (stopped) return;
+    void poll().then((r) => {
+      if (stopped) return;
+      retry = setTimeout(loop, Math.max(pollMs(), r.retryAfterMs ?? 0));
+    });
+  }
+
+  // ── Socket Mode (optional: only with SLACK_APP_TOKEN) ──
 
   async function connect(): Promise<void> {
     if (stopped) return;
@@ -252,7 +492,10 @@ export function slackAdapter(connection: Connection, opts: { openDms?: boolean }
       if (p.type === "disconnect") { try { sock.close(1000); } catch { /* closed */ } return; }
       if (p.type !== "events_api" || !p.payload?.event) return;
       setState({ ok: true, lastEventAt: Date.now() });
-      void onEvent(p.payload.event, p.payload.team_id ?? "").catch((e) => ctx?.log(`inbound message failed: ${e instanceof Error ? e.message : String(e)}`));
+      const before = Object.keys(cur.threads).length;
+      void handle(p.payload.event, p.payload.team_id ?? "")
+        .then(() => { if (Object.keys(cur.threads).length !== before) void saveCursor().catch(() => {}); })
+        .catch((e) => ctx?.log(`inbound message failed: ${e instanceof Error ? e.message : String(e)}`));
     };
     sock.onclose = (ev) => {
       if (ws !== sock || stopped) return;
@@ -275,26 +518,29 @@ export function slackAdapter(connection: Connection, opts: { openDms?: boolean }
   return {
     kind: "slack",
     caps: SLACK_CAPS,
+    poll,
     async start(c) {
       ctx = c;
       stopped = false;
-      // Inbound needs the app-level token. Without it the adapter only posts: no error, no socket.
-      if (socketOff || !appToken()) {
-        inbound = false;
-        state = { ok: Boolean(token()), detail: socketOff ? "inbound off (config socket: false)" : `inbound off: ${appRef} is not set` };
-        return;
+      running = mode();
+      if (running === "off") { state = { ok: Boolean(token()), detail: "inbound off (config inbound: off)" }; return; }
+      if (running === "socket") {
+        const refusal = secretRefRefusal(appRef, ORCA_SECRETS);
+        if (refusal) throw new Error(`appTokenRef: ${refusal}`);
       }
-      const refusal = secretRefRefusal(appRef, ORCA_SECRETS);
-      if (refusal) throw new Error(`appTokenRef: ${refusal}`);
       if (!token()) throw new Error(`${connection.secretRef ?? "the token variable"} is not set`);
       const auth = await slackRead(token(), "auth.test");
       if (!auth.ok || typeof auth.user_id !== "string") throw new Error(`Slack refused the user token (auth.test: ${auth.error ?? "no user_id"})`);
       me = { team: String(auth.team_id ?? ""), userId: auth.user_id, name: String(auth.user ?? "") };
-      inbound = true;
+      // The cursor: the threads Orca talks in (both modes) and where each poll stopped. A first start begins now.
+      const raw = await c.cursor.get();
+      cur = parseCursor(raw, Date.now());
+      if (!raw) await saveCursor();
       c.signal.addEventListener("abort", close, { once: true });
-      await connect();
+      if (running === "socket") await connect();
+      else { c.log(`polling every ${pollMs() / 1000}s as ${me.name || me.userId}`); loop(); }
     },
-    async stop() { close(); },
+    async stop() { close(); await inFlight?.catch(() => undefined); },
     async send(target: Target, msg: OutboundMessage): Promise<SendResult> {
       if (!token()) return { ok: false, retryable: false, error: `${connection.secretRef ?? "the token variable"} is not set` };
       const text = msg.title || msg.url ? render(msg) : msg.text;
@@ -310,16 +556,18 @@ export function slackAdapter(connection: Connection, opts: { openDms?: boolean }
       const posted = typeof r.ts === "string" ? r.ts : undefined;
       const channel = typeof r.channel === "string" ? r.channel : opened.channel;
       const threadId = target.threadId && (threadTs(target.threadId) || !ts) ? target.threadId : ts ? `${channel}:${ts}` : posted ? `${channel}:${posted}` : undefined;
-      // Replies in a thread Orca posted in reach it with no mention.
-      if (threadId) remember(threads, threadId, true);
+      // Replies in a thread Orca posted in reach it with no mention (kept in the cursor).
+      if (threadId?.includes(":") && posted) {
+        talkIn(threadId, posted);
+        if (running !== "off") await saveCursor().catch(() => {});
+      }
       return { ok: true, ...(posted ? { externalMsgId: posted } : {}), ...(threadId ? { threadId } : {}) };
     },
     async health() {
       if (!token()) return { ok: false, detail: `${connection.secretRef ?? "token"} is not set` };
-      if (inbound && ctx) return state;
+      if (running !== "off" && ctx) return state;
       const r = await slackRead(token(), "auth.test");
-      const off = socketOff ? "inbound off (config socket: false)" : `inbound off: ${appRef} is not set`;
-      return r.ok ? { ok: true, detail: `signed in as ${String(r.user ?? "?")}; ${off}` } : { ok: false, detail: r.error };
+      return r.ok ? { ok: true, detail: `signed in as ${String(r.user ?? "?")}; inbound off` } : { ok: false, detail: r.error };
     },
     async resolveUser(externalId: string) {
       if (!token()) return undefined;

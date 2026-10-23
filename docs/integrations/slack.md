@@ -1,9 +1,9 @@
 # Slack
 
 The Slack adapter (`server/integrations/adapters/slack.ts`) connects Orca to Slack AS YOU. It uses
-your user token, so every post from Orca is in your name. It reads your own events, so a message to
-you can wake the orchestrator. The integrations core does the permission checks. See
-[ADAPTERS.md](ADAPTERS.md).
+ONE token, your user token `SLACK_TOKEN` (`xoxp-`). Every post from Orca is in your name. Orca reads
+Slack as you each minute, so a message to you can wake the orchestrator. The integrations core does
+the permission checks. See [ADAPTERS.md](ADAPTERS.md).
 
 - **In.** A message from another person reaches Orca when it is one of these:
   - a message that @-mentions you, in a public or private channel that you are in;
@@ -17,77 +17,57 @@ you can wake the orchestrator. The integrations core does the permission checks.
 
 Your own messages never reach Orca. A post that Orca makes as you does not come back in.
 
-The adapter uses [Socket Mode](https://docs.slack.dev/apis/events-api/using-socket-mode/). The box
-opens a WebSocket to Slack, so Slack needs no public URL. The client is plain Bun WebSocket code, with
-no dependency, like the Discord adapter.
+The box only calls the Slack Web API. Slack needs no public URL, no app-level token and no Socket
+Mode. Socket Mode stays as an option (section 9).
 
-## 1. Tokens
+## 1. The token
 
 | Token | Prefix | Variable | Use |
 |---|---|---|---|
-| User token | `xoxp-` | `SLACK_TOKEN` | Every Web API call: posts, reads, search, `auth.test`, `conversations.open`. |
-| App-level token | `xapp-` | `SLACK_APP_TOKEN` | Only `apps.connections.open`, which gives the Socket Mode URL. Scope `connections:write`. |
+| User token | `xoxp-` | `SLACK_TOKEN` | Every call: the poll, posts, reads, search, `auth.test`, `conversations.open`. |
 
-- Both variables are in `ORCA_SECRETS` (`server/env.ts`). Orca removes them from the environment of
-  agents, checks and previews, so a prompt injection cannot read them.
-- Orca never logs a token and never stores one. A database row holds only the variable NAME.
-- Without `SLACK_APP_TOKEN`, inbound is off. The adapter still posts, and its card says
-  `inbound off: SLACK_APP_TOKEN is not set`. This is not an error.
+- `SLACK_TOKEN` is in `ORCA_SECRETS` (`server/env.ts`). Orca removes it from the environment of
+  agents, checks and previews, so a prompt injection cannot read it.
+- Orca never logs the token and never stores it. A database row holds only the variable NAME.
 - The card's Slack button (`POST /api/slack`) also uses `SLACK_TOKEN`. It does not change (section 8).
 
 ## 2. Set up the Slack app
 
-Do these steps at <https://api.slack.com/apps>, in the app that gave you `SLACK_TOKEN`.
+The only setup: add user scopes to the app that gave you `SLACK_TOKEN`, then reinstall it.
 
-1. Open **OAuth & Permissions**.
-2. Under **User Token Scopes**, add each scope in the table below.
-3. Open **Socket Mode** and turn on **Enable Socket Mode**.
-4. Open **Basic Information**. Under **App-Level Tokens**, click **Generate Token and Scopes**.
-5. Name the token `socket`, add the scope `connections:write`, and click **Generate**.
-6. Copy the `xapp-` token. This is `SLACK_APP_TOKEN`.
-7. Open **Event Subscriptions** and turn on **Enable Events**. Socket Mode needs no Request URL.
-8. Under **Subscribe to events on behalf of users**, add the four user events below.
-9. Click **Save Changes**.
-10. Open **Install App** and click **Reinstall to Workspace**. Accept the scopes.
-11. Copy the new **User OAuth Token** (`xoxp-`). This is `SLACK_TOKEN`.
+1. Open <https://api.slack.com/apps> and select the app.
+2. Open **OAuth & Permissions**.
+3. Under **User Token Scopes**, add each new scope in the table below.
+4. Open **Install App** and click **Reinstall to Workspace**. Accept the scopes.
+5. Copy the **User OAuth Token** (`xoxp-`). This is `SLACK_TOKEN`. It can be the same value as before.
 
-User token scopes:
+User token scopes (new ones first):
 
-| Scope | Why |
-|---|---|
-| `channels:history` | Read messages in public channels: events and `orca slack read`. |
-| `groups:history` | Read messages in private channels. |
-| `im:history` | Read DMs. |
-| `mpim:history` | Read group DMs. |
-| `channels:read`, `groups:read` | List channels: `orca slack conversations`, `#name` targets. |
-| `im:read`, `mpim:read` | List DMs and group DMs. |
-| `im:write`, `mpim:write` | Open a DM or group DM before a post to a person (`conversations.open`). |
-| `chat:write` | Post as you. |
-| `users:read` | Find names: the sender's name, `@name` targets. |
-| `search:read` | `orca slack search`. |
+| Scope | New | Why |
+|---|---|---|
+| `channels:history` | yes | Read public channels: thread replies, `orca slack read`. |
+| `groups:history` | yes | Read private channels. |
+| `im:history` | yes | Read your DMs: the DM poll. |
+| `mpim:history` | yes | Read your group DMs. |
+| `im:read`, `mpim:read` | yes | List your DMs and group DMs: the DM poll. |
+| `im:write`, `mpim:write` | yes | Open a DM or group DM before a post to a person (`conversations.open`). |
+| `search:read` | yes | Find mentions of you: the mention poll, `orca slack search`. |
+| `identify` | no | `auth.test`: who you are. |
+| `channels:read`, `groups:read` | no | List channels: `orca slack conversations`, `#name` targets. |
+| `users:read` | no | Names: the sender's name, `@name` targets. |
+| `chat:write` | no | Post as you. |
 
-User events (Event Subscriptions, on behalf of users):
+Do not turn on Event Subscriptions or Socket Mode for this setup.
 
-| Event | Messages |
-|---|---|
-| `message.channels` | Public channels that you are in. |
-| `message.groups` | Private channels that you are in. |
-| `message.im` | Your DMs. |
-| `message.mpim` | Your group DMs. |
-
-Slack sends every message in these places to the socket. The adapter keeps only the messages in the
-list at the top of this page, and drops all other messages at once. Nothing else is stored.
-
-## 3. Put the tokens on the box
+## 3. Put the token on the box
 
 The bridge reads `/opt/orca/.env` at start. Do these steps on the instance that runs Slack.
 
 1. Open a shell on the box as the `orca` user (SSM, or Settings > Instances > Open terminal).
-2. Put the two lines in `/opt/orca/.env`:
+2. Put the line in `/opt/orca/.env` (replace the old value if the token changed):
 
    ```sh
    SLACK_TOKEN=xoxp-...
-   SLACK_APP_TOKEN=xapp-...
    ```
 
 3. Make sure only `orca` can read the file: `chmod 600 /opt/orca/.env`.
@@ -100,7 +80,7 @@ Never put a token in `orca.config.ts`, in a database row, or in a commit.
 Add the rows in Settings > Integrations. The values:
 
 - **Integration.** Kind Slack. Secret variable `SLACK_TOKEN`. Instance: the box with the tokens, or
-  Automatic. Only one bridge opens the socket.
+  Automatic. Only one bridge polls.
 - **DMs.** A link with the place `im` takes every DM to you. Each DM has its own channel id (`D…`),
   so one link on `im` covers all of them. Set **Require mention** off.
 - **Group DMs.** A link with the place `mpim` takes every group DM.
@@ -125,22 +105,24 @@ Optional `config` keys on the integration row:
 
 | Key | Default | Effect |
 |---|---|---|
-| `appTokenRef` | `"SLACK_APP_TOKEN"` | The variable of the app-level token. It must start with `ORCA_SECRET_` or be in `ORCA_SECRETS`. |
-| `socket` | on | `false` turns inbound off. The adapter then only posts. |
+| `pollSeconds` | `60` | The time between two polls. The minimum is 15. |
+| `historyBudget` | `20` | At most this many DM reads and thread reads in each poll. |
+| `inbound` | `poll` | `off`: the adapter only posts. `socket`: Socket Mode (section 9). Unset: Socket Mode when `SLACK_APP_TOKEN` is set, else `poll`. |
+| `appTokenRef` | `"SLACK_APP_TOKEN"` | Socket Mode only: the variable of the app-level token. |
 
 ## 5. Check it
 
-1. Open Settings > Integrations. The Slack card must say `Socket Mode connected as <you>`.
+1. Open Settings > Integrations. The Slack card must say `polling every 60s as <you>` and `last poll`.
 2. Ask a person to send you a DM.
-3. The orchestrator wakes with the message, fenced as an outside message with the link's grant.
+3. In one minute or less, the orchestrator wakes with the message. It is fenced as an outside
+   message with the link's grant.
 4. The orchestrator answers with `orca post --reply`. The answer shows in the DM, as you.
 
 If the card shows an error, these are the usual causes:
 
-- `inbound off: SLACK_APP_TOKEN is not set`: add the app-level token (section 3).
 - `Slack refused the user token (auth.test: invalid_auth)`: `SLACK_TOKEN` is wrong or revoked.
-- `Slack refused the app-level token (invalid_auth); check SLACK_APP_TOKEN and that Socket Mode is on`.
-- No events with a connected socket: check the four user events (section 2, step 8) and reinstall.
+- `poll: search.messages: missing_scope`, or another method: add the scope (section 2) and reinstall.
+- `poll: … ratelimited`: Slack limits the calls. The next poll waits for Slack's `Retry-After`.
 
 ## 6. How messages map
 
@@ -154,15 +136,36 @@ If the card shows an error, these are the usual causes:
 | A message in a thread of a DM | One event in the thread `<channel>:<thread_ts>`. |
 | Your own message, a bot, an edit, a delete, a join | Dropped. |
 
-- **Key:** `slack:<team>:<channel>:<ts>`. Slack sends an envelope again when it gets no ack. The
-  core sees the same key and records one event.
-- **Ack:** the adapter acks every envelope at once, also one that it drops.
-- **Reconnect:** on `disconnect` (Slack refreshes the link every few hours) the adapter opens a new
-  socket at once. On a dropped socket or a failed `apps.connections.open` it waits 1 s, then 2 s,
-  4 s … up to 60 s. A `Retry-After` from Slack wins when it is longer. A bad app token stops it.
+- **Key:** `slack:<team>:<channel>:<ts>`. A message that Orca reads two times has one key, so the
+  core records one event.
 - **Pairing:** an unknown sender gets a pairing code in the bell only. Orca does not send them the
   code, because a post on Slack is in your name. Approve the code, then ask them to send the
   message again.
+
+## 6a. How the poll works
+
+Each poll (every `pollSeconds`) does three reads:
+
+1. **DMs and group DMs.** `conversations.list` (types `im,mpim`, kept for 5 minutes) gives your
+   conversations. `conversations.history` reads each one from its last-seen `ts`.
+   - Slack does not tell a user token which DM has a new message. So a DM with a message in the
+     last 24 hours is read on every poll. The other DMs are read in turns.
+   - Each poll makes at most `historyBudget` DM reads. A message in a quiet DM can come some minutes
+     late. It is never lost, because each DM keeps its own `ts`.
+2. **Mentions.** `search.messages` for `<@you>`, sorted by time, newest first. It reads back to the
+   last-seen mention less 5 minutes, because search finds a new message late. A mention that it
+   reads again has the same key, so the core drops it. A mention in a DM is left to step 1.
+3. **Threads.** `conversations.replies` for each thread where Orca talks, from its last-seen `ts`.
+   A thread with no activity for 7 days drops out. At most 200 threads are kept.
+
+The **cursor** holds every last-seen `ts` and the threads. It is one JSON value in
+`integration_cursor`, so a restart does not read a message again and does not miss one. The first
+start begins at that moment and reads no history.
+
+**Rate limits.** A poll makes one list call (each 5 minutes), one to three search calls and at most
+two times `historyBudget` read calls. This is below Slack's limits for these methods (Tier 2 and
+Tier 3). If Slack answers 429, the poll stops at once. The next poll waits for Slack's `Retry-After`.
+Nothing moves the cursor past a message that was not read.
 
 ## 7. The orchestrator's verbs
 
@@ -196,3 +199,24 @@ which goes back to the place and thread that the message came from.
 The card's Actions > Slack > Send message calls `POST /api/slack`. It posts one message, as you,
 to the repo's `slackChannel`, with `SLACK_TOKEN`. It does not use the queue or the adapter's DM
 lookup. If the post fails, the card shows the error and copies the message to your clipboard.
+
+## 9. Optional: Socket Mode
+
+Polling needs only `SLACK_TOKEN`. Socket Mode gives events at once instead of each minute. It needs
+more setup, so it is off unless you set `SLACK_APP_TOKEN`.
+
+1. In the app, open **Socket Mode** and turn on **Enable Socket Mode**.
+2. Open **Basic Information**. Under **App-Level Tokens**, click **Generate Token and Scopes**.
+3. Add the scope `connections:write` and click **Generate**. Copy the `xapp-` token.
+4. Open **Event Subscriptions** and turn on **Enable Events**.
+5. Under **Subscribe to events on behalf of users**, add `message.channels`, `message.groups`,
+   `message.im` and `message.mpim`. Click **Save Changes**.
+6. Reinstall the app.
+7. Put `SLACK_APP_TOKEN=xapp-...` in `/opt/orca/.env` and restart the bridge.
+
+- The card then says `Socket Mode connected as <you>`.
+- The adapter acks every envelope at once, also one that it drops.
+- On `disconnect` it opens a new socket at once. On a drop it waits 1 s, then 2 s, up to 60 s.
+- A bad app token stops it: `Slack refused the app-level token`.
+- `SLACK_APP_TOKEN` is in `ORCA_SECRETS` too.
+- Set `inbound: "poll"` on the row to poll even when `SLACK_APP_TOKEN` is set.

@@ -12,7 +12,7 @@ import * as router from "../server/integrations/router";
 import * as dispatcher from "../server/integrations/dispatcher";
 import * as store from "../server/integrations/store";
 import { context } from "../server/integrations/registry";
-import { postAsUser, slackAdapter, slackInbound, socketMode, threadTs, type WebSocketLike } from "../server/integrations/adapters/slack";
+import { parseCursor, pickConversations, postAsUser, pruneThreads, searchEvent, slackAdapter, slackInbound, socketMode, threadTs, tsOf, type WebSocketLike } from "../server/integrations/adapters/slack";
 import { resetSlackToolCache, slackTool } from "../server/slackTool";
 import { ORCA_SECRETS } from "../server/env";
 import type { AdapterContext, Connection, InboundEnvelope } from "../server/integrations/adapter";
@@ -53,7 +53,10 @@ const fetchStub = (async (url: unknown, init?: RequestInit) => {
   const body = type.startsWith("application/json") ? JSON.parse(String(init?.body ?? "{}")) : Object.fromEntries(new URLSearchParams(String(init?.body ?? "")));
   const c = { method, auth: (init?.headers as Record<string, string>).authorization ?? "", body };
   calls.push(c);
-  return Response.json(answer(c));
+  const a = answer(c);
+  // `__status` / `__retryAfter` fake an HTTP error: a 429 with Slack's Retry-After header.
+  if (a.__status) return new Response(JSON.stringify({ ok: false, error: a.error }), { status: Number(a.__status), headers: { "retry-after": String(a.__retryAfter ?? "") } });
+  return Response.json(a);
 }) as typeof fetch;
 
 /** The Slack the tests talk to: who you are, Socket Mode, DMs, users and messages. */
@@ -164,18 +167,31 @@ describe("the Slack adapter: Socket Mode and posts", () => {
     return { a, ws, ...f };
   }
 
-  test("no SLACK_APP_TOKEN: inbound stays off cleanly — no error, no socket, posts still work", async () => {
-    delete process.env.SLACK_APP_TOKEN;
-    const a = slackAdapter(conn());
+  test("config inbound: off — no socket, no poll, no error; posts still work", async () => {
+    const a = slackAdapter(conn({ inbound: "off" }));
     await a.start(fakeCtx().ctx);
     expect(FakeSocket.all).toHaveLength(0);
     expect(calls).toEqual([]);
-    expect(await a.health()).toEqual({ ok: true, detail: "signed in as finn; inbound off: SLACK_APP_TOKEN is not set" });
+    expect(await a.health()).toEqual({ ok: true, detail: "signed in as finn; inbound off" });
     expect(await a.send({ externalId: "C1" }, { text: "hi" }, "1")).toMatchObject({ ok: true });
-    // config socket: false turns it off with the app token set, too.
-    process.env.SLACK_APP_TOKEN = "xapp-test";
-    await slackAdapter(conn({ socket: "false" })).start(fakeCtx().ctx);
+  });
+
+  test("no SLACK_APP_TOKEN: inbound polls with SLACK_TOKEN alone, no socket; inbound: poll forces it", async () => {
+    delete process.env.SLACK_APP_TOKEN;
+    const a = slackAdapter(conn());
+    await a.start(fakeCtx().ctx);
+    await a.poll();
     expect(FakeSocket.all).toHaveLength(0);
+    expect(calls.some((c) => c.method === "apps.connections.open")).toBe(false);
+    expect(calls.every((c) => c.auth === "Bearer xoxp-test")).toBe(true);
+    expect(calls.map((c) => c.method)).toContain("search.messages");
+    await a.stop();
+    process.env.SLACK_APP_TOKEN = "xapp-test";
+    const forced = slackAdapter(conn({ inbound: "poll" }));
+    await forced.start(fakeCtx().ctx);
+    await forced.poll();
+    expect(FakeSocket.all).toHaveLength(0);
+    await forced.stop();
   });
 
   test("the app-level token is an Orca secret: agents never get it, and the row may not name another variable", async () => {
@@ -276,6 +292,195 @@ describe("the Slack adapter: Socket Mode and posts", () => {
     const fenced = fenceExternal({ text: "hi", source: { adapter: "slack", linkId: "L1" }, grant: { level: "ask", repos: [], linkId: "L1" } });
     expect(fenced).toContain("posts as the user, in their name");
     expect(fenceExternal({ text: "hi", source: { adapter: "discord", linkId: "L1" } })).not.toContain("posts as the user");
+  });
+});
+
+describe("the poller: inbound with SLACK_TOKEN alone", () => {
+  const base = Math.floor(Date.now() / 1000);
+  const at = (s: number, n = 0) => `${base + s}.${String(n).padStart(6, "0")}`;
+  /** A small Slack: DMs, group DMs, search matches and thread replies, answered like the Web API. */
+  let slack: {
+    dms: { id: string; is_mpim?: boolean }[];
+    history: Record<string, Record<string, unknown>[]>;
+    matches: Record<string, unknown>[];
+    replies: Record<string, Record<string, unknown>[]>;
+    limit?: string; // a method that answers 429 once
+  };
+  const slackAnswer = (c: Call): Record<string, unknown> => {
+    if (slack.limit === c.method) { slack.limit = undefined; return { __status: 429, __retryAfter: 30, error: "ratelimited" }; }
+    const after = (ms: Record<string, unknown>[], oldest: unknown) => ms.filter((m) => Number(m.ts) > Number(oldest ?? 0));
+    switch (c.method) {
+      case "conversations.list": return { ok: true, channels: slack.dms, response_metadata: { next_cursor: "" } };
+      case "conversations.history": return { ok: true, has_more: false, messages: after(slack.history[String(c.body.channel)] ?? [], c.body.oldest).sort((a, b) => Number(b.ts) - Number(a.ts)) };
+      case "search.messages": return { ok: true, messages: { matches: [...slack.matches].sort((a, b) => Number(b.ts) - Number(a.ts)), paging: { pages: 1 } } };
+      case "conversations.replies": {
+        const all = slack.replies[`${c.body.channel}:${c.body.ts}`] ?? [];
+        return { ok: true, messages: [{ ts: c.body.ts, user: "USAAJAN", text: "parent" }, ...after(all, c.body.oldest)] };
+      }
+      default: return defaultAnswer(c);
+    }
+  };
+  /** A context like the core's: the cursor kept in `store`, ingest deduped by key. */
+  function pollCtx(store: { cursor?: string }) {
+    const f = fakeCtx();
+    const keys = new Set<string>();
+    f.ctx.cursor = { get: async () => store.cursor, set: async (v) => { store.cursor = v; } };
+    f.ctx.ingest = async (e) => { if (keys.has(e.key)) return "duplicate"; keys.add(e.key); f.ingested.push(e); return "new"; };
+    return f;
+  }
+
+  beforeEach(() => {
+    calls = [];
+    FakeSocket.all = [];
+    slack = { dms: [{ id: "D1" }, { id: "G7", is_mpim: true }], history: {}, matches: [], replies: {} };
+    answer = slackAnswer;
+    process.env.SLACK_TOKEN = "xoxp-test";
+    delete process.env.SLACK_APP_TOKEN;
+    globalThis.fetch = fetchStub;
+  });
+  afterEach(() => {
+    globalThis.fetch = native.fetch;
+    delete process.env.SLACK_TOKEN;
+  });
+
+  test("a first start reads no history: the cursor starts now, older DMs and mentions stay out", async () => {
+    slack.history.D1 = [{ ts: at(-100), user: "USAAJAN", text: "old DM" }];
+    slack.matches = [{ ts: at(-100), user: "USAAJAN", text: "<@UFINN> old", channel: { id: "C1" } }];
+    const store: { cursor?: string } = {};
+    const f = pollCtx(store);
+    const a = slackAdapter(conn());
+    await a.start(f.ctx);
+    await a.poll();
+    expect(f.ingested).toEqual([]);
+    const cur = JSON.parse(store.cursor!);
+    expect(Number(cur.start)).toBeGreaterThanOrEqual(base);
+    expect(calls.find((c) => c.method === "conversations.history")!.body.oldest).toBe(cur.start);
+    expect(calls.find((c) => c.method === "search.messages")!.body).toMatchObject({ query: "<@UFINN>", sort: "timestamp", sort_dir: "desc" });
+    await a.stop();
+  });
+
+  test("DMs and group DMs: other people's messages in, your own out, each read once", async () => {
+    const store: { cursor?: string } = {};
+    const f = pollCtx(store);
+    const a = slackAdapter(conn());
+    await a.start(f.ctx);
+    slack.history.D1 = [{ ts: at(10), user: "USAAJAN", text: "is #12 merged?" }, { ts: at(11), user: "UFINN", text: "checking" }];
+    slack.history.G7 = [{ ts: at(12), user: "UANA", text: "standup at 10" }];
+    await a.poll();
+    expect(f.ingested.map((e) => [e.source.channel, e.source.parents, e.text, e.actor?.external.name])).toEqual([
+      ["D1", ["im"], "is #12 merged?", "Saajan"],
+      ["G7", ["mpim"], "standup at 10", "Saajan"],
+    ]);
+    expect(JSON.parse(store.cursor!).dms).toEqual({ D1: at(11), G7: at(12) }); // past your own message too
+    const before = calls.length;
+    await a.poll();
+    expect(f.ingested).toHaveLength(2);
+    expect(calls.slice(before).find((c) => c.method === "conversations.history" && c.body.channel === "D1")!.body.oldest).toBe(at(11));
+    await a.stop();
+  });
+
+  test("a mention in a channel comes by search; a reply in its thread then comes with no mention", async () => {
+    const store: { cursor?: string } = {};
+    const f = pollCtx(store);
+    const a = slackAdapter(conn());
+    await a.start(f.ctx);
+    slack.matches = [
+      { ts: at(20), user: "USAAJAN", text: "<@UFINN> can you look at #12?", channel: { id: "C1" }, permalink: "https://x.slack.com/archives/C1/p1" },
+      { ts: at(21), user: "USAAJAN", text: "<@UFINN> in a thread", channel: { id: "C2", is_private: true }, permalink: `https://x.slack.com/archives/C2/p2?thread_ts=${at(5)}&cid=C2` },
+      { ts: at(22), user: "USAAJAN", text: "<@UFINN> in a DM", channel: { id: "D1", is_im: true } }, // the DM poll's job
+    ];
+    await a.poll();
+    expect(f.ingested.map((e) => [e.text, e.thread?.externalId])).toEqual([
+      ["@finn can you look at #12?", `C1:${at(20)}`],
+      ["@finn in a thread", `C2:${at(5)}`],
+    ]);
+    expect(JSON.parse(store.cursor!).threads).toMatchObject({ [`C1:${at(20)}`]: at(20) });
+    slack.replies[`C1:${at(20)}`] = [{ ts: at(30), user: "USAAJAN", text: "and the tests?" }, { ts: at(31), user: "UFINN", text: "mine" }];
+    await a.poll();
+    expect(f.ingested.at(-1)).toMatchObject({ text: "and the tests?", thread: { externalId: `C1:${at(20)}` } });
+    expect(f.ingested).toHaveLength(3);
+    expect(JSON.parse(store.cursor!).threads[`C1:${at(20)}`]).toBe(at(31));
+    await a.stop();
+  });
+
+  test("a post in a thread: the replies there are polled, and the thread is in the cursor at once", async () => {
+    const store: { cursor?: string } = {};
+    const f = pollCtx(store);
+    const a = slackAdapter(conn());
+    await a.start(f.ctx);
+    answer = (c) => (c.method === "chat.postMessage" ? { ok: true, channel: "C1", ts: at(40) } : slackAnswer(c));
+    expect(await a.send({ externalId: "C1" }, { text: "I will look" }, "1")).toMatchObject({ threadId: `C1:${at(40)}` });
+    expect(JSON.parse(store.cursor!).threads[`C1:${at(40)}`]).toBe(at(40));
+    slack.replies[`C1:${at(40)}`] = [{ ts: at(41), user: "USAAJAN", text: "thanks" }];
+    await a.poll();
+    expect(f.ingested.map((e) => e.text)).toEqual(["thanks"]);
+    await a.stop();
+  });
+
+  test("a restart replays nothing and misses nothing", async () => {
+    const store: { cursor?: string } = {};
+    const first = slackAdapter(conn());
+    const f1 = pollCtx(store);
+    await first.start(f1.ctx);
+    slack.history.D1 = [{ ts: at(10), user: "USAAJAN", text: "one" }];
+    slack.matches = [{ ts: at(11), user: "USAAJAN", text: "<@UFINN> two", channel: { id: "C1" } }];
+    await first.poll();
+    expect(f1.ingested).toHaveLength(2);
+    await first.stop();
+    // While it is down: one more DM and one more mention.
+    slack.history.D1.push({ ts: at(50), user: "USAAJAN", text: "three" });
+    slack.matches.push({ ts: at(51), user: "USAAJAN", text: "<@UFINN> four", channel: { id: "C1" } });
+    const second = slackAdapter(conn());
+    const f2 = pollCtx(store); // a new process: an empty dedupe set, the stored cursor
+    await second.start(f2.ctx);
+    await second.poll();
+    // The mention search reads back 5 minutes (search indexes late), so "two" comes again: the core's key dedupes it.
+    expect(f2.ingested.map((e) => e.text).filter((t) => t !== "@finn two")).toEqual(["three", "@finn four"]);
+    expect(f2.ingested.filter((e) => e.text === "one")).toEqual([]);
+    expect(f2.ingested.map((e) => e.key)).toContain(f1.ingested[1]!.key); // same key as before: the core says duplicate
+    await second.stop();
+  });
+
+  test("a 429 ends the poll at once with Slack's Retry-After; the cursor stays, and the next poll reads it", async () => {
+    const store: { cursor?: string } = {};
+    const f = pollCtx(store);
+    const a = slackAdapter(conn());
+    await a.start(f.ctx);
+    await a.poll(); // the first poll, which start began, is done
+    slack.history.D1 = [{ ts: at(10), user: "USAAJAN", text: "hello" }];
+    slack.limit = "conversations.history";
+    const before = calls.length;
+    const r = await a.poll();
+    expect(r.retryAfterMs).toBe(30_000);
+    expect(calls.slice(before).map((c) => c.method)).toEqual(["conversations.history"]); // the list is cached; nothing after the 429
+    expect(f.ingested).toEqual([]);
+    expect(JSON.parse(store.cursor!).dms.D1).toBeUndefined();
+    await a.poll();
+    expect(f.ingested.map((e) => e.text)).toEqual(["hello"]);
+    await a.stop();
+  });
+
+  test("pickConversations: every hot DM, then the quiet ones in turns, within the budget", () => {
+    const now = Date.now();
+    const recent = tsOf(now - 60_000), old = tsOf(now - 3 * 86_400_000);
+    const dms = { H1: recent, H2: recent, Q1: old };
+    const ids = ["H1", "Q1", "Q2", "H2", "Q3"];
+    const first = pickConversations(ids, dms, now, 3, 0);
+    expect(first.pick.slice(0, 2).sort()).toEqual(["H1", "H2"]);
+    expect(first.pick[2]).toBe("Q1");
+    const second = pickConversations(ids, dms, now, 3, first.next);
+    expect(second.pick[2]).toBe("Q2");
+    const third = pickConversations(ids, dms, now, 3, second.next);
+    expect(third.pick[2]).toBe("Q3");
+    expect(pickConversations(ids, dms, now, 1, 0).pick).toHaveLength(1);
+  });
+
+  test("parseCursor, pruneThreads and searchEvent", () => {
+    const now = Date.now();
+    expect(parseCursor("not json", now)).toMatchObject({ v: 1, start: tsOf(now), dms: {}, threads: {} });
+    expect(pruneThreads({ "C1:1.0": tsOf(now - 8 * 86_400_000), "C1:2.0": tsOf(now) }, now)).toEqual({ "C1:2.0": tsOf(now) });
+    expect(searchEvent({ ts: "5.0", user: "U1", text: "x", channel: { id: "C9", is_mpim: true } })).toBeUndefined();
+    expect(searchEvent({ ts: "5.0", user: "U1", text: "x", channel: { id: "C9" }, permalink: "https://x/p?thread_ts=4.0" })).toMatchObject({ channel: "C9", thread_ts: "4.0" });
   });
 });
 
@@ -439,6 +644,35 @@ describe("Slack on the integrations core (Postgres)", () => {
     FakeSocket.all[0]!.push(envelope("E2", ev({ text: "thanks!", ts: "1700000000.000200", thread_ts: "1700000000.000100" })));
     await settle();
     expect(await store.event("slack:T1:C1:1700000000.000200")).toMatchObject({ text: "thanks!" });
+  });
+
+  test("polling (SLACK_TOKEN alone): a DM reaches the core, the cursor is in integration_cursor, a restart replays nothing", async () => {
+    await store.addPrincipal({ id: "saajan", name: "Saajan", maxLevel: "work" }, [{ adapter: "slack", externalId: "USAAJAN" }]);
+    const msgs: Record<string, unknown>[] = [];
+    answer = (x) => x.method === "conversations.list" ? { ok: true, channels: [{ id: "D1" }] }
+      : x.method === "conversations.history" ? { ok: true, messages: msgs.filter((m) => Number(m.ts) > Number(x.body.oldest)).reverse() }
+      : x.method === "search.messages" ? { ok: true, messages: { matches: [], paging: { pages: 1 } } }
+      : defaultAnswer(x);
+    const pollConn = conn({ inbound: "poll" });
+    const run = async () => {
+      const a = slackAdapter(pollConn);
+      const stop = new AbortController();
+      await a.start(context(pollConn, stop));
+      await a.poll();
+      stop.abort();
+      await a.stop();
+    };
+    await store.setCursor("slack", ""); // the socket's start wrote one; begin as a first start would
+    await run();
+    const start = JSON.parse((await store.cursor("slack"))!).start as string;
+    msgs.push({ ts: `${Number(start) + 5}.000100`, user: "USAAJAN", text: "is #12 merged?" });
+    await run();
+    const key = `slack:T1:D1:${Number(start) + 5}.000100`;
+    expect(await store.event(key)).toMatchObject({ source: { linkId: "dm", channel: "D1" }, grant: { level: "ask", principalId: "saajan" } });
+    expect(JSON.parse((await store.cursor("slack"))!).dms.D1).toBe(`${Number(start) + 5}.000100`);
+    const deliveries = (await store.deliveries()).length;
+    await run(); // a restart: the stored cursor, nothing again
+    expect((await store.deliveries()).length).toBe(deliveries);
   });
 
   test("an unknown sender gets a bell row and NO automatic post in your name", async () => {
