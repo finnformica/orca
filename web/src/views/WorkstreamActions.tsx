@@ -372,7 +372,7 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
 // Rename a card. The name field is editable but "Suggest" fills it with an AI-generated title — the
 // primary path when an auto-title came out broken. Saving edits the GitHub PR title for a PR (its title
 // IS the card's) and always records it in enrichment. Native <dialog> for the backdrop/ESC/focus-trap.
-function RenameDialog({ row, open, onClose }: { row: Row; open: boolean; onClose: () => void }) {
+export function RenameDialog({ row, open, onClose }: { row: Row; open: boolean; onClose: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
   const [title, setTitle] = useState(row.title);
   const [busy, setBusy] = useState<null | "suggest" | "save">(null);

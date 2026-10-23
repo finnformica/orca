@@ -6,7 +6,7 @@ import { ExpandableImage } from "@/components/ExpandableImage";
 import { Shortcut } from "@/components/ui/kbd";
 import { Tip } from "@/components/ui/tip";
 import { usePrRefs, useVoiceInput, useWorkstreamRefs } from "@/store";
-import { NO_WALK, appendQuote, filterMentions, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, type HistoryWalk, type MentionRef } from "@/workstream";
+import { NO_WALK, appendQuote, filterMentions, filterSlashCommands, historyKey, historyStep, insertPrRef, listContinuation, mentionLabel, prTrigger, removeSlashQuery, slashTrigger, type HistoryWalk, type MentionRef } from "@/workstream";
 import { lineVisualRow, scrollCaretIntoView } from "@/lib/caretRow";
 import { cn, PipContext } from "@/lib/utils";
 import { clearDraft, draftFiles, loadDraft, saveDraft } from "@/lib/composerDraft";
@@ -24,6 +24,10 @@ import { replaceFindings, secretFindings, type SecretFinding } from "../../../sh
 // historyKey's firstVisualRow/lastVisualRow, measured against the box's real layout — only for
 // ArrowUp/ArrowDown, and only for the line historyKey's own "\n" check would otherwise defer to (a
 // line with a "\n" on the relevant side already decides the key without this, so it's skipped).
+/** One entry of the composer's `/` menu (components/SlashCommands builds them). `run` gets the box's
+ *  own verbs; it never sends a message. */
+export type ComposerCommand = { name: string; description: string; icon: ReactNode; run: (box: { attach: () => void }) => void };
+
 function visualRowFlags(el: HTMLTextAreaElement, key: string): { firstVisualRow?: boolean; lastVisualRow?: boolean } {
   const { value, selectionStart, selectionEnd } = el;
   if (key === "ArrowUp" && !value.slice(0, selectionStart).includes("\n")) {
@@ -53,8 +57,10 @@ function visualRowFlags(el: HTMLTextAreaElement, key: string): { firstVisualRow?
 // and a labelled Send with its keycap; its @ picker is portaled out of the host's overflow-hidden.
 export function ChatComposer({
   persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt, className, repo, prefill, insert,
-  variant = "box", icon, inputLabel,
+  variant = "box", icon, inputLabel, commands,
 }: {
+  // The `/` menu: a `/` that opens a line lists these, filtered as you type. Absent: no menu.
+  commands?: ComposerCommand[];
   variant?: "box" | "quick";
   icon?: ReactNode; // quick variant: sits top left, the text the whole width beside it
   inputLabel?: string; // the textarea's aria-label
@@ -141,6 +147,24 @@ export function ChatComposer({
   const picking = matches.length > 0;
   const activeIdx = Math.min(active, Math.max(0, matches.length - 1));
   const optionId = (i: number) => `${listId}-pr-${i}`;
+  // `/` menu: the same rules as the @ picker (↑/↓, Enter/Tab, Escape, a blur dismisses that `/`).
+  // The two never both match: a slash trigger is a `/` and a name at the start of its line.
+  const strig = commands ? slashTrigger(value, caret) : null;
+  const cmdMatches = strig && strig.start !== dismissedAt ? filterSlashCommands(commands!, strig.query) : [];
+  const commanding = cmdMatches.length > 0;
+  const cmdIdx = Math.min(active, Math.max(0, cmdMatches.length - 1));
+  const cmdOptionId = (i: number) => `${listId}-cmd-${i}`;
+  const runCommand = (c: ComposerCommand) => {
+    if (!strig) return;
+    const next = removeSlashQuery(value, strig.start, caret);
+    pendingCaret.current = next.caret;
+    pendingFocus.current = true;
+    setDismissedAt(null);
+    setValue(next.text);
+    setCaret(next.caret);
+    setActive(0);
+    c.run({ attach: () => fileRef.current?.click() });
+  };
   const pick = (m: MentionRef) => {
     if (!trig) return;
     const next = insertPrRef(value, trig.start, caret, mentionLabel(m, refs, repoCount, repo));
@@ -355,6 +379,12 @@ export function ChatComposer({
     </div>
   );
   const onKey = (e: KeyboardEvent) => {
+    if (commanding && !e.nativeEvent.isComposing) {
+      const n = cmdMatches.length;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); setActive((cmdIdx + (e.key === "ArrowDown" ? 1 : n - 1)) % n); return; }
+      if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); runCommand(cmdMatches[cmdIdx]!); return; }
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setDismissedAt(strig!.start); return; }
+    }
     if (picking && !e.nativeEvent.isComposing) {
       const n = matches.length;
       if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); setActive((activeIdx + (e.key === "ArrowDown" ? 1 : n - 1)) % n); return; }
@@ -400,7 +430,7 @@ export function ChatComposer({
     const el = e.currentTarget as HTMLTextAreaElement;
     const dir = historyKey(
       { key: e.key, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey, metaKey: e.metaKey, isComposing: e.nativeEvent.isComposing || e.keyCode === 229 },
-      { value: el.value, selectionStart: el.selectionStart, selectionEnd: el.selectionEnd, menuOpen: picking, ...visualRowFlags(el, e.key) },
+      { value: el.value, selectionStart: el.selectionStart, selectionEnd: el.selectionEnd, menuOpen: picking || commanding, ...visualRowFlags(el, e.key) },
     );
     const step = dir && historyStep(walk.current, dir, history ?? [], el.value);
     if (!step) return;
@@ -429,22 +459,50 @@ export function ChatComposer({
       value={value}
       role="combobox"
       aria-autocomplete="list"
-      aria-expanded={picking}
-      aria-controls={picking ? listId : undefined}
-      aria-activedescendant={picking ? optionId(activeIdx) : undefined}
+      aria-expanded={picking || commanding}
+      aria-controls={picking || commanding ? listId : undefined}
+      aria-activedescendant={commanding ? cmdOptionId(cmdIdx) : picking ? optionId(activeIdx) : undefined}
       onChange={(e) => {
-        const t = prTrigger(e.target.value, e.target.selectionStart);
+        const t = prTrigger(e.target.value, e.target.selectionStart) ?? (commands ? slashTrigger(e.target.value, e.target.selectionStart) : null);
         if (t?.start !== dismissedAt) setDismissedAt(null); // a new (or no) `@` re-arms the picker
         setValue(e.target.value); setCaret(e.target.selectionStart); setActive(0); // an edit keeps the ↑/↓ walk: ↓ still returns to the draft
       }}
       onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-      onBlur={() => { if (trig) setDismissedAt(trig.start); }}
+      onBlur={() => { const t = trig ?? strig; if (t) setDismissedAt(t.start); }}
       onKeyDown={onKey}
       onPaste={onPaste}
     />
   );
   // Opens upward (chat boxes sit low) unless the box is near the top of the viewport (the new-draft box).
-  const rect = picking ? (quick ? rootRef.current : textRef.current)?.getBoundingClientRect() : undefined;
+  const rect = picking || commanding ? (quick ? rootRef.current : textRef.current)?.getBoundingClientRect() : undefined;
+  const menuPlace = cn(
+    "bg-popover text-popover-foreground z-50 w-full max-w-md rounded-lg border p-1 shadow-menu",
+    quick ? "fixed" : cn("absolute left-0", (rect?.top ?? 0) < 280 ? "top-full mt-1" : "bottom-full mb-1"),
+  );
+  const menuStyle = quick && rect ? { left: rect.left, bottom: (textRef.current?.ownerDocument.defaultView?.innerHeight ?? 0) - rect.top + 4, width: rect.width } : undefined;
+  const commandMenu = commanding && (
+    <div data-slot="chat-composer-commands" className={menuPlace} style={menuStyle}>
+      <ul id={listId} role="listbox" aria-label="Commands" className="max-h-64 overflow-y-auto">
+        {cmdMatches.map((c, i) => (
+          <li
+            key={c.name}
+            id={cmdOptionId(i)}
+            role="option"
+            aria-selected={i === cmdIdx}
+            data-command={c.name}
+            className={cn("flex cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-sm", i === cmdIdx && "bg-accent text-accent-foreground")}
+            onMouseDown={(e) => e.preventDefault()} // keep the textarea's focus + caret
+            onMouseEnter={() => setActive(i)}
+            onClick={() => runCommand(c)}
+          >
+            <span className="text-muted-foreground flex size-4 shrink-0 items-center justify-center [&_svg]:size-3.5" aria-hidden>{c.icon}</span>
+            <span className="shrink-0 font-mono text-xs">/{c.name}</span>
+            <span className="text-muted-foreground min-w-0 flex-1 truncate text-xs">{c.description}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
   const mentions = picking && (
     // Inline, not a portaled popover: the composer lives in modal <dialog>s (top layer) and the
     // orchestrator's PiP window, where a body portal would sit behind or outside it. The quick variant
@@ -552,6 +610,7 @@ export function ChatComposer({
       </div>
       {guardBar}
       {mentions && (quick && textRef.current ? createPortal(mentions, textRef.current.ownerDocument.body) : mentions)}
+      {commandMenu && (quick && textRef.current ? createPortal(commandMenu, textRef.current.ownerDocument.body) : commandMenu)}
       {error && <p data-slot="chat-composer-error" className={cn("text-destructive text-xs break-words", quick ? "border-t px-3 py-1.5" : "mt-1 px-1")}>{error}</p>}
       {footer}
     </div>

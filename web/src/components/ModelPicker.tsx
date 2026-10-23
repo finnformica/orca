@@ -8,10 +8,11 @@ import { useAgentProviders } from "../store";
 // the model implies which CLI runs it (shared/models.ts). The trigger shows the model the next run
 // will use; `ran` (the last run's reported model) is surfaced in the tooltip when it differs, so you
 // can see what actually answered without a second readout. `quiet` = the card's hover-reveal look.
-export function ModelPicker({ value, onChange, label, ran, quiet, className = "", only, auto }: {
+export function ModelPicker({ value, onChange, label, ran, quiet, className = "", only, auto, open, onOpenChange }: {
   value: string; onChange: (id: string) => void; label: string; ran?: string; quiet?: boolean; className?: string;
   only?: AgentProvider; // offer just this provider's models (the orchestrator is Claude-only)
   auto?: boolean; // also offer AUTO_MODEL — the orchestrator chooses (the New-draft box)
+  open?: boolean; onOpenChange?: (open: boolean) => void; // controlled: the composer's `/model` opens it
 }) {
   const providers = useAgentProviders();
   const choices = modelChoices(only ? [only] : providers);
@@ -30,7 +31,7 @@ export function ModelPicker({ value, onChange, label, ran, quiet, className = ""
     </SelectTrigger>
   );
   return (
-    <Select value={value} onValueChange={onChange}>
+    <Select value={value} onValueChange={onChange} {...(open !== undefined && { open, onOpenChange })}>
       {title ? <Tip label={title}>{trigger}</Tip> : trigger}
       <SelectContent onClick={(e) => e.stopPropagation()}>
         {auto && <SelectItem value={AUTO_MODEL}>{AUTO_LABEL}</SelectItem>}

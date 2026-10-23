@@ -26,10 +26,11 @@ export type CompactControl = {
   error?: string;
 };
 
-export function ChatControls({ model, onModel, only, ran, contextPct, compact }: ChatControlsProps & { compact?: CompactControl }) {
+/** `picker`: the model picker's open state, held by the chat panel so its `/model` command opens it. */
+export function ChatControls({ model, onModel, only, ran, contextPct, compact, picker }: ChatControlsProps & { compact?: CompactControl; picker?: { open: boolean; onOpenChange: (open: boolean) => void } }) {
   return (
     <div className="flex min-w-0 items-center gap-1">
-      <ModelPicker label="Model" value={model} ran={ran} only={only} onChange={onModel} className="min-w-0" />
+      <ModelPicker label="Model" value={model} ran={ran} only={only} onChange={onModel} className="min-w-0" open={picker?.open} onOpenChange={picker?.onOpenChange} />
       <ContextRing pct={contextPct} compact={compact} />
     </div>
   );
