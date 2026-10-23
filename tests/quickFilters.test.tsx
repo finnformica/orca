@@ -16,7 +16,7 @@ import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import { agentQueryAtom, instanceScopeAtom, repoFilterAtom } from "@/lib/atoms";
 import {
-  MERGED_WEEK_MS, NO_QUICK_FILTER, applyQuickFilter, attentionReasons, clearQuickGroup, dropStaleRepos, mergedThisWeek, mergedToday, notMergedCount, overviewStats, parseQuickFilter, quickCount, quickFilterQuery, quickGroupActive, toggleNotMerged, toggleQuick, type OverviewRow,
+  MERGED_WEEK_MS, NO_QUICK_FILTER, applyQuickFilter, attentionReasons, clearQuickGroup, dropStaleRepos, mergedThisWeek, mergedToday, newestMergedPerBranch, notMergedCount, overviewStats, parseQuickFilter, quickCount, quickFilterQuery, quickGroupActive, toggleNotMerged, toggleQuick, type OverviewRow,
 } from "@/workstream";
 
 const row = (over: Partial<OverviewRow>): OverviewRow => ({ repo: "a", branch: "b", title: "t", lane: "LOCAL", ...over });
@@ -109,6 +109,13 @@ describe("quick filters (pure)", () => {
     expect(quickCount(week, NO_QUICK_FILTER, "pr", "merged", "local", now)).toBe(1);
     // The Overview's "Merged today" number (which links to ?pr=merged) counts today's only.
     expect(overviewStats(week, now).mergedToday).toBe(1);
+  });
+
+  test("newestMergedPerBranch: one merged PR per branch, the newest merge, in the input order", () => {
+    const m = (number: number, branch: string, mergedAt?: string) => ({ number, branch, mergedAt });
+    const all = [m(1, "a", "2026-10-20T10:00:00Z"), m(2, "b", "2026-10-21T10:00:00Z"), m(3, "a", "2026-10-22T10:00:00Z"), m(4, "c")];
+    expect(newestMergedPerBranch(all).map((x) => x.number)).toEqual([2, 3, 4]);
+    expect(newestMergedPerBranch([m(5, "a", "2026-10-22T10:00:00Z"), m(6, "a", "2026-10-20T10:00:00Z")]).map((x) => x.number)).toEqual([5]);
   });
 
   test("the URL round-trips the new choice, and an old link still parses the same", () => {
@@ -304,6 +311,44 @@ describe("quick filter chips on the Agents page", () => {
     await click(menu()!.querySelector('[data-slot="quick-filter-clear"]')!);
     expect(location.search).toBe("");
     expect(checked("notMerged")).toBe("true");
+  });
+
+  // Finn: "toggling the merged this week shows all the merged things, but toggling it off doesn't
+  // change the view until i refresh". A week holds two merged PRs of one reused branch (ruminate's
+  // orca/es-7-app-reads-fold-3d9c00): two Done rows with one React key left orphan rows behind.
+  test("merged choices toggle on, then off: the merged rows go again, with no refresh (one Done row per branch)", async () => {
+    seed();
+    apiFake.repoHasRemote = true;
+    const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+    apiFake.mergedData = [
+      { number: 20, title: "Reused, first", branch: "feat-reused", url: "u", mergedAt: ago(3 * 86_400_000) },
+      { number: 21, title: "Reused, again", branch: "feat-reused", url: "u", mergedAt: ago(60_000) },
+      { number: 22, title: "Older", branch: "feat-older", url: "u", mergedAt: ago(4 * 86_400_000) },
+    ];
+    await open("/agents");
+    const live = ["cloud-bot", "feat-ci", "feat-ok", "local-held", "local-run"];
+    expect(listed()).toEqual(live);
+    await openGroup("state");
+    expect(count("pr:week")).toBe("2"); // one row for the reused branch, not two
+    // Each step opens the State dropdown again: in happy-dom a remounted row's closed RenameDialog
+    // takes focus through its autoFocus input, which closes the popover (a browser does not).
+    for (const [key, merged] of [["pr:week", ["feat-older", "feat-reused"]], ["pr:merged", ["feat-reused"]]] as const) {
+      await openGroup("state");
+      await click(box(key));
+      expect(listed()).toEqual([...merged]);
+      await openGroup("state");
+      await click(box(key));
+      expect(location.search).toBe("");
+      expect(listed()).toEqual(live); // the merged rows left the list at once
+    }
+    await openGroup("state");
+    await click(box("notMerged"));
+    expect(listed()).toEqual([...live, "feat-older", "feat-reused"].sort());
+    await openGroup("state");
+    await click(box("notMerged"));
+    expect(listed()).toEqual(live);
+    const reused = container!.querySelectorAll('[data-slot="workstream-row"][data-branch="feat-reused"]');
+    expect(reused).toHaveLength(0);
   });
 
   test("the sidebar's instance scope narrows the list with no instance pills in the row (dropped with mine/orchestrated)", async () => {

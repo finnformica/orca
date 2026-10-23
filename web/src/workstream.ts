@@ -82,6 +82,18 @@ export function deriveKanbanState(s: PrStatusLike): WorkstreamState {
  *  caller never checked (a pure-web caller with no git), so a differing head still reads as reuse. */
 export type BranchActivity = { agentStatus?: string; queued?: number; agentStartedAt?: number; head?: string; headBehindPr?: boolean; openPr?: boolean };
 
+/** One merged PR per branch: the newest merge. A branch is one workstream, and a reused branch can
+ *  merge twice in the week the board fetches; two Done rows with one key left orphan rows in the
+ *  Agents list when a merged filter went off. Keeps the input order. Pure. */
+export function newestMergedPerBranch<M extends { branch: string; mergedAt?: string }>(merged: readonly M[]): M[] {
+  const newest = new Map<string, M>();
+  for (const m of merged) {
+    const had = newest.get(m.branch);
+    if (!had || (Date.parse(m.mergedAt ?? "") || 0) > (Date.parse(had.mergedAt ?? "") || 0)) newest.set(m.branch, m);
+  }
+  return merged.filter((m) => newest.get(m.branch) === m);
+}
+
 /** Is a merged PR found by head branch only HISTORY for this workstream? GitHub matches PRs by
  *  branch name, and the orchestrator reuses a branch after its PR merged (`orca send` to it: the
  *  worker resets onto the base and starts again) — so the old merged PR must not make the row Done
