@@ -50,10 +50,18 @@ function DropdownMenuContent({ className, sideOffset = 4, collisionPadding = POP
   );
 }
 
-function DropdownMenuItem({ className, ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Item>) {
+/** `variant="destructive"` (shadcn's pattern) reddens the label AND any icon child together — the
+ *  icon takes it from `currentColor`, never a separate muted class — plus a light red focus fill, so
+ *  an irreversible item (Discard, Close PR, Delete…) never shows red text over a grey icon. */
+function DropdownMenuItem({ className, variant = "default", ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Item> & { variant?: "default" | "destructive" }) {
   return (
     <DropdownMenuPrimitive.Item
-      className={cn("focus:bg-accent focus:text-accent-foreground relative flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none select-none", className)}
+      data-variant={variant}
+      className={cn(
+        "focus:bg-accent focus:text-accent-foreground relative flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-sm outline-none select-none",
+        "data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 data-[variant=destructive]:focus:text-destructive data-[variant=destructive]:[&_svg]:text-destructive",
+        className,
+      )}
       {...props}
     />
   );

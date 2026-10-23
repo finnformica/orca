@@ -55,19 +55,23 @@ const SHEET_ROW = "active:bg-accent flex min-h-12 w-full items-center gap-3 roun
 
 // `busy` scopes a spinner (and the disable that blocks a double-click) to THIS item alone — every
 // other item, the card link, the chat and the menu itself stay usable while one action runs.
-function Item({ icon: Icon, onSelect, disabled, busy, className, children }: { icon?: LucideIcon; onSelect?: Select; disabled?: boolean; busy?: boolean; className?: string; children: ReactNode }) {
+// `destructive` is the one switch for an irreversible item (Discard, Close PR): red label AND red
+// icon together on both the desktop dropdown (DropdownMenuItem's own variant) and the phone sheet
+// row, never a className that reddens only the text.
+function Item({ icon: Icon, onSelect, disabled, busy, destructive, className, children }: { icon?: LucideIcon; onSelect?: Select; disabled?: boolean; busy?: boolean; destructive?: boolean; className?: string; children: ReactNode }) {
   const close = useContext(SheetMenu);
   const isDisabled = disabled || busy;
   if (!close) return (
-    <DropdownMenuItem onSelect={onSelect} disabled={isDisabled} className={className}>
+    <DropdownMenuItem onSelect={onSelect} disabled={isDisabled} variant={destructive ? "destructive" : undefined} className={className}>
       <span className="min-w-0 flex-1 truncate">{children}</span>
       {busy && <Loader2 className="size-3.5 shrink-0 animate-spin" />}
     </DropdownMenuItem>
   );
   return (
-    <button type="button" role="menuitem" data-slot="sheet-item" disabled={isDisabled} className={cn(SHEET_ROW, className)}
+    <button type="button" role="menuitem" data-slot="sheet-item" disabled={isDisabled}
+      className={cn(SHEET_ROW, destructive && "text-destructive active:bg-destructive/10 focus-visible:bg-destructive/10", className)}
       onClick={() => { const e = new Event("select", { cancelable: true }); onSelect?.(e); if (!e.defaultPrevented) close(); }}>
-      {busy ? <Loader2 className="text-muted-foreground size-5 shrink-0 animate-spin" /> : (Icon && <Icon className="text-muted-foreground size-5 shrink-0" />)}
+      {busy ? <Loader2 className="text-muted-foreground size-5 shrink-0 animate-spin" /> : (Icon && <Icon className={cn("size-5 shrink-0", destructive ? "text-destructive" : "text-muted-foreground")} />)}
       <span className="min-w-0 flex-1">{children}</span>
     </button>
   );
@@ -281,7 +285,7 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
       <Sep />
       {isPr ? (
         <Item icon={XCircle}
-          className="text-destructive focus:text-destructive"
+          destructive
           busy={isBusy("Close PR")}
           onSelect={() => void (async () => {
             if (await confirmDialog({ title: `Close PR #${row.prNumber}?`, description: `Close "${row.title}" without a merge. This removes the worktree and the local branch.`, confirmLabel: "Close PR", destructive: true })) await run("Close PR", () => closePr(row))();
@@ -291,7 +295,7 @@ export function WorkstreamActions({ row, hasWork = true, compact = false, leadin
         </Item>
       ) : (
         <Item icon={Trash2}
-          className="text-destructive focus:text-destructive"
+          destructive
           onSelect={() => void (async () => {
             if (await confirmDialog({ title: `Discard "${row.title}"?`, description: `This removes the worktree and the branch ${row.branch}. You cannot undo this.`, confirmLabel: "Discard", destructive: true })) await discardDraft(row);
           })()}

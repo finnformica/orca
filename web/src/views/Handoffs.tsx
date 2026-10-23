@@ -227,7 +227,7 @@ function PackRow({ pack, source, servers, onChange, variant = "page" }: { pack: 
             )}
             {!pack.sentAt && (
               <Tip label="Delete pack">
-                <Button variant="ghost" size="icon" aria-label="Delete pack" onClick={() => void remove()} className="size-10 md:size-8"><Trash2 className="size-4" /></Button>
+                <Button variant="ghost" size="icon" aria-label="Delete pack" onClick={() => void remove()} className="text-destructive hover:text-destructive hover:bg-destructive/10 size-10 md:size-8"><Trash2 className="size-4" /></Button>
               </Tip>
             )}
           </div>

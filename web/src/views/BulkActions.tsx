@@ -92,7 +92,8 @@ export function LaneActions({ lane, cards }: { lane: Lane; cards: Row[] }) {
   };
 
   const item = ({ action, rows }: { action: BulkAction; rows: Row[] }) => (
-    <DropdownMenuItem key={action} disabled={Boolean(busy)} onSelect={() => void run(action, rows)} className="normal-case">
+    <DropdownMenuItem key={action} disabled={Boolean(busy)} onSelect={() => void run(action, rows)}
+      variant={action === "closePr" || action === "discard" ? "destructive" : undefined} className="normal-case">
       {BULK_LABELS[action]} <span className="text-muted-foreground ml-auto pl-2">{rows.length}</span>
     </DropdownMenuItem>
   );
