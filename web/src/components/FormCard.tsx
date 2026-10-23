@@ -241,10 +241,10 @@ function FieldSelect({ common, field: f, value, onChange }: { common: Record<str
   return (
     <Select value={value} onValueChange={(v) => onChange(v === NO_CHOICE ? "" : v)} open={open} onOpenChange={(o) => { setOpen(o); if (!o) onBlur(); }}>
       <SelectTrigger {...trigger} data-slot="form-select" data-value={value} onBlur={() => { if (!open) onBlur(); }}
-        className="aria-invalid:border-geist-red w-full text-base md:text-sm">
+        className="aria-invalid:border-geist-red data-[placeholder]:text-muted-foreground w-full text-base md:text-sm">
         <SelectValue placeholder={f.placeholder ?? "Choose…"} />
       </SelectTrigger>
-      <SelectContent>
+      <SelectContent className="min-w-(--radix-select-trigger-width)">
         {!f.required && value && <SelectItem value={NO_CHOICE} className="text-muted-foreground">None</SelectItem>}
         {f.options?.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
       </SelectContent>

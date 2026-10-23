@@ -99,7 +99,7 @@ export function DateTimePicker({ common, value, onChange, min, max, required }: 
 function TimePart({ label, slot, value, items, disabled, onChange }: { label: string; slot: string; value: string; items: string[]; disabled: boolean; onChange: (v: string) => void }) {
   return (
     <Select value={value} onValueChange={onChange} disabled={disabled}>
-      <SelectTrigger aria-label={label} data-slot={slot} className="text-base tabular-nums md:text-sm"><SelectValue placeholder="--" /></SelectTrigger>
+      <SelectTrigger aria-label={label} data-slot={slot} className="data-[placeholder]:text-muted-foreground text-base tabular-nums md:text-sm"><SelectValue placeholder="--" /></SelectTrigger>
       <SelectContent>{items.map((x) => <SelectItem key={x} value={x} className="tabular-nums">{x}</SelectItem>)}</SelectContent>
     </Select>
   );
