@@ -87,6 +87,17 @@ async function makeShimDir(opts: {
       `  echo systemctl-restart >> "${trace}"`,
       "  exit 0",
       "fi",
+      // The slots of deploy/orca@.service: ORCA_TEST_SLOT_ACTIVE names the live unit (a, b or legacy).
+      'case "$1 $2 $3" in',
+      '  "is-active -q orca@a") [ "${ORCA_TEST_SLOT_ACTIVE:-}" = a ]; exit $? ;;',
+      '  "is-active -q orca@b") [ "${ORCA_TEST_SLOT_ACTIVE:-}" = b ]; exit $? ;;',
+      '  "is-active -q orca") [ "${ORCA_TEST_SLOT_ACTIVE:-}" = legacy ]; exit $? ;;',
+      '  "show -p MainPID") echo 4242; exit 0 ;;',
+      "esac",
+      'case "$1" in',
+      `  start) grep -q bun-build-ok "${trace}" 2>/dev/null && echo build-before-restart >> "${trace}"; echo "systemctl-start $2" >> "${trace}"; exit 0 ;;`,
+      `  stop|enable|disable) echo "systemctl-$*" >> "${trace}"; exit 0 ;;`,
+      "esac",
       "exit 1",
     ].join("\n") + "\n",
   );
@@ -120,9 +131,11 @@ async function makeShimDir(opts: {
       "#!/bin/sh",
       // the URL is always the final argument in the two calls autodeploy.sh makes
       'for a in "$@"; do url="$a"; done',
+      // The health loop asks for the status code (-w); the slot swap reads the body for the new pid.
+      'code=0; for a in "$@"; do [ "$a" = "-w" ] && code=1; done',
       'case "$url" in',
       `  *api/orchestrator) printf '%s' '${orchBody}' ;;`,
-      "  *api/config) printf '200' ;;",
+      `  *api/config) [ "$code" = 1 ] && printf '200' || printf '%s' '{"bridge":{"pid":4242}}' ;;`,
       "  *) echo \"fake-curl: unhandled $*\" >&2; exit 1 ;;",
       "esac",
     ].join("\n") + "\n",
@@ -238,6 +251,41 @@ test("behind + idle: pull, build, restart in that order", async () => {
     "build-before-restart",
     "systemctl-restart",
   ]);
+});
+
+// With ORCA_REUSE_PORT=1 in the box's .env the restart is a slot swap (deploy/orca@.service): start the
+// idle slot beside the live one, wait for its pid on /api/config, then stop and disable the old.
+test("behind + idle, reuse-port box: the idle slot starts beside the live one and the old slot stops after the new one answers", async () => {
+  const { origin, box, state, trace } = await setup();
+  const newHead = await advanceOrigin(origin);
+  const shim = await makeShimDir({ trace });
+  await writeFile(join(box, ".env"), "ORCA_REUSE_PORT=1\n");
+
+  const { log } = await runScript({ ...baseEnv(box, state, shim), ORCA_TEST_REPO: box, ORCA_TEST_EXPECT_HEAD: newHead, ORCA_TEST_SLOT_ACTIVE: "a" });
+
+  expect(log).toContain(`deployed ${newHead.slice(0, 12)}`);
+  expect((await readFile(trace, "utf8")).trim().split("\n")).toEqual([
+    "pull-before-build",
+    "bun-build-ran",
+    "bun-build-ok",
+    "build-before-restart",
+    "systemctl-start orca@b",
+    "systemctl-stop orca@a",
+    "systemctl-disable -q orca@a",
+    "systemctl-enable -q orca@b",
+  ]);
+});
+
+test("reuse-port box still on the legacy single unit: the first swap starts orca@a and retires `orca`", async () => {
+  const { origin, box, state, trace } = await setup();
+  await advanceOrigin(origin);
+  const shim = await makeShimDir({ trace });
+  await writeFile(join(box, ".env"), "ORCA_REUSE_PORT=1\n");
+
+  await runScript({ ...baseEnv(box, state, shim), ORCA_TEST_SLOT_ACTIVE: "legacy" });
+
+  const steps = (await readFile(trace, "utf8")).trim().split("\n");
+  expect(steps.slice(-4)).toEqual(["systemctl-start orca@a", "systemctl-stop orca", "systemctl-disable -q orca", "systemctl-enable -q orca@a"]);
 });
 
 test("build fails: no restart, old build keeps serving, failure logged", async () => {

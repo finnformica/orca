@@ -16,11 +16,13 @@ beforeEach(async () => {
     await writeFile(join(dir, name), `#!/bin/sh\n${body}\n`);
     await chmod(join(dir, name), 0o755);
   };
+  // The unit is `orca`, or a slot of deploy/orca@.service when "$SHIM/slot" names one (a or b).
   await bin("systemctl", `case "$*" in
-  "show -p ActiveState --value orca") cat "$SHIM/orca-state" ;;
-  "show -p ActiveEnterTimestampMonotonic --value orca") cat "$SHIM/orca-start" ;;
+  "show -p ActiveState --value orca"|"show -p ActiveState --value orca@"[ab]) cat "$SHIM/orca-state" ;;
+  "show -p ActiveEnterTimestampMonotonic --value orca"|"show -p ActiveEnterTimestampMonotonic --value orca@"[ab]) cat "$SHIM/orca-start" ;;
   "show -p ActiveState --value orca-autodeploy.service") cat "$SHIM/autodeploy-state" ;;
-  "restart orca") echo restart >> "$SHIM/calls" ;;
+  "is-active -q orca@"[ab]) [ "$(cat "$SHIM/slot" 2>/dev/null)" = "\${3#orca@}" ] ;;
+  "restart orca"|"restart orca@"[ab]) echo "restart $2" >> "$SHIM/calls" ;;
   "show -p ActiveState --value user@"*) cat "$SHIM/manager-state" ;;
   "restart user@"*) echo "$2" >> "$SHIM/manager-calls" ;;
 esac`);
@@ -66,6 +68,13 @@ test("three failed checks in a row restart orca and log each step to the journal
   // The count starts again after a restart.
   check(); check();
   expect(await restarts()).toBe(1);
+});
+
+test("with a slot of deploy/orca@.service live, that slot is the one restarted", async () => {
+  await writeFile(join(dir, "slot"), "b\n");
+  check(); check(); check();
+  expect(await read("calls")).toBe("restart orca@b\n");
+  expect(await read("journal")).toContain("restarting orca@b after 3 failed checks in a row");
 });
 
 test("an answer clears the count, so only failures IN A ROW restart orca", async () => {
