@@ -232,6 +232,15 @@ describe("ChatPanel / menu", () => {
     expect(sent).toEqual([]);
   });
 
+  test("rename opens the rename dialog, seeded with the title", async () => {
+    const box = await mount(worker);
+    await type(box, "/rename");
+    await key(box, "Enter");
+    const field = container!.querySelector<HTMLInputElement>('input[aria-label="Card title"]');
+    expect(field?.value).toBe("Feat");
+    expect(sent).toEqual([]);
+  });
+
   test("merge asks first, then marks the PR merge-when-green", async () => {
     const box = await mount(worker);
     await type(box, "/merge");

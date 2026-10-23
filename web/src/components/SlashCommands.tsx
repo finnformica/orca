@@ -87,7 +87,9 @@ export function useSlashCommands(host: SlashHost): { commands: ComposerCommand[]
             try { await mergeWhenGreen(row); setNotice(`PR #${row.prNumber} merges when green`); } catch (e) { fail("Merge when green", e); }
           }} />
       )}
-      {!ctx.orchestrator && <RenameDialog row={row} open={dialog === "rename"} onClose={() => setDialog(null)} />}
+      {/* Mounted only while open: its title field has autoFocus, and a closed one mounted beside the
+          composer pulled the focus away from the Chat tab's box (a focus fight, never settled). */}
+      {dialog === "rename" && <RenameDialog row={row} open onClose={() => setDialog(null)} />}
       {notice && (
         <div role="status" data-slot="slash-notice" className="bg-muted text-muted-foreground mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs">
           <span className="min-w-0 truncate">{notice}</span>
