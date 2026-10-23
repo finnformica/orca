@@ -196,7 +196,7 @@ function LinkRowView({ link: l, onEdit, onChange }: { link: LinkRow; onEdit: () 
       <div className="flex items-center gap-1">
         {l.externalId !== CATCH_ALL && <Button variant="secondary" size="sm" disabled={test.busy} onClick={() => void run()} className="max-md:h-10 max-md:flex-1">Test</Button>}
         <Button variant="ghost" size="sm" onClick={onEdit} className="max-md:h-10">Edit</Button>
-        <Button variant="ghost" size="icon" className="size-8 max-md:size-10" aria-label={`Remove ${l.label ?? l.externalId}`}
+        <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive hover:bg-destructive/10 size-8 max-md:size-10" aria-label={`Remove ${l.label ?? l.externalId}`}
           onClick={() => ask(`Remove ${l.label ?? l.externalId}?`, "Orca stops listening and posting there. Its subscriptions go too.", () => void act("Remove link", "links/remove", { id: l.id }, onChange))}><Trash2 /></Button>
       </div>
       {confirmNode}
@@ -422,7 +422,7 @@ function PersonRowView({ person: p, kinds, onChange }: { person: PersonRow; kind
           <SelectTrigger aria-label={`${p.name} max level`} size="sm" className="w-28 max-sm:h-10 max-sm:flex-1"><SelectValue /></SelectTrigger>
           <SelectContent>{LINK_LEVELS.map((l) => <SelectItem key={l.value} value={l.value}>{l.label}</SelectItem>)}</SelectContent>
         </Select>
-        <Button variant="ghost" size="icon" className="size-8 max-sm:size-10" aria-label={`Remove ${p.name}`}
+        <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive hover:bg-destructive/10 size-8 max-sm:size-10" aria-label={`Remove ${p.name}`}
           onClick={() => ask(`Remove ${p.name}?`, "Every identity is unpaired. Their messages are dropped again.", () => void act(`Remove ${p.name}`, "people/remove", { id: p.id }, onChange))}><Trash2 /></Button>
       </div>
       {adding && <IdentityDialog person={p} kinds={kinds} onClose={() => setAdding(false)} onSaved={onChange} />}
@@ -540,7 +540,7 @@ function SubscriptionsCard({ data, onChange }: { data: Overview; onChange: () =>
                 {s.digestSeconds && <Pill>digest {Math.round(s.digestSeconds / 60)} min</Pill>}
               </div>
             </div>
-            <Button variant="ghost" size="icon" className="size-8 max-sm:size-10" aria-label={`Remove subscription ${s.topicPattern}`}
+            <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive hover:bg-destructive/10 size-8 max-sm:size-10" aria-label={`Remove subscription ${s.topicPattern}`}
               onClick={() => void act("Remove subscription", "subscriptions/remove", { id: s.id }, onChange)}><Trash2 /></Button>
           </div>
         ))}
