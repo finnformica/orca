@@ -18,6 +18,10 @@
 set -uo pipefail
 
 SERVICE="${ORCA_SERVICE_NAME:-orca}"
+# The slotted unit (deploy/orca@.service): restart the slot that is live, not the legacy name.
+if [ -z "${ORCA_SERVICE_NAME:-}" ]; then
+  for s in orca@a orca@b; do systemctl is-active -q "$s" 2>/dev/null && SERVICE="$s"; done
+fi
 URL="${ORCA_HEALTH_URL:-http://127.0.0.1:8787/api/config}"
 GRACE_S="${ORCA_HEALTH_GRACE_S:-120}"
 LIMIT="${ORCA_HEALTH_FAILURES:-3}"

@@ -63,7 +63,7 @@ hydra add <name>                                   # one per Claude login
 git clone <your-orca-repo-url> /opt/orca
 git clone <repo-url> /opt/<repo-name>              # each repo Orca will manage
 /opt/orca/deploy/bootstrap.sh                      # build, .env, orca.service, auto-deploy timer
-echo "ORCA_PREVIEW_BIND=<tailnet-ip>" >> /opt/orca/.env && sudo systemctl restart orca
+echo "ORCA_PREVIEW_BIND=<tailnet-ip>" >> /opt/orca/.env && sudo systemctl restart orca@a
 
 # then: add your repos to the config document (curl GET/PUT /api/config/document — SETUP.md §6–8)
 ```

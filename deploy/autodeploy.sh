@@ -26,7 +26,7 @@
 set -euo pipefail
 
 REPO="${ORCA_REPO:-/opt/orca}"
-SERVICE="${ORCA_SERVICE_NAME:-orca}"
+SERVICE="${ORCA_SERVICE_NAME:-orca}" # launchd label / the legacy single unit; the box uses the slots below
 BRIDGE_URL="${ORCA_BRIDGE_URL:-http://127.0.0.1:8787}"
 STATE_DIR="${ORCA_STATE_DIR:-$HOME/.orca}"
 LOG="${STATE_DIR}/autodeploy.log"
@@ -111,7 +111,35 @@ if [[ "${MODE}" == "launchd" ]]; then
     log "error: launchctl kickstart of ${LAUNCHD_LABEL} failed (is its LaunchAgent loaded?)"
     exit 1
   fi
+elif grep -qs '^ORCA_REUSE_PORT=1' "${REPO}/.env"; then
+  # Zero downtime: the bridge listens with SO_REUSEPORT (ORCA_REUSE_PORT=1), so the NEW slot comes up
+  # BESIDE the old one on 8787 (deploy/orca@.service: orca@a / orca@b). The old slot is stopped only
+  # once a request has reached the new process — its pid on /api/config — so nothing ever finds the
+  # port closed; open event streams on the old process reconnect to a listener already there. A
+  # legacy single `orca` unit is the old one the first time. Sudo is scoped to exactly these
+  # commands (deploy/orca-autodeploy.sudoers).
+  old=""
+  for s in orca@a orca@b orca; do
+    if systemctl is-active -q "${s}" 2>/dev/null; then old="${s}"; break; fi
+  done
+  case "${old}" in orca@a) new=orca@b;; *) new=orca@a;; esac
+  sudo -n systemctl start "${new}"
+  newpid="$(systemctl show -p MainPID --value "${new}")"
+  seen=0
+  for _ in $(seq 1 60); do
+    pid="$(curl -fsS --max-time 2 "${BRIDGE_URL}/api/config" 2>/dev/null | sed -n 's/.*"pid":\([0-9]*\).*/\1/p')"
+    if [[ -n "${pid}" && "${pid}" == "${newpid}" ]]; then seen=1; break; fi
+    sleep 0.5
+  done
+  if [[ "${seen}" -ne 1 ]]; then
+    log "error: ${new} (pid ${newpid}) never answered /api/config within 30s; ${old:-nothing} keeps serving"
+    sudo -n systemctl stop "${new}"
+    exit 1
+  fi
+  if [[ -n "${old}" ]]; then sudo -n systemctl stop "${old}"; sudo -n systemctl disable -q "${old}" || true; fi
+  sudo -n systemctl enable -q "${new}" || true
 else
+  # The single-unit box (no ORCA_REUSE_PORT in .env): a plain restart, ~2 s with nothing on the port.
   # The autodeploy unit runs as `orca`, same as every other step here; only the restart needs
   # elevated privilege (deploy/orca-autodeploy.sudoers scopes that to exactly this command).
   sudo -n systemctl restart "${SERVICE}"

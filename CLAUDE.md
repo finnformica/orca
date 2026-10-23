@@ -1332,8 +1332,17 @@ busy rule. Otherwise `git pull --ff-only`, then `bun install --frozen-lockfile` 
 `bun.lock` changed between the old and new HEAD (a PR that adds a dependency, like #192's
 @radix-ui/react-hover-card, would otherwise build against stale `node_modules` and fail with a
 Rollup unresolved-import error while the box silently kept serving the old build), then `bun run
-build`, and only on a successful build `systemctl restart orca`, then poll `/api/config` until it's
-back. A failed install or build never restarts the service — the old build keeps serving — and its
+build`, and only on a successful build the restart, then poll `/api/config` until it's back.
+**The restart has no gap (2026-10-23):** the unit is a template with two slots (`deploy/orca@.service`,
+`orca@a` / `orca@b`, one enabled at a time) and the bridge listens with `SO_REUSEPORT`
+(`ORCA_REUSE_PORT=1` in the box's `.env`; `reusePort` on `Bun.serve`, off by default so a laptop's
+second bridge still fails loudly). The script starts the idle slot BESIDE the running one, waits until a
+request reaches the new process (`bridge.pid` on `/api/config`), then stops the old slot — so nothing
+ever finds 8787 closed; the old process releases the instance lock as it drains and the new one takes the
+duties within seconds, as any restart did. A new slot that never answers is stopped and the old keeps
+serving. Without `ORCA_REUSE_PORT` in `.env` the script falls back to `systemctl restart`. (History: each
+deploy was ~2 s with nothing listening; with PRs landing in bursts the board sat on a 502 several times
+an hour.) A failed install or build never restarts the service — the old build keeps serving — and its
 log tail goes to `~/.orca/autodeploy.log` (one line per tick). Pause it with
 `systemctl stop orca-autodeploy.timer`; `deploy/bootstrap.sh` installs and enables it, scoped by
 `deploy/orca-autodeploy.sudoers` to exactly `systemctl restart orca` for the `orca` user.

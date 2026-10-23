@@ -5,12 +5,12 @@
 #   sudo visudo -c   # verify before relying on it
 #   sudo systemctl daemon-reload && sudo systemctl enable --now orca-autodeploy.timer
 #
-# Runs as `orca`, same as the bridge itself (orca.service) — git/bun need nothing special, and the
-# one privileged step (restarting orca.service) is scoped by orca-autodeploy.sudoers rather than
+# Runs as `orca`, same as the bridge itself (orca@.service) — git/bun need nothing special, and the
+# privileged steps (starting and stopping the bridge's slots) are scoped by orca-autodeploy.sudoers rather than
 # running this whole unit as root. Pause auto-deploy with `systemctl stop orca-autodeploy.timer`.
 [Unit]
 Description=Orca auto-deploy (pull main, build, restart the bridge)
-After=network-online.target orca.service
+After=network-online.target
 Wants=network-online.target
 
 [Service]

@@ -10,4 +10,7 @@
 # (The box's cloud-init already grants `orca` blanket NOPASSWD:ALL sudo — this rule is here so
 # auto-deploy keeps working if that blanket grant is ever tightened, and so the privilege this
 # timer actually needs is documented in one place.)
-orca ALL=(root) NOPASSWD: /usr/bin/systemctl restart orca
+orca ALL=(root) NOPASSWD: /usr/bin/systemctl restart orca, /usr/bin/systemctl stop orca, /usr/bin/systemctl disable -q orca
+# The two slots of deploy/orca@.service: a deploy starts the idle slot, then stops the old one.
+orca ALL=(root) NOPASSWD: /usr/bin/systemctl start orca@a, /usr/bin/systemctl stop orca@a, /usr/bin/systemctl enable -q orca@a, /usr/bin/systemctl disable -q orca@a
+orca ALL=(root) NOPASSWD: /usr/bin/systemctl start orca@b, /usr/bin/systemctl stop orca@b, /usr/bin/systemctl enable -q orca@b, /usr/bin/systemctl disable -q orca@b

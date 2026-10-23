@@ -179,7 +179,7 @@ As the user `orca` on the box, run this command:
 
 ```sh
 echo "ORCA_PREVIEW_BIND=<tailnet-ip>" >> /opt/orca/.env
-sudo systemctl restart orca
+sudo systemctl restart orca@a   # or orca@b — whichever slot is active
 ```
 
 ### The systemd units

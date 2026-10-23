@@ -113,7 +113,14 @@ async function resolvePrDescription(
 process.on("unhandledRejection", (e) => console.error("orca: unhandled rejection", e instanceof Error ? e.message : e));
 process.on("uncaughtException", (e) => console.error("orca: uncaught exception", e instanceof Error ? e.stack ?? e.message : e));
 const PREVIEW_BRIDGE = db.previewBridge();
-if (!PREVIEW_BRIDGE && !(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
+// ORCA_REUSE_PORT=1 (the box's .env, deploy/bootstrap.sh): SO_REUSEPORT, so a deploy's NEW bridge
+// listens BESIDE the old one on the same port and the old is stopped only once the new answers
+// (deploy/autodeploy.sh reads `bridge.pid` off /api/config) — no second with nothing on 8787. Off by
+// default: on a laptop a second bridge on the port should fail loudly, not share it.
+const REUSE_PORT = process.env.ORCA_REUSE_PORT === "1";
+// With it, the bridge on the port is the old slot that must keep serving until this one answers: never
+// reclaim the port from it.
+if (!PREVIEW_BRIDGE && !REUSE_PORT && !(await portFree(API_PORT)) && reclaimBridgePort(API_PORT)) {
   console.log(`orca: reclaimed :${API_PORT} from a stale bridge`);
   await waitForPortFree(API_PORT);
 }
@@ -373,7 +380,7 @@ function whenDatabaseDown(req: Request, url: URL, e: db.DbUnavailable): Response
 }
 
 const BRIDGE_BRANCH = Bun.spawnSync(["git", "rev-parse", "--abbrev-ref", "HEAD"], { cwd: import.meta.dir, env: scrubbedEnv() }).stdout.toString().trim() || undefined;
-const bridgeInfo = () => ({ preview: PREVIEW_BRIDGE, branch: BRIDGE_BRANCH, port: API_PORT, ...primary.state() });
+const bridgeInfo = () => ({ preview: PREVIEW_BRIDGE, branch: BRIDGE_BRANCH, port: API_PORT, pid: process.pid, ...primary.state() });
 
 /** A caller-supplied base ref, rejected unless it looks like a branch name (never a `-flag` that git
  *  would read as an option). */
@@ -1747,6 +1754,7 @@ const BIND = (process.env.ORCA_BIND || "127.0.0.1").split(",").map((h) => h.trim
 for (const hostname of BIND) Bun.serve<terminal.TerminalData>({
   port: API_PORT,
   hostname,
+  reusePort: REUSE_PORT,
   // gh calls (esp. list with per-PR detail) can run past Bun's 10s default; give them room so a
   // slow response completes instead of timing out to a confusing empty/errored page.
   idleTimeout: 60,
