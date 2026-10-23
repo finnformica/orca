@@ -2,7 +2,7 @@
 // gate the sender against its link (§3.7), then `publish`. `publish` is everyone's: record the event
 // once by its key and plan its deliveries in the same transaction, then kick the dispatcher.
 import { randomUUID } from "crypto";
-import { CATCH_ALL, CATCH_ALL_SEND_ERROR, effectiveGrant, sendsToCatchAll, INBOUND_LIMIT, paceWait, pairingCode, pairingReply, planDeliveries, replyToOf, PAIRING_CODE_LENGTH, type ConversationRef, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery, type ReplyTo } from "../../shared/integrations";
+import { CATCH_ALL, CATCH_ALL_SEND_ERROR, effectiveGrant, sendsToCatchAll, INBOUND_LIMIT, paceWait, pairingCode, pairingReply, planDeliveries, postsAsUser, replyToOf, PAIRING_CODE_LENGTH, type ConversationRef, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery, type ReplyTo } from "../../shared/integrations";
 import { replyRefusal } from "../../shared/inbox";
 import * as store from "./store";
 
@@ -135,7 +135,8 @@ async function firstLink(integrationId: string, places: string[]): Promise<store
 }
 
 /** An unknown sender on a linked place: their pending code, or a new one. A NEW code is sent back to
- *  them on the same place (a durable delivery, so a send failure retries) and shown in the bell. The
+ *  them on the same place (a durable delivery, so a send failure retries; never where Orca posts as
+ *  you, `postsAsUser`) and shown in the bell. The
  *  message itself is dropped: they send it again once you approve (POST /api/integrations/pairing/approve). */
 async function requestPairing(integrationId: string, linkId: string, e: InboundEnvelope, now: number): Promise<void> {
   const who = e.actor!.external;
@@ -145,7 +146,9 @@ async function requestPairing(integrationId: string, linkId: string, e: InboundE
   if (!fresh) return;
   const name = who.name ?? who.id;
   const source = { adapter: "orca", integrationId, linkId };
-  await publish({
+  // Slack posts as you: no automatic reply in your name. The code is in the bell only.
+  const silent = postsAsUser(e.source.adapter);
+  if (!silent) await publish({
     key: `pairing:${pairing.code}:reply`, topic: "orca.message", at: now, source, text: pairingReply(pairing.code),
     ...(e.thread ? { thread: e.thread } : {}),
   }, now, [{ subscriptionId: null, target: {
@@ -154,6 +157,6 @@ async function requestPairing(integrationId: string, linkId: string, e: InboundE
   } }]);
   await publish({
     key: `pairing:${pairing.code}`, topic: "orca.pairing.requested", at: now, source, actor: e.actor,
-    title: `Pairing request from ${name}`, text: `${name} (${who.adapter}:${who.id}) wants to talk to Orca. Approve code ${pairing.code} to pair.`,
+    title: `Pairing request from ${name}`, text: `${name} (${who.adapter}:${who.id}) wants to talk to Orca. Approve code ${pairing.code} to pair.${silent ? " Orca posts there as you, so it did not send them the code: ask them to send the message again once you approve." : ""}`,
   }, now, [{ subscriptionId: null, target: { kind: "web" } }]);
 }

@@ -449,6 +449,7 @@ export function fenceExternal(e: Pick<Envelope, "text" | "source" | "actor" | "g
     ...(e.grant && e.grant.level !== "full" ? [`The ${e.grant.level} grant allows: ${GRANT_ALLOWS[e.grant.level]}. Orca refuses any other verb.`] : []),
     'Answer the sender with `orca post --reply "<text>"` (it goes to this link and thread).',
     "Add `--thread` to open a thread only for a long answer, a job with many steps, a workstream or a long conversation.",
+    ...(postsAsUser(e.source.adapter) ? [`On ${e.source.adapter} the answer posts as the user, in their name. Write it as they would.`] : []),
   ].join("\n");
 }
 
@@ -616,6 +617,14 @@ export const replyToOf = (e: Pick<Envelope, "key" | "source" | "thread">): Reply
     linkId: e.source.linkId, ...(e.source.channel ? { channel: e.source.channel } : {}),
     ...(e.thread ? { threadId: e.thread.externalId } : {}), ...(e.thread?.messageId ? { messageId: e.thread.messageId } : {}), eventKey: e.key,
   } : undefined;
+
+// ── Platforms where Orca speaks as you ───────────────────────────────────────────────────────────
+
+/** Adapter kinds whose token is the user's own (Slack: a user token, `xoxp`). Every post there is in
+ *  the user's name, so the core never posts there by itself: an unknown sender gets no pairing code
+ *  back (the code is in the bell only). The orchestrator still answers with `orca post`. */
+export const POSTS_AS_USER: readonly string[] = ["slack"];
+export const postsAsUser = (adapter: string | undefined): boolean => !!adapter && POSTS_AS_USER.includes(adapter);
 
 // ── The catch-all link ───────────────────────────────────────────────────────────────────────────
 
