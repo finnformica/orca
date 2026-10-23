@@ -12,24 +12,25 @@
 // before the queue, and the ban is on browsers outside tests. Each kill is recorded on the workstream that started it (enrichment `browserKilled`,
 // the card's warning) and as a step in that run's transcript.
 //
-// The same pass stops ORPHAN run scopes (`sweepOrphanScopes`): an `orca-run-<runId>.scope` whose
-// run no lease file on this host names. Every run this host's bridges start has one (they share
-// `~/.orca`), so an orphan is a run a test started with its own state dir, or one a dead bridge
-// forgot. 2026-10-19: six fake claudes of a test looped through the `bun` shims for minutes in real
+// The same pass stops ORPHAN run scopes (`sweepOrphanScopes`): an `orca-run-<owner>-<runId>.scope`
+// of THIS bridge's owner (a hash of its state dir, `cgroup.scopeOwner`) whose run no lease file in
+// that state dir names: one a dead bridge forgot. A scope of another owner is never touched — a
+// test bridge with its own state dir once killed every live worker on the box (2026-10-23). 2026-10-19: six fake claudes of a test looped through the `bun` shims for minutes in real
 // run scopes. A scope is killed on the second pass in a row that sees it, so a launch between its
 // spawn and its lease write is safe.
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { basename, join } from "path";
 import type { AgentStep } from "../shared/agent";
 import * as bus from "./bus";
-import { AGENTS_SLICE } from "./cgroup";
+import { AGENTS_SLICE, defaultScopeOwner, runScopeOf, scopeOwner } from "./cgroup";
 import * as db from "./db";
 import { WORKER_BIN } from "./env";
 import * as lease from "./lease";
 import * as outbox from "./outbox";
 import * as transcript from "./transcript";
 
-export const WATCH_INTERVAL_MS = 30_000;
+/** 30 s; `ORCA_WATCH_INTERVAL_MS` makes it shorter for a test bridge. */
+export const WATCH_INTERVAL_MS = Number(process.env.ORCA_WATCH_INTERVAL_MS) || 30_000;
 
 /** Browser binaries, by the base name of argv[0] (or `comm`, which Linux cuts at 15 characters). */
 const BROWSER_BINARIES = ["chrome", "chrome-headless-shell", "chromium", "chromium-browser", "headless_shell", "google-chrome", "google-chrome-stable", "chrome_crashpad_handler"];
@@ -38,7 +39,6 @@ const MCP_SERVER = /(^|[\/@])(chrome-devtools-mcp|playwright-mcp|playwright\/mcp
 
 /** Scopes whose browsers are allowed: orca-shot's and the test queue's slots. */
 const EXEMPT_SCOPE = /\/orca-(shot|heavy)-[^/]*\.scope(\/|$)/;
-const RUN_SCOPE = /\/orca-run-([0-9a-f-]{36})\.scope(\/|$)/;
 
 /** What a process is, when it is a browser or a browser MCP server: the name to report. Pure. */
 export function browserProcess(argv: string[], comm = ""): string | undefined {
@@ -71,7 +71,7 @@ export function watchVerdict(p: ProcInfo, self = process.pid, underTest = false)
   if (p.pid === self || !p.cgroup.includes(`/${AGENTS_SLICE}/`) || EXEMPT_SCOPE.test(p.cgroup)) return { kill: false };
   const name = browserProcess(p.argv, p.comm);
   if (!name || underTest) return { kill: false };
-  return { kill: true, name, runId: p.cgroup.match(RUN_SCOPE)?.[1] };
+  return { kill: true, name, runId: runScopeOf(p.cgroup)?.runId };
 }
 
 /** Every process this user can read under `/proc`. Gone or unreadable ones are skipped. */
@@ -160,17 +160,20 @@ export async function recordKills(runId: string | undefined, names: string[]): P
   if (written.length) bus.publish({ kind: "step", runId, repo: owner.repo, branch: owner.branch, steps: written });
 }
 
-/** The run of a process in a run scope in the agents' slice that no lease names. Pure. */
-export function orphanRun(p: ProcInfo, known: Set<string>, self = process.pid): string | undefined {
+/** The run of a process in a run scope of `owner` in the agents' slice that no lease names. A scope
+ *  of another owner is never an orphan here. Pure. */
+export function orphanRun(p: ProcInfo, known: Set<string>, self = process.pid, owner = scopeOwner(), defaultOwner = defaultScopeOwner()): string | undefined {
   if (p.pid === self || !p.cgroup.includes(`/${AGENTS_SLICE}/`)) return undefined;
-  const runId = p.cgroup.match(RUN_SCOPE)?.[1];
-  return runId && !known.has(runId) ? runId : undefined;
+  const scope = runScopeOf(p.cgroup, defaultOwner);
+  return scope && scope.owner === owner && !known.has(scope.runId) ? scope.runId : undefined;
 }
 
 export type OrphanDeps = {
   procs?: () => ProcInfo[];
   /** Run ids with a lease file here; `undefined` (unreadable) kills nothing. */
   known?: () => Set<string> | undefined;
+  /** This bridge's scope owner (default: its state dir's). */
+  owner?: string;
   kill?: (pid: number) => void;
   /** The orphan runs the last pass saw: read, then replaced with this pass's. */
   suspects?: Set<string>;
@@ -185,11 +188,13 @@ export function sweepOrphanScopes(deps: OrphanDeps = {}): { pid: number; runId: 
   // The processes first, then the leases: a run that starts between the two reads is known.
   const procs = (deps.procs ?? readProcs)();
   const known = (deps.known ?? lease.knownRunIds)();
+  const owner = deps.owner ?? scopeOwner();
+  const defaultOwner = defaultScopeOwner();
   const seen = new Set<string>();
   const killed: { pid: number; runId: string }[] = [];
   if (known) {
     for (const p of procs) {
-      const runId = orphanRun(p, known);
+      const runId = orphanRun(p, known, process.pid, owner, defaultOwner);
       if (!runId) continue;
       seen.add(runId);
       if (!last.has(runId)) continue;
@@ -200,7 +205,7 @@ export function sweepOrphanScopes(deps: OrphanDeps = {}): { pid: number; runId: 
   last.clear();
   for (const r of seen) last.add(r);
   for (const runId of new Set(killed.map((k) => k.runId))) {
-    console.error(`orca: watchdog killed ${killed.filter((k) => k.runId === runId).length} process(es) of orphan scope orca-run-${runId}.scope (no lease on this host)`);
+    console.error(`orca: watchdog killed ${killed.filter((k) => k.runId === runId).length} process(es) of orphan scope of run ${runId} (no lease in this bridge's state dir)`);
   }
   return killed;
 }

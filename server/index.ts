@@ -232,8 +232,8 @@ if (!PREVIEW_BRIDGE) setInterval(() => {
   void loadConfig().then((cfg) => upkeep.tick(cfg)).catch(db.logUnlessDown("orca: upkeep pass failed"));
 }, upkeep.UPKEEP_POLL_MS).unref();
 // The browser watchdog (server/browserWatch.ts): a browser or a browser MCP server in the agents'
-// slice is killed and flagged on the workstream that started it, and a run scope that no lease on
-// this host names (a test's leaked run) is killed.
+// slice is killed and flagged on the workstream that started it, and a run scope of THIS bridge's
+// owner (its state dir) that no lease there names is killed. Another bridge's scopes are left alone.
 if (!PREVIEW_BRIDGE && process.platform === "linux") setInterval(() => {
   if (!primary.held()) return;
   try { browserWatch.sweepOrphanScopes(); } catch (e) { console.error(`orca: orphan scope sweep failed: ${e instanceof Error ? e.message : e}`); }
