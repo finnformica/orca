@@ -103,13 +103,20 @@ const ChatMarkdown = memo(({ children, tone = "text-neutral-300", breaks, outsid
   // element — a declaration .log-themed's ancestor-level remap can never reach, since an element's
   // own matching rule always beats an inherited custom property. That made bold text render
   // white-on-white in light theme. Route it through Tailwind's own (correctly remapped) neutral-200
-  // token instead, like prose-headings/prose-code/prose-a already do.
+  // token instead, like prose-headings/prose-code/prose-a already do. The same bug hits every other
+  // --tw-prose-invert-* var .prose declares a literal default for — blockquote, hr, table borders,
+  // figcaption — even though styles.css maps them too: the map is dead weight, never read. Quotes
+  // rendered near-white text on a near-black bar, in a light-blue user bubble, until routed the
+  // same way.
   <div className={cn("prose prose-invert prose-sm max-w-none wrap-anywhere prose-pre:wrap-normal",
     "prose-p:my-1 prose-headings:mt-2 prose-headings:mb-1 prose-headings:text-neutral-200",
     "prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1",
     "prose-strong:text-neutral-200",
     "prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none",
-    "prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400", tone)}>
+    "prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-pre:text-neutral-200 prose-a:text-sky-400",
+    "prose-blockquote:text-neutral-400 prose-blockquote:border-neutral-800",
+    "prose-hr:border-neutral-800 prose-th:border-neutral-800 prose-td:border-neutral-800 prose-figcaption:text-neutral-500",
+    tone)}>
     <ReactMarkdown remarkPlugins={breaks ? [remarkGfm, remarkBreaks] : [remarkGfm]} components={outside ? outsideComponents : chatComponents}>{children}</ReactMarkdown>
   </div>
 ));
@@ -143,7 +150,9 @@ const FacetMarkdown = memo(({ children }: { children: string }) => (
     prose-li:my-0.5 prose-ul:my-1 prose-ol:my-1
     prose-strong:text-neutral-200
     prose-code:text-sky-300 prose-code:before:content-none prose-code:after:content-none
-    prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-a:text-sky-400">
+    prose-pre:bg-neutral-900 prose-pre:text-[11px] prose-pre:text-neutral-200 prose-a:text-sky-400
+    prose-blockquote:text-neutral-400 prose-blockquote:border-neutral-800
+    prose-hr:border-neutral-800 prose-th:border-neutral-800 prose-td:border-neutral-800 prose-figcaption:text-neutral-500">
     <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ ...chatComponents, p: ({ children: c }) => <>{c}</> }}>{children}</ReactMarkdown>
   </div>
 ));
