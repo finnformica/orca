@@ -168,3 +168,48 @@ describe("ChatComposer ↑/↓", () => {
     expect(el.value).toBe("");
   });
 });
+
+// The bug of 2026-10-23: ↑ did nothing in a real browser. happy-dom has no layout, so lineVisualRow
+// returned null and the tests above never measured anything. A browser counts the box's padding in
+// offsetTop and scrollHeight; the chat box's 10px top padding over 20px rows read as "row 1", so the
+// caret was never on the first row. This fakes that layout model: 20 characters to a row.
+describe("ChatComposer ↑/↓ with a real layout (padding)", () => {
+  const CHARS = 20, LINE = 20, PAD = 10;
+  const zw = (s: string) => s.replace(/​/g, "").length;
+  const proto = HTMLElement.prototype;
+  const saved = { offsetTop: Object.getOwnPropertyDescriptor(proto, "offsetTop"), scrollHeight: Object.getOwnPropertyDescriptor(Element.prototype, "scrollHeight") };
+  const mirrorOf = (n: Element | null) => n instanceof HTMLDivElement && n.style.left === "-9999px" ? n : null;
+  afterEach(() => {
+    if (saved.offsetTop) Object.defineProperty(proto, "offsetTop", saved.offsetTop);
+    if (saved.scrollHeight) Object.defineProperty(Element.prototype, "scrollHeight", saved.scrollHeight);
+  });
+  const fakeLayout = () => {
+    Object.defineProperty(proto, "offsetTop", { configurable: true, get(this: HTMLElement) {
+      const mirror = mirrorOf(this.parentElement);
+      if (!mirror) return 0;
+      let before = 0;
+      for (let n = this.previousSibling; n; n = n.previousSibling) before += zw(n.textContent ?? "");
+      return PAD + Math.floor(before / CHARS) * LINE; // the padding is in it, as in a browser
+    } });
+    Object.defineProperty(Element.prototype, "scrollHeight", { configurable: true, get(this: Element) {
+      if (!mirrorOf(this)) return 0;
+      return 2 * PAD + Math.max(1, Math.ceil(zw(this.textContent ?? "") / CHARS)) * LINE;
+    } });
+  };
+
+  test("↑ recalls in an empty padded box, and not on a wrapped line's second row", async () => {
+    fakeLayout();
+    const el = await mount(["previous"], []);
+    el.style.paddingTop = el.style.paddingBottom = `${PAD}px`;
+    el.style.lineHeight = `${LINE}px`;
+    expect(await key(el, "ArrowUp")).toBe(true); // an empty box is row 0
+    expect(el.value).toBe("previous");
+    expect(await key(el, "ArrowDown")).toBe(true); // one row: the last row too
+    expect(el.value).toBe("");
+    await type(el, "a".repeat(30)); // two rows, caret on the second
+    expect(await key(el, "ArrowUp")).toBe(false);
+    el.setSelectionRange(5, 5); // first row
+    expect(await key(el, "ArrowUp")).toBe(true);
+    expect(el.value).toBe("previous");
+  });
+});
