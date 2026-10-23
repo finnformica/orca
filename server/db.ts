@@ -1019,6 +1019,13 @@ export const MIGRATIONS: MigrationStep[] = [
     // for the send on any instance and print the thread id (`--new-thread`). Nullable.
     sql: `ALTER TABLE delivery ADD COLUMN IF NOT EXISTS external_thread_id TEXT;`,
   },
+  {
+    name: "20261023-link-pairing",
+    idempotent: true,
+    // What a link does with an unknown sender (shared/integrations.ts LinkPairing): 'request' gives
+    // them a pairing code, as every link did before; 'off' drops their message silently.
+    sql: `ALTER TABLE channel_link ADD COLUMN IF NOT EXISTS pairing TEXT NOT NULL DEFAULT 'request' CHECK (pairing IN ('request','off'));`,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };

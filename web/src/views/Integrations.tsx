@@ -176,6 +176,8 @@ function LinkRowView({ link: l, onEdit, onChange }: { link: LinkRow; onEdit: () 
     setTest(r ? { state: String(r.state), ...(typeof r.error === "string" ? { error: r.error } : {}) } : {});
   };
   const [ask, confirmNode] = useConfirm();
+  const pairing = l.pairing !== "off";
+  const setPairing = (on: boolean) => void act(`${on ? "Turn on" : "Turn off"} pairing for ${l.label ?? l.externalId}`, "links/save", { ...l, pairing: on ? "request" : "off" }, onChange);
   return (
     <li data-slot="integration-link" className="flex flex-col gap-2 px-4 py-3 text-sm md:flex-row md:items-center md:gap-4">
       <div className="min-w-0 flex-1">
@@ -194,6 +196,10 @@ function LinkRowView({ link: l, onEdit, onChange }: { link: LinkRow; onEdit: () 
         </div>}
       </div>
       <div className="flex items-center gap-1">
+        {l.level !== "notify" && <div data-slot="link-pairing" className="mr-2 flex items-center gap-2">
+          <Label htmlFor={`link-pairing-${l.id}`} className="text-muted-foreground text-xs font-normal">Pairing requests</Label>
+          <Switch id={`link-pairing-${l.id}`} checked={pairing} onCheckedChange={setPairing} aria-label={`Pairing requests for ${l.label ?? l.externalId}`} />
+        </div>}
         {l.externalId !== CATCH_ALL && <Button variant="secondary" size="sm" disabled={test.busy} onClick={() => void run()} className="max-md:h-10 max-md:flex-1">Test</Button>}
         <Button variant="ghost" size="sm" onClick={onEdit} className="max-md:h-10">Edit</Button>
         <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive hover:bg-destructive/10 size-8 max-md:size-10" aria-label={`Remove ${l.label ?? l.externalId}`}
@@ -315,9 +321,10 @@ function LinkDialog({ integration: c, meta, link, onClose, onSaved }: { integrat
   const [level, setLevel] = useState<LinkLevel>(link?.level ?? "notify");
   const [chosen, setChosen] = useState<string[]>(link?.repos ?? []);
   const [mention, setMention] = useState(link?.requireMention ?? true);
+  const [pairing, setPairing] = useState(link?.pairing !== "off");
   const [busy, setBusy] = useState(false);
   const id = link?.id ?? `${c.id}-${(label || externalId).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`.slice(0, 63);
-  const body = { id, integrationId: c.id, externalId, label, level, repos: repoScoped(level) ? chosen : [], requireMention: mention };
+  const body = { id, integrationId: c.id, externalId, label, level, repos: repoScoped(level) ? chosen : [], requireMention: mention, pairing: pairing ? "request" as const : "off" as const };
   const problem = linkProblem(body);
   const place = meta?.place ?? "place";
   const save = async () => { setBusy(true); const r = await act(`Save link ${label || externalId}`, "links/save", body, onSaved); setBusy(false); if (r) onClose(); };
@@ -350,6 +357,13 @@ function LinkDialog({ integration: c, meta, link, onClose, onSaved }: { integrat
         <Label htmlFor="link-mention">Only when @-mentioned</Label>
         <Switch id="link-mention" checked={mention} onCheckedChange={setMention} />
       </div>
+      {level !== "notify" && <div className="space-y-1.5">
+        <div className="flex items-center justify-between gap-4">
+          <Label htmlFor="link-pairing">Pairing requests</Label>
+          <Switch id="link-pairing" checked={pairing} onCheckedChange={setPairing} />
+        </div>
+        <div className="text-muted-foreground text-xs">{pairing ? "An unknown sender gets a pairing code, and the bell shows it." : "Orca drops a message from an unknown sender. No code, no bell row, no reply."}</div>
+      </div>}
     </FormDialog>
   );
 }
