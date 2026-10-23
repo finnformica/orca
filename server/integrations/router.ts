@@ -49,6 +49,10 @@ export async function post(link: store.Link, text: string, opts: {
   attachments?: string[];
   /** The place to post on a catch-all link (`orca post --channel`): any channel the bot can see. */
   channel?: string;
+  /** Post, then open a thread with this name on the post (`orca post --new-thread`). */
+  newThread?: { name: string };
+  /** Delete this message instead of posting (`orca post --delete`). */
+  deleteMessage?: string;
 } = {}, now = Date.now()): Promise<{ id: string; delivery?: number; externalId: string; threadId?: string }> {
   const conn = await store.integration(link.integrationId);
   const threadId = opts.reply ? opts.reply.threadId : opts.threadId;
@@ -62,6 +66,7 @@ export async function post(link: store.Link, text: string, opts: {
     ...(opts.scope ? { scope: opts.scope } : {}), ...(thread ? { thread } : {}), text,
     ...(opts.openThread ? { openThread: opts.reply?.messageId ? { messageId: opts.reply.messageId } : {} } : {}),
     ...(opts.attachments?.length ? { attachments: opts.attachments } : {}),
+    ...(opts.newThread ? { newThread: opts.newThread } : {}), ...(opts.deleteMessage ? { deleteMessage: opts.deleteMessage } : {}),
   }, now, [{ subscriptionId: null, target: {
     kind: "link", integrationId: link.integrationId, adapter: conn?.kind ?? "?", linkId: link.id, externalId, ...(threadId ? { threadId } : {}),
   } }]);

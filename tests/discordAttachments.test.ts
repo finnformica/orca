@@ -25,7 +25,8 @@ import { freshSchema, type TestDb } from "./pg";
 
 // Bun's own fetch, FormData and File: the adapter builds the form a deployed bridge sends.
 const dom = { fetch: globalThis.fetch, Response: globalThis.Response, FormData: globalThis.FormData, File: globalThis.File };
-beforeAll(() => { Object.assign(globalThis, native, nativeUpload); });
+// These tests dispatch by hand, so `orca post` must not wait for its delivery.
+beforeAll(() => { Object.assign(globalThis, native, nativeUpload); orchestrator.postWait.ms = 0; });
 afterAll(() => { Object.assign(globalThis, dom); });
 
 const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);

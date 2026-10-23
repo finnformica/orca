@@ -3,7 +3,7 @@
 // orchestrator's inbox, a workstream follow-up, or the web. A failure backs off (5 s, 30 s, 2 min,
 // 10 min, 1 h, respecting retryAfterMs); after the sixth attempt the row is dead and
 // `orca.integration.failed` is published (the web hears it as an `integration_failed` notification).
-import { afterAttempt, attachmentRefusal, CATCH_ALL_SEND_ERROR, clip, sendsToCatchAll, digestEnvelope, paceWait, type DeliveryTarget, type Envelope, type OutboundMessage, type SendResult, type TargetKind } from "../../shared/integrations";
+import { afterAttempt, attachmentRefusal, CATCH_ALL_SEND_ERROR, clip, deleteRefusal, sendsToCatchAll, digestEnvelope, paceWait, type DeliveryTarget, type Envelope, type OutboundMessage, type SendResult, type TargetKind } from "../../shared/integrations";
 import type { Adapter } from "./adapter";
 import * as router from "./router";
 import * as store from "./store";
@@ -41,6 +41,7 @@ export const outbound = (e: Envelope): OutboundMessage => ({
   ...(e.thread?.messageId ? { replyToExternalMsgId: e.thread.messageId } : {}),
   ...(e.openThread ? { thread: true, ...(e.openThread.messageId ? { replyToExternalMsgId: e.openThread.messageId } : {}) } : {}),
   ...(e.attachments?.length ? { attachments: e.attachments } : {}),
+  ...(e.newThread ? { newThread: e.newThread } : {}),
 });
 
 // Outbound pace per (integration, target), in memory: one dispatcher per instance.
@@ -65,8 +66,14 @@ async function sendOne(d: store.Delivery, now: number): Promise<SendResult | { d
         if (wait > 0) return { deferUntil: now + wait };
         sentAt.set(key, [...(sentAt.get(key) ?? []).filter((x) => now - x < a.caps.rate!.windowMs), now]);
       }
+      const place = { linkId: t.linkId, externalId: t.externalId, ...(t.threadId ? { threadId: t.threadId } : {}) };
+      // `orca post --delete`: one message removed, nothing posted. An adapter with no deletes ends it.
+      if (d.envelope.deleteMessage) {
+        const refusal = deleteRefusal(a.kind, a.delete ? a.caps : {});
+        return refusal ? { ok: false, retryable: false, error: refusal } : await a.delete!(place, d.envelope.deleteMessage);
+      }
       const msg = outbound(d.envelope);
-      const r = await a.send({ linkId: t.linkId, externalId: t.externalId, ...(t.threadId ? { threadId: t.threadId } : {}) }, { ...msg, text: clip(msg.text, a.caps.maxTextLength) }, String(d.id));
+      const r = await a.send(place, { ...msg, text: clip(msg.text, a.caps.maxTextLength) }, String(d.id));
       // A post that starts a thread — the first post about a workstream (§3.6), or `--thread` on a
       // reply — stores it, so the next post continues there and a reply in it reaches the workstream.
       // The workstream is the event's scope, else the one the old thread was linked to.
@@ -108,7 +115,7 @@ export async function dispatchOnce(now = Date.now()): Promise<number> {
     const r = await sendOne(one, now);
     if ("deferUntil" in r) { for (const d of g) await store.deferDelivery(d.id, r.deferUntil); continue; }
     const next = afterAttempt(r, Math.max(...g.map((d) => d.attempts)), now);
-    for (const d of g) await store.finishDelivery(d.id, { ...next, ...(r.ok ? { externalMsgId: r.externalMsgId } : { error: r.error }) });
+    for (const d of g) await store.finishDelivery(d.id, { ...next, ...(r.ok ? { externalMsgId: r.externalMsgId, threadId: r.threadId } : { error: r.error }) });
     if (next.state === "dead") await died(one, r.ok ? "" : r.error);
   }
   return groups.reduce((n, g) => n + g.length, 0);

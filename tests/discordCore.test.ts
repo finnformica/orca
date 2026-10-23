@@ -20,7 +20,8 @@ import { native } from "./happydom";
 import { freshSchema, type TestDb } from "./pg";
 
 const dom = { fetch: globalThis.fetch, Response: globalThis.Response };
-beforeAll(() => { Object.assign(globalThis, native); });
+// These tests dispatch by hand, so `orca post` must not wait for its delivery.
+beforeAll(() => { Object.assign(globalThis, native); orchestrator.postWait.ms = 0; });
 afterAll(() => { Object.assign(globalThis, dom); });
 
 class FakeSocket implements WebSocketLike {

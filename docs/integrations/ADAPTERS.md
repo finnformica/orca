@@ -87,6 +87,7 @@ export type Capabilities = {
   attachments: boolean;                                    // outbound files (msg.attachments)
   maxAttachments?: number; maxAttachmentBytes?: number;    // the platform's file limits
   maxTextLength: number;
+  deletes?: boolean;                                       // Adapter.delete (orca post --delete)
   rate?: { perTarget: number; windowMs: number };
 };
 
@@ -175,6 +176,18 @@ export type InboundMessage = {
   - `orca post --attach` refuses before it queues: `attachments not supported: …`.
   - The dispatcher ends an old delivery with the same error (not retryable), and the user gets
     the `integration_failed` notification.
+- `msg.newThread` (`orca post --new-thread "<name>"`): post as usual, then open a thread with that
+  name on the post. Return the thread's id as `threadId`. If the platform refuses the thread, keep
+  the post and return no new thread. Only Discord does this now.
+
+### `delete(target, externalMsgId)` (optional)
+
+- `orca post --delete <message id>` calls it through the delivery queue. Set `caps.deletes: true`
+  and add the method. Discord is the only adapter with it now.
+- Delete only a message that the bot posted. Read the message first. For a person's message,
+  return `{ ok: false, retryable: false, error }` with a clear reason.
+- Without the flag or the method, the core refuses: `delete not supported: …`. The verb refuses
+  before it queues when it knows the kind's caps. Else the dispatcher ends the delivery.
 
 ### `handle(req, body)`
 
@@ -344,6 +357,9 @@ first (section 7).
 | `orca post --reply --thread "<text>"` | Answers the same way, but opens a thread for the answer where the adapter can (Discord: on the mention). Use it for a long answer, a job with many steps, a workstream or a long conversation. The thread that the send returns is recorded as the workstream's thread on the link. |
 | `orca post … --attach <id\|path>` | Repeatable, on every form above. Sends each file with the post (Discord: an image shows inline). The value is an attachment id (from `## Attachments`) or an absolute path on the orchestrator's machine, stored like an upload. Refused before it queues when the adapter has no file support, when there are too many files or a file is too large, or when a text file holds an obvious secret (the handoff scan). A wake from an outside message may attach only ids. |
 | `orca post --link <catch-all> --channel <id> [--thread <id>] "<text>"` | Posts through a catch-all link (`external_id` `*`) to any channel or thread the bot can see. The grant is the catch-all link's grant. A wake from an outside message may name only the place that message came from. |
+| `orca post … --new-thread "<name>"` | On a `--link` or `--reply` post. Posts as usual, then opens a thread with that name on the post (Discord: the name is cut to 90 characters). It works with `config.threads` off. Use it only when the user asks for a thread. Refused with `--thread`, and for an adapter with no threads. |
+| `orca post --link <id> [--channel <id>] [--thread <id>] --delete <message id>` | Deletes one message that the bot posted, through the delivery queue. A person's message is refused. An adapter without `caps.deletes` refuses. It takes no text. |
+| Every `orca post` | Waits for its delivery (about 15 seconds) and prints the platform's message id and thread id. A dead delivery prints its error. If the wait ends first, it prints the delivery id, and Orca still retries the send. |
 | `orca post --link <catch-all>` | Refused without `--channel` or `--reply`: a catch-all link names no place to post to. `--channel` on any other link is refused too. |
 | `orca thread link <adapter> <thread-id> --repo r --branch b [--link <id>]` | Binds an external thread to a workstream. Replies in it then go to the workstream (with a `work` grant on its repo). |
 | `orca ask-user "<question>"` | Publishes `orca.question`. The bell shows it as `needs_input`. Subscriptions to `orca.question` also send it out (for example to your Slack DM). |

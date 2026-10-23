@@ -46,6 +46,10 @@ export interface Adapter {
    *  delivery id): email uses it as the Message-ID, a chat adapter returns `externalMsgId` so the
    *  core stores it before any retry. Never throw for a platform error: return `ok: false`. */
   send(target: Target, msg: OutboundMessage, idempotencyKey: string): Promise<SendResult>;
+  /** Delete one message in the target's place (`orca post --delete`; only with `caps.deletes`).
+   *  Delete only a message the bot posted: refuse a person's message with `ok: false, retryable:
+   *  false` and a reason. Never throw for a platform error. */
+  delete?(target: Target, externalMsgId: string): Promise<SendResult>;
   /** A cheap live check for the settings card and its Test button. */
   health(): Promise<{ ok: boolean; detail?: string; lastEventAt?: number; lastPollAt?: number }>;
   /** A platform user's display name and stable id (pairing). */

@@ -77,6 +77,10 @@ export type Envelope = {
   /** `orca post --thread`: open a thread for this post where the place allows one (Discord: on the
    *  message `messageId` names, the mention it answers, else on the post). */
   openThread?: { messageId?: string };
+  /** `orca post --new-thread "<name>"`: post, then open a thread named `name` on the post itself. */
+  newThread?: { name: string };
+  /** `orca post --delete <message id>`: remove that message instead of posting (`caps.deletes`). */
+  deleteMessage?: string;
   raw?: unknown; // the platform's payload, for debug
 };
 
@@ -112,6 +116,8 @@ export type Capabilities = {
   maxAttachments?: number;
   maxAttachmentBytes?: number;
   maxTextLength: number;
+  /** `Adapter.delete`: remove a message the bot posted (`orca post --delete`). Absent = no deletes. */
+  deletes?: boolean;
   /** Outbound pace per target: at most `perTarget` sends each `windowMs` (Slack: 1 per second). */
   rate?: { perTarget: number; windowMs: number };
 };
@@ -137,7 +143,15 @@ export type OutboundMessage = {
   /** `orca-attachment://<id>/<name>` refs (`orca post --attach`). The bytes stay in the `attachment`
    *  table, so a retry reads them again by id. */
   attachments?: string[];
+  /** Post, then open a thread named `name` on the post itself (`orca post --new-thread`), whatever
+   *  the adapter's default. An adapter with no threads posts as usual and returns no new thread. */
+  newThread?: { name: string };
 };
+
+/** Why `kind` cannot delete a message (`orca post --delete`), or undefined when it can. Pure. */
+export function deleteRefusal(kind: string, caps: Pick<Capabilities, "deletes">): string | undefined {
+  return caps.deletes ? undefined : `delete not supported: the ${kind} adapter cannot delete messages`;
+}
 
 /** The attachment id in an `orca-attachment://<id>/<name>` ref, or a bare id. */
 export const attachmentIdOf = (ref: string): string | undefined => ref.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/)?.[1];

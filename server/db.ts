@@ -1012,6 +1012,13 @@ export const MIGRATIONS: MigrationStep[] = [
       ) pc WHERE i.user_id = pc.user_id AND i.adapter = pc.adapter AND i.external_id = pc.external_id AND i.name IS NULL;
     `,
   },
+  {
+    name: "20261023-delivery-thread-id",
+    idempotent: true,
+    // The thread a sent delivery opened or posted in (SendResult.threadId), so `orca post` can wait
+    // for the send on any instance and print the thread id (`--new-thread`). Nullable.
+    sql: `ALTER TABLE delivery ADD COLUMN IF NOT EXISTS external_thread_id TEXT;`,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
