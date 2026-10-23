@@ -1027,14 +1027,13 @@ export const MIGRATIONS: MigrationStep[] = [
     sql: `ALTER TABLE channel_link ADD COLUMN IF NOT EXISTS pairing TEXT NOT NULL DEFAULT 'request' CHECK (pairing IN ('request','off'));`,
   },
   {
-    name: "20261023-link-pairing-notify",
+    name: "20261023-link-notify-switches",
     idempotent: true,
-    // `off` (drop an unknown sender's message) became `notify` (show it to you, read-only). The
-    // column of 20261023-link-pairing stays; only its value set and CHECK change: widen the CHECK,
-    // rename the value, narrow it. Each statement is a no-op on a re-run.
-    sql: `ALTER TABLE channel_link DROP CONSTRAINT IF EXISTS channel_link_pairing_check, ADD CONSTRAINT channel_link_pairing_check CHECK (pairing IN ('request','off','notify'));
-      UPDATE channel_link SET pairing = 'notify' WHERE pairing = 'off';
-      ALTER TABLE channel_link DROP CONSTRAINT IF EXISTS channel_link_pairing_check, ADD CONSTRAINT channel_link_pairing_check CHECK (pairing IN ('request','notify'));`,
+    // A link's two switches (shared/integrations.ts LinkNotify): show a message to you, and let it wake
+    // an agent. Both on for every link, the old ones too. `pairing` (20261023-link-pairing) is unused now:
+    // ingest makes no pairing code any more.
+    sql: `ALTER TABLE channel_link ADD COLUMN IF NOT EXISTS notify_me BOOLEAN NOT NULL DEFAULT true;
+      ALTER TABLE channel_link ADD COLUMN IF NOT EXISTS notify_agent BOOLEAN NOT NULL DEFAULT true;`,
   },
 ];
 

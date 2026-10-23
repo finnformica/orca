@@ -348,7 +348,7 @@ function InboxRowView({ row, selected, onOpen, onMarkRead, onChanged }: {
           <span data-slot="inbox-sender" className={cn("min-w-0 truncate", row.read ? "font-medium" : "font-semibold")}>{who}</span>
           {row.place && <span data-slot="inbox-place" className="text-muted-foreground shrink-0 text-xs">{row.place}</span>}
           {kind && <span className="bg-muted text-muted-foreground shrink-0 rounded px-1 text-[10px] leading-4 font-medium uppercase">{kind}</span>}
-          {row.notice && <Tip label="An unknown sender. Orca shows the message only: no agent ran, no reply went out."><span data-slot="inbox-notice" className="bg-muted text-muted-foreground shrink-0 rounded px-1 text-[10px] leading-4 font-medium uppercase">Notify</span></Tip>}
+          {row.readOnly && <Tip label="An unknown sender. The agent may read it and tell you. It does not act on it or reply."><span data-slot="inbox-read-only" className="bg-muted text-muted-foreground shrink-0 rounded px-1 text-[10px] leading-4 font-medium uppercase">Read-only</span></Tip>}
           {row.badge && <span data-slot="inbox-badge" data-tone={row.badge.tone} className={cn("shrink-0 rounded px-1 text-[10px] leading-4 font-medium uppercase", BADGE_TONE[row.badge.tone])}>{row.badge.label}</span>}
           <span className="ml-auto" />
           <When at={row.at} />

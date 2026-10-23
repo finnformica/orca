@@ -853,9 +853,9 @@ const IntegrationBlock = memo(function IntegrationBlock({ turn, messages, loadSt
   );
 });
 
-/** An unknown sender's message a `notify` pairing link recorded (shared/inbox.ts Notice): the same
- *  card as an outside message's wake, state "notified", read-only — no agent ran and no reply went
- *  out. Open, it shows the message with its link, and Add to person for its sender. */
+/** A message shown to you that no agent took (shared/inbox.ts Notice: its link's Notify agent is
+ *  off, or nothing routed it to one): the same card as an outside message's wake, state "notified",
+ *  read-only. Open, it shows the message with its link, and Add to person for a sender with no person. */
 const NoticeCard = memo(function NoticeCard({ notice: n }: { notice: Notice }) {
   const m: IntegrationMessage = { adapter: n.adapter, sender: n.sender.name, text: n.text, ...(n.place ? { place: n.place } : {}), ...(n.url ? { url: n.url } : {}) };
   return (
@@ -863,7 +863,7 @@ const NoticeCard = memo(function NoticeCard({ notice: n }: { notice: Notice }) {
       <IntegrationMessages messages={[m]} />
       <div className="text-muted-foreground flex flex-wrap items-center gap-2 text-[11px]" data-slot="notice-footer">
         <span>Notification only. No agent ran.</span>
-        <AddToPersonButton sender={n.sender} />
+        {n.sender.externalId && !n.sender.personId && <AddToPersonButton sender={{ adapter: n.sender.adapter, externalId: n.sender.externalId, name: n.sender.name }} />}
       </div>
     </IntegrationCard>
   );

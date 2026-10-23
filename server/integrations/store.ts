@@ -2,7 +2,7 @@
 // Through db.withRetry like every other query, so a dropped connection is retried and an outage is
 // db.DbUnavailable. Every row carries user_id (db.currentUser()).
 import * as db from "../db";
-import { AUTO_INSTANCE, digestWindow, PAIRING_TTL_MS, type AutoLease, type DeliveryState, type DeliveryTarget, type Envelope, type Level, type LinkPairing, type PlannedDelivery, type Subscription, type TargetKind } from "../../shared/integrations";
+import { AUTO_INSTANCE, digestWindow, PAIRING_TTL_MS, type AutoLease, type DeliveryState, type DeliveryTarget, type Envelope, type Level, type PlannedDelivery, type Subscription, type TargetKind } from "../../shared/integrations";
 import type { Connection } from "./adapter";
 import type { Notification } from "../../shared/notifications";
 import { muteKey, OWN_EVENT, type Conversation, type OutboundRecord, type ThreadLinkRecord } from "../../shared/inbox";
@@ -91,33 +91,36 @@ export async function markSecretMissing(id: string, here: string, missing: boole
 
 // ── channel_link, principal, identity ────────────────────────────────────────────────────────────
 
-export type Link = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean; pairing?: LinkPairing };
-type LinkRow = { id: string; integration_id: string; external_id: string; label: string | null; level: Link["level"]; repos: string[]; require_mention: boolean; pairing: LinkPairing | null };
+export type Link = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean;
+  /** The link's switches (LinkNotify); absent on a write means on. */
+  notifyMe?: boolean; notifyAgent?: boolean };
+type LinkRow = { id: string; integration_id: string; external_id: string; label: string | null; level: Link["level"]; repos: string[]; require_mention: boolean; notify_me: boolean | null; notify_agent: boolean | null };
 const toLink = (r: LinkRow): Link => ({
   id: r.id, integrationId: r.integration_id, externalId: r.external_id, ...(r.label ? { label: r.label } : {}),
-  level: r.level, repos: r.repos ?? [], requireMention: r.require_mention, pairing: r.pairing ?? "request",
+  level: r.level, repos: r.repos ?? [], requireMention: r.require_mention, notifyMe: r.notify_me !== false, notifyAgent: r.notify_agent !== false,
 });
 
 export async function addLink(l: Link): Promise<void> {
   return db.withRetry(async (sql) => {
     await sql`
-      INSERT INTO channel_link (id, user_id, integration_id, external_id, label, level, repos, require_mention, pairing)
-      VALUES (${l.id}, ${user()}, ${l.integrationId}, ${l.externalId}, ${l.label ?? null}, ${l.level}, ${sql.array(l.repos, "TEXT")}, ${l.requireMention}, ${l.pairing ?? "request"})
+      INSERT INTO channel_link (id, user_id, integration_id, external_id, label, level, repos, require_mention, notify_me, notify_agent)
+      VALUES (${l.id}, ${user()}, ${l.integrationId}, ${l.externalId}, ${l.label ?? null}, ${l.level}, ${sql.array(l.repos, "TEXT")}, ${l.requireMention}, ${l.notifyMe !== false}, ${l.notifyAgent !== false})
       ON CONFLICT (user_id, id) DO UPDATE SET external_id = EXCLUDED.external_id, label = EXCLUDED.label,
-        level = EXCLUDED.level, repos = EXCLUDED.repos, require_mention = EXCLUDED.require_mention, pairing = EXCLUDED.pairing`;
+        level = EXCLUDED.level, repos = EXCLUDED.repos, require_mention = EXCLUDED.require_mention,
+        notify_me = EXCLUDED.notify_me, notify_agent = EXCLUDED.notify_agent`;
   });
 }
 
 export async function links(): Promise<Link[]> {
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, pairing FROM channel_link WHERE user_id = ${user()}`;
+    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, notify_me, notify_agent FROM channel_link WHERE user_id = ${user()}`;
     return (rows as LinkRow[]).map(toLink);
   });
 }
 
 export async function link(id: string): Promise<Link | undefined> {
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, pairing FROM channel_link WHERE user_id = ${user()} AND id = ${id}`;
+    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, notify_me, notify_agent FROM channel_link WHERE user_id = ${user()} AND id = ${id}`;
     const r = (rows as LinkRow[])[0];
     return r ? toLink(r) : undefined;
   });
@@ -126,7 +129,7 @@ export async function link(id: string): Promise<Link | undefined> {
 /** The link for an external place on one integration (a Slack channel id, a mailbox). */
 export async function linkFor(integrationId: string, externalId: string): Promise<Link | undefined> {
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, pairing FROM channel_link
+    const rows = await sql`SELECT id, integration_id, external_id, label, level, repos, require_mention, notify_me, notify_agent FROM channel_link
       WHERE user_id = ${user()} AND integration_id = ${integrationId} AND external_id = ${externalId}`;
     const r = (rows as LinkRow[])[0];
     return r ? toLink(r) : undefined;
@@ -486,23 +489,26 @@ export async function denyPairing(code: string, now = Date.now()): Promise<boole
 export async function inboxEvents(opts: { before?: string; beforeAt?: number; limit: number }): Promise<Envelope[]> {
   return db.withRetry(async (sql) => {
     const rows = opts.beforeAt !== undefined
-      ? await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question') AND created_at < ${opts.beforeAt}
+      ? await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question') AND created_at < ${opts.beforeAt} AND COALESCE(envelope->'notify'->>'me', 'true') <> 'false'
           ORDER BY id DESC LIMIT ${opts.limit}`
       : opts.before
-      ? await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question') AND id < ${opts.before}
+      ? await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question') AND id < ${opts.before} AND COALESCE(envelope->'notify'->>'me', 'true') <> 'false'
           ORDER BY id DESC LIMIT ${opts.limit}`
-      : await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question')
+      : await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND (topic LIKE 'ext.%' OR topic = 'orca.question') AND COALESCE(envelope->'notify'->>'me', 'true') <> 'false'
           ORDER BY id DESC LIMIT ${opts.limit}`;
     return (rows as { envelope: Envelope }[]).map((r) => r.envelope);
   });
 }
 
-/** The notices (shared/inbox.ts isNotice) at or after `since`, newest first: an unknown sender's
- *  message a `notify` pairing link recorded. The orchestrator's chat shows them between its turns. */
+/** The notices (shared/inbox.ts Notice) at or after `since`, newest first: a message the gate recorded
+ *  with Notify me on (`envelope.notify`) that no agent took — no orchestrator or workstream delivery.
+ *  The orchestrator's chat shows them between its turns; a message an agent took is its wake there. */
 export async function noticeEvents(opts: { since: number; limit: number }): Promise<Envelope[]> {
   return db.withRetry(async (sql) => {
-    const rows = await sql`SELECT envelope FROM event WHERE user_id = ${user()} AND topic LIKE 'ext.%' AND created_at >= ${opts.since}
-      AND envelope->'grant'->>'level' = 'notify' AND envelope ? 'actor' ORDER BY id DESC LIMIT ${opts.limit}`;
+    const rows = await sql`SELECT e.envelope FROM event e WHERE e.user_id = ${user()} AND e.topic LIKE 'ext.%' AND e.created_at >= ${opts.since}
+      AND e.envelope ? 'notify' AND e.envelope->'notify'->>'me' = 'true'
+      AND NOT EXISTS (SELECT 1 FROM delivery d WHERE d.event_id = e.id AND d.target->>'kind' IN ('orchestrator', 'workstream'))
+      ORDER BY e.id DESC LIMIT ${opts.limit}`;
     return (rows as { envelope: Envelope }[]).map((r) => r.envelope);
   });
 }
@@ -659,6 +665,7 @@ export async function unreadWithoutCopy(limit: number): Promise<number> {
   return db.withRetry(async (sql) => {
     const rows = await sql`SELECT count(*)::int AS n FROM (
         SELECT e.id, e.key, e.envelope FROM event e WHERE e.user_id = ${user()} AND (e.topic LIKE 'ext.%' OR e.topic = 'orca.question')
+          AND COALESCE(e.envelope->'notify'->>'me', 'true') <> 'false'
         ORDER BY e.id DESC LIMIT ${limit}) e
       WHERE NOT EXISTS (SELECT 1 FROM notification n WHERE n.user_id = ${user()} AND n.key = e.key)
         AND NOT EXISTS (SELECT 1 FROM inbox_read r WHERE r.user_id = ${user()} AND r.event_id = e.id)

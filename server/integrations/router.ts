@@ -2,7 +2,7 @@
 // gate the sender against its link (§3.7), then `publish`. `publish` is everyone's: record the event
 // once by its key and plan its deliveries in the same transaction, then kick the dispatcher.
 import { randomUUID } from "crypto";
-import { CATCH_ALL, CATCH_ALL_SEND_ERROR, effectiveGrant, sendsToCatchAll, INBOUND_LIMIT, paceWait, pairingCode, pairingReply, planDeliveries, postsAsUser, replyToOf, PAIRING_CODE_LENGTH, type ConversationRef, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery, type ReplyTo } from "../../shared/integrations";
+import { CATCH_ALL, CATCH_ALL_SEND_ERROR, effectiveGrant, sendsToCatchAll, INBOUND_LIMIT, paceWait, planDeliveries, replyToOf, type ConversationRef, type Envelope, type Grant, type InboundEnvelope, type PlannedDelivery, type ReplyTo } from "../../shared/integrations";
 import { replyRefusal } from "../../shared/inbox";
 import * as store from "./store";
 
@@ -110,33 +110,26 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
   const times = recent.get(who) ?? [];
   if (paceWait(times, now, INBOUND_LIMIT.count, INBOUND_LIMIT.windowMs) > 0) return "rejected";
   recent.set(who, [...times.filter((t) => now - t < INBOUND_LIMIT.windowMs), now]);
-  // A person is gated on who they are (an unknown sender gets nothing until paired); a sender with no
-  // person behind it (a webhook, a poller) is authenticated by its integration and takes the link's level.
+  // A link's switches (both on by default): Notify me shows the message to you, Notify agent lets
+  // it wake an agent. Both off: nothing is recorded.
+  const notify = { me: link.notifyMe !== false, agent: link.notifyAgent !== false };
+  if (!notify.me && !notify.agent) return "rejected";
+  // A person keeps the grant of who they are; an unknown sender (no principal) gets `notify`: a
+  // READ-ONLY wake (no verb, no reply) and a notification. No pairing code: People is the manual way.
+  // A sender with no person behind it (a webhook, a poller) is authenticated by its integration and
+  // takes the link's level.
   const principal = e.actor ? await store.principalFor(e.actor.external.adapter, e.actor.external.id) : undefined;
-  if (e.actor && !principal) {
-    if (link.level === "notify") return "rejected";
-    // `pairing: "notify"`: show it to you, read-only — the machine event's path below (a "notify"
-    // grant, so no agent target is planned) plus one web delivery, so the bell and the Inbox show it
-    // without a subscription. No code, no pairing row, no reply.
-    if (link.pairing === "notify") {
-      const r = await publish({ ...e, source: { ...e.source, integrationId, linkId: link.id }, grant: { level: "notify", repos: [], linkId: link.id } },
-        now, [{ subscriptionId: null, target: { kind: "web" } }]);
-      return r.status;
-    }
-    await requestPairing(integrationId, link.id, e, now);
-    return "rejected";
-  }
   const grant: Grant = e.actor ? effectiveGrant(link, principal) : { level: link.level, repos: link.repos, linkId: link.id };
-  // A notify link takes nothing in — except, when its integration says so (`config.machineEventsOnNotify`),
-  // a machine event (no person: a poller, a webhook). That event is recorded and fans out to its
-  // subscriptions (the web, other links) with the grant "notify", so no agent acts on it.
-  if (grant.level === "notify" && (e.actor || !(await machineEventsOnNotify(integrationId)))) return "rejected";
+  // A notify link takes no machine event in — except, when its integration says so
+  // (`config.machineEventsOnNotify`): recorded and fanned out to its subscriptions with the grant
+  // "notify", so no agent acts on it (shared/integrations.ts agentMay).
+  if (grant.level === "notify" && !e.actor && !(await machineEventsOnNotify(integrationId))) return "rejected";
   const principalId = grant.principalId;
   const r = await publish({
     ...e, source: { ...e.source, integrationId, linkId: link.id },
     ...(e.actor && principalId ? { actor: { ...e.actor, principalId } } : {}),
-    grant,
-  }, now);
+    grant, notify,
+  }, now, notify.me ? [{ subscriptionId: null, target: { kind: "web" } }] : []);
   return r.status;
 }
 
@@ -148,31 +141,4 @@ async function machineEventsOnNotify(integrationId: string): Promise<boolean> {
 async function firstLink(integrationId: string, places: string[]): Promise<store.Link | undefined> {
   for (const p of places) { const l = await store.linkFor(integrationId, p); if (l) return l; }
   return undefined;
-}
-
-/** An unknown sender on a linked place: their pending code, or a new one. A NEW code is sent back to
- *  them on the same place (a durable delivery, so a send failure retries; never where Orca posts as
- *  you, `postsAsUser`) and shown in the bell. The
- *  message itself is dropped: they send it again once you approve (POST /api/integrations/pairing/approve). */
-async function requestPairing(integrationId: string, linkId: string, e: InboundEnvelope, now: number): Promise<void> {
-  const who = e.actor!.external;
-  const { pairing, fresh } = await store.pairingFor(
-    { integrationId, adapter: who.adapter, externalId: who.id, name: who.name, linkId },
-    () => pairingCode(crypto.getRandomValues(new Uint8Array(PAIRING_CODE_LENGTH))), now);
-  if (!fresh) return;
-  const name = who.name ?? who.id;
-  const source = { adapter: "orca", integrationId, linkId };
-  // Slack posts as you: no automatic reply in your name. The code is in the bell only.
-  const silent = postsAsUser(e.source.adapter);
-  if (!silent) await publish({
-    key: `pairing:${pairing.code}:reply`, topic: "orca.message", at: now, source, text: pairingReply(pairing.code),
-    ...(e.thread ? { thread: e.thread } : {}),
-  }, now, [{ subscriptionId: null, target: {
-    kind: "link", integrationId, adapter: e.source.adapter, linkId,
-    externalId: e.source.channel ?? (await store.link(linkId))?.externalId ?? "", ...(e.thread ? { threadId: e.thread.externalId } : {}),
-  } }]);
-  await publish({
-    key: `pairing:${pairing.code}`, topic: "orca.pairing.requested", at: now, source, actor: e.actor,
-    title: `Pairing request from ${name}`, text: `${name} (${who.adapter}:${who.id}) wants to talk to Orca. Approve code ${pairing.code} to pair.${silent ? " Orca posts there as you, so it did not send them the code: ask them to send the message again once you approve." : ""}`,
-  }, now, [{ subscriptionId: null, target: { kind: "web" } }]);
 }
