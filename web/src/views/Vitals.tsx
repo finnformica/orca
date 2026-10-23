@@ -82,7 +82,7 @@ export function HeaderUsageMeter() {
     <HoverCard>
       <HoverCardTrigger asChild>
         <button type="button" data-slot="header-usage" tabIndex={0} aria-label={`Claude usage — ${reading.tooltip}`}
-          className="text-muted-foreground hover:text-foreground hover:bg-accent flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-xs max-md:hidden">
+          className="bg-card text-muted-foreground hover:text-foreground hover:bg-accent flex h-8 shrink-0 items-center gap-1.5 rounded-md border px-2 text-xs max-md:hidden">
           <Ring pct={pct} size={14} />
           <span className="tabular-nums">{pct}%</span>
         </button>

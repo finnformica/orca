@@ -75,6 +75,17 @@ Use the `Button` variants from `components/ui/button.tsx`.
 - Destructive: only for an action that deletes or discards.
 - A hand-made control (a switcher trigger, a toolbar button) uses the ghost look: `hover:bg-accent`.
 
+## Controls on the page
+
+Controls with a hairline sit on the raised surface (`bg-card`). Then they stand out from the page (`bg-background`).
+
+- `Button` `outline` and `secondary`, `SelectTrigger`, `Input`, `Textarea` and `Segmented` have `bg-card` in their base.
+- A filter chip uses `filterChipClass` (`console.tsx`). It is `bg-card` when off and `bg-primary` when pressed.
+- A hand-made bordered control (the top bar's usage meter, the Ask button, a search box) adds `bg-card`.
+- A selected or pressed state keeps its own fill (`bg-selected`, `bg-primary`).
+- A field whose frame is its container (the composer's textarea, the palette's input) sets `bg-transparent`.
+- Ghost buttons stay without a fill. They have no hairline.
+
 ## States
 
 - Hover on a control: `hover:bg-accent`. Do not use a step of it (`/60`) on a control.
