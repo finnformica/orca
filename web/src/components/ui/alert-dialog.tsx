@@ -19,12 +19,33 @@ AlertDialogOverlay.displayName = "AlertDialogOverlay";
 
 // Centred on every width; below md the footer's buttons stack full width (thumb-sized), like the
 // phone's bottom sheets.
-function AlertDialogContent({ className, ...props }: React.ComponentProps<typeof AlertDialogPrimitive.Content>) {
+// Radix focuses AlertDialogCancel on open by default (its recommendation for a destructive
+// action) — so Enter right after opening just closes the dialog. Finn asked for the primary
+// action focused instead, for every confirm, destructive or not: Enter then runs it once.
+function AlertDialogContent({ className, onOpenAutoFocus, onKeyDown, ...props }: React.ComponentProps<typeof AlertDialogPrimitive.Content>) {
   return (
     <AlertDialogPrimitive.Portal container={React.useContext(PortalContainer)}>
       <AlertDialogOverlay />
       <AlertDialogPrimitive.Content
         data-slot="alert-dialog-content"
+        onOpenAutoFocus={(event) => {
+          onOpenAutoFocus?.(event);
+          if (event.defaultPrevented) return;
+          const action = (event.currentTarget as HTMLElement).querySelector<HTMLElement>('[data-slot="alert-dialog-action"]');
+          if (!action) return;
+          event.preventDefault();
+          action.focus();
+        }}
+        // A focused native <button> already activates on Enter — belt and suspenders for a browser
+        // that doesn't, and the one thing that makes this behaviour testable.
+        onKeyDown={(event) => {
+          onKeyDown?.(event);
+          if (event.defaultPrevented || event.key !== "Enter") return;
+          const target = event.target as HTMLElement;
+          if (target.tagName !== "BUTTON") return;
+          event.preventDefault();
+          target.click();
+        }}
         className={cn("bg-card text-card-foreground fixed top-1/2 left-1/2 z-50 grid w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border p-5 shadow-modal outline-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95", className)}
         {...props}
       />
