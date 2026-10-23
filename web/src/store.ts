@@ -10,7 +10,7 @@ import { onRefresh } from "@/lib/refresh";
 import { api, type LiveAgent, type PreviewSvc, type RepoInfo } from "./api";
 import type { CiStatus, ConversationComment, Mergeable, MergedPr, PrSummary, ReviewStatus, ReviewThreadEvidence } from "../../server/gh";
 import {
-  addressNeedsAgent, addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, mergedPrIsHistory, followUpPrompt, instanceOrder, launchPrompt,
+  addressNeedsAgent, addressPrPrompt, chatPrompt, continuation, deriveKanbanState, followDecision, mergedPrIsHistory, newestMergedPerBranch, followUpPrompt, instanceOrder, launchPrompt,
   mergeSettled, newDraftMessage, rerunFailedPrompt, resolveConflictsPrompt, reviewDigest, rowTitle, slackApiText, slackClipboard, titleFromPrompt, verifiedLane, verifiedMark, verifiedState, withAttachments,
 } from "./workstream";
 import type { MergeMark, VerifiedMark } from "./workstream";
@@ -732,7 +732,7 @@ export function assembleRows(): Row[] {
     // branch (new run, new commits, a newer open PR) shows its live row instead (mergedPrIsHistory).
     // `m.headBehindPr` rides along from `/api/prs/merged` (the server ran the git check this
     // browser can't) so a worktree merely behind the PR's last push isn't mistaken for reuse.
-    const merged = rl.merged.filter((m) => {
+    const merged = newestMergedPerBranch(rl.merged).filter((m) => {
       const wt = wtByBranch.get(m.branch), openPr = prByBranch.has(m.branch);
       return !mergedPrIsHistory(m, wt || openPr ? { ...wt, openPr, headBehindPr: m.headBehindPr } : undefined);
     });
