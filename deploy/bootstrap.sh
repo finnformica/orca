@@ -23,9 +23,11 @@ ORCA_BIND=127.0.0.1,$ts_ip
 ORCA_PREVIEW_HOST=$ts_name
 ORCA_DATABASE_URL=postgres://orca:orca@localhost:5432/orca
 ORCA_TEST_DATABASE_URL=postgres://orca:orca@localhost:5432/postgres
+# Deploys start the new bridge beside the old one on 8787 (deploy/orca@.service, deploy/autodeploy.sh).
+ORCA_REUSE_PORT=1
 ENV
-sudo cp deploy/orca.service /etc/systemd/system/orca.service
-sudo systemctl daemon-reload && sudo systemctl enable --now orca
+sudo cp deploy/orca@.service /etc/systemd/system/orca@.service
+sudo systemctl daemon-reload && sudo systemctl enable --now orca@a
 
 # Auto-deploy: pulls main, builds and restarts the bridge on its own once main changes (see
 # CLAUDE.md "Deploying" → "Auto-deploy").

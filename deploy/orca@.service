@@ -1,8 +1,11 @@
-# systemd unit for the deployed bridge. Install:
+# systemd unit for the deployed bridge — a TEMPLATE with two slots, orca@a and orca@b, so a deploy
+# starts the new build in the idle slot beside the running one (both on 8787: ORCA_REUSE_PORT=1 in
+# .env) and stops the old slot only once the new one answers (deploy/autodeploy.sh). Exactly one
+# slot is enabled at a time. Install:
 #
-#   sudo cp deploy/orca.service /etc/systemd/system/orca.service
-#   sudo systemctl daemon-reload && sudo systemctl enable --now orca
-#   journalctl -u orca -f
+#   sudo cp deploy/orca@.service /etc/systemd/system/orca@.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now orca@a
+#   journalctl -u orca@a -u orca@b -f
 #
 # Assumes a checkout at /opt/orca owned by a user `orca` who has run `bun install`, `bun run build`,
 # and signed in each CLI (`claude login`, `codex login --device-auth`, `gh auth login`) — see README
@@ -18,7 +21,7 @@
 # pick if it ever has to look outside a single run's own scope. Sized for the default m7i.xlarge
 # (16GB, deploy/provision.sh) — adjust both if the box's RAM changes.
 [Unit]
-Description=Orca bridge
+Description=Orca bridge (slot %i)
 After=network-online.target
 Wants=network-online.target
 
