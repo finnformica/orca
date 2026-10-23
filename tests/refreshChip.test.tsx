@@ -49,6 +49,26 @@ test("refresh: a poll stuck on a request is aborted and re-run at once; the refr
   stop();
 });
 
+test("a GET nobody answers is aborted on its own after HUNG_MS, and its poll ticks again", async () => {
+  const signals: AbortSignal[] = [];
+  globalThis.fetch = ((_: string, init?: RequestInit) => {
+    const signal = init!.signal!;
+    signals.push(signal);
+    // The first request never answers and never errors (a link that dropped silently); the re-run answers.
+    if (signals.length === 1) return new Promise((_, reject) => signal.addEventListener("abort", () => reject(new Error("aborted"))));
+    return Promise.resolve(new Response("{}"));
+  }) as typeof fetch;
+  let answered = 0;
+  const stop = poll(() => trackedFetch("/api/usage", undefined, 20).then(() => { answered++; }), 1);
+  await flush();
+  expect(signals).toHaveLength(1);
+  await new Promise((r) => setTimeout(r, 60));
+  expect(signals[0]!.aborted).toBe(true);
+  expect(signals.length).toBeGreaterThanOrEqual(2);
+  expect(answered).toBeGreaterThanOrEqual(1);
+  stop();
+});
+
 test("refresh: a page that never settles falls back to a hard reload", async () => {
   const off = onRefresh(() => new Promise(() => {}));
   let reloads = 0;

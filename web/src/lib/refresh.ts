@@ -11,18 +11,23 @@ import { apiFetch } from "./server";
 
 export const STUCK_MS = 3_000;
 export const DEADLINE_MS = 15_000;
+/** A GET still unanswered after this long is aborted on its own, so its poll ticks again. Without it a
+ *  request the network dropped silently (a tailnet link blip during a deploy: no RST, no error, just
+ *  nothing) parked that poll for good, and the page sat "loading" until a hand refresh (2026-10-23). */
+export const HUNG_MS = 30_000;
 
 type InFlight = { ctl: AbortController; at: number };
 const inflight = new Set<InFlight>();
 
 /** `fetch` for a GET, tracked so a refresh can abort it once it is stuck. An `/api/…` path goes to
  *  the chosen server (lib/server.ts `apiFetch`; the home origin unless the switcher says otherwise). */
-export function trackedFetch(input: string, init?: RequestInit): Promise<Response> {
+export function trackedFetch(input: string, init?: RequestInit, hungMs = HUNG_MS): Promise<Response> {
   const entry: InFlight = { ctl: new AbortController(), at: Date.now() };
   inflight.add(entry);
+  const hung = setTimeout(() => entry.ctl.abort(), hungMs);
   return apiFetch(input, { ...init, signal: entry.ctl.signal })
     .then((r) => { noteDatabase(r.headers?.get("x-orca-database")); return r; })
-    .finally(() => inflight.delete(entry));
+    .finally(() => { clearTimeout(hung); inflight.delete(entry); });
 }
 
 // The bridge's database state, as the last answered GET said it: every answer carries
