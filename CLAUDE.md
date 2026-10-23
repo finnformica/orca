@@ -206,8 +206,15 @@ plus allow and deny rules — files in the worktree, git and the toolchain, no s
 `--no-verify`, no push to the base branch; never `bypassPermissions`, which approves everything).
 Only a wake whose every message is yours clears it on a steer; `orca status --clear-grant` clears it. An unknown sender gets a one-time
 pairing code (`pairing_code`; approve with `POST /api/integrations/pairing/approve`), unless the link's
-`pairing` is `off` (the row's Pairing requests switch, named step `20261023-link-pairing`): then the
-message is dropped silently — no code, no bell row, no reply. A known person passes either way. The orchestrator
+`pairing` is `notify` (the row's Unknown senders Select: Pairing request / Notify me; named steps
+`20261023-link-pairing` and `20261023-link-pairing-notify`, which moved the old `off` rows to `notify`).
+Then the router publishes the message with a `notify` grant and one `web` delivery — the machine-event
+path, so no agent target is planned — and it shows as a read-only notification: the bell, the Inbox
+(`InboxRow.notice`, its place) and the orchestrator's chat (`GET /api/inbox/notices`, a "notified"
+card between the turns by time, `withNotices`). No code, no pairing row, no agent run, no reply. Its
+`conversation` id is stable, for a later "tell me when they answer". An Inbox row or a chat card with
+such a sender has Add to person (`components/SenderPerson.tsx`: an existing person, or a new one, via
+`identities/add` and `people/save`). A known person passes either way, with their grant. The orchestrator
 has `orca channels`, `post`, `thread link` and `ask-user`. A catch-all link (`*`) posts to any channel or thread the bot can see with `orca post --link <id> --channel <id> [--thread <id>]` (`catchAllPostRefusal`: a bare post is refused, an outside wake posts only where its message came from), so no channel link is made only to post. `orca post … --new-thread "<name>"` opens a named thread on the post even with Discord's `config.threads` off (only on request: the default is a reply in place); `--delete <message id>` deletes one message the bot posted (`Adapter.delete`, `caps.deletes`; a person's message is refused). Every `orca post` waits for its delivery (`postWait`) and prints the message and thread ids (`delivery.external_thread_id`, named step `20261023-delivery-thread-id`), else the delivery id. People are global: the Integrations page lists them first, with their identities on every adapter (`identity.name`, named step `20261020-show-identity-name`). A subscription's `digest_seconds` batches
 its deliveries per fixed window (`delivery.digest_key`). `/api/slack` still posts at once as
 you (`postAsUser`), not through the queue; `/api/orchestrator/event` stays for instance-to-instance

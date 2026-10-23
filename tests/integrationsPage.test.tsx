@@ -105,4 +105,22 @@ describe("the Integrations page", () => {
     expect(second!.textContent).toContain("#chan");
     expect(all("link-level", second)[0]!.textContent).toBe("Viewer");
   });
+
+  test("each link's Unknown senders is a Select: Pairing request (the default) or Notify me; a notify link has none", async () => {
+    const data = overview();
+    data.links = [
+      { ...data.links[0]!, pairing: "notify" } as typeof data.links[0],
+      data.links[1]!,
+      { id: "discord-feed", integrationId: "discord", externalId: "C2", label: "#feed", level: "notify", repos: [], requireMention: false },
+    ];
+    apiFake.integrationsData = data;
+    await open("/integrations");
+    const byLabel = (l: string) => all("integration-link").find((e) => e.textContent!.includes(l))!;
+    const trigger = (l: string) => byLabel(l).querySelector<HTMLElement>('[data-slot="link-pairing"] [role="combobox"]');
+    expect(trigger("#chan")!.textContent).toBe("Notify me");
+    expect(trigger("#chan")!.getAttribute("aria-label")).toBe("Unknown senders on #chan");
+    expect(trigger("All channels and DMs")!.textContent).toBe("Pairing request");
+    expect(trigger("#feed")).toBeNull();
+    expect(container!.textContent).not.toContain("Pairing requests");
+  });
 });

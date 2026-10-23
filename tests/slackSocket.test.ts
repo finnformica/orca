@@ -12,7 +12,7 @@ import * as router from "../server/integrations/router";
 import * as dispatcher from "../server/integrations/dispatcher";
 import * as store from "../server/integrations/store";
 import { context } from "../server/integrations/registry";
-import { parseCursor, pickConversations, postAsUser, pruneThreads, searchEvent, slackAdapter, slackInbound, socketMode, threadTs, tsOf, type WebSocketLike } from "../server/integrations/adapters/slack";
+import { parseCursor, pickConversations, placeLabel, postAsUser, pruneThreads, searchEvent, slackAdapter, slackInbound, slackPermalink, socketMode, threadTs, tsOf, type WebSocketLike } from "../server/integrations/adapters/slack";
 import { resetSlackToolCache, slackTool } from "../server/slackTool";
 import { ORCA_SECRETS } from "../server/env";
 import type { AdapterContext, Connection, InboundEnvelope } from "../server/integrations/adapter";
@@ -123,6 +123,20 @@ describe("slackInbound: what reaches Orca", () => {
     expect(group).toMatchObject({ source: { channel: "G7", parents: ["mpim"] }, thread: { externalId: "G7" } });
     const inThread = slackInbound(ev({ channel: "D1", channel_type: "im", text: "more", thread_ts: "1.5" }), me)!;
     expect(inThread.thread!.externalId).toBe("D1:1.5");
+  });
+
+  test("the place a person reads and a link to the message: DM, Group DM or #channel; the permalink names a reply's thread", () => {
+    const at = { ...me, url: "https://acme.slack.com/" };
+    expect(slackInbound(ev({ channel: "D1", channel_type: "im" }), at)).toMatchObject({ display: { place: "DM" }, link: { url: "https://acme.slack.com/archives/D1/p1700000000000100" } });
+    expect(slackInbound(ev({ channel: "G7", channel_type: "mpim" }), at)!.display).toEqual({ place: "Group DM" });
+    expect(slackInbound(ev(), at, { channelName: "eng" })!.display).toEqual({ place: "#eng" });
+    // A channel with no known name, and no workspace URL: neither field, never a guess.
+    const bare = slackInbound(ev(), me)!;
+    expect(bare.display).toBeUndefined();
+    expect(bare.link).toBeUndefined();
+    expect(slackPermalink("https://acme.slack.com", { channel: "C1", ts: "2.5", thread_ts: "1.1" })).toBe("https://acme.slack.com/archives/C1/p25?thread_ts=1.1&cid=C1");
+    expect(slackPermalink("https://acme.slack.com", { channel: "C1", ts: "1.1", thread_ts: "1.1" })).toBe("https://acme.slack.com/archives/C1/p11");
+    expect(placeLabel("channel")).toBeUndefined();
   });
 
   test("a reply with no mention counts only in a thread Orca already talks in", () => {

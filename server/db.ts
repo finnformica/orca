@@ -1030,10 +1030,11 @@ export const MIGRATIONS: MigrationStep[] = [
     name: "20261023-link-pairing-notify",
     idempotent: true,
     // `off` (drop an unknown sender's message) became `notify` (show it to you, read-only). The
-    // column of 20261023-link-pairing stays; only its value set and CHECK change. Drop first, so a re-run is a no-op.
-    sql: `ALTER TABLE channel_link DROP CONSTRAINT IF EXISTS channel_link_pairing_check;
+    // column of 20261023-link-pairing stays; only its value set and CHECK change: widen the CHECK,
+    // rename the value, narrow it. Each statement is a no-op on a re-run.
+    sql: `ALTER TABLE channel_link DROP CONSTRAINT IF EXISTS channel_link_pairing_check, ADD CONSTRAINT channel_link_pairing_check CHECK (pairing IN ('request','off','notify'));
       UPDATE channel_link SET pairing = 'notify' WHERE pairing = 'off';
-      ALTER TABLE channel_link ADD CONSTRAINT channel_link_pairing_check CHECK (pairing IN ('request','notify'));`,
+      ALTER TABLE channel_link DROP CONSTRAINT IF EXISTS channel_link_pairing_check, ADD CONSTRAINT channel_link_pairing_check CHECK (pairing IN ('request','notify'));`,
   },
 ];
 

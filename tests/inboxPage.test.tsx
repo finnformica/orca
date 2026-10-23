@@ -63,6 +63,30 @@ describe("the Inbox page", () => {
     apiFake.threadLinksData = [{ adapter: "slack", externalThreadId: "C1:1.2", linkId: "eng", repo: "r", branch: "feat-login" }];
   };
 
+  test("an unknown sender's notice: its place and a Notify tag; Add to person joins an existing person or makes one", async () => {
+    const notice: InboxRow = { id: "e5", at: now - 30_000, topic: "ext.slack.message", kind: "message", adapter: "slack", sender: { name: "Mira", externalId: "U9" }, place: "DM", notice: true, text: "are you free?", conversation: "slack|D9", read: false, muted: false, canReply: true, canLink: true };
+    apiFake.inboxData = { rows: [notice, ...rows], facets: inboxFacets([notice, ...rows]), older: null };
+    apiFake.integrationsData = { instance: "local", kinds: [], integrations: [], links: [], people: [{ id: "ana", name: "Ana", maxLevel: "ask", identities: [] }], pairings: [], subscriptions: [], dead: [] };
+    await open("/inbox");
+    const [first, , , known] = all("inbox-row");
+    expect(first!.querySelector('[data-slot="inbox-place"]')!.textContent).toBe("DM");
+    expect(first!.querySelector('[data-slot="inbox-notice"]')!.textContent).toBe("Notify");
+    expect(known!.querySelector('[data-slot="inbox-notice"]')).toBeNull();
+    const pointerdown = async (el: Element) => act(async () => { el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })); await flush(); await flush(); });
+    // A sender with a person has no Add to person.
+    await pointerdown(known!.querySelector('[data-slot="row-actions"]')!);
+    expect(document.querySelector('[data-slot="action-add-person"]')).toBeNull();
+    await act(async () => { document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
+    await pointerdown(first!.querySelector('[data-slot="row-actions"]')!);
+    const sub = document.querySelector<HTMLElement>('[data-slot="action-add-person"]')!;
+    expect(sub.textContent).toBe("Add to person");
+    await act(async () => { sub.focus(); sub.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })); await flush(); await flush(); });
+    const items = [...document.querySelectorAll<HTMLElement>('[data-slot="add-person-new"], [data-slot="add-person-existing"]')];
+    expect(items.map((i) => i.textContent)).toEqual(["New person…", "Ana"]);
+    await click(items[1]!);
+    expect(apiFake.integrationPosts).toEqual([{ path: "identities/add", body: { principal: "ana", adapter: "slack", externalId: "U9", name: "Mira" } }]);
+  });
+
   test("rows newest first: source, sender, workstream chip, reply state; the source filter is in the URL", async () => {
     seed();
     await open("/inbox");
