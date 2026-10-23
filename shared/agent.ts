@@ -103,6 +103,29 @@ export function autofixInstruction(check: TurnCheck): string {
 }
 export const isAutofix = (instruction: string | undefined): boolean => Boolean(instruction?.startsWith(AUTOFIX_MARKER));
 
+/** A background task (Claude Code's `run_in_background` Bash, a background subagent) that was still
+ *  running when its run ended — what the resume message tells the agent about. */
+export type UnfinishedTask = { id: string; description?: string; command?: string; outputTail?: string };
+/** The system message that resumes a session whose run ended while its background tasks still ran
+ *  (server/agent.ts). Its marker is the loop guard: a resumed run that again ends this way is not
+ *  resumed a second time. */
+export const BACKGROUND_MARKER = "[Orca system message] Your last run ended while background tasks still ran.";
+export function backgroundResumeInstruction(tasks: UnfinishedTask[], reason: "cap" | "exit", capMinutes: number): string {
+  const why = reason === "cap"
+    ? `Your turn ended, and Orca waited ${capMinutes} minutes for these tasks. They did not finish, so Orca stopped them.`
+    : "The run ended before these tasks finished, and they stopped with it.";
+  const items = tasks.map((t) => [
+    `- \`${t.command ?? t.description ?? t.id}\` (task ${t.id}): no exit code, the task was stopped.`,
+    t.outputTail ? `  Output tail:\n\n\`\`\`\n${t.outputTail}\n\`\`\`` : "  No output was recorded.",
+  ].join("\n"));
+  return [
+    BACKGROUND_MARKER, why, "", ...items, "",
+    "Run each unfinished command again in the foreground, and wait for it in the same Bash call (`orca-run` waits for its slot).",
+    "Do not end your turn while a command runs. Then continue the task (push, then the rest of the brief).",
+  ].join("\n");
+}
+export const isBackgroundResume = (instruction: string | undefined): boolean => Boolean(instruction?.startsWith(BACKGROUND_MARKER));
+
 export type AgentTurn = {
   id: string;
   provider: AgentProvider;

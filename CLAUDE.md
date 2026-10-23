@@ -860,6 +860,15 @@ subagents; Orca does not model that). `server/orchestrator.ts` is all of it.
   Also: a lease records its `sessionId` and `launch` refuses a resume while another live run is on
   that session (`lease.sessionBusy`) — two runs on one session both end with the same reply, which
   was the "one message behind" bug.
+  (3) **A run ended mid background task** (2026-10-23, six runs: a push behind the pre-push gate,
+  `npm install`). `claude -p` does not exit while its `run_in_background` task runs: it waits, and
+  the task's notification starts its next turn. Orca's `agentTimeoutMinutes` counted that wait and
+  killed the CLI, and the task died with it. Now `agent.trackBackground` reads the CLI's task events;
+  while the turn has ended and a task runs, the timeout is paused (the next turn gets at least
+  `backgroundWait.floorMs`) and `backgroundWait.ms` (30 min) caps the wait. At the cap Orca stops the
+  run and queues ONE resume of the same session (`BACKGROUND_MARKER`, each task's command and output
+  tail); a resumed run that ends the same way is an error. The worker report says `N commits not
+  pushed` (`git.unpushedHere`).
 - **One primary bridge per instance** (`server/primary.ts`; incident 2026-10-14: four hand-started
   bridges from reaped worktrees kept running stale code on the shared database, and one woke the
   orchestrator with a deleted `bin/` on PATH). Background duties — orchestrator wakes/recovery, the
