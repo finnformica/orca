@@ -1019,6 +1019,33 @@ export const MIGRATIONS: MigrationStep[] = [
     // for the send on any instance and print the thread id (`--new-thread`). Nullable.
     sql: `ALTER TABLE delivery ADD COLUMN IF NOT EXISTS external_thread_id TEXT;`,
   },
+  {
+    name: "20261023-forms-and-secrets",
+    idempotent: true,
+    // Forms in the chat (`orca ask-form`, server/forms.ts) and the encrypted secret store
+    // (server/secrets.ts). A form's `answers` never holds a secret value: a secret field is stored
+    // in `secret` (AES-256-GCM, the key from ORCA_SECRETS_KEY or the state dir) and the answer is
+    // only its name. `secret_use` is the audit: one row per store, use and delete (who, command, when).
+    sql: `
+      CREATE TABLE IF NOT EXISTS form (
+        user_id TEXT NOT NULL, id TEXT NOT NULL, title TEXT NOT NULL, intro TEXT, scope TEXT,
+        fields JSONB NOT NULL, state TEXT NOT NULL DEFAULT 'open', answers JSONB,
+        created_at BIGINT NOT NULL, answered_at BIGINT,
+        PRIMARY KEY (user_id, id)
+      );
+      CREATE TABLE IF NOT EXISTS secret (
+        user_id TEXT NOT NULL, scope TEXT NOT NULL, name TEXT NOT NULL,
+        ciphertext TEXT NOT NULL, key_id TEXT NOT NULL, source TEXT,
+        created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, last_used_at BIGINT,
+        PRIMARY KEY (user_id, scope, name)
+      );
+      CREATE TABLE IF NOT EXISTS secret_use (
+        id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL, scope TEXT NOT NULL, name TEXT NOT NULL,
+        action TEXT NOT NULL, command TEXT, who TEXT NOT NULL, at BIGINT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS secret_use_at ON secret_use (user_id, at);
+    `,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };
@@ -2238,5 +2265,123 @@ export async function markHandoffsSeen(at = Date.now()): Promise<void> {
 export async function deleteHandoff(id: string): Promise<void> {
   return withRetry(async (sql) => {
     await sql`DELETE FROM handoff WHERE user_id = ${currentUser()} AND direction = 'out' AND id = ${id}`;
+  });
+}
+
+// ---- forms (`orca ask-form`, server/forms.ts) ----
+
+export type FormRow = {
+  id: string; title: string; intro?: string; scope?: string; fields: unknown[];
+  state: "open" | "submitted" | "cancelled"; answers?: Record<string, unknown>; createdAt: number; answeredAt?: number;
+};
+
+const jsonCol = <T>(v: unknown): T => (typeof v === "string" ? JSON.parse(v) : v) as T;
+const toForm = (r: Record<string, unknown>): FormRow => ({
+  id: String(r.id), title: String(r.title), ...(r.intro ? { intro: String(r.intro) } : {}), ...(r.scope ? { scope: String(r.scope) } : {}),
+  fields: jsonCol<unknown[]>(r.fields) ?? [], state: (r.state as FormRow["state"]) ?? "open",
+  ...(r.answers === null || r.answers === undefined ? {} : { answers: jsonCol<Record<string, unknown>>(r.answers) }),
+  createdAt: Number(r.created_at), ...(r.answered_at === null || r.answered_at === undefined ? {} : { answeredAt: Number(r.answered_at) }),
+});
+
+export async function addForm(f: Omit<FormRow, "state" | "answers" | "answeredAt">): Promise<void> {
+  return withRetry(async (sql) => {
+    await sql`
+      INSERT INTO form (user_id, id, title, intro, scope, fields, created_at)
+      VALUES (${currentUser()}, ${f.id}, ${f.title}, ${f.intro ?? null}, ${f.scope ?? null}, ${JSON.stringify(f.fields)}::jsonb, ${f.createdAt})`;
+  });
+}
+
+export async function form(id: string): Promise<FormRow | undefined> {
+  return withRetry(async (sql) => {
+    const rows = await sql`SELECT * FROM form WHERE user_id = ${currentUser()} AND id = ${id}`;
+    const r = (rows as Record<string, unknown>[])[0];
+    return r ? toForm(r) : undefined;
+  });
+}
+
+/** Close an OPEN form as submitted or cancelled. False when it was not open (a double submit). */
+export async function closeForm(id: string, state: "submitted" | "cancelled", answers: Record<string, unknown> | null, at = Date.now()): Promise<boolean> {
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      UPDATE form SET state = ${state}, answers = ${answers === null ? null : JSON.stringify(answers)}::jsonb, answered_at = ${at}
+      WHERE user_id = ${currentUser()} AND id = ${id} AND state = 'open' RETURNING id`;
+    return (rows as unknown[]).length > 0;
+  });
+}
+
+/** The tool results of these runs that name a form (`orca-form://<id>`, the line `orca ask-form` prints). */
+export async function formOutputs(runIds: string[]): Promise<{ runId: string; output: string }[]> {
+  if (!runIds.length) return [];
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      SELECT run_id, step->>'output' AS output FROM turn_step
+      WHERE run_id IN ${sql(runIds)} AND step->>'kind' = 'result' AND COALESCE(step->>'isError', 'false') <> 'true'
+        AND step->>'output' LIKE '%orca-form://%'
+      ORDER BY at, seq`;
+    return (rows as { run_id: string; output: string }[]).map((r) => ({ runId: r.run_id, output: r.output }));
+  });
+}
+
+// ---- the secret store (server/secrets.ts) ----
+// Only ciphertext is stored here. `secrets()` never selects it; `secretCiphers()` is for the store's
+// own decrypt (a use, the scrub's cache) and never leaves the bridge.
+
+export type SecretRow = { scope: string; name: string; source?: string; keyId: string; createdAt: number; updatedAt: number; lastUsedAt?: number };
+export type SecretUse = { scope: string; name: string; action: string; command?: string; who: string; at: number };
+
+const toSecret = (r: Record<string, unknown>): SecretRow => ({
+  scope: String(r.scope), name: String(r.name), ...(r.source ? { source: String(r.source) } : {}), keyId: String(r.key_id),
+  createdAt: Number(r.created_at), updatedAt: Number(r.updated_at),
+  ...(r.last_used_at === null || r.last_used_at === undefined ? {} : { lastUsedAt: Number(r.last_used_at) }),
+});
+
+/** Store or replace a secret. True when it was new. */
+export async function putSecret(s: { scope: string; name: string; ciphertext: string; keyId: string; source?: string }, at = Date.now()): Promise<boolean> {
+  return withRetry(async (sql) => {
+    const rows = await sql`
+      INSERT INTO secret (user_id, scope, name, ciphertext, key_id, source, created_at, updated_at)
+      VALUES (${currentUser()}, ${s.scope}, ${s.name}, ${s.ciphertext}, ${s.keyId}, ${s.source ?? null}, ${at}, ${at})
+      ON CONFLICT (user_id, scope, name) DO UPDATE SET ciphertext = EXCLUDED.ciphertext, key_id = EXCLUDED.key_id, source = EXCLUDED.source, updated_at = EXCLUDED.updated_at
+      RETURNING (xmax = 0) AS inserted`;
+    return Boolean((rows as { inserted?: boolean }[])[0]?.inserted);
+  });
+}
+
+/** Every secret's name, scope and dates — never its value. */
+export async function secrets(): Promise<SecretRow[]> {
+  return withRetry(async (sql) => {
+    const rows = await sql`SELECT scope, name, source, key_id, created_at, updated_at, last_used_at FROM secret WHERE user_id = ${currentUser()} ORDER BY scope, name`;
+    return (rows as Record<string, unknown>[]).map(toSecret);
+  });
+}
+
+/** Every secret with its ciphertext: for the store's decrypt only. */
+export async function secretCiphers(): Promise<(SecretRow & { ciphertext: string })[]> {
+  return withRetry(async (sql) => {
+    const rows = await sql`SELECT * FROM secret WHERE user_id = ${currentUser()} ORDER BY scope, name`;
+    return (rows as Record<string, unknown>[]).map((r) => ({ ...toSecret(r), ciphertext: String(r.ciphertext) }));
+  });
+}
+
+export async function deleteSecret(scope: string, name: string): Promise<boolean> {
+  return withRetry(async (sql) => {
+    const rows = await sql`DELETE FROM secret WHERE user_id = ${currentUser()} AND scope = ${scope} AND name = ${name} RETURNING name`;
+    return (rows as unknown[]).length > 0;
+  });
+}
+
+/** One audit row, and the secret's `last_used_at` for a use. */
+export async function addSecretUse(u: SecretUse): Promise<void> {
+  return withRetry(async (sql) => {
+    await sql`INSERT INTO secret_use (user_id, scope, name, action, command, who, at) VALUES (${currentUser()}, ${u.scope}, ${u.name}, ${u.action}, ${u.command ?? null}, ${u.who}, ${u.at})`;
+    if (u.action === "pipe" || u.action === "env") await sql`UPDATE secret SET last_used_at = ${u.at} WHERE user_id = ${currentUser()} AND scope = ${u.scope} AND name = ${u.name}`;
+  });
+}
+
+/** The audit, newest first. */
+export async function secretUses(limit = 100): Promise<SecretUse[]> {
+  return withRetry(async (sql) => {
+    const rows = await sql`SELECT * FROM secret_use WHERE user_id = ${currentUser()} ORDER BY at DESC, id DESC LIMIT ${limit}`;
+    return (rows as Record<string, unknown>[]).map((r) => ({ scope: String(r.scope), name: String(r.name), action: String(r.action), ...(r.command ? { command: String(r.command) } : {}), who: String(r.who), at: Number(r.at) }));
   });
 }

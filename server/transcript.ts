@@ -16,6 +16,7 @@
 import type { AgentStep } from "../shared/agent";
 import * as db from "./db";
 import * as outbox from "./outbox";
+import { scrubValue } from "./secrets";
 
 // Per-step caps keep one runaway tool result (a `cat` of a lockfile, a 10k-line test log) from
 // dominating a conversation; the per-run cap bounds a pathological run overall. Sized from real runs:
@@ -57,7 +58,9 @@ export async function append(runId: string, steps: AgentStep[]): Promise<AgentSt
   try {
     let seq = nextSeq.get(runId) ?? await outbox.nextStepSeq(runId);
     if (seq > MAX_STEPS) return [];
-    const bounded = steps.map(boundStep);
+    // Bounded, then scrubbed of every stored secret value (server/secrets.ts): what is stored is
+    // also what the caller publishes to the chat stream.
+    const bounded = steps.map((st) => scrubValue(boundStep(st)));
     await outbox.appendSteps(runId, seq, bounded as unknown as db.Fields[]); // journaled while the database is down
     seq += bounded.length;
     if (seq > MAX_STEPS) {

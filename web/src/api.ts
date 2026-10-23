@@ -97,6 +97,7 @@ async function res(r: Response) {
 }
 
 import type { IntegrationsOverview } from "../../shared/integrationSettings";
+import type { FormView } from "../../shared/forms";
 export type { IntegrationsOverview } from "../../shared/integrationSettings";
 
 export type GithubAccount = { login: string; active: boolean; name?: string; email?: string; configured: { name?: string; email?: string }; repos: string[]; avatarUrl?: string };
@@ -140,6 +141,16 @@ export const api = {
   integrationPost: (path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> => post(`/api/integrations/${path}`, body),
   // Handoff packs (server/handoff.ts) on the CURRENT server; the import goes to another server's
   // absolute URL from this browser — the boxes never call each other.
+  // Forms in the chat (`orca ask-form`) and the secret store: on the orchestrator's instance.
+  form: (id: string): Promise<{ form: FormView } | null> => get(`/api/orchestrator/forms/${encodeURIComponent(id)}`).then((r) => (r.status === 404 ? null : res(r))),
+  submitForm: async (id: string, values: Record<string, unknown>): Promise<{ form: FormView }> => {
+    const r = await apiFetch(`/api/orchestrator/forms/${encodeURIComponent(id)}/submit`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ values }) });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw Object.assign(new Error(data.error ?? `${r.status}`), { errors: data.errors as Record<string, string> | undefined });
+    return data;
+  },
+  cancelForm: (id: string): Promise<{ form: FormView }> => post(`/api/orchestrator/forms/${encodeURIComponent(id)}/cancel`, {}),
+  saveSecret: (body: { name: string; scope?: string; value: string }): Promise<{ ref: string; created: boolean }> => post("/api/orchestrator/secrets", body),
   handoffs: (): Promise<{ self: string; packs: PackView[] }> => get("/api/handoffs").then(res),
   /** One pack; null once it is deleted (404). */
   handoffPack: (id: string): Promise<{ self: string; pack: PackView } | null> => get(`/api/handoffs/${encodeURIComponent(id)}`).then((r) => (r.status === 404 ? null : res(r))),

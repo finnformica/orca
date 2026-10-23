@@ -132,6 +132,8 @@ export type AgentTurn = {
   attachments?: { id: string; name: string }[];
   /** Handoff packs this turn made (`orca handoff create`), by id — server-decorated (handoff.linkTurns). */
   handoffs?: string[];
+  /** Forms this turn asked (`orca ask-form`), by id — server-decorated (forms.linkTurns). */
+  forms?: string[];
 };
 
 const OUTCOME_HEADINGS = ["outcome", "verification", "decisions", "remaining", "commits"] as const;

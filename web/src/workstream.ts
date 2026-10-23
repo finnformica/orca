@@ -1198,7 +1198,7 @@ export function wakeStoppedLine(input: { reason: string; toolCalls: number; cost
 }
 /** Commands that change something — what a wake that died must not repeat. `orca` verbs and the
  *  `gh pr` writes the orchestrator runs with its shell. */
-const ACTING_COMMAND = /\b(orca\s+(?:spawn|send|address|archive|move|merge|preview|notes\s+set|post|ask-user|thread\s+link)|gh\s+pr\s+(?:merge|create|ready|close|edit|comment))\b/g;
+const ACTING_COMMAND = /\b(orca\s+(?:spawn|send|address|archive|move|merge|preview|notes\s+set|post|ask-user|ask-form|secret\s+(?:pipe|env|delete)|thread\s+link)|gh\s+pr\s+(?:merge|create|ready|close|edit|comment))\b/g;
 /** What a wake that was cut off had already done, condensed for the next wake's prompt: each acting
  *  command it ran with the first line of what it printed, then the reply it had started (its text,
  *  tail-clipped). Built from the steps the run recorded as it went, so it survives the process. Empty
@@ -1824,6 +1824,17 @@ const ORCA_COMMANDS = [
   "  orca thread link <adapter> <thread-id> --repo <repo> --branch <branch> [--link <id>]   send replies in that",
   "                                  external thread to the workstream",
   "  orca ask-user \"<question>\"      ask the user in Orca and on every channel subscribed to questions",
+  "  orca ask-form --title \"…\" [--intro \"…\"] [--scope <scope>] --fields <json|@file>   ask the user for structured",
+  "                                  data: a form card in the Orca chat (a channel gets only a link). Each field is",
+  "                                  {name, label, type, required?, help?, placeholder?, default?, options?, min?, max?,",
+  "                                  scope?}; types: text, textarea, number, date, datetime, select, multiselect,",
+  "                                  checkbox, url, email, secret. Returns at once; the answers wake you as JSON.",
+  "                                  Ask for a password, token or key ONLY with a secret field, never in chat",
+  "  orca secret list                the stored secrets: names, scope, created, last used. Never a value",
+  "  orca secret pipe <name> -- <cmd…>   run cmd with the secret on its stdin; its output comes back scrubbed",
+  "  orca secret env <name>[=VAR] -- <cmd…>   run cmd with the secret in VAR (default: the name in capitals)",
+  "  orca secret delete <name>       delete a stored secret. A secret answer is {\"name\": …, \"stored\": true}:",
+  "                                  use it only through these verbs, and never print, echo or write its value",
 ].join("\n");
 
 const ORCHESTRATOR_ROLE = [

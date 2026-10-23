@@ -60,6 +60,8 @@ import { isAutomatic, leaseHolder } from "../shared/integrations";
 import { instanceOptions } from "../shared/integrationSettings";
 import { identityUpdate, serverIdentityProblems } from "../shared/serverIdentity";
 import * as handoff from "./handoff";
+import * as forms from "./forms";
+import * as secrets from "./secrets";
 
 /** Resume the implementation agent to write a template-exact PR body from its full context and the
  *  final git state. A self-contained fresh call is the fallback when the native session is missing
@@ -269,6 +271,11 @@ const publishPreviews = () => loadConfig().then((cfg) => verbs.previewRows(cfg, 
 // This machine's vitals into instance_metric once a minute, for the header chip's 24h graphs
 // (server/health.ts). Each instance samples itself; either answers the history from Postgres.
 primary.onPrimary(() => { startMetricsSampler(); });
+
+// The secret store's scrub cache (server/secrets.ts): every stored value this bridge can decrypt,
+// replaced by its name in transcripts, turns, tool output and channel posts. Read at connect and
+// every minute. A preview bridge writes none of those.
+if (!db.previewBridge()) secrets.startScrubCache();
 
 // The machine card's 15 s view of the box (server/liveMetrics.ts): in memory, last 6 hours. Every
 // bridge runs it (it only reads /proc), so a preview bridge's card has data too.
@@ -755,7 +762,7 @@ async function api(req: Request, url: URL): Promise<Response> {
   }
   // A secondary bridge (server/primary.ts) never wakes the orchestrator: what would launch a wake is
   // refused, so a stray bridge on stale code can't run one with its own PATH and port.
-  if (!primary.held() && req.method === "POST" && (p === "/api/orchestrator/event" || p === "/api/orchestrator/message" || (p === "/api/compact" && body.repo === ORCHESTRATOR_REPO))) {
+  if (!primary.held() && req.method === "POST" && (p === "/api/orchestrator/event" || p === "/api/orchestrator/message" || /^\/api\/orchestrator\/forms\/[\w-]+\/(submit|cancel)$/.test(p) || (p === "/api/compact" && body.repo === ORCHESTRATOR_REPO))) {
     return json({ error: `this is a secondary bridge (${primary.state().reason}); the orchestrator is driven by the instance's primary bridge` }, 503);
   }
   if (req.method === "GET" && p === "/api/integrations") {
@@ -929,6 +936,36 @@ async function api(req: Request, url: URL): Promise<Response> {
     if (typeof body.text !== "string" || !body.text.trim()) return json({ error: "text required" }, 400);
     return json(await orchestrator.message(cfg, body.text, body.attachments ?? []));
   }
+  // Forms in the chat (`orca ask-form`, server/forms.ts): the card reads one, then submits or cancels
+  // it. The submit stores each secret field and wakes the orchestrator with the rest — never a value.
+  const formRoute = p.match(/^\/api\/orchestrator\/forms\/([\w-]+)(\/submit|\/cancel)?$/);
+  if (formRoute) {
+    const [, id, verb] = formRoute;
+    const wake = (text: string) => orchestrator.message(cfg, text);
+    try {
+      if (req.method === "GET" && !verb) { const f = await forms.one(id!); return f ? json({ form: f }) : json({ error: `no form ${id}` }, 404); }
+      if (req.method === "POST" && verb === "/submit") return json({ form: await forms.submit(id!, (body.values ?? {}) as Record<string, unknown>, wake) });
+      if (req.method === "POST" && verb === "/cancel") return json({ form: await forms.cancel(id!, wake) });
+    } catch (e) {
+      if (e instanceof forms.FormError) return json({ error: e.message, ...(e.errors ? { errors: e.errors } : {}) }, e.status);
+      throw e;
+    }
+  }
+  // The secret store (server/secrets.ts): names only out; a value only in (the paste guard's "Save
+  // as secret"). On the orchestrator's instance, whose key encrypts them.
+  if (p === "/api/orchestrator/secrets") {
+    try {
+      if (req.method === "GET") return json({ secrets: await secrets.list(), key: secrets.keyInfo() });
+      if (req.method === "POST") {
+        const r = await secrets.store({ name: String(body.name ?? ""), scope: typeof body.scope === "string" ? body.scope : undefined, value: String(body.value ?? ""), who: "user (chat)", source: "paste guard" });
+        return json(r);
+      }
+      if (req.method === "DELETE") return json({ deleted: await secrets.remove(url.searchParams.get("name") ?? "", "user") });
+    } catch (e) {
+      if (e instanceof secrets.SecretError) return json({ error: e.message }, e.status);
+      throw e;
+    }
+  }
   // The GitHub page: this host's signed-in `gh` accounts (per host, like /api/usage) and the commit
   // identity each carries; a save writes the shared config.
   if (req.method === "GET" && p === "/api/github/accounts") return json({ accounts: await repos.accountsHere(cfg) });
@@ -943,9 +980,11 @@ async function api(req: Request, url: URL): Promise<Response> {
   if (req.method === "POST" && p === "/api/orchestrator/tool") {
     // What `bin/orca` calls. A refusal is a 400 with a message written for the model to act on.
     try {
-      return json({ text: await orchestrator.tool(cfg, String(body.verb ?? ""), body.args ?? {}) });
+      // Everything the tool prints goes back to an agent: no stored secret value in it (secrets.scrub).
+      return json({ text: secrets.scrub(await orchestrator.tool(cfg, String(body.verb ?? ""), body.args ?? {})) });
     } catch (e) {
-      return json({ error: e instanceof Error ? e.message : String(e) }, 400);
+      if (e instanceof orchestrator.ToolExit) return json({ text: secrets.scrub(e.text), exitCode: e.exitCode });
+      return json({ error: secrets.scrub(e instanceof Error ? e.message : String(e)) }, 400);
     }
   }
   // Every repo-scoped call names its repo (query for GET, body for POST); defaults to the first.
@@ -1600,6 +1639,8 @@ async function api(req: Request, url: URL): Promise<Response> {
     // The packs the orchestrator made (`orca handoff create`), linked by the id its tool result names:
     // the chat draws a review widget for each. A failed lookup only loses the widgets.
     if (repo.name === ORCHESTRATOR_REPO && !degraded) await handoff.linkTurns(turns).catch(db.logUnlessDown("handoff links"));
+    // The forms it asked (`orca ask-form`), linked the same way: the chat draws a form card for each.
+    if (repo.name === ORCHESTRATOR_REPO && !degraded) await forms.linkTurns(turns).catch(db.logUnlessDown("form links"));
     for (const t of turns) if (t.instruction !== undefined) t.prompt = "";
     const body = page ? { turns, older: page.older } : turns;
     return degraded ? degradedJson(body) : json(body);

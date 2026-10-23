@@ -11,6 +11,8 @@ const words: string[] = [];
 const flag = /^--[a-z][a-z-]*$/; // `--promote-integrations`, but never a `---` rule
 for (let i = 0; i < rest.length; i++) {
   const a = rest[i]!;
+  // `--` ends Orca's flags: the rest is one command, word for word (`orca secret pipe k -- curl --data-binary @- …`).
+  if (a === "--") { args["--"] = rest.slice(i + 1); break; }
   // Only a bare `--name` is a flag: free text that happens to open with dashes (a `---` rule at the
   // top of the notes) is still text.
   // A flag followed by another flag (or by nothing) is a switch: `--status --repo r` must not take
@@ -28,9 +30,14 @@ const res = await fetch(`${process.env.ORCA_URL ?? `http://127.0.0.1:${API_PORT}
   headers: { "content-type": "application/json" },
   body: JSON.stringify({ verb, args: { ...args, _: words, _cwd: process.cwd() } }),
 });
-const out = (await res.json().catch(() => ({ error: `bridge answered ${res.status}` }))) as { text?: string; error?: string };
+const out = (await res.json().catch(() => ({ error: `bridge answered ${res.status}` }))) as { text?: string; error?: string; exitCode?: number };
 if (!res.ok) {
   console.error(out.error ?? `bridge answered ${res.status}`);
   process.exit(1);
+}
+// `orca secret pipe|env` answers its command's output and exit code.
+if (typeof out.exitCode === "number") {
+  if (out.text) process.stdout.write(out.text.endsWith("\n") ? out.text : `${out.text}\n`);
+  process.exit(out.exitCode);
 }
 console.log(out.text ?? "");
