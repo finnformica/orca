@@ -322,6 +322,39 @@ test("O3: messages that arrive mid-run are queued and drained as ONE resumed wak
   expect(turns[1]!.prompt).toContain("orca move --repo <repo> --branch <branch> --to <instance>");
 });
 
+test("O3b: a message to a busy orchestrator is queued at once, even while a slow job holds the delivery chain", async () => {
+  wire();
+  await writeFile(hold, "");
+  expect(await orchestrator.message(cfg(), "first")).toEqual({ status: "running" });
+  // A clean worker report reads the board (workersRunning → board → GitHub) inside the chain. With
+  // GitHub slow, that read holds the chain — and the message used to wait behind it in "sending…".
+  const ghHold = join(state, "gh-hold");
+  await writeFile(ghHold, "");
+  process.env.ORCA_FAKE_GH_HOLD = ghHold;
+  try {
+    const report = orchestrator.deliverReport(cfg(), workerEvent({ repo: "r", branch: "a", title: "A", runId: "run-a", status: "done" }));
+    await Bun.sleep(200); // the report is in the chain, waiting on GitHub
+    const before = performance.now();
+    const answer = await Promise.race([orchestrator.message(cfg(), "second"), Bun.sleep(2_000).then(() => "still sending")]);
+    expect(answer).toEqual({ status: "queued" });
+    expect(performance.now() - before).toBeLessThan(1_000);
+    expect((await orchQueue()).map((m) => m.instruction)).toEqual(["second"]); // on the queue already
+    await rm(ghHold);
+    await report;
+  } finally {
+    delete process.env.ORCA_FAKE_GH_HOLD;
+    await rm(ghHold, { force: true });
+  }
+  await rm(hold);
+  // Delivered exactly once, in order, in the one wake that follows.
+  const turns = await settled(orchTurns, 2);
+  expect(turns).toHaveLength(2);
+  expect(splitMessages(turns[1]!.instruction!)[0]).toBe("second");
+  expect(splitMessages(turns[1]!.instruction!).filter((m) => m === "second")).toHaveLength(1);
+  expect(await orchQueue()).toEqual([]);
+  expect((await orchBlob()).wakes).toBe(0); // the reset still ran, off the reply's path
+});
+
 test("O4: the wake cap pauses self-waking; your next message resumes it with what was held", async () => {
   const finished = (branch: string, extra: Partial<agent.RunFinished> = {}): agent.RunFinished => ({
     key: "k", cwd: "k", runId: `run-${branch}`, status: "error", result: "boom", continued: false,

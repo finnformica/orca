@@ -1116,7 +1116,10 @@ export async function followUp(
   // If a run is in flight the bridge queues `instruction` as typed (see /api/agent) and rebuilds the
   // prompt — with its own mergeWhenGreen note — at dispatch time, so this flag only matters here.
   await launchOnRow(row, wt, withAttachments(chatPrompt(instruction, { mergeWhenGreen: Boolean(row.mergeWhenGreen) }), paths), options.provider ?? providerFor(row), { action: "followup", attachments: paths, instruction });
-  await refresh();
+  // Not awaited: the chat drops its "sending…" bubble when this resolves, and re-reads its own turns
+  // and queue for that. Waiting on the whole board (every repo's agents, PRs and merged history)
+  // kept a message the bridge had already queued in "sending…" for seconds.
+  void refresh();
 }
 
 /** Continue natively when possible; otherwise create a target-provider session with portable history
