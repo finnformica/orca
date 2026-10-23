@@ -26,7 +26,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Empty, RowSkeleton, StatusDot, VCard, type DotTone } from "@/components/console";
+import { Empty, filterChipClass, RowSkeleton, StatusDot, VCard, type DotTone } from "@/components/console";
 import { SourceChip } from "@/components/SourceChip";
 import { AddToPersonSub, NewPersonDialog, type SenderRef } from "@/components/SenderPerson";
 import { api, type InboxPage, type InboxQuery, type InboxThread } from "../api";
@@ -147,10 +147,6 @@ export function InboxPage() {
   );
 }
 
-const chipClass = (on: boolean) => cn(
-  "inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors",
-  on ? "border-primary bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:border-foreground/30",
-);
 
 function Filters({ page, source, person, unread, muted, set, onMarkAll }: {
   page: InboxPage | null; source: string; person: string; unread: boolean; muted: boolean;
@@ -163,21 +159,21 @@ function Filters({ page, source, person, unread, muted, set, onMarkAll }: {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       <div role="group" aria-label="State" className="flex flex-wrap items-center gap-1.5">
-        <button type="button" data-slot="inbox-unread" aria-pressed={unread} onClick={() => set({ unread: unread ? "" : "1" })} className={chipClass(unread)}>
+        <button type="button" data-slot="inbox-unread" aria-pressed={unread} onClick={() => set({ unread: unread ? "" : "1" })} className={filterChipClass(unread)}>
           <StatusDot tone="queued" className="size-2" />Unread
           <span className="tabular-nums opacity-60">{page?.facets.unread ?? 0}</span>
         </button>
         {(mutedCount > 0 || muted) && (
-          <button type="button" data-slot="inbox-muted" aria-pressed={muted} onClick={() => set({ muted: muted ? "" : "1" })} className={chipClass(muted)}>
+          <button type="button" data-slot="inbox-muted" aria-pressed={muted} onClick={() => set({ muted: muted ? "" : "1" })} className={filterChipClass(muted)}>
             Muted<span className="tabular-nums opacity-60">{mutedCount}</span>
           </button>
         )}
       </div>
       <div role="group" aria-label="Source" className="flex flex-wrap items-center gap-1.5">
-        <button type="button" data-slot="inbox-source" data-source="" aria-pressed={!source} onClick={() => set({ source: "" })} className={chipClass(!source)}>All sources</button>
+        <button type="button" data-slot="inbox-source" data-source="" aria-pressed={!source} onClick={() => set({ source: "" })} className={filterChipClass(!source)}>All sources</button>
         {shown.map((s) => (
           <button key={s.adapter} type="button" data-slot="inbox-source" data-source={s.adapter} aria-pressed={source === s.adapter}
-            onClick={() => set({ source: source === s.adapter ? "" : s.adapter })} className={chipClass(source === s.adapter)}>
+            onClick={() => set({ source: source === s.adapter ? "" : s.adapter })} className={filterChipClass(source === s.adapter)}>
             {sourceLabel(s.adapter)}
             <span className="tabular-nums opacity-60">{s.count}</span>
           </button>
@@ -227,7 +223,7 @@ function WorkstreamChip({ repo, branch }: { repo: string; branch: string }) {
   const to = (row && detailPath(row)) ?? `/${repo}/local/${encodeURIComponent(branch)}`;
   return (
     <a href={to} data-slot="workstream-chip" onClick={(e) => { e.preventDefault(); e.stopPropagation(); navigate(to); }}
-      className="hover:text-foreground text-muted-foreground inline-flex h-5 min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 text-[11px]">
+      className="bg-card hover:text-foreground text-muted-foreground inline-flex h-5 min-w-0 max-w-full items-center gap-1 rounded-md border px-1.5 text-[11px]">
       <span className="shrink-0">{repo}</span><span aria-hidden="true">/</span><span className="min-w-0 truncate font-mono">{row?.title && row.title !== branch ? row.title : branch}</span>
     </a>
   );

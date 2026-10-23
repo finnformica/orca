@@ -12,6 +12,11 @@ import * as store from "@/store";
 import { AskOrchestrator, OrchestratorPanel } from "@/components/Terminal";
 import { Dock } from "@/components/Shell";
 import { orchestratorOpenAtom } from "@/lib/atoms";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Select, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Segmented, filterChipClass } from "@/components/console";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -63,4 +68,27 @@ test("S2: a control's hover is the solid accent, never a translucent step of it"
   };
   walk(dir);
   expect(offenders).toEqual([]);
+});
+
+test("S3: controls sit on the raised surface (bg-card); a pressed chip keeps the primary fill", async () => {
+  container = document.createElement("div");
+  document.body.appendChild(container);
+  await act(async () => {
+    root = createRoot(container!);
+    root.render(<>
+      <Button data-test="outline" variant="outline">a</Button>
+      <Button data-test="secondary" variant="secondary">b</Button>
+      <Input data-test="input" />
+      <Textarea data-test="textarea" />
+      <Select value="x"><SelectTrigger data-test="select"><SelectValue /></SelectTrigger></Select>
+      <Segmented label="Range" value="a" options={[{ value: "a", label: "A" }, { value: "b", label: "B" }]} onChange={() => {}} />
+      <button data-test="chip-off" className={filterChipClass(false)}>off</button>
+      <button data-test="chip-on" className={filterChipClass(true)}>on</button>
+    </>);
+    await flush();
+  });
+  const el = (t: string) => container!.querySelector(`[data-test="${t}"]`)!;
+  for (const t of ["outline", "secondary", "input", "textarea", "select", "chip-off"]) expect(fills(el(t))).toEqual(["bg-card"]);
+  expect(fills(container.querySelector('[role="group"][aria-label="Range"]')!)).toEqual(["bg-card"]);
+  expect(fills(el("chip-on"))).toEqual(["bg-primary"]);
 });

@@ -188,10 +188,17 @@ export const Detail = ({ label, children, slot }: { label: string; children: Rea
   </div>
 );
 
+/** A one-click filter chip (the Agents list's quick filters, the Inbox's filters): raised (`bg-card`)
+ *  when off, the primary fill when pressed. */
+export const filterChipClass = (on: boolean) => cn(
+  "inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors",
+  on ? "border-primary bg-primary text-primary-foreground" : "bg-card text-muted-foreground hover:text-foreground hover:border-foreground/30",
+);
+
 /** A filter / segmented chip — the "6h | 24h | 7d" range picker and the like. */
 export function Segmented<T extends string>({ value, options, onChange, label, size = "default" }: { value: T; options: { value: T; label: ReactNode }[]; onChange: (v: T) => void; label: string; size?: "default" | "sm" }) {
   return (
-    <div role="group" aria-label={label} className={cn("inline-flex items-center rounded-md border p-0.5", size === "sm" ? "h-6" : "h-7")}>
+    <div role="group" aria-label={label} className={cn("bg-card inline-flex items-center rounded-md border p-0.5", size === "sm" ? "h-6" : "h-7")}>
       {options.map((o) => (
         <button key={o.value} type="button" aria-pressed={value === o.value} onClick={() => onChange(o.value)}
           className={cn("inline-flex h-full items-center rounded-[5px] text-xs font-medium transition-colors", size === "sm" ? "px-1.5" : "px-2", value === o.value ? "bg-selected text-selected-foreground" : "text-muted-foreground hover:text-foreground")}>

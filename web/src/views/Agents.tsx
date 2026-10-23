@@ -34,7 +34,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { BrowserKillBadge, Pill, RepoBadge, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
+import { BrowserKillBadge, filterChipClass, Pill, RepoBadge, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
 import { CopyDone, LaneActions } from "./BulkActions";
 import { ConditionBadges } from "./ConditionBadges";
@@ -309,7 +309,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
     return (
       <button key={`${c.group}:${c.value}`} type="button" data-slot="quick-filter" data-chip={`${c.group}:${c.value}`} aria-pressed={on}
         onClick={() => setQuick(toggleQuick(quick, c.group, c.value))}
-        className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors ${on ? "border-primary bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
+        className={filterChipClass(on)}>
         {c.dot && <StatusDot tone={c.dot} className="size-2" />}
         {c.label}
         <span data-slot="quick-count" className={`tabular-nums ${on ? "opacity-70" : "opacity-60"}`}>
@@ -321,7 +321,7 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
   const notMergedChip = (
     <button key="notMerged" type="button" data-slot="quick-filter" data-chip="notMerged" aria-pressed={quick.notMerged}
       onClick={() => setQuick(toggleNotMerged(quick))}
-      className={`inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[13px] transition-colors ${quick.notMerged ? "border-primary bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground hover:border-foreground/30"}`}>
+      className={filterChipClass(quick.notMerged)}>
       Not merged
       <span data-slot="quick-count" className={`tabular-nums ${quick.notMerged ? "opacity-70" : "opacity-60"}`}>
         {loaded ? notMergedCount(scoped, quick, here) : <Skeleton className="h-3 w-3" />}
