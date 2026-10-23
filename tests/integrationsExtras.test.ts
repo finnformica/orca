@@ -120,24 +120,20 @@ describe("with Postgres", () => {
     ...(thread ? { thread: { adapter: "slack", externalId: thread } } : {}),
   });
 
-  test("pairing: an unknown Slack sender gets ONE bell row and no code in Slack (Orca posts there as you); approval binds them and the next message is accepted", async () => {
-    expect(await router.ingest("slack-work", msg("p1", "U9", "C1", "C1:5.5"), 1_000)).toBe("rejected");
-    expect(await router.ingest("slack-work", msg("p2", "U9"), 2_000)).toBe("rejected"); // same pending code: no second reply
-    const [pairing, ...more] = await store.pendingPairings(2_000);
-    expect(more).toEqual([]);
-    expect(pairing).toMatchObject({ adapter: "slack", externalId: "U9", name: "Saajan", linkId: "L1", expiresAt: 1_000 + PAIRING_TTL_MS });
+  test("pairing: ingest makes no code — an unknown Slack sender is a read-only message; an approved code binds them and the next message has their grant", async () => {
+    expect(await router.ingest("slack-work", msg("p1", "U9", "C1", "C1:5.5"), 1_000)).toBe("noted");
+    expect(await store.pendingPairings(1_000)).toEqual([]);
+    expect((await store.event("slack:p1"))?.grant).toMatchObject({ level: "notify", linkId: "L1" });
     await dispatcher.dispatchOnce(3_000);
-    // Slack posts as you: no automatic reply in your name (Discord's code-on-place: discordCore.test.ts).
-    expect(sent).toHaveLength(0);
-    expect(sent.map((d) => d.msg.text)).not.toContain(pairingReply(pairing!.code));
-    expect(web.map((e) => [e.topic, e.title])).toEqual([["orca.pairing.requested", "Pairing request from Saajan"]]);
-    expect(web[0]!.text).toContain(`Approve code ${pairing!.code}`);
-    expect(web[0]!.text).toContain("did not send them the code");
+    expect(sent).toHaveLength(0); // nothing posted in your name
+    expect(web.map((e) => e.key)).toEqual(["slack:p1"]); // Notify me: the bell row is the message itself
 
+    // A code made by hand (the old flow's leftovers) still approves.
+    const pairing = (await store.pairingFor({ integrationId: "slack-work", adapter: "slack", externalId: "U9", name: "Saajan", linkId: "L1" }, () => "PAIR23", 2_000)).pairing;
     await expect(store.approvePairing("NOPE22", { id: "x" }, 3_000)).rejects.toThrow("no pairing code NOPE22");
-    const approved = await store.approvePairing(pairing!.code.toLowerCase(), { id: "saajan" }, 3_000);
+    const approved = await store.approvePairing(pairing.code.toLowerCase(), { id: "saajan" }, 3_000);
     expect(approved).toMatchObject({ state: "approved", principalId: "saajan" });
-    await expect(store.approvePairing(pairing!.code, { id: "saajan" }, 3_000)).rejects.toThrow("already approved");
+    await expect(store.approvePairing(pairing.code, { id: "saajan" }, 3_000)).rejects.toThrow("already approved");
     expect(await store.principalFor("slack", "U9")).toEqual({ id: "saajan", name: "Saajan", maxLevel: "ask" }); // a new person defaults to ask
     expect(await router.ingest("slack-work", msg("p3", "U9"), 4_000)).toBe("new");
     expect((await store.event("slack:p3"))?.grant).toMatchObject({ level: "ask", principalId: "saajan" });
@@ -147,7 +143,7 @@ describe("with Postgres", () => {
     expect(await store.principalFor("discord", "D1")).toEqual({ id: "saajan", name: "Saajan", maxLevel: "ask" });
   });
 
-  test("pairing: an expired code is refused, a denied one is gone, a notify link gives no code, and a catch-all link covers DMs", async () => {
+  test("pairing: an expired code is refused, a denied one is gone, ingest makes no code, and a catch-all link covers DMs", async () => {
     const { pairing } = await store.pairingFor({ integrationId: "slack-work", adapter: "slack", externalId: "U5" }, () => "OLDCDE", 0);
     await expect(store.approvePairing("OLDCDE", { id: "u5" }, PAIRING_TTL_MS + 1)).rejects.toThrow("has expired");
     expect(pairing.code).toBe("OLDCDE");
@@ -157,17 +153,16 @@ describe("with Postgres", () => {
     expect(await store.pendingPairings(PAIRING_TTL_MS + 2)).toEqual([]);
 
     await store.addLink({ id: "L2", integrationId: "slack-work", externalId: "C2", level: "notify", repos: [], requireMention: false });
-    expect(await router.ingest("slack-work", msg("n1", "U6", "C2"))).toBe("rejected");
+    expect(await router.ingest("slack-work", msg("n1", "U6", "C2"))).toBe("noted"); // read-only, whatever the link's level
     expect(await store.pendingPairings()).toEqual([]);
 
     expect(await router.ingest("slack-work", msg("dm1", "U7", "D-dm"))).toBe("rejected"); // no link for the DM, no catch-all
-    expect(await store.pendingPairings()).toEqual([]);
     await store.addLink({ id: "Lstar", integrationId: "slack-work", externalId: "*", level: "ask", repos: [], requireMention: false });
-    expect(await router.ingest("slack-work", msg("dm2", "U7", "D-dm"))).toBe("rejected");
-    const [p] = await store.pendingPairings();
-    expect(p).toMatchObject({ externalId: "U7", linkId: "Lstar" });
+    expect(await router.ingest("slack-work", msg("dm2", "U7", "D-dm"))).toBe("noted");
+    expect((await store.event("slack:dm2"))?.source).toMatchObject({ linkId: "Lstar", channel: "D-dm" });
+    expect(await store.pendingPairings()).toEqual([]);
     await dispatcher.dispatchOnce();
-    expect(sent).toEqual([]); // Slack posts as you: no code in the DM (a pairing reply on its place: discordCore.test.ts)
+    expect(sent).toEqual([]); // nothing posted in your name
   });
 
   test("a place resolves to its own link, then each parent place in order, then the catch-all link", async () => {
@@ -198,12 +193,14 @@ describe("with Postgres", () => {
     const machine = (id: string) => ({ key: `gh:${id}`, topic: "ext.github.message" as const, at: 0, source: { adapter: "github", channel: "repo:orca" }, text: "PR #12 merged" });
     expect(await router.ingest("slack-work", machine("1"))).toBe("rejected"); // as today
     await store.addIntegration({ id: "slack-work", kind: "slack", name: "Work Slack", instance: "local", config: { machineEventsOnNotify: true }, enabled: true });
-    expect(await router.ingest("slack-work", machine("2"))).toBe("new");
+    expect(await router.ingest("slack-work", machine("2"))).toBe("noted");
     const ev = await store.event("gh:2");
     expect(ev?.grant).toMatchObject({ level: "notify", linkId: "Lgh" });
     expect((await store.deliveries()).map((d) => d.target)).toEqual([{ kind: "web" }]); // not the orchestrator, not the inbound default
     await store.addPrincipal({ id: "ana", name: "Ana", maxLevel: "work" }, [{ adapter: "github", externalId: "ana" }]);
-    expect(await router.ingest("slack-work", { ...machine("3"), actor: { external: { adapter: "github", id: "ana" } } })).toBe("rejected"); // a person still gets nothing on notify
+    // A person under notify is a read-only message: recorded, a bell row, a read-only wake (agentMay).
+    expect(await router.ingest("slack-work", { ...machine("3"), actor: { external: { adapter: "github", id: "ana" } } })).toBe("noted");
+    expect((await store.event("gh:3"))?.grant).toMatchObject({ level: "notify", principalId: "ana" });
   });
 
   test("orca post --reply answers the outside message that woke the orchestrator, on its link, place and thread", async () => {

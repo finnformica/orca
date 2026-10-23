@@ -56,7 +56,7 @@ export type Connection = {
 export type AdapterContext = {
   connection: Connection;
   secret(): string | undefined;
-  ingest(e: InboundEnvelope): Promise<"new" | "duplicate" | "rejected">;
+  ingest(e: InboundEnvelope): Promise<"new" | "noted" | "duplicate" | "rejected">; // noted: recorded, no agent answers
   cursor: { get(): Promise<string | undefined>; set(v: string): Promise<void> };
   status(s: { ok: boolean; detail?: string; lastEventAt?: number }): Promise<void>;
   log(msg: string): void;
@@ -137,8 +137,10 @@ export type InboundMessage = {
   (`external_id = '*'`), if one exists. A place with no link is `"rejected"`.
 - Set `source.parents` when the place sits inside wider places, most specific first. Linear sets
   the issue's project, then its team. The core tries `channel`, then each parent, then `*`.
-- Set `actor` for a person. The core finds the person through `identity`. An unknown person is
-  `"rejected"`, and the core sends them a pairing code (section 10). Do not send it yourself.
+- Set `actor` for a person. The core finds the person through `identity`. An unknown person gets
+  a read-only grant (`notify`), and `ingest` returns `"noted"` (section 10). Send them nothing.
+- `ingest` returns `"noted"` when no agent will answer the message. Then do not open a thread for
+  it, and do not track its thread.
 - Leave `actor` empty for a machine sender (a webhook, a poller). The integration is then the
   identity, and the grant is the link's level.
 - Set `mentioned: false` for a chat message that does not mention Orca. A link with
@@ -218,8 +220,8 @@ Use Settings > Integrations (`/settings/integrations`): Connect, links, people, 
    instance that runs it, section 6.1), `config`, `secret_ref` (the variable name).
 3. Add a `channel_link` row for each external place: `level` (`notify`, `ask`, `work` or `admin`),
    `repos` (for `work` and `admin`), `require_mention`.
-4. Add `principal` and `identity` rows for each person who may write to Orca. Or let them write
-   once and approve their pairing code (section 10).
+4. Add `principal` and `identity` rows for each person who may act through Orca. Use the People
+   section of the Integrations page, or Add to person on their message (section 10).
 5. Add `subscription` rows for what goes out: `topic_pattern`, `filter` (for example
    `{"repo":"orca"}`), `target_kind` (`link`, `orchestrator`, `workstream`, `web`), `target_id`
    (the link id, or `repo::branch`). Set `digest_seconds` for a digest (section 12).
@@ -317,22 +319,28 @@ VALUES ('me', 'orca.pr.ci_failed', '{"repo":"orca"}', 'link', 'eng');
 - `notify.emit` writes the notification row as before. For a new row it also writes the event with
   the same key.
 
-## 10. Pairing codes
+## 10. Unknown senders, the link switches and pairing
 
-An unknown person who writes on a linked place gets a one-time code. The core does all of it. An
-adapter only sets `actor` and delivers the reply in `send`.
+Each link has two switches. Both are on for a new link. Named step `20261023-link-switches` turned
+them on for the old links.
 
-1. The sender writes on a place with a link above `notify`. `ingest` returns `"rejected"`.
-2. The core makes a code: 6 characters, no `0`, `O`, `1`, `I` or `L`. It expires after 1 hour.
-3. The core sends the code back on the same place (`source.channel`, and `thread` when set). The
-   send is a normal delivery, so a failure is retried.
-4. The bell shows a `pairing_requested` notification with the code.
-5. You approve the code. This binds `(adapter, external_id)` to a principal.
-6. The sender writes again. The message now gets the grant min(link level, person's max level).
+- **Notify me:** the message shows in the bell, the Inbox and the orchestrator's chat.
+- **Notify agent:** the message may wake an agent. Off, no message on the link wakes an agent.
+- With both off, the core records nothing.
 
-- A sender with a live code gets no second code and no second reply.
-- A `notify` link never makes a code.
-- The first message is dropped. The reply tells the sender to send it again.
+A known person keeps their grant: min(link level, person's max level).
+
+An unknown person gets the `notify` grant. That grant is READ-ONLY:
+
+1. The core records the message. `ingest` returns `"noted"`.
+2. With Notify agent on, the orchestrator wakes. It may read the message and tell you about it.
+3. Every `orca` verb is refused, `post` too. The wake has no reply target.
+4. The core makes no pairing code and sends nothing to the sender.
+
+To give a person a grant, add them on the People section of the Integrations page. You can also
+use Add to person on their message in the Inbox or the chat.
+
+A pairing code made before this change still shows on the People section. Approve or deny it there.
 
 The API (the Settings page uses the same routes later):
 

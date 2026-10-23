@@ -104,11 +104,12 @@ describe("with Postgres", () => {
     await router.publish({ key: "question:1", topic: "orca.question", at: 6_000, source: { adapter: "orca" }, text: "Merge #12 now?" }, 6_000);
     await dispatcher.dispatchOnce(6_000);
 
-    // An unknown sender is not in the inbox (the gate rejected the message; a pairing code went back).
-    expect(await router.ingest("slack-work", inboundEnvelope({ adapter: "slack", channel: "C1", eventId: "Ev9", from: { adapter: "slack", id: "U9" }, text: "hi", at: 7_000 }), 7_000)).toBe("rejected");
+    // An unknown sender is in the inbox as a read-only row (no pairing code); the rest of this test reads the others.
+    expect(await router.ingest("slack-work", inboundEnvelope({ adapter: "slack", channel: "C1", eventId: "Ev9", from: { adapter: "slack", id: "U9" }, text: "hi", at: 7_000 }), 7_000)).toBe("noted");
 
     const events = await store.inboxEvents({ limit: 300 });
-    const all = inboxRows(events, await store.linkDeliveries(0), await store.threadLinks(), await store.principalNames());
+    const [stranger, ...all] = inboxRows(events, await store.linkDeliveries(0), await store.threadLinks(), await store.principalNames());
+    expect(stranger).toMatchObject({ readOnly: true, text: "hi", sender: { externalId: "U9" } });
     // Newest first; only inbox topics (not the run event, the post, the pairing reply or request).
     expect(all.map((r) => [r.adapter, r.kind])).toEqual([["orca", "question"], ["slack", "message"], ["webhook", "event"], ["email", "message"], ["slack", "message"]]);
     const [question, top, hook, mail, slack] = all;
@@ -116,7 +117,7 @@ describe("with Postgres", () => {
     expect(top).toMatchObject({ conversation: "slack|C1", text: "Anyone on the flaky test?" });
     expect(top!.reply).toBeUndefined();
     const topConv = await store.conversation({ adapter: "slack", id: "C1" });
-    expect(threadItems(topConv.events, topConv.outbound, new Map()).map((i) => i.dir)).toEqual(["in"]);
+    expect(threadItems(topConv.events, topConv.outbound, new Map()).map((i) => i.dir)).toEqual(["in", "in"]); // and the stranger's "hi"
     expect(slack).toMatchObject({ sender: { name: "Saajan", principalId: "saajan", externalId: "U1" }, workstream: { repo: "r", branch: "feat" }, reply: { state: "sent" }, conversation: `slack|${thread}` });
     expect(mail).toMatchObject({ sender: { name: "Ada", principalId: "ada" }, conversation: "email|orca@example.com" });
     expect(mail!.reply).toBeUndefined(); // nothing went back to Ada yet

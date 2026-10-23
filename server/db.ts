@@ -1026,6 +1026,15 @@ export const MIGRATIONS: MigrationStep[] = [
     // them a pairing code, as every link did before; 'off' drops their message silently.
     sql: `ALTER TABLE channel_link ADD COLUMN IF NOT EXISTS pairing TEXT NOT NULL DEFAULT 'request' CHECK (pairing IN ('request','off'));`,
   },
+  {
+    name: "20261023-link-switches",
+    idempotent: true,
+    // A link's two switches (shared/integrations.ts LinkNotify): show a message to you, and let it wake
+    // an agent. Both on for every link, the old ones too. `pairing` (20261023-link-pairing) is unused now:
+    // ingest makes no pairing code any more.
+    sql: `ALTER TABLE channel_link ADD COLUMN IF NOT EXISTS notify_me BOOLEAN NOT NULL DEFAULT true;
+      ALTER TABLE channel_link ADD COLUMN IF NOT EXISTS notify_agent BOOLEAN NOT NULL DEFAULT true;`,
+  },
 ];
 
 export type MigrationMismatch = { id: number; recorded: string; expected: string; idempotent: boolean };

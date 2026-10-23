@@ -256,7 +256,7 @@ export function linearAdapter(connection: Connection): LinearAdapter {
     let next = since, ingested = 0;
     for (const it of items) {
       if (limit && Date.parse(it.at) > Date.parse(limit)) break;
-      if (it.env && (await ctx.ingest(it.env)) === "new") { ingested++; lastEventAt = Date.now(); }
+      if (it.env && ["new", "noted"].includes(await ctx.ingest(it.env))) { ingested++; lastEventAt = Date.now(); }
       next = newest(next, it.at);
     }
     if (next !== since) await ctx.cursor.set(next);

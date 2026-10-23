@@ -2,6 +2,9 @@
 // ADAPTERS.md). One adapter per platform. The core owns everything else — dedupe, the permission
 // gate, routing, the durable outbox, retry, threads — so an adapter only speaks its platform.
 import type { AdapterKind, AutoLease, Capabilities, InboundEnvelope, OutboundMessage, SendResult, Target } from "../../shared/integrations";
+/** What `ingest` did with one inbound message (see `AdapterContext.ingest`). */
+export type IngestVerdict = "new" | "noted" | "duplicate" | "rejected";
+
 export type { AdapterKind, Capabilities, InboundEnvelope, OutboundMessage, SendResult, Target } from "../../shared/integrations";
 
 /** One `integration` row: an account, bot, mailbox or hook. Credentials are NOT on it — `secret()`
@@ -24,7 +27,9 @@ export type AdapterContext = {
   secret(): string | undefined;
   /** Hand one inbound event to the core: dedupe on `key`, gate the sender, record, route.
    *  "duplicate" = seen before (a retry or a reconnect); "rejected" = the gate dropped it. */
-  ingest(e: InboundEnvelope): Promise<"new" | "duplicate" | "rejected">;
+  /** `new`: recorded, and an agent may answer it. `noted`: recorded and shown to the user, but no
+   *  agent will answer (a read-only sender, or the link's Notify agent off), so open no thread for it. */
+  ingest(e: InboundEnvelope): Promise<IngestVerdict>;
   /** A poller's position (a timestamp, an ETag, an IMAP UID). Stored per integration. */
   cursor: { get(): Promise<string | undefined>; set(v: string): Promise<void> };
   /** Record health for the settings card (merged into `integration.status`). A poller sets

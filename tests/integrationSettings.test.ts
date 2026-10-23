@@ -193,11 +193,14 @@ describe("with Postgres", () => {
     expect((await store.deliveries({ state: "dead" }))).toHaveLength(0);
   });
 
-  test("people: an unknown sender's pairing code shows; approval makes a person the gate then trusts; deny closes a code", async () => {
+  test("people: ingest makes no code; a pending code shows; approval makes a person the gate then trusts; deny closes a code", async () => {
     await connect();
     const msg = (id: string, from = "U9", name?: string) => ({ key: `fakechat:${id}`, topic: "ext.fakechat.message" as const, at: Date.now(), source: { adapter: "fakechat", channel: "R1" }, actor: { external: { adapter: "fakechat", id: from, ...(name ? { name } : {}) } }, mentioned: true, text: "status?" });
-    // The core's gate: an unknown sender is dropped and gets a pairing code, which the page lists.
-    expect(await router.ingest("chat", msg("e1", "U9", "Saajan"))).toBe("rejected");
+    // The core's gate: an unknown sender is a read-only message, and gets no code.
+    expect(await router.ingest("chat", msg("e1", "U9", "Saajan"))).toBe("noted");
+    expect((await admin.overview("local")).pairings).toEqual([]);
+    // A pending code (made before codes stopped) still shows on the page.
+    await store.pairingFor({ integrationId: "chat", adapter: "fakechat", externalId: "U9", name: "Saajan" }, () => "SAAJ23");
     const [p] = (await admin.overview("local")).pairings;
     expect(p).toMatchObject({ integrationId: "chat", adapter: "fakechat", externalId: "U9", name: "Saajan", state: "pending" });
     // Approve as a new person (the page's POST pairing/approve {code, name, maxLevel} → the core's approvePairing).
@@ -215,8 +218,8 @@ describe("with Postgres", () => {
 
     // A second sender joins the existing person ({code, principal}); deny closes a third.
     router.resetPace();
-    await router.ingest("chat", msg("e4", "U10"));
-    await router.ingest("chat", msg("e5", "U11"));
+    await store.pairingFor({ integrationId: "chat", adapter: "fakechat", externalId: "U10" }, () => "UTEN23");
+    await store.pairingFor({ integrationId: "chat", adapter: "fakechat", externalId: "U11" }, () => "ELEV23");
     const codes = new Map((await admin.overview("local")).pairings.map((x) => [x.externalId, x.code]));
     await store.approvePairing(codes.get("U10")!, { id: "saajan" });
     expect(await store.denyPairing(codes.get("U11")!)).toBe(true);
@@ -229,7 +232,8 @@ describe("with Postgres", () => {
     expect((await admin.overview("local")).people[0]).toMatchObject({ maxLevel: "work", identities: [{ externalId: "U9" }] });
     await admin.route("/api/integrations/people/remove", { id: "saajan" });
     expect((await admin.overview("local")).people).toEqual([]);
-    expect(await router.ingest("chat", msg("e3"))).toBe("rejected");
+    expect(await router.ingest("chat", msg("e3"))).toBe("noted"); // unknown again: read-only
+    expect((await store.event("fakechat:e3"))!.grant).toMatchObject({ level: "notify" });
   });
 
   test("people are global: Add identity binds ids on several adapters to one person, and a message from any of them gets that person's level", async () => {

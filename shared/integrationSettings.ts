@@ -2,7 +2,7 @@
 // decisions — a card's health tone, the subscription presets, what a row reads as, and the checks a
 // form runs before it posts. Pure: the server (server/integrations/admin.ts), the page
 // (web/src/views/Integrations.tsx) and the tests import it as is.
-import { isAutomatic, secretRefRefusal, type AdapterMeta, type DeliveryTarget, type Level, type LinkPairing, type Subscription, type TargetKind } from "./integrations";
+import { isAutomatic, secretRefRefusal, type AdapterMeta, type DeliveryTarget, type Level, type Subscription, type TargetKind } from "./integrations";
 
 /** One integration as the page shows it: the row, its health and what it ran last. */
 export type IntegrationCard = {
@@ -23,7 +23,7 @@ export type IntegrationCard = {
   lastPollAt?: number;
 };
 
-export type LinkRow = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean; pairing?: LinkPairing };
+export type LinkRow = { id: string; integrationId: string; externalId: string; label?: string; level: Exclude<Level, "full">; repos: string[]; requireMention: boolean; notifyMe?: boolean; notifyAgent?: boolean };
 /** One platform identity of a person: the adapter kind, the platform's id, and the name it goes by there. */
 export type IdentityRow = { adapter: string; externalId: string; name?: string };
 /** A person (a principal): global, with identities on any number of adapters. */
@@ -192,3 +192,15 @@ export function identityProblem(i: { principal?: string; adapter?: string; exter
   if (!i.externalId?.trim()) return "the platform id is required";
   return undefined;
 }
+
+/** A person id from a name, unique among `taken` (the server keeps ids as given). */
+export const newPersonId = (name: string, taken: string[]): string => {
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "person";
+  let id = base;
+  for (let n = 2; taken.includes(id); n++) id = `${base}-${n}`;
+  return id;
+};
+
+/** The person an identity belongs to now, if any: a sender with none can be added to one. */
+export const personOf = (people: readonly PersonRow[], adapter: string, externalId: string): PersonRow | undefined =>
+  people.find((p) => p.identities.some((i) => i.adapter === adapter && i.externalId === externalId));

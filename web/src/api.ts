@@ -8,7 +8,7 @@ import type { Usage } from "../../server/usage";
 import type { PackView, WirePack } from "../../server/handoff";
 import type { AgentOutcome, AgentProvider, AgentStep, AgentTurn, TurnCheck } from "../../shared/agent";
 import type { Notification } from "../../shared/notifications";
-import type { Conversation, InboxFacets, InboxRow, ThreadActions, ThreadItem, ThreadLinkRecord } from "../../shared/inbox";
+import type { Conversation, InboxFacets, InboxRow, Notice, ThreadActions, ThreadItem, ThreadLinkRecord } from "../../shared/inbox";
 
 export type InboxPage = { rows: InboxRow[]; facets: InboxFacets; older: string | null; dbUnavailable?: boolean };
 export type InboxQuery = { before?: string; source?: string; person?: string; unread?: boolean; muted?: boolean };
@@ -124,6 +124,8 @@ export const api = {
   /** Reply where the event came from (the orca post path); the reply is a durable delivery. */
   /** The inbox's half of the one unread count, and the notification kinds muted there. */
   inboxUnread: (): Promise<{ others: number; mutedKinds: string[] }> => get("/api/inbox/unread").then(res),
+  /** An unknown sender's messages a `notify` pairing link recorded since `since` (ms), newest first. */
+  inboxNotices: (since: number): Promise<{ notices: Notice[] }> => get(`/api/inbox/notices?since=${Math.max(0, Math.floor(since))}`).then(res),
   inboxReply: (eventId: string, text: string): Promise<{ eventId: string; delivery?: number }> => post("/api/inbox/reply", { eventId, text }),
   inboxRead: (ids: string[], read = true): Promise<{ ok: true }> => post("/api/inbox/read", { ids, read }),
   inboxMute: (eventId: string, muted: boolean): Promise<{ ok: true }> => post("/api/inbox/mute", { eventId, muted }),

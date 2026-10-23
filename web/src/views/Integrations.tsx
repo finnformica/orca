@@ -23,7 +23,7 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Empty, Pill, SectionTitle, StatusDot, VCard } from "@/components/console";
 import {
-  SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, integrationProblem, linkProblem, parseFilter, targetLabel,
+  SUBSCRIPTION_PRESETS, deadTargetLabel, filterText, healthLine, healthTone, identityLabel, identityProblem, instanceText, newPersonId as personId, integrationProblem, linkProblem, parseFilter, targetLabel,
   type IntegrationCard, type InstanceOption, type IntegrationsOverview, type LinkRow, type Pairing, type PersonRow,
 } from "../../../shared/integrationSettings";
 import { AUTO_INSTANCE, CATCH_ALL, LEVEL_LABEL, LINK_LEVELS as LEVELS, isAutomatic, repoScoped, type AdapterMeta, type LinkLevel } from "../../../shared/integrations";
@@ -33,6 +33,11 @@ type Overview = IntegrationsOverview;
 const LINK_LEVELS: { value: LinkLevel; label: string }[] = LEVELS.map((value) => ({ value, label: LEVEL_LABEL[value] }));
 // Pairing approval is unchanged: it takes up to "work" (POST /api/integrations/pairing/approve). Set Admin on the person after.
 const PAIRING_LEVELS = LINK_LEVELS.filter((l) => l.value !== "admin");
+// A link's two switches, on the row and in the link dialog. Both on by default.
+const NOTIFY_SWITCHES = [
+  { key: "notifyMe", label: "Notify me", slot: "link-notify-me", hint: "Each message shows in the bell, the Inbox and the chat. Turn it off for a busy place." },
+  { key: "notifyAgent", label: "Notify agent", slot: "link-notify-agent", hint: "Each message wakes the orchestrator. A paired person keeps their level; an unknown sender is read-only: the agent tells you and does not reply." },
+] as const;
 const LEVEL_TONE = { notify: "default", ask: "blue", work: "green", admin: "purple" } as const;
 // The page's own copy of server/env.ts ORCA_SECRETS (the server checks again): enough to warn early.
 const STRIPPED = ["SLACK_TOKEN"] as const;
@@ -176,8 +181,9 @@ function LinkRowView({ link: l, onEdit, onChange }: { link: LinkRow; onEdit: () 
     setTest(r ? { state: String(r.state), ...(typeof r.error === "string" ? { error: r.error } : {}) } : {});
   };
   const [ask, confirmNode] = useConfirm();
-  const pairing = l.pairing !== "off";
-  const setPairing = (on: boolean) => void act(`${on ? "Turn on" : "Turn off"} pairing for ${l.label ?? l.externalId}`, "links/save", { ...l, pairing: on ? "request" : "off" }, onChange);
+  const name = l.label ?? l.externalId;
+  const setSwitch = (key: "notifyMe" | "notifyAgent", on: boolean) =>
+    void act(`${on ? "Turn on" : "Turn off"} ${key === "notifyMe" ? "Notify me" : "Notify agent"} for ${name}`, "links/save", { ...l, [key]: on }, onChange);
   return (
     <li data-slot="integration-link" className="flex flex-col gap-2 px-4 py-3 text-sm md:flex-row md:items-center md:gap-4">
       <div className="min-w-0 flex-1">
@@ -196,10 +202,14 @@ function LinkRowView({ link: l, onEdit, onChange }: { link: LinkRow; onEdit: () 
         </div>}
       </div>
       <div className="flex items-center gap-1">
-        {l.level !== "notify" && <div data-slot="link-pairing" className="mr-2 flex items-center gap-2">
-          <Label htmlFor={`link-pairing-${l.id}`} className="text-muted-foreground text-xs font-normal">Pairing requests</Label>
-          <Switch id={`link-pairing-${l.id}`} checked={pairing} onCheckedChange={setPairing} aria-label={`Pairing requests for ${l.label ?? l.externalId}`} />
-        </div>}
+        <div data-slot="link-switches" className="mr-2 flex items-center gap-4 max-md:flex-1">
+          {NOTIFY_SWITCHES.map(({ key, label, slot }) => (
+            <div key={key} data-slot={slot} className="flex items-center gap-2">
+              <Label htmlFor={`${slot}-${l.id}`} className="text-muted-foreground text-xs font-normal">{label}</Label>
+              <Switch id={`${slot}-${l.id}`} checked={l[key] !== false} onCheckedChange={(on) => setSwitch(key, on)} aria-label={`${label} for ${name}`} />
+            </div>
+          ))}
+        </div>
         {l.externalId !== CATCH_ALL && <Button variant="secondary" size="sm" disabled={test.busy} onClick={() => void run()} className="max-md:h-10 max-md:flex-1">Test</Button>}
         <Button variant="ghost" size="sm" onClick={onEdit} className="max-md:h-10">Edit</Button>
         <Button variant="ghost" size="icon" className="text-destructive hover:text-destructive hover:bg-destructive/10 size-8 max-md:size-10" aria-label={`Remove ${l.label ?? l.externalId}`}
@@ -321,10 +331,11 @@ function LinkDialog({ integration: c, meta, link, onClose, onSaved }: { integrat
   const [level, setLevel] = useState<LinkLevel>(link?.level ?? "notify");
   const [chosen, setChosen] = useState<string[]>(link?.repos ?? []);
   const [mention, setMention] = useState(link?.requireMention ?? true);
-  const [pairing, setPairing] = useState(link?.pairing !== "off");
+  const [notifyMe, setNotifyMe] = useState(link?.notifyMe !== false);
+  const [notifyAgent, setNotifyAgent] = useState(link?.notifyAgent !== false);
   const [busy, setBusy] = useState(false);
   const id = link?.id ?? `${c.id}-${(label || externalId).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")}`.slice(0, 63);
-  const body = { id, integrationId: c.id, externalId, label, level, repos: repoScoped(level) ? chosen : [], requireMention: mention, pairing: pairing ? "request" as const : "off" as const };
+  const body = { id, integrationId: c.id, externalId, label, level, repos: repoScoped(level) ? chosen : [], requireMention: mention, notifyMe, notifyAgent };
   const problem = linkProblem(body);
   const place = meta?.place ?? "place";
   const save = async () => { setBusy(true); const r = await act(`Save link ${label || externalId}`, "links/save", body, onSaved); setBusy(false); if (r) onClose(); };
@@ -357,26 +368,20 @@ function LinkDialog({ integration: c, meta, link, onClose, onSaved }: { integrat
         <Label htmlFor="link-mention">Only when @-mentioned</Label>
         <Switch id="link-mention" checked={mention} onCheckedChange={setMention} />
       </div>
-      {level !== "notify" && <div className="space-y-1.5">
-        <div className="flex items-center justify-between gap-4">
-          <Label htmlFor="link-pairing">Pairing requests</Label>
-          <Switch id="link-pairing" checked={pairing} onCheckedChange={setPairing} />
+      {NOTIFY_SWITCHES.map(({ key, label, slot, hint }) => (
+        <div key={key} className="space-y-1.5">
+          <div className="flex items-center justify-between gap-4">
+            <Label htmlFor={slot}>{label}</Label>
+            <Switch id={slot} checked={key === "notifyMe" ? notifyMe : notifyAgent} onCheckedChange={key === "notifyMe" ? setNotifyMe : setNotifyAgent} />
+          </div>
+          <div className="text-muted-foreground text-xs">{hint}</div>
         </div>
-        <div className="text-muted-foreground text-xs">{pairing ? "An unknown sender gets a pairing code, and the bell shows it." : "Orca drops a message from an unknown sender. No code, no bell row, no reply."}</div>
-      </div>}
+      ))}
     </FormDialog>
   );
 }
 
 // ── people and pairing ───────────────────────────────────────────────────────────────────────────
-
-/** A person id from a name, unique among `taken` (the server keeps ids as given). */
-const personId = (name: string, taken: string[]): string => {
-  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "person";
-  let id = base;
-  for (let n = 2; taken.includes(id); n++) id = `${base}-${n}`;
-  return id;
-};
 
 /** People are global: one person has identities on every adapter (Discord, Slack, email…), one
  *  level for all of them, and a pairing from any adapter can join an existing person. */
@@ -403,7 +408,7 @@ function PeopleCard({ data, onChange }: { data: Overview; onChange: () => void }
             </div>
           </div>
         ))}
-        {data.people.length === 0 && data.pairings.length === 0 && <Empty>No people yet. An unknown sender gets a pairing code, and it shows here for you to approve.</Empty>}
+        {data.people.length === 0 && data.pairings.length === 0 && <Empty>No people yet. Add one here, or use Add to person on a message in the Inbox or the chat.</Empty>}
         {data.people.map((p) => <PersonRowView key={p.id} person={p} kinds={data.kinds} onChange={onChange} />)}
       </VCard>
       {approve && <ApproveDialog pairing={approve} people={data.people} onClose={() => setApprove(null)} onSaved={onChange} />}

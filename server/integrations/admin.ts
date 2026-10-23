@@ -5,7 +5,7 @@
 // the /api/integrations/pairing/approve|deny routes the page posts to).
 import * as db from "../db";
 import { ORCA_SECRETS } from "../env";
-import { CATCH_ALL, CATCH_ALL_SEND_ERROR, isAutomatic, leaseHolder, secretRefRefusal, LINK_LEVELS, type Level, type LinkLevel, type LinkPairing, type Subscription, type TargetKind } from "../../shared/integrations";
+import { CATCH_ALL, CATCH_ALL_SEND_ERROR, isAutomatic, leaseHolder, secretRefRefusal, LINK_LEVELS, type Level, type LinkLevel, type Subscription, type TargetKind } from "../../shared/integrations";
 import {
   identityProblem, integrationProblem, linkProblem,
   type DeadRow, type IntegrationCard, type IntegrationsOverview, type PersonRow,
@@ -134,9 +134,9 @@ export async function saveLink(b: Record<string, unknown>): Promise<void> {
     level: String(b.level ?? "") as Exclude<Level, "full">,
     repos: Array.isArray(b.repos) ? b.repos.map(String).filter(Boolean) : [], requireMention: b.requireMention !== false,
     // Absent keeps the stored value, so an edit that does not name it never turns pairing back on.
-    pairing: (b.pairing ?? (await store.link(String(b.id ?? "").trim()))?.pairing ?? "request") as LinkPairing,
+    // A switch a save omits keeps its stored value (on for a new link), so an edit never flips one back.
+    ...await switches(b),
   };
-  if (l.pairing !== "request" && l.pairing !== "off") fail("pairing: request or off");
   const problem = linkProblem(l);
   if (problem) fail(problem);
   if (!(await store.integration(l.integrationId))) fail(`no integration ${l.integrationId}`);
@@ -150,6 +150,16 @@ export async function removeLink(id: string): Promise<void> {
       await tx`DELETE FROM channel_link WHERE user_id = ${user()} AND id = ${id}`;
     });
   });
+}
+
+/** A link's Notify me / Notify agent from a save: a boolean, else the stored value, else on. */
+async function switches(b: Record<string, unknown>): Promise<{ notifyMe: boolean; notifyAgent: boolean }> {
+  for (const k of ["notifyMe", "notifyAgent"]) if (b[k] !== undefined && typeof b[k] !== "boolean") fail(`${k}: true or false`);
+  const stored = await store.link(String(b.id ?? "").trim());
+  return {
+    notifyMe: typeof b.notifyMe === "boolean" ? b.notifyMe : stored?.notifyMe ?? true,
+    notifyAgent: typeof b.notifyAgent === "boolean" ? b.notifyAgent : stored?.notifyAgent ?? true,
+  };
 }
 
 const LEVEL_OK = (l: unknown): l is LinkLevel => (LINK_LEVELS as readonly unknown[]).includes(l);

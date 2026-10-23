@@ -255,7 +255,7 @@ describe("with Postgres", () => {
     expect(targets).toEqual([["run:1:failed", "link"], ["run:1:failed", "web"], ["run:2:failed", "web"]]);
   });
 
-  test("the gate: no link, a notify link, an unknown sender, no mention and too many messages are rejected; a paired person gets min(link, person)", async () => {
+  test("the gate: no link, no mention and too many messages are rejected; an unknown sender is read-only; a paired person gets min(link, person)", async () => {
     await store.addIntegration({ id: "slack-work", kind: "slack", name: "Work Slack", instance: "local", config: {}, enabled: true });
     await store.addLink({ id: "L1", integrationId: "slack-work", externalId: "C1", level: "work", repos: ["r"], requireMention: true });
     await store.addLink({ id: "L2", integrationId: "slack-work", externalId: "C2", level: "notify", repos: [], requireMention: false });
@@ -263,8 +263,9 @@ describe("with Postgres", () => {
     const msg = (eventId: string, channel: string, from = "U1", mentioned = true) =>
       inboundEnvelope({ adapter: "slack", channel, eventId, from: { adapter: "slack", id: from, name: "x" }, text: "status?", mentioned });
     expect(await router.ingest("slack-work", msg("e0", "C9"))).toBe("rejected"); // no link
-    expect(await router.ingest("slack-work", msg("e1", "C2"))).toBe("rejected"); // notify link
-    expect(await router.ingest("slack-work", msg("e2", "C1", "U-stranger"))).toBe("rejected"); // not paired (gets a pairing code, below)
+    expect(await router.ingest("slack-work", msg("e1", "C2"))).toBe("noted"); // notify link: read-only (the person's grant is notify)
+    expect(await router.ingest("slack-work", msg("e2", "C1", "U-stranger"))).toBe("noted"); // not paired: read-only, no code
+    expect((await store.event("slack:e2"))?.grant).toMatchObject({ level: "notify", linkId: "L1" });
     expect(await router.ingest("slack-work", msg("e3", "C1", "U1", false))).toBe("rejected"); // no mention
     expect(await router.ingest("slack-work", msg("e4", "C1"))).toBe("new");
     expect(await router.ingest("slack-work", msg("e4", "C1"))).toBe("duplicate"); // a platform retry
@@ -273,8 +274,8 @@ describe("with Postgres", () => {
     expect(ev?.grant).toEqual({ level: "ask", repos: ["r"], linkId: "L1", principalId: "saajan" });
     expect(ev?.actor?.principalId).toBe("saajan");
     const accepted = (await store.deliveries()).filter((d) => d.envelope.key === "slack:e4").map((d) => d.target);
-    expect(accepted).toEqual([{ kind: "orchestrator" }]);
-    for (let i = 0; i < 19; i++) await router.ingest("slack-work", msg(`flood${i}`, "C1"));
+    expect(accepted.map((t) => t.kind).sort()).toEqual(["orchestrator", "web"]); // web: the link's Notify me
+    for (let i = 0; i < 18; i++) await router.ingest("slack-work", msg(`flood${i}`, "C1"));
     expect(await router.ingest("slack-work", msg("flood-over", "C1"))).toBe("rejected"); // 21st in 10 min
   });
 
@@ -370,7 +371,7 @@ describe("with Postgres", () => {
       expect(await ok.json()).toEqual({ status: "new" });
       expect(await (await post(body, sign("hook-secret", body))).json()).toEqual({ status: "duplicate" });
       expect(await store.event("webhook:repo-watch:push-abc123")).toMatchObject({ topic: "ext.webhook.message", text: "main moved to abc123", grant: { level: "ask" } });
-      expect((await store.deliveries()).map((d) => d.target)).toEqual([{ kind: "orchestrator" }]);
+      expect((await store.deliveries()).map((d) => d.target.kind).sort()).toEqual(["orchestrator", "web"]); // web: the link's Notify me
       expect((await registry.handle("elsewhere", new Request("http://x/", { method: "POST" }), "{}")).status).toBe(404);
       expect(verify("k", "b", sign("k", "b"))).toBe(true);
       expect(webhookEnvelope({ id: "h", kind: "webhook", name: "h", instance: "local", config: {}, enabled: true }, { text: "t", topic: "ext.webhook.push" }, "raw").topic).toBe("ext.webhook.push");

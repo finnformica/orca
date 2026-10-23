@@ -14,7 +14,7 @@ import { reloadCatchAllLabels } from "@/lib/catchAllLabels";
 import * as store from "@/store";
 import { ChatPanel } from "@/views/Chat";
 import type { Row } from "@/store";
-import { integrationState, integrationTurn, composerHistory, CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, MESSAGE_BREAK, capWindow, chatItems, longMessage, newestMessages, longReply, splitMessages, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, anchorShift, eagerFrom, estimateItemHeight, turnSource, windowRange, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
+import { integrationState, integrationTurn, composerHistory, CHAT_WINDOW, TAIL_WINDOW, TURN_PAGE_SIZE, agentsMarker, anchoredScrollTop, asTurnPage, atBottom, MESSAGE_BREAK, capWindow, chatItems, longMessage, newestMessages, longReply, splitMessages, mergeLatestPage, prependOlderPage, revealAbove, revealBelow, sourceOf, anchorShift, eagerFrom, estimateItemHeight, turnSource, windowRange, withNotices, WORKER_EVENT_MARKER, type ChatItem } from "@/workstream";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeAll(() => store.configReady);
@@ -344,6 +344,40 @@ test("P8: the orchestrator's chat shows an outside message and its answer as ONE
   await act(async () => { queued.querySelector("button")!.click(); await flush(); });
   expect(queued.querySelector('[data-slot="integration-message"]')!.textContent).toContain("one more");
   expect(queued.querySelector('[data-slot="integration-reply"]')).toBeNull();
+});
+
+test("P8d: the orchestrator's chat shows an unknown sender's notice between its turns by time: read-only, its place and link, Add to person", async () => {
+  apiFake.turnsData.set("r::long", [turn(0), turn(5)]);
+  apiFake.noticesData = [{ id: "n1", at: 1003, adapter: "slack", text: "are you free?", sender: { name: "Mira", adapter: "slack", externalId: "U9" }, place: "DM", url: "https://acme.slack.com/archives/D9/p1", conversation: "slack|D9", read: false }];
+  await mount(<ChatPanel row={row} outbox />);
+  const c = container!;
+  const card = c.querySelector<HTMLElement>('[data-slot="integration-notice"]')!;
+  const field = (el: HTMLElement, slot: string) => el.querySelector<HTMLElement>(`[data-slot="${slot}"]`)!.textContent;
+  expect([field(card, "integration-sender"), field(card, "integration-place"), field(card, "integration-preview"), field(card, "integration-state")]).toEqual(["Mira", "DM", "are you free?", "notified"]);
+  // Between ask 0 (1000) and ask 5 (1005), never a bubble of yours.
+  const order = [...c.querySelectorAll<HTMLElement>('[data-slot="chat-turn"], [data-slot="integration-notice"]')].map((el) => el.dataset.slot === "integration-notice" ? "notice" : el.querySelector('[data-slot="chat-user-text"]')!.textContent);
+  expect(order).toEqual(["ask 0", "notice", "ask 5"]);
+  await act(async () => { card.querySelector("button")!.click(); await flush(); });
+  expect(card.querySelector<HTMLAnchorElement>('[data-slot="integration-message"] a')!.href).toBe("https://acme.slack.com/archives/D9/p1");
+  expect(field(card, "notice-footer")).toContain("No agent ran.");
+  expect(card.querySelector('[data-slot="add-person"]')!.textContent).toBe("Add to person");
+  // Only the orchestrator's chat reads notices.
+  await act(async () => { root?.unmount(); }); container?.remove();
+  apiFake.noticeCalls = [];
+  await mount(<ChatPanel row={row} />);
+  expect(container!.querySelector('[data-slot="integration-notice"]')).toBeNull();
+  expect(apiFake.noticeCalls).toEqual([]);
+});
+
+test("P8e: withNotices places notices by time inside the window's span only", () => {
+  const t = (id: string, startedAt?: number) => ({ kind: "turn" as const, turn: { id, startedAt } });
+  const n = (id: string, at: number) => ({ id, at });
+  const ids = (xs: ReturnType<typeof withNotices<{ id: string; startedAt?: number }, { id: string; at: number }>>) => xs.map((x) => x.kind === "notice" ? `n:${x.notice.id}` : x.kind === "turn" ? x.turn.id : "?");
+  expect(ids(withNotices([t("a", 10), t("b", 20)], [n("late", 30), n("mid", 15), n("early", 5)]))).toEqual(["n:early", "a", "n:mid", "b", "n:late"]);
+  // A window from 10 to 20: the notice before it and the one after it stay out.
+  expect(ids(withNotices([t("a", 10), t("b", 20)], [n("late", 30), n("mid", 15), n("early", 5)], 10, 20))).toEqual(["a", "n:mid", "b"]);
+  // An item with no time keeps its place.
+  expect(ids(withNotices([t("a"), t("b", 20)], [n("x", 1)]))).toEqual(["a", "n:x", "b"]);
 });
 
 test("P8b: an outside message's preview line renders the same markdown as its open body; its images are links, never loaded", async () => {

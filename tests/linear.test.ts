@@ -178,9 +178,13 @@ describe("with Postgres", () => {
     expect(await store.event("linear:linear:comment:c2")).toBeUndefined(); // my own (and Orca's) comment
     expect(await store.event("linear:linear:comment:c3")).toBeUndefined(); // OPS has no link: rejected
     expect(await store.cursor("linear")).toBe("2026-10-17T12:00:00.000Z");
-    // Every Linear event is a message: the inbound default takes it to the orchestrator, no subscription.
+    // Every Linear event is a message: the inbound default takes it to the orchestrator, no subscription,
+    // and the link's Notify me shows it to you (web).
     const targets = (await store.deliveries()).map((d) => `${d.envelope.key}>${d.target.kind}`).sort();
-    expect(targets).toEqual(["linear:linear:comment:c1>orchestrator", "linear:linear:issue:1:assigned>orchestrator", "linear:linear:issue:2:mention>orchestrator"]);
+    expect(targets).toEqual([
+      "linear:linear:comment:c1>orchestrator", "linear:linear:comment:c1>web", "linear:linear:issue:1:assigned>orchestrator",
+      "linear:linear:issue:1:assigned>web", "linear:linear:issue:2:mention>orchestrator", "linear:linear:issue:2:mention>web",
+    ]);
     const next = calls.filter((c) => c.op === "OrcaIssues").at(-1)!;
     expect(next.variables.filter.updatedAt).toEqual({ gt: "2026-10-17T12:00:00.000Z" });
   });
@@ -207,7 +211,7 @@ describe("with Postgres", () => {
     await store.setThreadLink({ adapter: "linear", externalThreadId: "1", linkId: "eng", repo: "r", branch: "feat" });
     comments = [comment("c9", assigned, { body: "please also handle the empty state" })];
     await a.poll();
-    expect((await store.deliveries()).find((d) => d.envelope.key === "linear:linear:comment:c9")!.target).toEqual({ kind: "workstream", repo: "r", branch: "feat" });
+    expect((await store.deliveries()).find((d) => d.envelope.key === "linear:linear:comment:c9" && d.target.kind !== "web")!.target).toEqual({ kind: "workstream", repo: "r", branch: "feat" });
 
     await store.addSubscription({ topicPattern: "orca.pr.*", filter: {}, targetKind: "link", targetId: "eng" });
     dispatcher.configure({ adapter: registry.adapterFor });
