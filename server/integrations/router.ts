@@ -112,7 +112,8 @@ export async function ingest(integrationId: string, e: InboundEnvelope, now = Da
   // person behind it (a webhook, a poller) is authenticated by its integration and takes the link's level.
   const principal = e.actor ? await store.principalFor(e.actor.external.adapter, e.actor.external.id) : undefined;
   if (e.actor && !principal) {
-    if (link.level !== "notify") await requestPairing(integrationId, link.id, e, now);
+    // `pairing: "off"` (a mention catch-all, say): drop them silently — no code, no bell row, no reply.
+    if (link.level !== "notify" && link.pairing !== "off") await requestPairing(integrationId, link.id, e, now);
     return "rejected";
   }
   const grant: Grant = e.actor ? effectiveGrant(link, principal) : { level: link.level, repos: link.repos, linkId: link.id };

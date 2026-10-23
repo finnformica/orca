@@ -5,7 +5,7 @@
 // the /api/integrations/pairing/approve|deny routes the page posts to).
 import * as db from "../db";
 import { ORCA_SECRETS } from "../env";
-import { CATCH_ALL, CATCH_ALL_SEND_ERROR, isAutomatic, leaseHolder, secretRefRefusal, LINK_LEVELS, type Level, type LinkLevel, type Subscription, type TargetKind } from "../../shared/integrations";
+import { CATCH_ALL, CATCH_ALL_SEND_ERROR, isAutomatic, leaseHolder, secretRefRefusal, LINK_LEVELS, type Level, type LinkLevel, type LinkPairing, type Subscription, type TargetKind } from "../../shared/integrations";
 import {
   identityProblem, integrationProblem, linkProblem,
   type DeadRow, type IntegrationCard, type IntegrationsOverview, type PersonRow,
@@ -133,7 +133,10 @@ export async function saveLink(b: Record<string, unknown>): Promise<void> {
     label: typeof b.label === "string" && b.label.trim() ? b.label.trim() : undefined,
     level: String(b.level ?? "") as Exclude<Level, "full">,
     repos: Array.isArray(b.repos) ? b.repos.map(String).filter(Boolean) : [], requireMention: b.requireMention !== false,
+    // Absent keeps the stored value, so an edit that does not name it never turns pairing back on.
+    pairing: (b.pairing ?? (await store.link(String(b.id ?? "").trim()))?.pairing ?? "request") as LinkPairing,
   };
+  if (l.pairing !== "request" && l.pairing !== "off") fail("pairing: request or off");
   const problem = linkProblem(l);
   if (problem) fail(problem);
   if (!(await store.integration(l.integrationId))) fail(`no integration ${l.integrationId}`);

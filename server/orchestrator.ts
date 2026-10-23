@@ -608,7 +608,7 @@ async function channelsText(): Promise<string> {
   const byId = new Map(conns.map((c) => [c.id, c]));
   const lines = links.length ? links.map((l) => {
     const c = byId.get(l.integrationId);
-    return `link ${l.id} · ${c?.kind ?? "?"} ${c?.name ?? l.integrationId} on ${c ? (c.instance === "*" ? "automatic" : c.instance) : "?"} · ${l.externalId}${l.label ? ` (${l.label})` : ""} · ${l.level}${repoScoped(l.level) ? ` on ${l.repos.join(", ") || "no repos"}` : ""}${l.requireMention ? " · mention required" : ""}${l.externalId === "*" ? " · catch-all: post with --channel <id> [--thread <id>]" : ""}`;
+    return `link ${l.id} · ${c?.kind ?? "?"} ${c?.name ?? l.integrationId} on ${c ? (c.instance === "*" ? "automatic" : c.instance) : "?"} · ${l.externalId}${l.label ? ` (${l.label})` : ""} · ${l.level}${repoScoped(l.level) ? ` on ${l.repos.join(", ") || "no repos"}` : ""}${l.requireMention ? " · mention required" : ""}${l.pairing === "off" ? " · pairing off" : ""}${l.externalId === "*" ? " · catch-all: post with --channel <id> [--thread <id>]" : ""}`;
   }) : ["no channel links"];
   const subLines = subs.map((s) => `sub ${s.id} · ${s.topicPattern}${Object.keys(s.filter).length ? ` ${JSON.stringify(s.filter)}` : ""} → ${s.targetKind}${s.targetId ? ` ${s.targetId}` : ""}${s.digestSeconds ? ` · digest ${s.digestSeconds}s` : ""}`);
   const pairLines = pairings.map((p) => `pairing ${p.code} · ${p.adapter}:${p.externalId}${p.name ? ` (${p.name})` : ""} waits for the user's approval`);
