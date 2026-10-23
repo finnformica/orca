@@ -57,8 +57,11 @@ function visualRowFlags(el: HTMLTextAreaElement, key: string): { firstVisualRow?
 // and a labelled Send with its keycap; its @ picker is portaled out of the host's overflow-hidden.
 export function ChatComposer({
   persistKey, onSubmit, placeholder, leading, footer, onCancel, autoFocus, optimistic, history, action, alt, className, repo, prefill, insert,
-  variant = "box", icon, inputLabel, commands,
+  variant = "box", icon, inputLabel, commands, replace,
 }: {
+  // Drawn in the box's place while set (the `/secret` widget). The box's text and files stay in
+  // this component's state, so closing it gives the draft back as it was, and focus returns to it.
+  replace?: ReactNode;
   // The `/` menu: a `/` that opens a line lists these, filtered as you type. Absent: no menu.
   commands?: ComposerCommand[];
   variant?: "box" | "quick";
@@ -184,6 +187,13 @@ export function ChatComposer({
       if (pendingScroll.current) { scrollCaretIntoView(el); pendingScroll.current = false; }
     }
   }, [value]);
+  const replaced = Boolean(replace);
+  const wasReplaced = useRef(false);
+  useEffect(() => {
+    const el = textRef.current;
+    if (wasReplaced.current && !replaced && el) { el.focus(); el.setSelectionRange(caret, caret); } // where the `/command` was
+    wasReplaced.current = replaced;
+  }, [replaced]); // eslint-disable-line react-hooks/exhaustive-deps
   const quick = variant === "quick";
   const rootRef = useRef<HTMLDivElement>(null);
   // Quick variant: grow with the text where `field-sizing: content` isn't supported (Safari, Firefox),
@@ -554,7 +564,7 @@ export function ChatComposer({
 
   return (
     <div ref={rootRef} className="relative">
-      <div
+      {replaced ? <div data-slot="chat-composer-replaced">{replace}</div> : <div
         className={cn(quick ? "cursor-text" : "bg-card focus-within:border-ring focus-within:ring-ring/40 cursor-text rounded-lg border transition-[color,box-shadow] focus-within:ring-2", className)}
         onMouseDown={focusText}
         onDrop={onDrop}
@@ -607,7 +617,7 @@ export function ChatComposer({
             )}
           </div>
         </div>
-      </div>
+      </div>}
       {guardBar}
       {mentions && (quick && textRef.current ? createPortal(mentions, textRef.current.ownerDocument.body) : mentions)}
       {commandMenu && (quick && textRef.current ? createPortal(commandMenu, textRef.current.ownerDocument.body) : commandMenu)}

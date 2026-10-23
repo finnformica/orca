@@ -698,8 +698,9 @@ until Finn asked for `@`; `#` now opens nothing. A `/` that opens a line opens t
 (`slashTrigger`; never mid-sentence or in a path): the registry is `SLASH_COMMANDS` in `workstream.ts`
 (name, description, where it applies) plus `components/SlashCommands.tsx` (icon, action) — compact,
 stop, clear-queue, model, attach, secret, and for a worker chat preview, merge (confirmed) and
-rename. A command that does not apply is hidden; none sends a message; `/secret`'s value stays in its
-dialog and the request body. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
+rename. A command that does not apply is hidden; none sends a message. `/secret` is an inline
+widget in the box's place (ChatComposer `replace`, styled as the form card, its `SecretInput`): its
+value stays in the widget and the request body, and Esc gives the draft back. It is NOT a live shell — it renders the turns Orca already records, so nothing tmux is
 involved. Orca still hosts no chat *runtime* — the composer fires the same headless one-shot every
 board action uses. A turn written at launch but not yet finished renders as `▋ working…` (that's how
 an interrupted run stays visible); a turn with a parsed outcome renders its sections. A Claude run's

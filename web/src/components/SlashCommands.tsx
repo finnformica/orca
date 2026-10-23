@@ -1,14 +1,14 @@
 import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Cpu, Eye, EyeOff, GitMerge, Globe, KeyRound, ListX, Loader2, Minimize2, Paperclip, Pencil, Square, X } from "lucide-react";
+import { Cpu, GitMerge, Globe, KeyRound, ListX, Loader2, Minimize2, Paperclip, Pencil, Square, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { SecretInput } from "@/components/FormCard";
 import type { ComposerCommand } from "@/components/ChatComposer";
 import { RenameDialog } from "@/views/WorkstreamActions";
 import { mergeWhenGreen, previewKeyOf, previewStatus, testLocally, type Row } from "@/store";
 import { actionFailed } from "@/lib/notificationStore";
-import { cn, PortalContainer } from "@/lib/utils";
+import { PortalContainer } from "@/lib/utils";
 import { api } from "@/api";
 import { SLASH_COMMANDS, previewHref, type SlashCommandId, type SlashContext } from "@/workstream";
 
@@ -32,9 +32,10 @@ export type SlashHost = {
   openModel: () => void;
 };
 
-/** The commands for this chat (only those that apply) and the UI they open: the secret and merge
- *  dialogs, the rename dialog and a one-line notice under the composer. */
-export function useSlashCommands(host: SlashHost): { commands: ComposerCommand[]; ui: ReactNode } {
+/** The commands for this chat (only those that apply) and the UI they open: the merge and rename
+ *  dialogs and a one-line notice under the composer (`ui`), and the `/secret` widget, which takes
+ *  the composer box's place while it is open (`widget`, ChatComposer's `replace`). */
+export function useSlashCommands(host: SlashHost): { commands: ComposerCommand[]; ui: ReactNode; widget: ReactNode } {
   const { row, ctx } = host;
   const [dialog, setDialog] = useState<null | "secret" | "merge" | "rename">(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -79,7 +80,6 @@ export function useSlashCommands(host: SlashHost): { commands: ComposerCommand[]
 
   const ui = (
     <SlashPortal>
-      <SecretDialog open={dialog === "secret"} onClose={() => setDialog(null)} onSaved={(ref) => { setDialog(null); setNotice(`Secret ${ref} saved`); }} />
       {!ctx.orchestrator && (
         <MergeDialog row={row} open={dialog === "merge"} onClose={() => setDialog(null)}
           onConfirm={async () => {
@@ -98,7 +98,10 @@ export function useSlashCommands(host: SlashHost): { commands: ComposerCommand[]
       )}
     </SlashPortal>
   );
-  return { commands, ui };
+  const widget = dialog === "secret"
+    ? <SecretWidget onCancel={() => setDialog(null)} onSaved={(ref) => { setDialog(null); setNotice(`Secret ${ref} saved`); }} />
+    : null;
+  return { commands, ui, widget };
 }
 
 /** Radix portals to <body> by default, which is inert behind a native modal <dialog> (the card's
@@ -117,15 +120,15 @@ function SlashPortal({ children }: { children: ReactNode }) {
   );
 }
 
-/** `/secret`: a name and a value, saved encrypted in the "chat" scope. The value lives only in this
- *  dialog's state and the request body: never in the composer, its draft or a message. */
-function SecretDialog({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: (ref: string) => void }) {
+/** `/secret`: an inline widget in the composer's place, drawn like the chat's form card (FormCard): a
+ *  name and a value, saved encrypted in the "chat" scope. The value lives only in this widget's state
+ *  and the request body: never in the composer, its draft, a message or the turn log. Enter saves,
+ *  Esc or Cancel closes it, and the composer comes back with its draft as it was. */
+function SecretWidget({ onCancel, onSaved }: { onCancel: () => void; onSaved: (ref: string) => void }) {
   const [name, setName] = useState("");
   const [value, setValue] = useState("");
-  const [shown, setShown] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { if (open) { setName(""); setValue(""); setShown(false); setError(null); } }, [open]);
   const save = async () => {
     if (!name.trim()) { setError("Give the secret a name."); return; }
     if (!value) { setError("Give the secret a value."); return; }
@@ -134,42 +137,34 @@ function SecretDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =
       const { ref } = await api.saveSecret({ name: name.trim(), scope: "chat", value });
       setValue("");
       onSaved(ref);
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
-    finally { setBusy(false); }
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); setBusy(false); }
   };
+  const cancel = () => { setValue(""); onCancel(); };
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!o) { setValue(""); onClose(); } }}>
-      <DialogContent data-slot="slash-secret">
-        <DialogHeader>
-          <DialogTitle>Save a secret</DialogTitle>
-          <DialogDescription>Stored encrypted. The agent sees only its name.</DialogDescription>
-        </DialogHeader>
-        <form className="grid gap-3" onSubmit={(e) => { e.preventDefault(); void save(); }}>
-          <div className="grid gap-1.5">
-            <Label htmlFor="slash-secret-name">Name</Label>
-            <Input id="slash-secret-name" data-slot="slash-secret-name" autoFocus className="font-mono" autoComplete="off" spellCheck={false}
-              value={name} onChange={(e) => setName(e.target.value)} placeholder="stripe-test-key" />
-          </div>
-          <div className="grid gap-1.5">
-            <Label htmlFor="slash-secret-value">Value</Label>
-            <div className="relative">
-              <Input id="slash-secret-value" data-slot="slash-secret-value" type={shown ? "text" : "password"} autoComplete="new-password" spellCheck={false}
-                autoCapitalize="off" autoCorrect="off" data-1p-ignore data-lpignore="true" className={cn("pr-9 font-mono")}
-                value={value} onChange={(e) => setValue(e.target.value)} />
-              <Button type="button" size="icon" variant="ghost" className="text-muted-foreground absolute top-0 right-0 size-8" aria-label={shown ? "Hide the value" : "Show the value"} aria-pressed={shown}
-                data-slot="slash-secret-reveal" onClick={() => setShown(!shown)}>
-                {shown ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-              </Button>
-            </div>
-          </div>
-          {error && <p className="text-destructive text-xs" role="alert">{error}</p>}
-          <DialogFooter>
-            <Button type="button" variant="outline" size="sm" onClick={onClose}>Cancel</Button>
-            <Button type="submit" size="sm" disabled={busy} data-slot="slash-secret-save">{busy && <Loader2 className="size-3.5 animate-spin" />}Save secret</Button>
-          </DialogFooter>
-        </form>
-      </DialogContent>
-    </Dialog>
+    <div data-slot="slash-secret" className="bg-card rounded-md border text-[13px]"
+      // preventDefault also keeps a host <dialog> (the card's terminal) from closing on this Esc.
+      onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); cancel(); } }}>
+      <div className="flex items-start gap-2 border-b px-3 py-2.5">
+        <span className="flex h-5 shrink-0 items-center"><KeyRound className="text-muted-foreground size-4" /></span>
+        <div className="min-w-0 flex-1 leading-5 font-medium">Save a secret</div>
+      </div>
+      <form className="space-y-3 px-3 py-3" noValidate autoComplete="off" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+        <div className="space-y-1">
+          <label htmlFor="slash-secret-name" className="text-xs font-medium">Name</label>
+          <Input id="slash-secret-name" data-slot="slash-secret-name" autoFocus className="font-mono" autoComplete="off" spellCheck={false}
+            value={name} onChange={(e) => setName(e.target.value)} placeholder="stripe-test-key" />
+        </div>
+        <div className="space-y-1">
+          <label htmlFor="slash-secret-value" className="text-xs font-medium">Value</label>
+          <SecretInput common={{ id: "slash-secret-value", name: "value" }} value={value} onChange={setValue} />
+        </div>
+        {error && <p className="text-destructive text-xs break-words" role="alert" data-slot="slash-secret-error">{error}</p>}
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={cancel} data-slot="slash-secret-cancel">Cancel</Button>
+          <Button type="submit" size="sm" disabled={busy} data-slot="slash-secret-save">{busy && <Loader2 className="size-3.5 animate-spin" />}Save secret</Button>
+        </div>
+      </form>
+    </div>
   );
 }
 
