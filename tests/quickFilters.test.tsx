@@ -1,8 +1,8 @@
 // The Agents page's quick filters (views/Agents.tsx, workstream.ts parseQuickFilter / applyQuickFilter
-// / quickCount): one-click chips above the list, grouped into families — State (Open PRs, Mergeable,
-// Merged today, Not merged), Activity (Running, Needs attention) and Repo (one per repo) — toggleable
-// and combinable (AND across groups, OR within one), each with its count, and held in the URL query so
-// a filtered view is a link. "Mine"/"Orchestrated" and per-instance pills were dropped (orchestrated
+// / quickCount): one dropdown per family above the list — State (Open PRs, Verified, Mergeable,
+// Merged today, Merged this week, Not merged), Activity (Running, Needs attention) and Repo (one per
+// repo) — whose choices are toggleable and combinable (AND across groups, OR within one), each with
+// its count, and held in the URL query so a filtered view is a link. "Mine"/"Orchestrated" and per-instance pills were dropped (orchestrated
 // and instance stay visible as the row's own badge/column), but their URL params and pure filtering
 // still work for a link someone already has. The pure model first, then the page against the fake api
 // (tests/apiFake.ts) in a real DOM.
@@ -16,7 +16,7 @@ import { App } from "@/App";
 import { navigate } from "@/lib/route";
 import { agentQueryAtom, instanceScopeAtom, repoFilterAtom } from "@/lib/atoms";
 import {
-  NO_QUICK_FILTER, applyQuickFilter, attentionReasons, dropStaleRepos, notMergedCount, parseQuickFilter, quickCount, quickFilterQuery, toggleNotMerged, toggleQuick, type OverviewRow,
+  MERGED_WEEK_MS, NO_QUICK_FILTER, applyQuickFilter, attentionReasons, clearQuickGroup, dropStaleRepos, mergedThisWeek, mergedToday, notMergedCount, overviewStats, parseQuickFilter, quickCount, quickFilterQuery, quickGroupActive, toggleNotMerged, toggleQuick, type OverviewRow,
 } from "@/workstream";
 
 const row = (over: Partial<OverviewRow>): OverviewRow => ({ repo: "a", branch: "b", title: "t", lane: "LOCAL", ...over });
@@ -83,6 +83,53 @@ describe("quick filters (pure)", () => {
     expect(quickCount(rows, f, "by", "mine", "local")).toBe(2); // its own group is ignored: what switching to it shows ("done" stays hidden)
   });
 
+  test("merged this week: a rolling 7 days, today's included; Merged today stays today's", () => {
+    const now = new Date(2026, 9, 21, 15, 0).getTime(); // a Wednesday afternoon, local time
+    const at = (ms: number) => new Date(ms).toISOString();
+    const hour = 3_600_000;
+    const week: OverviewRow[] = [
+      row({ branch: "today", lane: "DONE", prNumber: 1, mergedAt: at(now - 2 * hour) }),
+      row({ branch: "monday", lane: "DONE", prNumber: 2, mergedAt: at(now - 50 * hour) }),
+      row({ branch: "six-days", lane: "DONE", prNumber: 3, mergedAt: at(now - MERGED_WEEK_MS + hour) }),
+      row({ branch: "eight-days", lane: "DONE", prNumber: 4, mergedAt: at(now - MERGED_WEEK_MS - hour) }),
+      row({ branch: "open", lane: "IN_REVIEW", prNumber: 5 }),
+    ];
+    const names = (search: string) => applyQuickFilter(week, parseQuickFilter(search), "local", now).map((r) => r.branch);
+    expect(mergedToday(week[0]!, now)).toBe(true);
+    expect(mergedToday(week[1]!, now)).toBe(false);
+    expect(mergedThisWeek(week[2]!, now)).toBe(true);
+    expect(mergedThisWeek(week[3]!, now)).toBe(false);
+    expect(mergedThisWeek(week[4]!, now)).toBe(false); // not merged at all
+    expect(mergedToday(row({ lane: "DONE" }), now)).toBe(true); // no mergedAt: read as today's, as before
+    expect(names("?pr=merged")).toEqual(["today"]);
+    expect(names("?pr=week")).toEqual(["today", "monday", "six-days"]);
+    expect(names("?pr=merged,week")).toEqual(["today", "monday", "six-days"]); // OR within the group
+    expect(names("")).toEqual(["open"]); // Not merged (the default) hides every merged row
+    expect(quickCount(week, NO_QUICK_FILTER, "pr", "week", "local", now)).toBe(3);
+    expect(quickCount(week, NO_QUICK_FILTER, "pr", "merged", "local", now)).toBe(1);
+    // The Overview's "Merged today" number (which links to ?pr=merged) counts today's only.
+    expect(overviewStats(week, now).mergedToday).toBe(1);
+  });
+
+  test("the URL round-trips the new choice, and an old link still parses the same", () => {
+    const f = parseQuickFilter("?pr=week,open&status=running");
+    expect(f.pr).toEqual(["week", "open"]);
+    expect(quickFilterQuery(f)).toBe("?status=running&pr=week,open");
+    expect(parseQuickFilter(quickFilterQuery(f))).toEqual(f);
+    // Links from before the dropdowns (the Overview's "Merged today" among them) mean what they meant.
+    expect(parseQuickFilter("?pr=merged")).toEqual({ ...NO_QUICK_FILTER, pr: ["merged"] });
+    expect(parseQuickFilter("?status=attention&pr=open&notMerged=0")).toEqual({ ...NO_QUICK_FILTER, status: ["attention"], pr: ["open"], notMerged: false });
+  });
+
+  test("a dropdown's count and Clear: only its own group; State counts Not merged when it is off", () => {
+    const f = parseQuickFilter("?pr=open,week&status=running&notMerged=0");
+    expect(quickGroupActive(f, "pr")).toBe(3); // two choices + Not merged turned off
+    expect(quickGroupActive(f, "status")).toBe(1);
+    expect(quickGroupActive(NO_QUICK_FILTER, "pr")).toBe(0); // Not merged on is the default, not a choice
+    expect(clearQuickGroup(f, "pr")).toEqual({ ...NO_QUICK_FILTER, status: ["running"] });
+    expect(clearQuickGroup(f, "status")).toEqual({ ...f, status: [] });
+  });
+
   test("dropStaleRepos: drops a repo value no repo config names (a rename or removal), keeps the rest", () => {
     const f = parseQuickFilter("?status=running&repo=a,orca-src,b");
     expect(dropStaleRepos(f, ["a", "b"])).toEqual({ ...f, repo: ["a", "b"] });
@@ -116,9 +163,23 @@ async function open(path: string) {
   await act(async () => { await store.refresh(); await flush(); await flush(); });
 }
 const listed = () => [...container!.querySelectorAll<HTMLElement>('[data-slot="workstream-row"]')].map((r) => r.dataset.branch).sort();
-const chip = (key: string) => container!.querySelector<HTMLButtonElement>(`[data-slot="quick-filter"][data-chip="${key}"]`)!;
+// A filter dropdown's choices render in a popover (portaled to <body>) only while it is open.
+const trigger = (group: string) => container!.querySelector<HTMLButtonElement>(`[data-slot="quick-filter-trigger"][data-group="${group}"]`)!;
+const menu = () => document.querySelector<HTMLElement>('[data-slot="quick-filter-menu"]');
+const chip = (key: string) => document.querySelector<HTMLElement>(`[data-slot="quick-filter"][data-chip="${key}"]`)!;
+const box = (key: string) => chip(key).querySelector<HTMLButtonElement>('[role="checkbox"]')!;
+const checked = (key: string) => box(key).getAttribute("aria-checked");
 const count = (key: string) => chip(key).querySelector('[data-slot="quick-count"]')!.textContent;
+const active = (group: string) => trigger(group).querySelector('[data-slot="quick-filter-active"]')?.textContent ?? "0";
 const click = async (el: Element) => { await act(async () => { el.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); await flush(); }); };
+const keyDown = async (key: string) => { await act(async () => { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true })); await flush(); }); };
+/** Open one group's dropdown (closing any other first). */
+async function openGroup(group: string) {
+  if (menu()?.getAttribute("data-group") === group) return;
+  if (menu()) await keyDown("Escape");
+  await click(trigger(group));
+  expect(menu()?.getAttribute("data-group")).toBe(group);
+}
 
 describe("quick filter chips on the Agents page", () => {
   beforeAll(() => store.configReady);
@@ -147,39 +208,53 @@ describe("quick filter chips on the Agents page", () => {
     apiFake.enrichmentData.set("r::cloud-bot", { title: "Bot work", orchestrated: true });
   };
 
-  test("chips toggle and combine, each shows its count, grouped into families, and the URL holds the view", async () => {
+  test("one dropdown per group: choices toggle and combine, each shows its count, and the URL holds the view", async () => {
     seed();
     await open("/agents");
     expect(listed()).toEqual(["cloud-bot", "feat-ci", "feat-ok", "local-held", "local-run"]);
-    const labels = [...container!.querySelectorAll('[data-slot="quick-filter"]')].map((c) => c.getAttribute("data-chip"));
-    expect(labels).toEqual(["pr:open", "pr:verified", "pr:mergeable", "pr:merged", "notMerged", "status:running", "status:attention"]); // one repo: no repo chips; no mine/orchestrated/instance pills
-    // Grouped into families: State (the pr chips + not merged), Activity (status).
-    const groups = [...container!.querySelectorAll('[data-slot="quick-filter-group"]')].map((g) => g.getAttribute("data-group"));
+    // One trigger per group; one repo, so no Repo dropdown; no mine/orchestrated/instance choices.
+    const groups = [...container!.querySelectorAll('[data-slot="quick-filter-trigger"]')].map((g) => g.getAttribute("data-group"));
     expect(groups).toEqual(["state", "activity"]);
-    expect(chip("pr:open").closest('[data-slot="quick-filter-group"]')!.getAttribute("data-group")).toBe("state");
-    expect(chip("notMerged").closest('[data-slot="quick-filter-group"]')!.getAttribute("data-group")).toBe("state");
-    expect(chip("status:running").closest('[data-slot="quick-filter-group"]')!.getAttribute("data-group")).toBe("activity");
-    expect(chip("notMerged").getAttribute("aria-pressed")).toBe("true"); // on by default
-    expect(count("status:attention")).toBe("2"); // CI red + the held message
-    expect(count("status:running")).toBe("1");
+    expect(container!.querySelector('[data-slot="quick-filter"]')).toBeNull(); // closed: the choices are not on the page
+    expect(active("state")).toBe("0");
+
+    await openGroup("state");
+    expect([...menu()!.querySelectorAll('[data-slot="quick-filter"]')].map((c) => c.getAttribute("data-chip")))
+      .toEqual(["pr:open", "pr:verified", "pr:mergeable", "pr:merged", "pr:week", "notMerged"]);
+    expect(chip("pr:merged").textContent).toContain("Merged today");
+    expect(chip("pr:week").textContent).toContain("Merged this week");
+    expect(chip("pr:merged").querySelector('[data-slot="status-dot"], [data-tone]')).not.toBeNull(); // the colored dot stays
+    expect(checked("notMerged")).toBe("true"); // on by default
     expect(count("pr:open")).toBe("2");
 
-    await click(chip("status:attention"));
-    expect(chip("status:attention").getAttribute("aria-pressed")).toBe("true");
+    await openGroup("activity");
+    expect(count("status:attention")).toBe("2"); // CI red + the held message
+    expect(count("status:running")).toBe("1");
+    await click(box("status:attention"));
+    expect(checked("status:attention")).toBe("true");
+    expect(menu()).not.toBeNull(); // a multi-select: it stays open
     expect(listed()).toEqual(["feat-ci", "local-held"]);
     expect(location.search).toBe("?status=attention");
-    await click(chip("status:running")); // same group → OR
+    await click(box("status:running")); // same group → OR
     expect(listed()).toEqual(["feat-ci", "local-held", "local-run"]);
     expect(location.search).toBe("?status=attention,running");
-    await click(chip("pr:open")); // another group → AND
+    expect(active("activity")).toBe("2");
+
+    await openGroup("state");
+    await click(box("pr:open")); // another group → AND
     expect(listed()).toEqual(["feat-ci"]);
     expect(location.search).toBe("?status=attention,running&pr=open");
-    expect(count("pr:mergeable")).toBe("0"); // counts follow the other groups' chips
-    await click(chip("status:attention"));
-    await click(chip("status:running"));
+    expect(count("pr:mergeable")).toBe("0"); // counts follow the other groups' choices
+
+    // The Activity dropdown's Clear clears only its own group.
+    await openGroup("activity");
+    await click(menu()!.querySelector('[data-slot="quick-filter-clear"]')!);
     expect(location.search).toBe("?pr=open");
     expect(listed()).toEqual(["feat-ci", "feat-ok"]);
-    await click([...container!.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Clear")!);
+    expect(active("activity")).toBe("0");
+    expect(active("state")).toBe("1");
+    await keyDown("Escape");
+    await click(container!.querySelector('[data-slot="clear-filters"]')!);
     expect(location.search).toBe("");
     expect(listed()).toHaveLength(5);
   });
@@ -208,22 +283,27 @@ describe("quick filter chips on the Agents page", () => {
     seed();
     await open("/agents");
     expect(location.search).toBe(""); // on by default, so a plain URL
-    expect(chip("notMerged").getAttribute("aria-pressed")).toBe("true");
+    await openGroup("state");
+    expect(checked("notMerged")).toBe("true");
     expect(count("notMerged")).toBe("5"); // every seeded row is not merged
     expect(listed()).toHaveLength(5);
 
-    await click(chip("notMerged"));
-    expect(chip("notMerged").getAttribute("aria-pressed")).toBe("false");
+    await click(box("notMerged"));
+    expect(checked("notMerged")).toBe("false");
     expect(location.search).toBe("?notMerged=0"); // off differs from the default, so it's carried
     expect(listed()).toHaveLength(5); // unaffected here: nothing merged in this seed
+    expect(active("state")).toBe("1"); // off is a choice the trigger counts
 
     // The turned-off state is itself a link.
+    await keyDown("Escape");
     await act(async () => { navigate("/agents?notMerged=0"); await flush(); });
-    expect(chip("notMerged").getAttribute("aria-pressed")).toBe("false");
+    await openGroup("state");
+    expect(checked("notMerged")).toBe("false");
 
-    await click([...container!.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Clear")!);
-    expect(location.search).toBe(""); // Clear restores the default (not merged back on)
-    expect(chip("notMerged").getAttribute("aria-pressed")).toBe("true");
+    // The State dropdown's Clear restores the default (not merged back on).
+    await click(menu()!.querySelector('[data-slot="quick-filter-clear"]')!);
+    expect(location.search).toBe("");
+    expect(checked("notMerged")).toBe("true");
   });
 
   test("the sidebar's instance scope narrows the list with no instance pills in the row (dropped with mine/orchestrated)", async () => {

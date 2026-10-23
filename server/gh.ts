@@ -583,19 +583,43 @@ async function mergedRows(cwd: string): Promise<RawMergedPr[]> {
   return inflight;
 }
 
-/** The current user's PRs merged since `since` (ms epoch) — the Done lane.
+// The Done rows' own search: dated (`merged:>=`, one UTC day of margin, then cut exactly by the
+// caller's boundary) and longer than `mergedRows`, so a busy repo still lists a whole week (the
+// Agents page's "Merged this week") — `mergedRows`' 50 newest-CREATED PRs held about two days of
+// orca. Cached per repo and day, like `mergedRows`.
+const MERGED_SINCE_LIMIT = 300;
+const mergedSinceCache = new Map<string, { at: number; rows: RawMergedPr[]; inflight?: Promise<RawMergedPr[]> }>();
+async function mergedSince(cwd: string, since: number): Promise<RawMergedPr[]> {
+  const day = new Date(since - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const key = `${cwd}\0${day}`;
+  const hit = mergedSinceCache.get(key);
+  if (hit && Date.now() - hit.at < MERGED_TTL_MS) return hit.rows;
+  if (hit?.inflight) return hit.inflight;
+  const inflight = searchPrs(cwd, `is:merged author:@me merged:>=${day}`, MERGED_SINCE_LIMIT, "number,title,headRefName,url,mergedAt,headRefOid")
+    .then((found) => {
+      const rows = found as RawMergedPr[];
+      for (const k of mergedSinceCache.keys()) if (k.startsWith(`${cwd}\0`) && k !== key) mergedSinceCache.delete(k); // yesterday's window
+      mergedSinceCache.set(key, { at: Date.now(), rows });
+      return rows;
+    })
+    .catch((error) => { mergedSinceCache.delete(key); throw error; });
+  mergedSinceCache.set(key, { at: hit?.at ?? 0, rows: hit?.rows ?? [], inflight });
+  return inflight;
+}
+
+/** The current user's PRs merged since `since` (ms epoch) — the Done rows.
  *
  *  The boundary comes from the CLIENT, because "today" is a property of the person looking at the
  *  board, not of the machine running the bridge. Those were the same thing while Orca ran on your
  *  laptop; once it runs on a box in another timezone, a server-local midnight silently empties or
  *  over-fills the lane. Falls back to the server's own day when a caller doesn't say. */
 export async function listMerged(cwd: string, since?: number): Promise<MergedPr[]> {
-  const arr = await mergedRows(cwd);
   const boundary = since ?? (() => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
     return d.getTime();
   })();
+  const arr = await mergedSince(cwd, boundary);
   return arr
     .filter((j) => j.mergedAt && Date.parse(j.mergedAt) >= boundary)
     .map((j) => ({ number: j.number, title: j.title, branch: j.headRefName, url: j.url, mergedAt: j.mergedAt, headSha: j.headRefOid }));

@@ -41,7 +41,7 @@ export type LiveAgent = {
   instance?: string;
 };
 
-import { asTurnPage } from "./workstream";
+import { MERGED_WEEK_MS, asTurnPage } from "./workstream";
 import { trackedFetch as get } from "./lib/refresh";
 import { apiFetch, apiUrl } from "./lib/server";
 
@@ -251,13 +251,11 @@ export const api = {
   notificationsRead: (ids: number[] | "all"): Promise<{ ok: true; changed: number }> => post("/api/notifications/read", ids === "all" ? { all: true } : { ids }),
   agents: (repo: string): Promise<LiveAgent[]> => get(`/api/agents${q(repo)}`).then(res),
   prs: (repo: string): Promise<PrSummary[]> => get(`/api/prs${q(repo)}`).then(res),
-  // The client sends its own local midnight: "merged today" belongs to the person reading the board,
-  // not to the timezone of whatever machine the bridge runs on.
-  mergedPrs: (repo: string): Promise<MergedPr[]> => {
-    const midnight = new Date();
-    midnight.setHours(0, 0, 0, 0);
-    return get(`/api/prs/merged${q(repo, `&since=${midnight.getTime()}`)}`).then(res);
-  },
+  // The last 7 days, so the Agents page's "Merged this week" has its rows. The client still decides
+  // what "today" is (workstream.mergedToday, its own local midnight): that belongs to the person
+  // reading the board, not to the timezone of whatever machine the bridge runs on.
+  mergedPrs: (repo: string): Promise<MergedPr[]> =>
+    get(`/api/prs/merged${q(repo, `&since=${Date.now() - MERGED_WEEK_MS}`)}`).then(res),
   prDetail: (repo: string, n: number): Promise<PrDetail> => get(`/api/prs/${n}${q(repo)}`).then(res),
   prDiff: (repo: string, n: number): Promise<{ diff: string }> => get(`/api/prs/${n}/diff${q(repo)}`).then(res),
   reviewEvidence: (repo: string, n: number): Promise<ReviewThreadEvidence[]> => get(`/api/prs/${n}/review-evidence${q(repo)}`).then(res),

@@ -84,7 +84,11 @@ const button = () => container!.querySelector<HTMLButtonElement>('[data-slot="ve
 // The read-only badge beside the title (VerifiedBadge), on the Board card or the Agents row.
 const badge = () => container!.querySelector<HTMLElement>('[data-slot="verified-badge"]');
 const statePill = () => container!.querySelector('[data-slot="workstream-row"] [data-slot="state-pill"]')?.textContent;
-const chipCount = () => container!.querySelector('[data-chip="pr:verified"] [data-slot="quick-count"]')!.textContent;
+// The Verified choice's count, in the State filter dropdown (opened first: its choices render only while open).
+const chipCount = async () => {
+  if (!document.querySelector('[data-slot="quick-filter-menu"]')) await click(container!.querySelector('[data-slot="quick-filter-trigger"][data-group="state"]')!);
+  return document.querySelector('[data-chip="pr:verified"] [data-slot="quick-count"]')!.textContent;
+};
 
 const pr = (head: string) => ({
   number: 267, title: "Cache layer", branch: "feat-v", head, url: "u", state: "OPEN", isDraft: false,
@@ -133,7 +137,7 @@ describe("Verified marker on the Board and the Agents page", () => {
     await open("/agents");
     expect(statePill()).toBe("Changed since verified");
     expect(badge()).toBeNull();
-    expect(chipCount()).toBe("0");
+    expect(await chipCount()).toBe("0");
     close();
 
     // Verify again at the new head, from the card.
@@ -146,7 +150,7 @@ describe("Verified marker on the Board and the Agents page", () => {
 
     await open("/agents?pr=verified");
     expect(statePill()).toBe("Verified");
-    expect(chipCount()).toBe("1");
+    expect(await chipCount()).toBe("1");
     expect(container!.querySelectorAll('[data-slot="workstream-row"]')).toHaveLength(1);
     expect(badge()?.getAttribute("aria-label")).toBe("Verified"); // icon only: no label text
     expect(badge()?.textContent).toBe("");

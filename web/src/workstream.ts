@@ -2375,7 +2375,7 @@ export function overviewStats(rows: OverviewRow[], now = Date.now()): OverviewSt
     attention: rows.filter((r) => attentionReasons(r).length > 0).length,
     local: rows.filter((r) => r.lane === "LOCAL").length,
     prs,
-    mergedToday: rows.filter((r) => r.lane === "DONE").length,
+    mergedToday: rows.filter((r) => mergedToday(r, now)).length,
     turnsByHour: turnsByHour(rows, now),
   };
 }
@@ -3368,13 +3368,14 @@ export function agentFailure(row: { agentStatus?: string; agentError?: string; a
 }
 
 // ---- the Agents page's quick filters ----
-// One-click chips above the list, Vercel's filter row: toggleable and combinable — AND across
-// groups, OR within one (local OR cloud, Open PRs OR Merged today) — and kept in the URL query so a
-// filtered view is a link. Each chip shows how many rows it would show with the other groups' chips.
+// One dropdown per group above the list, Vercel's filter row: choices toggleable and combinable —
+// AND across groups, OR within one (local OR cloud, Open PRs OR Merged today) — and kept in the URL
+// query so a filtered view is a link. Each choice ("chip") shows how many rows it would show with the
+// other groups' choices.
 
 export type QuickFilter = {
   status: ("attention" | "running")[];
-  pr: ("open" | "verified" | "mergeable" | "merged")[];
+  pr: ("open" | "verified" | "mergeable" | "merged" | "week")[]; // merged = merged today, week = the last 7 days
   by: ("mine" | "orchestrated")[];
   on: string[];
   repo: string[];
@@ -3386,8 +3387,28 @@ export type QuickGroup = Exclude<keyof QuickFilter, "notMerged">;
 export const NO_QUICK_FILTER: QuickFilter = { status: [], pr: [], by: [], on: [], repo: [], notMerged: true };
 export const QUICK_GROUPS: QuickGroup[] = ["status", "pr", "by", "on", "repo"];
 const QUICK_VALUES: Partial<Record<QuickGroup, readonly string[]>> = {
-  status: ["attention", "running"], pr: ["open", "verified", "mergeable", "merged"], by: ["mine", "orchestrated"],
+  status: ["attention", "running"], pr: ["open", "verified", "mergeable", "merged", "week"], by: ["mine", "orchestrated"],
 };
+
+/** How far back "Merged this week" looks: a rolling 7 days, not "since Monday", so the view is never
+ *  near-empty on a Monday morning. The board asks the bridge for merged PRs over the same window
+ *  (api.mergedPrs), so the rows are there to filter. */
+export const MERGED_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const localMidnight = (now: number) => { const d = new Date(now); d.setHours(0, 0, 0, 0); return d.getTime(); };
+const mergedTime = (row: { mergedAt?: string }) => (row.mergedAt ? Date.parse(row.mergedAt) : NaN);
+/** A merged (DONE) row merged since the viewer's local midnight. A DONE row with no `mergedAt` counts
+ *  as today: before the board fetched a week, every DONE row was today's. */
+export function mergedToday(row: { lane: string; mergedAt?: string }, now = Date.now()): boolean {
+  if (row.lane !== "DONE") return false;
+  const t = mergedTime(row);
+  return !Number.isFinite(t) || t >= localMidnight(now);
+}
+/** A merged (DONE) row merged in the last `MERGED_WEEK_MS` (today's included). */
+export function mergedThisWeek(row: { lane: string; mergedAt?: string }, now = Date.now()): boolean {
+  if (row.lane !== "DONE") return false;
+  const t = mergedTime(row);
+  return !Number.isFinite(t) || t >= now - MERGED_WEEK_MS;
+}
 
 /** `?status=attention&on=cloud,local` → the filter. Unknown values are dropped, so a stale link is
  *  merely less filtered, never broken. `notMerged` is omitted from the query when it's at its
@@ -3432,10 +3453,10 @@ export function toggleNotMerged(f: QuickFilter): QuickFilter {
   return { ...f, notMerged: !f.notMerged };
 }
 
-function matchesChip(row: OverviewRow, group: QuickGroup, value: string, here?: string): boolean {
+function matchesChip(row: OverviewRow, group: QuickGroup, value: string, here: string | undefined, now: number): boolean {
   switch (group) {
     case "status": return value === "running" ? row.agentStatus === "running" : attentionReasons(row).length > 0;
-    case "pr": return value === "merged" ? row.lane === "DONE" : value === "mergeable" ? row.lane === "MERGEABLE" : value === "verified" ? row.lane === "VERIFIED" : Boolean(row.prNumber) && row.lane !== "DONE";
+    case "pr": return value === "merged" ? mergedToday(row, now) : value === "week" ? mergedThisWeek(row, now) : value === "mergeable" ? row.lane === "MERGEABLE" : value === "verified" ? row.lane === "VERIFIED" : Boolean(row.prNumber) && row.lane !== "DONE";
     case "by": return value === "orchestrated" ? Boolean(row.orchestrated) : !row.orchestrated;
     case "on": return rowInstance(row, here) === value;
     case "repo": return row.repo === value;
@@ -3450,19 +3471,20 @@ function matchesChip(row: OverviewRow, group: QuickGroup, value: string, here?: 
 // notMergedCount) suspends it too, for the same reason `quickCount` skips a chip's OWN group: the
 // count must not depend on whether the toggle it's labelling happens to be on or off right now.
 type PassesSkip = QuickGroup | "notMerged";
-const passes = (row: OverviewRow, f: QuickFilter, here: string | undefined, skip?: PassesSkip) => {
-  if (skip !== "pr" && skip !== "notMerged" && f.notMerged && !f.pr.includes("merged") && row.lane === "DONE") return false;
-  return QUICK_GROUPS.every((g) => g === skip || !f[g].length || (f[g] as string[]).some((v) => matchesChip(row, g, v, here)));
+const asksForMerged = (f: QuickFilter) => f.pr.includes("merged") || f.pr.includes("week");
+const passes = (row: OverviewRow, f: QuickFilter, here: string | undefined, now: number, skip?: PassesSkip) => {
+  if (skip !== "pr" && skip !== "notMerged" && f.notMerged && !asksForMerged(f) && row.lane === "DONE") return false;
+  return QUICK_GROUPS.every((g) => g === skip || !f[g].length || (f[g] as string[]).some((v) => matchesChip(row, g, v, here, now)));
 };
 
-export function applyQuickFilter<R extends OverviewRow>(rows: R[], f: QuickFilter, here?: string): R[] {
-  return rows.filter((r) => passes(r, f, here));
+export function applyQuickFilter<R extends OverviewRow>(rows: R[], f: QuickFilter, here?: string, now = Date.now()): R[] {
+  return rows.filter((r) => passes(r, f, here, now));
 }
 
 /** A chip's count: the rows it matches among those the OTHER groups' chips let through — so it says
  *  what turning it on (alone in its group) would show. */
-export function quickCount(rows: OverviewRow[], f: QuickFilter, group: QuickGroup, value: string, here?: string): number {
-  return rows.filter((r) => passes(r, f, here, group) && matchesChip(r, group, value, here)).length;
+export function quickCount(rows: OverviewRow[], f: QuickFilter, group: QuickGroup, value: string, here?: string, now = Date.now()): number {
+  return rows.filter((r) => passes(r, f, here, now, group) && matchesChip(r, group, value, here, now)).length;
 }
 
 /** The "Not merged" chip's count: the number of NOT merged workstreams — rows that pass every
@@ -3470,11 +3492,23 @@ export function quickCount(rows: OverviewRow[], f: QuickFilter, group: QuickGrou
  *  DONE, the same question `quickCount` answers for a real chip, with the toggle's own effect (the
  *  `notMerged` exclusion above) ignored so the count doesn't flip depending on whether it's
  *  currently on or off. */
-export function notMergedCount(rows: OverviewRow[], f: QuickFilter, here?: string): number {
-  return rows.filter((r) => passes(r, f, here, "notMerged") && r.lane !== "DONE").length;
+export function notMergedCount(rows: OverviewRow[], f: QuickFilter, here?: string, now = Date.now()): number {
+  return rows.filter((r) => passes(r, f, here, now, "notMerged") && r.lane !== "DONE").length;
 }
 
 export const quickActive = (f: QuickFilter): boolean => QUICK_GROUPS.some((g) => f[g].length > 0) || !f.notMerged;
+
+/** How many choices a filter dropdown has on — its trigger's count. The State dropdown also counts
+ *  "Not merged" when it is OFF, since on is the default; the same rule as the phone's Filters badge. */
+export function quickGroupActive(f: QuickFilter, group: QuickGroup): number {
+  return f[group].length + (group === "pr" && !f.notMerged ? 1 : 0);
+}
+
+/** A filter dropdown's Clear: that group's choices off ("Not merged" back to its default, on, for the
+ *  State dropdown); the other groups keep theirs. */
+export function clearQuickGroup(f: QuickFilter, group: QuickGroup): QuickFilter {
+  return { ...f, [group]: [], ...(group === "pr" ? { notMerged: true } : {}) };
+}
 
 // ---- the Agents list's columns ----
 // Only what you act on: the workstream, its run status, the PR (state + number), checks and the

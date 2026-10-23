@@ -416,7 +416,8 @@ describe("agents loading skeleton", () => {
     const count = container!.querySelector('[data-slot="agents-count"]')!;
     expect(count.textContent).toBe(""); // a skeleton pill, not "0 of 0"
     expect(count.querySelector('[data-slot="skeleton"]')).not.toBeNull();
-    const openChip = container!.querySelector('[data-chip="pr:open"]')!;
+    await act(async () => { container!.querySelector('[data-slot="quick-filter-trigger"][data-group="state"]')!.dispatchEvent(new MouseEvent("click", { bubbles: true })); await flush(); });
+    const openChip = document.querySelector('[data-chip="pr:open"]')!; // in the State dropdown
     expect(openChip.querySelector('[data-slot="quick-count"]')!.textContent).toBe("");
     expect(openChip.querySelector('[data-slot="quick-count"] [data-slot="skeleton"]')).not.toBeNull();
     await act(async () => { apiFake.releasePrs!(); await flush(); await flush(); });

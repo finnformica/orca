@@ -1159,7 +1159,12 @@ test("P4 deployment shape: preview links name a reachable host, and Done·today 
     { number: 2, title: "Merged three days ago", headRefName: "old", url: "u2", mergedAt: new Date(now - 3 * day).toISOString() },
   ]);
   // A boundary the client supplies is honoured...
+  const read = await recordGhArgs();
   expect((await listMerged(merged, now - 4 * day)).map((p) => p.number)).toEqual([1, 2]); // both inside
+  process.env.ORCA_GH_ARGS_LOG = "";
+  // ...through a dated search, so a busy repo lists the whole week (the Agents page's "Merged this
+  // week"), not only the 50 newest PRs: one UTC day of margin before the boundary.
+  expect(await read()).toContain(`is:merged author:@me merged:>=${new Date(now - 5 * day).toISOString().slice(0, 10)}`);
   expect((await listMerged(merged, now - 2 * day)).map((p) => p.number)).toEqual([1]); // the 3-day-old one falls outside
   expect((await listMerged(merged, now - day)).map((p) => p.number)).toEqual([1]);
   expect((await listMerged(merged, now + day)).map((p) => p.number)).toEqual([]);

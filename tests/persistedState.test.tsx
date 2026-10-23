@@ -93,22 +93,33 @@ afterEach(async () => {
   navigate("/");
 });
 
-const chip = (key: string) => container!.querySelector<HTMLButtonElement>(`[data-slot="quick-filter"][data-chip="${key}"]`)!;
+// A choice in a filter dropdown: open the group's dropdown (its choices render only while open), then
+// the choice's checkbox.
+const GROUP_OF: Record<string, string> = { status: "activity", pr: "state" };
+async function chip(key: string): Promise<HTMLButtonElement> {
+  const group = GROUP_OF[key.split(":")[0]!]!;
+  const menu = document.querySelector('[data-slot="quick-filter-menu"]');
+  if (menu?.getAttribute("data-group") !== group) {
+    if (menu) await act(async () => { document.activeElement?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); await flush(); });
+    await click(container!.querySelector(`[data-slot="quick-filter-trigger"][data-group="${group}"]`)!);
+  }
+  return document.querySelector<HTMLButtonElement>(`[data-slot="quick-filter"][data-chip="${key}"] [role="checkbox"]`)!;
+}
 const searchBox = () => container!.querySelector<HTMLInputElement>('input[aria-label="Search workstreams"]')!;
 const saved = (repo = "all") => JSON.parse(localStorage.getItem(persistedKey("agents.filters", repo)) ?? "null");
 
 describe("the Agents page remembers its filters", () => {
   test("chips + search restore on a bare /agents and are written into the URL", async () => {
     await open("/agents");
-    await click(chip("status:running"));
-    await click(chip("pr:open"));
+    await click(await chip("status:running"));
+    await click(await chip("pr:open"));
     await type(searchBox(), "gauge");
     expect(location.search).toBe("?status=running&pr=open");
     expect(saved()).toEqual({ query: "?status=running&pr=open", q: "gauge" });
 
     await reload();
     expect(location.pathname + location.search).toBe("/agents?status=running&pr=open");
-    expect(chip("status:running").getAttribute("aria-pressed")).toBe("true");
+    expect((await chip("status:running")).getAttribute("aria-checked")).toBe("true");
     expect(searchBox().value).toBe("gauge");
   });
 
@@ -116,8 +127,8 @@ describe("the Agents page remembers its filters", () => {
     writePersisted(persistedKey("agents.filters", "all"), { query: "?status=running", q: "old" });
     await open("/agents?pr=mergeable");
     expect(location.search).toBe("?pr=mergeable");
-    expect(chip("pr:mergeable").getAttribute("aria-pressed")).toBe("true");
-    expect(chip("status:running").getAttribute("aria-pressed")).toBe("false");
+    expect((await chip("pr:mergeable")).getAttribute("aria-checked")).toBe("true");
+    expect((await chip("status:running")).getAttribute("aria-checked")).toBe("false");
     expect(searchBox().value).toBe("");
     expect(saved()).toEqual({ query: "?pr=mergeable", q: "" });
   });

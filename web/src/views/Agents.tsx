@@ -1,5 +1,5 @@
-// The Agents page — Vercel's Deployments list, adapted: a quick-filter row grouped into families
-// (State, Activity, Repo) with the active filters as dashed chips — instance and orchestrated stay
+// The Agents page — Vercel's Deployments list, adapted: one filter dropdown per family (State,
+// Activity, Repo), each with its choices' counts and a Clear — instance and orchestrated stay
 // as the row's own column/badge rather than a pill — then one dense row per workstream with only
 // what you act on (workstream.listColumns): the title over repo · model, the
 // status (a spinner and a live elapsed time while running), the PR state + number, checks and the
@@ -12,12 +12,12 @@
 // Clicking a row opens its agent page; every action is in the trailing ⋯ and on right-click
 // (WorkstreamActions, menu-only).
 // On a phone (below md) each row stacks — title and status, then where it runs —
-// with every action in its one ⋯ menu, and the chips and sort move into a Filters bottom sheet
+// with every action in its one ⋯ menu, and the filter choices and sort move into a Filters bottom sheet
 // beside the search box.
-import { Fragment, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type ReactNode, type RefObject } from "react";
 import { ThreadChips, useThreadSources } from "@/components/SourceChip";
 import { useAtom, useAtomValue } from "jotai";
-import { ArrowDown, GitPullRequest, ListFilter, Loader2, Search, X } from "lucide-react";
+import { ArrowDown, ChevronDown, GitPullRequest, ListFilter, Loader2, Search, X } from "lucide-react";
 import { agentQueryAtom, instanceScopeAtom, repoFilterAtom } from "@/lib/atoms";
 import { navigate, useSearch } from "@/lib/route";
 import { oneOf, persistedKey, readPersisted, usePersisted, writePersisted } from "@/lib/persisted";
@@ -28,13 +28,13 @@ import { BottomSheet } from "@/components/BottomSheet";
 import { instanceChoices, modelFor, refresh, thisInstance, useRepos, useReposLoaded, useWorkstreams, useWorkstreamsLoaded, type Row } from "../store";
 import {
   DEFAULT_LIST_FILTER, detailPath, NO_QUICK_FILTER, QUICK_GROUPS, SORT_LABELS, applyQuickFilter, attentionReasons, dropStaleRepos, filterRows, prPill,
-  LIST_ITEM_GAP_PX, NO_FOLD, browserKillLabel, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, rowInstance, rowTone, sortRows, sublineDots, sublineOverflow, toggleNotMerged, toggleQuick,
+  LIST_ITEM_GAP_PX, NO_FOLD, browserKillLabel, listColumns, listLayout, modelBadge, notMergedCount, parseQuickFilter, promptInstruction, quickActive, quickCount, quickFilterQuery, quickGroupActive, clearQuickGroup, rowInstance, rowTone, sortRows, sublineDots, sublineOverflow, toggleNotMerged, toggleQuick,
   type ListColumn, type ListFold, type ListSort, type ListWidths, type OverviewLane, type QuickFilter, type QuickGroup, type RowTone, type SublineSepItem,
 } from "../workstream";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { BrowserKillBadge, filterChipClass, Pill, RepoBadge, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
+import { BrowserKillBadge, Pill, RepoBadge, Skeleton, UpkeepNote, StatusDot, type DotTone } from "@/components/console";
 import { TerminalDialog } from "@/components/Terminal";
 import { CopyDone, LaneActions } from "./BulkActions";
 import { ConditionBadges } from "./ConditionBadges";
@@ -45,6 +45,7 @@ import { ReviewCluster } from "./Review";
 import { StatusDuration, StatusHoverCard } from "./StatusCard";
 import { VerifiedBadge } from "./VerifiedButton";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 export function Agents() {
@@ -264,81 +265,124 @@ const isSavedFilters = (v: unknown): v is SavedFilters =>
   typeof v === "object" && v !== null && typeof (v as SavedFilters).query === "string" && typeof (v as SavedFilters).q === "string";
 
 type Chip = { group: QuickGroup; value: string; label: string; dot?: DotTone };
+type FilterGroup = { group: QuickGroup; label: string; chips: Chip[] };
 
-// The grouping is in the data only now (no visible caption or extra gap between families): this
-// wrapper stays in the DOM, keyed by `label`, so a chip's family is still inspectable, but
-// `contents` keeps it out of layout so every chip reads as one flat, evenly-gapped wrapping row.
-function ChipFamily({ label, children }: { label: string; children: ReactNode }) {
+/** One choice in a filter dropdown (or the phone's Filters sheet): a checkbox, the dot, the label and
+ *  the count it would show with the other groups' choices on. `data-chip` names it as the URL does. */
+function FilterOption({ chip, on, count, onToggle }: { chip: { key: string; label: string; dot?: DotTone }; on: boolean; count: ReactNode; onToggle: () => void }) {
+  const id = useId();
   return (
-    <div data-slot="quick-filter-group" data-group={label.toLowerCase()} className="contents">
-      {children}
+    <label htmlFor={id} data-slot="quick-filter" data-chip={chip.key} data-state={on ? "on" : "off"}
+      className="hover:bg-accent flex h-8 cursor-pointer items-center gap-2 rounded-md px-2 text-[13px] max-md:h-11">
+      <Checkbox id={id} checked={on} onCheckedChange={onToggle} />
+      {chip.dot && <StatusDot tone={chip.dot} className="size-2" />}
+      <span className="min-w-0 flex-1 truncate">{chip.label}</span>
+      <span data-slot="quick-count" className="text-muted-foreground tabular-nums">{count}</span>
+    </label>
+  );
+}
+
+/** A filter group's choices (AND across groups, OR within one). The State group also holds the
+ *  default-on "Not merged" toggle, under a divider. */
+function FilterOptions({ g, quick, setQuick, scoped, loaded }: { g: FilterGroup; quick: QuickFilter; setQuick: (f: QuickFilter) => void; scoped: Row[]; loaded: boolean }) {
+  const here = thisInstance();
+  const skeleton = <Skeleton className="h-3 w-3" />;
+  return (
+    <div role="group" aria-label={g.label} data-slot="quick-filter-group" data-group={g.label.toLowerCase()} className="flex flex-col">
+      {g.chips.map((c) => (
+        <FilterOption key={`${c.group}:${c.value}`} chip={{ key: `${c.group}:${c.value}`, label: c.label, dot: c.dot }}
+          on={(quick[c.group] as string[]).includes(c.value)} onToggle={() => setQuick(toggleQuick(quick, c.group, c.value))}
+          count={loaded ? quickCount(scoped, quick, c.group, c.value, here) : skeleton} />
+      ))}
+      {g.group === "pr" && (
+        <>
+          <div role="separator" className="bg-border -mx-1 my-1 h-px" />
+          <FilterOption chip={{ key: "notMerged", label: "Not merged" }} on={quick.notMerged} onToggle={() => setQuick(toggleNotMerged(quick))}
+            count={loaded ? notMergedCount(scoped, quick, here) : skeleton} />
+        </>
+      )}
     </div>
   );
 }
 
-// Vercel's filter row: one-click chips, each with its count, toggleable and combinable (AND across
+/** A filter group as a dropdown: the trigger shows the group's name and how many choices are on;
+ *  the popover lists the choices and a Clear for this group only. */
+function FilterDropdown(props: { g: FilterGroup; quick: QuickFilter; setQuick: (f: QuickFilter) => void; scoped: Row[]; loaded: boolean }) {
+  const { g, quick, setQuick } = props;
+  const active = quickGroupActive(quick, g.group);
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <Button variant="outline" size="sm" data-slot="quick-filter-trigger" data-group={g.label.toLowerCase()} data-active={active}
+          className={`h-8 gap-1.5 px-2.5 text-[13px] font-normal ${active ? "border-foreground/30" : "text-muted-foreground"}`}>
+          {g.label}
+          {active > 0 && <span data-slot="quick-filter-active" className="bg-foreground text-background rounded-full px-1.5 text-[11px] leading-4 tabular-nums">{active}</span>}
+          <ChevronDown className="size-3.5 opacity-60" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-60 p-1" data-slot="quick-filter-menu" data-group={g.label.toLowerCase()}>
+        <FilterOptions {...props} />
+        <div role="separator" className="bg-border -mx-1 my-1 h-px" />
+        <Button variant="ghost" size="sm" data-slot="quick-filter-clear" disabled={!active} onClick={() => setQuick(clearQuickGroup(quick, g.group))}
+          className="h-8 w-full justify-start px-2 text-[13px] font-normal">
+          <X className="size-3.5" /> Clear
+        </Button>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+// Vercel's filter row: one dropdown per group, each with its choices' counts, combinable (AND across
 // groups, OR within one); the URL query holds them, so a filtered view is a link. Search and sort sit
-// at the end.
+// beside them.
 function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, sort, setSort, showRepos, loaded }: {
   scoped: Row[]; quick: QuickFilter; setQuick: (f: QuickFilter) => void; clear: () => void; visible: Row[]; total: number;
   q: string; setQ: (v: string) => void; sort: ListSort; setSort: (s: ListSort) => void;
   showRepos: boolean; loaded: boolean;
 }) {
   const repos = useRepos();
-  const here = thisInstance();
   // State and instance/by are columns and badges already (instance column, the orchestrated bot
-  // icon); only the lane-ish and activity chips earn a pill here. Grouped Vercel-style: a muted
-  // caption per family, chips within a family read as one segmented row.
-  const stateChips: Chip[] = [
-    { group: "pr", value: "open", label: "Open PRs" },
-    { group: "pr", value: "verified", label: "Verified" },
-    { group: "pr", value: "mergeable", label: "Mergeable", dot: "queued" },
-    { group: "pr", value: "merged", label: "Merged today", dot: "ready" },
+  // icon); only the lane-ish, activity and repo groups earn a dropdown here.
+  const groups: FilterGroup[] = [
+    { group: "pr", label: "State", chips: [
+      { group: "pr", value: "open", label: "Open PRs" },
+      { group: "pr", value: "verified", label: "Verified" },
+      { group: "pr", value: "mergeable", label: "Mergeable", dot: "queued" },
+      { group: "pr", value: "merged", label: "Merged today", dot: "ready" },
+      { group: "pr", value: "week", label: "Merged this week", dot: "ready" },
+    ] },
+    { group: "status", label: "Activity", chips: [
+      { group: "status", value: "running", label: "Running", dot: "building" },
+      { group: "status", value: "attention", label: "Needs attention", dot: "warning" },
+    ] },
   ];
-  const activityChips: Chip[] = [
-    { group: "status", value: "running", label: "Running", dot: "building" },
-    { group: "status", value: "attention", label: "Needs attention", dot: "warning" },
-  ];
-  const repoChips: Chip[] = showRepos && repos.length > 1 ? repos.map((r): Chip => ({ group: "repo", value: r.name, label: r.name })) : [];
+  if (showRepos && repos.length > 1) groups.push({ group: "repo", label: "Repo", chips: repos.map((r): Chip => ({ group: "repo", value: r.name, label: r.name })) });
   // The lane the chips narrow to, when exactly one: the swimlanes' bulk verbs apply to it.
-  const lane: OverviewLane | null = quick.pr.length === 1 && quick.pr[0] !== "open" ? (quick.pr[0] === "merged" ? "DONE" : quick.pr[0] === "verified" ? "VERIFIED" : "MERGEABLE") : null;
+  const lane: OverviewLane | null = quick.pr.length === 1 && quick.pr[0] !== "open" ? (quick.pr[0] === "merged" || quick.pr[0] === "week" ? "DONE" : quick.pr[0] === "verified" ? "VERIFIED" : "MERGEABLE") : null;
   const narrow = useNarrow();
   const [sheet, setSheet] = useState(false);
-  const renderChip = (c: Chip) => {
-    const on = (quick[c.group] as string[]).includes(c.value);
-    return (
-      <button key={`${c.group}:${c.value}`} type="button" data-slot="quick-filter" data-chip={`${c.group}:${c.value}`} aria-pressed={on}
-        onClick={() => setQuick(toggleQuick(quick, c.group, c.value))}
-        className={filterChipClass(on)}>
-        {c.dot && <StatusDot tone={c.dot} className="size-2" />}
-        {c.label}
-        <span data-slot="quick-count" className={`tabular-nums ${on ? "opacity-70" : "opacity-60"}`}>
-          {loaded ? quickCount(scoped, quick, c.group, c.value, here) : <Skeleton className="h-3 w-3" />}
-        </span>
-      </button>
-    );
-  };
-  const notMergedChip = (
-    <button key="notMerged" type="button" data-slot="quick-filter" data-chip="notMerged" aria-pressed={quick.notMerged}
-      onClick={() => setQuick(toggleNotMerged(quick))}
-      className={filterChipClass(quick.notMerged)}>
-      Not merged
-      <span data-slot="quick-count" className={`tabular-nums ${quick.notMerged ? "opacity-70" : "opacity-60"}`}>
-        {loaded ? notMergedCount(scoped, quick, here) : <Skeleton className="h-3 w-3" />}
-      </span>
+  const clearAll = (quickActive(quick) || q) && (
+    <button type="button" data-slot="clear-filters" onClick={clear} className="text-muted-foreground hover:text-foreground inline-flex h-8 items-center gap-1 px-1.5 text-[13px] max-md:h-11">
+      <X className="size-3.5" /> Clear
     </button>
   );
-  const chipGroup = (
-      <div role="group" aria-label="Quick filters" className="flex flex-wrap items-center gap-1.5">
-        <ChipFamily label="State">{stateChips.map(renderChip)}{notMergedChip}</ChipFamily>
-        <ChipFamily label="Activity">{activityChips.map(renderChip)}</ChipFamily>
-        {repoChips.length > 0 && <ChipFamily label="Repo">{repoChips.map(renderChip)}</ChipFamily>}
-        {(quickActive(quick) || q) && (
-          <button type="button" data-slot="clear-filters" onClick={clear} className="text-muted-foreground hover:text-foreground inline-flex h-7 items-center gap-1 px-1.5 text-[13px]">
-            <X className="size-3.5" /> Clear
-          </button>
-        )}
-      </div>
+  const dropdowns = (
+    <div role="group" aria-label="Quick filters" className="flex flex-wrap items-center gap-1.5">
+      {groups.map((g) => <FilterDropdown key={g.group} g={g} quick={quick} setQuick={setQuick} scoped={scoped} loaded={loaded} />)}
+      {clearAll}
+    </div>
+  );
+  // The phone's Filters sheet is already a menu: each group's choices sit in it under a caption.
+  const sheetGroups = (
+    <div role="group" aria-label="Quick filters" className="space-y-3">
+      {groups.map((g) => (
+        <div key={g.group} className="space-y-1">
+          <div className="text-muted-foreground px-2 text-xs font-medium">{g.label}</div>
+          <FilterOptions g={g} quick={quick} setQuick={setQuick} scoped={scoped} loaded={loaded} />
+        </div>
+      ))}
+      {clearAll}
+    </div>
   );
   const sortSelect = (
           <Select value={sort} onValueChange={(v) => setSort(v as ListSort)}>
@@ -379,17 +423,17 @@ function FilterRow({ scoped, quick, setQuick, clear, visible, total, q, setQ, so
           <span className="ml-auto flex items-center gap-2">{laneActions}</span>
         </div>
         <BottomSheet open={sheet} onClose={() => setSheet(false)} title="Filters" slot="filter-sheet">
-          {chipGroup}
+          {sheetGroups}
           <div className="flex items-center justify-between gap-2">{sortSelect}<Button onClick={() => setSheet(false)}>Show {visible.length}</Button></div>
         </BottomSheet>
       </div>
     );
   }
   return (
-    <div data-slot="filter-bar" className="space-y-2">
-      {chipGroup}
+    <div data-slot="filter-bar">
       <div className="flex flex-wrap items-center gap-2">
         {searchBox}
+        {dropdowns}
         <div className="ml-auto flex items-center gap-2">
           <span className="text-muted-foreground text-xs tabular-nums" data-slot="agents-count">{loaded ? `${visible.length} of ${total}` : <Skeleton className="h-3 w-16" />}</span>
           {laneActions}

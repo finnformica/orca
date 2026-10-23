@@ -193,7 +193,7 @@ describe("overview: the Agents card", () => {
     act(() => root?.unmount()); container?.remove();
     await mount(<Agents />);
     expect(listed().sort()).toEqual(["feat-ci", "local-err"]); // the same two the card counted
-    expect(container!.querySelector('[data-chip="status:attention"]')!.getAttribute("aria-pressed")).toBe("true");
+    expect(container!.querySelector('[data-slot="quick-filter-trigger"][data-group="activity"] [data-slot="quick-filter-active"]')!.textContent).toBe("1"); // its dropdown shows one choice on
     act(() => root?.unmount()); container?.remove();
     await act(async () => navigate("/"));
     await mount();

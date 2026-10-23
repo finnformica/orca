@@ -482,9 +482,12 @@ status dot, pill, details grid, line chart) are `components/console.tsx`.
   **A failed poll keeps the last good value** (the store's `keepGood` for the agents / PRs / merged
   streams, the machine card's history and ring in `lib/vitals.ts`): storing the empty fallback made
   rows, counts and graphs vanish for one cycle and come back — the Overview's flicker.
-- **Agents** (`/agents`, `views/Agents.tsx`): Vercel's Deployments list — one-click **quick
-  filter chips**, grouped into families with a muted caption (State: Open PRs, Mergeable, Merged
-  today, Not merged; Activity: Running, Needs attention; Repo: one per repo; AND across groups, OR
+- **Agents** (`/agents`, `views/Agents.tsx`): Vercel's Deployments list — one **filter dropdown**
+  per family (a shadcn Popover of Checkbox rows; the trigger shows the family and how many choices
+  are on, the popover a Clear for that family; on a phone the Filters sheet lists them inline)
+  (State: Open PRs, Verified, Mergeable, Merged today, Merged this week — a rolling 7 days, so the
+  board fetches a week of merged PRs and `mergedToday` keeps the today-only views today's — Not
+  merged; Activity: Running, Needs attention; Repo: one per repo; AND across groups, OR
   within one, each with its count) held in the URL query (`?status=attention&pr=open`,
   `parseQuickFilter` / `quickFilterQuery`), so a filtered view is a link and the Overview's numbers
   open exactly their chips. The Mine/Orchestrated and per-instance pills were dropped as redundant
