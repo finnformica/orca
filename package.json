@@ -6,7 +6,7 @@
     "dev": "bun run scripts/dev.ts",
     "server": "bun run server/index.ts",
     "build": "cd web && bunx --bun vite build",
-    "check": "bunx --bun tsc --noEmit && bun test",
+    "check": "bun run scripts/check-native-inputs.ts && bunx --bun tsc --noEmit && bun test",
     "test": "bun test",
     "db:check": "bun run scripts/db-check.ts"
   },
@@ -34,6 +34,7 @@
     "lucide-react": "^1.23.0",
     "prism-react-renderer": "^2.4.1",
     "react": "^18.3.1",
+    "react-day-picker": "^9",
     "react-dom": "^18.3.1",
     "react-markdown": "^10.1.0",
     "remark-breaks": "^4.0.0",

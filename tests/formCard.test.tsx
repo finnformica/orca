@@ -41,6 +41,23 @@ async function setValue(el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectE
   });
 }
 const click = async (el: Element) => { await act(async () => { (el as HTMLElement).click(); await flush(); await flush(); }); };
+const key = async (el: Element, k: string) => { await act(async () => { el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true })); await flush(); await flush(); }); };
+/** Pick an option of a shadcn Select by keyboard, as a user does: Enter opens it, Enter on the option
+ *  chooses it. The options are in a portal, so they are found in the document. */
+async function choose(trigger: Element, label: string) {
+  await key(trigger, "Enter");
+  const option = [...document.querySelectorAll("[role=option]")].find((o) => o.textContent === label);
+  expect(option).toBeTruthy();
+  await key(option!, "Enter");
+}
+const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; };
+/** Open a date field's calendar and click the day `iso` (a day of the month it opens on). */
+async function pickDay(trigger: Element, iso: string) {
+  await click(trigger);
+  const cell = document.querySelector(`[data-slot=form-date-popover] [data-day="${iso}"] button`);
+  expect(cell).toBeTruthy();
+  await click(cell!);
+}
 
 const form = (): FormView => ({ ...parseFormSpec({ title: "Set up billing", intro: "Two minutes.", fields: EVERY_TYPE }), id: ID, state: "open", createdAt: 1_700_000_000_000 });
 
@@ -58,9 +75,18 @@ describe("form card", () => {
     expect(field("project").type).toBe("text");
     expect(field("notes").tagName).toBe("TEXTAREA");
     expect(field("replicas")).toMatchObject({ type: "number", value: "2" }); // its default
-    expect(field("launch").type).toBe("date");
-    expect(field("window").type).toBe("datetime-local");
-    expect(field("region").tagName).toBe("SELECT");
+    // No native control: a select, a date and a date+time are shadcn triggers, each named by its label.
+    expect(container!.querySelector("select:not([aria-hidden=true]), input[type=date], input[type=datetime-local]")).toBeNull();
+    for (const [name, slot] of [["launch", "form-date"], ["window", "form-date"], ["region", "form-select"]] as const) {
+      const el = field(name);
+      expect(el.tagName).toBe("BUTTON");
+      expect(el.getAttribute("data-slot")).toBe(slot);
+      expect(container!.querySelector(`label[for="${el.id}"]`)).toBeTruthy();
+    }
+    expect(field("region").getAttribute("role")).toBe("combobox");
+    expect(container!.querySelectorAll("[data-slot=form-datetime] [role=combobox]")).toHaveLength(2); // hour, minute
+    // A number keeps type=number (arrow keys) but hides the browser's spinner.
+    expect(field("replicas").className).toContain("[appearance:textfield]");
     expect(container!.querySelectorAll("[data-slot=form-multiselect] [role=checkbox]")).toHaveLength(3);
     expect(field("homepage").type).toBe("url");
     expect(field("contact").type).toBe("email");
@@ -82,7 +108,8 @@ describe("form card", () => {
     expect(apiFake.formCalls.filter(([k]) => k === "submit")).toEqual([]);
 
     await setValue(field("project"), "orca");
-    await setValue(field("region") as unknown as HTMLSelectElement, "us-east-1");
+    await choose(field("region"), "US East");
+    expect(field("region").textContent).toBe("US East");
     await click(container!.querySelector("[data-slot=form-multiselect] [role=checkbox]")!);
     await click(container!.querySelector("[data-type=checkbox] [role=checkbox]")!);
     await setValue(field("contact"), "nope");
@@ -100,12 +127,35 @@ describe("form card", () => {
     expect(container!.innerHTML).not.toContain(SECRET);
   });
 
+  test("the date pickers keep the answer text: a date as YYYY-MM-DD, a date+time as YYYY-MM-DDTHH:MM", async () => {
+    apiFake.formById.set(ID, form());
+    await render(<FormCard id={ID} />);
+    const day = today();
+    await pickDay(field("launch"), day);
+    expect(field("launch").getAttribute("data-value")).toBe(day);
+    expect(document.querySelector("[data-slot=form-date-popover]")).toBeNull(); // a pick closes it
+    // The time waits for a date; a date gives 00:00, then the hour and minute selects set it.
+    const [hour, minute] = [...container!.querySelectorAll("[data-slot=form-datetime] [role=combobox]")];
+    expect(hour!.hasAttribute("disabled")).toBe(true);
+    await pickDay(field("window"), day);
+    await choose(hour!, "22");
+    await choose(minute!, "30");
+    for (const [n, v] of [["project", "orca"], ["api_key", SECRET]] as const) await setValue(field(n), v);
+    await choose(field("region"), "eu-west-2");
+    await click(container!.querySelector("[data-slot=form-multiselect] [role=checkbox]")!);
+    await click(container!.querySelector("[data-type=checkbox] [role=checkbox]")!);
+    await click(q("[data-slot=form-submit]")!);
+    const submits = apiFake.formCalls.filter(([k]) => k === "submit");
+    expect(submits).toHaveLength(1);
+    expect(submits[0]![2]).toMatchObject({ launch: day, window: `${day}T22:30`, region: "eu-west-2" });
+  });
+
   test("Cancel closes the form; the server's field errors show on their fields", async () => {
     apiFake.formById.set(ID, form());
     apiFake.submitFormError = { message: "fix the form: contact must be an email address", errors: { contact: "must be an email address" } };
     await render(<FormCard id={ID} />);
     for (const [n, v] of [["project", "orca"], ["contact", "a@example.com"], ["api_key", SECRET]] as const) await setValue(field(n), v);
-    await setValue(field("region") as unknown as HTMLSelectElement, "eu-west-2");
+    await choose(field("region"), "eu-west-2");
     await click(container!.querySelector("[data-slot=form-multiselect] [role=checkbox]")!);
     await click(container!.querySelector("[data-type=checkbox] [role=checkbox]")!);
     await click(q("[data-slot=form-submit]")!);
